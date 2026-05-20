@@ -7,11 +7,10 @@ use hypercolor_types::effect::{
     ControlBinding, ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource,
 };
 use hypercolor_types::scene::{
-    DisplayFaceBlendMode, DisplayFaceTarget, RenderGroup, RenderGroupId, RenderGroupRole, SceneId,
-    SceneKind,
+    DisplayFaceBlendMode, DisplayFaceTarget, SceneId, SceneKind, Zone, ZoneId, ZoneRole,
 };
 use hypercolor_types::spatial::{
-    DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+    EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection,
 };
 use uuid::Uuid;
@@ -23,7 +22,7 @@ fn sample_layout(zone_id: &str) -> SpatialLayout {
         description: None,
         canvas_width: 320,
         canvas_height: 200,
-        zones: vec![DeviceZone {
+        zones: vec![Output {
             id: zone_id.into(),
             name: zone_id.into(),
             device_id: "mock:device".into(),
@@ -124,7 +123,7 @@ fn upsert_primary_group_creates_when_absent() {
         .expect("primary upsert should succeed")
         .clone();
 
-    assert_eq!(group.role, RenderGroupRole::Primary);
+    assert_eq!(group.role, ZoneRole::Primary);
     assert_eq!(group.effect_id, Some(effect.id));
     assert_eq!(group.controls, controls);
     assert_eq!(group.layout.id, "layout-zone_primary");
@@ -221,7 +220,7 @@ fn upsert_display_group_uniqueness_per_device() {
         .clone();
 
     assert_eq!(updated_group.id, first_group_id);
-    assert_eq!(updated_group.role, RenderGroupRole::Display);
+    assert_eq!(updated_group.role, ZoneRole::Display);
     assert_eq!(updated_group.effect_id, Some(second_effect.id));
     assert_eq!(updated_group.layout.id, "layout-display_b");
     assert_eq!(
@@ -230,7 +229,7 @@ fn upsert_display_group_uniqueness_per_device() {
             .expect("default scene should remain active")
             .groups
             .iter()
-            .filter(|group| group.role == RenderGroupRole::Display)
+            .filter(|group| group.role == ZoneRole::Display)
             .count(),
         1
     );
@@ -322,8 +321,8 @@ fn remove_display_groups_for_device_prunes_named_scenes_too() {
 
     let mut named_scene = make_scene("Desk");
     named_scene.groups = vec![
-        RenderGroup {
-            id: RenderGroupId::new(),
+        Zone {
+            id: ZoneId::new(),
             name: "Desk Face".to_owned(),
             description: None,
             effect_id: Some(effect.id),
@@ -336,12 +335,12 @@ fn remove_display_groups_for_device_prunes_named_scenes_too() {
             enabled: true,
             color: None,
             display_target: Some(DisplayFaceTarget::new(device_id)),
-            role: RenderGroupRole::Display,
+            role: ZoneRole::Display,
             controls_version: 0,
             layers_version: 0,
         },
-        RenderGroup {
-            id: RenderGroupId::new(),
+        Zone {
+            id: ZoneId::new(),
             name: "Other Face".to_owned(),
             description: None,
             effect_id: Some(effect.id),
@@ -354,7 +353,7 @@ fn remove_display_groups_for_device_prunes_named_scenes_too() {
             enabled: true,
             color: None,
             display_target: Some(DisplayFaceTarget::new(other_device_id)),
-            role: RenderGroupRole::Display,
+            role: ZoneRole::Display,
             controls_version: 0,
             layers_version: 0,
         },
@@ -401,7 +400,7 @@ fn patch_group_controls_missing_group_returns_none() {
     assert!(
         manager
             .patch_group_controls(
-                RenderGroupId::new(),
+                ZoneId::new(),
                 HashMap::from([("speed".to_owned(), ControlValue::Float(0.9))]),
             )
             .is_none()

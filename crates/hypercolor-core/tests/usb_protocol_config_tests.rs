@@ -1,7 +1,7 @@
-use hypercolor_core::attachment::AttachmentRegistry;
+use hypercolor_core::attachment::ComponentRegistry;
 use hypercolor_core::device::UsbProtocolConfigStore;
 use hypercolor_hal::protocol_config::ProtocolRuntimeConfig;
-use hypercolor_types::attachment::{AttachmentBinding, AttachmentSlot, DeviceAttachmentProfile};
+use hypercolor_types::attachment::{ComponentBinding, ComponentSlot, DeviceComponentProfile};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceId, DeviceInfo,
     DeviceOrigin, DeviceTopologyHint, ZoneInfo,
@@ -62,8 +62,8 @@ fn nollie32_info() -> DeviceInfo {
     }
 }
 
-fn attachment_registry() -> AttachmentRegistry {
-    let mut registry = AttachmentRegistry::new();
+fn attachment_registry() -> ComponentRegistry {
+    let mut registry = ComponentRegistry::new();
     registry
         .load_builtins()
         .expect("built-in attachments should load");
@@ -105,7 +105,7 @@ async fn prism_s_config_derives_dual_gpu_from_attachment_binding() {
     let registry = attachment_registry();
     let mut profile = info.default_attachment_profile();
     profile.bindings = vec![
-        AttachmentBinding {
+        ComponentBinding {
             slot_id: "atx-strimer".to_owned(),
             template_id: "nollie-atx-strimer".to_owned(),
             name: None,
@@ -113,7 +113,7 @@ async fn prism_s_config_derives_dual_gpu_from_attachment_binding() {
             instances: 1,
             led_offset: 0,
         },
-        AttachmentBinding {
+        ComponentBinding {
             slot_id: "gpu-strimer".to_owned(),
             template_id: "lian-li-gpu-strimer-4x27".to_owned(),
             name: None,
@@ -140,9 +140,9 @@ async fn prism_s_config_derives_dual_gpu_from_attachment_binding() {
 async fn prism_s_config_supports_gpu_only_profiles() {
     let info = prism_s_info();
     let registry = attachment_registry();
-    let profile = DeviceAttachmentProfile {
+    let profile = DeviceComponentProfile {
         schema_version: 1,
-        slots: vec![AttachmentSlot {
+        slots: vec![ComponentSlot {
             id: "gpu-strimer".to_owned(),
             name: "GPU Strimer".to_owned(),
             led_start: 0,
@@ -151,7 +151,7 @@ async fn prism_s_config_supports_gpu_only_profiles() {
             allowed_templates: vec![],
             allow_custom: true,
         }],
-        bindings: vec![AttachmentBinding {
+        bindings: vec![ComponentBinding {
             slot_id: "gpu-strimer".to_owned(),
             template_id: "lian-li-gpu-strimer-4x27".to_owned(),
             name: None,
@@ -200,7 +200,7 @@ async fn nollie32_config_derives_cables_from_attachment_bindings() {
     let registry = attachment_registry();
     let mut profile = info.default_attachment_profile();
     profile.bindings = vec![
-        AttachmentBinding {
+        ComponentBinding {
             slot_id: "atx-strimer".to_owned(),
             template_id: "lian-li-atx-strimer".to_owned(),
             name: None,
@@ -208,7 +208,7 @@ async fn nollie32_config_derives_cables_from_attachment_bindings() {
             instances: 1,
             led_offset: 0,
         },
-        AttachmentBinding {
+        ComponentBinding {
             slot_id: "gpu-strimer".to_owned(),
             template_id: "nollie-gpu-strimer-6x27".to_owned(),
             name: None,

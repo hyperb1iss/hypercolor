@@ -39,7 +39,7 @@ use hypercolor_types::scene::{
     ColorInterpolation, EasingFunction, ScenePriority, TransitionSpec, ZoneAssignment,
 };
 use hypercolor_types::spatial::{
-    DeviceZone, EdgeBehavior, NormalizedPosition, SamplingMode, SpatialLayout,
+    EdgeBehavior, NormalizedPosition, Output, SamplingMode, SpatialLayout,
 };
 
 use effect_engine::EffectEngine;
@@ -220,7 +220,7 @@ fn make_discovered_device(name: &str, led_count: u32) -> DiscoveredDevice {
 }
 
 /// Create a horizontal LED strip zone positioned at canvas center.
-fn make_strip_zone(id: &str, led_count: u32) -> DeviceZone {
+fn make_strip_zone(id: &str, led_count: u32) -> Output {
     #[allow(clippy::as_conversions)]
     let capacity = led_count as usize;
     let mut positions = Vec::with_capacity(capacity);
@@ -234,7 +234,7 @@ fn make_strip_zone(id: &str, led_count: u32) -> DeviceZone {
         positions.push(NormalizedPosition::new(t, 0.5));
     }
 
-    DeviceZone {
+    Output {
         id: id.to_string(),
         name: format!("Strip {id}"),
         device_id: format!("test:{id}"),
@@ -260,7 +260,7 @@ fn make_strip_zone(id: &str, led_count: u32) -> DeviceZone {
     }
 }
 
-fn make_layout(zones: Vec<DeviceZone>) -> SpatialLayout {
+fn make_layout(zones: Vec<Output>) -> SpatialLayout {
     SpatialLayout {
         id: "test-layout".to_string(),
         name: "Test Layout".to_string(),

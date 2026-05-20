@@ -21,7 +21,7 @@ use hypercolor_types::device::{
 };
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::spatial::{
-    DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+    EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
 };
 use tokio::sync::Mutex;
 
@@ -194,7 +194,7 @@ fn make_layout(layout_device_id: &str) -> SpatialLayout {
         description: None,
         canvas_width: 320,
         canvas_height: 200,
-        zones: vec![DeviceZone {
+        zones: vec![Output {
             id: "zone_main".into(),
             name: "Main".into(),
             device_id: layout_device_id.to_owned(),

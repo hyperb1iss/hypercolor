@@ -1,5 +1,5 @@
 use hypercolor_core::attachment::effective_attachment_slots;
-use hypercolor_types::attachment::AttachmentBinding;
+use hypercolor_types::attachment::ComponentBinding;
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceId, DeviceInfo,
     DeviceOrigin, DeviceTopologyHint, ZoneInfo,
@@ -67,8 +67,8 @@ fn nollie32_nos2_info() -> DeviceInfo {
     info
 }
 
-fn binding(slot_id: &str, template_id: &str) -> AttachmentBinding {
-    AttachmentBinding {
+fn binding(slot_id: &str, template_id: &str) -> ComponentBinding {
+    ComponentBinding {
         slot_id: slot_id.to_owned(),
         template_id: template_id.to_owned(),
         name: None,
@@ -177,14 +177,14 @@ fn generic_channel_protocol_slots_allow_fan_attachments() {
 
     assert!(
         slot.suggested_categories
-            .contains(&hypercolor_types::attachment::AttachmentCategory::Strip)
+            .contains(&hypercolor_types::attachment::ComponentCategory::Strip)
     );
     assert!(
         slot.suggested_categories
-            .contains(&hypercolor_types::attachment::AttachmentCategory::Fan)
+            .contains(&hypercolor_types::attachment::ComponentCategory::Fan)
     );
     assert!(
         slot.suggested_categories
-            .contains(&hypercolor_types::attachment::AttachmentCategory::Ring)
+            .contains(&hypercolor_types::attachment::ComponentCategory::Ring)
     );
 }

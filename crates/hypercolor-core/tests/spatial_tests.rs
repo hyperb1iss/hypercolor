@@ -11,15 +11,15 @@ use hypercolor_core::spatial::{
 use hypercolor_types::canvas::{Canvas, Rgba, linear_to_srgb, srgb_to_linear};
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::spatial::{
-    Corner, DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode,
-    StripDirection, Winding,
+    Corner, EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, StripDirection,
+    Winding,
 };
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 /// Build a minimal `SpatialLayout` with the given zones.
 fn test_layout(
-    zones: Vec<DeviceZone>,
+    zones: Vec<Output>,
     canvas_width: u32,
     canvas_height: u32,
 ) -> hypercolor_types::spatial::SpatialLayout {
@@ -38,8 +38,8 @@ fn test_layout(
 }
 
 /// Build a test zone centered on the full canvas with the given topology.
-fn full_canvas_zone(id: &str, topology: LedTopology) -> DeviceZone {
-    DeviceZone {
+fn full_canvas_zone(id: &str, topology: LedTopology) -> Output {
+    Output {
         id: id.into(),
         name: id.into(),
         device_id: format!("test:{id}"),
@@ -69,8 +69,8 @@ fn custom_zone(
     position: NormalizedPosition,
     size: NormalizedPosition,
     sampling_mode: Option<SamplingMode>,
-) -> DeviceZone {
-    DeviceZone {
+) -> Output {
+    Output {
         id: id.into(),
         name: id.into(),
         device_id: format!("test:{id}"),

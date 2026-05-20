@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 use hypercolor_types::attachment::{
-    AttachmentCategory, AttachmentOrigin, AttachmentTemplate, AttachmentTemplateManifest,
+    ComponentCategory, ComponentOrigin, ComponentTemplate, ComponentTemplateManifest,
 };
 
 use super::embedded::EMBEDDED_ATTACHMENT_TEMPLATES;
@@ -14,9 +14,9 @@ use super::embedded::EMBEDDED_ATTACHMENT_TEMPLATES;
 /// Filter set for browsing attachment templates.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TemplateFilter {
-    pub category: Option<AttachmentCategory>,
+    pub category: Option<ComponentCategory>,
     pub vendor: Option<String>,
-    pub origin: Option<AttachmentOrigin>,
+    pub origin: Option<ComponentOrigin>,
     pub query: Option<String>,
     pub led_min: Option<u32>,
     pub led_max: Option<u32>,
@@ -27,15 +27,15 @@ pub struct TemplateFilter {
 
 /// Registry and index for built-in and user attachment templates.
 #[derive(Debug, Default, Clone)]
-pub struct AttachmentRegistry {
-    templates: HashMap<String, AttachmentTemplate>,
-    by_category: HashMap<AttachmentCategory, Vec<String>>,
+pub struct ComponentRegistry {
+    templates: HashMap<String, ComponentTemplate>,
+    by_category: HashMap<ComponentCategory, Vec<String>>,
     by_vendor: HashMap<String, Vec<String>>,
 }
 
 /// Attachment template registry/load errors.
 #[derive(Debug, Error)]
-pub enum AttachmentRegistryError {
+pub enum ComponentRegistryError {
     #[error("attachment template already exists: {0}")]
     DuplicateTemplateId(String),
     #[error("cannot remove built-in attachment template: {0}")]
@@ -64,13 +64,13 @@ pub enum AttachmentRegistryError {
     InvalidTemplate { id: String, reason: String },
 }
 
-type Result<T> = std::result::Result<T, AttachmentRegistryError>;
+type Result<T> = std::result::Result<T, ComponentRegistryError>;
 
 fn u32_to_usize(value: u32) -> usize {
     usize::try_from(value).expect("attachment LED counts should fit into usize")
 }
 
-impl AttachmentRegistry {
+impl ComponentRegistry {
     /// Create an empty attachment registry.
     #[must_use]
     pub fn new() -> Self {
@@ -82,14 +82,14 @@ impl AttachmentRegistry {
         let mut loaded = 0_usize;
 
         for (relative_path, raw_toml) in EMBEDDED_ATTACHMENT_TEMPLATES {
-            let manifest: AttachmentTemplateManifest =
+            let manifest: ComponentTemplateManifest =
                 toml::from_str(raw_toml).map_err(|source| {
-                    AttachmentRegistryError::ParseManifest {
+                    ComponentRegistryError::ParseManifest {
                         path: PathBuf::from(relative_path),
                         source,
                     }
                 })?;
-            self.register_manifest(manifest, AttachmentOrigin::BuiltIn)?;
+            self.register_manifest(manifest, ComponentOrigin::BuiltIn)?;
             loaded = loaded.saturating_add(1);
         }
 
@@ -103,16 +103,16 @@ impl AttachmentRegistry {
 
         for file in files {
             let raw =
-                fs::read_to_string(&file).map_err(|source| AttachmentRegistryError::ReadFile {
+                fs::read_to_string(&file).map_err(|source| ComponentRegistryError::ReadFile {
                     path: file.clone(),
                     source,
                 })?;
-            let manifest: AttachmentTemplateManifest =
-                toml::from_str(&raw).map_err(|source| AttachmentRegistryError::ParseManifest {
+            let manifest: ComponentTemplateManifest =
+                toml::from_str(&raw).map_err(|source| ComponentRegistryError::ParseManifest {
                     path: file.clone(),
                     source,
                 })?;
-            self.register_manifest(manifest, AttachmentOrigin::User)?;
+            self.register_manifest(manifest, ComponentOrigin::User)?;
             loaded = loaded.saturating_add(1);
         }
 
@@ -120,15 +120,15 @@ impl AttachmentRegistry {
     }
 
     /// Register or update one template.
-    pub fn register(&mut self, template: AttachmentTemplate) -> Result<()> {
+    pub fn register(&mut self, template: ComponentTemplate) -> Result<()> {
         validate_template(&template)?;
 
         if let Some(existing) = self.templates.get(&template.id) {
-            if existing.origin == AttachmentOrigin::BuiltIn {
-                return Err(AttachmentRegistryError::DuplicateTemplateId(template.id));
+            if existing.origin == ComponentOrigin::BuiltIn {
+                return Err(ComponentRegistryError::DuplicateTemplateId(template.id));
             }
-            if template.origin != AttachmentOrigin::User {
-                return Err(AttachmentRegistryError::DuplicateTemplateId(template.id));
+            if template.origin != ComponentOrigin::User {
+                return Err(ComponentRegistryError::DuplicateTemplateId(template.id));
             }
         }
 
@@ -138,12 +138,12 @@ impl AttachmentRegistry {
     }
 
     /// Remove one user-defined template.
-    pub fn remove(&mut self, id: &str) -> Result<AttachmentTemplate> {
+    pub fn remove(&mut self, id: &str) -> Result<ComponentTemplate> {
         let Some(template) = self.templates.get(id) else {
-            return Err(AttachmentRegistryError::TemplateNotFound(id.to_owned()));
+            return Err(ComponentRegistryError::TemplateNotFound(id.to_owned()));
         };
-        if template.origin == AttachmentOrigin::BuiltIn {
-            return Err(AttachmentRegistryError::CannotRemoveBuiltIn(id.to_owned()));
+        if template.origin == ComponentOrigin::BuiltIn {
+            return Err(ComponentRegistryError::CannotRemoveBuiltIn(id.to_owned()));
         }
 
         let removed = self
@@ -156,7 +156,7 @@ impl AttachmentRegistry {
 
     /// Get one template by ID.
     #[must_use]
-    pub fn get(&self, id: &str) -> Option<&AttachmentTemplate> {
+    pub fn get(&self, id: &str) -> Option<&ComponentTemplate> {
         self.templates.get(id)
     }
 
@@ -177,7 +177,7 @@ impl AttachmentRegistry {
     pub fn builtin_count(&self) -> usize {
         self.templates
             .values()
-            .filter(|template| template.origin == AttachmentOrigin::BuiltIn)
+            .filter(|template| template.origin == ComponentOrigin::BuiltIn)
             .count()
     }
 
@@ -186,14 +186,14 @@ impl AttachmentRegistry {
     pub fn user_count(&self) -> usize {
         self.templates
             .values()
-            .filter(|template| template.origin == AttachmentOrigin::User)
+            .filter(|template| template.origin == ComponentOrigin::User)
             .count()
     }
 
     /// Browse templates with optional filtering.
     #[must_use]
-    pub fn list(&self, filter: &TemplateFilter) -> Vec<&AttachmentTemplate> {
-        let mut templates: Vec<&AttachmentTemplate> = self
+    pub fn list(&self, filter: &TemplateFilter) -> Vec<&ComponentTemplate> {
+        let mut templates: Vec<&ComponentTemplate> = self
             .templates
             .values()
             .filter(|template| template_matches_filter(template, filter))
@@ -220,8 +220,8 @@ impl AttachmentRegistry {
         model: Option<&str>,
         slot_id: &str,
         max_leds: u32,
-    ) -> Vec<&AttachmentTemplate> {
-        let mut templates: Vec<&AttachmentTemplate> = self
+    ) -> Vec<&ComponentTemplate> {
+        let mut templates: Vec<&ComponentTemplate> = self
             .templates
             .values()
             .filter(|template| template.led_count() <= max_leds)
@@ -243,7 +243,7 @@ impl AttachmentRegistry {
 
     /// Category index snapshot for metadata APIs.
     #[must_use]
-    pub fn category_counts(&self) -> Vec<(AttachmentCategory, usize)> {
+    pub fn category_counts(&self) -> Vec<(ComponentCategory, usize)> {
         let mut items: Vec<_> = self
             .by_category
             .iter()
@@ -271,8 +271,8 @@ impl AttachmentRegistry {
 
     fn register_manifest(
         &mut self,
-        mut manifest: AttachmentTemplateManifest,
-        origin: AttachmentOrigin,
+        mut manifest: ComponentTemplateManifest,
+        origin: ComponentOrigin,
     ) -> Result<()> {
         manifest.template.origin = origin;
         self.register(manifest.template)
@@ -312,13 +312,13 @@ fn collect_toml_files(root: &Path) -> Result<Vec<PathBuf>> {
 
     while let Some(dir) = stack.pop() {
         let entries =
-            fs::read_dir(&dir).map_err(|source| AttachmentRegistryError::ReadDirectory {
+            fs::read_dir(&dir).map_err(|source| ComponentRegistryError::ReadDirectory {
                 path: dir.clone(),
                 source,
             })?;
 
         for entry in entries {
-            let entry = entry.map_err(|source| AttachmentRegistryError::ReadDirectory {
+            let entry = entry.map_err(|source| ComponentRegistryError::ReadDirectory {
                 path: dir.clone(),
                 source,
             })?;
@@ -326,7 +326,7 @@ fn collect_toml_files(root: &Path) -> Result<Vec<PathBuf>> {
             let file_type =
                 entry
                     .file_type()
-                    .map_err(|source| AttachmentRegistryError::ReadDirectory {
+                    .map_err(|source| ComponentRegistryError::ReadDirectory {
                         path: path.clone(),
                         source,
                     })?;
@@ -350,7 +350,7 @@ fn collect_toml_files(root: &Path) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
-fn template_matches_filter(template: &AttachmentTemplate, filter: &TemplateFilter) -> bool {
+fn template_matches_filter(template: &ComponentTemplate, filter: &TemplateFilter) -> bool {
     if filter
         .category
         .as_ref()
@@ -399,7 +399,7 @@ fn template_matches_filter(template: &AttachmentTemplate, filter: &TemplateFilte
     )
 }
 
-fn template_matches_query(template: &AttachmentTemplate, needle: &str) -> bool {
+fn template_matches_query(template: &ComponentTemplate, needle: &str) -> bool {
     template.name.to_ascii_lowercase().contains(needle)
         || template.id.to_ascii_lowercase().contains(needle)
         || template.vendor.to_ascii_lowercase().contains(needle)
@@ -411,7 +411,7 @@ fn template_matches_query(template: &AttachmentTemplate, needle: &str) -> bool {
 }
 
 fn matches_compatibility_filter(
-    template: &AttachmentTemplate,
+    template: &ComponentTemplate,
     controller_ids: &[String],
     model: Option<&str>,
     slot_id: Option<&str>,
@@ -451,21 +451,21 @@ fn value_matches_filter(filters: &[String], value: Option<&str>) -> bool {
     })
 }
 
-fn validate_template(template: &AttachmentTemplate) -> Result<()> {
+fn validate_template(template: &ComponentTemplate) -> Result<()> {
     if template.id.trim().is_empty() {
-        return Err(AttachmentRegistryError::InvalidTemplate {
+        return Err(ComponentRegistryError::InvalidTemplate {
             id: template.id.clone(),
             reason: "id must not be empty".to_owned(),
         });
     }
     if template.name.trim().is_empty() {
-        return Err(AttachmentRegistryError::InvalidTemplate {
+        return Err(ComponentRegistryError::InvalidTemplate {
             id: template.id.clone(),
             reason: "name must not be empty".to_owned(),
         });
     }
     if template.vendor.trim().is_empty() {
-        return Err(AttachmentRegistryError::InvalidTemplate {
+        return Err(ComponentRegistryError::InvalidTemplate {
             id: template.id.clone(),
             reason: "vendor must not be empty".to_owned(),
         });
@@ -473,7 +473,7 @@ fn validate_template(template: &AttachmentTemplate) -> Result<()> {
 
     let led_count = template.led_count();
     if led_count == 0 {
-        return Err(AttachmentRegistryError::InvalidTemplate {
+        return Err(ComponentRegistryError::InvalidTemplate {
             id: template.id.clone(),
             reason: "topology must define at least one LED".to_owned(),
         });
@@ -482,7 +482,7 @@ fn validate_template(template: &AttachmentTemplate) -> Result<()> {
     if let Some(led_names) = &template.led_names
         && led_names.len() != u32_to_usize(led_count)
     {
-        return Err(AttachmentRegistryError::InvalidTemplate {
+        return Err(ComponentRegistryError::InvalidTemplate {
             id: template.id.clone(),
             reason: format!(
                 "led_names length {} does not match topology LED count {}",
@@ -494,7 +494,7 @@ fn validate_template(template: &AttachmentTemplate) -> Result<()> {
 
     if let Some(mapping) = &template.led_mapping {
         if mapping.len() != u32_to_usize(led_count) {
-            return Err(AttachmentRegistryError::InvalidTemplate {
+            return Err(ComponentRegistryError::InvalidTemplate {
                 id: template.id.clone(),
                 reason: format!(
                     "led_mapping length {} does not match topology LED count {}",
@@ -507,13 +507,13 @@ fn validate_template(template: &AttachmentTemplate) -> Result<()> {
         let mut seen = HashSet::with_capacity(mapping.len());
         for &index in mapping {
             if index >= led_count {
-                return Err(AttachmentRegistryError::InvalidTemplate {
+                return Err(ComponentRegistryError::InvalidTemplate {
                     id: template.id.clone(),
                     reason: format!("led_mapping index {index} exceeds LED count {led_count}"),
                 });
             }
             if !seen.insert(index) {
-                return Err(AttachmentRegistryError::InvalidTemplate {
+                return Err(ComponentRegistryError::InvalidTemplate {
                     id: template.id.clone(),
                     reason: format!("led_mapping index {index} is duplicated"),
                 });

@@ -1,13 +1,11 @@
 use std::collections::HashMap;
 
-use hypercolor_core::scene::{RenderGroupMetaPatch, SceneManager, ZoneMutationError, make_scene};
+use hypercolor_core::scene::{SceneManager, ZoneMetaPatch, ZoneMutationError, make_scene};
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
-use hypercolor_types::scene::{
-    RenderGroupId, RenderGroupRole, SceneId, SceneMutationMode, UnassignedBehavior,
-};
+use hypercolor_types::scene::{SceneId, SceneMutationMode, UnassignedBehavior, ZoneId, ZoneRole};
 use hypercolor_types::spatial::{
-    DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+    EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection,
 };
 use uuid::Uuid;
@@ -47,8 +45,8 @@ fn sample_layout(zone_id: &str) -> SpatialLayout {
     }
 }
 
-fn sample_zone(id: &str) -> DeviceZone {
-    DeviceZone {
+fn sample_zone(id: &str) -> Output {
+    Output {
         id: id.to_owned(),
         name: id.to_owned(),
         device_id: format!("mock:{id}"),
@@ -101,7 +99,7 @@ fn create_and_delete_custom_zone_refreshes_active_group_cache() {
         .iter()
         .find(|group| group.id == group_id)
         .expect("new custom zone should be in the active scene");
-    assert_eq!(group.role, RenderGroupRole::Custom);
+    assert_eq!(group.role, ZoneRole::Custom);
     assert!(group.layout.zones.is_empty());
     assert!(scene.groups_revision > groups_revision);
     assert!(manager.active_render_groups_revision() > cache_revision);
@@ -167,11 +165,11 @@ fn metadata_patch_can_promote_primary_atomically() {
         .update_render_group_meta(
             &scene_id,
             custom_id,
-            RenderGroupMetaPatch {
+            ZoneMetaPatch {
                 name: Some("Room".to_owned()),
                 brightness: Some(1.7),
                 make_primary: Some(true),
-                ..RenderGroupMetaPatch::default()
+                ..ZoneMetaPatch::default()
             },
         )
         .expect("custom zone should promote to primary");
@@ -179,14 +177,14 @@ fn metadata_patch_can_promote_primary_atomically() {
     let scene = manager
         .active_scene()
         .expect("default scene should stay active");
-    assert_eq!(updated.role, RenderGroupRole::Primary);
+    assert_eq!(updated.role, ZoneRole::Primary);
     assert_eq!(updated.name, "Room");
     assert_eq!(updated.brightness, 1.0);
     assert_eq!(
         scene
             .groups
             .iter()
-            .filter(|group| group.role == RenderGroupRole::Primary)
+            .filter(|group| group.role == ZoneRole::Primary)
             .count(),
         1
     );
@@ -221,7 +219,7 @@ fn apply_effect_to_group_targets_a_named_zone_and_keeps_its_layout() {
     assert_eq!(updated.id, custom_id);
     assert_eq!(updated.effect_id, Some(aurora.id));
     // A named-zone apply never reshapes the zone — role and layout hold.
-    assert_eq!(updated.role, RenderGroupRole::Custom);
+    assert_eq!(updated.role, ZoneRole::Custom);
     assert_eq!(updated.layout, custom_layout);
 
     // The Primary zone keeps whatever effect it had.
@@ -245,7 +243,7 @@ fn apply_effect_to_group_rejects_an_unknown_zone() {
         .expect("primary should be created");
 
     let result = manager.apply_effect_to_group(
-        RenderGroupId::new(),
+        ZoneId::new(),
         &sample_effect("Aurora"),
         HashMap::new(),
         None,
@@ -351,13 +349,13 @@ fn primary_and_display_zones_cannot_be_deleted_as_custom_zones() {
     assert_eq!(
         manager.delete_render_group(&scene_id, primary_id),
         Err(ZoneMutationError::InvalidRole {
-            role: RenderGroupRole::Primary
+            role: ZoneRole::Primary
         })
     );
     assert_eq!(
         manager.delete_render_group(&scene_id, display_id),
         Err(ZoneMutationError::InvalidRole {
-            role: RenderGroupRole::Display
+            role: ZoneRole::Display
         })
     );
 }
@@ -387,10 +385,7 @@ fn unassigned_behavior_validates_fallback_group() {
             > revision
     );
     assert_eq!(
-        manager.set_unassigned_behavior(
-            &scene_id,
-            UnassignedBehavior::Fallback(RenderGroupId::new())
-        ),
+        manager.set_unassigned_behavior(&scene_id, UnassignedBehavior::Fallback(ZoneId::new())),
         Err(ZoneMutationError::GroupMissing)
     );
 }

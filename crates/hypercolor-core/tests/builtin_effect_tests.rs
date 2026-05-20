@@ -22,7 +22,7 @@ use hypercolor_types::effect::{
 };
 use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::spatial::{
-    DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+    EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection,
 };
 use hypercolor_types::viewport::ViewportRect;
@@ -175,7 +175,7 @@ fn full_canvas_strip_layout(led_count: u32) -> SpatialLayout {
         description: None,
         canvas_width: W,
         canvas_height: H,
-        zones: vec![DeviceZone {
+        zones: vec![Output {
             id: "strip".to_owned(),
             name: "Strip".to_owned(),
             device_id: "test:strip".to_owned(),

@@ -23,7 +23,7 @@ use hypercolor_types::device::{
 };
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::spatial::{
-    DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+    EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
 };
 use tokio::sync::Notify;
 
@@ -370,7 +370,7 @@ fn test_device_info(device_id: DeviceId, backend_id: &str) -> DeviceInfo {
     }
 }
 
-fn make_layout(zones: Vec<DeviceZone>) -> SpatialLayout {
+fn make_layout(zones: Vec<Output>) -> SpatialLayout {
     SpatialLayout {
         id: "contention-layout".into(),
         name: "Contention Layout".into(),
@@ -385,8 +385,8 @@ fn make_layout(zones: Vec<DeviceZone>) -> SpatialLayout {
     }
 }
 
-fn make_zone(id: &str, device_id: &str) -> DeviceZone {
-    DeviceZone {
+fn make_zone(id: &str, device_id: &str) -> Output {
+    Output {
         id: id.into(),
         name: id.into(),
         device_id: device_id.into(),

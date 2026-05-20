@@ -20,7 +20,7 @@ use hypercolor_types::canvas::Rgba;
 use hypercolor_types::device::{DeviceId, DeviceState};
 use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::spatial::{
-    DeviceZone, LedTopology, NormalizedPosition, SpatialLayout, StripDirection,
+    LedTopology, NormalizedPosition, Output, SpatialLayout, StripDirection,
 };
 
 use effect_engine::EffectEngine;
@@ -83,7 +83,7 @@ fn build_layout_for_device(
         description: None,
         canvas_width: 320,
         canvas_height: 200,
-        zones: vec![DeviceZone {
+        zones: vec![Output {
             id: format!("zone-{zone_name}"),
             name: zone_name.to_owned(),
             device_id: device_id.to_string(),
@@ -126,7 +126,7 @@ fn build_dual_zone_layout(
         canvas_width: 320,
         canvas_height: 200,
         zones: vec![
-            DeviceZone {
+            Output {
                 id: "zone-strip".to_owned(),
                 name: "LED Strip".to_owned(),
                 device_id: strip_id.to_string(),
@@ -150,7 +150,7 @@ fn build_dual_zone_layout(
                 attachment: None,
                 brightness: None,
             },
-            DeviceZone {
+            Output {
                 id: "zone-matrix".to_owned(),
                 name: "LED Matrix".to_owned(),
                 device_id: matrix_id.to_string(),

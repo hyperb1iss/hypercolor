@@ -28,7 +28,7 @@ use tokio::sync::{broadcast, watch};
 use crate::types::canvas::{Canvas, PublishedSurface};
 use crate::types::device::{DeviceId, DisplayFrameFormat};
 use crate::types::event::{FrameData, HypercolorEvent, SpectrumData};
-use crate::types::scene::{DisplayFaceBlendMode, DisplayFaceTarget, RenderGroupId, SceneId};
+use crate::types::scene::{DisplayFaceBlendMode, DisplayFaceTarget, SceneId, ZoneId};
 use crate::types::spatial::{EdgeBehavior, NormalizedPosition};
 
 // ── Constants ────────────────────────────────────────────────────────────
@@ -206,7 +206,7 @@ impl CanvasFrame {
 #[derive(Clone, Debug)]
 pub struct ZonePreviewFrame {
     pub scene_id: SceneId,
-    pub zone_id: RenderGroupId,
+    pub zone_id: ZoneId,
     pub frame: CanvasFrame,
 }
 
@@ -407,13 +407,13 @@ impl From<&DisplayFaceTarget> for DisplayGroupTarget {
 #[derive(Debug, Default)]
 struct DisplayGroupTargetRegistry {
     revision: u64,
-    targets: HashMap<RenderGroupId, DisplayGroupTarget>,
+    targets: HashMap<ZoneId, DisplayGroupTarget>,
 }
 
 #[derive(Debug, Default)]
 struct DisplayGroupOutputRouteRegistry {
     revision: u64,
-    routes: HashMap<RenderGroupId, DisplayGroupOutputRoute>,
+    routes: HashMap<ZoneId, DisplayGroupOutputRoute>,
 }
 
 // ── HypercolorBus ────────────────────────────────────────────────────────
@@ -451,7 +451,7 @@ pub struct HypercolorBus {
     zone_preview: watch::Sender<Vec<ZonePreviewFrame>>,
 
     /// Latest per-render-group canvases for direct display consumption.
-    group_canvases: Arc<Mutex<HashMap<RenderGroupId, watch::Sender<DisplayGroupFrame>>>>,
+    group_canvases: Arc<Mutex<HashMap<ZoneId, watch::Sender<DisplayGroupFrame>>>>,
 
     /// Render-thread-authored display-face routing metadata keyed by group id.
     display_group_targets: Arc<Mutex<DisplayGroupTargetRegistry>>,
@@ -654,7 +654,7 @@ impl HypercolorBus {
 
     /// Access or create the per-group canvas sender for a render group.
     #[must_use]
-    pub fn group_canvas_sender(&self, id: RenderGroupId) -> watch::Sender<DisplayGroupFrame> {
+    pub fn group_canvas_sender(&self, id: ZoneId) -> watch::Sender<DisplayGroupFrame> {
         let mut group_canvases = self
             .group_canvases
             .lock()
@@ -672,8 +672,8 @@ impl HypercolorBus {
     #[must_use]
     pub fn retain_group_canvases_and_collect_senders(
         &self,
-        active_ids: &[RenderGroupId],
-    ) -> Vec<(RenderGroupId, watch::Sender<DisplayGroupFrame>)> {
+        active_ids: &[ZoneId],
+    ) -> Vec<(ZoneId, watch::Sender<DisplayGroupFrame>)> {
         let mut group_canvases = self
             .group_canvases
             .lock()
@@ -712,7 +712,7 @@ impl HypercolorBus {
 
     /// Subscribe to a render group's canvas updates.
     #[must_use]
-    pub fn group_canvas_receiver(&self, id: RenderGroupId) -> watch::Receiver<DisplayGroupFrame> {
+    pub fn group_canvas_receiver(&self, id: ZoneId) -> watch::Receiver<DisplayGroupFrame> {
         self.group_canvas_sender(id).subscribe()
     }
 
@@ -726,7 +726,7 @@ impl HypercolorBus {
     }
 
     /// Insert or update render-thread-authored display-face routing metadata.
-    pub fn upsert_display_group_target(&self, id: RenderGroupId, target: DisplayGroupTarget) {
+    pub fn upsert_display_group_target(&self, id: ZoneId, target: DisplayGroupTarget) {
         let mut display_group_targets = self
             .display_group_targets
             .lock()
@@ -739,7 +739,7 @@ impl HypercolorBus {
     }
 
     /// Drop any render-thread-authored display-face routes not present in the active set.
-    pub fn retain_display_group_targets(&self, active_ids: &[RenderGroupId]) {
+    pub fn retain_display_group_targets(&self, active_ids: &[ZoneId]) {
         let mut display_group_targets = self
             .display_group_targets
             .lock()
@@ -768,9 +768,7 @@ impl HypercolorBus {
 
     /// Snapshot the active render-thread-authored display-face routes.
     #[must_use]
-    pub fn display_group_targets_snapshot(
-        &self,
-    ) -> (u64, HashMap<RenderGroupId, DisplayGroupTarget>) {
+    pub fn display_group_targets_snapshot(&self) -> (u64, HashMap<ZoneId, DisplayGroupTarget>) {
         let display_group_targets = self
             .display_group_targets
             .lock()
@@ -792,11 +790,7 @@ impl HypercolorBus {
     }
 
     /// Insert or update display-output-authored final display surface metadata.
-    pub fn upsert_display_group_output_route(
-        &self,
-        id: RenderGroupId,
-        route: DisplayGroupOutputRoute,
-    ) {
+    pub fn upsert_display_group_output_route(&self, id: ZoneId, route: DisplayGroupOutputRoute) {
         let mut routes = self
             .display_group_output_routes
             .lock()
@@ -809,7 +803,7 @@ impl HypercolorBus {
     }
 
     /// Drop display-output-authored routes that no longer have active display groups.
-    pub fn retain_display_group_output_routes(&self, active_ids: &[RenderGroupId]) {
+    pub fn retain_display_group_output_routes(&self, active_ids: &[ZoneId]) {
         let mut routes = self
             .display_group_output_routes
             .lock()
@@ -838,7 +832,7 @@ impl HypercolorBus {
     #[must_use]
     pub fn display_group_output_routes_snapshot(
         &self,
-    ) -> (u64, HashMap<RenderGroupId, DisplayGroupOutputRoute>) {
+    ) -> (u64, HashMap<ZoneId, DisplayGroupOutputRoute>) {
         let routes = self
             .display_group_output_routes
             .lock()
@@ -847,7 +841,7 @@ impl HypercolorBus {
     }
 
     /// Remove one display-output-authored final display surface route.
-    pub fn remove_display_group_output_route(&self, id: RenderGroupId) {
+    pub fn remove_display_group_output_route(&self, id: ZoneId) {
         let mut routes = self
             .display_group_output_routes
             .lock()
@@ -858,7 +852,7 @@ impl HypercolorBus {
     }
 
     /// Remove the render-thread-authored display-face route for a render group.
-    pub fn remove_display_group_target(&self, id: RenderGroupId) {
+    pub fn remove_display_group_target(&self, id: ZoneId) {
         let mut display_group_targets = self
             .display_group_targets
             .lock()
@@ -871,7 +865,7 @@ impl HypercolorBus {
     }
 
     /// Drop any per-group canvas streams not present in the active set.
-    pub fn retain_group_canvases(&self, active_ids: &[RenderGroupId]) {
+    pub fn retain_group_canvases(&self, active_ids: &[ZoneId]) {
         let mut group_canvases = self
             .group_canvases
             .lock()
@@ -893,7 +887,7 @@ impl HypercolorBus {
     }
 
     /// Remove the per-group canvas stream for a render group.
-    pub fn remove_group_canvas(&self, id: RenderGroupId) {
+    pub fn remove_group_canvas(&self, id: ZoneId) {
         let mut group_canvases = self
             .group_canvases
             .lock()

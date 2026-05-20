@@ -26,7 +26,7 @@ use hypercolor_types::canvas::{linear_to_output_u8, srgb_to_linear};
 use hypercolor_types::device::{DeviceId, DeviceInfo, OwnedDisplayFramePayload, ZoneInfo};
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::spatial::{
-    DeviceZone, LedTopology, NormalizedPosition, SpatialLayout, StripDirection, ZoneAttachment,
+    LedTopology, NormalizedPosition, Output, OutputComponent, SpatialLayout, StripDirection,
 };
 
 use crate::spatial::is_led_sampled_zone;
@@ -1152,7 +1152,7 @@ pub struct BackendManager {
     /// Registered backends, keyed by `BackendInfo.id`.
     backends: HashMap<String, BackendHandle>,
 
-    /// Maps spatial layout `DeviceZone.device_id` strings to `(backend_id, DeviceId)`.
+    /// Maps spatial layout `Output.device_id` strings to `(backend_id, DeviceId)`.
     ///
     /// Populated during device discovery/connection. Entries are added via
     /// [`map_device`](Self::map_device) when a zone's device reference is
@@ -1246,7 +1246,7 @@ struct CompiledZoneRoute {
     target_key: BackendDeviceKey,
     led_mapping: Option<Box<[u32]>>,
     segment: Option<SegmentRange>,
-    attachment: Option<ZoneAttachment>,
+    attachment: Option<OutputComponent>,
     physical_led_count: Option<usize>,
     zone_brightness: f32,
 }
@@ -1826,7 +1826,7 @@ impl BackendManager {
     /// backend path as normal scene-owned zones.
     #[doc(hidden)]
     #[must_use]
-    pub fn unassigned_output_zones(&self, layout: &SpatialLayout) -> Vec<DeviceZone> {
+    pub fn unassigned_output_zones(&self, layout: &SpatialLayout) -> Vec<Output> {
         let coverage = layout_output_coverage(layout);
         let mut layout_ids = self.device_map.keys().cloned().collect::<Vec<_>>();
         layout_ids.sort_unstable();
@@ -2606,9 +2606,9 @@ fn unassigned_output_zone(
     layout_device_id: &str,
     zone_name: Option<&str>,
     led_count: usize,
-) -> DeviceZone {
+) -> Output {
     let led_count = u32::try_from(led_count).unwrap_or(u32::MAX);
-    DeviceZone {
+    Output {
         id: unassigned_output_zone_id(layout_device_id, zone_name),
         name: zone_name.map_or_else(
             || format!("{layout_device_id} unassigned"),
@@ -2718,7 +2718,7 @@ fn prepare_output_for_leds_scaled(colors: &mut [[u8; 3]], brightness: f32) {
     }
 }
 
-fn should_use_ordered_routing(zone: &DeviceZone) -> bool {
+fn should_use_ordered_routing(zone: &Output) -> bool {
     is_led_sampled_zone(zone)
 }
 
@@ -3022,7 +3022,7 @@ fn normalized_zone_brightness(brightness: Option<f32>) -> f32 {
     brightness.unwrap_or(1.0).clamp(0.0, 1.0)
 }
 
-fn hash_attachment(attachment: Option<&ZoneAttachment>, hasher: &mut DefaultHasher) {
+fn hash_attachment(attachment: Option<&OutputComponent>, hasher: &mut DefaultHasher) {
     let Some(attachment) = attachment else {
         0_u8.hash(hasher);
         return;
@@ -3040,7 +3040,7 @@ fn hash_attachment(attachment: Option<&ZoneAttachment>, hasher: &mut DefaultHash
 fn attachment_segment_for_zone(
     zone_id: &str,
     base_segment: Option<SegmentRange>,
-    attachment: Option<&ZoneAttachment>,
+    attachment: Option<&OutputComponent>,
     sampled_led_count: usize,
 ) -> Option<SegmentRange> {
     let Some(attachment) = attachment else {

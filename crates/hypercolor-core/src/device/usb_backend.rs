@@ -21,7 +21,7 @@ use hypercolor_hal::transport::midi::Push2Transport;
 use hypercolor_hal::transport::serial::UsbSerialTransport;
 use hypercolor_hal::transport::vendor::UsbVendorTransport;
 use hypercolor_hal::transport::{Transport, TransportError};
-use hypercolor_types::attachment::DeviceAttachmentProfile;
+use hypercolor_types::attachment::DeviceComponentProfile;
 use hypercolor_types::device::{
     DeviceId, DeviceInfo, OwnedDisplayFramePayload, USB_OUTPUT_BACKEND_ID, ZoneInfo,
 };
@@ -36,7 +36,7 @@ use hypercolor_hal::transport::hidraw::UsbHidRawTransport;
 use super::traits::{BackendInfo, DeviceBackend, DeviceDisplaySink, DeviceFrameSink};
 use super::usb_scanner::UsbScanner;
 use super::{DiscoveredDevice, TransportScanner};
-use crate::attachment::AttachmentRegistry;
+use crate::attachment::ComponentRegistry;
 
 const RETRY_BACKOFF: Duration = Duration::from_millis(100);
 const MAX_RETRIES: u8 = 3;
@@ -375,8 +375,8 @@ impl UsbProtocolConfigStore {
         &self,
         device_id: DeviceId,
         device: &DeviceInfo,
-        profile: &DeviceAttachmentProfile,
-        registry: &AttachmentRegistry,
+        profile: &DeviceComponentProfile,
+        registry: &ComponentRegistry,
     ) -> bool {
         let Some(config) = runtime_config_for_attachment_profile(device, profile, |binding| {
             registry

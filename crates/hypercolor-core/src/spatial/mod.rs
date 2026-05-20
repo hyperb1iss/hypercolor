@@ -37,20 +37,20 @@ use std::sync::Arc;
 
 use hypercolor_types::canvas::Canvas;
 use hypercolor_types::event::ZoneColors;
-use hypercolor_types::spatial::{DeviceZone, SpatialLayout};
+use hypercolor_types::spatial::{Output, SpatialLayout};
 
 /// Layout zone name reserved for display-only viewports.
 pub const DISPLAY_ZONE_NAME: &str = "Display";
 
 /// Return whether a layout zone represents a display viewport instead of LEDs.
 #[must_use]
-pub fn is_display_zone(zone: &DeviceZone) -> bool {
+pub fn is_display_zone(zone: &Output) -> bool {
     zone.zone_name.as_deref() == Some(DISPLAY_ZONE_NAME)
 }
 
 /// Return whether a layout zone contributes sampled LED colors.
 #[must_use]
-pub fn is_led_sampled_zone(zone: &DeviceZone) -> bool {
+pub fn is_led_sampled_zone(zone: &Output) -> bool {
     !is_display_zone(zone)
 }
 
@@ -61,7 +61,7 @@ pub fn is_led_sampled_zone(zone: &DeviceZone) -> bool {
 /// a `Vec<ZoneColors>` ready for dispatch to device backends.
 ///
 /// LED positions are generated once from each zone's topology and cached
-/// inside the layout's `DeviceZone::led_positions` field. Call
+/// inside the layout's `Output::led_positions` field. Call
 /// [`update_layout`](Self::update_layout) when the layout changes to
 /// recompute positions.
 #[derive(Debug, Clone)]

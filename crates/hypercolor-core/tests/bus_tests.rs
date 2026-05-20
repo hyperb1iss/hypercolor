@@ -10,7 +10,7 @@ use hypercolor_core::types::event::{
     HypercolorEvent, Severity, SpectrumData, ZoneColors,
 };
 use hypercolor_types::device::{ConnectionType, DeviceId, DeviceOrigin};
-use hypercolor_types::scene::{DisplayFaceBlendMode, RenderGroupId};
+use hypercolor_types::scene::{DisplayFaceBlendMode, ZoneId};
 use tokio::sync::broadcast;
 use tokio::time::{Duration, timeout};
 
@@ -238,7 +238,7 @@ async fn screen_canvas_receiver_count_tracks_drops() {
 #[tokio::test]
 async fn group_canvas_receiver_roundtrip() {
     let bus = HypercolorBus::new();
-    let group_id = RenderGroupId::new();
+    let group_id = ZoneId::new();
     let mut rx = bus.group_canvas_receiver(group_id);
     let mut canvas = Canvas::new(2, 1);
     canvas.set_pixel(0, 0, Rgba::new(255, 0, 0, 255));
@@ -267,7 +267,7 @@ async fn group_canvas_receiver_roundtrip() {
 #[tokio::test]
 async fn removing_group_canvas_resets_new_subscribers_to_empty() {
     let bus = HypercolorBus::new();
-    let group_id = RenderGroupId::new();
+    let group_id = ZoneId::new();
     let mut canvas = Canvas::new(1, 1);
     canvas.fill(Rgba::new(12, 34, 56, 255));
     let _ = bus
@@ -287,8 +287,8 @@ async fn removing_group_canvas_resets_new_subscribers_to_empty() {
 #[test]
 fn retain_group_canvases_prunes_stale_streams() {
     let bus = HypercolorBus::new();
-    let keep_id = RenderGroupId::new();
-    let stale_id = RenderGroupId::new();
+    let keep_id = ZoneId::new();
+    let stale_id = ZoneId::new();
     let device_id = DeviceId::new();
 
     let _keep = bus.group_canvas_sender(keep_id);
@@ -327,8 +327,8 @@ fn retain_group_canvases_prunes_stale_streams() {
 #[test]
 fn retain_group_canvases_and_collect_senders_reuses_kept_streams() {
     let bus = HypercolorBus::new();
-    let keep_id = RenderGroupId::new();
-    let stale_id = RenderGroupId::new();
+    let keep_id = ZoneId::new();
+    let stale_id = ZoneId::new();
     let device_id = DeviceId::new();
 
     let keep_sender = bus.group_canvas_sender(keep_id);
@@ -365,7 +365,7 @@ fn retain_group_canvases_and_collect_senders_reuses_kept_streams() {
 #[test]
 fn display_group_targets_roundtrip_and_revision() {
     let bus = HypercolorBus::new();
-    let group_id = RenderGroupId::new();
+    let group_id = ZoneId::new();
     let device_id = DeviceId::new();
 
     let (initial_revision, initial_targets) = bus.display_group_targets_snapshot();
@@ -399,8 +399,8 @@ fn display_group_targets_roundtrip_and_revision() {
 #[test]
 fn retain_display_group_targets_prunes_stale_routes() {
     let bus = HypercolorBus::new();
-    let keep_id = RenderGroupId::new();
-    let stale_id = RenderGroupId::new();
+    let keep_id = ZoneId::new();
+    let stale_id = ZoneId::new();
     let device_id = DeviceId::new();
 
     bus.upsert_display_group_target(

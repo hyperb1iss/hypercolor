@@ -619,7 +619,7 @@ fn zone_mutation_error(error: ZoneMutationError) -> Response {
     match error {
         ZoneMutationError::SceneMissing => ApiError::not_found("Scene not found"),
         ZoneMutationError::GroupMissing => ApiError::not_found("Zone not found"),
-        ZoneMutationError::DeviceZoneMissing => ApiError::not_found("Device zone not found"),
+        ZoneMutationError::OutputMissing => ApiError::not_found("Device zone not found"),
         ZoneMutationError::SnapshotLocked => {
             ApiError::conflict("Snapshot scene cannot be structurally edited")
         }

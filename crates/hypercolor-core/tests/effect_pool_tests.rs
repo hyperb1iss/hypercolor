@@ -8,10 +8,10 @@ use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, Rgba};
 use hypercolor_types::effect::{ControlBinding, ControlValue, EffectId};
 use hypercolor_types::layer::{SceneLayer, SceneLayerId};
-use hypercolor_types::scene::{RenderGroup, RenderGroupId, RenderGroupRole};
+use hypercolor_types::scene::{Zone, ZoneId, ZoneRole};
 use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::spatial::{
-    DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+    EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection,
 };
 
@@ -37,7 +37,7 @@ fn sample_layout() -> SpatialLayout {
         description: None,
         canvas_width: 32,
         canvas_height: 16,
-        zones: vec![DeviceZone {
+        zones: vec![Output {
             id: "desk:main".into(),
             name: "Desk".into(),
             device_id: "mock:device".into(),
@@ -68,8 +68,8 @@ fn sample_layout() -> SpatialLayout {
     }
 }
 
-fn render_group(id: RenderGroupId, effect_id: EffectId) -> RenderGroup {
-    RenderGroup {
+fn render_group(id: ZoneId, effect_id: EffectId) -> Zone {
+    Zone {
         id,
         name: "Desk".into(),
         description: None,
@@ -83,7 +83,7 @@ fn render_group(id: RenderGroupId, effect_id: EffectId) -> RenderGroup {
         enabled: true,
         color: None,
         display_target: None,
-        role: RenderGroupRole::Custom,
+        role: ZoneRole::Custom,
         controls_version: 0,
         layers_version: 0,
     }
@@ -107,7 +107,7 @@ fn top_left(canvas: &Canvas) -> Rgba {
 fn effect_pool_reconciles_and_renders_group_controls() {
     let registry = registry_with_builtins();
     let solid_id = builtin_effect_id(&registry, "solid_color");
-    let group_id = RenderGroupId::new();
+    let group_id = ZoneId::new();
     let mut group = render_group(group_id, solid_id);
     group
         .controls
@@ -138,7 +138,7 @@ fn effect_pool_hot_swaps_effects_for_same_group() {
     let registry = registry_with_builtins();
     let solid_id = builtin_effect_id(&registry, "solid_color");
     let rainbow_id = builtin_effect_id(&registry, "rainbow");
-    let group_id = RenderGroupId::new();
+    let group_id = ZoneId::new();
     let mut solid_group = render_group(group_id, solid_id);
     solid_group
         .controls
@@ -188,7 +188,7 @@ fn effect_pool_rebuilds_slot_when_registry_entry_changes_for_same_effect_id() {
             (entry.metadata.source.source_stem() == Some("rainbow")).then_some(entry.clone())
         })
         .expect("rainbow effect should be registered");
-    let group_id = RenderGroupId::new();
+    let group_id = ZoneId::new();
     let mut group = render_group(group_id, solid_id);
     group
         .controls
@@ -237,7 +237,7 @@ fn effect_pool_rebuilds_slot_when_registry_entry_changes_for_same_effect_id() {
 fn effect_pool_rebuilds_slot_when_registry_modified_changes_for_same_effect_id() {
     let mut registry = registry_with_builtins();
     let rainbow_id = builtin_effect_id(&registry, "rainbow");
-    let group = render_group(RenderGroupId::new(), rainbow_id);
+    let group = render_group(ZoneId::new(), rainbow_id);
 
     let mut pool = EffectPool::new();
     pool.reconcile(std::slice::from_ref(&group), &registry)
@@ -288,7 +288,7 @@ fn effect_pool_rebuilds_slot_when_registry_modified_changes_for_same_effect_id()
 fn effect_pool_does_not_rebuild_slot_for_control_binding_state() {
     let registry = registry_with_builtins();
     let rainbow_id = builtin_effect_id(&registry, "rainbow");
-    let mut group = render_group(RenderGroupId::new(), rainbow_id);
+    let mut group = render_group(ZoneId::new(), rainbow_id);
     let bound_control_id = registry
         .get(&rainbow_id)
         .and_then(|entry| entry.metadata.controls.first())
@@ -349,7 +349,7 @@ fn effect_pool_does_not_rebuild_slot_for_control_binding_state() {
 fn effect_pool_prunes_removed_groups() {
     let registry = registry_with_builtins();
     let solid_id = builtin_effect_id(&registry, "solid_color");
-    let group = render_group(RenderGroupId::new(), solid_id);
+    let group = render_group(ZoneId::new(), solid_id);
 
     let mut pool = EffectPool::new();
     pool.reconcile(&[group], &registry)
@@ -365,7 +365,7 @@ fn effect_pool_prunes_removed_groups() {
 fn effect_pool_prunes_disabled_groups() {
     let registry = registry_with_builtins();
     let solid_id = builtin_effect_id(&registry, "solid_color");
-    let group_id = RenderGroupId::new();
+    let group_id = ZoneId::new();
     let enabled_group = render_group(group_id, solid_id);
     let mut disabled_group = render_group(group_id, solid_id);
     disabled_group.enabled = false;
@@ -397,7 +397,7 @@ fn effect_pool_prunes_disabled_groups() {
 fn effect_pool_reconciles_duplicate_effect_layers_as_separate_slots() {
     let registry = registry_with_builtins();
     let solid_id = builtin_effect_id(&registry, "solid_color");
-    let group_id = RenderGroupId::new();
+    let group_id = ZoneId::new();
     let red_layer = effect_layer(solid_id, [1.0, 0.0, 0.0, 1.0]);
     let blue_layer = effect_layer(solid_id, [0.0, 0.0, 1.0, 1.0]);
     let mut group = render_group(group_id, solid_id);
@@ -442,7 +442,7 @@ fn effect_pool_reconciles_duplicate_effect_layers_as_separate_slots() {
 fn effect_pool_skips_disabled_effect_layers() {
     let registry = registry_with_builtins();
     let solid_id = builtin_effect_id(&registry, "solid_color");
-    let mut group = render_group(RenderGroupId::new(), solid_id);
+    let mut group = render_group(ZoneId::new(), solid_id);
     let mut disabled_layer = effect_layer(solid_id, [0.0, 0.0, 1.0, 1.0]);
     disabled_layer.enabled = false;
     group.layers = vec![effect_layer(solid_id, [1.0, 0.0, 0.0, 1.0]), disabled_layer];

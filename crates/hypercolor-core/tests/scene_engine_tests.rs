@@ -17,12 +17,11 @@ use hypercolor_types::layer::{
     LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
 };
 use hypercolor_types::scene::{
-    ActionKind, AutomationRule, ColorInterpolation, EasingFunction, RenderGroup, RenderGroupId,
-    RenderGroupRole, SceneId, ScenePriority, TransitionSpec, TriggerSource, UnassignedBehavior,
-    ZoneAssignment,
+    ActionKind, AutomationRule, ColorInterpolation, EasingFunction, SceneId, ScenePriority,
+    TransitionSpec, TriggerSource, UnassignedBehavior, Zone, ZoneAssignment, ZoneId, ZoneRole,
 };
 use hypercolor_types::spatial::{
-    DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+    EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection,
 };
 use uuid::Uuid;
@@ -73,7 +72,7 @@ fn sample_layout(zone_id: &str) -> SpatialLayout {
         description: None,
         canvas_width: 320,
         canvas_height: 200,
-        zones: vec![DeviceZone {
+        zones: vec![Output {
             id: zone_id.into(),
             name: zone_id.into(),
             device_id: "mock:device".into(),
@@ -106,8 +105,8 @@ fn sample_layout(zone_id: &str) -> SpatialLayout {
 
 fn grouped_scene(name: &str, zone_id: &str, effect_id: EffectId) -> hypercolor_types::scene::Scene {
     let mut scene = make_scene(name);
-    scene.groups = vec![RenderGroup {
-        id: RenderGroupId::new(),
+    scene.groups = vec![Zone {
+        id: ZoneId::new(),
         name: format!("{name} Group"),
         description: None,
         effect_id: Some(effect_id),
@@ -120,7 +119,7 @@ fn grouped_scene(name: &str, zone_id: &str, effect_id: EffectId) -> hypercolor_t
         enabled: true,
         color: None,
         display_target: None,
-        role: RenderGroupRole::Custom,
+        role: ZoneRole::Custom,
         controls_version: 0,
         layers_version: 0,
     }];
@@ -204,8 +203,8 @@ fn scene_manager_create_rejects_overlapping_render_groups() {
     let mut mgr = SceneManager::new();
     let mut scene = make_scene("Grouped");
     scene.groups = vec![
-        RenderGroup {
-            id: RenderGroupId::new(),
+        Zone {
+            id: ZoneId::new(),
             name: "Desk".into(),
             description: None,
             effect_id: Some(EffectId::from(Uuid::now_v7())),
@@ -218,12 +217,12 @@ fn scene_manager_create_rejects_overlapping_render_groups() {
             enabled: true,
             color: None,
             display_target: None,
-            role: RenderGroupRole::Custom,
+            role: ZoneRole::Custom,
             controls_version: 0,
             layers_version: 0,
         },
-        RenderGroup {
-            id: RenderGroupId::new(),
+        Zone {
+            id: ZoneId::new(),
             name: "Room".into(),
             description: None,
             effect_id: Some(EffectId::from(Uuid::now_v7())),
@@ -236,7 +235,7 @@ fn scene_manager_create_rejects_overlapping_render_groups() {
             enabled: true,
             color: None,
             display_target: None,
-            role: RenderGroupRole::Custom,
+            role: ZoneRole::Custom,
             controls_version: 0,
             layers_version: 0,
         },
@@ -368,7 +367,7 @@ fn scene_manager_upsert_primary_group_replaces_materialized_layer_stack() {
     let new_id = EffectId::from(Uuid::now_v7());
     let mut scene = grouped_scene("Primary", "desk:main", old_id);
     let scene_id = scene.id;
-    scene.groups[0].role = RenderGroupRole::Primary;
+    scene.groups[0].role = ZoneRole::Primary;
     scene.groups[0].layers = vec![effect_layer(old_id, 0.25)];
     scene.groups[0].layers_version = 4;
 

@@ -31,12 +31,12 @@ use hypercolor_types::effect::{
     EffectId, EffectMetadata, EffectSource,
 };
 use hypercolor_types::event::ZoneColors;
-use hypercolor_types::scene::{RenderGroup, RenderGroupId, RenderGroupRole};
+use hypercolor_types::scene::{Zone, ZoneId, ZoneRole};
 
 use effect_engine::EffectEngine;
 use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::spatial::{
-    Corner, DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+    Corner, EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection,
 };
 use tokio::runtime::Runtime;
@@ -246,8 +246,8 @@ fn patterned_canvas(width: u32, height: u32) -> Canvas {
     canvas
 }
 
-fn full_canvas_zone(id: &str, topology: LedTopology) -> DeviceZone {
-    DeviceZone {
+fn full_canvas_zone(id: &str, topology: LedTopology) -> Output {
+    Output {
         id: id.to_owned(),
         name: id.to_owned(),
         device_id: format!("bench:{id}"),
@@ -270,7 +270,7 @@ fn full_canvas_zone(id: &str, topology: LedTopology) -> DeviceZone {
     }
 }
 
-fn layout_with_zone(zone: DeviceZone) -> SpatialLayout {
+fn layout_with_zone(zone: Output) -> SpatialLayout {
     SpatialLayout {
         id: "benchmark-layout".to_owned(),
         name: "Benchmark Layout".to_owned(),
@@ -304,9 +304,9 @@ fn render_group(
     led_count: u32,
     color: [f32; 4],
     effect_id: EffectId,
-) -> RenderGroup {
-    RenderGroup {
-        id: RenderGroupId::new(),
+) -> Zone {
+    Zone {
+        id: ZoneId::new(),
         name: zone_id.to_owned(),
         description: None,
         effect_id: Some(effect_id),
@@ -319,7 +319,7 @@ fn render_group(
         enabled: true,
         color: None,
         display_target: None,
-        role: RenderGroupRole::Custom,
+        role: ZoneRole::Custom,
         controls_version: 0,
         layers_version: 0,
     }
@@ -330,8 +330,8 @@ fn bench_routing_zone(
     device_id: &str,
     led_count: u32,
     led_mapping: Option<Vec<u32>>,
-) -> DeviceZone {
-    DeviceZone {
+) -> Output {
+    Output {
         id: id.to_owned(),
         name: id.to_owned(),
         device_id: device_id.to_owned(),

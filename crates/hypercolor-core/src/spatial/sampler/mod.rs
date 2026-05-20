@@ -14,7 +14,7 @@ mod resample;
 
 use hypercolor_types::canvas::{Canvas, Rgba, SamplingMethod};
 use hypercolor_types::spatial::{
-    DeviceZone, EdgeBehavior, NormalizedPosition, SamplingMode, SpatialLayout,
+    EdgeBehavior, NormalizedPosition, Output, SamplingMode, SpatialLayout,
 };
 
 use super::plan::{PreparedZonePlan, PreparedZoneSamples};
@@ -37,7 +37,7 @@ use resample::{
 #[must_use]
 fn zone_local_to_canvas(
     local: NormalizedPosition,
-    zone: &DeviceZone,
+    zone: &Output,
     edge: EdgeBehavior,
 ) -> NormalizedPosition {
     let s = zone.scale;
@@ -83,14 +83,14 @@ fn apply_edge_normalized(value: f32, edge: EdgeBehavior) -> f32 {
 // ── Resolution helpers ─────────────────────────────────────────────────────
 
 /// Resolve the effective sampling mode for a zone, falling back to the layout default.
-fn resolve_sampling_mode(zone: &DeviceZone, layout: &SpatialLayout) -> SamplingMode {
+fn resolve_sampling_mode(zone: &Output, layout: &SpatialLayout) -> SamplingMode {
     zone.sampling_mode
         .clone()
         .unwrap_or_else(|| layout.default_sampling_mode.clone())
 }
 
 /// Resolve the effective edge behavior for a zone, falling back to the layout default.
-fn resolve_edge_behavior(zone: &DeviceZone, layout: &SpatialLayout) -> EdgeBehavior {
+fn resolve_edge_behavior(zone: &Output, layout: &SpatialLayout) -> EdgeBehavior {
     zone.edge_behavior.unwrap_or(layout.default_edge_behavior)
 }
 
@@ -113,7 +113,7 @@ fn to_sampling_method(mode: &SamplingMode) -> SamplingMethod {
 /// Build the immutable sampling plan for a zone.
 #[must_use]
 pub(crate) fn prepare_zone(
-    zone: &DeviceZone,
+    zone: &Output,
     layout: &SpatialLayout,
     plan_generation: u64,
 ) -> PreparedZonePlan {
@@ -279,7 +279,7 @@ pub(crate) fn sample_prepared_zone_into(
 pub fn sample_led(
     canvas: &Canvas,
     local_pos: NormalizedPosition,
-    zone: &DeviceZone,
+    zone: &Output,
     mode: &SamplingMode,
     edge: EdgeBehavior,
 ) -> Rgba {
@@ -314,7 +314,7 @@ pub fn sample_led(
 /// Each LED position from the zone's `led_positions` is transformed
 /// through the zone's affine placement and sampled from the canvas.
 #[must_use]
-pub fn sample_zone(canvas: &Canvas, zone: &DeviceZone, layout: &SpatialLayout) -> Vec<[u8; 3]> {
+pub fn sample_zone(canvas: &Canvas, zone: &Output, layout: &SpatialLayout) -> Vec<[u8; 3]> {
     let prepared = prepare_zone(zone, layout, 0);
     sample_prepared_zone(canvas, &prepared)
 }

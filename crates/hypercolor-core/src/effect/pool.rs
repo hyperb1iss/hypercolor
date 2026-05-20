@@ -11,7 +11,7 @@ use hypercolor_types::effect::{
     ControlBinding, ControlDefinition, ControlKind, ControlValue, EffectId, EffectMetadata,
 };
 use hypercolor_types::layer::{LayerSource, SceneLayer, SceneLayerId};
-use hypercolor_types::scene::{RenderGroup, RenderGroupId};
+use hypercolor_types::scene::{Zone, ZoneId};
 use hypercolor_types::sensor::SystemSnapshot;
 #[cfg(feature = "servo")]
 use hypercolor_types::viewport::FitMode;
@@ -30,7 +30,7 @@ pub struct EffectPool {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EffectSlotKey {
-    pub group_id: RenderGroupId,
+    pub group_id: ZoneId,
     pub layer_id: SceneLayerId,
 }
 
@@ -43,7 +43,7 @@ struct LayerEffectSource {
 
 impl EffectSlotKey {
     #[must_use]
-    pub const fn new(group_id: RenderGroupId, layer_id: SceneLayerId) -> Self {
+    pub const fn new(group_id: ZoneId, layer_id: SceneLayerId) -> Self {
         Self { group_id, layer_id }
     }
 }
@@ -67,7 +67,7 @@ impl EffectPool {
         self.asset_library = Some(asset_library);
     }
 
-    pub fn reconcile(&mut self, groups: &[RenderGroup], registry: &EffectRegistry) -> Result<()> {
+    pub fn reconcile(&mut self, groups: &[Zone], registry: &EffectRegistry) -> Result<()> {
         let desired_keys = desired_effect_layers(groups)
             .into_iter()
             .map(|(group, layer)| EffectSlotKey::new(group.id, layer.id))
@@ -109,7 +109,7 @@ impl EffectPool {
 
     pub fn render_group_into(
         &mut self,
-        group: &RenderGroup,
+        group: &Zone,
         delta_secs: f32,
         audio: &AudioData,
         interaction: &InteractionData,
@@ -139,7 +139,7 @@ impl EffectPool {
     )]
     pub fn render_layer_into(
         &mut self,
-        group: &RenderGroup,
+        group: &Zone,
         layer: &SceneLayer,
         delta_secs: f32,
         audio: &AudioData,
@@ -181,7 +181,7 @@ impl EffectPool {
 
     pub fn render_group_output(
         &mut self,
-        group: &RenderGroup,
+        group: &Zone,
         delta_secs: f32,
         audio: &AudioData,
         interaction: &InteractionData,
@@ -211,7 +211,7 @@ impl EffectPool {
     )]
     pub fn render_layer_output(
         &mut self,
-        group: &RenderGroup,
+        group: &Zone,
         layer: &SceneLayer,
         delta_secs: f32,
         audio: &AudioData,
@@ -268,7 +268,7 @@ struct EffectSlot {
 impl EffectSlot {
     fn build(
         entry: &EffectEntry,
-        group: &RenderGroup,
+        group: &Zone,
         layer: &SceneLayer,
         asset_library: Option<&Arc<RwLock<AssetLibrary>>>,
     ) -> Result<Self> {
@@ -433,7 +433,7 @@ fn lookup_effect_entry(registry: &EffectRegistry, effect_id: EffectId) -> Result
         .ok_or_else(|| anyhow!("effect '{effect_id}' is not registered"))
 }
 
-fn desired_effect_layers(groups: &[RenderGroup]) -> Vec<(&RenderGroup, SceneLayer)> {
+fn desired_effect_layers(groups: &[Zone]) -> Vec<(&Zone, SceneLayer)> {
     groups
         .iter()
         .filter(|group| group.enabled)
@@ -447,7 +447,7 @@ fn desired_effect_layers(groups: &[RenderGroup]) -> Vec<(&RenderGroup, SceneLaye
         .collect()
 }
 
-fn single_enabled_effect_layer(group: &RenderGroup) -> Result<Option<SceneLayer>> {
+fn single_enabled_effect_layer(group: &Zone) -> Result<Option<SceneLayer>> {
     if !group.enabled {
         return Ok(None);
     }
@@ -667,9 +667,9 @@ mod tests {
     use hypercolor_types::layer::{
         LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, SceneLayer,
     };
-    use hypercolor_types::scene::{RenderGroup, RenderGroupId, RenderGroupRole};
+    use hypercolor_types::scene::{Zone, ZoneId, ZoneRole};
     use hypercolor_types::spatial::{
-        DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+        EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
         StripDirection,
     };
 
@@ -706,7 +706,7 @@ mod tests {
             description: None,
             canvas_width: 32,
             canvas_height: 16,
-            zones: vec![DeviceZone {
+            zones: vec![Output {
                 id: "desk:main".into(),
                 name: "Desk".into(),
                 device_id: "mock:device".into(),
@@ -788,8 +788,8 @@ mod tests {
             .expect("builtin effect should be registered")
     }
 
-    fn render_group(id: RenderGroupId, effect_id: EffectId) -> RenderGroup {
-        RenderGroup {
+    fn render_group(id: ZoneId, effect_id: EffectId) -> Zone {
+        Zone {
             id,
             name: "Desk".into(),
             description: None,
@@ -803,7 +803,7 @@ mod tests {
             enabled: true,
             color: None,
             display_target: None,
-            role: RenderGroupRole::Custom,
+            role: ZoneRole::Custom,
             controls_version: 0,
             layers_version: 0,
         }
@@ -822,7 +822,7 @@ mod tests {
     #[test]
     fn reconcile_pruning_destroys_removed_slot() {
         let destroyed = Arc::new(AtomicBool::new(false));
-        let group_id = RenderGroupId::new();
+        let group_id = ZoneId::new();
         let layer_id = SceneLayerId::new();
         let mut pool = EffectPool::new();
         pool.slots.insert(
@@ -840,7 +840,7 @@ mod tests {
     #[test]
     fn clear_destroys_slots() {
         let destroyed = Arc::new(AtomicBool::new(false));
-        let group_id = RenderGroupId::new();
+        let group_id = ZoneId::new();
         let layer_id = SceneLayerId::new();
         let mut pool = EffectPool::new();
         pool.slots.insert(
@@ -857,7 +857,7 @@ mod tests {
     #[test]
     fn reconcile_replacement_destroys_old_slot() {
         let destroyed = Arc::new(AtomicBool::new(false));
-        let group_id = RenderGroupId::new();
+        let group_id = ZoneId::new();
         let layer_id = SceneLayerId::new();
         let mut pool = EffectPool::new();
         pool.slots.insert(

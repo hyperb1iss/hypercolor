@@ -18,8 +18,8 @@ use hypercolor_types::device::{
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo};
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::spatial::{
-    DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
-    ZoneAttachment,
+    EdgeBehavior, LedTopology, NormalizedPosition, Output, OutputComponent, SamplingMode,
+    SpatialLayout,
 };
 use tokio::sync::Mutex;
 use tracing_subscriber::fmt::writer::MakeWriter;
@@ -1229,7 +1229,7 @@ impl io::Write for SharedLogWriter {
     }
 }
 
-fn make_layout(zones: Vec<DeviceZone>) -> SpatialLayout {
+fn make_layout(zones: Vec<Output>) -> SpatialLayout {
     SpatialLayout {
         id: "test-layout".into(),
         name: "Test Layout".into(),
@@ -1244,8 +1244,8 @@ fn make_layout(zones: Vec<DeviceZone>) -> SpatialLayout {
     }
 }
 
-fn make_zone(id: &str, device_id: &str, led_count: u32) -> DeviceZone {
-    DeviceZone {
+fn make_zone(id: &str, device_id: &str, led_count: u32) -> Output {
+    Output {
         id: id.into(),
         name: id.into(),
         device_id: device_id.into(),
@@ -3375,7 +3375,7 @@ async fn write_frame_uses_attachment_led_range_within_mapped_device() {
     );
 
     let mut zone = make_zone("zone_gpu", "usb:prismrgb-prism-s", 160);
-    zone.attachment = Some(ZoneAttachment {
+    zone.attachment = Some(OutputComponent {
         template_id: "strimer-gpu".into(),
         slot_id: "gpu-strimer".into(),
         instance: 0,
@@ -3419,7 +3419,7 @@ async fn write_frame_uses_sampled_led_count_when_attachment_metadata_is_stale() 
     manager.map_device("usb:corsair-aio", "slow", device_id);
 
     let mut zone = make_zone("zone_aio", "usb:corsair-aio", 24);
-    zone.attachment = Some(ZoneAttachment {
+    zone.attachment = Some(OutputComponent {
         template_id: "stale-aio-template".into(),
         slot_id: "pump".into(),
         instance: 0,
@@ -3480,7 +3480,7 @@ async fn write_frame_uses_absolute_attachment_coordinates_for_segmented_logical_
     );
 
     let mut zone = make_zone("attachment_zone", "attachment:gpu", 108);
-    zone.attachment = Some(ZoneAttachment {
+    zone.attachment = Some(OutputComponent {
         template_id: "strimer-gpu".into(),
         slot_id: "gpu-strimer".into(),
         instance: 0,
@@ -3552,7 +3552,7 @@ async fn write_frame_uses_mapped_segment_when_attachment_length_already_matches(
         "attachment-usb-16d0-1294-a04328385154315431202020ff01332e-gpu-strimer-120-0",
         108,
     );
-    zone.attachment = Some(ZoneAttachment {
+    zone.attachment = Some(OutputComponent {
         template_id: "lian-li-gpu-strimer-4x27".into(),
         slot_id: "gpu-strimer".into(),
         instance: 0,
