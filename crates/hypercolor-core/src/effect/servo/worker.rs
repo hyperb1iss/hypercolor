@@ -70,6 +70,8 @@ const JS_TIMER_MIN_DURATION_MS: i64 = 4;
 const MAX_GL_ERROR_BATCH: usize = 8;
 const MAX_SERVO_READBACK_RETIREES: usize = 8;
 const STATIC_CANVAS_REUSE_NO_READY_FRAMES: u32 = 2;
+#[cfg(feature = "servo-gpu-import")]
+const SERVO_GPU_IMPORT_TRANSIENT_RETRY: Duration = Duration::from_millis(250);
 
 /// Per-frame Servo render timings, split by stage. All durations in
 /// microseconds; the shared `_us` suffix is deliberate.
@@ -1002,6 +1004,8 @@ struct ServoSession {
     readback_buffers: ServoReadbackBuffers,
     #[cfg(feature = "servo-gpu-import")]
     gpu_importer: Option<PlatformServoGpuImporter>,
+    #[cfg(feature = "servo-gpu-import")]
+    gpu_import_retry_after: Option<Instant>,
     /// Most recent successful readback, retained so ticks where Servo has
     /// nothing new to composite can skip `read_to_image` entirely. Cloning a
     /// `Canvas` is an Arc refcount bump (zero-copy), so repeated reuse costs
@@ -1313,6 +1317,8 @@ impl ServoWorkerRuntime {
                 readback_buffers: ServoReadbackBuffers::default(),
                 #[cfg(feature = "servo-gpu-import")]
                 gpu_importer: None,
+                #[cfg(feature = "servo-gpu-import")]
+                gpu_import_retry_after: None,
                 last_canvas: None,
                 consecutive_no_ready_frames: 0,
             },
@@ -1404,6 +1410,10 @@ impl ServoWorkerRuntime {
             session.delegate.reset_navigation_state();
             session.script_buffer.clear();
             session.readback_buffers = ServoReadbackBuffers::default();
+            #[cfg(feature = "servo-gpu-import")]
+            {
+                session.gpu_import_retry_after = None;
+            }
             session.last_canvas = None;
             session.consecutive_no_ready_frames = 0;
         }
@@ -2015,39 +2025,85 @@ fn render_servo_framebuffer(
 
     #[cfg(feature = "servo-gpu-import")]
     if matches!(mode, ServoRenderMode::GpuPreferred) {
-        match import_servo_framebuffer_into_wgpu(runtime, session_id, size.width, size.height) {
-            Ok(frame) => {
-                record_imported_gpu_frame(&frame);
-                super::servo_gpu_import_note_success();
-                runtime.session(session_id)?.rendering_context.present();
-                return Ok(EffectRenderOutput::Gpu(frame));
-            }
-            Err(error) => {
-                let reason = classify_servo_gpu_import_error(&error);
-                let allow_cpu_fallback = matches!(
-                    super::servo_gpu_import_mode(),
-                    hypercolor_types::config::ServoGpuImportMode::Auto
-                );
-                record_servo_gpu_import_failure(reason, allow_cpu_fallback);
-                let cooldown_ms = super::servo_gpu_import_note_failure().map(duration_millis_u64);
-                runtime.clear_gpu_importer(session_id);
-                if !allow_cpu_fallback {
-                    warn!(
-                        %error,
-                        reason = reason.as_str(),
-                        cooldown_ms,
-                        "Servo GPU framebuffer import failed; refusing CPU readback fallback"
-                    );
-                    return Err(error).context(
-                        "Servo GPU framebuffer import failed without CPU readback fallback",
-                    );
+        let auto_import = matches!(
+            super::servo_gpu_import_mode(),
+            hypercolor_types::config::ServoGpuImportMode::Auto
+        );
+        let retry_delay = if auto_import {
+            let now = Instant::now();
+            runtime
+                .session(session_id)?
+                .gpu_import_retry_after
+                .and_then(|retry_after| retry_after.checked_duration_since(now))
+        } else {
+            None
+        };
+
+        if let Some(retry_delay) = retry_delay {
+            trace!(
+                retry_ms = duration_millis_u64(retry_delay),
+                "Servo GPU framebuffer import retry cooling down after transient failure"
+            );
+        } else {
+            match import_servo_framebuffer_into_wgpu(runtime, session_id, size.width, size.height) {
+                Ok(frame) => {
+                    runtime.session_mut(session_id)?.gpu_import_retry_after = None;
+                    record_imported_gpu_frame(&frame);
+                    super::servo_gpu_import_note_success();
+                    runtime.session(session_id)?.rendering_context.present();
+                    return Ok(EffectRenderOutput::Gpu(frame));
                 }
-                warn!(
-                    %error,
-                    reason = reason.as_str(),
-                    cooldown_ms,
-                    "Servo GPU framebuffer import failed; falling back to CPU readback"
-                );
+                Err(error) => {
+                    let reason = classify_servo_gpu_import_error(&error);
+                    let allow_cpu_fallback = auto_import;
+                    record_servo_gpu_import_failure(reason, allow_cpu_fallback);
+
+                    let transient = servo_gpu_import_failure_is_transient(reason);
+                    let retry_ms = if transient && auto_import {
+                        runtime.session_mut(session_id)?.gpu_import_retry_after =
+                            Some(Instant::now() + SERVO_GPU_IMPORT_TRANSIENT_RETRY);
+                        Some(duration_millis_u64(SERVO_GPU_IMPORT_TRANSIENT_RETRY))
+                    } else {
+                        None
+                    };
+                    let cooldown_ms = if transient {
+                        None
+                    } else {
+                        super::servo_gpu_import_note_failure().map(duration_millis_u64)
+                    };
+
+                    if servo_gpu_import_failure_should_clear_importer(reason) {
+                        runtime.clear_gpu_importer(session_id);
+                    }
+                    if !allow_cpu_fallback {
+                        warn!(
+                            %error,
+                            reason = reason.as_str(),
+                            transient,
+                            retry_ms,
+                            cooldown_ms,
+                            "Servo GPU framebuffer import failed; refusing CPU readback fallback"
+                        );
+                        return Err(error).context(
+                            "Servo GPU framebuffer import failed without CPU readback fallback",
+                        );
+                    }
+                    if transient {
+                        debug!(
+                            %error,
+                            reason = reason.as_str(),
+                            retry_ms,
+                            "Servo GPU framebuffer import hit transient GL state; falling back to CPU readback"
+                        );
+                    } else {
+                        warn!(
+                            %error,
+                            reason = reason.as_str(),
+                            cooldown_ms,
+                            "Servo GPU framebuffer import failed; falling back to CPU readback"
+                        );
+                    }
+                }
             }
         }
     }
@@ -2117,6 +2173,22 @@ fn record_imported_gpu_frame(frame: &crate::effect::traits::ImportedEffectFrame)
 #[cfg(feature = "servo-gpu-import")]
 fn duration_millis_u64(duration: Duration) -> u64 {
     duration.as_millis().try_into().unwrap_or(u64::MAX)
+}
+
+#[cfg(feature = "servo-gpu-import")]
+fn servo_gpu_import_failure_is_transient(reason: ServoGpuImportFallbackReason) -> bool {
+    matches!(
+        reason,
+        ServoGpuImportFallbackReason::GlOperation
+            | ServoGpuImportFallbackReason::GlFramebufferIncomplete
+            | ServoGpuImportFallbackReason::ImportSlotsExhausted
+            | ServoGpuImportFallbackReason::MissingMacosServoSurface
+    )
+}
+
+#[cfg(feature = "servo-gpu-import")]
+fn servo_gpu_import_failure_should_clear_importer(reason: ServoGpuImportFallbackReason) -> bool {
+    !matches!(reason, ServoGpuImportFallbackReason::ImportSlotsExhausted)
 }
 
 #[cfg(feature = "servo-gpu-import")]
@@ -2754,6 +2826,23 @@ mod tests {
             classify_servo_gpu_import_error(&error),
             ServoGpuImportFallbackReason::ImportSlotsExhausted
         );
+    }
+
+    #[cfg(feature = "servo-gpu-import")]
+    #[test]
+    fn transient_gpu_import_failures_skip_global_auto_backoff() {
+        assert!(servo_gpu_import_failure_is_transient(
+            ServoGpuImportFallbackReason::GlOperation
+        ));
+        assert!(servo_gpu_import_failure_is_transient(
+            ServoGpuImportFallbackReason::GlFramebufferIncomplete
+        ));
+        assert!(servo_gpu_import_failure_is_transient(
+            ServoGpuImportFallbackReason::ImportSlotsExhausted
+        ));
+        assert!(!servo_gpu_import_failure_is_transient(
+            ServoGpuImportFallbackReason::MissingWgpuVulkanDevice
+        ));
     }
 
     #[test]
