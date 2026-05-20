@@ -757,6 +757,8 @@ pub fn import_gl_framebuffer_to_wgpu_from_process(
 pub enum GlFramebufferSource {
     /// Use the framebuffer currently bound to `READ_FRAMEBUFFER`.
     CurrentRead,
+    /// Use the framebuffer currently bound to `DRAW_FRAMEBUFFER`.
+    CurrentDraw,
     /// Bind and read the supplied framebuffer. `None` means the default FBO.
     Framebuffer(Option<glow::NativeFramebuffer>),
 }
@@ -1371,12 +1373,11 @@ impl GlImportedImageBinding {
         clear_gl_errors(gl);
         let result = (|| {
             let blit_start = Instant::now();
-            // SAFETY: source_framebuffer is supplied by the current GL context;
-            // the destination framebuffer is complete and backed by external memory.
+            bind_source_framebuffer_for_blit(gl, source_framebuffer);
+            // SAFETY: the source framebuffer has been selected in this current
+            // GL context, and the destination framebuffer is complete and
+            // backed by external memory.
             unsafe {
-                if let GlFramebufferSource::Framebuffer(source_framebuffer) = source_framebuffer {
-                    gl.bind_framebuffer(glow::READ_FRAMEBUFFER, source_framebuffer);
-                }
                 gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, self.framebuffer);
                 gl.blit_framebuffer(
                     0,
@@ -1418,12 +1419,11 @@ impl GlImportedImageBinding {
         clear_gl_errors(gl);
         let result = (|| {
             let blit_start = Instant::now();
-            // SAFETY: source_framebuffer is supplied by the current GL context;
-            // the destination framebuffer is complete and backed by external memory.
+            bind_source_framebuffer_for_blit(gl, source_framebuffer);
+            // SAFETY: the source framebuffer has been selected in this current
+            // GL context, and the destination framebuffer is complete and
+            // backed by external memory.
             unsafe {
-                if let GlFramebufferSource::Framebuffer(source_framebuffer) = source_framebuffer {
-                    gl.bind_framebuffer(glow::READ_FRAMEBUFFER, source_framebuffer);
-                }
                 gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, self.framebuffer);
                 gl.blit_framebuffer(
                     0,
@@ -1474,12 +1474,10 @@ impl GlImportedImageBinding {
         source_framebuffer: GlFramebufferSource,
     ) -> GlFramebufferStateSnapshot {
         let bindings = capture_gl_bindings(gl);
+        bind_source_framebuffer_for_blit(gl, source_framebuffer);
         // SAFETY: the bindings are restored before returning. The caller owns
         // the current context and this mirrors the import blit's bind sequence.
         unsafe {
-            if let GlFramebufferSource::Framebuffer(source_framebuffer) = source_framebuffer {
-                gl.bind_framebuffer(glow::READ_FRAMEBUFFER, source_framebuffer);
-            }
             gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, self.framebuffer);
         }
         let state = current_gl_framebuffer_state(gl);
@@ -1725,6 +1723,28 @@ fn restore_gl_bindings(gl: &glow::Context, bindings: GlBindingSnapshot) {
         gl.bind_framebuffer(glow::READ_FRAMEBUFFER, bindings.read_framebuffer);
         gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, bindings.draw_framebuffer);
         gl.bind_texture(glow::TEXTURE_2D, bindings.texture_2d);
+    }
+}
+
+fn bind_source_framebuffer_for_blit(gl: &glow::Context, source: GlFramebufferSource) {
+    match source {
+        GlFramebufferSource::CurrentRead => {}
+        GlFramebufferSource::CurrentDraw => {
+            // SAFETY: the query reads binding state from the current GL context.
+            let source = unsafe {
+                framebuffer_from_binding(gl.get_parameter_i32(glow::DRAW_FRAMEBUFFER_BINDING))
+            };
+            // SAFETY: the object name came from this same current GL context.
+            unsafe {
+                gl.bind_framebuffer(glow::READ_FRAMEBUFFER, source);
+            }
+        }
+        GlFramebufferSource::Framebuffer(source) => {
+            // SAFETY: the caller supplied a framebuffer for this current GL context.
+            unsafe {
+                gl.bind_framebuffer(glow::READ_FRAMEBUFFER, source);
+            }
+        }
     }
 }
 

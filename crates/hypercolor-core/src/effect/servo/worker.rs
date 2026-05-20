@@ -2313,7 +2313,7 @@ fn import_servo_framebuffer_into_wgpu(
             session_id,
             device,
             descriptor,
-            GlFramebufferSource::CurrentRead,
+            GlFramebufferSource::CurrentDraw,
         )
         .context("failed to import Servo GL framebuffer into wgpu")
 }

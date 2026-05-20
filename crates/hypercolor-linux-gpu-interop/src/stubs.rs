@@ -264,6 +264,8 @@ pub fn report_linux_gpu_import_capabilities(
 pub enum GlFramebufferSource {
     /// Use the framebuffer currently bound to `READ_FRAMEBUFFER`.
     CurrentRead,
+    /// Use the framebuffer currently bound to `DRAW_FRAMEBUFFER`.
+    CurrentDraw,
     /// Bind and read the supplied framebuffer. `None` means the default FBO.
     Framebuffer(Option<glow::NativeFramebuffer>),
 }
