@@ -9,7 +9,7 @@ use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::icons::*;
 use crate::ws::PerformanceMetrics;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DiagnosticTone {
     Good,
     Warn,
@@ -28,10 +28,20 @@ impl DiagnosticTone {
     }
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct DiagnosticBadge {
     label: String,
     tone: DiagnosticTone,
+}
+
+#[derive(Clone, Copy)]
+struct ServoImportBadgeSnapshot {
+    import_attempting: bool,
+    gpu_frames: u64,
+    cpu_frames: u64,
+    import_failures: u64,
+    import_fallbacks: u64,
+    has_fallback_reason: bool,
 }
 
 /// Live renderer, GPU import, host hardware, and output-lane diagnostics.
@@ -461,24 +471,51 @@ fn servo_import_badge(
     };
 
     let health = &metrics.effect_health;
-    if health.servo_gpu_import_failures_total > 0 {
-        badge("failing", DiagnosticTone::Bad)
-    } else if health.servo_gpu_import_fallbacks_total > 0
-        || health.servo_gpu_import_fallback_reason.is_some()
-    {
-        badge("fallback", DiagnosticTone::Warn)
-    } else if health.servo_render_gpu_frames_total > 0 && health.servo_render_cpu_frames_total == 0
-    {
-        badge("active", DiagnosticTone::Good)
-    } else if health.servo_render_gpu_frames_total > 0 {
-        badge("mixed", DiagnosticTone::Warn)
-    } else if health.servo_render_cpu_frames_total > 0 {
-        badge("cpu", DiagnosticTone::Warn)
-    } else if status.is_some_and(|s| s.compositor_acceleration.servo_gpu_import_attempting) {
-        badge("arming", DiagnosticTone::Neutral)
-    } else {
-        badge("idle", DiagnosticTone::Neutral)
+    classify_servo_import_badge(ServoImportBadgeSnapshot {
+        import_attempting: status
+            .is_some_and(|s| s.compositor_acceleration.servo_gpu_import_attempting),
+        gpu_frames: health.servo_render_gpu_frames_total,
+        cpu_frames: health.servo_render_cpu_frames_total,
+        import_failures: health.servo_gpu_import_failures_total,
+        import_fallbacks: health.servo_gpu_import_fallbacks_total,
+        has_fallback_reason: health.servo_gpu_import_fallback_reason.is_some(),
+    })
+}
+
+fn classify_servo_import_badge(snapshot: ServoImportBadgeSnapshot) -> DiagnosticBadge {
+    if snapshot.import_attempting && snapshot.gpu_frames > 0 {
+        return badge("active", DiagnosticTone::Good);
     }
+
+    if snapshot.import_fallbacks > 0 || snapshot.has_fallback_reason {
+        return badge("fallback", DiagnosticTone::Warn);
+    }
+
+    if snapshot.gpu_frames > 0 && snapshot.cpu_frames == 0 {
+        return badge("active", DiagnosticTone::Good);
+    }
+
+    if snapshot.gpu_frames > 0 {
+        return badge("mixed", DiagnosticTone::Warn);
+    }
+
+    if snapshot.cpu_frames > 0 {
+        return badge("cpu", DiagnosticTone::Warn);
+    }
+
+    if snapshot.import_failures > 0 && snapshot.import_attempting {
+        return badge("retrying", DiagnosticTone::Warn);
+    }
+
+    if snapshot.import_failures > 0 {
+        return badge("failing", DiagnosticTone::Bad);
+    }
+
+    if snapshot.import_attempting {
+        return badge("arming", DiagnosticTone::Neutral);
+    }
+
+    badge("idle", DiagnosticTone::Neutral)
 }
 
 fn readback_badge(metrics: Option<&PerformanceMetrics>) -> DiagnosticBadge {
@@ -574,4 +611,78 @@ fn fmt_optional_temp(value: Option<f32>) -> String {
 
 fn format_window_count(value: u32) -> String {
     format!("{value}/120 frames")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_badge(badge: DiagnosticBadge, expected_label: &str, expected_tone: DiagnosticTone) {
+        assert_eq!(badge.label, expected_label);
+        assert_eq!(badge.tone, expected_tone);
+    }
+
+    #[test]
+    fn servo_import_badge_stays_active_after_recovered_import_failure() {
+        assert_badge(
+            classify_servo_import_badge(ServoImportBadgeSnapshot {
+                import_attempting: true,
+                gpu_frames: 42,
+                cpu_frames: 0,
+                import_failures: 2,
+                import_fallbacks: 0,
+                has_fallback_reason: false,
+            }),
+            "active",
+            DiagnosticTone::Good,
+        );
+    }
+
+    #[test]
+    fn servo_import_badge_stays_active_after_recovered_fallback() {
+        assert_badge(
+            classify_servo_import_badge(ServoImportBadgeSnapshot {
+                import_attempting: true,
+                gpu_frames: 42,
+                cpu_frames: 3,
+                import_failures: 2,
+                import_fallbacks: 1,
+                has_fallback_reason: true,
+            }),
+            "active",
+            DiagnosticTone::Good,
+        );
+    }
+
+    #[test]
+    fn servo_import_badge_reports_retry_before_first_gpu_frame() {
+        assert_badge(
+            classify_servo_import_badge(ServoImportBadgeSnapshot {
+                import_attempting: true,
+                gpu_frames: 0,
+                cpu_frames: 0,
+                import_failures: 1,
+                import_fallbacks: 0,
+                has_fallback_reason: false,
+            }),
+            "retrying",
+            DiagnosticTone::Warn,
+        );
+    }
+
+    #[test]
+    fn servo_import_badge_reports_failing_when_import_stops_without_frames() {
+        assert_badge(
+            classify_servo_import_badge(ServoImportBadgeSnapshot {
+                import_attempting: false,
+                gpu_frames: 0,
+                cpu_frames: 0,
+                import_failures: 1,
+                import_fallbacks: 0,
+                has_fallback_reason: false,
+            }),
+            "failing",
+            DiagnosticTone::Bad,
+        );
+    }
 }
