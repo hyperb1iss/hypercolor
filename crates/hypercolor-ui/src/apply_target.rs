@@ -1,0 +1,45 @@
+pub const ALL_LIGHT_ZONES_VALUE: &str = "__all_light_zones__";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApplyTarget {
+    Primary,
+    Zone(String),
+    AllLightZones,
+}
+
+impl Default for ApplyTarget {
+    fn default() -> Self {
+        Self::Primary
+    }
+}
+
+impl ApplyTarget {
+    #[must_use]
+    pub fn from_select_value(value: String) -> Self {
+        let trimmed = value.trim();
+        if trimmed.is_empty() || trimmed == "default" {
+            Self::Primary
+        } else if trimmed == ALL_LIGHT_ZONES_VALUE {
+            Self::AllLightZones
+        } else {
+            Self::Zone(trimmed.to_owned())
+        }
+    }
+
+    #[must_use]
+    pub fn select_value(&self) -> String {
+        match self {
+            Self::Primary => String::new(),
+            Self::Zone(zone_id) => zone_id.clone(),
+            Self::AllLightZones => ALL_LIGHT_ZONES_VALUE.to_owned(),
+        }
+    }
+
+    #[must_use]
+    pub fn zone_id(&self) -> Option<&str> {
+        match self {
+            Self::Zone(zone_id) => Some(zone_id),
+            Self::Primary | Self::AllLightZones => None,
+        }
+    }
+}

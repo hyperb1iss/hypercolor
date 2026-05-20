@@ -4,6 +4,7 @@
 //! or `just ui-build` (production). Communicates with `hypercolor-daemon` over
 //! REST and WebSocket using `hypercolor-leptos-ext`.
 
+pub mod apply_target;
 pub mod control_surface_api;
 pub mod control_surface_values;
 pub mod control_surface_view;

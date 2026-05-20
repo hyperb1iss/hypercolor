@@ -1,5 +1,6 @@
 mod api;
 mod app;
+mod apply_target;
 mod async_helpers;
 mod channel_names;
 mod color;

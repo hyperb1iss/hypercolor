@@ -8,11 +8,13 @@ use leptos_router::path;
 
 use hypercolor_leptos_ext::events::Input;
 use hypercolor_leptos_ext::prelude::now_ms;
-use hypercolor_types::effect::{ControlDefinition, ControlValue};
+use hypercolor_types::effect::{ControlDefinition, ControlValue, EffectId};
 use hypercolor_types::event::LayerHealth;
-use hypercolor_types::scene::{SceneKind, SceneMutationMode};
+use hypercolor_types::layer::{LayerAdjust, LayerBlendMode, LayerSource, LayerTransform};
+use hypercolor_types::scene::{SceneKind, SceneMutationMode, ZoneRole};
 
 use crate::api;
+use crate::apply_target::ApplyTarget;
 use crate::color::CanvasFrameAnalysis;
 use crate::components::preset_matching::controls_to_json;
 use crate::components::shell::Shell;
@@ -177,11 +179,10 @@ pub struct EffectsContext {
     /// change. Cleared for an effect when `apply_effect(id)` is called,
     /// so switching away and coming back re-triggers the restore.
     pub restored_effects: StoredValue<HashSet<String>>,
-    /// The zone a quick-apply targets. `None` is the Primary zone — the
-    /// daemon's default. Studio writes it from the selected zone; the
-    /// dashboard, sidebar, and shell quick-apply surfaces read it so an
-    /// apply always lands in the zone the user is composing (Wave B3).
-    pub apply_target: RwSignal<Option<String>>,
+    /// The zone a quick-apply targets. Studio writes it from the selected
+    /// zone; every quick-apply surface reads it so applies land in the
+    /// zone the user is composing (Wave B3).
+    pub apply_target: RwSignal<ApplyTarget>,
 }
 
 /// Shared device + layout state — accessible from devices page and layout builder.
@@ -247,10 +248,19 @@ impl EffectsContext {
     pub fn apply_effect(&self, id: String) {
         let apply_target = self.apply_target.get_untracked();
         let stored_prefs = self.preferences.get(&id);
+        if apply_target == ApplyTarget::AllLightZones {
+            let ctx = *self;
+            leptos::task::spawn_local(async move {
+                apply_effect_to_current_led_zones(&ctx, id).await;
+            });
+            return;
+        }
+
         // A body is sent when there are preferences to bake in, or when a
         // non-Primary zone has to be named.
+        let target_zone_id = apply_target.zone_id().map(ToOwned::to_owned);
         let body =
-            (stored_prefs.is_some() || apply_target.is_some()).then(|| api::ApplyEffectBody {
+            (stored_prefs.is_some() || target_zone_id.is_some()).then(|| api::ApplyEffectBody {
                 preset_id: stored_prefs
                     .as_ref()
                     .and_then(|prefs| prefs.preset_id.clone()),
@@ -258,13 +268,13 @@ impl EffectsContext {
                     (!prefs.control_values.is_empty())
                         .then(|| serde_json::Value::Object(controls_to_json(&prefs.control_values)))
                 }),
-                render_group: apply_target.clone(),
+                render_group: target_zone_id.clone(),
             });
 
         // A named-zone apply renders into that zone and leaves the global
         // Primary effect untouched, so it skips the Primary-state optimism
         // the legacy path runs below.
-        if apply_target.is_some() {
+        if target_zone_id.is_some() {
             let ctx = *self;
             leptos::task::spawn_local(async move {
                 if api::apply_effect(&id, body.as_ref()).await.is_ok() {
@@ -392,6 +402,99 @@ impl EffectsContext {
             });
         }
     }
+}
+
+async fn apply_effect_to_current_led_zones(ctx: &EffectsContext, effect_id: String) {
+    let Some(source) = effect_layer_source(&effect_id) else {
+        toasts::toast_error("That effect has an invalid identifier");
+        return;
+    };
+    let scene = match api::fetch_active_scene().await {
+        Ok(Some(scene)) => scene,
+        _ => {
+            toasts::toast_error("No active scene is available");
+            return;
+        }
+    };
+    let zone_ids = scene
+        .groups
+        .iter()
+        .filter(|group| group.role != ZoneRole::Display)
+        .map(|group| group.id.to_string())
+        .collect::<Vec<_>>();
+    if zone_ids.is_empty() {
+        toasts::toast_error("No light zones are available");
+        return;
+    }
+
+    let mut applied = 0_usize;
+    let mut failed = 0_usize;
+    for zone_id in &zone_ids {
+        match apply_effect_layer(&scene.id, zone_id, &source).await {
+            Ok(()) => applied += 1,
+            Err(_) => failed += 1,
+        }
+    }
+    ctx.refresh_active_scene();
+    if failed == 0 {
+        toasts::toast_success(&format!("Effect applied to {applied} zone(s)"));
+    } else if applied == 0 {
+        toasts::toast_error("Effect apply failed");
+    } else {
+        toasts::toast_error(&format!(
+            "Effect applied to {applied} zone(s), {failed} failed"
+        ));
+    }
+}
+
+async fn apply_effect_layer(
+    scene_id: &str,
+    zone_id: &str,
+    source: &LayerSource,
+) -> Result<(), String> {
+    let stack = api::list_layers(scene_id, zone_id).await?;
+    let outcome = if let Some(layer) = stack
+        .items
+        .iter()
+        .find(|layer| matches!(layer.source, LayerSource::Effect { .. }))
+    {
+        let mut request = api::UpdateLayerRequest::from(layer);
+        request.source = source.clone();
+        api::update_layer(
+            scene_id,
+            zone_id,
+            &layer.id.to_string(),
+            &request,
+            Some(stack.layers_version),
+        )
+        .await?
+    } else {
+        let request = api::CreateLayerRequest {
+            name: None,
+            source: source.clone(),
+            blend: LayerBlendMode::Alpha,
+            opacity: 1.0,
+            transform: LayerTransform::default(),
+            adjust: LayerAdjust::default(),
+            bindings: Vec::new(),
+            enabled: true,
+        };
+        api::create_layer(scene_id, zone_id, &request, Some(stack.layers_version)).await?
+    };
+    match outcome {
+        api::LayerStackOutcome::Applied(_) => Ok(()),
+        api::LayerStackOutcome::Stale { .. } => Err("layer stack changed".to_owned()),
+    }
+}
+
+fn effect_layer_source(effect_id: &str) -> Option<LayerSource> {
+    let uuid = uuid::Uuid::parse_str(effect_id.trim()).ok()?;
+    Some(LayerSource::Effect {
+        effect_id: EffectId::new(uuid),
+        controls: HashMap::new(),
+        control_bindings: HashMap::new(),
+        preset_id: None,
+    })
 }
 
 fn apply_active_effect_snapshot(
@@ -762,7 +865,7 @@ pub fn App() -> impl IntoView {
         set_favorite_ids,
         preferences: preferences_store,
         restored_effects: StoredValue::new(HashSet::new()),
-        apply_target: RwSignal::new(None),
+        apply_target: RwSignal::new(ApplyTarget::Primary),
     };
     provide_context(effects_ctx);
 

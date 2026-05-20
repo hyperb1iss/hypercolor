@@ -24,6 +24,7 @@ use leptos_icons::Icon;
 
 use crate::api;
 use crate::api::ComponentBindingSummary;
+use crate::apply_target::ApplyTarget;
 use crate::components::layout_builder::ZoneLayoutProvider;
 use crate::components::page_header::{HeaderToolbar, PageAccent, PageHeader};
 use crate::components::resize_handle::ResizeHandle;
@@ -151,20 +152,18 @@ pub fn StudioPage() -> impl IntoView {
                     .any(|group| group.id.to_string() == *id && group.role != ZoneRole::Display)
         });
         if let Some(zone_id) = selected_led_zone {
-            effects_ctx.apply_target.set(Some(zone_id));
-        } else if effects_ctx
-            .apply_target
-            .get_untracked()
-            .is_some_and(|target| {
-                !scene
+            effects_ctx.apply_target.set(ApplyTarget::Zone(zone_id));
+        } else if matches!(
+            effects_ctx.apply_target.get_untracked(),
+            ApplyTarget::Zone(ref target)
+                if !scene
                     .groups
                     .iter()
-                    .any(|group| group.id.to_string() == target)
-            })
-        {
+                    .any(|group| group.id.to_string() == target.as_str())
+        ) {
             // A Screen / Unassigned selection holding a target left over
             // from a no-longer-active scene falls back to the Primary zone.
-            effects_ctx.apply_target.set(None);
+            effects_ctx.apply_target.set(ApplyTarget::Primary);
         }
     });
 
