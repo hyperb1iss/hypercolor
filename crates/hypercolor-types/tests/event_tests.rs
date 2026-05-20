@@ -8,12 +8,10 @@ use hypercolor_types::event::{
     AssetChangeKind, ChangeTrigger, ContextType, DisconnectReason, EffectDegradationState,
     EffectRef, EffectStopReason, EventCategory, EventControlValue, EventPriority, FrameData,
     FrameTiming, HypercolorEvent, InputButtonState, InputEvent, LayerHealth, LayerStackChangeKind,
-    RenderGroupChangeKind, SceneChangeReason, Severity, TransitionRef, ZoneColors, ZoneRef,
+    SceneChangeReason, Severity, TransitionRef, ZoneChangeKind, ZoneColors, ZoneRef,
 };
 use hypercolor_types::layer::SceneLayerId;
-use hypercolor_types::scene::{
-    RenderGroupId, RenderGroupRole, SceneId, SceneKind, SceneMutationMode,
-};
+use hypercolor_types::scene::{SceneId, SceneKind, SceneMutationMode, ZoneId, ZoneRole};
 use hypercolor_types::session::SessionEvent;
 
 fn fixture_origin() -> DeviceOrigin {
@@ -127,7 +125,7 @@ fn effect_events_have_effect_category() {
         },
         HypercolorEvent::EffectDegraded {
             effect_id: "broken".into(),
-            group_id: Some(RenderGroupId::new()),
+            group_id: Some(ZoneId::new()),
             group_name: Some("Display Face".into()),
             state: EffectDegradationState::Failed,
             reason: Some("shader compile failed".into()),
@@ -168,19 +166,19 @@ fn scene_events_have_scene_category() {
         },
         HypercolorEvent::RenderGroupChanged {
             scene_id: SceneId::DEFAULT,
-            group_id: RenderGroupId::new(),
-            role: RenderGroupRole::Primary,
-            kind: RenderGroupChangeKind::Updated,
+            group_id: ZoneId::new(),
+            role: ZoneRole::Primary,
+            kind: ZoneChangeKind::Updated,
         },
         HypercolorEvent::LayerStackChanged {
             scene_id: SceneId::DEFAULT,
-            group_id: RenderGroupId::new(),
+            group_id: ZoneId::new(),
             layers_version: 2,
             kind: LayerStackChangeKind::Updated,
         },
         HypercolorEvent::LayerHealthChanged {
             scene_id: SceneId::DEFAULT,
-            group_id: RenderGroupId::new(),
+            group_id: ZoneId::new(),
             layer_id: SceneLayerId::new(),
             health: LayerHealth::Active,
         },
@@ -524,7 +522,7 @@ fn high_priority_events() {
         },
         HypercolorEvent::LayerHealthChanged {
             scene_id: SceneId::DEFAULT,
-            group_id: RenderGroupId::new(),
+            group_id: ZoneId::new(),
             layer_id: SceneLayerId::new(),
             health: LayerHealth::Failed {
                 reason: "decoder_timeout".into(),
@@ -532,7 +530,7 @@ fn high_priority_events() {
         },
         HypercolorEvent::LayerHealthChanged {
             scene_id: SceneId::DEFAULT,
-            group_id: RenderGroupId::new(),
+            group_id: ZoneId::new(),
             layer_id: SceneLayerId::new(),
             health: LayerHealth::AssetMissing,
         },
@@ -777,7 +775,7 @@ fn serialize_effect_started_with_transition() {
 
 #[test]
 fn serialize_effect_degraded_roundtrip() {
-    let group_id = RenderGroupId::new();
+    let group_id = ZoneId::new();
     let event = HypercolorEvent::EffectDegraded {
         effect_id: "effect-1".into(),
         group_id: Some(group_id),

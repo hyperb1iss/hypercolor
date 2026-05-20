@@ -1,6 +1,6 @@
 use hypercolor_types::attachment::{
-    AttachmentBinding, AttachmentCanvasSize, AttachmentCategory, AttachmentCompatibility,
-    AttachmentOrigin, AttachmentSlot, AttachmentTemplate, AttachmentTemplateManifest,
+    ComponentBinding, ComponentCanvasSize, ComponentCategory, ComponentCompatibility,
+    ComponentOrigin, ComponentSlot, ComponentTemplate, ComponentTemplateManifest,
 };
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
@@ -8,24 +8,24 @@ use hypercolor_types::device::{
 };
 use hypercolor_types::spatial::{Corner, LedTopology, NormalizedPosition};
 
-fn sample_template() -> AttachmentTemplateManifest {
-    AttachmentTemplateManifest {
+fn sample_template() -> ComponentTemplateManifest {
+    ComponentTemplateManifest {
         schema_version: 1,
-        template: AttachmentTemplate {
+        template: ComponentTemplate {
             id: "fixture-gpu-template".into(),
             name: "Fixture GPU Accessory".into(),
-            category: AttachmentCategory::Strimer,
-            origin: AttachmentOrigin::BuiltIn,
+            category: ComponentCategory::Strimer,
+            origin: ComponentOrigin::BuiltIn,
             description: "Fixture Controller GPU cable template".into(),
             vendor: "Fixture Accessory".into(),
-            default_size: AttachmentCanvasSize::default(),
+            default_size: ComponentCanvasSize::default(),
             topology: LedTopology::Matrix {
                 width: 27,
                 height: 6,
                 serpentine: false,
                 start_corner: Corner::TopLeft,
             },
-            compatible_slots: vec![AttachmentCompatibility {
+            compatible_slots: vec![ComponentCompatibility {
                 controller_ids: vec!["fixture-controller".into()],
                 models: vec!["fixture_model".into()],
                 slots: vec!["gpu-port".into()],
@@ -82,22 +82,22 @@ fn sample_device() -> DeviceInfo {
 fn attachment_template_toml_round_trip() {
     let manifest = sample_template();
     let toml_str = toml::to_string_pretty(&manifest).expect("toml serialize");
-    let back: AttachmentTemplateManifest = toml::from_str(&toml_str).expect("toml deserialize");
+    let back: ComponentTemplateManifest = toml::from_str(&toml_str).expect("toml deserialize");
     assert_eq!(back, manifest);
 }
 
 #[test]
 fn custom_attachment_template_preserves_positions() {
-    let manifest = AttachmentTemplateManifest {
+    let manifest = ComponentTemplateManifest {
         schema_version: 1,
-        template: AttachmentTemplate {
+        template: ComponentTemplate {
             id: "my-custom-aio".into(),
             name: "My Custom AIO Halo".into(),
-            category: AttachmentCategory::Aio,
-            origin: AttachmentOrigin::User,
+            category: ComponentCategory::Aio,
+            origin: ComponentOrigin::User,
             description: String::new(),
             vendor: "Custom".into(),
-            default_size: AttachmentCanvasSize::default(),
+            default_size: ComponentCanvasSize::default(),
             topology: LedTopology::Custom {
                 positions: vec![
                     NormalizedPosition::new(0.1, 0.5),
@@ -116,18 +116,18 @@ fn custom_attachment_template_preserves_positions() {
     };
 
     let toml_str = toml::to_string_pretty(&manifest).expect("toml serialize");
-    let back: AttachmentTemplateManifest = toml::from_str(&toml_str).expect("toml deserialize");
+    let back: ComponentTemplateManifest = toml::from_str(&toml_str).expect("toml deserialize");
     assert_eq!(back, manifest);
 }
 
 #[test]
 fn attachment_slot_supports_built_in_and_custom_templates() {
-    let slot = AttachmentSlot {
+    let slot = ComponentSlot {
         id: "gpu-port".into(),
         name: "GPU Port".into(),
         led_start: 120,
         led_count: 162,
-        suggested_categories: vec![AttachmentCategory::Strimer],
+        suggested_categories: vec![ComponentCategory::Strimer],
         allowed_templates: Vec::new(),
         allow_custom: false,
     };
@@ -135,13 +135,13 @@ fn attachment_slot_supports_built_in_and_custom_templates() {
     let built_in = sample_template().template;
     assert!(slot.supports_template(&built_in));
 
-    let custom = AttachmentTemplate {
-        origin: AttachmentOrigin::User,
+    let custom = ComponentTemplate {
+        origin: ComponentOrigin::User,
         ..built_in.clone()
     };
     assert!(!slot.supports_template(&custom));
 
-    let override_slot = AttachmentSlot {
+    let override_slot = ComponentSlot {
         allow_custom: false,
         allowed_templates: vec![custom.id.clone()],
         ..slot
@@ -151,24 +151,24 @@ fn attachment_slot_supports_built_in_and_custom_templates() {
 
 #[test]
 fn attachment_slot_accepts_any_other_category_bucket() {
-    let slot = AttachmentSlot {
+    let slot = ComponentSlot {
         id: "ambient".into(),
         name: "Ambient".into(),
         led_start: 0,
         led_count: 32,
-        suggested_categories: vec![AttachmentCategory::Other("other".into())],
+        suggested_categories: vec![ComponentCategory::Other("other".into())],
         allowed_templates: Vec::new(),
         allow_custom: true,
     };
 
-    let template = AttachmentTemplate {
+    let template = ComponentTemplate {
         id: "hex-panel".into(),
         name: "Hex Panel".into(),
-        category: AttachmentCategory::Other("panel".into()),
-        origin: AttachmentOrigin::BuiltIn,
+        category: ComponentCategory::Other("panel".into()),
+        origin: ComponentOrigin::BuiltIn,
         description: String::new(),
         vendor: "Misc".into(),
-        default_size: AttachmentCanvasSize::default(),
+        default_size: ComponentCanvasSize::default(),
         topology: LedTopology::Point,
         compatible_slots: Vec::new(),
         tags: Vec::new(),
@@ -196,7 +196,7 @@ fn device_info_derives_default_attachment_profile_from_zones() {
     assert!(
         profile.slots[0]
             .suggested_categories
-            .contains(&AttachmentCategory::Strimer)
+            .contains(&ComponentCategory::Strimer)
     );
 
     assert_eq!(profile.slots[1].id, "gpu-strimer");
@@ -252,18 +252,18 @@ fn default_attachment_profile_uses_topology_categories_only() {
     assert!(
         profile.slots[0]
             .suggested_categories
-            .contains(&AttachmentCategory::Strip)
+            .contains(&ComponentCategory::Strip)
     );
     assert!(
         !profile.slots[0]
             .suggested_categories
-            .contains(&AttachmentCategory::Fan)
+            .contains(&ComponentCategory::Fan)
     );
 }
 
 #[test]
 fn attachment_compatibility_matches_controller_model_and_slot() {
-    let compatibility = AttachmentCompatibility {
+    let compatibility = ComponentCompatibility {
         controller_ids: vec!["fixture-controller".into()],
         models: vec!["fixture_model".into()],
         slots: vec!["gpu-port".into()],
@@ -277,7 +277,7 @@ fn attachment_compatibility_matches_controller_model_and_slot() {
 
 #[test]
 fn attachment_binding_round_trips_defaults() {
-    let binding = AttachmentBinding {
+    let binding = ComponentBinding {
         slot_id: "gpu-port".into(),
         template_id: "fixture-gpu-template".into(),
         name: Some("GPU Cable".into()),
@@ -287,13 +287,13 @@ fn attachment_binding_round_trips_defaults() {
     };
 
     let toml_str = toml::to_string_pretty(&binding).expect("toml serialize");
-    let back: AttachmentBinding = toml::from_str(&toml_str).expect("toml deserialize");
+    let back: ComponentBinding = toml::from_str(&toml_str).expect("toml deserialize");
     assert_eq!(back, binding);
 }
 
 #[test]
 fn attachment_binding_defaults_enabled_instances_and_offset() {
-    let back: AttachmentBinding = toml::from_str(
+    let back: ComponentBinding = toml::from_str(
         r#"
 slot_id = "gpu-port"
 template_id = "fixture-gpu-template"
@@ -308,11 +308,11 @@ template_id = "fixture-gpu-template"
 
 #[test]
 fn attachment_category_unknown_string_round_trips() {
-    let category = AttachmentCategory::Other("desk".into());
+    let category = ComponentCategory::Other("desk".into());
     let serialized = serde_json::to_string(&category).expect("serialize category");
     assert_eq!(serialized, "\"desk\"");
 
-    let restored: AttachmentCategory =
+    let restored: ComponentCategory =
         serde_json::from_str(&serialized).expect("deserialize category");
     assert_eq!(restored, category);
 }

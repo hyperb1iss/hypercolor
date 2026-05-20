@@ -12,7 +12,7 @@ use crate::asset::AssetId;
 use crate::controls::ControlSurfaceEvent;
 use crate::device::DeviceOrigin;
 use crate::layer::SceneLayerId;
-use crate::scene::{RenderGroupId, RenderGroupRole, SceneId, SceneKind, SceneMutationMode};
+use crate::scene::{SceneId, SceneKind, SceneMutationMode, ZoneId, ZoneRole};
 use crate::session::SessionEvent;
 
 // ── Supporting Types ────────────────────────────────────────────────────
@@ -113,7 +113,7 @@ pub enum EffectDegradationState {
 /// How a render group changed inside the active scene.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum RenderGroupChangeKind {
+pub enum ZoneChangeKind {
     Created,
     Updated,
     Removed,
@@ -559,7 +559,7 @@ pub enum HypercolorEvent {
     /// An effect entered or exited degraded mode.
     EffectDegraded {
         effect_id: String,
-        group_id: Option<RenderGroupId>,
+        group_id: Option<ZoneId>,
         group_name: Option<String>,
         state: EffectDegradationState,
         reason: Option<String>,
@@ -592,18 +592,18 @@ pub enum HypercolorEvent {
     /// A scene was enabled or disabled.
     SceneEnabled { scene_id: String, enabled: bool },
 
-    /// A render group in a scene changed.
+    /// A zone in a scene changed.
     RenderGroupChanged {
         scene_id: SceneId,
-        group_id: RenderGroupId,
-        role: RenderGroupRole,
-        kind: RenderGroupChangeKind,
+        group_id: ZoneId,
+        role: ZoneRole,
+        kind: ZoneChangeKind,
     },
 
     /// An authored layer stack in a render group changed.
     LayerStackChanged {
         scene_id: SceneId,
-        group_id: RenderGroupId,
+        group_id: ZoneId,
         layers_version: u64,
         kind: LayerStackChangeKind,
     },
@@ -611,7 +611,7 @@ pub enum HypercolorEvent {
     /// Runtime health for one authored layer producer changed.
     LayerHealthChanged {
         scene_id: SceneId,
-        group_id: RenderGroupId,
+        group_id: ZoneId,
         layer_id: SceneLayerId,
         health: LayerHealth,
     },
@@ -987,3 +987,15 @@ impl HypercolorEvent {
         }
     }
 }
+
+// ── Plan 55 P3 backwards-compat aliases ─────────────────────────────────
+//
+// See `scene.rs` for the multi-crate rollout rationale. The
+// `RenderGroupChanged` variant is intentionally left under its old
+// name in this commit because it forms part of the wire format
+// (externally tagged enum). A later commit will rename the variant
+// together with a `#[serde(rename)]` so the wire bytes stay intact.
+
+/// Deprecated alias for [`ZoneChangeKind`]; remove after Plan 55 P3
+/// finishes.
+pub type RenderGroupChangeKind = ZoneChangeKind;

@@ -1,7 +1,7 @@
 use hypercolor_types::spatial::{
-    Corner, DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, NormalizedRect, Orientation,
-    RingDef, RoomAdjacency, RoomDimensions, SamplingMode, SpaceDefinition, SpatialLayout,
-    StripDirection, Wall, Winding, ZoneAttachment, ZoneShape,
+    Corner, EdgeBehavior, LedTopology, NormalizedPosition, NormalizedRect, Orientation, Output,
+    OutputComponent, RingDef, RoomAdjacency, RoomDimensions, SamplingMode, SpaceDefinition,
+    SpatialLayout, StripDirection, Wall, Winding, ZoneShape,
 };
 use serde_json::json;
 
@@ -235,12 +235,12 @@ fn strip_direction_all_variants() {
     assert_eq!(dirs.len(), 4);
 }
 
-// ── DeviceZone ──────────────────────────────────────────────────────────────
+// ── Output ──────────────────────────────────────────────────────────────
 
 #[test]
 fn device_zone_construction() {
     let expected_mapping: Vec<u32> = (0..24).rev().collect();
-    let zone = DeviceZone {
+    let zone = Output {
         id: "zone-1".into(),
         name: "ATX Strimer".into(),
         device_id: "hid:prism-s-1".into(),
@@ -278,7 +278,7 @@ fn device_zone_construction() {
 
 #[test]
 fn device_zone_optional_fields() {
-    let zone = DeviceZone {
+    let zone = Output {
         id: "z".into(),
         name: "Bulb".into(),
         device_id: "fixture-device:1".into(),
@@ -311,7 +311,7 @@ fn device_zone_optional_fields() {
 
 #[test]
 fn zone_attachment_defaults_optional_physical_range() {
-    let attachment: ZoneAttachment = serde_json::from_value(json!({
+    let attachment: OutputComponent = serde_json::from_value(json!({
         "template_id": "strimer-gpu",
         "slot_id": "gpu-strimer",
         "instance": 1
@@ -351,7 +351,7 @@ fn spatial_layout_empty_zones() {
 
 #[test]
 fn spatial_layout_with_zones() {
-    let zone = DeviceZone {
+    let zone = Output {
         id: "fan-1".into(),
         name: "Front Fan".into(),
         device_id: "hid:prism-s-1".into(),

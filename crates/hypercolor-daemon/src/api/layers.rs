@@ -19,7 +19,7 @@ use hypercolor_types::layer::{
     LayerAdjust, LayerBinding, LayerBlendMode, LayerSource, LayerTransform, MediaPlayback,
     SceneLayer, SceneLayerId,
 };
-use hypercolor_types::scene::{RenderGroup, RenderGroupId, SceneId};
+use hypercolor_types::scene::{RenderGroup, RenderGroupId, SceneId, ZoneId};
 
 use crate::api::control_values::json_to_control_value;
 use crate::api::effects::normalize_control_payload;
@@ -651,7 +651,7 @@ async fn normalize_layer_controls(
 }
 
 fn parse_group_id(raw: &str) -> Result<RenderGroupId, uuid::Error> {
-    raw.parse::<uuid::Uuid>().map(RenderGroupId)
+    raw.parse::<uuid::Uuid>().map(ZoneId)
 }
 
 fn parse_if_match_layers_version(headers: &HeaderMap) -> Result<Option<u64>, &'static str> {

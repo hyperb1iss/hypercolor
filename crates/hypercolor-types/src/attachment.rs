@@ -28,13 +28,13 @@ fn default_binding_instances() -> u32 {
     1
 }
 
-fn other_attachment_category() -> AttachmentCategory {
-    AttachmentCategory::Other("other".to_owned())
+fn other_attachment_category() -> ComponentCategory {
+    ComponentCategory::Other("other".to_owned())
 }
 
 /// Template category used for filtering and UI grouping.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum AttachmentCategory {
+pub enum ComponentCategory {
     /// Standard fan lighting ring or fan frame.
     Fan,
     /// Generic linear strip.
@@ -59,7 +59,7 @@ pub enum AttachmentCategory {
     Other(String),
 }
 
-impl AttachmentCategory {
+impl ComponentCategory {
     /// Stable string form used in serialized templates and API filters.
     #[must_use]
     pub fn as_str(&self) -> &str {
@@ -103,7 +103,7 @@ impl AttachmentCategory {
     }
 }
 
-impl Serialize for AttachmentCategory {
+impl Serialize for ComponentCategory {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -112,7 +112,7 @@ impl Serialize for AttachmentCategory {
     }
 }
 
-impl<'de> Deserialize<'de> for AttachmentCategory {
+impl<'de> Deserialize<'de> for ComponentCategory {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
@@ -125,7 +125,7 @@ impl<'de> Deserialize<'de> for AttachmentCategory {
 /// Where an attachment template came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
-pub enum AttachmentOrigin {
+pub enum ComponentOrigin {
     /// Shipped by Hypercolor.
     #[default]
     BuiltIn,
@@ -135,14 +135,14 @@ pub enum AttachmentOrigin {
 
 /// Default visual footprint for placing an attachment in the layout editor.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct AttachmentCanvasSize {
+pub struct ComponentCanvasSize {
     /// Width as a normalized fraction of the canvas.
     pub width: f32,
     /// Height as a normalized fraction of the canvas.
     pub height: f32,
 }
 
-impl Default for AttachmentCanvasSize {
+impl Default for ComponentCanvasSize {
     fn default() -> Self {
         Self {
             width: 0.25,
@@ -156,7 +156,7 @@ impl Default for AttachmentCanvasSize {
 /// Empty matcher fields are wildcards. If a template has no compatibility
 /// entries at all, it is considered globally compatible.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct AttachmentCompatibility {
+pub struct ComponentCompatibility {
     /// Controller driver or protocol identifiers.
     #[serde(default)]
     pub controller_ids: Vec<String>,
@@ -168,7 +168,7 @@ pub struct AttachmentCompatibility {
     pub slots: Vec<String>,
 }
 
-impl AttachmentCompatibility {
+impl ComponentCompatibility {
     /// Whether this matcher accepts the given controller/slot tuple.
     #[must_use]
     pub fn matches(
@@ -185,16 +185,16 @@ impl AttachmentCompatibility {
 
 /// Reusable attachment layout template.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AttachmentTemplate {
+pub struct ComponentTemplate {
     /// Stable template identifier.
     pub id: String,
     /// Human-readable display name.
     pub name: String,
     /// UI grouping category.
-    pub category: AttachmentCategory,
+    pub category: ComponentCategory,
     /// Built-in or user-authored template.
     #[serde(default)]
-    pub origin: AttachmentOrigin,
+    pub origin: ComponentOrigin,
     /// Optional descriptive text.
     #[serde(default)]
     pub description: String,
@@ -203,12 +203,12 @@ pub struct AttachmentTemplate {
     pub vendor: String,
     /// Default visual size when dropped into a layout.
     #[serde(default)]
-    pub default_size: AttachmentCanvasSize,
+    pub default_size: ComponentCanvasSize,
     /// Physical LED topology for this attachment.
     pub topology: LedTopology,
     /// Optional controller/slot filters.
     #[serde(default)]
-    pub compatible_slots: Vec<AttachmentCompatibility>,
+    pub compatible_slots: Vec<ComponentCompatibility>,
     /// Search/filter tags.
     #[serde(default)]
     pub tags: Vec<String>,
@@ -226,7 +226,7 @@ pub struct AttachmentTemplate {
     pub physical_size_mm: Option<(f32, f32)>,
 }
 
-impl AttachmentTemplate {
+impl ComponentTemplate {
     /// Number of LEDs required by this template.
     #[must_use]
     pub fn led_count(&self) -> u32 {
@@ -251,27 +251,27 @@ impl AttachmentTemplate {
 
 /// TOML-friendly manifest wrapper for one template file.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AttachmentTemplateManifest {
+pub struct ComponentTemplateManifest {
     /// Schema version for migrations.
     #[serde(default = "current_attachment_schema_version")]
     pub schema_version: u32,
     /// Flattened template body.
     #[serde(flatten)]
-    pub template: AttachmentTemplate,
+    pub template: ComponentTemplate,
 }
 
-impl Default for AttachmentTemplateManifest {
+impl Default for ComponentTemplateManifest {
     fn default() -> Self {
         Self {
             schema_version: CURRENT_ATTACHMENT_SCHEMA_VERSION,
-            template: AttachmentTemplate {
+            template: ComponentTemplate {
                 id: String::new(),
                 name: String::new(),
                 category: other_attachment_category(),
-                origin: AttachmentOrigin::BuiltIn,
+                origin: ComponentOrigin::BuiltIn,
                 description: String::new(),
                 vendor: String::new(),
-                default_size: AttachmentCanvasSize::default(),
+                default_size: ComponentCanvasSize::default(),
                 topology: LedTopology::Point,
                 compatible_slots: Vec::new(),
                 tags: Vec::new(),
@@ -286,7 +286,7 @@ impl Default for AttachmentTemplateManifest {
 
 /// One physical controller attachment point.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AttachmentSlot {
+pub struct ComponentSlot {
     /// Stable slot identifier.
     pub id: String,
     /// User-facing port/channel name.
@@ -297,7 +297,7 @@ pub struct AttachmentSlot {
     pub led_count: u32,
     /// Template categories that make sense here.
     #[serde(default)]
-    pub suggested_categories: Vec<AttachmentCategory>,
+    pub suggested_categories: Vec<ComponentCategory>,
     /// Explicit template IDs that should be offered regardless of category.
     #[serde(default)]
     pub allowed_templates: Vec<String>,
@@ -306,7 +306,7 @@ pub struct AttachmentSlot {
     pub allow_custom: bool,
 }
 
-impl AttachmentSlot {
+impl ComponentSlot {
     /// Exclusive LED end index on the controller.
     #[must_use]
     pub const fn led_end_exclusive(&self) -> u32 {
@@ -315,7 +315,7 @@ impl AttachmentSlot {
 
     /// Whether the slot can host the given template.
     #[must_use]
-    pub fn supports_template(&self, template: &AttachmentTemplate) -> bool {
+    pub fn supports_template(&self, template: &ComponentTemplate) -> bool {
         if template.led_count() > self.led_count {
             return false;
         }
@@ -331,7 +331,7 @@ impl AttachmentSlot {
             return false;
         }
 
-        if template.origin == AttachmentOrigin::User && !self.allow_custom && !explicitly_allowed {
+        if template.origin == ComponentOrigin::User && !self.allow_custom && !explicitly_allowed {
             return false;
         }
 
@@ -341,7 +341,7 @@ impl AttachmentSlot {
 
 /// Binding from a controller slot to a chosen attachment template.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AttachmentBinding {
+pub struct ComponentBinding {
     /// Slot receiving the attachment.
     pub slot_id: String,
     /// Template identifier selected for this slot.
@@ -360,10 +360,10 @@ pub struct AttachmentBinding {
     pub led_offset: u32,
 }
 
-impl AttachmentBinding {
+impl ComponentBinding {
     /// Effective LED span for this binding given the bound template size.
     #[must_use]
-    pub fn effective_led_count(&self, template: &AttachmentTemplate) -> u32 {
+    pub fn effective_led_count(&self, template: &ComponentTemplate) -> u32 {
         template
             .led_count()
             .saturating_mul(self.instances.max(default_binding_instances()))
@@ -372,7 +372,7 @@ impl AttachmentBinding {
 
 /// Attachment-derived zone suggestion for layout import and preview flows.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AttachmentSuggestedZone {
+pub struct ComponentSuggestedZone {
     /// Source slot ID on the physical controller.
     pub slot_id: String,
     /// Bound attachment template identifier.
@@ -388,9 +388,9 @@ pub struct AttachmentSuggestedZone {
     /// Number of LEDs consumed by this instance.
     pub led_count: u32,
     /// Attachment category for UI grouping and shape defaults.
-    pub category: AttachmentCategory,
+    pub category: ComponentCategory,
     /// Suggested default layout footprint.
-    pub default_size: AttachmentCanvasSize,
+    pub default_size: ComponentCanvasSize,
     /// Imported topology for spatial sampling.
     pub topology: LedTopology,
     /// Optional spatial-order -> physical-order LED remapping.
@@ -400,22 +400,22 @@ pub struct AttachmentSuggestedZone {
 
 /// Per-controller attachment state persisted in TOML.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct DeviceAttachmentProfile {
+pub struct DeviceComponentProfile {
     /// Schema version for migrations.
     #[serde(default = "current_attachment_schema_version")]
     pub schema_version: u32,
     /// Attachment points exposed by the controller.
     #[serde(default)]
-    pub slots: Vec<AttachmentSlot>,
+    pub slots: Vec<ComponentSlot>,
     /// Current template assignments.
     #[serde(default)]
-    pub bindings: Vec<AttachmentBinding>,
+    pub bindings: Vec<ComponentBinding>,
     /// Attachment-derived zones ready for layout import.
     #[serde(default)]
-    pub suggested_zones: Vec<AttachmentSuggestedZone>,
+    pub suggested_zones: Vec<ComponentSuggestedZone>,
 }
 
-impl Default for DeviceAttachmentProfile {
+impl Default for DeviceComponentProfile {
     fn default() -> Self {
         Self {
             schema_version: CURRENT_ATTACHMENT_SCHEMA_VERSION,
@@ -432,7 +432,7 @@ impl DeviceInfo {
     /// This gives every zone a stable slot ID and LED range even before the
     /// daemon grows a dedicated attachment registry.
     #[must_use]
-    pub fn default_attachment_profile(&self) -> DeviceAttachmentProfile {
+    pub fn default_attachment_profile(&self) -> DeviceComponentProfile {
         let mut led_start = 0_u32;
         let mut slot_ids: HashMap<String, u32> = HashMap::new();
         let slots = self
@@ -440,7 +440,7 @@ impl DeviceInfo {
             .iter()
             .map(|zone| {
                 let slot_id = dedupe_slot_id(&mut slot_ids, &slugify_slot_id(&zone.name));
-                let slot = AttachmentSlot {
+                let slot = ComponentSlot {
                     id: slot_id,
                     name: zone.name.clone(),
                     led_start,
@@ -454,7 +454,7 @@ impl DeviceInfo {
             })
             .collect();
 
-        DeviceAttachmentProfile {
+        DeviceComponentProfile {
             schema_version: CURRENT_ATTACHMENT_SCHEMA_VERSION,
             slots,
             bindings: Vec::new(),
@@ -478,31 +478,31 @@ fn matches_optional_filter(filters: &[String], value: Option<&str>) -> bool {
     value.is_some_and(|inner| matches_filter(filters, inner))
 }
 
-fn suggested_categories(topology: &DeviceTopologyHint) -> Vec<AttachmentCategory> {
+fn suggested_categories(topology: &DeviceTopologyHint) -> Vec<ComponentCategory> {
     match topology {
         DeviceTopologyHint::Strip => vec![
-            AttachmentCategory::Strip,
-            AttachmentCategory::Case,
-            AttachmentCategory::Radiator,
+            ComponentCategory::Strip,
+            ComponentCategory::Case,
+            ComponentCategory::Radiator,
             other_attachment_category(),
         ],
         DeviceTopologyHint::Matrix { .. } => vec![
-            AttachmentCategory::Strimer,
-            AttachmentCategory::Matrix,
+            ComponentCategory::Strimer,
+            ComponentCategory::Matrix,
             other_attachment_category(),
         ],
         DeviceTopologyHint::Ring { .. } => vec![
-            AttachmentCategory::Fan,
-            AttachmentCategory::Aio,
-            AttachmentCategory::Heatsink,
-            AttachmentCategory::Ring,
+            ComponentCategory::Fan,
+            ComponentCategory::Aio,
+            ComponentCategory::Heatsink,
+            ComponentCategory::Ring,
             other_attachment_category(),
         ],
         DeviceTopologyHint::Point => {
-            vec![AttachmentCategory::Bulb, other_attachment_category()]
+            vec![ComponentCategory::Bulb, other_attachment_category()]
         }
         DeviceTopologyHint::Display { .. } => {
-            vec![AttachmentCategory::Matrix, other_attachment_category()]
+            vec![ComponentCategory::Matrix, other_attachment_category()]
         }
         DeviceTopologyHint::Custom => vec![other_attachment_category()],
     }
@@ -545,3 +545,49 @@ fn dedupe_slot_id(slot_ids: &mut HashMap<String, u32>, base_id: &str) -> String 
         format!("{base_id}-{next_index}")
     }
 }
+
+// ── Plan 55 P3 backwards-compat aliases ─────────────────────────────────
+//
+// See `scene.rs` for the multi-crate rollout rationale. These match
+// the legacy `Attachment*` and `DeviceAttachment*` names so consumer
+// crates compile until each has been migrated to the new vocabulary.
+
+/// Deprecated alias for [`ComponentCategory`]; remove after Plan 55 P3
+/// finishes.
+pub type AttachmentCategory = ComponentCategory;
+
+/// Deprecated alias for [`ComponentOrigin`]; remove after Plan 55 P3
+/// finishes.
+pub type AttachmentOrigin = ComponentOrigin;
+
+/// Deprecated alias for [`ComponentCanvasSize`]; remove after Plan 55
+/// P3 finishes.
+pub type AttachmentCanvasSize = ComponentCanvasSize;
+
+/// Deprecated alias for [`ComponentCompatibility`]; remove after Plan
+/// 55 P3 finishes.
+pub type AttachmentCompatibility = ComponentCompatibility;
+
+/// Deprecated alias for [`ComponentTemplate`]; remove after Plan 55 P3
+/// finishes.
+pub type AttachmentTemplate = ComponentTemplate;
+
+/// Deprecated alias for [`ComponentTemplateManifest`]; remove after
+/// Plan 55 P3 finishes.
+pub type AttachmentTemplateManifest = ComponentTemplateManifest;
+
+/// Deprecated alias for [`ComponentSlot`]; remove after Plan 55 P3
+/// finishes.
+pub type AttachmentSlot = ComponentSlot;
+
+/// Deprecated alias for [`ComponentBinding`]; remove after Plan 55 P3
+/// finishes.
+pub type AttachmentBinding = ComponentBinding;
+
+/// Deprecated alias for [`ComponentSuggestedZone`]; remove after Plan
+/// 55 P3 finishes.
+pub type AttachmentSuggestedZone = ComponentSuggestedZone;
+
+/// Deprecated alias for [`DeviceComponentProfile`]; remove after Plan
+/// 55 P3 finishes.
+pub type DeviceAttachmentProfile = DeviceComponentProfile;

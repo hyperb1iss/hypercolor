@@ -12,7 +12,7 @@ use utoipa::ToSchema;
 use hypercolor_core::scene::{RenderGroupMetaPatch, SceneManager, ZoneMutationError};
 use hypercolor_types::event::{HypercolorEvent, RenderGroupChangeKind, SceneSettingsChangeKind};
 use hypercolor_types::scene::{
-    RenderGroup, RenderGroupId, RenderGroupRole, SceneId, UnassignedBehavior,
+    RenderGroup, RenderGroupId, RenderGroupRole, SceneId, UnassignedBehavior, ZoneId,
 };
 use hypercolor_types::spatial::{DeviceZone, SpatialLayout};
 
@@ -640,7 +640,7 @@ fn zone_mutation_error(error: ZoneMutationError) -> Response {
 }
 
 fn parse_zone_id(raw: &str) -> Result<RenderGroupId, uuid::Error> {
-    raw.parse::<uuid::Uuid>().map(RenderGroupId)
+    raw.parse::<uuid::Uuid>().map(ZoneId)
 }
 
 fn parse_if_match_groups_revision(headers: &HeaderMap) -> Result<Option<u64>, &'static str> {

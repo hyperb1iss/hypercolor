@@ -5,12 +5,11 @@ use hypercolor_types::effect::{ControlValue, EffectId};
 use hypercolor_types::layer::{LayerSource, SceneLayerId};
 use hypercolor_types::scene::{
     ActionKind, AutomationRule, ColorInterpolation, DisplayFaceBlendMode, DisplayFaceTarget,
-    EasingFunction, RenderGroup, RenderGroupId, RenderGroupRole, Scene, SceneId, SceneKind,
-    SceneMutationMode, ScenePriority, SceneScope, TransitionSpec, TriggerSource,
-    UnassignedBehavior, ZoneAssignment,
+    EasingFunction, Scene, SceneId, SceneKind, SceneMutationMode, ScenePriority, SceneScope,
+    TransitionSpec, TriggerSource, UnassignedBehavior, Zone, ZoneAssignment, ZoneId, ZoneRole,
 };
 use hypercolor_types::spatial::{
-    DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+    EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection,
 };
 use std::collections::HashMap;
@@ -57,7 +56,7 @@ fn sample_layout(zone_id: &str) -> SpatialLayout {
         description: None,
         canvas_width: 320,
         canvas_height: 200,
-        zones: vec![DeviceZone {
+        zones: vec![Output {
             id: zone_id.into(),
             name: zone_id.into(),
             device_id: "mock:device".into(),
@@ -88,9 +87,9 @@ fn sample_layout(zone_id: &str) -> SpatialLayout {
     }
 }
 
-fn sample_group(name: &str, zone_id: &str, effect_id: EffectId) -> RenderGroup {
-    RenderGroup {
-        id: RenderGroupId::new(),
+fn sample_group(name: &str, zone_id: &str, effect_id: EffectId) -> Zone {
+    Zone {
+        id: ZoneId::new(),
         name: name.into(),
         description: None,
         effect_id: Some(effect_id),
@@ -103,7 +102,7 @@ fn sample_group(name: &str, zone_id: &str, effect_id: EffectId) -> RenderGroup {
         enabled: true,
         color: Some("#e135ff".into()),
         display_target: None,
-        role: RenderGroupRole::Custom,
+        role: ZoneRole::Custom,
         controls_version: 0,
         layers_version: 0,
     }
@@ -237,7 +236,7 @@ fn render_group_display_target_round_trips_in_scene_json() {
     display_target.blend_mode = DisplayFaceBlendMode::SoftLight;
     display_target.opacity = 0.64;
     let scene = Scene {
-        groups: vec![RenderGroup {
+        groups: vec![Zone {
             display_target: Some(display_target.clone()),
             ..sample_group("AIO Display", "desk:display", effect_id)
         }],
@@ -252,7 +251,7 @@ fn render_group_display_target_round_trips_in_scene_json() {
 
 #[test]
 fn render_group_legacy_json_synthesizes_effect_layer() {
-    let group_id = RenderGroupId::new();
+    let group_id = ZoneId::new();
     let effect_id = EffectId::from(Uuid::now_v7());
     let json = serde_json::json!({
         "id": group_id,
@@ -271,7 +270,7 @@ fn render_group_legacy_json_synthesizes_effect_layer() {
         "controls_version": 4
     });
 
-    let group: RenderGroup = serde_json::from_value(json).expect("deserialize legacy group");
+    let group: Zone = serde_json::from_value(json).expect("deserialize legacy group");
 
     assert_eq!(group.effect_id, Some(effect_id));
     assert_eq!(group.controls_version, 4);
@@ -296,7 +295,7 @@ fn render_group_layers_are_authoritative_over_legacy_fields() {
     let layer_effect = EffectId::from(Uuid::now_v7());
     let layer_id = SceneLayerId::new();
     let json = serde_json::json!({
-        "id": RenderGroupId::new(),
+        "id": ZoneId::new(),
         "name": "Layered",
         "description": null,
         "effect_id": legacy_effect,
@@ -321,7 +320,7 @@ fn render_group_layers_are_authoritative_over_legacy_fields() {
         "role": "primary"
     });
 
-    let group: RenderGroup = serde_json::from_value(json).expect("deserialize layered group");
+    let group: Zone = serde_json::from_value(json).expect("deserialize layered group");
 
     assert_eq!(group.effect_id, Some(layer_effect));
     assert_eq!(group.controls.get("speed"), Some(&ControlValue::Float(1.5)));
@@ -343,7 +342,7 @@ fn scene_json_requires_group_role() {
         "scope": "full",
         "zone_assignments": [],
         "groups": [{
-            "id": RenderGroupId::new(),
+            "id": ZoneId::new(),
             "name": "Primary",
             "description": null,
             "effect_id": EffectId::from(Uuid::now_v7()),
@@ -371,8 +370,8 @@ fn scene_json_requires_group_role() {
 #[test]
 fn scene_json_requires_scene_kind() {
     let mut json = serde_json::to_value(Scene {
-        groups: vec![RenderGroup {
-            role: RenderGroupRole::Primary,
+        groups: vec![Zone {
+            role: ZoneRole::Primary,
             ..sample_group("Primary", "desk:main", EffectId::from(Uuid::now_v7()))
         }],
         ..sample_scene()
@@ -392,8 +391,8 @@ fn scene_json_requires_scene_kind() {
 #[test]
 fn scene_json_requires_mutation_mode() {
     let mut json = serde_json::to_value(Scene {
-        groups: vec![RenderGroup {
-            role: RenderGroupRole::Primary,
+        groups: vec![Zone {
+            role: ZoneRole::Primary,
             ..sample_group("Primary", "desk:main", EffectId::from(Uuid::now_v7()))
         }],
         ..sample_scene()
@@ -432,12 +431,12 @@ fn scene_validate_group_exclusivity_rejects_duplicates() {
 fn scene_validate_rejects_two_primary_groups() {
     let scene = Scene {
         groups: vec![
-            RenderGroup {
-                role: RenderGroupRole::Primary,
+            Zone {
+                role: ZoneRole::Primary,
                 ..sample_group("Desk", "desk:main", EffectId::from(Uuid::now_v7()))
             },
-            RenderGroup {
-                role: RenderGroupRole::Primary,
+            Zone {
+                role: ZoneRole::Primary,
                 ..sample_group("Room", "room:main", EffectId::from(Uuid::now_v7()))
             },
         ],
@@ -458,8 +457,8 @@ fn scene_validate_rejects_two_primary_groups() {
 #[test]
 fn scene_validate_rejects_display_without_target() {
     let scene = Scene {
-        groups: vec![RenderGroup {
-            role: RenderGroupRole::Display,
+        groups: vec![Zone {
+            role: ZoneRole::Display,
             ..sample_group("Display", "desk:display", EffectId::from(Uuid::now_v7()))
         }],
         ..sample_scene()
@@ -481,8 +480,8 @@ fn scene_validate_rejects_duplicate_display_device_ids() {
     let device_id = DeviceId::new();
     let scene = Scene {
         groups: vec![
-            RenderGroup {
-                role: RenderGroupRole::Display,
+            Zone {
+                role: ZoneRole::Display,
                 display_target: Some(DisplayFaceTarget::new(device_id)),
                 ..sample_group(
                     "Display A",
@@ -490,8 +489,8 @@ fn scene_validate_rejects_duplicate_display_device_ids() {
                     EffectId::from(Uuid::now_v7()),
                 )
             },
-            RenderGroup {
-                role: RenderGroupRole::Display,
+            Zone {
+                role: ZoneRole::Display,
                 display_target: Some(DisplayFaceTarget::new(device_id)),
                 ..sample_group(
                     "Display B",

@@ -1,12 +1,13 @@
 //! Wire-format compatibility tests.
 //!
 //! These tests are the gate for Plan 55 Wave P3 (the codebase-wide
-//! type rename `RenderGroup`→`Zone`, `DeviceZone`→`Output`,
-//! `Attachment*`→`Component*`). The rename is a Rust-identifier
-//! rename only — the serialized wire format must stay byte-identical.
-//! These tests build a representative Scene and AttachmentTemplate
-//! with the affected types populated, serialize them, and assert the
-//! bytes match a checked-in golden. Run as part of `just verify`; a
+//! type rename from the legacy `RenderGroup`/`DeviceZone`/`Attachment*`
+//! identifiers to today's `Zone`/`Output`/`Component*` ones). The
+//! rename is a Rust-identifier rename only; the serialized wire
+//! format must stay byte-identical. These tests build a
+//! representative Scene and ComponentTemplate with the affected
+//! types populated, serialize them, and assert the bytes match a
+//! checked-in golden. Run as part of `just verify`; a
 //! diff means an unintentional wire change crept in.
 //!
 //! Regenerating the goldens (only when a wire change is genuinely
@@ -27,19 +28,18 @@ use std::path::PathBuf;
 use uuid::{Uuid, uuid};
 
 use hypercolor_types::attachment::{
-    AttachmentCanvasSize, AttachmentCategory, AttachmentCompatibility, AttachmentOrigin,
-    AttachmentTemplate, AttachmentTemplateManifest,
+    ComponentCanvasSize, ComponentCategory, ComponentCompatibility, ComponentOrigin,
+    ComponentTemplate, ComponentTemplateManifest,
 };
 use hypercolor_types::effect::EffectId;
 use hypercolor_types::layer::{SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{
-    ColorInterpolation, EasingFunction, RenderGroup, RenderGroupId, RenderGroupRole, Scene,
-    SceneId, SceneKind, SceneMutationMode, ScenePriority, SceneScope, TransitionSpec,
-    UnassignedBehavior,
+    ColorInterpolation, EasingFunction, Scene, SceneId, SceneKind, SceneMutationMode,
+    ScenePriority, SceneScope, TransitionSpec, UnassignedBehavior, Zone, ZoneId, ZoneRole,
 };
 use hypercolor_types::spatial::{
-    DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
-    StripDirection, ZoneAttachment, ZoneShape,
+    EdgeBehavior, LedTopology, NormalizedPosition, Output, OutputComponent, SamplingMode,
+    SpatialLayout, StripDirection, ZoneShape,
 };
 
 const SCENE_FIXTURE: &str = "tests/fixtures/wire_compat_scene.json";
@@ -64,7 +64,7 @@ fn build_fixture_scene() -> Scene {
         description: Some("Wire-compat layout snapshot".to_owned()),
         canvas_width: 640,
         canvas_height: 480,
-        zones: vec![DeviceZone {
+        zones: vec![Output {
             id: "output-strip-1".to_owned(),
             name: "Front strip".to_owned(),
             device_id: "usb:controller-1".to_owned(),
@@ -85,7 +85,7 @@ fn build_fixture_scene() -> Scene {
             edge_behavior: Some(EdgeBehavior::Clamp),
             shape: Some(ZoneShape::Rectangle),
             shape_preset: Some("strip-24".to_owned()),
-            attachment: Some(ZoneAttachment {
+            attachment: Some(OutputComponent {
                 template_id: "lianli-strimer-24pin".to_owned(),
                 slot_id: "atx".to_owned(),
                 instance: 0,
@@ -101,8 +101,8 @@ fn build_fixture_scene() -> Scene {
         version: 1,
     };
 
-    let group = RenderGroup {
-        id: RenderGroupId(FIXTURE_GROUP_UUID),
+    let group = Zone {
+        id: ZoneId(FIXTURE_GROUP_UUID),
         name: "Default zone".to_owned(),
         description: Some("Fixture render group".to_owned()),
         effect_id: Some(EffectId(FIXTURE_EFFECT_UUID)),
@@ -121,7 +121,7 @@ fn build_fixture_scene() -> Scene {
         enabled: true,
         color: Some("#80ffea".to_owned()),
         display_target: None,
-        role: RenderGroupRole::Primary,
+        role: ZoneRole::Primary,
         controls_version: 0,
         layers_version: 0,
     };
@@ -148,29 +148,29 @@ fn build_fixture_scene() -> Scene {
     }
 }
 
-/// Deterministic AttachmentTemplateManifest that exercises every
+/// Deterministic ComponentTemplateManifest that exercises every
 /// rename-affected `Attachment*` type — including the hand-written
-/// `Serialize` on `AttachmentCategory`.
-fn build_fixture_attachment_manifest() -> AttachmentTemplateManifest {
-    AttachmentTemplateManifest {
+/// `Serialize` on `ComponentCategory`.
+fn build_fixture_attachment_manifest() -> ComponentTemplateManifest {
+    ComponentTemplateManifest {
         schema_version: 1,
-        template: AttachmentTemplate {
+        template: ComponentTemplate {
             id: "fixture-strip-24".to_owned(),
             name: "Fixture 24-LED strip".to_owned(),
             vendor: "fixtureco".to_owned(),
-            category: AttachmentCategory::Strip,
+            category: ComponentCategory::Strip,
             description: "Wire-compat strip template".to_owned(),
             tags: vec!["strip".to_owned(), "fixture".to_owned()],
-            origin: AttachmentOrigin::BuiltIn,
+            origin: ComponentOrigin::BuiltIn,
             topology: LedTopology::Strip {
                 count: 24,
                 direction: StripDirection::LeftToRight,
             },
-            default_size: AttachmentCanvasSize {
+            default_size: ComponentCanvasSize {
                 width: 0.4,
                 height: 0.1,
             },
-            compatible_slots: vec![AttachmentCompatibility {
+            compatible_slots: vec![ComponentCompatibility {
                 controller_ids: vec!["lianli".to_owned()],
                 models: vec!["strimer-plus-24pin".to_owned()],
                 slots: vec!["atx".to_owned()],
@@ -227,7 +227,7 @@ fn scene_wire_format_matches_golden() {
 fn attachment_template_manifest_wire_format_matches_golden() {
     let manifest = build_fixture_attachment_manifest();
     let serialized =
-        toml::to_string_pretty(&manifest).expect("AttachmentTemplateManifest serializes to TOML");
+        toml::to_string_pretty(&manifest).expect("ComponentTemplateManifest serializes to TOML");
 
     let path = fixture_path(ATTACHMENT_FIXTURE);
     if std::env::var_os("BOOTSTRAP_FIXTURES").is_some() {
@@ -239,7 +239,7 @@ fn attachment_template_manifest_wire_format_matches_golden() {
 
     let golden = fs::read_to_string(&path).unwrap_or_else(|_| {
         panic!(
-            "AttachmentTemplate wire-compat golden missing at {}. Seed \
+            "ComponentTemplate wire-compat golden missing at {}. Seed \
              it with BOOTSTRAP_FIXTURES=1 cargo test -p hypercolor-types \
              --test wire_compat_tests",
             path.display()
@@ -248,18 +248,18 @@ fn attachment_template_manifest_wire_format_matches_golden() {
     assert_eq!(
         serialized.trim(),
         golden.trim(),
-        "AttachmentTemplate wire format diverged from golden. If \
+        "ComponentTemplate wire format diverged from golden. If \
          intentional, regenerate with BOOTSTRAP_FIXTURES=1 cargo test \
          -p hypercolor-types --test wire_compat_tests."
     );
 
-    let parsed: AttachmentTemplateManifest =
+    let parsed: ComponentTemplateManifest =
         toml::from_str(&golden).expect("golden attachment manifest parses back");
     let reserialized = toml::to_string_pretty(&parsed)
-        .expect("Parsed AttachmentTemplateManifest re-serializes cleanly");
+        .expect("Parsed ComponentTemplateManifest re-serializes cleanly");
     assert_eq!(
         reserialized.trim(),
         golden.trim(),
-        "AttachmentTemplate golden did not round-trip"
+        "ComponentTemplate golden did not round-trip"
     );
 }

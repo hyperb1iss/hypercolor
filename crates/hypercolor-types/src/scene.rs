@@ -54,9 +54,9 @@ impl fmt::Display for SceneId {
 
 /// Opaque render group identifier. UUID v7 for time-sortable ordering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct RenderGroupId(pub Uuid);
+pub struct ZoneId(pub Uuid);
 
-impl RenderGroupId {
+impl ZoneId {
     /// Create a new random render group identifier (UUID v7).
     #[must_use]
     pub fn new() -> Self {
@@ -64,13 +64,13 @@ impl RenderGroupId {
     }
 }
 
-impl Default for RenderGroupId {
+impl Default for ZoneId {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl fmt::Display for RenderGroupId {
+impl fmt::Display for ZoneId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
     }
@@ -78,9 +78,9 @@ impl fmt::Display for RenderGroupId {
 
 /// An independent rendering pipeline within a scene.
 #[derive(Debug, Clone, PartialEq)]
-pub struct RenderGroup {
+pub struct Zone {
     /// Unique identifier.
-    pub id: RenderGroupId,
+    pub id: ZoneId,
 
     /// Human-readable display name.
     pub name: String,
@@ -119,7 +119,7 @@ pub struct RenderGroup {
     pub display_target: Option<DisplayFaceTarget>,
 
     /// Semantic role inside the scene.
-    pub role: RenderGroupRole,
+    pub role: ZoneRole,
 
     /// Monotonic version counter for the control mutation stream.
     ///
@@ -134,8 +134,8 @@ pub struct RenderGroup {
 }
 
 #[derive(Serialize)]
-struct RenderGroupSerialize {
-    id: RenderGroupId,
+struct ZoneSerialize {
+    id: ZoneId,
     name: String,
     description: Option<String>,
     effect_id: Option<EffectId>,
@@ -152,7 +152,7 @@ struct RenderGroupSerialize {
     color: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     display_target: Option<DisplayFaceTarget>,
-    role: RenderGroupRole,
+    role: ZoneRole,
     #[serde(default)]
     controls_version: u64,
     #[serde(default)]
@@ -160,8 +160,8 @@ struct RenderGroupSerialize {
 }
 
 #[derive(Deserialize)]
-struct RenderGroupDeserialize {
-    id: RenderGroupId,
+struct ZoneDeserialize {
+    id: ZoneId,
     name: String,
     description: Option<String>,
     #[serde(default)]
@@ -181,14 +181,14 @@ struct RenderGroupDeserialize {
     color: Option<String>,
     #[serde(default)]
     display_target: Option<DisplayFaceTarget>,
-    role: RenderGroupRole,
+    role: ZoneRole,
     #[serde(default)]
     controls_version: u64,
     #[serde(default)]
     layers_version: u64,
 }
 
-impl Serialize for RenderGroup {
+impl Serialize for Zone {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -196,7 +196,7 @@ impl Serialize for RenderGroup {
         let layers = self.effective_layers();
         let legacy = legacy_effect_fields_from_layers(&layers).unwrap_or_else(empty_effect_fields);
 
-        RenderGroupSerialize {
+        ZoneSerialize {
             id: self.id,
             name: self.name.clone(),
             description: self.description.clone(),
@@ -218,12 +218,12 @@ impl Serialize for RenderGroup {
     }
 }
 
-impl<'de> Deserialize<'de> for RenderGroup {
+impl<'de> Deserialize<'de> for Zone {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        let helper = RenderGroupDeserialize::deserialize(deserializer)?;
+        let helper = ZoneDeserialize::deserialize(deserializer)?;
         let layers_were_present = helper.layers.is_some();
         let layers = helper.layers.unwrap_or_else(|| {
             legacy_effect_layer(
@@ -297,7 +297,7 @@ fn legacy_effect_fields_from_layers(layers: &[SceneLayer]) -> Option<LegacyEffec
 }
 
 fn legacy_effect_layer(
-    group_id: RenderGroupId,
+    group_id: ZoneId,
     effect_id: Option<EffectId>,
     controls: &HashMap<String, ControlValue>,
     control_bindings: &HashMap<String, ControlBinding>,
@@ -316,7 +316,7 @@ fn legacy_effect_layer(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum RenderGroupRole {
+pub enum ZoneRole {
     #[default]
     Custom,
     Primary,
@@ -415,7 +415,7 @@ impl DisplayFaceTarget {
     }
 }
 
-impl RenderGroup {
+impl Zone {
     /// Return the stable synthetic layer ID used for legacy single-effect groups.
     #[must_use]
     pub fn legacy_layer_id(&self) -> SceneLayerId {
@@ -531,7 +531,7 @@ pub enum UnassignedBehavior {
     /// Unassigned zones retain their previous colors.
     Hold,
     /// Route unassigned zones to a fallback render group.
-    Fallback(RenderGroupId),
+    Fallback(ZoneId),
 }
 
 fn is_default_unassigned_behavior(value: &UnassignedBehavior) -> bool {
@@ -565,7 +565,7 @@ pub struct Scene {
 
     /// Independent render pipelines owned by this scene.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub groups: Vec<RenderGroup>,
+    pub groups: Vec<Zone>,
 
     /// Monotonic version counter for render-group structure.
     #[serde(default)]
@@ -647,27 +647,27 @@ impl Scene {
 
         self.groups
             .iter()
-            .flat_map(RenderGroup::zone_assignments)
+            .flat_map(Zone::zone_assignments)
             .collect()
     }
 
     #[must_use]
-    pub fn primary_group(&self) -> Option<&RenderGroup> {
+    pub fn primary_group(&self) -> Option<&Zone> {
         self.groups
             .iter()
-            .find(|group| group.role == RenderGroupRole::Primary)
+            .find(|group| group.role == ZoneRole::Primary)
     }
 
-    pub fn primary_group_mut(&mut self) -> Option<&mut RenderGroup> {
+    pub fn primary_group_mut(&mut self) -> Option<&mut Zone> {
         self.groups
             .iter_mut()
-            .find(|group| group.role == RenderGroupRole::Primary)
+            .find(|group| group.role == ZoneRole::Primary)
     }
 
     #[must_use]
-    pub fn display_group_for(&self, device_id: DeviceId) -> Option<&RenderGroup> {
+    pub fn display_group_for(&self, device_id: DeviceId) -> Option<&Zone> {
         self.groups.iter().find(|group| {
-            group.role == RenderGroupRole::Display
+            group.role == ZoneRole::Display
                 && group
                     .display_target
                     .as_ref()
@@ -675,9 +675,9 @@ impl Scene {
         })
     }
 
-    pub fn display_group_for_mut(&mut self, device_id: DeviceId) -> Option<&mut RenderGroup> {
+    pub fn display_group_for_mut(&mut self, device_id: DeviceId) -> Option<&mut Zone> {
         self.groups.iter_mut().find(|group| {
-            group.role == RenderGroupRole::Display
+            group.role == ZoneRole::Display
                 && group
                     .display_target
                     .as_ref()
@@ -727,35 +727,35 @@ impl Scene {
         let primary_count = self
             .groups
             .iter()
-            .filter(|group| group.role == RenderGroupRole::Primary)
+            .filter(|group| group.role == ZoneRole::Primary)
             .count();
         if primary_count > 1 {
             errors.push("scene has more than one primary render group".to_owned());
         }
 
-        let mut display_targets = HashMap::<DeviceId, RenderGroupId>::new();
+        let mut display_targets = HashMap::<DeviceId, ZoneId>::new();
         for group in &self.groups {
             if let Err(mut layer_errors) = group.validate_layers() {
                 errors.append(&mut layer_errors);
             }
 
             match (&group.role, &group.display_target) {
-                (RenderGroupRole::Display, None) => errors.push(format!(
+                (ZoneRole::Display, None) => errors.push(format!(
                     "display render group '{}' is missing a display target",
                     group.name
                 )),
-                (RenderGroupRole::Custom | RenderGroupRole::Primary, Some(_)) => {
+                (ZoneRole::Custom | ZoneRole::Primary, Some(_)) => {
                     errors.push(format!(
                         "render group '{}' has a display target but role '{}'",
                         group.name,
                         match group.role {
-                            RenderGroupRole::Custom => "custom",
-                            RenderGroupRole::Primary => "primary",
-                            RenderGroupRole::Display => "display",
+                            ZoneRole::Custom => "custom",
+                            ZoneRole::Primary => "primary",
+                            ZoneRole::Display => "display",
                         }
                     ));
                 }
-                (RenderGroupRole::Display, Some(target)) => {
+                (ZoneRole::Display, Some(target)) => {
                     if let Some(existing) = display_targets.insert(target.device_id, group.id) {
                         errors.push(format!(
                             "duplicate display render groups for device {} ({} and {})",
@@ -1069,3 +1069,20 @@ pub enum ActionKind {
     /// Pop the current scene and restore the previous one.
     RestorePrevious,
 }
+
+// ── Plan 55 P3 backwards-compat aliases ─────────────────────────────────
+//
+// The Wave P3 rename ships in stages: this crate flips to the new names
+// first while consumer crates still spell things the old way. These
+// aliases let the cascade land one crate at a time without breaking the
+// workspace build. Removed once every consumer crate has migrated; the
+// wire fixture guards the bytes throughout.
+
+/// Deprecated alias for [`Zone`]; remove after Plan 55 P3 finishes.
+pub type RenderGroup = Zone;
+
+/// Deprecated alias for [`ZoneId`]; remove after Plan 55 P3 finishes.
+pub type RenderGroupId = ZoneId;
+
+/// Deprecated alias for [`ZoneRole`]; remove after Plan 55 P3 finishes.
+pub type RenderGroupRole = ZoneRole;

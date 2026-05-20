@@ -15,7 +15,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_icons::Icon;
 
-use hypercolor_types::scene::{RenderGroupId, UnassignedBehavior};
+use hypercolor_types::scene::{UnassignedBehavior, ZoneId};
 
 use crate::api;
 use crate::api::zones::ZoneOutcome;
@@ -596,6 +596,6 @@ fn parse_unassigned_behavior(value: &str) -> Option<UnassignedBehavior> {
         other => other
             .strip_prefix("fallback:")
             .and_then(|raw| raw.parse::<uuid::Uuid>().ok())
-            .map(|uuid| UnassignedBehavior::Fallback(RenderGroupId(uuid))),
+            .map(|uuid| UnassignedBehavior::Fallback(ZoneId(uuid))),
     }
 }

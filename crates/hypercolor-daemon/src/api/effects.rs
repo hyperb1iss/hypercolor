@@ -29,7 +29,7 @@ use hypercolor_types::event::{
     ChangeTrigger, EffectRef, EffectStopReason, EventControlValue, FrameData, HypercolorEvent,
     RenderGroupChangeKind,
 };
-use hypercolor_types::scene::{RenderGroup, RenderGroupId};
+use hypercolor_types::scene::{RenderGroup, ZoneId};
 use hypercolor_types::session::OffOutputBehavior;
 use hypercolor_types::spatial::SpatialLayout;
 
@@ -817,7 +817,7 @@ pub async fn apply_effect(
     let target_group = match body.as_ref().and_then(|body| body.render_group.as_deref()) {
         None => None,
         Some(raw) => match raw.parse::<uuid::Uuid>() {
-            Ok(uuid) => Some(RenderGroupId(uuid)),
+            Ok(uuid) => Some(ZoneId(uuid)),
             Err(_) => return ApiError::bad_request(format!("Invalid render_group id: {raw}")),
         },
     };

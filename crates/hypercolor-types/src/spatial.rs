@@ -304,7 +304,7 @@ pub struct RingDef {
 
 /// Attachment metadata carried by imported layout zones.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ZoneAttachment {
+pub struct OutputComponent {
     /// Bound attachment template identifier.
     pub template_id: String,
     /// Source slot ID on the physical controller.
@@ -323,7 +323,7 @@ pub struct ZoneAttachment {
     pub led_mapping: Option<Vec<u32>>,
 }
 
-// ── DeviceZone ──────────────────────────────────────────────────────────────
+// ── Output ──────────────────────────────────────────────────────────────
 
 /// A device zone: the spatial binding between a physical device and a
 /// region of the effect canvas.
@@ -333,7 +333,7 @@ pub struct ZoneAttachment {
 /// LED positions within the zone are computed from the `topology` and stored
 /// in `led_positions` as zone-local normalized coordinates.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct DeviceZone {
+pub struct Output {
     // ── Identity ──────────────────────────────────────────────────────
     /// Unique identifier within the layout.
     pub id: String,
@@ -404,7 +404,7 @@ pub struct DeviceZone {
 
     /// Attachment metadata for zones imported from attachment profiles.
     #[serde(default)]
-    pub attachment: Option<ZoneAttachment>,
+    pub attachment: Option<OutputComponent>,
 
     /// Per-zone brightness scalar in `[0.0, 1.0]`. `None` means full
     /// brightness (1.0). Applied multiplicatively with the device output
@@ -485,7 +485,7 @@ pub struct SpatialLayout {
 
     // ── Zones ─────────────────────────────────────────────────────────
     /// All device zones in this layout, ordered by rendering priority.
-    pub zones: Vec<DeviceZone>,
+    pub zones: Vec<Output>,
 
     // ── Defaults ──────────────────────────────────────────────────────
     /// Default sampling mode for zones that don't specify one.
@@ -626,3 +626,16 @@ pub enum Wall {
     /// Left wall.
     West,
 }
+
+// ── Plan 55 P3 backwards-compat aliases ─────────────────────────────────
+//
+// See `scene.rs` for the multi-crate rollout rationale. These two
+// shadow the old `DeviceZone` and `ZoneAttachment` names while
+// downstream crates still reference them.
+
+/// Deprecated alias for [`Output`]; remove after Plan 55 P3 finishes.
+pub type DeviceZone = Output;
+
+/// Deprecated alias for [`OutputComponent`]; remove after Plan 55 P3
+/// finishes.
+pub type ZoneAttachment = OutputComponent;
