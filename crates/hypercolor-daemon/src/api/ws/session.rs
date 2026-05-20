@@ -4,6 +4,7 @@
 //! relay tasks, runs the select loop that muxes incoming client frames,
 //! outbound JSON/binary queues, and the ping/pong heartbeat.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -16,6 +17,10 @@ use hypercolor_leptos_ext::axum::upgrade_handler;
 use serde::Serialize;
 use tokio::sync::watch;
 use tracing::{debug, warn};
+use uuid::Uuid;
+
+use hypercolor_types::scene::{Scene, SceneId, ZoneId};
+use hypercolor_types::spatial::SpatialLayout;
 
 use super::cache::{WS_BUFFER_SIZE, WsClientGuard, track_ws_bytes_sent};
 use super::command::dispatch_command;
@@ -31,6 +36,7 @@ use super::relays::{
 };
 use crate::api::AppState;
 use crate::api::effects::active_effect_metadata;
+use crate::api::scenes;
 use crate::api::security::RequestAuthContext;
 
 const WS_PROTOCOL_VERSION: &str = "1.0";
@@ -210,6 +216,7 @@ async fn handle_socket(
     ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut awaiting_pong = false;
     let mut ping_sent_at = Instant::now();
+    let mut zone_layout_preview_keys = HashSet::<(SceneId, ZoneId)>::new();
 
     // Main loop: multiplex between incoming client messages and outbound events.
     loop {
@@ -268,6 +275,7 @@ async fn handle_socket(
                             auth_context,
                             &mut subscriptions,
                             &subscriptions_tx,
+                            &mut zone_layout_preview_keys,
                             &mut socket,
                         )
                         .await;
@@ -304,6 +312,10 @@ async fn handle_socket(
     zone_preview_relay_handle.abort();
     metrics_relay_handle.abort();
     device_metrics_relay_handle.abort();
+    state
+        .zone_layout_previews
+        .clear_many(zone_layout_preview_keys)
+        .await;
     debug!("WebSocket client disconnected");
 }
 
@@ -314,6 +326,7 @@ async fn handle_client_message(
     auth_context: RequestAuthContext,
     subscriptions: &mut SubscriptionState,
     subscriptions_tx: &watch::Sender<SubscriptionState>,
+    zone_layout_preview_keys: &mut HashSet<(SceneId, ZoneId)>,
     socket: &mut WebSocket,
 ) {
     let msg = match serde_json::from_str::<ClientMessage>(text) {
@@ -387,7 +400,163 @@ async fn handle_client_message(
             let response = dispatch_command(state, auth_context, id, method, path, body).await;
             let _ = send_json(socket, &response).await;
         }
+        ClientMessage::ZoneLayoutPreview {
+            scene_id,
+            zone_id,
+            layout,
+        } => {
+            if let Err(error) = handle_zone_layout_preview(
+                state,
+                zone_layout_preview_keys,
+                scene_id,
+                zone_id,
+                layout,
+            )
+            .await
+            {
+                let _ = send_json(socket, &error.into_message()).await;
+            }
+        }
+        ClientMessage::ZoneLayoutPreviewClear { scene_id, zone_id } => {
+            if let Err(error) = handle_zone_layout_preview_clear(
+                state,
+                zone_layout_preview_keys,
+                &scene_id,
+                &zone_id,
+            )
+            .await
+            {
+                let _ = send_json(socket, &error.into_message()).await;
+            }
+        }
     }
+}
+
+async fn handle_zone_layout_preview(
+    state: &Arc<AppState>,
+    zone_layout_preview_keys: &mut HashSet<(SceneId, ZoneId)>,
+    scene_id_raw: String,
+    zone_id_raw: String,
+    layout: SpatialLayout,
+) -> Result<(), WsProtocolError> {
+    let zone_id = parse_zone_preview_id(&zone_id_raw)?;
+    let (scene_id, layout) = {
+        let manager = state.scene_manager.read().await;
+        let scene_id = scenes::resolve_scene_id(&manager, &scene_id_raw).ok_or_else(|| {
+            WsProtocolError::invalid_request(format!("Scene not found: {scene_id_raw}"))
+        })?;
+        let scene = manager.get(&scene_id).ok_or_else(|| {
+            WsProtocolError::invalid_request(format!("Scene not found: {scene_id_raw}"))
+        })?;
+        let layout = validated_zone_layout_preview(scene, zone_id, layout)?;
+        (scene_id, layout)
+    };
+
+    state
+        .zone_layout_previews
+        .set(scene_id, zone_id, layout)
+        .await;
+    zone_layout_preview_keys.insert((scene_id, zone_id));
+    Ok(())
+}
+
+async fn handle_zone_layout_preview_clear(
+    state: &Arc<AppState>,
+    zone_layout_preview_keys: &mut HashSet<(SceneId, ZoneId)>,
+    scene_id_raw: &str,
+    zone_id_raw: &str,
+) -> Result<(), WsProtocolError> {
+    let scene_id = parse_scene_preview_id(scene_id_raw)?;
+    let zone_id = parse_zone_preview_id(zone_id_raw)?;
+    state.zone_layout_previews.clear(scene_id, zone_id).await;
+    zone_layout_preview_keys.remove(&(scene_id, zone_id));
+    Ok(())
+}
+
+fn validated_zone_layout_preview(
+    scene: &Scene,
+    zone_id: ZoneId,
+    layout: SpatialLayout,
+) -> Result<SpatialLayout, WsProtocolError> {
+    if scene.blocks_runtime_mutation() {
+        return Err(WsProtocolError::invalid_request(format!(
+            "Scene '{}' is snapshot locked",
+            scene.name
+        )));
+    }
+
+    let Some(group) = scene.groups.iter().find(|group| group.id == zone_id) else {
+        return Err(WsProtocolError::invalid_request(format!(
+            "Zone not found: {zone_id}"
+        )));
+    };
+
+    let stored_ids = group
+        .layout
+        .zones
+        .iter()
+        .map(|zone| zone.id.as_str())
+        .collect::<HashSet<_>>();
+    let request_ids = layout
+        .zones
+        .iter()
+        .map(|zone| zone.id.as_str())
+        .collect::<HashSet<_>>();
+    if request_ids.len() != layout.zones.len() || stored_ids != request_ids {
+        return Err(WsProtocolError::invalid_request(
+            "zone layout preview must contain exactly the selected zone outputs",
+        ));
+    }
+
+    let mut stored = group
+        .layout
+        .zones
+        .iter()
+        .cloned()
+        .map(|zone| (zone.id.clone(), zone))
+        .collect::<HashMap<_, _>>();
+    let mut preview = group.layout.clone();
+    preview.zones = layout
+        .zones
+        .into_iter()
+        .filter_map(|incoming| {
+            let mut merged = stored.remove(&incoming.id)?;
+            merged.name = incoming.name;
+            merged.position = incoming.position;
+            merged.size = incoming.size;
+            merged.rotation = incoming.rotation;
+            merged.scale = incoming.scale;
+            merged.display_order = incoming.display_order;
+            merged.orientation = incoming.orientation;
+            merged.shape = incoming.shape;
+            merged.shape_preset = incoming.shape_preset;
+            merged.sampling_mode = incoming.sampling_mode;
+            merged.edge_behavior = incoming.edge_behavior;
+            merged.brightness = incoming.brightness;
+            Some(merged)
+        })
+        .collect();
+    preview.canvas_width = layout.canvas_width;
+    preview.canvas_height = layout.canvas_height;
+    preview.default_sampling_mode = layout.default_sampling_mode;
+    preview.default_edge_behavior = layout.default_edge_behavior;
+
+    Ok(preview)
+}
+
+fn parse_scene_preview_id(raw: &str) -> Result<SceneId, WsProtocolError> {
+    match raw {
+        "default" => Ok(SceneId::DEFAULT),
+        _ => Uuid::parse_str(raw).map(SceneId).map_err(|_| {
+            WsProtocolError::invalid_request("scene_id must be a valid UUID or 'default'")
+        }),
+    }
+}
+
+fn parse_zone_preview_id(raw: &str) -> Result<ZoneId, WsProtocolError> {
+    Uuid::parse_str(raw)
+        .map(ZoneId)
+        .map_err(|_| WsProtocolError::invalid_request("zone_id must be a valid UUID"))
 }
 
 async fn build_hello_state(state: &AppState) -> HelloState {

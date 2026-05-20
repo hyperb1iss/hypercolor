@@ -54,6 +54,7 @@ use crate::scene_store::SceneStore;
 use crate::scene_transactions::SceneTransactionQueue;
 use crate::session::{OutputPowerState, SessionController};
 use crate::simulators::{SimulatedDisplayRuntime, SimulatedDisplayStore};
+use crate::zone_layout_preview::ZoneLayoutPreviewStore;
 
 mod acceleration;
 pub mod banner;
@@ -106,6 +107,9 @@ pub struct DaemonState {
 
     /// Dedicated preview fanout for browser-facing canvas consumers.
     pub preview_runtime: Arc<PreviewRuntime>,
+
+    /// Transient per-zone layout overrides driven by Studio drag previews.
+    pub zone_layout_previews: Arc<ZoneLayoutPreviewStore>,
 
     /// Render loop — frame timing and FPS tier management.
     pub render_loop: Arc<RwLock<RenderLoop>>,

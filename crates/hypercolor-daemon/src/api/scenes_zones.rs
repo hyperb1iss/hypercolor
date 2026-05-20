@@ -438,6 +438,7 @@ pub async fn update_zone_layout(
     {
         return response;
     }
+    state.zone_layout_previews.clear(scene_id, zone_id).await;
     zone_response(zone, groups_revision, StatusKind::Ok)
 }
 

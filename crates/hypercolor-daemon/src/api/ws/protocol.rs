@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use hypercolor_types::server::ServerIdentity;
+use hypercolor_types::spatial::SpatialLayout;
 
 use crate::device_metrics::DeviceMetricsSnapshot;
 
@@ -563,6 +564,14 @@ pub(super) enum ClientMessage {
         #[serde(default)]
         body: Option<serde_json::Value>,
     },
+    /// Transient per-zone layout preview for Studio drag interactions.
+    ZoneLayoutPreview {
+        scene_id: String,
+        zone_id: String,
+        layout: SpatialLayout,
+    },
+    /// Clear one transient per-zone layout preview.
+    ZoneLayoutPreviewClear { scene_id: String, zone_id: String },
 }
 
 #[derive(Debug, Deserialize, Default)]

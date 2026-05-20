@@ -6,6 +6,7 @@ use super::messages::CanvasFrame;
 use hypercolor_leptos_ext::canvas::supports_bitmap_worker_canvas;
 use hypercolor_leptos_ext::prelude::current_page_location;
 use hypercolor_leptos_ext::ws::transport::send_websocket_json;
+use hypercolor_types::spatial::SpatialLayout;
 
 pub const DEFAULT_PREVIEW_FPS_CAP: u32 = 60;
 pub(super) const HIDDEN_TAB_PREVIEW_FPS_CAP: u32 = 6;
@@ -278,6 +279,34 @@ pub(super) fn send_display_preview_unsubscribe(ws: &web_sys::WebSocket) {
         "channels": ["display_preview"]
     });
     let _ = send_websocket_json(ws, &unsubscribe_msg);
+}
+
+pub(super) fn send_zone_layout_preview(
+    ws: &web_sys::WebSocket,
+    scene_id: &str,
+    zone_id: &str,
+    layout: &SpatialLayout,
+) {
+    let msg = serde_json::json!({
+        "type": "zone_layout_preview",
+        "scene_id": scene_id,
+        "zone_id": zone_id,
+        "layout": layout
+    });
+    let _ = send_websocket_json(ws, &msg);
+}
+
+pub(super) fn send_zone_layout_preview_clear(
+    ws: &web_sys::WebSocket,
+    scene_id: &str,
+    zone_id: &str,
+) {
+    let msg = serde_json::json!({
+        "type": "zone_layout_preview_clear",
+        "scene_id": scene_id,
+        "zone_id": zone_id
+    });
+    let _ = send_websocket_json(ws, &msg);
 }
 
 fn preview_hostname() -> String {

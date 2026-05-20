@@ -808,6 +808,9 @@ mod tests {
             discovery_runtime: None,
             event_bus: Arc::clone(&event_bus),
             preview_runtime: Arc::new(PreviewRuntime::new(event_bus)),
+            zone_layout_previews: Arc::new(
+                crate::zone_layout_preview::ZoneLayoutPreviewStore::default(),
+            ),
             render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
             scene_manager: Arc::new(RwLock::new(SceneManager::new())),
             input_manager: Arc::new(Mutex::new(InputManager::new())),

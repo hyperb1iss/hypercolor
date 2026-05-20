@@ -6,6 +6,7 @@ use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::layer::LayerSource;
 use hypercolor_types::scene::{ColorInterpolation, SceneId, UnassignedBehavior, Zone, ZoneId};
+use hypercolor_types::spatial::SpatialLayout;
 
 use crate::session::OutputPowerState;
 
@@ -45,6 +46,7 @@ pub(crate) struct SceneRuntimeSnapshot {
     pub active_transition: Option<SceneTransitionSnapshot>,
     pub active_render_groups: Arc<[Zone]>,
     pub active_render_groups_revision: u64,
+    pub zone_layout_preview_generation: u64,
     pub active_render_group_count: u32,
     pub active_display_group_target_fps: HashMap<ZoneId, u32>,
     pub unassigned_behavior: UnassignedBehavior,
@@ -62,6 +64,7 @@ impl SceneRuntimeSnapshot {
             combine_scene_dependency_generation(
                 dependency_generation,
                 self.device_registry_generation,
+                self.zone_layout_preview_generation,
                 &self.unassigned_behavior,
             ),
         )
@@ -248,8 +251,19 @@ async fn snapshot_scene_runtime(
     scene_snapshot_cache: &mut SceneSnapshotCache,
     manager: &SceneManager,
 ) -> SceneRuntimeSnapshot {
-    let active_render_groups = manager.active_render_groups();
+    let active_scene_id = manager.active_scene_id().copied();
+    let mut active_render_groups = manager.active_render_groups();
     let active_render_groups_revision = manager.active_render_groups_revision();
+    let zone_layout_preview_generation = if let Some(scene_id) = active_scene_id {
+        let (generation, overrides) = state
+            .zone_layout_previews
+            .scene_overrides_with_generation(scene_id)
+            .await;
+        active_render_groups = apply_zone_layout_previews(active_render_groups, &overrides);
+        generation
+    } else {
+        state.zone_layout_previews.generation()
+    };
     let unassigned_behavior = manager
         .active_scene()
         .map(|scene| scene.unassigned_behavior.clone())
@@ -270,7 +284,7 @@ async fn snapshot_scene_runtime(
     )
     .unwrap_or(u32::MAX);
     SceneRuntimeSnapshot {
-        active_scene_id: manager.active_scene_id().copied(),
+        active_scene_id,
         active_transition: manager
             .active_transition()
             .map(|transition| SceneTransitionSnapshot {
@@ -282,6 +296,7 @@ async fn snapshot_scene_runtime(
             }),
         active_render_groups,
         active_render_groups_revision,
+        zone_layout_preview_generation,
         active_render_group_count,
         active_display_group_target_fps,
         unassigned_behavior,
@@ -289,13 +304,45 @@ async fn snapshot_scene_runtime(
     }
 }
 
+fn apply_zone_layout_previews(
+    active_render_groups: Arc<[Zone]>,
+    overrides: &HashMap<ZoneId, SpatialLayout>,
+) -> Arc<[Zone]> {
+    if overrides.is_empty() {
+        return active_render_groups;
+    }
+
+    let mut changed = false;
+    let groups = active_render_groups
+        .iter()
+        .cloned()
+        .map(|mut group| {
+            if let Some(layout) = overrides.get(&group.id)
+                && group.layout != *layout
+            {
+                group.layout = layout.clone();
+                changed = true;
+            }
+            group
+        })
+        .collect::<Vec<_>>();
+
+    if changed {
+        groups.into()
+    } else {
+        active_render_groups
+    }
+}
+
 fn combine_scene_dependency_generation(
     dependency_generation: u64,
     device_registry_generation: u64,
+    zone_layout_preview_generation: u64,
     unassigned_behavior: &UnassignedBehavior,
 ) -> u64 {
     dependency_generation
         ^ device_registry_generation.rotate_left(21)
+        ^ zone_layout_preview_generation.rotate_left(37)
         ^ unassigned_behavior_generation(unassigned_behavior).rotate_left(42)
 }
 
@@ -468,7 +515,7 @@ mod tests {
     use super::{
         EffectDemand, FrameSceneSnapshot, SceneDependencyKey, SceneRuntimeSnapshot,
         SceneSnapshotCache, build_frame_scene_snapshot, current_effect_scene_snapshot,
-        refresh_effect_scene_snapshot, render_loop_snapshot,
+        refresh_effect_scene_snapshot, render_loop_snapshot, snapshot_scene_runtime,
     };
     use crate::render_thread::scene_state::RenderSceneState;
 
@@ -620,6 +667,9 @@ mod tests {
             discovery_runtime: None,
             event_bus: Arc::clone(&event_bus),
             preview_runtime: Arc::new(PreviewRuntime::new(event_bus)),
+            zone_layout_previews: Arc::new(
+                crate::zone_layout_preview::ZoneLayoutPreviewStore::default(),
+            ),
             render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
             scene_manager: Arc::new(RwLock::new(SceneManager::with_default())),
             input_manager: Arc::new(Mutex::new(InputManager::new())),
@@ -665,6 +715,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn scene_runtime_snapshot_applies_zone_layout_preview_overrides() {
+        let effect_id = EffectId::from(Uuid::now_v7());
+        let entry = sample_entry(effect_id, false, false);
+        let metadata = entry.metadata.clone();
+        let mut registry = EffectRegistry::default();
+        registry.register(entry);
+        let state = minimal_render_thread_state(registry);
+        let mut preview_layout = sample_layout();
+        preview_layout.canvas_width = 640;
+        preview_layout.canvas_height = 360;
+
+        let (scene_id, group_id) = {
+            let mut manager = state.scene_manager.write().await;
+            manager
+                .upsert_primary_group(&metadata, HashMap::new(), None, sample_layout())
+                .expect("test scene should accept a primary group");
+            let scene = manager
+                .active_scene()
+                .expect("default scene should be active");
+            let group = scene.groups.first().expect("primary group should exist");
+            (scene.id, group.id)
+        };
+        state
+            .zone_layout_previews
+            .set(scene_id, group_id, preview_layout.clone())
+            .await;
+
+        let mut scene_snapshot_cache = SceneSnapshotCache::new();
+        let manager = state.scene_manager.read().await;
+        let snapshot = snapshot_scene_runtime(&state, &mut scene_snapshot_cache, &manager).await;
+
+        assert_eq!(snapshot.active_render_groups[0].layout, preview_layout);
+        assert_eq!(
+            snapshot.zone_layout_preview_generation,
+            state.zone_layout_previews.generation()
+        );
+    }
+
+    #[tokio::test]
     async fn effect_scene_snapshot_invalidates_cached_capture_demand_on_registry_generation() {
         let effect_id = EffectId::from(Uuid::now_v7());
         let mut registry = EffectRegistry::default();
@@ -675,6 +764,7 @@ mod tests {
             active_transition: None,
             active_render_groups: vec![sample_group(effect_id)].into(),
             active_render_groups_revision: 7,
+            zone_layout_preview_generation: 0,
             active_render_group_count: 1,
             active_display_group_target_fps: HashMap::new(),
             unassigned_behavior: UnassignedBehavior::default(),
@@ -728,6 +818,7 @@ mod tests {
             active_transition: None,
             active_render_groups: vec![group].into(),
             active_render_groups_revision: 7,
+            zone_layout_preview_generation: 0,
             active_render_group_count: 1,
             active_display_group_target_fps: HashMap::new(),
             unassigned_behavior: UnassignedBehavior::default(),
@@ -755,6 +846,7 @@ mod tests {
             active_transition: None,
             active_render_groups: vec![sample_group(effect_id)].into(),
             active_render_groups_revision: 7,
+            zone_layout_preview_generation: 0,
             active_render_group_count: 1,
             active_display_group_target_fps: HashMap::new(),
             unassigned_behavior: UnassignedBehavior::default(),

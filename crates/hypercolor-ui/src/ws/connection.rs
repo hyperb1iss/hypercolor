@@ -5,6 +5,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use hypercolor_types::event::LayerHealth;
+use hypercolor_types::spatial::SpatialLayout;
 
 use hypercolor_leptos_ext::events::{
     EventHandle, document as browser_document, document_event_target, on, window as browser_window,
@@ -90,6 +91,8 @@ pub struct WsManager {
     /// channel to that device, or `None` to unsubscribe. The subscription
     /// effect inside `WsManager` sends the actual WS messages.
     pub set_display_preview_device: WriteSignal<Option<String>>,
+    pub send_zone_layout_preview: Callback<(String, String, SpatialLayout)>,
+    pub clear_zone_layout_preview: Callback<(String, String)>,
 }
 
 impl WsManager {
@@ -556,6 +559,22 @@ impl WsManager {
             connect_fn();
         }
 
+        let send_zone_layout_preview = Callback::new(move |(scene_id, zone_id, layout): (
+            String,
+            String,
+            SpatialLayout,
+        )| {
+            if let Some(ws) = ws_handle.get_value() {
+                super::preview::send_zone_layout_preview(&ws, &scene_id, &zone_id, &layout);
+            }
+        });
+        let clear_zone_layout_preview =
+            Callback::new(move |(scene_id, zone_id): (String, String)| {
+                if let Some(ws) = ws_handle.get_value() {
+                    super::preview::send_zone_layout_preview_clear(&ws, &scene_id, &zone_id);
+                }
+            });
+
         Self {
             canvas_frame,
             screen_canvas_frame,
@@ -580,6 +599,8 @@ impl WsManager {
             set_screen_preview_consumers,
             set_web_viewport_preview_consumers,
             set_display_preview_device,
+            send_zone_layout_preview,
+            clear_zone_layout_preview,
         }
     }
 }

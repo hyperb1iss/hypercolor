@@ -61,6 +61,7 @@ use crate::performance::PerformanceTracker;
 use crate::preview_runtime::PreviewRuntime;
 use crate::scene_transactions::SceneTransactionQueue;
 use crate::session::OutputPowerState;
+use crate::zone_layout_preview::ZoneLayoutPreviewStore;
 use hypercolor_core::asset::AssetLibrary;
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::device::{BackendManager, DeviceRegistry};
@@ -206,6 +207,9 @@ pub struct RenderThreadState {
 
     /// Dedicated preview fanout for browser-facing canvas consumers.
     pub preview_runtime: Arc<PreviewRuntime>,
+
+    /// Transient per-zone layout overrides driven by Studio drag previews.
+    pub zone_layout_previews: Arc<ZoneLayoutPreviewStore>,
 
     /// Render loop — frame timing, FPS control, tier transitions.
     pub render_loop: Arc<RwLock<RenderLoop>>,

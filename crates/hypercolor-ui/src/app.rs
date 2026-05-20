@@ -12,6 +12,7 @@ use hypercolor_types::effect::{ControlDefinition, ControlValue, EffectId};
 use hypercolor_types::event::LayerHealth;
 use hypercolor_types::layer::{LayerAdjust, LayerBlendMode, LayerSource, LayerTransform};
 use hypercolor_types::scene::{SceneKind, SceneMutationMode, ZoneRole};
+use hypercolor_types::spatial::SpatialLayout;
 
 use crate::api;
 use crate::apply_target::ApplyTarget;
@@ -92,6 +93,8 @@ pub struct WsContext {
     /// on connect, layers that failed before this session connected.
     pub layer_health: ReadSignal<HashMap<String, LayerHealth>>,
     pub audio_level: ReadSignal<AudioLevel>,
+    pub send_zone_layout_preview: Callback<(String, String, SpatialLayout)>,
+    pub clear_zone_layout_preview: Callback<(String, String)>,
 }
 
 #[derive(Clone, Copy)]
@@ -747,6 +750,8 @@ pub fn App() -> impl IntoView {
         last_control_surface_event: ws.last_control_surface_event,
         layer_health: ws.layer_health,
         audio_level: ws.audio_level,
+        send_zone_layout_preview: ws.send_zone_layout_preview,
+        clear_zone_layout_preview: ws.clear_zone_layout_preview,
     };
     provide_context(ws_ctx);
     provide_context(crate::device_metrics::install_device_metrics_store(ws_ctx));

@@ -101,6 +101,7 @@ use crate::scene_store::SceneStore;
 use crate::scene_transactions::SceneTransactionQueue;
 use crate::session::{OutputPowerState, current_global_brightness};
 use crate::simulators::{SimulatedDisplayBackend, SimulatedDisplayRuntime, SimulatedDisplayStore};
+use crate::zone_layout_preview::ZoneLayoutPreviewStore;
 
 // ── AppState ─────────────────────────────────────────────────────────────
 
@@ -137,6 +138,9 @@ pub struct AppState {
 
     /// Dedicated preview fanout for browser-facing canvas consumers.
     pub preview_runtime: Arc<PreviewRuntime>,
+
+    /// Transient per-zone layout overrides driven by Studio drag previews.
+    pub zone_layout_previews: Arc<ZoneLayoutPreviewStore>,
 
     /// Render loop — frame timing and pipeline skeleton.
     pub render_loop: Arc<RwLock<RenderLoop>>,
@@ -442,6 +446,7 @@ impl AppState {
         let asset_library = AssetLibrary::open(data_dir.join("assets"))
             .expect("default app state should open asset library");
         let preview_runtime = Arc::new(PreviewRuntime::new(Arc::clone(&event_bus)));
+        let zone_layout_previews = Arc::new(ZoneLayoutPreviewStore::default());
         let render_loop = Arc::new(RwLock::new(RenderLoop::new(60)));
         let configured_max_fps_tier = ConfiguredFpsTier::new(FpsTier::Full);
         let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(default_layout)));
@@ -516,6 +521,7 @@ impl AppState {
             event_bus,
             asset_library: Arc::new(RwLock::new(asset_library)),
             preview_runtime,
+            zone_layout_previews,
             render_loop,
             configured_max_fps_tier,
             spatial_engine,
@@ -611,6 +617,7 @@ impl AppState {
             event_bus: Arc::clone(&daemon.event_bus),
             asset_library: Arc::clone(&daemon.asset_library),
             preview_runtime: Arc::clone(&daemon.preview_runtime),
+            zone_layout_previews: Arc::clone(&daemon.zone_layout_previews),
             render_loop: Arc::clone(&daemon.render_loop),
             configured_max_fps_tier: daemon.configured_max_fps_tier.clone(),
             spatial_engine: Arc::clone(&daemon.spatial_engine),

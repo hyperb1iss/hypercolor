@@ -20,7 +20,7 @@ use leptos_icons::Icon;
 use leptos_use::use_debounce_fn_with_arg;
 
 use crate::api;
-use crate::app::DevicesContext;
+use crate::app::{DevicesContext, WsContext};
 use crate::components::control_panel::ControlDropdownDismissHandlers;
 use crate::components::layout_canvas::LayoutCanvas;
 use crate::components::layout_palette::LayoutPalette;
@@ -1506,6 +1506,7 @@ pub(crate) fn ZoneLayoutProvider(
     children: Children,
 ) -> impl IntoView {
     let devices_ctx = expect_context::<DevicesContext>();
+    let ws_ctx = expect_context::<WsContext>();
 
     let (layout, set_layout_signal) = signal(None::<SpatialLayout>);
     let (saved_layout, set_saved_layout) = signal(None::<SpatialLayout>);
@@ -1538,10 +1539,40 @@ pub(crate) fn ZoneLayoutProvider(
     let can_redo = Signal::derive(move || history.get().can_redo());
     let is_dirty = Signal::derive(move || dirty.get());
 
-    // The live drag preview is wired to the WS zone-preview channel in a
-    // later wave (plan 55 §5.1) — it cannot reuse the global library
-    // preview path. Until then the canvas previews locally only.
-    let push_preview = Callback::new(|_snapshot: SpatialLayout| {});
+    let active_preview_key = StoredValue::new(None::<(String, String)>);
+    let push_preview = Callback::new(move |snapshot: SpatialLayout| {
+        let Some(scene_id) =
+            active_scene.with_untracked(|scene| scene.as_ref().map(|scene| scene.id.clone()))
+        else {
+            return;
+        };
+        let Some(zone_id) = selected_zone_id.get_untracked() else {
+            return;
+        };
+        active_preview_key.set_value(Some((scene_id.clone(), zone_id.clone())));
+        ws_ctx
+            .send_zone_layout_preview
+            .run((scene_id, zone_id, snapshot));
+    });
+
+    Effect::new(move |_| {
+        let next_key = active_scene
+            .with(|scene| scene.as_ref().map(|scene| scene.id.clone()))
+            .zip(selected_zone_id.get());
+        let previous_key = active_preview_key.get_value();
+        if previous_key != next_key {
+            if let Some(key) = previous_key {
+                ws_ctx.clear_zone_layout_preview.run(key);
+            }
+            active_preview_key.set_value(None);
+        }
+    });
+
+    on_cleanup(move || {
+        if let Some(key) = active_preview_key.get_value() {
+            ws_ctx.clear_zone_layout_preview.run(key);
+        }
+    });
 
     provide_context(LayoutEditorContext {
         layout: layout_signal,
@@ -1679,10 +1710,18 @@ pub(crate) fn ZoneLayoutProvider(
                 Ok(api::zones::ZoneOutcome::Applied(_)) => {
                     set_saved_layout.set(Some(current));
                     set_layout.mark_clean();
+                    ws_ctx
+                        .clear_zone_layout_preview
+                        .run((scene_id.clone(), zone_id.clone()));
+                    active_preview_key.set_value(None);
                     toasts::toast_success("Zone layout saved");
                     refresh_scene.run(());
                 }
                 Ok(api::zones::ZoneOutcome::Stale { .. }) => {
+                    ws_ctx
+                        .clear_zone_layout_preview
+                        .run((scene_id.clone(), zone_id.clone()));
+                    active_preview_key.set_value(None);
                     toasts::toast_error("Scene changed elsewhere — reloaded, try again");
                     refresh_scene.run(());
                 }
@@ -1697,6 +1736,10 @@ pub(crate) fn ZoneLayoutProvider(
         };
         set_layout.replace_zones_with_history(saved.zones.clone());
         set_layout.mark_clean();
+        if let Some(key) = active_preview_key.get_value() {
+            ws_ctx.clear_zone_layout_preview.run(key);
+            active_preview_key.set_value(None);
+        }
         toasts::toast_info("Zone layout reverted");
     });
 

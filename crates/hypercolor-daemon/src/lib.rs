@@ -35,3 +35,4 @@ pub mod scene_transactions;
 pub mod session;
 pub mod simulators;
 pub mod startup;
+pub mod zone_layout_preview;

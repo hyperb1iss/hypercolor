@@ -400,6 +400,7 @@ mod tests {
                 }),
                 active_render_groups: Arc::<[Zone]>::from(Vec::<Zone>::new()),
                 active_render_groups_revision: 3,
+                zone_layout_preview_generation: 0,
                 active_render_group_count: 2,
                 active_display_group_target_fps: HashMap::new(),
                 unassigned_behavior: UnassignedBehavior::default(),

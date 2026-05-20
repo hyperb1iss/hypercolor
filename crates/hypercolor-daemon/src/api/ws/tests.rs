@@ -39,8 +39,8 @@ use super::preview_encode::{
     encode_canvas_jpeg_payload_scaled_stateless,
 };
 use super::protocol::{
-    ActiveFramesConfig, CanvasFormat, ChannelConfig, ChannelConfigPatch, ChannelSet, FrameFormat,
-    FrameZoneSelection, FramesConfig, ServerMessage, SubscriptionState, WsChannel,
+    ActiveFramesConfig, CanvasFormat, ChannelConfig, ChannelConfigPatch, ChannelSet, ClientMessage,
+    FrameFormat, FrameZoneSelection, FramesConfig, ServerMessage, SubscriptionState, WsChannel,
     event_message_parts, parse_channels, should_relay_event, to_snake_case,
     unique_sorted_channel_names, ws_capabilities,
 };
@@ -1238,6 +1238,61 @@ fn parse_channels_rejects_unknown_channel() {
     let channels = vec!["unknown".to_owned()];
     let error = parse_channels(&channels).expect_err("unknown channel should fail");
     assert_eq!(error.code, "invalid_request");
+}
+
+#[test]
+fn zone_layout_preview_client_messages_deserialize() {
+    let scene_id = SceneId::new().to_string();
+    let zone_id = ZoneId::new().to_string();
+    let preview: ClientMessage = serde_json::from_value(serde_json::json!({
+        "type": "zone_layout_preview",
+        "scene_id": scene_id,
+        "zone_id": zone_id,
+        "layout": {
+            "id": "zone-layout",
+            "name": "Zone Layout",
+            "description": null,
+            "canvas_width": 320,
+            "canvas_height": 200,
+            "zones": [],
+            "default_sampling_mode": {"type": "bilinear"},
+            "default_edge_behavior": "clamp",
+            "spaces": null,
+            "version": 1
+        }
+    }))
+    .expect("preview message should deserialize");
+
+    match preview {
+        ClientMessage::ZoneLayoutPreview {
+            scene_id: parsed_scene_id,
+            zone_id: parsed_zone_id,
+            layout,
+        } => {
+            assert_eq!(parsed_scene_id, scene_id);
+            assert_eq!(parsed_zone_id, zone_id);
+            assert_eq!(layout.id, "zone-layout");
+        }
+        _ => panic!("expected zone_layout_preview variant"),
+    }
+
+    let clear: ClientMessage = serde_json::from_value(serde_json::json!({
+        "type": "zone_layout_preview_clear",
+        "scene_id": scene_id,
+        "zone_id": zone_id
+    }))
+    .expect("clear message should deserialize");
+
+    match clear {
+        ClientMessage::ZoneLayoutPreviewClear {
+            scene_id: parsed_scene_id,
+            zone_id: parsed_zone_id,
+        } => {
+            assert_eq!(parsed_scene_id, scene_id);
+            assert_eq!(parsed_zone_id, zone_id);
+        }
+        _ => panic!("expected zone_layout_preview_clear variant"),
+    }
 }
 
 #[test]

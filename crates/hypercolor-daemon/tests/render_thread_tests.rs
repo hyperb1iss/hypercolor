@@ -956,6 +956,9 @@ fn make_render_state(
         discovery_runtime: None,
         event_bus: Arc::clone(&event_bus),
         preview_runtime: Arc::new(PreviewRuntime::new(event_bus)),
+        zone_layout_previews: Arc::new(
+            hypercolor_daemon::zone_layout_preview::ZoneLayoutPreviewStore::default(),
+        ),
         render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
         scene_manager: Arc::new(RwLock::new(scene_manager)),
         input_manager: Arc::new(Mutex::new(InputManager::new())),
@@ -2525,6 +2528,9 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
         discovery_runtime: Some(discovery_runtime.clone()),
         event_bus: Arc::clone(&event_bus),
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
+        zone_layout_previews: Arc::new(
+            hypercolor_daemon::zone_layout_preview::ZoneLayoutPreviewStore::default(),
+        ),
         render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
         scene_manager: Arc::new(RwLock::new(scene_manager)),
         input_manager: Arc::new(Mutex::new(InputManager::new())),
@@ -4108,6 +4114,9 @@ async fn release_sleep_clears_published_frame_and_canvas_once() {
         discovery_runtime: None,
         event_bus: Arc::clone(&event_bus),
         preview_runtime: Arc::new(PreviewRuntime::new(event_bus)),
+        zone_layout_previews: Arc::new(
+            hypercolor_daemon::zone_layout_preview::ZoneLayoutPreviewStore::default(),
+        ),
         render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
         scene_manager: Arc::new(RwLock::new(scene_manager)),
         input_manager: Arc::new(Mutex::new(InputManager::new())),

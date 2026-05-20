@@ -87,6 +87,7 @@ impl DaemonState {
             discovery_runtime: Some(self.discovery_runtime()),
             event_bus: Arc::clone(&self.event_bus),
             preview_runtime: Arc::clone(&self.preview_runtime),
+            zone_layout_previews: Arc::clone(&self.zone_layout_previews),
             render_loop: Arc::clone(&self.render_loop),
             scene_manager: Arc::clone(&self.scene_manager),
             input_manager: Arc::clone(&self.input_manager),

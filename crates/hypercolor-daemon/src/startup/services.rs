@@ -54,6 +54,7 @@ use crate::scene_store::SceneStore;
 use crate::scene_transactions::SceneTransactionQueue;
 use crate::session::{OutputPowerState, set_global_brightness};
 use crate::simulators::{SimulatedDisplayBackend, SimulatedDisplayRuntime, SimulatedDisplayStore};
+use crate::zone_layout_preview::ZoneLayoutPreviewStore;
 
 use super::DaemonState;
 use super::config::resolve_server_identity;
@@ -134,6 +135,7 @@ impl DaemonState {
         // ── Event Bus ───────────────────────────────────────────────────
         let event_bus = Arc::new(HypercolorBus::new());
         let preview_runtime = Arc::new(PreviewRuntime::new(Arc::clone(&event_bus)));
+        let zone_layout_previews = Arc::new(ZoneLayoutPreviewStore::default());
         info!("Event bus created");
 
         let asset_library_path = ConfigManager::config_dir().join("assets");
@@ -487,6 +489,7 @@ impl DaemonState {
             event_bus,
             asset_library,
             preview_runtime,
+            zone_layout_previews,
             render_loop,
             configured_max_fps_tier,
             spatial_engine,
