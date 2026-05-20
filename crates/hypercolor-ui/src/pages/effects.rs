@@ -50,8 +50,8 @@ const CATEGORY_CHIPS: &[(&str, &str)] = &[
 ];
 
 /// The apply-target selector. Picks which zone a quick effect-apply
-/// lands in; reads and writes `EffectsContext::apply_target` (plan 55
-/// Wave B3). The empty value is the scene's Primary zone.
+/// lands in; reads and writes `EffectsContext::apply_target`. The empty value
+/// is the scene's default zone.
 #[component]
 fn ApplyTargetSelect(
     #[prop(into)] scene: Signal<Option<api::ActiveSceneResponse>>,
@@ -68,8 +68,8 @@ fn ApplyTargetSelect(
             for group in &scene.groups {
                 match group.role {
                     ZoneRole::Display => {}
-                    // The Primary zone is the empty-value default; a
-                    // renamed Primary relabels that option in place.
+                    // The Primary role is the empty-value default; a renamed
+                    // default zone relabels that option in place.
                     ZoneRole::Primary => {
                         if group.name != "Primary"
                             && let Some(first) = opts.first_mut()
@@ -728,7 +728,7 @@ pub fn EffectsPage() -> impl IntoView {
                                         {if snapshot_locked {
                                             " is snapshot-locked. Return to Default before applying an effect or changing its controls."
                                         } else {
-                                            " is active. Applying an effect here rewrites that scene’s primary effect."
+                                            " is active. Applying an effect here rewrites that scene’s default-zone effect."
                                         }}
                                     </div>
                                 </div>

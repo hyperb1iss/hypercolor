@@ -162,7 +162,7 @@ pub fn StudioPage() -> impl IntoView {
                     .any(|group| group.id.to_string() == target.as_str())
         ) {
             // A Screen / Unassigned selection holding a target left over
-            // from a no-longer-active scene falls back to the Primary zone.
+            // from a no-longer-active scene falls back to the default zone.
             effects_ctx.apply_target.set(ApplyTarget::Primary);
         }
     });

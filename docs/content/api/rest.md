@@ -573,8 +573,8 @@ Get one scene zone by ID.
 {% end %}
 
 {% api_endpoint(method="PATCH", path="/api/v1/scenes/{id}/zones/{zone_id}") %}
-Update zone metadata. Set `make_primary` to promote a zone to the primary
-output group; that structural edit should include `If-Match`.
+Update zone metadata. Set `make_primary` to make a zone the default
+output zone; that structural edit should include `If-Match`.
 
 **Request body:**
 
@@ -590,7 +590,7 @@ output group; that structural edit should include `If-Match`.
 {% end %}
 
 {% api_endpoint(method="DELETE", path="/api/v1/scenes/{id}/zones/{zone_id}") %}
-Delete a custom zone. Primary and display zones cannot be deleted through this route.
+Delete a custom zone. Default and display zones cannot be deleted through this route.
 {% end %}
 
 {% api_endpoint(method="POST", path="/api/v1/scenes/{id}/zones/{zone_id}/devices") %}

@@ -220,6 +220,6 @@ async fn send_layer_mutation(
                 .ok_or_else(|| "412 response missing `current` layers_version".to_owned())?;
             Ok(LayerStackOutcome::Stale { current })
         }
-        status => Err(format!("HTTP {status}")),
+        _ => Err(client::response_error_string(response).await),
     }
 }

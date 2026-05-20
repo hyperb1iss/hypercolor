@@ -102,8 +102,8 @@ implementable; that list is direct input to the spec 64 build.
 This spec was reviewed by Codex before implementation. The review
 endorsed the surface-centric paradigm and flagged contract gaps — chiefly
 a missing write API for scene-level unassigned behavior, the
-device-output (not whole-device) granularity of assignment, the
-"All Lights" naming breaking once zones exist, and a too-aggressive
+device-output (not whole-device) granularity of assignment, stale
+single-zone naming breaking once zones exist, and a too-aggressive
 single-step cutover. This revision incorporates all of them.
 
 ---
@@ -228,7 +228,7 @@ Complexity scales with configuration, not with the feature set:
 
 - A one-zone user never sees zone management: no `+ New zone` control at
   all, no Unassigned entry, no zone filter, no All-zones Stage mode, no
-  Effects apply-target selector. The Lights section is a single row.
+  Effects apply-target selector. The Zones section is a single row.
 - The Add-layer target scope selector (§6.6) is hidden while only one
   surface exists — there is nothing to scope to.
 - Advanced per-layer controls — transform, color adjust, parameter
@@ -286,12 +286,11 @@ The UI uses exactly these words. The internal type is never shown.
 
 | Internal type / concept                | UI term                          | Notes                                                        |
 | --------------------------------------- | -------------------------------- | ------------------------------------------------------------ |
-| `RenderGroup` (LED role)                | a **zone** (a **Light**)         | Listed under the **Lights** section.                        |
+| `RenderGroup` (LED role)                | a **zone**                       | Listed under the **Zones** section.                        |
 | `RenderGroup` (Display role)            | a **Screen**                     | Listed under the **Screens** section.                        |
-| `RenderGroupRole::Primary`, sole LED zone | **All Lights**                 | Used **only** while Primary owns every LED output (§9.2).    |
-| `RenderGroupRole::Primary`, with other zones present | **Default zone**      | Once Custom zones exist, Primary no longer covers everything. Renameable. |
+| `RenderGroupRole::Primary`                | **Default zone**                | Renameable; never rendered as an internal role name.         |
 | `RenderGroup.name`                      | the zone's name                  | User-typed ("Keyboard", "Case Fans") once multi-zone exists. |
-| `RenderGroupRole::Custom` group         | a **zone**                       | Just another row under Lights. "Custom" is never shown.      |
+| `RenderGroupRole::Custom` group         | a **zone**                       | Just another row under Zones. "Custom" is never shown.       |
 | `DeviceZone` (one device output/segment)| a **light** / a device **output**| The unit of zone assignment (§9.3). Grouped visually by device. |
 | `SceneLayer`                            | a **layer**                      |                                                              |
 | `LayerSource` variant                   | a **source**                     | Picker tabs: Effect, Media, Screen Capture, Web Page, Color. |
@@ -343,8 +342,8 @@ at once, so "put this gif on every screen" is one action.
 
 The Effects page stays the effect browser. While there is one LED zone,
 applying an effect from it seeds or replaces the effect layer of
-**All Lights**, exactly as "apply effect" does today, and the sidebar
-"Now Playing" reflects it.
+the **Default zone**, exactly as "apply effect" does today, and the
+sidebar "Now Playing" reflects it.
 
 Once Custom zones exist this is no longer unambiguous — spec 64 §6.2/§9.5
 says `effects/apply` targets the `Primary` (Default) zone and may leave it
@@ -356,7 +355,7 @@ specific-zone or all-zones target instead issues per-group layer
 mutations — adding or replacing each target zone's effect layer — because
 spec 64 gives `effects/apply` no per-zone target. With a single zone the
 selector is hidden and behavior is unchanged. "Now Playing" then reflects
-the Default zone and is labelled as such, not as "All Lights."
+the Default zone and is labelled as such.
 
 ---
 
@@ -365,9 +364,9 @@ the Default zone and is labelled as such, not as "All Lights."
 A three-rail workspace.
 
 ```
-┌─ LIGHTS & SCREENS ─┐┌─ STAGE ───────────────────┐┌─ LAYERS ──────────┐
-│ LIGHTS             ││  ◐ Output    ○ Layout     ││ All Lights        │
-│  ● All Lights      ││                           ││                   │
+┌─ ZONES & SCREENS ──┐┌─ STAGE ───────────────────┐┌─ LAYERS ──────────┐
+│ ZONES              ││  ◐ Output    ○ Layout     ││ Default zone      │
+│  ● Default zone    ││                           ││                   │
 │                    ││   ┌───────────────────┐   ││ ▤ paimon.gif      │
 │ SCREENS            ││   │  live composited  │   ││   Screen · 80%    │
 │  ▢ Corsair LCD     ││   │  preview canvas   │   ││ ✦ Aurora Wave     │
@@ -377,10 +376,10 @@ A three-rail workspace.
 └────────────────────┘└───────────────────────────┘└───────────────────┘
 ```
 
-### 6.1 The Surface Rail (Lights & Screens)
+### 6.1 The Surface Rail (Zones & Screens)
 
-A left rail with two sections. **Lights** lists LED zones — today exactly
-one row, **All Lights**; with spec 64, one row per zone plus an Unassigned
+A left rail with two sections. **Zones** lists LED zones — today exactly
+one row, **Default zone**; with spec 64, one row per zone plus an Unassigned
 entry (§9). **Screens** lists display-face surfaces, one per screen
 device, each showing the device name, an aspect badge (`WIDE` / `ROUND`),
 a small live thumbnail, and any degraded-state indicator (§6.7).
@@ -391,7 +390,7 @@ A `+ New zone` control is **not shown at all** until the daemon
 advertises the `zone-crud` capability (§9.6). Per §3.3 a single-zone user
 sees no zone-management affordance whatsoever — not even a disabled
 placeholder. When the capability appears the control appears with it, at
-the foot of the Lights section, and multi-zone becomes a fill-in of the
+the foot of the Zones section, and multi-zone becomes a fill-in of the
 rail Studio already has, not a redesign.
 
 The rail reuses `device_card`-family styling and live-thumbnail patterns
@@ -433,7 +432,7 @@ and fixes its labels (§6.5).
 Three label defects are corrected, all label-only, no behavior change:
 
 - The group selector "Primary · Primary" becomes the surface name
-  ("All Lights" / the zone name), or is dropped since the selected
+  ("Default zone" / the zone name), or is dropped since the selected
   surface is already shown at the rail header.
 - Layer rows labelled `Effect <uuid>` resolve the effect id to the
   effect's display name. Media layers already show the filename.
@@ -527,9 +526,8 @@ is "Media" throughout.
 A **surface** is the UI presentation of one render group. The surface
 rail is built from the active scene's groups:
 
-- LED-role groups → the **Lights** section. Today there is one, the
-  `Primary` group, presented as **All Lights** (§9.2 covers the rename
-  once more zones exist).
+- LED-role groups → the **Zones** section. Today there is one, the
+  `Primary` group, presented as **Default zone** (§9.2).
 - Display-role groups → the **Screens** section, one per screen device.
 
 Each surface exposes the same three things: a name, a live preview
@@ -539,7 +537,7 @@ through the existing per-group layer and control endpoints addressed by
 the group's id, which the UI holds but never displays.
 
 This uniform per-surface model is the extensibility guarantee: a zone, a
-screen, and "All Lights" are the same shape, so adding zones is adding
+screen, and the default zone are the same shape, so adding zones is adding
 rows, never rebuilding the editor.
 
 ---
@@ -557,14 +555,14 @@ outputs, and its own layer stack — "multiple layer stacks with different
 device outputs assigned to each." Because §8 already gives every surface a
 name, a Stage, and a Layers rail, multi-zone needs no change to the
 per-surface editor. Selecting the "Case Fans" zone loads its layer stack
-and its preview exactly as selecting "All Lights" does today. That
+and its preview exactly as selecting the Default zone does today. That
 invariance is the proof the paradigm is extensible.
 
 The five brainstorm use cases land as:
 
 | Use case                                              | Studio shape                                            |
 | ------------------------------------------------------ | ------------------------------------------------------- |
-| Gif as the whole lighting surface, blended with effect | One zone (All Lights), layers: effect + media           |
+| Gif as the whole lighting surface, blended with effect | One zone (Default zone), layers: effect + media         |
 | Gif on the Corsair AIO screen, blended with effect     | The Corsair Screen surface, layers: effect + media      |
 | 12 fans, 4 groups of 3, different media per group      | 4 zones, 3 fans each, each zone a one-media layer stack |
 | A face on the NZXT screen blended with the effect      | The NZXT Screen surface, layers: effect + media         |
@@ -579,12 +577,11 @@ third and fifth need zones (Waves 9-10).
 `POST /scenes/:id/zones`. A zone row carries an inline rename, a color
 swatch, an enable toggle, a small live preview, and a delete affordance.
 
-The `Primary` group is the **Default zone**. Its label is **"All Lights"**
-only while it is the *sole* LED zone and owns every LED output. The moment
-a second zone exists, Primary may no longer cover everything (spec 64
-§6.2 permits an empty Primary), so its row relabels to **"Default zone"**
-or whatever name the user gives it. Promoting a different zone to default
-is offered where spec 64 supports it (`make_primary`), framed as
+The `Primary` group is the **Default zone** from the first scene onward.
+It starts with every LED output, but spec 64 §6.2 permits an empty
+Primary once zones are split, so the UI always treats it as an ordinary
+renameable zone. Promoting a different zone to default is offered where
+spec 64 supports it (`make_primary`), framed as
 "make this the default zone," never "make primary." The Effects apply
 target (§5.3) follows the same rule.
 
@@ -623,7 +620,7 @@ finer granularity.
 ### 9.4 The Unassigned Entry
 
 Device outputs in no zone appear as a distinct **Unassigned** entry at the
-bottom of the Lights section. It is a synthetic rail entry, **not a
+bottom of the Zones section. It is a synthetic rail entry, **not a
 surface** in the §8 sense: it has no layer stack and no Stage of its own.
 Selecting it shows only the unassigned outputs and a control for the
 scene's `unassigned_behavior`, in plain words: "Unassigned lights:
@@ -861,7 +858,7 @@ treatment and navigation.
 | 1    | Extract `LayerPanel`/`LayerRow` to `components/layer_panel/` and decouple from asset-page state; build the five-source Add-layer picker; add `If-Match` to the layer mutations; repoint `/assets`; document and test the §10 contract. | — |
 | 2    | `studio_ui_beta` preference + Settings toggle; flag-driven nav swap; `/studio` and `/media` routes with off-flag redirect (§11.2). | — |
 | 3    | `/media` catalog page; shared catalog-grid component (also the Add-layer Media tab). | — |
-| 4    | Studio shell — three rails; Lights & Screens list; surface selection; Layers rail (Wave 1 component); Stage Output view. | — |
+| 4    | Studio shell — three rails; Zones & Screens list; surface selection; Layers rail (Wave 1 component); Stage Output view. | — |
 | 5    | Stage Layout view — embed `layout_builder`/`layout_canvas`; Output/Layout toggle; retire `/layout` link. | — |
 | 6    | Jargon scrub (§6.5); friendly names; per-layer health pill (§10); Add-layer target scope (§6.6); visual polish; responsive collapse (§13). | — |
 | 7    | Full UI QA sweep (§15.2); §6.7 display-parity checklist; flip `studio_ui_beta` default to `true` — flag and old pages **retained** (default-on soak). | — |
@@ -943,9 +940,9 @@ reviewed against spec 64 §11 for parity.
 - **The flag doubles maintained UI surface** between Wave 2 and Wave 8.
   This is the accepted cost of not breaking the working pages; Wave 8
   removes the duplication after the soak confirms Studio is stable.
-- **Single-zone until spec 64.** Studio ships showing one Light
-  ("All Lights"). The disabled `+ New zone` affordance signals the model
-  to the user in the interim.
+- **Single-zone until spec 64.** Studio ships showing one Default zone.
+  Zone creation appears only when the daemon advertises the matching
+  capability.
 - **Waves 9-10 build on spec 64, which is done.** Spec 64 landed on
   2026-05-17 — per-group sampling, zone CRUD, device assignment, the
   unassigned-behavior write route, capability advertisement, and
@@ -978,8 +975,9 @@ exist.
 
 The Codex review confirmed the paradigm and corrected the contracts: the
 unassigned-behavior write is a real backend gap (§12.2), assignment is
-output-grained not device-grained (§9.3), "All Lights" is a single-zone
-label (§9.2), and cutover is staged so the flag stays a live rollback
+output-grained not device-grained (§9.3), Default zone naming is
+consistent at every scale (§9.2), and cutover is staged so the flag stays
+a live rollback
 (§11.4). With those folded in, the risk is contained — no engine work in
 this spec, no new frontend API, no rewrite of the polished layer manager,
 and a default flip that is reversible until the Wave 8 cleanup.

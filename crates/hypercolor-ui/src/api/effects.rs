@@ -172,8 +172,7 @@ pub struct ApplyEffectBody {
     pub preset_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub controls: Option<serde_json::Value>,
-    /// Target zone (render-group id). Omitted applies to the scene's
-    /// Primary zone — the daemon's default.
+    /// Target zone (render-group id). Omitted applies to the default zone.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub render_group: Option<String>,
 }
@@ -265,7 +264,7 @@ pub async fn update_effect_controls(
                 .ok_or_else(|| "412 body missing `current`".to_owned())?;
             Ok(UpdateControlsOutcome::Stale { current })
         }
-        status => Err(format!("HTTP {status}")),
+        _ => Err(client::response_error_string(resp).await),
     }
 }
 

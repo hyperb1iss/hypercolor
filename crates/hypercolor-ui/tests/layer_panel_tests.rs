@@ -280,7 +280,7 @@ fn a_light_and_screen_scene_offers_every_relevant_scope() {
         available_add_layer_scopes(&groups),
         [
             AddLayerScope::ThisSurface,
-            AddLayerScope::AllLights,
+            AddLayerScope::AllLightZones,
             AddLayerScope::AllScreens,
             AddLayerScope::WholeScene,
         ]
@@ -295,7 +295,7 @@ fn all_screens_scope_is_dropped_when_no_screens_exist() {
     ];
     let scopes = available_add_layer_scopes(&groups);
     assert!(!scopes.contains(&AddLayerScope::AllScreens));
-    assert!(scopes.contains(&AddLayerScope::AllLights));
+    assert!(scopes.contains(&AddLayerScope::AllLightZones));
 }
 
 #[test]
@@ -312,7 +312,7 @@ fn scope_resolution_picks_the_right_surfaces() {
         vec![selected.clone()]
     );
     assert_eq!(
-        resolve_add_layer_targets(AddLayerScope::AllLights, &groups, &selected).len(),
+        resolve_add_layer_targets(AddLayerScope::AllLightZones, &groups, &selected).len(),
         2
     );
     assert_eq!(

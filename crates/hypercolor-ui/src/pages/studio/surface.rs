@@ -1,6 +1,6 @@
 //! The §8 surface model — the UI presentation of one zone.
 //!
-//! A *surface* is a name, a Stage, and a layer stack. Lights and Screens
+//! A *surface* is a name, a Stage, and a layer stack. Zones and Screens
 //! are the same shape, so a multi-zone scene is more rows in the rail,
 //! never a rebuilt editor. Kept leptos-free for `#[path]` tests.
 
@@ -15,7 +15,7 @@ pub const UNASSIGNED_SURFACE_ID: &str = "__unassigned__";
 /// Which rail section a surface belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SurfaceKind {
-    /// An LED zone — listed under **Lights**.
+    /// An LED zone — listed under **Zones**.
     Light,
     /// A display-face zone — listed under **Screens**.
     Screen,
@@ -36,7 +36,7 @@ pub struct Surface {
     pub color: Option<String>,
     /// Physical display device backing a Screen surface — the key the
     /// Stage subscribes to for that screen's live face preview. `None`
-    /// for Lights and for display groups with no target assigned yet.
+    /// for LED zones and for display groups with no target assigned yet.
     pub display_device_id: Option<String>,
     /// Ids of the layers this surface currently holds. The degraded
     /// indicator filters streamed layer health against this live set, so
@@ -69,7 +69,7 @@ pub fn led_zone_count(groups: &[Zone]) -> usize {
 }
 
 /// Build the surface list from the active scene's zones, in scene
-/// order. LED-role groups become Lights; display-role groups become
+/// order. LED-role groups become zone surfaces; display-role groups become
 /// Screens.
 #[must_use]
 pub fn surfaces_from_groups(groups: &[Zone]) -> Vec<Surface> {
@@ -131,8 +131,8 @@ fn layer_source_kind(source: &LayerSource) -> &'static str {
 
 /// Display name for a surface. A non-`Primary` group shows its stored
 /// name. The `Primary` group is the Default zone (§3): it shows the
-/// user's typed name, or **"Default zone"** while still unnamed. There is
-/// no "All Lights" — the default zone is a zone at every scale.
+/// user's typed name, or **"Default zone"** while still unnamed. The
+/// default zone is a zone at every scale.
 fn surface_name(group: &Zone, kind: SurfaceKind) -> String {
     if kind != SurfaceKind::Light || group.role != ZoneRole::Primary {
         return group.name.clone();

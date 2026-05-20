@@ -291,6 +291,6 @@ where
                 .ok_or_else(|| "412 response missing `current` groups_revision".to_owned())?;
             Ok(ZoneOutcome::Stale { current })
         }
-        status => Err(format!("HTTP {status}")),
+        _ => Err(client::response_error_string(response).await),
     }
 }

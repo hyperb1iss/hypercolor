@@ -260,7 +260,7 @@ impl EffectsContext {
         }
 
         // A body is sent when there are preferences to bake in, or when a
-        // non-Primary zone has to be named.
+        // named zone has to be targeted.
         let target_zone_id = apply_target.zone_id().map(ToOwned::to_owned);
         let body =
             (stored_prefs.is_some() || target_zone_id.is_some()).then(|| api::ApplyEffectBody {
@@ -274,9 +274,8 @@ impl EffectsContext {
                 render_group: target_zone_id.clone(),
             });
 
-        // A named-zone apply renders into that zone and leaves the global
-        // Primary effect untouched, so it skips the Primary-state optimism
-        // the legacy path runs below.
+        // A named-zone apply renders into that zone and leaves the default
+        // effect untouched, so it skips the default-state optimism below.
         if target_zone_id.is_some() {
             let ctx = *self;
             leptos::task::spawn_local(async move {
@@ -289,7 +288,7 @@ impl EffectsContext {
             return;
         }
 
-        // Primary apply — skip if it is already the active effect.
+        // Default-zone apply: skip if it is already the active effect.
         if self.active_effect_id.get().as_deref() == Some(&id) {
             return;
         }
@@ -704,7 +703,9 @@ pub fn App() -> impl IntoView {
                     set_api_key_required.set(false);
                     set_config.set(Some(fresh));
                 }
-                Err(api::client::ApiError::Http { status }) if status == 401 || status == 403 => {
+                Err(api::client::ApiError::Http { status, .. })
+                    if status == 401 || status == 403 =>
+                {
                     set_api_key_required.set(true);
                 }
                 Err(_) => {}

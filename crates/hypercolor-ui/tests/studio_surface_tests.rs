@@ -126,7 +126,7 @@ fn a_surface_carries_its_groups_live_layer_ids() {
 }
 
 #[test]
-fn led_and_display_groups_split_into_lights_and_screens() {
+fn led_and_display_groups_split_into_zones_and_screens() {
     let surfaces = surfaces_from_groups(&[
         group("Zone A", ZoneRole::Primary, None),
         group(

@@ -31,7 +31,10 @@ pub enum ApiError {
     /// Transport-layer failure (socket, CORS, abort, DNS, etc.).
     Network(String),
     /// Non-2xx response from the server.
-    Http { status: u16 },
+    Http {
+        status: u16,
+        message: Option<String>,
+    },
     /// Response body couldn't be deserialized into the expected envelope.
     Parse(String),
     /// Request body couldn't be serialized.
@@ -42,7 +45,14 @@ impl fmt::Display for ApiError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Network(msg) => write!(f, "Network error: {msg}"),
-            Self::Http { status } => write!(f, "HTTP {status}"),
+            Self::Http {
+                status,
+                message: Some(message),
+            } => write!(f, "{message} (HTTP {status})"),
+            Self::Http {
+                status,
+                message: None,
+            } => write!(f, "HTTP {status}"),
             Self::Parse(msg) => write!(f, "Parse error: {msg}"),
             Self::Serialize(msg) => write!(f, "Serialize error: {msg}"),
         }
@@ -57,13 +67,36 @@ impl From<ApiError> for String {
     }
 }
 
-fn ensure_success(resp: &Response) -> Result<(), ApiError> {
+async fn ensure_success(resp: Response) -> Result<Response, ApiError> {
     let status = resp.status();
     if (200..300).contains(&status) {
-        Ok(())
+        Ok(resp)
     } else {
-        Err(ApiError::Http { status })
+        Err(http_error(resp).await)
     }
+}
+
+async fn http_error(resp: Response) -> ApiError {
+    let status = resp.status();
+    let message = resp
+        .json::<serde_json::Value>()
+        .await
+        .ok()
+        .and_then(|body| extract_error_message(&body));
+    ApiError::Http { status, message }
+}
+
+fn extract_error_message(body: &serde_json::Value) -> Option<String> {
+    body.pointer("/error/message")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| body.get("message").and_then(serde_json::Value::as_str))
+        .map(str::trim)
+        .filter(|message| !message.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+pub async fn response_error_string(resp: Response) -> String {
+    http_error(resp).await.to_string()
 }
 
 /// Return the browser-stored API key, if one has been configured.
@@ -130,7 +163,7 @@ where
         .send()
         .await
         .map_err(|e| ApiError::Network(e.to_string()))?;
-    ensure_success(&resp)?;
+    let resp = ensure_success(resp).await?;
     let envelope: ApiEnvelope<T> = resp
         .json()
         .await
@@ -152,7 +185,7 @@ where
     if resp.status() == 404 {
         return Ok(None);
     }
-    ensure_success(&resp)?;
+    let resp = ensure_success(resp).await?;
     let envelope: ApiEnvelope<T> = resp
         .json()
         .await
@@ -176,7 +209,7 @@ where
         .send()
         .await
         .map_err(|e| ApiError::Network(e.to_string()))?;
-    ensure_success(&resp)?;
+    let resp = ensure_success(resp).await?;
     let envelope: ApiEnvelope<Res> = resp
         .json()
         .await
@@ -198,7 +231,7 @@ where
         .send()
         .await
         .map_err(|e| ApiError::Network(e.to_string()))?;
-    ensure_success(&resp)?;
+    let resp = ensure_success(resp).await?;
     let envelope: ApiEnvelope<Res> = resp
         .json()
         .await
@@ -220,7 +253,7 @@ where
         .send()
         .await
         .map_err(|e| ApiError::Network(e.to_string()))?;
-    ensure_success(&resp)?;
+    let resp = ensure_success(resp).await?;
     let envelope: ApiEnvelope<Res> = resp
         .json()
         .await
@@ -237,7 +270,7 @@ pub async fn post_empty(url: &str) -> Result<(), ApiError> {
         .send()
         .await
         .map_err(|e| ApiError::Network(e.to_string()))?;
-    ensure_success(&resp)?;
+    ensure_success(resp).await?;
     Ok(())
 }
 
@@ -255,7 +288,7 @@ where
         .send()
         .await
         .map_err(|e| ApiError::Network(e.to_string()))?;
-    ensure_success(&resp)?;
+    ensure_success(resp).await?;
     Ok(())
 }
 
@@ -273,7 +306,7 @@ where
         .send()
         .await
         .map_err(|e| ApiError::Network(e.to_string()))?;
-    ensure_success(&resp)?;
+    ensure_success(resp).await?;
     Ok(())
 }
 
@@ -291,7 +324,7 @@ where
         .send()
         .await
         .map_err(|e| ApiError::Network(e.to_string()))?;
-    ensure_success(&resp)?;
+    ensure_success(resp).await?;
     Ok(())
 }
 
@@ -301,6 +334,35 @@ pub async fn delete_empty(url: &str) -> Result<(), ApiError> {
         .send()
         .await
         .map_err(|e| ApiError::Network(e.to_string()))?;
-    ensure_success(&resp)?;
+    ensure_success(resp).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ApiError, extract_error_message};
+
+    #[test]
+    fn extracts_daemon_error_message_from_envelope() {
+        let body = serde_json::json!({
+            "error": {
+                "message": "Active scene changed elsewhere"
+            }
+        });
+
+        assert_eq!(
+            extract_error_message(&body),
+            Some("Active scene changed elsewhere".to_owned())
+        );
+    }
+
+    #[test]
+    fn http_error_display_includes_server_message() {
+        let error = ApiError::Http {
+            status: 409,
+            message: Some("Scene is snapshot locked".to_owned()),
+        };
+
+        assert_eq!(error.to_string(), "Scene is snapshot locked (HTTP 409)");
+    }
 }
