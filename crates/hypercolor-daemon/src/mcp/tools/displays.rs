@@ -8,7 +8,7 @@ use crate::api::effects::resolve_effect_metadata;
 use crate::api::{AppState, publish_render_group_changed, save_runtime_session_snapshot};
 use hypercolor_types::device::{DeviceId, DeviceInfo};
 use hypercolor_types::effect::{ControlValue, EffectCategory};
-use hypercolor_types::event::RenderGroupChangeKind;
+use hypercolor_types::event::ZoneChangeKind;
 
 pub(super) fn build_set_display_face() -> ToolDefinition {
     ToolDefinition {
@@ -98,7 +98,7 @@ pub(super) async fn handle_set_display_face_with_state(
                 state,
                 active_scene_id,
                 removed_group,
-                RenderGroupChangeKind::Removed,
+                ZoneChangeKind::Removed,
             );
         }
         save_runtime_session_snapshot(state).await;
@@ -148,9 +148,9 @@ pub(super) async fn handle_set_display_face_with_state(
             .and_then(|scene| scene.display_group_for(device_id))
             .is_some()
         {
-            RenderGroupChangeKind::Updated
+            ZoneChangeKind::Updated
         } else {
-            RenderGroupChangeKind::Created
+            ZoneChangeKind::Created
         };
         let group = scene_manager
             .upsert_display_group(

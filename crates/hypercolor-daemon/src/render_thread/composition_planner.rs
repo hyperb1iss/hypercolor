@@ -232,11 +232,9 @@ mod tests {
 
     use hypercolor_core::types::canvas::{Canvas, Rgba};
     use hypercolor_types::effect::EffectId;
-    use hypercolor_types::scene::{
-        RenderGroup, RenderGroupId, RenderGroupRole, UnassignedBehavior,
-    };
+    use hypercolor_types::scene::{UnassignedBehavior, Zone, ZoneId, ZoneRole};
     use hypercolor_types::spatial::{
-        DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+        EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
         StripDirection,
     };
     use uuid::Uuid;
@@ -252,9 +250,9 @@ mod tests {
         canvas
     }
 
-    fn sample_group() -> RenderGroup {
-        RenderGroup {
-            id: RenderGroupId::new(),
+    fn sample_group() -> Zone {
+        Zone {
+            id: ZoneId::new(),
             name: "Desk".into(),
             description: None,
             effect_id: Some(EffectId::from(Uuid::now_v7())),
@@ -268,7 +266,7 @@ mod tests {
                 description: None,
                 canvas_width: 2,
                 canvas_height: 2,
-                zones: vec![DeviceZone {
+                zones: vec![Output {
                     id: "desk:main".into(),
                     name: "Desk".into(),
                     device_id: "mock:device".into(),
@@ -301,7 +299,7 @@ mod tests {
             enabled: true,
             color: None,
             display_target: None,
-            role: RenderGroupRole::Custom,
+            role: ZoneRole::Custom,
             controls_version: 0,
             layers_version: 0,
         }

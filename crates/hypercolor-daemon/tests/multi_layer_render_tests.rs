@@ -22,11 +22,9 @@ use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::{ControlValue, EffectId};
 use hypercolor_types::layer::{LayerBlendMode, SceneLayer, SceneLayerId};
-use hypercolor_types::scene::{
-    DisplayFaceTarget, RenderGroup, RenderGroupId, RenderGroupRole, UnassignedBehavior,
-};
+use hypercolor_types::scene::{DisplayFaceTarget, UnassignedBehavior, Zone, ZoneId, ZoneRole};
 use hypercolor_types::spatial::{
-    DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+    EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection,
 };
 use tokio::sync::{Mutex, RwLock, watch};
@@ -46,7 +44,7 @@ fn builtin_effect_id(registry: &EffectRegistry, stem: &str) -> EffectId {
         .expect("builtin effect should exist")
 }
 
-fn test_layout(zones: Vec<DeviceZone>) -> SpatialLayout {
+fn test_layout(zones: Vec<Output>) -> SpatialLayout {
     SpatialLayout {
         id: "multi-layer-test".into(),
         name: "Multi Layer Test".into(),
@@ -61,8 +59,8 @@ fn test_layout(zones: Vec<DeviceZone>) -> SpatialLayout {
     }
 }
 
-fn full_zone(id: &str) -> DeviceZone {
-    DeviceZone {
+fn full_zone(id: &str) -> Output {
+    Output {
         id: id.into(),
         name: id.into(),
         device_id: id.into(),
@@ -106,9 +104,9 @@ fn solid_layer(
     layer
 }
 
-fn render_group(name: &str, effect_id: EffectId, layers: Vec<SceneLayer>) -> RenderGroup {
-    RenderGroup {
-        id: RenderGroupId::new(),
+fn render_group(name: &str, effect_id: EffectId, layers: Vec<SceneLayer>) -> Zone {
+    Zone {
+        id: ZoneId::new(),
         name: name.into(),
         description: None,
         effect_id: Some(effect_id),
@@ -121,23 +119,23 @@ fn render_group(name: &str, effect_id: EffectId, layers: Vec<SceneLayer>) -> Ren
         enabled: true,
         color: None,
         display_target: None,
-        role: RenderGroupRole::Primary,
+        role: ZoneRole::Primary,
         controls_version: 0,
         layers_version: 0,
     }
 }
 
 fn display_group(
-    group_id: RenderGroupId,
+    group_id: ZoneId,
     device_id: DeviceId,
     effect_id: EffectId,
     layers: Vec<SceneLayer>,
-) -> RenderGroup {
+) -> Zone {
     let mut group = render_group("Display", effect_id, layers);
     group.id = group_id;
     group.layout = test_layout(Vec::new());
     group.display_target = Some(DisplayFaceTarget::new(device_id));
-    group.role = RenderGroupRole::Display;
+    group.role = ZoneRole::Display;
     group
 }
 
@@ -175,7 +173,7 @@ fn render_state() -> RenderThreadState {
     }
 }
 
-async fn install_scene(state: &RenderThreadState, groups: Vec<RenderGroup>) {
+async fn install_scene(state: &RenderThreadState, groups: Vec<Zone>) {
     let mut scene = make_scene("Multi Layer Scene");
     scene.groups = groups;
     scene.unassigned_behavior = UnassignedBehavior::Off;
@@ -265,7 +263,7 @@ async fn display_layer_stack_publishes_separately_from_scene_canvas() {
         let registry = state.effect_registry.read().await;
         builtin_effect_id(&registry, "solid_color")
     };
-    let display_group_id = RenderGroupId::new();
+    let display_group_id = ZoneId::new();
     let display_device_id = DeviceId::new();
     let group_canvas_sender = state.event_bus.group_canvas_sender(display_group_id);
     let mut group_canvas_rx = group_canvas_sender.subscribe();

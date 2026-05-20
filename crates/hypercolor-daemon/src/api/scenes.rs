@@ -14,9 +14,8 @@ use hypercolor_types::asset::AssetId;
 use hypercolor_types::config::MediaConfig;
 use hypercolor_types::layer::{LayerSource, SceneLayer};
 use hypercolor_types::scene::{
-    ColorInterpolation, EasingFunction, RenderGroup, RenderGroupId, RenderGroupRole, Scene,
-    SceneId, SceneKind, SceneMutationMode, ScenePriority, SceneScope, TransitionSpec,
-    UnassignedBehavior,
+    ColorInterpolation, EasingFunction, Scene, SceneId, SceneKind, SceneMutationMode,
+    ScenePriority, SceneScope, TransitionSpec, UnassignedBehavior, Zone, ZoneId, ZoneRole,
 };
 
 use crate::api::AppState;
@@ -73,7 +72,7 @@ pub struct ActiveSceneResponse {
     pub priority: u8,
     pub kind: SceneKind,
     pub mutation_mode: SceneMutationMode,
-    pub groups: Vec<RenderGroup>,
+    pub groups: Vec<Zone>,
     pub groups_revision: u64,
     pub unassigned_behavior: UnassignedBehavior,
 }
@@ -160,11 +159,11 @@ pub async fn create_scene(
     // Every scene is born with a Default zone holding the current device
     // output roster, so the Studio scene selector always has a zone to
     // select (§5.2). The zone is `Primary`; the user renames it freely.
-    let default_zone_id = RenderGroupId::new();
+    let default_zone_id = ZoneId::new();
     let mut default_layout = crate::api::effects::resolve_full_scope_layout(state.as_ref()).await;
     default_layout.id = format!("zone-{default_zone_id}");
     "Default zone".clone_into(&mut default_layout.name);
-    let default_zone = RenderGroup {
+    let default_zone = Zone {
         id: default_zone_id,
         name: "Primary".to_owned(),
         description: Some("Default zone.".to_owned()),
@@ -178,7 +177,7 @@ pub async fn create_scene(
         enabled: true,
         color: None,
         display_target: None,
-        role: RenderGroupRole::Primary,
+        role: ZoneRole::Primary,
         controls_version: 0,
         layers_version: 0,
     };
@@ -622,7 +621,7 @@ async fn apply_scene_media_soft_admission(
 }
 
 fn media_admission_layer_detail(
-    group: &RenderGroup,
+    group: &Zone,
     layer: &SceneLayer,
     asset_id: AssetId,
     mime_type: &str,

@@ -18,7 +18,7 @@ use hypercolor_core::types::event::FrameData;
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::scene::ColorInterpolation;
 #[cfg(test)]
-use hypercolor_types::spatial::DeviceZone;
+use hypercolor_types::spatial::Output;
 use hypercolor_types::spatial::SpatialLayout;
 
 use super::frame_composer::RenderStageStats;
@@ -205,7 +205,7 @@ fn hash_zone_shapes<'a>(shapes: impl IntoIterator<Item = (&'a str, usize)>) -> u
 }
 
 #[cfg(test)]
-fn expected_zone_sample_count(zone: &DeviceZone) -> usize {
+fn expected_zone_sample_count(zone: &Output) -> usize {
     if zone.led_positions.is_empty() {
         return generate_positions(&zone.topology).len();
     }
@@ -820,14 +820,14 @@ pub(crate) fn resolve_led_sampling(
 mod tests {
     use hypercolor_types::event::ZoneColors;
     use hypercolor_types::spatial::{
-        DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+        EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
         StripDirection,
     };
 
     use super::can_hold_zone_colors_for_deferred_sampling;
 
-    fn test_zone(id: &str) -> DeviceZone {
-        DeviceZone {
+    fn test_zone(id: &str) -> Output {
+        Output {
             id: id.to_owned(),
             name: id.to_owned(),
             device_id: format!("device:{id}"),
@@ -853,7 +853,7 @@ mod tests {
         }
     }
 
-    fn test_layout(mut zones: Vec<DeviceZone>) -> SpatialLayout {
+    fn test_layout(mut zones: Vec<Output>) -> SpatialLayout {
         if let Some(display) = zones.iter_mut().find(|zone| zone.id == "display") {
             display.zone_name = Some("Display".to_owned());
         }

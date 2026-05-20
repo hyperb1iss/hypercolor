@@ -5,7 +5,7 @@ use hypercolor_core::bus::{CanvasFrame, DisplayGroupFrame, ZonePreviewFrame};
 use hypercolor_core::types::audio::AudioData;
 use hypercolor_core::types::canvas::{Canvas, PublishedSurface, PublishedSurfaceStorageIdentity};
 use hypercolor_core::types::event::{FrameData, FrameTiming, HypercolorEvent, SpectrumData};
-use hypercolor_types::scene::{RenderGroupId, SceneId};
+use hypercolor_types::scene::{SceneId, ZoneId};
 use tokio::sync::watch;
 
 use crate::performance::FullFrameCopyMetrics;
@@ -71,9 +71,9 @@ pub(crate) struct FramePublicationRequest<'a> {
     pub(crate) audio: &'a AudioData,
     pub(crate) surfaces: FramePublicationSurfaces,
     pub(crate) scene_id: Option<SceneId>,
-    pub(crate) group_canvases: &'a [(RenderGroupId, GroupCanvasFrame)],
-    pub(crate) zone_canvases: &'a [(RenderGroupId, ProducerFrame)],
-    pub(crate) active_group_canvas_ids: &'a [RenderGroupId],
+    pub(crate) group_canvases: &'a [(ZoneId, GroupCanvasFrame)],
+    pub(crate) zone_canvases: &'a [(ZoneId, ProducerFrame)],
+    pub(crate) active_group_canvas_ids: &'a [ZoneId],
     pub(crate) frame_number: u32,
     pub(crate) elapsed_ms: u32,
     pub(crate) reuse_existing_frame: bool,
@@ -393,8 +393,8 @@ fn publish_zone_previews(
     state: &RenderThreadState,
     publication_cadence: &mut PublicationCadenceState,
     scene_id: Option<SceneId>,
-    group_canvases: &[(RenderGroupId, GroupCanvasFrame)],
-    zone_canvases: &[(RenderGroupId, ProducerFrame)],
+    group_canvases: &[(ZoneId, GroupCanvasFrame)],
+    zone_canvases: &[(ZoneId, ProducerFrame)],
     frame_number: u32,
     elapsed_ms: u32,
 ) {
@@ -444,8 +444,8 @@ fn publish_zone_previews(
 
 fn collect_zone_previews(
     scene_id: SceneId,
-    group_canvases: &[(RenderGroupId, GroupCanvasFrame)],
-    zone_canvases: &[(RenderGroupId, ProducerFrame)],
+    group_canvases: &[(ZoneId, GroupCanvasFrame)],
+    zone_canvases: &[(ZoneId, ProducerFrame)],
     frame_number: u32,
     elapsed_ms: u32,
 ) -> Vec<ZonePreviewFrame> {
@@ -729,7 +729,7 @@ mod tests {
     use hypercolor_core::types::event::{FrameData, FrameTiming, ZoneColors};
     use hypercolor_types::canvas::PublishedSurfaceStorageIdentity;
     use hypercolor_types::config::RenderAccelerationMode;
-    use hypercolor_types::scene::{RenderGroupId, SceneId};
+    use hypercolor_types::scene::{SceneId, ZoneId};
     use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
     use tokio::sync::{Mutex, RwLock, watch};
 
@@ -931,7 +931,7 @@ mod tests {
         let state = minimal_render_thread_state();
         let mut zone_rx = state.preview_runtime.zone_preview_receiver();
         let scene_id = SceneId::new();
-        let zone_id = RenderGroupId::new();
+        let zone_id = ZoneId::new();
         let zone_canvas = Canvas::from_rgba(&[10, 20, 30, 255], 1, 1);
         let zone_canvases = vec![(zone_id, ProducerFrame::Canvas(zone_canvas))];
         let mut recycled_frame = FrameData::empty();

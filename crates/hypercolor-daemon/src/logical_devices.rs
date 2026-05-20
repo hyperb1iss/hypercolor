@@ -15,7 +15,7 @@ use hypercolor_types::device::DeviceId;
 /// One logical device mapped onto a physical device LED range.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogicalDevice {
-    /// Stable logical device ID used by layout zones (`DeviceZone.device_id`).
+    /// Stable logical device ID used by layout zones (`Output.device_id`).
     pub id: String,
 
     /// Back-reference to the physical device in the registry.

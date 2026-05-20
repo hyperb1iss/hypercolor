@@ -9,7 +9,7 @@ use std::sync::Arc;
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::response::Response;
-use hypercolor_types::spatial::{DeviceZone, SpatialLayout};
+use hypercolor_types::spatial::{Output, SpatialLayout};
 use serde::{Deserialize, Serialize};
 
 use crate::api::AppState;
@@ -51,7 +51,7 @@ pub struct UpdateLayoutRequest {
     pub description: Option<String>,
     pub canvas_width: Option<u32>,
     pub canvas_height: Option<u32>,
-    pub zones: Option<Vec<DeviceZone>>,
+    pub zones: Option<Vec<Output>>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -387,8 +387,8 @@ pub async fn delete_layout(State(state): State<Arc<AppState>>, Path(id): Path<St
 async fn update_layout_auto_exclusions(
     state: &Arc<AppState>,
     layout_id: &str,
-    previous_zones: &[DeviceZone],
-    updated_zones: &[DeviceZone],
+    previous_zones: &[Output],
+    updated_zones: &[Output],
 ) {
     let changed = {
         let mut exclusions = state.layout_auto_exclusions.write().await;

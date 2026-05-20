@@ -5,7 +5,7 @@ use std::fs;
 use std::path::Path;
 
 use anyhow::Context;
-use hypercolor_types::spatial::DeviceZone;
+use hypercolor_types::spatial::Output;
 use serde::{Deserialize, Serialize};
 
 /// In-memory layout exclusion store keyed by layout ID.
@@ -111,8 +111,8 @@ pub fn save(path: &Path, store: &LayoutAutoExclusionStore) -> anyhow::Result<()>
 /// exclusion set.
 #[must_use]
 pub fn reconcile_layout_device_exclusions(
-    previous_zones: &[DeviceZone],
-    updated_zones: &[DeviceZone],
+    previous_zones: &[Output],
+    updated_zones: &[Output],
     existing_exclusions: &HashSet<String>,
 ) -> HashSet<String> {
     let previous_device_ids = zone_device_ids(previous_zones);
@@ -130,7 +130,7 @@ pub fn reconcile_layout_device_exclusions(
     next
 }
 
-fn zone_device_ids(zones: &[DeviceZone]) -> HashSet<String> {
+fn zone_device_ids(zones: &[Output]) -> HashSet<String> {
     zones
         .iter()
         .map(|zone| zone.device_id.clone())

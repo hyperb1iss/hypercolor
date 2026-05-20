@@ -9,12 +9,10 @@ use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use hypercolor_core::scene::{RenderGroupMetaPatch, SceneManager, ZoneMutationError};
-use hypercolor_types::event::{HypercolorEvent, RenderGroupChangeKind, SceneSettingsChangeKind};
-use hypercolor_types::scene::{
-    RenderGroup, RenderGroupId, RenderGroupRole, SceneId, UnassignedBehavior, ZoneId,
-};
-use hypercolor_types::spatial::{DeviceZone, SpatialLayout};
+use hypercolor_core::scene::{SceneManager, ZoneMetaPatch, ZoneMutationError};
+use hypercolor_types::event::{HypercolorEvent, SceneSettingsChangeKind, ZoneChangeKind};
+use hypercolor_types::scene::{SceneId, UnassignedBehavior, Zone, ZoneId, ZoneRole};
+use hypercolor_types::spatial::{Output, SpatialLayout};
 
 use crate::api::envelope::{ApiError, ApiResponse};
 use crate::api::{
@@ -41,7 +39,7 @@ pub struct UpdateZoneRequest {
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct AssignDevicesRequest {
     #[schema(value_type = Vec<Object>)]
-    pub device_zones: Vec<DeviceZoneAssignment>,
+    pub device_zones: Vec<OutputAssignment>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -53,35 +51,35 @@ pub struct UpdateUnassignedBehaviorRequest {
 /// Untagged: serde tries variants in declaration order and the first
 /// match wins. `Existing { id }` ignores unknown fields by default, so
 /// it would silently swallow any object that has an `id`, including a
-/// full `DeviceZone`. `New(DeviceZone)` is declared FIRST so a brand-new
-/// output (which has every required `DeviceZone` field) matches it;
+/// full `Output`. `New(Output)` is declared FIRST so a brand-new
+/// output (which has every required `Output` field) matches it;
 /// a bare `{ "id": "..." }` lacks those fields, `New` fails, and the
 /// parser falls through to `Existing`. Do not reorder.
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
-pub enum DeviceZoneAssignment {
-    New(DeviceZone),
+pub enum OutputAssignment {
+    New(Output),
     Existing { id: String },
 }
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ZoneListResponse {
     #[schema(value_type = Vec<Object>)]
-    pub items: Vec<RenderGroup>,
+    pub items: Vec<Zone>,
     pub groups_revision: u64,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ZoneResponse {
     #[schema(value_type = Object)]
-    pub zone: RenderGroup,
+    pub zone: Zone,
     pub groups_revision: u64,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ZoneMutationResponse {
     #[schema(value_type = Vec<Object>)]
-    pub items: Vec<RenderGroup>,
+    pub items: Vec<Zone>,
     pub groups_revision: u64,
 }
 
@@ -149,7 +147,7 @@ pub async fn create_zone(
     };
 
     if let Err(response) =
-        finalize_zone_mutation(&state, scene_id, &zone, RenderGroupChangeKind::Created).await
+        finalize_zone_mutation(&state, scene_id, &zone, ZoneChangeKind::Created).await
     {
         return response;
     }
@@ -214,7 +212,7 @@ pub async fn update_zone(
     };
 
     if let Err(response) =
-        finalize_zone_mutation(&state, scene_id, &zone, RenderGroupChangeKind::Updated).await
+        finalize_zone_mutation(&state, scene_id, &zone, ZoneChangeKind::Updated).await
     {
         return response;
     }
@@ -260,7 +258,7 @@ pub async fn delete_zone(
     };
 
     if let Err(response) =
-        finalize_zone_mutation(&state, scene_id, &zone, RenderGroupChangeKind::Removed).await
+        finalize_zone_mutation(&state, scene_id, &zone, ZoneChangeKind::Removed).await
     {
         return response;
     }
@@ -330,13 +328,8 @@ pub async fn assign_devices(
         )
     };
 
-    if let Err(response) = finalize_zone_mutation(
-        &state,
-        scene_id,
-        &target_group,
-        RenderGroupChangeKind::Updated,
-    )
-    .await
+    if let Err(response) =
+        finalize_zone_mutation(&state, scene_id, &target_group, ZoneChangeKind::Updated).await
     {
         return response;
     }
@@ -395,13 +388,8 @@ pub async fn unassign_device(
         )
     };
 
-    if let Err(response) = finalize_zone_mutation(
-        &state,
-        scene_id,
-        &target_group,
-        RenderGroupChangeKind::Updated,
-    )
-    .await
+    if let Err(response) =
+        finalize_zone_mutation(&state, scene_id, &target_group, ZoneChangeKind::Updated).await
     {
         return response;
     }
@@ -446,7 +434,7 @@ pub async fn update_zone_layout(
     };
 
     if let Err(response) =
-        finalize_zone_mutation(&state, scene_id, &zone, RenderGroupChangeKind::Updated).await
+        finalize_zone_mutation(&state, scene_id, &zone, ZoneChangeKind::Updated).await
     {
         return response;
     }
@@ -491,8 +479,8 @@ pub async fn update_unassigned_behavior(
 }
 
 impl UpdateZoneRequest {
-    fn into_patch(self) -> RenderGroupMetaPatch {
-        RenderGroupMetaPatch {
+    fn into_patch(self) -> ZoneMetaPatch {
+        ZoneMetaPatch {
             name: self.name,
             description: self.description,
             color: self.color,
@@ -508,7 +496,7 @@ enum StatusKind {
     Created,
 }
 
-fn zones_response(groups: Vec<RenderGroup>, groups_revision: u64, status: StatusKind) -> Response {
+fn zones_response(groups: Vec<Zone>, groups_revision: u64, status: StatusKind) -> Response {
     let body = ZoneListResponse {
         items: groups,
         groups_revision,
@@ -520,7 +508,7 @@ fn zones_response(groups: Vec<RenderGroup>, groups_revision: u64, status: Status
     attach_groups_revision_headers(response, groups_revision)
 }
 
-fn zone_response(zone: RenderGroup, groups_revision: u64, status: StatusKind) -> Response {
+fn zone_response(zone: Zone, groups_revision: u64, status: StatusKind) -> Response {
     let body = ZoneResponse {
         zone,
         groups_revision,
@@ -542,28 +530,25 @@ fn unassigned_behavior_response(behavior: UnassignedBehavior, groups_revision: u
     )
 }
 
-fn find_group_in_scene(
-    scene: &hypercolor_types::scene::Scene,
-    group_id: RenderGroupId,
-) -> Option<&RenderGroup> {
+fn find_group_in_scene(scene: &hypercolor_types::scene::Scene, group_id: ZoneId) -> Option<&Zone> {
     scene.groups.iter().find(|group| group.id == group_id)
 }
 
 fn resolve_device_zone_assignments(
     scene: &hypercolor_types::scene::Scene,
-    assignments: Vec<DeviceZoneAssignment>,
-) -> Result<Vec<DeviceZone>, String> {
+    assignments: Vec<OutputAssignment>,
+) -> Result<Vec<Output>, String> {
     assignments
         .into_iter()
         .map(|assignment| match assignment {
-            DeviceZoneAssignment::Existing { id } => scene
+            OutputAssignment::Existing { id } => scene
                 .groups
                 .iter()
                 .flat_map(|group| group.layout.zones.iter())
                 .find(|zone| zone.id == id)
                 .cloned()
                 .ok_or(id),
-            DeviceZoneAssignment::New(device_zone) => Ok(device_zone),
+            OutputAssignment::New(device_zone) => Ok(device_zone),
         })
         .collect()
 }
@@ -581,8 +566,8 @@ fn check_groups_revision(
 async fn finalize_zone_mutation(
     state: &Arc<AppState>,
     scene_id: SceneId,
-    group: &RenderGroup,
-    kind: RenderGroupChangeKind,
+    group: &Zone,
+    kind: ZoneChangeKind,
 ) -> Result<(), Response> {
     if let Err(error) = save_scene_store_snapshot(state.as_ref()).await {
         return Err(ApiError::internal(format!(
@@ -624,10 +609,10 @@ fn zone_mutation_error(error: ZoneMutationError) -> Response {
             ApiError::conflict("Snapshot scene cannot be structurally edited")
         }
         ZoneMutationError::InvalidRole {
-            role: RenderGroupRole::Primary,
+            role: ZoneRole::Primary,
         } => ApiError::conflict("Primary zone cannot be deleted through the custom zone endpoint"),
         ZoneMutationError::InvalidRole {
-            role: RenderGroupRole::Display,
+            role: ZoneRole::Display,
         } => ApiError::conflict("Display zone cannot be deleted through the custom zone endpoint"),
         ZoneMutationError::InvalidRole { .. } => {
             ApiError::conflict("Zone role does not support this mutation")
@@ -639,7 +624,7 @@ fn zone_mutation_error(error: ZoneMutationError) -> Response {
     }
 }
 
-fn parse_zone_id(raw: &str) -> Result<RenderGroupId, uuid::Error> {
+fn parse_zone_id(raw: &str) -> Result<ZoneId, uuid::Error> {
     raw.parse::<uuid::Uuid>().map(ZoneId)
 }
 

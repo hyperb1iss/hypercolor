@@ -17,7 +17,7 @@ use tokio::sync::{Mutex, RwLock, watch};
 use tokio::task::JoinHandle;
 
 use hypercolor_core::asset::AssetLibrary;
-use hypercolor_core::attachment::AttachmentRegistry;
+use hypercolor_core::attachment::ComponentRegistry;
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::device::{
@@ -35,7 +35,7 @@ use hypercolor_types::device::DeviceId;
 use hypercolor_types::server::ServerIdentity;
 use hypercolor_types::spatial::SpatialLayout;
 
-use crate::attachment_profiles::AttachmentProfileStore;
+use crate::attachment_profiles::ComponentProfileStore;
 #[cfg(feature = "cloud")]
 use crate::cloud_connection::CloudConnectionRuntime;
 #[cfg(feature = "cloud")]
@@ -156,10 +156,10 @@ pub struct DaemonState {
     pub logical_devices_path: PathBuf,
 
     /// Attachment template registry (built-in plus user-defined).
-    pub attachment_registry: Arc<RwLock<AttachmentRegistry>>,
+    pub attachment_registry: Arc<RwLock<ComponentRegistry>>,
 
     /// Persistent per-device attachment profiles.
-    pub attachment_profiles: Arc<RwLock<AttachmentProfileStore>>,
+    pub attachment_profiles: Arc<RwLock<ComponentProfileStore>>,
 
     /// Persisted global and per-device output settings.
     pub device_settings: Arc<RwLock<DeviceSettingsStore>>,

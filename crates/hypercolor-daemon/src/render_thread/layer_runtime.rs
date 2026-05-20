@@ -2,16 +2,16 @@ use std::collections::{HashMap, HashSet};
 
 use hypercolor_types::event::{HypercolorEvent, LayerHealth};
 use hypercolor_types::layer::SceneLayerId;
-use hypercolor_types::scene::{RenderGroup, RenderGroupId, SceneId};
+use hypercolor_types::scene::{SceneId, Zone, ZoneId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct LayerRuntimeKey {
-    pub(crate) group_id: RenderGroupId,
+    pub(crate) group_id: ZoneId,
     pub(crate) layer_id: SceneLayerId,
 }
 
 impl LayerRuntimeKey {
-    pub(crate) const fn new(group_id: RenderGroupId, layer_id: SceneLayerId) -> Self {
+    pub(crate) const fn new(group_id: ZoneId, layer_id: SceneLayerId) -> Self {
         Self { group_id, layer_id }
     }
 }
@@ -36,7 +36,7 @@ pub(crate) struct LayerRuntimeRegistry {
 }
 
 impl LayerRuntimeRegistry {
-    pub(crate) fn reconcile(&mut self, active_scene_id: Option<SceneId>, groups: &[RenderGroup]) {
+    pub(crate) fn reconcile(&mut self, active_scene_id: Option<SceneId>, groups: &[Zone]) {
         let scene_id = active_scene_id.unwrap_or(SceneId::DEFAULT);
         let active_keys = active_layer_keys(groups);
         self.states.retain(|key, state| {
@@ -57,7 +57,7 @@ impl LayerRuntimeRegistry {
     pub(crate) fn note_health(
         &mut self,
         active_scene_id: Option<SceneId>,
-        group_id: RenderGroupId,
+        group_id: ZoneId,
         layer_id: SceneLayerId,
         health: LayerHealth,
     ) {
@@ -110,7 +110,7 @@ impl LayerRuntimeRegistry {
     }
 }
 
-fn active_layer_keys(groups: &[RenderGroup]) -> HashSet<LayerRuntimeKey> {
+fn active_layer_keys(groups: &[Zone]) -> HashSet<LayerRuntimeKey> {
     groups
         .iter()
         .filter(|group| group.enabled)
@@ -135,10 +135,10 @@ mod tests {
 
     use super::*;
 
-    fn sample_group() -> RenderGroup {
+    fn sample_group() -> Zone {
         let effect_id = EffectId::from(Uuid::now_v7());
-        RenderGroup {
-            id: RenderGroupId::new(),
+        Zone {
+            id: ZoneId::new(),
             name: "Layer Runtime".into(),
             description: None,
             effect_id: Some(effect_id),
@@ -168,7 +168,7 @@ mod tests {
             enabled: true,
             color: None,
             display_target: None,
-            role: hypercolor_types::scene::RenderGroupRole::Custom,
+            role: hypercolor_types::scene::ZoneRole::Custom,
             controls_version: 0,
             layers_version: 0,
         }

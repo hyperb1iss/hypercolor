@@ -10,8 +10,8 @@ use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_core::types::canvas::Canvas;
 use hypercolor_core::types::event::FrameTiming;
 use hypercolor_types::event::{HypercolorEvent, Severity, ZoneColors};
-use hypercolor_types::scene::{RenderGroup, RenderGroupId, UnassignedBehavior};
-use hypercolor_types::spatial::{DeviceZone, SpatialLayout};
+use hypercolor_types::scene::{UnassignedBehavior, Zone, ZoneId};
+use hypercolor_types::spatial::{Output, SpatialLayout};
 
 use super::frame_composer::{ComposeRequest, RenderStageStats, compose_frame};
 use super::frame_io::{FramePublicationRequest, FramePublicationSurfaces, publish_frame_updates};
@@ -496,8 +496,8 @@ impl UnassignedOutputPlan {
         manager: &mut BackendManager,
         layout: Arc<SpatialLayout>,
         behavior: &UnassignedBehavior,
-        groups: &[RenderGroup],
-        zone_canvases: &[(RenderGroupId, ProducerFrame)],
+        groups: &[Zone],
+        zone_canvases: &[(ZoneId, ProducerFrame)],
     ) -> Self {
         if matches!(behavior, UnassignedBehavior::Hold) {
             return Self {
@@ -546,14 +546,14 @@ impl UnassignedOutputPlan {
 
 fn layout_with_unassigned_zones(
     layout: &SpatialLayout,
-    unassigned_zones: &[DeviceZone],
+    unassigned_zones: &[Output],
 ) -> SpatialLayout {
     let mut output_layout = layout.clone();
     output_layout.zones.extend_from_slice(unassigned_zones);
     output_layout
 }
 
-fn black_zone_colors(zones: &[DeviceZone]) -> Vec<ZoneColors> {
+fn black_zone_colors(zones: &[Output]) -> Vec<ZoneColors> {
     zones
         .iter()
         .map(|zone| ZoneColors {
@@ -564,10 +564,10 @@ fn black_zone_colors(zones: &[DeviceZone]) -> Vec<ZoneColors> {
 }
 
 fn fallback_zone_colors(
-    fallback_group_id: RenderGroupId,
-    groups: &[RenderGroup],
-    zone_canvases: &[(RenderGroupId, ProducerFrame)],
-    unassigned_zones: &[DeviceZone],
+    fallback_group_id: ZoneId,
+    groups: &[Zone],
+    zone_canvases: &[(ZoneId, ProducerFrame)],
+    unassigned_zones: &[Output],
 ) -> Option<Vec<ZoneColors>> {
     let fallback_group = groups
         .iter()
@@ -617,11 +617,10 @@ mod tests {
     use hypercolor_core::types::event::{FrameData, ZoneColors};
     use hypercolor_types::device::DeviceId;
     use hypercolor_types::scene::{
-        ColorInterpolation, RenderGroup, RenderGroupId, RenderGroupRole, SceneId,
-        UnassignedBehavior,
+        ColorInterpolation, SceneId, UnassignedBehavior, Zone, ZoneId, ZoneRole,
     };
     use hypercolor_types::spatial::{
-        DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+        EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     };
 
     use crate::performance::CompositorBackendKind;
@@ -739,7 +738,7 @@ mod tests {
             canvas_height: 1,
             zones: zone_ids
                 .iter()
-                .map(|zone_id| DeviceZone {
+                .map(|zone_id| Output {
                     id: (*zone_id).to_owned(),
                     name: (*zone_id).to_owned(),
                     device_id: "device".to_owned(),
@@ -782,8 +781,8 @@ mod tests {
         )
     }
 
-    fn render_group(id: RenderGroupId, layout: SpatialLayout) -> RenderGroup {
-        RenderGroup {
+    fn render_group(id: ZoneId, layout: SpatialLayout) -> Zone {
+        Zone {
             id,
             name: "fallback".to_owned(),
             description: None,
@@ -797,7 +796,7 @@ mod tests {
             enabled: true,
             color: None,
             display_target: None,
-            role: RenderGroupRole::Custom,
+            role: ZoneRole::Custom,
             controls_version: 0,
             layers_version: 0,
         }
@@ -840,7 +839,7 @@ mod tests {
             Some(SegmentRange::new(0, 2)),
         );
 
-        let group_id = RenderGroupId::new();
+        let group_id = ZoneId::new();
         let fallback_canvas = Canvas::from_rgba(&[255, 0, 0, 255], 1, 1);
         let groups = vec![render_group(group_id, sample_layout(&[]))];
         let zone_canvases = vec![(group_id, ProducerFrame::Canvas(fallback_canvas))];

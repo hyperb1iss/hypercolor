@@ -27,9 +27,9 @@ use hypercolor_types::effect::{
 };
 use hypercolor_types::event::{
     ChangeTrigger, EffectRef, EffectStopReason, EventControlValue, FrameData, HypercolorEvent,
-    RenderGroupChangeKind,
+    ZoneChangeKind,
 };
-use hypercolor_types::scene::{RenderGroup, ZoneId};
+use hypercolor_types::scene::{Zone, ZoneId};
 use hypercolor_types::session::OffOutputBehavior;
 use hypercolor_types::spatial::SpatialLayout;
 
@@ -294,12 +294,7 @@ pub(crate) async fn stop_active_effect_and_quiesce_output(
         effect: effect.clone(),
         reason: EffectStopReason::Stopped,
     });
-    publish_render_group_changed(
-        state,
-        scene_id,
-        &cleared_group,
-        RenderGroupChangeKind::Updated,
-    );
+    publish_render_group_changed(state, scene_id, &cleared_group, ZoneChangeKind::Updated);
 
     let released_network_devices = quiesce_output_after_effect_stop(state).await;
     super::save_runtime_session_snapshot(state).await;
@@ -852,17 +847,12 @@ pub async fn apply_effect(
                     ));
                 }
             };
-            (
-                scene_id,
-                group,
-                RenderGroupChangeKind::Updated,
-                named_target,
-            )
+            (scene_id, group, ZoneChangeKind::Updated, named_target)
         } else {
             let change_kind = if primary_id.is_some() {
-                RenderGroupChangeKind::Updated
+                ZoneChangeKind::Updated
             } else {
-                RenderGroupChangeKind::Created
+                ZoneChangeKind::Created
             };
             let group = match scene_manager.upsert_primary_group(
                 &metadata,
@@ -1060,7 +1050,7 @@ pub async fn update_current_controls(
         state.as_ref(),
         scene_id,
         &updated_group,
-        RenderGroupChangeKind::ControlsPatched,
+        ZoneChangeKind::ControlsPatched,
     );
     publish_primary_control_changed_events(
         state.as_ref(),
@@ -1175,7 +1165,7 @@ pub async fn update_effect_controls(
         state.as_ref(),
         scene_id,
         &updated_group,
-        RenderGroupChangeKind::ControlsPatched,
+        ZoneChangeKind::ControlsPatched,
     );
     publish_primary_control_changed_events(
         state.as_ref(),
@@ -1260,7 +1250,7 @@ fn attach_controls_version_headers(mut response: Response, version: u64) -> Resp
 async fn primary_effect_by_id(
     state: &AppState,
     effect_id: EffectId,
-) -> Option<(RenderGroup, EffectMetadata)> {
+) -> Option<(Zone, EffectMetadata)> {
     let scene_manager = state.scene_manager.read().await;
     let scene = scene_manager.active_scene()?;
     let group = scene
@@ -1315,7 +1305,7 @@ pub async fn set_current_control_binding(
         state.as_ref(),
         scene_id,
         &updated_group,
-        RenderGroupChangeKind::Updated,
+        ZoneChangeKind::Updated,
     );
     super::persist_runtime_session(&state).await;
 
@@ -1354,7 +1344,7 @@ pub async fn reset_controls(State(state): State<Arc<AppState>>) -> Response {
         state.as_ref(),
         scene_id,
         &updated_group,
-        RenderGroupChangeKind::ControlsPatched,
+        ZoneChangeKind::ControlsPatched,
     );
     let control_ids = meta
         .controls
@@ -1597,14 +1587,12 @@ fn extract_request_controls(
         .unwrap_or_default()
 }
 
-pub(crate) async fn active_primary_group(state: &AppState) -> Option<RenderGroup> {
+pub(crate) async fn active_primary_group(state: &AppState) -> Option<Zone> {
     let scene_manager = state.scene_manager.read().await;
     scene_manager.active_scene()?.primary_group().cloned()
 }
 
-pub(crate) async fn active_primary_effect(
-    state: &AppState,
-) -> Option<(RenderGroup, EffectMetadata)> {
+pub(crate) async fn active_primary_effect(state: &AppState) -> Option<(Zone, EffectMetadata)> {
     let group = active_primary_group(state).await?;
     let effect_id = group.effect_id?;
     let registry = state.effect_registry.read().await;
@@ -1618,10 +1606,7 @@ pub(crate) async fn active_effect_metadata(state: &AppState) -> Option<EffectMet
         .map(|(_, metadata)| metadata)
 }
 
-fn controls_with_group_bindings(
-    metadata: &EffectMetadata,
-    group: &RenderGroup,
-) -> Vec<ControlDefinition> {
+fn controls_with_group_bindings(metadata: &EffectMetadata, group: &Zone) -> Vec<ControlDefinition> {
     metadata
         .controls
         .iter()
@@ -1699,7 +1684,7 @@ pub(crate) fn default_control_values(metadata: &EffectMetadata) -> HashMap<Strin
 
 pub(crate) fn resolved_control_values(
     metadata: &EffectMetadata,
-    group: &RenderGroup,
+    group: &Zone,
 ) -> HashMap<String, ControlValue> {
     let mut resolved = default_control_values(metadata);
     resolved.extend(group.controls.clone());

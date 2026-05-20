@@ -86,7 +86,7 @@ mod tests {
     use std::collections::HashMap;
 
     use hypercolor_types::spatial::{
-        DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+        EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
         StripDirection,
     };
     use tempfile::TempDir;
@@ -100,7 +100,7 @@ mod tests {
             description: Some("Persisted for restore".into()),
             canvas_width: 320,
             canvas_height: 200,
-            zones: vec![DeviceZone {
+            zones: vec![Output {
                 id: "zone-1".into(),
                 name: "Saved Fixture".into(),
                 device_id: "layout-driver:saved".into(),

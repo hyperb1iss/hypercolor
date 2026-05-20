@@ -22,7 +22,7 @@ use utoipa::ToSchema;
 
 use hypercolor_core::device::{BackendIo, BackendManager, DeviceLifecycleManager};
 use hypercolor_driver_api::DeviceAuthSummary;
-use hypercolor_types::attachment::{AttachmentBinding, AttachmentSlot};
+use hypercolor_types::attachment::{ComponentBinding, ComponentSlot};
 use hypercolor_types::device::{
     DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint, DeviceUserSettings,
     DriverPresentation, DriverTransportKind,
@@ -35,8 +35,8 @@ use crate::device_metrics::DeviceMetricsSnapshot;
 use crate::discovery as core_discovery;
 
 pub use attachments::{
-    AttachmentBindingSummary, AttachmentPreviewResponse, AttachmentPreviewZone,
-    DeviceAttachmentsResponse, DeviceAttachmentsUpdateResponse, UpdateAttachmentsRequest,
+    AttachmentPreviewResponse, AttachmentPreviewZone, ComponentBindingSummary,
+    DeviceComponentsResponse, DeviceComponentsUpdateResponse, UpdateAttachmentsRequest,
     delete_attachments, get_attachments, preview_attachments, update_attachments,
 };
 pub use discovery::{DiscoverRequest, discover_devices};
@@ -1451,8 +1451,8 @@ struct AttachmentIdentifyTarget<'a> {
 }
 
 fn build_attachment_identify_frame(
-    profiles: &crate::attachment_profiles::AttachmentProfileStore,
-    registry: &hypercolor_core::attachment::AttachmentRegistry,
+    profiles: &crate::attachment_profiles::ComponentProfileStore,
+    registry: &hypercolor_core::attachment::ComponentRegistry,
     target: AttachmentIdentifyTarget<'_>,
     total_leds: usize,
     color: [u8; 3],
@@ -1484,7 +1484,7 @@ fn build_attachment_identify_frame(
             )
         })?;
 
-    let slot_bindings: Vec<(usize, &AttachmentBinding)> = profile
+    let slot_bindings: Vec<(usize, &ComponentBinding)> = profile
         .bindings
         .iter()
         .enumerate()
@@ -1516,9 +1516,9 @@ fn build_attachment_identify_frame(
 }
 
 fn resolve_attachment_instance_range(
-    registry: &hypercolor_core::attachment::AttachmentRegistry,
-    slot_bindings: &[(usize, &AttachmentBinding)],
-    slot: &AttachmentSlot,
+    registry: &hypercolor_core::attachment::ComponentRegistry,
+    slot_bindings: &[(usize, &ComponentBinding)],
+    slot: &ComponentSlot,
     binding_index: usize,
     instance_index: u32,
 ) -> Result<(usize, usize), String> {
@@ -1560,9 +1560,9 @@ fn resolve_attachment_instance_range(
 }
 
 fn resolve_attachment_component_range(
-    registry: &hypercolor_core::attachment::AttachmentRegistry,
-    slot_bindings: &[(usize, &AttachmentBinding)],
-    slot: &AttachmentSlot,
+    registry: &hypercolor_core::attachment::ComponentRegistry,
+    slot_bindings: &[(usize, &ComponentBinding)],
+    slot: &ComponentSlot,
     component_index: usize,
 ) -> Result<(usize, usize), String> {
     let mut sorted = slot_bindings

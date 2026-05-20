@@ -15,7 +15,7 @@ use tokio::sync::oneshot;
 use tokio::sync::{Mutex, Notify, RwLock, watch};
 
 use hypercolor_core::asset::AssetLibrary;
-use hypercolor_core::attachment::AttachmentRegistry;
+use hypercolor_core::attachment::ComponentRegistry;
 use hypercolor_core::bus::{CanvasFrame, DisplayGroupFrame, HypercolorBus};
 use hypercolor_core::device::mock::{MockDeviceBackend, MockDeviceConfig};
 use hypercolor_core::device::{
@@ -27,7 +27,7 @@ use hypercolor_core::engine::{FpsTier, RenderLoop};
 use hypercolor_core::input::{InputData, InputManager, InputSource, ScreenData};
 use hypercolor_core::scene::{SceneManager, make_scene};
 use hypercolor_core::spatial::SpatialEngine;
-use hypercolor_daemon::attachment_profiles::AttachmentProfileStore;
+use hypercolor_daemon::attachment_profiles::ComponentProfileStore;
 use hypercolor_daemon::device_settings::DeviceSettingsStore;
 use hypercolor_driver_api::CredentialStore;
 use hypercolor_types::audio::AudioData;
@@ -39,12 +39,10 @@ use hypercolor_types::event::{
     FrameData, HypercolorEvent, InputButtonState, InputEvent, ZoneColors,
 };
 use hypercolor_types::library::PresetId;
-use hypercolor_types::scene::{
-    DisplayFaceTarget, RenderGroup, RenderGroupId, RenderGroupRole, UnassignedBehavior,
-};
+use hypercolor_types::scene::{DisplayFaceTarget, UnassignedBehavior, Zone, ZoneId, ZoneRole};
 use hypercolor_types::session::OffOutputBehavior;
 use hypercolor_types::spatial::{
-    DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+    EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection,
 };
 
@@ -58,7 +56,7 @@ use hypercolor_daemon::session::OutputPowerState;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-fn test_layout(zones: Vec<DeviceZone>) -> SpatialLayout {
+fn test_layout(zones: Vec<Output>) -> SpatialLayout {
     SpatialLayout {
         id: "test".into(),
         name: "Test Layout".into(),
@@ -74,8 +72,8 @@ fn test_layout(zones: Vec<DeviceZone>) -> SpatialLayout {
     }
 }
 
-fn strip_zone(id: &str, device_id: &str, led_count: u32) -> DeviceZone {
-    DeviceZone {
+fn strip_zone(id: &str, device_id: &str, led_count: u32) -> Output {
+    Output {
         id: id.into(),
         name: id.into(),
         device_id: device_id.into(),
@@ -102,8 +100,8 @@ fn strip_zone(id: &str, device_id: &str, led_count: u32) -> DeviceZone {
     }
 }
 
-fn point_zone(id: &str, device_id: &str, x: f32, y: f32) -> DeviceZone {
-    DeviceZone {
+fn point_zone(id: &str, device_id: &str, x: f32, y: f32) -> Output {
+    Output {
         id: id.into(),
         name: id.into(),
         device_id: device_id.into(),
@@ -270,9 +268,9 @@ fn primary_group(
     effect_id: EffectId,
     controls: HashMap<String, ControlValue>,
     layout: SpatialLayout,
-) -> RenderGroup {
-    RenderGroup {
-        id: RenderGroupId::new(),
+) -> Zone {
+    Zone {
+        id: ZoneId::new(),
         name: "Primary".into(),
         description: None,
         effect_id: Some(effect_id),
@@ -285,7 +283,7 @@ fn primary_group(
         enabled: true,
         color: None,
         display_target: None,
-        role: RenderGroupRole::Primary,
+        role: ZoneRole::Primary,
         controls_version: 0,
         layers_version: 0,
     }
@@ -296,9 +294,9 @@ fn custom_group(
     effect_id: EffectId,
     controls: HashMap<String, ControlValue>,
     layout: SpatialLayout,
-) -> RenderGroup {
-    RenderGroup {
-        id: RenderGroupId::new(),
+) -> Zone {
+    Zone {
+        id: ZoneId::new(),
         name: name.into(),
         description: None,
         effect_id: Some(effect_id),
@@ -311,20 +309,20 @@ fn custom_group(
         enabled: true,
         color: None,
         display_target: None,
-        role: RenderGroupRole::Custom,
+        role: ZoneRole::Custom,
         controls_version: 0,
         layers_version: 0,
     }
 }
 
 fn display_group(
-    group_id: RenderGroupId,
+    group_id: ZoneId,
     device_id: DeviceId,
     effect_id: EffectId,
     controls: HashMap<String, ControlValue>,
     layout: SpatialLayout,
-) -> RenderGroup {
-    RenderGroup {
+) -> Zone {
+    Zone {
         id: group_id,
         name: "Display".into(),
         description: None,
@@ -338,7 +336,7 @@ fn display_group(
         enabled: true,
         color: None,
         display_target: Some(DisplayFaceTarget::new(device_id)),
-        role: RenderGroupRole::Display,
+        role: ZoneRole::Display,
         controls_version: 0,
         layers_version: 0,
     }
@@ -1656,7 +1654,7 @@ async fn late_group_canvas_subscribers_see_last_display_face_frame() {
         let registry = state.effect_registry.read().await;
         builtin_effect_id(&registry, "solid_color")
     };
-    let group_id = RenderGroupId::new();
+    let group_id = ZoneId::new();
     let display_id = DeviceId::new();
 
     let mut scene = make_scene("Display Face Scene");
@@ -1727,7 +1725,7 @@ async fn blended_display_faces_publish_authoritative_scene_canvas_on_gpu() {
         let registry = state.effect_registry.read().await;
         builtin_effect_id(&registry, "solid_color")
     };
-    let group_id = RenderGroupId::new();
+    let group_id = ZoneId::new();
     let display_id = DeviceId::new();
 
     let mut face_group = display_group(
@@ -1815,8 +1813,8 @@ async fn render_thread_prunes_stale_group_canvas_streams_when_face_groups_change
         let registry = state.effect_registry.read().await;
         builtin_effect_id(&registry, "solid_color")
     };
-    let first_group_id = RenderGroupId::new();
-    let second_group_id = RenderGroupId::new();
+    let first_group_id = ZoneId::new();
+    let second_group_id = ZoneId::new();
     let display_id = DeviceId::new();
 
     let mut first_scene = make_scene("Face Scene A");
@@ -2480,8 +2478,8 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
         layouts_path: PathBuf::from("layouts.json"),
         layout_auto_exclusions: Arc::new(RwLock::new(HashMap::new())),
         logical_devices: Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new())),
-        attachment_registry: Arc::new(RwLock::new(AttachmentRegistry::new())),
-        attachment_profiles: Arc::new(RwLock::new(AttachmentProfileStore::new(PathBuf::from(
+        attachment_registry: Arc::new(RwLock::new(ComponentRegistry::new())),
+        attachment_profiles: Arc::new(RwLock::new(ComponentProfileStore::new(PathBuf::from(
             "attachment-profiles.json",
         )))),
         device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(
@@ -2670,8 +2668,8 @@ async fn pipeline_keeps_rendering_while_async_write_failure_disconnects() {
         layouts_path: PathBuf::from("layouts.json"),
         layout_auto_exclusions: Arc::new(RwLock::new(HashMap::new())),
         logical_devices: Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new())),
-        attachment_registry: Arc::new(RwLock::new(AttachmentRegistry::new())),
-        attachment_profiles: Arc::new(RwLock::new(AttachmentProfileStore::new(PathBuf::from(
+        attachment_registry: Arc::new(RwLock::new(ComponentRegistry::new())),
+        attachment_profiles: Arc::new(RwLock::new(ComponentProfileStore::new(PathBuf::from(
             "attachment-profiles.json",
         )))),
         device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(

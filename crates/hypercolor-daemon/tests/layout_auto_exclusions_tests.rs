@@ -4,11 +4,11 @@ use hypercolor_daemon::layout_auto_exclusions::{
     LayoutAutoExclusionStore, load, reconcile_layout_device_exclusions, save,
 };
 use hypercolor_types::spatial::{
-    DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, StripDirection,
+    EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, StripDirection,
 };
 
-fn make_zone(id: &str, device_id: &str) -> DeviceZone {
-    DeviceZone {
+fn make_zone(id: &str, device_id: &str) -> Output {
+    Output {
         id: id.to_owned(),
         name: id.to_owned(),
         device_id: device_id.to_owned(),

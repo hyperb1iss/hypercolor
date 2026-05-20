@@ -6,7 +6,7 @@ use std::sync::atomic::AtomicBool;
 
 use anyhow::{Result, bail};
 use async_trait::async_trait;
-use hypercolor_core::attachment::AttachmentRegistry;
+use hypercolor_core::attachment::ComponentRegistry;
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::device::{
@@ -31,7 +31,7 @@ use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tracing::warn;
 
-use crate::attachment_profiles::AttachmentProfileStore;
+use crate::attachment_profiles::ComponentProfileStore;
 use crate::device_settings::DeviceSettingsStore;
 use crate::discovery::{self, DiscoveryRuntime};
 use crate::layout_auto_exclusions;
@@ -53,8 +53,8 @@ pub struct DaemonDriverHost {
     layouts_path: PathBuf,
     layout_auto_exclusions: Arc<RwLock<layout_auto_exclusions::LayoutAutoExclusionStore>>,
     logical_devices: Arc<RwLock<HashMap<String, LogicalDevice>>>,
-    attachment_registry: Arc<RwLock<AttachmentRegistry>>,
-    attachment_profiles: Arc<RwLock<AttachmentProfileStore>>,
+    attachment_registry: Arc<RwLock<ComponentRegistry>>,
+    attachment_profiles: Arc<RwLock<ComponentProfileStore>>,
     device_settings: Arc<RwLock<DeviceSettingsStore>>,
     runtime_state_path: PathBuf,
     usb_protocol_configs: UsbProtocolConfigStore,
@@ -80,8 +80,8 @@ impl DaemonDriverHost {
         layouts_path: PathBuf,
         layout_auto_exclusions: Arc<RwLock<layout_auto_exclusions::LayoutAutoExclusionStore>>,
         logical_devices: Arc<RwLock<HashMap<String, LogicalDevice>>>,
-        attachment_registry: Arc<RwLock<AttachmentRegistry>>,
-        attachment_profiles: Arc<RwLock<AttachmentProfileStore>>,
+        attachment_registry: Arc<RwLock<ComponentRegistry>>,
+        attachment_profiles: Arc<RwLock<ComponentProfileStore>>,
         device_settings: Arc<RwLock<DeviceSettingsStore>>,
         runtime_state_path: PathBuf,
         usb_protocol_configs: UsbProtocolConfigStore,

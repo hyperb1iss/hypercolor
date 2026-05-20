@@ -11,7 +11,7 @@ use hypercolor_types::effect::{
     ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource, EffectState,
 };
 use hypercolor_types::spatial::{
-    DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+    EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection,
 };
 use tower::ServiceExt;
@@ -104,8 +104,8 @@ fn sample_effect(name: &str) -> EffectMetadata {
     }
 }
 
-fn sample_zone(id: &str) -> DeviceZone {
-    DeviceZone {
+fn sample_zone(id: &str) -> Output {
+    Output {
         id: id.to_owned(),
         name: id.to_owned(),
         device_id: format!("mock:{id}"),

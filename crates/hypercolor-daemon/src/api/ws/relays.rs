@@ -659,7 +659,7 @@ pub(super) async fn relay_zone_preview(
     let mut active_canvas_config = None::<CanvasConfig>;
     let mut receiver_initialized = false;
     let mut last_sent_surfaces =
-        HashMap::<hypercolor_types::scene::RenderGroupId, PreviewSurfaceIdentity>::new();
+        HashMap::<hypercolor_types::scene::ZoneId, PreviewSurfaceIdentity>::new();
     let mut pending_send = false;
     let mut active_fps = 15_u32;
     let mut last_sent_at = preview_initial_last_sent();

@@ -363,7 +363,7 @@ mod tests {
     use std::sync::Arc;
 
     use hypercolor_core::spatial::SpatialEngine;
-    use hypercolor_types::scene::{ColorInterpolation, RenderGroup, UnassignedBehavior};
+    use hypercolor_types::scene::{ColorInterpolation, UnassignedBehavior, Zone};
     use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 
     use super::{
@@ -398,7 +398,7 @@ mod tests {
                     eased_progress: 0.5,
                     color_interpolation: ColorInterpolation::Srgb,
                 }),
-                active_render_groups: Arc::<[RenderGroup]>::from(Vec::<RenderGroup>::new()),
+                active_render_groups: Arc::<[Zone]>::from(Vec::<Zone>::new()),
                 active_render_groups_revision: 3,
                 active_render_group_count: 2,
                 active_display_group_target_fps: HashMap::new(),

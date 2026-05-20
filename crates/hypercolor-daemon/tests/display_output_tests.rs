@@ -19,10 +19,10 @@ use hypercolor_types::device::{
     DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint,
     OwnedDisplayFramePayload, ZoneInfo,
 };
-use hypercolor_types::scene::{DisplayFaceBlendMode, DisplayFaceTarget, RenderGroupId};
+use hypercolor_types::scene::{DisplayFaceBlendMode, DisplayFaceTarget, ZoneId};
 use hypercolor_types::session::OffOutputBehavior;
 use hypercolor_types::spatial::{
-    DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+    EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
 };
 
 use hypercolor_daemon::display_frames::{DisplayFrameRuntime, DisplayFrameSnapshot};
@@ -542,7 +542,7 @@ fn display_device_info_with_format_and_max_fps(
     }
 }
 
-fn layout_with_zones(zones: Vec<DeviceZone>) -> SpatialLayout {
+fn layout_with_zones(zones: Vec<Output>) -> SpatialLayout {
     SpatialLayout {
         id: "layout-test".to_owned(),
         name: "Layout Test".to_owned(),
@@ -568,12 +568,8 @@ fn simulated_display_metadata() -> HashMap<String, String> {
     ])
 }
 
-fn display_zone(
-    device_id: &str,
-    position: NormalizedPosition,
-    size: NormalizedPosition,
-) -> DeviceZone {
-    DeviceZone {
+fn display_zone(device_id: &str, position: NormalizedPosition, size: NormalizedPosition) -> Output {
+    Output {
         id: "zone-display".to_owned(),
         name: "Display Zone".to_owned(),
         device_id: device_id.to_owned(),
@@ -602,7 +598,7 @@ fn display_zone_with_id(
     device_id: &str,
     position: NormalizedPosition,
     size: NormalizedPosition,
-) -> DeviceZone {
+) -> Output {
     let mut zone = display_zone(device_id, position, size);
     zone_id.clone_into(&mut zone.id);
     zone
@@ -621,8 +617,8 @@ fn led_zone(
     zone_name: &str,
     position: NormalizedPosition,
     size: NormalizedPosition,
-) -> DeviceZone {
-    DeviceZone {
+) -> Output {
+    Output {
         id: format!("zone-{}", zone_name.to_lowercase().replace(' ', "-")),
         name: zone_name.to_owned(),
         device_id: device_id.to_owned(),
@@ -688,7 +684,7 @@ fn transparent_white_canvas() -> Canvas {
 
 fn publish_display_face_route(
     event_bus: &HypercolorBus,
-    group_id: RenderGroupId,
+    group_id: ZoneId,
     display_target: DisplayFaceTarget,
 ) {
     let display_target = display_target.normalized();
@@ -706,7 +702,7 @@ fn publish_display_face_route(
 fn publish_direct_display_face_route(
     event_bus: &HypercolorBus,
     device_id: DeviceId,
-    group_id: RenderGroupId,
+    group_id: ZoneId,
 ) {
     publish_display_face_route(event_bus, group_id, DisplayFaceTarget::new(device_id));
 }
@@ -2269,7 +2265,7 @@ async fn display_group_canvas_routes_to_device_worker() {
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
-    let group_id = RenderGroupId::new();
+    let group_id = ZoneId::new();
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
@@ -2345,7 +2341,7 @@ async fn automatic_display_output_updates_direct_faces_without_scene_canvas_tick
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
-    let group_id = RenderGroupId::new();
+    let group_id = ZoneId::new();
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
@@ -2425,7 +2421,7 @@ async fn display_group_alpha_blends_face_with_effect_canvas() {
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
-    let group_id = RenderGroupId::new();
+    let group_id = ZoneId::new();
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
@@ -2513,7 +2509,7 @@ async fn display_group_alpha_composes_against_black_before_effect_frame() {
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
-    let group_id = RenderGroupId::new();
+    let group_id = ZoneId::new();
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
@@ -2608,7 +2604,7 @@ async fn display_output_uses_render_published_face_route_metadata() {
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
-    let group_id = RenderGroupId::new();
+    let group_id = ZoneId::new();
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
@@ -2694,7 +2690,7 @@ async fn display_group_replace_keeps_transparent_face_pixels_from_bleeding_effec
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
-    let group_id = RenderGroupId::new();
+    let group_id = ZoneId::new();
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
@@ -2769,7 +2765,7 @@ async fn alpha_display_faces_keep_default_30_fps_cadence_on_60_fps_devices() {
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let display_write_times = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
-    let group_id = RenderGroupId::new();
+    let group_id = ZoneId::new();
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Box::new(
@@ -2876,7 +2872,7 @@ async fn display_group_screen_blends_face_color_with_effect_canvas() {
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
-    let group_id = RenderGroupId::new();
+    let group_id = ZoneId::new();
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
@@ -2964,7 +2960,7 @@ async fn display_group_tint_turns_face_into_effect_tinted_material() {
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
-    let group_id = RenderGroupId::new();
+    let group_id = ZoneId::new();
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
@@ -3052,7 +3048,7 @@ async fn display_group_luma_reveal_lets_bright_face_regions_adopt_effect_color()
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
-    let group_id = RenderGroupId::new();
+    let group_id = ZoneId::new();
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
@@ -4092,7 +4088,7 @@ async fn automatic_display_output_refreshes_cached_targets_when_display_face_rou
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
-    let group_id = RenderGroupId::new();
+    let group_id = ZoneId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
     {

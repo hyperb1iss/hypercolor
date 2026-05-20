@@ -52,7 +52,7 @@ use tower_http::services::{ServeDir, ServeFile};
 use tracing::warn;
 
 use hypercolor_core::asset::AssetLibrary;
-use hypercolor_core::attachment::AttachmentRegistry;
+use hypercolor_core::attachment::ComponentRegistry;
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::device::{
@@ -71,15 +71,15 @@ use hypercolor_types::config::{
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::EffectId;
 use hypercolor_types::event::{
-    EffectRef, EffectStopReason, HypercolorEvent, RenderGroupChangeKind, SceneChangeReason,
+    EffectRef, EffectStopReason, HypercolorEvent, SceneChangeReason, ZoneChangeKind,
 };
-use hypercolor_types::scene::{RenderGroup, Scene, SceneId};
+use hypercolor_types::scene::{Scene, SceneId, Zone};
 use hypercolor_types::server::ServerIdentity;
 use hypercolor_types::spatial::SpatialLayout;
 use uuid::Uuid;
 
 use crate::api::envelope::ApiError;
-use crate::attachment_profiles::AttachmentProfileStore;
+use crate::attachment_profiles::ComponentProfileStore;
 #[cfg(feature = "cloud")]
 use crate::cloud_connection::CloudConnectionRuntime;
 #[cfg(feature = "cloud")]
@@ -181,10 +181,10 @@ pub struct AppState {
     pub profiles: Arc<RwLock<ProfileStore>>,
 
     /// Attachment template registry (built-in plus user templates).
-    pub attachment_registry: Arc<RwLock<AttachmentRegistry>>,
+    pub attachment_registry: Arc<RwLock<ComponentRegistry>>,
 
     /// Persistent per-device attachment profile store.
-    pub attachment_profiles: Arc<RwLock<AttachmentProfileStore>>,
+    pub attachment_profiles: Arc<RwLock<ComponentProfileStore>>,
 
     /// Persistent per-device user settings store.
     pub device_settings: Arc<RwLock<DeviceSettingsStore>>,
@@ -354,7 +354,7 @@ impl AppState {
             version: 1,
         };
 
-        let mut attachment_registry = AttachmentRegistry::new();
+        let mut attachment_registry = ComponentRegistry::new();
         if let Err(error) = attachment_registry.load_builtins() {
             warn!(%error, "Failed to load built-in attachment templates");
         }
@@ -369,14 +369,14 @@ impl AppState {
         }
 
         let attachment_profiles_path = data_dir.join("attachment-profiles.json");
-        let attachment_profiles = AttachmentProfileStore::load(&attachment_profiles_path)
+        let attachment_profiles = ComponentProfileStore::load(&attachment_profiles_path)
             .unwrap_or_else(|error| {
                 warn!(
                     path = %attachment_profiles_path.display(),
                     %error,
                     "Failed to load attachment profiles; starting with empty store"
                 );
-                AttachmentProfileStore::new(attachment_profiles_path)
+                ComponentProfileStore::new(attachment_profiles_path)
             });
         let profiles_path = data_dir.join("profiles.json");
         let profiles = ProfileStore::load(&profiles_path).unwrap_or_else(|error| {
@@ -701,8 +701,8 @@ pub(crate) async fn save_scene_store_snapshot(state: &AppState) -> anyhow::Resul
 pub(crate) fn publish_render_group_changed(
     state: &AppState,
     scene_id: SceneId,
-    group: &RenderGroup,
-    kind: RenderGroupChangeKind,
+    group: &Zone,
+    kind: ZoneChangeKind,
 ) {
     state
         .event_bus
@@ -819,12 +819,7 @@ async fn clear_active_scene_effect_groups(
         reason: EffectStopReason::Error,
     });
     for group in &cleared_groups {
-        publish_render_group_changed(
-            state.as_ref(),
-            scene_id,
-            group,
-            RenderGroupChangeKind::Updated,
-        );
+        publish_render_group_changed(state.as_ref(), scene_id, group, ZoneChangeKind::Updated);
     }
     persist_runtime_session(state).await;
 
@@ -863,12 +858,7 @@ pub(crate) async fn prune_scene_display_groups_for_device(
     }
 
     for (scene_id, group) in &removed_groups {
-        publish_render_group_changed(
-            state.as_ref(),
-            *scene_id,
-            group,
-            RenderGroupChangeKind::Removed,
-        );
+        publish_render_group_changed(state.as_ref(), *scene_id, group, ZoneChangeKind::Removed);
     }
     persist_runtime_session(state).await;
 }

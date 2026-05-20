@@ -10,8 +10,8 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceTopologyHint};
 use hypercolor_types::effect::{ControlValue, EffectCategory, EffectMetadata, EffectSource};
-use hypercolor_types::event::RenderGroupChangeKind;
-use hypercolor_types::scene::{DisplayFaceBlendMode, DisplayFaceTarget, RenderGroup};
+use hypercolor_types::event::ZoneChangeKind;
+use hypercolor_types::scene::{DisplayFaceBlendMode, DisplayFaceTarget, Zone};
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use serde::{Deserialize, Serialize};
 
@@ -79,7 +79,7 @@ pub struct DisplayFaceResponse {
     pub device_id: String,
     pub scene_id: String,
     pub effect: EffectMetadata,
-    pub group: RenderGroup,
+    pub group: Zone,
 }
 
 struct OwnedDisplayJpeg(Arc<Vec<u8>>);
@@ -249,9 +249,9 @@ pub async fn set_display_face(
             .and_then(|scene| scene.display_group_for(device_id))
             .is_some()
         {
-            RenderGroupChangeKind::Updated
+            ZoneChangeKind::Updated
         } else {
-            RenderGroupChangeKind::Created
+            ZoneChangeKind::Created
         };
         let group = match scene_manager.upsert_display_group(
             device_id,
@@ -360,7 +360,7 @@ pub async fn patch_display_face_composition(
         state.as_ref(),
         scene_id,
         &response.group,
-        RenderGroupChangeKind::Updated,
+        ZoneChangeKind::Updated,
     );
     crate::api::persist_runtime_session(&state).await;
 
@@ -398,7 +398,7 @@ pub async fn delete_display_face(
             state.as_ref(),
             scene_id,
             removed_group,
-            RenderGroupChangeKind::Removed,
+            ZoneChangeKind::Removed,
         );
     }
     crate::api::persist_runtime_session(&state).await;
@@ -501,7 +501,7 @@ pub async fn patch_display_face_controls(
         state.as_ref(),
         scene_id,
         &response.group,
-        RenderGroupChangeKind::ControlsPatched,
+        ZoneChangeKind::ControlsPatched,
     );
     crate::api::persist_runtime_session(&state).await;
 
@@ -646,7 +646,7 @@ async fn current_display_face_assignment(
     })
 }
 
-fn compact_display_face_assignment_group(mut group: RenderGroup) -> RenderGroup {
+fn compact_display_face_assignment_group(mut group: Zone) -> Zone {
     if let Some(target) = group.display_target.as_mut()
         && target.blend_mode == DisplayFaceBlendMode::Replace
         && (target.opacity - 1.0).abs() <= f32::EPSILON

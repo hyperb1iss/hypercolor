@@ -59,17 +59,17 @@ use hypercolor_types::effect::{
     EffectId, EffectMetadata, EffectSource, EffectState,
 };
 use hypercolor_types::event::{
-    ChangeTrigger, EffectStopReason, HypercolorEvent, RenderGroupChangeKind, SceneChangeReason,
+    ChangeTrigger, EffectStopReason, HypercolorEvent, SceneChangeReason, ZoneChangeKind,
 };
 use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::{
-    ColorInterpolation, DisplayFaceBlendMode, DisplayFaceTarget, EasingFunction, RenderGroup,
-    RenderGroupRole, Scene, SceneId, SceneKind, SceneMutationMode, ScenePriority, SceneScope,
-    TransitionSpec, UnassignedBehavior,
+    ColorInterpolation, DisplayFaceBlendMode, DisplayFaceTarget, EasingFunction, Scene, SceneId,
+    SceneKind, SceneMutationMode, ScenePriority, SceneScope, TransitionSpec, UnassignedBehavior,
+    Zone, ZoneRole,
 };
 use hypercolor_types::session::OffOutputBehavior;
 use hypercolor_types::spatial::{
-    DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+    EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection,
 };
 
@@ -1924,8 +1924,8 @@ async fn activate_display_face_test_scene(
         description: None,
         scope: SceneScope::Full,
         zone_assignments: Vec::new(),
-        groups: vec![RenderGroup {
-            id: hypercolor_types::scene::RenderGroupId::new(),
+        groups: vec![Zone {
+            id: hypercolor_types::scene::ZoneId::new(),
             name: "Display Face".to_owned(),
             description: None,
             effect_id: Some(effect_id),
@@ -1949,7 +1949,7 @@ async fn activate_display_face_test_scene(
             enabled: true,
             color: None,
             display_target: Some(DisplayFaceTarget::new(device_id)),
-            role: RenderGroupRole::Display,
+            role: ZoneRole::Display,
             controls_version: 0,
             layers_version: 0,
         }],
@@ -2197,7 +2197,7 @@ async fn set_layout_targeting_device(state: &AppState, layout_device_id: &str, l
         description: None,
         canvas_width: 320,
         canvas_height: 200,
-        zones: vec![DeviceZone {
+        zones: vec![Output {
             id: "zone_main".into(),
             name: "Main".into(),
             device_id: layout_device_id.into(),
@@ -4271,7 +4271,7 @@ async fn apply_effect_upserts_primary_group() {
         .active_scene()
         .and_then(Scene::primary_group)
         .expect("active scene should contain a primary group");
-    assert_eq!(primary.role, RenderGroupRole::Primary);
+    assert_eq!(primary.role, ZoneRole::Primary);
     assert!(primary.effect_id.is_some());
 }
 
@@ -4599,7 +4599,7 @@ async fn stop_current_quiesces_output_and_resume_wakes_pipeline() {
     insert_test_effect(&state, "solid_color").await;
     state.render_loop.write().await.start();
 
-    let group_id = hypercolor_types::scene::RenderGroupId::new();
+    let group_id = hypercolor_types::scene::ZoneId::new();
     let display_device_id = DeviceId::new();
     state.event_bus.upsert_display_group_target(
         group_id,
@@ -4994,7 +4994,7 @@ async fn patch_effect_controls_by_id_rejects_apply_after_effect_swap() {
     // stale PATCH must NOT silently land on B.
     //
     // The scene manager's primary-group reuse ([upsert_primary_group])
-    // keeps the same `RenderGroupId` across effect swaps, so
+    // keeps the same `ZoneId` across effect swaps, so
     // patching by group id alone is unsafe — the handler verifies
     // `effect_id` still matches before writing.
     let state = Arc::new(isolated_state());
@@ -5298,7 +5298,7 @@ async fn put_current_control_binding_updates_active_effect_schema() {
     let primary = persisted
         .default_scene_groups
         .iter()
-        .find(|group| group.role == RenderGroupRole::Primary)
+        .find(|group| group.role == ZoneRole::Primary)
         .expect("primary group should be persisted");
     assert_eq!(
         primary
@@ -5572,8 +5572,8 @@ async fn patch_current_controls_publishes_render_group_and_control_events() {
                         kind,
                         ..
                     } if scene_id == SceneId::DEFAULT
-                        && role == RenderGroupRole::Primary
-                        && kind == RenderGroupChangeKind::ControlsPatched =>
+                        && role == ZoneRole::Primary
+                        && kind == ZoneChangeKind::ControlsPatched =>
                     {
                         saw_render_group_change = true;
                     }
@@ -10242,8 +10242,8 @@ async fn deleting_display_device_prunes_scene_display_groups_and_persists_cleanu
                         kind,
                         ..
                     } = timestamped.event
-                        && role == RenderGroupRole::Display
-                        && kind == RenderGroupChangeKind::Removed
+                        && role == ZoneRole::Display
+                        && kind == ZoneChangeKind::Removed
                     {
                         removed_scene_ids.push(scene_id);
                     }

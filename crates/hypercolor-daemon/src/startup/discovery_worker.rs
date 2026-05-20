@@ -10,7 +10,7 @@ use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
-use hypercolor_core::attachment::AttachmentRegistry;
+use hypercolor_core::attachment::ComponentRegistry;
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::device::manager::BackendRoutingDebugSnapshot;
@@ -24,7 +24,7 @@ use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::spatial::SpatialLayout;
 
-use crate::attachment_profiles::AttachmentProfileStore;
+use crate::attachment_profiles::ComponentProfileStore;
 use crate::device_settings::DeviceSettingsStore;
 use crate::discovery::{self, DiscoveryTarget};
 use crate::layout_auto_exclusions;
@@ -53,8 +53,8 @@ pub(super) struct DiscoveryWorkerContext {
     pub(super) layout_auto_exclusions:
         Arc<RwLock<layout_auto_exclusions::LayoutAutoExclusionStore>>,
     pub(super) logical_devices: Arc<RwLock<HashMap<String, LogicalDevice>>>,
-    pub(super) attachment_registry: Arc<RwLock<AttachmentRegistry>>,
-    pub(super) attachment_profiles: Arc<RwLock<AttachmentProfileStore>>,
+    pub(super) attachment_registry: Arc<RwLock<ComponentRegistry>>,
+    pub(super) attachment_profiles: Arc<RwLock<ComponentProfileStore>>,
     pub(super) device_settings: Arc<RwLock<DeviceSettingsStore>>,
     pub(super) runtime_state_path: PathBuf,
     pub(super) usb_protocol_configs: UsbProtocolConfigStore,

@@ -13,7 +13,7 @@ use hypercolor_types::canvas::{
 use hypercolor_types::controls::{ControlSurfaceEvent, ControlValue, ControlValueMap};
 use hypercolor_types::device::{ConnectionType, DeviceId, DeviceOrigin};
 use hypercolor_types::event::{FrameData, FrameTiming, HypercolorEvent, SpectrumData, ZoneColors};
-use hypercolor_types::scene::{RenderGroupId, RenderGroupRole, SceneId};
+use hypercolor_types::scene::{SceneId, ZoneId, ZoneRole};
 
 use super::cache::{
     FrameRelayMessage, WS_CANVAS_BINARY_CACHE, WS_CANVAS_HEADER, WS_CANVAS_JPEG_BODY_BUILD_COUNT,
@@ -1358,12 +1358,12 @@ fn event_message_parts_serializes_control_surface_changed() {
 
 #[test]
 fn event_message_parts_serializes_render_group_changed() {
-    let group_id = RenderGroupId::new();
+    let group_id = ZoneId::new();
     let event = HypercolorEvent::RenderGroupChanged {
         scene_id: SceneId::DEFAULT,
         group_id,
-        role: RenderGroupRole::Display,
-        kind: hypercolor_types::event::RenderGroupChangeKind::ControlsPatched,
+        role: ZoneRole::Display,
+        kind: hypercolor_types::event::ZoneChangeKind::ControlsPatched,
     };
 
     let (event_name, event_data) = event_message_parts(&event);
@@ -1376,7 +1376,7 @@ fn event_message_parts_serializes_render_group_changed() {
 
 #[test]
 fn event_message_parts_serializes_effect_degraded() {
-    let group_id = RenderGroupId::new();
+    let group_id = ZoneId::new();
     let event = HypercolorEvent::EffectDegraded {
         effect_id: "effect-1".to_owned(),
         group_id: Some(group_id),
@@ -2213,7 +2213,7 @@ fn zone_preview_binary_encoder_writes_addressed_header_and_rgb_payload() {
     canvas.set_pixel(0, 0, Rgba::new(10, 20, 30, 255));
     canvas.set_pixel(1, 0, Rgba::new(40, 50, 60, 200));
     let scene_id = SceneId::new();
-    let zone_id = RenderGroupId::new();
+    let zone_id = ZoneId::new();
     let frame = ZonePreviewFrame {
         scene_id,
         zone_id,

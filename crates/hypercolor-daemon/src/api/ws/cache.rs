@@ -17,7 +17,7 @@ use serde::ser::SerializeSeq;
 use tracing::{trace, warn};
 
 use hypercolor_types::canvas::PublishedSurfaceStorageIdentity;
-use hypercolor_types::scene::{RenderGroupId, SceneId};
+use hypercolor_types::scene::{SceneId, ZoneId};
 
 use super::preview_encode::{
     PreviewJpegEncoder, PreviewRawEncoder, encode_canvas_jpeg_payload_scaled_stateless,
@@ -199,7 +199,7 @@ pub(super) struct CanvasBinaryCacheKey {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) struct ZonePreviewBinaryCacheKey {
     pub(super) scene_id: SceneId,
-    pub(super) zone_id: RenderGroupId,
+    pub(super) zone_id: ZoneId,
     pub(super) generation: u64,
     pub(super) frame_number: u32,
     pub(super) timestamp_ms: u32,

@@ -5,9 +5,7 @@ use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::layer::LayerSource;
-use hypercolor_types::scene::{
-    ColorInterpolation, RenderGroup, RenderGroupId, SceneId, UnassignedBehavior,
-};
+use hypercolor_types::scene::{ColorInterpolation, SceneId, UnassignedBehavior, Zone, ZoneId};
 
 use crate::session::OutputPowerState;
 
@@ -45,10 +43,10 @@ impl Default for SceneTransitionSnapshot {
 pub(crate) struct SceneRuntimeSnapshot {
     pub active_scene_id: Option<SceneId>,
     pub active_transition: Option<SceneTransitionSnapshot>,
-    pub active_render_groups: Arc<[RenderGroup]>,
+    pub active_render_groups: Arc<[Zone]>,
     pub active_render_groups_revision: u64,
     pub active_render_group_count: u32,
-    pub active_display_group_target_fps: HashMap<RenderGroupId, u32>,
+    pub active_display_group_target_fps: HashMap<ZoneId, u32>,
     pub unassigned_behavior: UnassignedBehavior,
     pub device_registry_generation: u64,
 }
@@ -105,7 +103,7 @@ pub(crate) struct RenderLoopSnapshot {
 #[derive(Debug, Clone, Default)]
 struct CachedDisplayGroupTargetFps {
     dependency_key: SceneDependencyKey,
-    values: HashMap<RenderGroupId, u32>,
+    values: HashMap<ZoneId, u32>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -132,7 +130,7 @@ impl SceneSnapshotCache {
     pub(crate) fn cached_display_group_target_fps(
         &self,
         dependency_key: SceneDependencyKey,
-    ) -> Option<HashMap<RenderGroupId, u32>> {
+    ) -> Option<HashMap<ZoneId, u32>> {
         self.cached_display_group_target_fps
             .as_ref()
             .filter(|cache| cache.dependency_key == dependency_key)
@@ -142,7 +140,7 @@ impl SceneSnapshotCache {
     pub(crate) fn cache_display_group_target_fps(
         &mut self,
         dependency_key: SceneDependencyKey,
-        values: &HashMap<RenderGroupId, u32>,
+        values: &HashMap<ZoneId, u32>,
     ) {
         self.cached_display_group_target_fps = Some(CachedDisplayGroupTargetFps {
             dependency_key,
@@ -316,8 +314,8 @@ async fn snapshot_display_group_target_fps(
     device_registry: &hypercolor_core::device::DeviceRegistry,
     scene_snapshot_cache: &mut SceneSnapshotCache,
     groups_revision: u64,
-    groups: &[RenderGroup],
-) -> HashMap<RenderGroupId, u32> {
+    groups: &[Zone],
+) -> HashMap<ZoneId, u32> {
     let dependency_key = SceneDependencyKey::new(groups_revision, device_registry.generation());
     if let Some(cached) = scene_snapshot_cache.cached_display_group_target_fps(dependency_key) {
         return cached;
@@ -414,7 +412,7 @@ async fn current_effect_scene_snapshot(
     }
 }
 
-fn group_has_enabled_layer(group: &RenderGroup) -> bool {
+fn group_has_enabled_layer(group: &Zone) -> bool {
     group.enabled
         && group
             .effective_layers()
@@ -455,8 +453,8 @@ mod tests {
     use hypercolor_types::layer::{
         LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
     };
-    use hypercolor_types::scene::RenderGroupId;
-    use hypercolor_types::scene::{RenderGroup, RenderGroupRole, UnassignedBehavior};
+    use hypercolor_types::scene::ZoneId;
+    use hypercolor_types::scene::{UnassignedBehavior, Zone, ZoneRole};
     use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
     use hypercolor_types::viewport::ViewportRect;
 
@@ -477,7 +475,7 @@ mod tests {
     #[test]
     fn scene_snapshot_cache_caches_display_group_target_fps_by_revision_and_registry_generation() {
         let mut scheduler = SceneSnapshotCache::new();
-        let group_id = RenderGroupId::new();
+        let group_id = ZoneId::new();
         let values = std::collections::HashMap::from([(group_id, 30)]);
         let dependency_key = SceneDependencyKey::new(1, 7);
 
@@ -584,9 +582,9 @@ mod tests {
         }
     }
 
-    fn sample_group(effect_id: EffectId) -> RenderGroup {
-        RenderGroup {
-            id: RenderGroupId::new(),
+    fn sample_group(effect_id: EffectId) -> Zone {
+        Zone {
+            id: ZoneId::new(),
             name: "Test Group".into(),
             description: None,
             effect_id: Some(effect_id),
@@ -599,7 +597,7 @@ mod tests {
             enabled: true,
             color: None,
             display_target: None,
-            role: RenderGroupRole::Custom,
+            role: ZoneRole::Custom,
             controls_version: 0,
             layers_version: 0,
         }

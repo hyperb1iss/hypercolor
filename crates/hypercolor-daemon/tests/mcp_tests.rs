@@ -31,11 +31,11 @@ use hypercolor_types::effect::{
     EffectMetadata, EffectSource,
 };
 use hypercolor_types::event::{
-    ChangeTrigger, EffectStopReason, HypercolorEvent, RenderGroupChangeKind, SceneChangeReason,
+    ChangeTrigger, EffectStopReason, HypercolorEvent, SceneChangeReason, ZoneChangeKind,
 };
 use hypercolor_types::scene::SceneId;
 use hypercolor_types::spatial::{
-    DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+    EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection,
 };
 use reqwest::{Client, Response};
@@ -212,8 +212,8 @@ async fn insert_test_effect(state: &Arc<AppState>, name: &str) -> EffectMetadata
     metadata
 }
 
-fn test_device_zone(id: &str) -> DeviceZone {
-    DeviceZone {
+fn test_device_zone(id: &str) -> Output {
+    Output {
         id: id.to_owned(),
         name: id.to_owned(),
         device_id: format!("mock:{id}"),
@@ -239,7 +239,7 @@ fn test_device_zone(id: &str) -> DeviceZone {
     }
 }
 
-fn test_layout(id: &str, zones: Vec<DeviceZone>) -> SpatialLayout {
+fn test_layout(id: &str, zones: Vec<Output>) -> SpatialLayout {
     SpatialLayout {
         id: id.to_owned(),
         name: id.to_owned(),
@@ -775,8 +775,8 @@ async fn stateful_display_face_tool_assigns_and_clears_face_groups() {
         } = timestamped.event
         {
             assert_eq!(scene_id, SceneId::DEFAULT);
-            assert_eq!(role, hypercolor_types::scene::RenderGroupRole::Display);
-            assert_eq!(kind, RenderGroupChangeKind::Created);
+            assert_eq!(role, hypercolor_types::scene::ZoneRole::Display);
+            assert_eq!(kind, ZoneChangeKind::Created);
             saw_assign_event = true;
         }
     }
@@ -811,8 +811,8 @@ async fn stateful_display_face_tool_assigns_and_clears_face_groups() {
         } = timestamped.event
         {
             assert_eq!(scene_id, SceneId::DEFAULT);
-            assert_eq!(role, hypercolor_types::scene::RenderGroupRole::Display);
-            assert_eq!(kind, RenderGroupChangeKind::Removed);
+            assert_eq!(role, hypercolor_types::scene::ZoneRole::Display);
+            assert_eq!(kind, ZoneChangeKind::Removed);
             saw_clear_event = true;
         }
     }
@@ -984,8 +984,8 @@ async fn stateful_set_effect_and_stop_effect_sync_scene_runtime_and_events() {
                 ..
             } => {
                 assert_eq!(event_scene_id, scene_id);
-                assert_eq!(role, hypercolor_types::scene::RenderGroupRole::Primary);
-                assert_eq!(kind, RenderGroupChangeKind::Created);
+                assert_eq!(role, hypercolor_types::scene::ZoneRole::Primary);
+                assert_eq!(kind, ZoneChangeKind::Created);
                 saw_group_event = true;
             }
             _ => {}
@@ -1032,8 +1032,8 @@ async fn stateful_set_effect_and_stop_effect_sync_scene_runtime_and_events() {
                 saw_stopped_event = true;
             }
             HypercolorEvent::RenderGroupChanged { kind, role, .. } => {
-                assert_eq!(role, hypercolor_types::scene::RenderGroupRole::Primary);
-                assert_eq!(kind, RenderGroupChangeKind::Updated);
+                assert_eq!(role, hypercolor_types::scene::ZoneRole::Primary);
+                assert_eq!(kind, ZoneChangeKind::Updated);
                 saw_updated_group = true;
             }
             _ => {}

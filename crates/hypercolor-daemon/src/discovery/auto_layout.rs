@@ -4,7 +4,7 @@ use hypercolor_core::device::DeviceLifecycleManager;
 use hypercolor_core::spatial::generate_positions;
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceTopologyHint};
 use hypercolor_types::spatial::{
-    Corner, DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+    Corner, EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection, Winding, ZoneShape,
 };
 use tracing::{debug, info, warn};
@@ -252,7 +252,7 @@ pub fn append_auto_layout_zones_for_device(
             format!("{}: {}", device_info.name, zone_info.name)
         };
 
-        layout.zones.push(DeviceZone {
+        layout.zones.push(Output {
             id: zone_id,
             name: zone_name,
             device_id: layout_device_id.to_owned(),

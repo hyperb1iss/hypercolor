@@ -10,11 +10,11 @@ use axum::response::Response;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLockWriteGuard;
 
-use hypercolor_core::attachment::{AttachmentRegistry, TemplateFilter};
+use hypercolor_core::attachment::{ComponentRegistry, TemplateFilter};
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::spatial::generate_positions;
 use hypercolor_types::attachment::{
-    AttachmentCategory, AttachmentOrigin, AttachmentTemplate, AttachmentTemplateManifest,
+    ComponentCategory, ComponentOrigin, ComponentTemplate, ComponentTemplateManifest,
 };
 
 use crate::api::AppState;
@@ -47,8 +47,8 @@ pub struct TemplateSummary {
     pub id: String,
     pub name: String,
     pub vendor: String,
-    pub category: AttachmentCategory,
-    pub origin: AttachmentOrigin,
+    pub category: ComponentCategory,
+    pub origin: ComponentOrigin,
     pub led_count: u32,
     pub description: String,
     pub image_url: Option<String>,
@@ -60,14 +60,14 @@ pub struct TemplateDetail {
     pub id: String,
     pub name: String,
     pub vendor: String,
-    pub category: AttachmentCategory,
-    pub origin: AttachmentOrigin,
+    pub category: ComponentCategory,
+    pub origin: ComponentOrigin,
     pub led_count: u32,
     pub description: String,
-    pub default_size: hypercolor_types::attachment::AttachmentCanvasSize,
+    pub default_size: hypercolor_types::attachment::ComponentCanvasSize,
     pub topology: hypercolor_types::spatial::LedTopology,
     pub led_positions: Vec<hypercolor_types::spatial::NormalizedPosition>,
-    pub compatible_slots: Vec<hypercolor_types::attachment::AttachmentCompatibility>,
+    pub compatible_slots: Vec<hypercolor_types::attachment::ComponentCompatibility>,
     pub tags: Vec<String>,
     pub led_names: Option<Vec<String>>,
     pub led_mapping: Option<Vec<u32>>,
@@ -82,7 +82,7 @@ pub struct CategoryListResponse {
 
 #[derive(Debug, Serialize)]
 pub struct CategorySummary {
-    pub category: AttachmentCategory,
+    pub category: ComponentCategory,
     pub count: usize,
     pub label: String,
 }
@@ -152,9 +152,9 @@ pub async fn get_template(
 /// `POST /api/v1/attachments/templates`
 pub async fn create_template(
     State(state): State<Arc<AppState>>,
-    Json(mut template): Json<AttachmentTemplate>,
+    Json(mut template): Json<ComponentTemplate>,
 ) -> Response {
-    template.origin = AttachmentOrigin::User;
+    template.origin = ComponentOrigin::User;
 
     let mut registry = state.attachment_registry.write().await;
     if registry.get(&template.id).is_some() {
@@ -175,18 +175,18 @@ pub async fn create_template(
 pub async fn update_template(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<String>,
-    Json(mut template): Json<AttachmentTemplate>,
+    Json(mut template): Json<ComponentTemplate>,
 ) -> Response {
     if template.id != id {
         return ApiError::validation("template ID in path must match request body");
     }
-    template.origin = AttachmentOrigin::User;
+    template.origin = ComponentOrigin::User;
 
     let mut registry = state.attachment_registry.write().await;
     let Some(existing) = registry.get(&id) else {
         return ApiError::not_found(format!("Attachment template not found: {id}"));
     };
-    if existing.origin == AttachmentOrigin::BuiltIn {
+    if existing.origin == ComponentOrigin::BuiltIn {
         return ApiError::forbidden(format!("Built-in template cannot be updated: {id}"));
     }
 
@@ -215,7 +215,7 @@ pub async fn delete_template(
     let Some(existing) = registry.get(&id) else {
         return ApiError::not_found(format!("Attachment template not found: {id}"));
     };
-    if existing.origin == AttachmentOrigin::BuiltIn {
+    if existing.origin == ComponentOrigin::BuiltIn {
         return ApiError::forbidden(format!("Built-in template cannot be deleted: {id}"));
     }
 
@@ -266,10 +266,10 @@ pub async fn list_vendors(State(state): State<Arc<AppState>>) -> Response {
     reason = "private handler helper returns a concrete HTTP response on validation failure"
 )]
 fn build_filter(query: &ListTemplatesQuery) -> Result<TemplateFilter, Response> {
-    let category = query.category.as_deref().map(AttachmentCategory::from_raw);
+    let category = query.category.as_deref().map(ComponentCategory::from_raw);
     let origin = match query.origin.as_deref() {
-        Some("built_in") => Some(AttachmentOrigin::BuiltIn),
-        Some("user") => Some(AttachmentOrigin::User),
+        Some("built_in") => Some(ComponentOrigin::BuiltIn),
+        Some("user") => Some(ComponentOrigin::User),
         Some(other) => {
             return Err(ApiError::validation(format!(
                 "invalid origin filter: {other}"
@@ -291,7 +291,7 @@ fn build_filter(query: &ListTemplatesQuery) -> Result<TemplateFilter, Response> 
     })
 }
 
-fn template_summary(template: &AttachmentTemplate) -> TemplateSummary {
+fn template_summary(template: &ComponentTemplate) -> TemplateSummary {
     TemplateSummary {
         id: template.id.clone(),
         name: template.name.clone(),
@@ -305,7 +305,7 @@ fn template_summary(template: &AttachmentTemplate) -> TemplateSummary {
     }
 }
 
-fn template_detail(template: &AttachmentTemplate) -> TemplateDetail {
+fn template_detail(template: &ComponentTemplate) -> TemplateDetail {
     TemplateDetail {
         id: template.id.clone(),
         name: template.name.clone(),
@@ -331,14 +331,14 @@ fn template_detail(template: &AttachmentTemplate) -> TemplateDetail {
     reason = "private handler helper returns a concrete HTTP response on persistence failure"
 )]
 fn register_and_persist_template(
-    registry: &mut RwLockWriteGuard<'_, AttachmentRegistry>,
-    template: &AttachmentTemplate,
+    registry: &mut RwLockWriteGuard<'_, ComponentRegistry>,
+    template: &ComponentTemplate,
 ) -> Result<(), Response> {
     if let Err(error) = registry.register(template.clone()) {
         return Err(ApiError::validation(error.to_string()));
     }
 
-    let manifest = AttachmentTemplateManifest {
+    let manifest = ComponentTemplateManifest {
         schema_version: 1,
         template: template.clone(),
     };
@@ -361,19 +361,19 @@ fn register_and_persist_template(
     Ok(())
 }
 
-fn category_label(category: &AttachmentCategory) -> String {
+fn category_label(category: &ComponentCategory) -> String {
     match category {
-        AttachmentCategory::Aio => "AIO Coolers".to_owned(),
-        AttachmentCategory::Fan => "Fans".to_owned(),
-        AttachmentCategory::Strip => "LED Strips".to_owned(),
-        AttachmentCategory::Strimer => "Strimers".to_owned(),
-        AttachmentCategory::Case => "Cases".to_owned(),
-        AttachmentCategory::Heatsink => "Heatsinks".to_owned(),
-        AttachmentCategory::Radiator => "Radiators".to_owned(),
-        AttachmentCategory::Matrix => "Matrices".to_owned(),
-        AttachmentCategory::Ring => "Rings".to_owned(),
-        AttachmentCategory::Bulb => "Bulbs".to_owned(),
-        AttachmentCategory::Other(raw) => titleize(raw),
+        ComponentCategory::Aio => "AIO Coolers".to_owned(),
+        ComponentCategory::Fan => "Fans".to_owned(),
+        ComponentCategory::Strip => "LED Strips".to_owned(),
+        ComponentCategory::Strimer => "Strimers".to_owned(),
+        ComponentCategory::Case => "Cases".to_owned(),
+        ComponentCategory::Heatsink => "Heatsinks".to_owned(),
+        ComponentCategory::Radiator => "Radiators".to_owned(),
+        ComponentCategory::Matrix => "Matrices".to_owned(),
+        ComponentCategory::Ring => "Rings".to_owned(),
+        ComponentCategory::Bulb => "Bulbs".to_owned(),
+        ComponentCategory::Other(raw) => titleize(raw),
     }
 }
 
@@ -437,7 +437,7 @@ fn delete_user_template_file(id: &str) -> Result<(), String> {
 
 fn matches_template_file(path: &Path, id: &str) -> Result<bool, String> {
     let raw = std::fs::read_to_string(path).map_err(|error| error.to_string())?;
-    let manifest: AttachmentTemplateManifest =
+    let manifest: ComponentTemplateManifest =
         toml::from_str(&raw).map_err(|error| error.to_string())?;
     Ok(manifest.template.id == id)
 }

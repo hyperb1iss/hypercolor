@@ -18,7 +18,7 @@ use hypercolor_types::device::{
     DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint, ZoneInfo,
 };
 use hypercolor_types::spatial::{
-    DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+    EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection,
 };
 
@@ -288,7 +288,7 @@ async fn set_active_layout_for_device(state: &Arc<AppState>, device_id: DeviceId
         description: None,
         canvas_width: 320,
         canvas_height: 200,
-        zones: vec![DeviceZone {
+        zones: vec![Output {
             id: "zone-main".to_owned(),
             name: "Desk Strip".to_owned(),
             device_id: device_id.to_string(),

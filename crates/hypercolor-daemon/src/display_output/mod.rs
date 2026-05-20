@@ -24,7 +24,7 @@ use hypercolor_core::device::{BackendManager, DeviceRegistry};
 use hypercolor_core::spatial::{SpatialEngine, is_display_zone};
 use hypercolor_types::canvas::PublishedSurfaceStorageIdentity;
 use hypercolor_types::device::{DeviceId, DeviceTopologyHint, DisplayFrameFormat};
-use hypercolor_types::scene::{DisplayFaceBlendMode, DisplayFaceTarget, RenderGroupId};
+use hypercolor_types::scene::{DisplayFaceBlendMode, DisplayFaceTarget, ZoneId};
 use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition, SpatialLayout};
 
 use self::render::display_viewport_signature;
@@ -165,13 +165,13 @@ impl DisplayTargetCacheKey {
 #[derive(Clone, Debug)]
 enum DisplayCanvasSource {
     Scene,
-    GroupDirect { group_id: RenderGroupId },
+    GroupDirect { group_id: ZoneId },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum DisplayCanvasSourceSignature {
     Scene,
-    GroupDirect { group_id: RenderGroupId },
+    GroupDirect { group_id: ZoneId },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1061,7 +1061,7 @@ mod tests {
             },
             frame_format: DisplayFrameFormat::Jpeg,
             canvas_source: DisplayCanvasSource::GroupDirect {
-                group_id: RenderGroupId::new(),
+                group_id: ZoneId::new(),
             },
             group_canvas_sender: None,
             display_target: Some(DisplayFaceTarget {

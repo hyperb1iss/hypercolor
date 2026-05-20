@@ -3663,7 +3663,7 @@ mod tests {
     use hypercolor_types::event::ZoneColors;
     use hypercolor_types::scene::DisplayFaceBlendMode;
     use hypercolor_types::spatial::{
-        DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+        EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
         StripDirection,
     };
 
@@ -3904,7 +3904,7 @@ mod tests {
             description: None,
             canvas_width: 4,
             canvas_height: 4,
-            zones: vec![DeviceZone {
+            zones: vec![Output {
                 id: "zone".into(),
                 name: "zone".into(),
                 device_id: "device:zone".into(),
@@ -3942,7 +3942,7 @@ mod tests {
             description: None,
             canvas_width: 4,
             canvas_height: 4,
-            zones: vec![DeviceZone {
+            zones: vec![Output {
                 id: "zone".into(),
                 name: "zone".into(),
                 device_id: "device:zone".into(),

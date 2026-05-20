@@ -6,17 +6,17 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 
-use hypercolor_types::attachment::{AttachmentSlot, DeviceAttachmentProfile};
+use hypercolor_types::attachment::{ComponentSlot, DeviceComponentProfile};
 use hypercolor_types::device::DeviceInfo;
 
 /// Persistent attachment profile store keyed by physical device ID.
 #[derive(Debug, Clone)]
-pub struct AttachmentProfileStore {
-    profiles: HashMap<String, DeviceAttachmentProfile>,
+pub struct ComponentProfileStore {
+    profiles: HashMap<String, DeviceComponentProfile>,
     path: PathBuf,
 }
 
-impl AttachmentProfileStore {
+impl ComponentProfileStore {
     /// Create an empty attachment profile store for the given file path.
     #[must_use]
     pub fn new(path: PathBuf) -> Self {
@@ -38,7 +38,7 @@ impl AttachmentProfileStore {
                 path.display()
             )
         })?;
-        let profiles: HashMap<String, DeviceAttachmentProfile> = serde_json::from_str(&raw)
+        let profiles: HashMap<String, DeviceComponentProfile> = serde_json::from_str(&raw)
             .with_context(|| {
                 format!(
                     "failed to parse attachment profile store at {}",
@@ -92,13 +92,13 @@ impl AttachmentProfileStore {
 
     /// Get a stored profile by physical device ID.
     #[must_use]
-    pub fn get(&self, device_id: &str) -> Option<&DeviceAttachmentProfile> {
+    pub fn get(&self, device_id: &str) -> Option<&DeviceComponentProfile> {
         self.profiles.get(device_id)
     }
 
     /// Get the stored profile for a device, or derive a default one from current zones.
     #[must_use]
-    pub fn get_or_default(&self, device: &DeviceInfo) -> DeviceAttachmentProfile {
+    pub fn get_or_default(&self, device: &DeviceInfo) -> DeviceComponentProfile {
         let device_id = device.id.to_string();
 
         if let Some(profile) = self.profiles.get(&device_id) {
@@ -112,12 +112,12 @@ impl AttachmentProfileStore {
     }
 
     /// Insert or replace a stored profile.
-    pub fn update(&mut self, device_id: &str, profile: DeviceAttachmentProfile) {
+    pub fn update(&mut self, device_id: &str, profile: DeviceComponentProfile) {
         self.profiles.insert(device_id.to_owned(), profile);
     }
 
     /// Remove a stored profile.
-    pub fn remove(&mut self, device_id: &str) -> Option<DeviceAttachmentProfile> {
+    pub fn remove(&mut self, device_id: &str) -> Option<DeviceComponentProfile> {
         self.profiles.remove(device_id)
     }
 
@@ -134,9 +134,9 @@ impl AttachmentProfileStore {
 }
 
 fn merge_slots_preserving_ids(
-    stored_slots: &[AttachmentSlot],
-    current_slots: &[AttachmentSlot],
-) -> Vec<AttachmentSlot> {
+    stored_slots: &[ComponentSlot],
+    current_slots: &[ComponentSlot],
+) -> Vec<ComponentSlot> {
     let stored_by_range = stored_slots
         .iter()
         .map(|slot| ((slot.led_start, slot.led_count), slot))
@@ -160,13 +160,13 @@ fn merge_slots_preserving_ids(
 mod tests {
     use std::path::PathBuf;
 
-    use hypercolor_types::attachment::AttachmentBinding;
+    use hypercolor_types::attachment::ComponentBinding;
     use hypercolor_types::device::{
         ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceId, DeviceInfo,
         DeviceOrigin, DeviceTopologyHint, ZoneInfo,
     };
 
-    use super::AttachmentProfileStore;
+    use super::ComponentProfileStore;
 
     #[test]
     fn get_or_default_preserves_slot_ids_when_zone_names_change() {
@@ -220,14 +220,14 @@ mod tests {
             ],
             ..original.clone()
         };
-        let mut store = AttachmentProfileStore::new(PathBuf::from("attachment-profiles-test.json"));
+        let mut store = ComponentProfileStore::new(PathBuf::from("attachment-profiles-test.json"));
         let mut profile = original.default_attachment_profile();
         let original_slot_ids = profile
             .slots
             .iter()
             .map(|slot| slot.id.clone())
             .collect::<Vec<_>>();
-        profile.bindings = vec![AttachmentBinding {
+        profile.bindings = vec![ComponentBinding {
             slot_id: original_slot_ids[0].clone(),
             template_id: "dummy-template".to_owned(),
             name: None,

@@ -7,7 +7,7 @@ use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use hypercolor_core::attachment::AttachmentRegistry;
+use hypercolor_core::attachment::ComponentRegistry;
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::device::{
     BackendInfo, BackendManager, DeviceBackend, DeviceLifecycleManager, DeviceRegistry,
@@ -15,7 +15,7 @@ use hypercolor_core::device::{
 };
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
-use hypercolor_daemon::attachment_profiles::AttachmentProfileStore;
+use hypercolor_daemon::attachment_profiles::ComponentProfileStore;
 use hypercolor_daemon::device_settings::DeviceSettingsStore;
 use hypercolor_daemon::discovery::{
     DiscoveryRuntime, DiscoveryTarget, execute_discovery_scan, execute_discovery_scan_if_idle,
@@ -34,7 +34,7 @@ use hypercolor_types::device::{
 };
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::spatial::{
-    DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+    EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection,
 };
 use tokio::sync::{Mutex, RwLock};
@@ -350,7 +350,7 @@ fn layout_with_device(layout_device_id: &str) -> SpatialLayout {
         description: None,
         canvas_width: 320,
         canvas_height: 200,
-        zones: vec![DeviceZone {
+        zones: vec![Output {
             id: "zone_main".into(),
             name: "Main".into(),
             device_id: layout_device_id.to_owned(),
@@ -396,8 +396,8 @@ fn make_runtime(
     let layouts = Arc::new(RwLock::new(HashMap::new()));
     let layout_auto_exclusions = Arc::new(RwLock::new(HashMap::new()));
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
-    let attachment_registry = Arc::new(RwLock::new(AttachmentRegistry::new()));
-    let attachment_profiles = Arc::new(RwLock::new(AttachmentProfileStore::new(
+    let attachment_registry = Arc::new(RwLock::new(ComponentRegistry::new()));
+    let attachment_profiles = Arc::new(RwLock::new(ComponentProfileStore::new(
         std::path::PathBuf::from("attachment-profiles.json"),
     )));
     let device_settings = Arc::new(RwLock::new(DeviceSettingsStore::new(

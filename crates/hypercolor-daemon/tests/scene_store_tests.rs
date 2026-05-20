@@ -4,9 +4,9 @@ use hypercolor_core::scene::{SceneManager, make_scene};
 use hypercolor_daemon::scene_store::SceneStore;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::EffectId;
-use hypercolor_types::scene::{RenderGroupId, SceneId};
+use hypercolor_types::scene::{SceneId, ZoneId};
 use hypercolor_types::spatial::{
-    DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+    EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection,
 };
 use tempfile::TempDir;
@@ -19,7 +19,7 @@ fn sample_layout(zone_id: &str) -> SpatialLayout {
         description: None,
         canvas_width: 320,
         canvas_height: 200,
-        zones: vec![DeviceZone {
+        zones: vec![Output {
             id: zone_id.into(),
             name: zone_id.into(),
             device_id: "mock:device".into(),
@@ -100,7 +100,7 @@ fn scene_store_load_rejects_groups_missing_role() {
     let mut scene = make_scene("Strict Display");
     scene.groups = vec![
         serde_json::from_value(serde_json::json!({
-            "id": RenderGroupId::new(),
+            "id": ZoneId::new(),
             "name": "Face",
             "description": null,
             "effect_id": EffectId::from(Uuid::now_v7()),
@@ -149,7 +149,7 @@ fn scene_store_load_rejects_scenes_missing_kind() {
     let mut scene = make_scene("Strict Primary");
     scene.groups = vec![
         serde_json::from_value(serde_json::json!({
-            "id": RenderGroupId::new(),
+            "id": ZoneId::new(),
             "name": "Primary",
             "description": null,
             "effect_id": EffectId::from(Uuid::now_v7()),

@@ -13,7 +13,7 @@ use tokio::sync::{Mutex, RwLock, watch};
 use tracing::{info, warn};
 
 use hypercolor_core::asset::{AssetLibrary, StreamUrlPolicy};
-use hypercolor_core::attachment::AttachmentRegistry;
+use hypercolor_core::attachment::ComponentRegistry;
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::device::mock::MockDeviceBackend;
@@ -38,7 +38,7 @@ use hypercolor_types::audio::{AudioPipelineConfig, AudioSourceType};
 use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 
-use crate::attachment_profiles::AttachmentProfileStore;
+use crate::attachment_profiles::ComponentProfileStore;
 #[cfg(feature = "cloud")]
 use crate::cloud_connection::CloudConnectionRuntime;
 #[cfg(feature = "cloud")]
@@ -271,7 +271,7 @@ impl DaemonState {
 
         // ── Attachment Template Registry ─────────────────────────────
         let attachment_templates_dir = ConfigManager::data_dir().join("attachments");
-        let mut attachment_registry_inner = AttachmentRegistry::new();
+        let mut attachment_registry_inner = ComponentRegistry::new();
         let builtin_count = attachment_registry_inner
             .load_builtins()
             .unwrap_or_else(|error| {
@@ -297,14 +297,14 @@ impl DaemonState {
 
         // ── Attachment Profile Store ─────────────────────────────────
         let attachment_profiles_path = ConfigManager::data_dir().join("attachment-profiles.json");
-        let attachment_profiles_inner = AttachmentProfileStore::load(&attachment_profiles_path)
+        let attachment_profiles_inner = ComponentProfileStore::load(&attachment_profiles_path)
             .unwrap_or_else(|error| {
                 warn!(
                     path = %attachment_profiles_path.display(),
                     %error,
                     "Failed to load attachment profiles; starting with empty store"
                 );
-                AttachmentProfileStore::new(attachment_profiles_path)
+                ComponentProfileStore::new(attachment_profiles_path)
             });
         let attachment_profiles = Arc::new(RwLock::new(attachment_profiles_inner));
         info!("Attachment profile store ready");

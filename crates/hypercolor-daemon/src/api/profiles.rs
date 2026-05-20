@@ -26,7 +26,7 @@ use hypercolor_core::effect::EffectRegistry;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::{ControlValue, EffectMetadata};
 use hypercolor_types::library::PresetId;
-use hypercolor_types::scene::{RenderGroup, RenderGroupRole};
+use hypercolor_types::scene::{Zone, ZoneRole};
 use hypercolor_types::spatial::SpatialLayout;
 
 // ── Request / Response Types ─────────────────────────────────────────────
@@ -437,7 +437,7 @@ async fn snapshot_profile(
                     scene
                         .groups
                         .iter()
-                        .filter(|group| group.role == RenderGroupRole::Display)
+                        .filter(|group| group.role == ZoneRole::Display)
                         .cloned()
                         .collect(),
                 )
@@ -536,10 +536,7 @@ async fn prepare_profile_displays(
     Ok(prepared)
 }
 
-fn snapshot_primary_group(
-    registry: &EffectRegistry,
-    group: &RenderGroup,
-) -> Option<ProfilePrimary> {
+fn snapshot_primary_group(registry: &EffectRegistry, group: &Zone) -> Option<ProfilePrimary> {
     let effect_id = group.effect_id?;
     Some(ProfilePrimary {
         effect_id,
@@ -548,10 +545,7 @@ fn snapshot_primary_group(
     })
 }
 
-fn snapshot_display_group(
-    registry: &EffectRegistry,
-    group: &RenderGroup,
-) -> Option<ProfileDisplay> {
+fn snapshot_display_group(registry: &EffectRegistry, group: &Zone) -> Option<ProfileDisplay> {
     let device_id = group.display_target.as_ref()?.device_id;
     let effect_id = group.effect_id?;
     Some(ProfileDisplay {
@@ -564,7 +558,7 @@ fn snapshot_display_group(
 fn resolved_profile_controls(
     registry: &EffectRegistry,
     effect_id: hypercolor_types::effect::EffectId,
-    group: &RenderGroup,
+    group: &Zone,
 ) -> HashMap<String, ControlValue> {
     registry.get(&effect_id).map_or_else(
         || group.controls.clone(),

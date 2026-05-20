@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use hypercolor_daemon::layout_store;
 use hypercolor_types::spatial::{
-    DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+    EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection,
 };
 
@@ -13,7 +13,7 @@ fn sample_layout() -> SpatialLayout {
         description: Some("Persist me".into()),
         canvas_width: 640,
         canvas_height: 360,
-        zones: vec![DeviceZone {
+        zones: vec![Output {
             id: "zone-1".into(),
             name: "Desk Strip".into(),
             device_id: "wled:desk".into(),

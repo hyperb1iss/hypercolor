@@ -17,7 +17,7 @@ use hypercolor_daemon::simulators::{
 use hypercolor_types::device::{DeviceId, DeviceState};
 use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
 use hypercolor_types::spatial::{
-    DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+    EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
 };
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -374,7 +374,7 @@ async fn simulated_display_crud_routes_update_runtime_state() {
     let layout_device_id = default_layout_device_id(&preview_config);
     let zone_id = format!("zone_simulator_{device_id}");
     let mut active_layout_with_simulator = active_layout.clone();
-    active_layout_with_simulator.zones.push(DeviceZone {
+    active_layout_with_simulator.zones.push(Output {
         id: zone_id.clone(),
         name: "Desk Preview Display".to_owned(),
         device_id: layout_device_id.clone(),

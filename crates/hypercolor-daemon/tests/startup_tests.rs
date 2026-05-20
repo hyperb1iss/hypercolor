@@ -39,9 +39,9 @@ use hypercolor_types::device::{
 };
 use hypercolor_types::effect::EffectSource;
 use hypercolor_types::event::{EffectStopReason, HypercolorEvent};
-use hypercolor_types::scene::{RenderGroup, RenderGroupId, RenderGroupRole, SceneId};
+use hypercolor_types::scene::{SceneId, Zone, ZoneId, ZoneRole};
 use hypercolor_types::spatial::{
-    DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+    EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection, ZoneShape,
 };
 use serde_json::Value;
@@ -1217,8 +1217,8 @@ async fn daemon_start_restores_named_active_scene_and_default_groups() {
     store.replace_named_scenes([named_scene]);
     store.save().expect("scene store should save");
 
-    let default_group = RenderGroup {
-        id: RenderGroupId::new(),
+    let default_group = Zone {
+        id: ZoneId::new(),
         name: "Saved Default Group".to_owned(),
         description: None,
         effect_id: None,
@@ -1242,7 +1242,7 @@ async fn daemon_start_restores_named_active_scene_and_default_groups() {
         enabled: true,
         color: None,
         display_target: None,
-        role: RenderGroupRole::Primary,
+        role: ZoneRole::Primary,
         controls_version: 0,
         layers_version: 0,
     };
@@ -1300,8 +1300,8 @@ async fn default_scene_contents_restore_on_restart() {
         &guard.runtime_state_path(),
         &runtime_state::RuntimeSessionSnapshot {
             active_scene_id: Some(SceneId::DEFAULT.to_string()),
-            default_scene_groups: vec![RenderGroup {
-                id: RenderGroupId::new(),
+            default_scene_groups: vec![Zone {
+                id: ZoneId::new(),
                 name: "Saved Default Group".to_owned(),
                 description: Some("Restored from runtime snapshot".to_owned()),
                 effect_id: Some(effect_id),
@@ -1328,7 +1328,7 @@ async fn default_scene_contents_restore_on_restart() {
                 enabled: true,
                 color: None,
                 display_target: None,
-                role: RenderGroupRole::Primary,
+                role: ZoneRole::Primary,
                 controls_version: 0,
                 layers_version: 0,
             }],
@@ -1539,8 +1539,8 @@ fn collect_unmapped_prefixed_layout_targets_ignores_unmatched_prefixes() {
     assert!(unmapped.is_empty());
 }
 
-fn test_zone(id: &str, device_id: &str) -> DeviceZone {
-    DeviceZone {
+fn test_zone(id: &str, device_id: &str) -> Output {
+    Output {
         id: id.to_owned(),
         name: id.to_owned(),
         device_id: device_id.to_owned(),
@@ -2104,7 +2104,7 @@ fn reconcile_auto_layout_zones_for_device_updates_existing_custom_auto_zone() {
         description: None,
         canvas_width: 320,
         canvas_height: 200,
-        zones: vec![DeviceZone {
+        zones: vec![Output {
             id: "auto-usb-driver-compact-test-main".to_owned(),
             name: "Compact Custom Device".to_owned(),
             device_id: "usb:driver:compact:test".to_owned(),
@@ -2187,7 +2187,7 @@ fn reconcile_auto_layout_zones_repairs_device_declared_geometry_without_touching
         canvas_width: 320,
         canvas_height: 200,
         zones: vec![
-            DeviceZone {
+            Output {
                 id: "auto-usb-driver-stacked-rings-test-outer-ring".to_owned(),
                 name: "Stacked Ring Controller: Outer Ring".to_owned(),
                 device_id: "usb:driver:stacked-rings:test".to_owned(),
@@ -2212,7 +2212,7 @@ fn reconcile_auto_layout_zones_repairs_device_declared_geometry_without_touching
                 attachment: None,
                 brightness: None,
             },
-            DeviceZone {
+            Output {
                 id: "auto-usb-driver-stacked-rings-test-inner-ring".to_owned(),
                 name: "Stacked Ring Controller: Inner Ring".to_owned(),
                 device_id: "usb:driver:stacked-rings:test".to_owned(),
@@ -2309,7 +2309,7 @@ fn reconcile_auto_layout_zones_for_device_removes_stale_auto_zones() {
         canvas_width: 320,
         canvas_height: 200,
         zones: vec![
-            DeviceZone {
+            Output {
                 id: "auto-usb-prism-s-test-atx-strimer".to_owned(),
                 name: "PrismRGB Prism S: ATX Strimer".to_owned(),
                 device_id: "usb:prism-s:test".to_owned(),
@@ -2336,7 +2336,7 @@ fn reconcile_auto_layout_zones_for_device_removes_stale_auto_zones() {
                 brightness: None,
                 led_mapping: None,
             },
-            DeviceZone {
+            Output {
                 id: "auto-usb-prism-s-test-gpu-strimer".to_owned(),
                 name: "PrismRGB Prism S: GPU Strimer".to_owned(),
                 device_id: "usb:prism-s:test".to_owned(),

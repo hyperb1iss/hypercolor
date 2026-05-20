@@ -14,7 +14,7 @@ use tracing::warn;
 use hypercolor_core::scene::SceneManager;
 use hypercolor_driver_api::DriverHost;
 use hypercolor_network::DriverModuleRegistry;
-use hypercolor_types::scene::{RenderGroup, SceneId};
+use hypercolor_types::scene::{SceneId, Zone};
 
 /// Process-local counter to guarantee per-save temp file uniqueness.
 static SNAPSHOT_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -28,7 +28,7 @@ pub struct RuntimeSessionSnapshot {
     pub active_scene_id: Option<String>,
 
     /// Full render groups for the synthesized default scene.
-    pub default_scene_groups: Vec<RenderGroup>,
+    pub default_scene_groups: Vec<Zone>,
 
     /// Active layout ID, if one was applied to the spatial engine.
     pub active_layout_id: Option<String>,

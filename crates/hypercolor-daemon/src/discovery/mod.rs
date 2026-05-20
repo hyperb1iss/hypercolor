@@ -12,7 +12,7 @@ use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use hypercolor_core::attachment::AttachmentRegistry;
+use hypercolor_core::attachment::ComponentRegistry;
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::device::{
     BackendManager, DeviceLifecycleManager, DeviceRegistry, UsbProtocolConfigStore,
@@ -29,7 +29,7 @@ use tokio::runtime::Handle;
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
 
-use crate::attachment_profiles::AttachmentProfileStore;
+use crate::attachment_profiles::ComponentProfileStore;
 use crate::device_settings::DeviceSettingsStore;
 use crate::layout_auto_exclusions;
 use crate::logical_devices::LogicalDevice;
@@ -110,10 +110,10 @@ pub struct DiscoveryRuntime {
     pub logical_devices: Arc<RwLock<HashMap<String, LogicalDevice>>>,
 
     /// Attachment template registry used to derive dynamic hardware topology.
-    pub attachment_registry: Arc<RwLock<AttachmentRegistry>>,
+    pub attachment_registry: Arc<RwLock<ComponentRegistry>>,
 
     /// Saved attachment bindings keyed by physical device ID.
-    pub attachment_profiles: Arc<RwLock<AttachmentProfileStore>>,
+    pub attachment_profiles: Arc<RwLock<ComponentProfileStore>>,
 
     /// Persisted global and per-device output settings.
     pub device_settings: Arc<RwLock<DeviceSettingsStore>>,

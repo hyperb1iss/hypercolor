@@ -30,7 +30,7 @@ use super::frame_policy::SkipDecision;
 #[cfg(feature = "wgpu")]
 use super::gpu_device::GpuRenderDevice;
 use super::producer_queue::ProducerQueue;
-use super::render_groups::{RenderGroupResult, RenderGroupRuntime};
+use super::render_groups::{ZoneResult, ZoneRuntime};
 use super::scene_dependency::SceneDependencyKey;
 use super::scene_snapshot::{FrameSceneSnapshot, SceneSnapshotCache};
 use super::scene_state::RenderSceneState;
@@ -690,7 +690,7 @@ pub(crate) struct RenderCaches {
     pub(crate) display_sparkleflinger: SparkleFlinger,
     pub(crate) deferred_sampling: DeferredSamplingState,
     pub(crate) zone_transition_planner: ZoneTransitionPlanner,
-    pub(crate) render_group_runtime: RenderGroupRuntime,
+    pub(crate) render_group_runtime: ZoneRuntime,
     pub(crate) render_surface_pool: RenderSurfacePool,
     pub(crate) output_artifacts: OutputArtifactsState,
 }
@@ -701,7 +701,7 @@ pub(crate) struct ComposeRuntime<'a> {
     pub(crate) sparkleflinger: &'a mut SparkleFlinger,
     #[cfg(feature = "wgpu")]
     pub(crate) display_sparkleflinger: &'a mut SparkleFlinger,
-    pub(crate) render_group_runtime: &'a mut RenderGroupRuntime,
+    pub(crate) render_group_runtime: &'a mut ZoneRuntime,
     pub(crate) output_artifacts: &'a mut OutputArtifactsState,
 }
 
@@ -714,7 +714,7 @@ impl ComposeRuntime<'_> {
         skip_decision: SkipDecision,
         delta_secs: f32,
         inputs: &FrameInputs,
-    ) -> (Result<RenderGroupResult>, bool) {
+    ) -> (Result<ZoneResult>, bool) {
         if skip_decision == SkipDecision::ReuseCanvas
             && let Some(retained) = self.render_group_runtime.reuse_scene(dependency_key)
         {
@@ -1004,10 +1004,8 @@ impl RenderCaches {
             desired_render_surface_slots(0),
         );
         self.render_group_runtime = match self.render_group_runtime.asset_library() {
-            Some(asset_library) => {
-                RenderGroupRuntime::with_asset_library(width, height, asset_library)
-            }
-            None => RenderGroupRuntime::new(width, height),
+            Some(asset_library) => ZoneRuntime::with_asset_library(width, height, asset_library),
+            None => ZoneRuntime::new(width, height),
         };
         self.composition_planner = CompositionPlanner::new();
         self.zone_transition_planner = ZoneTransitionPlanner::default();
@@ -1140,12 +1138,10 @@ impl PipelineRuntime {
                 deferred_sampling: DeferredSamplingState::default(),
                 zone_transition_planner: ZoneTransitionPlanner::default(),
                 render_group_runtime: match asset_library {
-                    Some(asset_library) => RenderGroupRuntime::with_asset_library(
-                        canvas_width,
-                        canvas_height,
-                        asset_library,
-                    ),
-                    None => RenderGroupRuntime::new(canvas_width, canvas_height),
+                    Some(asset_library) => {
+                        ZoneRuntime::with_asset_library(canvas_width, canvas_height, asset_library)
+                    }
+                    None => ZoneRuntime::new(canvas_width, canvas_height),
                 },
                 render_surface_pool: RenderSurfacePool::with_slot_count(
                     SurfaceDescriptor::rgba8888(canvas_width, canvas_height),

@@ -22,10 +22,10 @@ use hypercolor_types::event::{HypercolorEvent, LayerHealth, ZoneColors};
 use hypercolor_types::layer::{
     LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, SceneLayer,
 };
-use hypercolor_types::scene::{DisplayFaceTarget, RenderGroup, RenderGroupId, SceneId};
+use hypercolor_types::scene::{DisplayFaceTarget, SceneId, Zone, ZoneId};
 use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::spatial::{
-    DeviceZone, EdgeBehavior, NormalizedPosition, SamplingMode, SpatialLayout,
+    EdgeBehavior, NormalizedPosition, Output, SamplingMode, SpatialLayout,
 };
 
 use super::binding_eval::evaluate_layer_runtime;
@@ -81,11 +81,11 @@ pub(crate) struct GroupCanvasFrame {
     pub display_target: DisplayGroupTarget,
 }
 
-pub(crate) struct RenderGroupResult {
+pub(crate) struct ZoneResult {
     pub scene_frame: ProducerFrame,
-    pub group_canvases: Vec<(RenderGroupId, PendingGroupCanvasFrame)>,
-    pub zone_canvases: Vec<(RenderGroupId, ProducerFrame)>,
-    pub active_group_canvas_ids: Vec<RenderGroupId>,
+    pub group_canvases: Vec<(ZoneId, PendingGroupCanvasFrame)>,
+    pub zone_canvases: Vec<(ZoneId, ProducerFrame)>,
+    pub active_group_canvas_ids: Vec<ZoneId>,
     pub led_sampling_strategy: LedSamplingStrategy,
     pub producer_full_frame_copy: FullFrameCopyMetrics,
     pub render_us: u32,
@@ -96,10 +96,10 @@ pub(crate) struct RenderGroupResult {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("render group '{group_name}' effect '{effect_name}' ({effect_id}) failed: {error}")]
-pub(crate) struct RenderGroupEffectError {
+pub(crate) struct ZoneEffectError {
     pub(crate) effect_id: String,
     pub(crate) effect_name: String,
-    pub(crate) group_id: RenderGroupId,
+    pub(crate) group_id: ZoneId,
     pub(crate) group_name: String,
     pub(crate) error: String,
 }
@@ -108,8 +108,8 @@ pub(crate) struct RenderGroupEffectError {
 struct RetainedRenderGroupFrame {
     dependency_key: SceneDependencyKey,
     scene_frame: ProducerFrame,
-    active_group_canvas_ids: Vec<RenderGroupId>,
-    zone_canvases: Vec<(RenderGroupId, ProducerFrame)>,
+    active_group_canvas_ids: Vec<ZoneId>,
+    zone_canvases: Vec<(ZoneId, ProducerFrame)>,
     led_sampling_strategy: RetainedLedSamplingStrategy,
     logical_layer_count: u32,
 }
@@ -129,7 +129,7 @@ struct CachedGroupProjection {
 }
 
 struct CachedZoneProjection {
-    zone: DeviceZone,
+    zone: Output,
     sampling_mode: SamplingMode,
     edge_behavior: EdgeBehavior,
     samples: Vec<ProjectionSample>,
@@ -157,20 +157,20 @@ struct ProjectionSample {
     local_position: NormalizedPosition,
 }
 
-pub(crate) struct RenderGroupRuntime {
+pub(crate) struct ZoneRuntime {
     asset_library: Option<Arc<RwLock<AssetLibrary>>>,
     effect_pool: EffectPool,
     media_producers: HashMap<AssetId, CachedMediaProducer>,
-    target_canvases: HashMap<RenderGroupId, Canvas>,
-    scene_projection_cache: HashMap<RenderGroupId, CachedGroupProjection>,
-    spatial_engines: HashMap<RenderGroupId, SpatialEngine>,
-    direct_surface_pools: HashMap<RenderGroupId, RenderSurfacePool>,
-    retained_direct_group_frames: HashMap<RenderGroupId, RetainedDirectGroupFrame>,
+    target_canvases: HashMap<ZoneId, Canvas>,
+    scene_projection_cache: HashMap<ZoneId, CachedGroupProjection>,
+    spatial_engines: HashMap<ZoneId, SpatialEngine>,
+    direct_surface_pools: HashMap<ZoneId, RenderSurfacePool>,
+    retained_direct_group_frames: HashMap<ZoneId, RetainedDirectGroupFrame>,
     scene_surface_pool: RenderSurfacePool,
     reconciled_dependency_key: Option<SceneDependencyKey>,
     retained_frame: Option<RetainedRenderGroupFrame>,
-    last_effect_error: Option<RenderGroupEffectError>,
-    recovered_effect_error: Option<RenderGroupEffectError>,
+    last_effect_error: Option<ZoneEffectError>,
+    recovered_effect_error: Option<ZoneEffectError>,
     layer_runtime: LayerRuntimeRegistry,
     combined_led_layout: Arc<SpatialLayout>,
     combined_led_spatial_engine: SpatialEngine,
@@ -178,7 +178,7 @@ pub(crate) struct RenderGroupRuntime {
     scene_height: u32,
 }
 
-impl RenderGroupRuntime {
+impl ZoneRuntime {
     pub(crate) fn new(scene_width: u32, scene_height: u32) -> Self {
         Self {
             asset_library: None,
@@ -340,16 +340,13 @@ impl RenderGroupRuntime {
             SpatialEngine::new(self.combined_led_layout.as_ref().clone());
     }
 
-    pub(crate) fn reuse_scene(
-        &self,
-        dependency_key: SceneDependencyKey,
-    ) -> Option<RenderGroupResult> {
+    pub(crate) fn reuse_scene(&self, dependency_key: SceneDependencyKey) -> Option<ZoneResult> {
         let retained = self.retained_frame.as_ref()?;
         if retained.dependency_key != dependency_key {
             return None;
         }
 
-        Some(RenderGroupResult {
+        Some(ZoneResult {
             scene_frame: retained.scene_frame.clone(),
             group_canvases: Vec::new(),
             zone_canvases: retained.zone_canvases.clone(),
@@ -382,11 +379,11 @@ impl RenderGroupRuntime {
     )]
     pub(crate) fn render_scene(
         &mut self,
-        groups: &[RenderGroup],
+        groups: &[Zone],
         active_scene_id: Option<SceneId>,
         dependency_key: SceneDependencyKey,
         elapsed_ms: u32,
-        display_group_target_fps: &HashMap<RenderGroupId, u32>,
+        display_group_target_fps: &HashMap<ZoneId, u32>,
         registry: &EffectRegistry,
         delta_secs: f32,
         audio: &AudioData,
@@ -395,7 +392,7 @@ impl RenderGroupRuntime {
         sensors: &SystemSnapshot,
         sparkleflinger: &mut SparkleFlinger,
         zones: &mut Vec<ZoneColors>,
-    ) -> Result<RenderGroupResult> {
+    ) -> Result<ZoneResult> {
         self.reconcile(groups, active_scene_id, dependency_key, registry)?;
 
         if let Some(result) = self.render_single_full_scene_group(
@@ -552,7 +549,7 @@ impl RenderGroupRuntime {
             LedSamplingStrategy::PreSampled(Arc::clone(&self.combined_led_layout))
         };
 
-        let result = RenderGroupResult {
+        let result = ZoneResult {
             scene_frame,
             group_canvases,
             zone_canvases,
@@ -571,7 +568,7 @@ impl RenderGroupRuntime {
 
     fn reconcile(
         &mut self,
-        groups: &[RenderGroup],
+        groups: &[Zone],
         active_scene_id: Option<SceneId>,
         dependency_key: SceneDependencyKey,
         registry: &EffectRegistry,
@@ -631,7 +628,7 @@ impl RenderGroupRuntime {
         Ok(())
     }
 
-    fn ensure_group_canvas(&mut self, group: &RenderGroup) {
+    fn ensure_group_canvas(&mut self, group: &Zone) {
         let needs_canvas = self.target_canvases.get(&group.id).is_none_or(|canvas| {
             canvas.width() != group.layout.canvas_width
                 || canvas.height() != group.layout.canvas_height
@@ -644,7 +641,7 @@ impl RenderGroupRuntime {
         }
     }
 
-    fn ensure_scene_projection(&mut self, group: &RenderGroup) {
+    fn ensure_scene_projection(&mut self, group: &Zone) {
         let needs_projection =
             self.scene_projection_cache
                 .get(&group.id)
@@ -661,7 +658,7 @@ impl RenderGroupRuntime {
         }
     }
 
-    fn ensure_direct_surface_pool(&mut self, group: &RenderGroup) {
+    fn ensure_direct_surface_pool(&mut self, group: &Zone) {
         let descriptor =
             SurfaceDescriptor::rgba8888(group.layout.canvas_width, group.layout.canvas_height);
         let needs_pool = self
@@ -680,7 +677,7 @@ impl RenderGroupRuntime {
         }
     }
 
-    fn ensure_spatial_engine(&mut self, group: &RenderGroup) {
+    fn ensure_spatial_engine(&mut self, group: &Zone) {
         let needs_engine = self
             .spatial_engines
             .get(&group.id)
@@ -693,10 +690,10 @@ impl RenderGroupRuntime {
 
     fn render_single_full_scene_group(
         &mut self,
-        groups: &[RenderGroup],
+        groups: &[Zone],
         active_scene_id: Option<SceneId>,
         elapsed_ms: u32,
-        display_group_target_fps: &HashMap<RenderGroupId, u32>,
+        display_group_target_fps: &HashMap<ZoneId, u32>,
         dependency_key: SceneDependencyKey,
         registry: &EffectRegistry,
         delta_secs: f32,
@@ -706,7 +703,7 @@ impl RenderGroupRuntime {
         sensors: &SystemSnapshot,
         sparkleflinger: &mut SparkleFlinger,
         zones: &mut Vec<ZoneColors>,
-    ) -> Result<Option<RenderGroupResult>> {
+    ) -> Result<Option<ZoneResult>> {
         let Some(scene_group) = self.single_full_scene_group(groups) else {
             return Ok(None);
         };
@@ -807,7 +804,7 @@ impl RenderGroupRuntime {
         }
         zones.clear();
 
-        Ok(Some(RenderGroupResult {
+        Ok(Some(ZoneResult {
             scene_frame,
             group_canvases,
             zone_canvases,
@@ -821,10 +818,7 @@ impl RenderGroupRuntime {
         }))
     }
 
-    pub(crate) fn note_effect_error(
-        &mut self,
-        error: &RenderGroupEffectError,
-    ) -> Option<RenderGroupEffectError> {
+    pub(crate) fn note_effect_error(&mut self, error: &ZoneEffectError) -> Option<ZoneEffectError> {
         self.recovered_effect_error = None;
         if self.last_effect_error.as_ref() == Some(error) {
             return None;
@@ -840,7 +834,7 @@ impl RenderGroupRuntime {
         }
     }
 
-    pub(crate) fn take_recovered_effect_error(&mut self) -> Option<RenderGroupEffectError> {
+    pub(crate) fn take_recovered_effect_error(&mut self) -> Option<ZoneEffectError> {
         self.recovered_effect_error.take()
     }
 
@@ -848,7 +842,7 @@ impl RenderGroupRuntime {
         self.layer_runtime.drain_events()
     }
 
-    fn single_full_scene_group<'a>(&self, groups: &'a [RenderGroup]) -> Option<&'a RenderGroup> {
+    fn single_full_scene_group<'a>(&self, groups: &'a [Zone]) -> Option<&'a Zone> {
         let mut scene_groups = groups
             .iter()
             .filter(|group| group_contributes_to_scene_canvas(group));
@@ -867,7 +861,7 @@ impl RenderGroupRuntime {
     fn retain_frame(
         &mut self,
         dependency_key: SceneDependencyKey,
-        result: &RenderGroupResult,
+        result: &ZoneResult,
         zones: &[ZoneColors],
     ) {
         self.retained_frame = Some(RetainedRenderGroupFrame {
@@ -880,7 +874,7 @@ impl RenderGroupRuntime {
         });
     }
 
-    fn sample_scene_group_led_zones(&self, groups: &[RenderGroup], zones: &mut Vec<ZoneColors>) {
+    fn sample_scene_group_led_zones(&self, groups: &[Zone], zones: &mut Vec<ZoneColors>) {
         for group in groups
             .iter()
             .filter(|group| group_contributes_to_scene_canvas(group))
@@ -898,9 +892,9 @@ impl RenderGroupRuntime {
 
     fn reuse_retained_direct_group_frame(
         &self,
-        group: &RenderGroup,
+        group: &Zone,
         elapsed_ms: u32,
-        display_group_target_fps: &HashMap<RenderGroupId, u32>,
+        display_group_target_fps: &HashMap<ZoneId, u32>,
         dependency_key: SceneDependencyKey,
     ) -> Option<PendingGroupCanvasFrame> {
         if !group_publishes_direct_canvas(group) || !group.layout.zones.is_empty() {
@@ -919,7 +913,7 @@ impl RenderGroupRuntime {
 
     fn retain_direct_group_frame(
         &mut self,
-        group_id: RenderGroupId,
+        group_id: ZoneId,
         elapsed_ms: u32,
         dependency_key: SceneDependencyKey,
         frame: &PendingGroupCanvasFrame,
@@ -940,7 +934,7 @@ impl RenderGroupRuntime {
     )]
     fn render_direct_group_frame(
         &mut self,
-        group: &RenderGroup,
+        group: &Zone,
         active_scene_id: Option<SceneId>,
         elapsed_ms: u32,
         registry: &EffectRegistry,
@@ -1004,7 +998,7 @@ impl RenderGroupRuntime {
     )]
     fn render_group_frame(
         &mut self,
-        group: &RenderGroup,
+        group: &Zone,
         active_scene_id: Option<SceneId>,
         elapsed_ms: u32,
         registry: &EffectRegistry,
@@ -1278,7 +1272,7 @@ impl RenderGroupRuntime {
     )]
     fn render_passthrough_effect_layer_frame(
         &mut self,
-        group: &RenderGroup,
+        group: &Zone,
         active_scene_id: Option<SceneId>,
         registry: &EffectRegistry,
         delta_secs: f32,
@@ -1312,7 +1306,7 @@ impl RenderGroupRuntime {
     )]
     fn render_effect_layer_frame(
         &mut self,
-        group: &RenderGroup,
+        group: &Zone,
         layer: &SceneLayer,
         registry: &EffectRegistry,
         delta_secs: f32,
@@ -1373,7 +1367,7 @@ impl RenderGroupRuntime {
 
     fn surface_backed_direct_frame(
         &mut self,
-        group_id: RenderGroupId,
+        group_id: ZoneId,
         frame: ProducerFrame,
         full_frame_copy: &mut FullFrameCopyMetrics,
     ) -> Option<ProducerFrame> {
@@ -1381,7 +1375,7 @@ impl RenderGroupRuntime {
         surface_backed_frame(surface_pool, frame, full_frame_copy)
     }
 
-    fn compose_scene_frame(&mut self, groups: &[RenderGroup]) -> ProducerFrame {
+    fn compose_scene_frame(&mut self, groups: &[Zone]) -> ProducerFrame {
         let Some(mut lease) = self.scene_surface_pool.dequeue() else {
             let mut scene_canvas = Canvas::new(self.scene_width, self.scene_height);
             compose_authoritative_scene_canvas(
@@ -1432,7 +1426,7 @@ impl RenderGroupRuntime {
     }
 
     #[cfg(test)]
-    fn compose_preview_grid_for_test(&mut self, groups: &[RenderGroup]) -> ProducerFrame {
+    fn compose_preview_grid_for_test(&mut self, groups: &[Zone]) -> ProducerFrame {
         let Some(mut lease) = self.scene_surface_pool.dequeue() else {
             let mut preview_grid = Canvas::new(self.scene_width, self.scene_height);
             compose_preview_grid_canvas(
@@ -1459,11 +1453,11 @@ impl RenderGroupRuntime {
 
 fn compose_authoritative_scene_canvas(
     scene_canvas: &mut Canvas,
-    groups: &[RenderGroup],
-    target_canvases: &HashMap<RenderGroupId, Canvas>,
+    groups: &[Zone],
+    target_canvases: &HashMap<ZoneId, Canvas>,
     scene_width: u32,
     scene_height: u32,
-    scene_projection_cache: &HashMap<RenderGroupId, CachedGroupProjection>,
+    scene_projection_cache: &HashMap<ZoneId, CachedGroupProjection>,
 ) {
     scene_canvas.clear();
 
@@ -1512,8 +1506,8 @@ fn compose_authoritative_scene_canvas(
 }
 
 fn groups_support_projection_composition(
-    groups: &[RenderGroup],
-    scene_projection_cache: &HashMap<RenderGroupId, CachedGroupProjection>,
+    groups: &[Zone],
+    scene_projection_cache: &HashMap<ZoneId, CachedGroupProjection>,
 ) -> bool {
     let mut scene_group_count = 0_usize;
     for group in groups
@@ -1537,7 +1531,7 @@ fn projection_supports_composition(projection: &CachedGroupProjection) -> bool {
 
 fn projection_composition_layers_for_group(
     frame: &ProducerFrame,
-    group: &RenderGroup,
+    group: &Zone,
     projection: &CachedGroupProjection,
     scene_width: u32,
     scene_height: u32,
@@ -1603,7 +1597,7 @@ fn full_scene_identity_projection_shape(projection: &CachedGroupProjection) -> b
     u64::try_from(zone_projection.samples.len()) == Ok(expected_samples)
 }
 
-fn zone_is_full_scene_identity(zone: &DeviceZone) -> bool {
+fn zone_is_full_scene_identity(zone: &Output) -> bool {
     zone.position == NormalizedPosition::new(0.5, 0.5)
         && zone.size == NormalizedPosition::new(1.0, 1.0)
         && (zone.scale - 1.0).abs() <= f32::EPSILON
@@ -1611,7 +1605,7 @@ fn zone_is_full_scene_identity(zone: &DeviceZone) -> bool {
 }
 
 fn build_group_projection(
-    group: &RenderGroup,
+    group: &Zone,
     scene_width: u32,
     scene_height: u32,
 ) -> CachedGroupProjection {
@@ -1629,7 +1623,7 @@ fn build_group_projection(
 }
 
 fn build_zone_projection(
-    zone: &DeviceZone,
+    zone: &Output,
     layout: &SpatialLayout,
     target_width: u32,
     target_height: u32,
@@ -1677,7 +1671,7 @@ fn build_zone_projection(
 fn blit_zone_projection(
     target: &mut Canvas,
     source: &Canvas,
-    zone: &DeviceZone,
+    zone: &Output,
     layout: &SpatialLayout,
     target_width: u32,
     target_height: u32,
@@ -1706,7 +1700,7 @@ fn blit_zone_projection(
     reason = "zone projection rasterizes bounded normalized geometry into scene pixels"
 )]
 fn zone_projection_bounds(
-    zone: &DeviceZone,
+    zone: &Output,
     target_width: u32,
     target_height: u32,
 ) -> Option<(u32, u32, u32, u32)> {
@@ -1768,7 +1762,7 @@ fn zone_local_position_for_scene_pixel(
     y: u32,
     target_width: u32,
     target_height: u32,
-    zone: &DeviceZone,
+    zone: &Output,
 ) -> Option<hypercolor_types::spatial::NormalizedPosition> {
     if target_width == 0 || target_height == 0 {
         return None;
@@ -1798,8 +1792,8 @@ fn zone_local_position_for_scene_pixel(
 #[cfg(test)]
 fn compose_preview_grid_canvas(
     preview: &mut Canvas,
-    groups: &[RenderGroup],
-    target_canvases: &HashMap<RenderGroupId, Canvas>,
+    groups: &[Zone],
+    target_canvases: &HashMap<ZoneId, Canvas>,
     preview_width: u32,
     preview_height: u32,
 ) {
@@ -1851,19 +1845,19 @@ fn compose_preview_grid_canvas(
     }
 }
 
-fn group_is_active(group: &RenderGroup) -> bool {
+fn group_is_active(group: &Zone) -> bool {
     enabled_layer_count(group) > 0
 }
 
-fn group_contributes_to_scene_canvas(group: &RenderGroup) -> bool {
+fn group_contributes_to_scene_canvas(group: &Zone) -> bool {
     group_is_active(group) && group.display_target.is_none()
 }
 
-fn group_publishes_direct_canvas(group: &RenderGroup) -> bool {
+fn group_publishes_direct_canvas(group: &Zone) -> bool {
     group_is_active(group) && group.display_target.is_some()
 }
 
-fn passthrough_effect_layer(group: &RenderGroup) -> Option<SceneLayer> {
+fn passthrough_effect_layer(group: &Zone) -> Option<SceneLayer> {
     if !group.enabled {
         return None;
     }
@@ -1898,7 +1892,7 @@ fn passthrough_effect_layer(group: &RenderGroup) -> Option<SceneLayer> {
     Some(layer)
 }
 
-fn enabled_layer_count(group: &RenderGroup) -> u32 {
+fn enabled_layer_count(group: &Zone) -> u32 {
     if !group.enabled {
         return 0;
     }
@@ -1912,11 +1906,11 @@ fn enabled_layer_count(group: &RenderGroup) -> u32 {
     .unwrap_or(u32::MAX)
 }
 
-fn desired_media_asset_ids(groups: &[RenderGroup]) -> HashSet<AssetId> {
+fn desired_media_asset_ids(groups: &[Zone]) -> HashSet<AssetId> {
     groups
         .iter()
         .filter(|group| group.enabled)
-        .flat_map(RenderGroup::effective_layers)
+        .flat_map(Zone::effective_layers)
         .filter_map(|layer| match layer.source {
             LayerSource::Media { asset_id, .. } if layer.enabled => Some(asset_id),
             _ => None,
@@ -1924,7 +1918,7 @@ fn desired_media_asset_ids(groups: &[RenderGroup]) -> HashSet<AssetId> {
         .collect()
 }
 
-fn scene_logical_layer_count(groups: &[RenderGroup]) -> u32 {
+fn scene_logical_layer_count(groups: &[Zone]) -> u32 {
     groups
         .iter()
         .filter(|group| group_contributes_to_scene_canvas(group))
@@ -2125,11 +2119,11 @@ fn empty_group_layout(width: u32, height: u32) -> SpatialLayout {
 }
 
 fn render_layer_effect_error(
-    group: &RenderGroup,
+    group: &Zone,
     layer: &SceneLayer,
     registry: &EffectRegistry,
     error: anyhow::Error,
-) -> RenderGroupEffectError {
+) -> ZoneEffectError {
     let effect_id = match &layer.source {
         LayerSource::Effect { effect_id, .. } => effect_id.to_string(),
         LayerSource::WebViewport { url, .. } => format!("web_viewport:{url}"),
@@ -2150,7 +2144,7 @@ fn render_layer_effect_error(
         })
         .unwrap_or_else(|| effect_id.clone());
 
-    RenderGroupEffectError {
+    ZoneEffectError {
         effect_id,
         effect_name,
         group_id: group.id,
@@ -2159,7 +2153,7 @@ fn render_layer_effect_error(
     }
 }
 
-fn combine_led_group_layouts(groups: &[RenderGroup], width: u32, height: u32) -> SpatialLayout {
+fn combine_led_group_layouts(groups: &[Zone], width: u32, height: u32) -> SpatialLayout {
     let mut layout = empty_group_layout(width, height);
     layout.zones = groups
         .iter()
@@ -2226,9 +2220,9 @@ mod tests {
     use hypercolor_types::canvas::Rgba;
     use hypercolor_types::effect::{ControlValue, EffectId};
     use hypercolor_types::layer::MediaPlayback;
-    use hypercolor_types::scene::RenderGroupRole;
+    use hypercolor_types::scene::ZoneRole;
     use hypercolor_types::spatial::{
-        Corner, DeviceZone, LedTopology, NormalizedPosition, StripDirection,
+        Corner, LedTopology, NormalizedPosition, Output, StripDirection,
     };
     use uuid::Uuid;
 
@@ -2268,9 +2262,9 @@ mod tests {
         );
     }
 
-    fn sample_group(width: u32, height: u32) -> RenderGroup {
-        RenderGroup {
-            id: RenderGroupId::new(),
+    fn sample_group(width: u32, height: u32) -> Zone {
+        Zone {
+            id: ZoneId::new(),
             name: "Preview Group".into(),
             description: None,
             effect_id: Some(EffectId::from(Uuid::now_v7())),
@@ -2294,7 +2288,7 @@ mod tests {
             enabled: true,
             color: None,
             display_target: None,
-            role: RenderGroupRole::Custom,
+            role: ZoneRole::Custom,
             controls_version: 0,
             layers_version: 0,
         }
@@ -2314,19 +2308,19 @@ mod tests {
         canvas
     }
 
-    fn sample_display_group(width: u32, height: u32) -> RenderGroup {
+    fn sample_display_group(width: u32, height: u32) -> Zone {
         let mut group = sample_group(width, height);
         group.display_target = Some(hypercolor_types::scene::DisplayFaceTarget {
             device_id: hypercolor_types::device::DeviceId::new(),
             blend_mode: hypercolor_types::scene::DisplayFaceBlendMode::Replace,
             opacity: 1.0,
         });
-        group.role = RenderGroupRole::Display;
+        group.role = ZoneRole::Display;
         group
     }
 
-    fn point_zone(id: &str) -> DeviceZone {
-        DeviceZone {
+    fn point_zone(id: &str) -> Output {
+        Output {
             id: id.into(),
             name: id.into(),
             device_id: id.into(),
@@ -2352,14 +2346,14 @@ mod tests {
         }
     }
 
-    fn rotated_zone(id: &str, rotation: f32, size: f32) -> DeviceZone {
+    fn rotated_zone(id: &str, rotation: f32, size: f32) -> Output {
         let mut zone = point_zone(id);
         zone.size = NormalizedPosition { x: size, y: size };
         zone.rotation = rotation;
         zone
     }
 
-    fn point_zone_at(id: &str, x: f32, y: f32) -> DeviceZone {
+    fn point_zone_at(id: &str, x: f32, y: f32) -> Output {
         let mut zone = point_zone(id);
         zone.position = NormalizedPosition::new(x, y);
         zone.size = NormalizedPosition::new(0.4, 0.4);
@@ -2394,14 +2388,14 @@ mod tests {
     }
 
     fn render_scene_for_test(
-        runtime: &mut RenderGroupRuntime,
-        groups: &[RenderGroup],
+        runtime: &mut ZoneRuntime,
+        groups: &[Zone],
         groups_revision: u64,
         elapsed_ms: u32,
-        display_group_target_fps: &HashMap<RenderGroupId, u32>,
+        display_group_target_fps: &HashMap<ZoneId, u32>,
         registry: &EffectRegistry,
         zones: &mut Vec<ZoneColors>,
-    ) -> Result<RenderGroupResult> {
+    ) -> Result<ZoneResult> {
         render_scene_for_test_with_screen(
             runtime,
             groups,
@@ -2415,10 +2409,10 @@ mod tests {
     }
 
     fn render_overlapping_groups_for_test(
-        groups: &[RenderGroup],
+        groups: &[Zone],
         registry: &EffectRegistry,
     ) -> Vec<ZoneColors> {
-        let mut runtime = RenderGroupRuntime::new(4, 4);
+        let mut runtime = ZoneRuntime::new(4, 4);
         let mut zones = Vec::new();
         let result = render_scene_for_test(
             &mut runtime,
@@ -2448,15 +2442,15 @@ mod tests {
     }
 
     fn render_scene_for_test_with_screen(
-        runtime: &mut RenderGroupRuntime,
-        groups: &[RenderGroup],
+        runtime: &mut ZoneRuntime,
+        groups: &[Zone],
         groups_revision: u64,
         elapsed_ms: u32,
-        display_group_target_fps: &HashMap<RenderGroupId, u32>,
+        display_group_target_fps: &HashMap<ZoneId, u32>,
         registry: &EffectRegistry,
         zones: &mut Vec<ZoneColors>,
         screen: Option<&ScreenData>,
-    ) -> Result<RenderGroupResult> {
+    ) -> Result<ZoneResult> {
         let mut sparkleflinger = SparkleFlinger::cpu();
         runtime.render_scene(
             groups,
@@ -2478,7 +2472,7 @@ mod tests {
     fn blit_general_zone_projection(
         target: &mut Canvas,
         source: &Canvas,
-        zone: &DeviceZone,
+        zone: &Output,
         sampling_mode: &SamplingMode,
         edge_behavior: EdgeBehavior,
         x0: u32,
@@ -2615,7 +2609,7 @@ mod tests {
 
     #[test]
     fn missing_media_layer_renders_transparent_black_and_reports_health() {
-        let mut runtime = RenderGroupRuntime::new(4, 4);
+        let mut runtime = ZoneRuntime::new(4, 4);
         let registry = EffectRegistry::new(Vec::new());
         let mut group = sample_group(4, 4);
         group.effect_id = None;
@@ -2663,7 +2657,7 @@ mod tests {
 
     #[test]
     fn screen_region_layer_uses_latest_capture_canvas() {
-        let mut runtime = RenderGroupRuntime::new(4, 4);
+        let mut runtime = ZoneRuntime::new(4, 4);
         let registry = EffectRegistry::new(Vec::new());
         let mut group = sample_display_group(2, 1);
         group.effect_id = None;
@@ -2729,7 +2723,7 @@ mod tests {
             .add_bytes(&red_gif_bytes(), AssetUploadOptions::new("red.gif"))
             .expect("GIF upload should be accepted");
         let asset_library = Arc::new(RwLock::new(library));
-        let mut runtime = RenderGroupRuntime::with_asset_library(4, 4, asset_library);
+        let mut runtime = ZoneRuntime::with_asset_library(4, 4, asset_library);
         let registry = EffectRegistry::new(Vec::new());
         let mut group = sample_display_group(2, 2);
         group.effect_id = None;
@@ -2789,7 +2783,7 @@ mod tests {
             .add_bytes(b"http://1.1.1.1/hypercolor-missing-live.m3u8\n", options)
             .expect("stream URL upload should be accepted");
         let asset_library = Arc::new(RwLock::new(library));
-        let mut runtime = RenderGroupRuntime::with_asset_library(4, 4, asset_library);
+        let mut runtime = ZoneRuntime::with_asset_library(4, 4, asset_library);
         let registry = EffectRegistry::new(Vec::new());
         let mut group = sample_group(4, 4);
         group.effect_id = None;
@@ -2837,11 +2831,11 @@ mod tests {
 
     #[test]
     fn note_effect_error_dedupes_until_cleared() {
-        let mut runtime = RenderGroupRuntime::new(4, 4);
-        let error = RenderGroupEffectError {
+        let mut runtime = ZoneRuntime::new(4, 4);
+        let error = ZoneEffectError {
             effect_id: "effect-1".into(),
             effect_name: "Test Effect".into(),
-            group_id: RenderGroupId::new(),
+            group_id: ZoneId::new(),
             group_name: "Test Group".into(),
             error: "boom".into(),
         };
@@ -2856,11 +2850,11 @@ mod tests {
 
     #[test]
     fn recovered_effect_error_is_reported_once_after_clear() {
-        let mut runtime = RenderGroupRuntime::new(4, 4);
-        let error = RenderGroupEffectError {
+        let mut runtime = ZoneRuntime::new(4, 4);
+        let error = ZoneEffectError {
             effect_id: "effect-1".into(),
             effect_name: "Test Effect".into(),
-            group_id: RenderGroupId::new(),
+            group_id: ZoneId::new(),
             group_name: "Test Group".into(),
             error: "boom".into(),
         };
@@ -2874,7 +2868,7 @@ mod tests {
 
     #[test]
     fn clear_inactive_groups_releases_cached_group_state() {
-        let mut runtime = RenderGroupRuntime::new(4, 4);
+        let mut runtime = ZoneRuntime::new(4, 4);
         let group = sample_group(4, 4);
         runtime.target_canvases.insert(group.id, Canvas::new(4, 4));
         runtime
@@ -2892,7 +2886,7 @@ mod tests {
 
     #[test]
     fn single_group_preview_publishes_surface_frame() {
-        let mut runtime = RenderGroupRuntime::new(4, 4);
+        let mut runtime = ZoneRuntime::new(4, 4);
         let group = sample_group(4, 4);
         let mut source = Canvas::new(4, 4);
         source.fill(Rgba::new(12, 34, 56, 255));
@@ -2911,7 +2905,7 @@ mod tests {
 
     #[test]
     fn single_group_preview_scales_group_canvas_to_preview_extent() {
-        let mut runtime = RenderGroupRuntime::new(4, 4);
+        let mut runtime = ZoneRuntime::new(4, 4);
         let group = sample_group(2, 2);
         let mut source = Canvas::new(2, 2);
         source.set_pixel(0, 0, Rgba::new(255, 0, 0, 255));
@@ -2940,7 +2934,7 @@ mod tests {
 
     #[test]
     fn compose_preview_ignores_display_groups() {
-        let mut runtime = RenderGroupRuntime::new(4, 4);
+        let mut runtime = ZoneRuntime::new(4, 4);
         let preview_group = sample_group(4, 4);
         let display_group = sample_display_group(4, 4);
         let mut preview_canvas = Canvas::new(4, 4);
@@ -2965,7 +2959,7 @@ mod tests {
 
     #[test]
     fn authoritative_scene_canvas_clips_rotated_zone_geometry() {
-        let mut runtime = RenderGroupRuntime::new(8, 8);
+        let mut runtime = ZoneRuntime::new(8, 8);
         let mut group = sample_group(8, 8);
         group.layout.zones = vec![rotated_zone("zone_rotated", FRAC_PI_4, 0.5)];
         let mut source = Canvas::new(8, 8);
@@ -2991,7 +2985,7 @@ mod tests {
 
     #[test]
     fn authoritative_scene_canvas_preserves_group_overlap_order() {
-        let mut runtime = RenderGroupRuntime::new(8, 8);
+        let mut runtime = ZoneRuntime::new(8, 8);
         let mut back_group = sample_group(8, 8);
         back_group.layout.zones = vec![rotated_zone("zone_back", FRAC_PI_4, 0.5)];
         let mut front_group = sample_group(8, 8);
@@ -3024,7 +3018,7 @@ mod tests {
 
     #[test]
     fn authoritative_scene_canvas_uses_zone_sampling_mode() {
-        let mut runtime = RenderGroupRuntime::new(4, 4);
+        let mut runtime = ZoneRuntime::new(4, 4);
         let mut group = sample_group(2, 2);
         group.layout.zones = vec![point_zone("zone_sampling")];
         group.layout.zones[0].size = NormalizedPosition { x: 1.0, y: 1.0 };
@@ -3049,7 +3043,7 @@ mod tests {
 
     #[test]
     fn render_scene_reuses_projection_cache_until_layout_changes() {
-        let mut runtime = RenderGroupRuntime::new(4, 4);
+        let mut runtime = ZoneRuntime::new(4, 4);
         let registry = builtin_registry();
         let solid_id = builtin_effect_id(&registry, "solid_color");
         let mut group = sample_group(2, 2);
@@ -3239,8 +3233,8 @@ mod tests {
         zone.rotation = 0.0;
         zone.sampling_mode = Some(SamplingMode::Nearest);
         zone.edge_behavior = Some(EdgeBehavior::Clamp);
-        let group = RenderGroup {
-            id: RenderGroupId::new(),
+        let group = Zone {
+            id: ZoneId::new(),
             name: "Identity".into(),
             description: None,
             effect_id: None,
@@ -3264,7 +3258,7 @@ mod tests {
             enabled: true,
             color: None,
             display_target: None,
-            role: RenderGroupRole::Custom,
+            role: ZoneRole::Custom,
             controls_version: 0,
             layers_version: 0,
         };
@@ -3478,7 +3472,7 @@ mod tests {
         else {
             return;
         };
-        let mut runtime = RenderGroupRuntime::new(4, 4);
+        let mut runtime = ZoneRuntime::new(4, 4);
         let frame = runtime
             .compose_projected_scene_frame(
                 vec![CompositionLayer::replace_opaque(ProducerFrame::GpuTexture(
@@ -3493,12 +3487,12 @@ mod tests {
 
     #[test]
     fn single_full_scene_group_renders_directly_into_surface() {
-        let mut runtime = RenderGroupRuntime::new(4, 4);
+        let mut runtime = ZoneRuntime::new(4, 4);
         let registry = builtin_registry();
         let solid_id = builtin_effect_id(&registry, "solid_color");
         let producer_counts_before = crate::render_thread::producer_frame_counts();
-        let group = RenderGroup {
-            id: RenderGroupId::new(),
+        let group = Zone {
+            id: ZoneId::new(),
             name: "Direct".into(),
             description: None,
             effect_id: Some(solid_id),
@@ -3522,7 +3516,7 @@ mod tests {
             enabled: true,
             color: None,
             display_target: None,
-            role: RenderGroupRole::Custom,
+            role: ZoneRole::Custom,
             controls_version: 0,
             layers_version: 0,
         };
@@ -3575,7 +3569,7 @@ mod tests {
 
     #[test]
     fn single_full_display_group_keeps_shared_scene_canvas_blank() {
-        let mut runtime = RenderGroupRuntime::new(4, 4);
+        let mut runtime = ZoneRuntime::new(4, 4);
         let registry = builtin_registry();
         let solid_id = builtin_effect_id(&registry, "solid_color");
         let mut group = sample_display_group(4, 4);
@@ -3615,7 +3609,7 @@ mod tests {
 
     #[test]
     fn full_scene_group_with_display_group_keeps_display_faces_out_of_led_sampling() {
-        let mut runtime = RenderGroupRuntime::new(4, 4);
+        let mut runtime = ZoneRuntime::new(4, 4);
         let registry = builtin_registry();
         let solid_id = builtin_effect_id(&registry, "solid_color");
         let mut scene_group = sample_group(4, 4);
@@ -3683,12 +3677,12 @@ mod tests {
 
     #[test]
     fn multiple_custom_groups_render_distinct_zone_colors() {
-        let mut runtime = RenderGroupRuntime::new(4, 4);
+        let mut runtime = ZoneRuntime::new(4, 4);
         let registry = builtin_registry();
         let solid_id = builtin_effect_id(&registry, "solid_color");
         let groups = vec![
-            RenderGroup {
-                id: RenderGroupId::new(),
+            Zone {
+                id: ZoneId::new(),
                 name: "Left".into(),
                 description: None,
                 effect_id: Some(solid_id),
@@ -3715,12 +3709,12 @@ mod tests {
                 enabled: true,
                 color: None,
                 display_target: None,
-                role: RenderGroupRole::Custom,
+                role: ZoneRole::Custom,
                 controls_version: 0,
                 layers_version: 0,
             },
-            RenderGroup {
-                id: RenderGroupId::new(),
+            Zone {
+                id: ZoneId::new(),
                 name: "Right".into(),
                 description: None,
                 effect_id: Some(solid_id),
@@ -3747,7 +3741,7 @@ mod tests {
                 enabled: true,
                 color: None,
                 display_target: None,
-                role: RenderGroupRole::Custom,
+                role: ZoneRole::Custom,
                 controls_version: 0,
                 layers_version: 0,
             },
@@ -3781,7 +3775,7 @@ mod tests {
 
     #[test]
     fn overlapping_custom_groups_sample_each_group_canvas_independently() {
-        let mut runtime = RenderGroupRuntime::new(4, 4);
+        let mut runtime = ZoneRuntime::new(4, 4);
         let registry = builtin_registry();
         let solid_id = builtin_effect_id(&registry, "solid_color");
         let mut red = sample_group(4, 4);
@@ -3868,7 +3862,7 @@ mod tests {
 
     #[test]
     fn multiple_custom_groups_with_display_group_exclude_display_faces_from_led_sampling() {
-        let mut runtime = RenderGroupRuntime::new(4, 4);
+        let mut runtime = ZoneRuntime::new(4, 4);
         let registry = builtin_registry();
         let solid_id = builtin_effect_id(&registry, "solid_color");
         let mut left = sample_group(4, 4);
@@ -3940,7 +3934,7 @@ mod tests {
 
     #[test]
     fn multiple_display_groups_publish_surface_backed_direct_canvases() {
-        let mut runtime = RenderGroupRuntime::new(4, 4);
+        let mut runtime = ZoneRuntime::new(4, 4);
         let registry = builtin_registry();
         let solid_id = builtin_effect_id(&registry, "solid_color");
         let mut left = sample_display_group(4, 4);
@@ -3990,7 +3984,7 @@ mod tests {
 
     #[test]
     fn zero_zone_scene_groups_keep_empty_presampled_led_strategy() {
-        let mut runtime = RenderGroupRuntime::new(4, 4);
+        let mut runtime = ZoneRuntime::new(4, 4);
         let registry = builtin_registry();
         let solid_id = builtin_effect_id(&registry, "solid_color");
         let mut left = sample_group(2, 2);
@@ -4025,7 +4019,7 @@ mod tests {
 
     #[test]
     fn retained_scene_invalidates_when_registry_generation_changes() {
-        let mut runtime = RenderGroupRuntime::new(4, 4);
+        let mut runtime = ZoneRuntime::new(4, 4);
         let mut registry = builtin_registry();
         let solid_id = builtin_effect_id(&registry, "solid_color");
         let mut replacement = builtin_entry(&registry, "rainbow");
@@ -4090,7 +4084,7 @@ mod tests {
 
     #[test]
     fn retained_direct_canvas_invalidates_when_registry_generation_changes() {
-        let mut runtime = RenderGroupRuntime::new(4, 4);
+        let mut runtime = ZoneRuntime::new(4, 4);
         let mut registry = builtin_registry();
         let solid_id = builtin_effect_id(&registry, "solid_color");
         let mut replacement = builtin_entry(&registry, "rainbow");
@@ -4148,7 +4142,7 @@ mod tests {
 
     #[test]
     fn retained_direct_canvas_invalidates_when_groups_revision_changes() {
-        let mut runtime = RenderGroupRuntime::new(4, 4);
+        let mut runtime = ZoneRuntime::new(4, 4);
         let registry = builtin_registry();
         let solid_id = builtin_effect_id(&registry, "solid_color");
         let mut group = sample_display_group(4, 4);
@@ -4197,7 +4191,7 @@ mod tests {
 
     #[test]
     fn zero_zone_display_group_reuses_retained_surface_until_target_interval() {
-        let mut runtime = RenderGroupRuntime::new(4, 4);
+        let mut runtime = ZoneRuntime::new(4, 4);
         let registry = builtin_registry();
         let solid_id = builtin_effect_id(&registry, "solid_color");
         let mut group = sample_display_group(4, 4);

@@ -14,12 +14,12 @@ use utoipa::ToSchema;
 use hypercolor_core::scene::{LayerMutationError, SceneGroupLayerInsert, SceneManager};
 use hypercolor_types::asset::AssetId;
 use hypercolor_types::effect::{ControlValue, EffectId};
-use hypercolor_types::event::{HypercolorEvent, LayerStackChangeKind, RenderGroupChangeKind};
+use hypercolor_types::event::{HypercolorEvent, LayerStackChangeKind, ZoneChangeKind};
 use hypercolor_types::layer::{
     LayerAdjust, LayerBinding, LayerBlendMode, LayerSource, LayerTransform, MediaPlayback,
     SceneLayer, SceneLayerId,
 };
-use hypercolor_types::scene::{RenderGroup, RenderGroupId, SceneId, ZoneId};
+use hypercolor_types::scene::{SceneId, Zone, ZoneId};
 
 use crate::api::control_values::json_to_control_value;
 use crate::api::effects::normalize_control_payload;
@@ -97,7 +97,7 @@ pub struct CreateLayerQuery {
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct BroadcastMediaLayerTarget {
     #[schema(value_type = String)]
-    pub group_id: RenderGroupId,
+    pub group_id: ZoneId,
     #[serde(default)]
     #[schema(value_type = Object)]
     pub transform: LayerTransform,
@@ -141,7 +141,7 @@ pub struct LayerStackResponse {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct BroadcastMediaLayerGroupResponse {
     #[schema(value_type = String)]
-    pub group_id: RenderGroupId,
+    pub group_id: ZoneId,
     #[schema(value_type = Vec<Object>)]
     pub items: Vec<SceneLayer>,
     pub layers_version: u64,
@@ -525,7 +525,7 @@ enum StatusKind {
     Created,
 }
 
-fn layer_stack_response(group: &RenderGroup, status: StatusKind) -> Response {
+fn layer_stack_response(group: &Zone, status: StatusKind) -> Response {
     let body = LayerStackResponse {
         items: group.effective_layers(),
         layers_version: group.layers_version,
@@ -537,7 +537,7 @@ fn layer_stack_response(group: &RenderGroup, status: StatusKind) -> Response {
     attach_layers_version_headers(response, group.layers_version)
 }
 
-fn broadcast_media_layer_response(groups: &[RenderGroup]) -> Response {
+fn broadcast_media_layer_response(groups: &[Zone]) -> Response {
     ApiResponse::created(BroadcastMediaLayerResponse {
         groups: groups
             .iter()
@@ -550,11 +550,7 @@ fn broadcast_media_layer_response(groups: &[RenderGroup]) -> Response {
     })
 }
 
-fn find_group(
-    manager: &SceneManager,
-    scene_id: SceneId,
-    group_id: RenderGroupId,
-) -> Option<&RenderGroup> {
+fn find_group(manager: &SceneManager, scene_id: SceneId, group_id: ZoneId) -> Option<&Zone> {
     manager
         .get(&scene_id)?
         .groups
@@ -565,7 +561,7 @@ fn find_group(
 async fn finalize_layer_mutation(
     state: &Arc<AppState>,
     scene_id: SceneId,
-    group: &RenderGroup,
+    group: &Zone,
     kind: LayerStackChangeKind,
 ) -> Result<(), Response> {
     if let Err(error) = save_scene_store_snapshot(state.as_ref()).await {
@@ -592,7 +588,7 @@ async fn finalize_layer_mutation(
 async fn finalize_layer_mutations(
     state: &Arc<AppState>,
     scene_id: SceneId,
-    groups: &[RenderGroup],
+    groups: &[Zone],
     kind: LayerStackChangeKind,
 ) -> Result<(), Response> {
     if let Err(error) = save_scene_store_snapshot(state.as_ref()).await {
@@ -618,13 +614,13 @@ async fn finalize_layer_mutations(
     Ok(())
 }
 
-fn render_group_change_kind_for_layer_stack(kind: LayerStackChangeKind) -> RenderGroupChangeKind {
+fn render_group_change_kind_for_layer_stack(kind: LayerStackChangeKind) -> ZoneChangeKind {
     match kind {
-        LayerStackChangeKind::ControlsPatched => RenderGroupChangeKind::ControlsPatched,
+        LayerStackChangeKind::ControlsPatched => ZoneChangeKind::ControlsPatched,
         LayerStackChangeKind::Created
         | LayerStackChangeKind::Updated
         | LayerStackChangeKind::Removed
-        | LayerStackChangeKind::Reordered => RenderGroupChangeKind::Updated,
+        | LayerStackChangeKind::Reordered => ZoneChangeKind::Updated,
     }
 }
 
@@ -650,7 +646,7 @@ async fn normalize_layer_controls(
     (normalized, rejected)
 }
 
-fn parse_group_id(raw: &str) -> Result<RenderGroupId, uuid::Error> {
+fn parse_group_id(raw: &str) -> Result<ZoneId, uuid::Error> {
     raw.parse::<uuid::Uuid>().map(ZoneId)
 }
 
@@ -711,7 +707,7 @@ async fn validate_livestream_layer_insert(
 async fn validate_livestream_layer_update(
     state: &Arc<AppState>,
     scene_id_raw: &str,
-    group_id: RenderGroupId,
+    group_id: ZoneId,
     layer_id: SceneLayerId,
     next_asset_id: Option<AssetId>,
 ) -> Result<(), Response> {
@@ -726,7 +722,7 @@ async fn validate_livestream_layer_update(
 async fn validate_livestream_admission(
     state: &Arc<AppState>,
     scene_id_raw: &str,
-    pending_asset: Option<(Option<(RenderGroupId, SceneLayerId)>, AssetId)>,
+    pending_asset: Option<(Option<(ZoneId, SceneLayerId)>, AssetId)>,
 ) -> Result<(), Response> {
     let asset_mime_types = scenes::asset_mime_types(state.as_ref()).await;
     let media_config = scenes::current_media_config(state.as_ref());

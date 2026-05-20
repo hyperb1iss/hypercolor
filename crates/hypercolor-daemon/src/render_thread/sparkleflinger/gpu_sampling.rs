@@ -879,7 +879,7 @@ fn rebuild_zone_colors_from_mapped_bytes(
 mod tests {
     use hypercolor_core::spatial::SpatialEngine;
     use hypercolor_types::spatial::{
-        DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+        EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
         StripDirection,
     };
 
@@ -892,7 +892,7 @@ mod tests {
             description: None,
             canvas_width: 16,
             canvas_height: 16,
-            zones: vec![DeviceZone {
+            zones: vec![Output {
                 id: "zone".into(),
                 name: "zone".into(),
                 device_id: "device:zone".into(),

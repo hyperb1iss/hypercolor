@@ -13,7 +13,7 @@ use crate::api::effects::{
 };
 use crate::api::{AppState, publish_render_group_changed, save_runtime_session_snapshot};
 use hypercolor_types::effect::{ControlValue, EffectCategory};
-use hypercolor_types::event::{ChangeTrigger, HypercolorEvent, RenderGroupChangeKind};
+use hypercolor_types::event::{ChangeTrigger, HypercolorEvent, ZoneChangeKind};
 
 // ── Tool Definitions ──────────────────────────────────────────────────────
 
@@ -334,9 +334,9 @@ pub(super) async fn handle_set_effect_with_state(
             .and_then(|scene| scene.primary_group())
             .is_some()
         {
-            RenderGroupChangeKind::Updated
+            ZoneChangeKind::Updated
         } else {
-            RenderGroupChangeKind::Created
+            ZoneChangeKind::Created
         };
         let group = scene_manager
             .upsert_primary_group(
@@ -585,9 +585,9 @@ pub(super) async fn handle_set_color_with_state(
             .and_then(|scene| scene.primary_group())
             .is_some()
         {
-            RenderGroupChangeKind::Updated
+            ZoneChangeKind::Updated
         } else {
-            RenderGroupChangeKind::Created
+            ZoneChangeKind::Created
         };
         let group = scene_manager
             .upsert_primary_group(&solid_effect, controls.clone(), None, full_scope_layout)

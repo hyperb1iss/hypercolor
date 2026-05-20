@@ -7,14 +7,14 @@ use hypercolor_core::bus::{DisplayGroupFrame, DisplayGroupOutputRoute, DisplayGr
 use hypercolor_core::types::canvas::PublishedSurface;
 use hypercolor_types::device::DisplayFrameFormat;
 use hypercolor_types::event::{EffectDegradationState, HypercolorEvent};
-use hypercolor_types::scene::{DisplayFaceTarget, RenderGroupId};
+use hypercolor_types::scene::{DisplayFaceTarget, ZoneId};
 
 use super::frame_policy::SkipDecision;
 use super::frame_sampling::LedSamplingStrategy;
 use super::pipeline_runtime::{ComposeRuntime, FrameInputs};
 use super::producer_queue::{ProducerFrame, ProducerFrameState};
 use super::render_groups::{
-    GroupCanvasFrame, PendingGroupCanvasFrame, RenderGroupEffectError, RenderGroupResult,
+    GroupCanvasFrame, PendingGroupCanvasFrame, ZoneEffectError, ZoneResult,
 };
 use super::scene_snapshot::FrameSceneSnapshot;
 #[cfg(feature = "wgpu")]
@@ -33,9 +33,9 @@ pub(crate) struct RenderStageStats {
     pub(crate) preview_requested: bool,
     pub(crate) web_viewport_preview: Option<PublishedSurface>,
     pub(crate) producer_full_frame_copy: FullFrameCopyMetrics,
-    pub(crate) group_canvases: Vec<(RenderGroupId, GroupCanvasFrame)>,
-    pub(crate) zone_canvases: Vec<(RenderGroupId, ProducerFrame)>,
-    pub(crate) active_group_canvas_ids: Vec<RenderGroupId>,
+    pub(crate) group_canvases: Vec<(ZoneId, GroupCanvasFrame)>,
+    pub(crate) zone_canvases: Vec<(ZoneId, ProducerFrame)>,
+    pub(crate) active_group_canvas_ids: Vec<ZoneId>,
     pub(crate) led_sampling_strategy: LedSamplingStrategy,
     pub(crate) producer_render_us: u32,
     pub(crate) producer_scene_compose_us: u32,
@@ -276,7 +276,7 @@ impl ComposeContext<'_> {
 
     fn finish_render_group_frame_set(
         &mut self,
-        render_group_result: Result<RenderGroupResult>,
+        render_group_result: Result<ZoneResult>,
         producer_us: u32,
         producer_done_us: u32,
         effect_retained: bool,
@@ -375,7 +375,7 @@ impl ComposeContext<'_> {
             Err(error) => {
                 self.publish_layer_runtime_events();
                 if self.publish_effect_error(&error)
-                    || error.downcast_ref::<RenderGroupEffectError>().is_none()
+                    || error.downcast_ref::<ZoneEffectError>().is_none()
                 {
                     warn!(%error, "failed to render active scene groups; publishing black frame");
                 }
@@ -521,9 +521,9 @@ impl ComposeContext<'_> {
 
     fn materialize_group_canvases(
         &mut self,
-        group_canvases: Vec<(RenderGroupId, PendingGroupCanvasFrame)>,
+        group_canvases: Vec<(ZoneId, PendingGroupCanvasFrame)>,
         scene_frame: &ProducerFrame,
-    ) -> Vec<(RenderGroupId, GroupCanvasFrame)> {
+    ) -> Vec<(ZoneId, GroupCanvasFrame)> {
         let (_, display_routes) = self.state.event_bus.display_group_output_routes_snapshot();
         group_canvases
             .into_iter()
@@ -694,7 +694,7 @@ impl ComposeContext<'_> {
     }
 
     fn publish_effect_error(&mut self, error: &anyhow::Error) -> bool {
-        let Some(effect_error) = error.downcast_ref::<RenderGroupEffectError>() else {
+        let Some(effect_error) = error.downcast_ref::<ZoneEffectError>() else {
             return false;
         };
         let Some(effect_error) = self
@@ -738,7 +738,7 @@ impl ComposeContext<'_> {
 
     fn publish_effect_degraded(
         &self,
-        effect_error: &RenderGroupEffectError,
+        effect_error: &ZoneEffectError,
         state: EffectDegradationState,
         reason: Option<&anyhow::Error>,
     ) {
@@ -892,7 +892,7 @@ mod tests {
     use hypercolor_core::spatial::SpatialEngine;
     use hypercolor_core::types::canvas::{Canvas, PublishedSurface};
     use hypercolor_types::spatial::{
-        DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+        EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
         StripDirection,
     };
 
@@ -925,7 +925,7 @@ mod tests {
             description: None,
             canvas_width: 4,
             canvas_height: 4,
-            zones: vec![DeviceZone {
+            zones: vec![Output {
                 id: "strip".into(),
                 name: "Strip".into(),
                 device_id: "device".into(),

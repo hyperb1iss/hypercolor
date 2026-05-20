@@ -21,11 +21,9 @@ use hypercolor_types::layer::{
     LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, MediaPlayback, SceneLayer,
     SceneLayerId,
 };
-use hypercolor_types::scene::{
-    DisplayFaceTarget, RenderGroup, RenderGroupId, RenderGroupRole, SceneId,
-};
+use hypercolor_types::scene::{DisplayFaceTarget, SceneId, Zone, ZoneId, ZoneRole};
 use hypercolor_types::spatial::{
-    DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+    EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection,
 };
 use tower::ServiceExt;
@@ -105,7 +103,7 @@ fn sample_layout(zone_id: &str) -> SpatialLayout {
         description: None,
         canvas_width: 320,
         canvas_height: 200,
-        zones: vec![DeviceZone {
+        zones: vec![Output {
             id: zone_id.into(),
             name: zone_id.into(),
             device_id: "mock:device".into(),
@@ -198,10 +196,10 @@ async fn install_scene(
     state: &Arc<AppState>,
     effect_id: EffectId,
     layers: Vec<SceneLayer>,
-) -> (SceneId, RenderGroupId) {
+) -> (SceneId, ZoneId) {
     let mut scene = make_scene("Layered Scene");
-    let group = RenderGroup {
-        id: RenderGroupId::new(),
+    let group = Zone {
+        id: ZoneId::new(),
         name: "Primary".to_owned(),
         description: None,
         effect_id: Some(effect_id),
@@ -214,7 +212,7 @@ async fn install_scene(
         enabled: true,
         color: None,
         display_target: None,
-        role: RenderGroupRole::Primary,
+        role: ZoneRole::Primary,
         controls_version: 0,
         layers_version: 0,
     };
@@ -233,10 +231,10 @@ async fn install_scene(
 async fn install_scene_with_two_groups(
     state: &Arc<AppState>,
     effect_id: EffectId,
-) -> (SceneId, RenderGroupId, RenderGroupId) {
+) -> (SceneId, ZoneId, ZoneId) {
     let mut scene = make_scene("Broadcast Scene");
-    let primary = RenderGroup {
-        id: RenderGroupId::new(),
+    let primary = Zone {
+        id: ZoneId::new(),
         name: "Primary".to_owned(),
         description: None,
         effect_id: Some(effect_id),
@@ -249,12 +247,12 @@ async fn install_scene_with_two_groups(
         enabled: true,
         color: None,
         display_target: None,
-        role: RenderGroupRole::Primary,
+        role: ZoneRole::Primary,
         controls_version: 0,
         layers_version: 0,
     };
-    let display = RenderGroup {
-        id: RenderGroupId::new(),
+    let display = Zone {
+        id: ZoneId::new(),
         name: "AIO Display".to_owned(),
         description: None,
         effect_id: Some(effect_id),
@@ -267,7 +265,7 @@ async fn install_scene_with_two_groups(
         enabled: true,
         color: None,
         display_target: Some(DisplayFaceTarget::new(DeviceId::new())),
-        role: RenderGroupRole::Display,
+        role: ZoneRole::Display,
         controls_version: 0,
         layers_version: 0,
     };
@@ -345,8 +343,8 @@ fn media_layer(asset_id: AssetId) -> SceneLayer {
 async fn install_media_scene(state: &Arc<AppState>, layers: Vec<SceneLayer>) -> SceneId {
     let mut scene = make_scene("Media Admission Scene");
     let scene_id = scene.id;
-    scene.groups = vec![RenderGroup {
-        id: RenderGroupId::new(),
+    scene.groups = vec![Zone {
+        id: ZoneId::new(),
         name: "Media".to_owned(),
         description: None,
         effect_id: None,
@@ -359,7 +357,7 @@ async fn install_media_scene(state: &Arc<AppState>, layers: Vec<SceneLayer>) -> 
         enabled: true,
         color: None,
         display_target: None,
-        role: RenderGroupRole::Primary,
+        role: ZoneRole::Primary,
         controls_version: 0,
         layers_version: 0,
     }];
@@ -721,7 +719,7 @@ async fn scene_wide_media_broadcast_rejects_missing_group() {
     let app = test_app_with_state(Arc::clone(&state));
     let uri = format!("/api/v1/scenes/{scene_id}/layers/broadcast-media");
 
-    let missing_group_id = RenderGroupId::new();
+    let missing_group_id = ZoneId::new();
     let response = send(
         &app,
         json_request(

@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 use hypercolor_core::attachment::{effective_attachment_slots, normalize_attachment_profile_slots};
 use hypercolor_core::spatial::generate_positions;
 use hypercolor_types::attachment::{
-    AttachmentBinding, AttachmentSlot, AttachmentSuggestedZone, AttachmentTemplate,
-    DeviceAttachmentProfile,
+    ComponentBinding, ComponentSlot, ComponentSuggestedZone, ComponentTemplate,
+    DeviceComponentProfile,
 };
 use hypercolor_types::device::{DeviceId, DeviceInfo};
 use hypercolor_types::spatial::{LedTopology, NormalizedPosition};
@@ -26,30 +26,30 @@ use super::{ensure_default_logical_entry, resolve_device_id_or_response};
 #[derive(Debug, Deserialize, Default)]
 pub struct UpdateAttachmentsRequest {
     #[serde(default)]
-    pub bindings: Vec<AttachmentBinding>,
+    pub bindings: Vec<ComponentBinding>,
 }
 
 #[derive(Debug, Serialize)]
-pub struct DeviceAttachmentsResponse {
+pub struct DeviceComponentsResponse {
     pub device_id: String,
     pub device_name: String,
-    pub slots: Vec<AttachmentSlot>,
-    pub bindings: Vec<AttachmentBindingSummary>,
-    pub suggested_zones: Vec<AttachmentSuggestedZone>,
+    pub slots: Vec<ComponentSlot>,
+    pub bindings: Vec<ComponentBindingSummary>,
+    pub suggested_zones: Vec<ComponentSuggestedZone>,
 }
 
 #[derive(Debug, Serialize)]
-pub struct DeviceAttachmentsUpdateResponse {
+pub struct DeviceComponentsUpdateResponse {
     pub device_id: String,
     pub device_name: String,
-    pub slots: Vec<AttachmentSlot>,
-    pub bindings: Vec<AttachmentBindingSummary>,
-    pub suggested_zones: Vec<AttachmentSuggestedZone>,
+    pub slots: Vec<ComponentSlot>,
+    pub bindings: Vec<ComponentBindingSummary>,
+    pub suggested_zones: Vec<ComponentSuggestedZone>,
     pub needs_layout_update: bool,
 }
 
 #[derive(Debug, Serialize)]
-pub struct AttachmentBindingSummary {
+pub struct ComponentBindingSummary {
     pub slot_id: String,
     pub template_id: String,
     pub template_name: String,
@@ -84,9 +84,9 @@ pub struct AttachmentPreviewZone {
 #[derive(Debug, Clone)]
 pub(super) struct ResolvedAttachmentBinding {
     pub(super) index: usize,
-    pub(super) binding: AttachmentBinding,
-    pub(super) slot: AttachmentSlot,
-    pub(super) template: AttachmentTemplate,
+    pub(super) binding: ComponentBinding,
+    pub(super) slot: ComponentSlot,
+    pub(super) template: ComponentTemplate,
     pub(super) effective_led_count: u32,
 }
 
@@ -142,7 +142,7 @@ pub async fn update_attachments(
     };
 
     let suggested_zones = suggested_attachment_zones(&resolved);
-    let profile = DeviceAttachmentProfile {
+    let profile = DeviceComponentProfile {
         schema_version: 1,
         slots: slots.clone(),
         bindings: resolved.iter().map(|item| item.binding.clone()).collect(),
@@ -161,7 +161,7 @@ pub async fn update_attachments(
     let needs_layout_update =
         active_layout_targets_device(&state, tracked.info.id, &layout_device_id).await;
 
-    ApiResponse::ok(DeviceAttachmentsUpdateResponse {
+    ApiResponse::ok(DeviceComponentsUpdateResponse {
         device_id: tracked.info.id.to_string(),
         device_name: tracked.info.name.clone(),
         slots,
@@ -234,9 +234,9 @@ pub async fn delete_attachments(
 
 fn summarize_attachment_profile(
     device: &DeviceInfo,
-    mut profile: DeviceAttachmentProfile,
-    registry: &hypercolor_core::attachment::AttachmentRegistry,
-) -> DeviceAttachmentsResponse {
+    mut profile: DeviceComponentProfile,
+    registry: &hypercolor_core::attachment::ComponentRegistry,
+) -> DeviceComponentsResponse {
     normalize_attachment_profile_slots(device, &mut profile);
     let suggested_zones = resolve_profile_bindings(device, &profile, registry).map_or_else(
         || profile.suggested_zones.clone(),
@@ -248,7 +248,7 @@ fn summarize_attachment_profile(
         .map(|binding| summarize_attachment_binding(binding, registry.get(&binding.template_id)))
         .collect();
 
-    DeviceAttachmentsResponse {
+    DeviceComponentsResponse {
         device_id: device.id.to_string(),
         device_name: device.name.clone(),
         slots: profile.slots,
@@ -258,10 +258,10 @@ fn summarize_attachment_profile(
 }
 
 fn summarize_attachment_binding(
-    binding: &AttachmentBinding,
-    template: Option<&AttachmentTemplate>,
-) -> AttachmentBindingSummary {
-    AttachmentBindingSummary {
+    binding: &ComponentBinding,
+    template: Option<&ComponentTemplate>,
+) -> ComponentBindingSummary {
+    ComponentBindingSummary {
         slot_id: binding.slot_id.clone(),
         template_id: binding.template_id.clone(),
         template_name: template.map_or_else(
@@ -278,10 +278,10 @@ fn summarize_attachment_binding(
 
 fn summarize_resolved_bindings(
     bindings: &[ResolvedAttachmentBinding],
-) -> Vec<AttachmentBindingSummary> {
+) -> Vec<ComponentBindingSummary> {
     bindings
         .iter()
-        .map(|binding| AttachmentBindingSummary {
+        .map(|binding| ComponentBindingSummary {
             slot_id: binding.binding.slot_id.clone(),
             template_id: binding.binding.template_id.clone(),
             template_name: binding.template.name.clone(),
@@ -327,7 +327,7 @@ fn preview_attachment_zones(bindings: &[ResolvedAttachmentBinding]) -> Vec<Attac
 
 pub(super) fn suggested_attachment_zones(
     bindings: &[ResolvedAttachmentBinding],
-) -> Vec<AttachmentSuggestedZone> {
+) -> Vec<ComponentSuggestedZone> {
     let mut zones = Vec::new();
 
     for binding in bindings {
@@ -338,7 +338,7 @@ pub(super) fn suggested_attachment_zones(
                 .led_start
                 .saturating_add(binding.binding.led_offset)
                 .saturating_add(instance.saturating_mul(template_led_count));
-            zones.push(AttachmentSuggestedZone {
+            zones.push(ComponentSuggestedZone {
                 slot_id: binding.binding.slot_id.clone(),
                 template_id: binding.binding.template_id.clone(),
                 template_name: binding.template.name.clone(),
@@ -391,7 +391,7 @@ impl NamedAttachmentZone for AttachmentPreviewZone {
     }
 }
 
-impl NamedAttachmentZone for AttachmentSuggestedZone {
+impl NamedAttachmentZone for ComponentSuggestedZone {
     fn slot_id(&self) -> &str {
         &self.slot_id
     }
@@ -429,8 +429,8 @@ fn disambiguate_attachment_zone_names<T: NamedAttachmentZone>(zones: &mut [T]) {
 
 fn resolve_profile_bindings(
     device: &DeviceInfo,
-    profile: &DeviceAttachmentProfile,
-    registry: &hypercolor_core::attachment::AttachmentRegistry,
+    profile: &DeviceComponentProfile,
+    registry: &hypercolor_core::attachment::ComponentRegistry,
 ) -> Option<Vec<ResolvedAttachmentBinding>> {
     validate_attachment_bindings(device, &profile.slots, &profile.bindings, registry).ok()
 }
@@ -441,9 +441,9 @@ fn resolve_profile_bindings(
 )]
 fn validate_attachment_bindings(
     device: &DeviceInfo,
-    slots: &[AttachmentSlot],
-    bindings: &[AttachmentBinding],
-    registry: &hypercolor_core::attachment::AttachmentRegistry,
+    slots: &[ComponentSlot],
+    bindings: &[ComponentBinding],
+    registry: &hypercolor_core::attachment::ComponentRegistry,
 ) -> Result<Vec<ResolvedAttachmentBinding>, Response> {
     let slot_index = slots
         .iter()
@@ -510,7 +510,7 @@ fn validate_attachment_bindings(
 
         resolved.push(ResolvedAttachmentBinding {
             index,
-            binding: AttachmentBinding {
+            binding: ComponentBinding {
                 slot_id: slot_id.to_owned(),
                 template_id: template_id.to_owned(),
                 name: normalize_attachment_binding_name(binding.name.as_deref()),
@@ -529,7 +529,7 @@ fn validate_attachment_bindings(
 }
 
 fn template_supports_device_slot(
-    template: &AttachmentTemplate,
+    template: &ComponentTemplate,
     device: &DeviceInfo,
     slot_id: &str,
 ) -> bool {
