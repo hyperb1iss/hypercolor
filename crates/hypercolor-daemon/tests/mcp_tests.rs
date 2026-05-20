@@ -989,7 +989,7 @@ async fn stateful_set_effect_and_stop_effect_sync_scene_runtime_and_events() {
             } => {
                 assert_eq!(event_scene_id, scene_id);
                 assert_eq!(role, hypercolor_types::scene::ZoneRole::Primary);
-                assert_eq!(kind, ZoneChangeKind::Created);
+                assert_eq!(kind, ZoneChangeKind::Updated);
                 saw_group_event = true;
             }
             _ => {}

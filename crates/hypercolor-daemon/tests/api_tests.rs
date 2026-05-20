@@ -4882,17 +4882,21 @@ async fn patch_effect_controls_by_id_threads_controls_version_through_etag() {
         .to_str()
         .expect("ETag must be ASCII")
         .to_owned();
-    assert_eq!(etag, "\"0\"");
     let active_body = body_json(active_response).await;
     let effect_id = active_body["data"]["id"]
         .as_str()
         .expect("active effect must have an id")
         .to_owned();
-    assert_eq!(active_body["data"]["controls_version"], 0);
+    let active_controls_version = active_body["data"]["controls_version"]
+        .as_u64()
+        .expect("active effect should expose controls_version");
+    assert_eq!(etag, format!("\"{active_controls_version}\""));
 
     // Valid `If-Match` applies; the response body + ETag advance to
-    // version 1 so the next commit can chain against the fresh token.
+    // the next version so the next commit can chain against the fresh token.
     let patch_uri = format!("/api/v1/effects/{effect_id}/controls");
+    let if_match = active_controls_version.to_string();
+    let next_controls_version = active_controls_version + 1;
     let ok_response = app
         .clone()
         .oneshot(
@@ -4900,7 +4904,7 @@ async fn patch_effect_controls_by_id_threads_controls_version_through_etag() {
                 .method("PATCH")
                 .uri(&patch_uri)
                 .header("content-type", "application/json")
-                .header("if-match", "0")
+                .header("if-match", if_match.as_str())
                 .body(Body::from(r#"{"controls":{"speed":3.0}}"#))
                 .expect("failed to build request"),
         )
@@ -4914,9 +4918,14 @@ async fn patch_effect_controls_by_id_threads_controls_version_through_etag() {
         .to_str()
         .expect("ETag must be ASCII")
         .to_owned();
-    assert_eq!(ok_etag, "\"1\"");
+    assert_eq!(ok_etag, format!("\"{next_controls_version}\""));
     let ok_body = body_json(ok_response).await;
-    assert_eq!(ok_body["data"]["controls_version"], 1);
+    assert_eq!(
+        ok_body["data"]["controls_version"]
+            .as_u64()
+            .expect("controls_version should serialize as u64"),
+        next_controls_version
+    );
 
     // Re-issuing the same precondition now fires the stale path; the
     // 412 body carries the server's current version so the client can
@@ -4928,7 +4937,7 @@ async fn patch_effect_controls_by_id_threads_controls_version_through_etag() {
                 .method("PATCH")
                 .uri(&patch_uri)
                 .header("content-type", "application/json")
-                .header("if-match", "0")
+                .header("if-match", if_match.as_str())
                 .body(Body::from(r#"{"controls":{"speed":3.5}}"#))
                 .expect("failed to build request"),
         )
@@ -4936,7 +4945,12 @@ async fn patch_effect_controls_by_id_threads_controls_version_through_etag() {
         .expect("failed to execute request");
     assert_eq!(stale_response.status(), StatusCode::PRECONDITION_FAILED);
     let stale_body = body_json(stale_response).await;
-    assert_eq!(stale_body["current"], 1);
+    assert_eq!(
+        stale_body["current"]
+            .as_u64()
+            .expect("stale response should expose current version"),
+        next_controls_version
+    );
 }
 
 #[tokio::test]
@@ -6502,12 +6516,12 @@ async fn scene_deactivate_returns_to_default_scene() {
     let json = body_json(response).await;
     assert_eq!(json["data"]["name"], "Default");
     assert_eq!(json["data"]["kind"], "ephemeral");
-    assert!(
-        json["data"]["groups"]
-            .as_array()
-            .expect("groups should serialize as an array")
-            .is_empty()
-    );
+    let groups = json["data"]["groups"]
+        .as_array()
+        .expect("groups should serialize as an array");
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0]["name"], "Default zone");
+    assert_eq!(groups[0]["role"], "primary");
 }
 
 #[tokio::test]
@@ -7974,8 +7988,11 @@ async fn activating_named_scene_then_applying_effect_mutates_named_scene() {
     let default_scene = manager
         .get(&SceneId::DEFAULT)
         .expect("default scene should still exist");
+    let default_primary = default_scene
+        .primary_group()
+        .expect("default scene should keep its Default zone");
     assert!(
-        default_scene.primary_group().is_none(),
+        default_primary.effect_id.is_none(),
         "default scene should not be mutated while a named scene is active"
     );
 

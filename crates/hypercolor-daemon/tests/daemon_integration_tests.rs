@@ -277,11 +277,12 @@ async fn removed_runtime_effect_fields_are_rejected_on_startup() {
         .expect("start should ignore invalid runtime state");
 
     let scenes = state.scene_manager.read().await;
+    let primary = scenes
+        .active_scene()
+        .and_then(|scene| scene.primary_group())
+        .expect("startup should keep the seeded Default zone");
     assert!(
-        scenes
-            .active_scene()
-            .and_then(|scene| scene.primary_group())
-            .is_none(),
+        primary.effect_id.is_none() && primary.controls.is_empty(),
         "startup should not hydrate removed runtime fields"
     );
     drop(scenes);
