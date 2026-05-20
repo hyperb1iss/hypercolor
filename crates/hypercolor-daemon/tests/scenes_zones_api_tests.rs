@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::SystemTime;
 
@@ -7,9 +7,11 @@ use http::{Request, StatusCode};
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::effect::EffectEntry;
 use hypercolor_daemon::api::{self, AppState};
+use hypercolor_daemon::layout_auto_exclusions::LayoutAutoExclusionKey;
 use hypercolor_types::effect::{
     ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource, EffectState,
 };
+use hypercolor_types::scene::{SceneId, ZoneId};
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection,
@@ -301,6 +303,7 @@ async fn device_assignment_moves_existing_zone_to_target_zone() {
         .iter()
         .find(|group| group["role"] == "primary")
         .expect("primary group should exist");
+    let primary_group_id = primary["id"].as_str().expect("primary id should be string");
     let custom = groups
         .iter()
         .find(|group| group["id"] == zone_id)
@@ -315,6 +318,17 @@ async fn device_assignment_moves_existing_zone_to_target_zone() {
             .expect("zone id should be string"),
         "primary-zone"
     );
+    let primary_key = LayoutAutoExclusionKey::zone(
+        SceneId::DEFAULT,
+        ZoneId(Uuid::parse_str(primary_group_id).expect("primary id should be uuid")),
+    );
+    {
+        let exclusions = state.layout_auto_exclusions.read().await;
+        assert_eq!(
+            exclusions.get(&primary_key),
+            Some(&HashSet::from(["mock:primary-zone".to_owned()]))
+        );
+    }
 
     let next_revision = json["data"]["groups_revision"]
         .as_u64()
@@ -339,6 +353,43 @@ async fn device_assignment_moves_existing_zone_to_target_zone() {
             .expect("zones array")
             .is_empty()
     }));
+    let custom_key = LayoutAutoExclusionKey::zone(
+        SceneId::DEFAULT,
+        ZoneId(Uuid::parse_str(&zone_id).expect("custom id should be uuid")),
+    );
+    {
+        let exclusions = state.layout_auto_exclusions.read().await;
+        assert_eq!(
+            exclusions.get(&custom_key),
+            Some(&HashSet::from(["mock:primary-zone".to_owned()]))
+        );
+    }
+
+    let revision = json["data"]["groups_revision"]
+        .as_u64()
+        .expect("revision should be u64");
+    let response = send(
+        &app,
+        if_match(
+            json_request(
+                "POST",
+                format!("/api/v1/scenes/default/zones/{zone_id}/devices"),
+                serde_json::json!({
+                    "device_zones": [sample_zone("primary-zone")]
+                }),
+            ),
+            revision,
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    {
+        let exclusions = state.layout_auto_exclusions.read().await;
+        assert!(
+            !exclusions.contains_key(&custom_key),
+            "re-added devices should clear the target zone exclusion"
+        );
+    }
 }
 
 #[tokio::test]

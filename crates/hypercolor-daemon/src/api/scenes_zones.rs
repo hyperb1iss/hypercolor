@@ -19,6 +19,7 @@ use crate::api::{
     AppState, persist_runtime_session, publish_render_group_changed, save_scene_store_snapshot,
     scenes,
 };
+use crate::layout_auto_exclusions;
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateZoneRequest {
@@ -262,6 +263,7 @@ pub async fn delete_zone(
     {
         return response;
     }
+    remove_zone_auto_exclusions(&state, scene_id, zone_id).await;
     attach_groups_revision_headers(
         ApiResponse::ok(serde_json::json!({
             "zone_id": zone_id,
@@ -289,7 +291,7 @@ pub async fn assign_devices(
         Err(message) => return ApiError::bad_request(message),
     };
 
-    let (scene_id, zones, target_group, groups_revision) = {
+    let (scene_id, previous_groups, zones, target_group, groups_revision) = {
         let mut manager = state.scene_manager.write().await;
         let Some(scene_id) = scenes::resolve_scene_id(&manager, &scene_id_raw) else {
             return ApiError::not_found(format!("Scene not found: {scene_id_raw}"));
@@ -303,6 +305,7 @@ pub async fn assign_devices(
         if find_group_in_scene(scene, zone_id).is_none() {
             return ApiError::not_found(format!("Zone not found: {zone_id}"));
         }
+        let previous_groups = scene.groups.clone();
         let device_zones = match resolve_device_zone_assignments(scene, body.device_zones) {
             Ok(device_zones) => device_zones,
             Err(device_zone_id) => {
@@ -322,6 +325,7 @@ pub async fn assign_devices(
         };
         (
             scene_id,
+            previous_groups,
             scene.groups.clone(),
             target_group.clone(),
             scene.groups_revision,
@@ -333,6 +337,7 @@ pub async fn assign_devices(
     {
         return response;
     }
+    update_zone_auto_exclusions(&state, scene_id, &previous_groups, &zones).await;
     zones_response(zones, groups_revision, StatusKind::Ok)
 }
 
@@ -349,7 +354,7 @@ pub async fn unassign_device(
         Err(message) => return ApiError::bad_request(message),
     };
 
-    let (scene_id, zones, target_group, groups_revision) = {
+    let (scene_id, previous_groups, zones, target_group, groups_revision) = {
         let mut manager = state.scene_manager.write().await;
         let Some(scene_id) = scenes::resolve_scene_id(&manager, &scene_id_raw) else {
             return ApiError::not_found(format!("Scene not found: {scene_id_raw}"));
@@ -371,6 +376,7 @@ pub async fn unassign_device(
         {
             return ApiError::not_found(format!("Device zone not found: {device_zone_id}"));
         }
+        let previous_groups = scene.groups.clone();
         if let Err(error) = manager.unassign_device_zone(&scene_id, &device_zone_id) {
             return zone_mutation_error(error);
         }
@@ -382,6 +388,7 @@ pub async fn unassign_device(
         };
         (
             scene_id,
+            previous_groups,
             scene.groups.clone(),
             target_group.clone(),
             scene.groups_revision,
@@ -393,6 +400,7 @@ pub async fn unassign_device(
     {
         return response;
     }
+    update_zone_auto_exclusions(&state, scene_id, &previous_groups, &zones).await;
     zones_response(zones, groups_revision, StatusKind::Ok)
 }
 
@@ -533,6 +541,67 @@ fn unassigned_behavior_response(behavior: UnassignedBehavior, groups_revision: u
 
 fn find_group_in_scene(scene: &hypercolor_types::scene::Scene, group_id: ZoneId) -> Option<&Zone> {
     scene.groups.iter().find(|group| group.id == group_id)
+}
+
+async fn update_zone_auto_exclusions(
+    state: &Arc<AppState>,
+    scene_id: SceneId,
+    previous_groups: &[Zone],
+    updated_groups: &[Zone],
+) {
+    let changed = {
+        let mut exclusions = state.layout_auto_exclusions.write().await;
+        let mut changed = false;
+        for previous_group in previous_groups {
+            let Some(updated_group) = updated_groups
+                .iter()
+                .find(|group| group.id == previous_group.id)
+            else {
+                continue;
+            };
+            if previous_group.layout.zones == updated_group.layout.zones {
+                continue;
+            }
+
+            let key =
+                layout_auto_exclusions::LayoutAutoExclusionKey::zone(scene_id, previous_group.id);
+            let current = exclusions.get(&key).cloned().unwrap_or_default();
+            let next = layout_auto_exclusions::reconcile_layout_device_exclusions(
+                &previous_group.layout.zones,
+                &updated_group.layout.zones,
+                &current,
+            );
+            if next == current {
+                continue;
+            }
+            if next.is_empty() {
+                exclusions.remove(&key);
+            } else {
+                exclusions.insert(key, next);
+            }
+            changed = true;
+        }
+        changed
+    };
+
+    if changed {
+        crate::api::persist_layout_auto_exclusions(state).await;
+    }
+}
+
+async fn remove_zone_auto_exclusions(state: &Arc<AppState>, scene_id: SceneId, zone_id: ZoneId) {
+    let removed = {
+        let mut exclusions = state.layout_auto_exclusions.write().await;
+        exclusions
+            .remove(&layout_auto_exclusions::LayoutAutoExclusionKey::zone(
+                scene_id, zone_id,
+            ))
+            .is_some()
+    };
+
+    if removed {
+        crate::api::persist_layout_auto_exclusions(state).await;
+    }
 }
 
 fn resolve_device_zone_assignments(

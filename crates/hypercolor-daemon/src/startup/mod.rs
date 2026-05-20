@@ -189,10 +189,10 @@ pub struct DaemonState {
     /// In-memory layout store (shared with `AppState`).
     pub layouts: Arc<RwLock<HashMap<String, SpatialLayout>>>,
 
-    /// Persisted layout-specific auto-sync exclusions.
+    /// Persisted discovery auto-sync exclusions.
     pub layout_auto_exclusions: Arc<RwLock<layout_auto_exclusions::LayoutAutoExclusionStore>>,
 
-    /// Persistent JSON file for layout-specific auto-sync exclusions.
+    /// Persistent JSON file for discovery auto-sync exclusions.
     pub layout_auto_exclusions_path: PathBuf,
 
     /// Persistent JSON file for startup runtime session state.

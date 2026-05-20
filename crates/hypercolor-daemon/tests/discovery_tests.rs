@@ -21,6 +21,7 @@ use hypercolor_daemon::discovery::{
     DiscoveryRuntime, DiscoveryTarget, execute_discovery_scan, execute_discovery_scan_if_idle,
     sync_active_layout_connectivity, sync_active_layout_for_renderable_devices,
 };
+use hypercolor_daemon::layout_auto_exclusions::LayoutAutoExclusionKey;
 use hypercolor_daemon::logical_devices::{LogicalDevice, LogicalDeviceKind};
 use hypercolor_daemon::network::{self, DaemonDriverHost};
 use hypercolor_daemon::scene_transactions::SceneTransactionQueue;
@@ -697,8 +698,21 @@ async fn sync_active_layout_for_renderable_devices_skips_excluded_devices() {
         manager.map_device(layout_device_id.clone(), "usb", device_id);
     }
     {
+        let (scene_id, zone_id) = {
+            let scene_manager = runtime.scene_manager.read().await;
+            let scene = scene_manager
+                .active_scene()
+                .expect("default scene should be active");
+            let group = scene
+                .primary_group()
+                .expect("default scene should have a primary zone");
+            (scene.id, group.id)
+        };
         let mut exclusions = runtime.layout_auto_exclusions.write().await;
-        exclusions.insert("default".to_owned(), HashSet::from([layout_device_id]));
+        exclusions.insert(
+            LayoutAutoExclusionKey::zone(scene_id, zone_id),
+            HashSet::from([layout_device_id]),
+        );
     }
 
     sync_active_layout_for_renderable_devices(&runtime, None).await;

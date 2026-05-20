@@ -217,10 +217,10 @@ pub struct AppState {
     /// Persistent path for spatial layouts.
     pub layouts_path: PathBuf,
 
-    /// Layout-specific exclusions for discovery auto-sync.
+    /// Discovery auto-sync exclusions keyed by legacy layout or scene zone.
     pub layout_auto_exclusions: Arc<RwLock<layout_auto_exclusions::LayoutAutoExclusionStore>>,
 
-    /// Persistent path for layout-specific discovery auto-sync exclusions.
+    /// Persistent path for discovery auto-sync exclusions.
     pub layout_auto_exclusions_path: PathBuf,
 
     /// Logical device segmentation store (physical device -> logical ranges).
@@ -889,7 +889,7 @@ pub(crate) fn publish_active_scene_changed(
         });
 }
 
-/// Persist layout-specific discovery auto-sync exclusions to disk.
+/// Persist discovery auto-sync exclusions to disk.
 pub(crate) async fn persist_layout_auto_exclusions(state: &Arc<AppState>) {
     let exclusions = state.layout_auto_exclusions.read().await;
     if let Err(error) =

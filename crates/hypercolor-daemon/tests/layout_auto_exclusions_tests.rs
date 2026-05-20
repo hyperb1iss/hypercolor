@@ -1,8 +1,10 @@
 use std::collections::{HashMap, HashSet};
 
 use hypercolor_daemon::layout_auto_exclusions::{
-    LayoutAutoExclusionStore, load, reconcile_layout_device_exclusions, save,
+    LayoutAutoExclusionKey, LayoutAutoExclusionStore, load, reconcile_layout_device_exclusions,
+    save,
 };
+use hypercolor_types::scene::{SceneId, ZoneId};
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, StripDirection,
 };
@@ -57,20 +59,53 @@ fn reconcile_layout_device_exclusions_marks_removed_devices_and_clears_readded_d
 fn save_and_load_round_trip_layout_auto_exclusions() {
     let temp_dir = tempfile::tempdir().expect("tempdir");
     let path = temp_dir.path().join("layout-auto-exclusions.json");
+    let scene_id = SceneId::new();
+    let zone_id = ZoneId::new();
     let mut store = LayoutAutoExclusionStore::new();
     store.insert(
-        "default".to_owned(),
+        LayoutAutoExclusionKey::layout("default"),
         HashSet::from(["usb:defy".to_owned(), "wled:desk".to_owned()]),
     );
-    store.insert("empty".to_owned(), HashSet::new());
+    store.insert(
+        LayoutAutoExclusionKey::zone(scene_id, zone_id),
+        HashSet::from(["usb:keyboard".to_owned()]),
+    );
+    store.insert(LayoutAutoExclusionKey::layout("empty"), HashSet::new());
 
     save(&path, &store).expect("save exclusions");
     let loaded = load(&path).expect("load exclusions");
 
     let mut expected = HashMap::new();
     expected.insert(
-        "default".to_owned(),
+        LayoutAutoExclusionKey::layout("default"),
         HashSet::from(["usb:defy".to_owned(), "wled:desk".to_owned()]),
     );
+    expected.insert(
+        LayoutAutoExclusionKey::zone(scene_id, zone_id),
+        HashSet::from(["usb:keyboard".to_owned()]),
+    );
     assert_eq!(loaded, expected);
+}
+
+#[test]
+fn load_migrates_legacy_layout_auto_exclusions() {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let path = temp_dir.path().join("layout-auto-exclusions.json");
+    std::fs::write(
+        &path,
+        r#"[
+          {
+            "layout_id": "default",
+            "excluded_device_ids": ["usb:defy"]
+          }
+        ]"#,
+    )
+    .expect("write legacy exclusions");
+
+    let loaded = load(&path).expect("load exclusions");
+
+    assert_eq!(
+        loaded.get(&LayoutAutoExclusionKey::layout("default")),
+        Some(&HashSet::from(["usb:defy".to_owned()]))
+    );
 }

@@ -103,7 +103,7 @@ pub struct DiscoveryRuntime {
     /// Persistent path for the layout store.
     pub layouts_path: PathBuf,
 
-    /// Layout-specific exclusions that block discovery-driven auto-layout reconciliation.
+    /// Discovery auto-sync exclusions keyed by legacy layout or scene zone.
     pub layout_auto_exclusions: Arc<RwLock<layout_auto_exclusions::LayoutAutoExclusionStore>>,
 
     /// Logical device segmentation store.

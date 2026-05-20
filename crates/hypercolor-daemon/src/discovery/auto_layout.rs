@@ -10,6 +10,7 @@ use hypercolor_types::spatial::{
 use tracing::{debug, info, warn};
 
 use super::DiscoveryRuntime;
+use crate::layout_auto_exclusions::LayoutAutoExclusionKey;
 use crate::scene_transactions::apply_layout_update;
 
 #[doc(hidden)]
@@ -26,8 +27,13 @@ pub async fn sync_active_layout_for_renderable_devices(
         spatial.layout().as_ref().clone()
     };
     let excluded_layout_device_ids = {
+        let exclusion_keys = active_auto_exclusion_keys(runtime, &layout).await;
         let store = runtime.layout_auto_exclusions.read().await;
-        store.get(&layout.id).cloned().unwrap_or_default()
+        exclusion_keys
+            .iter()
+            .filter_map(|key| store.get(key))
+            .flat_map(|device_ids| device_ids.iter().cloned())
+            .collect::<HashSet<_>>()
     };
 
     let inactive_ids = {
@@ -155,6 +161,20 @@ pub async fn sync_active_layout_for_renderable_devices(
         repaired_devices = ?repaired_devices,
         "reconciled existing auto-layout zones in the active layout"
     );
+}
+
+async fn active_auto_exclusion_keys(
+    runtime: &DiscoveryRuntime,
+    layout: &SpatialLayout,
+) -> Vec<LayoutAutoExclusionKey> {
+    let mut keys = vec![LayoutAutoExclusionKey::layout(layout.id.as_str())];
+    let manager = runtime.scene_manager.read().await;
+    if let Some(scene) = manager.active_scene()
+        && let Some(group) = scene.primary_group()
+    {
+        keys.push(LayoutAutoExclusionKey::zone(scene.id, group.id));
+    }
+    keys
 }
 
 #[doc(hidden)]

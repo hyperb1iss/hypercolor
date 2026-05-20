@@ -357,7 +357,11 @@ pub async fn delete_layout(State(state): State<Arc<AppState>>, Path(id): Path<St
     drop(layouts);
     let exclusions_changed = {
         let mut exclusions = state.layout_auto_exclusions.write().await;
-        exclusions.remove(&key).is_some()
+        exclusions
+            .remove(&layout_auto_exclusions::LayoutAutoExclusionKey::layout(
+                key.as_str(),
+            ))
+            .is_some()
     };
 
     if let Some(layout) = next_active_layout {
@@ -392,7 +396,8 @@ async fn update_layout_auto_exclusions(
 ) {
     let changed = {
         let mut exclusions = state.layout_auto_exclusions.write().await;
-        let current = exclusions.get(layout_id).cloned().unwrap_or_default();
+        let key = layout_auto_exclusions::LayoutAutoExclusionKey::layout(layout_id);
+        let current = exclusions.get(&key).cloned().unwrap_or_default();
         let next = layout_auto_exclusions::reconcile_layout_device_exclusions(
             previous_zones,
             updated_zones,
@@ -402,9 +407,9 @@ async fn update_layout_auto_exclusions(
             false
         } else {
             if next.is_empty() {
-                exclusions.remove(layout_id);
+                exclusions.remove(&key);
             } else {
-                exclusions.insert(layout_id.to_owned(), next);
+                exclusions.insert(key, next);
             }
             true
         }
