@@ -1316,6 +1316,7 @@ impl ServoWorkerRuntime {
         width: u32,
         height: u32,
     ) -> Result<()> {
+        debug!(?session_id, width, height, "Creating Servo session");
         if self.sessions.contains_key(&session_id) {
             bail!("Servo session {session_id:?} already exists");
         }
@@ -1362,6 +1363,7 @@ impl ServoWorkerRuntime {
             self.sessions.remove(&session_id);
             return Err(error);
         }
+        debug!(?session_id, width, height, "Servo session ready");
 
         #[cfg(all(feature = "servo-gpu-import", target_os = "macos"))]
         self.trace_macos_native_surface(session_id);
@@ -1472,7 +1474,14 @@ impl ServoWorkerRuntime {
         self.resize_if_needed(session_id, width, height)?;
         let url = file_url_for_path(html_path)?;
         self.session_mut(session_id)?.loaded_html_path = Some(html_path.to_path_buf());
-        debug!(url = %url, "Loading Servo effect page");
+        debug!(
+            ?session_id,
+            url = %url,
+            width,
+            height,
+            path = %html_path.display(),
+            "Loading Servo effect page"
+        );
         self.navigate_webview(session_id, url.clone(), LOAD_TIMEOUT)
             .context("failed to load Servo effect page")?;
         let recent_console_entries = self
@@ -1540,6 +1549,15 @@ impl ServoWorkerRuntime {
         let Some(mut session) = self.sessions.remove(&session_id) else {
             return Ok(());
         };
+        debug!(
+            ?session_id,
+            loaded_html_path = session
+                .loaded_html_path
+                .as_deref()
+                .map_or_else(String::new, |path| path.display().to_string()),
+            renders_since_load = session.renders_since_load,
+            "Destroying Servo session"
+        );
 
         #[cfg(feature = "servo-gpu-import")]
         Self::destroy_gpu_importer_for_session(&mut session);
@@ -1808,7 +1826,11 @@ impl ServoWorkerRuntime {
             let url_matches = load_completion_url_matches(expected_url, last_url.as_deref());
             if loaded && url_matches {
                 delegate.take_page_loaded();
-                debug!("Servo page load completed");
+                debug!(
+                    ?session_id,
+                    current_url = last_url.as_deref().unwrap_or("<unknown>"),
+                    "Servo page load completed"
+                );
                 return Ok(());
             }
 
@@ -1913,13 +1935,68 @@ impl ServoWorkerRuntime {
             session.rendering_context.prepare_for_rendering();
             session.rendering_context.glow_gl_api()
         };
-        self.ensure_gpu_importer(session_id, device, descriptor)?;
+        if let Err(error) = self.ensure_gpu_importer(session_id, device, descriptor) {
+            let loaded_html_path = self
+                .session(session_id)
+                .ok()
+                .and_then(|session| session.loaded_html_path.as_ref())
+                .map_or_else(String::new, |path| path.display().to_string());
+            debug!(
+                %error,
+                ?session_id,
+                width = descriptor.width,
+                height = descriptor.height,
+                loaded_html_path,
+                "Servo GPU importer setup failed"
+            );
+            return Err(error);
+        }
+        let (loaded_html_path, context_width, context_height, page_age_ms, renders_since_load) = {
+            let session = self.session(session_id)?;
+            let size = session.rendering_context.size();
+            (
+                session.loaded_html_path.clone(),
+                size.width,
+                size.height,
+                session
+                    .loaded_at
+                    .map(|loaded_at| duration_millis_u64(loaded_at.elapsed())),
+                session.renders_since_load,
+            )
+        };
         let importer = self
             .session_mut(session_id)?
             .gpu_importer
             .as_mut()
             .ok_or_else(|| anyhow!("Servo GPU importer was not initialized"))?;
-        Ok(importer.import_framebuffer_pipelined(gl.as_ref(), source_framebuffer)?)
+        let importer_before = importer.state_snapshot();
+        let blit_before = importer.framebuffer_state_for_blit(gl.as_ref(), source_framebuffer);
+        let import_result = importer.import_framebuffer_pipelined(gl.as_ref(), source_framebuffer);
+        if let Err(error) = import_result.as_ref() {
+            let importer_after = importer.state_snapshot();
+            let blit_after = importer.framebuffer_state_for_blit(gl.as_ref(), source_framebuffer);
+            let loaded_html_path = loaded_html_path
+                .as_deref()
+                .map_or_else(String::new, |path| path.display().to_string());
+            debug!(
+                %error,
+                ?session_id,
+                width = descriptor.width,
+                height = descriptor.height,
+                context_width,
+                context_height,
+                loaded_html_path,
+                page_age_ms,
+                renders_since_load,
+                ?source_framebuffer,
+                ?importer_before,
+                ?importer_after,
+                ?blit_before,
+                ?blit_after,
+                "Servo GPU import GL diagnostics"
+            );
+        }
+        Ok(import_result?)
     }
 
     fn clear_gpu_importer(&mut self, session_id: ServoSessionId) {

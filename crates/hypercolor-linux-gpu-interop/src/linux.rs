@@ -1,4 +1,5 @@
 use std::ffi::{CStr, c_void};
+use std::fmt;
 use std::num::NonZeroU32;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::sync::Arc;
@@ -200,6 +201,51 @@ pub struct ImportedFrameTimings {
     pub total_us: u64,
 }
 
+/// Snapshot of the GL framebuffer state used by the import blit.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct GlFramebufferStateSnapshot {
+    /// Currently bound read framebuffer object, where zero means default FBO.
+    pub read_framebuffer: i32,
+    /// Currently bound draw framebuffer object, where zero means default FBO.
+    pub draw_framebuffer: i32,
+    /// Completeness status for `READ_FRAMEBUFFER`.
+    pub read_status: u32,
+    /// Completeness status for `DRAW_FRAMEBUFFER`.
+    pub draw_status: u32,
+    /// Active GL viewport as x, y, width, height.
+    pub viewport: [i32; 4],
+}
+
+impl fmt::Debug for GlFramebufferStateSnapshot {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GlFramebufferStateSnapshot")
+            .field("read_framebuffer", &self.read_framebuffer)
+            .field("draw_framebuffer", &self.draw_framebuffer)
+            .field("read_status", &format_args!("0x{:04x}", self.read_status))
+            .field("draw_status", &format_args!("0x{:04x}", self.draw_status))
+            .field("viewport", &self.viewport)
+            .finish()
+    }
+}
+
+/// Slot-level state for a reusable Linux GPU import pool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LinuxGlImporterStateSnapshot {
+    /// Number of import slots in the pool.
+    pub slot_count: usize,
+    /// Slots currently waiting on a GL fence.
+    pub pending_slots: usize,
+    /// Completed slots that can be returned to wgpu consumers.
+    pub completed_slots: usize,
+    /// Slots not pending and not retained by downstream GPU work.
+    pub available_slots: usize,
+    /// Age in milliseconds of the oldest pending fence.
+    pub oldest_pending_age_ms: Option<u64>,
+    /// Monotonic storage id for the newest completed slot.
+    pub latest_completed_storage_id: Option<u64>,
+}
+
 /// Reusable importer for repeatedly copying one GL framebuffer into wgpu.
 ///
 /// Creating exportable Vulkan images and importing their memory into GL is
@@ -280,6 +326,45 @@ impl LinuxGlFramebufferImporter {
     #[must_use]
     pub fn slot_count(&self) -> usize {
         self.slots.len()
+    }
+
+    /// Returns a cheap snapshot of pooled import slot state.
+    #[must_use]
+    pub fn state_snapshot(&self) -> LinuxGlImporterStateSnapshot {
+        let oldest_pending_age_ms = self
+            .slots
+            .iter()
+            .filter_map(ImportedFrameSlot::pending_age_ms)
+            .max();
+        LinuxGlImporterStateSnapshot {
+            slot_count: self.slots.len(),
+            pending_slots: self
+                .slots
+                .iter()
+                .filter(|slot| slot.pending.is_some())
+                .count(),
+            completed_slots: self
+                .slots
+                .iter()
+                .filter(|slot| slot.completed.is_some())
+                .count(),
+            available_slots: self.slots.iter().filter(|slot| slot.is_available()).count(),
+            oldest_pending_age_ms,
+            latest_completed_storage_id: self.latest_completed_storage_id(),
+        }
+    }
+
+    /// Captures the exact read/draw framebuffer state used by the import blit.
+    #[must_use]
+    pub fn framebuffer_state_for_blit(
+        &self,
+        gl: &glow::Context,
+        source_framebuffer: GlFramebufferSource,
+    ) -> GlFramebufferStateSnapshot {
+        self.slots.first().map_or_else(
+            || current_gl_framebuffer_state(gl),
+            |slot| slot.framebuffer_state_for_blit(gl, source_framebuffer),
+        )
     }
 
     /// Imports the current GL framebuffer contents into a pooled wgpu texture.
@@ -390,6 +475,13 @@ impl LinuxGlFramebufferImporter {
             .filter_map(|(index, slot)| slot.completed.map(|completed| (index, completed)))
             .max_by_key(|(_, completed)| completed.storage_id)
             .map(|(index, _)| index)
+    }
+
+    fn latest_completed_storage_id(&self) -> Option<u64> {
+        self.slots
+            .iter()
+            .filter_map(|slot| slot.completed.map(|completed| completed.storage_id))
+            .max()
     }
 
     fn latest_completed_frame(&self) -> Option<ImportedEffectFrame> {
@@ -701,6 +793,7 @@ struct ImportedFrameSlot {
 struct PendingImport {
     fence: glow::NativeFence,
     storage_id: u64,
+    issued_at: Instant,
     timings: ImportedFrameTimings,
 }
 
@@ -791,8 +884,18 @@ impl ImportedFrameSlot {
         Ok(PendingImport {
             fence: timings.fence,
             storage_id: NEXT_STORAGE_ID.fetch_add(1, Ordering::Relaxed),
+            issued_at: Instant::now(),
             timings: timings.timings,
         })
+    }
+
+    fn framebuffer_state_for_blit(
+        &self,
+        gl: &glow::Context,
+        source_framebuffer: GlFramebufferSource,
+    ) -> GlFramebufferStateSnapshot {
+        self.gl_binding
+            .framebuffer_state_for_blit(gl, source_framebuffer)
     }
 
     fn frame(
@@ -879,6 +982,12 @@ impl ImportedFrameSlot {
             timings: pending.timings,
         });
         Ok(())
+    }
+
+    fn pending_age_ms(&self) -> Option<u64> {
+        self.pending
+            .as_ref()
+            .map(|pending| elapsed_millis(pending.issued_at))
     }
 
     fn destroy_gl_resources(
@@ -1359,6 +1468,25 @@ impl GlImportedImageBinding {
         result
     }
 
+    fn framebuffer_state_for_blit(
+        &self,
+        gl: &glow::Context,
+        source_framebuffer: GlFramebufferSource,
+    ) -> GlFramebufferStateSnapshot {
+        let bindings = capture_gl_bindings(gl);
+        // SAFETY: the bindings are restored before returning. The caller owns
+        // the current context and this mirrors the import blit's bind sequence.
+        unsafe {
+            if let GlFramebufferSource::Framebuffer(source_framebuffer) = source_framebuffer {
+                gl.bind_framebuffer(glow::READ_FRAMEBUFFER, source_framebuffer);
+            }
+            gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, self.framebuffer);
+        }
+        let state = current_gl_framebuffer_state(gl);
+        restore_gl_bindings(gl, bindings);
+        state
+    }
+
     fn destroy(&mut self, gl: &glow::Context, gl_external_memory: GlExternalMemoryFunctions) {
         cleanup_gl_import_resources(
             gl,
@@ -1600,6 +1728,22 @@ fn restore_gl_bindings(gl: &glow::Context, bindings: GlBindingSnapshot) {
     }
 }
 
+fn current_gl_framebuffer_state(gl: &glow::Context) -> GlFramebufferStateSnapshot {
+    let mut viewport = [0; 4];
+    // SAFETY: these queries operate on the current GL context and leave
+    // framebuffer bindings unchanged.
+    unsafe {
+        gl.get_parameter_i32_slice(glow::VIEWPORT, &mut viewport);
+        GlFramebufferStateSnapshot {
+            read_framebuffer: gl.get_parameter_i32(glow::READ_FRAMEBUFFER_BINDING),
+            draw_framebuffer: gl.get_parameter_i32(glow::DRAW_FRAMEBUFFER_BINDING),
+            read_status: gl.check_framebuffer_status(glow::READ_FRAMEBUFFER),
+            draw_status: gl.check_framebuffer_status(glow::DRAW_FRAMEBUFFER),
+            viewport,
+        }
+    }
+}
+
 fn framebuffer_from_binding(binding: i32) -> Option<glow::NativeFramebuffer> {
     u32::try_from(binding)
         .ok()
@@ -1635,6 +1779,10 @@ fn check_gl_error(gl: &glow::Context, operation: &'static str) -> Result<()> {
 
 fn elapsed_micros(start: Instant) -> u64 {
     start.elapsed().as_micros().try_into().unwrap_or(u64::MAX)
+}
+
+fn elapsed_millis(start: Instant) -> u64 {
+    start.elapsed().as_millis().try_into().unwrap_or(u64::MAX)
 }
 
 fn wgpu_texture_descriptor(
