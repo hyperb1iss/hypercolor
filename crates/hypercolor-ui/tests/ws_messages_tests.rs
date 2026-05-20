@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use hypercolor_types::event::{LayerHealth, ZoneChangeKind};
 use hypercolor_types::scene::{SceneKind, SceneMutationMode, ZoneRole};
 use messages::{
-    extract_effect_error_hint, extract_layer_health, extract_scene_event_hint,
+    PerformanceMetrics, extract_effect_error_hint, extract_layer_health, extract_scene_event_hint,
     group_has_degraded_layer, layer_health_key, scene_event_affects_active_effect,
 };
 
@@ -37,6 +37,106 @@ fn extract_scene_event_hint_parses_active_scene_payload() {
     assert_eq!(hint.render_group_role, None);
     assert_eq!(hint.render_group_change_kind, None);
     assert!(scene_event_affects_active_effect(&hint));
+}
+
+#[test]
+fn performance_metrics_deserializes_renderer_diagnostics() {
+    let metrics: PerformanceMetrics = serde_json::from_value(serde_json::json!({
+        "fps": { "target": 60, "ceiling": 60, "actual": 58.4, "dropped": 1 },
+        "frame_time": { "avg_ms": 8.1, "p95_ms": 12.4, "p99_ms": 15.9, "max_ms": 18.2 },
+        "stages": {
+            "producer_effect_rendering_ms": 2.1,
+            "producer_preview_compose_ms": 3.4,
+            "composition_ms": 4.2,
+            "publish_frame_data_ms": 0.1,
+            "publish_group_canvas_ms": 0.2,
+            "publish_preview_ms": 0.3,
+            "publish_events_ms": 0.4
+        },
+        "pacing": {
+            "gpu_zone_sampling": 114,
+            "gpu_sample_cpu_fallback": 2,
+            "cpu_sampling_late_readback": 1,
+            "led_sampling_readback": 3,
+            "gpu_readback_failed_frames": 4,
+            "scene_canvas_forced_surface": 5,
+            "full_frame_copy_frames": 6
+        },
+        "effect_health": {
+            "servo_render_gpu_frames_total": 120,
+            "servo_render_cpu_frames_total": 3,
+            "servo_render_cached_frames_total": 9,
+            "servo_gpu_import_failures_total": 1,
+            "servo_gpu_import_fallbacks_total": 2,
+            "servo_gpu_import_fallback_reason": "unsupported format",
+            "servo_gpu_import_max_ms": 1.7,
+            "producer_gpu_frames_total": 130,
+            "producer_cpu_frames_total": 5,
+            "servo_render_readback_max_ms": 0.0
+        },
+        "timeline": {
+            "frame_token": 42,
+            "compositor_backend": "gpu",
+            "gpu_zone_sampling": true,
+            "gpu_readback_failed": true,
+            "budget_ms": 16.67
+        },
+        "render_surfaces": {
+            "slot_count": 6,
+            "free_slots": 2,
+            "preview_pool_saturation_reallocs": 7,
+            "direct_pool_saturation_reallocs": 8,
+            "preview_pool_grown_slots": 1,
+            "scene_pool_slot_count": 4,
+            "scene_pool_shared_published_slots": 2
+        },
+        "preview": {
+            "canvas_receivers": 1,
+            "canvas_demand": {
+                "subscribers": 1,
+                "max_fps": 60,
+                "max_width": 1280,
+                "max_height": 720,
+                "any_rgba": true
+            }
+        },
+        "display_output": {
+            "captured_devices": 1,
+            "preview_subscribers": 2,
+            "write_failures_total": 3,
+            "retry_attempts_total": 4,
+            "display_lane": {
+                "display_frames_total": 100,
+                "display_frames_delayed_for_led_total": 6,
+                "display_led_priority_wait_max_ms": 0.8
+            }
+        },
+        "copies": {
+            "full_frame_count": 2,
+            "full_frame_kb": 2400.0,
+            "producer_reason": "readback",
+            "publication_reason": "canvas"
+        },
+        "memory": { "daemon_rss_mb": 100.0, "canvas_buffer_kb": 1200 },
+        "devices": { "connected": 2, "total_leds": 300, "output_errors": 0 },
+        "websocket": { "client_count": 1, "bytes_sent_per_sec": 2048.0 }
+    }))
+    .expect("metrics payload should include renderer diagnostics");
+
+    assert_eq!(metrics.fps.ceiling, 60);
+    assert_eq!(metrics.stages.producer_scene_compose_ms, 3.4);
+    assert_eq!(metrics.effect_health.servo_render_gpu_frames_total, 120);
+    assert_eq!(
+        metrics
+            .effect_health
+            .servo_gpu_import_fallback_reason
+            .as_deref(),
+        Some("unsupported format")
+    );
+    assert!(metrics.timeline.gpu_readback_failed);
+    assert_eq!(metrics.render_surfaces.scene_pool_saturation_reallocs, 7);
+    assert_eq!(metrics.display_output.write_failures_total, 3);
+    assert_eq!(metrics.copies.producer_reason.as_deref(), Some("readback"));
 }
 
 #[test]

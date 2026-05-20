@@ -60,7 +60,12 @@ pub struct PerformanceMetrics {
     pub frame_time: MetricsFrameTime,
     pub stages: MetricsStages,
     pub pacing: MetricsPacing,
+    pub effect_health: MetricsEffectHealth,
     pub timeline: MetricsTimeline,
+    pub render_surfaces: MetricsRenderSurfaces,
+    pub preview: MetricsPreview,
+    pub display_output: MetricsDisplayOutput,
+    pub copies: MetricsCopies,
     pub memory: MetricsMemory,
     pub devices: MetricsDevices,
     pub websocket: MetricsWebsocket,
@@ -70,6 +75,7 @@ pub struct PerformanceMetrics {
 #[serde(default)]
 pub struct MetricsFps {
     pub target: u32,
+    pub ceiling: u32,
     pub actual: f64,
     pub dropped: u32,
 }
@@ -88,12 +94,19 @@ pub struct MetricsFrameTime {
 pub struct MetricsStages {
     pub input_sampling_ms: f64,
     pub producer_rendering_ms: f64,
+    pub producer_effect_rendering_ms: f64,
+    #[serde(rename = "producer_preview_compose_ms")]
+    pub producer_scene_compose_ms: f64,
     pub composition_ms: f64,
     pub effect_rendering_ms: f64,
     pub spatial_sampling_ms: f64,
     pub device_output_ms: f64,
     pub preview_postprocess_ms: f64,
     pub event_bus_ms: f64,
+    pub publish_frame_data_ms: f64,
+    pub publish_group_canvas_ms: f64,
+    pub publish_preview_ms: f64,
+    pub publish_events_ms: f64,
     pub coordination_overhead_ms: f64,
 }
 
@@ -112,6 +125,78 @@ pub struct MetricsPacing {
     pub retained_effect: u32,
     pub retained_screen: u32,
     pub composition_bypassed: u32,
+    pub gpu_zone_sampling: u32,
+    pub gpu_sample_deferred: u32,
+    pub gpu_sample_stale: u32,
+    pub gpu_sample_retry_hit: u32,
+    pub gpu_sample_queue_saturated: u32,
+    pub gpu_sample_wait_blocked: u32,
+    pub gpu_sample_cpu_fallback: u32,
+    pub cpu_sampling_late_readback: u32,
+    pub led_sampling_readback: u32,
+    pub preview_surface: u32,
+    pub scene_canvas_forced_surface: u32,
+    pub gpu_readback_failed_frames: u32,
+    pub output_error_frames: u32,
+    pub full_frame_copy_frames: u32,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct MetricsEffectHealth {
+    pub errors_total: u64,
+    pub fallbacks_applied_total: u64,
+    pub producer_gpu_readback_failures_total: u64,
+    pub servo_soft_stalls_total: u64,
+    pub servo_breaker_opens_total: u64,
+    pub servo_session_creates_total: u64,
+    pub servo_session_create_failures_total: u64,
+    pub servo_session_create_wait_total_ms: f64,
+    pub servo_session_create_wait_max_ms: f64,
+    pub servo_page_loads_total: u64,
+    pub servo_page_load_failures_total: u64,
+    pub servo_page_load_wait_total_ms: f64,
+    pub servo_page_load_wait_max_ms: f64,
+    pub servo_renderer_loads_total: u64,
+    pub servo_renderer_load_failures_total: u64,
+    pub servo_renderer_load_wait_total_ms: f64,
+    pub servo_renderer_load_wait_max_ms: f64,
+    pub servo_detached_destroys_total: u64,
+    pub servo_detached_destroy_failures_total: u64,
+    pub servo_destroy_wait_total_ms: f64,
+    pub servo_destroy_wait_max_ms: f64,
+    pub servo_render_requests_total: u64,
+    pub servo_render_queue_wait_total_ms: f64,
+    pub servo_render_queue_wait_max_ms: f64,
+    pub servo_render_queue_depth: u64,
+    pub servo_render_queue_depth_max: u64,
+    pub servo_render_superseded_total: u64,
+    pub servo_render_pending_age_max_ms: f64,
+    pub servo_render_cpu_frames_total: u64,
+    pub servo_render_cached_frames_total: u64,
+    pub servo_render_gpu_frames_total: u64,
+    pub servo_gpu_import_failures_total: u64,
+    pub servo_gpu_import_fallbacks_total: u64,
+    pub servo_gpu_import_fallback_reason: Option<String>,
+    pub servo_gpu_import_blit_total_ms: f64,
+    pub servo_gpu_import_blit_max_ms: f64,
+    pub servo_gpu_import_sync_total_ms: f64,
+    pub servo_gpu_import_sync_max_ms: f64,
+    pub servo_gpu_import_total_ms: f64,
+    pub servo_gpu_import_max_ms: f64,
+    pub producer_cpu_frames_total: u64,
+    pub producer_gpu_frames_total: u64,
+    pub sparkleflinger_gpu_source_upload_skipped_total: u64,
+    pub servo_render_evaluate_scripts_total_ms: f64,
+    pub servo_render_evaluate_scripts_max_ms: f64,
+    pub servo_render_event_loop_total_ms: f64,
+    pub servo_render_event_loop_max_ms: f64,
+    pub servo_render_paint_total_ms: f64,
+    pub servo_render_paint_max_ms: f64,
+    pub servo_render_readback_total_ms: f64,
+    pub servo_render_readback_max_ms: f64,
+    pub servo_render_frame_total_ms: f64,
+    pub servo_render_frame_max_ms: f64,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
@@ -119,6 +204,19 @@ pub struct MetricsPacing {
 pub struct MetricsTimeline {
     pub frame_token: u64,
     pub compositor_backend: String,
+    pub gpu_zone_sampling: bool,
+    pub gpu_sample_deferred: bool,
+    pub gpu_sample_stale: bool,
+    pub gpu_sample_retry_hit: bool,
+    pub gpu_sample_queue_saturated: bool,
+    pub gpu_sample_wait_blocked: bool,
+    pub gpu_sample_cpu_fallback: bool,
+    pub cpu_sampling_late_readback: bool,
+    pub led_sampling_readback: bool,
+    pub preview_surface: bool,
+    pub scene_canvas_forced_surface: bool,
+    pub cpu_readback_skipped: bool,
+    pub gpu_readback_failed: bool,
     pub budget_ms: f64,
     pub wake_late_ms: f64,
     pub logical_layer_count: u32,
@@ -133,6 +231,103 @@ pub struct MetricsTimeline {
     pub output_done_ms: f64,
     pub publish_done_ms: f64,
     pub frame_done_ms: f64,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct MetricsRenderSurfaces {
+    pub slot_count: u32,
+    pub free_slots: u32,
+    pub published_slots: u32,
+    pub dequeued_slots: u32,
+    pub canvas_receivers: u32,
+    #[serde(rename = "preview_pool_saturation_reallocs")]
+    pub scene_pool_saturation_reallocs: u64,
+    pub direct_pool_saturation_reallocs: u64,
+    #[serde(rename = "preview_pool_grown_slots")]
+    pub scene_pool_grown_slots: u32,
+    pub direct_pool_grown_slots: u32,
+    pub scene_pool_slot_count: u32,
+    pub scene_pool_max_slots: u32,
+    pub direct_pool_slot_count: u32,
+    pub direct_pool_max_slots: u32,
+    pub scene_pool_shared_published_slots: u32,
+    pub scene_pool_max_ref_count: u32,
+    pub direct_pool_shared_published_slots: u32,
+    pub direct_pool_max_ref_count: u32,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct MetricsPreview {
+    pub canvas_receivers: u32,
+    pub scene_canvas_receivers: u32,
+    pub screen_canvas_receivers: u32,
+    pub web_viewport_canvas_receivers: u32,
+    pub zone_preview_receivers: u32,
+    pub canvas_frames_published: u64,
+    pub scene_canvas_frames_published: u64,
+    pub screen_canvas_frames_published: u64,
+    pub web_viewport_canvas_frames_published: u64,
+    pub zone_preview_frames_published: u64,
+    pub latest_canvas_frame_number: u32,
+    pub latest_scene_canvas_frame_number: u32,
+    pub latest_screen_canvas_frame_number: u32,
+    pub latest_web_viewport_canvas_frame_number: u32,
+    pub latest_zone_preview_frame_number: u32,
+    pub canvas_demand: MetricsPreviewDemand,
+    pub scene_canvas_demand: MetricsPreviewDemand,
+    pub screen_canvas_demand: MetricsPreviewDemand,
+    pub web_viewport_canvas_demand: MetricsPreviewDemand,
+    pub zone_preview_demand: MetricsPreviewDemand,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct MetricsPreviewDemand {
+    pub subscribers: u32,
+    pub max_fps: u32,
+    pub max_width: u32,
+    pub max_height: u32,
+    pub any_full_resolution: bool,
+    pub any_rgb: bool,
+    pub any_rgba: bool,
+    pub any_jpeg: bool,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct MetricsDisplayOutput {
+    pub captured_devices: usize,
+    pub preview_subscribers: usize,
+    pub write_attempts_total: u64,
+    pub write_successes_total: u64,
+    pub write_failures_total: u64,
+    pub retry_attempts_total: u64,
+    pub display_lane: MetricsDisplayLane,
+    pub last_failure_age_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct MetricsDisplayLane {
+    pub display_frames_total: u64,
+    pub display_frames_delayed_for_led_total: u64,
+    pub display_led_priority_wait_total_ms: f64,
+    pub display_led_priority_wait_max_ms: f64,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct MetricsCopies {
+    pub full_frame_count: u32,
+    pub full_frame_kb: f64,
+    pub producer_full_frame_count: u32,
+    pub producer_full_frame_kb: f64,
+    pub producer_reason: Option<String>,
+    pub publication_full_frame_count: u32,
+    pub publication_full_frame_kb: f64,
+    pub publication_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]

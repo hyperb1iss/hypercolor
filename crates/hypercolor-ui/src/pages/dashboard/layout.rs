@@ -16,7 +16,7 @@ use crate::storage;
 
 const STORAGE_KEY: &str = "hc-dashboard-layout";
 
-/// One of the nine dashboard stats panels. Closed set — adding a panel
+/// One of the ten dashboard stats panels. Closed set — adding a panel
 /// means adding a variant here and updating [`PanelId::ALL`] plus the
 /// render match in `mod.rs`. Serialised in snake_case to keep the
 /// localStorage blob human-readable.
@@ -25,6 +25,7 @@ const STORAGE_KEY: &str = "hc-dashboard-layout";
 pub enum PanelId {
     HeroGauges,
     Pipeline,
+    RendererHardware,
     FrameTimeline,
     Distribution,
     Pacing,
@@ -36,9 +37,10 @@ pub enum PanelId {
 
 impl PanelId {
     /// All panel IDs in their default display order.
-    pub const ALL: [PanelId; 9] = [
+    pub const ALL: [PanelId; 10] = [
         PanelId::HeroGauges,
         PanelId::Pipeline,
+        PanelId::RendererHardware,
         PanelId::FrameTimeline,
         PanelId::Distribution,
         PanelId::Pacing,
@@ -53,6 +55,7 @@ impl PanelId {
         match self {
             PanelId::HeroGauges => "Render Engine",
             PanelId::Pipeline => "Pipeline Breakdown",
+            PanelId::RendererHardware => "Renderer & Hardware",
             PanelId::FrameTimeline => "Frame Timeline",
             PanelId::Distribution => "Frame Distribution",
             PanelId::Pacing => "Pacing",
@@ -144,6 +147,11 @@ impl DashboardLayout {
                 },
                 PanelConfig {
                     id: PanelId::Pipeline,
+                    visible: true,
+                    width: PanelWidth::Full,
+                },
+                PanelConfig {
+                    id: PanelId::RendererHardware,
                     visible: true,
                     width: PanelWidth::Full,
                 },

@@ -37,6 +37,7 @@ mod gauges;
 mod header;
 mod layout;
 mod panel_frame;
+mod renderer;
 mod timeline;
 
 use charts::{DistributionPanel, FavoritesPanel, PipelinePanel, ThroughputPanel};
@@ -45,6 +46,7 @@ use gauges::{HeroGauges, MemoryAndDevicesPanel, ReuseRatesPanel};
 use header::{StatusSkeleton, StatusStrip};
 use layout::{DashboardLayout, PanelId};
 use panel_frame::PanelFrame;
+use renderer::RendererHardwarePanel;
 use timeline::{BackpressureBanner, FrameTimelinePanel, LatestFramePanel, PacingPanel};
 
 // ── Layout tunables ──────────────────────────────────────────────────
@@ -528,6 +530,9 @@ pub fn DashboardPage() -> impl IntoView {
                                             }.into_any(),
                                             PanelId::Pipeline => view! {
                                                 <PipelinePanel metrics=ws.metrics />
+                                            }.into_any(),
+                                            PanelId::RendererHardware => view! {
+                                                <RendererHardwarePanel metrics=ws.metrics />
                                             }.into_any(),
                                             PanelId::FrameTimeline => view! {
                                                 <FrameTimelinePanel

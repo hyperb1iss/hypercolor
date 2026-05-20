@@ -22,12 +22,50 @@ pub struct SystemStatus {
     #[serde(default)]
     pub active_scene_snapshot_locked: bool,
     pub global_brightness: u8,
+    #[serde(default)]
+    pub compositor_acceleration: RenderAccelerationStatus,
+    #[serde(default)]
+    pub render_loop: RenderLoopStatus,
     /// Named daemon capabilities (Spec 65 §9.6). Multi-zone Studio
     /// affordances gate on the presence of their backing capability —
     /// `zone-crud`, `multi-zone-sampling`, `zone-device-assignment`,
     /// `scene-unassigned-behavior-write`.
     #[serde(default)]
     pub capabilities: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct RenderLoopStatus {
+    pub state: String,
+    pub fps_tier: String,
+    pub target_fps: u32,
+    pub ceiling_fps: u32,
+    pub consecutive_misses: u32,
+    pub total_frames: u64,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct RenderAccelerationStatus {
+    pub requested_mode: String,
+    pub effective_mode: String,
+    pub fallback_reason: Option<String>,
+    pub servo_gpu_import_mode: String,
+    pub servo_gpu_import_attempting: bool,
+    pub gpu_probe: Option<GpuCompositorProbeStatus>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct GpuCompositorProbeStatus {
+    pub adapter_name: String,
+    pub backend: String,
+    pub texture_format: String,
+    pub max_texture_dimension_2d: u32,
+    pub max_storage_textures_per_shader_stage: u32,
+    pub linux_servo_gpu_import_backend_compatible: bool,
+    pub linux_servo_gpu_import_backend_reason: Option<String>,
 }
 
 // ── Fetch Functions ─────────────────────────────────────────────────────────
