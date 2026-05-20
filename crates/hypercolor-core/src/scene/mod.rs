@@ -35,6 +35,8 @@ use crate::types::scene::{
 };
 use crate::types::spatial::{NormalizedPosition, Output, SpatialLayout};
 
+const DEFAULT_ZONE_NAME: &str = "Default zone";
+
 /// Error variants for precondition-checked control patches.
 ///
 /// `NoActiveScene` and `GroupMissing` are plumbed separately from
@@ -166,12 +168,17 @@ impl SceneManager {
 
     #[must_use]
     pub fn with_default() -> Self {
+        Self::with_default_layout(empty_default_spatial_layout())
+    }
+
+    #[must_use]
+    pub fn with_default_layout(layout: SpatialLayout) -> Self {
         let mut manager = Self::new();
-        manager.install_default_scene();
+        manager.install_default_scene(layout);
         manager
     }
 
-    fn install_default_scene(&mut self) {
+    fn install_default_scene(&mut self, layout: SpatialLayout) {
         if self.scenes.contains_key(&SceneId::DEFAULT) {
             return;
         }
@@ -182,7 +189,7 @@ impl SceneManager {
             description: Some("Auto-managed default scene.".to_owned()),
             scope: crate::types::scene::SceneScope::Full,
             zone_assignments: Vec::new(),
-            groups: Vec::new(),
+            groups: vec![default_primary_group(layout)],
             groups_revision: 0,
             transition: TransitionSpec {
                 duration_ms: 1_000,
@@ -490,8 +497,8 @@ impl SceneManager {
         } else {
             scene.groups.push(Zone {
                 id: ZoneId::new(),
-                name: "Primary".to_owned(),
-                description: Some("Primary full-scene zone.".to_owned()),
+                name: DEFAULT_ZONE_NAME.to_owned(),
+                description: Some("Default zone.".to_owned()),
                 effect_id: Some(effect.id),
                 controls,
                 control_bindings: HashMap::new(),
@@ -1710,6 +1717,29 @@ impl SceneManager {
     }
 }
 
+#[must_use]
+pub fn default_primary_group(mut layout: SpatialLayout) -> Zone {
+    layout.name = DEFAULT_ZONE_NAME.to_owned();
+    Zone {
+        id: ZoneId::new(),
+        name: DEFAULT_ZONE_NAME.to_owned(),
+        description: Some("Default zone.".to_owned()),
+        effect_id: None,
+        controls: HashMap::new(),
+        control_bindings: HashMap::new(),
+        preset_id: None,
+        layers: Vec::new(),
+        layout,
+        brightness: 1.0,
+        enabled: true,
+        color: None,
+        display_target: None,
+        role: ZoneRole::Primary,
+        controls_version: 0,
+        layers_version: 0,
+    }
+}
+
 fn materialize_legacy_effect_layer(group: &mut Zone) {
     if !group.layers.is_empty() {
         return;
@@ -1761,6 +1791,21 @@ fn empty_scene_group_layout(
         description: None,
         canvas_width,
         canvas_height,
+        zones: Vec::new(),
+        default_sampling_mode: crate::types::spatial::SamplingMode::Bilinear,
+        default_edge_behavior: crate::types::spatial::EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
+    }
+}
+
+fn empty_default_spatial_layout() -> SpatialLayout {
+    SpatialLayout {
+        id: "default".to_owned(),
+        name: "Default Layout".to_owned(),
+        description: None,
+        canvas_width: 640,
+        canvas_height: 480,
         zones: Vec::new(),
         default_sampling_mode: crate::types::spatial::SamplingMode::Bilinear,
         default_edge_behavior: crate::types::spatial::EdgeBehavior::Clamp,

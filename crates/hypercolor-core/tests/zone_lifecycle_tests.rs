@@ -465,6 +465,14 @@ fn effect_apply_preserves_primary_assignment_when_custom_zones_exist() {
 fn effect_apply_seeds_new_primary_with_unclaimed_zones_only() {
     let mut manager = SceneManager::with_default();
     let scene_id = SceneId::DEFAULT;
+    let mut default_scene = manager
+        .active_scene()
+        .expect("default scene should be active")
+        .clone();
+    default_scene.groups.clear();
+    manager
+        .update(default_scene)
+        .expect("legacy default scene should update");
     let custom_id = manager
         .create_render_group(&scene_id, "Custom".to_owned(), None, (320, 200))
         .expect("custom zone should be created");

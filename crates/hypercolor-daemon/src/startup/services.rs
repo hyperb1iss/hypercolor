@@ -179,6 +179,19 @@ impl DaemonState {
             "Effect registry created"
         );
 
+        let default_layout = SpatialLayout {
+            id: "default".into(),
+            name: "Default Layout".into(),
+            description: None,
+            canvas_width: config.daemon.canvas_width,
+            canvas_height: config.daemon.canvas_height,
+            zones: Vec::new(),
+            default_sampling_mode: SamplingMode::Bilinear,
+            default_edge_behavior: EdgeBehavior::Clamp,
+            spaces: None,
+            version: 1,
+        };
+
         // ── Scene Manager / Store ──────────────────────────────────────
         let scenes_path = ConfigManager::data_dir().join("scenes.json");
         let scene_store_inner = SceneStore::load(&scenes_path).unwrap_or_else(|error| {
@@ -190,7 +203,7 @@ impl DaemonState {
             );
             SceneStore::new(scenes_path.clone())
         });
-        let mut scene_manager_inner = SceneManager::with_default();
+        let mut scene_manager_inner = SceneManager::with_default_layout(default_layout.clone());
         for scene in scene_store_inner.list().cloned() {
             if let Err(error) = scene_manager_inner.create(scene) {
                 warn!(%error, "Failed to install persisted named scene");
@@ -213,18 +226,6 @@ impl DaemonState {
         info!("Device metrics snapshot store created");
 
         // ── Spatial Engine ──────────────────────────────────────────────
-        let default_layout = SpatialLayout {
-            id: "default".into(),
-            name: "Default Layout".into(),
-            description: None,
-            canvas_width: config.daemon.canvas_width,
-            canvas_height: config.daemon.canvas_height,
-            zones: Vec::new(),
-            default_sampling_mode: SamplingMode::Bilinear,
-            default_edge_behavior: EdgeBehavior::Clamp,
-            spaces: None,
-            version: 1,
-        };
         let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(default_layout.clone())));
         info!("Spatial engine created (empty default layout)");
 

@@ -763,7 +763,7 @@ async fn stateful_display_face_tool_assigns_and_clears_face_groups() {
         assign_snapshot.active_scene_id,
         Some(SceneId::DEFAULT.to_string())
     );
-    assert_eq!(assign_snapshot.default_scene_groups.len(), 1);
+    assert_eq!(assign_snapshot.default_scene_groups.len(), 2);
 
     let mut saw_assign_event = false;
     while let Ok(timestamped) = assign_events.try_recv() {
@@ -799,7 +799,11 @@ async fn stateful_display_face_tool_assigns_and_clears_face_groups() {
     let clear_snapshot = runtime_state::load(&state.runtime_state_path)
         .expect("runtime snapshot should load")
         .expect("runtime snapshot should exist");
-    assert!(clear_snapshot.default_scene_groups.is_empty());
+    assert_eq!(clear_snapshot.default_scene_groups.len(), 1);
+    assert_eq!(
+        clear_snapshot.default_scene_groups[0].role,
+        hypercolor_types::scene::ZoneRole::Primary
+    );
 
     let mut saw_clear_event = false;
     while let Ok(timestamped) = clear_events.try_recv() {

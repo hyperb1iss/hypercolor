@@ -917,7 +917,7 @@ async fn daemon_state_device_registry_starts_empty() {
 }
 
 #[tokio::test]
-async fn daemon_state_default_scene_starts_without_render_groups() {
+async fn daemon_state_default_scene_starts_with_default_zone() {
     let _guard = TestDataDirGuard::new().await;
     let config = default_config();
     let temp = temp_config_file();
@@ -929,10 +929,10 @@ async fn daemon_state_default_scene_starts_without_render_groups() {
         scenes.active_scene_id().is_some_and(SceneId::is_default),
         "default scene should be active initially"
     );
-    assert!(
-        scenes.active_render_groups().is_empty(),
-        "default scene should start without any active zones"
-    );
+    let groups = scenes.active_render_groups();
+    assert_eq!(groups.len(), 1, "default scene should start with a zone");
+    assert_eq!(groups[0].name, "Default zone");
+    assert_eq!(groups[0].role, ZoneRole::Primary);
 }
 
 #[tokio::test]

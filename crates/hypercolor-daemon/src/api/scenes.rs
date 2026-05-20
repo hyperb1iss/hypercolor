@@ -9,13 +9,13 @@ use axum::response::Response;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
-use hypercolor_core::scene::SceneManager;
+use hypercolor_core::scene::{SceneManager, default_primary_group};
 use hypercolor_types::asset::AssetId;
 use hypercolor_types::config::MediaConfig;
 use hypercolor_types::layer::{LayerSource, SceneLayer};
 use hypercolor_types::scene::{
     ColorInterpolation, EasingFunction, Scene, SceneId, SceneKind, SceneMutationMode,
-    ScenePriority, SceneScope, TransitionSpec, UnassignedBehavior, Zone, ZoneId, ZoneRole,
+    ScenePriority, SceneScope, TransitionSpec, UnassignedBehavior, Zone,
 };
 
 use crate::api::AppState;
@@ -159,28 +159,8 @@ pub async fn create_scene(
     // Every scene is born with a Default zone holding the current device
     // output roster, so the Studio scene selector always has a zone to
     // select (§5.2). The zone is `Primary`; the user renames it freely.
-    let default_zone_id = ZoneId::new();
-    let mut default_layout = crate::api::effects::resolve_full_scope_layout(state.as_ref()).await;
-    default_layout.id = format!("zone-{default_zone_id}");
-    "Default zone".clone_into(&mut default_layout.name);
-    let default_zone = Zone {
-        id: default_zone_id,
-        name: "Primary".to_owned(),
-        description: Some("Default zone.".to_owned()),
-        effect_id: None,
-        controls: HashMap::new(),
-        control_bindings: HashMap::new(),
-        preset_id: None,
-        layers: Vec::new(),
-        layout: default_layout,
-        brightness: 1.0,
-        enabled: true,
-        color: None,
-        display_target: None,
-        role: ZoneRole::Primary,
-        controls_version: 0,
-        layers_version: 0,
-    };
+    let default_layout = crate::api::effects::resolve_full_scope_layout(state.as_ref()).await;
+    let default_zone = default_primary_group(default_layout);
 
     let scene = Scene {
         id: SceneId::new(),

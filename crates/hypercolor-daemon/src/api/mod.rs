@@ -430,7 +430,7 @@ impl AppState {
             );
             SceneStore::new(scenes_path)
         });
-        let mut scene_manager_inner = SceneManager::with_default();
+        let mut scene_manager_inner = SceneManager::with_default_layout(default_layout.clone());
         for scene in scene_store.list().cloned() {
             if let Err(error) = scene_manager_inner.create(scene) {
                 warn!(%error, "Failed to install persisted named scene into default app state");

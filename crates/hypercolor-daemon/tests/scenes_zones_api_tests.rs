@@ -183,8 +183,9 @@ async fn zone_crud_uses_groups_revision_etags() {
     let json = body_json(response).await;
     assert_eq!(
         json["data"]["items"].as_array().expect("items array").len(),
-        0
+        1
     );
+    assert_eq!(json["data"]["items"][0]["role"], "primary");
 
     let response = send(
         &app,
