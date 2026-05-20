@@ -7,7 +7,7 @@ use crate::app::{DisplaysContext, WsContext};
 use crate::components::display_preview_surface::DisplayPreviewSurface;
 use crate::display_preview_state::{use_display_face_resource, use_display_preview_subscription};
 use crate::icons::{LuLayers, LuMonitor};
-use hypercolor_types::scene::RenderGroupRole;
+use hypercolor_types::scene::ZoneRole;
 
 #[component]
 pub fn DisplayPreviewPage() -> impl IntoView {
@@ -56,7 +56,7 @@ pub fn DisplayPreviewPage() -> impl IntoView {
 
             if current_scene_event.as_ref().is_some_and(|scene_event| {
                 scene_event.event_type == "active_scene_changed"
-                    || scene_event.render_group_role == Some(RenderGroupRole::Display)
+                    || scene_event.render_group_role == Some(ZoneRole::Display)
             }) {
                 set_face_refresh_tick.update(|tick| *tick = tick.wrapping_add(1));
             }

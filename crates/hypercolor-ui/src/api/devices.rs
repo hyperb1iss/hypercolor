@@ -194,7 +194,7 @@ pub struct BrightnessSettingsResponse {
 
 /// Attachment binding summary from `GET /api/v1/devices/:id/attachments`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct AttachmentBindingSummary {
+pub struct ComponentBindingSummary {
     pub slot_id: String,
     pub template_id: String,
     pub template_name: String,
@@ -208,15 +208,15 @@ pub struct AttachmentBindingSummary {
 
 /// Device attachment profile summary from `GET /api/v1/devices/:id/attachments`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct DeviceAttachmentsResponse {
+pub struct DeviceComponentsResponse {
     pub device_id: String,
     pub device_name: String,
     #[serde(default)]
-    pub slots: Vec<hypercolor_types::attachment::AttachmentSlot>,
+    pub slots: Vec<hypercolor_types::attachment::ComponentSlot>,
     #[serde(default)]
-    pub bindings: Vec<AttachmentBindingSummary>,
+    pub bindings: Vec<ComponentBindingSummary>,
     #[serde(default)]
-    pub suggested_zones: Vec<hypercolor_types::attachment::AttachmentSuggestedZone>,
+    pub suggested_zones: Vec<hypercolor_types::attachment::ComponentSuggestedZone>,
 }
 
 /// Template summary from `GET /api/v1/attachments/templates`.
@@ -225,9 +225,9 @@ pub struct TemplateSummary {
     pub id: String,
     pub name: String,
     pub vendor: String,
-    pub category: hypercolor_types::attachment::AttachmentCategory,
+    pub category: hypercolor_types::attachment::ComponentCategory,
     #[serde(default)]
-    pub origin: Option<hypercolor_types::attachment::AttachmentOrigin>,
+    pub origin: Option<hypercolor_types::attachment::ComponentOrigin>,
     pub led_count: u32,
     pub description: String,
     #[serde(default)]
@@ -243,12 +243,12 @@ pub struct TemplateListResponse {
 /// Request body for `PUT /api/v1/devices/:id/attachments`.
 #[derive(Debug, Serialize)]
 pub struct UpdateAttachmentsRequest {
-    pub bindings: Vec<AttachmentBindingRequest>,
+    pub bindings: Vec<ComponentBindingRequest>,
 }
 
 /// A single binding entry sent to the update endpoint.
 #[derive(Debug, Clone, Serialize)]
-pub struct AttachmentBindingRequest {
+pub struct ComponentBindingRequest {
     pub slot_id: String,
     pub template_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -324,7 +324,7 @@ pub async fn identify_attachment(
 /// Create a user-authored attachment template (custom strip, matrix, etc.).
 /// Uses raw request because the daemon returns detailed error text on failure.
 pub async fn create_attachment_template(
-    template: &hypercolor_types::attachment::AttachmentTemplate,
+    template: &hypercolor_types::attachment::ComponentTemplate,
 ) -> Result<TemplateSummary, String> {
     let body = serde_json::to_string(template).map_err(|e| format!("Serialize error: {e}"))?;
     let resp = Request::post("/api/v1/attachments/templates")
@@ -345,9 +345,7 @@ pub async fn create_attachment_template(
 }
 
 /// Fetch attachment bindings and import-ready zones for a physical device.
-pub async fn fetch_device_attachments(
-    device_id: &str,
-) -> Result<DeviceAttachmentsResponse, String> {
+pub async fn fetch_device_attachments(device_id: &str) -> Result<DeviceComponentsResponse, String> {
     client::fetch_json(&format!("/api/v1/devices/{device_id}/attachments"))
         .await
         .map_err(Into::into)
@@ -369,7 +367,7 @@ pub async fn fetch_attachment_templates(
 pub async fn update_device_attachments(
     device_id: &str,
     req: &UpdateAttachmentsRequest,
-) -> Result<DeviceAttachmentsResponse, String> {
+) -> Result<DeviceComponentsResponse, String> {
     client::put_json(&format!("/api/v1/devices/{device_id}/attachments"), req)
         .await
         .map_err(Into::into)

@@ -6,10 +6,10 @@
 
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
-use hypercolor_types::attachment::{AttachmentCategory, AttachmentSuggestedZone};
+use hypercolor_types::attachment::{ComponentCategory, ComponentSuggestedZone};
 use hypercolor_types::spatial::{
-    Corner, DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, Orientation, SamplingMode,
-    SpatialLayout, StripDirection, Winding, ZoneAttachment, ZoneShape,
+    Corner, EdgeBehavior, LedTopology, NormalizedPosition, Orientation, Output, OutputComponent,
+    SamplingMode, SpatialLayout, StripDirection, Winding, ZoneShape,
 };
 
 use crate::api::{ZoneSummary, ZoneTopologySummary};
@@ -90,12 +90,12 @@ pub(crate) struct ZoneVisualDefaults {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct SeededDeviceLayout {
-    pub zones: Vec<DeviceZone>,
+    pub zones: Vec<Output>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct SeededAttachmentLayout {
-    pub zones: Vec<DeviceZone>,
+    pub zones: Vec<Output>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -240,7 +240,7 @@ pub(crate) fn seeded_device_layout(
             LedTopology::PerimeterLoop { .. } | LedTopology::Point => None,
         };
 
-        seeded_zones.push(DeviceZone {
+        seeded_zones.push(Output {
             id: format!(
                 "zone_{}_{}",
                 sanitize_layout_identifier(device_id),
@@ -278,25 +278,25 @@ pub(crate) fn seeded_device_layout(
 }
 
 pub(crate) fn attachment_zone_size(
-    suggested: &AttachmentSuggestedZone,
+    suggested: &ComponentSuggestedZone,
     max_size: NormalizedPosition,
 ) -> NormalizedPosition {
     let units = attachment_visual_units(suggested);
     fit_visual_units(units, ATTACHMENT_MIN_SIZE, max_size)
 }
 
-pub(crate) fn attachment_zone_shape(category: &AttachmentCategory) -> Option<ZoneShape> {
+pub(crate) fn attachment_zone_shape(category: &ComponentCategory) -> Option<ZoneShape> {
     match category {
-        AttachmentCategory::Fan
-        | AttachmentCategory::Aio
-        | AttachmentCategory::Heatsink
-        | AttachmentCategory::Ring => Some(ZoneShape::Ring),
-        AttachmentCategory::Strip
-        | AttachmentCategory::Strimer
-        | AttachmentCategory::Case
-        | AttachmentCategory::Radiator
-        | AttachmentCategory::Matrix => Some(ZoneShape::Rectangle),
-        AttachmentCategory::Bulb | AttachmentCategory::Other(_) => None,
+        ComponentCategory::Fan
+        | ComponentCategory::Aio
+        | ComponentCategory::Heatsink
+        | ComponentCategory::Ring => Some(ZoneShape::Ring),
+        ComponentCategory::Strip
+        | ComponentCategory::Strimer
+        | ComponentCategory::Case
+        | ComponentCategory::Radiator
+        | ComponentCategory::Matrix => Some(ZoneShape::Rectangle),
+        ComponentCategory::Bulb | ComponentCategory::Other(_) => None,
     }
 }
 
@@ -304,7 +304,7 @@ pub(crate) fn attachment_zone_shape(category: &AttachmentCategory) -> Option<Zon
 pub(crate) fn seeded_attachment_layout(
     device_id: &str,
     _device_name: &str,
-    suggested_zones: &[AttachmentSuggestedZone],
+    suggested_zones: &[ComponentSuggestedZone],
     display_order_start: i32,
 ) -> SeededAttachmentLayout {
     if suggested_zones.is_empty() {
@@ -315,7 +315,7 @@ pub(crate) fn seeded_attachment_layout(
         .iter()
         .cloned()
         .fold(
-            std::collections::BTreeMap::<String, Vec<AttachmentSuggestedZone>>::new(),
+            std::collections::BTreeMap::<String, Vec<ComponentSuggestedZone>>::new(),
             |mut acc, zone| {
                 acc.entry(zone.slot_id.clone()).or_default().push(zone);
                 acc
@@ -357,7 +357,7 @@ pub(crate) fn seeded_attachment_layout(
             slot_zones.into_iter().zip(placements).enumerate()
         {
             let shape = attachment_zone_shape(&suggested.category);
-            zones.push(DeviceZone {
+            zones.push(Output {
                 id: attachment_zone_id(device_id, &suggested),
                 name: suggested.name.clone(),
                 device_id: device_id.to_owned(),
@@ -380,7 +380,7 @@ pub(crate) fn seeded_attachment_layout(
                 shape_preset: None,
                 display_order: slot_display_order_start
                     + i32::try_from(slot_offset).unwrap_or(i32::MAX),
-                attachment: Some(ZoneAttachment {
+                attachment: Some(OutputComponent {
                     template_id: suggested.template_id.clone(),
                     slot_id: suggested.slot_id.clone(),
                     instance: suggested.instance,
@@ -1013,25 +1013,25 @@ fn custom_visual_units(positions: &[NormalizedPosition]) -> VisualUnits {
     VisualUnits::new((max_x - min_x).max(0.25), (max_y - min_y).max(0.25))
 }
 
-fn attachment_visual_units(suggested: &AttachmentSuggestedZone) -> VisualUnits {
+fn attachment_visual_units(suggested: &ComponentSuggestedZone) -> VisualUnits {
     match suggested.category {
-        AttachmentCategory::Fan
-        | AttachmentCategory::Aio
-        | AttachmentCategory::Heatsink
-        | AttachmentCategory::Ring
-        | AttachmentCategory::Bulb => VisualUnits::new(1.0, 1.0),
-        AttachmentCategory::Strimer | AttachmentCategory::Matrix => {
+        ComponentCategory::Fan
+        | ComponentCategory::Aio
+        | ComponentCategory::Heatsink
+        | ComponentCategory::Ring
+        | ComponentCategory::Bulb => VisualUnits::new(1.0, 1.0),
+        ComponentCategory::Strimer | ComponentCategory::Matrix => {
             topology_visual_units(&suggested.topology)
         }
-        AttachmentCategory::Strip
-        | AttachmentCategory::Case
-        | AttachmentCategory::Radiator
-        | AttachmentCategory::Other(_) => topology_visual_units(&suggested.topology),
+        ComponentCategory::Strip
+        | ComponentCategory::Case
+        | ComponentCategory::Radiator
+        | ComponentCategory::Other(_) => topology_visual_units(&suggested.topology),
     }
 }
 
 fn attachment_slot_placements(
-    zones: &[AttachmentSuggestedZone],
+    zones: &[ComponentSuggestedZone],
     center: NormalizedPosition,
     max_size: NormalizedPosition,
 ) -> Vec<(NormalizedPosition, NormalizedPosition)> {
@@ -1096,7 +1096,7 @@ fn orientation_for_attachment_topology(topology: &LedTopology) -> Option<Orienta
     }
 }
 
-fn attachment_zone_id(device_id: &str, suggested: &AttachmentSuggestedZone) -> String {
+fn attachment_zone_id(device_id: &str, suggested: &ComponentSuggestedZone) -> String {
     format!(
         "attachment-{}-{}-{}-{}",
         sanitize_layout_identifier(device_id),

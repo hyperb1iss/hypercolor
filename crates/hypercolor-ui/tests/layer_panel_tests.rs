@@ -12,7 +12,7 @@ mod source;
 use std::collections::HashMap;
 
 use hypercolor_types::layer::{LayerBlendMode, LayerSource};
-use hypercolor_types::scene::{RenderGroup, RenderGroupId, RenderGroupRole};
+use hypercolor_types::scene::{Zone, ZoneId, ZoneRole};
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use hypercolor_types::viewport::FitMode;
 
@@ -243,9 +243,9 @@ fn sample_layout() -> SpatialLayout {
     }
 }
 
-fn group(name: &str, role: RenderGroupRole) -> RenderGroup {
-    RenderGroup {
-        id: RenderGroupId::new(),
+fn group(name: &str, role: ZoneRole) -> Zone {
+    Zone {
+        id: ZoneId::new(),
         name: name.to_owned(),
         description: None,
         effect_id: None,
@@ -266,15 +266,15 @@ fn group(name: &str, role: RenderGroupRole) -> RenderGroup {
 
 #[test]
 fn a_single_surface_offers_no_target_scope() {
-    let scopes = available_add_layer_scopes(&[group("Zone A", RenderGroupRole::Primary)]);
+    let scopes = available_add_layer_scopes(&[group("Zone A", ZoneRole::Primary)]);
     assert!(scopes.is_empty());
 }
 
 #[test]
 fn a_light_and_screen_scene_offers_every_relevant_scope() {
     let groups = [
-        group("Zone A", RenderGroupRole::Primary),
-        group("AIO Screen", RenderGroupRole::Display),
+        group("Zone A", ZoneRole::Primary),
+        group("AIO Screen", ZoneRole::Display),
     ];
     assert_eq!(
         available_add_layer_scopes(&groups),
@@ -290,8 +290,8 @@ fn a_light_and_screen_scene_offers_every_relevant_scope() {
 #[test]
 fn all_screens_scope_is_dropped_when_no_screens_exist() {
     let groups = [
-        group("Zone A", RenderGroupRole::Primary),
-        group("Zone B", RenderGroupRole::Custom),
+        group("Zone A", ZoneRole::Primary),
+        group("Zone B", ZoneRole::Custom),
     ];
     let scopes = available_add_layer_scopes(&groups);
     assert!(!scopes.contains(&AddLayerScope::AllScreens));
@@ -301,9 +301,9 @@ fn all_screens_scope_is_dropped_when_no_screens_exist() {
 #[test]
 fn scope_resolution_picks_the_right_surfaces() {
     let groups = [
-        group("Zone A", RenderGroupRole::Primary),
-        group("Zone B", RenderGroupRole::Custom),
-        group("AIO Screen", RenderGroupRole::Display),
+        group("Zone A", ZoneRole::Primary),
+        group("Zone B", ZoneRole::Custom),
+        group("AIO Screen", ZoneRole::Display),
     ];
     let selected = groups[0].id.to_string();
 

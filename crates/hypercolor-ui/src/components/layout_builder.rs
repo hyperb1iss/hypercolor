@@ -34,8 +34,8 @@ use crate::layout_page_state::{LayoutPageState, PerLayoutState};
 use crate::storage;
 use crate::toasts;
 use hypercolor_leptos_ext::events::{Input, target_is_text_entry};
-use hypercolor_types::scene::RenderGroupRole;
-use hypercolor_types::spatial::{DeviceZone, SpatialLayout};
+use hypercolor_types::scene::ZoneRole;
+use hypercolor_types::spatial::{Output, SpatialLayout};
 
 // Panel size defaults and constraints
 const SIDEBAR_DEFAULT: f64 = 280.0;
@@ -203,7 +203,7 @@ impl LayoutWriteHandle {
     /// During drag the canvas paints positions directly to the DOM and never
     /// touches the layout signal, so this is the *only* moment the reactive
     /// graph sees the change. Returns true if zone state actually changed.
-    pub fn commit_zones(self, zones: Vec<DeviceZone>) -> bool {
+    pub fn commit_zones(self, zones: Vec<Output>) -> bool {
         let unchanged = self
             .layout
             .with_untracked(|l| l.as_ref().is_some_and(|current| current.zones == zones));
@@ -219,7 +219,7 @@ impl LayoutWriteHandle {
         true
     }
 
-    pub fn replace_zones_with_history(self, zones: Vec<DeviceZone>) {
+    pub fn replace_zones_with_history(self, zones: Vec<Output>) {
         self.update(move |current| {
             if let Some(layout) = current {
                 layout.zones = zones;
@@ -286,7 +286,7 @@ pub(crate) struct LayoutEditorContext {
 #[derive(Clone, Copy)]
 pub(crate) struct LayoutZoneDisplayContext {
     pub attachment_profiles:
-        LocalResource<std::collections::HashMap<String, api::DeviceAttachmentsResponse>>,
+        LocalResource<std::collections::HashMap<String, api::DeviceComponentsResponse>>,
 }
 
 /// The layout-library controls and editor actions, lifted out of the
@@ -644,7 +644,7 @@ pub(crate) fn LayoutEditorProvider(children: Children) -> impl IntoView {
 
     // Push live preview to spatial engine whenever the layout changes (debounced).
     Effect::new(
-        move |prev_snapshot: Option<Option<Vec<hypercolor_types::spatial::DeviceZone>>>| {
+        move |prev_snapshot: Option<Option<Vec<hypercolor_types::spatial::Output>>>| {
             let current = layout.get();
             let current_snapshot = current.as_ref().map(|current| current.zones.clone());
 
@@ -1484,7 +1484,7 @@ pub(crate) struct ZoneCanvasActions {
 /// Studio Stage, scoped to the **selected zone's** own `SpatialLayout`.
 ///
 /// Where [`LayoutEditorProvider`] edits the standalone layouts library,
-/// this provider loads the selected zone's `RenderGroup.layout` and
+/// this provider loads the selected zone's `Zone.layout` and
 /// persists it through the per-zone layout API (`PUT
 /// .../zones/{id}/layout` — a placement merge, plan 55 §5.1). Switching
 /// zones switches the canvas. Mount it once above the Stage; it provides
@@ -1496,7 +1496,7 @@ pub(crate) fn ZoneLayoutProvider(
     /// `groups_revision` carried as each save's `If-Match` precondition.
     #[prop(into)]
     active_scene: Signal<Option<api::ActiveSceneResponse>>,
-    /// The selected zone's id (a `RenderGroup` id). `None`, an unknown
+    /// The selected zone's id (a `Zone` id). `None`, an unknown
     /// id, or a Display zone leaves the canvas empty.
     #[prop(into)]
     selected_zone_id: Signal<Option<String>>,
@@ -1612,7 +1612,7 @@ pub(crate) fn ZoneLayoutProvider(
                 .groups
                 .iter()
                 .find(|group| group.id.to_string() == zone_id)?;
-            if group.role == RenderGroupRole::Display {
+            if group.role == ZoneRole::Display {
                 return None;
             }
             let mut output_ids: Vec<String> = group

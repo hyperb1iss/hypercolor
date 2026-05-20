@@ -1,18 +1,18 @@
 //! The "+ Add device" affordance on each Studio zone.
 //!
 //! Picking a device brings every output it has into this zone. A device
-//! placed in another zone is moved (its `DeviceZone`s reassigned); a
+//! placed in another zone is moved (its `Output`s reassigned); a
 //! device the scene has not placed at all is minted (a fresh
-//! `DeviceZone` per channel; the daemon resets placement on assign).
+//! `Output` per channel; the daemon resets placement on assign).
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_icons::Icon;
 
-use hypercolor_types::scene::{RenderGroup, RenderGroupRole};
+use hypercolor_types::scene::{Zone, ZoneRole};
 
 use crate::api;
-use crate::api::zones::{DeviceZoneAssignment, ZoneOutcome};
+use crate::api::zones::{OutputAssignment, ZoneOutcome};
 use crate::app::DevicesContext;
 use crate::components::silk_select::SilkSelect;
 use crate::icons::*;
@@ -21,7 +21,7 @@ use crate::toasts;
 
 use super::StudioContext;
 
-/// Canvas dimensions used when minting a `DeviceZone` for an unassigned
+/// Canvas dimensions used when minting a `Output` for an unassigned
 /// device. The daemon resets position and size on assign, so these only
 /// seed the topology defaults `create_default_zone` derives from them.
 const MINT_CANVAS_WIDTH: u32 = 640;
@@ -100,14 +100,14 @@ pub fn ZoneAddDevice(zone_id: String) -> impl IntoView {
             return;
         };
 
-        let mut assignments: Vec<DeviceZoneAssignment> = Vec::new();
+        let mut assignments: Vec<OutputAssignment> = Vec::new();
         for group in &scene.groups {
             if group.id.to_string() == target {
                 continue;
             }
             for output in &group.layout.zones {
                 if output.device_id == layout_device_id {
-                    assignments.push(DeviceZoneAssignment::Existing {
+                    assignments.push(OutputAssignment::Existing {
                         id: output.id.clone(),
                     });
                 }
@@ -192,17 +192,17 @@ pub fn ZoneAddDevice(zone_id: String) -> impl IntoView {
     }
 }
 
-/// Build a fresh `DeviceZone` per channel for a device that no scene
+/// Build a fresh `Output` per channel for a device that no scene
 /// has placed: one zone per declared `ZoneSummary`, or a single zone
 /// for a device with no channels. The daemon resets position and size
 /// on assign, so these defaults only seed topology and shape.
-fn mint_device_zones(device: &api::DeviceSummary) -> Vec<DeviceZoneAssignment> {
+fn mint_device_zones(device: &api::DeviceSummary) -> Vec<OutputAssignment> {
     let layout_id = device.layout_device_id.as_str();
     let physical_id = device.id.as_str();
     let name = device.name.as_str();
     let total_leds = device.total_leds;
     if device.zones.is_empty() {
-        return vec![DeviceZoneAssignment::New(Box::new(
+        return vec![OutputAssignment::New(Box::new(
             layout_utils::create_default_zone(
                 layout_id,
                 physical_id,
@@ -220,7 +220,7 @@ fn mint_device_zones(device: &api::DeviceSummary) -> Vec<DeviceZoneAssignment> {
         .iter()
         .enumerate()
         .map(|(order, channel)| {
-            DeviceZoneAssignment::New(Box::new(layout_utils::create_default_zone(
+            OutputAssignment::New(Box::new(layout_utils::create_default_zone(
                 layout_id,
                 physical_id,
                 name,
@@ -237,9 +237,9 @@ fn mint_device_zones(device: &api::DeviceSummary) -> Vec<DeviceZoneAssignment> {
 /// The non-target zone that currently owns a device's outputs, or
 /// "unassigned" if no zone holds any. Drives the location hint in the
 /// picker label so the user sees where the move comes from.
-fn device_location(groups: &[RenderGroup], device_id: &str, target: &str) -> String {
+fn device_location(groups: &[Zone], device_id: &str, target: &str) -> String {
     for group in groups {
-        if group.role == RenderGroupRole::Display {
+        if group.role == ZoneRole::Display {
             continue;
         }
         if group.id.to_string() == target {
@@ -260,9 +260,9 @@ fn device_location(groups: &[RenderGroup], device_id: &str, target: &str) -> Str
 /// Display name for a zone. Copies the rule used in `zone_assignment`
 /// so the Default zone reads as "Default zone" rather than its raw role
 /// string.
-fn zone_display_name(group: &RenderGroup) -> String {
+fn zone_display_name(group: &Zone) -> String {
     let trimmed = group.name.trim();
-    if group.role == RenderGroupRole::Primary
+    if group.role == ZoneRole::Primary
         && (trimmed.is_empty() || trimmed.eq_ignore_ascii_case("primary"))
     {
         "Default zone".to_owned()

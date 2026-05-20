@@ -18,12 +18,12 @@ mod zone_tree;
 
 use std::collections::{HashMap, HashSet};
 
-use hypercolor_types::scene::RenderGroupRole;
+use hypercolor_types::scene::ZoneRole;
 use leptos::prelude::*;
 use leptos_icons::Icon;
 
 use crate::api;
-use crate::api::AttachmentBindingSummary;
+use crate::api::ComponentBindingSummary;
 use crate::components::layout_builder::ZoneLayoutProvider;
 use crate::components::page_header::{HeaderToolbar, PageAccent, PageHeader};
 use crate::components::resize_handle::ResizeHandle;
@@ -90,7 +90,7 @@ pub struct StudioContext {
     /// Cache of component (attachment) bindings per physical device id.
     /// Each device card lazily fills its own entry; channel rows read it
     /// to surface live binding labels without re-fetching per render.
-    pub attachment_cache: RwSignal<HashMap<String, Vec<AttachmentBindingSummary>>>,
+    pub attachment_cache: RwSignal<HashMap<String, Vec<ComponentBindingSummary>>>,
 }
 
 #[component]
@@ -129,7 +129,7 @@ pub fn StudioPage() -> impl IntoView {
         let next = scene
             .groups
             .iter()
-            .find(|group| group.role != RenderGroupRole::Display)
+            .find(|group| group.role != ZoneRole::Display)
             .or_else(|| scene.groups.first())
             .map(|group| group.id.to_string());
         selected_surface_id.set(next);
@@ -145,9 +145,10 @@ pub fn StudioPage() -> impl IntoView {
         };
         let selected_led_zone = selected_surface_id.get().filter(|id| {
             id != UNASSIGNED_SURFACE_ID
-                && scene.groups.iter().any(|group| {
-                    group.id.to_string() == *id && group.role != RenderGroupRole::Display
-                })
+                && scene
+                    .groups
+                    .iter()
+                    .any(|group| group.id.to_string() == *id && group.role != ZoneRole::Display)
         });
         if let Some(zone_id) = selected_led_zone {
             effects_ctx.apply_target.set(Some(zone_id));
@@ -235,7 +236,7 @@ pub fn StudioPage() -> impl IntoView {
         save_hidden_outputs(&snapshot);
     });
 
-    let attachment_cache = RwSignal::new(HashMap::<String, Vec<AttachmentBindingSummary>>::new());
+    let attachment_cache = RwSignal::new(HashMap::<String, Vec<ComponentBindingSummary>>::new());
 
     provide_context(StudioContext {
         selected_surface_id,

@@ -35,9 +35,9 @@ pub(super) struct PaletteState {
     pub collapsed_devices: ReadSignal<std::collections::HashSet<String>>,
     pub set_collapsed_devices: WriteSignal<std::collections::HashSet<String>>,
     pub attachment_cache:
-        ReadSignal<std::collections::HashMap<String, Vec<api::AttachmentBindingSummary>>>,
+        ReadSignal<std::collections::HashMap<String, Vec<api::ComponentBindingSummary>>>,
     pub set_attachment_cache:
-        WriteSignal<std::collections::HashMap<String, Vec<api::AttachmentBindingSummary>>>,
+        WriteSignal<std::collections::HashMap<String, Vec<api::ComponentBindingSummary>>>,
     /// Write-side of the master "hide all" snapshot. Individual device/zone
     /// toggles clear this so manual changes invalidate the saved state.
     pub set_master_hidden_snapshot: WriteSignal<Option<std::collections::HashSet<String>>>,
@@ -62,7 +62,7 @@ pub fn LayoutPalette() -> impl IntoView {
 
     let (attachment_cache, set_attachment_cache) = signal(std::collections::HashMap::<
         String,
-        Vec<api::AttachmentBindingSummary>,
+        Vec<api::ComponentBindingSummary>,
     >::new());
     let (master_hidden_snapshot, set_master_hidden_snapshot) =
         signal(None::<std::collections::HashSet<String>>);

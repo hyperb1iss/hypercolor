@@ -9,10 +9,10 @@ use crate::api::{self, ZoneSummary};
 use crate::channel_names;
 use crate::layout_geometry;
 use crate::style_utils::uuid_v4_hex;
-use hypercolor_types::spatial::{DeviceZone, NormalizedPosition, SpatialLayout};
+use hypercolor_types::spatial::{NormalizedPosition, Output, SpatialLayout};
 
 /// Type alias for the removed-zone stash, keyed by (device_id, zone_name).
-pub type ZoneCache = std::collections::HashMap<(String, Option<String>), DeviceZone>;
+pub type ZoneCache = std::collections::HashMap<(String, Option<String>), Output>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ZoneIdentifyTarget {
@@ -56,7 +56,7 @@ pub fn current_canvas_dimensions(layout: &Signal<Option<SpatialLayout>>) -> (u32
     })
 }
 
-/// Create a default `DeviceZone` placed at canvas center.
+/// Create a default `Output` placed at canvas center.
 #[allow(clippy::too_many_arguments)]
 pub fn create_default_zone(
     device_id: &str,
@@ -67,7 +67,7 @@ pub fn create_default_zone(
     canvas_width: u32,
     canvas_height: u32,
     display_order: i32,
-) -> DeviceZone {
+) -> Output {
     let defaults = layout_geometry::default_zone_visuals(
         device_name,
         zone,
@@ -85,7 +85,7 @@ pub fn create_default_zone(
         },
     );
 
-    DeviceZone {
+    Output {
         id: format!("zone_{}", uuid_v4_hex()),
         name: display_name,
         device_id: device_id.to_string(),
@@ -281,9 +281,9 @@ pub fn prefixed_channel_display_name(device_name: &str, channel_name: &str) -> S
 }
 
 pub fn effective_zone_display(
-    zone: &DeviceZone,
+    zone: &Output,
     devices: &[api::DeviceSummary],
-    attachment_profiles: &HashMap<String, api::DeviceAttachmentsResponse>,
+    attachment_profiles: &HashMap<String, api::DeviceComponentsResponse>,
 ) -> EffectiveZoneDisplay {
     let Some(device) = devices
         .iter()
@@ -417,7 +417,7 @@ pub fn sync_channel_display_name_in_layout(
 }
 
 fn effective_device_zone_display(
-    zone: &DeviceZone,
+    zone: &Output,
     device: &api::DeviceSummary,
 ) -> EffectiveZoneDisplay {
     let matched_zone = resolve_device_zone_summary(device, zone.zone_name.as_deref());
@@ -470,10 +470,10 @@ fn effective_device_zone_display(
 }
 
 fn effective_attachment_zone_display(
-    zone: &DeviceZone,
+    zone: &Output,
     device: &api::DeviceSummary,
-    attachment: &hypercolor_types::spatial::ZoneAttachment,
-    attachment_profiles: &HashMap<String, api::DeviceAttachmentsResponse>,
+    attachment: &hypercolor_types::spatial::OutputComponent,
+    attachment_profiles: &HashMap<String, api::DeviceComponentsResponse>,
 ) -> EffectiveZoneDisplay {
     let binding = attachment_profiles
         .get(&zone.device_id)
@@ -510,9 +510,9 @@ fn resolve_device_zone_summary<'a>(
 }
 
 fn resolve_attachment_binding<'a>(
-    profile: &'a api::DeviceAttachmentsResponse,
-    attachment: &hypercolor_types::spatial::ZoneAttachment,
-) -> Option<(usize, &'a api::AttachmentBindingSummary)> {
+    profile: &'a api::DeviceComponentsResponse,
+    attachment: &hypercolor_types::spatial::OutputComponent,
+) -> Option<(usize, &'a api::ComponentBindingSummary)> {
     let slot = profile
         .slots
         .iter()
@@ -564,7 +564,7 @@ fn resolve_attachment_binding<'a>(
 }
 
 fn attachment_binding_display_name(
-    profile: &api::DeviceAttachmentsResponse,
+    profile: &api::DeviceComponentsResponse,
     binding_index: usize,
     instance: u32,
 ) -> Option<String> {
@@ -606,7 +606,7 @@ fn attachment_binding_display_name(
     None
 }
 
-fn attachment_binding_base_name(binding: &api::AttachmentBindingSummary, instance: u32) -> String {
+fn attachment_binding_base_name(binding: &api::ComponentBindingSummary, instance: u32) -> String {
     match binding.name.as_deref() {
         Some(name) if binding.instances > 1 => {
             format!("{name} - {} {}", binding.template_name, instance + 1)
@@ -666,7 +666,7 @@ fn zone_id_matches_attachment_slot(binding_slot_id: &str, candidate: Option<&str
 
 fn representative_zone_id_with_filter(
     layout: &SpatialLayout,
-    mut filter: impl FnMut(&hypercolor_types::spatial::DeviceZone) -> bool,
+    mut filter: impl FnMut(&hypercolor_types::spatial::Output) -> bool,
 ) -> Option<String> {
     layout
         .zones

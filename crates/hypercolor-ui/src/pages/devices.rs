@@ -5,7 +5,7 @@ use leptos::ev;
 use leptos::prelude::*;
 use leptos_icons::Icon;
 
-use hypercolor_types::scene::RenderGroupRole;
+use hypercolor_types::scene::ZoneRole;
 
 use crate::api::DeviceSummary;
 use crate::app::{DevicesContext, WsContext};
@@ -115,10 +115,10 @@ pub fn DevicesPage() -> impl IntoView {
         let mut map = std::collections::HashMap::<String, String>::new();
         if let Some(Ok(Some(scene))) = devices_scene.get() {
             for group in &scene.groups {
-                if group.role == RenderGroupRole::Display {
+                if group.role == ZoneRole::Display {
                     continue;
                 }
-                let label = if group.role == RenderGroupRole::Primary && group.name == "Primary" {
+                let label = if group.role == ZoneRole::Primary && group.name == "Primary" {
                     "Default zone".to_owned()
                 } else {
                     group.name.clone()

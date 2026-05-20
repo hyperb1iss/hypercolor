@@ -7,8 +7,8 @@ pub(super) use hypercolor_leptos_ext::ws::PreviewFrameChannel;
 pub use hypercolor_leptos_ext::ws::{
     PreviewFrameView as CanvasFrame, PreviewPixelFormat as CanvasPixelFormat,
 };
-use hypercolor_types::event::{LayerHealth, RenderGroupChangeKind};
-use hypercolor_types::scene::{RenderGroupRole, SceneKind, SceneMutationMode};
+use hypercolor_types::event::{LayerHealth, ZoneChangeKind};
+use hypercolor_types::scene::{SceneKind, SceneMutationMode, ZoneRole};
 use leptos::prelude::*;
 use serde::Deserialize;
 
@@ -185,8 +185,8 @@ pub struct SceneEventHint {
     pub scene_kind: Option<SceneKind>,
     pub scene_mutation_mode: Option<SceneMutationMode>,
     pub scene_snapshot_locked: Option<bool>,
-    pub render_group_role: Option<RenderGroupRole>,
-    pub render_group_change_kind: Option<RenderGroupChangeKind>,
+    pub render_group_role: Option<ZoneRole>,
+    pub render_group_change_kind: Option<ZoneChangeKind>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -560,8 +560,7 @@ pub(crate) fn extract_scene_event_hint(
 }
 
 pub(crate) fn scene_event_affects_active_effect(hint: &SceneEventHint) -> bool {
-    hint.event_type != "render_group_changed"
-        || hint.render_group_role != Some(RenderGroupRole::Display)
+    hint.event_type != "render_group_changed" || hint.render_group_role != Some(ZoneRole::Display)
 }
 
 fn extract_active_effect_name(state: &serde_json::Value) -> Option<String> {

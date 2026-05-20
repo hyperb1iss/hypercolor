@@ -8,8 +8,8 @@ mod messages;
 
 use std::collections::HashMap;
 
-use hypercolor_types::event::{LayerHealth, RenderGroupChangeKind};
-use hypercolor_types::scene::{RenderGroupRole, SceneKind, SceneMutationMode};
+use hypercolor_types::event::{LayerHealth, ZoneChangeKind};
+use hypercolor_types::scene::{SceneKind, SceneMutationMode, ZoneRole};
 use messages::{
     extract_effect_error_hint, extract_layer_health, extract_scene_event_hint,
     group_has_degraded_layer, layer_health_key, scene_event_affects_active_effect,
@@ -53,10 +53,10 @@ fn extract_scene_event_hint_parses_display_render_group_metadata() {
 
     assert_eq!(hint.event_type, "render_group_changed");
     assert_eq!(hint.scene_id.as_deref(), Some("scene-1"));
-    assert_eq!(hint.render_group_role, Some(RenderGroupRole::Display));
+    assert_eq!(hint.render_group_role, Some(ZoneRole::Display));
     assert_eq!(
         hint.render_group_change_kind,
-        Some(RenderGroupChangeKind::ControlsPatched)
+        Some(ZoneChangeKind::ControlsPatched)
     );
 }
 
@@ -87,11 +87,8 @@ fn scene_event_affects_active_effect_keeps_primary_render_group_changes() {
         }),
     );
 
-    assert_eq!(hint.render_group_role, Some(RenderGroupRole::Primary));
-    assert_eq!(
-        hint.render_group_change_kind,
-        Some(RenderGroupChangeKind::Updated)
-    );
+    assert_eq!(hint.render_group_role, Some(ZoneRole::Primary));
+    assert_eq!(hint.render_group_change_kind, Some(ZoneChangeKind::Updated));
     assert!(scene_event_affects_active_effect(&hint));
 }
 

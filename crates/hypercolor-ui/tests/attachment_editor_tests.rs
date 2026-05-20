@@ -3,23 +3,23 @@ mod api;
 #[path = "../src/components/attachment_editor.rs"]
 mod attachment_editor;
 
-use api::{AttachmentBindingSummary, TemplateSummary};
+use api::{ComponentBindingSummary, TemplateSummary};
 use attachment_editor::{DraftRow, expand_bindings_to_drafts, summarize_channel};
-use hypercolor_types::attachment::{AttachmentCategory, AttachmentSlot};
+use hypercolor_types::attachment::{ComponentCategory, ComponentSlot};
 
-fn slot() -> AttachmentSlot {
-    AttachmentSlot {
+fn slot() -> ComponentSlot {
+    ComponentSlot {
         id: "channel-1".to_owned(),
         name: "Channel 1".to_owned(),
         led_start: 0,
         led_count: 48,
-        suggested_categories: vec![AttachmentCategory::Fan],
+        suggested_categories: vec![ComponentCategory::Fan],
         allowed_templates: Vec::new(),
         allow_custom: true,
     }
 }
 
-fn template(id: &str, name: &str, category: AttachmentCategory, led_count: u32) -> TemplateSummary {
+fn template(id: &str, name: &str, category: ComponentCategory, led_count: u32) -> TemplateSummary {
     TemplateSummary {
         id: id.to_owned(),
         name: name.to_owned(),
@@ -39,8 +39,8 @@ fn binding(
     instances: u32,
     led_offset: u32,
     name: Option<&str>,
-) -> AttachmentBindingSummary {
-    AttachmentBindingSummary {
+) -> ComponentBindingSummary {
+    ComponentBindingSummary {
         slot_id: slot_id.to_owned(),
         template_id: template_id.to_owned(),
         template_name: template_name.to_owned(),
@@ -127,7 +127,7 @@ fn pack_slot_rows_auto_packs_rows_without_manual_offsets() {
     let templates = vec![template(
         "lian-li-sl-unifan-fan",
         "Lian Li UNIFan SL120 - 16 LED",
-        AttachmentCategory::Fan,
+        ComponentCategory::Fan,
         16,
     )];
     let rows = vec![
@@ -152,13 +152,13 @@ fn summarize_slot_rows_flags_overflow_when_rows_exceed_slot_capacity() {
         template(
             "fan",
             "Lian Li UNIFan SL120 - 16 LED",
-            AttachmentCategory::Fan,
+            ComponentCategory::Fan,
             16,
         ),
         template(
             "strip",
             "Lian Li O11 Dynamic Evo Front Strip - 47 LED",
-            AttachmentCategory::Case,
+            ComponentCategory::Case,
             47,
         ),
     ];

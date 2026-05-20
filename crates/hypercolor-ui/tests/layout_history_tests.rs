@@ -6,15 +6,15 @@ mod compound_selection;
 mod layout_history;
 
 use hypercolor_types::spatial::{
-    DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+    EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection,
 };
 
 use compound_selection::CompoundDepth;
 use layout_history::{LayoutEditorSnapshot, LayoutHistoryState, RemovedZoneCache};
 
-fn zone(id: &str, x: f32) -> DeviceZone {
-    DeviceZone {
+fn zone(id: &str, x: f32) -> Output {
+    Output {
         id: id.to_owned(),
         name: id.to_owned(),
         device_id: "device-1".to_owned(),
@@ -40,7 +40,7 @@ fn zone(id: &str, x: f32) -> DeviceZone {
     }
 }
 
-fn layout(zones: Vec<DeviceZone>) -> SpatialLayout {
+fn layout(zones: Vec<Output>) -> SpatialLayout {
     SpatialLayout {
         id: "layout".to_owned(),
         name: "Layout".to_owned(),

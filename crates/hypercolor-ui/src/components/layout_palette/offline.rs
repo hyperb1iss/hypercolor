@@ -21,14 +21,14 @@ pub(super) fn render_offline_devices_section(state: PaletteState) -> Option<AnyV
     let set_hidden_zones = state.set_hidden_zones;
 
     // Collect unique offline device IDs from the layout
-    let offline_devices: Vec<(String, Vec<hypercolor_types::spatial::DeviceZone>)> =
+    let offline_devices: Vec<(String, Vec<hypercolor_types::spatial::Output>)> =
         layout.with(|current| {
             let Some(l) = current.as_ref() else {
                 return Vec::new();
             };
             let mut by_device: std::collections::BTreeMap<
                 String,
-                Vec<hypercolor_types::spatial::DeviceZone>,
+                Vec<hypercolor_types::spatial::Output>,
             > = std::collections::BTreeMap::new();
             for zone in &l.zones {
                 if !connected_ids.contains(&zone.device_id) {

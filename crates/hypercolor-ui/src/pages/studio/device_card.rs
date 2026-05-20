@@ -43,7 +43,7 @@ struct ComponentRow {
     name: String,
     shape_svg: &'static str,
     led_count: usize,
-    /// `Output.id` (`DeviceZone.id`) when this channel has an output
+    /// `Output.id` (`Output.id`) when this channel has an output
     /// in the current zone — `None` for the Unassigned bucket or a
     /// channel with no placed output, in which case the row offers no
     /// hide toggle.

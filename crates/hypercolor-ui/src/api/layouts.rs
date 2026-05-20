@@ -49,7 +49,7 @@ pub struct UpdateLayoutApiRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub canvas_height: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub zones: Option<Vec<hypercolor_types::spatial::DeviceZone>>,
+    pub zones: Option<Vec<hypercolor_types::spatial::Output>>,
 }
 
 // ── Fetch Functions ─────────────────────────────────────────────────────────

@@ -8,17 +8,17 @@ mod device_grouping;
 
 use std::collections::HashMap;
 
-use hypercolor_types::scene::{RenderGroup, RenderGroupId, RenderGroupRole};
+use hypercolor_types::scene::{Zone, ZoneId, ZoneRole};
 use hypercolor_types::spatial::{
-    DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+    EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection,
 };
 
 use device_grouping::{DeviceMeta, device_rows_for_zone, unassigned_device_rows};
 
-/// One `DeviceZone` output: a device id, an optional channel, an LED count.
-fn output(device_id: &str, zone_name: Option<&str>, leds: u32) -> DeviceZone {
-    DeviceZone {
+/// One `Output` output: a device id, an optional channel, an LED count.
+fn output(device_id: &str, zone_name: Option<&str>, leds: u32) -> Output {
+    Output {
         id: format!("{device_id}:{}", zone_name.unwrap_or("0")),
         name: device_id.to_owned(),
         device_id: device_id.to_owned(),
@@ -52,9 +52,9 @@ fn meta(layout_device_id: &str, name: &str, total_leds: u32) -> DeviceMeta {
     }
 }
 
-fn group_with(zones: Vec<DeviceZone>) -> RenderGroup {
-    RenderGroup {
-        id: RenderGroupId::new(),
+fn group_with(zones: Vec<Output>) -> Zone {
+    Zone {
+        id: ZoneId::new(),
         name: "Zone".to_owned(),
         description: None,
         effect_id: None,
@@ -78,7 +78,7 @@ fn group_with(zones: Vec<DeviceZone>) -> RenderGroup {
         enabled: true,
         color: None,
         display_target: None,
-        role: RenderGroupRole::Primary,
+        role: ZoneRole::Primary,
         controls_version: 0,
         layers_version: 0,
     }

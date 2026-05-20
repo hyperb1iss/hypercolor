@@ -8,7 +8,7 @@ mod display_utils;
 mod style_utils;
 
 use api::{
-    AttachmentBindingRequest, DisplaySummary, PairDeviceRequest, SetDisplayFaceRequest,
+    ComponentBindingRequest, DisplaySummary, PairDeviceRequest, SetDisplayFaceRequest,
     UpdateSimulatedDisplayRequest,
 };
 use display_utils::{
@@ -160,7 +160,7 @@ fn pair_device_request_skips_empty_values() {
 
 #[test]
 fn attachment_binding_request_keeps_explicit_defaults_on_wire() {
-    let payload = serde_json::to_value(AttachmentBindingRequest {
+    let payload = serde_json::to_value(ComponentBindingRequest {
         slot_id: "slot-1".to_owned(),
         template_id: "template-1".to_owned(),
         name: None,

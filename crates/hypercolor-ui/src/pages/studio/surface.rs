@@ -5,11 +5,11 @@
 //! never a rebuilt editor. Kept leptos-free for `#[path]` tests.
 
 use hypercolor_types::layer::LayerSource;
-use hypercolor_types::scene::{RenderGroup, RenderGroupRole};
+use hypercolor_types::scene::{Zone, ZoneRole};
 
 /// Synthetic rail-entry id for the §9.4 Unassigned entry. It is not a
 /// surface — it has no layer stack and no Stage — so it never collides
-/// with a real `RenderGroupId` (a UUID, which this is not).
+/// with a real `ZoneId` (a UUID, which this is not).
 pub const UNASSIGNED_SURFACE_ID: &str = "__unassigned__";
 
 /// Which rail section a surface belongs to.
@@ -31,7 +31,7 @@ pub struct Surface {
     pub enabled: bool,
     /// Semantic role of the backing render group. `Primary` is the §9.2
     /// Default zone — it cannot be deleted through the zone endpoints.
-    pub role: RenderGroupRole,
+    pub role: ZoneRole,
     /// Optional UI accent color for the zone swatch (§9.2).
     pub color: Option<String>,
     /// Physical display device backing a Screen surface — the key the
@@ -53,7 +53,7 @@ impl Surface {
     /// `Primary` Default zone is permanent; `Custom` zones are removable.
     #[must_use]
     pub fn is_deletable_zone(&self) -> bool {
-        self.kind == SurfaceKind::Light && self.role == RenderGroupRole::Custom
+        self.kind == SurfaceKind::Light && self.role == ZoneRole::Custom
     }
 }
 
@@ -61,10 +61,10 @@ impl Surface {
 /// this exceeds one — the trigger for the per-zone controls and the
 /// zone-assignment panel.
 #[must_use]
-pub fn led_zone_count(groups: &[RenderGroup]) -> usize {
+pub fn led_zone_count(groups: &[Zone]) -> usize {
     groups
         .iter()
-        .filter(|group| group.role != RenderGroupRole::Display)
+        .filter(|group| group.role != ZoneRole::Display)
         .count()
 }
 
@@ -72,11 +72,11 @@ pub fn led_zone_count(groups: &[RenderGroup]) -> usize {
 /// order. LED-role groups become Lights; display-role groups become
 /// Screens.
 #[must_use]
-pub fn surfaces_from_groups(groups: &[RenderGroup]) -> Vec<Surface> {
+pub fn surfaces_from_groups(groups: &[Zone]) -> Vec<Surface> {
     groups
         .iter()
         .map(|group| {
-            let kind = if group.role == RenderGroupRole::Display {
+            let kind = if group.role == ZoneRole::Display {
                 SurfaceKind::Screen
             } else {
                 SurfaceKind::Light
@@ -106,7 +106,7 @@ pub fn surfaces_from_groups(groups: &[RenderGroup]) -> Vec<Surface> {
 /// Display label of a group's top layer — the last entry of the
 /// bottom-to-top authored stack. Uses the layer's user-set name when it
 /// has one, otherwise a plain-words label for its source kind.
-fn top_layer_label(group: &RenderGroup) -> Option<String> {
+fn top_layer_label(group: &Zone) -> Option<String> {
     let layers = group.effective_layers();
     let top = layers.last()?;
     Some(
@@ -133,8 +133,8 @@ fn layer_source_kind(source: &LayerSource) -> &'static str {
 /// name. The `Primary` group is the Default zone (§3): it shows the
 /// user's typed name, or **"Default zone"** while still unnamed. There is
 /// no "All Lights" — the default zone is a zone at every scale.
-fn surface_name(group: &RenderGroup, kind: SurfaceKind) -> String {
-    if kind != SurfaceKind::Light || group.role != RenderGroupRole::Primary {
+fn surface_name(group: &Zone, kind: SurfaceKind) -> String {
+    if kind != SurfaceKind::Light || group.role != ZoneRole::Primary {
         return group.name.clone();
     }
     if is_blank_default_name(&group.name) {

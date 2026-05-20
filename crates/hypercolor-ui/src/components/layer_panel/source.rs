@@ -11,7 +11,7 @@ use hypercolor_types::asset::AssetId;
 use hypercolor_types::canvas::srgb_to_linear;
 use hypercolor_types::effect::EffectId;
 use hypercolor_types::layer::{LayerBlendMode, LayerSource, MediaPlayback, WebViewportRender};
-use hypercolor_types::scene::{RenderGroup, RenderGroupRole};
+use hypercolor_types::scene::{Zone, ZoneRole};
 use hypercolor_types::viewport::{FitMode, ViewportRect};
 use uuid::Uuid;
 
@@ -81,16 +81,12 @@ impl AddLayerScope {
 /// nothing to scope to, and a scope that would target nothing is dropped
 /// (§6.6), so a result shorter than two means "show no selector".
 #[must_use]
-pub fn available_add_layer_scopes(groups: &[RenderGroup]) -> Vec<AddLayerScope> {
+pub fn available_add_layer_scopes(groups: &[Zone]) -> Vec<AddLayerScope> {
     if groups.len() < 2 {
         return Vec::new();
     }
-    let has_lights = groups
-        .iter()
-        .any(|group| group.role != RenderGroupRole::Display);
-    let has_screens = groups
-        .iter()
-        .any(|group| group.role == RenderGroupRole::Display);
+    let has_lights = groups.iter().any(|group| group.role != ZoneRole::Display);
+    let has_screens = groups.iter().any(|group| group.role == ZoneRole::Display);
     let mut scopes = vec![AddLayerScope::ThisSurface];
     if has_lights {
         scopes.push(AddLayerScope::AllLights);
@@ -108,19 +104,19 @@ pub fn available_add_layer_scopes(groups: &[RenderGroup]) -> Vec<AddLayerScope> 
 #[must_use]
 pub fn resolve_add_layer_targets(
     scope: AddLayerScope,
-    groups: &[RenderGroup],
+    groups: &[Zone],
     selected_group_id: &str,
 ) -> Vec<String> {
     match scope {
         AddLayerScope::ThisSurface => vec![selected_group_id.to_owned()],
         AddLayerScope::AllLights => groups
             .iter()
-            .filter(|group| group.role != RenderGroupRole::Display)
+            .filter(|group| group.role != ZoneRole::Display)
             .map(|group| group.id.to_string())
             .collect(),
         AddLayerScope::AllScreens => groups
             .iter()
-            .filter(|group| group.role == RenderGroupRole::Display)
+            .filter(|group| group.role == ZoneRole::Display)
             .map(|group| group.id.to_string())
             .collect(),
         AddLayerScope::WholeScene => groups.iter().map(|group| group.id.to_string()).collect(),

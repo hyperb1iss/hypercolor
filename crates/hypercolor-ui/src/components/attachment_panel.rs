@@ -8,7 +8,7 @@ use leptos_icons::Icon;
 
 use hypercolor_leptos_ext::events::Input;
 use hypercolor_leptos_ext::prelude::now_ms;
-use hypercolor_types::attachment::AttachmentSuggestedZone;
+use hypercolor_types::attachment::ComponentSuggestedZone;
 
 use crate::api;
 use crate::app::DevicesContext;
@@ -40,7 +40,7 @@ pub fn WiringPanel(
         let id = device_id.get();
         async move {
             if id.is_empty() {
-                return Ok(api::DeviceAttachmentsResponse {
+                return Ok(api::DeviceComponentsResponse {
                     device_id: String::new(),
                     device_name: String::new(),
                     slots: Vec::new(),
@@ -392,24 +392,24 @@ pub fn WiringPanel(
                                                                         let (name, cat, topo, desc) = match &row.kind {
                                                                             attachment_editor::ComponentDraft::Strip { led_count } => {
                                                                                 let n = if row.name.is_empty() { format!("Custom Strip - {led_count} LEDs") } else { row.name.clone() };
-                                                                                (n, hypercolor_types::attachment::AttachmentCategory::Strip,
+                                                                                (n, hypercolor_types::attachment::ComponentCategory::Strip,
                                                                                  hypercolor_types::spatial::LedTopology::Strip { count: *led_count, direction: hypercolor_types::spatial::StripDirection::LeftToRight },
                                                                                  format!("Custom strip, {led_count} LEDs"))
                                                                             }
                                                                             attachment_editor::ComponentDraft::Matrix { cols, rows } => {
                                                                                 let n = if row.name.is_empty() { format!("Custom Matrix - {cols}\u{00d7}{rows}") } else { row.name.clone() };
-                                                                                (n, hypercolor_types::attachment::AttachmentCategory::Matrix,
+                                                                                (n, hypercolor_types::attachment::ComponentCategory::Matrix,
                                                                                  hypercolor_types::spatial::LedTopology::Matrix { width: *cols, height: *rows, serpentine: true, start_corner: hypercolor_types::spatial::Corner::TopLeft },
                                                                                  format!("Custom {cols}\u{00d7}{rows} matrix"))
                                                                             }
                                                                             _ => continue,
                                                                         };
                                                                         let id = format!("custom-{}-{}-{}", cat.as_str(), now_ms() as u64, i);
-                                                                        let tmpl = hypercolor_types::attachment::AttachmentTemplate {
+                                                                        let tmpl = hypercolor_types::attachment::ComponentTemplate {
                                                                             id: id.clone(), name, category: cat,
-                                                                            origin: hypercolor_types::attachment::AttachmentOrigin::User,
+                                                                            origin: hypercolor_types::attachment::ComponentOrigin::User,
                                                                             description: desc, vendor: "Custom".to_string(),
-                                                                            default_size: hypercolor_types::attachment::AttachmentCanvasSize { width: 0.24, height: 0.08 },
+                                                                            default_size: hypercolor_types::attachment::ComponentCanvasSize { width: 0.24, height: 0.08 },
                                                                             topology: topo, compatible_slots: Vec::new(),
                                                                             tags: vec!["custom".to_string()],
                                                                             led_names: None, led_mapping: None, image_url: None, physical_size_mm: None,
@@ -419,9 +419,9 @@ pub fn WiringPanel(
                                                                     }
                                                                     // Build bindings
                                                                     let current = api::fetch_device_attachments(&did).await?;
-                                                                    let mut bindings: Vec<api::AttachmentBindingRequest> = current.bindings.iter()
+                                                                    let mut bindings: Vec<api::ComponentBindingRequest> = current.bindings.iter()
                                                                         .filter(|b| b.slot_id != slot_id)
-                                                                        .map(|b| api::AttachmentBindingRequest {
+                                                                        .map(|b| api::ComponentBindingRequest {
                                                                             slot_id: b.slot_id.clone(), template_id: b.template_id.clone(),
                                                                             name: b.name.clone(), enabled: b.enabled, instances: b.instances, led_offset: b.led_offset,
                                                                         }).collect();
@@ -432,7 +432,7 @@ pub fn WiringPanel(
                                                                             _ => template_ids.get(&i).cloned().unwrap_or_default(),
                                                                         };
                                                                         let count = row.led_count(&templates).unwrap_or(0);
-                                                                        bindings.push(api::AttachmentBindingRequest {
+                                                                        bindings.push(api::ComponentBindingRequest {
                                                                             slot_id: slot_id.clone(), template_id: tid,
                                                                             name: if row.name.is_empty() { None } else { Some(row.name.clone()) },
                                                                             enabled: true, instances: 1, led_offset: offset,
@@ -452,7 +452,7 @@ pub fn WiringPanel(
                                                                         // identify button starts working without a refetch.
                                                                         let slot_id_local = slot_id_for_save.get_value();
                                                                         set_drafts.update(|rows| {
-                                                                            let mut slot_bindings: Vec<(usize, &api::AttachmentBindingSummary)> = updated
+                                                                            let mut slot_bindings: Vec<(usize, &api::ComponentBindingSummary)> = updated
                                                                                 .bindings
                                                                                 .iter()
                                                                                 .enumerate()
@@ -803,7 +803,7 @@ pub fn WiringPanel(
 
 pub fn sync_wiring_to_layout(
     device: api::DeviceSummary,
-    suggested_zones: Vec<AttachmentSuggestedZone>,
+    suggested_zones: Vec<ComponentSuggestedZone>,
     layouts_resource: LocalResource<Result<Vec<api::LayoutSummary>, String>>,
 ) {
     leptos::task::spawn_local(async move {

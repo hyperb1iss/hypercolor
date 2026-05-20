@@ -21,7 +21,7 @@ use crate::toasts;
 use hypercolor_leptos_ext::events::document as browser_document;
 use hypercolor_types::effect::{ControlDefinition, ControlType, ControlValue, EffectId};
 use hypercolor_types::layer::{LayerAdjust, LayerBlendMode, LayerSource, LayerTransform};
-use hypercolor_types::scene::{RenderGroupRole, SceneKind, SceneMutationMode};
+use hypercolor_types::scene::{SceneKind, SceneMutationMode, ZoneRole};
 
 use crate::style_utils::{category_accent_rgb, filter_chips};
 
@@ -66,17 +66,17 @@ fn ApplyTargetSelect(
             };
             for group in &scene.groups {
                 match group.role {
-                    RenderGroupRole::Display => {}
+                    ZoneRole::Display => {}
                     // The Primary zone is the empty-value default; a
                     // renamed Primary relabels that option in place.
-                    RenderGroupRole::Primary => {
+                    ZoneRole::Primary => {
                         if group.name != "Primary"
                             && let Some(first) = opts.first_mut()
                         {
                             first.1 = group.name.clone();
                         }
                     }
-                    RenderGroupRole::Custom => {
+                    ZoneRole::Custom => {
                         opts.push((group.id.to_string(), group.name.clone()));
                     }
                 }
@@ -382,7 +382,7 @@ pub fn EffectsPage() -> impl IntoView {
                 scene
                     .groups
                     .iter()
-                    .filter(|group| group.role == RenderGroupRole::Custom)
+                    .filter(|group| group.role == ZoneRole::Custom)
                     .map(|group| (group.id.to_string(), group.name.clone()))
                     .collect::<Vec<_>>()
             })
@@ -398,7 +398,7 @@ pub fn EffectsPage() -> impl IntoView {
                 scene
                     .groups
                     .iter()
-                    .filter(|group| group.role != RenderGroupRole::Display)
+                    .filter(|group| group.role != ZoneRole::Display)
                     .map(|group| group.id.to_string())
                     .collect::<Vec<_>>()
             })

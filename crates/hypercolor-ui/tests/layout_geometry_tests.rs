@@ -7,10 +7,10 @@ mod layout_geometry;
 
 use api::{ZoneSummary, ZoneTopologySummary};
 use hypercolor_types::attachment::{
-    AttachmentCanvasSize, AttachmentCategory, AttachmentSuggestedZone,
+    ComponentCanvasSize, ComponentCategory, ComponentSuggestedZone,
 };
 use hypercolor_types::spatial::{
-    DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+    EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
 };
 use hypercolor_types::spatial::{StripDirection, ZoneShape};
 use layout_geometry::{ResizeHandle, SizeAxis};
@@ -58,10 +58,10 @@ fn suggested_attachment(
     name: &str,
     instance: u32,
     led_start: u32,
-    category: AttachmentCategory,
+    category: ComponentCategory,
     topology: LedTopology,
-) -> AttachmentSuggestedZone {
-    AttachmentSuggestedZone {
+) -> ComponentSuggestedZone {
+    ComponentSuggestedZone {
         slot_id: slot_id.to_owned(),
         template_id: format!("{slot_id}-{instance}"),
         template_name: name.to_owned(),
@@ -70,7 +70,7 @@ fn suggested_attachment(
         led_start,
         led_count: topology.led_count(),
         category,
-        default_size: AttachmentCanvasSize {
+        default_size: ComponentCanvasSize {
             width: 0.24,
             height: 0.24,
         },
@@ -240,7 +240,7 @@ fn set_zone_rotation_updates_single_zone_without_moving_it() {
         description: None,
         canvas_width: 320,
         canvas_height: 200,
-        zones: vec![DeviceZone {
+        zones: vec![Output {
             id: "zone-a".to_owned(),
             name: "A".to_owned(),
             device_id: "usb:a".to_owned(),
@@ -284,7 +284,7 @@ fn set_zone_rotation_updates_single_zone_without_moving_it() {
 
 #[test]
 fn attachment_strip_size_preserves_thin_signal_like_aspect() {
-    let suggested = AttachmentSuggestedZone {
+    let suggested = ComponentSuggestedZone {
         slot_id: "gpu".to_owned(),
         template_id: "powercolor-reddevil-rx7800xt".to_owned(),
         template_name: "PowerColor RX 7800XT Red Devil - 20 LED".to_owned(),
@@ -292,8 +292,8 @@ fn attachment_strip_size_preserves_thin_signal_like_aspect() {
         instance: 0,
         led_start: 0,
         led_count: 20,
-        category: AttachmentCategory::Strip,
-        default_size: AttachmentCanvasSize {
+        category: ComponentCategory::Strip,
+        default_size: ComponentCanvasSize {
             width: 0.24,
             height: 0.08,
         },
@@ -313,7 +313,7 @@ fn attachment_strip_size_preserves_thin_signal_like_aspect() {
 
 #[test]
 fn attachment_fan_size_prefers_ring_footprint_over_strip_topology() {
-    let suggested = AttachmentSuggestedZone {
+    let suggested = ComponentSuggestedZone {
         slot_id: "channel-1".to_owned(),
         template_id: "lian-li-sl-unifan-fan".to_owned(),
         template_name: "Lian Li UNIFan SL120 - 16 LED".to_owned(),
@@ -321,8 +321,8 @@ fn attachment_fan_size_prefers_ring_footprint_over_strip_topology() {
         instance: 0,
         led_start: 0,
         led_count: 16,
-        category: AttachmentCategory::Fan,
-        default_size: AttachmentCanvasSize {
+        category: ComponentCategory::Fan,
+        default_size: ComponentCanvasSize {
             width: 0.24,
             height: 0.08,
         },
@@ -351,7 +351,7 @@ fn seeded_attachment_layout_arranges_multi_fan_slots_into_horizontal_rows() {
                 "Front Fan 1",
                 0,
                 0,
-                AttachmentCategory::Fan,
+                ComponentCategory::Fan,
                 LedTopology::Ring {
                     count: 20,
                     start_angle: 0.0,
@@ -363,7 +363,7 @@ fn seeded_attachment_layout_arranges_multi_fan_slots_into_horizontal_rows() {
                 "Front Fan 2",
                 1,
                 20,
-                AttachmentCategory::Fan,
+                ComponentCategory::Fan,
                 LedTopology::Ring {
                     count: 20,
                     start_angle: 0.0,
@@ -375,7 +375,7 @@ fn seeded_attachment_layout_arranges_multi_fan_slots_into_horizontal_rows() {
                 "Front Fan 3",
                 2,
                 40,
-                AttachmentCategory::Fan,
+                ComponentCategory::Fan,
                 LedTopology::Ring {
                     count: 20,
                     start_angle: 0.0,
@@ -405,7 +405,7 @@ fn seeded_attachment_layout_handles_single_slot_attachments() {
             "Desk Strip",
             0,
             0,
-            AttachmentCategory::Strip,
+            ComponentCategory::Strip,
             LedTopology::Strip {
                 count: 60,
                 direction: StripDirection::LeftToRight,
@@ -525,8 +525,8 @@ fn locked_resize_can_shrink_long_strip_below_old_aspect_floor() {
 
 // ── Compound bounding box ────────────────────────────────────────────────
 
-fn plain_zone(id: &str, device_id: &str, x: f32, y: f32, w: f32, h: f32) -> DeviceZone {
-    DeviceZone {
+fn plain_zone(id: &str, device_id: &str, x: f32, y: f32, w: f32, h: f32) -> Output {
+    Output {
         id: id.to_owned(),
         name: id.to_owned(),
         device_id: device_id.to_owned(),
@@ -552,7 +552,7 @@ fn plain_zone(id: &str, device_id: &str, x: f32, y: f32, w: f32, h: f32) -> Devi
     }
 }
 
-fn simple_layout(zones: Vec<DeviceZone>) -> SpatialLayout {
+fn simple_layout(zones: Vec<Output>) -> SpatialLayout {
     SpatialLayout {
         id: "test".to_owned(),
         name: "Test".to_owned(),

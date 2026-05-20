@@ -6,9 +6,9 @@
 //! - **Component**: reference to a known component definition from the library (TOML)
 #![cfg_attr(test, allow(dead_code))]
 
-use hypercolor_types::attachment::AttachmentSlot;
+use hypercolor_types::attachment::ComponentSlot;
 
-use crate::api::{AttachmentBindingSummary, TemplateSummary};
+use crate::api::{ComponentBindingSummary, TemplateSummary};
 
 /// A single component in the draft editor.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -142,7 +142,7 @@ impl ChannelDraftSummary {
 #[must_use]
 pub(crate) fn expand_bindings_to_drafts(
     slot_id: &str,
-    bindings: &[AttachmentBindingSummary],
+    bindings: &[ComponentBindingSummary],
     templates: &[TemplateSummary],
 ) -> Vec<DraftRow> {
     let mut relevant: Vec<_> = bindings
@@ -178,7 +178,7 @@ pub(crate) fn expand_bindings_to_drafts(
             let tmpl = templates.iter().find(|t| t.id == binding.template_id);
             let is_user = tmpl
                 .and_then(|t| t.origin.as_ref())
-                .map(|o| *o == hypercolor_types::attachment::AttachmentOrigin::User)
+                .map(|o| *o == hypercolor_types::attachment::ComponentOrigin::User)
                 .unwrap_or(false);
 
             if is_user {
@@ -232,7 +232,7 @@ pub(crate) fn expand_bindings_to_drafts(
 /// Summarize channel draft state for validation.
 #[must_use]
 pub(crate) fn summarize_channel(
-    slot: &AttachmentSlot,
+    slot: &ComponentSlot,
     rows: &[DraftRow],
     templates: &[TemplateSummary],
 ) -> ChannelDraftSummary {

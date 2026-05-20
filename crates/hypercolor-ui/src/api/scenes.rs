@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use hypercolor_types::scene::{RenderGroup, SceneKind, SceneMutationMode, UnassignedBehavior};
+use hypercolor_types::scene::{SceneKind, SceneMutationMode, UnassignedBehavior, Zone};
 
 use super::client;
 
@@ -13,7 +13,7 @@ pub struct ActiveSceneResponse {
     pub kind: SceneKind,
     pub mutation_mode: SceneMutationMode,
     #[serde(default)]
-    pub groups: Vec<RenderGroup>,
+    pub groups: Vec<Zone>,
     /// Monotonic render-group structure counter. Carried as the
     /// `If-Match` precondition for every zone mutation (Spec 64).
     #[serde(default)]

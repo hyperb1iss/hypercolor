@@ -25,7 +25,7 @@ use crate::compound_selection::{self, CompoundDepth};
 use crate::layout_geometry::{self, ResizeHandle};
 use crate::layout_utils;
 use crate::style_utils::device_accent_colors;
-use hypercolor_types::spatial::{DeviceZone, NormalizedPosition, SpatialLayout, ZoneShape};
+use hypercolor_types::spatial::{NormalizedPosition, Output, SpatialLayout, ZoneShape};
 
 /// Throttle the in-drag preview push to the daemon. Matches the existing
 /// debounce we use outside drags so the spatial engine isn't recomputed at
@@ -146,7 +146,7 @@ pub fn LayoutCanvas() -> impl IntoView {
     // Per-id zone lookup memo — lets every per-zone style closure resolve
     // its zone in O(1). Replaces the O(N) `zones.iter().find(|z| z.id == zid)`
     // scan that ran inside each `zone_style` derive.
-    let zones_by_id: Memo<HashMap<String, DeviceZone>> = Memo::new(move |_| {
+    let zones_by_id: Memo<HashMap<String, Output>> = Memo::new(move |_| {
         layout
             .with(|current| {
                 current.as_ref().map(|l| {
@@ -1029,7 +1029,7 @@ struct ZoneRenderData {
 /// to the cached `HtmlElement`s without going through the layout signal.
 struct DragRuntime {
     kind: InteractionKind,
-    current_zones: Vec<DeviceZone>,
+    current_zones: Vec<Output>,
     /// `data-zone-id` → element. Captured at interaction start so the RAF
     /// loop never has to query the DOM.
     elements: HashMap<String, web_sys::HtmlElement>,
@@ -1198,7 +1198,7 @@ impl DragRuntime {
 /// can run against just the zone vec we own during an interaction. Keeps
 /// the rest of the layout immutable and out of our hot loop.
 struct SpatialLayoutShim {
-    zones: Vec<DeviceZone>,
+    zones: Vec<Output>,
 }
 
 impl SpatialLayoutShim {

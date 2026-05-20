@@ -7,13 +7,13 @@ use std::collections::HashSet;
 
 use compound_selection::{CompoundDepth, device_compound_ids, resolve_click, slot_compound_ids};
 use hypercolor_types::spatial::{
-    DeviceZone, LedTopology, NormalizedPosition, SpatialLayout, StripDirection, ZoneAttachment,
+    LedTopology, NormalizedPosition, Output, OutputComponent, SpatialLayout, StripDirection,
 };
 
 // ── Fixtures ─────────────────────────────────────────────────────────────
 
-fn test_zone(id: &str, device_id: &str, attachment: Option<(&str, u32)>) -> DeviceZone {
-    DeviceZone {
+fn test_zone(id: &str, device_id: &str, attachment: Option<(&str, u32)>) -> Output {
+    Output {
         id: id.to_owned(),
         name: id.to_owned(),
         device_id: device_id.to_owned(),
@@ -34,7 +34,7 @@ fn test_zone(id: &str, device_id: &str, attachment: Option<(&str, u32)>) -> Devi
         edge_behavior: None,
         shape: None,
         shape_preset: None,
-        attachment: attachment.map(|(slot_id, instance)| ZoneAttachment {
+        attachment: attachment.map(|(slot_id, instance)| OutputComponent {
             template_id: "test-template".to_owned(),
             slot_id: slot_id.to_owned(),
             instance,
@@ -46,7 +46,7 @@ fn test_zone(id: &str, device_id: &str, attachment: Option<(&str, u32)>) -> Devi
     }
 }
 
-fn test_layout(zones: Vec<DeviceZone>) -> SpatialLayout {
+fn test_layout(zones: Vec<Output>) -> SpatialLayout {
     SpatialLayout {
         id: "test".to_owned(),
         name: "Test Layout".to_owned(),

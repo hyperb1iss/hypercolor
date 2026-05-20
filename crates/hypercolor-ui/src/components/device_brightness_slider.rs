@@ -3,7 +3,7 @@
 //! Pure UI: caller supplies the current value (plus a `mixed` flag for
 //! when selected zones disagree) and a change callback. The caller owns
 //! aggregation and the write path. Brightness in Hypercolor is now a
-//! per-zone property on `DeviceZone`, so the change callback typically
+//! per-zone property on `Output`, so the change callback typically
 //! updates the spatial layout and lets the existing preview flow push
 //! the delta to the daemon.
 

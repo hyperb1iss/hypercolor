@@ -1,7 +1,7 @@
 //! `/assets` — user media library and active scene layer stack.
 
 use hypercolor_leptos_ext::events::{Change, Input};
-use hypercolor_types::scene::RenderGroupRole;
+use hypercolor_types::scene::ZoneRole;
 use leptos::html;
 use leptos::prelude::*;
 use leptos_icons::Icon;
@@ -66,7 +66,7 @@ pub fn AssetsPage() -> impl IntoView {
         let next = scene
             .groups
             .iter()
-            .find(|group| group.role != RenderGroupRole::Display)
+            .find(|group| group.role != ZoneRole::Display)
             .or_else(|| scene.groups.first())
             .map(|group| group.id.to_string());
         set_selected_group_id.set(next);

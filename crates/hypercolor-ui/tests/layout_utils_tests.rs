@@ -49,8 +49,8 @@ mod components {
 mod layout_utils;
 
 use hypercolor_types::spatial::{
-    DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
-    ZoneAttachment, ZoneShape,
+    EdgeBehavior, LedTopology, NormalizedPosition, Output, OutputComponent, SamplingMode,
+    SpatialLayout, ZoneShape,
 };
 use std::collections::HashMap;
 
@@ -60,9 +60,9 @@ fn ring_zone(
     device_id: &str,
     zone_name: Option<&str>,
     display_order: i32,
-    attachment: Option<ZoneAttachment>,
-) -> DeviceZone {
-    DeviceZone {
+    attachment: Option<OutputComponent>,
+) -> Output {
+    Output {
         id: id.to_owned(),
         name: name.to_owned(),
         device_id: device_id.to_owned(),
@@ -135,11 +135,11 @@ fn sample_device_summary(name: &str, zones: Vec<api::ZoneSummary>) -> api::Devic
     }
 }
 
-fn sample_attachment_profile(name: Option<&str>) -> api::DeviceAttachmentsResponse {
-    api::DeviceAttachmentsResponse {
+fn sample_attachment_profile(name: Option<&str>) -> api::DeviceComponentsResponse {
+    api::DeviceComponentsResponse {
         device_id: "physical:prism8".to_owned(),
         device_name: "Prism 8".to_owned(),
-        slots: vec![hypercolor_types::attachment::AttachmentSlot {
+        slots: vec![hypercolor_types::attachment::ComponentSlot {
             id: "channel-1".to_owned(),
             name: "Channel 1".to_owned(),
             led_start: 0,
@@ -148,7 +148,7 @@ fn sample_attachment_profile(name: Option<&str>) -> api::DeviceAttachmentsRespon
             allowed_templates: Vec::new(),
             allow_custom: true,
         }],
-        bindings: vec![api::AttachmentBindingSummary {
+        bindings: vec![api::ComponentBindingSummary {
             slot_id: "channel-1".to_owned(),
             template_id: "fan-template-1".to_owned(),
             template_name: "Halo Ring".to_owned(),
@@ -184,7 +184,7 @@ fn prism_attachment_layout() -> SpatialLayout {
                 "usb:prism8:test",
                 Some("channel-1"),
                 1,
-                Some(ZoneAttachment {
+                Some(OutputComponent {
                     template_id: "fan-template-1".to_owned(),
                     slot_id: "channel-1".to_owned(),
                     instance: 0,
@@ -199,7 +199,7 @@ fn prism_attachment_layout() -> SpatialLayout {
                 "usb:prism8:test",
                 Some("channel-1"),
                 2,
-                Some(ZoneAttachment {
+                Some(OutputComponent {
                     template_id: "fan-template-2".to_owned(),
                     slot_id: "channel-1".to_owned(),
                     instance: 1,
@@ -225,7 +225,7 @@ fn prism_seeded_attachment_layout() -> layout_geometry::SeededAttachmentLayout {
                 "usb:prism8:test",
                 Some("channel-1"),
                 1,
-                Some(ZoneAttachment {
+                Some(OutputComponent {
                     template_id: "fan-template-1".to_owned(),
                     slot_id: "channel-1".to_owned(),
                     instance: 0,
@@ -240,7 +240,7 @@ fn prism_seeded_attachment_layout() -> layout_geometry::SeededAttachmentLayout {
                 "usb:prism8:test",
                 Some("channel-1"),
                 2,
-                Some(ZoneAttachment {
+                Some(OutputComponent {
                     template_id: "fan-template-2".to_owned(),
                     slot_id: "channel-1".to_owned(),
                     instance: 1,
@@ -409,7 +409,7 @@ fn effective_zone_display_uses_attachment_binding_override() {
         "usb:prism8:test",
         Some("channel-1"),
         1,
-        Some(ZoneAttachment {
+        Some(OutputComponent {
             template_id: "fan-template-1".to_owned(),
             slot_id: "channel-1".to_owned(),
             instance: 0,

@@ -26,7 +26,7 @@ pub fn LayoutZoneProperties() -> impl IntoView {
         expect_context::<crate::components::layout_builder::LayoutZoneDisplayContext>();
 
     // Brightness aggregate for the currently-selected zones — returns
-    // `(value_0_to_100, mixed)`. Each `DeviceZone` carries its own
+    // `(value_0_to_100, mixed)`. Each `Output` carries its own
     // `brightness: Option<f32>` (None = 1.0). When the selection spans
     // zones with different brightness values the slider shows "Mixed"
     // at the average; dragging collapses them all to a shared value.
@@ -139,8 +139,7 @@ pub fn LayoutZoneProperties() -> impl IntoView {
 
     // Helper to update a zone field
     let update_zone =
-        move |zone_id: String,
-              updater: Box<dyn FnOnce(&mut hypercolor_types::spatial::DeviceZone)>| {
+        move |zone_id: String, updater: Box<dyn FnOnce(&mut hypercolor_types::spatial::Output)>| {
             set_layout.update(|l| {
                 if let Some(layout) = l
                     && let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zone_id)

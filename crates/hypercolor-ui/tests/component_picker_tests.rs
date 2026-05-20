@@ -9,9 +9,9 @@ mod icons;
 
 use api::TemplateSummary;
 use component_picker::{filter_components, selected_result_index};
-use hypercolor_types::attachment::AttachmentCategory;
+use hypercolor_types::attachment::ComponentCategory;
 
-fn template(id: &str, name: &str, vendor: &str, category: AttachmentCategory) -> TemplateSummary {
+fn template(id: &str, name: &str, vendor: &str, category: ComponentCategory) -> TemplateSummary {
     TemplateSummary {
         id: id.to_owned(),
         name: name.to_owned(),
@@ -28,9 +28,9 @@ fn template(id: &str, name: &str, vendor: &str, category: AttachmentCategory) ->
 fn filter_components_sorts_matches_by_vendor_then_name() {
     let results = filter_components(
         &[
-            template("b", "SL Infinity Fan", "Lian Li", AttachmentCategory::Fan),
-            template("a", "QL Fan", "Corsair", AttachmentCategory::Fan),
-            template("c", "AL Fan", "Lian Li", AttachmentCategory::Fan),
+            template("b", "SL Infinity Fan", "Lian Li", ComponentCategory::Fan),
+            template("a", "QL Fan", "Corsair", ComponentCategory::Fan),
+            template("c", "AL Fan", "Lian Li", ComponentCategory::Fan),
         ],
         "fan",
     );
@@ -46,9 +46,9 @@ fn filter_components_sorts_matches_by_vendor_then_name() {
 fn selected_result_index_finds_last_selected_template_in_filtered_results() {
     let results = filter_components(
         &[
-            template("front", "Front Fan", "Lian Li", AttachmentCategory::Fan),
-            template("rear", "Rear Fan", "Lian Li", AttachmentCategory::Fan),
-            template("strip", "Case Strip", "Corsair", AttachmentCategory::Strip),
+            template("front", "Front Fan", "Lian Li", ComponentCategory::Fan),
+            template("rear", "Rear Fan", "Lian Li", ComponentCategory::Fan),
+            template("strip", "Case Strip", "Corsair", ComponentCategory::Strip),
         ],
         "fan",
     );

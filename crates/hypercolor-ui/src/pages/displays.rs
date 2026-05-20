@@ -20,9 +20,7 @@ use crate::icons::*;
 use crate::preferences::{EffectPreferences, PreferencesStore};
 use crate::toasts;
 use hypercolor_leptos_ext::events::{Input, document as browser_document};
-use hypercolor_types::scene::{
-    DisplayFaceBlendMode, RenderGroupRole, SceneKind, SceneMutationMode,
-};
+use hypercolor_types::scene::{DisplayFaceBlendMode, SceneKind, SceneMutationMode, ZoneRole};
 
 type DisplaysResource = LocalResource<Result<Vec<api::DisplaySummary>, String>>;
 
@@ -270,7 +268,7 @@ pub fn DisplaysPage() -> impl IntoView {
 
             if current_scene_event.as_ref().is_some_and(|scene_event| {
                 scene_event.event_type == "active_scene_changed"
-                    || scene_event.render_group_role == Some(RenderGroupRole::Display)
+                    || scene_event.render_group_role == Some(ZoneRole::Display)
             }) {
                 set_face_refresh_tick.update(|value| *value = value.wrapping_add(1));
             }

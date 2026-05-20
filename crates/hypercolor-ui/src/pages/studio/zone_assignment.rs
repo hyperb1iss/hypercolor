@@ -1,6 +1,6 @@
 //! Device-output assignment for a multi-zone Studio scene (Spec 65 §9.3).
 //!
-//! The unit of assignment is a `DeviceZone` — one device output or
+//! The unit of assignment is a `Output` — one device output or
 //! addressable segment, never a whole physical device. The panel lists
 //! every output grouped by its owning zone (and, within a zone, by
 //! physical device), lets the user multi-select outputs, and moves them
@@ -14,8 +14,8 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_icons::Icon;
 
-use hypercolor_types::scene::{RenderGroup, RenderGroupRole};
-use hypercolor_types::spatial::DeviceZone;
+use hypercolor_types::scene::{Zone, ZoneRole};
+use hypercolor_types::spatial::Output;
 
 use crate::api;
 use crate::api::zones::ZoneOutcome;
@@ -32,14 +32,14 @@ struct ZoneOutputs {
     id: String,
     name: String,
     color: String,
-    outputs: Vec<DeviceZone>,
+    outputs: Vec<Output>,
 }
 
 /// Display name for an LED zone in the assignment panel — the user's typed
 /// name, or "Default zone" for an unnamed `Primary` group (§9.2).
-fn zone_display_name(group: &RenderGroup) -> String {
+fn zone_display_name(group: &Zone) -> String {
     let trimmed = group.name.trim();
-    if group.role == RenderGroupRole::Primary
+    if group.role == ZoneRole::Primary
         && (trimmed.is_empty() || trimmed.eq_ignore_ascii_case("primary"))
     {
         "Default zone".to_owned()
@@ -63,7 +63,7 @@ pub fn ZoneAssignment() -> impl IntoView {
         scene
             .groups
             .iter()
-            .filter(|group| group.role != RenderGroupRole::Display)
+            .filter(|group| group.role != ZoneRole::Display)
             .map(|group| ZoneOutputs {
                 id: group.id.to_string(),
                 name: zone_display_name(group),
@@ -90,7 +90,7 @@ pub fn ZoneAssignment() -> impl IntoView {
         let assignments = selected
             .get_untracked()
             .into_iter()
-            .map(|id| api::zones::DeviceZoneAssignment::Existing { id })
+            .map(|id| api::zones::OutputAssignment::Existing { id })
             .collect::<Vec<_>>();
         let count = assignments.len();
         if count == 0 {
@@ -281,7 +281,7 @@ fn ZoneOutputSection(zone: ZoneOutputs, selected: RwSignal<HashSet<String>>) -> 
 }
 
 #[component]
-fn OutputChip(output: DeviceZone, selected: RwSignal<HashSet<String>>) -> impl IntoView {
+fn OutputChip(output: Output, selected: RwSignal<HashSet<String>>) -> impl IntoView {
     let output_id = output.id.clone();
     let toggle_id = output.id.clone();
     let is_selected = Signal::derive(move || selected.with(|set| set.contains(output_id.as_str())));
