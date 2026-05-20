@@ -11,6 +11,8 @@ use anyhow::{Result, anyhow};
 use dpi::PhysicalSize;
 use servo::{RenderingContext, SoftwareRenderingContext};
 
+#[cfg(all(target_os = "linux", feature = "servo-gpu-import"))]
+use hypercolor_linux_gpu_interop::LinuxServoRenderingContext;
 #[cfg(all(target_os = "macos", feature = "servo-gpu-import"))]
 use hypercolor_macos_gpu_interop::MacosHardwareRenderingContext;
 #[cfg(target_os = "windows")]
@@ -25,7 +27,10 @@ use tao::event_loop::{EventLoop, EventLoopBuilder};
 use tao::platform::windows::EventLoopBuilderExtWindows;
 #[cfg(target_os = "windows")]
 use tao::window::{Window, WindowBuilder};
-#[cfg(all(target_os = "macos", feature = "servo-gpu-import"))]
+#[cfg(any(
+    all(target_os = "macos", feature = "servo-gpu-import"),
+    all(target_os = "linux", feature = "servo-gpu-import")
+))]
 use tracing::warn;
 
 #[cfg(target_os = "windows")]
@@ -41,6 +46,8 @@ struct WindowsServoWindow {
 
 pub(crate) struct ServoRenderingContextHandle {
     pub(crate) rendering_context: Rc<dyn RenderingContext>,
+    #[cfg(all(target_os = "linux", feature = "servo-gpu-import"))]
+    pub(crate) linux_context: Option<Rc<LinuxServoRenderingContext>>,
     #[cfg(all(target_os = "macos", feature = "servo-gpu-import"))]
     pub(crate) macos_hardware_context: Option<Rc<MacosHardwareRenderingContext>>,
 }
@@ -49,8 +56,19 @@ impl ServoRenderingContextHandle {
     fn new(rendering_context: Rc<dyn RenderingContext>) -> Self {
         Self {
             rendering_context,
+            #[cfg(all(target_os = "linux", feature = "servo-gpu-import"))]
+            linux_context: None,
             #[cfg(all(target_os = "macos", feature = "servo-gpu-import"))]
             macos_hardware_context: None,
+        }
+    }
+
+    #[cfg(all(target_os = "linux", feature = "servo-gpu-import"))]
+    fn linux_software(context: Rc<LinuxServoRenderingContext>) -> Self {
+        let rendering_context: Rc<dyn RenderingContext> = context.clone();
+        Self {
+            rendering_context,
+            linux_context: Some(context),
         }
     }
 
@@ -59,6 +77,8 @@ impl ServoRenderingContextHandle {
         let rendering_context: Rc<dyn RenderingContext> = context.clone();
         Self {
             rendering_context,
+            #[cfg(all(target_os = "linux", feature = "servo-gpu-import"))]
+            linux_context: None,
             macos_hardware_context: Some(context),
         }
     }
@@ -126,6 +146,42 @@ pub(crate) fn bootstrap_rendering_context(
     Ok(ServoRenderingContextHandle::new(Rc::new(context)))
 }
 
+#[cfg(all(target_os = "linux", feature = "servo-gpu-import"))]
+pub(crate) fn bootstrap_rendering_context(
+    width: u32,
+    height: u32,
+) -> Result<ServoRenderingContextHandle> {
+    if crate::effect::servo_gpu_import_should_attempt() {
+        match LinuxServoRenderingContext::new_software(width, height) {
+            Ok(context) => {
+                return Ok(ServoRenderingContextHandle::linux_software(Rc::new(
+                    context,
+                )));
+            }
+            Err(error)
+                if matches!(
+                    crate::effect::servo_gpu_import_mode(),
+                    hypercolor_types::config::ServoGpuImportMode::On
+                ) =>
+            {
+                return Err(anyhow!(
+                    "failed to create required Linux Servo GPU import context: {error:?}"
+                ));
+            }
+            Err(error) => {
+                warn!(
+                    ?error,
+                    "Linux Servo GPU import context unavailable; using software context"
+                );
+            }
+        }
+    }
+
+    Ok(ServoRenderingContextHandle::new(Rc::new(
+        bootstrap_software_rendering_context(width, height)?,
+    )))
+}
+
 #[cfg(all(target_os = "macos", feature = "servo-gpu-import"))]
 pub(crate) fn bootstrap_rendering_context(
     width: u32,
@@ -161,6 +217,7 @@ pub(crate) fn bootstrap_rendering_context(
 
 #[cfg(not(any(
     target_os = "windows",
+    all(target_os = "linux", feature = "servo-gpu-import"),
     all(target_os = "macos", feature = "servo-gpu-import")
 )))]
 pub(crate) fn bootstrap_rendering_context(

@@ -10,20 +10,24 @@ description = "Linux GL/Vulkan texture import boundary for Hypercolor"
 
 [features]
 default = []
-raw-gl-fixture = []
+raw-gl-fixture = ["dep:euclid", "dep:surfman"]
+servo-context = ["dep:dpi", "dep:euclid", "dep:gleam", "dep:servo", "dep:surfman"]
 
 [dependencies]
 ash = { workspace = true }
+dpi = { workspace = true, optional = true }
+euclid = { version = "0.22", optional = true }
+gleam = { version = "0.15", optional = true }
 glow = { workspace = true }
 libc = { workspace = true }
+servo = { version = "0.1.0", default-features = false, features = ["baked-in-resources", "js_jit"], optional = true }
+surfman = { version = "0.11", features = ["sm-x11"], optional = true }
 thiserror = { workspace = true }
 wgpu = { workspace = true }
 wgpu-hal = { workspace = true }
 
 [dev-dependencies]
-euclid = "0.22"
 pollster = { workspace = true }
-surfman = { version = "0.11", features = ["sm-x11"] }
 
 [lints.rust]
 unsafe_code = "allow"

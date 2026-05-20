@@ -5211,10 +5211,13 @@ name = "hypercolor-linux-gpu-interop"
 version = "0.1.0"
 dependencies = [
  "ash",
+ "dpi",
  "euclid",
+ "gleam",
  "glow 0.16.0",
  "libc",
  "pollster",
+ "servo",
  "surfman",
  "thiserror 2.0.18",
  "wgpu",

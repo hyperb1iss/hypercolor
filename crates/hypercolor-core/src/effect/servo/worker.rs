@@ -1022,6 +1022,8 @@ impl Drop for ServoWorker {
 struct ServoSession {
     webview: Option<WebView>,
     rendering_context: Rc<dyn RenderingContext>,
+    #[cfg(all(feature = "servo-gpu-import", target_os = "linux"))]
+    linux_context: Option<Rc<hypercolor_linux_gpu_interop::LinuxServoRenderingContext>>,
     #[cfg(all(feature = "servo-gpu-import", target_os = "macos"))]
     macos_hardware_context: Option<Rc<hypercolor_macos_gpu_interop::MacosHardwareRenderingContext>>,
     delegate: Rc<HypercolorWebViewDelegate>,
@@ -1340,6 +1342,8 @@ impl ServoWorkerRuntime {
             ServoSession {
                 webview: Some(webview),
                 rendering_context,
+                #[cfg(all(feature = "servo-gpu-import", target_os = "linux"))]
+                linux_context: rendering_context_handle.linux_context,
                 #[cfg(all(feature = "servo-gpu-import", target_os = "macos"))]
                 macos_hardware_context: rendering_context_handle.macos_hardware_context,
                 delegate,
@@ -1924,16 +1928,31 @@ impl ServoWorkerRuntime {
         session_id: ServoSessionId,
         device: &wgpu::Device,
         descriptor: hypercolor_linux_gpu_interop::LinuxGlFramebufferImportDescriptor,
-        source_framebuffer: hypercolor_linux_gpu_interop::GlFramebufferSource,
     ) -> Result<crate::effect::traits::ImportedEffectFrame> {
-        let gl = {
+        let (gl, source_framebuffer, linux_surface) = {
             let session = self.session(session_id)?;
             session
                 .rendering_context
                 .make_current()
                 .map_err(|error| anyhow!("failed to make Servo GL context current: {error:?}"))?;
             session.rendering_context.prepare_for_rendering();
-            session.rendering_context.glow_gl_api()
+            let linux_context = session
+                .linux_context
+                .as_ref()
+                .ok_or_else(|| anyhow!("Linux Servo GPU import context is unavailable"))?;
+            let linux_surface = linux_context.surface_snapshot();
+            let framebuffer = linux_context.framebuffer().ok_or_else(|| {
+                anyhow!(
+                    "Linux Servo GPU import surface did not expose a framebuffer: {linux_surface:?}"
+                )
+            })?;
+            let source_framebuffer =
+                hypercolor_linux_gpu_interop::GlFramebufferSource::Framebuffer(Some(framebuffer));
+            (
+                session.rendering_context.glow_gl_api(),
+                source_framebuffer,
+                linux_surface,
+            )
         };
         if let Err(error) = self.ensure_gpu_importer(session_id, device, descriptor) {
             let loaded_html_path = self
@@ -1989,6 +2008,7 @@ impl ServoWorkerRuntime {
                 page_age_ms,
                 renders_since_load,
                 ?source_framebuffer,
+                ?linux_surface,
                 ?importer_before,
                 ?importer_after,
                 ?blit_before,
@@ -2301,20 +2321,13 @@ fn import_servo_framebuffer_into_wgpu(
     width: u32,
     height: u32,
 ) -> Result<crate::effect::traits::ImportedEffectFrame> {
-    use hypercolor_linux_gpu_interop::{
-        GlFramebufferSource, ImportedFrameFormat, LinuxGlFramebufferImportDescriptor,
-    };
+    use hypercolor_linux_gpu_interop::{ImportedFrameFormat, LinuxGlFramebufferImportDescriptor};
 
     let device = super::gpu_import::servo_gpu_import_device()?;
     let descriptor =
         LinuxGlFramebufferImportDescriptor::new(width, height, ImportedFrameFormat::Rgba8Unorm)?;
     runtime
-        .import_gpu_frame(
-            session_id,
-            device,
-            descriptor,
-            GlFramebufferSource::CurrentDraw,
-        )
+        .import_gpu_frame(session_id, device, descriptor)
         .context("failed to import Servo GL framebuffer into wgpu")
 }
 

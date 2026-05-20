@@ -757,8 +757,6 @@ pub fn import_gl_framebuffer_to_wgpu_from_process(
 pub enum GlFramebufferSource {
     /// Use the framebuffer currently bound to `READ_FRAMEBUFFER`.
     CurrentRead,
-    /// Use the framebuffer currently bound to `DRAW_FRAMEBUFFER`.
-    CurrentDraw,
     /// Bind and read the supplied framebuffer. `None` means the default FBO.
     Framebuffer(Option<glow::NativeFramebuffer>),
 }
@@ -1729,16 +1727,6 @@ fn restore_gl_bindings(gl: &glow::Context, bindings: GlBindingSnapshot) {
 fn bind_source_framebuffer_for_blit(gl: &glow::Context, source: GlFramebufferSource) {
     match source {
         GlFramebufferSource::CurrentRead => {}
-        GlFramebufferSource::CurrentDraw => {
-            // SAFETY: the query reads binding state from the current GL context.
-            let source = unsafe {
-                framebuffer_from_binding(gl.get_parameter_i32(glow::DRAW_FRAMEBUFFER_BINDING))
-            };
-            // SAFETY: the object name came from this same current GL context.
-            unsafe {
-                gl.bind_framebuffer(glow::READ_FRAMEBUFFER, source);
-            }
-        }
         GlFramebufferSource::Framebuffer(source) => {
             // SAFETY: the caller supplied a framebuffer for this current GL context.
             unsafe {

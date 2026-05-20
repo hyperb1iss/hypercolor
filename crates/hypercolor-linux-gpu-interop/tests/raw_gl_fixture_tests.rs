@@ -66,40 +66,6 @@ fn raw_gl_solid_color_import_matches_wgpu_readback() {
 }
 
 #[test]
-fn raw_gl_current_draw_import_matches_wgpu_readback_when_read_is_default() {
-    if std::env::var_os(RUN_FIXTURE_ENV).is_none() {
-        eprintln!("set {RUN_FIXTURE_ENV}=1 to run the raw GL import fixture");
-        return;
-    }
-
-    let wgpu = WgpuFixture::new().expect("raw GL import fixture should create wgpu device");
-    let raw_gl =
-        RawGlFixture::new(WIDTH, HEIGHT).expect("raw GL import fixture should create GL surface");
-    let gl_external_memory = raw_gl
-        .load_external_memory_functions()
-        .expect("raw GL import fixture should load GL external memory functions");
-
-    raw_gl.clear(EXPECTED_PIXEL);
-    raw_gl.bind_source_for_draw_with_default_read();
-    let descriptor =
-        LinuxGlFramebufferImportDescriptor::new(WIDTH, HEIGHT, ImportedFrameFormat::Rgba8Unorm)
-            .expect("fixture dimensions should be valid");
-    let frame = import_gl_framebuffer_to_wgpu(
-        &wgpu.device,
-        &raw_gl.gl,
-        gl_external_memory,
-        GlFramebufferSource::CurrentDraw,
-        descriptor,
-    )
-    .expect("raw GL current draw fixture should import into wgpu");
-    let pixels = read_texture_pixels(&wgpu.device, &wgpu.queue, &frame.texture, WIDTH, HEIGHT);
-
-    for pixel in pixels.chunks_exact(4) {
-        assert_eq!(pixel, EXPECTED_PIXEL);
-    }
-}
-
-#[test]
 fn raw_gl_orientation_import_preserves_top_left_wgpu_readback() {
     if std::env::var_os(RUN_FIXTURE_ENV).is_none() {
         eprintln!("set {RUN_FIXTURE_ENV}=1 to run the raw GL import fixture");
@@ -451,15 +417,6 @@ impl RawGlFixture {
             self.gl.clear_color(red, green, blue, alpha);
             self.gl.clear(glow::COLOR_BUFFER_BIT);
             self.gl.finish();
-        }
-    }
-
-    fn bind_source_for_draw_with_default_read(&self) {
-        // SAFETY: the fixture owns the current GL context and framebuffer.
-        unsafe {
-            self.gl
-                .bind_framebuffer(glow::DRAW_FRAMEBUFFER, self.framebuffer);
-            self.gl.bind_framebuffer(glow::READ_FRAMEBUFFER, None);
         }
     }
 
