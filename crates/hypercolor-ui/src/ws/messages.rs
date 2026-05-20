@@ -465,7 +465,7 @@ pub(crate) fn extract_effect_error_hint(
 }
 
 /// Compose the health-map key for a layer. A `SceneLayerId` is unique only
-/// within its render group — two groups can carry the same layer id — and
+/// within its zone — two groups can carry the same layer id — and
 /// the daemon keys health by group as well, so scene and group ride along
 /// or one group's health would clobber another group's row.
 pub(crate) fn layer_health_key(scene_id: &str, group_id: &str, layer_id: &str) -> String {
@@ -474,7 +474,7 @@ pub(crate) fn layer_health_key(scene_id: &str, group_id: &str, layer_id: &str) -
 
 /// Decode a `layer_health_changed` event into its `(health-map key, health)`.
 /// All three identity fields are required: the daemon always sends them, and
-/// without scene + group the key would collide across render groups.
+/// without scene + group the key would collide across zones.
 pub(crate) fn extract_layer_health(data: &serde_json::Value) -> Option<(String, LayerHealth)> {
     let scene_id = data.get("scene_id")?.as_str()?;
     let group_id = data.get("group_id")?.as_str()?;
@@ -483,7 +483,7 @@ pub(crate) fn extract_layer_health(data: &serde_json::Value) -> Option<(String, 
     Some((layer_health_key(scene_id, group_id, layer_id), health))
 }
 
-/// Whether any *current* layer in a render group is in a degraded health
+/// Whether any *current* layer in a zone is in a degraded health
 /// state. "Degraded" is the alarming end of `LayerHealth` — a failed
 /// producer or a missing asset; transient `Loading`/`Stalled` states do not
 /// count, so the §6.7 Screen-row and Stage indicators stay meaningful.

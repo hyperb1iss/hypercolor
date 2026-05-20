@@ -332,7 +332,7 @@ pub(super) fn metadata() -> EffectMetadata {
         name: "Media Player".into(),
         author: "Hypercolor".into(),
         version: "0.1.0".into(),
-        description: "Play an image or animated media asset on a render group".into(),
+        description: "Play an image or animated media asset on a zone".into(),
         category: EffectCategory::Source,
         tags: vec![
             "media".into(),

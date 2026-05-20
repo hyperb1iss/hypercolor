@@ -508,7 +508,7 @@ fn scene_validate_rejects_duplicate_display_device_ids() {
     assert!(
         errors
             .iter()
-            .any(|error| error.contains("duplicate display render groups")),
+            .any(|error| error.contains("duplicate display zones")),
         "expected duplicate-display validation error, got {errors:?}"
     );
 }

@@ -652,7 +652,7 @@ impl HypercolorBus {
         self.zone_preview.receiver_count()
     }
 
-    /// Access or create the per-group canvas sender for a render group.
+    /// Access or create the per-group canvas sender for a zone.
     #[must_use]
     pub fn group_canvas_sender(&self, id: ZoneId) -> watch::Sender<DisplayGroupFrame> {
         let mut group_canvases = self
@@ -710,7 +710,7 @@ impl HypercolorBus {
         senders
     }
 
-    /// Subscribe to a render group's canvas updates.
+    /// Subscribe to a zone's canvas updates.
     #[must_use]
     pub fn group_canvas_receiver(&self, id: ZoneId) -> watch::Receiver<DisplayGroupFrame> {
         self.group_canvas_sender(id).subscribe()
@@ -851,7 +851,7 @@ impl HypercolorBus {
         }
     }
 
-    /// Remove the render-thread-authored display-face route for a render group.
+    /// Remove the render-thread-authored display-face route for a zone.
     pub fn remove_display_group_target(&self, id: ZoneId) {
         let mut display_group_targets = self
             .display_group_targets
@@ -886,7 +886,7 @@ impl HypercolorBus {
         self.retain_display_group_targets(active_ids);
     }
 
-    /// Remove the per-group canvas stream for a render group.
+    /// Remove the per-group canvas stream for a zone.
     pub fn remove_group_canvas(&self, id: ZoneId) {
         let mut group_canvases = self
             .group_canvases

@@ -674,7 +674,7 @@ fn bench_render_groups(c: &mut Criterion) {
                         black_box(&EMPTY_SENSORS),
                         black_box(&mut canvases[index]),
                     )
-                    .expect("render group should render");
+                    .expect("zone should render");
                     spatial_engines[index]
                         .sample_into(black_box(&canvases[index]), &mut sampled[index]);
                 }

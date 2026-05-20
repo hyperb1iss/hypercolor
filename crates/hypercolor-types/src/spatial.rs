@@ -626,16 +626,3 @@ pub enum Wall {
     /// Left wall.
     West,
 }
-
-// ── Plan 55 P3 backwards-compat aliases ─────────────────────────────────
-//
-// See `scene.rs` for the multi-crate rollout rationale. These two
-// shadow the old `DeviceZone` and `ZoneAttachment` names while
-// downstream crates still reference them.
-
-/// Deprecated alias for [`Output`]; remove after Plan 55 P3 finishes.
-pub type DeviceZone = Output;
-
-/// Deprecated alias for [`OutputComponent`]; remove after Plan 55 P3
-/// finishes.
-pub type ZoneAttachment = OutputComponent;

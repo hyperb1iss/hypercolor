@@ -2,7 +2,7 @@
 //!
 //! This module defines the `EffectRenderer` trait that both the wgpu (native shader)
 //! and Servo (HTML/Canvas) rendering backends implement. `EffectPool`
-//! reconciles per-scene render groups into live renderer instances, and `EffectRegistry` indexes
+//! reconciles per-scene zones into live renderer instances, and `EffectRegistry` indexes
 //! all discovered effects from the filesystem.
 
 pub mod builtin;

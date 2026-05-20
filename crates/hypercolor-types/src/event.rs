@@ -99,7 +99,7 @@ pub enum EffectStopReason {
     Shutdown,
 }
 
-/// Degraded-mode state for an effect or render group.
+/// Degraded-mode state for an effect or zone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EffectDegradationState {
@@ -110,7 +110,7 @@ pub enum EffectDegradationState {
     Recovered,
 }
 
-/// How a render group changed inside the active scene.
+/// How a zone changed inside the active scene.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ZoneChangeKind {
@@ -136,7 +136,7 @@ pub enum AssetChangeKind {
     Removed,
 }
 
-/// How a render group's authored layer stack changed.
+/// How a zone's authored layer stack changed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LayerStackChangeKind {
@@ -600,7 +600,7 @@ pub enum HypercolorEvent {
         kind: ZoneChangeKind,
     },
 
-    /// An authored layer stack in a render group changed.
+    /// An authored layer stack in a zone changed.
     LayerStackChanged {
         scene_id: SceneId,
         group_id: ZoneId,
@@ -987,15 +987,3 @@ impl HypercolorEvent {
         }
     }
 }
-
-// ── Plan 55 P3 backwards-compat aliases ─────────────────────────────────
-//
-// See `scene.rs` for the multi-crate rollout rationale. The
-// `RenderGroupChanged` variant is intentionally left under its old
-// name in this commit because it forms part of the wire format
-// (externally tagged enum). A later commit will rename the variant
-// together with a `#[serde(rename)]` so the wire bytes stay intact.
-
-/// Deprecated alias for [`ZoneChangeKind`]; remove after Plan 55 P3
-/// finishes.
-pub type RenderGroupChangeKind = ZoneChangeKind;

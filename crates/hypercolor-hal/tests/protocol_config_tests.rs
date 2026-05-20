@@ -1,7 +1,7 @@
 use hypercolor_hal::drivers::nollie::GpuCableType;
 use hypercolor_hal::drivers::prismrgb::PrismSGpuCable;
 use hypercolor_hal::{ProtocolRuntimeConfig, runtime_config_for_attachment_profile};
-use hypercolor_types::attachment::{AttachmentBinding, AttachmentSlot, DeviceAttachmentProfile};
+use hypercolor_types::attachment::{ComponentBinding, ComponentSlot, DeviceComponentProfile};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceId, DeviceInfo,
     DeviceOrigin, DeviceTopologyHint, ZoneInfo,
@@ -52,10 +52,10 @@ fn nollie32_nos2_info() -> DeviceInfo {
     info
 }
 
-fn profile(bindings: Vec<AttachmentBinding>) -> DeviceAttachmentProfile {
-    DeviceAttachmentProfile {
+fn profile(bindings: Vec<ComponentBinding>) -> DeviceComponentProfile {
+    DeviceComponentProfile {
         schema_version: 1,
-        slots: vec![AttachmentSlot {
+        slots: vec![ComponentSlot {
             id: "gpu-strimer".to_owned(),
             name: "GPU Strimer".to_owned(),
             led_start: 0,
@@ -69,8 +69,8 @@ fn profile(bindings: Vec<AttachmentBinding>) -> DeviceAttachmentProfile {
     }
 }
 
-fn binding(slot_id: &str, template_id: &str) -> AttachmentBinding {
-    AttachmentBinding {
+fn binding(slot_id: &str, template_id: &str) -> ComponentBinding {
+    ComponentBinding {
         slot_id: slot_id.to_owned(),
         template_id: template_id.to_owned(),
         name: None,
@@ -80,7 +80,7 @@ fn binding(slot_id: &str, template_id: &str) -> AttachmentBinding {
     }
 }
 
-fn template_leds(binding: &AttachmentBinding) -> Option<u32> {
+fn template_leds(binding: &ComponentBinding) -> Option<u32> {
     match binding.template_id.as_str() {
         "gpu-dual" => Some(108),
         "gpu-triple" => Some(162),

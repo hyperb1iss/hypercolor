@@ -107,7 +107,7 @@ impl EffectRenderOutput {
 ///
 /// Both `WgpuRenderer` (native shaders) and `ServoRenderer` (HTML/Canvas)
 /// implement this trait. `EffectPool` stores `Box<dyn EffectRenderer>`
-/// instances per active render group and delegates frame production through them.
+/// instances per active zone and delegates frame production through them.
 ///
 /// # Lifecycle
 ///

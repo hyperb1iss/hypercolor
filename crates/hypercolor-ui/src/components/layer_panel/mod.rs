@@ -2,7 +2,7 @@
 //!
 //! # Contract (Spec 65 §10)
 //!
-//! `LayerPanel` edits the layer stack of exactly one render group. Studio,
+//! `LayerPanel` edits the layer stack of exactly one zone. Studio,
 //! `/assets`, and any future surface mount the same component, so the layer
 //! manager cannot drift — there is exactly one implementation.
 //!
@@ -47,7 +47,7 @@ use picker::{AddLayerPicker, NewLayerDraft};
 use row::LayerRow;
 use source::{AddLayerScope, available_add_layer_scopes, resolve_add_layer_targets};
 
-/// Layer-stack editor for one render group. See the module docs for the
+/// Layer-stack editor for one zone. See the module docs for the
 /// mount contract.
 #[component]
 pub fn LayerPanel(
@@ -197,7 +197,7 @@ pub fn LayerPanel(
                         {move || {
                             surface_label
                                 .get()
-                                .unwrap_or_else(|| "Active scene render group".to_owned())
+                                .unwrap_or_else(|| "Active scene zone".to_owned())
                         }}
                     </div>
                 </div>

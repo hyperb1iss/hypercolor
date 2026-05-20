@@ -931,7 +931,7 @@ async fn daemon_state_default_scene_starts_without_render_groups() {
     );
     assert!(
         scenes.active_render_groups().is_empty(),
-        "default scene should start without any active render groups"
+        "default scene should start without any active zones"
     );
 }
 

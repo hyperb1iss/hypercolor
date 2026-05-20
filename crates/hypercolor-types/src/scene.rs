@@ -52,12 +52,12 @@ impl fmt::Display for SceneId {
 
 // ── Render Groups ────────────────────────────────────────────────────────
 
-/// Opaque render group identifier. UUID v7 for time-sortable ordering.
+/// Opaque zone identifier. UUID v7 for time-sortable ordering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ZoneId(pub Uuid);
 
 impl ZoneId {
-    /// Create a new random render group identifier (UUID v7).
+    /// Create a new random zone identifier (UUID v7).
     #[must_use]
     pub fn new() -> Self {
         Self(Uuid::now_v7())
@@ -115,7 +115,7 @@ pub struct Zone {
     /// Optional UI accent color.
     pub color: Option<String>,
 
-    /// Direct display target for face-style render groups.
+    /// Direct display target for face-style zones.
     pub display_target: Option<DisplayFaceTarget>,
 
     /// Semantic role inside the scene.
@@ -376,7 +376,7 @@ fn is_default_display_face_opacity(value: &f32) -> bool {
     (*value - default_display_face_opacity()).abs() <= f32::EPSILON
 }
 
-/// Direct LCD target for a display-face render group.
+/// Direct LCD target for a display-face zone.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct DisplayFaceTarget {
@@ -446,7 +446,7 @@ impl Zone {
         for layer in &self.layers {
             if !seen.insert(layer.id) {
                 errors.push(format!(
-                    "render group '{}' has duplicate layer id {}",
+                    "zone '{}' has duplicate layer id {}",
                     self.name, layer.id
                 ));
             }
@@ -466,7 +466,7 @@ impl Zone {
         }
     }
 
-    /// Flatten this render group into zone assignments.
+    /// Flatten this zone into zone assignments.
     #[must_use]
     pub fn zone_assignments(&self) -> Vec<ZoneAssignment> {
         if !self.enabled {
@@ -521,7 +521,7 @@ fn control_value_parameter(value: &ControlValue) -> String {
     }
 }
 
-/// How zones not claimed by any render group should behave.
+/// How zones not claimed by any zone should behave.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum UnassignedBehavior {
@@ -530,7 +530,7 @@ pub enum UnassignedBehavior {
     Off,
     /// Unassigned zones retain their previous colors.
     Hold,
-    /// Route unassigned zones to a fallback render group.
+    /// Route unassigned zones to a fallback zone.
     Fallback(ZoneId),
 }
 
@@ -583,7 +583,7 @@ pub struct Scene {
     /// Freeform key-value metadata for extensions and UI display.
     pub metadata: HashMap<String, String>,
 
-    /// Policy for zones not claimed by any render group.
+    /// Policy for zones not claimed by any zone.
     #[serde(default, skip_serializing_if = "is_default_unassigned_behavior")]
     pub unassigned_behavior: UnassignedBehavior,
 
@@ -611,7 +611,7 @@ pub enum SceneMutationMode {
 }
 
 impl Scene {
-    /// Whether this scene uses render groups instead of flat zone assignments.
+    /// Whether this scene uses zones instead of flat zone assignments.
     #[must_use]
     pub fn has_render_groups(&self) -> bool {
         !self.groups.is_empty()
@@ -690,7 +690,7 @@ impl Scene {
         self.kind == SceneKind::Named && self.mutation_mode == SceneMutationMode::Snapshot
     }
 
-    /// Ensure no zone is claimed by multiple render groups.
+    /// Ensure no zone is claimed by multiple zones.
     pub fn validate_group_exclusivity(&self) -> Result<(), Vec<String>> {
         if !self.has_render_groups() {
             return Ok(());
@@ -730,7 +730,7 @@ impl Scene {
             .filter(|group| group.role == ZoneRole::Primary)
             .count();
         if primary_count > 1 {
-            errors.push("scene has more than one primary render group".to_owned());
+            errors.push("scene has more than one primary zone".to_owned());
         }
 
         let mut display_targets = HashMap::<DeviceId, ZoneId>::new();
@@ -741,12 +741,12 @@ impl Scene {
 
             match (&group.role, &group.display_target) {
                 (ZoneRole::Display, None) => errors.push(format!(
-                    "display render group '{}' is missing a display target",
+                    "display zone '{}' is missing a display target",
                     group.name
                 )),
                 (ZoneRole::Custom | ZoneRole::Primary, Some(_)) => {
                     errors.push(format!(
-                        "render group '{}' has a display target but role '{}'",
+                        "zone '{}' has a display target but role '{}'",
                         group.name,
                         match group.role {
                             ZoneRole::Custom => "custom",
@@ -758,7 +758,7 @@ impl Scene {
                 (ZoneRole::Display, Some(target)) => {
                     if let Some(existing) = display_targets.insert(target.device_id, group.id) {
                         errors.push(format!(
-                            "duplicate display render groups for device {} ({} and {})",
+                            "duplicate display zones for device {} ({} and {})",
                             target.device_id, existing, group.id
                         ));
                     }
@@ -1069,20 +1069,3 @@ pub enum ActionKind {
     /// Pop the current scene and restore the previous one.
     RestorePrevious,
 }
-
-// ── Plan 55 P3 backwards-compat aliases ─────────────────────────────────
-//
-// The Wave P3 rename ships in stages: this crate flips to the new names
-// first while consumer crates still spell things the old way. These
-// aliases let the cascade land one crate at a time without breaking the
-// workspace build. Removed once every consumer crate has migrated; the
-// wire fixture guards the bytes throughout.
-
-/// Deprecated alias for [`Zone`]; remove after Plan 55 P3 finishes.
-pub type RenderGroup = Zone;
-
-/// Deprecated alias for [`ZoneId`]; remove after Plan 55 P3 finishes.
-pub type RenderGroupId = ZoneId;
-
-/// Deprecated alias for [`ZoneRole`]; remove after Plan 55 P3 finishes.
-pub type RenderGroupRole = ZoneRole;

@@ -60,7 +60,7 @@ fn invalidate_active_render_groups_bumps_revision_without_mutating_groups() {
 
     assert!(
         manager.active_render_groups_revision() > revision_before,
-        "invalidating active render groups should advance the revision"
+        "invalidating active zones should advance the revision"
     );
     assert_eq!(
         manager.active_render_groups().as_ref(),

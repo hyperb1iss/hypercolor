@@ -764,47 +764,47 @@ pub const ROUTES: &[RouteSpec] = &[
         "/api/v1/scenes/{id}/layers/broadcast-media",
         "broadcast_media_layer",
         "scenes",
-        "Broadcast one media layer across render groups",
+        "Broadcast one media layer across zones",
     )
     .with_request_body("BroadcastMediaLayerRequest", true),
     RouteSpec::get(
         "/api/v1/scenes/{id}/groups/{group_id}/layers",
         "list_layers",
         "scenes",
-        "List render group layers",
+        "List zone layers",
     ),
     RouteSpec::post(
         "/api/v1/scenes/{id}/groups/{group_id}/layers",
         "create_layer",
         "scenes",
-        "Create render group layer",
+        "Create zone layer",
     )
     .with_request_body("CreateLayerRequest", true),
     RouteSpec::patch(
         "/api/v1/scenes/{id}/groups/{group_id}/layers/order",
         "reorder_layers",
         "scenes",
-        "Reorder render group layers",
+        "Reorder zone layers",
     )
     .with_request_body("LayerOrderRequest", true),
     RouteSpec::put(
         "/api/v1/scenes/{id}/groups/{group_id}/layers/{layer_id}",
         "update_layer",
         "scenes",
-        "Update render group layer",
+        "Update zone layer",
     )
     .with_request_body("UpdateLayerRequest", true),
     RouteSpec::delete(
         "/api/v1/scenes/{id}/groups/{group_id}/layers/{layer_id}",
         "delete_layer",
         "scenes",
-        "Delete render group layer",
+        "Delete zone layer",
     ),
     RouteSpec::patch(
         "/api/v1/scenes/{id}/groups/{group_id}/layers/{layer_id}/controls",
         "patch_layer_controls",
         "scenes",
-        "Patch render group layer controls",
+        "Patch zone layer controls",
     )
     .with_request_body("PatchLayerControlsRequest", true),
     RouteSpec::get(

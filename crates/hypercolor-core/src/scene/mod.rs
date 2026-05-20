@@ -82,7 +82,7 @@ pub enum LayerMutationError {
 pub enum ZoneMutationError {
     /// No scene exists with the requested id.
     SceneMissing,
-    /// No render group exists with the requested id.
+    /// No zone exists with the requested id.
     GroupMissing,
     /// No device zone exists with the requested id.
     OutputMissing,
@@ -99,7 +99,7 @@ pub enum ZoneMutationError {
 /// One precondition-checked layer insertion in a multi-group scene mutation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SceneGroupLayerInsert {
-    /// Target render group.
+    /// Target zone.
     pub group_id: ZoneId,
     /// Layer to insert into the target group's authored stack.
     pub layer: SceneLayer,
@@ -143,7 +143,7 @@ pub struct SceneManager {
     /// Used for restore-previous semantics.
     activation_history: Vec<SceneId>,
 
-    /// Cached active render groups for cheap frame snapshot reads.
+    /// Cached active zones for cheap frame snapshot reads.
     active_render_groups: Arc<[Zone]>,
 
     /// Monotonic revision for the active render-group cache.
@@ -373,19 +373,19 @@ impl SceneManager {
         self.active_scene_id().and_then(|id| self.scenes.get(id))
     }
 
-    /// Get the cached active render groups for cheap frame snapshots.
+    /// Get the cached active zones for cheap frame snapshots.
     #[must_use]
     pub fn active_render_groups(&self) -> Arc<[Zone]> {
         Arc::clone(&self.active_render_groups)
     }
 
-    /// Monotonic revision of the cached active render groups.
+    /// Monotonic revision of the cached active zones.
     #[must_use]
     pub fn active_render_groups_revision(&self) -> u64 {
         self.active_render_groups_revision
     }
 
-    /// Invalidate caches derived from the active render groups when an
+    /// Invalidate caches derived from the active zones when an
     /// external dependency changes without mutating the scene graph itself.
     pub fn invalidate_active_render_groups(&mut self) {
         self.active_render_groups_revision = self.active_render_groups_revision.saturating_add(1);
@@ -491,7 +491,7 @@ impl SceneManager {
             scene.groups.push(Zone {
                 id: ZoneId::new(),
                 name: "Primary".to_owned(),
-                description: Some("Primary full-scene render group.".to_owned()),
+                description: Some("Primary full-scene zone.".to_owned()),
                 effect_id: Some(effect.id),
                 controls,
                 control_bindings: HashMap::new(),
@@ -1362,7 +1362,7 @@ impl SceneManager {
         self.patch_effect_controls_with_precondition(group_id, None, updates, expected_version)
     }
 
-    /// Patch a render group's controls, optionally requiring the group
+    /// Patch a zone's controls, optionally requiring the group
     /// to currently be bound to a specific `expected_effect_id`.
     ///
     /// The `expected_effect_id` gate closes the TOCTOU window the
@@ -1491,7 +1491,7 @@ impl SceneManager {
             .and_then(|active| active.groups.iter().find(|group| group.id == group_id))
     }
 
-    /// Apply an effect to a named (non-Primary) render group — the
+    /// Apply an effect to a named (non-Primary) zone — the
     /// zone-targeted counterpart of [`Self::upsert_primary_group`]. Sets
     /// the group's effect, controls, and preset; the group's layout,
     /// role, and device assignment are left untouched. The group must
@@ -1510,11 +1510,9 @@ impl SceneManager {
             .groups
             .iter_mut()
             .find(|group| group.id == group_id)
-            .ok_or_else(|| {
-                anyhow::anyhow!("render group {group_id:?} is not in the active scene")
-            })?;
+            .ok_or_else(|| anyhow::anyhow!("zone {group_id:?} is not in the active scene"))?;
         if group.role == ZoneRole::Display {
-            anyhow::bail!("render group {group_id:?} is a display face, not an LED zone");
+            anyhow::bail!("zone {group_id:?} is a display face, not an LED zone");
         }
         let effect_changed = group.effect_id != Some(effect.id);
         let control_bindings = if effect_changed {
@@ -1536,7 +1534,7 @@ impl SceneManager {
         self.refresh_active_render_groups();
         self.active_scene()
             .and_then(|scene| scene.groups.iter().find(|group| group.id == group_id))
-            .ok_or_else(|| anyhow::anyhow!("render group vanished after effect apply"))
+            .ok_or_else(|| anyhow::anyhow!("zone vanished after effect apply"))
     }
 
     pub fn clear_group_effect(&mut self, group_id: ZoneId) -> Option<&Zone> {
@@ -1876,12 +1874,3 @@ pub fn make_scene(name: &str) -> Scene {
         mutation_mode: SceneMutationMode::Live,
     }
 }
-
-// ── Plan 55 P3 backwards-compat aliases ─────────────────────────────────
-//
-// Match the legacy name so the daemon keeps compiling against this
-// crate until P3c migrates its imports.
-
-/// Deprecated alias for [`ZoneMetaPatch`]; remove after Plan 55 P3
-/// finishes.
-pub type RenderGroupMetaPatch = ZoneMetaPatch;

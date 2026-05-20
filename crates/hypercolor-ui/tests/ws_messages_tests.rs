@@ -145,7 +145,7 @@ fn extract_layer_health_parses_a_failure_reason() {
 #[test]
 fn extract_layer_health_rejects_a_payload_missing_an_identity_field() {
     // All three identity fields are mandatory. Dropping any one leaves a
-    // key that could collide across render groups, so the event is rejected.
+    // key that could collide across zones, so the event is rejected.
     assert!(extract_layer_health(&serde_json::json!({ "health": "active" })).is_none());
     assert!(
         extract_layer_health(&serde_json::json!({
@@ -167,7 +167,7 @@ fn extract_layer_health_rejects_a_payload_missing_an_identity_field() {
 
 #[test]
 fn layer_health_key_separates_groups_that_share_a_layer_id() {
-    // A SceneLayerId is unique only within its render group; two groups can
+    // A SceneLayerId is unique only within its zone; two groups can
     // hold the same id, so the composite key must keep their rows distinct.
     let shared_layer = "layer-7";
     let group_a = layer_health_key("scene-1", "group-a", shared_layer);

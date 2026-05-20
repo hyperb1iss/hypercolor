@@ -742,7 +742,7 @@ async fn scene_wide_media_broadcast_rejects_missing_group() {
         json["error"]["message"]
             .as_str()
             .expect("message should be a string")
-            .contains("Render group not found")
+            .contains("Zone not found")
     );
 }
 

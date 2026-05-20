@@ -242,7 +242,7 @@ fn scene_manager_create_rejects_overlapping_render_groups() {
     ];
 
     let result = mgr.create(scene);
-    assert!(result.is_err(), "overlapping render groups should fail");
+    assert!(result.is_err(), "overlapping zones should fail");
 }
 
 #[test]
@@ -409,7 +409,7 @@ fn scene_manager_upsert_primary_group_replaces_materialized_layer_stack() {
 
     let active_layers = mgr.active_render_groups()[0].effective_layers();
     let LayerSource::Effect { effect_id, .. } = active_layers[0].source else {
-        panic!("active render group should expose the replacement effect layer");
+        panic!("active zone should expose the replacement effect layer");
     };
     assert_eq!(effect_id, new_id);
     assert!(mgr.active_render_groups_revision() > initial_revision);

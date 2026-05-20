@@ -5030,7 +5030,7 @@ async fn patch_effect_controls_by_id_rejects_apply_after_effect_swap() {
         .expect("Aurora id")
         .to_owned();
 
-    // Swap to a different effect. Same render group slot; different
+    // Swap to a different effect. Same zone slot; different
     // effect_id.
     app.clone()
         .oneshot(
@@ -5161,7 +5161,7 @@ async fn apply_effect_with_preset_id_sets_group_preset_atomically() {
     assert_eq!(
         primary.preset_id.map(|id| id.to_string()),
         Some(preset_id),
-        "preset_id should be set on the render group in the same transaction as the effect start"
+        "preset_id should be set on the zone in the same transaction as the effect start"
     );
     let speed = primary
         .controls

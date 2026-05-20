@@ -35,7 +35,7 @@ use crate::device_metrics::DeviceMetricsSnapshot;
 use crate::discovery as core_discovery;
 
 pub use attachments::{
-    AttachmentPreviewResponse, AttachmentPreviewZone, ComponentBindingSummary,
+    ComponentBindingSummary, ComponentPreviewResponse, ComponentPreviewZone,
     DeviceComponentsResponse, DeviceComponentsUpdateResponse, UpdateAttachmentsRequest,
     delete_attachments, get_attachments, preview_attachments, update_attachments,
 };
@@ -770,7 +770,7 @@ pub async fn identify_attachment(
         match build_attachment_identify_frame(
             &profiles,
             &registry,
-            AttachmentIdentifyTarget {
+            ComponentIdentifyTarget {
                 binding_index,
                 device_id,
                 instance,
@@ -1443,7 +1443,7 @@ fn build_zone_identify_frame(info: &DeviceInfo, zone_index: usize, color: [u8; 3
 
 /// Build a full-device LED frame with only a single attachment component lit.
 #[derive(Clone, Copy)]
-struct AttachmentIdentifyTarget<'a> {
+struct ComponentIdentifyTarget<'a> {
     device_id: DeviceId,
     slot_id: &'a str,
     binding_index: usize,
@@ -1453,11 +1453,11 @@ struct AttachmentIdentifyTarget<'a> {
 fn build_attachment_identify_frame(
     profiles: &crate::attachment_profiles::ComponentProfileStore,
     registry: &hypercolor_core::attachment::ComponentRegistry,
-    target: AttachmentIdentifyTarget<'_>,
+    target: ComponentIdentifyTarget<'_>,
     total_leds: usize,
     color: [u8; 3],
 ) -> Result<Vec<[u8; 3]>, String> {
-    let AttachmentIdentifyTarget {
+    let ComponentIdentifyTarget {
         device_id,
         slot_id,
         binding_index,

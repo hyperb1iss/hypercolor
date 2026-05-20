@@ -27,7 +27,7 @@ pub struct RuntimeSessionSnapshot {
     /// Active scene ID, including the synthesized default scene.
     pub active_scene_id: Option<String>,
 
-    /// Full render groups for the synthesized default scene.
+    /// Full zones for the synthesized default scene.
     pub default_scene_groups: Vec<Zone>,
 
     /// Active layout ID, if one was applied to the spatial engine.

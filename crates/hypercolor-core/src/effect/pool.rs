@@ -162,7 +162,7 @@ impl EffectPool {
         let key = EffectSlotKey::new(group.id, layer.id);
         let slot = self.slots.get_mut(&key).ok_or_else(|| {
             anyhow!(
-                "render group '{}' layer '{}' is not reconciled before rendering",
+                "zone '{}' layer '{}' is not reconciled before rendering",
                 group.name,
                 layer.id
             )
@@ -229,7 +229,7 @@ impl EffectPool {
         let key = EffectSlotKey::new(group.id, layer.id);
         let slot = self.slots.get_mut(&key).ok_or_else(|| {
             anyhow!(
-                "render group '{}' layer '{}' is not reconciled before rendering",
+                "zone '{}' layer '{}' is not reconciled before rendering",
                 group.name,
                 layer.id
             )
@@ -461,7 +461,7 @@ fn single_enabled_effect_layer(group: &Zone) -> Result<Option<SceneLayer>> {
     };
     if layers.next().is_some() {
         return Err(anyhow!(
-            "render group '{}' has multiple enabled effect layers; render layers explicitly",
+            "zone '{}' has multiple enabled effect layers; render layers explicitly",
             group.name
         ));
     }

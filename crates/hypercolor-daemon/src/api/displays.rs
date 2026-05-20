@@ -55,7 +55,7 @@ pub struct SetDisplayFaceRequest {
 /// Request body for `PATCH /api/v1/displays/{id}/face/controls`.
 ///
 /// The payload carries only the overrides the caller wants to change;
-/// existing control values on the render group are preserved unless their
+/// existing control values on the zone are preserved unless their
 /// key appears in this map. `controls` is typed as raw JSON (rather than
 /// `HashMap<String, ControlValue>`) so callers can send natural shapes
 /// like `{"accent": 0.5}` instead of `{"accent": {"float": 0.5}}`, which
@@ -411,7 +411,7 @@ pub async fn delete_display_face(
 }
 
 /// `PATCH /api/v1/displays/{id}/face/controls` — merge control overrides
-/// into the render group without replacing the face assignment itself.
+/// into the zone without replacing the face assignment itself.
 ///
 /// Returns the full `DisplayFaceResponse` so callers can reconcile their
 /// optimistic local state with the authoritative values the daemon

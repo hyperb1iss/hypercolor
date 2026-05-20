@@ -61,14 +61,14 @@ pub struct ComponentBindingSummary {
 }
 
 #[derive(Debug, Serialize)]
-pub struct AttachmentPreviewResponse {
+pub struct ComponentPreviewResponse {
     pub device_id: String,
     pub device_name: String,
-    pub zones: Vec<AttachmentPreviewZone>,
+    pub zones: Vec<ComponentPreviewZone>,
 }
 
 #[derive(Debug, Serialize)]
-pub struct AttachmentPreviewZone {
+pub struct ComponentPreviewZone {
     pub slot_id: String,
     pub binding_index: usize,
     pub instance: u32,
@@ -82,7 +82,7 @@ pub struct AttachmentPreviewZone {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct ResolvedAttachmentBinding {
+pub(super) struct ResolvedComponentBinding {
     pub(super) index: usize,
     pub(super) binding: ComponentBinding,
     pub(super) slot: ComponentSlot,
@@ -194,7 +194,7 @@ pub async fn preview_attachments(
         }
     };
 
-    ApiResponse::ok(AttachmentPreviewResponse {
+    ApiResponse::ok(ComponentPreviewResponse {
         device_id: tracked.info.id.to_string(),
         device_name: tracked.info.name.clone(),
         zones: preview_attachment_zones(&resolved),
@@ -277,7 +277,7 @@ fn summarize_attachment_binding(
 }
 
 fn summarize_resolved_bindings(
-    bindings: &[ResolvedAttachmentBinding],
+    bindings: &[ResolvedComponentBinding],
 ) -> Vec<ComponentBindingSummary> {
     bindings
         .iter()
@@ -294,7 +294,7 @@ fn summarize_resolved_bindings(
         .collect()
 }
 
-fn preview_attachment_zones(bindings: &[ResolvedAttachmentBinding]) -> Vec<AttachmentPreviewZone> {
+fn preview_attachment_zones(bindings: &[ResolvedComponentBinding]) -> Vec<ComponentPreviewZone> {
     let mut zones = Vec::new();
 
     for binding in bindings {
@@ -306,7 +306,7 @@ fn preview_attachment_zones(bindings: &[ResolvedAttachmentBinding]) -> Vec<Attac
                 .led_start
                 .saturating_add(binding.binding.led_offset)
                 .saturating_add(instance.saturating_mul(template_led_count));
-            zones.push(AttachmentPreviewZone {
+            zones.push(ComponentPreviewZone {
                 slot_id: binding.binding.slot_id.clone(),
                 binding_index: binding.index,
                 instance,
@@ -326,7 +326,7 @@ fn preview_attachment_zones(bindings: &[ResolvedAttachmentBinding]) -> Vec<Attac
 }
 
 pub(super) fn suggested_attachment_zones(
-    bindings: &[ResolvedAttachmentBinding],
+    bindings: &[ResolvedComponentBinding],
 ) -> Vec<ComponentSuggestedZone> {
     let mut zones = Vec::new();
 
@@ -358,7 +358,7 @@ pub(super) fn suggested_attachment_zones(
     zones
 }
 
-fn preview_attachment_zone_name(binding: &ResolvedAttachmentBinding, instance: u32) -> String {
+fn preview_attachment_zone_name(binding: &ResolvedComponentBinding, instance: u32) -> String {
     match binding.binding.name.as_deref() {
         Some(name) if binding.binding.instances > 1 => {
             format!("{name} - {} {}", binding.template.name, instance + 1)
@@ -371,13 +371,13 @@ fn preview_attachment_zone_name(binding: &ResolvedAttachmentBinding, instance: u
     }
 }
 
-trait NamedAttachmentZone {
+trait NamedComponentZone {
     fn slot_id(&self) -> &str;
     fn name(&self) -> &str;
     fn name_mut(&mut self) -> &mut String;
 }
 
-impl NamedAttachmentZone for AttachmentPreviewZone {
+impl NamedComponentZone for ComponentPreviewZone {
     fn slot_id(&self) -> &str {
         &self.slot_id
     }
@@ -391,7 +391,7 @@ impl NamedAttachmentZone for AttachmentPreviewZone {
     }
 }
 
-impl NamedAttachmentZone for ComponentSuggestedZone {
+impl NamedComponentZone for ComponentSuggestedZone {
     fn slot_id(&self) -> &str {
         &self.slot_id
     }
@@ -405,7 +405,7 @@ impl NamedAttachmentZone for ComponentSuggestedZone {
     }
 }
 
-fn disambiguate_attachment_zone_names<T: NamedAttachmentZone>(zones: &mut [T]) {
+fn disambiguate_attachment_zone_names<T: NamedComponentZone>(zones: &mut [T]) {
     let mut totals = HashMap::<(String, String), usize>::new();
     for zone in &*zones {
         *totals
@@ -431,7 +431,7 @@ fn resolve_profile_bindings(
     device: &DeviceInfo,
     profile: &DeviceComponentProfile,
     registry: &hypercolor_core::attachment::ComponentRegistry,
-) -> Option<Vec<ResolvedAttachmentBinding>> {
+) -> Option<Vec<ResolvedComponentBinding>> {
     validate_attachment_bindings(device, &profile.slots, &profile.bindings, registry).ok()
 }
 
@@ -444,7 +444,7 @@ fn validate_attachment_bindings(
     slots: &[ComponentSlot],
     bindings: &[ComponentBinding],
     registry: &hypercolor_core::attachment::ComponentRegistry,
-) -> Result<Vec<ResolvedAttachmentBinding>, Response> {
+) -> Result<Vec<ResolvedComponentBinding>, Response> {
     let slot_index = slots
         .iter()
         .map(|slot| (slot.id.as_str(), slot))
@@ -508,7 +508,7 @@ fn validate_attachment_bindings(
             )));
         }
 
-        resolved.push(ResolvedAttachmentBinding {
+        resolved.push(ResolvedComponentBinding {
             index,
             binding: ComponentBinding {
                 slot_id: slot_id.to_owned(),
@@ -559,7 +559,7 @@ fn push_unique_id(ids: &mut Vec<String>, id: String) {
     clippy::result_large_err,
     reason = "private handler helper returns a concrete HTTP response on validation failure"
 )]
-fn validate_attachment_overlaps(bindings: &[ResolvedAttachmentBinding]) -> Result<(), Response> {
+fn validate_attachment_overlaps(bindings: &[ResolvedComponentBinding]) -> Result<(), Response> {
     let mut enabled = bindings
         .iter()
         .filter(|binding| binding.binding.enabled)

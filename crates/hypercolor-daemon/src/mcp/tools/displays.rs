@@ -14,7 +14,7 @@ pub(super) fn build_set_display_face() -> ToolDefinition {
     ToolDefinition {
         name: "set_display_face".into(),
         title: "Assign Display Face".into(),
-        description: "Assign or clear an HTML display-face effect on a display device by updating the active scene's display-target render group.".into(),
+        description: "Assign or clear an HTML display-face effect on a display device by updating the active scene's display-target zone.".into(),
         input_schema: json!({
             "type": "object",
             "properties": {

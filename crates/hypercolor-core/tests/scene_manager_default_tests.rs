@@ -454,7 +454,7 @@ fn sync_primary_group_layout_refreshes_primary_but_leaves_display_untouched() {
     );
     assert!(
         manager.active_render_groups_revision() > revision_before,
-        "render group revision should bump when the primary layout changes"
+        "zone revision should bump when the primary layout changes"
     );
 }
 
@@ -474,6 +474,6 @@ fn sync_primary_group_layout_is_noop_when_layout_already_matches() {
     assert_eq!(
         manager.active_render_groups_revision(),
         revision_before,
-        "render group revision should not move when nothing changed"
+        "zone revision should not move when nothing changed"
     );
 }

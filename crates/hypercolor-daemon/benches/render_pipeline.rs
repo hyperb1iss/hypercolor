@@ -26,7 +26,7 @@ use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::event::FrameData;
 use hypercolor_types::spatial::{
-    DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+    EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection,
 };
 use tokio::runtime::Runtime;
@@ -53,8 +53,8 @@ fn benchmark_config() -> Criterion {
         .sample_size(40)
 }
 
-fn strip_zone(id: &str, device_id: &str, led_count: u32) -> DeviceZone {
-    DeviceZone {
+fn strip_zone(id: &str, device_id: &str, led_count: u32) -> Output {
+    Output {
         id: id.to_owned(),
         name: id.to_owned(),
         device_id: device_id.to_owned(),
@@ -80,7 +80,7 @@ fn strip_zone(id: &str, device_id: &str, led_count: u32) -> DeviceZone {
     }
 }
 
-fn layout_with_zones(zones: Vec<DeviceZone>) -> SpatialLayout {
+fn layout_with_zones(zones: Vec<Output>) -> SpatialLayout {
     SpatialLayout {
         id: "daemon-bench-layout".to_owned(),
         name: "Daemon Bench Layout".to_owned(),

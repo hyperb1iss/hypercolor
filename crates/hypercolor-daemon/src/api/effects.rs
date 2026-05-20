@@ -60,7 +60,7 @@ pub struct ApplyEffectRequest {
     #[schema(value_type = Object)]
     pub controls: Option<serde_json::Value>,
     pub transition: Option<TransitionRequest>,
-    /// Optional preset ID to associate with the render group in the same
+    /// Optional preset ID to associate with the zone in the same
     /// transaction as the effect start — lets the UI pass a remembered
     /// preset selection without a follow-up round-trip. If `controls` is
     /// also provided, the explicit controls win (they're presumed to
@@ -1112,7 +1112,7 @@ pub async fn update_effect_controls(
     }
 
     let Some((group, active_meta)) = primary_effect_by_id(state.as_ref(), effect_id).await else {
-        return ApiError::not_found("No render group loads that effect");
+        return ApiError::not_found("No zone loads that effect");
     };
     let effect_name = active_meta.name.clone();
     let (normalized, invalid) = normalize_control_payload(&active_meta, &controls);
@@ -1141,14 +1141,14 @@ pub async fn update_effect_controls(
         ) {
             Ok((updated, version)) => (scene_id, updated.clone(), version),
             Err(ControlsVersionMismatch::NoActiveScene | ControlsVersionMismatch::GroupMissing) => {
-                return ApiError::not_found("render group no longer loads that effect");
+                return ApiError::not_found("zone no longer loads that effect");
             }
             Err(ControlsVersionMismatch::Stale { current }) => {
                 return controls_version_mismatch_response(current);
             }
             Err(ControlsVersionMismatch::AmbiguousLayerStack) => {
                 return ApiError::validation(
-                    "render group has multiple matching effect layers; use the layer controls endpoint",
+                    "zone has multiple matching effect layers; use the layer controls endpoint",
                 );
             }
         }
@@ -1241,7 +1241,7 @@ fn attach_controls_version_headers(mut response: Response, version: u64) -> Resp
     response
 }
 
-/// Resolve the render group currently loaded with the given effect id.
+/// Resolve the zone currently loaded with the given effect id.
 ///
 /// Wave 1 policy: if the effect is attached to multiple groups (unusual
 /// but not impossible in custom scenes), take the first — deterministic

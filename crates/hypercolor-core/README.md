@@ -70,7 +70,7 @@ optionally `hypercolor-linux-gpu-interop` (feature `servo-gpu-import`).
 
 - `scene::SceneManager` — scene activation, priority, and transition management.
 - `session::SessionMonitor` — logind/screensaver session policy gating.
-- `attachment::AttachmentRegistry` — device-to-zone wiring profile management.
+- `attachment::ComponentRegistry` — device-to-zone wiring profile management.
 - `config::ConfigManager` — TOML config loader with file-watcher hot-reload.
 - `blend_math` — public RGBA blending helpers used by the compositor.
 

@@ -1,4 +1,4 @@
-//! The §8 surface model — the UI presentation of one render group.
+//! The §8 surface model — the UI presentation of one zone.
 //!
 //! A *surface* is a name, a Stage, and a layer stack. Lights and Screens
 //! are the same shape, so a multi-zone scene is more rows in the rail,
@@ -15,13 +15,13 @@ pub const UNASSIGNED_SURFACE_ID: &str = "__unassigned__";
 /// Which rail section a surface belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SurfaceKind {
-    /// An LED render group — listed under **Lights**.
+    /// An LED zone — listed under **Lights**.
     Light,
-    /// A display-face render group — listed under **Screens**.
+    /// A display-face zone — listed under **Screens**.
     Screen,
 }
 
-/// One render group as the UI presents it. The group id is held for
+/// One zone as the UI presents it. The group id is held for
 /// addressing mutations but is never shown to the user.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Surface {
@@ -29,7 +29,7 @@ pub struct Surface {
     pub name: String,
     pub kind: SurfaceKind,
     pub enabled: bool,
-    /// Semantic role of the backing render group. `Primary` is the §9.2
+    /// Semantic role of the backing zone. `Primary` is the §9.2
     /// Default zone — it cannot be deleted through the zone endpoints.
     pub role: ZoneRole,
     /// Optional UI accent color for the zone swatch (§9.2).
@@ -57,7 +57,7 @@ impl Surface {
     }
 }
 
-/// Count of LED-role render groups in a scene. A scene is multi-zone when
+/// Count of LED-role zones in a scene. A scene is multi-zone when
 /// this exceeds one — the trigger for the per-zone controls and the
 /// zone-assignment panel.
 #[must_use]
@@ -68,7 +68,7 @@ pub fn led_zone_count(groups: &[Zone]) -> usize {
         .count()
 }
 
-/// Build the surface list from the active scene's render groups, in scene
+/// Build the surface list from the active scene's zones, in scene
 /// order. LED-role groups become Lights; display-role groups become
 /// Screens.
 #[must_use]

@@ -24,11 +24,11 @@ on it directly.
 | Module | Notable types |
 |---|---|
 | `device` | `DeviceId` (UUIDv7), `DeviceInfo`, `DeviceCapabilities`, `DeviceFamily`, `DeviceState` |
-| `spatial` | `SpatialLayout`, `DeviceZone`, `LedTopology`, `NormalizedPosition`, `ZoneShape` |
+| `spatial` | `SpatialLayout`, `Output`, `OutputComponent`, `LedTopology`, `NormalizedPosition`, `ZoneShape` |
 | `canvas` | `Canvas`, `PublishedSurface` — the 640×480 (configurable) RGBA pixel buffer |
 | `audio` | `AudioData`, `AudioPipelineConfig` — per-frame spectrum/beat snapshot |
 | `effect` | `EffectMetadata`, `ControlValue`, `EffectId` |
-| `scene` | `SceneConfig`, `DisplayFaceTarget`, `RenderGroupId`, `DisplayFaceBlendMode` |
+| `scene` | `Scene`, `Zone`, `ZoneId`, `ZoneRole`, `DisplayFaceTarget`, `DisplayFaceBlendMode` |
 | `event` | `HypercolorEvent`, `FrameData`, `ZoneColors`, `SpectrumData` — event bus payloads |
 | `sensor` | `SystemSnapshot` — CPU/GPU/memory telemetry |
 | `config` | `DaemonConfig` — top-level TOML configuration |
@@ -37,7 +37,7 @@ on it directly.
 | `viewport` | `ViewportConfig`, `ScreenRegion` |
 | `palette` | `Palette`, `ColorStop` |
 | `library` | `FavoriteEntry` |
-| `attachment` | `AttachmentProfile`, `AttachmentSlot` |
+| `attachment` | `ComponentTemplate`, `ComponentSlot`, `ComponentBinding`, `DeviceComponentProfile` |
 | `controls` | `ControlSurface`, `ControlSurfaceInput` |
 
 All modules are flat re-exports; import via the module path that matches

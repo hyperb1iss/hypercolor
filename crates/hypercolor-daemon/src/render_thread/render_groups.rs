@@ -49,7 +49,7 @@ use crate::performance::{CompositorBackendKind, FullFrameCopyMetrics};
 const SCENE_SURFACE_POOL_INITIAL_SLOTS: usize = 8;
 const SCENE_SURFACE_POOL_MAX_SLOTS: usize = 64;
 
-/// Initial slot count for per-group direct-canvas pools (HTML-face render groups).
+/// Initial slot count for per-group direct-canvas pools (HTML-face zones).
 /// Same failure mode as the scene surface pool, but at smaller canvas sizes; still
 /// needs room for watch channel + in-flight display encode.
 const DIRECT_SURFACE_POOL_INITIAL_SLOTS: usize = 6;
@@ -95,7 +95,7 @@ pub(crate) struct ZoneResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("render group '{group_name}' effect '{effect_name}' ({effect_id}) failed: {error}")]
+#[error("zone '{group_name}' effect '{effect_name}' ({effect_id}) failed: {error}")]
 pub(crate) struct ZoneEffectError {
     pub(crate) effect_id: String,
     pub(crate) effect_name: String,
@@ -240,7 +240,7 @@ impl ZoneRuntime {
     }
 
     /// Same as `scene_surface_pool_saturation_reallocs` but summed across
-    /// every direct-canvas group pool (one per HTML-face render group).
+    /// every direct-canvas group pool (one per HTML-face zone).
     #[must_use]
     pub(crate) fn direct_surface_pool_saturation_reallocs(&self) -> u64 {
         self.direct_surface_pools

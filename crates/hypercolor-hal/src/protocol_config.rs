@@ -1,6 +1,6 @@
 //! Runtime protocol configuration derived from device attachment profiles.
 
-use hypercolor_types::attachment::{AttachmentBinding, DeviceAttachmentProfile};
+use hypercolor_types::attachment::{ComponentBinding, DeviceComponentProfile};
 use hypercolor_types::device::DeviceInfo;
 
 use crate::drivers::nollie::{
@@ -94,8 +94,8 @@ impl ProtocolRuntimeConfig {
 
 pub fn runtime_config_for_attachment_profile(
     device: &DeviceInfo,
-    profile: &DeviceAttachmentProfile,
-    binding_led_count: impl FnMut(&AttachmentBinding) -> Option<u32>,
+    profile: &DeviceComponentProfile,
+    binding_led_count: impl FnMut(&ComponentBinding) -> Option<u32>,
 ) -> Option<ProtocolRuntimeConfig> {
     if has_protocol(device, PRISM_S_PROTOCOL_ID) {
         return Some(ProtocolRuntimeConfig::PrismS(
@@ -119,8 +119,8 @@ pub fn runtime_config_for_attachment_profile(
 }
 
 fn prism_s_config_for_attachment_profile(
-    profile: &DeviceAttachmentProfile,
-    mut binding_led_count: impl FnMut(&AttachmentBinding) -> Option<u32>,
+    profile: &DeviceComponentProfile,
+    mut binding_led_count: impl FnMut(&ComponentBinding) -> Option<u32>,
 ) -> PrismSConfig {
     let has_enabled_bindings = profile.bindings.iter().any(|binding| binding.enabled);
     if !has_enabled_bindings {
@@ -150,8 +150,8 @@ fn prism_s_config_for_attachment_profile(
 }
 
 fn nollie32_config_for_attachment_profile(
-    profile: &DeviceAttachmentProfile,
-    mut binding_led_count: impl FnMut(&AttachmentBinding) -> Option<u32>,
+    profile: &DeviceComponentProfile,
+    mut binding_led_count: impl FnMut(&ComponentBinding) -> Option<u32>,
 ) -> Nollie32Config {
     let mut config = Nollie32Config::default();
 

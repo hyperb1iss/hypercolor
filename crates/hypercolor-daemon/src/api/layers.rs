@@ -164,7 +164,7 @@ pub async fn list_layers(
         return ApiError::not_found(format!("Scene not found: {scene_id_raw}"));
     };
     let Some(group) = find_group(&manager, scene_id, group_id) else {
-        return ApiError::not_found(format!("Render group not found: {group_id}"));
+        return ApiError::not_found(format!("Zone not found: {group_id}"));
     };
     layer_stack_response(group, StatusKind::Ok)
 }
@@ -219,7 +219,7 @@ pub async fn broadcast_media_layer(
     Json(body): Json<BroadcastMediaLayerRequest>,
 ) -> Response {
     if body.targets.is_empty() {
-        return ApiError::bad_request("targets must include at least one render group");
+        return ApiError::bad_request("targets must include at least one zone");
     }
     {
         let library = state.asset_library.read().await;
@@ -242,7 +242,7 @@ pub async fn broadcast_media_layer(
                 .is_none()
                 .then_some(target.group_id)
         }) {
-            return ApiError::not_found(format!("Render group not found: {group_id}"));
+            return ApiError::not_found(format!("Zone not found: {group_id}"));
         }
         let inserts = body.into_layer_inserts();
         match manager.insert_scene_group_layers_batch(scene_id, inserts) {
@@ -410,7 +410,7 @@ pub async fn patch_layer_controls(
             return ApiError::not_found(format!("Scene not found: {scene_id_raw}"));
         };
         let Some(group) = find_group(&manager, scene_id, group_id) else {
-            return ApiError::not_found(format!("Render group not found: {group_id}"));
+            return ApiError::not_found(format!("Zone not found: {group_id}"));
         };
         let Some(layer) = group
             .effective_layers()
@@ -672,7 +672,7 @@ fn layer_mutation_error(error: LayerMutationError) -> Response {
         LayerMutationError::NoActiveScene | LayerMutationError::SceneMissing => {
             ApiError::not_found("Scene not found")
         }
-        LayerMutationError::GroupMissing => ApiError::not_found("Render group not found"),
+        LayerMutationError::GroupMissing => ApiError::not_found("Zone not found"),
         LayerMutationError::LayerMissing { layer_id } => {
             ApiError::not_found(format!("Layer not found: {layer_id}"))
         }

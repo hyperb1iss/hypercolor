@@ -16,7 +16,7 @@ use crate::scene::DisplayFaceBlendMode;
 use crate::spatial::NormalizedPosition;
 use crate::viewport::{FitMode, ViewportRect};
 
-/// Stable identifier for a layer within a render group.
+/// Stable identifier for a layer within a zone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SceneLayerId(pub Uuid);
 
@@ -66,7 +66,7 @@ impl FromStr for SceneLayerId {
     }
 }
 
-/// Authored layer inside a render group's bottom-to-top stack.
+/// Authored layer inside a zone's bottom-to-top stack.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SceneLayer {
     /// Stable identifier for this layer.
@@ -105,7 +105,7 @@ pub struct SceneLayer {
 }
 
 impl SceneLayer {
-    /// Create the legacy single-effect layer for a render group.
+    /// Create the legacy single-effect layer for a zone.
     #[must_use]
     pub fn from_effect(
         id: SceneLayerId,
