@@ -55,9 +55,8 @@ impl ZoneLayoutPreviewStore {
         let layouts = self.layouts.read().await;
         let overrides = layouts
             .iter()
-            .filter_map(|((candidate_scene_id, zone_id), layout)| {
-                (*candidate_scene_id == scene_id).then(|| (*zone_id, layout.clone()))
-            })
+            .filter(|((candidate_scene_id, _), _)| *candidate_scene_id == scene_id)
+            .map(|((_, zone_id), layout)| (*zone_id, layout.clone()))
             .collect();
         (self.generation(), overrides)
     }

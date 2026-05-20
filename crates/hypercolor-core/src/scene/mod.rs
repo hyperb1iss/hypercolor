@@ -1719,7 +1719,7 @@ impl SceneManager {
 
 #[must_use]
 pub fn default_primary_group(mut layout: SpatialLayout) -> Zone {
-    layout.name = DEFAULT_ZONE_NAME.to_owned();
+    DEFAULT_ZONE_NAME.clone_into(&mut layout.name);
     Zone {
         id: ZoneId::new(),
         name: DEFAULT_ZONE_NAME.to_owned(),
