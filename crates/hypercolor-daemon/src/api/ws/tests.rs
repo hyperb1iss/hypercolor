@@ -976,6 +976,9 @@ fn cached_display_preview_payload_reuses_bytes_for_matching_snapshot() {
 
 #[test]
 fn cached_display_preview_payload_skips_cache_for_large_payloads() {
+    let _guard = WS_CACHE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
     reset_ws_payload_caches();
     let large_jpeg = vec![0_u8; 300 * 1024];
     let snapshot = DisplayFrameSnapshot {
@@ -1008,6 +1011,9 @@ fn display_preview_snapshot(jpeg_len: usize, frame_number: u64) -> DisplayFrameS
 
 #[test]
 fn cached_display_preview_payload_respects_the_size_boundary() {
+    let _guard = WS_CACHE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
     reset_ws_payload_caches();
 
     // Derive the wire-header length from a probe payload so the boundary math
