@@ -26,6 +26,8 @@ use super::telemetry::{
     record_servo_detached_destroy, record_servo_page_load, record_servo_pending_render_age,
     record_servo_renderer_load, record_servo_session_create, record_servo_soft_stall,
 };
+#[cfg(feature = "servo-gpu-import")]
+use super::worker::ServoFrameUnavailable;
 use super::worker::{
     RENDER_RESPONSE_TIMEOUT, effect_is_audio_reactive, prepare_runtime_html_source,
     servo_worker_is_fatal_error,
@@ -248,6 +250,16 @@ impl ServoRenderer {
             );
         };
 
+        let previous_canvas = self
+            .last_canvas
+            .take()
+            .filter(|canvas| canvas.width() == canvas_width && canvas.height() == canvas_height);
+        #[cfg(feature = "servo-gpu-import")]
+        let previous_gpu_frame = self
+            .last_gpu_frame
+            .take()
+            .filter(|frame| frame.width == canvas_width && frame.height == canvas_height);
+
         self.destroy();
         self.cleanup_runtime_html();
         self.session = None;
@@ -266,7 +278,11 @@ impl ServoRenderer {
         self.host_driven_animation = host_driven_animation(metadata);
         self.last_submit_time_secs = None;
         self.queued_frame = None;
-        self.last_canvas = None;
+        self.last_canvas = previous_canvas;
+        #[cfg(feature = "servo-gpu-import")]
+        {
+            self.last_gpu_frame = previous_gpu_frame;
+        }
         self.controls = metadata
             .controls
             .iter()
@@ -414,6 +430,18 @@ impl ServoRenderer {
                 }
             }
             Err(error) => {
+                #[cfg(feature = "servo-gpu-import")]
+                {
+                    if let Some(unavailable) = error.downcast_ref::<ServoFrameUnavailable>() {
+                        debug!(
+                            reason = unavailable.reason(),
+                            detail = unavailable.detail(),
+                            retry_ms = unavailable.retry_ms(),
+                            "Servo frame unavailable; reusing previous completed frame"
+                        );
+                        return;
+                    }
+                }
                 note_servo_session_error("Servo frame render failed", &error);
                 if servo_worker_is_fatal_error(&error) {
                     self.session = None;
@@ -468,6 +496,15 @@ impl ServoRenderer {
                 }
             }
             Err(error) => {
+                if let Some(unavailable) = error.downcast_ref::<ServoFrameUnavailable>() {
+                    debug!(
+                        reason = unavailable.reason(),
+                        detail = unavailable.detail(),
+                        retry_ms = unavailable.retry_ms(),
+                        "Servo frame unavailable; reusing previous completed frame"
+                    );
+                    return;
+                }
                 note_servo_session_error("Servo frame render failed", &error);
                 if servo_worker_is_fatal_error(&error) {
                     self.session = None;
@@ -1296,6 +1333,54 @@ mod tests {
         assert_eq!(target.width(), 4);
         assert_eq!(target.height(), 3);
         assert_eq!(target.get_pixel(0, 0), Rgba::new(7, 127, 39, 255));
+
+        release_tx.send(()).expect("release create-session");
+        wait_for_load_completion(&mut renderer);
+
+        renderer.destroy();
+        unload_rx
+            .recv_timeout(Duration::from_millis(100))
+            .expect("destroy should unload test worker");
+
+        shutdown_shared_servo_worker().expect("shared worker shutdown should succeed");
+        assert!(stopped.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn init_with_canvas_size_reuses_previous_canvas_while_new_effect_loads() {
+        let _lock = SHARED_WORKER_STATE_TEST_LOCK
+            .lock()
+            .expect("shared worker test lock");
+        reset_shared_servo_worker_state();
+
+        let (worker, load_rx, release_tx, unload_rx, stopped) = spawn_blocking_load_test_worker();
+        install_running_shared_worker(worker);
+
+        let temp_dir = tempfile::tempdir().expect("temporary directory");
+        let source_path = temp_dir.path().join("effect.html");
+        std::fs::write(&source_path, "<!doctype html><html><body></body></html>")
+            .expect("write source html");
+
+        let metadata = html_metadata(source_path);
+        let mut renderer = ServoRenderer::new();
+        renderer.initialized = true;
+        renderer.last_canvas = Some(solid_canvas(640, 480, 12, 34, 56));
+
+        renderer
+            .init_with_canvas_size(&metadata, 640, 480)
+            .expect("renderer should queue initialization");
+
+        load_rx
+            .recv_timeout(Duration::from_millis(100))
+            .expect("create-session command should be queued asynchronously");
+
+        let input = frame_input_with(1.0 / 30.0, 1, &SILENCE, &DEFAULT_INTERACTION, 640, 480);
+        let mut target = Canvas::new(640, 480);
+        renderer
+            .render_into(&input, &mut target)
+            .expect("render should reuse the previous completed frame");
+
+        assert_eq!(target.get_pixel(0, 0), Rgba::new(12, 34, 56, 255));
 
         release_tx.send(()).expect("release create-session");
         wait_for_load_completion(&mut renderer);

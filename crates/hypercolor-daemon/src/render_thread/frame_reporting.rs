@@ -1,7 +1,15 @@
 use hypercolor_core::device::manager::FrameWriteStats;
+use std::sync::{LazyLock, Mutex};
+use std::time::{Duration, Instant};
 use tracing::{trace, warn};
 
 use crate::performance::LatestFrameMetrics;
+
+const SLOW_FRAME_WARNING_MIN_INTERVAL: Duration = Duration::from_secs(2);
+const FRAME_STAGE_SPIKE_US: u32 = 2_000;
+const FRAME_PACING_SPIKE_US: u32 = 2_500;
+
+static LAST_SLOW_FRAME_WARNING: LazyLock<Mutex<Option<Instant>>> = LazyLock::new(Mutex::default);
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct FrameCompletionReport {
@@ -81,6 +89,108 @@ pub(crate) fn report_active_frame_completion(
         leds = report.total_leds,
         "frame complete"
     );
+
+    let Some(reason) = frame_completion_warning_reason(report) else {
+        return;
+    };
+    if !slow_frame_warning_due(Instant::now()) {
+        return;
+    }
+
+    warn!(
+        reason,
+        frame = metrics.timeline.frame_token,
+        frame_interval_us = report.frame_interval_us,
+        budget_us = metrics.timeline.budget_us,
+        wake_late_us = metrics.wake_late_us,
+        jitter_us = metrics.jitter_us,
+        input_us = metrics.input_us,
+        render_us = metrics.render_us,
+        producer_us = metrics.producer_us,
+        producer_render_us = metrics.producer_render_us,
+        producer_scene_compose_us = metrics.producer_scene_compose_us,
+        composition_us = metrics.composition_us,
+        sample_us = metrics.sample_us,
+        push_us = metrics.push_us,
+        postprocess_us = metrics.postprocess_us,
+        publish_us = metrics.publish_us,
+        overhead_us = metrics.overhead_us,
+        total_us = metrics.total_us,
+        compositor_backend = metrics.compositor_backend.as_str(),
+        gpu_zone_sampling = metrics.gpu_zone_sampling,
+        gpu_sample_deferred = metrics.gpu_sample_deferred,
+        gpu_sample_stale = metrics.gpu_sample_stale,
+        gpu_sample_retry_hit = metrics.gpu_sample_retry_hit,
+        gpu_sample_wait_blocked = metrics.gpu_sample_wait_blocked,
+        gpu_sample_queue_saturated = metrics.gpu_sample_queue_saturated,
+        gpu_sample_cpu_fallback = metrics.gpu_sample_cpu_fallback,
+        cpu_sampling_late_readback = metrics.cpu_sampling_late_readback,
+        cpu_readback_skipped = metrics.cpu_readback_skipped,
+        gpu_readback_failed = metrics.gpu_readback_failed,
+        led_sampling_readback = metrics.led_sampling_readback,
+        output_errors = metrics.output_errors,
+        devices = report.devices_written,
+        leds = report.total_leds,
+        "slow LED pipeline frame"
+    );
+}
+
+fn frame_completion_warning_reason(report: &FrameCompletionReport) -> Option<&'static str> {
+    let metrics = report.metrics;
+    if report.frame_interval_us > 0 && metrics.total_us > report.frame_interval_us {
+        return Some("over_budget");
+    }
+    if metrics.wake_late_us > FRAME_PACING_SPIKE_US {
+        return Some("wake_late");
+    }
+    if metrics.jitter_us > FRAME_PACING_SPIKE_US {
+        return Some("jitter");
+    }
+    if metrics.sample_us > FRAME_STAGE_SPIKE_US {
+        return Some("sampling_spike");
+    }
+    if metrics.push_us > FRAME_STAGE_SPIKE_US {
+        return Some("device_output_spike");
+    }
+    if metrics.gpu_sample_wait_blocked {
+        return Some("gpu_sample_wait_blocked");
+    }
+    if metrics.gpu_sample_queue_saturated {
+        return Some("gpu_sample_queue_saturated");
+    }
+    if metrics.gpu_sample_cpu_fallback {
+        return Some("gpu_sample_cpu_fallback");
+    }
+    if metrics.gpu_sample_stale {
+        return Some("gpu_sample_stale");
+    }
+    if metrics.gpu_readback_failed {
+        return Some("gpu_readback_failed");
+    }
+    if metrics.cpu_sampling_late_readback {
+        return Some("cpu_sampling_late_readback");
+    }
+    if metrics.led_sampling_readback {
+        return Some("led_sampling_readback");
+    }
+    if metrics.output_errors > 0 {
+        return Some("device_output_error");
+    }
+    None
+}
+
+fn slow_frame_warning_due(now: Instant) -> bool {
+    let mut last_warning = match LAST_SLOW_FRAME_WARNING.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if last_warning
+        .is_some_and(|last| now.saturating_duration_since(last) < SLOW_FRAME_WARNING_MIN_INTERVAL)
+    {
+        return false;
+    }
+    *last_warning = Some(now);
+    true
 }
 
 #[cfg(test)]
@@ -88,6 +198,7 @@ mod tests {
     use hypercolor_core::device::manager::FrameWriteStats;
 
     use super::FrameCompletionReport;
+    use super::frame_completion_warning_reason;
     use crate::performance::LatestFrameMetrics;
 
     #[test]
@@ -108,5 +219,43 @@ mod tests {
         assert_eq!(report.metrics.total_us, 512);
         assert_eq!(report.devices_written, 3);
         assert_eq!(report.total_leds, 144);
+    }
+
+    #[test]
+    fn frame_completion_warning_reason_detects_led_pipeline_stalls() {
+        let mut metrics = LatestFrameMetrics {
+            total_us: 20_000,
+            ..LatestFrameMetrics::default()
+        };
+        let write_stats = FrameWriteStats::default();
+
+        let report = FrameCompletionReport::new(16_666, &metrics, &write_stats);
+        assert_eq!(
+            frame_completion_warning_reason(&report),
+            Some("over_budget")
+        );
+
+        metrics.total_us = 1_000;
+        metrics.led_sampling_readback = true;
+        let report = FrameCompletionReport::new(16_666, &metrics, &write_stats);
+        assert_eq!(
+            frame_completion_warning_reason(&report),
+            Some("led_sampling_readback")
+        );
+    }
+
+    #[test]
+    fn frame_completion_warning_reason_ignores_normal_deferred_gpu_sampling() {
+        let metrics = LatestFrameMetrics {
+            total_us: 1_000,
+            gpu_zone_sampling: true,
+            gpu_sample_deferred: true,
+            gpu_sample_retry_hit: true,
+            ..LatestFrameMetrics::default()
+        };
+        let write_stats = FrameWriteStats::default();
+        let report = FrameCompletionReport::new(16_666, &metrics, &write_stats);
+
+        assert_eq!(frame_completion_warning_reason(&report), None);
     }
 }

@@ -11,7 +11,7 @@ static SERVO_GPU_IMPORT_MODE: AtomicU8 =
 static SERVO_GPU_IMPORT_CLOCK_START: OnceLock<Instant> = OnceLock::new();
 static SERVO_GPU_IMPORT_AUTO_BACKOFF_UNTIL_MS: AtomicU64 = AtomicU64::new(0);
 
-const SERVO_GPU_IMPORT_AUTO_BACKOFF: Duration = Duration::from_secs(60);
+const SERVO_GPU_IMPORT_AUTO_BACKOFF: Duration = Duration::from_mins(1);
 
 const fn servo_gpu_import_mode_to_u8(mode: ServoGpuImportMode) -> u8 {
     match mode {

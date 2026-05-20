@@ -1632,7 +1632,7 @@ impl GpuSparkleFlinger {
         let request_bytes_per_row = request.width.saturating_mul(BYTES_PER_PIXEL as u32);
         let direct_source_texture = if request.width == source_width
             && request.height == source_height
-            && request_bytes_per_row % wgpu::COPY_BYTES_PER_ROW_ALIGNMENT == 0
+            && request_bytes_per_row.is_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
         {
             let surfaces = self
                 .surfaces
