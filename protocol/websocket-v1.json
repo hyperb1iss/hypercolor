@@ -86,7 +86,13 @@
     "canvas_format_jpeg"
   ],
   "json_messages": {
-    "client": ["subscribe", "unsubscribe", "command"],
+    "client": [
+      "subscribe",
+      "unsubscribe",
+      "command",
+      "zone_layout_preview",
+      "zone_layout_preview_clear"
+    ],
     "server": [
       "hello",
       "subscribed",

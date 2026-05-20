@@ -589,6 +589,30 @@ output zone; that structural edit should include `If-Match`.
 
 {% end %}
 
+{% api_endpoint(method="PUT", path="/api/v1/scenes/{id}/zones/{zone_id}/layout") %}
+Update one scene zone's spatial layout. The route accepts a `SpatialLayout`
+payload and preserves the zone's existing output roster, so it is for placement
+edits only. Add or remove assigned outputs through the zone device routes.
+Structural edits should include `If-Match` with the last seen `groups_revision`.
+
+**Request body:**
+
+```json
+{
+  "id": "default-zone-layout",
+  "name": "Default zone",
+  "canvas_width": 640,
+  "canvas_height": 480,
+  "zones": [],
+  "default_sampling_mode": { "type": "bilinear" },
+  "default_edge_behavior": "clamp",
+  "spaces": null,
+  "version": 1
+}
+```
+
+{% end %}
+
 {% api_endpoint(method="DELETE", path="/api/v1/scenes/{id}/zones/{zone_id}") %}
 Delete a custom zone. Default and display zones cannot be deleted through this route.
 {% end %}

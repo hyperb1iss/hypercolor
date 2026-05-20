@@ -86,8 +86,8 @@ fn ApplyTargetSelect(
         });
         if custom_count > 0 {
             opts.push((
-                crate::apply_target::ALL_LIGHT_ZONES_VALUE.to_owned(),
-                "All light zones".to_owned(),
+                crate::apply_target::ALL_ZONES_VALUE.to_owned(),
+                "All zones".to_owned(),
             ));
         }
         opts

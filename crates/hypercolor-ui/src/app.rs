@@ -251,7 +251,7 @@ impl EffectsContext {
     pub fn apply_effect(&self, id: String) {
         let apply_target = self.apply_target.get_untracked();
         let stored_prefs = self.preferences.get(&id);
-        if apply_target == ApplyTarget::AllLightZones {
+        if apply_target == ApplyTarget::AllZones {
             let ctx = *self;
             leptos::task::spawn_local(async move {
                 apply_effect_to_current_led_zones(&ctx, id).await;

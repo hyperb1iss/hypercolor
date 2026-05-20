@@ -1375,7 +1375,7 @@ impl SceneManager {
     /// The `expected_effect_id` gate closes the TOCTOU window the
     /// Viewport Designer modal would otherwise hit: a GET resolves an
     /// `effect_id → group_id` mapping, the modal edits, and later
-    /// issues a PATCH. If another client swaps the primary effect in
+    /// issues a PATCH. If another client swaps the Default-zone effect in
     /// between, `group_id` will be reused ([`upsert_primary_group`])
     /// but `effect_id` will have changed — so the PATCH would land on
     /// the wrong effect. Requiring `effect_id` to match at write time

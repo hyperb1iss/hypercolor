@@ -451,7 +451,7 @@ fn effect_apply_preserves_primary_assignment_when_custom_zones_exist() {
             None,
             full_layout.clone(),
         )
-        .expect("primary effect update should succeed");
+        .expect("Default-zone effect update should succeed");
 
     let after = manager
         .active_scene()

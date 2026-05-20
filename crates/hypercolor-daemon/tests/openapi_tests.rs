@@ -70,6 +70,12 @@ async fn openapi_json_is_served_with_expected_paths() {
         body["paths"]["/api/v1/scenes/{id}/zones"]["post"]["requestBody"]["required"],
         true
     );
+    assert_eq!(
+        body["paths"]["/api/v1/scenes/{id}/zones/{zone_id}/layout"]["put"]["requestBody"]["content"]
+            ["application/json"]["schema"]["$ref"],
+        "#/components/schemas/SpatialLayout"
+    );
+    assert!(body["components"]["schemas"]["SpatialLayout"].is_object());
     assert!(
         body["paths"]["/api/v1/scenes/{id}/unassigned-behavior"]["patch"]["responses"]["412"]
             .is_object()

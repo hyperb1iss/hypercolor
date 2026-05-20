@@ -1,10 +1,10 @@
-pub const ALL_LIGHT_ZONES_VALUE: &str = "__all_light_zones__";
+pub const ALL_ZONES_VALUE: &str = "__all_zones__";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApplyTarget {
     Primary,
     Zone(String),
-    AllLightZones,
+    AllZones,
 }
 
 impl Default for ApplyTarget {
@@ -19,8 +19,8 @@ impl ApplyTarget {
         let trimmed = value.trim();
         if trimmed.is_empty() || trimmed == "default" {
             Self::Primary
-        } else if trimmed == ALL_LIGHT_ZONES_VALUE {
-            Self::AllLightZones
+        } else if trimmed == ALL_ZONES_VALUE {
+            Self::AllZones
         } else {
             Self::Zone(trimmed.to_owned())
         }
@@ -31,7 +31,7 @@ impl ApplyTarget {
         match self {
             Self::Primary => String::new(),
             Self::Zone(zone_id) => zone_id.clone(),
-            Self::AllLightZones => ALL_LIGHT_ZONES_VALUE.to_owned(),
+            Self::AllZones => ALL_ZONES_VALUE.to_owned(),
         }
     }
 
@@ -39,7 +39,7 @@ impl ApplyTarget {
     pub fn zone_id(&self) -> Option<&str> {
         match self {
             Self::Zone(zone_id) => Some(zone_id),
-            Self::Primary | Self::AllLightZones => None,
+            Self::Primary | Self::AllZones => None,
         }
     }
 }

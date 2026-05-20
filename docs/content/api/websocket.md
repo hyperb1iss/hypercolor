@@ -95,7 +95,8 @@ The `subscriptions` field lists which channels are already active. Only `events`
 
 ## Client Commands
 
-Clients send JSON messages to subscribe, unsubscribe, or issue REST-equivalent commands.
+Clients send JSON messages to subscribe, unsubscribe, issue REST-equivalent
+commands, or stage transient Studio layout previews.
 
 ### `subscribe`
 
@@ -179,6 +180,45 @@ Proxy any REST API call over the WebSocket. This lets a single connection both r
 ```
 
 The `id` field is client-assigned and echoed back so concurrent commands can be correlated. On error, `status` reflects the HTTP status code and `error` is populated instead of `data`.
+
+### `zone_layout_preview`
+
+Stage one scene zone's spatial layout for live Studio drag interactions. The
+override is scoped to the current WebSocket session, affects preview rendering
+only, and is cleared automatically when the connection closes. Like the REST
+layout update route, it preserves the zone's output roster and uses the payload
+for placement edits only.
+
+```json
+{
+  "type": "zone_layout_preview",
+  "scene_id": "default",
+  "zone_id": "0197495b-3513-72f6-9c42-a278a8b6d90f",
+  "layout": {
+    "id": "default-zone-layout-preview",
+    "name": "Default zone",
+    "canvas_width": 640,
+    "canvas_height": 480,
+    "zones": [],
+    "default_sampling_mode": { "type": "bilinear" },
+    "default_edge_behavior": "clamp",
+    "spaces": null,
+    "version": 1
+  }
+}
+```
+
+### `zone_layout_preview_clear`
+
+Clear one staged zone-layout override before the connection closes.
+
+```json
+{
+  "type": "zone_layout_preview_clear",
+  "scene_id": "default",
+  "zone_id": "0197495b-3513-72f6-9c42-a278a8b6d90f"
+}
+```
 
 ## Server Messages
 

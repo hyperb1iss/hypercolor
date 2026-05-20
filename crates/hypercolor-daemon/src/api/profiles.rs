@@ -1,6 +1,6 @@
 //! Profile endpoints — `/api/v1/profiles/*`.
 //!
-//! Profiles are named snapshots of runtime state: active primary effect,
+//! Profiles are named snapshots of runtime state: active Default-zone effect,
 //! display face assignments, control values, layout, and brightness. They are
 //! persisted to `profiles.json`.
 

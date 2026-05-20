@@ -6737,7 +6737,7 @@ async fn profile_crud_lifecycle() {
     );
     let primary_effect_id = json["data"]["primary"]["effect_id"]
         .as_str()
-        .expect("primary effect id should be present")
+        .expect("Default-zone effect id should be present")
         .to_owned();
     let profile_id = json["data"]["id"]
         .as_str()
@@ -7870,7 +7870,7 @@ async fn apply_effect_mutates_active_scene_not_default_if_named_active() {
             .get(&SceneId::DEFAULT)
             .and_then(Scene::primary_group)
             .and_then(|group| group.effect_id)
-            .expect("default scene should retain its primary effect")
+            .expect("default scene should retain its Default-zone effect")
             .to_string()
     };
 

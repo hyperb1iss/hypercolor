@@ -57,7 +57,7 @@ pub enum AddLayerScope {
     /// The selected surface only — the default.
     ThisSurface,
     /// Every LED zone.
-    AllLightZones,
+    AllZones,
     /// Every display-face screen.
     AllScreens,
     /// Every surface in the scene.
@@ -70,7 +70,7 @@ impl AddLayerScope {
     pub fn label(self) -> &'static str {
         match self {
             Self::ThisSurface => "This surface",
-            Self::AllLightZones => "All light zones",
+            Self::AllZones => "All zones",
             Self::AllScreens => "All screens",
             Self::WholeScene => "Whole scene",
         }
@@ -89,7 +89,7 @@ pub fn available_add_layer_scopes(groups: &[Zone]) -> Vec<AddLayerScope> {
     let has_screens = groups.iter().any(|group| group.role == ZoneRole::Display);
     let mut scopes = vec![AddLayerScope::ThisSurface];
     if has_lights {
-        scopes.push(AddLayerScope::AllLightZones);
+        scopes.push(AddLayerScope::AllZones);
     }
     if has_screens {
         scopes.push(AddLayerScope::AllScreens);
@@ -109,7 +109,7 @@ pub fn resolve_add_layer_targets(
 ) -> Vec<String> {
     match scope {
         AddLayerScope::ThisSurface => vec![selected_group_id.to_owned()],
-        AddLayerScope::AllLightZones => groups
+        AddLayerScope::AllZones => groups
             .iter()
             .filter(|group| group.role != ZoneRole::Display)
             .map(|group| group.id.to_string())

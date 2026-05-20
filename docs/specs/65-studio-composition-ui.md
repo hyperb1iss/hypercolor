@@ -349,7 +349,7 @@ Once Custom zones exist this is no longer unambiguous — spec 64 §6.2/§9.5
 says `effects/apply` targets the `Primary` (Default) zone and may leave it
 empty. The Effects page therefore gains an explicit **apply target**
 selector once more than one zone exists: *Default zone*, *a specific
-zone*, or *all light zones*. Only the *Default zone* target uses
+zone*, or *all zones*. Only the *Default zone* target uses
 `effects/apply` (which spec 64 §3.2 deliberately keeps Primary-only); a
 specific-zone or all-zones target instead issues per-group layer
 mutations — adding or replacing each target zone's effect layer — because
@@ -448,7 +448,7 @@ more than the selected surface in one action:
 | ------------------ | ------------------------------------------------------------------ |
 | This surface       | Default. Adds to the selected surface only.                        |
 | Selected surfaces  | Adds to a multi-selected set of rows in the surface rail.           |
-| All light zones    | Adds to every LED zone.                                            |
+| All zones          | Adds to every LED zone.                                            |
 | All screens        | Adds to every display-face surface.                                |
 | Whole scene        | Every surface.                                                     |
 
