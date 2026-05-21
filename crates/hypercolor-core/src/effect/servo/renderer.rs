@@ -131,6 +131,8 @@ pub struct ServoRenderer {
     last_canvas: Option<Canvas>,
     #[cfg(feature = "servo-gpu-import")]
     last_gpu_frame: Option<ImportedEffectFrame>,
+    #[cfg(feature = "servo-gpu-import")]
+    allow_gpu_import: bool,
     warned_fallback_frame: bool,
     warned_stalled_frame: bool,
     include_audio_updates: bool,
@@ -161,6 +163,8 @@ impl ServoRenderer {
             last_canvas: None,
             #[cfg(feature = "servo-gpu-import")]
             last_gpu_frame: None,
+            #[cfg(feature = "servo-gpu-import")]
+            allow_gpu_import: true,
             warned_fallback_frame: false,
             warned_stalled_frame: false,
             include_audio_updates: true,
@@ -276,12 +280,19 @@ impl ServoRenderer {
         self.last_animation_fps_cap = None;
         self.animation_cadence = animation_cadence(metadata);
         self.host_driven_animation = host_driven_animation(metadata);
+        #[cfg(feature = "servo-gpu-import")]
+        {
+            self.allow_gpu_import = servo_gpu_import_allowed(metadata);
+        }
         self.last_submit_time_secs = None;
         self.queued_frame = None;
         self.last_canvas = previous_canvas;
         #[cfg(feature = "servo-gpu-import")]
         {
-            self.last_gpu_frame = previous_gpu_frame;
+            self.last_gpu_frame = self
+                .allow_gpu_import
+                .then_some(previous_gpu_frame)
+                .flatten();
         }
         self.controls = metadata
             .controls
@@ -801,9 +812,12 @@ impl EffectRenderer for ServoRenderer {
         self.poll_load_task();
         self.queue_frame(input);
         self.poll_in_flight_render_output();
-        self.try_submit_queued_frame_with_gpu_preference(super::servo_gpu_import_should_attempt());
+        self.try_submit_queued_frame_with_gpu_preference(
+            super::servo_gpu_import_should_attempt() && self.allow_gpu_import,
+        );
 
-        if let Some(frame) = self.last_gpu_frame.as_ref()
+        if self.allow_gpu_import
+            && let Some(frame) = self.last_gpu_frame.as_ref()
             && frame.width == input.canvas_width
             && frame.height == input.canvas_height
         {
@@ -837,6 +851,7 @@ impl EffectRenderer for ServoRenderer {
         #[cfg(feature = "servo-gpu-import")]
         {
             self.last_gpu_frame = None;
+            self.allow_gpu_import = true;
         }
         self.controls.clear();
         self.html_source = None;
@@ -969,6 +984,11 @@ fn effect_uses_sensor_data(metadata: &EffectMetadata) -> bool {
 }
 
 fn host_driven_animation(metadata: &EffectMetadata) -> bool {
+    metadata.category != EffectCategory::Display
+}
+
+#[cfg(feature = "servo-gpu-import")]
+fn servo_gpu_import_allowed(metadata: &EffectMetadata) -> bool {
     metadata.category != EffectCategory::Display
 }
 
@@ -1193,6 +1213,16 @@ mod tests {
         assert_eq!(animation_cadence(&metadata), AnimationCadence::Fixed(30));
         assert_eq!(animation_cadence(&metadata).fps_cap(1.0 / 60.0), 30);
         assert_eq!(animation_cadence(&metadata).fps_cap(1.0 / 20.0), 30);
+    }
+
+    #[cfg(feature = "servo-gpu-import")]
+    #[test]
+    fn display_faces_do_not_use_servo_gpu_import() {
+        let display = display_html_metadata(PathBuf::from("face.html"));
+        let scene = html_metadata(PathBuf::from("scene.html"));
+
+        assert!(!servo_gpu_import_allowed(&display));
+        assert!(servo_gpu_import_allowed(&scene));
     }
 
     #[test]

@@ -15,118 +15,72 @@ import {
 
 import {
     clamp01,
-    createFaceRoot,
     DISPLAY_FONT_FAMILIES,
-    ensureFaceStyles,
     humanizeSensorLabel,
     mixFaceAccent,
     resolveFaceInk,
     UI_FONT_FAMILIES,
 } from '../shared/dom'
 
-const STYLE_ID = 'hc-face-pulse-temp'
 const FACE_SCHEMES = {
     load: ['#50fa7b', '#00d4ff', '#ff5ca8'] as const,
     memory: ['#77ecff', '#8f70ff'] as const,
     temperature: ['#7ce9ff', '#ffb35f', '#ff6b7a'] as const,
 }
 
-const STYLES = `
-.hc-pulse-temp {
-    --accent: ${palette.neonCyan};
-    --secondary: ${palette.coral};
-    --hero-font: 'Rajdhani', sans-serif;
-    --ui-font: 'Inter', sans-serif;
-    --hero-size: 132;
-    --detail-size: 12;
-    --hero-ink: ${palette.fg.primary};
-    --ui-ink: ${palette.fg.secondary};
-    --dim-ink: ${palette.fg.tertiary};
-    position: absolute;
-    inset: 0;
-    overflow: hidden;
-    color: var(--hero-ink);
+function fontStack(family: string): string {
+    return `"${family}", sans-serif`
 }
 
-.hc-pulse-temp__value {
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    display: inline-flex;
-    align-items: baseline;
-    justify-content: center;
-    gap: 8px;
-    line-height: 1;
-    white-space: nowrap;
+function setTextStyle(c: CanvasRenderingContext2D, family: string, size: number, color: string, weight = 600): void {
+    c.font = `${weight} ${size}px ${fontStack(family)}`
+    c.fillStyle = color
+    c.textBaseline = 'middle'
 }
 
-.hc-pulse-temp__number {
-    font-family: var(--hero-font);
-    font-size: calc(var(--hero-size) * 1px);
-    font-weight: 600;
-    line-height: 1;
-    letter-spacing: 0.015em;
-    color: var(--hero-ink);
-    font-variant-numeric: tabular-nums lining-nums;
-    font-feature-settings: 'tnum' 1, 'lnum' 1;
-    text-shadow:
-        0 0 20px color-mix(in srgb, var(--accent) 12%, transparent),
-        0 10px 28px rgba(0, 0, 0, 0.28);
+function drawTextWithGlow(
+    c: CanvasRenderingContext2D,
+    text: string,
+    x: number,
+    y: number,
+    color: string,
+    glowColor: string,
+    blur: number,
+): void {
+    c.save()
+    c.shadowColor = glowColor
+    c.shadowBlur = blur
+    c.fillStyle = color
+    c.fillText(text, x, y)
+    c.restore()
 }
 
-.hc-pulse-temp__unit {
-    font-family: var(--ui-font);
-    font-size: 32px;
-    font-weight: 600;
-    letter-spacing: 0.16em;
-    text-transform: uppercase;
-    color: var(--ui-ink);
-}
+function drawCenteredParts(
+    c: CanvasRenderingContext2D,
+    parts: Array<{ text: string; family: string; size: number; color: string; yOffset?: number }>,
+    cx: number,
+    cy: number,
+    gap: number,
+    glowColor: string,
+    glowBlur: number,
+): void {
+    const visible = parts.filter((part) => part.text.length > 0)
+    if (visible.length === 0) return
 
-.hc-pulse-temp__label {
-    position: absolute;
-    top: calc(50% + 74px);
-    left: 50%;
-    transform: translateX(-50%);
-    font-family: var(--ui-font);
-    font-size: calc(var(--detail-size) * 1px);
-    font-weight: 600;
-    letter-spacing: 0.18em;
-    text-transform: uppercase;
-    color: var(--ui-ink);
-    white-space: nowrap;
+    const widths = visible.map((part) => {
+        setTextStyle(c, part.family, part.size, part.color)
+        return c.measureText(part.text).width
+    })
+    const totalWidth = widths.reduce((sum, width) => sum + width, 0) + gap * (visible.length - 1)
+    let x = cx - totalWidth * 0.5
+    c.textAlign = 'left'
+    for (let index = 0; index < visible.length; index += 1) {
+        const part = visible[index]
+        setTextStyle(c, part.family, part.size, part.color)
+        drawTextWithGlow(c, part.text, x, cy + (part.yOffset ?? 0), part.color, glowColor, glowBlur)
+        x += widths[index] + gap
+    }
 }
-
-.hc-pulse-temp__details {
-    position: absolute;
-    top: calc(50% + 100px);
-    left: 50%;
-    transform: translateX(-50%);
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    gap: 18px;
-    flex-wrap: nowrap;
-    font-family: var(--ui-font);
-    font-size: calc((var(--detail-size) - 1) * 1px);
-    font-weight: 600;
-    letter-spacing: 0.16em;
-    text-transform: uppercase;
-    color: var(--dim-ink);
-    font-variant-numeric: tabular-nums lining-nums;
-    font-feature-settings: 'tnum' 1, 'lnum' 1;
-    white-space: nowrap;
-}
-
-.hc-pulse-temp__detail--primary {
-    color: var(--ui-ink);
-}
-
-.hc-pulse-temp__hidden {
-    display: none !important;
-}
-`
 
 export default face(
     'Pulse Temp',
@@ -256,27 +210,9 @@ export default face(
         ],
     },
     (ctx) => {
-        ensureFaceStyles(STYLE_ID, STYLES)
-        const root = createFaceRoot(ctx, 'hc-pulse-temp')
-        root.innerHTML = `
-            <div class="hc-pulse-temp__value">
-                <span class="hc-pulse-temp__number">--</span>
-                <span class="hc-pulse-temp__unit">°C</span>
-            </div>
-            <div class="hc-pulse-temp__label">CPU TEMP</div>
-            <div class="hc-pulse-temp__details">
-                <span class="hc-pulse-temp__detail hc-pulse-temp__detail--primary hc-pulse-temp__trend">STEADY</span>
-                <span class="hc-pulse-temp__detail hc-pulse-temp__peak">PEAK --</span>
-            </div>
-        `
-
-        const valueEl = root.querySelector<HTMLDivElement>('.hc-pulse-temp__value')!
-        const numberEl = root.querySelector<HTMLSpanElement>('.hc-pulse-temp__number')!
-        const unitEl = root.querySelector<HTMLSpanElement>('.hc-pulse-temp__unit')!
-        const labelEl = root.querySelector<HTMLDivElement>('.hc-pulse-temp__label')!
-        const detailsEl = root.querySelector<HTMLDivElement>('.hc-pulse-temp__details')!
-        const trendEl = root.querySelector<HTMLSpanElement>('.hc-pulse-temp__trend')!
-        const peakEl = root.querySelector<HTMLSpanElement>('.hc-pulse-temp__peak')!
+        for (const child of [...ctx.container.children]) {
+            if (child !== ctx.canvas) child.remove()
+        }
 
         let smoothValue = 0
         let lastHistoryPush = 0
@@ -320,23 +256,16 @@ export default face(
             const ink = resolveFaceInk(baseAccent)
             const glow = clamp01((controls.glowIntensity as number) / 100)
             const meterStyle = (controls.meterStyle as string).toLowerCase()
-
-            root.dataset.style = meterStyle
-            root.style.setProperty('--accent', baseAccent)
-            root.style.setProperty('--secondary', secondary)
-            root.style.setProperty('--hero-font', `"${controls.heroFont as string}", sans-serif`)
-            root.style.setProperty('--ui-font', `"${controls.uiFont as string}", sans-serif`)
-            root.style.setProperty('--hero-size', `${controls.heroSize as number}`)
-            root.style.setProperty('--detail-size', `${controls.detailSize as number}`)
-            root.style.setProperty('--hero-ink', ink.hero)
-            root.style.setProperty('--ui-ink', ink.ui)
-            root.style.setProperty('--dim-ink', ink.dim)
+            const heroFont = controls.heroFont as string
+            const uiFont = controls.uiFont as string
+            const heroSize = controls.heroSize as number
+            const detailSize = controls.detailSize as number
 
             const formatted = sensors.formatted(sensorLabel)
             const match = formatted.match(/^([\d.]+)\s*(.*)$/)
-            numberEl.textContent = match?.[1] ?? formatted
-            unitEl.textContent = match?.[2] || (reading?.unit ?? '')
-            labelEl.textContent = humanizeSensorLabel(sensorLabel)
+            const numberText = match?.[1] ?? formatted
+            const unitText = match?.[2] || (reading?.unit ?? '')
+            const labelText = humanizeSensorLabel(sensorLabel)
 
             if (time - lastHistoryPush > 0.12) {
                 history.push(normalized)
@@ -346,10 +275,10 @@ export default face(
                 peakReading = reading.value
                 peakDisplay = formatted
             }
-            peakEl.textContent = `PEAK ${peakDisplay}`
+            const peakText = `PEAK ${peakDisplay}`
             const values = history.values()
             const trendDelta = values.length > 8 ? smoothValue - values[Math.max(0, values.length - 8)] : 0
-            trendEl.textContent = trendDelta > 0.018 ? 'RISING' : trendDelta < -0.018 ? 'COOLING' : 'STEADY'
+            const trendText = trendDelta > 0.018 ? 'RISING' : trendDelta < -0.018 ? 'COOLING' : 'STEADY'
 
             const showNumber = controls.showNumber as boolean
             const showUnit = controls.showUnit as boolean
@@ -358,62 +287,84 @@ export default face(
             const showPeak = controls.showPeak as boolean
             const showArc = controls.showArc as boolean
 
-            numberEl.classList.toggle('hc-pulse-temp__hidden', !showNumber)
-            unitEl.classList.toggle('hc-pulse-temp__hidden', !showUnit)
-            valueEl.classList.toggle('hc-pulse-temp__hidden', !showNumber && !showUnit)
-            labelEl.classList.toggle('hc-pulse-temp__hidden', !showLabel)
-            trendEl.classList.toggle('hc-pulse-temp__hidden', !showTrend)
-            peakEl.classList.toggle('hc-pulse-temp__hidden', !showPeak)
-            detailsEl.classList.toggle('hc-pulse-temp__hidden', !showTrend && !showPeak)
-
             const c = ctx.ctx
             c.clearRect(0, 0, W, H)
-            if (!showArc) return
 
             c.save()
-            c.globalAlpha = 0.92
+            if (showArc) {
+                c.globalAlpha = 0.92
 
-            if (meterStyle === 'vector') {
-                arcGauge(c, {
-                    cx,
-                    cy,
-                    fillColor: [baseAccent, secondary],
-                    glow: 0.18 + glow * 0.24,
-                    radius: 134,
-                    startAngle: Math.PI * 0.98,
-                    sweep: Math.PI * 0.86,
-                    thickness: 10,
-                    trackColor: withAlpha(ink.ui, 0.1),
-                    value: smoothValue,
-                })
-            } else if (meterStyle === 'scope') {
-                arcGauge(c, {
-                    cx,
-                    cy,
-                    fillColor: [baseAccent, secondary],
-                    glow: 0.2 + glow * 0.28,
-                    radius: 146,
-                    startAngle: Math.PI * 0.74,
-                    sweep: Math.PI * 1.12,
-                    thickness: 12,
-                    trackColor: withAlpha(ink.ui, 0.1),
-                    value: smoothValue,
-                })
-            } else {
-                arcGauge(c, {
-                    cx,
-                    cy,
-                    fillColor: [baseAccent, secondary],
-                    glow: 0.24 + glow * 0.32,
-                    radius: 156,
-                    startAngle: Math.PI * 0.72,
-                    sweep: Math.PI * 1.42,
-                    thickness: 16,
-                    trackColor: withAlpha(ink.ui, 0.12),
-                    value: smoothValue,
-                })
+                if (meterStyle === 'vector') {
+                    arcGauge(c, {
+                        cx,
+                        cy,
+                        fillColor: [baseAccent, secondary],
+                        glow: 0.18 + glow * 0.24,
+                        radius: 134,
+                        startAngle: Math.PI * 0.98,
+                        sweep: Math.PI * 0.86,
+                        thickness: 10,
+                        trackColor: withAlpha(ink.ui, 0.1),
+                        value: smoothValue,
+                    })
+                } else if (meterStyle === 'scope') {
+                    arcGauge(c, {
+                        cx,
+                        cy,
+                        fillColor: [baseAccent, secondary],
+                        glow: 0.2 + glow * 0.28,
+                        radius: 146,
+                        startAngle: Math.PI * 0.74,
+                        sweep: Math.PI * 1.12,
+                        thickness: 12,
+                        trackColor: withAlpha(ink.ui, 0.1),
+                        value: smoothValue,
+                    })
+                } else {
+                    arcGauge(c, {
+                        cx,
+                        cy,
+                        fillColor: [baseAccent, secondary],
+                        glow: 0.24 + glow * 0.32,
+                        radius: 156,
+                        startAngle: Math.PI * 0.72,
+                        sweep: Math.PI * 1.42,
+                        thickness: 16,
+                        trackColor: withAlpha(ink.ui, 0.12),
+                        value: smoothValue,
+                    })
+                }
+                c.globalAlpha = 1
             }
 
+            const glowColor = withAlpha(baseAccent, 0.22 + glow * 0.22)
+            const valueParts = [
+                ...(showNumber ? [{ color: ink.hero, family: heroFont, size: heroSize, text: numberText }] : []),
+                ...(showUnit
+                    ? [
+                          {
+                              color: ink.ui,
+                              family: uiFont,
+                              size: Math.max(20, Math.min(36, heroSize * 0.22)),
+                              text: unitText,
+                              yOffset: heroSize * 0.08,
+                          },
+                      ]
+                    : []),
+            ]
+            drawCenteredParts(c, valueParts, cx, cy, 8, glowColor, 18 + glow * 12)
+
+            c.textAlign = 'center'
+            if (showLabel) {
+                setTextStyle(c, uiFont, detailSize, ink.ui)
+                drawTextWithGlow(c, labelText.toUpperCase(), cx, cy + 74, ink.ui, glowColor, 6 + glow * 5)
+            }
+
+            const detailParts = [
+                ...(showTrend ? [{ color: ink.ui, family: uiFont, size: detailSize - 1, text: trendText }] : []),
+                ...(showPeak ? [{ color: ink.dim, family: uiFont, size: detailSize - 1, text: peakText }] : []),
+            ]
+            drawCenteredParts(c, detailParts, cx, cy + 100, 18, glowColor, 4 + glow * 4)
             c.restore()
         }
     },

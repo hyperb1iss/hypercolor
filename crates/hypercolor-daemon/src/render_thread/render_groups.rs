@@ -429,13 +429,13 @@ impl ZoneRuntime {
             }
 
             if group_publishes_direct_canvas(group) {
+                active_group_canvas_ids.push(group.id);
                 if let Some(retained) = self.reuse_retained_direct_group_frame(
                     group,
                     elapsed_ms,
                     display_group_target_fps,
                     dependency_key,
                 ) {
-                    active_group_canvas_ids.push(group.id);
                     zone_canvases.push((group.id, retained.frame.clone()));
                     group_canvases.push((group.id, retained));
                     continue;
@@ -458,7 +458,6 @@ impl ZoneRuntime {
                     continue;
                 };
                 render_us = render_us.saturating_add(micros_u32(render_start.elapsed()));
-                active_group_canvas_ids.push(group.id);
                 self.retain_direct_group_frame(group.id, elapsed_ms, dependency_key, &frame);
                 zone_canvases.push((group.id, frame.frame.clone()));
                 group_canvases.push((group.id, frame));
@@ -767,13 +766,13 @@ impl ZoneRuntime {
                 continue;
             }
 
+            active_group_canvas_ids.push(group.id);
             if let Some(retained) = self.reuse_retained_direct_group_frame(
                 group,
                 elapsed_ms,
                 display_group_target_fps,
                 dependency_key,
             ) {
-                active_group_canvas_ids.push(group.id);
                 zone_canvases.push((group.id, retained.frame.clone()));
                 group_canvases.push((group.id, retained));
                 continue;
@@ -797,7 +796,6 @@ impl ZoneRuntime {
                 continue;
             };
             render_us = render_us.saturating_add(micros_u32(render_start.elapsed()));
-            active_group_canvas_ids.push(group.id);
             self.retain_direct_group_frame(group.id, elapsed_ms, dependency_key, &frame);
             zone_canvases.push((group.id, frame.frame.clone()));
             group_canvases.push((group.id, frame));

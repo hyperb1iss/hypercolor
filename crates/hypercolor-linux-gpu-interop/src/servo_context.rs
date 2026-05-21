@@ -205,9 +205,11 @@ impl RenderingContext for LinuxServoRenderingContext {
     fn present(&self) {
         let device = &mut self.device.borrow_mut();
         let context = &mut self.context.borrow_mut();
-        let _ = self
-            .swap_chain
-            .swap_buffers(device, context, PreserveBuffer::No);
+        let _ = self.swap_chain.swap_buffers(
+            device,
+            context,
+            PreserveBuffer::Yes(self.glow_gl.as_ref()),
+        );
     }
 
     fn make_current(&self) -> Result<(), Error> {
