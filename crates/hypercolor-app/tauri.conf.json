@@ -29,9 +29,9 @@
       "../../scripts/install-windows-hardware-support.ps1": "tools/install-windows-hardware-support.ps1"
     },
     "windows": {
-      "webviewInstallMode": { "type": "downloadBootstrapper" },
+      "webviewInstallMode": { "type": "offlineInstaller" },
       "nsis": {
-        "installMode": "perMachine",
+        "installMode": "currentUser",
         "displayLanguageSelector": false,
         "languages": ["English"]
       },
