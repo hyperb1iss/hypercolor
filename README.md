@@ -268,7 +268,18 @@ dependencies. The installer then builds the daemon, CLI, TUI, web UI, and bundle
 installs a systemd user service, sets up udev rules for USB device access, and persists
 `i2c-dev` so SMBus RGB devices survive reboot.
 
-### Install on macOS and Windows
+### Install on Windows
+
+Download the signed installer from [hypercolor.lighting/download](https://hypercolor.lighting/download) and run it.
+Per-user install (no UAC unless you opt into motherboard/RAM RGB hardware support, which
+installs the [PawnIO](https://github.com/namazso/PawnIO) kernel driver via a one-click
+flow). Tested on Windows 10 22H2 and Windows 11 23H2/24H2, x64.
+
+Hue, WLED, Nanoleaf, Govee, and USB-HID lighting (Razer, Corsair, Lian Li, etc.) work out
+of the box. Motherboard / DRAM SMBus lighting (ASUS Aura, MSI, Gigabyte) requires the
+optional PawnIO install — Hypercolor prompts you only if compatible hardware is detected.
+
+### Install on macOS
 
 ```bash
 git clone https://github.com/hyperb1iss/hypercolor.git
@@ -276,9 +287,9 @@ cd hypercolor
 cargo build --release
 ```
 
-Linux is the only platform currently gated in CI. macOS arm64 builds through the release
-pipeline. Windows compiles from source but isn't in CI yet, so treat it as experimental.
-Service management and permission setup are manual outside Linux.
+macOS arm64 builds through the release pipeline; a signed `.dmg` ships with each release.
+Service management and permission setup follow the standard LaunchAgent + System Settings
+permission flow on first run.
 
 ### Run
 
