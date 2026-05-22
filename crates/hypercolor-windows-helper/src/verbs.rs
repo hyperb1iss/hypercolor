@@ -13,6 +13,7 @@ use thiserror::Error;
 use crate::request::Request;
 
 mod repair_smbus_service;
+mod uninstall_smbus_service;
 
 /// Allowlisted operations the elevated helper can perform.
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -66,6 +67,8 @@ pub enum VerbError {
     ServiceStop { service: String, detail: String },
     #[error("could not start service `{service}`: {detail}")]
     ServiceStart { service: String, detail: String },
+    #[error("could not delete service `{service}`: {detail}")]
+    ServiceDelete { service: String, detail: String },
     #[error(
         "service `{service}` did not reach expected state `{expected}` within timeout (observed `{observed}`)"
     )]
@@ -85,6 +88,7 @@ impl VerbError {
             Self::ServiceQuery { .. } => "service_query_failed",
             Self::ServiceStop { .. } => "service_stop_failed",
             Self::ServiceStart { .. } => "service_start_failed",
+            Self::ServiceDelete { .. } => "service_delete_failed",
             Self::ServiceTimeout { .. } => "service_timeout",
         }
     }
@@ -97,6 +101,7 @@ impl VerbError {
 pub fn dispatch(request: &Request) -> Result<(), VerbError> {
     match request.verb {
         Verb::RepairSmbusService => repair_smbus_service::run(),
+        Verb::UninstallSmbusService => uninstall_smbus_service::run(),
         verb => Err(VerbError::NotImplemented { verb }),
     }
 }
