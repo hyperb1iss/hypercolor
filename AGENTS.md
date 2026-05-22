@@ -267,9 +267,12 @@ Response envelope: `{ data: T, meta: { api_version, request_id, timestamp } }`.
   keep their `DeviceId` even if transport details (IP, USB path) change.
 - **FPS adaptation.** The render loop auto-shifts between 5 tiers. Downshift is aggressive
   (2 consecutive budget misses), upshift is conservative (sustained headroom).
-- **Performance ceilings are product behavior.** Never intentionally reduce preview/runtime
-  performance caps to hide Linux Tauri/WebKitGTK issues. Preserve the intended ceiling and fix
-  root causes with profiling, rendering changes, build/profile choices, or explicit user controls.
+- **Performance baselines are product contracts.** Never reduce FPS caps, preview cadences,
+  render tiers, resolution, sample rates, device output rates, benchmark thresholds, or
+  default performance ceilings for convenience, to make telemetry look better, or "to see if
+  it helps." No lowering baselines for the fuck of it. Preserve the intended ceiling and fix
+  root causes with profiling, rendering changes, build/profile choices, adaptive policy that
+  keeps the full baseline under headroom, or explicit user controls.
 
 ## Agent Coordination
 

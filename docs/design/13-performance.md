@@ -10,6 +10,10 @@
 2. **Measure everything, assume nothing.** Every stage of the pipeline is instrumented. Performance regressions are caught in CI before they reach users.
 3. **Graceful degradation over graceful failure.** Dropping to 30fps is acceptable. Dropping frames silently is not. Crashing is never acceptable.
 4. **Predictable latency beats peak throughput.** A consistent 8ms frame is better than alternating 2ms and 14ms frames. Jitter causes visible flicker.
+5. **Performance baselines are contracts.** Default FPS, preview cadence, resolution, quality,
+   and device-output ceilings are not casual tuning knobs. Lowering them requires evidence,
+   explicit product approval, and an adaptive or user-controlled path that preserves the
+   higher baseline whenever the system has headroom.
 
 ---
 
