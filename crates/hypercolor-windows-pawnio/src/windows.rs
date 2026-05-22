@@ -1304,6 +1304,7 @@ impl Drop for CpuTempReader {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 fn detect_cpu_vendor() -> PawnIoResult<CpuVendor> {
     let info = std::arch::x86_64::__cpuid(0);
     let mut bytes = [0_u8; 12];
@@ -1323,6 +1324,16 @@ fn detect_cpu_vendor() -> PawnIoResult<CpuVendor> {
             ),
         })
     }
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn detect_cpu_vendor() -> PawnIoResult<CpuVendor> {
+    // ARM64 Windows: no x86 CPUID, no MSR/SMN access. Caller treats the
+    // resulting Err as "no PawnIO CPU temp source" and falls through to
+    // the LHM/OHM/ACPI cascade just like any non-Windows host would.
+    Err(PawnIoError::InvalidInput {
+        detail: "CPU temperature MSR/SMN reads are only supported on x86_64".to_owned(),
+    })
 }
 
 #[cfg(test)]

@@ -12,7 +12,9 @@ $PawnIoModulesZipSha256 = "1149B87F4DC757E72654D5A402863251815EBFC8AD4E3BB030DBC
 $RequiredModules = @(
     "SmbusI801.bin",
     "SmbusPIIX4.bin",
-    "SmbusNCT6793.bin"
+    "SmbusNCT6793.bin",
+    "IntelMSR.bin",
+    "AMDFamily17.bin"
 )
 
 if (-not $AssetRoot) {

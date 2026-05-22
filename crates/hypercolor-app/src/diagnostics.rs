@@ -187,8 +187,11 @@ fn preferred_destination_dir() -> Result<PathBuf> {
 #[cfg(target_os = "windows")]
 fn create_zip(stage_root: &Path, zip_path: &Path) -> Result<()> {
     // PowerShell's Compress-Archive is built-in on Windows 10+ and avoids
-    // pulling in a Rust zip-crate dep just for this one path.
-    let pattern = format!("{}\\*", stage_root.display());
+    // pulling in a Rust zip-crate dep just for this one path. Escape paths
+    // so apostrophes / wildcards in profile directories can't break the
+    // command or inject extra cmdlets.
+    let pattern = ps_single_quote(&format!("{}\\*", stage_root.display()));
+    let destination = ps_single_quote(&zip_path.display().to_string());
     let status = Command::new("powershell.exe")
         .args([
             "-NoLogo",
@@ -198,9 +201,7 @@ fn create_zip(stage_root: &Path, zip_path: &Path) -> Result<()> {
             "-Command",
         ])
         .arg(format!(
-            "Compress-Archive -Path '{}' -DestinationPath '{}' -Force",
-            pattern,
-            zip_path.display()
+            "Compress-Archive -Path {pattern} -DestinationPath {destination} -Force"
         ))
         .status()
         .with_context(|| "spawn powershell Compress-Archive")?;
@@ -211,6 +212,15 @@ fn create_zip(stage_root: &Path, zip_path: &Path) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Wrap a string in PowerShell single-quote literals, doubling any embedded
+/// apostrophes. PowerShell treats single-quoted strings as full literals —
+/// no variable expansion, no backtick escapes — so this is injection-safe
+/// even for paths containing `' " ; & |` etc.
+#[cfg(target_os = "windows")]
+fn ps_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
 }
 
 #[cfg(not(target_os = "windows"))]

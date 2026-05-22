@@ -68,7 +68,15 @@ fn detects_missing_bundled_pawnio_modules() {
         .map(|module| module.name.as_str())
         .collect();
 
-    assert_eq!(missing, vec!["SmbusPIIX4.bin", "SmbusNCT6793.bin"]);
+    assert_eq!(
+        missing,
+        vec![
+            "SmbusPIIX4.bin",
+            "SmbusNCT6793.bin",
+            "IntelMSR.bin",
+            "AMDFamily17.bin",
+        ]
+    );
     assert!(!status.install_available);
 
     cleanup_temp_resource_dir(&resource_dir);
@@ -164,7 +172,13 @@ fn create_bundled_payload(resource_dir: &Path) {
     touch(&tools_dir.join("hypercolor-smbus-service.exe"));
     touch(&tools_dir.join("pawnio").join("PawnIO_setup.exe"));
 
-    for module in ["SmbusI801.bin", "SmbusPIIX4.bin", "SmbusNCT6793.bin"] {
+    for module in [
+        "SmbusI801.bin",
+        "SmbusPIIX4.bin",
+        "SmbusNCT6793.bin",
+        "IntelMSR.bin",
+        "AMDFamily17.bin",
+    ] {
         touch(&tools_dir.join("pawnio").join("modules").join(module));
     }
 }
