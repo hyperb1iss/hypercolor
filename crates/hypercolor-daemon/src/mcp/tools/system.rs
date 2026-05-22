@@ -354,15 +354,61 @@ pub(super) async fn handle_get_layout_with_state(state: &AppState) -> Result<Val
     }))
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "MCP diagnose returns a compact but broad operational snapshot"
+)]
 pub(super) async fn handle_diagnose_with_state(
     _params: &Value,
     state: &AppState,
 ) -> Result<Value, ToolError> {
     let render_stats = state.render_loop.read().await.stats();
+    let performance = state.performance.read().await.snapshot();
+    let device_metrics = state.device_metrics.load_full();
+    let usb_actor_metrics = hypercolor_core::device::usb_actor_metrics_snapshot();
     let fps = capped_fps(&render_stats);
     let target_fps = render_stats.tier.fps();
     let consecutive_misses = render_stats.consecutive_misses;
     let render_time_ms = render_stats.avg_frame_time.as_secs_f64() * 1000.0;
+    let latest_frame = performance.latest_frame.as_ref().map(|frame| {
+        json!({
+            "frame_token": frame.timeline.frame_token,
+            "compositor_backend": frame.compositor_backend.as_str(),
+            "output_frame_source": frame.output_frame_source.as_str(),
+            "output_reuses_published_frame": frame.output_reuses_published_frame,
+            "gpu_zone_sampling": frame.gpu_zone_sampling,
+            "gpu_sample_deferred": frame.gpu_sample_deferred,
+            "gpu_sample_stale": frame.gpu_sample_stale,
+            "gpu_sample_retry_hit": frame.gpu_sample_retry_hit,
+            "gpu_sample_queue_saturated": frame.gpu_sample_queue_saturated,
+            "gpu_sample_wait_blocked": frame.gpu_sample_wait_blocked,
+            "cpu_readback_skipped": frame.cpu_readback_skipped,
+            "gpu_readback_failed": frame.gpu_readback_failed,
+            "devices_written": frame.devices_written,
+            "total_leds": frame.total_leds,
+            "sample_us": frame.sample_us,
+            "push_us": frame.push_us,
+            "publish_us": frame.publish_us,
+            "total_us": frame.total_us,
+            "output_routing_signature": frame.output_routing_signature,
+            "output_zone_shape_signature": frame.output_zone_shape_signature,
+            "output_unassigned_behavior_generation": frame.output_unassigned_behavior_generation,
+            "output_errors": frame.output_errors
+        })
+    });
+    let lagging_queues = device_metrics
+        .items
+        .iter()
+        .filter(|item| item.fps_queued > 1.0 && item.fps_sent + 1.0 < item.fps_queued * 0.75)
+        .count();
+    let dropped_frames_total = device_metrics
+        .items
+        .iter()
+        .fold(0_u64, |acc, item| acc.saturating_add(item.frames_dropped));
+    let output_errors_total = device_metrics
+        .items
+        .iter()
+        .fold(0_u64, |acc, item| acc.saturating_add(item.errors_total));
 
     let devices = state.device_registry.list().await;
     let device_count = devices.len();
@@ -387,6 +433,24 @@ pub(super) async fn handle_diagnose_with_state(
         findings.push(json!({
             "severity": "warning",
             "message": format!("Render loop has {consecutive_misses} consecutive frame budget misses — effects may stutter.")
+        }));
+    }
+
+    if performance
+        .latest_frame
+        .as_ref()
+        .is_some_and(|frame| frame.gpu_sample_stale)
+    {
+        findings.push(json!({
+            "severity": "warning",
+            "message": "Latest LED frame used a stale GPU sample; inspect metrics.latest_frame.output_frame_source and metrics.render_window."
+        }));
+    }
+
+    if lagging_queues > 0 || dropped_frames_total > 0 {
+        findings.push(json!({
+            "severity": "warning",
+            "message": format!("Device output queues show lag/drops: lagging={lagging_queues}, dropped_total={dropped_frames_total}.")
         }));
     }
 
@@ -417,7 +481,51 @@ pub(super) async fn handle_diagnose_with_state(
             "avg_render_time_ms": render_time_ms,
             "device_count": device_count,
             "connected_devices": connected_count,
-            "uptime_seconds": state.start_time.elapsed().as_secs()
+            "uptime_seconds": state.start_time.elapsed().as_secs(),
+            "latest_frame": latest_frame,
+            "render_window": {
+                "frames": performance.frame_count,
+                "gpu_sample_deferred": performance.pacing.gpu_sample_deferred,
+                "gpu_sample_stale": performance.pacing.gpu_sample_stale,
+                "gpu_sample_retry_hit": performance.pacing.gpu_sample_retry_hit,
+                "gpu_sample_queue_saturated": performance.pacing.gpu_sample_queue_saturated,
+                "gpu_sample_wait_blocked": performance.pacing.gpu_sample_wait_blocked,
+                "output_current_frame": performance.pacing.output_current_frame,
+                "output_published_frame": performance.pacing.output_published_frame,
+                "output_routed_reuse": performance.pacing.output_routed_reuse,
+                "output_reused_published_frame": performance.pacing.output_reused_published_frame,
+                "output_error_frames": performance.pacing.output_error_frames
+            },
+            "device_output": {
+                "queues": device_metrics.items.len(),
+                "lagging_queues": lagging_queues,
+                "dropped_frames_total": dropped_frames_total,
+                "errors_total": output_errors_total,
+                "items": device_metrics.items.iter().map(|item| json!({
+                    "id": item.id.to_string(),
+                    "backend_id": item.backend_id.clone(),
+                    "mapped_layout_ids": item.mapped_layout_ids.clone(),
+                    "uses_frame_sink": item.uses_frame_sink,
+                    "worker_finished": item.worker_finished,
+                    "fps_sent": item.fps_sent,
+                    "fps_queued": item.fps_queued,
+                    "fps_target": item.fps_target,
+                    "frames_received": item.frames_received,
+                    "frames_sent": item.frames_sent,
+                    "frames_dropped": item.frames_dropped,
+                    "errors_total": item.errors_total,
+                    "avg_queue_wait_ms": item.avg_queue_wait_ms,
+                    "avg_write_ms": item.avg_write_ms,
+                    "last_sent_ago_ms": item.last_sent_ago_ms,
+                    "last_sequence": item.last_sequence
+                })).collect::<Vec<_>>()
+            },
+            "usb_actor": {
+                "display_frames_total": usb_actor_metrics.display_frames_total,
+                "display_frames_delayed_for_led_total": usb_actor_metrics.display_frames_delayed_for_led_total,
+                "display_led_priority_wait_total_us": usb_actor_metrics.display_led_priority_wait_total_us,
+                "display_led_priority_wait_max_us": usb_actor_metrics.display_led_priority_wait_max_us
+            }
         }
     }))
 }

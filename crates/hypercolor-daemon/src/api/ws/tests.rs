@@ -55,6 +55,7 @@ use crate::device_metrics::{DeviceMetrics, DeviceMetricsSnapshot};
 use crate::display_frames::{DisplayFrameRuntime, DisplayFrameSnapshot};
 use crate::performance::{
     CompositorBackendKind, FrameTimeline, FullFrameCopyMetrics, LatestFrameMetrics,
+    OutputFrameSourceKind,
 };
 use crate::preview_runtime::{
     PreviewFrameReceiver, PreviewPixelFormat, PreviewRuntime, PreviewStreamDemand,
@@ -314,6 +315,15 @@ async fn metrics_message_includes_latest_frame_timeline() {
             cpu_readback_skipped: true,
             gpu_readback_failed: true,
             compositor_backend: CompositorBackendKind::Gpu,
+            output_frame_source: OutputFrameSourceKind::PublishedFrame,
+            output_reuses_published_frame: true,
+            output_brightness_bits: 1.0_f32.to_bits(),
+            output_brightness_generation: 17,
+            output_routing_signature: 23,
+            output_zone_shape_signature: 29,
+            output_unassigned_behavior_generation: 31,
+            devices_written: 7,
+            total_leds: 512,
             logical_layer_count: 2,
             render_group_count: 1,
             scene_active: true,
@@ -379,6 +389,17 @@ async fn metrics_message_includes_latest_frame_timeline() {
 
     assert_eq!(json["timeline"]["frame_token"], 77);
     assert_eq!(json["timeline"]["compositor_backend"], "gpu");
+    assert_eq!(json["timeline"]["output_frame_source"], "published_frame");
+    assert_eq!(json["timeline"]["output_reuses_published_frame"], true);
+    assert_eq!(json["timeline"]["output_brightness_generation"], 17);
+    assert_eq!(json["timeline"]["output_routing_signature"], 23);
+    assert_eq!(json["timeline"]["output_zone_shape_signature"], 29);
+    assert_eq!(
+        json["timeline"]["output_unassigned_behavior_generation"],
+        31
+    );
+    assert_eq!(json["timeline"]["devices_written"], 7);
+    assert_eq!(json["timeline"]["total_leds"], 512);
     assert_eq!(json["timeline"]["gpu_zone_sampling"], true);
     assert_eq!(json["timeline"]["gpu_sample_deferred"], true);
     assert_eq!(json["timeline"]["gpu_sample_stale"], true);
@@ -412,6 +433,10 @@ async fn metrics_message_includes_latest_frame_timeline() {
     assert_eq!(json["pacing"]["gpu_readback_failed_frames"], 1);
     assert_eq!(json["pacing"]["output_error_frames"], 1);
     assert_eq!(json["pacing"]["full_frame_copy_frames"], 1);
+    assert_eq!(json["pacing"]["output_current_frame"], 0);
+    assert_eq!(json["pacing"]["output_published_frame"], 1);
+    assert_eq!(json["pacing"]["output_routed_reuse"], 0);
+    assert_eq!(json["pacing"]["output_reused_published_frame"], 1);
     assert_eq!(json["render_surfaces"]["scene_pool_slot_count"], 10);
     assert_eq!(json["render_surfaces"]["scene_pool_max_slots"], 12);
     assert_eq!(json["render_surfaces"]["direct_pool_slot_count"], 6);
@@ -685,18 +710,26 @@ fn device_metrics_message_uses_shared_snapshot() {
         taken_at_ms: 2_500,
         items: vec![DeviceMetrics {
             id: device_id,
+            backend_id: "usb".to_owned(),
+            mapped_layout_ids: vec!["layout-device".to_owned()],
+            uses_frame_sink: true,
+            worker_finished: false,
             fps_sent: 58.5,
             fps_queued: 60.0,
             fps_actual: 58.5,
             fps_target: 60,
             payload_bps_estimate: 2_048,
             avg_latency_ms: 11,
+            avg_queue_wait_ms: 3,
+            avg_write_ms: 8,
             frames_received: 302,
             frames_sent: 300,
             frames_dropped: 4,
             errors_total: 1,
+            write_failure_warnings_total: 1,
             last_error: Some("socket timeout".to_owned()),
             last_sent_ago_ms: Some(12),
+            last_sequence: 302,
         }],
     }));
 
@@ -707,6 +740,10 @@ fn device_metrics_message_uses_shared_snapshot() {
     assert_eq!(data.taken_at_ms, 2_500);
     assert_eq!(data.items.len(), 1);
     assert_eq!(data.items[0].id, device_id);
+    assert_eq!(data.items[0].backend_id, "usb");
+    assert!(data.items[0].uses_frame_sink);
+    assert_eq!(data.items[0].avg_queue_wait_ms, 3);
+    assert_eq!(data.items[0].avg_write_ms, 8);
     assert_eq!(data.items[0].payload_bps_estimate, 2_048);
 }
 
@@ -739,18 +776,26 @@ async fn relay_device_metrics_wakes_when_subscription_changes() {
         taken_at_ms: 4_200,
         items: vec![DeviceMetrics {
             id: hypercolor_types::device::DeviceId::new(),
+            backend_id: "usb".to_owned(),
+            mapped_layout_ids: vec!["layout-device".to_owned()],
+            uses_frame_sink: true,
+            worker_finished: false,
             fps_sent: 60.0,
             fps_queued: 60.0,
             fps_actual: 60.0,
             fps_target: 60,
             payload_bps_estimate: 512,
             avg_latency_ms: 8,
+            avg_queue_wait_ms: 2,
+            avg_write_ms: 6,
             frames_received: 42,
             frames_sent: 42,
             frames_dropped: 0,
             errors_total: 0,
+            write_failure_warnings_total: 0,
             last_error: None,
             last_sent_ago_ms: Some(7),
+            last_sequence: 42,
         }],
     }));
     let initial_subscriptions = SubscriptionState::default();

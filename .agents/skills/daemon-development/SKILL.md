@@ -122,6 +122,40 @@ Runs on a **dedicated OS thread** with its own Tokio runtime (isolated from API 
 
 **Adaptive FPS**: Tiers at 10/20/30/45/60. On 2 consecutive budget misses → downshift. On sustained headroom → upshift. Prevents frame drops from cascading.
 
+## Modern Diagnostics & Telemetry
+
+Do not ask Bliss to paste logs first. The dev environment should query the daemon:
+
+```bash
+just diagnose -- --json
+hypercolor diagnose --system -j
+curl -s -X POST http://127.0.0.1:9420/api/v1/diagnose -H 'content-type: application/json' -d '{"system":true}'
+curl -s http://127.0.0.1:9420/api/v1/status
+curl -s http://127.0.0.1:9420/api/v1/devices/metrics
+```
+
+`/api/v1/diagnose` returns checks plus `snapshot.render`, `snapshot.usb`, and `snapshot.device_output`. The WebSocket `metrics` channel and `/api/v1/status` expose the same latest-frame fields for live UI/agent inspection.
+
+Key LED-frame fields:
+
+- `output_frame_source`: `current_frame`, `published_frame`, or `routed_reuse`
+- `output_reuses_published_frame`: render reused the last published LED frame data
+- `output_routing_signature`, `output_zone_shape_signature`, `output_unassigned_behavior_generation`: changed signatures explain why output reuse did or did not happen
+- `devices_written`, `total_leds`, `sample_us`, `push_us`, `publish_us`, `total_us`
+- GPU sampling flags: `gpu_sample_deferred`, `gpu_sample_stale`, `gpu_sample_retry_hit`, `gpu_sample_queue_saturated`, `gpu_sample_wait_blocked`, `gpu_sample_cpu_fallback`, `cpu_readback_skipped`, `gpu_readback_failed`, `led_sampling_readback`
+
+Key device-output fields:
+
+- Per queue: `backend_id`, `mapped_layout_ids`, `uses_frame_sink`, `worker_finished`, `fps_sent`, `fps_queued`, `frames_dropped`, `avg_queue_wait_ms`, `avg_write_ms`, `last_sent_ago_ms`, `last_sequence`
+- USB actor: `display_frames_delayed_for_led_total`, `display_led_priority_wait_avg_ms`, `display_led_priority_wait_max_ms`
+
+Jank triage:
+
+- Displays smooth but LEDs jank: inspect `output_frame_source` and GPU stale/deferred flags before touching USB.
+- All USB LEDs jank in unison: suspect shared LED sample/output freshness or shared queue pressure before per-device protocol bugs.
+- One device/family janks: compare `fps_sent` vs `fps_queued`, `frames_dropped`, queue wait, write time, and `last_error`.
+- Never reduce canvas resolution, FPS ceilings, or performance caps to hide telemetry symptoms. Fix the root cause.
+
 ## Device Lifecycle State Machine
 
 Per-device states managed by `DeviceLifecycleManager` — a **pure state machine** that emits actions for async executors (no I/O itself):

@@ -868,6 +868,10 @@ pub(super) struct MetricsPacing {
     pub(super) gpu_readback_failed_frames: u32,
     pub(super) output_error_frames: u32,
     pub(super) full_frame_copy_frames: u32,
+    pub(super) output_current_frame: u32,
+    pub(super) output_published_frame: u32,
+    pub(super) output_routed_reuse: u32,
+    pub(super) output_reused_published_frame: u32,
 }
 
 #[derive(Debug, Serialize)]
@@ -939,6 +943,15 @@ pub(super) struct MetricsEffectHealth {
 pub(super) struct MetricsTimeline {
     pub(super) frame_token: u64,
     pub(super) compositor_backend: String,
+    pub(super) output_frame_source: String,
+    pub(super) output_reuses_published_frame: bool,
+    pub(super) output_brightness_bits: u32,
+    pub(super) output_brightness_generation: u64,
+    pub(super) output_routing_signature: u64,
+    pub(super) output_zone_shape_signature: u64,
+    pub(super) output_unassigned_behavior_generation: u64,
+    pub(super) devices_written: u32,
+    pub(super) total_leds: u32,
     pub(super) gpu_zone_sampling: bool,
     pub(super) gpu_sample_deferred: bool,
     pub(super) gpu_sample_stale: bool,

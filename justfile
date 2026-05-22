@@ -164,6 +164,10 @@ compat-check:
 graphics-soak *args='':
     bun scripts/graphics-pipeline-soak.ts {{ args }}
 
+# Diagnose an already-running daemon through the cross-platform REST snapshot
+diagnose *args='':
+    bun scripts/diagnose-daemon.ts {{ args }}
+
 # Observe an already-running daemon for the 30-minute graphics acceptance soak
 graphics-soak-30 *args='':
     mkdir -p target/graphics-soak

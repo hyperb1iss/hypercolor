@@ -99,6 +99,15 @@ pub struct GpuCompositorProbeStatus {
 pub struct LatestFrameStatus {
     pub frame_token: u64,
     pub compositor_backend: String,
+    pub output_frame_source: String,
+    pub output_reuses_published_frame: bool,
+    pub output_brightness_bits: u32,
+    pub output_brightness_generation: u64,
+    pub output_routing_signature: u64,
+    pub output_zone_shape_signature: u64,
+    pub output_unassigned_behavior_generation: u64,
+    pub devices_written: u32,
+    pub total_leds: u32,
     pub gpu_zone_sampling: bool,
     pub gpu_sample_deferred: bool,
     pub gpu_sample_stale: bool,
@@ -794,6 +803,15 @@ fn latest_frame_status(frame: &LatestFrameMetrics, render_elapsed_ms: f64) -> La
     LatestFrameStatus {
         frame_token: frame.timeline.frame_token,
         compositor_backend: frame.compositor_backend.as_str().to_owned(),
+        output_frame_source: frame.output_frame_source.as_str().to_owned(),
+        output_reuses_published_frame: frame.output_reuses_published_frame,
+        output_brightness_bits: frame.output_brightness_bits,
+        output_brightness_generation: frame.output_brightness_generation,
+        output_routing_signature: frame.output_routing_signature,
+        output_zone_shape_signature: frame.output_zone_shape_signature,
+        output_unassigned_behavior_generation: frame.output_unassigned_behavior_generation,
+        devices_written: frame.devices_written,
+        total_leds: frame.total_leds,
         gpu_zone_sampling: frame.gpu_zone_sampling,
         gpu_sample_deferred: frame.gpu_sample_deferred,
         gpu_sample_stale: frame.gpu_sample_stale,
@@ -921,6 +939,7 @@ mod tests {
     use crate::api::AppState;
     use crate::performance::{
         CompositorBackendKind, FrameTimeline, FullFrameCopyMetrics, LatestFrameMetrics,
+        OutputFrameSourceKind,
     };
     use crate::preview_runtime::{PreviewPixelFormat, PreviewStreamDemand};
     use axum::body::to_bytes;
@@ -1026,6 +1045,15 @@ mod tests {
                 cpu_readback_skipped: true,
                 gpu_readback_failed: true,
                 compositor_backend: CompositorBackendKind::GpuFallback,
+                output_frame_source: OutputFrameSourceKind::RoutedReuse,
+                output_reuses_published_frame: true,
+                output_brightness_bits: 1.0_f32.to_bits(),
+                output_brightness_generation: 5,
+                output_routing_signature: 7,
+                output_zone_shape_signature: 11,
+                output_unassigned_behavior_generation: 13,
+                devices_written: 3,
+                total_leds: 144,
                 logical_layer_count: 2,
                 render_group_count: 1,
                 scene_active: true,
@@ -1100,6 +1128,29 @@ mod tests {
             json["data"]["latest_frame"]["compositor_backend"],
             "gpu_fallback"
         );
+        assert_eq!(
+            json["data"]["latest_frame"]["output_frame_source"],
+            "routed_reuse"
+        );
+        assert_eq!(
+            json["data"]["latest_frame"]["output_reuses_published_frame"],
+            true
+        );
+        assert_eq!(
+            json["data"]["latest_frame"]["output_brightness_generation"],
+            5
+        );
+        assert_eq!(json["data"]["latest_frame"]["output_routing_signature"], 7);
+        assert_eq!(
+            json["data"]["latest_frame"]["output_zone_shape_signature"],
+            11
+        );
+        assert_eq!(
+            json["data"]["latest_frame"]["output_unassigned_behavior_generation"],
+            13
+        );
+        assert_eq!(json["data"]["latest_frame"]["devices_written"], 3);
+        assert_eq!(json["data"]["latest_frame"]["total_leds"], 144);
         assert_eq!(json["data"]["latest_frame"]["gpu_zone_sampling"], true);
         assert_eq!(json["data"]["latest_frame"]["gpu_sample_deferred"], true);
         assert_eq!(json["data"]["latest_frame"]["gpu_sample_stale"], true);

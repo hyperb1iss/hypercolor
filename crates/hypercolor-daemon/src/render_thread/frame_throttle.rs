@@ -203,6 +203,8 @@ pub(crate) async fn maybe_sleep_throttle(
         total_us,
         overhead_us,
         output_errors,
+        devices_written: u32::try_from(write_stats.devices_written).unwrap_or(u32::MAX),
+        total_leds: u32::try_from(write_stats.total_leds).unwrap_or(u32::MAX),
         scene_snapshot_done_us,
         sample_done_us,
         output_done_us,

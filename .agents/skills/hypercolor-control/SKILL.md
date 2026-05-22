@@ -62,6 +62,34 @@ hypercolor diagnose --system
 
 Use `hypercolor effects layout show|set|clear` when effect-to-layout links matter.
 
+## Diagnostics workflow
+
+When diagnosing a running daemon, query telemetry before asking for pasted logs:
+
+```bash
+just diagnose
+just diagnose -- --json
+hypercolor diagnose --system -j
+curl -s http://127.0.0.1:9420/api/v1/devices/metrics
+```
+
+Use `just windows-diagnose` only when Windows service/PawnIO/SMBus environment state matters; the daemon render/output telemetry itself is cross-platform.
+
+Read these fields first for LED jank:
+
+- `snapshot.render.latest_frame.output_frame_source` — `current_frame`, `published_frame`, or `routed_reuse`
+- `gpu_sample_stale`, `gpu_sample_deferred`, `gpu_sample_retry_hit`, `gpu_sample_queue_saturated`, `gpu_sample_wait_blocked`
+- `sample_us`, `push_us`, `publish_us`, `devices_written`, `total_leds`
+- `snapshot.device_output.items[]`: `backend_id`, `fps_sent`, `fps_queued`, `frames_dropped`, `avg_queue_wait_ms`, `avg_write_ms`, `last_error`
+- `snapshot.usb`: USB actor display-lane wait counters
+
+Interpretation:
+
+- Smooth display previews with LED jank usually means LED sampling/output freshness, not effect rendering.
+- `gpu_sample_stale=true` with `output_frame_source=published_frame` means LEDs reused older LED data while the visual path may still be smooth.
+- `fps_queued` above `fps_sent`, rising `frames_dropped`, or high queue/write time points to device-output pressure.
+- Multiple USB devices janking together points upstream or shared queue pressure; one device with errors points at that driver/transport.
+
 ## Effect authoring commands
 
 Inside a Bun-authored workspace:

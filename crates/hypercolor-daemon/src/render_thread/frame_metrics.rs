@@ -4,6 +4,7 @@ use super::pipeline_runtime::RenderSurfaceSnapshot;
 use super::scene_snapshot::FrameSceneSnapshot;
 use crate::performance::{
     CompositorBackendKind, FrameTimeline, FullFrameCopyMetrics, LatestFrameMetrics,
+    OutputFrameSourceKind,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -45,6 +46,15 @@ pub(crate) struct ActiveFrameMetricsInput<'a> {
     pub(crate) cpu_readback_skipped: bool,
     pub(crate) gpu_readback_failed: bool,
     pub(crate) compositor_backend: CompositorBackendKind,
+    pub(crate) output_frame_source: OutputFrameSourceKind,
+    pub(crate) output_reuses_published_frame: bool,
+    pub(crate) output_brightness_bits: u32,
+    pub(crate) output_brightness_generation: u64,
+    pub(crate) output_routing_signature: u64,
+    pub(crate) output_zone_shape_signature: u64,
+    pub(crate) output_unassigned_behavior_generation: u64,
+    pub(crate) devices_written: u32,
+    pub(crate) total_leds: u32,
     pub(crate) output_errors: u32,
     pub(crate) logical_layer_count: u32,
     pub(crate) render_group_count: u32,
@@ -71,6 +81,8 @@ pub(crate) struct ThrottleFrameMetricsInput<'a> {
     pub(crate) total_us: u32,
     pub(crate) overhead_us: u32,
     pub(crate) output_errors: u32,
+    pub(crate) devices_written: u32,
+    pub(crate) total_leds: u32,
     pub(crate) scene_snapshot_done_us: u32,
     pub(crate) sample_done_us: u32,
     pub(crate) output_done_us: u32,
@@ -111,6 +123,15 @@ pub(crate) fn build_active_frame_metrics(input: ActiveFrameMetricsInput<'_>) -> 
         cpu_readback_skipped,
         gpu_readback_failed,
         compositor_backend,
+        output_frame_source,
+        output_reuses_published_frame,
+        output_brightness_bits,
+        output_brightness_generation,
+        output_routing_signature,
+        output_zone_shape_signature,
+        output_unassigned_behavior_generation,
+        devices_written,
+        total_leds,
         output_errors,
         logical_layer_count,
         render_group_count,
@@ -171,6 +192,15 @@ pub(crate) fn build_active_frame_metrics(input: ActiveFrameMetricsInput<'_>) -> 
         cpu_readback_skipped,
         gpu_readback_failed,
         compositor_backend,
+        output_frame_source,
+        output_reuses_published_frame,
+        output_brightness_bits,
+        output_brightness_generation,
+        output_routing_signature,
+        output_zone_shape_signature,
+        output_unassigned_behavior_generation,
+        devices_written,
+        total_leds,
         logical_layer_count,
         render_group_count,
         scene_active,
@@ -233,6 +263,8 @@ pub(crate) fn build_throttle_frame_metrics(
         total_us,
         overhead_us,
         output_errors,
+        devices_written,
+        total_leds,
         scene_snapshot_done_us,
         sample_done_us,
         output_done_us,
@@ -274,6 +306,15 @@ pub(crate) fn build_throttle_frame_metrics(
         cpu_readback_skipped: false,
         gpu_readback_failed: false,
         compositor_backend: CompositorBackendKind::Cpu,
+        output_frame_source: OutputFrameSourceKind::CurrentFrame,
+        output_reuses_published_frame: false,
+        output_brightness_bits: 0,
+        output_brightness_generation: 0,
+        output_routing_signature: 0,
+        output_zone_shape_signature: 0,
+        output_unassigned_behavior_generation: 0,
+        devices_written,
+        total_leds,
         logical_layer_count: 0,
         render_group_count: scene_snapshot.scene_runtime.active_render_group_count(),
         scene_active: scene_snapshot.scene_runtime.active_scene_id.is_some(),
@@ -370,7 +411,7 @@ mod tests {
         ActiveFrameMetricsInput, PublishFrameStats, RenderSurfaceSnapshot,
         ThrottleFrameMetricsInput, build_throttle_frame_metrics, summarize_active_frame,
     };
-    use crate::performance::{CompositorBackendKind, FullFrameCopyMetrics};
+    use crate::performance::{CompositorBackendKind, FullFrameCopyMetrics, OutputFrameSourceKind};
     use crate::render_thread::scene_dependency::SceneDependencyKey;
     use crate::render_thread::scene_snapshot::{
         EffectDemand, FrameSceneSnapshot, SceneRuntimeSnapshot, SceneTransitionSnapshot,
@@ -497,6 +538,15 @@ mod tests {
             cpu_readback_skipped: true,
             gpu_readback_failed: true,
             compositor_backend: CompositorBackendKind::Gpu,
+            output_frame_source: OutputFrameSourceKind::PublishedFrame,
+            output_reuses_published_frame: true,
+            output_brightness_bits: 1.0_f32.to_bits(),
+            output_brightness_generation: 7,
+            output_routing_signature: 11,
+            output_zone_shape_signature: 13,
+            output_unassigned_behavior_generation: 17,
+            devices_written: 5,
+            total_leds: 321,
             output_errors: 3,
             logical_layer_count: 4,
             render_group_count: 2,
@@ -522,6 +572,15 @@ mod tests {
         assert!(summary.metrics.preview_surface);
         assert!(summary.metrics.scene_canvas_forced_surface);
         assert!(summary.metrics.led_sampling_readback);
+        assert_eq!(
+            summary.metrics.output_frame_source,
+            OutputFrameSourceKind::PublishedFrame
+        );
+        assert!(summary.metrics.output_reuses_published_frame);
+        assert_eq!(summary.metrics.output_routing_signature, 11);
+        assert_eq!(summary.metrics.output_zone_shape_signature, 13);
+        assert_eq!(summary.metrics.devices_written, 5);
+        assert_eq!(summary.metrics.total_leds, 321);
         assert_eq!(summary.metrics.output_errors, 3);
         assert_eq!(summary.admission.total_us, summary.metrics.total_us);
         assert_eq!(summary.admission.producer_us, summary.metrics.producer_us);
@@ -554,6 +613,8 @@ mod tests {
             total_us: 111,
             overhead_us: 44,
             output_errors: 2,
+            devices_written: 3,
+            total_leds: 99,
             scene_snapshot_done_us: 10,
             sample_done_us: 70,
             output_done_us: 90,
@@ -571,6 +632,13 @@ mod tests {
         assert!(!metrics.retained_effect);
         assert!(!metrics.retained_screen);
         assert!(!metrics.composition_bypassed);
+        assert_eq!(
+            metrics.output_frame_source,
+            OutputFrameSourceKind::CurrentFrame
+        );
+        assert!(!metrics.output_reuses_published_frame);
+        assert_eq!(metrics.devices_written, 3);
+        assert_eq!(metrics.total_leds, 99);
         assert_eq!(metrics.output_errors, 2);
         assert_eq!(metrics.timeline.input_done_us, 10);
         assert_eq!(metrics.timeline.producer_done_us, 10);

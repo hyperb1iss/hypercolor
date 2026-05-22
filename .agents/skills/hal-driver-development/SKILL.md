@@ -16,6 +16,26 @@ description: >-
 
 `hypercolor-hal` must never depend on `hypercolor-core` — that would create a circular dependency (`core` depends on `hal`). Key dependencies: `hypercolor-types`, `nusb`, `zerocopy`, `hidapi`, `tokio`, `tokio-serial`, `midir`, `image`, `thiserror`, `tracing`, and Linux-only `async-hid`, `i2cdev`.
 
+## Before USB Driver Surgery
+
+For “device jank”, “USB jank”, or “all USB devices stutter” reports, query daemon telemetry before editing protocol code:
+
+```bash
+just diagnose -- --json
+hypercolor diagnose --system -j
+curl -s http://127.0.0.1:9420/api/v1/devices/metrics
+```
+
+Use the data to place the bug:
+
+- `snapshot.render.latest_frame.gpu_sample_stale` or `output_frame_source=published_frame` means LEDs may be receiving old sampled data before any USB write happens.
+- `snapshot.device_output.items[]` shows per-device queue health: `backend_id`, `fps_sent`, `fps_queued`, `frames_dropped`, `avg_queue_wait_ms`, `avg_write_ms`, `worker_finished`, `last_error`, `last_sequence`.
+- `snapshot.usb.display_frames_delayed_for_led_total` and wait times reveal shared USB actor display-lane contention, not necessarily LED protocol failure.
+- If all USB devices jank in unison and queues are healthy, investigate shared render sampling/output reuse first.
+- If one family has high `avg_write_ms`, drops, or errors while others are clean, then inspect transport/protocol encoding.
+
+Do not lower FPS, resolution, LED counts, or performance caps to hide driver symptoms.
+
 ## Protocol Trait Contract
 
 Every driver implements `Protocol` (in `src/protocol.rs`). Key methods:

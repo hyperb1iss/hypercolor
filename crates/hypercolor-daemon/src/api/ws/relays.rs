@@ -1329,6 +1329,12 @@ pub(super) async fn build_metrics_message(
                 gpu_readback_failed_frames: performance_snapshot.pacing.gpu_readback_failed_frames,
                 output_error_frames: performance_snapshot.pacing.output_error_frames,
                 full_frame_copy_frames: performance_snapshot.pacing.full_frame_copy_frames,
+                output_current_frame: performance_snapshot.pacing.output_current_frame,
+                output_published_frame: performance_snapshot.pacing.output_published_frame,
+                output_routed_reuse: performance_snapshot.pacing.output_routed_reuse,
+                output_reused_published_frame: performance_snapshot
+                    .pacing
+                    .output_reused_published_frame,
             },
             effect_health: MetricsEffectHealth {
                 errors_total: performance_snapshot.effect_health.errors_total,
@@ -1417,6 +1423,16 @@ pub(super) async fn build_metrics_message(
             timeline: MetricsTimeline {
                 frame_token: latest_frame.timeline.frame_token,
                 compositor_backend: latest_frame.compositor_backend.as_str().to_owned(),
+                output_frame_source: latest_frame.output_frame_source.as_str().to_owned(),
+                output_reuses_published_frame: latest_frame.output_reuses_published_frame,
+                output_brightness_bits: latest_frame.output_brightness_bits,
+                output_brightness_generation: latest_frame.output_brightness_generation,
+                output_routing_signature: latest_frame.output_routing_signature,
+                output_zone_shape_signature: latest_frame.output_zone_shape_signature,
+                output_unassigned_behavior_generation: latest_frame
+                    .output_unassigned_behavior_generation,
+                devices_written: latest_frame.devices_written,
+                total_leds: latest_frame.total_leds,
                 gpu_zone_sampling: latest_frame.gpu_zone_sampling,
                 gpu_sample_deferred: latest_frame.gpu_sample_deferred,
                 gpu_sample_stale: latest_frame.gpu_sample_stale,

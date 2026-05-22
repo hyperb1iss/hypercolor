@@ -20,18 +20,26 @@ const DEVICE_FPS_EWMA_ALPHA: f32 = 0.35;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DeviceMetrics {
     pub id: DeviceId,
+    pub backend_id: String,
+    pub mapped_layout_ids: Vec<String>,
+    pub uses_frame_sink: bool,
+    pub worker_finished: bool,
     pub fps_sent: f32,
     pub fps_queued: f32,
     pub fps_actual: f32,
     pub fps_target: u32,
     pub payload_bps_estimate: u64,
     pub avg_latency_ms: u32,
+    pub avg_queue_wait_ms: u32,
+    pub avg_write_ms: u32,
     pub frames_received: u64,
     pub frames_sent: u64,
     pub frames_dropped: u64,
     pub errors_total: u64,
+    pub write_failure_warnings_total: u64,
     pub last_error: Option<String>,
     pub last_sent_ago_ms: Option<u64>,
+    pub last_sequence: u64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -183,18 +191,26 @@ fn build_device_metrics(
 
     DeviceMetrics {
         id: stats.device_id,
+        backend_id: stats.backend_id.clone(),
+        mapped_layout_ids: stats.mapped_layout_ids.clone(),
+        uses_frame_sink: stats.uses_frame_sink,
+        worker_finished: stats.worker_finished,
         fps_sent,
         fps_queued,
         fps_actual: fps_sent,
         fps_target: stats.target_fps,
         payload_bps_estimate: rate_as_u64(delta_bytes_sent, elapsed_secs),
         avg_latency_ms: u32::try_from(stats.avg_latency_ms).unwrap_or(u32::MAX),
+        avg_queue_wait_ms: u32::try_from(stats.avg_queue_wait_ms).unwrap_or(u32::MAX),
+        avg_write_ms: u32::try_from(stats.avg_write_ms).unwrap_or(u32::MAX),
         frames_received: stats.frames_received,
         frames_sent: stats.frames_sent,
         frames_dropped: stats.frames_dropped,
         errors_total: stats.errors_total,
+        write_failure_warnings_total: stats.write_failure_warnings_total,
         last_error: sanitize_last_error(stats.last_error.as_deref()),
         last_sent_ago_ms: stats.last_sent_ago_ms,
+        last_sequence: stats.last_sequence,
     }
 }
 

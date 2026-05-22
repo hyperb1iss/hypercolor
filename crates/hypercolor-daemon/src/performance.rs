@@ -36,6 +36,24 @@ impl CompositorBackendKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum OutputFrameSourceKind {
+    #[default]
+    CurrentFrame,
+    PublishedFrame,
+    RoutedReuse,
+}
+
+impl OutputFrameSourceKind {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::CurrentFrame => "current_frame",
+            Self::PublishedFrame => "published_frame",
+            Self::RoutedReuse => "routed_reuse",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct FullFrameCopyMetrics {
     pub(crate) count: u32,
@@ -108,6 +126,15 @@ pub(crate) struct LatestFrameMetrics {
     pub cpu_readback_skipped: bool,
     pub gpu_readback_failed: bool,
     pub compositor_backend: CompositorBackendKind,
+    pub output_frame_source: OutputFrameSourceKind,
+    pub output_reuses_published_frame: bool,
+    pub output_brightness_bits: u32,
+    pub output_brightness_generation: u64,
+    pub output_routing_signature: u64,
+    pub output_zone_shape_signature: u64,
+    pub output_unassigned_behavior_generation: u64,
+    pub devices_written: u32,
+    pub total_leds: u32,
     pub logical_layer_count: u32,
     pub render_group_count: u32,
     pub scene_active: bool,
@@ -196,6 +223,10 @@ pub(crate) struct PacingSummary {
     pub gpu_readback_failed_frames: u32,
     pub output_error_frames: u32,
     pub full_frame_copy_frames: u32,
+    pub output_current_frame: u32,
+    pub output_published_frame: u32,
+    pub output_routed_reuse: u32,
+    pub output_reused_published_frame: u32,
 }
 
 /// Aggregate effect-health counters observed by the daemon.
@@ -214,6 +245,7 @@ pub(crate) struct EffectHealthSummary {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PerformanceSnapshot {
     pub latest_frame: Option<LatestFrameMetrics>,
+    pub frame_count: u32,
     pub frame_time: FrameTimeSummary,
     pub pacing: PacingSummary,
     pub effect_health: EffectHealthSummary,
@@ -261,6 +293,8 @@ impl PerformanceTracker {
             gpu_readback_failed: metrics.gpu_readback_failed,
             output_error: metrics.output_errors > 0,
             full_frame_copy: metrics.full_frame_copy_count > 0,
+            output_frame_source: metrics.output_frame_source,
+            output_reuses_published_frame: metrics.output_reuses_published_frame,
         });
         if metrics.gpu_readback_failed {
             self.effect_health.producer_gpu_readback_failures_total = self
@@ -305,6 +339,7 @@ impl PerformanceTracker {
     pub(crate) fn snapshot(&self) -> PerformanceSnapshot {
         PerformanceSnapshot {
             latest_frame: self.latest_frame,
+            frame_count: u32::try_from(self.frame_times_us.len()).unwrap_or(u32::MAX),
             frame_time: summarize_frame_times(&self.frame_times_us),
             pacing: summarize_pacing(
                 &self.jitter_us,
@@ -365,6 +400,8 @@ struct FramePacingSample {
     gpu_readback_failed: bool,
     output_error: bool,
     full_frame_copy: bool,
+    output_frame_source: OutputFrameSourceKind,
+    output_reuses_published_frame: bool,
 }
 
 fn summarize_frame_times(samples: &VecDeque<u32>) -> FrameTimeSummary {
@@ -534,6 +571,49 @@ fn summarize_pacing(
             pacing_history
                 .iter()
                 .filter(|sample| sample.full_frame_copy)
+                .count(),
+        )
+        .unwrap_or(u32::MAX),
+        output_current_frame: u32::try_from(
+            pacing_history
+                .iter()
+                .filter(|sample| {
+                    matches!(
+                        sample.output_frame_source,
+                        OutputFrameSourceKind::CurrentFrame
+                    )
+                })
+                .count(),
+        )
+        .unwrap_or(u32::MAX),
+        output_published_frame: u32::try_from(
+            pacing_history
+                .iter()
+                .filter(|sample| {
+                    matches!(
+                        sample.output_frame_source,
+                        OutputFrameSourceKind::PublishedFrame
+                    )
+                })
+                .count(),
+        )
+        .unwrap_or(u32::MAX),
+        output_routed_reuse: u32::try_from(
+            pacing_history
+                .iter()
+                .filter(|sample| {
+                    matches!(
+                        sample.output_frame_source,
+                        OutputFrameSourceKind::RoutedReuse
+                    )
+                })
+                .count(),
+        )
+        .unwrap_or(u32::MAX),
+        output_reused_published_frame: u32::try_from(
+            pacing_history
+                .iter()
+                .filter(|sample| sample.output_reuses_published_frame)
                 .count(),
         )
         .unwrap_or(u32::MAX),

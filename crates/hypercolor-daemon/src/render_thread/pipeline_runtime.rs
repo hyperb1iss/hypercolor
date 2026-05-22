@@ -602,6 +602,10 @@ impl OutputReuseDecision {
     pub(crate) const fn source(self) -> OutputFrameSource {
         self.source
     }
+
+    pub(crate) const fn key(self) -> OutputReuseKey {
+        self.key
+    }
 }
 
 impl OutputReuseState {

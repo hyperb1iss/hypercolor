@@ -28,6 +28,7 @@ use super::scene_snapshot::{build_frame_scene_snapshot, refresh_effect_scene_sna
 use super::sparkleflinger::ComposedFrameSet;
 use super::{RenderThreadState, micros_between, micros_u32, u64_to_u32};
 use crate::discovery::handle_async_write_failures;
+use crate::performance::OutputFrameSourceKind;
 #[expect(
     clippy::too_many_lines,
     reason = "frame execution intentionally keeps the full pipeline in one ordered async function"
@@ -226,7 +227,7 @@ pub(crate) async fn execute_frame(
     let push_start = Instant::now();
     let global_brightness = output_power.effective_brightness();
     let global_brightness_bits = global_brightness.to_bits();
-    let (write_stats, async_failures) = {
+    let (write_stats, async_failures, output_frame_source, output_reuse_key) = {
         let mut manager = if primed_backend_manager_lock {
             manager_lock.await
         } else {
@@ -254,7 +255,9 @@ pub(crate) async fn execute_frame(
             output_reuse_key,
             || manager.can_reuse_routed_frame_outputs(unassigned_output_plan.layout.as_ref()),
         );
-        let write_stats = match output_reuse_decision.source() {
+        let output_frame_source = output_reuse_decision.source();
+        let output_reuse_key = output_reuse_decision.key();
+        let write_stats = match output_frame_source {
             OutputFrameSource::RoutedReuse => {
                 manager.reuse_routed_frame_outputs(unassigned_output_plan.layout.as_ref())
             }
@@ -286,7 +289,12 @@ pub(crate) async fn execute_frame(
             .output_reuse
             .record_decision(output_reuse_decision);
         let async_failures = manager.async_write_failures();
-        (write_stats, async_failures)
+        (
+            write_stats,
+            async_failures,
+            output_frame_source,
+            output_reuse_key,
+        )
     };
     let output_done_at = Instant::now();
     let push_us = micros_between(push_start, output_done_at);
@@ -416,6 +424,15 @@ pub(crate) async fn execute_frame(
         cpu_readback_skipped,
         gpu_readback_failed,
         compositor_backend,
+        output_frame_source: output_frame_source_kind(output_frame_source),
+        output_reuses_published_frame: reuses_published_frame,
+        output_brightness_bits: output_reuse_key.output_brightness_bits,
+        output_brightness_generation: output_reuse_key.device_output_brightness_generation,
+        output_routing_signature: output_reuse_key.routing_signature,
+        output_zone_shape_signature: output_reuse_key.zone_shape_signature,
+        output_unassigned_behavior_generation: output_reuse_key.unassigned_behavior_generation,
+        devices_written: u32::try_from(write_stats.devices_written).unwrap_or(u32::MAX),
+        total_leds: u32::try_from(write_stats.total_leds).unwrap_or(u32::MAX),
         output_errors,
         logical_layer_count: render_stage.logical_layer_count,
         render_group_count: render_stage.render_group_count,
@@ -474,6 +491,14 @@ fn should_record_idle_black_frame(
     reuses_published_frame: bool,
 ) -> bool {
     !effect_running && !screen_capture_active && !reuses_published_frame
+}
+
+const fn output_frame_source_kind(source: OutputFrameSource) -> OutputFrameSourceKind {
+    match source {
+        OutputFrameSource::CurrentFrame => OutputFrameSourceKind::CurrentFrame,
+        OutputFrameSource::PublishedFrame => OutputFrameSourceKind::PublishedFrame,
+        OutputFrameSource::RoutedReuse => OutputFrameSourceKind::RoutedReuse,
+    }
 }
 
 fn measured_sampling_us(
