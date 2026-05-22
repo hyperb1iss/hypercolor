@@ -96,6 +96,7 @@ if ($Silent) {
     $pawnIoArgs += "-Silent"
 }
 & $pawnIoInstaller @pawnIoArgs
+$pawnIoExit = $LASTEXITCODE
 
 $serviceArgs = @(
     "-BrokerExe",
@@ -112,3 +113,11 @@ if (-not $NoStartService) {
 & $serviceInstaller @serviceArgs
 
 Write-Host "Hypercolor Windows hardware support is ready"
+
+# Propagate PawnIO's reboot-required signal (3010) up to the parent Tauri
+# command so the UI can surface a persistent "Restart Windows" banner
+# instead of silently pretending the install is fully live.
+if ($pawnIoExit -eq 3010) {
+    Write-Host "Restart required: PawnIO driver activation needs a reboot to finish."
+    exit 3010
+}

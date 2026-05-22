@@ -1048,6 +1048,7 @@ fn HardwareSupportPanel() -> impl IntoView {
     let native_available = tauri_bridge::is_tauri_available();
     let status = LocalResource::new(tauri_bridge::detect_pawnio_support);
     let (installing, set_installing) = signal(false);
+    let (reboot_required, set_reboot_required) = signal(false);
     let install = move |_| {
         if installing.get_untracked() {
             return;
@@ -1059,8 +1060,21 @@ fn HardwareSupportPanel() -> impl IntoView {
             set_installing.set(false);
 
             match result {
-                Ok(_) => {
-                    toasts::toast_success("Windows hardware support installed");
+                Ok(result) => {
+                    if result.exit_code == Some(3010) {
+                        // Windows Installer reboot-required convention —
+                        // PawnIO's signed kernel driver finishes binding
+                        // its SCM service entry on the next boot. Surface
+                        // a persistent banner instead of pretending the
+                        // install is fully live.
+                        set_reboot_required.set(true);
+                        toasts::toast_success(
+                            "Hardware support installed. Restart Windows to finish driver activation.",
+                        );
+                    } else {
+                        set_reboot_required.set(false);
+                        toasts::toast_success("Windows hardware support installed");
+                    }
                     status.refetch();
                     // Kick a device-discovery rescan so SMBus motherboard /
                     // DRAM devices that were unreachable before PawnIO is
@@ -1081,6 +1095,17 @@ fn HardwareSupportPanel() -> impl IntoView {
 
     view! {
         <Show when=move || native_available>
+            <Show when=move || reboot_required.get()>
+                <div
+                    class="mb-3 flex items-center gap-2 rounded-lg px-3 py-2 text-xs"
+                    style="color: rgba(241, 250, 140, 0.95); background: rgba(241, 250, 140, 0.08); border: 1px solid rgba(241, 250, 140, 0.18)"
+                >
+                    <Icon icon=LuTriangleAlert width="13px" height="13px" />
+                    <span>
+                        "Restart Windows to finish PawnIO driver activation. Lights will be unresponsive until you reboot."
+                    </span>
+                </div>
+            </Show>
             {move || match status.get() {
                 None => view! {
                     <HardwareSupportFrame>

@@ -169,6 +169,7 @@ if (-not (Test-Path -LiteralPath $setup)) {
     throw "Bundled PawnIO installer was not found: $setup"
 }
 
+$rebootRequired = $false
 $pawnIoHome = Resolve-PawnIoHome
 if (-not $pawnIoHome -or $Force) {
     $installerArgs = if ($Silent) { @("-install", "-silent") } else { @("-install") }
@@ -176,6 +177,14 @@ if (-not $pawnIoHome -or $Force) {
     $validExitCodes = @(0, 3010)
     if ($validExitCodes -notcontains $process.ExitCode) {
         throw "PawnIO installer failed with exit code $($process.ExitCode)"
+    }
+    if ($process.ExitCode -eq 3010) {
+        # Microsoft Installer convention: 3010 = success, reboot required to
+        # complete. PawnIO's signed kernel driver may need a reboot to finish
+        # binding the SCM service entry. Propagate as our own exit code so
+        # the parent helper / Tauri command can surface a "Restart Windows"
+        # banner in the UI instead of pretending everything is live.
+        $rebootRequired = $true
     }
     $pawnIoHome = Resolve-PawnIoHome
 }
@@ -199,3 +208,8 @@ if ($pawnIoHome) {
     Write-Host "  Runtime: $pawnIoHome"
 }
 Write-Host "  User modules: $ModuleDestination"
+
+if ($rebootRequired) {
+    Write-Host "Restart required to complete PawnIO driver activation."
+    exit 3010
+}
