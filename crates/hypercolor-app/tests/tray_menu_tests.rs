@@ -48,7 +48,11 @@ fn connected_menu_contains_dynamic_entries() {
         "Scene: Movie Night [snap]",
         false,
     );
-    assert_item(&entries, "brightness", "Brightness: 80%", false);
+    let brightness = find_submenu(&entries, "Brightness (80%)");
+    // The current preset (matches state.brightness=80) is the disabled marker.
+    assert_item(brightness, "brightness:75", "  75%", true);
+    // 100% is enabled (it's not the current value).
+    assert_item(brightness, "brightness:100", "  100%", true);
     assert_no_item(&entries, ids::PAUSE_RESUME);
     assert_item(&entries, ids::STOP_EFFECT, "Stop Effect", true);
 

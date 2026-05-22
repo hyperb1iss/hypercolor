@@ -31,7 +31,14 @@ pub mod ids {
 
     /// Prefix for dynamically generated server items.
     pub const SERVER_PREFIX: &str = "server:";
+
+    /// Prefix for dynamically generated brightness preset items.
+    /// Suffix is the target percent (0/25/50/75/100).
+    pub const BRIGHTNESS_PREFIX: &str = "brightness:";
 }
+
+/// Brightness preset percentages exposed in the tray submenu.
+pub const BRIGHTNESS_PRESETS: [u8; 5] = [0, 25, 50, 75, 100];
 
 /// Action represented by a native menu item ID.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,6 +56,7 @@ pub enum MenuAction {
     ApplyEffect(String),
     ApplyProfile(String),
     SwitchServer(usize),
+    SetBrightness(u8),
 }
 
 /// Platform-neutral tray menu description.
@@ -164,6 +172,9 @@ pub fn action_for_menu_id(id: &str) -> Option<MenuAction> {
 }
 
 fn dynamic_action_for_menu_id(id: &str) -> Option<MenuAction> {
+    if let Some(percent) = id.strip_prefix(ids::BRIGHTNESS_PREFIX) {
+        return percent.parse::<u8>().ok().map(MenuAction::SetBrightness);
+    }
     if let Some(effect_id) = id.strip_prefix(ids::EFFECT_PREFIX) {
         return Some(MenuAction::ApplyEffect(effect_id.to_owned()));
     }
@@ -236,11 +247,7 @@ fn build_connected_entries(entries: &mut Vec<MenuEntry>, state: &AppState) {
     }
 
     entries.push(MenuEntry::Separator);
-    entries.push(item(
-        "brightness",
-        format!("Brightness: {}%", state.brightness),
-        false,
-    ));
+    entries.push(brightness_submenu(state));
 
     if state.current_effect.is_some() {
         entries.push(item(ids::STOP_EFFECT, "Stop Effect", true));
@@ -273,6 +280,25 @@ fn build_app_entries(entries: &mut Vec<MenuEntry>) {
     ));
     entries.push(item(ids::EXPORT_DIAGNOSTICS, "Export Diagnostics", true));
     entries.push(item(ids::SETTINGS, "Settings", true));
+}
+
+fn brightness_submenu(state: &AppState) -> MenuEntry {
+    let current = state.brightness;
+    let entries: Vec<MenuEntry> = BRIGHTNESS_PRESETS
+        .iter()
+        .map(|&percent| {
+            let active = percent == current;
+            let prefix = if active { "\u{25cf} " } else { "  " };
+            let label = format!("{prefix}{percent}%");
+            item(
+                format!("{}{percent}", ids::BRIGHTNESS_PREFIX),
+                label,
+                !active,
+            )
+        })
+        .collect();
+    let label = format!("Brightness ({current}%)");
+    MenuEntry::Submenu(SubmenuModel::new(label, entries))
 }
 
 fn servers_submenu(state: &AppState) -> MenuEntry {

@@ -43,6 +43,9 @@ pub fn target_for_action(action: &MenuAction) -> ActionTarget {
         MenuAction::SwitchServer(index) => {
             ActionTarget::DaemonCommand(TrayCommand::SwitchServer(*index))
         }
+        MenuAction::SetBrightness(percent) => {
+            ActionTarget::DaemonCommand(TrayCommand::SetBrightness(*percent))
+        }
     }
 }
 
