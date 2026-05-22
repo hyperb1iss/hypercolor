@@ -358,6 +358,9 @@ const WBEM_E_ACCESS_DENIED_HRESULT: i32 = -2_147_217_405;
 #[cfg(target_os = "windows")]
 struct WindowsSensorExtras {
     cpu_temp: Option<hypercolor_windows_pawnio::CpuTempReader>,
+    /// Set after we've emitted at least one warn about a PawnIO CPU temp
+    /// failure, so the per-poll error doesn't spam the log every 2 seconds.
+    cpu_temp_logged_error: bool,
     libre_hardware: Option<wmi::WMIConnection>,
     open_hardware: Option<wmi::WMIConnection>,
     acpi_zones: Option<wmi::WMIConnection>,
@@ -380,7 +383,13 @@ impl WindowsSensorExtras {
                 Some(reader)
             }
             Err(err) => {
-                debug!("PawnIO CPU temperature reader unavailable: {err}");
+                // Promoted from debug! — at INFO so it surfaces in normal
+                // `just dev` runs. "PawnIO not installed yet" is the
+                // expected reason on a fresh system; "module not found"
+                // means the bundled .bin files weren't staged.
+                tracing::info!(
+                    "PawnIO CPU temperature reader unavailable ({err}); falling through to LHM/OHM/ACPI cascade"
+                );
                 None
             }
         };
@@ -411,6 +420,7 @@ impl WindowsSensorExtras {
 
         Some(Self {
             cpu_temp,
+            cpu_temp_logged_error: false,
             libre_hardware,
             open_hardware,
             acpi_zones,
@@ -433,12 +443,22 @@ impl WindowsSensorExtras {
                         None,
                         None,
                     ));
+                    self.cpu_temp_logged_error = false;
                 }
                 Ok(celsius) => {
-                    debug!(celsius, "PawnIO CPU temp returned implausible value; ignoring");
+                    if !self.cpu_temp_logged_error {
+                        tracing::warn!(
+                            celsius,
+                            "PawnIO CPU temp returned implausible value (expected 5..=125 °C); register decode is likely wrong"
+                        );
+                        self.cpu_temp_logged_error = true;
+                    }
                 }
                 Err(err) => {
-                    debug!("PawnIO CPU temp read failed: {err}");
+                    if !self.cpu_temp_logged_error {
+                        tracing::warn!("PawnIO CPU temp read failed: {err}");
+                        self.cpu_temp_logged_error = true;
+                    }
                 }
             }
         }
