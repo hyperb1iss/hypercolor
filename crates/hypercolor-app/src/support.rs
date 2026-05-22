@@ -19,7 +19,17 @@ const DAEMON_SERVICE_NAME: &str = "Hypercolor";
 const HARDWARE_SUPPORT_SCRIPT_NAME: &str = "install-windows-hardware-support.ps1";
 const PAWNIO_SETUP_NAME: &str = "PawnIO_setup.exe";
 const SMBUS_SERVICE_EXE_NAME: &str = "hypercolor-smbus-service.exe";
-const REQUIRED_PAWNIO_MODULES: [&str; 3] = ["SmbusI801.bin", "SmbusPIIX4.bin", "SmbusNCT6793.bin"];
+const REQUIRED_PAWNIO_MODULES: [&str; 5] = [
+    // SMBus host controllers — motherboard / DRAM RGB.
+    "SmbusI801.bin",
+    "SmbusPIIX4.bin",
+    "SmbusNCT6793.bin",
+    // CPU thermal MSRs — first-class CPU temp source on Windows. IntelMSR
+    // exposes IA32_THERM_STATUS + Tjmax; AMDFamily17 reads SMU thermal
+    // registers for Zen and newer Family 17h-derived parts.
+    "IntelMSR.bin",
+    "AMDFamily17.bin",
+];
 
 /// Status for a Windows service used by hardware support.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

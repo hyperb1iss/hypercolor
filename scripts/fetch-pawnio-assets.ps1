@@ -10,9 +10,16 @@ $PawnIoSetupSha256 = "1F519A22E47187F70A1379A48CA604981C4FCF694F4E65B734AAA74A9F
 $PawnIoModulesVersion = "0.2.5"
 $PawnIoModulesSha256 = "1149B87F4DC757E72654D5A402863251815EBFC8AD4E3BB030DBCFFB3DE74153"
 $RequiredModules = @(
+    # SMBus host controllers — motherboard / DRAM RGB
     "SmbusI801.bin",
     "SmbusPIIX4.bin",
-    "SmbusNCT6793.bin"
+    "SmbusNCT6793.bin",
+    # CPU thermal MSRs — Hypercolor's native CPU temp source on Windows.
+    # IntelMSR exposes IA32_THERM_STATUS (0x19C) + MSR_TEMPERATURE_TARGET
+    # (0x1A2) for per-core Tjmax delta. AMDFamily17 covers Zen/Zen+/Zen2
+    # and newer Family 17h-derived parts via SMN bus temperature reads.
+    "IntelMSR.bin",
+    "AMDFamily17.bin"
 )
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
