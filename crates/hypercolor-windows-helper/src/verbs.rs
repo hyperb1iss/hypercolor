@@ -12,6 +12,8 @@ use thiserror::Error;
 
 use crate::request::Request;
 
+mod repair_smbus_service;
+
 /// Allowlisted operations the elevated helper can perform.
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -54,24 +56,47 @@ impl fmt::Display for Verb {
 pub enum VerbError {
     #[error("verb `{verb}` is not yet implemented")]
     NotImplemented { verb: Verb },
+    #[error("could not connect to the Windows service manager: {detail}")]
+    ServiceManager { detail: String },
+    #[error("could not open service `{service}`: {detail}")]
+    ServiceOpen { service: String, detail: String },
+    #[error("could not query status of service `{service}`: {detail}")]
+    ServiceQuery { service: String, detail: String },
+    #[error("could not stop service `{service}`: {detail}")]
+    ServiceStop { service: String, detail: String },
+    #[error("could not start service `{service}`: {detail}")]
+    ServiceStart { service: String, detail: String },
+    #[error(
+        "service `{service}` did not reach expected state `{expected}` within timeout (observed `{observed}`)"
+    )]
+    ServiceTimeout {
+        service: String,
+        expected: String,
+        observed: String,
+    },
 }
 
 impl VerbError {
     pub fn kind(&self) -> &'static str {
         match self {
             Self::NotImplemented { .. } => "verb_not_implemented",
+            Self::ServiceManager { .. } => "service_manager_unavailable",
+            Self::ServiceOpen { .. } => "service_open_failed",
+            Self::ServiceQuery { .. } => "service_query_failed",
+            Self::ServiceStop { .. } => "service_stop_failed",
+            Self::ServiceStart { .. } => "service_start_failed",
+            Self::ServiceTimeout { .. } => "service_timeout",
         }
     }
 }
 
 /// Dispatch a validated request to its verb handler.
 ///
-/// Every verb returns `Err(VerbError::NotImplemented)` until the
-/// corresponding handler lands — this is intentional scaffolding so the
-/// CLI/request/auth plumbing can be validated end-to-end with smoke tests
-/// before any privileged operation is wired.
+/// Verbs that still return `VerbError::NotImplemented` are intentional —
+/// they'll land as their downstream Phase tickets become unblocked.
 pub fn dispatch(request: &Request) -> Result<(), VerbError> {
-    Err(VerbError::NotImplemented {
-        verb: request.verb,
-    })
+    match request.verb {
+        Verb::RepairSmbusService => repair_smbus_service::run(),
+        verb => Err(VerbError::NotImplemented { verb }),
+    }
 }
