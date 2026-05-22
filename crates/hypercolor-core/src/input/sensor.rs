@@ -141,8 +141,9 @@ impl Drop for SensorPoller {
 struct SystemSampler {
     system: System,
     components: Components,
-    #[cfg(feature = "nvidia")]
     nvidia: Option<NvidiaTelemetry>,
+    #[cfg(target_os = "windows")]
+    windows: Option<WindowsSensorExtras>,
 }
 
 impl SystemSampler {
@@ -161,8 +162,9 @@ impl SystemSampler {
         Self {
             system,
             components,
-            #[cfg(feature = "nvidia")]
             nvidia: NvidiaTelemetry::new(),
+            #[cfg(target_os = "windows")]
+            windows: WindowsSensorExtras::new(),
         }
     }
 
@@ -187,7 +189,7 @@ impl SystemSampler {
         let components = collect_component_readings(&self.components);
         let cpu_temp_celsius = best_cpu_temperature(&self.components);
 
-        let snapshot = SystemSnapshot {
+        let mut snapshot = SystemSnapshot {
             cpu_load_percent: self.system.global_cpu_usage(),
             cpu_loads,
             cpu_temp_celsius,
@@ -201,9 +203,13 @@ impl SystemSampler {
             polled_at_ms: unix_timestamp_ms(),
         };
 
-        #[cfg(feature = "nvidia")]
         if let Some(nvidia) = self.nvidia.as_mut() {
             nvidia.merge_snapshot(&mut snapshot);
+        }
+
+        #[cfg(target_os = "windows")]
+        if let Some(windows) = self.windows.as_mut() {
+            windows.merge_snapshot(&mut snapshot);
         }
 
         snapshot
@@ -281,12 +287,10 @@ fn unix_timestamp_ms() -> u64 {
         .unwrap_or(u64::MAX)
 }
 
-#[cfg(feature = "nvidia")]
 struct NvidiaTelemetry {
     nvml: nvml_wrapper::Nvml,
 }
 
-#[cfg(feature = "nvidia")]
 impl NvidiaTelemetry {
     fn new() -> Option<Self> {
         nvml_wrapper::Nvml::init().ok().map(|nvml| Self { nvml })
@@ -309,6 +313,100 @@ impl NvidiaTelemetry {
             snapshot.gpu_vram_used_mb = Some(bytes_to_megabytes(memory.used) as f32);
         }
     }
+}
+
+#[cfg(target_os = "windows")]
+#[allow(non_camel_case_types)]
+#[derive(serde::Deserialize, Debug)]
+#[serde(rename_all = "PascalCase")]
+struct MSAcpi_ThermalZoneTemperature {
+    current_temperature: u32,
+    active: bool,
+    instance_name: String,
+}
+
+/// Windows-specific sensor extras: ACPI thermal zones via WMI.
+///
+/// `sysinfo`'s Windows backend rarely exposes CPU temperature out of the box.
+/// The ACPI thermal zone WMI class is unelevated-readable and gives at least
+/// motherboard/chipset temps that LCD device faces can render. For richer per-
+/// core data we'd need LibreHardwareMonitor or our own SMBus path via PawnIO —
+/// deferred to a later phase.
+#[cfg(target_os = "windows")]
+struct WindowsSensorExtras {
+    wmi: wmi::WMIConnection,
+}
+
+#[cfg(target_os = "windows")]
+impl WindowsSensorExtras {
+    fn new() -> Option<Self> {
+        match wmi::WMIConnection::with_namespace_path("ROOT\\WMI") {
+            Ok(wmi) => Some(Self { wmi }),
+            Err(err) => {
+                debug!("WMI ROOT\\WMI connection failed: {err}");
+                None
+            }
+        }
+    }
+
+    fn merge_snapshot(&mut self, snapshot: &mut SystemSnapshot) {
+        let zones: Vec<MSAcpi_ThermalZoneTemperature> = match self.wmi.query() {
+            Ok(zones) => zones,
+            Err(err) => {
+                debug!("WMI thermal zone query failed: {err}");
+                return;
+            }
+        };
+
+        let mut max_active_celsius: Option<f32> = None;
+        for zone in &zones {
+            if !zone.active || zone.current_temperature == 0 {
+                continue;
+            }
+            let celsius = deci_kelvin_to_celsius(zone.current_temperature);
+            if !celsius.is_finite() || celsius <= 0.0 || celsius >= 150.0 {
+                continue;
+            }
+            max_active_celsius = Some(match max_active_celsius {
+                Some(current) => current.max(celsius),
+                None => celsius,
+            });
+            snapshot.components.push(SensorReading::new(
+                format!(
+                    "acpi_thermal_zone_{}",
+                    sanitize_zone_label(&zone.instance_name)
+                ),
+                celsius,
+                SensorUnit::Celsius,
+                None,
+                None,
+                None,
+            ));
+        }
+
+        if snapshot.cpu_temp_celsius.is_none() {
+            snapshot.cpu_temp_celsius = max_active_celsius;
+        }
+    }
+}
+
+/// ACPI thermal zones report `CurrentTemperature` in tenths of a Kelvin per
+/// `MSAcpi_ThermalZoneTemperature` documentation. Convert to Celsius.
+#[cfg(target_os = "windows")]
+#[allow(clippy::as_conversions, clippy::cast_precision_loss)]
+fn deci_kelvin_to_celsius(value: u32) -> f32 {
+    (value as f64 / 10.0 - 273.15) as f32
+}
+
+/// Strip ACPI thermal zone path prefixes (`\\_TZ.TZ00` etc.) for clean labels.
+#[cfg(target_os = "windows")]
+fn sanitize_zone_label(instance_name: &str) -> String {
+    instance_name
+        .trim_start_matches(r"\_TZ.")
+        .trim_start_matches(r"\\_TZ.")
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch.to_ascii_lowercase() } else { '_' })
+        .collect()
 }
 
 #[cfg(test)]
