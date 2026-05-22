@@ -2749,6 +2749,8 @@ pub(super) mod test_support {
     use super::super::worker_client::{
         ServoWorkerClient, ServoWorkerClientSharedState, WorkerCommand,
     };
+    #[cfg(feature = "servo-gpu-import")]
+    use super::super::worker_client::ServoRenderMode;
     use super::ServoWorker;
 
     pub static SHARED_WORKER_STATE_TEST_LOCK: LazyLock<StdMutex<()>> =
@@ -2758,6 +2760,8 @@ pub(super) mod test_support {
         pub scripts: Vec<String>,
         pub width: u32,
         pub height: u32,
+        #[cfg(feature = "servo-gpu-import")]
+        pub prefer_gpu: bool,
     }
 
     pub struct RecordedLoadCommand {
@@ -2849,13 +2853,20 @@ pub(super) mod test_support {
                         scripts,
                         width,
                         height,
+                        mode,
                         response_tx,
                         ..
                     } => {
+                        #[cfg(feature = "servo-gpu-import")]
+                        let prefer_gpu = matches!(mode, ServoRenderMode::GpuPreferred);
+                        #[cfg(not(feature = "servo-gpu-import"))]
+                        let _ = mode;
                         let _ = render_tx.send(RecordedRenderCommand {
                             scripts,
                             width,
                             height,
+                            #[cfg(feature = "servo-gpu-import")]
+                            prefer_gpu,
                         });
                         let result = result_rx
                             .recv()

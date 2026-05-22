@@ -131,8 +131,6 @@ pub struct ServoRenderer {
     last_canvas: Option<Canvas>,
     #[cfg(feature = "servo-gpu-import")]
     last_gpu_frame: Option<ImportedEffectFrame>,
-    #[cfg(feature = "servo-gpu-import")]
-    allow_gpu_import: bool,
     warned_fallback_frame: bool,
     warned_stalled_frame: bool,
     include_audio_updates: bool,
@@ -163,8 +161,6 @@ impl ServoRenderer {
             last_canvas: None,
             #[cfg(feature = "servo-gpu-import")]
             last_gpu_frame: None,
-            #[cfg(feature = "servo-gpu-import")]
-            allow_gpu_import: true,
             warned_fallback_frame: false,
             warned_stalled_frame: false,
             include_audio_updates: true,
@@ -280,19 +276,12 @@ impl ServoRenderer {
         self.last_animation_fps_cap = None;
         self.animation_cadence = animation_cadence(metadata);
         self.host_driven_animation = host_driven_animation(metadata);
-        #[cfg(feature = "servo-gpu-import")]
-        {
-            self.allow_gpu_import = servo_gpu_import_allowed(metadata);
-        }
         self.last_submit_time_secs = None;
         self.queued_frame = None;
         self.last_canvas = previous_canvas;
         #[cfg(feature = "servo-gpu-import")]
         {
-            self.last_gpu_frame = self
-                .allow_gpu_import
-                .then_some(previous_gpu_frame)
-                .flatten();
+            self.last_gpu_frame = previous_gpu_frame;
         }
         self.controls = metadata
             .controls
@@ -812,12 +801,9 @@ impl EffectRenderer for ServoRenderer {
         self.poll_load_task();
         self.queue_frame(input);
         self.poll_in_flight_render_output();
-        self.try_submit_queued_frame_with_gpu_preference(
-            super::servo_gpu_import_should_attempt() && self.allow_gpu_import,
-        );
+        self.try_submit_queued_frame_with_gpu_preference(super::servo_gpu_import_should_attempt());
 
-        if self.allow_gpu_import
-            && let Some(frame) = self.last_gpu_frame.as_ref()
+        if let Some(frame) = self.last_gpu_frame.as_ref()
             && frame.width == input.canvas_width
             && frame.height == input.canvas_height
         {
@@ -851,7 +837,6 @@ impl EffectRenderer for ServoRenderer {
         #[cfg(feature = "servo-gpu-import")]
         {
             self.last_gpu_frame = None;
-            self.allow_gpu_import = true;
         }
         self.controls.clear();
         self.html_source = None;
@@ -987,14 +972,11 @@ fn host_driven_animation(metadata: &EffectMetadata) -> bool {
     metadata.category != EffectCategory::Display
 }
 
-#[cfg(feature = "servo-gpu-import")]
-fn servo_gpu_import_allowed(metadata: &EffectMetadata) -> bool {
-    metadata.category != EffectCategory::Display
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "servo-gpu-import")]
+    use crate::effect::servo::set_servo_gpu_import_mode;
     use crate::effect::servo::worker::{
         install_running_shared_worker, reset_shared_servo_worker_state,
         shutdown_shared_servo_worker,
@@ -1004,6 +986,8 @@ mod tests {
         },
     };
     use hypercolor_types::audio::AudioData;
+    #[cfg(feature = "servo-gpu-import")]
+    use hypercolor_types::config::ServoGpuImportMode;
     use hypercolor_types::effect::{
         ControlDefinition, ControlType, EffectCategory, EffectId, EffectSource,
     };
@@ -1217,12 +1201,63 @@ mod tests {
 
     #[cfg(feature = "servo-gpu-import")]
     #[test]
-    fn display_faces_do_not_use_servo_gpu_import() {
-        let display = display_html_metadata(PathBuf::from("face.html"));
-        let scene = html_metadata(PathBuf::from("scene.html"));
+    fn display_faces_submit_gpu_preferred_renders_when_import_is_on() {
+        let _lock = SHARED_WORKER_STATE_TEST_LOCK
+            .lock()
+            .expect("shared worker test lock");
+        reset_shared_servo_worker_state();
+        set_servo_gpu_import_mode(ServoGpuImportMode::On);
 
-        assert!(!servo_gpu_import_allowed(&display));
-        assert!(servo_gpu_import_allowed(&scene));
+        let (worker, render_rx, result_tx, delivered_rx, unload_rx, stopped) =
+            spawn_render_test_worker();
+        install_running_shared_worker(worker);
+
+        let temp_dir = tempfile::tempdir().expect("temporary directory");
+        let source_path = temp_dir.path().join("face.html");
+        std::fs::write(&source_path, "<!doctype html><html><body></body></html>")
+            .expect("write source html");
+
+        let metadata = display_html_metadata(source_path);
+        let mut renderer = ServoRenderer::new();
+        renderer
+            .init_with_canvas_size(&metadata, 640, 480)
+            .expect("renderer should queue initialization");
+        wait_for_load_completion(&mut renderer);
+
+        let output = renderer
+            .render_output(&frame_input_with(
+                1.0 / 60.0,
+                1,
+                &SILENCE,
+                &DEFAULT_INTERACTION,
+                640,
+                480,
+            ))
+            .expect("display render should submit");
+        assert!(matches!(output, EffectRenderOutput::Cpu(_)));
+
+        let render = render_rx
+            .recv_timeout(Duration::from_millis(100))
+            .expect("render command should be queued");
+        assert!(render.prefer_gpu);
+        assert_eq!(render.width, 640);
+        assert_eq!(render.height, 480);
+
+        result_tx
+            .send(Ok(solid_canvas(640, 480, 1, 2, 3)))
+            .expect("render result should send");
+        delivered_rx
+            .recv_timeout(Duration::from_millis(100))
+            .expect("render result should deliver");
+
+        renderer.destroy();
+        unload_rx
+            .recv_timeout(Duration::from_millis(100))
+            .expect("destroy should unload test worker");
+
+        shutdown_shared_servo_worker().expect("shared worker shutdown should succeed");
+        set_servo_gpu_import_mode(ServoGpuImportMode::Off);
+        assert!(stopped.load(Ordering::SeqCst));
     }
 
     #[test]
