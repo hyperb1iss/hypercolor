@@ -12,8 +12,16 @@ rust-version.workspace = true
 name = "hypercolor-app"
 path = "src/main.rs"
 
-[lints]
-workspace = true
+[lints.rust]
+# Win32 power-event message-pump (power_events::windows_impl) needs FFI
+# unsafe. Mirror the pattern from hypercolor-windows-pawnio /
+# hypercolor-windows-gpu-interop: allow at the crate level, deny
+# undocumented blocks at clippy.
+unsafe_code = "allow"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"
+unwrap_used = "deny"
 
 [dependencies]
 hypercolor-core = { workspace = true }
@@ -42,3 +50,9 @@ tauri-build = { version = "2", features = [] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 win32job = "2.0.3"
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Power",
+    "Win32_UI_WindowsAndMessaging",
+] }

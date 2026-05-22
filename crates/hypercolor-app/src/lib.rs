@@ -7,6 +7,7 @@ pub mod daemon_client;
 pub mod diagnostics;
 pub mod linux_webkit;
 pub mod logging;
+pub mod power_events;
 pub mod resources;
 pub mod state;
 pub mod supervisor;

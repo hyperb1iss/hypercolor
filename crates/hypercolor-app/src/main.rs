@@ -96,8 +96,12 @@ fn main() -> anyhow::Result<()> {
                 }
             }
 
-            hypercolor_app::supervisor::start(app.handle(), url)?;
+            hypercolor_app::supervisor::start(app.handle(), url.clone())?;
             tracing::info!("daemon supervisor started");
+
+            // On Windows, hook into WM_POWERBROADCAST so devices re-enumerate
+            // when the user wakes the machine. No-op on other platforms.
+            hypercolor_app::power_events::start(url);
 
             Ok(())
         })
