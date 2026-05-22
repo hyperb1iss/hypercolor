@@ -1,9 +1,13 @@
 use std::cell::{Cell, RefCell};
+use std::ffi::OsStr;
 use std::ffi::c_void;
 use std::mem;
+use std::os::windows::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
 use std::ptr;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use dpi::PhysicalSize;
@@ -21,6 +25,8 @@ use winapi::shared::dxgi::{
     CreateDXGIFactory1, DXGI_ADAPTER_FLAG_SOFTWARE, IDXGIAdapter, IDXGIAdapter1, IDXGIFactory1,
 };
 use winapi::shared::winerror::{DXGI_ERROR_NOT_FOUND, SUCCEEDED};
+use windows::Win32::System::LibraryLoader::LoadLibraryW;
+use windows::core::PCWSTR;
 use wio::com::ComPtr;
 
 use crate::{
@@ -91,6 +97,10 @@ impl WindowsAngleRenderingContext {
         adapter_identity: Option<WindowsDxgiAdapterIdentity>,
     ) -> Result<Self> {
         let size = validate_size(width, height)?;
+        ensure_angle_dlls_loaded().map_err(|message| WindowsGpuInteropError::ServoContext {
+            operation: "load ANGLE DLLs",
+            message,
+        })?;
         let connection = Connection::new().map_err(context_error("create connection"))?;
         let adapter = match adapter_identity {
             Some(identity) => adapter_from_identity(identity)?,
@@ -516,6 +526,71 @@ fn destroy_surface_or_forget(device: &Device, context: &mut Context, surface: &m
             std::mem::forget(std::ptr::read(surface));
         }
     }
+}
+
+fn ensure_angle_dlls_loaded() -> std::result::Result<(), String> {
+    static RESULT: OnceLock<std::result::Result<(), String>> = OnceLock::new();
+    RESULT
+        .get_or_init(|| {
+            for directory in angle_dll_directories() {
+                if directory.join("libEGL.dll").is_file()
+                    && directory.join("libGLESv2.dll").is_file()
+                {
+                    return load_angle_dll_pair(&directory);
+                }
+            }
+            load_angle_library(OsStr::new("libGLESv2.dll"))
+                .and_then(|()| load_angle_library(OsStr::new("libEGL.dll")))
+        })
+        .clone()
+}
+
+fn angle_dll_directories() -> Vec<PathBuf> {
+    let mut directories = Vec::new();
+    if let Ok(exe_path) = std::env::current_exe()
+        && let Some(binary_dir) = exe_path.parent()
+    {
+        directories.push(binary_dir.to_path_buf());
+        push_mozangle_output_dirs(binary_dir.join("build"), &mut directories);
+        if let Some(profile_dir) = binary_dir.parent() {
+            push_mozangle_output_dirs(profile_dir.join("build"), &mut directories);
+        }
+    }
+    directories
+}
+
+fn push_mozangle_output_dirs(build_dir: PathBuf, directories: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(build_dir) else {
+        return;
+    };
+    for entry in entries.filter_map(std::result::Result::ok) {
+        let file_name = entry.file_name();
+        if !file_name.to_string_lossy().starts_with("mozangle-") {
+            continue;
+        }
+        let out_dir = entry.path().join("out");
+        if out_dir.join("libEGL.dll").is_file() {
+            directories.push(out_dir);
+        }
+    }
+}
+
+fn load_angle_dll_pair(directory: &Path) -> std::result::Result<(), String> {
+    load_angle_library(directory.join("libGLESv2.dll").as_os_str())
+        .and_then(|()| load_angle_library(directory.join("libEGL.dll").as_os_str()))
+}
+
+fn load_angle_library(path: &OsStr) -> std::result::Result<(), String> {
+    let wide_path = wide_null(path);
+    // SAFETY: LoadLibraryW reads a NUL-terminated UTF-16 path. The loaded
+    // ANGLE modules intentionally stay resident for the process lifetime.
+    unsafe { LoadLibraryW(PCWSTR(wide_path.as_ptr())) }
+        .map(|_| ())
+        .map_err(|error| format!("{} ({error})", path.to_string_lossy()))
+}
+
+fn wide_null(value: &OsStr) -> Vec<u16> {
+    value.encode_wide().chain(std::iter::once(0)).collect()
 }
 
 fn load_gleam_gl(device: &Device, context: &Context, gl_api: GLApi) -> Rc<dyn Gl> {
