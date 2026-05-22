@@ -321,73 +321,307 @@ impl NvidiaTelemetry {
 #[serde(rename_all = "PascalCase")]
 struct MSAcpi_ThermalZoneTemperature {
     current_temperature: u32,
-    active: bool,
     instance_name: String,
 }
 
-/// Windows-specific sensor extras: ACPI thermal zones via WMI.
+/// LibreHardwareMonitor / OpenHardwareMonitor share the same `Sensor` schema.
+/// Both expose a `ROOT\LibreHardwareMonitor` or `ROOT\OpenHardwareMonitor`
+/// namespace with one row per sensor. `SensorType` is a string enum:
+/// `Temperature`, `Load`, `Clock`, `Voltage`, `Power`, `Fan`, `Data`,
+/// `SmallData`, `Flow`, etc.
+#[cfg(target_os = "windows")]
+#[derive(serde::Deserialize, Debug, Clone)]
+#[serde(rename_all = "PascalCase")]
+struct HardwareMonitorSensor {
+    name: String,
+    value: f32,
+    sensor_type: String,
+    identifier: String,
+}
+
+#[cfg(target_os = "windows")]
+const WBEM_E_ACCESS_DENIED_HRESULT: i32 = -2_147_217_405;
+
+/// Windows-specific sensor extras. Builds a small cascade of WMI sources at
+/// startup and queries the available ones every poll:
 ///
-/// `sysinfo`'s Windows backend rarely exposes CPU temperature out of the box.
-/// The ACPI thermal zone WMI class is unelevated-readable and gives at least
-/// motherboard/chipset temps that LCD device faces can render. For richer per-
-/// core data we'd need LibreHardwareMonitor or our own SMBus path via PawnIO —
-/// deferred to a later phase.
+/// 1. **LibreHardwareMonitor** (`ROOT\LibreHardwareMonitor.Sensor`) — most
+///    accurate, gives per-core CPU + GPU + VRM data when the tool is running.
+/// 2. **OpenHardwareMonitor** (`ROOT\OpenHardwareMonitor.Sensor`) — same
+///    schema; older but still common on enthusiast rigs.
+/// 3. **MSAcpi_ThermalZoneTemperature** (`ROOT\WMI`) — ubiquitous on systems
+///    with ACPI thermal zones but sparse on modern boards (often absent or
+///    reporting a single chassis-level value).
+///
+/// On a fresh consumer install with none of LHM/OHM running and no ACPI
+/// thermal zones exposed, we won't return CPU temps until the user installs
+/// LibreHardwareMonitor (recommended) or PawnIO is wired for MSR reads
+/// (later phase).
 #[cfg(target_os = "windows")]
 struct WindowsSensorExtras {
-    wmi: wmi::WMIConnection,
+    libre_hardware: Option<wmi::WMIConnection>,
+    open_hardware: Option<wmi::WMIConnection>,
+    acpi_zones: Option<wmi::WMIConnection>,
+    acpi_zones_enabled: bool,
 }
 
 #[cfg(target_os = "windows")]
 impl WindowsSensorExtras {
     fn new() -> Option<Self> {
-        match wmi::WMIConnection::with_namespace_path("ROOT\\WMI") {
-            Ok(wmi) => Some(Self { wmi }),
+        let libre_hardware = match wmi::WMIConnection::with_namespace_path(
+            "ROOT\\LibreHardwareMonitor",
+        ) {
+            Ok(con) => {
+                tracing::info!(
+                    "LibreHardwareMonitor WMI namespace available; using it for CPU/GPU sensors"
+                );
+                Some(con)
+            }
             Err(err) => {
-                debug!("WMI ROOT\\WMI connection failed: {err}");
+                debug!("LibreHardwareMonitor WMI namespace not available: {err}");
                 None
+            }
+        };
+        let open_hardware = if libre_hardware.is_some() {
+            None
+        } else {
+            match wmi::WMIConnection::with_namespace_path("ROOT\\OpenHardwareMonitor") {
+                Ok(con) => {
+                    tracing::info!(
+                        "OpenHardwareMonitor WMI namespace available; using it for CPU/GPU sensors"
+                    );
+                    Some(con)
+                }
+                Err(err) => {
+                    debug!("OpenHardwareMonitor WMI namespace not available: {err}");
+                    None
+                }
+            }
+        };
+        let acpi_zones = match wmi::WMIConnection::with_namespace_path("ROOT\\WMI") {
+            Ok(con) => Some(con),
+            Err(err) => {
+                debug!("ROOT\\WMI namespace not available for ACPI thermal zones: {err}");
+                None
+            }
+        };
+
+        if libre_hardware.is_none() && open_hardware.is_none() && acpi_zones.is_none() {
+            tracing::warn!(
+                "no Windows sensor sources available (install LibreHardwareMonitor for CPU/GPU temps; LCD device faces will render zeros)"
+            );
+            return None;
+        }
+
+        Some(Self {
+            libre_hardware,
+            open_hardware,
+            acpi_zones,
+            acpi_zones_enabled: true,
+        })
+    }
+
+    fn merge_snapshot(&mut self, snapshot: &mut SystemSnapshot) {
+        // 1. LibreHardwareMonitor / OpenHardwareMonitor — only one runs at a time.
+        if let Some(con) = self.libre_hardware.as_ref() {
+            self.merge_hardware_monitor(con, snapshot, "lhm");
+        } else if let Some(con) = self.open_hardware.as_ref() {
+            self.merge_hardware_monitor(con, snapshot, "ohm");
+        }
+
+        // 2. ACPI thermal zones — additive context, only backfills cpu_temp
+        //    if no better source produced one.
+        if self.acpi_zones_enabled {
+            if let Some(con) = self.acpi_zones.as_ref() {
+                let still_enabled = merge_acpi_thermal_zones(con, snapshot);
+                self.acpi_zones_enabled = still_enabled;
             }
         }
     }
 
-    fn merge_snapshot(&mut self, snapshot: &mut SystemSnapshot) {
-        let zones: Vec<MSAcpi_ThermalZoneTemperature> = match self.wmi.query() {
-            Ok(zones) => zones,
+    fn merge_hardware_monitor(
+        &self,
+        con: &wmi::WMIConnection,
+        snapshot: &mut SystemSnapshot,
+        label_prefix: &str,
+    ) {
+        let sensors: Vec<HardwareMonitorSensor> = match con.query() {
+            Ok(rows) => rows,
             Err(err) => {
-                debug!("WMI thermal zone query failed: {err}");
+                debug!("hardware monitor sensor query failed: {err}");
                 return;
             }
         };
 
-        let mut max_active_celsius: Option<f32> = None;
-        for zone in &zones {
-            if !zone.active || zone.current_temperature == 0 {
+        let mut best_cpu_temp: Option<f32> = None;
+        let mut best_gpu_temp: Option<f32> = None;
+        let mut best_gpu_load: Option<f32> = None;
+
+        for sensor in &sensors {
+            let value = sensor.value;
+            if !value.is_finite() {
                 continue;
             }
-            let celsius = deci_kelvin_to_celsius(zone.current_temperature);
-            if !celsius.is_finite() || celsius <= 0.0 || celsius >= 150.0 {
-                continue;
+            match sensor.sensor_type.as_str() {
+                "Temperature" => {
+                    if is_cpu_sensor(&sensor.identifier, &sensor.name) {
+                        // Prefer "package" / "tdie" / "ccd" over per-core; otherwise take max.
+                        if is_cpu_package(&sensor.name) {
+                            best_cpu_temp = Some(value);
+                        } else if best_cpu_temp.is_none() {
+                            best_cpu_temp = Some(value);
+                        } else {
+                            best_cpu_temp = best_cpu_temp.map(|cur| cur.max(value));
+                        }
+                    } else if is_gpu_sensor(&sensor.identifier, &sensor.name) {
+                        if is_gpu_core(&sensor.name) {
+                            best_gpu_temp = Some(value);
+                        } else if best_gpu_temp.is_none() {
+                            best_gpu_temp = Some(value);
+                        }
+                    }
+                    snapshot.components.push(SensorReading::new(
+                        format!(
+                            "{label_prefix}_{}",
+                            sanitize_zone_label(&sensor.identifier)
+                        ),
+                        value,
+                        SensorUnit::Celsius,
+                        None,
+                        None,
+                        None,
+                    ));
+                }
+                "Load" => {
+                    if is_gpu_sensor(&sensor.identifier, &sensor.name) && is_gpu_core(&sensor.name)
+                    {
+                        best_gpu_load = Some(value);
+                    }
+                }
+                _ => {}
             }
-            max_active_celsius = Some(match max_active_celsius {
-                Some(current) => current.max(celsius),
-                None => celsius,
-            });
-            snapshot.components.push(SensorReading::new(
-                format!(
-                    "acpi_thermal_zone_{}",
-                    sanitize_zone_label(&zone.instance_name)
-                ),
-                celsius,
-                SensorUnit::Celsius,
-                None,
-                None,
-                None,
-            ));
         }
 
-        if snapshot.cpu_temp_celsius.is_none() {
-            snapshot.cpu_temp_celsius = max_active_celsius;
+        if let Some(value) = best_cpu_temp {
+            snapshot.cpu_temp_celsius = Some(value);
+        }
+        if let Some(value) = best_gpu_temp {
+            // Only override if NVML didn't already produce one (NVML is more accurate
+            // for NVIDIA cards; LHM may report driver-reported "Hot Spot" which is hotter).
+            if snapshot.gpu_temp_celsius.is_none() {
+                snapshot.gpu_temp_celsius = Some(value);
+            }
+        }
+        if let Some(value) = best_gpu_load
+            && snapshot.gpu_load_percent.is_none()
+        {
+            snapshot.gpu_load_percent = Some(value);
         }
     }
+}
+
+/// Returns `false` if the ACPI thermal zone source should be disabled for
+/// the rest of the session (after access-denied or similar permanent
+/// failure).
+#[cfg(target_os = "windows")]
+fn merge_acpi_thermal_zones(
+    con: &wmi::WMIConnection,
+    snapshot: &mut SystemSnapshot,
+) -> bool {
+    let zones: Vec<MSAcpi_ThermalZoneTemperature> = match con.query() {
+        Ok(zones) => zones,
+        Err(err) => {
+            if wmi_access_denied(&err) {
+                debug!(
+                    "ACPI thermal zone query denied; disabling for this session"
+                );
+                return false;
+            }
+            debug!("ACPI thermal zone query failed: {err}");
+            return true;
+        }
+    };
+
+    let mut max_celsius: Option<f32> = None;
+    for zone in &zones {
+        // NOTE: do NOT filter on `Active`. The ACPI `Active` field indicates
+        // whether *active cooling has triggered*, not whether the reading is
+        // valid. Many systems have permanently-inactive zones reporting
+        // perfectly good motherboard / chipset temperatures.
+        if zone.current_temperature == 0 {
+            continue;
+        }
+        let celsius = deci_kelvin_to_celsius(zone.current_temperature);
+        if !celsius.is_finite() || celsius <= 0.0 || celsius >= 150.0 {
+            continue;
+        }
+        max_celsius = Some(match max_celsius {
+            Some(current) => current.max(celsius),
+            None => celsius,
+        });
+        snapshot.components.push(SensorReading::new(
+            format!(
+                "acpi_thermal_zone_{}",
+                sanitize_zone_label(&zone.instance_name)
+            ),
+            celsius,
+            SensorUnit::Celsius,
+            None,
+            None,
+            None,
+        ));
+    }
+
+    if snapshot.cpu_temp_celsius.is_none() {
+        snapshot.cpu_temp_celsius = max_celsius;
+    }
+    true
+}
+
+#[cfg(target_os = "windows")]
+fn wmi_access_denied(error: &wmi::WMIError) -> bool {
+    match error {
+        wmi::WMIError::HResultError { hres } => *hres == WBEM_E_ACCESS_DENIED_HRESULT,
+        _ => false,
+    }
+}
+
+/// LibreHardwareMonitor identifies CPU sensors with paths starting with
+/// `/intelcpu/` or `/amdcpu/`. OpenHardwareMonitor uses the same convention.
+#[cfg(target_os = "windows")]
+fn is_cpu_sensor(identifier: &str, name: &str) -> bool {
+    let ident = identifier.to_ascii_lowercase();
+    ident.starts_with("/intelcpu/")
+        || ident.starts_with("/amdcpu/")
+        || ident.starts_with("/cpu/")
+        || name.to_ascii_lowercase().starts_with("cpu ")
+        || name.eq_ignore_ascii_case("cpu")
+}
+
+#[cfg(target_os = "windows")]
+fn is_cpu_package(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.contains("package")
+        || lower.contains("tdie")
+        || lower.contains("tctl")
+        || lower.contains("ccd average")
+        || lower == "cpu total"
+}
+
+#[cfg(target_os = "windows")]
+fn is_gpu_sensor(identifier: &str, name: &str) -> bool {
+    let ident = identifier.to_ascii_lowercase();
+    ident.starts_with("/nvidiagpu/")
+        || ident.starts_with("/atigpu/")
+        || ident.starts_with("/amdgpu/")
+        || ident.starts_with("/gpu/")
+        || name.to_ascii_lowercase().starts_with("gpu ")
+}
+
+#[cfg(target_os = "windows")]
+fn is_gpu_core(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.contains("core") || lower.contains("die") || lower == "gpu"
 }
 
 /// ACPI thermal zones report `CurrentTemperature` in tenths of a Kelvin per
@@ -398,14 +632,21 @@ fn deci_kelvin_to_celsius(value: u32) -> f32 {
     (value as f64 / 10.0 - 273.15) as f32
 }
 
-/// Strip ACPI thermal zone path prefixes (`\\_TZ.TZ00` etc.) for clean labels.
+/// Strip ACPI / HardwareMonitor path prefixes for clean labels.
 #[cfg(target_os = "windows")]
 fn sanitize_zone_label(instance_name: &str) -> String {
     instance_name
         .trim_start_matches(r"\_TZ.")
         .trim_start_matches(r"\\_TZ.")
+        .trim_start_matches('/')
         .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() { ch.to_ascii_lowercase() } else { '_' })
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -447,6 +688,18 @@ mod tests {
 
         assert!(second > first);
         poller.stop();
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn wmi_access_denied_hresult_is_terminal_for_acpi_thermal_polling() {
+        let denied = wmi::WMIError::HResultError {
+            hres: super::WBEM_E_ACCESS_DENIED_HRESULT,
+        };
+        let other = wmi::WMIError::HResultError { hres: 0 };
+
+        assert!(super::wmi_access_denied(&denied));
+        assert!(!super::wmi_access_denied(&other));
     }
 
     fn wait_for_change(
