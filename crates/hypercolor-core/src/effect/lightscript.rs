@@ -376,6 +376,8 @@ impl LightscriptRuntime {
         script.push_str("  if (typeof window.showNotification !== 'function') {\n");
         script.push_str("    window.showNotification = function(_message, _isError) {};\n");
         script.push_str("  }\n");
+        script.push_str("  window.__hypercolorControlsDirty = true;\n");
+        script.push_str("  window.__hypercolorLastControlUpdateTime = -Infinity;\n");
         script.push_str("  window.__hypercolorRenderHostFrame = function() {\n");
         script.push_str(
             "    if (!window.__hypercolorCaptureMode || typeof window !== 'object') return;\n",
@@ -391,12 +393,17 @@ impl LightscriptRuntime {
         script.push_str("    if (typeof instance.syncCanvasSizeFromEngine === 'function') {\n");
         script.push_str("      try { instance.syncCanvasSizeFromEngine(); } catch (_err) {}\n");
         script.push_str("    }\n");
-        script.push_str("    if (typeof window.update === 'function') {\n");
-        script.push_str("      try { window.update(false); } catch (_err) {}\n");
-        script.push_str("    }\n");
         script.push_str(
             "    const time = (window.performance && typeof window.performance.now === 'function') ? window.performance.now() * 0.001 : Date.now() * 0.001;\n",
         );
+        script.push_str("    const shouldUpdateControls = !!window.__hypercolorControlsDirty || time - window.__hypercolorLastControlUpdateTime >= 0.1;\n");
+        script.push_str("    if (shouldUpdateControls && typeof window.update === 'function') {\n");
+        script.push_str("      try {\n");
+        script.push_str("        window.update(false);\n");
+        script.push_str("        window.__hypercolorControlsDirty = false;\n");
+        script.push_str("        window.__hypercolorLastControlUpdateTime = time;\n");
+        script.push_str("      } catch (_err) {}\n");
+        script.push_str("    }\n");
         script.push_str("    instance.render(time);\n");
         script.push_str("  };\n");
         script.push_str("  if (typeof globalThis === 'object' && globalThis !== null) { globalThis.engine = window.engine; }\n");
@@ -954,6 +961,7 @@ pub fn control_update_script(name: &str, value: &ControlValue) -> String {
             "(function(){{\n",
             "  const callback = {};\n",
             "  window[{}] = {};\n",
+            "  window.__hypercolorControlsDirty = true;\n",
             "  if (typeof window[callback] === 'function') {{\n",
             "    try {{ window[callback](); }} catch (_err) {{}}\n",
             "  }}\n",
@@ -1518,6 +1526,7 @@ mod tests {
 
         assert!(script.contains("window[\"frontColor\"]"));
         assert!(script.contains("const callback = \"onfrontColorChanged\""));
+        assert!(script.contains("window.__hypercolorControlsDirty = true"));
         assert!(script.contains("window[callback]"));
         assert!(script.contains("try { window[callback](); } catch (_err) {}"));
         assert!(script.contains("\"#00ffcc\""));
@@ -1539,7 +1548,12 @@ mod tests {
         assert!(script.contains("window.__hypercolorCaptureMode"));
         assert!(script.contains("window.cancelAnimationFrame"));
         assert!(script.contains("instance.syncCanvasSizeFromEngine"));
+        assert!(script.contains("window.__hypercolorControlsDirty = true"));
+        assert!(script.contains("window.__hypercolorLastControlUpdateTime = -Infinity"));
+        assert!(script.contains("time - window.__hypercolorLastControlUpdateTime >= 0.1"));
         assert!(script.contains("window.update(false)"));
+        assert!(script.contains("window.__hypercolorControlsDirty = false"));
+        assert!(script.contains("window.__hypercolorLastControlUpdateTime = time"));
         assert!(script.contains("window.performance.now() * 0.001"));
         assert!(script.contains("instance.render(time)"));
     }
