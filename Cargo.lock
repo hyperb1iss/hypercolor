@@ -5339,11 +5339,22 @@ dependencies = [
 name = "hypercolor-windows-gpu-interop"
 version = "0.1.0"
 dependencies = [
+ "dpi",
+ "euclid",
+ "gleam",
+ "glow 0.16.0",
+ "image",
  "pollster",
+ "servo-paint-api",
+ "surfman",
  "thiserror 2.0.18",
+ "tracing",
+ "webrender_api",
  "wgpu",
  "wgpu-hal 29.0.1",
+ "winapi",
  "windows 0.62.2",
+ "wio",
 ]
 
 [[package]]
@@ -13175,6 +13186,7 @@ dependencies = [
  "glow 0.16.0",
  "libc",
  "log",
+ "mozangle",
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
  "objc2-core-foundation",

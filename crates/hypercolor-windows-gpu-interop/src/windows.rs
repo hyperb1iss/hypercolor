@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
@@ -44,6 +45,10 @@ pub enum WindowsGpuInteropError {
     /// A Windows ANGLE rendering context is required before import can run.
     #[error("Windows ANGLE rendering context is unavailable")]
     MissingWindowsAngleContext,
+
+    /// The Windows ANGLE context had no published shared texture.
+    #[error("Windows ANGLE shared-texture frame is not ready")]
+    WindowsImportStaleFrame,
 
     /// Frame dimensions are not usable by D3D11 or wgpu.
     #[error("invalid import dimensions {width}x{height}")]
@@ -124,6 +129,15 @@ pub enum WindowsGpuInteropError {
         expected_len: usize,
         /// Actual byte length.
         actual_len: usize,
+    },
+
+    /// Creating or operating the Servo ANGLE rendering context failed.
+    #[error("Servo ANGLE context {operation} failed: {message}")]
+    ServoContext {
+        /// Failing operation.
+        operation: &'static str,
+        /// Platform error detail.
+        message: String,
     },
 }
 
@@ -232,6 +246,24 @@ impl WindowsD3d11Device {
     pub fn new_for_wgpu_adapter(vendor_id: u32, device_id: u32) -> Result<Self> {
         let adapter = find_dxgi_adapter(Some(vendor_id), Some(device_id))?;
         Self::from_dxgi_adapter(&adapter)
+    }
+
+    #[cfg(feature = "servo-context")]
+    pub(crate) unsafe fn from_owned_raw_d3d11_device(raw: *mut std::ffi::c_void) -> Result<Self> {
+        if raw.is_null() {
+            return Err(WindowsGpuInteropError::D3d11DeviceCreateFailed { hresult: 0 });
+        }
+        // SAFETY: raw is an owned ID3D11Device reference returned by Surfman.
+        let device = unsafe { ID3D11Device::from_raw(raw) };
+        // SAFETY: device is a live D3D11 device and returns its immediate context.
+        let context = unsafe {
+            device.GetImmediateContext().map_err(|error| {
+                WindowsGpuInteropError::D3d11DeviceCreateFailed {
+                    hresult: hresult(error),
+                }
+            })?
+        };
+        Ok(Self { device, context })
     }
 
     /// Creates a shared NT-handle texture on this D3D11 device.
@@ -377,6 +409,22 @@ impl WindowsD3d11SharedTexture {
     pub const fn shared_handle(&self) -> HANDLE {
         self.shared_handle
     }
+
+    #[cfg(feature = "servo-context")]
+    pub(crate) unsafe fn to_surfman_texture(
+        &self,
+    ) -> wio::com::ComPtr<winapi::um::d3d11::ID3D11Texture2D> {
+        let raw = self
+            .texture
+            .as_raw()
+            .cast::<winapi::um::d3d11::ID3D11Texture2D>();
+        // SAFETY: raw is the live COM texture owned by self; AddRef gives
+        // Surfman its own counted reference for the EGL surface.
+        unsafe {
+            (*raw).AddRef();
+            wio::com::ComPtr::from_raw(raw)
+        }
+    }
 }
 
 impl Drop for WindowsD3d11SharedTexture {
@@ -391,6 +439,14 @@ impl Drop for WindowsD3d11SharedTexture {
 /// Reusable importer for wrapping D3D11 shared textures as wgpu textures.
 pub struct WindowsD3d11SharedTextureImporter {
     descriptor: WindowsD3d11SharedTextureImportDescriptor,
+    imported_textures: HashMap<usize, ImportedSharedTexture>,
+}
+
+#[derive(Debug, Clone)]
+struct ImportedSharedTexture {
+    storage_id: u64,
+    texture: Arc<wgpu::Texture>,
+    view: Arc<wgpu::TextureView>,
 }
 
 impl WindowsD3d11SharedTextureImporter {
@@ -405,7 +461,10 @@ impl WindowsD3d11SharedTextureImporter {
             descriptor.format,
         )?;
         check_wgpu_vulkan_external_memory_win32(device)?;
-        Ok(Self { descriptor })
+        Ok(Self {
+            descriptor,
+            imported_textures: HashMap::new(),
+        })
     }
 
     /// Returns the descriptor this importer was built for.
@@ -433,6 +492,23 @@ impl WindowsD3d11SharedTextureImporter {
         }
 
         let total_start = Instant::now();
+        let shared_handle_key = shared_handle_key(shared_handle);
+        if let Some(imported) = self.imported_textures.get(&shared_handle_key) {
+            return Ok(ImportedEffectFrame {
+                width: self.descriptor.width,
+                height: self.descriptor.height,
+                format: self.descriptor.format,
+                storage_id: imported.storage_id,
+                texture: Arc::clone(&imported.texture),
+                view: Arc::clone(&imported.view),
+                timings: ImportedFrameTimings {
+                    wrap_us: 0,
+                    sync_us,
+                    total_us: elapsed_micros(total_start),
+                },
+            });
+        }
+
         let wrap_start = Instant::now();
         // SAFETY: this only borrows the underlying HAL device long enough to
         // import the caller-owned D3D11 NT handle; no raw Vulkan device handle
@@ -453,14 +529,25 @@ impl WindowsD3d11SharedTextureImporter {
         };
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let wrap_us = elapsed_micros(wrap_start);
+        let storage_id = NEXT_STORAGE_ID.fetch_add(1, Ordering::Relaxed);
+        let texture = Arc::new(texture);
+        let view = Arc::new(view);
+        self.imported_textures.insert(
+            shared_handle_key,
+            ImportedSharedTexture {
+                storage_id,
+                texture: Arc::clone(&texture),
+                view: Arc::clone(&view),
+            },
+        );
 
         Ok(ImportedEffectFrame {
             width: self.descriptor.width,
             height: self.descriptor.height,
             format: self.descriptor.format,
-            storage_id: NEXT_STORAGE_ID.fetch_add(1, Ordering::Relaxed),
-            texture: Arc::new(texture),
-            view: Arc::new(view),
+            storage_id,
+            texture,
+            view,
             timings: ImportedFrameTimings {
                 wrap_us,
                 sync_us,
@@ -468,6 +555,10 @@ impl WindowsD3d11SharedTextureImporter {
             },
         })
     }
+}
+
+fn shared_handle_key(shared_handle: HANDLE) -> usize {
+    shared_handle.0 as usize
 }
 
 /// Verifies that the active wgpu device can expose Vulkan external memory Win32 handles.
