@@ -91,7 +91,7 @@ Notarization typically resolves in 2-15 minutes. 2026 saw sporadic multi-hour Ap
 
 - **Azure Artifact Signing (formerly Trusted Signing). $9.99/mo basic tier covering 5,000 signatures.**
 - Open to self-employed individuals (US/CA/EU/UK) as of 2026.
-- Replaces EV certs entirely. Confers instant SmartScreen reputation. Identity validation takes a few days the first time.
+- Replaces EV certs as the path of choice. **SmartScreen reputation is not instant** — Microsoft's anti-malware service builds reputation against cert + file hash, and new binaries on a freshly-issued cert can still show "Windows protected your PC" until enough installs accumulate. Verify on a clean Windows VM after every rollout. Identity validation takes a few days the first time.
 - Sign with `signtool` against the Azure-hosted certificate. GitHub Actions: `azure/trusted-signing-action`.
 
 Do not buy a Sectigo / DigiCert EV cert in 2026. Microsoft's own offering replaced that market.
@@ -374,7 +374,7 @@ Note: this is the **signing + CDN** cost specifically. Compute and DB costs are 
 
 ## Decision log
 
-- **2026-05-03.** Azure Artifact Signing picked over EV certs. Replaces the EV market in 2026, $9.99/mo for individuals, instant SmartScreen reputation.
+- **2026-05-03.** Azure Artifact Signing picked over EV certs. Replaces the EV market in 2026, $9.99/mo for individuals. Reputation still builds empirically against cert + file hash (verify on clean VM after rollout); the "instant SmartScreen" claim from the original draft was wrong.
 - **2026-05-03.** Cloudflare Workers + R2 picked for manifest hosting. Workers gets us edge-cached entitlement checks; R2 has zero egress. Total ~$60-120/yr.
 - **2026-05-03.** Effect signing kept on a separate key hierarchy (per-author minisign + marketplace index). Different threat model; conflating with binary signing is a footgun.
 - **2026-05-03.** TUF deferred to v2. Two-key (manifest + artifact) scheme with rare rotation is the right cost-benefit point for now.

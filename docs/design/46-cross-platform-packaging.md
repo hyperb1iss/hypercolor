@@ -964,7 +964,7 @@ CLI users keep `brew install hyperb1iss/tap/hypercolor`. Desktop users get
 | Item | Detail |
 |---|---|
 | Cost | $9.99/month + ~$20 one-time identity verification |
-| Trust level | EV-equivalent — immediate SmartScreen trust, no warnings |
+| Trust level | EV-equivalent identity, but **SmartScreen reputation is not instant** — it builds against the publisher certificate + the per-file hash; warnings can persist on new release binaries until enough installs accumulate. Verify behavior on a clean Windows VM after each rollout. |
 | Setup | Azure subscription → enroll Trusted Signing → identity validation (3-5 days) → cert provisioned in Azure HSM |
 | CI | First-class GitHub Actions: `azure/trusted-signing-action@v0` |
 

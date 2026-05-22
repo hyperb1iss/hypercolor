@@ -299,9 +299,13 @@ This closes the "helper accepts arbitrary paths and restart commands" hole: the 
 
 If the daemon is installed as a Windows Service, the path requires `windows-service` 0.8 to `ControlService(SERVICE_CONTROL_STOP)` first. Per-user install (Scheduled Task with LogonTrigger) is the recommended deployment, no SCM involved.
 
-### Windows — MSI (desktop shell)
+### Windows — NSIS (v1)
 
-Tauri ships an MSI. The updater downloads the new MSI, verifies minisign, then runs `msiexec /i path-to-new.msi /quiet /norestart`. MSI handles its own install over the existing app. Tauri shell's update flow is *driven by* `hypercolor-updater` rather than `tauri-plugin-updater`.
+The desktop shell ships an NSIS installer (`currentUser` mode per RFC 46 §10.1.7). The updater downloads the new NSIS installer, verifies minisign, signals the running daemon to exit cleanly, then runs `installer.exe /S` for silent in-place upgrade. NSIS handles registry updates and shortcut maintenance.
+
+Amended 2026-05-22 from the original MSI-driven design. Reason: the production build pipeline ships NSIS today (see RFC 46 §10.1), maintaining a parallel MSI bundle target would double artifact storage and CI time, and the "single helper invocation per upgrade" elevation cost is the same regardless of installer format. MSI is deferred to a Phase 4 enterprise concern alongside Group Policy deployability — see windows-experience execution roadmap §7.3 (D5).
+
+The privileged broker-service binary swap (replacing `hypercolor-smbus-service.exe` under `C:\Program Files\Hypercolor\smbus-service\`) is **not** handled by the NSIS installer — it goes through the consolidated `hypercolor-windows-helper` per the windows-experience roadmap §7.4 (D7), which inherits this RFC's request-file authorization protocol.
 
 ## Service restart per platform
 
@@ -344,8 +348,12 @@ crates/
       events.rs                 # HypercolorBus integration
       error.rs
 
-  hypercolor-updater-helper/    # tiny Windows-only binary
-    src/main.rs                 # waits parent PID, rename dance, restart, exit
+  hypercolor-windows-helper/    # consolidated Windows-only elevated helper
+    src/main.rs                 # request-file authorization protocol per
+                                # windows-experience roadmap §7.4 (D7);
+                                # supports updater swap, hardware install,
+                                # service repair, uninstall — single signed
+                                # surface for all elevation needs
     Cargo.toml                  # cfg target_os = "windows" only
 ```
 
