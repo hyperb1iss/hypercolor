@@ -353,9 +353,17 @@ impl GpuSparkleFlinger {
         ))]
         {
             let info = render_device.info();
+            #[cfg(target_os = "windows")]
+            let servo_adapter_info = Some(hypercolor_core::effect::ServoGpuImportAdapterInfo {
+                vendor_id: info.adapter_vendor_id,
+                device_id: info.adapter_device_id,
+            });
+            #[cfg(not(target_os = "windows"))]
+            let servo_adapter_info = None;
             if info.servo_gpu_import_backend_compatible()
                 && let Err(error) = hypercolor_core::effect::install_servo_gpu_import_device(
                     render_device.device_handle(),
+                    servo_adapter_info,
                 )
             {
                 tracing::debug!(

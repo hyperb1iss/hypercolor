@@ -24,8 +24,9 @@ use winapi::shared::winerror::{DXGI_ERROR_NOT_FOUND, SUCCEEDED};
 use wio::com::ComPtr;
 
 use crate::{
-    ImportedFrameFormat, Result, WindowsD3d11Device, WindowsD3d11SharedTexture,
-    WindowsD3d11SharedTextureImportDescriptor, WindowsGpuInteropError,
+    ImportedEffectFrame, ImportedFrameFormat, Result, WindowsD3d11Device,
+    WindowsD3d11SharedTexture, WindowsD3d11SharedTextureImportDescriptor,
+    WindowsD3d11SharedTextureImporter, WindowsGpuInteropError,
 };
 
 const WINDOWS_SERVO_RING_DEPTH: usize = 3;
@@ -243,6 +244,19 @@ impl WindowsAngleRenderingContext {
         *ring = next_ring;
         self.current_slot.set(0);
         Ok(())
+    }
+}
+
+impl WindowsD3d11SharedTextureImporter {
+    /// Imports a native frame produced by `WindowsAngleRenderingContext`.
+    pub fn import_servo_native_frame(
+        &mut self,
+        device: &wgpu::Device,
+        frame: WindowsServoNativeFrame,
+    ) -> Result<ImportedEffectFrame> {
+        // SAFETY: WindowsServoNativeFrame is only produced by the ANGLE
+        // context after finish_current_frame synchronizes producer GL work.
+        unsafe { self.import_shared_handle(device, frame.shared_handle, frame.sync_us) }
     }
 }
 

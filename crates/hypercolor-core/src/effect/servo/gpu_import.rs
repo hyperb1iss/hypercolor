@@ -6,12 +6,19 @@ use anyhow::{Result, bail};
 use hypercolor_types::config::ServoGpuImportMode;
 
 static SERVO_GPU_IMPORT_DEVICE: OnceLock<wgpu::Device> = OnceLock::new();
+static SERVO_GPU_IMPORT_ADAPTER_INFO: OnceLock<ServoGpuImportAdapterInfo> = OnceLock::new();
 static SERVO_GPU_IMPORT_MODE: AtomicU8 =
     AtomicU8::new(servo_gpu_import_mode_to_u8(ServoGpuImportMode::Off));
 static SERVO_GPU_IMPORT_CLOCK_START: OnceLock<Instant> = OnceLock::new();
 static SERVO_GPU_IMPORT_AUTO_BACKOFF_UNTIL_MS: AtomicU64 = AtomicU64::new(0);
 
 const SERVO_GPU_IMPORT_AUTO_BACKOFF: Duration = Duration::from_mins(1);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ServoGpuImportAdapterInfo {
+    pub vendor_id: u32,
+    pub device_id: u32,
+}
 
 const fn servo_gpu_import_mode_to_u8(mode: ServoGpuImportMode) -> u8 {
     match mode {
@@ -76,11 +83,21 @@ pub fn servo_gpu_import_auto_backoff_remaining() -> Option<Duration> {
     (retry_after > now).then(|| Duration::from_millis(retry_after.saturating_sub(now)))
 }
 
-pub fn install_servo_gpu_import_device(device: wgpu::Device) -> Result<()> {
+pub fn install_servo_gpu_import_device(
+    device: wgpu::Device,
+    adapter_info: Option<ServoGpuImportAdapterInfo>,
+) -> Result<()> {
     SERVO_GPU_IMPORT_DEVICE
         .set(device)
         .map_err(|_| anyhow::anyhow!("Servo GPU import device is already installed"))?;
+    if let Some(adapter_info) = adapter_info {
+        let _ = SERVO_GPU_IMPORT_ADAPTER_INFO.set(adapter_info);
+    }
     Ok(())
+}
+
+pub fn servo_gpu_import_adapter_info() -> Option<ServoGpuImportAdapterInfo> {
+    SERVO_GPU_IMPORT_ADAPTER_INFO.get().copied()
 }
 
 pub fn servo_gpu_import_device() -> Result<&'static wgpu::Device> {

@@ -54,16 +54,9 @@ fn angle_context_renders_into_importable_d3d11_ring() -> Result<(), String> {
     );
     assert_eq!(first_native_frame.slot_index, 0);
 
-    // SAFETY: the native frame comes from the live ANGLE D3D11 ring and has
-    // just been synchronized by finish_current_frame.
-    let first_imported = unsafe {
-        importer.import_shared_handle(
-            &wgpu.device,
-            first_native_frame.shared_handle,
-            first_native_frame.sync_us,
-        )
-    }
-    .map_err(|error| error.to_string())?;
+    let first_imported = importer
+        .import_servo_native_frame(&wgpu.device, first_native_frame)
+        .map_err(|error| error.to_string())?;
     let first_pixels = read_texture_pixels(
         &wgpu.device,
         &wgpu.queue,
@@ -86,15 +79,9 @@ fn angle_context_renders_into_importable_d3d11_ring() -> Result<(), String> {
         first_native_frame.shared_handle
     );
 
-    // SAFETY: the second native frame is synchronized and matches descriptor.
-    let second_imported = unsafe {
-        importer.import_shared_handle(
-            &wgpu.device,
-            second_native_frame.shared_handle,
-            second_native_frame.sync_us,
-        )
-    }
-    .map_err(|error| error.to_string())?;
+    let second_imported = importer
+        .import_servo_native_frame(&wgpu.device, second_native_frame)
+        .map_err(|error| error.to_string())?;
     assert_ne!(second_imported.storage_id, first_imported.storage_id);
     let second_pixels = read_texture_pixels(
         &wgpu.device,

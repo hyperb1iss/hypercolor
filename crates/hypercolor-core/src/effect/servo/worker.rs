@@ -1028,6 +1028,8 @@ struct ServoSession {
     linux_context: Option<Rc<hypercolor_linux_gpu_interop::LinuxServoRenderingContext>>,
     #[cfg(all(feature = "servo-gpu-import", target_os = "macos"))]
     macos_hardware_context: Option<Rc<hypercolor_macos_gpu_interop::MacosHardwareRenderingContext>>,
+    #[cfg(all(feature = "servo-gpu-import", target_os = "windows"))]
+    windows_angle_context: Option<Rc<hypercolor_windows_gpu_interop::WindowsAngleRenderingContext>>,
     delegate: Rc<HypercolorWebViewDelegate>,
     loaded_html_path: Option<PathBuf>,
     script_buffer: String,
@@ -1348,6 +1350,8 @@ impl ServoWorkerRuntime {
                 linux_context: rendering_context_handle.linux_context,
                 #[cfg(all(feature = "servo-gpu-import", target_os = "macos"))]
                 macos_hardware_context: rendering_context_handle.macos_hardware_context,
+                #[cfg(all(feature = "servo-gpu-import", target_os = "windows"))]
+                windows_angle_context: rendering_context_handle.windows_angle_context,
                 delegate,
                 loaded_html_path: None,
                 script_buffer: String::new(),
@@ -2060,19 +2064,91 @@ impl ServoWorkerRuntime {
 impl ServoWorkerRuntime {
     fn warm_gpu_importer_if_available(
         &mut self,
-        _session_id: ServoSessionId,
-        _width: u32,
-        _height: u32,
+        session_id: ServoSessionId,
+        width: u32,
+        height: u32,
     ) {
+        if !super::servo_gpu_import_should_attempt() {
+            return;
+        }
+        let Ok(device) = super::gpu_import::servo_gpu_import_device() else {
+            return;
+        };
+        let Ok(descriptor) =
+            hypercolor_windows_gpu_interop::WindowsD3d11SharedTextureImportDescriptor::new(
+                width,
+                height,
+                hypercolor_windows_gpu_interop::ImportedFrameFormat::Bgra8Unorm,
+            )
+        else {
+            return;
+        };
+        if let Err(error) = self.ensure_gpu_importer(session_id, device, descriptor) {
+            debug!(%error, "Servo GPU import pool warmup skipped");
+        }
+    }
+
+    fn ensure_gpu_importer(
+        &mut self,
+        session_id: ServoSessionId,
+        device: &wgpu::Device,
+        descriptor: hypercolor_windows_gpu_interop::WindowsD3d11SharedTextureImportDescriptor,
+    ) -> Result<()> {
+        let should_recreate = self
+            .session(session_id)?
+            .gpu_importer
+            .as_ref()
+            .is_none_or(|importer| importer.descriptor() != descriptor);
+        if !should_recreate {
+            return Ok(());
+        }
+
+        self.session_mut(session_id)?.gpu_importer = Some(
+            hypercolor_windows_gpu_interop::WindowsD3d11SharedTextureImporter::new(
+                device, descriptor,
+            )?,
+        );
+        Ok(())
     }
 
     fn import_gpu_frame(
         &mut self,
-        _session_id: ServoSessionId,
-        _device: &wgpu::Device,
+        session_id: ServoSessionId,
+        device: &wgpu::Device,
     ) -> Result<crate::effect::traits::ImportedEffectFrame> {
-        Err(hypercolor_windows_gpu_interop::WindowsGpuInteropError::MissingWindowsAngleContext)
-            .context("Windows Servo GPU import requires the ANGLE shared-texture context")
+        let context = self.windows_angle_context(session_id)?;
+        let native_frame = context.finish_current_frame()?;
+        let descriptor =
+            hypercolor_windows_gpu_interop::WindowsD3d11SharedTextureImportDescriptor::new(
+                native_frame.width,
+                native_frame.height,
+                native_frame.format,
+            )?;
+        self.ensure_gpu_importer(session_id, device, descriptor)?;
+        let imported = {
+            let importer = self
+                .session_mut(session_id)?
+                .gpu_importer
+                .as_mut()
+                .ok_or_else(|| anyhow!("Servo GPU importer was not initialized"))?;
+            importer.import_servo_native_frame(device, native_frame)?
+        };
+        context.rotate_after_import()?;
+        Ok(imported)
+    }
+
+    fn windows_angle_context(
+        &self,
+        session_id: ServoSessionId,
+    ) -> Result<Rc<hypercolor_windows_gpu_interop::WindowsAngleRenderingContext>> {
+        self.session(session_id)?
+            .windows_angle_context
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| {
+                hypercolor_windows_gpu_interop::WindowsGpuInteropError::MissingWindowsAngleContext
+                    .into()
+            })
     }
 
     fn clear_gpu_importer(&mut self, session_id: ServoSessionId) {
@@ -2519,6 +2595,9 @@ fn classify_servo_gpu_import_error(error: &anyhow::Error) -> ServoGpuImportFallb
                 }
                 hypercolor_windows_gpu_interop::WindowsGpuInteropError::MissingWindowsAngleContext => {
                     ServoGpuImportFallbackReason::MissingWindowsAngleContext
+                }
+                hypercolor_windows_gpu_interop::WindowsGpuInteropError::WindowsImportStaleFrame => {
+                    ServoGpuImportFallbackReason::WindowsImportStaleFrame
                 }
                 hypercolor_windows_gpu_interop::WindowsGpuInteropError::InvalidDimensions {
                     ..

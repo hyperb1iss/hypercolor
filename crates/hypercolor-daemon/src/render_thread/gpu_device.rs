@@ -19,6 +19,8 @@ struct GpuRenderDeviceInner {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct GpuRenderDeviceInfo {
     pub(crate) adapter_name: String,
+    pub(crate) adapter_vendor_id: u32,
+    pub(crate) adapter_device_id: u32,
     pub(crate) backend: wgpu::Backend,
     pub(crate) vulkan_external_memory_win32: bool,
     pub(crate) max_texture_dimension_2d: u32,
@@ -86,6 +88,8 @@ impl GpuRenderDevice {
         let limits = device.limits();
         let info = GpuRenderDeviceInfo {
             adapter_name: adapter_info.name,
+            adapter_vendor_id: adapter_info.vendor,
+            adapter_device_id: adapter_info.device,
             backend: adapter_info.backend,
             vulkan_external_memory_win32: device
                 .features()
@@ -263,6 +267,8 @@ mod tests {
     fn reports_linux_servo_import_backend_support_from_platform_and_backend() {
         let info = GpuRenderDeviceInfo {
             adapter_name: "test".to_owned(),
+            adapter_vendor_id: 0,
+            adapter_device_id: 0,
             backend: wgpu::Backend::Vulkan,
             vulkan_external_memory_win32: true,
             max_texture_dimension_2d: 16_384,
@@ -290,6 +296,8 @@ mod tests {
     fn reports_servo_import_backend_support_from_platform_and_backend() {
         let vulkan = GpuRenderDeviceInfo {
             adapter_name: "test".to_owned(),
+            adapter_vendor_id: 0,
+            adapter_device_id: 0,
             backend: wgpu::Backend::Vulkan,
             vulkan_external_memory_win32: true,
             max_texture_dimension_2d: 16_384,
@@ -323,6 +331,8 @@ mod tests {
     fn windows_servo_import_requires_win32_external_memory() {
         let vulkan_without_win32 = GpuRenderDeviceInfo {
             adapter_name: "test".to_owned(),
+            adapter_vendor_id: 0,
+            adapter_device_id: 0,
             backend: wgpu::Backend::Vulkan,
             vulkan_external_memory_win32: false,
             max_texture_dimension_2d: 16_384,

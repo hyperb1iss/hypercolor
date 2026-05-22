@@ -15,6 +15,8 @@ use servo::{RenderingContext, SoftwareRenderingContext};
 use hypercolor_linux_gpu_interop::LinuxServoRenderingContext;
 #[cfg(all(target_os = "macos", feature = "servo-gpu-import"))]
 use hypercolor_macos_gpu_interop::MacosHardwareRenderingContext;
+#[cfg(all(target_os = "windows", feature = "servo-gpu-import"))]
+use hypercolor_windows_gpu_interop::{WindowsAngleRenderingContext, WindowsDxgiAdapterIdentity};
 #[cfg(target_os = "windows")]
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 #[cfg(target_os = "windows")]
@@ -51,6 +53,8 @@ pub(crate) struct ServoRenderingContextHandle {
     pub(crate) linux_context: Option<Rc<LinuxServoRenderingContext>>,
     #[cfg(all(target_os = "macos", feature = "servo-gpu-import"))]
     pub(crate) macos_hardware_context: Option<Rc<MacosHardwareRenderingContext>>,
+    #[cfg(all(target_os = "windows", feature = "servo-gpu-import"))]
+    pub(crate) windows_angle_context: Option<Rc<WindowsAngleRenderingContext>>,
 }
 
 impl ServoRenderingContextHandle {
@@ -61,6 +65,8 @@ impl ServoRenderingContextHandle {
             linux_context: None,
             #[cfg(all(target_os = "macos", feature = "servo-gpu-import"))]
             macos_hardware_context: None,
+            #[cfg(all(target_os = "windows", feature = "servo-gpu-import"))]
+            windows_angle_context: None,
         }
     }
 
@@ -70,6 +76,8 @@ impl ServoRenderingContextHandle {
         Self {
             rendering_context,
             linux_context: Some(context),
+            #[cfg(all(target_os = "windows", feature = "servo-gpu-import"))]
+            windows_angle_context: None,
         }
     }
 
@@ -81,6 +89,21 @@ impl ServoRenderingContextHandle {
             #[cfg(all(target_os = "linux", feature = "servo-gpu-import"))]
             linux_context: None,
             macos_hardware_context: Some(context),
+            #[cfg(all(target_os = "windows", feature = "servo-gpu-import"))]
+            windows_angle_context: None,
+        }
+    }
+
+    #[cfg(all(target_os = "windows", feature = "servo-gpu-import"))]
+    fn windows_angle(context: Rc<WindowsAngleRenderingContext>) -> Self {
+        let rendering_context: Rc<dyn RenderingContext> = context.clone();
+        Self {
+            rendering_context,
+            #[cfg(all(target_os = "linux", feature = "servo-gpu-import"))]
+            linux_context: None,
+            #[cfg(all(target_os = "macos", feature = "servo-gpu-import"))]
+            macos_hardware_context: None,
+            windows_angle_context: Some(context),
         }
     }
 }
@@ -121,15 +144,30 @@ pub(crate) fn bootstrap_rendering_context(
     height: u32,
 ) -> Result<ServoRenderingContextHandle> {
     if crate::effect::servo_gpu_import_should_attempt() {
-        if matches!(
-            crate::effect::servo_gpu_import_mode(),
-            hypercolor_types::config::ServoGpuImportMode::On
-        ) {
-            return Err(anyhow!(
-                "Windows Servo GPU import requires the ANGLE shared-texture context"
-            ));
+        let adapter_identity = crate::effect::servo_gpu_import_adapter_info().map(|adapter_info| {
+            WindowsDxgiAdapterIdentity {
+                vendor_id: adapter_info.vendor_id,
+                device_id: adapter_info.device_id,
+            }
+        });
+        match WindowsAngleRenderingContext::new(width, height, adapter_identity) {
+            Ok(context) => {
+                return Ok(ServoRenderingContextHandle::windows_angle(Rc::new(context)));
+            }
+            Err(error)
+                if matches!(
+                    crate::effect::servo_gpu_import_mode(),
+                    hypercolor_types::config::ServoGpuImportMode::On
+                ) =>
+            {
+                return Err(anyhow!(
+                    "failed to create required Windows Servo ANGLE context: {error}"
+                ));
+            }
+            Err(error) => {
+                warn!(%error, "Windows Servo GPU import context unavailable; using hidden-window CPU context");
+            }
         }
-        warn!("Windows Servo GPU import context unavailable; using hidden-window CPU context");
     }
 
     bootstrap_windows_window_rendering_context(width, height)

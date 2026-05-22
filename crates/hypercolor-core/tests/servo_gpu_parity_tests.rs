@@ -81,7 +81,7 @@ fn run_deterministic_servo_gpu_import_parity() {
 
     let wgpu = WgpuFixture::new().expect("Servo GPU parity fixture should create wgpu device");
     if servo_gpu_import_device().is_err() {
-        install_servo_gpu_import_device(wgpu.device.clone())
+        install_servo_gpu_import_device(wgpu.device.clone(), None)
             .expect("Servo GPU parity fixture should install wgpu device");
     }
     set_servo_gpu_import_mode(ServoGpuImportMode::On);

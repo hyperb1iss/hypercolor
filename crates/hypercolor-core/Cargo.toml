@@ -27,6 +27,7 @@ servo = [
 servo-gpu-import = [
     "servo",
     "hypercolor-linux-gpu-interop?/servo-context",
+    "hypercolor-windows-gpu-interop?/servo-context",
     "dep:hypercolor-linux-gpu-interop",
     "dep:hypercolor-macos-gpu-interop",
     "dep:hypercolor-windows-gpu-interop",
