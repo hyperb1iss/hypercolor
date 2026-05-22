@@ -24,6 +24,24 @@ const IOCTL_IDENTITY: &CStr = c"ioctl_identity";
 const IOCTL_SMBUS_XFER: &CStr = c"ioctl_smbus_xfer";
 const IOCTL_PIIX4_PORT_SEL: &CStr = c"ioctl_piix4_port_sel";
 const IOCTL_SET_SLEEP_MODE: &CStr = c"ioctl_set_sleep_mode";
+/// PawnIO `IntelMSR.bin` and `AMDFamily17.bin` both expose this ioctl —
+/// reads a single 64-bit MSR by index.
+const IOCTL_READ_MSR: &CStr = c"ioctl_read_msr";
+/// AMD-specific: reads a 32-bit SMN (System Management Network) register.
+const IOCTL_READ_SMN: &CStr = c"ioctl_read_smn";
+
+/// Intel MSR addresses for package thermal data.
+const INTEL_MSR_TEMPERATURE_TARGET: u32 = 0x1A2;
+const INTEL_MSR_PACKAGE_THERM_STATUS: u32 = 0x1B1;
+
+/// AMD Family 17h THM (thermal) SMN register holding the current package temp.
+/// `CurTmp` lives in bits 31:21 with a 0.125°C LSB.
+const AMD_F17_THM_TCON_CUR_TMP: u32 = 0x0005_9800;
+const AMD_F17_CUR_TMP_RANGE_SEL_BIT: u32 = 1 << 19;
+const AMD_F17_CUR_TMP_RANGE_OFFSET: f32 = 49.0;
+
+const PAWNIO_MODULE_INTEL_MSR: &str = "IntelMSR.bin";
+const PAWNIO_MODULE_AMD_FAMILY_17: &str = "AMDFamily17.bin";
 
 const PAWNIO_SLEEP_ALWAYS_SLEEP: u64 = 2;
 const GLOBAL_SMBUS_MUTEX_NAME: &[u8] = b"Global\\Access_SMBUS.HTP.Method\0";
@@ -1142,6 +1160,168 @@ const fn hresult_from_win32(error: i32) -> i32 {
         error
     } else {
         HRESULT_SEVERITY_ERROR | (HRESULT_FACILITY_WIN32 << 16) | error
+    }
+}
+
+/// Detected x86_64 CPU vendor. Used to pick the right PawnIO module +
+/// thermal register decoding strategy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CpuVendor {
+    Intel,
+    Amd,
+}
+
+/// Live PawnIO-backed reader for CPU package temperature.
+///
+/// Loads the right PawnIO module (`IntelMSR.bin` or `AMDFamily17.bin`) at
+/// construction time, caches the kernel handle for the lifetime of the
+/// reader, and returns Celsius readings on demand.
+///
+/// On Intel: reads `MSR_TEMPERATURE_TARGET` (0x1A2) once for Tjmax, then
+/// `MSR_PACKAGE_THERM_STATUS` (0x1B1) every poll. `temp = Tjmax - digital_readout`
+/// per Intel SDM Vol. 4.
+///
+/// On AMD Family 17h (Zen / Zen+ / Zen 2) and the Family 17h-derived
+/// Family 19h (Zen 3 / Zen 4): reads the SMN-mapped `THM_TCON_CUR_TMP`
+/// register at SMN 0x59800. `CurTmp` occupies bits 31:21 with a 0.125°C
+/// LSB; the `CurTempRangeSel` bit at position 19 subtracts 49°C when set
+/// (Threadripper / EPYC).
+pub struct CpuTempReader {
+    runtime: Arc<PawnIoRuntime>,
+    handle: PawnIoHandle,
+    vendor: CpuVendor,
+    tjmax_celsius: Option<u8>,
+}
+
+impl CpuTempReader {
+    /// Open the CPU temperature reader, picking the right PawnIO module
+    /// for the detected vendor.
+    pub fn new() -> PawnIoResult<Self> {
+        let vendor = detect_cpu_vendor()?;
+        let module_name = match vendor {
+            CpuVendor::Intel => PAWNIO_MODULE_INTEL_MSR,
+            CpuVendor::Amd => PAWNIO_MODULE_AMD_FAMILY_17,
+        };
+        let module_path = resolve_module_path(module_name)?;
+        let runtime = PawnIoRuntime::load()?;
+        let handle = runtime.open_loaded_module(&module_path)?;
+        debug!(
+            vendor = ?vendor,
+            module = module_name,
+            path = %module_path.display(),
+            "opened PawnIO CPU temperature module"
+        );
+        Ok(Self {
+            runtime,
+            handle,
+            vendor,
+            tjmax_celsius: None,
+        })
+    }
+
+    /// The CPU vendor this reader was built for.
+    #[must_use]
+    pub const fn vendor(&self) -> CpuVendor {
+        self.vendor
+    }
+
+    /// Read the current package temperature in Celsius. Returns `Err` on
+    /// PawnIO failure; never returns a nonsensical placeholder.
+    pub fn read_package_celsius(&mut self) -> PawnIoResult<f32> {
+        match self.vendor {
+            CpuVendor::Intel => self.read_intel_package_celsius(),
+            CpuVendor::Amd => self.read_amd_package_celsius(),
+        }
+    }
+
+    fn read_intel_package_celsius(&mut self) -> PawnIoResult<f32> {
+        let tjmax = match self.tjmax_celsius {
+            Some(cached) => cached,
+            None => {
+                let target = self.read_msr(INTEL_MSR_TEMPERATURE_TARGET)?;
+                let raw = ((target >> 16) & 0xff) as u8;
+                let tjmax = if raw == 0 { 100 } else { raw };
+                self.tjmax_celsius = Some(tjmax);
+                tjmax
+            }
+        };
+
+        let status = self.read_msr(INTEL_MSR_PACKAGE_THERM_STATUS)?;
+        let digital_readout = ((status >> 16) & 0x7F) as u8;
+        Ok(f32::from(tjmax) - f32::from(digital_readout))
+    }
+
+    fn read_amd_package_celsius(&self) -> PawnIoResult<f32> {
+        let raw = self.read_smn(AMD_F17_THM_TCON_CUR_TMP)?;
+        let cur_tmp = (raw >> 21) & 0x7FF;
+        let mut celsius = (cur_tmp as f32) * 0.125;
+        if (raw & AMD_F17_CUR_TMP_RANGE_SEL_BIT) != 0 {
+            celsius -= AMD_F17_CUR_TMP_RANGE_OFFSET;
+        }
+        Ok(celsius)
+    }
+
+    fn read_msr(&self, msr_index: u32) -> PawnIoResult<u64> {
+        let input = [u64::from(msr_index)];
+        let mut output = [0_u64; 1];
+        let mut returned = 0_usize;
+        let status =
+            self.runtime
+                .execute(self.handle, IOCTL_READ_MSR, &input, &mut output, &mut returned);
+        if status != S_OK {
+            return Err(PawnIoError::InvalidInput {
+                detail: format!(
+                    "ioctl_read_msr(0x{msr_index:X}) failed: {}",
+                    hresult_detail(status)
+                ),
+            });
+        }
+        Ok(output[0])
+    }
+
+    fn read_smn(&self, address: u32) -> PawnIoResult<u32> {
+        let input = [u64::from(address)];
+        let mut output = [0_u64; 1];
+        let mut returned = 0_usize;
+        let status =
+            self.runtime
+                .execute(self.handle, IOCTL_READ_SMN, &input, &mut output, &mut returned);
+        if status != S_OK {
+            return Err(PawnIoError::InvalidInput {
+                detail: format!(
+                    "ioctl_read_smn(0x{address:X}) failed: {}",
+                    hresult_detail(status)
+                ),
+            });
+        }
+        Ok(output[0] as u32)
+    }
+}
+
+impl Drop for CpuTempReader {
+    fn drop(&mut self) {
+        let _ = self.runtime.close(self.handle);
+    }
+}
+
+fn detect_cpu_vendor() -> PawnIoResult<CpuVendor> {
+    let info = std::arch::x86_64::__cpuid(0);
+    let mut bytes = [0_u8; 12];
+    bytes[0..4].copy_from_slice(&info.ebx.to_le_bytes());
+    bytes[4..8].copy_from_slice(&info.edx.to_le_bytes());
+    bytes[8..12].copy_from_slice(&info.ecx.to_le_bytes());
+
+    if &bytes == b"GenuineIntel" {
+        Ok(CpuVendor::Intel)
+    } else if &bytes == b"AuthenticAMD" {
+        Ok(CpuVendor::Amd)
+    } else {
+        Err(PawnIoError::InvalidInput {
+            detail: format!(
+                "unsupported CPU vendor for PawnIO temperature reads: {:?}",
+                String::from_utf8_lossy(&bytes).into_owned()
+            ),
+        })
     }
 }
 

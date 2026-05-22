@@ -97,6 +97,7 @@ servo = { version = "0.1.0", default-features = false, features = ["baked-in-res
 raw-window-handle = { version = "0.6", optional = true }
 tao = { version = "0.34", default-features = false, features = ["rwh_06"], optional = true }
 wmi = { workspace = true }
+hypercolor-windows-pawnio = { path = "../hypercolor-windows-pawnio" }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

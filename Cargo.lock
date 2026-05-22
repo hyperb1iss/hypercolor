@@ -4912,6 +4912,7 @@ dependencies = [
  "hypercolor-macos-gpu-interop",
  "hypercolor-types",
  "hypercolor-windows-gpu-interop",
+ "hypercolor-windows-pawnio",
  "image",
  "libpulse-binding",
  "log",

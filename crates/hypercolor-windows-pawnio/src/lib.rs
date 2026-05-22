@@ -5,9 +5,9 @@ mod windows;
 
 #[cfg(target_os = "windows")]
 pub use windows::{
-    PawnIoError, PawnIoResult, SmBusBatchOperation, SmBusBlockData, SmBusDirection,
-    SmBusTransaction, WindowsSmBusBus, WindowsSmBusBusInfo, enumerate_smbus_buses, open_smbus_bus,
-    run_smbus_service,
+    CpuTempReader, CpuVendor, PawnIoError, PawnIoResult, SmBusBatchOperation, SmBusBlockData,
+    SmBusDirection, SmBusTransaction, WindowsSmBusBus, WindowsSmBusBusInfo, enumerate_smbus_buses,
+    open_smbus_bus, run_smbus_service,
 };
 
 #[cfg(not(target_os = "windows"))]

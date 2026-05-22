@@ -342,23 +342,22 @@ struct HardwareMonitorSensor {
 #[cfg(target_os = "windows")]
 const WBEM_E_ACCESS_DENIED_HRESULT: i32 = -2_147_217_405;
 
-/// Windows-specific sensor extras. Builds a small cascade of WMI sources at
+/// Windows-specific sensor extras. Builds a small cascade of sources at
 /// startup and queries the available ones every poll:
 ///
-/// 1. **LibreHardwareMonitor** (`ROOT\LibreHardwareMonitor.Sensor`) — most
-///    accurate, gives per-core CPU + GPU + VRM data when the tool is running.
-/// 2. **OpenHardwareMonitor** (`ROOT\OpenHardwareMonitor.Sensor`) — same
-///    schema; older but still common on enthusiast rigs.
-/// 3. **MSAcpi_ThermalZoneTemperature** (`ROOT\WMI`) — ubiquitous on systems
-///    with ACPI thermal zones but sparse on modern boards (often absent or
-///    reporting a single chassis-level value).
-///
-/// On a fresh consumer install with none of LHM/OHM running and no ACPI
-/// thermal zones exposed, we won't return CPU temps until the user installs
-/// LibreHardwareMonitor (recommended) or PawnIO is wired for MSR reads
-/// (later phase).
+/// 1. **PawnIO CPU thermal MSR/SMN reads** — first-class, no third-party
+///    tools required. Uses the `IntelMSR.bin` / `AMDFamily17.bin` modules
+///    we bundle with the installer. Read directly from `IA32_PACKAGE_THERM_STATUS`
+///    on Intel and the `THM_TCON_CUR_TMP` SMN register on AMD Zen+.
+/// 2. **LibreHardwareMonitor** (`ROOT\LibreHardwareMonitor.Sensor`) —
+///    opportunistic; used if the user happens to be running it.
+/// 3. **OpenHardwareMonitor** (`ROOT\OpenHardwareMonitor.Sensor`) — same
+///    schema; older variant.
+/// 4. **MSAcpi_ThermalZoneTemperature** (`ROOT\WMI`) — last-resort backfill
+///    for systems with ACPI thermal zones but no PawnIO.
 #[cfg(target_os = "windows")]
 struct WindowsSensorExtras {
+    cpu_temp: Option<hypercolor_windows_pawnio::CpuTempReader>,
     libre_hardware: Option<wmi::WMIConnection>,
     open_hardware: Option<wmi::WMIConnection>,
     acpi_zones: Option<wmi::WMIConnection>,
@@ -368,10 +367,26 @@ struct WindowsSensorExtras {
 #[cfg(target_os = "windows")]
 impl WindowsSensorExtras {
     fn new() -> Option<Self> {
+        // First-class CPU temp source: PawnIO MSR/SMN reads. Fails cleanly
+        // if PawnIO isn't installed yet — the user will see CPU temp once
+        // they accept the hardware-support prompt (which they need for
+        // motherboard RGB anyway).
+        let cpu_temp = match hypercolor_windows_pawnio::CpuTempReader::new() {
+            Ok(reader) => {
+                tracing::info!(
+                    vendor = ?reader.vendor(),
+                    "PawnIO CPU temperature reader online"
+                );
+                Some(reader)
+            }
+            Err(err) => {
+                debug!("PawnIO CPU temperature reader unavailable: {err}");
+                None
+            }
+        };
+
         // Opportunistic sources — used if the user happens to be running
         // LibreHardwareMonitor or OpenHardwareMonitor, but never required.
-        // The first-class CPU temp path is PawnIO MSR reads (TODO: wire),
-        // which we bundle with the installer for motherboard RGB anyway.
         let libre_hardware = wmi::WMIConnection::with_namespace_path("ROOT\\LibreHardwareMonitor")
             .map_err(|err| debug!("LibreHardwareMonitor namespace not present: {err}"))
             .ok();
@@ -386,11 +401,16 @@ impl WindowsSensorExtras {
             .map_err(|err| debug!("ROOT\\WMI namespace not present for ACPI thermal zones: {err}"))
             .ok();
 
-        if libre_hardware.is_none() && open_hardware.is_none() && acpi_zones.is_none() {
+        if cpu_temp.is_none()
+            && libre_hardware.is_none()
+            && open_hardware.is_none()
+            && acpi_zones.is_none()
+        {
             return None;
         }
 
         Some(Self {
+            cpu_temp,
             libre_hardware,
             open_hardware,
             acpi_zones,
@@ -399,14 +419,38 @@ impl WindowsSensorExtras {
     }
 
     fn merge_snapshot(&mut self, snapshot: &mut SystemSnapshot) {
-        // 1. LibreHardwareMonitor / OpenHardwareMonitor — only one runs at a time.
+        // 1. PawnIO MSR/SMN — first-class CPU temp source. Authoritative
+        //    when it works; we won't override it with the WMI fallbacks below.
+        if let Some(reader) = self.cpu_temp.as_mut() {
+            match reader.read_package_celsius() {
+                Ok(celsius) if celsius.is_finite() && (5.0..=125.0).contains(&celsius) => {
+                    snapshot.cpu_temp_celsius = Some(celsius);
+                    snapshot.components.push(SensorReading::new(
+                        "cpu_package",
+                        celsius,
+                        SensorUnit::Celsius,
+                        None,
+                        None,
+                        None,
+                    ));
+                }
+                Ok(celsius) => {
+                    debug!(celsius, "PawnIO CPU temp returned implausible value; ignoring");
+                }
+                Err(err) => {
+                    debug!("PawnIO CPU temp read failed: {err}");
+                }
+            }
+        }
+
+        // 2. LibreHardwareMonitor / OpenHardwareMonitor — only one runs at a time.
         if let Some(con) = self.libre_hardware.as_ref() {
             self.merge_hardware_monitor(con, snapshot, "lhm");
         } else if let Some(con) = self.open_hardware.as_ref() {
             self.merge_hardware_monitor(con, snapshot, "ohm");
         }
 
-        // 2. ACPI thermal zones — additive context, only backfills cpu_temp
+        // 3. ACPI thermal zones — additive context, only backfills cpu_temp
         //    if no better source produced one.
         if self.acpi_zones_enabled {
             if let Some(con) = self.acpi_zones.as_ref() {
