@@ -1062,6 +1062,14 @@ fn HardwareSupportPanel() -> impl IntoView {
                 Ok(_) => {
                     toasts::toast_success("Windows hardware support installed");
                     status.refetch();
+                    // Kick a device-discovery rescan so SMBus motherboard /
+                    // DRAM devices that were unreachable before PawnIO is
+                    // installed surface without requiring a daemon restart.
+                    if let Err(error) = api::devices::discover_devices().await {
+                        leptos::logging::warn!(
+                            "post-install device rescan request failed: {error}"
+                        );
+                    }
                 }
                 Err(error) => {
                     toasts::toast_error(&format!("Hardware support install failed: {error}"));
