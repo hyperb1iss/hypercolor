@@ -30,6 +30,18 @@ pub const DAEMON_STARTUP_TIMEOUT: Duration = Duration::from_secs(20);
 /// Delay between daemon startup health probes.
 pub const DAEMON_STARTUP_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
+/// Watchdog circuit-breaker: max rapid daemon restarts within
+/// [`WATCHDOG_FAILURE_WINDOW`] before the supervisor gives up.
+pub const WATCHDOG_MAX_RAPID_RESTARTS: u32 = 5;
+
+/// Rolling window for the watchdog circuit breaker.
+pub const WATCHDOG_FAILURE_WINDOW: Duration = Duration::from_secs(300);
+
+/// Minimum healthy uptime before a daemon restart counts toward the rapid-
+/// failure window resetting. A daemon that runs for at least this long is
+/// considered "stable enough" — its next exit starts a fresh window.
+pub const WATCHDOG_STABLE_UPTIME: Duration = Duration::from_secs(60);
+
 /// Platform-neutral command description for spawning the daemon.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DaemonCommand {
@@ -62,51 +74,62 @@ pub enum SystemdUserServicePlan {
 }
 
 /// App-managed daemon supervisor state.
+///
+/// Tracks the PID of whichever daemon child the watchdog is currently
+/// supervising. The actual `Child` handle lives inside the watchdog task
+/// so blocking waits can run on a dedicated thread without holding the
+/// state mutex.
 #[derive(Clone, Default)]
 pub struct SupervisorState {
-    child: Arc<Mutex<Option<ManagedDaemon>>>,
+    child_pid: Arc<Mutex<Option<u32>>>,
 }
 
 impl SupervisorState {
     /// Return the app-owned daemon process ID, if one is running.
     #[must_use]
     pub fn child_pid(&self) -> Option<u32> {
-        self.child_guard().as_ref().map(ManagedDaemon::id)
+        *self.child_guard()
     }
 
-    fn replace_child(&self, daemon: ManagedDaemon) {
-        *self.child_guard() = Some(daemon);
+    fn replace_child_pid(&self, pid: u32) {
+        *self.child_guard() = Some(pid);
     }
 
     fn clear_child(&self) {
         *self.child_guard() = None;
     }
 
-    fn child_guard(&self) -> MutexGuard<'_, Option<ManagedDaemon>> {
-        self.child.lock().unwrap_or_else(PoisonError::into_inner)
+    fn child_guard(&self) -> MutexGuard<'_, Option<u32>> {
+        self.child_pid.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
 /// App-owned daemon child process.
 pub struct ManagedDaemon {
-    child: Child,
+    /// Underlying child handle. Wrapped in `Option` so the watchdog can
+    /// `take()` it before performing a blocking `wait()` without tripping
+    /// the kill-on-drop fallback below.
+    pub(crate) child: Option<Child>,
     #[allow(dead_code)]
-    platform_guard: PlatformGuard,
+    pub(crate) platform_guard: PlatformGuard,
 }
 
 impl ManagedDaemon {
-    /// Return the child process ID.
+    /// Return the child process ID, or 0 if the child has been taken out
+    /// (which only happens inside the watchdog right before wait()).
     #[must_use]
     pub fn id(&self) -> u32 {
-        self.child.id()
+        self.child.as_ref().map_or(0, Child::id)
     }
 }
 
 impl Drop for ManagedDaemon {
     fn drop(&mut self) {
-        if matches!(self.child.try_wait(), Ok(None)) {
-            let _ = self.child.kill();
-            let _ = self.child.wait();
+        if let Some(mut child) = self.child.take()
+            && matches!(child.try_wait(), Ok(None))
+        {
+            let _ = child.kill();
+            let _ = child.wait();
         }
     }
 }
@@ -419,37 +442,163 @@ pub fn start<R: Runtime>(app: &AppHandle<R>, daemon_url: Url) -> Result<()> {
             return;
         }
 
-        let command = build_daemon_command(&daemon_path, &bind, ui_dir.as_deref());
-        match spawn_daemon(&command) {
-            Ok(daemon) => {
-                let pid = daemon.id();
-                state.replace_child(daemon);
-                tracing::info!(pid, "app-owned daemon spawned");
-                if wait_until_healthy(
-                    &client,
-                    &daemon_url,
-                    DAEMON_STARTUP_TIMEOUT,
-                    DAEMON_STARTUP_POLL_INTERVAL,
-                )
-                .await
-                {
-                    tracing::info!(pid, "app-owned daemon reported healthy");
-                } else {
-                    tracing::warn!(
-                        pid,
-                        timeout_ms = DAEMON_STARTUP_TIMEOUT.as_millis(),
-                        "app-owned daemon did not become healthy before timeout"
-                    );
-                    state.clear_child();
-                }
-            }
-            Err(error) => {
-                tracing::warn!(%error, "failed to spawn app-owned daemon");
-            }
-        }
+        run_watchdog_loop(client, daemon_url, daemon_path, bind, ui_dir, state).await;
     });
 
     Ok(())
+}
+
+/// Exponential backoff for daemon restart attempts: 1s, 2s, 5s, 10s, 30s.
+#[must_use]
+pub const fn restart_backoff(attempt: u32) -> Duration {
+    let secs = match attempt {
+        0 | 1 => 1,
+        2 => 2,
+        3 => 5,
+        4 => 10,
+        _ => 30,
+    };
+    Duration::from_secs(secs)
+}
+
+/// Watchdog loop: keeps the daemon alive across crashes, with a
+/// circuit breaker that gives up after [`WATCHDOG_MAX_RAPID_RESTARTS`]
+/// restarts in [`WATCHDOG_FAILURE_WINDOW`].
+///
+/// Per-attempt flow:
+/// 1. Spawn the daemon as a child process.
+/// 2. Wait up to [`DAEMON_STARTUP_TIMEOUT`] for `/health` to respond.
+/// 3. If healthy, block on the child until it exits.
+/// 4. On exit, log the status and decide whether to keep restarting
+///    (under the rapid-restart cap) or give up (cap exhausted).
+///
+/// "Rapid" here is gated by [`WATCHDOG_STABLE_UPTIME`]: a daemon that
+/// stays healthy for at least that long resets the counter on its
+/// eventual exit. This lets the daemon naturally cycle (e.g. updater
+/// swap) without exhausting the budget.
+async fn run_watchdog_loop(
+    client: reqwest::Client,
+    daemon_url: Url,
+    daemon_path: PathBuf,
+    bind: String,
+    ui_dir: Option<PathBuf>,
+    state: SupervisorState,
+) {
+    let mut restart_count: u32 = 0;
+    let mut window_anchor: Option<Instant> = None;
+
+    loop {
+        if let Some(anchor) = window_anchor
+            && anchor.elapsed() > WATCHDOG_FAILURE_WINDOW
+        {
+            restart_count = 0;
+            window_anchor = None;
+        }
+
+        if restart_count >= WATCHDOG_MAX_RAPID_RESTARTS {
+            tracing::error!(
+                restarts = restart_count,
+                window_secs = WATCHDOG_FAILURE_WINDOW.as_secs(),
+                "daemon failed to stay alive too many times in window; supervisor giving up"
+            );
+            state.clear_child();
+            return;
+        }
+
+        let command = build_daemon_command(&daemon_path, &bind, ui_dir.as_deref());
+        let daemon = match spawn_daemon(&command) {
+            Ok(daemon) => daemon,
+            Err(error) => {
+                tracing::warn!(%error, attempt = restart_count + 1, "failed to spawn daemon");
+                record_failure(&mut restart_count, &mut window_anchor);
+                tokio::time::sleep(restart_backoff(restart_count)).await;
+                continue;
+            }
+        };
+        let pid = daemon.id();
+        state.replace_child_pid(pid);
+        tracing::info!(pid, attempt = restart_count + 1, "supervisor: daemon spawned");
+
+        let healthy = wait_until_healthy(
+            &client,
+            &daemon_url,
+            DAEMON_STARTUP_TIMEOUT,
+            DAEMON_STARTUP_POLL_INTERVAL,
+        )
+        .await;
+
+        if !healthy {
+            tracing::warn!(
+                pid,
+                timeout_ms = DAEMON_STARTUP_TIMEOUT.as_millis(),
+                "daemon did not become healthy before timeout; killing and retrying"
+            );
+            drop(daemon);
+            state.clear_child();
+            record_failure(&mut restart_count, &mut window_anchor);
+            tokio::time::sleep(restart_backoff(restart_count)).await;
+            continue;
+        }
+
+        tracing::info!(pid, "supervisor: daemon healthy");
+        let spawned_at = Instant::now();
+        let exit = wait_for_exit(daemon).await;
+        let uptime = spawned_at.elapsed();
+        state.clear_child();
+
+        match exit {
+            Ok(status) => tracing::warn!(
+                pid,
+                ?status,
+                uptime_secs = uptime.as_secs(),
+                "daemon exited; supervisor will restart"
+            ),
+            Err(error) => tracing::error!(
+                pid,
+                %error,
+                uptime_secs = uptime.as_secs(),
+                "daemon wait failed; supervisor will restart"
+            ),
+        }
+
+        if uptime >= WATCHDOG_STABLE_UPTIME {
+            // Stable run — reset the budget so the next failure starts fresh.
+            restart_count = 0;
+            window_anchor = None;
+        } else {
+            record_failure(&mut restart_count, &mut window_anchor);
+        }
+        tokio::time::sleep(restart_backoff(restart_count)).await;
+    }
+}
+
+fn record_failure(count: &mut u32, anchor: &mut Option<Instant>) {
+    *count = count.saturating_add(1);
+    if anchor.is_none() {
+        *anchor = Some(Instant::now());
+    }
+}
+
+/// Block on a `ManagedDaemon` child until it exits. Runs the blocking
+/// `Child::wait()` on a dedicated thread so the watchdog task stays async.
+async fn wait_for_exit(daemon: ManagedDaemon) -> Result<std::process::ExitStatus> {
+    let join = tauri::async_runtime::spawn_blocking(move || {
+        let mut daemon = daemon;
+        let Some(mut child) = daemon.child.take() else {
+            return Err(std::io::Error::other("daemon child already taken"));
+        };
+        let status = child.wait();
+        // platform_guard (Job Object on Windows) drops here, AFTER the
+        // child has been waited on. The Drop above sees `child = None`
+        // and does nothing — child is already reaped.
+        drop(daemon);
+        status
+    });
+    match join.await {
+        Ok(Ok(status)) => Ok(status),
+        Ok(Err(error)) => Err(anyhow::Error::from(error)),
+        Err(error) => Err(anyhow::Error::from(error)),
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -625,7 +774,7 @@ pub fn spawn_daemon(command: &DaemonCommand) -> Result<ManagedDaemon> {
     };
 
     Ok(ManagedDaemon {
-        child,
+        child: Some(child),
         platform_guard,
     })
 }

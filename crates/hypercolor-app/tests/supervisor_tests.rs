@@ -3,10 +3,10 @@ use std::path::Path;
 use hypercolor_app::supervisor::{
     DEFAULT_DAEMON_BIND, SYSTEMD_USER_SERVICE, SupervisorState, SystemdUserServicePlan,
     SystemdUserServiceProbe, bind_from_daemon_url, build_daemon_command, daemon_executable_name,
-    daemon_path_candidates, health_url, macos_app_resource_dir, sibling_daemon_path,
-    sibling_ui_dir, startup_retry_delay, systemctl_is_active_output, systemctl_is_enabled_output,
-    systemd_user_service_plan, target_triple_candidates, tauri_sidecar_daemon_name,
-    ui_dir_candidates,
+    daemon_path_candidates, health_url, macos_app_resource_dir, restart_backoff,
+    sibling_daemon_path, sibling_ui_dir, startup_retry_delay, systemctl_is_active_output,
+    systemctl_is_enabled_output, systemd_user_service_plan, target_triple_candidates,
+    tauri_sidecar_daemon_name, ui_dir_candidates,
 };
 use std::time::Duration;
 use url::Url;
@@ -20,6 +20,18 @@ fn daemon_executable_name_matches_platform() {
     } else {
         assert_eq!(name, "hypercolor-daemon");
     }
+}
+
+#[test]
+fn restart_backoff_grows_then_saturates() {
+    // Per-attempt backoff: 1, 1, 2, 5, 10, 30, 30, ...
+    assert_eq!(restart_backoff(0), Duration::from_secs(1));
+    assert_eq!(restart_backoff(1), Duration::from_secs(1));
+    assert_eq!(restart_backoff(2), Duration::from_secs(2));
+    assert_eq!(restart_backoff(3), Duration::from_secs(5));
+    assert_eq!(restart_backoff(4), Duration::from_secs(10));
+    assert_eq!(restart_backoff(5), Duration::from_secs(30));
+    assert_eq!(restart_backoff(100), Duration::from_secs(30));
 }
 
 #[test]
