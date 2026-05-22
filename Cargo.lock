@@ -4804,6 +4804,8 @@ name = "hypercolor-app"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
+ "dirs 6.0.0",
  "futures-util",
  "hypercolor-core",
  "hypercolor-types",

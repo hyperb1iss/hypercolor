@@ -16,6 +16,7 @@ pub mod ids {
     pub const OPEN_WEB_UI: &str = "open_web_ui";
     pub const OPEN_LOGS_FOLDER: &str = "open_logs_folder";
     pub const OPEN_USER_EFFECTS_FOLDER: &str = "open_user_effects_folder";
+    pub const EXPORT_DIAGNOSTICS: &str = "export_diagnostics";
     pub const SETTINGS: &str = "settings";
     pub const PAUSE_RESUME: &str = "pause_resume";
     pub const REFRESH_SERVERS: &str = "refresh_servers";
@@ -39,6 +40,7 @@ pub enum MenuAction {
     OpenWebUi,
     OpenLogsFolder,
     OpenUserEffectsFolder,
+    ExportDiagnostics,
     Settings,
     TogglePause,
     RefreshServers,
@@ -151,6 +153,7 @@ pub fn action_for_menu_id(id: &str) -> Option<MenuAction> {
         ids::OPEN_WEB_UI => Some(MenuAction::OpenWebUi),
         ids::OPEN_LOGS_FOLDER => Some(MenuAction::OpenLogsFolder),
         ids::OPEN_USER_EFFECTS_FOLDER => Some(MenuAction::OpenUserEffectsFolder),
+        ids::EXPORT_DIAGNOSTICS => Some(MenuAction::ExportDiagnostics),
         ids::SETTINGS => Some(MenuAction::Settings),
         ids::PAUSE_RESUME => Some(MenuAction::TogglePause),
         ids::REFRESH_SERVERS => Some(MenuAction::RefreshServers),
@@ -268,6 +271,7 @@ fn build_app_entries(entries: &mut Vec<MenuEntry>) {
         "Open User Effects Folder",
         true,
     ));
+    entries.push(item(ids::EXPORT_DIAGNOSTICS, "Export Diagnostics", true));
     entries.push(item(ids::SETTINGS, "Settings", true));
 }
 

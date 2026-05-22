@@ -26,6 +26,7 @@ fn disconnected_menu_contains_app_actions() {
         "Open User Effects Folder",
         true,
     );
+    assert_item(&entries, ids::EXPORT_DIAGNOSTICS, "Export Diagnostics", true);
     assert_item(&entries, ids::SETTINGS, "Settings", true);
     assert_item(&entries, ids::QUIT, "Quit", true);
 }

@@ -110,6 +110,15 @@ fn run_menu_action<R: Runtime>(app: &AppHandle<R>, action: menu::MenuAction) -> 
         actions::ActionTarget::OpenDirectory(path) => {
             open_or_create_dir(&path)?;
         }
+        actions::ActionTarget::ExportDiagnostics => match crate::diagnostics::export_to_desktop() {
+            Ok(zip_path) => {
+                tracing::info!(path = %zip_path.display(), "diagnostics bundle exported");
+                let _ = open::that_detached(zip_path.parent().unwrap_or(&zip_path));
+            }
+            Err(error) => {
+                tracing::warn!(%error, "diagnostics export failed");
+            }
+        },
         actions::ActionTarget::ShowSettings => window::show_settings(app)?,
         actions::ActionTarget::Quit => app.exit(0),
         actions::ActionTarget::DaemonCommand(command) => {

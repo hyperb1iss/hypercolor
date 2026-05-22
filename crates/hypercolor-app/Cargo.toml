@@ -34,6 +34,8 @@ tracing-subscriber.workspace = true
 anyhow.workspace = true
 url = "2.5.8"
 open = "5"
+chrono = { workspace = true }
+dirs = { workspace = true }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
