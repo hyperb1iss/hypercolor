@@ -55,8 +55,10 @@ use crate::effect::traits::EffectRenderOutput;
 
 #[cfg(all(feature = "servo-gpu-import", target_os = "macos"))]
 type PlatformServoGpuImporter = hypercolor_macos_gpu_interop::MacosIosurfaceImporter;
-#[cfg(all(feature = "servo-gpu-import", not(target_os = "macos")))]
+#[cfg(all(feature = "servo-gpu-import", target_os = "linux"))]
 type PlatformServoGpuImporter = hypercolor_linux_gpu_interop::LinuxGlFramebufferImporter;
+#[cfg(all(feature = "servo-gpu-import", target_os = "windows"))]
+type PlatformServoGpuImporter = hypercolor_windows_gpu_interop::WindowsD3d11SharedTextureImporter;
 
 pub(super) const LOAD_TIMEOUT: Duration = Duration::from_secs(5);
 const URL_LOAD_TIMEOUT: Duration = Duration::from_secs(15);
@@ -1858,7 +1860,7 @@ impl ServoWorkerRuntime {
     }
 }
 
-#[cfg(all(feature = "servo-gpu-import", not(target_os = "macos")))]
+#[cfg(all(feature = "servo-gpu-import", target_os = "linux"))]
 impl ServoWorkerRuntime {
     fn warm_gpu_importer_if_available(
         &mut self,
@@ -2050,6 +2052,36 @@ impl ServoWorkerRuntime {
             let gl = session.rendering_context.glow_gl_api();
             importer.destroy_gl_resources(gl.as_ref());
         }
+        session.gpu_importer = None;
+    }
+}
+
+#[cfg(all(feature = "servo-gpu-import", target_os = "windows"))]
+impl ServoWorkerRuntime {
+    fn warm_gpu_importer_if_available(
+        &mut self,
+        _session_id: ServoSessionId,
+        _width: u32,
+        _height: u32,
+    ) {
+    }
+
+    fn import_gpu_frame(
+        &mut self,
+        _session_id: ServoSessionId,
+        _device: &wgpu::Device,
+    ) -> Result<crate::effect::traits::ImportedEffectFrame> {
+        Err(hypercolor_windows_gpu_interop::WindowsGpuInteropError::MissingWindowsAngleContext)
+            .context("Windows Servo GPU import requires the ANGLE shared-texture context")
+    }
+
+    fn clear_gpu_importer(&mut self, session_id: ServoSessionId) {
+        if let Ok(session) = self.session_mut(session_id) {
+            session.gpu_importer = None;
+        }
+    }
+
+    fn destroy_gpu_importer_for_session(session: &mut ServoSession) {
         session.gpu_importer = None;
     }
 }
@@ -2314,7 +2346,7 @@ fn render_servo_framebuffer(
     Ok(EffectRenderOutput::Cpu(canvas))
 }
 
-#[cfg(all(feature = "servo-gpu-import", not(target_os = "macos")))]
+#[cfg(all(feature = "servo-gpu-import", target_os = "linux"))]
 fn import_servo_framebuffer_into_wgpu(
     runtime: &mut ServoWorkerRuntime,
     session_id: ServoSessionId,
@@ -2331,6 +2363,19 @@ fn import_servo_framebuffer_into_wgpu(
         .context("failed to import Servo GL framebuffer into wgpu")
 }
 
+#[cfg(all(feature = "servo-gpu-import", target_os = "windows"))]
+fn import_servo_framebuffer_into_wgpu(
+    runtime: &mut ServoWorkerRuntime,
+    session_id: ServoSessionId,
+    _width: u32,
+    _height: u32,
+) -> Result<crate::effect::traits::ImportedEffectFrame> {
+    let device = super::gpu_import::servo_gpu_import_device()?;
+    runtime
+        .import_gpu_frame(session_id, device)
+        .context("failed to import Servo D3D11 shared texture into wgpu")
+}
+
 #[cfg(all(feature = "servo-gpu-import", target_os = "macos"))]
 fn import_servo_framebuffer_into_wgpu(
     runtime: &mut ServoWorkerRuntime,
@@ -2344,7 +2389,7 @@ fn import_servo_framebuffer_into_wgpu(
         .context("failed to import Servo IOSurface into wgpu")
 }
 
-#[cfg(all(feature = "servo-gpu-import", not(target_os = "macos")))]
+#[cfg(all(feature = "servo-gpu-import", target_os = "linux"))]
 fn record_imported_gpu_frame(frame: &crate::effect::traits::ImportedEffectFrame) {
     record_servo_gpu_import_frame(
         frame.timings.blit_us,
@@ -2356,6 +2401,15 @@ fn record_imported_gpu_frame(frame: &crate::effect::traits::ImportedEffectFrame)
 #[cfg(all(feature = "servo-gpu-import", target_os = "macos"))]
 fn record_imported_gpu_frame(frame: &crate::effect::traits::ImportedEffectFrame) {
     record_servo_gpu_import_frame(frame.timings.wrap_us, 0, frame.timings.total_us);
+}
+
+#[cfg(all(feature = "servo-gpu-import", target_os = "windows"))]
+fn record_imported_gpu_frame(frame: &crate::effect::traits::ImportedEffectFrame) {
+    record_servo_gpu_import_frame(
+        frame.timings.wrap_us,
+        frame.timings.sync_us,
+        frame.timings.total_us,
+    );
 }
 
 #[cfg(feature = "servo-gpu-import")]
@@ -2371,6 +2425,7 @@ fn servo_gpu_import_failure_is_transient(reason: ServoGpuImportFallbackReason) -
             | ServoGpuImportFallbackReason::GlFramebufferIncomplete
             | ServoGpuImportFallbackReason::ImportSlotsExhausted
             | ServoGpuImportFallbackReason::MissingMacosServoSurface
+            | ServoGpuImportFallbackReason::WindowsImportStaleFrame
     )
 }
 
@@ -2407,6 +2462,13 @@ fn servo_gpu_import_failure_detail(error: &anyhow::Error) -> String {
         {
             return error.to_string();
         }
+
+        #[cfg(target_os = "windows")]
+        if let Some(error) =
+            cause.downcast_ref::<hypercolor_windows_gpu_interop::WindowsGpuInteropError>()
+        {
+            return error.to_string();
+        }
     }
 
     error.to_string()
@@ -2439,6 +2501,30 @@ fn classify_servo_gpu_import_error(error: &anyhow::Error) -> ServoGpuImportFallb
                 } => ServoGpuImportFallbackReason::IosurfacePixelFormatMismatch,
                 hypercolor_macos_gpu_interop::MacosGpuInteropError::MetalTextureCreateFailed => {
                     ServoGpuImportFallbackReason::MetalTextureCreateFailed
+                }
+                _ => ServoGpuImportFallbackReason::Other,
+            };
+        }
+
+        #[cfg(target_os = "windows")]
+        if let Some(error) =
+            cause.downcast_ref::<hypercolor_windows_gpu_interop::WindowsGpuInteropError>()
+        {
+            return match error {
+                hypercolor_windows_gpu_interop::WindowsGpuInteropError::MissingWgpuVulkanDevice => {
+                    ServoGpuImportFallbackReason::MissingWgpuVulkanDevice
+                }
+                hypercolor_windows_gpu_interop::WindowsGpuInteropError::MissingVulkanExternalMemoryWin32 => {
+                    ServoGpuImportFallbackReason::MissingVulkanExternalMemoryWin32
+                }
+                hypercolor_windows_gpu_interop::WindowsGpuInteropError::MissingWindowsAngleContext => {
+                    ServoGpuImportFallbackReason::MissingWindowsAngleContext
+                }
+                hypercolor_windows_gpu_interop::WindowsGpuInteropError::InvalidDimensions {
+                    ..
+                } => ServoGpuImportFallbackReason::InvalidDimensions,
+                hypercolor_windows_gpu_interop::WindowsGpuInteropError::VulkanD3d11ImportFailed => {
+                    ServoGpuImportFallbackReason::VulkanD3d11ImportFailed
                 }
                 _ => ServoGpuImportFallbackReason::Other,
             };

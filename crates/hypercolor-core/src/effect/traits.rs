@@ -15,12 +15,16 @@ use tokio::sync::RwLock;
 use crate::asset::AssetLibrary;
 use crate::input::{InteractionData, ScreenData};
 
-#[cfg(all(feature = "servo-gpu-import", not(target_os = "macos")))]
+#[cfg(all(feature = "servo-gpu-import", target_os = "linux"))]
 pub use hypercolor_linux_gpu_interop::{
     ImportedEffectFrame, ImportedFrameFormat, ImportedFrameTimings,
 };
 #[cfg(all(feature = "servo-gpu-import", target_os = "macos"))]
 pub use hypercolor_macos_gpu_interop::{
+    ImportedEffectFrame, ImportedFrameFormat, ImportedFrameTimings,
+};
+#[cfg(all(feature = "servo-gpu-import", target_os = "windows"))]
+pub use hypercolor_windows_gpu_interop::{
     ImportedEffectFrame, ImportedFrameFormat, ImportedFrameTimings,
 };
 

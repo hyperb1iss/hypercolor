@@ -291,6 +291,15 @@ pub(super) enum ServoGpuImportFallbackReason {
     IosurfacePixelFormatMismatch,
     MetalTextureCreateFailed,
     Other,
+    MissingVulkanExternalMemoryWin32,
+    MissingWindowsAngleContext,
+    D3d11DeviceCreateFailed,
+    D3d11SharedTextureCreateFailed,
+    D3d11SharedHandleCreateFailed,
+    AngleClientBufferSurfaceFailed,
+    AdapterLuidMismatch,
+    VulkanD3d11ImportFailed,
+    WindowsImportStaleFrame,
 }
 
 impl ServoGpuImportFallbackReason {
@@ -314,6 +323,15 @@ impl ServoGpuImportFallbackReason {
             Self::IosurfacePixelFormatMismatch => 15,
             Self::MetalTextureCreateFailed => 16,
             Self::Other => 17,
+            Self::MissingVulkanExternalMemoryWin32 => 18,
+            Self::MissingWindowsAngleContext => 19,
+            Self::D3d11DeviceCreateFailed => 20,
+            Self::D3d11SharedTextureCreateFailed => 21,
+            Self::D3d11SharedHandleCreateFailed => 22,
+            Self::AngleClientBufferSurfaceFailed => 23,
+            Self::AdapterLuidMismatch => 24,
+            Self::VulkanD3d11ImportFailed => 25,
+            Self::WindowsImportStaleFrame => 26,
         }
     }
 
@@ -336,6 +354,15 @@ impl ServoGpuImportFallbackReason {
             15 => Some(Self::IosurfacePixelFormatMismatch),
             16 => Some(Self::MetalTextureCreateFailed),
             17 => Some(Self::Other),
+            18 => Some(Self::MissingVulkanExternalMemoryWin32),
+            19 => Some(Self::MissingWindowsAngleContext),
+            20 => Some(Self::D3d11DeviceCreateFailed),
+            21 => Some(Self::D3d11SharedTextureCreateFailed),
+            22 => Some(Self::D3d11SharedHandleCreateFailed),
+            23 => Some(Self::AngleClientBufferSurfaceFailed),
+            24 => Some(Self::AdapterLuidMismatch),
+            25 => Some(Self::VulkanD3d11ImportFailed),
+            26 => Some(Self::WindowsImportStaleFrame),
             _ => None,
         }
     }
@@ -359,6 +386,15 @@ impl ServoGpuImportFallbackReason {
             Self::IosurfacePixelFormatMismatch => "iosurface_pixel_format_mismatch",
             Self::MetalTextureCreateFailed => "metal_texture_create_failed",
             Self::Other => "other",
+            Self::MissingVulkanExternalMemoryWin32 => "missing_vulkan_external_memory_win32",
+            Self::MissingWindowsAngleContext => "missing_windows_angle_context",
+            Self::D3d11DeviceCreateFailed => "d3d11_device_create_failed",
+            Self::D3d11SharedTextureCreateFailed => "d3d11_shared_texture_create_failed",
+            Self::D3d11SharedHandleCreateFailed => "d3d11_shared_handle_create_failed",
+            Self::AngleClientBufferSurfaceFailed => "angle_client_buffer_surface_failed",
+            Self::AdapterLuidMismatch => "adapter_luid_mismatch",
+            Self::VulkanD3d11ImportFailed => "vulkan_d3d11_import_failed",
+            Self::WindowsImportStaleFrame => "windows_import_stale_frame",
         }
     }
 }

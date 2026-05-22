@@ -1,0 +1,27 @@
+[package]
+name = "hypercolor-windows-gpu-interop"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Windows D3D11/Vulkan texture import boundary for Hypercolor"
+
+[features]
+default = []
+
+[dependencies]
+thiserror = { workspace = true }
+wgpu = { workspace = true }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+wgpu-hal = { workspace = true, features = ["vulkan"] }
+windows = { version = "0.62", default-features = false, features = ["Win32_Foundation"] }
+
+[lints.rust]
+unsafe_code = "allow"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"
+unwrap_used = "deny"

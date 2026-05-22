@@ -19,7 +19,9 @@ use super::{
     PreviewSurfaceRequest,
 };
 use crate::performance::CompositorBackendKind;
-use crate::render_thread::gpu_device::{GpuRenderDevice, backend_name, texture_format_name};
+use crate::render_thread::gpu_device::{
+    GpuBackendPreference, GpuRenderDevice, backend_name, texture_format_name,
+};
 use crate::render_thread::producer_queue::{GpuTextureFrame, ProducerFrame};
 use crate::render_thread::sparkleflinger::gpu_sampling::{
     GpuSampleSource, GpuSamplingPlan, GpuSamplingPlanKey, GpuSpatialSampler,
@@ -337,13 +339,16 @@ enum GpuCompositorOutputSurface {
 
 impl GpuSparkleFlinger {
     pub(crate) fn new() -> Result<Self> {
-        Self::with_render_device(GpuRenderDevice::new("SparkleFlinger GPU compositor")?)
+        Self::with_render_device(GpuRenderDevice::new_with_backend_preference(
+            "SparkleFlinger GPU compositor",
+            servo_import_backend_preference(),
+        )?)
     }
 
     pub(crate) fn with_render_device(render_device: GpuRenderDevice) -> Result<Self> {
         let probe = probe_render_device(&render_device)?;
         #[cfg(all(
-            any(target_os = "linux", target_os = "macos"),
+            any(target_os = "linux", target_os = "macos", target_os = "windows"),
             feature = "servo-gpu-import"
         ))]
         {
@@ -1801,6 +1806,20 @@ pub(crate) fn probe_render_device(render_device: &GpuRenderDevice) -> Result<Gpu
     })
 }
 
+fn servo_import_backend_preference() -> GpuBackendPreference {
+    #[cfg(all(feature = "servo-gpu-import", target_os = "windows"))]
+    {
+        if matches!(
+            hypercolor_core::effect::servo_gpu_import_mode(),
+            hypercolor_types::config::ServoGpuImportMode::On
+        ) {
+            return GpuBackendPreference::VulkanRequiredForServoImport;
+        }
+    }
+
+    GpuBackendPreference::Default
+}
+
 #[allow(
     clippy::missing_fields_in_debug,
     reason = "compositor owns non-Debug GPU handles; surfacing probe + snapshot is sufficient for tracing"
@@ -2803,7 +2822,9 @@ impl GpuSourceFrame<'_> {
         match self {
             #[cfg(all(feature = "servo-gpu-import", target_os = "macos"))]
             Self::Imported(_) => true,
-            #[cfg(all(feature = "servo-gpu-import", not(target_os = "macos")))]
+            #[cfg(all(feature = "servo-gpu-import", target_os = "windows"))]
+            Self::Imported(_) => true,
+            #[cfg(all(feature = "servo-gpu-import", target_os = "linux"))]
             Self::Imported(_) => false,
             Self::Texture(_) => false,
         }
@@ -2813,7 +2834,9 @@ impl GpuSourceFrame<'_> {
         match self {
             #[cfg(all(feature = "servo-gpu-import", target_os = "macos"))]
             Self::Imported(_) => true,
-            #[cfg(all(feature = "servo-gpu-import", not(target_os = "macos")))]
+            #[cfg(all(feature = "servo-gpu-import", target_os = "windows"))]
+            Self::Imported(_) => true,
+            #[cfg(all(feature = "servo-gpu-import", target_os = "linux"))]
             Self::Imported(_) => false,
             Self::Texture(_) => false,
         }

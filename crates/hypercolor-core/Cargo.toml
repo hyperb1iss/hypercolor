@@ -30,6 +30,7 @@ servo-gpu-import = [
     "hypercolor-linux-gpu-interop?/servo-context",
     "dep:hypercolor-linux-gpu-interop",
     "dep:hypercolor-macos-gpu-interop",
+    "dep:hypercolor-windows-gpu-interop",
     "dep:wgpu",
 ]
 
@@ -39,6 +40,7 @@ hypercolor-driver-api = { workspace = true }
 hypercolor-hal = { workspace = true }
 hypercolor-linux-gpu-interop = { workspace = true, optional = true }
 hypercolor-macos-gpu-interop = { workspace = true, optional = true }
+hypercolor-windows-gpu-interop = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

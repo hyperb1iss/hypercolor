@@ -37,7 +37,7 @@ struct DaemonArgs {
     #[arg(long, alias = "render-acceleration-mode", value_enum)]
     compositor_acceleration_mode: Option<RenderAccelerationModeArg>,
 
-    /// Override the configured Servo Linux GPU import mode.
+    /// Override the configured Servo GPU import mode.
     #[arg(long, value_enum)]
     servo_gpu_import_mode: Option<ServoGpuImportModeArg>,
 

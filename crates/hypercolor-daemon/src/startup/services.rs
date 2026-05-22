@@ -78,6 +78,17 @@ impl DaemonState {
     )]
     pub fn initialize(config: &HypercolorConfig, config_path: PathBuf) -> Result<Self> {
         info!("Initializing daemon subsystems");
+        #[cfg(feature = "servo-gpu-import")]
+        {
+            hypercolor_core::effect::set_servo_gpu_import_mode(
+                config.rendering.servo_gpu_import.mode,
+            );
+            info!(
+                mode = ?hypercolor_core::effect::servo_gpu_import_mode(),
+                "Servo GPU import mode configured"
+            );
+        }
+
         let render_acceleration =
             resolve_compositor_acceleration_mode(config.effect_engine.compositor_acceleration_mode)
                 .context("failed to resolve compositor acceleration mode")?;
@@ -104,16 +115,6 @@ impl DaemonState {
                 linux_servo_gpu_import_backend_compatible = probe.linux_servo_gpu_import_backend_compatible,
                 linux_servo_gpu_import_backend_reason = probe.linux_servo_gpu_import_backend_reason,
                 "SparkleFlinger GPU probe succeeded"
-            );
-        }
-        #[cfg(feature = "servo-gpu-import")]
-        {
-            hypercolor_core::effect::set_servo_gpu_import_mode(
-                config.rendering.servo_gpu_import.mode,
-            );
-            info!(
-                mode = ?hypercolor_core::effect::servo_gpu_import_mode(),
-                "Servo GPU import mode configured"
             );
         }
 

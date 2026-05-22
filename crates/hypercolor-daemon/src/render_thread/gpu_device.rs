@@ -20,13 +20,34 @@ struct GpuRenderDeviceInner {
 pub(crate) struct GpuRenderDeviceInfo {
     pub(crate) adapter_name: String,
     pub(crate) backend: wgpu::Backend,
+    pub(crate) vulkan_external_memory_win32: bool,
     pub(crate) max_texture_dimension_2d: u32,
     pub(crate) max_storage_textures_per_shader_stage: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GpuBackendPreference {
+    Default,
+    VulkanRequiredForServoImport,
+}
+
 impl GpuRenderDevice {
     pub(crate) fn new(label: &'static str) -> Result<Self> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        Self::new_with_backend_preference(label, GpuBackendPreference::Default)
+    }
+
+    pub(crate) fn new_with_backend_preference(
+        label: &'static str,
+        backend_preference: GpuBackendPreference,
+    ) -> Result<Self> {
+        let mut instance_descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+        if matches!(
+            backend_preference,
+            GpuBackendPreference::VulkanRequiredForServoImport
+        ) {
+            instance_descriptor.backends = wgpu::Backends::VULKAN;
+        }
+        let instance = wgpu::Instance::new(instance_descriptor);
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             force_fallback_adapter: false,
@@ -34,9 +55,27 @@ impl GpuRenderDevice {
         }))
         .with_context(|| format!("no compatible wgpu adapter was available for {label}"))?;
 
+        let adapter_features = adapter.features();
+        let mut required_features = wgpu::Features::CLEAR_TEXTURE;
+        let adapter_info = adapter.get_info();
+        let vulkan_external_memory_win32 =
+            adapter_features.contains(wgpu::Features::VULKAN_EXTERNAL_MEMORY_WIN32);
+        if cfg!(target_os = "windows")
+            && matches!(adapter_info.backend, wgpu::Backend::Vulkan)
+            && vulkan_external_memory_win32
+        {
+            required_features |= wgpu::Features::VULKAN_EXTERNAL_MEMORY_WIN32;
+        }
+        if matches!(
+            backend_preference,
+            GpuBackendPreference::VulkanRequiredForServoImport
+        ) {
+            required_features |= wgpu::Features::VULKAN_EXTERNAL_MEMORY_WIN32;
+        }
+
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some(label),
-            required_features: wgpu::Features::CLEAR_TEXTURE,
+            required_features,
             required_limits: wgpu::Limits::default(),
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
             memory_hints: wgpu::MemoryHints::Performance,
@@ -44,11 +83,13 @@ impl GpuRenderDevice {
         }))
         .with_context(|| format!("failed to create a {label} wgpu device"))?;
 
-        let adapter_info = adapter.get_info();
         let limits = device.limits();
         let info = GpuRenderDeviceInfo {
             adapter_name: adapter_info.name,
             backend: adapter_info.backend,
+            vulkan_external_memory_win32: device
+                .features()
+                .contains(wgpu::Features::VULKAN_EXTERNAL_MEMORY_WIN32),
             max_texture_dimension_2d: limits.max_texture_dimension_2d,
             max_storage_textures_per_shader_stage: limits.max_storage_textures_per_shader_stage,
         };
@@ -69,7 +110,7 @@ impl GpuRenderDevice {
     }
 
     #[cfg(all(
-        any(target_os = "linux", target_os = "macos"),
+        any(target_os = "linux", target_os = "macos", target_os = "windows"),
         feature = "servo-gpu-import"
     ))]
     pub(crate) fn device_handle(&self) -> wgpu::Device {
@@ -114,6 +155,8 @@ impl GpuRenderDeviceInfo {
             matches!(self.backend, wgpu::Backend::Vulkan)
         } else if cfg!(target_os = "macos") {
             matches!(self.backend, wgpu::Backend::Metal)
+        } else if cfg!(target_os = "windows") {
+            matches!(self.backend, wgpu::Backend::Vulkan) && self.vulkan_external_memory_win32
         } else {
             false
         }
@@ -139,8 +182,16 @@ impl GpuRenderDeviceInfo {
             } else {
                 Some("macOS servo gpu import requires a Metal wgpu backend")
             }
+        } else if cfg!(target_os = "windows") {
+            if !matches!(self.backend, wgpu::Backend::Vulkan) {
+                Some("Windows servo gpu import requires a Vulkan wgpu backend")
+            } else if !self.vulkan_external_memory_win32 {
+                Some("Windows servo gpu import requires VULKAN_EXTERNAL_MEMORY_WIN32")
+            } else {
+                None
+            }
         } else {
-            Some("servo gpu import is only available on linux and macOS")
+            Some("servo gpu import is only available on linux, macOS, and Windows")
         }
     }
 
@@ -213,6 +264,7 @@ mod tests {
         let info = GpuRenderDeviceInfo {
             adapter_name: "test".to_owned(),
             backend: wgpu::Backend::Vulkan,
+            vulkan_external_memory_win32: true,
             max_texture_dimension_2d: 16_384,
             max_storage_textures_per_shader_stage: 8,
         };
@@ -239,6 +291,7 @@ mod tests {
         let vulkan = GpuRenderDeviceInfo {
             adapter_name: "test".to_owned(),
             backend: wgpu::Backend::Vulkan,
+            vulkan_external_memory_win32: true,
             max_texture_dimension_2d: 16_384,
             max_storage_textures_per_shader_stage: 8,
         };
@@ -253,7 +306,7 @@ mod tests {
 
         assert_eq!(
             vulkan.servo_gpu_import_backend_compatible(),
-            cfg!(target_os = "linux")
+            cfg!(any(target_os = "linux", target_os = "windows"))
         );
         assert_eq!(
             metal.servo_gpu_import_backend_compatible(),
@@ -263,6 +316,28 @@ mod tests {
         assert_eq!(
             metal.servo_gpu_import_backend_reason().is_none(),
             cfg!(target_os = "macos")
+        );
+    }
+
+    #[test]
+    fn windows_servo_import_requires_win32_external_memory() {
+        let vulkan_without_win32 = GpuRenderDeviceInfo {
+            adapter_name: "test".to_owned(),
+            backend: wgpu::Backend::Vulkan,
+            vulkan_external_memory_win32: false,
+            max_texture_dimension_2d: 16_384,
+            max_storage_textures_per_shader_stage: 8,
+        };
+
+        assert_eq!(
+            vulkan_without_win32.servo_gpu_import_backend_compatible(),
+            false
+        );
+        assert_eq!(
+            vulkan_without_win32
+                .servo_gpu_import_backend_reason()
+                .is_some(),
+            cfg!(target_os = "windows")
         );
     }
 }

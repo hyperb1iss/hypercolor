@@ -29,7 +29,8 @@ use tao::platform::windows::EventLoopBuilderExtWindows;
 use tao::window::{Window, WindowBuilder};
 #[cfg(any(
     all(target_os = "macos", feature = "servo-gpu-import"),
-    all(target_os = "linux", feature = "servo-gpu-import")
+    all(target_os = "linux", feature = "servo-gpu-import"),
+    all(target_os = "windows", feature = "servo-gpu-import")
 ))]
 use tracing::warn;
 
@@ -106,8 +107,36 @@ pub fn bootstrap_software_rendering_context(
 /// Windows uses a hidden native window plus Servo's offscreen context. Servo's
 /// software WARP context can load pages there, but WebGL effects panic during
 /// ANGLE surface import before any pixels can be read back.
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", not(feature = "servo-gpu-import")))]
 pub(crate) fn bootstrap_rendering_context(
+    width: u32,
+    height: u32,
+) -> Result<ServoRenderingContextHandle> {
+    bootstrap_windows_window_rendering_context(width, height)
+}
+
+#[cfg(all(target_os = "windows", feature = "servo-gpu-import"))]
+pub(crate) fn bootstrap_rendering_context(
+    width: u32,
+    height: u32,
+) -> Result<ServoRenderingContextHandle> {
+    if crate::effect::servo_gpu_import_should_attempt() {
+        if matches!(
+            crate::effect::servo_gpu_import_mode(),
+            hypercolor_types::config::ServoGpuImportMode::On
+        ) {
+            return Err(anyhow!(
+                "Windows Servo GPU import requires the ANGLE shared-texture context"
+            ));
+        }
+        warn!("Windows Servo GPU import context unavailable; using hidden-window CPU context");
+    }
+
+    bootstrap_windows_window_rendering_context(width, height)
+}
+
+#[cfg(target_os = "windows")]
+fn bootstrap_windows_window_rendering_context(
     width: u32,
     height: u32,
 ) -> Result<ServoRenderingContextHandle> {

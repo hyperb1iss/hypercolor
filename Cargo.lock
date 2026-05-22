@@ -4911,6 +4911,7 @@ dependencies = [
  "hypercolor-linux-gpu-interop",
  "hypercolor-macos-gpu-interop",
  "hypercolor-types",
+ "hypercolor-windows-gpu-interop",
  "image",
  "libpulse-binding",
  "log",
@@ -5332,6 +5333,16 @@ dependencies = [
  "toml 0.8.2",
  "utoipa",
  "uuid",
+]
+
+[[package]]
+name = "hypercolor-windows-gpu-interop"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.18",
+ "wgpu",
+ "wgpu-hal 29.0.1",
+ "windows 0.62.2",
 ]
 
 [[package]]
