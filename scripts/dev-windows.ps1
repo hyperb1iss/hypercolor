@@ -10,6 +10,21 @@ $DaemonArgs = @($DaemonArgs | Where-Object { $null -ne $_ -and $_ -ne '' })
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $RepoRoot
 
+$CacheRoot = if ($env:HYPERCOLOR_CACHE_DIR) {
+    $env:HYPERCOLOR_CACHE_DIR
+} else {
+    Join-Path $env:USERPROFILE '.cache\hypercolor'
+}
+
+if (-not $env:CARGO_TARGET_DIR) {
+    $env:CARGO_TARGET_DIR = Join-Path $CacheRoot 'target'
+}
+if (-not $env:MOZBUILD_STATE_PATH) {
+    $env:MOZBUILD_STATE_PATH = Join-Path $CacheRoot 'mozbuild'
+}
+
+New-Item -ItemType Directory -Force -Path $env:CARGO_TARGET_DIR, $env:MOZBUILD_STATE_PATH | Out-Null
+
 function Add-PathPrefix {
     param([string] $Path)
 
@@ -114,7 +129,7 @@ function Stop-HypercolorChild {
 }
 
 function Add-HypercolorAngleRuntimePath {
-    $buildDir = Join-Path $RepoRoot 'target\preview\build'
+    $buildDir = Join-Path $env:CARGO_TARGET_DIR 'preview\build'
     if (-not (Test-Path $buildDir)) {
         return
     }
@@ -130,6 +145,31 @@ function Add-HypercolorAngleRuntimePath {
 
     Add-PathPrefix $eglDll.DirectoryName
     $env:HYPERCOLOR_ANGLE_DIR = $eglDll.DirectoryName
+}
+
+function Set-HypercolorPawnIoModuleDir {
+    # Make the bundled PawnIO modules (SMBus, IntelMSR, AMDFamily17) visible
+    # to the daemon without requiring the user to also run the installer.
+    # `pawnio_module_dirs()` in hypercolor-windows-pawnio checks this env var
+    # first, so a `just dev` loop gets motherboard RGB enumeration AND CPU
+    # temperature reads identical to a real install.
+    $stagedModuleDir = Join-Path $RepoRoot 'crates\hypercolor-app\resources\tools\pawnio\modules'
+    $intelMsr = Join-Path $stagedModuleDir 'IntelMSR.bin'
+
+    if (-not (Test-Path $intelMsr)) {
+        Write-Host '[dev] staging PawnIO modules (one-time)'
+        $fetchScript = Join-Path $RepoRoot 'scripts\fetch-pawnio-assets.ps1'
+        & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $fetchScript
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "[dev] PawnIO module fetch failed; CPU temps will be unavailable in this session"
+            return
+        }
+    }
+
+    if (Test-Path $stagedModuleDir) {
+        $env:HYPERCOLOR_PAWNIO_MODULE_DIR = $stagedModuleDir
+        Write-Host "[dev] HYPERCOLOR_PAWNIO_MODULE_DIR=$stagedModuleDir"
+    }
 }
 
 Enter-HypercolorVsDevShell
@@ -182,19 +222,22 @@ $cargoBuildArguments = @(
     'servo wgpu'
 )
 
-$daemonExe = Join-Path $RepoRoot 'target\preview\hypercolor-daemon.exe'
+$daemonExe = Join-Path $env:CARGO_TARGET_DIR 'preview\hypercolor-daemon.exe'
+$cargoCacheBuild = Join-Path $RepoRoot 'scripts\cargo-cache-build.ps1'
 
 $daemon = $null
 $ui = $null
 
 try {
     Write-Host '[dev] building daemon'
-    & cargo @cargoBuildArguments
+    Write-Host "[dev] CARGO_TARGET_DIR=$env:CARGO_TARGET_DIR"
+    & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $cargoCacheBuild cargo @cargoBuildArguments
     if ($LASTEXITCODE -ne 0) {
         exit $LASTEXITCODE
     }
 
     Add-HypercolorAngleRuntimePath
+    Set-HypercolorPawnIoModuleDir
 
     Write-Host '[dev] starting daemon on 127.0.0.1:9420'
     $daemon = Start-HypercolorChild -FilePath $daemonExe -Arguments $daemonArguments -WorkingDirectory $RepoRoot
