@@ -76,6 +76,10 @@ pub struct PawnIoSupportStatus {
     pub bundled_modules: Vec<PawnIoModuleStatus>,
     /// Whether the full local install payload is available.
     pub install_available: bool,
+    /// Host motherboard identity, when detectable. UI uses this to gate whether
+    /// to surface the hardware-support offer (RGB-capable vendors get a
+    /// promoted banner; non-RGB hosts get no offer at all).
+    pub motherboard: Option<hypercolor_types::motherboard::MotherboardInfo>,
 }
 
 /// User-selected options for the elevated Windows hardware support helper.
@@ -206,6 +210,7 @@ pub fn detect_pawnio_support_from_resource_dir(resource_dir: Option<&Path>) -> P
             && broker_available
             && bundled_installer_available
             && bundled_modules_available,
+        motherboard: hypercolor_core::system::motherboard_info(),
     }
 }
 

@@ -1092,6 +1092,18 @@ fn HardwareSupportPanel() -> impl IntoView {
                     </HardwareSupportFrame>
                 }.into_any(),
                 Some(Ok(Some(current))) if !current.platform_supported => ().into_any(),
+                Some(Ok(Some(current)))
+                    if current
+                        .motherboard
+                        .as_ref()
+                        .is_some_and(|board| !board.is_likely_rgb_capable()) =>
+                {
+                    // Detected motherboard from a vendor without known
+                    // Hypercolor RGB support — don't surface the install panel
+                    // at all. Network devices (Hue/WLED/etc.) still work
+                    // without PawnIO.
+                    ().into_any()
+                }
                 Some(Ok(Some(current))) => view! {
                     <HardwareSupportStatusPanel
                         status=current
@@ -1122,6 +1134,12 @@ fn HardwareSupportStatusPanel(
         "Install support"
     };
 
+    let board_summary = status
+        .motherboard
+        .as_ref()
+        .filter(|board| board.is_likely_rgb_capable())
+        .map(|board| format!("Detected: {} {}", board.manufacturer, board.product));
+
     view! {
         <HardwareSupportFrame>
             <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -1133,6 +1151,11 @@ fn HardwareSupportStatusPanel(
                     <div class="text-xs text-fg-tertiary/70 mt-1">
                         "PawnIO runtime and HypercolorSmBus broker for motherboard and memory RGB"
                     </div>
+                    {board_summary.map(|summary| view! {
+                        <div class="text-[11px] text-accent-cyan/80 mt-1 font-mono truncate">
+                            {summary}
+                        </div>
+                    })}
                 </div>
                 <button
                     class="px-3 py-1.5 rounded-lg text-xs font-medium transition-all shrink-0 disabled:cursor-not-allowed"

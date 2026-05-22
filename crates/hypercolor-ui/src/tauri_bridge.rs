@@ -40,6 +40,7 @@ pub struct PawnIoSupportStatus {
     pub bundled_installer_available: bool,
     pub bundled_modules: Vec<PawnIoModuleStatus>,
     pub install_available: bool,
+    pub motherboard: Option<hypercolor_types::motherboard::MotherboardInfo>,
 }
 
 /// Options for launching the native PawnIO helper.
@@ -397,6 +398,11 @@ mod tests {
                 module("SmbusNCT6793.bin"),
             ],
             install_available: true,
+            motherboard: Some(hypercolor_types::motherboard::MotherboardInfo {
+                manufacturer: "ASUSTeK COMPUTER INC.".to_string(),
+                product: "ROG STRIX X670E-E GAMING WIFI".to_string(),
+                version: Some("Rev 1.xx".to_string()),
+            }),
         }
     }
 
