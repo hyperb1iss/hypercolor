@@ -368,48 +368,25 @@ struct WindowsSensorExtras {
 #[cfg(target_os = "windows")]
 impl WindowsSensorExtras {
     fn new() -> Option<Self> {
-        let libre_hardware = match wmi::WMIConnection::with_namespace_path(
-            "ROOT\\LibreHardwareMonitor",
-        ) {
-            Ok(con) => {
-                tracing::info!(
-                    "LibreHardwareMonitor WMI namespace available; using it for CPU/GPU sensors"
-                );
-                Some(con)
-            }
-            Err(err) => {
-                debug!("LibreHardwareMonitor WMI namespace not available: {err}");
-                None
-            }
-        };
+        // Opportunistic sources — used if the user happens to be running
+        // LibreHardwareMonitor or OpenHardwareMonitor, but never required.
+        // The first-class CPU temp path is PawnIO MSR reads (TODO: wire),
+        // which we bundle with the installer for motherboard RGB anyway.
+        let libre_hardware = wmi::WMIConnection::with_namespace_path("ROOT\\LibreHardwareMonitor")
+            .map_err(|err| debug!("LibreHardwareMonitor namespace not present: {err}"))
+            .ok();
         let open_hardware = if libre_hardware.is_some() {
             None
         } else {
-            match wmi::WMIConnection::with_namespace_path("ROOT\\OpenHardwareMonitor") {
-                Ok(con) => {
-                    tracing::info!(
-                        "OpenHardwareMonitor WMI namespace available; using it for CPU/GPU sensors"
-                    );
-                    Some(con)
-                }
-                Err(err) => {
-                    debug!("OpenHardwareMonitor WMI namespace not available: {err}");
-                    None
-                }
-            }
+            wmi::WMIConnection::with_namespace_path("ROOT\\OpenHardwareMonitor")
+                .map_err(|err| debug!("OpenHardwareMonitor namespace not present: {err}"))
+                .ok()
         };
-        let acpi_zones = match wmi::WMIConnection::with_namespace_path("ROOT\\WMI") {
-            Ok(con) => Some(con),
-            Err(err) => {
-                debug!("ROOT\\WMI namespace not available for ACPI thermal zones: {err}");
-                None
-            }
-        };
+        let acpi_zones = wmi::WMIConnection::with_namespace_path("ROOT\\WMI")
+            .map_err(|err| debug!("ROOT\\WMI namespace not present for ACPI thermal zones: {err}"))
+            .ok();
 
         if libre_hardware.is_none() && open_hardware.is_none() && acpi_zones.is_none() {
-            tracing::warn!(
-                "no Windows sensor sources available (install LibreHardwareMonitor for CPU/GPU temps; LCD device faces will render zeros)"
-            );
             return None;
         }
 
