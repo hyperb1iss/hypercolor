@@ -90,6 +90,23 @@ pub struct PawnIoSupportStatus {
     /// to surface the hardware-support offer (RGB-capable vendors get a
     /// promoted banner; non-RGB hosts get no offer at all).
     pub motherboard: Option<hypercolor_types::motherboard::MotherboardInfo>,
+    /// Other RGB-control tools detected on the host that would compete with
+    /// Hypercolor for the SMBus or vendor APIs. UI shows a warning row when
+    /// any of these are running so users close them before clicking
+    /// "Install support" (two RGB tools fighting for SMBus = chaos).
+    pub conflicting_rgb_tools: Vec<ConflictingRgbTool>,
+}
+
+/// Competing RGB tool detected on the host.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ConflictingRgbTool {
+    /// Human-readable product name (e.g. "SignalRGB").
+    pub name: String,
+    /// Underlying service or process the detection matched.
+    pub identifier: String,
+    /// Whether the tool is actively running right now.
+    pub running: bool,
 }
 
 /// User-selected options for the elevated Windows hardware support helper.
@@ -221,6 +238,7 @@ pub fn detect_pawnio_support_from_resource_dir(resource_dir: Option<&Path>) -> P
             && bundled_installer_available
             && bundled_modules_available,
         motherboard: hypercolor_core::system::motherboard_info(),
+        conflicting_rgb_tools: detect_conflicting_rgb_tools(),
     }
 }
 
@@ -425,6 +443,44 @@ fn pawnio_home_candidates() -> Vec<PathBuf> {
     }
 
     candidates
+}
+
+/// Known competing RGB-control products that share the SMBus or vendor
+/// APIs Hypercolor depends on. Ordered roughly by how often they bite users.
+#[cfg(target_os = "windows")]
+const KNOWN_RGB_CONFLICTS: &[(&str, &str)] = &[
+    // (display name, Windows service name)
+    ("SignalRGB", "SignalRgb.Service"),
+    ("Corsair iCUE", "iCUEService"),
+    ("Corsair iCUE (legacy)", "Corsair Service"),
+    ("ASUS Armoury Crate / Aura", "LightingService"),
+    ("ASUS Armoury Crate", "Asus Optimization"),
+    ("MSI Center", "MSI_Central_Service"),
+    ("Gigabyte RGB Fusion", "GBT_ZA_Service"),
+    ("Razer Synapse", "Razer Synapse Service"),
+];
+
+#[cfg(target_os = "windows")]
+fn detect_conflicting_rgb_tools() -> Vec<ConflictingRgbTool> {
+    KNOWN_RGB_CONFLICTS
+        .iter()
+        .filter_map(|(name, service_name)| {
+            let status = query_service_status(service_name);
+            if !status.installed {
+                return None;
+            }
+            Some(ConflictingRgbTool {
+                name: (*name).to_owned(),
+                identifier: (*service_name).to_owned(),
+                running: status.state.as_deref() == Some("RUNNING"),
+            })
+        })
+        .collect()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn detect_conflicting_rgb_tools() -> Vec<ConflictingRgbTool> {
+    Vec::new()
 }
 
 #[cfg(target_os = "windows")]

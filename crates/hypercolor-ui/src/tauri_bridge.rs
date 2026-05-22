@@ -41,6 +41,17 @@ pub struct PawnIoSupportStatus {
     pub bundled_modules: Vec<PawnIoModuleStatus>,
     pub install_available: bool,
     pub motherboard: Option<hypercolor_types::motherboard::MotherboardInfo>,
+    #[serde(default)]
+    pub conflicting_rgb_tools: Vec<ConflictingRgbTool>,
+}
+
+/// Competing RGB-control tool detected on the host.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ConflictingRgbTool {
+    pub name: String,
+    pub identifier: String,
+    pub running: bool,
 }
 
 /// Options for launching the native PawnIO helper.
@@ -403,6 +414,7 @@ mod tests {
                 product: "ROG STRIX X670E-E GAMING WIFI".to_string(),
                 version: Some("Rev 1.xx".to_string()),
             }),
+            conflicting_rgb_tools: Vec::new(),
         }
     }
 

@@ -1148,6 +1148,19 @@ fn HardwareSupportStatusPanel(
         .filter(|board| board.is_likely_rgb_capable())
         .map(|board| format!("Detected: {} {}", board.manufacturer, board.product));
 
+    let running_conflicts: Vec<String> = status
+        .conflicting_rgb_tools
+        .iter()
+        .filter(|tool| tool.running)
+        .map(|tool| tool.name.clone())
+        .collect();
+    let conflict_warning = (!running_conflicts.is_empty()).then(|| {
+        format!(
+            "Other RGB software is running: {}. Quit it first to avoid SMBus conflicts.",
+            running_conflicts.join(", ")
+        )
+    });
+
     view! {
         <HardwareSupportFrame>
             <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -1162,6 +1175,15 @@ fn HardwareSupportStatusPanel(
                     {board_summary.map(|summary| view! {
                         <div class="text-[11px] text-accent-cyan/80 mt-1 font-mono truncate">
                             {summary}
+                        </div>
+                    })}
+                    {conflict_warning.map(|warning| view! {
+                        <div
+                            class="flex items-center gap-1.5 text-[11px] mt-1.5 px-2 py-1 rounded"
+                            style="color: rgba(241, 250, 140, 0.95); background: rgba(241, 250, 140, 0.08); border: 1px solid rgba(241, 250, 140, 0.18)"
+                        >
+                            <Icon icon=LuTriangleAlert width="11px" height="11px" />
+                            <span>{warning}</span>
                         </div>
                     })}
                 </div>
