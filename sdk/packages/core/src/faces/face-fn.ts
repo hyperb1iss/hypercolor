@@ -199,6 +199,14 @@ function googleFontsUrl(families: Iterable<string>): string {
 
 const loadedFaceFonts = new Set<string>()
 
+function shouldLoadRemoteFaceFonts(): boolean {
+    return !(
+        typeof globalThis === 'object' &&
+        globalThis !== null &&
+        Boolean((globalThis as Record<string, unknown>).__hypercolorCaptureMode)
+    )
+}
+
 /**
  * Load only the currently selected face fonts instead of the whole picker menu.
  */
@@ -206,6 +214,8 @@ async function loadFaceFonts(
     fontControls: ResolvedFaceFontControl[],
     controlValues: Record<string, unknown>,
 ): Promise<void> {
+    if (!shouldLoadRemoteFaceFonts()) return
+
     const families = resolveFaceFontFamilies(fontControls, controlValues).filter(
         (family) => family.length > 0 && !loadedFaceFonts.has(family),
     )
@@ -343,4 +353,5 @@ export const __testing = {
     resolveFaceControls,
     resolveFaceFontControls,
     resolveFaceFontFamilies,
+    shouldLoadRemoteFaceFonts,
 }

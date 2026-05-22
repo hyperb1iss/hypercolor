@@ -35,4 +35,14 @@ describe('face font loading', () => {
 
         expect(families).toEqual(['Rajdhani'])
     })
+
+    test('skips remote font loading in capture mode', () => {
+        Reflect.set(globalThis, '__hypercolorCaptureMode', true)
+
+        try {
+            expect(__testing.shouldLoadRemoteFaceFonts()).toBe(false)
+        } finally {
+            Reflect.deleteProperty(globalThis, '__hypercolorCaptureMode')
+        }
+    })
 })
