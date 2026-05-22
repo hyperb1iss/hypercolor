@@ -35,7 +35,6 @@ Notable secondary binaries built from `src/bin/`: `hypercolor-debug` (diagnostic
 | `servo-gpu-import` | no | Servo/wgpu GPU texture sharing on Linux |
 | `cloud` | no | Enables cloud connectivity via hypercolor-cloud-client |
 | `official-cloud` | no | Alias for `cloud` used in official builds |
-| `nvidia` | no | Propagates the NVIDIA display capture path from hypercolor-core |
 
 ## API Surface
 

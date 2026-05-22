@@ -80,8 +80,11 @@ optionally `hypercolor-linux-gpu-interop` (feature `servo-gpu-import`).
 |---|---|
 | `servo` | Servo HTML/Canvas renderer. Pulls in `servo`, `servo-base`, `profile_traits`, `dpi`, `gleam`, `tao`, `raw-window-handle`. On Windows, uses the `no-wgl` Servo variant. |
 | `servo-gpu-import` | Extends `servo` with zero-copy GL-to-wgpu texture import via `hypercolor-linux-gpu-interop`. Linux only in practice. |
-| `nvidia` | NVML GPU telemetry via `nvml-wrapper`. |
 | `default` | Empty — all features are opt-in. |
+
+NVML GPU telemetry via `nvml-wrapper` is always-on (no feature flag); it
+gracefully degrades to no readings when an NVIDIA driver is not present. On
+Windows, `wmi` is a required transitive dep for ACPI thermal zone queries.
 
 ---
 
