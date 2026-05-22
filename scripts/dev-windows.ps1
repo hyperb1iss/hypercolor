@@ -201,11 +201,21 @@ if ([string]::IsNullOrWhiteSpace($env:HYPERCOLOR_COMPOSITOR_ACCELERATION_MODE)) 
 }
 Write-Host "[dev] compositor acceleration mode: $compositorAccelerationMode"
 
+if ([string]::IsNullOrWhiteSpace($env:HYPERCOLOR_SERVO_GPU_IMPORT_MODE)) {
+    $servoGpuImportMode = 'auto'
+    Write-Host "[dev] Servo GPU import mode: $servoGpuImportMode (default)"
+} else {
+    $servoGpuImportMode = $env:HYPERCOLOR_SERVO_GPU_IMPORT_MODE
+    Write-Host "[dev] Servo GPU import mode: $servoGpuImportMode"
+}
+
 $daemonArguments = @(
     '--log-level',
     'debug',
     '--compositor-acceleration-mode',
     $compositorAccelerationMode,
+    '--servo-gpu-import-mode',
+    $servoGpuImportMode,
     '--bind',
     '127.0.0.1:9420'
 ) + $DaemonArgs
@@ -219,7 +229,7 @@ $cargoBuildArguments = @(
     '--profile',
     'preview',
     '--features',
-    'servo wgpu'
+    'servo wgpu servo-gpu-import'
 )
 
 $daemonExe = Join-Path $env:CARGO_TARGET_DIR 'preview\hypercolor-daemon.exe'
