@@ -8,7 +8,7 @@ use hypercolor_leptos_ext::prelude::current_page_location;
 use hypercolor_leptos_ext::ws::transport::send_websocket_json;
 use hypercolor_types::spatial::SpatialLayout;
 
-pub const DEFAULT_PREVIEW_FPS_CAP: u32 = 60;
+pub const DEFAULT_PREVIEW_FPS_CAP: u32 = 30;
 pub(super) const HIDDEN_TAB_PREVIEW_FPS_CAP: u32 = 6;
 pub(super) const SCREEN_PREVIEW_FPS_CAP: u32 = 15;
 pub(super) const WEB_VIEWPORT_PREVIEW_FPS_CAP: u32 = 15;

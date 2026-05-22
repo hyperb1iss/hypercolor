@@ -37,7 +37,7 @@ use worker::DisplayWorkerHandle;
 const DISPLAY_ERROR_WARN_INTERVAL: Duration = Duration::from_secs(5);
 const DISPLAY_OUTPUT_MAX_FPS: u32 = 15;
 const RAW_DISPLAY_OUTPUT_MAX_FPS: u32 = 30;
-pub(crate) const DISPLAY_FACE_DEFAULT_FPS: u32 = 30;
+pub(crate) const DISPLAY_FACE_DEFAULT_FPS: u32 = 15;
 const DISPLAY_OUTPUT_DISPATCH_INTERVAL: Duration = Duration::from_millis(16);
 pub const DEFAULT_STATIC_HOLD_REFRESH_INTERVAL: Duration = Duration::from_secs(20);
 const DISPLAY_RUNTIME_WORKERS: usize = 2;
@@ -1072,6 +1072,13 @@ mod tests {
             finalized_face: false,
             viewport: default_display_viewport(),
         }
+    }
+
+    #[test]
+    fn group_direct_display_target_fps_stays_on_face_cap() {
+        assert_eq!(capped_group_direct_display_target_fps(0), 15);
+        assert_eq!(capped_group_direct_display_target_fps(8), 8);
+        assert_eq!(capped_group_direct_display_target_fps(60), 15);
     }
 
     #[test]
