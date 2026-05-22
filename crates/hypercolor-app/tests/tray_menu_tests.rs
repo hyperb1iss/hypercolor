@@ -2,9 +2,50 @@ use std::net::{IpAddr, Ipv4Addr};
 
 use hypercolor_app::{
     state::{AppState, EffectInfo, ProfileInfo, ServerEntry},
+    tray::icons::{IconState, icon_state_for, icon_state_for_with_supervisor},
     tray::menu::{MenuAction, MenuEntry, action_for_menu_id, ids, menu_model},
 };
 use hypercolor_types::server::{DiscoveredServer, ServerIdentity};
+
+#[test]
+fn icon_state_falls_back_to_disconnected_when_not_connected() {
+    let state = AppState::disconnected();
+    assert_eq!(icon_state_for(&state), IconState::Disconnected);
+    assert_eq!(
+        icon_state_for_with_supervisor(&state, false),
+        IconState::Disconnected
+    );
+}
+
+#[test]
+fn icon_state_active_when_connected_and_running() {
+    let mut state = AppState::disconnected();
+    state.connected = true;
+    state.paused = false;
+    assert_eq!(icon_state_for(&state), IconState::Active);
+}
+
+#[test]
+fn icon_state_paused_when_paused_flag_set() {
+    let mut state = AppState::disconnected();
+    state.connected = true;
+    state.paused = true;
+    assert_eq!(icon_state_for(&state), IconState::Paused);
+}
+
+#[test]
+fn icon_state_error_when_supervisor_permanently_failed() {
+    // The Error state overrides everything else — even a "connected,
+    // running" daemon shows Error if the supervisor has given up trying
+    // to keep it alive (the tooltip and panel will explain why).
+    let mut state = AppState::disconnected();
+    state.connected = true;
+    state.paused = false;
+    assert_eq!(
+        icon_state_for_with_supervisor(&state, true),
+        IconState::Error
+    );
+}
 
 #[test]
 fn disconnected_menu_contains_app_actions() {

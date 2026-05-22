@@ -64,8 +64,12 @@ impl TrayRuntime {
 /// Returns a Tauri error if native tray or menu construction fails.
 pub fn register<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<TrayIcon<R>> {
     let state = AppState::disconnected();
+    let supervisor_failed = supervisor_failed(app);
     let tray_menu = menu::build_menu(app, &state)?;
-    let icon = icons::build_icon(icons::icon_state_for(&state));
+    let icon = icons::build_icon(icons::icon_state_for_with_supervisor(
+        &state,
+        supervisor_failed,
+    ));
 
     let tray = TrayIconBuilder::with_id(TRAY_ID)
         .tooltip(tooltip_for(&state))
@@ -174,12 +178,33 @@ fn refresh_tray<R: Runtime>(app: &AppHandle<R>, state: &AppState) -> tauri::Resu
         return Ok(());
     };
 
+    let supervisor_failed = supervisor_failed(app);
     let tray_menu = menu::build_menu(app, state)?;
-    let icon = icons::build_icon(icons::icon_state_for(state));
+    let icon = icons::build_icon(icons::icon_state_for_with_supervisor(
+        state,
+        supervisor_failed,
+    ));
     tray.set_menu(Some(tray_menu))?;
     tray.set_icon(Some(icon))?;
-    tray.set_tooltip(Some(tooltip_for(state)))?;
+    tray.set_tooltip(Some(tooltip_for_with_supervisor(state, supervisor_failed)))?;
     Ok(())
+}
+
+/// Read the supervisor's permanent-failure latch through the Tauri-
+/// managed `SupervisorState`. Returns `false` if the state isn't yet
+/// registered (early startup before `setup` finishes).
+fn supervisor_failed<R: Runtime>(app: &AppHandle<R>) -> bool {
+    app.try_state::<crate::supervisor::SupervisorState>()
+        .map(|state| state.inner().permanent_failure())
+        .unwrap_or(false)
+}
+
+fn tooltip_for_with_supervisor(state: &AppState, supervisor_failed: bool) -> String {
+    if supervisor_failed {
+        "Hypercolor - Supervisor stopped trying to restart the daemon".to_owned()
+    } else {
+        tooltip_for(state)
+    }
 }
 
 fn open_or_create_dir(path: &std::path::Path) -> anyhow::Result<()> {

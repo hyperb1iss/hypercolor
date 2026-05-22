@@ -24,9 +24,28 @@ pub enum IconState {
 }
 
 /// Pick the tray icon state from the current app state.
+///
+/// Considers only the app's view of the daemon. Use
+/// [`icon_state_for_with_supervisor`] when the supervisor's permanent-
+/// failure latch is also available — that's the path that surfaces
+/// `IconState::Error` (watchdog gave up after the rapid-restart cap).
 #[must_use]
 pub fn icon_state_for(state: &AppState) -> IconState {
-    if !state.connected {
+    icon_state_for_with_supervisor(state, false)
+}
+
+/// Pick the tray icon state with supervisor visibility.
+///
+/// `supervisor_failed` is sourced from
+/// `SupervisorState::permanent_failure()` — when true, the tray
+/// surfaces the red Error icon regardless of whether the daemon is
+/// momentarily reachable, because the supervisor has stopped trying
+/// to keep it alive.
+#[must_use]
+pub fn icon_state_for_with_supervisor(state: &AppState, supervisor_failed: bool) -> IconState {
+    if supervisor_failed {
+        IconState::Error
+    } else if !state.connected {
         IconState::Disconnected
     } else if state.paused {
         IconState::Paused

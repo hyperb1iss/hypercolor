@@ -82,6 +82,11 @@ pub enum SystemdUserServicePlan {
 #[derive(Clone, Default)]
 pub struct SupervisorState {
     child_pid: Arc<Mutex<Option<u32>>>,
+    /// Latched true when the watchdog circuit-breaker fires —
+    /// `WATCHDOG_MAX_RAPID_RESTARTS` failures within `WATCHDOG_FAILURE_WINDOW`.
+    /// The tray reads this to surface the red `IconState::Error` so users
+    /// know the supervisor has given up trying to restart the daemon.
+    permanent_failure: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl SupervisorState {
@@ -91,12 +96,25 @@ impl SupervisorState {
         *self.child_guard()
     }
 
+    /// Returns true when the watchdog has hit the rapid-failure cap and
+    /// stopped trying to respawn. Tray surfaces this as an Error icon.
+    #[must_use]
+    pub fn permanent_failure(&self) -> bool {
+        self.permanent_failure
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
     fn replace_child_pid(&self, pid: u32) {
         *self.child_guard() = Some(pid);
     }
 
     fn clear_child(&self) {
         *self.child_guard() = None;
+    }
+
+    fn mark_permanent_failure(&self) {
+        self.permanent_failure
+            .store(true, std::sync::atomic::Ordering::Release);
     }
 
     fn child_guard(&self) -> MutexGuard<'_, Option<u32>> {
@@ -502,6 +520,7 @@ async fn run_watchdog_loop(
                 "daemon failed to stay alive too many times in window; supervisor giving up"
             );
             state.clear_child();
+            state.mark_permanent_failure();
             return;
         }
 
