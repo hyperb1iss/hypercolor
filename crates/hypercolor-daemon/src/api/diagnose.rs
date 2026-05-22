@@ -616,7 +616,14 @@ fn round_2(value: f64) -> f64 {
 
 /// `POST /api/v1/diagnose/memory` — Capture Servo memory profiler output.
 pub async fn memory_diagnostics() -> Response {
-    #[cfg(feature = "servo")]
+    #[cfg(all(feature = "servo", target_os = "windows"))]
+    {
+        ApiError::not_found(
+            "Servo memory diagnostics are disabled on Windows because the embedded memory reporter can abort the daemon",
+        )
+    }
+
+    #[cfg(all(feature = "servo", not(target_os = "windows")))]
     {
         match tokio::task::spawn_blocking(hypercolor_core::effect::servo_memory_report_snapshot)
             .await
