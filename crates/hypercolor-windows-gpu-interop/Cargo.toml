@@ -15,9 +15,18 @@ default = []
 thiserror = { workspace = true }
 wgpu = { workspace = true }
 
+[dev-dependencies]
+pollster = { workspace = true }
+
 [target.'cfg(target_os = "windows")'.dependencies]
 wgpu-hal = { workspace = true, features = ["vulkan"] }
-windows = { version = "0.62", default-features = false, features = ["Win32_Foundation"] }
+windows = { version = "0.62", default-features = false, features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Direct3D",
+  "Win32_Graphics_Direct3D11",
+  "Win32_Graphics_Dxgi",
+  "Win32_Graphics_Dxgi_Common",
+] }
 
 [lints.rust]
 unsafe_code = "allow"

@@ -5339,6 +5339,7 @@ dependencies = [
 name = "hypercolor-windows-gpu-interop"
 version = "0.1.0"
 dependencies = [
+ "pollster",
  "thiserror 2.0.18",
  "wgpu",
  "wgpu-hal 29.0.1",

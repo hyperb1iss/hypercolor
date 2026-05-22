@@ -3,7 +3,25 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use thiserror::Error;
-use windows::Win32::Foundation::HANDLE;
+use windows::Win32::Foundation::{CloseHandle, HANDLE, HMODULE};
+use windows::Win32::Graphics::Direct3D::{
+    D3D_DRIVER_TYPE_UNKNOWN, D3D_FEATURE_LEVEL, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_11_1,
+};
+use windows::Win32::Graphics::Direct3D11::{
+    D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+    D3D11_RESOURCE_MISC_SHARED, D3D11_RESOURCE_MISC_SHARED_NTHANDLE, D3D11_SDK_VERSION,
+    D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, D3D11CreateDevice, ID3D11Device,
+    ID3D11DeviceContext, ID3D11Resource, ID3D11Texture2D,
+};
+use windows::Win32::Graphics::Dxgi::Common::{
+    DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_SAMPLE_DESC,
+};
+use windows::Win32::Graphics::Dxgi::{
+    CreateDXGIFactory1, DXGI_ADAPTER_FLAG_SOFTWARE, DXGI_ERROR_NOT_FOUND,
+    DXGI_SHARED_RESOURCE_READ, DXGI_SHARED_RESOURCE_WRITE, IDXGIAdapter, IDXGIAdapter1,
+    IDXGIFactory1, IDXGIResource1,
+};
+use windows::core::{Interface, PCWSTR};
 
 const BYTES_PER_PIXEL: u32 = 4;
 static NEXT_STORAGE_ID: AtomicU64 = AtomicU64::new(1);
@@ -43,6 +61,70 @@ pub enum WindowsGpuInteropError {
     /// Vulkan failed while importing the D3D11 shared handle.
     #[error("Vulkan D3D11 shared-handle import failed")]
     VulkanD3d11ImportFailed,
+
+    /// DXGI could not create a factory for adapter selection.
+    #[error("DXGI factory creation failed with HRESULT {hresult:#010x}")]
+    DxgiFactoryCreateFailed {
+        /// Failing HRESULT.
+        hresult: i32,
+    },
+
+    /// DXGI adapter enumeration or description failed.
+    #[error("DXGI adapter query failed with HRESULT {hresult:#010x}")]
+    DxgiAdapterQueryFailed {
+        /// Failing HRESULT.
+        hresult: i32,
+    },
+
+    /// No hardware DXGI adapter matched the requested identifiers.
+    #[error("DXGI adapter not found for vendor {vendor_id:?} device {device_id:?}")]
+    DxgiAdapterNotFound {
+        /// Requested PCI vendor identifier.
+        vendor_id: Option<u32>,
+        /// Requested PCI device identifier.
+        device_id: Option<u32>,
+    },
+
+    /// D3D11 device creation failed.
+    #[error("D3D11 device creation failed with HRESULT {hresult:#010x}")]
+    D3d11DeviceCreateFailed {
+        /// Failing HRESULT.
+        hresult: i32,
+    },
+
+    /// D3D11 did not return an immediate context.
+    #[error("D3D11 immediate context is unavailable")]
+    D3d11ImmediateContextUnavailable,
+
+    /// Creating a D3D11 texture failed.
+    #[error("D3D11 shared texture creation failed with HRESULT {hresult:#010x}")]
+    D3d11SharedTextureCreateFailed {
+        /// Failing HRESULT.
+        hresult: i32,
+    },
+
+    /// Querying a D3D11 texture for another COM interface failed.
+    #[error("D3D11 texture interface query failed with HRESULT {hresult:#010x}")]
+    D3d11TextureInterfaceQueryFailed {
+        /// Failing HRESULT.
+        hresult: i32,
+    },
+
+    /// Creating an NT shared handle for a D3D11 texture failed.
+    #[error("D3D11 shared handle creation failed with HRESULT {hresult:#010x}")]
+    D3d11SharedHandleCreateFailed {
+        /// Failing HRESULT.
+        hresult: i32,
+    },
+
+    /// A packed pixel upload did not match the texture shape.
+    #[error("pixel buffer size mismatch: expected {expected_len} bytes, got {actual_len}")]
+    PixelBufferSizeMismatch {
+        /// Expected byte length.
+        expected_len: usize,
+        /// Actual byte length.
+        actual_len: usize,
+    },
 }
 
 /// Pixel format shared by the D3D11 texture and imported wgpu texture.
@@ -62,6 +144,13 @@ impl ImportedFrameFormat {
         match self {
             Self::Rgba8Unorm => wgpu::TextureFormat::Rgba8Unorm,
             Self::Bgra8Unorm => wgpu::TextureFormat::Bgra8Unorm,
+        }
+    }
+
+    const fn dxgi_format(self) -> DXGI_FORMAT {
+        match self {
+            Self::Rgba8Unorm => DXGI_FORMAT_R8G8B8A8_UNORM,
+            Self::Bgra8Unorm => DXGI_FORMAT_B8G8R8A8_UNORM,
         }
     }
 }
@@ -124,6 +213,179 @@ pub struct ImportedFrameTimings {
     pub sync_us: u64,
     /// Total import time, including wgpu wrapping.
     pub total_us: u64,
+}
+
+/// D3D11 device and immediate context used to create shared textures.
+pub struct WindowsD3d11Device {
+    device: ID3D11Device,
+    context: ID3D11DeviceContext,
+}
+
+impl WindowsD3d11Device {
+    /// Creates a D3D11 device on the first non-software DXGI adapter.
+    pub fn new_hardware() -> Result<Self> {
+        let adapter = find_dxgi_adapter(None, None)?;
+        Self::from_dxgi_adapter(&adapter)
+    }
+
+    /// Creates a D3D11 device on the adapter matching a wgpu adapter.
+    pub fn new_for_wgpu_adapter(vendor_id: u32, device_id: u32) -> Result<Self> {
+        let adapter = find_dxgi_adapter(Some(vendor_id), Some(device_id))?;
+        Self::from_dxgi_adapter(&adapter)
+    }
+
+    /// Creates a shared NT-handle texture on this D3D11 device.
+    pub fn create_shared_texture(
+        &self,
+        descriptor: WindowsD3d11SharedTextureImportDescriptor,
+    ) -> Result<WindowsD3d11SharedTexture> {
+        let descriptor = WindowsD3d11SharedTextureImportDescriptor::new(
+            descriptor.width,
+            descriptor.height,
+            descriptor.format,
+        )?;
+        let desc = d3d11_texture_descriptor(descriptor);
+        let mut texture = None;
+        // SAFETY: desc is fully initialized and requests a single 2D texture.
+        unsafe {
+            self.device
+                .CreateTexture2D(&desc, None, Some(&mut texture))
+                .map_err(
+                    |error| WindowsGpuInteropError::D3d11SharedTextureCreateFailed {
+                        hresult: hresult(error),
+                    },
+                )?;
+        }
+        let texture =
+            texture.ok_or(WindowsGpuInteropError::D3d11SharedTextureCreateFailed { hresult: 0 })?;
+        let dxgi_resource: IDXGIResource1 = texture.cast().map_err(|error| {
+            WindowsGpuInteropError::D3d11TextureInterfaceQueryFailed {
+                hresult: hresult(error),
+            }
+        })?;
+        let access = (DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE).0;
+        // SAFETY: the texture was created with D3D11_RESOURCE_MISC_SHARED_NTHANDLE.
+        let shared_handle = unsafe {
+            dxgi_resource
+                .CreateSharedHandle(None, access, PCWSTR::null())
+                .map_err(
+                    |error| WindowsGpuInteropError::D3d11SharedHandleCreateFailed {
+                        hresult: hresult(error),
+                    },
+                )?
+        };
+        Ok(WindowsD3d11SharedTexture {
+            descriptor,
+            texture,
+            shared_handle,
+        })
+    }
+
+    /// Writes packed pixels into a shared texture and flushes producer work.
+    pub fn write_pixels(&self, texture: &WindowsD3d11SharedTexture, pixels: &[u8]) -> Result<()> {
+        let expected_len = texture.descriptor.width as usize
+            * texture.descriptor.height as usize
+            * BYTES_PER_PIXEL as usize;
+        if pixels.len() != expected_len {
+            return Err(WindowsGpuInteropError::PixelBufferSizeMismatch {
+                expected_len,
+                actual_len: pixels.len(),
+            });
+        }
+
+        let resource: ID3D11Resource = texture.texture.cast().map_err(|error| {
+            WindowsGpuInteropError::D3d11TextureInterfaceQueryFailed {
+                hresult: hresult(error),
+            }
+        })?;
+        let row_pitch = texture.descriptor.width * BYTES_PER_PIXEL;
+        let depth_pitch = row_pitch * texture.descriptor.height;
+        // SAFETY: resource is the destination texture, pixels covers every row,
+        // and row/depth pitch match the validated descriptor.
+        unsafe {
+            self.context.UpdateSubresource(
+                &resource,
+                0,
+                None,
+                pixels.as_ptr().cast(),
+                row_pitch,
+                depth_pitch,
+            );
+            self.context.Flush();
+        }
+        Ok(())
+    }
+
+    fn from_dxgi_adapter(adapter: &IDXGIAdapter1) -> Result<Self> {
+        let adapter: IDXGIAdapter =
+            adapter
+                .cast()
+                .map_err(|error| WindowsGpuInteropError::DxgiAdapterQueryFailed {
+                    hresult: hresult(error),
+                })?;
+        let feature_levels = [D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0];
+        let mut feature_level = D3D_FEATURE_LEVEL::default();
+        let mut device = None;
+        let mut context = None;
+        // SAFETY: adapter is a live DXGI hardware adapter and the output
+        // pointers remain valid until the call returns.
+        unsafe {
+            D3D11CreateDevice(
+                &adapter,
+                D3D_DRIVER_TYPE_UNKNOWN,
+                HMODULE::default(),
+                D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                Some(&feature_levels),
+                D3D11_SDK_VERSION,
+                Some(&mut device),
+                Some(&mut feature_level),
+                Some(&mut context),
+            )
+            .map_err(|error| WindowsGpuInteropError::D3d11DeviceCreateFailed {
+                hresult: hresult(error),
+            })?;
+        }
+        let device =
+            device.ok_or(WindowsGpuInteropError::D3d11DeviceCreateFailed { hresult: 0 })?;
+        let context = context.ok_or(WindowsGpuInteropError::D3d11ImmediateContextUnavailable)?;
+        Ok(Self { device, context })
+    }
+}
+
+/// A D3D11 texture carrying an NT shared handle for Vulkan import.
+pub struct WindowsD3d11SharedTexture {
+    descriptor: WindowsD3d11SharedTextureImportDescriptor,
+    texture: ID3D11Texture2D,
+    shared_handle: HANDLE,
+}
+
+impl WindowsD3d11SharedTexture {
+    /// Returns this texture's import descriptor.
+    #[must_use]
+    pub const fn descriptor(&self) -> WindowsD3d11SharedTextureImportDescriptor {
+        self.descriptor
+    }
+
+    /// Returns the raw D3D11 texture.
+    #[must_use]
+    pub const fn texture(&self) -> &ID3D11Texture2D {
+        &self.texture
+    }
+
+    /// Returns the NT shared handle. The texture owns and closes this handle.
+    #[must_use]
+    pub const fn shared_handle(&self) -> HANDLE {
+        self.shared_handle
+    }
+}
+
+impl Drop for WindowsD3d11SharedTexture {
+    fn drop(&mut self) {
+        if !self.shared_handle.is_invalid() {
+            // SAFETY: shared_handle is owned by this texture wrapper.
+            let _ = unsafe { CloseHandle(self.shared_handle) };
+        }
+    }
 }
 
 /// Reusable importer for wrapping D3D11 shared textures as wgpu textures.
@@ -224,6 +486,67 @@ pub fn check_wgpu_vulkan_external_memory_win32(device: &wgpu::Device) -> Result<
     }
 }
 
+fn find_dxgi_adapter(vendor_id: Option<u32>, device_id: Option<u32>) -> Result<IDXGIAdapter1> {
+    // SAFETY: CreateDXGIFactory1 has no borrowed inputs and initializes a COM interface.
+    let factory: IDXGIFactory1 = unsafe { CreateDXGIFactory1() }.map_err(|error| {
+        WindowsGpuInteropError::DxgiFactoryCreateFailed {
+            hresult: hresult(error),
+        }
+    })?;
+
+    let mut index = 0;
+    loop {
+        // SAFETY: factory is live and index is advanced until DXGI reports no match.
+        let adapter = match unsafe { factory.EnumAdapters1(index) } {
+            Ok(adapter) => adapter,
+            Err(error) if error.code() == DXGI_ERROR_NOT_FOUND => break,
+            Err(error) => {
+                return Err(WindowsGpuInteropError::DxgiAdapterQueryFailed {
+                    hresult: hresult(error),
+                });
+            }
+        };
+        // SAFETY: adapter is a live DXGI adapter returned by the factory.
+        let desc = unsafe { adapter.GetDesc1() }.map_err(|error| {
+            WindowsGpuInteropError::DxgiAdapterQueryFailed {
+                hresult: hresult(error),
+            }
+        })?;
+        let is_software = desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 != 0;
+        let vendor_matches = vendor_id.is_none_or(|id| id == desc.VendorId);
+        let device_matches = device_id.is_none_or(|id| id == desc.DeviceId);
+        if !is_software && vendor_matches && device_matches {
+            return Ok(adapter);
+        }
+        index += 1;
+    }
+
+    Err(WindowsGpuInteropError::DxgiAdapterNotFound {
+        vendor_id,
+        device_id,
+    })
+}
+
+fn d3d11_texture_descriptor(
+    descriptor: WindowsD3d11SharedTextureImportDescriptor,
+) -> D3D11_TEXTURE2D_DESC {
+    D3D11_TEXTURE2D_DESC {
+        Width: descriptor.width,
+        Height: descriptor.height,
+        MipLevels: 1,
+        ArraySize: 1,
+        Format: descriptor.format.dxgi_format(),
+        SampleDesc: DXGI_SAMPLE_DESC {
+            Count: 1,
+            Quality: 0,
+        },
+        Usage: D3D11_USAGE_DEFAULT,
+        BindFlags: (D3D11_BIND_RENDER_TARGET.0 | D3D11_BIND_SHADER_RESOURCE.0) as u32,
+        CPUAccessFlags: 0,
+        MiscFlags: (D3D11_RESOURCE_MISC_SHARED.0 | D3D11_RESOURCE_MISC_SHARED_NTHANDLE.0) as u32,
+    }
+}
+
 fn wgpu_texture_descriptor(
     descriptor: WindowsD3d11SharedTextureImportDescriptor,
 ) -> wgpu::TextureDescriptor<'static> {
@@ -269,4 +592,8 @@ fn hal_texture_descriptor(
 
 fn elapsed_micros(start: Instant) -> u64 {
     start.elapsed().as_micros().try_into().unwrap_or(u64::MAX)
+}
+
+fn hresult(error: windows::core::Error) -> i32 {
+    error.code().0
 }
