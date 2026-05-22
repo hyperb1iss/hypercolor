@@ -5359,6 +5359,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "hypercolor-windows-helper"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tracing",
+ "tracing-subscriber",
+ "windows-service",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "hypercolor-windows-pawnio"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,40 @@
+[package]
+name = "hypercolor-windows-helper"
+description = "Signed elevated helper for Hypercolor Windows privileged operations"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints.rust]
+# Win32 FFI calls (GetNamedSecurityInfoW, GetFinalPathNameByHandleW,
+# WinVerifyTrust) require unsafe. Every unsafe block must be documented
+# per the workspace pattern in hypercolor-windows-pawnio.
+unsafe_code = "allow"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"
+unwrap_used = "deny"
+
+[[bin]]
+name = "hypercolor-windows-helper"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+thiserror = { workspace = true }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-service = "0.8.0"
+windows-sys = { version = "0.61.2", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_Storage_FileSystem",
+] }
