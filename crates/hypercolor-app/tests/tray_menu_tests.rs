@@ -48,7 +48,7 @@ fn connected_menu_contains_dynamic_entries() {
         false,
     );
     assert_item(&entries, "brightness", "Brightness: 80%", false);
-    assert_item(&entries, ids::PAUSE_RESUME, "Resume", true);
+    assert_no_item(&entries, ids::PAUSE_RESUME);
     assert_item(&entries, ids::STOP_EFFECT, "Stop Effect", true);
 
     let effects = find_submenu(&entries, "Effects");

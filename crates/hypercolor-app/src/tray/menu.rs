@@ -239,9 +239,6 @@ fn build_connected_entries(entries: &mut Vec<MenuEntry>, state: &AppState) {
         false,
     ));
 
-    let pause_label = if state.paused { "Resume" } else { "Pause" };
-    entries.push(item(ids::PAUSE_RESUME, pause_label, true));
-
     if state.current_effect.is_some() {
         entries.push(item(ids::STOP_EFFECT, "Stop Effect", true));
     }
