@@ -123,6 +123,12 @@ impl PendingGpuSampleReadback {
     pub(super) fn readback_slot(&self) -> usize {
         self.slot
     }
+
+    fn unmap_after_failed_map(&mut self) {
+        self.receiver = None;
+        self.map_ready = false;
+        self.buffer.unmap();
+    }
 }
 
 impl GpuSamplingPlan {
@@ -796,8 +802,12 @@ fn take_zone_color_readback_ready(
             pending_readback.map_ready = true;
             Ok(Some(true))
         }
-        Ok(Err(error)) => Err(error).context("GPU sample buffer mapping failed"),
+        Ok(Err(error)) => {
+            pending_readback.unmap_after_failed_map();
+            Err(error).context("GPU sample buffer mapping failed")
+        }
         Err(TryRecvError::Disconnected) => {
+            pending_readback.unmap_after_failed_map();
             anyhow::bail!("GPU sample channel closed before map completion")
         }
         Err(TryRecvError::Empty) => Ok(None),
@@ -817,13 +827,21 @@ fn wait_for_zone_color_readback(
             timeout: None,
         })
         .context("GPU sample poll failed")?;
-    pending_readback
-        .receiver
-        .take()
-        .context("GPU sample channel was unavailable before wait completion")?
-        .recv()
-        .context("GPU sample channel closed before map completion")?
-        .context("GPU sample buffer mapping failed")?;
+    let Some(receiver) = pending_readback.receiver.take() else {
+        pending_readback.unmap_after_failed_map();
+        anyhow::bail!("GPU sample channel was unavailable before wait completion");
+    };
+    match receiver.recv() {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            pending_readback.unmap_after_failed_map();
+            return Err(error).context("GPU sample buffer mapping failed");
+        }
+        Err(error) => {
+            pending_readback.unmap_after_failed_map();
+            return Err(error).context("GPU sample channel closed before map completion");
+        }
+    }
     pending_readback.map_ready = true;
     Ok(())
 }

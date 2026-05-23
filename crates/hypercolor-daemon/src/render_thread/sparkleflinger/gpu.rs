@@ -1381,12 +1381,12 @@ impl GpuSparkleFlinger {
         match pending_preview_map.receiver.try_recv() {
             Ok(Ok(())) => {}
             Ok(Err(error)) => {
-                self.pending_preview_map = None;
+                self.discard_pending_preview_map();
                 return Err(error).context("GPU preview buffer mapping failed");
             }
             Err(TryRecvError::Empty) => return Ok(None),
             Err(TryRecvError::Disconnected) => {
-                self.pending_preview_map = None;
+                self.discard_pending_preview_map();
                 anyhow::bail!("GPU preview channel closed before map completion");
             }
         }
@@ -3251,8 +3251,12 @@ fn try_read_back_texture_into_surface(
     }
     match receiver.try_recv() {
         Ok(Ok(())) => {}
-        Ok(Err(error)) => return Err(error).context("GPU readback buffer mapping failed"),
+        Ok(Err(error)) => {
+            buffer.unmap();
+            return Err(error).context("GPU readback buffer mapping failed");
+        }
         Err(TryRecvError::Disconnected) => {
+            buffer.unmap();
             anyhow::bail!("GPU readback channel closed before map completion");
         }
         Err(TryRecvError::Empty) => {
@@ -3308,11 +3312,19 @@ fn try_read_back_yuv420_buffer(
             submission_index: Some(submission_index),
             timeout: Some(GPU_READBACK_WAIT_TIMEOUT),
         })
+        .map_err(|error| {
+            buffer.unmap();
+            error
+        })
         .context("GPU YUV readback map poll failed")?;
     match receiver.try_recv() {
         Ok(Ok(())) => {}
-        Ok(Err(error)) => return Err(error).context("GPU YUV readback buffer mapping failed"),
+        Ok(Err(error)) => {
+            buffer.unmap();
+            return Err(error).context("GPU YUV readback buffer mapping failed");
+        }
         Err(TryRecvError::Disconnected) => {
+            buffer.unmap();
             anyhow::bail!("GPU YUV readback channel closed before map completion");
         }
         Err(TryRecvError::Empty) => {
@@ -3357,9 +3369,11 @@ fn copy_mapped_readback_buffer_into_surface(
     let slice = buffer.slice(..used_bytes);
     let mapped = slice.get_mapped_range();
     let unpadded_bytes_per_row = width * BYTES_PER_PIXEL as u32;
-    let mut lease = surfaces
-        .dequeue()
-        .context("GPU readback surface pool should provide a reusable slot")?;
+    let Some(mut lease) = surfaces.dequeue() else {
+        drop(mapped);
+        buffer.unmap();
+        anyhow::bail!("GPU readback surface pool should provide a reusable slot");
+    };
     let target = lease.canvas_mut().as_rgba_bytes_mut();
     if padded_bytes_per_row == unpadded_bytes_per_row {
         target.copy_from_slice(
