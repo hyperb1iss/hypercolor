@@ -42,6 +42,26 @@ pub fn mark_complete() -> Result<()> {
     Ok(())
 }
 
+/// Delete the marker so the wizard reappears on the next launch.
+/// No-op when the marker is already absent. Used by the Developer
+/// settings "Show welcome again" affordance and by QA scripts.
+///
+/// # Errors
+///
+/// Returns an error when the LOCALAPPDATA directory cannot be located,
+/// or when removing an existing marker file fails for a reason other
+/// than "not found".
+pub fn reset() -> Result<()> {
+    let path = marker_path().context("LOCALAPPDATA / app data directory is unavailable")?;
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => {
+            Err(err).with_context(|| format!("remove {}", path.display()))
+        }
+    }
+}
+
 fn marker_path() -> Option<PathBuf> {
     dirs::data_local_dir().map(|dir| dir.join("hypercolor").join(MARKER_FILE_NAME))
 }
@@ -60,6 +80,14 @@ pub fn mark_first_run_complete() -> Result<(), String> {
     mark_complete().map_err(|err| err.to_string())
 }
 
+/// Tauri command: clear the marker so the next launch shows the
+/// welcome wizard again. Useful for QA and for users who want to
+/// re-run the guided setup.
+#[tauri::command]
+pub fn reset_first_run() -> Result<(), String> {
+    reset().map_err(|err| err.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -76,5 +104,19 @@ mod tests {
             display.ends_with(MARKER_FILE_NAME),
             "marker path should end with marker file name: {display}"
         );
+    }
+
+    #[test]
+    fn reset_is_noop_when_marker_missing() {
+        // Probe the real marker path; if it happens to exist (because
+        // the dev machine has run the app), skip this test rather than
+        // delete it. This test is about the absent-file branch.
+        let path = marker_path().expect("marker path");
+        if path.is_file() {
+            return;
+        }
+        // Idempotent: removing a missing file should succeed.
+        reset().expect("reset succeeds on missing marker");
+        reset().expect("reset succeeds again on missing marker");
     }
 }

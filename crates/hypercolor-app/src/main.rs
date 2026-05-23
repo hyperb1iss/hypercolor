@@ -38,6 +38,7 @@ fn main() -> anyhow::Result<()> {
         .invoke_handler(tauri::generate_handler![
             hypercolor_app::first_run::is_first_run_pending,
             hypercolor_app::first_run::mark_first_run_complete,
+            hypercolor_app::first_run::reset_first_run,
             hypercolor_app::support::detect_pawnio_support,
             hypercolor_app::support::detect_windows_daemon_service,
             hypercolor_app::support::launch_pawnio_helper,

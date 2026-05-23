@@ -257,6 +257,28 @@ pub async fn mark_first_run_complete() -> Result<(), String> {
     Err("native app bridge is unavailable".to_owned())
 }
 
+/// Clear the first-run marker so the welcome overlay shows again on
+/// the next launch.
+///
+/// # Errors
+///
+/// Returns an error when the Tauri bridge is unavailable or the native
+/// command rejects.
+#[cfg(target_arch = "wasm32")]
+pub async fn reset_first_run() -> Result<(), String> {
+    let Some(invoke) = tauri_invoke() else {
+        return Err("native app bridge is unavailable".to_owned());
+    };
+
+    let _ = invoke_command(&invoke, "reset_first_run", None).await?;
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn reset_first_run() -> Result<(), String> {
+    Err("native app bridge is unavailable".to_owned())
+}
+
 /// Read the native app autostart state when the Tauri bridge exists.
 ///
 /// # Errors
