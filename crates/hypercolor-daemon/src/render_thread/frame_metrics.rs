@@ -365,8 +365,6 @@ fn build_frame_admission_sample(metrics: &LatestFrameMetrics) -> FrameAdmissionS
         composition_us: metrics.composition_us,
         push_us: metrics.push_us,
         publish_us: metrics.publish_us,
-        wake_late_us: metrics.wake_late_us,
-        jitter_us: metrics.jitter_us,
         full_frame_copy_count: metrics.full_frame_copy_count,
         cpu_sampling_late_readback: metrics.cpu_sampling_late_readback,
         output_errors: metrics.output_errors,
@@ -590,8 +588,6 @@ mod tests {
         );
         assert_eq!(summary.admission.push_us, summary.metrics.push_us);
         assert_eq!(summary.admission.publish_us, summary.metrics.publish_us);
-        assert_eq!(summary.admission.wake_late_us, summary.metrics.wake_late_us);
-        assert_eq!(summary.admission.jitter_us, summary.metrics.jitter_us);
         assert_eq!(
             summary.admission.full_frame_copy_count,
             summary.metrics.full_frame_copy_count

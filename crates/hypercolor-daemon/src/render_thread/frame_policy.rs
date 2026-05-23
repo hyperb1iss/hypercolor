@@ -153,8 +153,6 @@ mod tests {
             composition_us: 800,
             push_us: 500,
             publish_us: 100,
-            wake_late_us: 0,
-            jitter_us: 0,
             full_frame_copy_count: 0,
             cpu_sampling_late_readback: false,
             output_errors: 0,
@@ -210,14 +208,14 @@ mod tests {
     }
 
     #[test]
-    fn next_wake_interval_resolution_catches_up_to_now_when_late() {
+    fn next_wake_interval_resolution_skips_missed_intervals_when_late() {
         let scheduled_start = Instant::now();
         let late_now = scheduled_start + Duration::from_millis(50);
 
         let next = NextWake::Interval(Duration::from_millis(16))
             .resolve_deadline(scheduled_start, late_now);
 
-        assert_eq!(next, late_now);
+        assert_eq!(next, scheduled_start + Duration::from_millis(64));
     }
 
     #[test]

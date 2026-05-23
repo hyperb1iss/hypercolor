@@ -7,7 +7,6 @@ use crate::performance::LatestFrameMetrics;
 
 const SLOW_FRAME_WARNING_MIN_INTERVAL: Duration = Duration::from_secs(2);
 const FRAME_STAGE_SPIKE_US: u32 = 2_000;
-const FRAME_PACING_SPIKE_US: u32 = 2_500;
 
 static LAST_SLOW_FRAME_WARNING: LazyLock<Mutex<Option<Instant>>> = LazyLock::new(Mutex::default);
 
@@ -148,14 +147,13 @@ pub(crate) fn report_active_frame_completion(
 
 fn frame_completion_warning_reason(report: &FrameCompletionReport) -> Option<&'static str> {
     let metrics = report.metrics;
-    if report.frame_interval_us > 0 && metrics.total_us > report.frame_interval_us {
+    let frame_budget_us = if metrics.timeline.budget_us > 0 {
+        metrics.timeline.budget_us
+    } else {
+        report.frame_interval_us
+    };
+    if frame_budget_us > 0 && metrics.total_us > frame_budget_us {
         return Some("over_budget");
-    }
-    if metrics.wake_late_us > FRAME_PACING_SPIKE_US {
-        return Some("wake_late");
-    }
-    if metrics.jitter_us > FRAME_PACING_SPIKE_US {
-        return Some("jitter");
     }
     if metrics.sample_us > FRAME_STAGE_SPIKE_US {
         return Some("sampling_spike");
@@ -253,6 +251,22 @@ mod tests {
     }
 
     #[test]
+    fn frame_completion_warning_reason_uses_target_budget_for_overrun() {
+        let mut metrics = LatestFrameMetrics {
+            total_us: 20_000,
+            ..LatestFrameMetrics::default()
+        };
+        metrics.timeline.budget_us = 16_666;
+        let write_stats = FrameWriteStats::default();
+        let report = FrameCompletionReport::new(50_000, &metrics, &write_stats);
+
+        assert_eq!(
+            frame_completion_warning_reason(&report),
+            Some("over_budget")
+        );
+    }
+
+    #[test]
     fn frame_completion_warning_reason_ignores_normal_deferred_gpu_sampling() {
         let mut metrics = LatestFrameMetrics {
             total_us: 1_000,
@@ -269,6 +283,20 @@ mod tests {
         metrics.gpu_zone_sampling = false;
         metrics.gpu_sample_retry_hit = false;
         metrics.gpu_sample_stale = true;
+        let report = FrameCompletionReport::new(16_666, &metrics, &write_stats);
+
+        assert_eq!(frame_completion_warning_reason(&report), None);
+    }
+
+    #[test]
+    fn frame_completion_warning_reason_keeps_pacing_slips_as_telemetry() {
+        let metrics = LatestFrameMetrics {
+            total_us: 1_000,
+            wake_late_us: 8_000,
+            jitter_us: 8_000,
+            ..LatestFrameMetrics::default()
+        };
+        let write_stats = FrameWriteStats::default();
         let report = FrameCompletionReport::new(16_666, &metrics, &write_stats);
 
         assert_eq!(frame_completion_warning_reason(&report), None);
