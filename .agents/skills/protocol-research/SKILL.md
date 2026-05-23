@@ -52,6 +52,36 @@ Community protocol documentation (wikis, blog posts, forum threads) and open-sou
 3. **Verify color byte ordering** — red capture should show `0xFF` in R positions and `0x00` in G/B; green capture inverts this. If R and B swap, the device uses RBG or BGR
 4. **Note inter-packet timing** — capture timestamps reveal required `post_delay` values between commands
 
+### Windows USBPcap + CDC ACM Notes
+
+When sniffing USB serial devices on Windows, prefer Wireshark's `usbcom`
+dissector fields over raw `usb.capdata` once the capture is decoded:
+
+```powershell
+tshark -r capture.pcapng `
+  -Y "usb.device_address == <addr> && (usbcom.data.out_payload || usbcom.data.in_payload)" `
+  -T fields `
+  -e frame.number -e frame.time_relative -e usb.src -e usb.dst `
+  -e usb.endpoint_address -e usbcom.data.out_payload -e usbcom.data.in_payload
+```
+
+Decode the hex payloads to ASCII for a clean bidirectional serial transcript.
+This avoids parsing USBPcap headers by hand and filters out noisy unrelated USB
+traffic. If `dumpcap -D` omits USB interfaces, `tshark -D` may still show
+`\\.\USBPcap1`; USBPcap extcap config requires the literal interface path:
+
+```powershell
+& "C:\Program Files\Wireshark\extcap\USBPcapCMD.exe" `
+  --extcap-config --extcap-interface "\\.\USBPcap1"
+```
+
+All-device USBPcap captures can become hundreds of MB in under a minute on RGB
+systems. Capture raw pcaps locally, but commit decoded transcripts and SHA256
+receipts instead of large `.pcapng` files. For Cinder/OpenGL-style vendor apps
+with poor UI Automation support, start the capture first and let the human drive
+the UI slowly with 2-3 second gaps; UAC/focus changes can close transient tool
+windows and ruin automated click sequences.
+
 ## Transport vs Transfer Types
 
 When studying any protocol implementation, note that a single transport call maps to TWO things in Hypercolor:
