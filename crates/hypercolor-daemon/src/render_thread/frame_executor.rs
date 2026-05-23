@@ -305,8 +305,7 @@ pub(crate) async fn execute_frame(
     }
     {
         let mut sampling = render.sampling_runtime();
-        sampling.finish_sampling_cleanup(
-            "Deferred GPU spatial sampling late finalize failed; dropping deferred sample result",
+        sampling.finish_retired(
             "Retired GPU spatial sampling late finalize failed; dropping stale deferred sample result",
         );
     }

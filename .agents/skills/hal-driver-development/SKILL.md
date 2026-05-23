@@ -32,6 +32,8 @@ Use the data to place the bug:
 - `snapshot.device_output.items[]` shows per-device queue health: `backend_id`, `fps_sent`, `fps_queued`, `frames_dropped`, `avg_queue_wait_ms`, `avg_write_ms`, `worker_finished`, `last_error`, `last_sequence`.
 - `snapshot.usb.display_frames_delayed_for_led_total` and wait times reveal shared USB actor display-lane contention, not necessarily LED protocol failure.
 - If all USB devices jank in unison and queues are healthy, investigate shared render sampling/output reuse first.
+- If `output_frame_source=current_frame`, `gpu_sample_retry_hit=true`, writes are fast, and slow-frame warnings are `wake_late`, look for host scheduler pressure such as active Rust/Servo builds before editing USB protocol code.
+- Queue `frames_dropped` is not automatically bad: capped devices intentionally replace stale pending payloads when render FPS exceeds device FPS. Compare `fps_sent` to `fps_target` and check write/queue latency plus errors.
 - If one family has high `avg_write_ms`, drops, or errors while others are clean, then inspect transport/protocol encoding.
 
 Do not lower FPS, resolution, LED counts, or performance caps to hide driver symptoms.

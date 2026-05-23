@@ -769,14 +769,6 @@ impl SamplingRuntime<'_> {
             .take_pending_status(self.sparkleflinger, error_message)
     }
 
-    pub(crate) fn keep_pending_if_stale(&mut self, error_message: &'static str) {
-        if let Some(PendingZoneSamplingStatus::Stale(deferred_sampling)) =
-            self.take_pending_status(error_message)
-        {
-            self.deferred_sampling.store_pending(deferred_sampling);
-        }
-    }
-
     pub(crate) fn finish_retired(&mut self, error_message: &'static str) {
         self.deferred_sampling
             .finish_retired(self.sparkleflinger, error_message);
@@ -814,15 +806,6 @@ impl SamplingRuntime<'_> {
 
     pub(crate) fn discard_backlog(&mut self) {
         self.deferred_sampling.discard_backlog(self.sparkleflinger);
-    }
-
-    pub(crate) fn finish_sampling_cleanup(
-        &mut self,
-        deferred_error_message: &'static str,
-        retired_error_message: &'static str,
-    ) {
-        self.keep_pending_if_stale(deferred_error_message);
-        self.finish_retired(retired_error_message);
     }
 }
 

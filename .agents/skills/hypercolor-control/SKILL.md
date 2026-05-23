@@ -87,7 +87,9 @@ Interpretation:
 
 - Smooth display previews with LED jank usually means LED sampling/output freshness, not effect rendering.
 - `gpu_sample_stale=true` with `output_frame_source=published_frame` means LEDs reused older LED data while the visual path may still be smooth.
+- `output_frame_source=current_frame` with `gpu_sample_retry_hit=true`, low sample/push times, and `wake_late` warnings usually means the app is ready but the OS woke the render thread late. On Windows, inspect active compiler/linker jobs before changing rendering or device code.
 - `fps_queued` above `fps_sent`, rising `frames_dropped`, or high queue/write time points to device-output pressure.
+- Drops on queues capped below render FPS are normal latest-frame replacement when `fps_sent` is near that queue's target and write latency/errors are clean.
 - Multiple USB devices janking together points upstream or shared queue pressure; one device with errors points at that driver/transport.
 
 ## Effect authoring commands
