@@ -286,6 +286,7 @@ impl RenderThread {
         let join_handle = std::thread::Builder::new()
             .name("hypercolor-render".to_owned())
             .spawn(move || {
+                configure_render_thread_priority("render_thread");
                 let runtime = match build_runtime() {
                     Ok(runtime) => runtime,
                     Err(error) => {
@@ -347,10 +348,29 @@ fn build_render_runtime() -> Result<tokio::runtime::Runtime> {
         .max_blocking_threads(RENDER_RUNTIME_MAX_BLOCKING_THREADS)
         .thread_keep_alive(RENDER_RUNTIME_THREAD_KEEP_ALIVE)
         .thread_name("hypercolor-render-rt")
+        .on_thread_start(|| configure_render_thread_priority("render_runtime_worker"))
         .enable_all()
         .build()
         .context("failed to initialize render thread runtime")
 }
+
+#[cfg(target_os = "windows")]
+fn configure_render_thread_priority(role: &'static str) {
+    use thread_priority::{ThreadPriority, WinAPIThreadPriority, set_current_thread_priority};
+
+    let priority = ThreadPriority::Os(WinAPIThreadPriority::AboveNormal.into());
+    match set_current_thread_priority(priority) {
+        Ok(()) => tracing::debug!(role, "configured Windows render thread priority"),
+        Err(error) => tracing::warn!(
+            role,
+            error = %error,
+            "failed to configure Windows render thread priority"
+        ),
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn configure_render_thread_priority(_role: &'static str) {}
 
 // ── Pipeline ────────────────────────────────────────────────────────────────
 
