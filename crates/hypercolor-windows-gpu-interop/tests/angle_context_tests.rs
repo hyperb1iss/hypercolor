@@ -43,8 +43,15 @@ fn angle_context_renders_into_importable_d3d11_ring() -> Result<(), String> {
 
     render_color(&context, [0.25, 0.5, 0.75, 1.0])?;
     let first_native_frame = context
-        .finish_current_frame()
+        .publish_current_frame()
         .map_err(|error| error.to_string())?;
+    assert!(first_native_frame.is_none());
+
+    render_color(&context, [0.1, 0.8, 0.3, 1.0])?;
+    let first_native_frame = context
+        .publish_current_frame()
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "first frame was not ready after one ring rotation".to_owned())?;
     assert_eq!(first_native_frame.width, WIDTH);
     assert_eq!(first_native_frame.height, HEIGHT);
     assert_eq!(first_native_frame.format, ImportedFrameFormat::Bgra8Unorm);
@@ -66,13 +73,11 @@ fn angle_context_renders_into_importable_d3d11_ring() -> Result<(), String> {
     )?;
     assert_uniform_bgra(&first_pixels, [191, 128, 64, 255]);
 
-    context
-        .rotate_after_import()
-        .map_err(|error| error.to_string())?;
-    render_color(&context, [0.1, 0.8, 0.3, 1.0])?;
+    render_color(&context, [0.9, 0.2, 0.6, 1.0])?;
     let second_native_frame = context
-        .finish_current_frame()
-        .map_err(|error| error.to_string())?;
+        .publish_current_frame()
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "second frame was not ready after one ring rotation".to_owned())?;
     assert_eq!(second_native_frame.slot_index, 1);
     assert_ne!(
         second_native_frame.shared_handle,

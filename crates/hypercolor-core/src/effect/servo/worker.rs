@@ -2117,7 +2117,14 @@ impl ServoWorkerRuntime {
         device: &wgpu::Device,
     ) -> Result<crate::effect::traits::ImportedEffectFrame> {
         let context = self.windows_angle_context(session_id)?;
-        let native_frame = context.finish_current_frame()?;
+        let Some(native_frame) = context.publish_current_frame()? else {
+            return Err(ServoFrameUnavailable {
+                reason: "windows_import_warmup",
+                detail: "Windows ANGLE fence ring has no completed frame yet".to_owned(),
+                retry_ms: 0,
+            }
+            .into());
+        };
         let descriptor =
             hypercolor_windows_gpu_interop::WindowsD3d11SharedTextureImportDescriptor::new(
                 native_frame.width,
@@ -2133,7 +2140,6 @@ impl ServoWorkerRuntime {
                 .ok_or_else(|| anyhow!("Servo GPU importer was not initialized"))?;
             importer.import_servo_native_frame(device, native_frame)?
         };
-        context.rotate_after_import()?;
         Ok(imported)
     }
 
@@ -2321,6 +2327,9 @@ fn render_servo_framebuffer(
                 return Ok(EffectRenderOutput::Gpu(frame));
             }
             Err(error) => {
+                if error.downcast_ref::<ServoFrameUnavailable>().is_some() {
+                    return Err(error);
+                }
                 let reason = classify_servo_gpu_import_error(&error);
                 let detail = servo_gpu_import_failure_detail(&error);
                 let transient = servo_gpu_import_failure_is_transient(reason);

@@ -35,7 +35,13 @@ use crate::{
     WindowsD3d11SharedTextureImporter, WindowsGpuInteropError,
 };
 
-const WINDOWS_SERVO_RING_DEPTH: usize = 3;
+const WINDOWS_SERVO_RING_DEPTH: usize = 4;
+const GL_SYNC_GPU_COMMANDS_COMPLETE: gl::GLenum = 0x9117;
+const GL_ALREADY_SIGNALED: gl::GLenum = 0x911A;
+const GL_TIMEOUT_EXPIRED: gl::GLenum = 0x911B;
+const GL_CONDITION_SATISFIED: gl::GLenum = 0x911C;
+const GL_WAIT_FAILED: gl::GLenum = 0x911D;
+const GL_WAIT_TIMEOUT_NS: gl::GLuint64 = u64::MAX;
 
 /// DXGI adapter identity used to pin ANGLE to wgpu's Vulkan adapter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,6 +93,7 @@ pub struct WindowsAngleRenderingContext {
 struct WindowsServoTextureSlot {
     texture: WindowsD3d11SharedTexture,
     surface: Option<Surface>,
+    fence: Option<gl::GLsync>,
 }
 
 impl WindowsAngleRenderingContext {
@@ -150,39 +157,35 @@ impl WindowsAngleRenderingContext {
         })
     }
 
-    /// Finishes Servo GL work and exposes the current D3D11 shared texture.
-    pub fn finish_current_frame(&self) -> Result<WindowsServoNativeFrame> {
+    /// Publishes current Servo GL work and returns the oldest completed frame.
+    pub fn publish_current_frame(&self) -> Result<Option<WindowsServoNativeFrame>> {
         self.make_current()
             .map_err(context_error("make current for shared frame"))?;
         self.prepare_for_rendering();
-        let sync_start = Instant::now();
-        self.gleam_gl.finish();
-        let sync_us = elapsed_micros(sync_start);
-        let slot_index = self.current_slot.get();
-        let ring = self.ring.borrow();
-        let texture = &ring
-            .get(slot_index)
-            .ok_or(WindowsGpuInteropError::WindowsImportStaleFrame)?
-            .texture;
-        let descriptor = texture.descriptor();
-        Ok(WindowsServoNativeFrame {
-            width: descriptor.width,
-            height: descriptor.height,
-            format: descriptor.format,
-            origin: WindowsServoFrameOrigin::BottomLeft,
-            slot_index,
-            shared_handle: texture.shared_handle(),
-            sync_us,
-        })
+        let current_slot = self.current_slot.get();
+        self.fence_current_slot(current_slot)?;
+        let completed_slot = self.previous_slot(current_slot);
+        let completed_had_frame = self.ring.borrow()[completed_slot].fence.is_some();
+        let sync_us = self.wait_for_slot(completed_slot)?;
+        let next_slot = self.next_slot(current_slot);
+        if self.ring.borrow()[next_slot].fence.is_some() {
+            let _ = self.wait_for_slot(next_slot)?;
+        }
+        self.rotate_to_slot(current_slot, next_slot)?;
+        if !completed_had_frame {
+            return Ok(None);
+        }
+        let completed_frame = self.native_frame_for_slot(completed_slot, sync_us)?;
+        Ok(Some(completed_frame))
     }
 
-    /// Rotates the ring so Servo paints into a different slot next frame.
-    pub fn rotate_after_import(&self) -> Result<()> {
+    fn rotate_to_slot(&self, current_slot: usize, next_slot: usize) -> Result<()> {
+        if current_slot == next_slot {
+            return Ok(());
+        }
         let device = self.device.borrow();
         let mut context = self.context.borrow_mut();
         let mut ring = self.ring.borrow_mut();
-        let current_slot = self.current_slot.get();
-        let next_slot = (current_slot + 1) % ring.len();
         let next_surface = ring[next_slot]
             .surface
             .take()
@@ -209,6 +212,100 @@ impl WindowsAngleRenderingContext {
         }
     }
 
+    fn fence_current_slot(&self, slot_index: usize) -> Result<()> {
+        let fence = self.gleam_gl.fence_sync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+        if fence.is_null() {
+            return Err(WindowsGpuInteropError::ServoContext {
+                operation: "fence shared frame",
+                message: "glFenceSync returned null".to_owned(),
+            });
+        }
+        self.gleam_gl.flush();
+        let mut ring = self.ring.borrow_mut();
+        let slot = ring
+            .get_mut(slot_index)
+            .ok_or(WindowsGpuInteropError::WindowsImportStaleFrame)?;
+        if let Some(previous) = slot.fence.replace(fence) {
+            self.gleam_gl.delete_sync(previous);
+        }
+        Ok(())
+    }
+
+    fn wait_for_slot(&self, slot_index: usize) -> Result<u64> {
+        let Some(fence) = self
+            .ring
+            .borrow()
+            .get(slot_index)
+            .and_then(|slot| slot.fence)
+        else {
+            return Ok(0);
+        };
+        let sync_start = Instant::now();
+        let status = self.gleam_gl.client_wait_sync(fence, 0, GL_WAIT_TIMEOUT_NS);
+        let sync_us = elapsed_micros(sync_start);
+        match status {
+            GL_ALREADY_SIGNALED | GL_CONDITION_SATISFIED => {
+                self.complete_slot_fence(slot_index, fence)?;
+                Ok(sync_us)
+            }
+            GL_TIMEOUT_EXPIRED => Err(WindowsGpuInteropError::ServoContext {
+                operation: "wait for shared frame fence",
+                message: "glClientWaitSync timed out".to_owned(),
+            }),
+            GL_WAIT_FAILED => Err(WindowsGpuInteropError::ServoContext {
+                operation: "wait for shared frame fence",
+                message: "glClientWaitSync returned GL_WAIT_FAILED".to_owned(),
+            }),
+            status => Err(WindowsGpuInteropError::ServoContext {
+                operation: "wait for shared frame fence",
+                message: format!("glClientWaitSync returned unexpected status {status:#x}"),
+            }),
+        }
+    }
+
+    fn complete_slot_fence(&self, slot_index: usize, fence: gl::GLsync) -> Result<()> {
+        self.gleam_gl.delete_sync(fence);
+        let mut ring = self.ring.borrow_mut();
+        let slot = ring
+            .get_mut(slot_index)
+            .ok_or(WindowsGpuInteropError::WindowsImportStaleFrame)?;
+        if slot.fence == Some(fence) {
+            slot.fence = None;
+        }
+        Ok(())
+    }
+
+    fn native_frame_for_slot(
+        &self,
+        slot_index: usize,
+        sync_us: u64,
+    ) -> Result<WindowsServoNativeFrame> {
+        let ring = self.ring.borrow();
+        let texture = &ring
+            .get(slot_index)
+            .ok_or(WindowsGpuInteropError::WindowsImportStaleFrame)?
+            .texture;
+        let descriptor = texture.descriptor();
+        Ok(WindowsServoNativeFrame {
+            width: descriptor.width,
+            height: descriptor.height,
+            format: descriptor.format,
+            origin: WindowsServoFrameOrigin::BottomLeft,
+            slot_index,
+            shared_handle: texture.shared_handle(),
+            sync_us,
+        })
+    }
+
+    fn next_slot(&self, current_slot: usize) -> usize {
+        (current_slot + 1) % self.ring.borrow().len()
+    }
+
+    fn previous_slot(&self, current_slot: usize) -> usize {
+        let ring_len = self.ring.borrow().len();
+        (current_slot + ring_len - 1) % ring_len
+    }
+
     fn framebuffer(&self) -> Option<glow::NativeFramebuffer> {
         let device = self.device.borrow();
         let context = self.context.borrow();
@@ -226,6 +323,9 @@ impl WindowsAngleRenderingContext {
             ring[self.current_slot.get()].surface = Some(surface);
         }
         for slot in ring.iter_mut() {
+            if let Some(fence) = slot.fence.take() {
+                self.gleam_gl.delete_sync(fence);
+            }
             if let Some(mut surface) = slot.surface.take() {
                 destroy_surface_or_forget(&device, &mut context, &mut surface);
             }
@@ -265,7 +365,7 @@ impl WindowsD3d11SharedTextureImporter {
         frame: WindowsServoNativeFrame,
     ) -> Result<ImportedEffectFrame> {
         // SAFETY: WindowsServoNativeFrame is only produced by the ANGLE
-        // context after finish_current_frame synchronizes producer GL work.
+        // context after publish_current_frame observes a completed GL fence.
         unsafe { self.import_shared_handle(device, frame.shared_handle, frame.sync_us) }
     }
 }
@@ -279,6 +379,9 @@ impl Drop for WindowsAngleRenderingContext {
             ring[self.current_slot.get()].surface = Some(surface);
         }
         for slot in ring {
+            if let Some(fence) = slot.fence.take() {
+                self.gleam_gl.delete_sync(fence);
+            }
             if let Some(mut surface) = slot.surface.take() {
                 destroy_surface_or_forget(device, context, &mut surface);
             }
@@ -413,6 +516,7 @@ fn create_texture_ring(
         ring.push(WindowsServoTextureSlot {
             texture,
             surface: Some(surface),
+            fence: None,
         });
     }
     Ok(ring)
