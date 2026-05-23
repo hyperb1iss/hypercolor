@@ -56,6 +56,8 @@ pub(crate) struct GpuCompositorProbe {
     pub(crate) texture_format: &'static str,
     pub(crate) max_texture_dimension_2d: u32,
     pub(crate) max_storage_textures_per_shader_stage: u32,
+    pub(crate) servo_gpu_import_backend_compatible: bool,
+    pub(crate) servo_gpu_import_backend_reason: Option<&'static str>,
     pub(crate) linux_servo_gpu_import_backend_compatible: bool,
     pub(crate) linux_servo_gpu_import_backend_reason: Option<&'static str>,
 }
@@ -1800,6 +1802,8 @@ pub(crate) fn probe_render_device(render_device: &GpuRenderDevice) -> Result<Gpu
     )?;
 
     let info = render_device.info();
+    let servo_gpu_import_backend_compatible = info.servo_gpu_import_backend_compatible();
+    let servo_gpu_import_backend_reason = info.servo_gpu_import_backend_reason();
     let linux_servo_gpu_import_backend_compatible =
         info.linux_servo_gpu_import_backend_compatible();
     let linux_servo_gpu_import_backend_reason = info.linux_servo_gpu_import_backend_reason();
@@ -1809,6 +1813,8 @@ pub(crate) fn probe_render_device(render_device: &GpuRenderDevice) -> Result<Gpu
         texture_format: texture_format_name(COMPOSITOR_TEXTURE_FORMAT),
         max_texture_dimension_2d: info.max_texture_dimension_2d,
         max_storage_textures_per_shader_stage: info.max_storage_textures_per_shader_stage,
+        servo_gpu_import_backend_compatible,
+        servo_gpu_import_backend_reason,
         linux_servo_gpu_import_backend_compatible,
         linux_servo_gpu_import_backend_reason,
     })

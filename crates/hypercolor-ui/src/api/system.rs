@@ -64,6 +64,8 @@ pub struct GpuCompositorProbeStatus {
     pub texture_format: String,
     pub max_texture_dimension_2d: u32,
     pub max_storage_textures_per_shader_stage: u32,
+    pub servo_gpu_import_backend_compatible: bool,
+    pub servo_gpu_import_backend_reason: Option<String>,
     pub linux_servo_gpu_import_backend_compatible: bool,
     pub linux_servo_gpu_import_backend_reason: Option<String>,
 }

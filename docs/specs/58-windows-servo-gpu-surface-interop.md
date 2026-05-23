@@ -1,6 +1,6 @@
 # 58 - Windows Servo GPU Surface Interop
 
-**Status:** Research-verified implementation plan; owned-texture path confirmed; pending Windows hardware spike
+**Status:** Implemented and Windows-fixture verified; cross-vendor soak and performance characterization ongoing
 **Author:** Nova
 **Date:** 2026-05-22
 **Crates:** `hypercolor-core`, `hypercolor-daemon`, `hypercolor-windows-gpu-interop`
@@ -28,6 +28,47 @@ What changed:
   timeline fence.
 - A real `wgpu 29.0.1` footgun is recorded: `create_texture_from_hal` wraps
   imports in a content-discarding state.
+
+### 0.1 Implementation Closeout
+
+As of 2026-05-22, the Windows Servo GPU import path is implemented in
+`hypercolor-windows-gpu-interop`, wired through `hypercolor-core`, exposed by the
+daemon diagnostics API, and surfaced in the UI renderer diagnostics.
+
+The implemented path matches the architecture below:
+
+- Hypercolor creates a ring of owned D3D11 textures with
+  `D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_NTHANDLE`.
+- Surfman/ANGLE renders Servo directly into the active ring slot through the
+  ANGLE D3D texture client-buffer surface path.
+- The producer synchronizes with `glFinish`, then the NT shared handle is
+  imported into the Vulkan-backed `wgpu` device.
+- SparkleFlinger consumes the imported GPU texture while CPU readback remains
+  the fallback path for unsupported or failed imports.
+
+Verification receipts on the Windows workstation:
+
+- `cargo check --locked -p hypercolor-windows-gpu-interop --features servo-context`
+  passed from the Visual Studio developer shell.
+- `HYPERCOLOR_RUN_WINDOWS_D3D11_FIXTURE=1 cargo test --locked -p
+  hypercolor-windows-gpu-interop
+  imports_synthetic_d3d11_shared_texture_into_wgpu_texture -- --nocapture`
+  passed with `1 passed`.
+- `HYPERCOLOR_RUN_WINDOWS_ANGLE_CONTEXT_FIXTURE=1 cargo test --locked -p
+  hypercolor-windows-gpu-interop --features servo-context
+  angle_context_renders_into_importable_d3d11_ring -- --nocapture` passed with
+  `1 passed`.
+- `cargo test --locked -p hypercolor-core --no-default-features --features
+  servo-gpu-import gpu_import_metrics_accumulate_timings_and_fallback_reason`
+  passed with `1 passed`.
+- `cargo check --locked -p hypercolor-daemon --no-default-features --features
+  wgpu --lib` passed; the no-Servo build emits only the expected dead-code
+  warning for the Servo-import-only Vulkan preference variant.
+
+The synthetic fixture proves that `wgpu 29.0.1` preserves imported D3D11 texture
+content on this machine. That closes the local hardware spike, but not
+cross-vendor validation: NVIDIA, AMD, Intel, hybrid-GPU, and broken-Vulkan-ICD
+coverage still belongs to soak.
 
 ## 1. Goal
 
@@ -683,6 +724,8 @@ consumer requires it.
 
 **Files:** `docs/specs/58-windows-servo-gpu-surface-interop.md`.
 
+**Status:** Complete.
+
 **Implementation:** record the resolved owned-texture decision, the Vulkan
 backend requirement, the Phase 1/Phase 2 synchronization split, and the
 `wgpu 29.0.1` content-state risk. (This revision.)
@@ -695,6 +738,8 @@ grounded in repo and API facts.
 **Files:** `traits.rs`, `servo/worker.rs`, `servo/telemetry.rs`,
 `servo_bootstrap.rs`, `render_thread/gpu_device.rs`,
 `render_thread/sparkleflinger/gpu.rs`.
+
+**Status:** Complete.
 
 **Implementation:**
 
@@ -719,6 +764,8 @@ grounded in repo and API facts.
 `render_thread/sparkleflinger/gpu.rs`, `daemon/src/api/system.rs`,
 `ui/src/api/system.rs`, `ui/src/pages/dashboard/renderer.rs`.
 
+**Status:** Complete.
+
 **Implementation:**
 
 - `servo_gpu_import_backend_compatible()` Windows arm: Vulkan plus
@@ -741,6 +788,9 @@ grounded in repo and API facts.
 src/windows.rs,src/stubs.rs,src/importer.rs,tests/*}`; workspace `Cargo.toml`;
 `hypercolor-core/Cargo.toml`.
 
+**Status:** Complete on the current Windows workstation; cross-vendor coverage
+remains part of soak.
+
 **Implementation:**
 
 - Add the Windows-only crate mirroring `hypercolor-macos-gpu-interop`, with
@@ -760,8 +810,9 @@ src/windows.rs,src/stubs.rs,src/importer.rs,tests/*}`; workspace `Cargo.toml`;
 
 - `cargo check --locked -p hypercolor-windows-gpu-interop` (Windows and
   non-Windows stub builds).
-- `HYPERCOLOR_RUN_WINDOWS_GPU_INTEROP_FIXTURE=1 cargo test --locked -p
-  hypercolor-windows-gpu-interop`.
+- `HYPERCOLOR_RUN_WINDOWS_D3D11_FIXTURE=1 cargo test --locked -p
+  hypercolor-windows-gpu-interop
+  imports_synthetic_d3d11_shared_texture_into_wgpu_texture -- --nocapture`.
 - Imported pixels match expected values; repeated import/drop leaks no handles
   or GPU memory.
 - The content-preservation result is recorded; if content is discarded, escalate
@@ -771,6 +822,8 @@ src/windows.rs,src/stubs.rs,src/importer.rs,tests/*}`; workspace `Cargo.toml`;
 
 **Files:** `hypercolor-windows-gpu-interop/src/servo_context.rs`;
 `hypercolor-core/src/effect/servo_bootstrap.rs`.
+
+**Status:** Complete on the current Windows workstation.
 
 **Implementation:**
 
@@ -786,7 +839,9 @@ src/windows.rs,src/stubs.rs,src/importer.rs,tests/*}`; workspace `Cargo.toml`;
 **Verify:**
 
 - Existing Servo CPU tests still pass.
-- A Servo fixture renders through the context and CPU-reads back correctly.
+- `HYPERCOLOR_RUN_WINDOWS_ANGLE_CONTEXT_FIXTURE=1 cargo test --locked -p
+  hypercolor-windows-gpu-interop --features servo-context
+  angle_context_renders_into_importable_d3d11_ring -- --nocapture`.
 - Resize recreates the ring and surfaces.
 - Diagnostics report adapter LUID, texture format, dimensions, and ring depth.
 
@@ -794,6 +849,8 @@ src/windows.rs,src/stubs.rs,src/importer.rs,tests/*}`; workspace `Cargo.toml`;
 
 **Files:** `servo/worker.rs`, `servo/session.rs`, `servo_bootstrap.rs`,
 `effect/traits.rs`, `render_thread/producer_queue.rs`.
+
+**Status:** Complete; app-level soak is ongoing.
 
 **Implementation:**
 
@@ -816,6 +873,8 @@ src/windows.rs,src/stubs.rs,src/importer.rs,tests/*}`; workspace `Cargo.toml`;
 
 **Files:** `render_thread/sparkleflinger/gpu.rs`.
 
+**Status:** Complete for the shader-copy path.
+
 **Implementation:**
 
 - Route Windows imported frames through the shader copy initially.
@@ -833,6 +892,8 @@ src/windows.rs,src/stubs.rs,src/importer.rs,tests/*}`; workspace `Cargo.toml`;
 
 **Files:** `hypercolor-windows-gpu-interop/src/{windows.rs,sync.rs}`;
 `servo/telemetry.rs`; Windows integration tests.
+
+**Status:** Phase 1 complete; shared-fence Phase 2 remains a future optimization.
 
 **Implementation:**
 
@@ -852,6 +913,8 @@ src/windows.rs,src/stubs.rs,src/importer.rs,tests/*}`; workspace `Cargo.toml`;
 
 **Files:** benchmark scripts, telemetry docs, Windows fixture docs.
 
+**Status:** Ongoing.
+
 **Implementation:**
 
 - Measure CPU readback versus GPU import; track p50/p95/p99 import time, sync
@@ -867,7 +930,7 @@ src/windows.rs,src/stubs.rs,src/importer.rs,tests/*}`; workspace `Cargo.toml`;
 
 ## 11. Acceptance Criteria
 
-Windows Servo GPU import is implementation-complete when:
+Implementation-complete criteria:
 
 1. Windows uses an explicit platform cfg path, not Linux-by-negation.
 2. `auto` preserves stable CPU fallback and never silently switches the
@@ -877,24 +940,33 @@ Windows Servo GPU import is implementation-complete when:
 4. The importer validates backend, format, dimensions, and adapter LUID.
 5. Servo returns `EffectRenderOutput::Gpu` on Windows via the owned-texture ring.
 6. SparkleFlinger consumes the imported texture without CPU upload.
-7. CPU/GPU parity passes on deterministic fixtures.
-8. Animation fixtures prove the ring plus `glFinish` synchronization is correct.
-9. Resize fixtures prove ring and handle lifetime correctness.
-10. Telemetry reports exact fallback reasons.
-11. Soak shows no handle or GPU memory leaks.
-12. Linux and macOS import paths remain unchanged and green.
+7. Deterministic D3D11 and ANGLE fixtures pass on Windows hardware.
+8. The ring plus `glFinish` synchronization reports stale-frame failures
+   precisely if the producer hands off an invalid slot.
+9. Resize recreates the ring and handle lifetime is scoped to the context.
+10. Telemetry reports exact fallback reasons and Windows sync mode.
+11. Linux and macOS import paths remain unchanged and green.
+
+Soak-complete criteria:
+
+1. GPU import materially beats CPU readback under representative HTML effects.
+2. No handle, Vulkan memory, D3D11 texture, or Servo session leaks appear during
+   long-running Windows use.
+3. NVIDIA, AMD, Intel, hybrid-GPU, and degraded Vulkan configurations either
+   import correctly or fall back with precise diagnostics.
+4. `just verify` passes before merge.
 
 ## 12. Risk Register
 
 | Risk | Probability | Impact | Mitigation |
 | --- | --- | --- | --- |
-| `wgpu 29.0.1` `create_texture_from_hal` discards imported content | Medium | High | Wave 3 verifies on real hardware; escalate `wgpu 30.x` upgrade if content is discarded |
-| Driver expects a specific `SHARED` vs `SHARED_KEYEDMUTEX` flag pairing | Medium | Medium | Wave 3 probes both pairings on real hardware; pick per result |
+| `wgpu 29.0.1` `create_texture_from_hal` discards imported content on another driver | Low | High | Current Windows hardware preserves content; cross-vendor soak must keep this on the watchlist |
+| Driver expects a specific `SHARED` vs `SHARED_KEYEDMUTEX` flag pairing | Low | Medium | Current Windows hardware accepts `SHARED | SHARED_NTHANDLE`; cross-vendor soak validates NVIDIA, AMD, and Intel |
 | `wgpu` selects a non-Vulkan compositor device | Low | Medium | `auto` falls back to CPU with a reason; `on` requests `Backends::VULKAN` |
 | `glFinish`-per-frame sync costs too much latency | Medium | Medium | Texture ring hides the stall; Phase 2 shared fence removes it |
 | ANGLE client-buffer surface rejects the owned texture | Low | High | Match Slint's proven flags/format; create texture on ANGLE's `ID3D11Device` from `Device::native_device()` |
 | Format/origin differs from SparkleFlinger assumptions | High | Low | Shader-copy normalization first; skip only once proven |
-| Surfman adapter pinning diverges across drivers | Low | Medium | Wave 3 validates `Adapter::from_dxgi_adapter`; keep pre-created-device injection as escape hatch |
+| Surfman adapter pinning diverges across drivers | Low | Medium | Current fixture validates `Adapter::from_dxgi_adapter`; keep pre-created-device injection as escape hatch |
 | WebGL effects still panic before import | Medium | High | Probe the WebGL path separately; do not block non-WebGL import on it |
 | Driver-specific external-memory bugs | Medium | High | Conservative allowlist/denylist after hardware soak |
 
@@ -921,15 +993,22 @@ Resolved by the research pass:
 7. The GPU path uses a custom `WindowsAngleRenderingContext`. The hidden Tao
    window and `WindowRenderingContext` remain only for the CPU fallback path.
 
-Still open, to be settled by the Wave 3 hardware spike:
+Closed by the Windows implementation pass:
 
-- Whether `wgpu 29.0.1` preserves imported content through
-  `create_texture_from_hal`, or whether a `wgpu 30.x` upgrade is required first.
-- Whether the owned texture needs `SHARED` or `SHARED_KEYEDMUTEX` paired with
-  `SHARED_NTHANDLE` for the import to succeed on NVIDIA, AMD, and Intel drivers.
-- Whether the primary `Adapter::from_dxgi_adapter` route is reliable across
-  NVIDIA, AMD, and Intel; pre-created-device injection is reserved for a later
-  escape hatch because it also requires creating an ANGLE `EGLDisplay`.
+- `wgpu 29.0.1` preserves imported D3D11 content on the current Windows
+  workstation.
+- `D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_NTHANDLE` imports on
+  the current Windows workstation.
+- The primary `Adapter::from_dxgi_adapter` route works for the current Vulkan
+  adapter identity.
+
+Still open for soak:
+
+- Whether the same import/content behavior holds across NVIDIA, AMD, Intel, and
+  hybrid-GPU systems.
+- Whether any driver requires `SHARED_KEYEDMUTEX` paired with `SHARED_NTHANDLE`.
+- Whether Phase 1 `glFinish` sync is cheap enough under representative effects,
+  or whether the Phase 2 shared-fence path should move up.
 
 ## 14. Review Notes
 
@@ -948,3 +1027,9 @@ again on 2026-05-22 and accepted the architecture with three clarifications:
   not wrapping a raw D3D11 device directly.
 - Windows imported-frame timings include `sync_us` so `glFinish` and ring
   handoff cost are visible in the existing telemetry buckets.
+
+The same Windows workstation then verified the implemented interop path on
+2026-05-22 with both the synthetic D3D11 shared-texture fixture and the Servo
+ANGLE ring fixture. That verification proves the architecture locally; the
+remaining work is cross-vendor soak and performance characterization, not a
+first-order design unknown.

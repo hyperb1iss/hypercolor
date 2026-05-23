@@ -68,6 +68,14 @@ pub(super) fn RendererHardwarePanel(
         let metric_snapshot = metrics.get();
         readback_badge(metric_snapshot.as_ref())
     });
+    let has_windows_import_metrics = Signal::derive(move || {
+        metrics.get().is_some_and(|metrics| {
+            metrics
+                .effect_health
+                .servo_gpu_import_windows_sync_mode
+                .is_some()
+        })
+    });
 
     view! {
         <div class="overflow-hidden rounded-lg border border-edge-subtle/70 bg-surface-overlay/40">
@@ -138,14 +146,21 @@ pub(super) fn RendererHardwarePanel(
                     <DetailRow label="Import policy" value=Signal::derive(move || {
                         status_text(status.get(), |s| mode_label(&s.compositor_acceleration.servo_gpu_import_mode))
                     }) />
-                    <DetailRow label="Linux import backend" value=Signal::derive(move || {
+                    <DetailRow label="Servo import backend" value=Signal::derive(move || {
                         probe_text(status.get(), |probe| {
-                            if probe.linux_servo_gpu_import_backend_compatible {
+                            let compatible = probe.servo_gpu_import_backend_compatible
+                                || probe.linux_servo_gpu_import_backend_compatible;
+                            if compatible {
                                 "compatible".to_owned()
                             } else {
                                 probe
-                                    .linux_servo_gpu_import_backend_reason
+                                    .servo_gpu_import_backend_reason
                                     .clone()
+                                    .or_else(|| {
+                                        probe
+                                            .linux_servo_gpu_import_backend_reason
+                                            .clone()
+                                    })
                                     .unwrap_or_else(|| "not compatible".to_owned())
                             }
                         })
@@ -189,6 +204,25 @@ pub(super) fn RendererHardwarePanel(
                                 .unwrap_or_else(|| "none".to_owned())
                         })
                     }) />
+                    <Show when=move || has_windows_import_metrics.get() fallback=|| ()>
+                        <DetailRow label="Sync mode" value=Signal::derive(move || {
+                            metrics_text(metrics.get(), |m| {
+                                m.effect_health
+                                    .servo_gpu_import_windows_sync_mode
+                                    .clone()
+                                    .unwrap_or_else(|| "n/a".to_owned())
+                            })
+                        }) />
+                        <DetailRow label="Stale / adapter" value=Signal::derive(move || {
+                            metrics_text(metrics.get(), |m| {
+                                format!(
+                                    "{} / {}",
+                                    m.effect_health.servo_gpu_import_stale_frame_total,
+                                    m.effect_health.servo_gpu_import_adapter_mismatch_total,
+                                )
+                            })
+                        }) />
+                    </Show>
                     <DetailRow label="Import max" value=Signal::derive(move || {
                         metrics_text(metrics.get(), |m| fmt_ms(m.effect_health.servo_gpu_import_max_ms))
                     }) />

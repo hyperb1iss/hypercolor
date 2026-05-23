@@ -34,6 +34,9 @@ pub struct ServoTelemetrySnapshot {
     pub render_gpu_import_failures_total: u64,
     pub render_gpu_import_fallbacks_total: u64,
     pub render_gpu_import_fallback_reason: Option<&'static str>,
+    pub render_gpu_import_windows_sync_mode: Option<&'static str>,
+    pub render_gpu_import_stale_frame_total: u64,
+    pub render_gpu_import_adapter_mismatch_total: u64,
     pub render_gpu_import_blit_total_us: u64,
     pub render_gpu_import_blit_max_us: u64,
     pub render_gpu_import_sync_total_us: u64,
@@ -83,6 +86,9 @@ static SERVO_RENDER_GPU_FRAMES_TOTAL: AtomicU64 = AtomicU64::new(0);
 static SERVO_RENDER_GPU_IMPORT_FAILURES_TOTAL: AtomicU64 = AtomicU64::new(0);
 static SERVO_RENDER_GPU_IMPORT_FALLBACKS_TOTAL: AtomicU64 = AtomicU64::new(0);
 static SERVO_RENDER_GPU_IMPORT_FALLBACK_REASON: AtomicU64 = AtomicU64::new(0);
+// These classify import failures before CPU-fallback filtering.
+static SERVO_RENDER_GPU_IMPORT_STALE_FRAME_TOTAL: AtomicU64 = AtomicU64::new(0);
+static SERVO_RENDER_GPU_IMPORT_ADAPTER_MISMATCH_TOTAL: AtomicU64 = AtomicU64::new(0);
 static SERVO_RENDER_GPU_IMPORT_BLIT_TOTAL_US: AtomicU64 = AtomicU64::new(0);
 static SERVO_RENDER_GPU_IMPORT_BLIT_MAX_US: AtomicU64 = AtomicU64::new(0);
 static SERVO_RENDER_GPU_IMPORT_SYNC_TOTAL_US: AtomicU64 = AtomicU64::new(0);
@@ -266,6 +272,15 @@ pub(super) fn record_servo_gpu_import_failure(
     fell_back_to_cpu: bool,
 ) {
     let _ = SERVO_RENDER_GPU_IMPORT_FAILURES_TOTAL.fetch_add(1, Ordering::Relaxed);
+    match reason {
+        ServoGpuImportFallbackReason::WindowsImportStaleFrame => {
+            let _ = SERVO_RENDER_GPU_IMPORT_STALE_FRAME_TOTAL.fetch_add(1, Ordering::Relaxed);
+        }
+        ServoGpuImportFallbackReason::AdapterLuidMismatch => {
+            let _ = SERVO_RENDER_GPU_IMPORT_ADAPTER_MISMATCH_TOTAL.fetch_add(1, Ordering::Relaxed);
+        }
+        _ => {}
+    }
     if fell_back_to_cpu {
         let _ = SERVO_RENDER_GPU_IMPORT_FALLBACKS_TOTAL.fetch_add(1, Ordering::Relaxed);
         SERVO_RENDER_GPU_IMPORT_FALLBACK_REASON.store(reason.as_u64(), Ordering::Relaxed);
@@ -439,6 +454,11 @@ pub fn servo_telemetry_snapshot() -> ServoTelemetrySnapshot {
             SERVO_RENDER_GPU_IMPORT_FALLBACK_REASON.load(Ordering::Relaxed),
         )
         .map(ServoGpuImportFallbackReason::as_str),
+        render_gpu_import_windows_sync_mode: windows_gpu_import_sync_mode(),
+        render_gpu_import_stale_frame_total: SERVO_RENDER_GPU_IMPORT_STALE_FRAME_TOTAL
+            .load(Ordering::Relaxed),
+        render_gpu_import_adapter_mismatch_total: SERVO_RENDER_GPU_IMPORT_ADAPTER_MISMATCH_TOTAL
+            .load(Ordering::Relaxed),
         render_gpu_import_blit_total_us: SERVO_RENDER_GPU_IMPORT_BLIT_TOTAL_US
             .load(Ordering::Relaxed),
         render_gpu_import_blit_max_us: SERVO_RENDER_GPU_IMPORT_BLIT_MAX_US.load(Ordering::Relaxed),
@@ -460,6 +480,16 @@ pub fn servo_telemetry_snapshot() -> ServoTelemetrySnapshot {
         render_frame_total_us: SERVO_RENDER_FRAME_TOTAL_US.load(Ordering::Relaxed),
         render_frame_max_us: SERVO_RENDER_FRAME_MAX_US.load(Ordering::Relaxed),
     }
+}
+
+#[cfg(all(feature = "servo-gpu-import", target_os = "windows"))]
+const fn windows_gpu_import_sync_mode() -> Option<&'static str> {
+    Some(hypercolor_windows_gpu_interop::WINDOWS_SERVO_GPU_IMPORT_SYNC_MODE)
+}
+
+#[cfg(not(all(feature = "servo-gpu-import", target_os = "windows")))]
+const fn windows_gpu_import_sync_mode() -> Option<&'static str> {
+    None
 }
 
 fn record_wait(wait: Duration, count: &AtomicU64, total_us: &AtomicU64, max_us: &AtomicU64) {
@@ -580,11 +610,23 @@ mod tests {
 
         record_servo_gpu_import_frame(10, 20, 40);
         record_servo_gpu_import_failure(ServoGpuImportFallbackReason::MissingGlFunction, true);
+        record_servo_gpu_import_failure(
+            ServoGpuImportFallbackReason::WindowsImportStaleFrame,
+            false,
+        );
+        record_servo_gpu_import_failure(ServoGpuImportFallbackReason::AdapterLuidMismatch, false);
 
         let after = servo_telemetry_snapshot();
         assert!(after.render_gpu_frames_total > before.render_gpu_frames_total);
         assert!(after.render_gpu_import_failures_total > before.render_gpu_import_failures_total);
         assert!(after.render_gpu_import_fallbacks_total > before.render_gpu_import_fallbacks_total);
+        assert!(
+            after.render_gpu_import_stale_frame_total > before.render_gpu_import_stale_frame_total
+        );
+        assert!(
+            after.render_gpu_import_adapter_mismatch_total
+                > before.render_gpu_import_adapter_mismatch_total
+        );
         assert_eq!(
             after.render_gpu_import_fallback_reason,
             Some("missing_gl_function")

@@ -30,6 +30,8 @@ fn system_status_deserializes_renderer_acceleration() {
                 "texture_format": "rgba8unorm",
                 "max_texture_dimension_2d": 16384,
                 "max_storage_textures_per_shader_stage": 8,
+                "servo_gpu_import_backend_compatible": true,
+                "servo_gpu_import_backend_reason": null,
                 "linux_servo_gpu_import_backend_compatible": true,
                 "linux_servo_gpu_import_backend_reason": null
             }
@@ -58,4 +60,11 @@ fn system_status_deserializes_renderer_acceleration() {
     );
     assert_eq!(status.render_loop.target_fps, 60);
     assert_eq!(status.render_loop.total_frames, 99);
+    assert!(
+        status
+            .compositor_acceleration
+            .gpu_probe
+            .as_ref()
+            .is_some_and(|probe| probe.servo_gpu_import_backend_compatible)
+    );
 }

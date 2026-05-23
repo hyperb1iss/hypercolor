@@ -69,6 +69,9 @@ fn performance_metrics_deserializes_renderer_diagnostics() {
             "servo_gpu_import_failures_total": 1,
             "servo_gpu_import_fallbacks_total": 2,
             "servo_gpu_import_fallback_reason": "unsupported format",
+            "servo_gpu_import_windows_sync_mode": "gl_finish",
+            "servo_gpu_import_stale_frame_total": 3,
+            "servo_gpu_import_adapter_mismatch_total": 4,
             "servo_gpu_import_max_ms": 1.7,
             "producer_gpu_frames_total": 130,
             "producer_cpu_frames_total": 5,
@@ -132,6 +135,20 @@ fn performance_metrics_deserializes_renderer_diagnostics() {
             .servo_gpu_import_fallback_reason
             .as_deref(),
         Some("unsupported format")
+    );
+    assert_eq!(
+        metrics
+            .effect_health
+            .servo_gpu_import_windows_sync_mode
+            .as_deref(),
+        Some("gl_finish")
+    );
+    assert_eq!(metrics.effect_health.servo_gpu_import_stale_frame_total, 3);
+    assert_eq!(
+        metrics
+            .effect_health
+            .servo_gpu_import_adapter_mismatch_total,
+        4
     );
     assert!(metrics.timeline.gpu_readback_failed);
     assert_eq!(metrics.render_surfaces.scene_pool_saturation_reallocs, 7);

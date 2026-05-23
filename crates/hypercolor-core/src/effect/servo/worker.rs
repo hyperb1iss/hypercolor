@@ -2586,6 +2586,8 @@ fn classify_servo_gpu_import_error(error: &anyhow::Error) -> ServoGpuImportFallb
         if let Some(error) =
             cause.downcast_ref::<hypercolor_windows_gpu_interop::WindowsGpuInteropError>()
         {
+            use hypercolor_windows_gpu_interop::WINDOWS_ANGLE_CLIENT_BUFFER_SURFACE_OPERATION;
+
             return match error {
                 hypercolor_windows_gpu_interop::WindowsGpuInteropError::MissingWgpuVulkanDevice => {
                     ServoGpuImportFallbackReason::MissingWgpuVulkanDevice
@@ -2599,11 +2601,35 @@ fn classify_servo_gpu_import_error(error: &anyhow::Error) -> ServoGpuImportFallb
                 hypercolor_windows_gpu_interop::WindowsGpuInteropError::WindowsImportStaleFrame => {
                     ServoGpuImportFallbackReason::WindowsImportStaleFrame
                 }
+                hypercolor_windows_gpu_interop::WindowsGpuInteropError::DxgiAdapterNotFound {
+                    ..
+                } => ServoGpuImportFallbackReason::AdapterLuidMismatch,
+                hypercolor_windows_gpu_interop::WindowsGpuInteropError::D3d11DeviceCreateFailed {
+                    ..
+                }
+                | hypercolor_windows_gpu_interop::WindowsGpuInteropError::D3d11ImmediateContextUnavailable => {
+                    ServoGpuImportFallbackReason::D3d11DeviceCreateFailed
+                }
+                hypercolor_windows_gpu_interop::WindowsGpuInteropError::D3d11SharedTextureCreateFailed {
+                    ..
+                }
+                | hypercolor_windows_gpu_interop::WindowsGpuInteropError::D3d11TextureInterfaceQueryFailed {
+                    ..
+                } => ServoGpuImportFallbackReason::D3d11SharedTextureCreateFailed,
+                hypercolor_windows_gpu_interop::WindowsGpuInteropError::D3d11SharedHandleCreateFailed {
+                    ..
+                } => ServoGpuImportFallbackReason::D3d11SharedHandleCreateFailed,
                 hypercolor_windows_gpu_interop::WindowsGpuInteropError::InvalidDimensions {
                     ..
                 } => ServoGpuImportFallbackReason::InvalidDimensions,
                 hypercolor_windows_gpu_interop::WindowsGpuInteropError::VulkanD3d11ImportFailed => {
                     ServoGpuImportFallbackReason::VulkanD3d11ImportFailed
+                }
+                hypercolor_windows_gpu_interop::WindowsGpuInteropError::ServoContext {
+                    operation,
+                    ..
+                } if *operation == WINDOWS_ANGLE_CLIENT_BUFFER_SURFACE_OPERATION => {
+                    ServoGpuImportFallbackReason::AngleClientBufferSurfaceFailed
                 }
                 _ => ServoGpuImportFallbackReason::Other,
             };
@@ -2746,11 +2772,11 @@ pub(super) mod test_support {
     use crate::effect::traits::EffectRenderOutput;
 
     use super::super::memory::{ServoMemoryReportSnapshot, ServoMemoryReportTotals};
+    #[cfg(feature = "servo-gpu-import")]
+    use super::super::worker_client::ServoRenderMode;
     use super::super::worker_client::{
         ServoWorkerClient, ServoWorkerClientSharedState, WorkerCommand,
     };
-    #[cfg(feature = "servo-gpu-import")]
-    use super::super::worker_client::ServoRenderMode;
     use super::ServoWorker;
 
     pub static SHARED_WORKER_STATE_TEST_LOCK: LazyLock<StdMutex<()>> =

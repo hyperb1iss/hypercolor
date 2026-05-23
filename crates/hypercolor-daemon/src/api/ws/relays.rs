@@ -1385,6 +1385,12 @@ pub(super) async fn build_metrics_message(
                 servo_gpu_import_failures_total: servo_health.render_gpu_import_failures_total,
                 servo_gpu_import_fallbacks_total: servo_health.render_gpu_import_fallbacks_total,
                 servo_gpu_import_fallback_reason: servo_health.render_gpu_import_fallback_reason,
+                servo_gpu_import_windows_sync_mode: servo_health
+                    .render_gpu_import_windows_sync_mode,
+                servo_gpu_import_stale_frame_total: servo_health
+                    .render_gpu_import_stale_frame_total,
+                servo_gpu_import_adapter_mismatch_total: servo_health
+                    .render_gpu_import_adapter_mismatch_total,
                 servo_gpu_import_blit_total_ms: us_to_ms_f64(
                     servo_health.render_gpu_import_blit_total_us,
                 ),
@@ -1605,6 +1611,9 @@ struct ServoEffectHealthCounts {
     render_gpu_import_failures_total: u64,
     render_gpu_import_fallbacks_total: u64,
     render_gpu_import_fallback_reason: Option<&'static str>,
+    render_gpu_import_windows_sync_mode: Option<&'static str>,
+    render_gpu_import_stale_frame_total: u64,
+    render_gpu_import_adapter_mismatch_total: u64,
     render_gpu_import_blit_total_us: u64,
     render_gpu_import_blit_max_us: u64,
     render_gpu_import_sync_total_us: u64,
@@ -1658,6 +1667,9 @@ fn servo_effect_health_counts() -> ServoEffectHealthCounts {
         render_gpu_import_failures_total: snapshot.render_gpu_import_failures_total,
         render_gpu_import_fallbacks_total: snapshot.render_gpu_import_fallbacks_total,
         render_gpu_import_fallback_reason: snapshot.render_gpu_import_fallback_reason,
+        render_gpu_import_windows_sync_mode: snapshot.render_gpu_import_windows_sync_mode,
+        render_gpu_import_stale_frame_total: snapshot.render_gpu_import_stale_frame_total,
+        render_gpu_import_adapter_mismatch_total: snapshot.render_gpu_import_adapter_mismatch_total,
         render_gpu_import_blit_total_us: snapshot.render_gpu_import_blit_total_us,
         render_gpu_import_blit_max_us: snapshot.render_gpu_import_blit_max_us,
         render_gpu_import_sync_total_us: snapshot.render_gpu_import_sync_total_us,
@@ -1711,6 +1723,9 @@ const fn servo_effect_health_counts() -> ServoEffectHealthCounts {
         render_gpu_import_failures_total: 0,
         render_gpu_import_fallbacks_total: 0,
         render_gpu_import_fallback_reason: None,
+        render_gpu_import_windows_sync_mode: None,
+        render_gpu_import_stale_frame_total: 0,
+        render_gpu_import_adapter_mismatch_total: 0,
         render_gpu_import_blit_total_us: 0,
         render_gpu_import_blit_max_us: 0,
         render_gpu_import_sync_total_us: 0,

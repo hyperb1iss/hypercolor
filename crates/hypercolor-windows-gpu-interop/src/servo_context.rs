@@ -406,7 +406,9 @@ fn create_texture_ring(
         let surface = unsafe {
             device
                 .create_surface_from_texture(context, &size, surfman_texture)
-                .map_err(context_error("create ANGLE client-buffer surface"))?
+                .map_err(context_error(
+                    crate::WINDOWS_ANGLE_CLIENT_BUFFER_SURFACE_OPERATION,
+                ))?
         };
         ring.push(WindowsServoTextureSlot {
             texture,
