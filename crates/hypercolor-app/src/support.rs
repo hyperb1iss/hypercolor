@@ -202,6 +202,35 @@ pub async fn launch_pawnio_helper(
     .map_err(|error| error.to_string())
 }
 
+/// Stop + start the `HypercolorSmBus` Windows service via the elevated
+/// helper. Triggers a UAC prompt and blocks until the helper exits.
+///
+/// First wire-up of `hypercolor-windows-helper` as a user-visible action;
+/// the same IPC shape will be reused by the Phase 1.2 broker watchdog and
+/// the Phase 3.5 native progress modal.
+///
+/// # Errors
+///
+/// Returns an error when the platform is unsupported, the helper binary
+/// cannot be located, the request file cannot be written, or
+/// `powershell.exe` itself fails to launch.
+#[tauri::command]
+pub async fn repair_smbus_service(
+    app: AppHandle,
+) -> Result<crate::helper_client::HelperOutcome, String> {
+    let resource_dir = app.path().resource_dir().ok();
+
+    tokio::task::spawn_blocking(move || {
+        crate::helper_client::invoke(
+            resource_dir.as_deref(),
+            crate::helper_client::Verb::RepairSmbusService,
+        )
+    })
+    .await
+    .map_err(|error| format!("helper task failed: {error}"))?
+    .map_err(|error| error.to_string())
+}
+
 /// Detect PawnIO and SMBus support status from an optional Tauri resource root.
 #[must_use]
 pub fn detect_pawnio_support_from_resource_dir(resource_dir: Option<&Path>) -> PawnIoSupportStatus {

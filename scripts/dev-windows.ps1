@@ -172,6 +172,31 @@ function Set-HypercolorPawnIoModuleDir {
     }
 }
 
+function Build-HypercolorWindowsHelper {
+    # Build the signed elevated helper that the Tauri app shells out to
+    # for privileged operations (repair SMBus, install/uninstall hardware
+    # support, swap broker binary). The app's helper_client resolves the
+    # binary via HYPERCOLOR_HELPER_PATH first, so we set that to the
+    # freshly built debug binary and `just dev` gets a single-prompt UAC
+    # repair flow identical to a real bundle.
+    Write-Host '[dev] building hypercolor-windows-helper'
+    $cargoCacheBuild = Join-Path $RepoRoot 'scripts\cargo-cache-build.ps1'
+    & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $cargoCacheBuild `
+        cargo build --bin hypercolor-windows-helper
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "[dev] hypercolor-windows-helper build failed; Repair button will be disabled"
+        return
+    }
+
+    $helperExe = Join-Path $env:CARGO_TARGET_DIR 'debug\hypercolor-windows-helper.exe'
+    if (Test-Path $helperExe) {
+        $env:HYPERCOLOR_HELPER_PATH = $helperExe
+        Write-Host "[dev] HYPERCOLOR_HELPER_PATH=$helperExe"
+    } else {
+        Write-Warning "[dev] hypercolor-windows-helper.exe not found at $helperExe"
+    }
+}
+
 Enter-HypercolorVsDevShell
 
 $nasmDir = 'C:\Program Files\NASM'
@@ -248,6 +273,7 @@ try {
 
     Add-HypercolorAngleRuntimePath
     Set-HypercolorPawnIoModuleDir
+    Build-HypercolorWindowsHelper
 
     Write-Host '[dev] starting daemon on 127.0.0.1:9420'
     $daemon = Start-HypercolorChild -FilePath $daemonExe -Arguments $daemonArguments -WorkingDirectory $RepoRoot

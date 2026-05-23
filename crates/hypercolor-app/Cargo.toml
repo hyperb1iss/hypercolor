@@ -56,3 +56,6 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_System_Power",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
