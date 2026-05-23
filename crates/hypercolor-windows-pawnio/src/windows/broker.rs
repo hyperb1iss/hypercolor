@@ -54,9 +54,11 @@ use windows_sys::Win32::Security::Authorization::{
 use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
 
 use super::{
-    PawnIoError, PawnIoResult, SmBusBatchOperation, SmBusBlockData, SmBusDirection,
-    SmBusTransaction, WindowsSmBusBus, WindowsSmBusBusInfo, direct_enumerate_smbus_buses,
-    direct_open_smbus_bus, module_name_from_wire,
+    CpuVendor, IOCTL_READ_MSR, IOCTL_READ_SMN, PAWNIO_MODULE_AMD_FAMILY_17,
+    PAWNIO_MODULE_INTEL_MSR, PawnIoError, PawnIoHandle, PawnIoResult, PawnIoRuntime,
+    SmBusBatchOperation, SmBusBlockData, SmBusDirection, SmBusTransaction, WindowsSmBusBus,
+    WindowsSmBusBusInfo, check_pawnio_status, detect_cpu_vendor, direct_enumerate_smbus_buses,
+    direct_open_smbus_bus, module_name_from_wire, resolve_module_path,
 };
 
 const SERVICE_NAME: &str = "HypercolorSmBus";
@@ -126,6 +128,27 @@ pub(super) fn smbus_xfer(
 
     *transaction = returned.try_into()?;
     Ok(())
+}
+
+/// Read an MSR via the broker. The broker loads the right PawnIO module
+/// (IntelMSR.bin for Intel, AMDFamily17.bin for AMD) lazily on first use
+/// and caches the handle for the broker's lifetime.
+pub(super) fn read_msr(msr: u32) -> PawnIoResult<u64> {
+    let response = send_request(BrokerRequest::ReadMsr { msr }, "read_msr")?;
+    let BrokerResponse::MsrValue { value } = response else {
+        return Err(unexpected_response("read_msr"));
+    };
+    Ok(value)
+}
+
+/// Read a 32-bit SMN register via the broker (AMD only). Same lazy
+/// PawnIO module loading as `read_msr`.
+pub(super) fn read_smn(addr: u32) -> PawnIoResult<u32> {
+    let response = send_request(BrokerRequest::ReadSmn { addr }, "read_smn")?;
+    let BrokerResponse::SmnValue { value } = response else {
+        return Err(unexpected_response("read_smn"));
+    };
+    Ok(value)
 }
 
 pub(super) fn smbus_xfer_batch(
@@ -491,6 +514,11 @@ fn read_blocking_frame(stream: &mut std::fs::File) -> PawnIoResult<Vec<u8>> {
 #[derive(Default)]
 struct BrokerState {
     buses: Mutex<HashMap<String, WindowsSmBusBus>>,
+    /// Lazy-loaded PawnIO module for MSR/SMN reads. Loaded on first
+    /// CPU-temp request and kept for the broker's lifetime — there's
+    /// only ever one CPU vendor per box, so one handle covers all
+    /// callers.
+    cpu_module: Mutex<Option<CpuTempModule>>,
 }
 
 impl BrokerState {
@@ -526,7 +554,67 @@ impl BrokerState {
                 self.smbus_xfer_batch(&path, address, &mut operations)?;
                 Ok(BrokerResponse::Batch { operations })
             }
+            BrokerRequest::ReadMsr { msr } => {
+                let value = self.read_msr(msr)?;
+                Ok(BrokerResponse::MsrValue { value })
+            }
+            BrokerRequest::ReadSmn { addr } => {
+                let value = self.read_smn(addr)?;
+                Ok(BrokerResponse::SmnValue { value })
+            }
         }
+    }
+
+    fn read_msr(&self, msr: u32) -> PawnIoResult<u64> {
+        let mut guard = self.cpu_module.lock().map_err(|_| lock_poisoned())?;
+        let module = match guard.as_ref() {
+            Some(module) => module,
+            None => {
+                *guard = Some(CpuTempModule::new()?);
+                guard.as_ref().expect("module just inserted")
+            }
+        };
+        let input = [u64::from(msr)];
+        let mut output = [0_u64; 1];
+        let mut returned = 0_usize;
+        let status = module.runtime.execute(
+            module.handle,
+            IOCTL_READ_MSR,
+            &input,
+            &mut output,
+            &mut returned,
+        );
+        check_pawnio_status("ioctl_read_msr", status)?;
+        Ok(output[0])
+    }
+
+    fn read_smn(&self, addr: u32) -> PawnIoResult<u32> {
+        let mut guard = self.cpu_module.lock().map_err(|_| lock_poisoned())?;
+        let module = match guard.as_ref() {
+            Some(module) => module,
+            None => {
+                *guard = Some(CpuTempModule::new()?);
+                guard.as_ref().expect("module just inserted")
+            }
+        };
+        if module.vendor != CpuVendor::Amd {
+            return Err(PawnIoError::InvalidInput {
+                detail: "SMN reads are only valid on AMD CPUs".to_owned(),
+            });
+        }
+        let input = [u64::from(addr)];
+        let mut output = [0_u64; 1];
+        let mut returned = 0_usize;
+        let status = module.runtime.execute(
+            module.handle,
+            IOCTL_READ_SMN,
+            &input,
+            &mut output,
+            &mut returned,
+        );
+        check_pawnio_status("ioctl_read_smn", status)?;
+        #[allow(clippy::cast_possible_truncation)]
+        Ok(output[0] as u32)
     }
 
     fn open_or_cached_bus(&self, path: &str) -> PawnIoResult<WindowsSmBusBusInfo> {
@@ -647,6 +735,16 @@ enum BrokerRequest {
         address: u8,
         operations: Vec<BrokerSmBusBatchOperation>,
     },
+    /// Read a single MSR. Broker selects the right PawnIO module
+    /// (IntelMSR / AMDFamily17) for the detected CPU vendor.
+    ReadMsr {
+        msr: u32,
+    },
+    /// Read a single 32-bit SMN register. AMD-only; the broker errors
+    /// on Intel hosts.
+    ReadSmn {
+        addr: u32,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -664,7 +762,60 @@ enum BrokerResponse {
     Batch {
         operations: Vec<BrokerSmBusBatchOperation>,
     },
+    MsrValue {
+        value: u64,
+    },
+    SmnValue {
+        value: u32,
+    },
 }
+
+/// Broker-side cached PawnIO module for CPU MSR/SMN reads. Loaded once
+/// (lazily on the first ReadMsr/ReadSmn request) and reused across the
+/// broker's lifetime.
+struct CpuTempModule {
+    runtime: Arc<PawnIoRuntime>,
+    handle: PawnIoHandle,
+    vendor: CpuVendor,
+}
+
+impl CpuTempModule {
+    fn new() -> PawnIoResult<Self> {
+        let vendor = detect_cpu_vendor()?;
+        let module_name = match vendor {
+            CpuVendor::Intel => PAWNIO_MODULE_INTEL_MSR,
+            CpuVendor::Amd => PAWNIO_MODULE_AMD_FAMILY_17,
+        };
+        let module_path = resolve_module_path(module_name)?;
+        let runtime = PawnIoRuntime::load()?;
+        let handle = runtime.open_loaded_module(&module_path)?;
+        debug!(
+            vendor = ?vendor,
+            module = module_name,
+            path = %module_path.display(),
+            "broker loaded PawnIO CPU temperature module"
+        );
+        Ok(Self {
+            runtime,
+            handle,
+            vendor,
+        })
+    }
+}
+
+impl Drop for CpuTempModule {
+    fn drop(&mut self) {
+        let _ = self.runtime.close(self.handle);
+    }
+}
+
+// SAFETY: PawnIO handle is opaque kernel state. The broker serializes
+// access through `BrokerState::cpu_module` (Mutex), and the loaded
+// library stays alive through `runtime` for the handle's lifetime.
+unsafe impl Send for CpuTempModule {}
+// SAFETY: Same justification as Send — concurrent access is gated by
+// the broker's `cpu_module` mutex.
+unsafe impl Sync for CpuTempModule {}
 
 #[derive(Debug, Serialize, Deserialize)]
 struct BrokerEnvelope {

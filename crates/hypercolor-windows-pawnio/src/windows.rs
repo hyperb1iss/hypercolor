@@ -26,9 +26,9 @@ const IOCTL_PIIX4_PORT_SEL: &CStr = c"ioctl_piix4_port_sel";
 const IOCTL_SET_SLEEP_MODE: &CStr = c"ioctl_set_sleep_mode";
 /// PawnIO `IntelMSR.bin` and `AMDFamily17.bin` both expose this ioctl —
 /// reads a single 64-bit MSR by index.
-const IOCTL_READ_MSR: &CStr = c"ioctl_read_msr";
+pub(super) const IOCTL_READ_MSR: &CStr = c"ioctl_read_msr";
 /// AMD-specific: reads a 32-bit SMN (System Management Network) register.
-const IOCTL_READ_SMN: &CStr = c"ioctl_read_smn";
+pub(super) const IOCTL_READ_SMN: &CStr = c"ioctl_read_smn";
 
 /// Intel MSR addresses for package thermal data.
 const INTEL_MSR_TEMPERATURE_TARGET: u32 = 0x1A2;
@@ -40,8 +40,8 @@ const AMD_F17_THM_TCON_CUR_TMP: u32 = 0x0005_9800;
 const AMD_F17_CUR_TMP_RANGE_SEL_BIT: u32 = 1 << 19;
 const AMD_F17_CUR_TMP_RANGE_OFFSET: f32 = 49.0;
 
-const PAWNIO_MODULE_INTEL_MSR: &str = "IntelMSR.bin";
-const PAWNIO_MODULE_AMD_FAMILY_17: &str = "AMDFamily17.bin";
+pub(super) const PAWNIO_MODULE_INTEL_MSR: &str = "IntelMSR.bin";
+pub(super) const PAWNIO_MODULE_AMD_FAMILY_17: &str = "AMDFamily17.bin";
 
 const PAWNIO_SLEEP_ALWAYS_SLEEP: u64 = 2;
 const GLOBAL_SMBUS_MUTEX_NAME: &[u8] = b"Global\\Access_SMBUS.HTP.Method\0";
@@ -79,7 +79,7 @@ const SMBUS_MODULES: &[SmBusModuleSpec] = &[
     },
 ];
 
-type PawnIoHandle = *mut c_void;
+pub(super) type PawnIoHandle = *mut c_void;
 type PawnIoVersion = unsafe extern "system" fn(*mut u32) -> i32;
 type PawnIoOpen = unsafe extern "system" fn(*mut PawnIoHandle) -> i32;
 type PawnIoLoad = unsafe extern "system" fn(PawnIoHandle, *const u8, usize) -> i32;
@@ -543,16 +543,16 @@ struct SmBusModuleSpec {
     ports: &'static [Option<u8>],
 }
 
-struct PawnIoRuntime {
+pub(super) struct PawnIoRuntime {
     _library: Library,
     open: PawnIoOpen,
     load: PawnIoLoad,
-    execute: PawnIoExecute,
-    close: PawnIoClose,
+    pub(super) execute: PawnIoExecute,
+    pub(super) close: PawnIoClose,
 }
 
 impl PawnIoRuntime {
-    fn load() -> PawnIoResult<Arc<Self>> {
+    pub(super) fn load() -> PawnIoResult<Arc<Self>> {
         if let Some(runtime) = PAWNIO_RUNTIME.get() {
             return Ok(Arc::clone(runtime));
         }
@@ -616,7 +616,7 @@ impl PawnIoRuntime {
         }))
     }
 
-    fn open_loaded_module(&self, module_path: &Path) -> PawnIoResult<PawnIoHandle> {
+    pub(super) fn open_loaded_module(&self, module_path: &Path) -> PawnIoResult<PawnIoHandle> {
         let blob = std::fs::read(module_path).map_err(|error| PawnIoError::InvalidInput {
             detail: format!(
                 "failed to read PawnIO module {}: {error}",
@@ -648,7 +648,7 @@ impl PawnIoRuntime {
         Ok(handle)
     }
 
-    fn execute(
+    pub(super) fn execute(
         &self,
         handle: PawnIoHandle,
         name: &CStr,
@@ -671,7 +671,7 @@ impl PawnIoRuntime {
         }
     }
 
-    fn close(&self, handle: PawnIoHandle) -> PawnIoResult<()> {
+    pub(super) fn close(&self, handle: PawnIoHandle) -> PawnIoResult<()> {
         let status = unsafe {
             // SAFETY: The handle was returned from `pawnio_open`; PawnIO owns close semantics.
             (self.close)(handle)
@@ -998,7 +998,7 @@ fn resolve_pawnio_library_path() -> PawnIoResult<PathBuf> {
         .ok_or(PawnIoError::PawnIoNotInstalled)
 }
 
-fn resolve_module_path(module_name: &'static str) -> PawnIoResult<PathBuf> {
+pub(super) fn resolve_module_path(module_name: &'static str) -> PawnIoResult<PathBuf> {
     pawnio_module_dirs()
         .into_iter()
         .map(|dir| dir.join(module_name))
@@ -1121,7 +1121,7 @@ pub(super) fn module_name_from_wire(name: &str) -> PawnIoResult<&'static str> {
         })
 }
 
-fn check_pawnio_status(operation: &'static str, status: i32) -> PawnIoResult<()> {
+pub(super) fn check_pawnio_status(operation: &'static str, status: i32) -> PawnIoResult<()> {
     if status == S_OK {
         return Ok(());
     }
@@ -1171,15 +1171,19 @@ pub enum CpuVendor {
     Amd,
 }
 
-/// Live PawnIO-backed reader for CPU package temperature.
+/// Live CPU package-temperature reader, brokered through the
+/// `HypercolorSmBus` service.
 ///
-/// Loads the right PawnIO module (`IntelMSR.bin` or `AMDFamily17.bin`) at
-/// construction time, caches the kernel handle for the lifetime of the
-/// reader, and returns Celsius readings on demand.
+/// The daemon runs as the user. `pawnio_open()` from user-mode returns
+/// access-denied on a normal Windows box, so MSR/SMN reads cannot be
+/// issued directly from the daemon process. Instead, the broker
+/// (running as LocalSystem) loads `IntelMSR.bin` or `AMDFamily17.bin`
+/// once at first request, holds the PawnIO handle for its lifetime, and
+/// services [`Self::read_package_celsius`] calls over its named pipe.
 ///
 /// On Intel: reads `MSR_TEMPERATURE_TARGET` (0x1A2) once for Tjmax, then
-/// `MSR_PACKAGE_THERM_STATUS` (0x1B1) every poll. `temp = Tjmax - digital_readout`
-/// per Intel SDM Vol. 4.
+/// `MSR_PACKAGE_THERM_STATUS` (0x1B1) every poll. `temp = Tjmax -
+/// digital_readout` per Intel SDM Vol. 4.
 ///
 /// On AMD Family 17h (Zen / Zen+ / Zen 2) and the Family 17h-derived
 /// Family 19h (Zen 3 / Zen 4): reads the SMN-mapped `THM_TCON_CUR_TMP`
@@ -1187,33 +1191,30 @@ pub enum CpuVendor {
 /// LSB; the `CurTempRangeSel` bit at position 19 subtracts 49°C when set
 /// (Threadripper / EPYC).
 pub struct CpuTempReader {
-    runtime: Arc<PawnIoRuntime>,
-    handle: PawnIoHandle,
     vendor: CpuVendor,
     tjmax_celsius: Option<u8>,
 }
 
 impl CpuTempReader {
-    /// Open the CPU temperature reader, picking the right PawnIO module
-    /// for the detected vendor.
+    /// Open the CPU temperature reader. Detects the host vendor via
+    /// CPUID (cheap, no kernel access) and probes the broker with one
+    /// MSR/SMN read so we fail fast if the broker isn't reachable or
+    /// the right PawnIO module isn't deployed.
     pub fn new() -> PawnIoResult<Self> {
         let vendor = detect_cpu_vendor()?;
-        let module_name = match vendor {
-            CpuVendor::Intel => PAWNIO_MODULE_INTEL_MSR,
-            CpuVendor::Amd => PAWNIO_MODULE_AMD_FAMILY_17,
-        };
-        let module_path = resolve_module_path(module_name)?;
-        let runtime = PawnIoRuntime::load()?;
-        let handle = runtime.open_loaded_module(&module_path)?;
-        debug!(
-            vendor = ?vendor,
-            module = module_name,
-            path = %module_path.display(),
-            "opened PawnIO CPU temperature module"
-        );
+        // Probe: issuing the first read forces the broker to load the
+        // appropriate PawnIO module. Surface the failure now rather
+        // than on the first dashboard sensor tick.
+        match vendor {
+            CpuVendor::Intel => {
+                broker::read_msr(INTEL_MSR_TEMPERATURE_TARGET)?;
+            }
+            CpuVendor::Amd => {
+                broker::read_smn(AMD_F17_THM_TCON_CUR_TMP)?;
+            }
+        }
+        debug!(vendor = ?vendor, "CpuTempReader opened (brokered)");
         Ok(Self {
-            runtime,
-            handle,
             vendor,
             tjmax_celsius: None,
         })
@@ -1226,7 +1227,7 @@ impl CpuTempReader {
     }
 
     /// Read the current package temperature in Celsius. Returns `Err` on
-    /// PawnIO failure; never returns a nonsensical placeholder.
+    /// broker / PawnIO failure; never returns a nonsensical placeholder.
     pub fn read_package_celsius(&mut self) -> PawnIoResult<f32> {
         match self.vendor {
             CpuVendor::Intel => self.read_intel_package_celsius(),
@@ -1238,7 +1239,7 @@ impl CpuTempReader {
         let tjmax = match self.tjmax_celsius {
             Some(cached) => cached,
             None => {
-                let target = self.read_msr(INTEL_MSR_TEMPERATURE_TARGET)?;
+                let target = broker::read_msr(INTEL_MSR_TEMPERATURE_TARGET)?;
                 let raw = ((target >> 16) & 0xff) as u8;
                 let tjmax = if raw == 0 { 100 } else { raw };
                 self.tjmax_celsius = Some(tjmax);
@@ -1246,13 +1247,13 @@ impl CpuTempReader {
             }
         };
 
-        let status = self.read_msr(INTEL_MSR_PACKAGE_THERM_STATUS)?;
+        let status = broker::read_msr(INTEL_MSR_PACKAGE_THERM_STATUS)?;
         let digital_readout = ((status >> 16) & 0x7F) as u8;
         Ok(f32::from(tjmax) - f32::from(digital_readout))
     }
 
     fn read_amd_package_celsius(&self) -> PawnIoResult<f32> {
-        let raw = self.read_smn(AMD_F17_THM_TCON_CUR_TMP)?;
+        let raw = broker::read_smn(AMD_F17_THM_TCON_CUR_TMP)?;
         let cur_tmp = (raw >> 21) & 0x7FF;
         let mut celsius = (cur_tmp as f32) * 0.125;
         if (raw & AMD_F17_CUR_TMP_RANGE_SEL_BIT) != 0 {
@@ -1260,52 +1261,10 @@ impl CpuTempReader {
         }
         Ok(celsius)
     }
-
-    fn read_msr(&self, msr_index: u32) -> PawnIoResult<u64> {
-        let input = [u64::from(msr_index)];
-        let mut output = [0_u64; 1];
-        let mut returned = 0_usize;
-        let status =
-            self.runtime
-                .execute(self.handle, IOCTL_READ_MSR, &input, &mut output, &mut returned);
-        if status != S_OK {
-            return Err(PawnIoError::InvalidInput {
-                detail: format!(
-                    "ioctl_read_msr(0x{msr_index:X}) failed: {}",
-                    hresult_detail(status)
-                ),
-            });
-        }
-        Ok(output[0])
-    }
-
-    fn read_smn(&self, address: u32) -> PawnIoResult<u32> {
-        let input = [u64::from(address)];
-        let mut output = [0_u64; 1];
-        let mut returned = 0_usize;
-        let status =
-            self.runtime
-                .execute(self.handle, IOCTL_READ_SMN, &input, &mut output, &mut returned);
-        if status != S_OK {
-            return Err(PawnIoError::InvalidInput {
-                detail: format!(
-                    "ioctl_read_smn(0x{address:X}) failed: {}",
-                    hresult_detail(status)
-                ),
-            });
-        }
-        Ok(output[0] as u32)
-    }
-}
-
-impl Drop for CpuTempReader {
-    fn drop(&mut self) {
-        let _ = self.runtime.close(self.handle);
-    }
 }
 
 #[cfg(target_arch = "x86_64")]
-fn detect_cpu_vendor() -> PawnIoResult<CpuVendor> {
+pub(super) fn detect_cpu_vendor() -> PawnIoResult<CpuVendor> {
     let info = std::arch::x86_64::__cpuid(0);
     let mut bytes = [0_u8; 12];
     bytes[0..4].copy_from_slice(&info.ebx.to_le_bytes());
@@ -1327,7 +1286,7 @@ fn detect_cpu_vendor() -> PawnIoResult<CpuVendor> {
 }
 
 #[cfg(not(target_arch = "x86_64"))]
-fn detect_cpu_vendor() -> PawnIoResult<CpuVendor> {
+pub(super) fn detect_cpu_vendor() -> PawnIoResult<CpuVendor> {
     // ARM64 Windows: no x86 CPUID, no MSR/SMN access. Caller treats the
     // resulting Err as "no PawnIO CPU temp source" and falls through to
     // the LHM/OHM/ACPI cascade just like any non-Windows host would.
