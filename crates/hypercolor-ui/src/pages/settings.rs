@@ -2,6 +2,7 @@
 
 use leptos::prelude::*;
 use leptos_icons::Icon;
+use leptos_router::hooks::use_query_map;
 use leptos_use::{UseIntersectionObserverOptions, use_intersection_observer_with_options};
 
 use crate::api;
@@ -149,6 +150,30 @@ pub fn SettingsPage() -> impl IntoView {
             scroll_into_view_start(&el);
         }
     };
+
+    // Deep-link target: callers (e.g. the first-run welcome overlay's
+    // "Set up RGB hardware support" CTA) pass `?focus=<section-id>` so
+    // the page scrolls past the default Audio section onto the section
+    // they actually wanted. spawn_local yields to the event loop so the
+    // section DOM is mounted by the time we look it up.
+    let query = use_query_map();
+    Effect::new(move |_| {
+        let Some(focus) = query.with(|map| map.get("focus")) else {
+            return;
+        };
+        if !SECTION_IDS.contains(&focus.as_str()) {
+            return;
+        }
+        set_active_section.set(focus.clone());
+        let focus_id = focus.clone();
+        leptos::task::spawn_local(async move {
+            if let Some(doc) = browser_document()
+                && let Some(el) = doc.get_element_by_id(&format!("section-{focus_id}"))
+            {
+                scroll_into_view_start(&el);
+            }
+        });
+    });
 
     // Tab data
     struct TabEntry {

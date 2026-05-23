@@ -21,7 +21,16 @@ use crate::tauri_bridge::{self, PawnIoSupportStatus, smbus_support_ready};
 #[component]
 pub fn WelcomeOverlay() -> impl IntoView {
     let pending = LocalResource::new(tauri_bridge::is_first_run_pending);
-    let pawnio = LocalResource::new(tauri_bridge::detect_pawnio_support);
+    // Defer the native PawnIO probe until first-run actually resolves to
+    // true. Without this gate the dashboard pays a per-launch
+    // sc.exe-query-fan-out + WMI motherboard query just to feed an
+    // overlay that won't render after onboarding has been dismissed.
+    let pawnio = LocalResource::new(move || async move {
+        if !matches!(pending.get(), Some(Ok(Some(true)))) {
+            return Ok(None::<PawnIoSupportStatus>);
+        }
+        tauri_bridge::detect_pawnio_support().await
+    });
     let (dismissed, set_dismissed) = signal(false);
     let (dismissing, set_dismissing) = signal(false);
     // Default to enabled — most users who installed an RGB orchestration
@@ -69,8 +78,12 @@ pub fn WelcomeOverlay() -> impl IntoView {
             set_dismissing,
             set_dismissed,
             autostart_enabled.get_untracked(),
+            // SettingsPage reads ?focus=<section-id> on mount and
+            // scrolls there, so the CTA lands on Device Discovery
+            // (where the install panel actually lives) instead of the
+            // default Audio section.
             Some(Box::new(move || {
-                navigate_clone("/settings", NavigateOptions::default());
+                navigate_clone("/settings?focus=discovery", NavigateOptions::default());
             })),
         );
     });
