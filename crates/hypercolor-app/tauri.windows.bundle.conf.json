@@ -4,6 +4,11 @@
       "../../target/bundle-stage/tools/hypercolor-smbus-service.exe": "tools/hypercolor-smbus-service.exe",
       "../../target/bundle-stage/tools/hypercolor-windows-helper.exe": "tools/hypercolor-windows-helper.exe",
       "../../target/bundle-stage/tools/pawnio/": "tools/pawnio/"
+    },
+    "windows": {
+      "nsis": {
+        "installerHooks": "./installer-hooks.nsh"
+      }
     }
   }
 }
