@@ -35,3 +35,4 @@ pub mod shell;
 pub mod sidebar;
 pub mod silk_select;
 pub mod viewport_designer;
+pub mod welcome_overlay;

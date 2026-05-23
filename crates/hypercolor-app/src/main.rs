@@ -36,6 +36,8 @@ fn main() -> anyhow::Result<()> {
         .manage(hypercolor_app::supervisor::SupervisorState::default())
         .manage(hypercolor_app::tray::TrayRuntime::default())
         .invoke_handler(tauri::generate_handler![
+            hypercolor_app::first_run::is_first_run_pending,
+            hypercolor_app::first_run::mark_first_run_complete,
             hypercolor_app::support::detect_pawnio_support,
             hypercolor_app::support::detect_windows_daemon_service,
             hypercolor_app::support::launch_pawnio_helper,

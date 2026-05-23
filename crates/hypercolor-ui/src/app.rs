@@ -19,6 +19,7 @@ use crate::apply_target::ApplyTarget;
 use crate::color::CanvasFrameAnalysis;
 use crate::components::preset_matching::controls_to_json;
 use crate::components::shell::Shell;
+use crate::components::welcome_overlay::WelcomeOverlay;
 use crate::config_state::ConfigContext;
 use crate::device_event_logic::should_refetch_devices_for_event;
 use crate::effect_search::IndexedEffect;
@@ -1061,6 +1062,8 @@ pub fn App() -> impl IntoView {
         <Show when=move || api_key_required.get()>
             <ApiKeyPrompt on_unlock=unlock_api />
         </Show>
+
+        <WelcomeOverlay />
 
         <leptoaster::Toaster />
     }

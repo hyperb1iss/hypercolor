@@ -213,6 +213,50 @@ pub async fn repair_smbus_service() -> Result<HelperOutcome, String> {
     Err("native app bridge is unavailable".to_owned())
 }
 
+/// True when the welcome overlay should be shown. Returns `Ok(None)`
+/// when the Tauri bridge isn't present (browser/dev mode without the
+/// native shell) so callers can keep the dashboard rendering normally.
+///
+/// # Errors
+///
+/// Returns an error when the native command rejects or returns malformed
+/// data.
+#[cfg(target_arch = "wasm32")]
+pub async fn is_first_run_pending() -> Result<Option<bool>, String> {
+    let Some(invoke) = tauri_invoke() else {
+        return Ok(None);
+    };
+
+    let value = invoke_command(&invoke, "is_first_run_pending", None).await?;
+    serde_json_from_js_value(value).map(Some)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn is_first_run_pending() -> Result<Option<bool>, String> {
+    Ok(None)
+}
+
+/// Persist that the welcome wizard has been dismissed.
+///
+/// # Errors
+///
+/// Returns an error when the Tauri bridge is unavailable or the native
+/// command rejects.
+#[cfg(target_arch = "wasm32")]
+pub async fn mark_first_run_complete() -> Result<(), String> {
+    let Some(invoke) = tauri_invoke() else {
+        return Err("native app bridge is unavailable".to_owned());
+    };
+
+    let _ = invoke_command(&invoke, "mark_first_run_complete", None).await?;
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn mark_first_run_complete() -> Result<(), String> {
+    Err("native app bridge is unavailable".to_owned())
+}
+
 /// Read the native app autostart state when the Tauri bridge exists.
 ///
 /// # Errors
