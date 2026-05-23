@@ -16,7 +16,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::{Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use tokio::sync::watch;
 
@@ -44,6 +44,14 @@ pub struct DisplayFrameSnapshot {
 pub struct DisplayOutputMetricsSnapshot {
     pub captured_devices: usize,
     pub preview_subscribers: usize,
+    pub encode_attempts_total: u64,
+    pub encode_successes_total: u64,
+    pub encode_failures_total: u64,
+    pub encode_avg_us: u64,
+    pub encode_max_us: u64,
+    pub encode_last_us: Option<u64>,
+    pub encoded_bytes_total: u64,
+    pub encoded_last_bytes: u64,
     pub write_attempts_total: u64,
     pub write_successes_total: u64,
     pub write_failures_total: u64,
@@ -53,6 +61,14 @@ pub struct DisplayOutputMetricsSnapshot {
 
 #[derive(Debug, Default)]
 struct DisplayOutputMetrics {
+    encode_attempts_total: u64,
+    encode_successes_total: u64,
+    encode_failures_total: u64,
+    encode_total_us: u64,
+    encode_max_us: u64,
+    encode_last_us: Option<u64>,
+    encoded_bytes_total: u64,
+    encoded_last_bytes: u64,
     write_attempts_total: u64,
     write_successes_total: u64,
     write_failures_total: u64,
@@ -100,6 +116,32 @@ impl DisplayFrameRuntime {
         }
     }
 
+    /// Record a successful display encode.
+    pub fn record_encode_success(&mut self, elapsed: Duration, encoded_bytes: usize) {
+        self.record_encode_attempt(elapsed);
+        self.metrics.encode_successes_total = self.metrics.encode_successes_total.saturating_add(1);
+        let encoded_bytes = u64::try_from(encoded_bytes).unwrap_or(u64::MAX);
+        self.metrics.encoded_bytes_total = self
+            .metrics
+            .encoded_bytes_total
+            .saturating_add(encoded_bytes);
+        self.metrics.encoded_last_bytes = encoded_bytes;
+    }
+
+    /// Record a failed display encode.
+    pub fn record_encode_failure(&mut self, elapsed: Duration) {
+        self.record_encode_attempt(elapsed);
+        self.metrics.encode_failures_total = self.metrics.encode_failures_total.saturating_add(1);
+    }
+
+    fn record_encode_attempt(&mut self, elapsed: Duration) {
+        let elapsed_us = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
+        self.metrics.encode_attempts_total = self.metrics.encode_attempts_total.saturating_add(1);
+        self.metrics.encode_total_us = self.metrics.encode_total_us.saturating_add(elapsed_us);
+        self.metrics.encode_max_us = self.metrics.encode_max_us.max(elapsed_us);
+        self.metrics.encode_last_us = Some(elapsed_us);
+    }
+
     /// Record a physical display write attempt.
     pub fn record_write_attempt(&mut self, retry: bool) {
         self.metrics.write_attempts_total = self.metrics.write_attempts_total.saturating_add(1);
@@ -122,6 +164,12 @@ impl DisplayFrameRuntime {
     /// Return a point-in-time display output metrics snapshot.
     #[must_use]
     pub fn metrics_snapshot(&self) -> DisplayOutputMetricsSnapshot {
+        let encode_avg_us = if self.metrics.encode_attempts_total == 0 {
+            0
+        } else {
+            self.metrics.encode_total_us / self.metrics.encode_attempts_total
+        };
+
         DisplayOutputMetricsSnapshot {
             captured_devices: self.frames.len(),
             preview_subscribers: self
@@ -129,6 +177,14 @@ impl DisplayFrameRuntime {
                 .values()
                 .map(watch::Sender::receiver_count)
                 .sum(),
+            encode_attempts_total: self.metrics.encode_attempts_total,
+            encode_successes_total: self.metrics.encode_successes_total,
+            encode_failures_total: self.metrics.encode_failures_total,
+            encode_avg_us,
+            encode_max_us: self.metrics.encode_max_us,
+            encode_last_us: self.metrics.encode_last_us,
+            encoded_bytes_total: self.metrics.encoded_bytes_total,
+            encoded_last_bytes: self.metrics.encoded_last_bytes,
             write_attempts_total: self.metrics.write_attempts_total,
             write_successes_total: self.metrics.write_successes_total,
             write_failures_total: self.metrics.write_failures_total,

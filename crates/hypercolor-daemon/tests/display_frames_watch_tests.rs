@@ -5,7 +5,7 @@
 //! closure, and late subscribers get the latest snapshot as initial value.
 
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use hypercolor_daemon::display_frames::{DisplayFrameRuntime, DisplayFrameSnapshot};
 use hypercolor_types::device::DeviceId;
@@ -110,4 +110,22 @@ async fn subscribed_device_ids_only_include_live_receivers() {
     let subscribed = runtime.subscribed_device_ids();
     assert!(subscribed.contains(&kept_device));
     assert!(!subscribed.contains(&dropped_device));
+}
+
+#[test]
+fn encode_metrics_accumulate_success_and_failure_timings() {
+    let mut runtime = DisplayFrameRuntime::new();
+
+    runtime.record_encode_success(Duration::from_micros(1_500), 2_048);
+    runtime.record_encode_failure(Duration::from_micros(500));
+
+    let metrics = runtime.metrics_snapshot();
+    assert_eq!(metrics.encode_attempts_total, 2);
+    assert_eq!(metrics.encode_successes_total, 1);
+    assert_eq!(metrics.encode_failures_total, 1);
+    assert_eq!(metrics.encode_avg_us, 1_000);
+    assert_eq!(metrics.encode_max_us, 1_500);
+    assert_eq!(metrics.encode_last_us, Some(500));
+    assert_eq!(metrics.encoded_bytes_total, 2_048);
+    assert_eq!(metrics.encoded_last_bytes, 2_048);
 }

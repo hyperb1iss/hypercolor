@@ -10,14 +10,14 @@ use tracing::warn;
 
 use crate::drivers::corsair::CORSAIR_KEEPALIVE_INTERVAL;
 use crate::drivers::corsair::framing::{
-    LINK_MAX_PAYLOAD, build_link_packet, build_link_write_buffer,
+    LINK_MAX_PAYLOAD, LINK_WRITE_BUF_SIZE, build_link_packet, build_link_write_buffer,
 };
 use crate::drivers::corsair::types::{
     EP_GET_DEVICES, EP_SET_COLOR, EndpointConfig, LinkCommand, LinkDeviceType,
 };
 use crate::protocol::{
-    Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive, ProtocolResponse, ProtocolZone,
-    ResponseStatus, TransferType,
+    CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive, ProtocolResponse,
+    ProtocolZone, ResponseStatus, TransferType,
 };
 
 const DEFAULT_TARGET_FPS: u32 = 30;
@@ -99,6 +99,35 @@ impl CorsairLinkProtocol {
         expects_response: bool,
     ) -> ProtocolCommand {
         Self::command(command, &[endpoint.address], expects_response)
+    }
+
+    fn push_command_into(
+        commands: &mut CommandBuffer<'_>,
+        command: LinkCommand,
+        data: &[u8],
+        expects_response: bool,
+    ) {
+        commands.push_fill(
+            expects_response,
+            Duration::ZERO,
+            Duration::ZERO,
+            TransferType::Primary,
+            |packet| {
+                packet.clear();
+                packet.resize(LINK_WRITE_BUF_SIZE, 0);
+                packet[2] = 0x01;
+
+                let command = command.bytes();
+                let command_len = command.len().min(LINK_WRITE_BUF_SIZE.saturating_sub(3));
+                packet[3..3 + command_len].copy_from_slice(&command[..command_len]);
+
+                let data_offset = 3 + command_len;
+                let data_len = data
+                    .len()
+                    .min(LINK_WRITE_BUF_SIZE.saturating_sub(data_offset));
+                packet[data_offset..data_offset + data_len].copy_from_slice(&data[..data_len]);
+            },
+        );
     }
 
     fn current_total_leds(&self) -> usize {
@@ -233,15 +262,23 @@ impl Protocol for CorsairLinkProtocol {
     }
 
     fn encode_frame(&self, colors: &[[u8; 3]]) -> Vec<ProtocolCommand> {
+        let mut commands = Vec::new();
+        self.encode_frame_into(colors, &mut commands);
+        commands
+    }
+
+    fn encode_frame_into(&self, colors: &[[u8; 3]], commands: &mut Vec<ProtocolCommand>) {
         let expected = match self.validate_color_count(colors) {
             Ok(expected) => expected,
             Err(error) => {
                 warn!(%error, "corsair LINK encode_frame rejected frame");
-                return Vec::new();
+                commands.clear();
+                return;
             }
         };
         if expected == 0 {
-            return Vec::new();
+            commands.clear();
+            return;
         }
 
         let rgb = colors
@@ -250,18 +287,19 @@ impl Protocol for CorsairLinkProtocol {
             .collect::<Vec<_>>();
         let framed = build_link_write_buffer(EP_SET_COLOR.data_type, &rgb);
 
-        let mut commands =
-            Vec::with_capacity(framed.len().div_ceil(LINK_MAX_PAYLOAD).saturating_add(3));
-        commands.push(Self::endpoint_command(
+        let mut command_buffer = CommandBuffer::new(commands);
+        Self::push_command_into(
+            &mut command_buffer,
             LinkCommand::CloseEndpoint,
-            EP_SET_COLOR,
+            &[EP_SET_COLOR.address],
             true,
-        ));
-        commands.push(Self::endpoint_command(
+        );
+        Self::push_command_into(
+            &mut command_buffer,
             LinkCommand::OpenColorEndpoint,
-            EP_SET_COLOR,
+            &[EP_SET_COLOR.address],
             true,
-        ));
+        );
 
         for (index, chunk) in framed.chunks(LINK_MAX_PAYLOAD).enumerate() {
             let command = if index == 0 {
@@ -269,22 +307,22 @@ impl Protocol for CorsairLinkProtocol {
             } else {
                 LinkCommand::WriteColorNext
             };
-            commands.push(Self::command(command, chunk, true));
+            Self::push_command_into(&mut command_buffer, command, chunk, true);
         }
 
-        commands.push(Self::endpoint_command(
+        Self::push_command_into(
+            &mut command_buffer,
             LinkCommand::CloseEndpoint,
-            EP_SET_COLOR,
+            &[EP_SET_COLOR.address],
             true,
-        ));
+        );
+        command_buffer.finish();
 
         self.state
             .write()
             .unwrap_or_else(PoisonError::into_inner)
             .last_frame_commands
-            .clone_from(&commands);
-
-        commands
+            .clone_from(commands);
     }
 
     fn keepalive(&self) -> Option<ProtocolKeepalive> {

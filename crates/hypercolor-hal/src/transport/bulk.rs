@@ -164,12 +164,12 @@ impl Transport for UsbBulkTransport {
                 let endpoint_address = self.out_endpoint_address;
                 let packet = data.to_vec();
                 spawn_blocking_transport_io("usb bulk send", move || {
-                    send_bulk_locked(
+                    send_bulk_owned_locked(
                         endpoint.as_ref(),
                         scratch.as_ref(),
                         interface_number,
                         endpoint_address,
-                        &packet,
+                        packet,
                     )
                 })
                 .await
@@ -320,12 +320,12 @@ impl Transport for UsbBulkTransport {
                 let in_max_packet_size = self.in_max_packet_size;
                 let packet = data.to_vec();
                 spawn_blocking_transport_io("usb bulk send_receive", move || {
-                    send_bulk_locked(
+                    send_bulk_owned_locked(
                         out_endpoint.as_ref(),
                         scratch.as_ref(),
                         interface_number,
                         out_endpoint_address,
-                        &packet,
+                        packet,
                     )?;
                     receive_bulk_locked(
                         in_endpoint.as_ref(),
@@ -373,41 +373,6 @@ impl Transport for UsbBulkTransport {
         self.closed.store(true, Ordering::Release);
         Ok(())
     }
-}
-
-fn send_bulk_locked(
-    endpoint: &Mutex<nusb::Endpoint<Bulk, Out>>,
-    scratch: &Mutex<Option<Buffer>>,
-    interface_number: u8,
-    endpoint_address: u8,
-    data: &[u8],
-) -> Result<(), TransportError> {
-    let mut endpoint = lock_mutex(endpoint, "bulk OUT endpoint")?;
-    let mut scratch = lock_mutex(scratch, "bulk OUT scratch buffer")?;
-    let mut buffer = scratch.take().unwrap_or_else(|| Buffer::new(data.len()));
-    if buffer.capacity() < data.len() {
-        buffer = Buffer::new(data.len());
-    }
-    buffer.clear();
-    buffer.set_requested_len(data.len());
-    buffer.extend_from_slice(data);
-
-    trace!(
-        interface_number,
-        endpoint = format_args!("0x{endpoint_address:02X}"),
-        packet_len = data.len(),
-        packet_hex = %format_hex_preview(data, 32),
-        "usb bulk send"
-    );
-
-    let completion = endpoint.transfer_blocking(buffer, DEFAULT_IO_TIMEOUT);
-    let mut returned_buffer = completion.buffer;
-    returned_buffer.clear();
-    *scratch = Some(returned_buffer);
-
-    completion
-        .status
-        .map_err(|error| map_transfer_error(error, DEFAULT_IO_TIMEOUT))
 }
 
 fn send_bulk_owned_locked(

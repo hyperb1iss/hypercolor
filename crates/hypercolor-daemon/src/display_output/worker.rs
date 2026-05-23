@@ -714,6 +714,7 @@ async fn run_display_worker(
         let frame_format = target.frame_format;
         let include_preview_jpeg = target.frame_format == DisplayFrameFormat::Jpeg
             || display_frames.read().await.has_subscriber(device_id);
+        let encode_started = Instant::now();
         let encode_result = tokio::task::spawn_blocking(move || {
             let mut encode_state = encode_state;
             let encoded = match encode_source {
@@ -766,14 +767,22 @@ async fn run_display_worker(
         let encoded = match encode_result {
             Ok((returned_state, Ok(encoded))) => {
                 encode_state = returned_state;
+                record_display_encode_success(
+                    &display_frames,
+                    encode_started.elapsed(),
+                    encoded.data.len(),
+                )
+                .await;
                 encoded
             }
             Ok((returned_state, Err(error))) => {
                 encode_state = returned_state;
+                record_display_encode_failure(&display_frames, encode_started.elapsed()).await;
                 maybe_warn_display_error(&mut last_warned_at, &target, &error);
                 continue;
             }
             Err(error) => {
+                record_display_encode_failure(&display_frames, encode_started.elapsed()).await;
                 match DisplayEncodeState::new() {
                     Ok(state) => {
                         encode_state = state;
@@ -825,8 +834,10 @@ async fn run_display_worker(
             .await;
         let display_format = payload.format;
         let display_bytes = payload.data.len();
-        last_delivered_payload = Some(Arc::clone(&payload));
-        last_delivered_preview_jpeg = preview_jpeg;
+        let previous_payload = last_delivered_payload.replace(Arc::clone(&payload));
+        let previous_preview_jpeg =
+            std::mem::replace(&mut last_delivered_preview_jpeg, preview_jpeg);
+        recycle_display_payload_buffers(previous_payload, previous_preview_jpeg, &mut encode_state);
         if let Err(error) = write_result {
             record_display_write_failure(&display_frames).await;
             maybe_warn_display_error(&mut last_warned_at, &target, &error);
@@ -933,6 +944,66 @@ async fn record_display_write_attempt(
     retry: bool,
 ) {
     display_frames.write().await.record_write_attempt(retry);
+}
+
+fn recycle_display_payload_buffers(
+    payload: Option<Arc<OwnedDisplayFramePayload>>,
+    preview_jpeg: Option<Arc<Vec<u8>>>,
+    encode_state: &mut DisplayEncodeState,
+) {
+    let Some(payload) = payload else {
+        return;
+    };
+
+    match payload.format {
+        DisplayFrameFormat::Jpeg => drop(preview_jpeg),
+        DisplayFrameFormat::Rgb => {
+            recycle_arc_vec_buffer(preview_jpeg, &mut encode_state.jpeg_buffer);
+        }
+    }
+
+    let Ok(payload) = Arc::try_unwrap(payload) else {
+        return;
+    };
+    match payload.format {
+        DisplayFrameFormat::Jpeg => {
+            recycle_arc_vec_buffer(Some(payload.data), &mut encode_state.jpeg_buffer);
+        }
+        DisplayFrameFormat::Rgb => {
+            recycle_arc_vec_buffer(Some(payload.data), &mut encode_state.rgb_buffer);
+        }
+    }
+}
+
+fn recycle_arc_vec_buffer(buffer: Option<Arc<Vec<u8>>>, target: &mut Vec<u8>) {
+    let Some(buffer) = buffer else {
+        return;
+    };
+    let Ok(mut buffer) = Arc::try_unwrap(buffer) else {
+        return;
+    };
+    buffer.clear();
+    if buffer.capacity() > target.capacity() {
+        *target = buffer;
+    }
+}
+
+async fn record_display_encode_success(
+    display_frames: &Arc<RwLock<DisplayFrameRuntime>>,
+    elapsed: Duration,
+    encoded_bytes: usize,
+) {
+    display_frames
+        .write()
+        .await
+        .record_encode_success(elapsed, encoded_bytes);
+}
+
+async fn record_display_encode_failure(
+    display_frames: &Arc<RwLock<DisplayFrameRuntime>>,
+    elapsed: Duration,
+) {
+    display_frames.write().await.record_encode_failure(elapsed);
 }
 
 async fn record_display_write_success(display_frames: &Arc<RwLock<DisplayFrameRuntime>>) {

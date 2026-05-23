@@ -157,6 +157,50 @@ fn link_encode_frame_chunks_payload_and_reuses_it_for_keepalive() {
 }
 
 #[test]
+fn link_encode_frame_into_reuses_existing_command_buffers() {
+    let protocol = CorsairLinkProtocol::new();
+    protocol
+        .parse_response(&link_enumeration_response(&[(0x01, 0x00, "FAN1")]))
+        .expect("enumeration response should parse");
+
+    let colors = vec![[0x10, 0x20, 0x30]; 34];
+    let mut commands = vec![
+        ProtocolCommand {
+            data: vec![0xAA; LINK_WRITE_BUF_SIZE],
+            expects_response: false,
+            response_delay: Duration::from_millis(1),
+            post_delay: Duration::from_millis(1),
+            transfer_type: TransferType::Bulk,
+        };
+        6
+    ];
+    let first_data_ptr = commands[0].data.as_ptr();
+
+    protocol.encode_frame_into(&colors, &mut commands);
+
+    assert_eq!(commands.len(), 4);
+    assert_eq!(commands[0].data.as_ptr(), first_data_ptr);
+    assert!(commands.iter().all(|command| command.expects_response));
+    assert!(
+        commands
+            .iter()
+            .all(|command| command.transfer_type == TransferType::Primary)
+    );
+    assert!(
+        commands
+            .iter()
+            .all(|command| command.data.len() == LINK_WRITE_BUF_SIZE)
+    );
+    assert_eq!(&commands[0].data[3..7], &[0x05, 0x01, 0x01, 0x22]);
+    assert_eq!(&commands[1].data[3..6], &[0x0D, 0x00, 0x22]);
+    assert_eq!(&commands[2].data[3..5], &[0x06, 0x00]);
+    assert_eq!(&commands[3].data[3..7], &[0x05, 0x01, 0x01, 0x22]);
+
+    protocol.encode_frame_into(&[], &mut commands);
+    assert!(commands.is_empty());
+}
+
+#[test]
 fn lighting_node_encode_frame_uses_planar_chunks_and_commit() {
     let protocol = CorsairLightingNodeProtocol::new("Test Lighting Node", 1);
     let colors = (0_u8..204_u8)

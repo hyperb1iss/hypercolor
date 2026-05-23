@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::api::AppState;
 use crate::api::envelope::{ApiError, ApiResponse};
 use crate::device_metrics::{DeviceMetrics, DeviceMetricsSnapshot};
+use crate::display_frames::DisplayOutputMetricsSnapshot;
 use crate::performance::{LatestFrameMetrics, PerformanceSnapshot};
 
 const RENDER_FRAME_STALE_WARNING_MS: f64 = 2_000.0;
@@ -49,6 +50,7 @@ struct DiagnoseSummary {
 struct DiagnoseSnapshot {
     render: DiagnoseRenderSnapshot,
     usb: DiagnoseUsbActorSnapshot,
+    display_output: DiagnoseDisplayOutputSnapshot,
     device_output: DiagnoseDeviceOutputSnapshot,
 }
 
@@ -134,6 +136,25 @@ struct DiagnoseUsbActorSnapshot {
 }
 
 #[derive(Debug, Serialize)]
+struct DiagnoseDisplayOutputSnapshot {
+    captured_devices: usize,
+    preview_subscribers: usize,
+    encode_attempts_total: u64,
+    encode_successes_total: u64,
+    encode_failures_total: u64,
+    encode_avg_ms: f64,
+    encode_max_ms: f64,
+    encode_last_ms: Option<f64>,
+    encoded_bytes_total: u64,
+    encoded_last_bytes: u64,
+    write_attempts_total: u64,
+    write_successes_total: u64,
+    write_failures_total: u64,
+    retry_attempts_total: u64,
+    last_failure_age_ms: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
 struct DiagnoseDeviceOutputSnapshot {
     queues: usize,
     usb_queues: usize,
@@ -193,11 +214,13 @@ pub async fn run_diagnostics(
     let render_elapsed_ms = state.start_time.elapsed().as_secs_f64() * 1000.0;
     let performance = state.performance.read().await.snapshot();
     let usb_actor_metrics = usb_actor_metrics_snapshot();
+    let display_output_metrics = state.display_frames.read().await.metrics_snapshot();
     let device_metrics = state.device_metrics.load_full();
     let snapshot = build_diagnose_snapshot(
         &performance,
         render_elapsed_ms,
         usb_actor_metrics,
+        display_output_metrics,
         device_metrics.as_ref(),
     );
 
@@ -312,6 +335,29 @@ pub async fn run_diagnostics(
                         snapshot.usb.display_frames_delayed_for_led_total,
                         snapshot.usb.display_led_priority_wait_avg_ms,
                         snapshot.usb.display_led_priority_wait_max_ms
+                    ),
+                });
+                checks.push(DiagnoseCheck {
+                    category: "devices".to_owned(),
+                    name: "display_output_encoder".to_owned(),
+                    status: if snapshot.display_output.encode_failures_total > 0 {
+                        "warning"
+                    } else {
+                        "pass"
+                    }
+                    .to_owned(),
+                    detail: format!(
+                        "attempts={}, successes={}, failures={}, avg_ms={:.2}, max_ms={:.2}, last_ms={}, last_bytes={}",
+                        snapshot.display_output.encode_attempts_total,
+                        snapshot.display_output.encode_successes_total,
+                        snapshot.display_output.encode_failures_total,
+                        snapshot.display_output.encode_avg_ms,
+                        snapshot.display_output.encode_max_ms,
+                        snapshot
+                            .display_output
+                            .encode_last_ms
+                            .map_or_else(|| "none".to_owned(), |value| format!("{value:.2}")),
+                        snapshot.display_output.encoded_last_bytes
                     ),
                 });
             }
@@ -441,11 +487,13 @@ fn build_diagnose_snapshot(
     performance: &PerformanceSnapshot,
     render_elapsed_ms: f64,
     usb_actor_metrics: UsbActorMetricsSnapshot,
+    display_output_metrics: DisplayOutputMetricsSnapshot,
     device_metrics: &DeviceMetricsSnapshot,
 ) -> DiagnoseSnapshot {
     DiagnoseSnapshot {
         render: build_render_snapshot(performance, render_elapsed_ms),
         usb: build_usb_actor_snapshot(usb_actor_metrics),
+        display_output: build_display_output_snapshot(display_output_metrics),
         device_output: build_device_output_snapshot(device_metrics),
     }
 }
@@ -530,6 +578,28 @@ fn build_usb_actor_snapshot(metrics: UsbActorMetricsSnapshot) -> DiagnoseUsbActo
         ),
         display_led_priority_wait_avg_ms: round_2(avg_wait_ms),
         display_led_priority_wait_max_ms: us_to_ms_f64(metrics.display_led_priority_wait_max_us),
+    }
+}
+
+fn build_display_output_snapshot(
+    metrics: DisplayOutputMetricsSnapshot,
+) -> DiagnoseDisplayOutputSnapshot {
+    DiagnoseDisplayOutputSnapshot {
+        captured_devices: metrics.captured_devices,
+        preview_subscribers: metrics.preview_subscribers,
+        encode_attempts_total: metrics.encode_attempts_total,
+        encode_successes_total: metrics.encode_successes_total,
+        encode_failures_total: metrics.encode_failures_total,
+        encode_avg_ms: round_2(us_to_ms_f64(metrics.encode_avg_us)),
+        encode_max_ms: round_2(us_to_ms_f64(metrics.encode_max_us)),
+        encode_last_ms: metrics.encode_last_us.map(us_to_ms_f64).map(round_2),
+        encoded_bytes_total: metrics.encoded_bytes_total,
+        encoded_last_bytes: metrics.encoded_last_bytes,
+        write_attempts_total: metrics.write_attempts_total,
+        write_successes_total: metrics.write_successes_total,
+        write_failures_total: metrics.write_failures_total,
+        retry_attempts_total: metrics.retry_attempts_total,
+        last_failure_age_ms: metrics.last_failure_age_ms,
     }
 }
 
