@@ -172,9 +172,6 @@ fn frame_completion_warning_reason(report: &FrameCompletionReport) -> Option<&'s
     if metrics.gpu_sample_cpu_fallback {
         return Some("gpu_sample_cpu_fallback");
     }
-    if metrics.gpu_sample_stale {
-        return Some("gpu_sample_stale");
-    }
     if metrics.gpu_readback_failed {
         return Some("gpu_readback_failed");
     }
@@ -257,7 +254,7 @@ mod tests {
 
     #[test]
     fn frame_completion_warning_reason_ignores_normal_deferred_gpu_sampling() {
-        let metrics = LatestFrameMetrics {
+        let mut metrics = LatestFrameMetrics {
             total_us: 1_000,
             gpu_zone_sampling: true,
             gpu_sample_deferred: true,
@@ -265,6 +262,13 @@ mod tests {
             ..LatestFrameMetrics::default()
         };
         let write_stats = FrameWriteStats::default();
+        let report = FrameCompletionReport::new(16_666, &metrics, &write_stats);
+
+        assert_eq!(frame_completion_warning_reason(&report), None);
+
+        metrics.gpu_zone_sampling = false;
+        metrics.gpu_sample_retry_hit = false;
+        metrics.gpu_sample_stale = true;
         let report = FrameCompletionReport::new(16_666, &metrics, &write_stats);
 
         assert_eq!(frame_completion_warning_reason(&report), None);
