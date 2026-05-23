@@ -49,6 +49,8 @@ describe('tooling build', () => {
             const html = readFileSync(result.outputPath, 'utf8')
             expect(html).toContain('<title>Arc Storm</title>')
             expect(html).toContain('#version 300 es')
+            expect(html).toContain('this.gl.flush();')
+            expect(html).not.toContain('this.gl.finish();')
             expect(html).not.toContain('var fragment_default = "./fragment-')
         } finally {
             rmSync(outDir, { force: true, recursive: true })

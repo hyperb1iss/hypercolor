@@ -168,7 +168,7 @@ impl ServoRenderer {
             include_sensor_updates: false,
             last_animation_fps_cap: None,
             animation_cadence: AnimationCadence::MatchRenderLoop,
-            host_driven_animation: true,
+            host_driven_animation: false,
             last_submit_time_secs: None,
         }
     }
@@ -968,8 +968,8 @@ fn effect_uses_sensor_data(metadata: &EffectMetadata) -> bool {
             .any(|control| matches!(control.kind, ControlKind::Sensor))
 }
 
-fn host_driven_animation(metadata: &EffectMetadata) -> bool {
-    metadata.category != EffectCategory::Display
+fn host_driven_animation(_metadata: &EffectMetadata) -> bool {
+    false
 }
 
 #[cfg(test)]
@@ -1580,7 +1580,7 @@ mod tests {
     }
 
     #[test]
-    fn frame_scripts_drive_sdk_render_with_static_host_script() {
+    fn frame_scripts_let_sdk_raf_drive_animation() {
         let mut renderer = ServoRenderer::new();
         let mut input = frame_input(1.0 / 30.0);
         input.time_secs = 2.5;
@@ -1591,13 +1591,13 @@ mod tests {
             renderer
                 .pending_scripts
                 .iter()
-                .any(|script| script.contains("window.__hypercolorRenderHostFrame"))
+                .all(|script| !script.contains("window.__hypercolorRenderHostFrame"))
         );
         assert!(
             renderer
                 .pending_scripts
                 .iter()
-                .all(|script| !script.contains("instance.render(2.5)"))
+                .all(|script| !script.contains("instance.render("))
         );
     }
 

@@ -114,6 +114,9 @@ declare global {
         /** Indicates the effect is running in a capture/readback host. */
         __hypercolorCaptureMode?: boolean
 
+        /** Set by the daemon when dynamic controls changed since the last frame. */
+        __hypercolorControlsDirty?: boolean
+
         /** Dynamic control values indexed by control ID */
         [controlId: string]: unknown
     }

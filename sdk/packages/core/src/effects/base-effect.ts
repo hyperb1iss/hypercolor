@@ -146,10 +146,12 @@ export abstract class BaseEffect<T> {
     }
 
     protected onFrame(time: number): void {
-        // Poll controls on a fixed cadence without frame-rate-dependent bursts.
-        if (time - this.lastControlPollTime >= 0.1) {
+        const controlHost = window as { __hypercolorControlsDirty?: boolean }
+        const controlsDirty = controlHost.__hypercolorControlsDirty === true
+        if (controlsDirty || time - this.lastControlPollTime >= 0.1) {
             this.lastControlPollTime = time
             this.update()
+            controlHost.__hypercolorControlsDirty = false
         }
     }
 

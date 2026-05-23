@@ -109,7 +109,7 @@ export abstract class WebGLEffect<T> extends BaseEffect<T> {
 
         this.gl.drawArrays(this.gl.TRIANGLE_STRIP, 0, 4)
         if (this.captureMode) {
-            this.gl.finish()
+            this.gl.flush()
         }
     }
 
