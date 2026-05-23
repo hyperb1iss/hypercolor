@@ -1,3 +1,28 @@
+//! HypercolorSmBus broker service and its client transport.
+//!
+//! ## Failure model
+//!
+//! The broker is a thin SMBus-over-PawnIO relay running as
+//! `HypercolorSmBus` under SCM. Failure handling is layered so the user
+//! never has to think about service health:
+//!
+//! - **Crashes** are handled by SCM recovery actions configured at
+//!   install time in `install-windows-smbus-service.ps1`
+//!   (`restart/5000`, `restart/15000`, 60s cooldown, reset after 24h).
+//!   Three crash-restart cycles per failure window with no user action.
+//! - **Brief unavailability** during SCM restart is absorbed by
+//!   [`open_pipe_client`]'s retry loop (`CLIENT_CONNECT_ATTEMPTS` x
+//!   `CLIENT_CONNECT_RETRY_DELAY`). Per-frame callers that miss a
+//!   render naturally retry on the next frame.
+//! - **In-flight broken-pipe errors** propagate as
+//!   `PawnIoError::BrokerUnavailable` and translate to `TransportError`
+//!   at the HAL boundary. Upstream consumers decide whether to retry or
+//!   degrade.
+//!
+//! There is intentionally **no user-facing repair affordance**. If the
+//! broker ever ends up in a state SCM recovery can't fix, that's a bug
+//! to fix in the broker, not a button to expose.
+
 use std::collections::HashMap;
 use std::ffi::{OsString, c_void};
 use std::fs::OpenOptions;
