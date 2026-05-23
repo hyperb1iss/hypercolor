@@ -12,19 +12,23 @@
 
 use leptos::prelude::*;
 use leptos_icons::Icon;
+use leptos_router::NavigateOptions;
+use leptos_router::hooks::use_navigate;
 
 use crate::icons::*;
-use crate::tauri_bridge;
+use crate::tauri_bridge::{self, PawnIoSupportStatus, smbus_support_ready};
 
 #[component]
 pub fn WelcomeOverlay() -> impl IntoView {
     let pending = LocalResource::new(tauri_bridge::is_first_run_pending);
+    let pawnio = LocalResource::new(tauri_bridge::detect_pawnio_support);
     let (dismissed, set_dismissed) = signal(false);
     let (dismissing, set_dismissing) = signal(false);
     // Default to enabled — most users who installed an RGB orchestration
     // app want it running with the session. Users who don't can flip the
     // toggle in two clicks or change it later in Settings → Session.
     let (autostart_enabled, set_autostart_enabled) = signal(true);
+    let navigate = use_navigate();
 
     let show = Signal::derive(move || {
         if dismissed.get() {
@@ -33,32 +37,43 @@ pub fn WelcomeOverlay() -> impl IntoView {
         matches!(pending.get(), Some(Ok(Some(true))))
     });
 
-    let dismiss = move |_| {
-        if dismissing.get_untracked() {
-            return;
+    // Hardware-support offer triggers only when the user is on Windows,
+    // their motherboard is from a vendor we know how to drive, and the
+    // SMBus broker isn't already running. Avoids steering Mac/Linux
+    // users (or Windows users on non-RGB hardware) toward a flow that
+    // won't help them.
+    let should_offer_hardware = Signal::derive(move || {
+        match pawnio.get() {
+            Some(Ok(Some(status))) => hardware_offer_visible(&status),
+            _ => false,
         }
-        set_dismissing.set(true);
-        let want_autostart = autostart_enabled.get_untracked();
-        leptos::task::spawn_local(async move {
-            // Apply the autostart preference first so the user's choice is
-            // honored even if marking the wizard complete somehow fails.
-            // Best-effort: we log but don't fail the dismissal on a plugin
-            // hiccup — the user can still toggle it from Settings.
-            if let Err(error) = tauri_bridge::set_autostart_enabled(want_autostart).await {
-                leptos::logging::warn!("welcome autostart write failed: {error}");
-            }
+    });
 
-            let result = tauri_bridge::mark_first_run_complete().await;
-            set_dismissing.set(false);
-            if let Err(error) = result {
-                leptos::logging::warn!("mark_first_run_complete failed: {error}");
-            }
-            // Hide regardless. A transient bridge failure shouldn't trap
-            // the user behind the overlay; next launch reappears, which
-            // is acceptable.
-            set_dismissed.set(true);
-        });
-    };
+    // Callbacks (rather than raw closures) so the outer view closure
+    // can be Fn — Callback is internally Arc-clonable, so moving it
+    // into `on:click` doesn't consume the surrounding closure.
+    let dismiss = Callback::new(move |()| {
+        spawn_dismiss_task(
+            dismissing,
+            set_dismissing,
+            set_dismissed,
+            autostart_enabled.get_untracked(),
+            None,
+        );
+    });
+    let navigate_for_settings = navigate;
+    let dismiss_to_settings = Callback::new(move |()| {
+        let navigate_clone = navigate_for_settings.clone();
+        spawn_dismiss_task(
+            dismissing,
+            set_dismissing,
+            set_dismissed,
+            autostart_enabled.get_untracked(),
+            Some(Box::new(move || {
+                navigate_clone("/settings", NavigateOptions::default());
+            })),
+        );
+    });
 
     view! {
         <Show when=move || show.get()>
@@ -106,22 +121,163 @@ pub fn WelcomeOverlay() -> impl IntoView {
                         })
                     />
 
+                    <Show when=move || should_offer_hardware.get()>
+                        <button
+                            type="button"
+                            class="mt-5 w-full rounded-lg px-3 py-2.5 text-sm font-medium transition-all disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                            style=move || if dismissing.get() {
+                                "color: rgba(139, 133, 160, 0.55); background: rgba(139, 133, 160, 0.08); border: 1px solid rgba(139, 133, 160, 0.12)"
+                            } else {
+                                "color: rgba(128, 255, 234, 0.95); background: rgba(128, 255, 234, 0.06); border: 1px solid rgba(128, 255, 234, 0.25)"
+                            }
+                            disabled=move || dismissing.get()
+                            on:click=move |_| dismiss_to_settings.run(())
+                        >
+                            <Icon icon=LuShieldCheck width="13px" height="13px" />
+                            "Set up RGB hardware support"
+                        </button>
+                    </Show>
+
                     <button
                         type="button"
-                        class="mt-5 w-full rounded-lg px-3 py-2.5 text-sm font-medium transition-all disabled:cursor-not-allowed"
+                        class="mt-3 w-full rounded-lg px-3 py-2.5 text-sm font-medium transition-all disabled:cursor-not-allowed"
                         style=move || if dismissing.get() {
                             "color: rgba(139, 133, 160, 0.55); background: rgba(139, 133, 160, 0.08); border: 1px solid rgba(139, 133, 160, 0.12)"
                         } else {
                             "color: rgb(10, 12, 18); background: rgb(225, 53, 255); border: 1px solid rgba(225, 53, 255, 0.5); box-shadow: 0 0 12px rgba(225, 53, 255, 0.25)"
                         }
                         disabled=move || dismissing.get()
-                        on:click=dismiss
+                        on:click=move |_| dismiss.run(())
                     >
                         {move || if dismissing.get() { "Saving..." } else { "Let's go" }}
                     </button>
                 </div>
             </div>
         </Show>
+    }
+}
+
+fn spawn_dismiss_task(
+    dismissing: ReadSignal<bool>,
+    set_dismissing: WriteSignal<bool>,
+    set_dismissed: WriteSignal<bool>,
+    want_autostart: bool,
+    after: Option<Box<dyn FnOnce() + 'static>>,
+) {
+    if dismissing.get_untracked() {
+        return;
+    }
+    set_dismissing.set(true);
+    leptos::task::spawn_local(async move {
+        // Apply the autostart preference first so the user's choice is
+        // honored even if marking the wizard complete somehow fails.
+        // Best-effort: we log but don't fail the dismissal on a plugin
+        // hiccup — the user can still toggle it from Settings.
+        if let Err(error) = tauri_bridge::set_autostart_enabled(want_autostart).await {
+            leptos::logging::warn!("welcome autostart write failed: {error}");
+        }
+
+        let result = tauri_bridge::mark_first_run_complete().await;
+        set_dismissing.set(false);
+        if let Err(error) = result {
+            leptos::logging::warn!("mark_first_run_complete failed: {error}");
+        }
+        // Hide regardless. A transient bridge failure shouldn't trap
+        // the user behind the overlay; next launch reappears, which is
+        // acceptable.
+        set_dismissed.set(true);
+        if let Some(after) = after {
+            after();
+        }
+    });
+}
+
+/// Whether the wizard should surface the "set up RGB hardware" offer
+/// for the given status. Public for unit testing.
+#[must_use]
+pub fn hardware_offer_visible(status: &PawnIoSupportStatus) -> bool {
+    if !status.platform_supported || smbus_support_ready(status) {
+        return false;
+    }
+    status
+        .motherboard
+        .as_ref()
+        .is_some_and(hypercolor_types::motherboard::MotherboardInfo::is_likely_rgb_capable)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tauri_bridge::{PawnIoModuleStatus, ServiceSupportStatus};
+
+    fn windows_status() -> PawnIoSupportStatus {
+        PawnIoSupportStatus {
+            platform_supported: true,
+            pawnio_home: None,
+            pawnio_runtime_installed: false,
+            pawnio_service: ServiceSupportStatus {
+                installed: false,
+                state: None,
+            },
+            smbus_service: ServiceSupportStatus {
+                installed: false,
+                state: None,
+            },
+            bundled_asset_root: None,
+            helper_script: None,
+            broker_executable: None,
+            bundled_installer_available: true,
+            bundled_modules: vec![PawnIoModuleStatus {
+                name: "SmbusI801.bin".to_string(),
+                bundled: true,
+            }],
+            install_available: true,
+            motherboard: Some(hypercolor_types::motherboard::MotherboardInfo {
+                manufacturer: "ASUSTeK COMPUTER INC.".to_string(),
+                product: "ROG STRIX X670E-E".to_string(),
+                version: None,
+            }),
+            conflicting_rgb_tools: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn offer_visible_on_windows_with_rgb_board_and_no_smbus() {
+        assert!(hardware_offer_visible(&windows_status()));
+    }
+
+    #[test]
+    fn offer_hidden_when_smbus_already_running() {
+        let mut status = windows_status();
+        status.pawnio_runtime_installed = true;
+        status.smbus_service.installed = true;
+        status.smbus_service.state = Some("RUNNING".to_string());
+        assert!(!hardware_offer_visible(&status));
+    }
+
+    #[test]
+    fn offer_hidden_when_motherboard_is_not_rgb_capable() {
+        let mut status = windows_status();
+        status.motherboard = Some(hypercolor_types::motherboard::MotherboardInfo {
+            manufacturer: "Dell Inc.".to_string(),
+            product: "OptiPlex 7090".to_string(),
+            version: None,
+        });
+        assert!(!hardware_offer_visible(&status));
+    }
+
+    #[test]
+    fn offer_hidden_when_motherboard_unknown() {
+        let mut status = windows_status();
+        status.motherboard = None;
+        assert!(!hardware_offer_visible(&status));
+    }
+
+    #[test]
+    fn offer_hidden_on_unsupported_platform() {
+        let mut status = windows_status();
+        status.platform_supported = false;
+        assert!(!hardware_offer_visible(&status));
     }
 }
 
