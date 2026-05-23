@@ -1048,7 +1048,6 @@ fn HardwareSupportPanel() -> impl IntoView {
     let native_available = tauri_bridge::is_tauri_available();
     let status = LocalResource::new(tauri_bridge::detect_pawnio_support);
     let (installing, set_installing) = signal(false);
-    let (repairing, set_repairing) = signal(false);
     let (reboot_required, set_reboot_required) = signal(false);
     let install = move |_| {
         if installing.get_untracked() {
@@ -1088,43 +1087,6 @@ fn HardwareSupportPanel() -> impl IntoView {
                 }
                 Err(error) => {
                     toasts::toast_error(&format!("Hardware support install failed: {error}"));
-                    status.refetch();
-                }
-            }
-        });
-    };
-    let repair = move |_| {
-        if repairing.get_untracked() {
-            return;
-        }
-
-        set_repairing.set(true);
-        leptos::task::spawn_local(async move {
-            let result = tauri_bridge::repair_smbus_service().await;
-            set_repairing.set(false);
-
-            match result {
-                Ok(outcome) => match outcome.exit_code {
-                    Some(0) => {
-                        toasts::toast_success("SMBus service restarted");
-                        status.refetch();
-                        if let Err(error) = api::devices::discover_devices().await {
-                            leptos::logging::warn!(
-                                "post-repair device rescan request failed: {error}"
-                            );
-                        }
-                    }
-                    Some(code) => {
-                        toasts::toast_error(&format!("Repair failed (exit code {code})"));
-                        status.refetch();
-                    }
-                    None => {
-                        toasts::toast_error("Repair ended without an exit code");
-                        status.refetch();
-                    }
-                },
-                Err(error) => {
-                    toasts::toast_error(&format!("Repair failed: {error}"));
                     status.refetch();
                 }
             }
@@ -1179,9 +1141,7 @@ fn HardwareSupportPanel() -> impl IntoView {
                     <HardwareSupportStatusPanel
                         status=current
                         installing=installing
-                        repairing=repairing
                         on_install=Callback::new(install)
-                        on_repair=Callback::new(repair)
                     />
                 }.into_any(),
             }}
@@ -1193,18 +1153,12 @@ fn HardwareSupportPanel() -> impl IntoView {
 fn HardwareSupportStatusPanel(
     status: PawnIoSupportStatus,
     #[prop(into)] installing: Signal<bool>,
-    #[prop(into)] repairing: Signal<bool>,
     on_install: Callback<()>,
-    on_repair: Callback<()>,
 ) -> impl IntoView {
     let ready = smbus_support_ready(&status);
     let payload_ready = bundled_payload_ready(&status);
     let can_install = status.install_available && !ready;
     let service_running = status.smbus_service.state.as_deref() == Some("RUNNING");
-    // The broker can be repaired (stopped+started) whenever the SCM
-    // entry exists — even if it's currently RUNNING, since "repair" also
-    // recovers from a wedged pipe handshake that still reports RUNNING.
-    let can_repair = status.smbus_service.installed;
     let install_label = if ready {
         "Ready"
     } else if installing.get_untracked() {
@@ -1258,39 +1212,20 @@ fn HardwareSupportStatusPanel(
                         </div>
                     })}
                 </div>
-                <div class="flex items-center gap-2 shrink-0">
-                    <Show when=move || can_repair>
-                        <button
-                            type="button"
-                            title="Restart the HypercolorSmBus service (UAC required)"
-                            class="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all shrink-0 disabled:cursor-not-allowed"
-                            style=move || if repairing.get() {
-                                "color: rgba(139, 133, 160, 0.55); background: rgba(139, 133, 160, 0.08); border: 1px solid rgba(139, 133, 160, 0.12)"
-                            } else {
-                                "color: rgba(241, 250, 140, 0.82); background: rgba(241, 250, 140, 0.07); border: 1px solid rgba(241, 250, 140, 0.18)"
-                            }
-                            disabled=move || repairing.get()
-                            on:click=move |_| on_repair.run(())
-                        >
-                            <Icon icon=LuRefreshCw width="11px" height="11px" />
-                            {move || if repairing.get() { "Repairing" } else { "Repair" }}
-                        </button>
-                    </Show>
-                    <button
-                        class="px-3 py-1.5 rounded-lg text-xs font-medium transition-all shrink-0 disabled:cursor-not-allowed"
-                        style=move || if ready {
-                            "color: rgba(80, 250, 123, 0.75); background: rgba(80, 250, 123, 0.08); border: 1px solid rgba(80, 250, 123, 0.12)"
-                        } else if can_install && !installing.get() {
-                            "color: rgb(10, 12, 18); background: rgb(128, 255, 234); border: 1px solid rgba(128, 255, 234, 0.5); box-shadow: 0 0 12px rgba(128, 255, 234, 0.2)"
-                        } else {
-                            "color: rgba(139, 133, 160, 0.55); background: rgba(139, 133, 160, 0.08); border: 1px solid rgba(139, 133, 160, 0.12)"
-                        }
-                        disabled=move || ready || !can_install || installing.get()
-                        on:click=move |_| on_install.run(())
-                    >
-                        {move || if installing.get() { "Installing" } else { install_label }}
-                    </button>
-                </div>
+                <button
+                    class="px-3 py-1.5 rounded-lg text-xs font-medium transition-all shrink-0 disabled:cursor-not-allowed"
+                    style=move || if ready {
+                        "color: rgba(80, 250, 123, 0.75); background: rgba(80, 250, 123, 0.08); border: 1px solid rgba(80, 250, 123, 0.12)"
+                    } else if can_install && !installing.get() {
+                        "color: rgb(10, 12, 18); background: rgb(128, 255, 234); border: 1px solid rgba(128, 255, 234, 0.5); box-shadow: 0 0 12px rgba(128, 255, 234, 0.2)"
+                    } else {
+                        "color: rgba(139, 133, 160, 0.55); background: rgba(139, 133, 160, 0.08); border: 1px solid rgba(139, 133, 160, 0.12)"
+                    }
+                    disabled=move || ready || !can_install || installing.get()
+                    on:click=move |_| on_install.run(())
+                >
+                    {move || if installing.get() { "Installing" } else { install_label }}
+                </button>
             </div>
             <div class="flex flex-wrap gap-2 pt-3">
                 <SupportPill label="Runtime" ready=status.pawnio_runtime_installed />

@@ -71,10 +71,12 @@ pub struct PawnIoHelperLaunchResult {
 }
 
 /// Result returned after invoking `hypercolor-windows-helper` for a
-/// privileged verb (e.g. repair-smbus-service). Exit code 0 means the
-/// verb succeeded; any non-zero value should surface as an error toast.
+/// privileged verb (e.g. install/uninstall flows). Exit code 0 means
+/// the verb succeeded; any non-zero value should surface as an error
+/// toast at the call site.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code, reason = "reserved for future helper invocations")]
 pub struct HelperOutcome {
     pub exit_code: Option<i32>,
 }
@@ -188,28 +190,6 @@ pub async fn launch_pawnio_helper(
 pub async fn launch_pawnio_helper(
     _options: PawnIoHelperOptions,
 ) -> Result<PawnIoHelperLaunchResult, String> {
-    Err("native app bridge is unavailable".to_owned())
-}
-
-/// Stop + start the `HypercolorSmBus` service via the elevated native
-/// helper. Triggers a UAC prompt; resolves with the helper's exit code.
-///
-/// # Errors
-///
-/// Returns an error when the Tauri bridge is unavailable, the native
-/// command rejects, or the command result cannot be decoded.
-#[cfg(target_arch = "wasm32")]
-pub async fn repair_smbus_service() -> Result<HelperOutcome, String> {
-    let Some(invoke) = tauri_invoke() else {
-        return Err("native app bridge is unavailable".to_owned());
-    };
-
-    let value = invoke_command(&invoke, "repair_smbus_service", None).await?;
-    serde_json_from_js_value(value)
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub async fn repair_smbus_service() -> Result<HelperOutcome, String> {
     Err("native app bridge is unavailable".to_owned())
 }
 
