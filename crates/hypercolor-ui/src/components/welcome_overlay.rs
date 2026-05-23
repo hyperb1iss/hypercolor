@@ -1,12 +1,14 @@
 //! First-run welcome overlay.
 //!
-//! Single-screen MVP: dashboard renders behind a centered card with a
-//! short orientation message and a "Let's go" CTA. Dismissing persists
-//! a marker via the Tauri bridge so the overlay doesn't reappear.
+//! Renders a single centered card on first launch with a short
+//! orientation message, an inline "Start at sign in" preference, and a
+//! "Let's go" CTA. Dismissing applies the autostart choice (when native
+//! bridge is available) and persists a marker so the overlay doesn't
+//! reappear.
 //!
-//! Content steps (hardware support offer, autostart prompt, device
-//! discovery kickoff) will land in a follow-up commit on top of this
-//! scaffolding.
+//! Future passes can layer additional steps onto the same skeleton —
+//! e.g. motherboard-aware hardware-support offer and post-wizard device
+//! discovery kickoff.
 
 use leptos::prelude::*;
 use leptos_icons::Icon;
@@ -19,6 +21,10 @@ pub fn WelcomeOverlay() -> impl IntoView {
     let pending = LocalResource::new(tauri_bridge::is_first_run_pending);
     let (dismissed, set_dismissed) = signal(false);
     let (dismissing, set_dismissing) = signal(false);
+    // Default to enabled — most users who installed an RGB orchestration
+    // app want it running with the session. Users who don't can flip the
+    // toggle in two clicks or change it later in Settings → Session.
+    let (autostart_enabled, set_autostart_enabled) = signal(true);
 
     let show = Signal::derive(move || {
         if dismissed.get() {
@@ -32,21 +38,25 @@ pub fn WelcomeOverlay() -> impl IntoView {
             return;
         }
         set_dismissing.set(true);
+        let want_autostart = autostart_enabled.get_untracked();
         leptos::task::spawn_local(async move {
+            // Apply the autostart preference first so the user's choice is
+            // honored even if marking the wizard complete somehow fails.
+            // Best-effort: we log but don't fail the dismissal on a plugin
+            // hiccup — the user can still toggle it from Settings.
+            if let Err(error) = tauri_bridge::set_autostart_enabled(want_autostart).await {
+                leptos::logging::warn!("welcome autostart write failed: {error}");
+            }
+
             let result = tauri_bridge::mark_first_run_complete().await;
             set_dismissing.set(false);
-            match result {
-                Ok(()) => {
-                    set_dismissed.set(true);
-                }
-                Err(error) => {
-                    leptos::logging::warn!("mark_first_run_complete failed: {error}");
-                    // Hide the overlay anyway so a transient bridge
-                    // failure doesn't trap the user behind it. Next
-                    // launch will re-show; that's acceptable.
-                    set_dismissed.set(true);
-                }
+            if let Err(error) = result {
+                leptos::logging::warn!("mark_first_run_complete failed: {error}");
             }
+            // Hide regardless. A transient bridge failure shouldn't trap
+            // the user behind the overlay; next launch reappears, which
+            // is acceptable.
+            set_dismissed.set(true);
         });
     };
 
@@ -89,9 +99,16 @@ pub fn WelcomeOverlay() -> impl IntoView {
                         />
                     </div>
 
+                    <AutostartRow
+                        enabled=Signal::derive(move || autostart_enabled.get())
+                        on_toggle=Callback::new(move |()| {
+                            set_autostart_enabled.update(|on| *on = !*on);
+                        })
+                    />
+
                     <button
                         type="button"
-                        class="mt-6 w-full rounded-lg px-3 py-2.5 text-sm font-medium transition-all disabled:cursor-not-allowed"
+                        class="mt-5 w-full rounded-lg px-3 py-2.5 text-sm font-medium transition-all disabled:cursor-not-allowed"
                         style=move || if dismissing.get() {
                             "color: rgba(139, 133, 160, 0.55); background: rgba(139, 133, 160, 0.08); border: 1px solid rgba(139, 133, 160, 0.12)"
                         } else {
@@ -105,6 +122,46 @@ pub fn WelcomeOverlay() -> impl IntoView {
                 </div>
             </div>
         </Show>
+    }
+}
+
+#[component]
+fn AutostartRow(
+    #[prop(into)] enabled: Signal<bool>,
+    on_toggle: Callback<()>,
+) -> impl IntoView {
+    view! {
+        <div
+            class="mt-5 flex items-center justify-between gap-3 rounded-lg px-3 py-2.5"
+            style="background: rgba(139, 133, 160, 0.05); border: 1px solid rgba(139, 133, 160, 0.08)"
+        >
+            <div class="min-w-0">
+                <div class="text-sm text-fg-primary font-medium">"Start at sign in"</div>
+                <div class="text-xs text-fg-tertiary/70 mt-0.5">
+                    "Launch Hypercolor in the tray when you log in. Toggle later in Settings."
+                </div>
+            </div>
+            <button
+                role="switch"
+                aria-checked=move || enabled.get().to_string()
+                class="relative w-11 h-6 rounded-full transition-all duration-200 shrink-0 cursor-pointer"
+                style=move || if enabled.get() {
+                    "background: rgba(225, 53, 255, 0.5); box-shadow: 0 0 10px rgba(225, 53, 255, 0.25)"
+                } else {
+                    "background: rgba(139, 133, 160, 0.2)"
+                }
+                on:click=move |_| on_toggle.run(())
+            >
+                <span
+                    class="absolute left-0.5 top-0.5 w-5 h-5 rounded-full shadow-sm transition-transform duration-200"
+                    style=move || if enabled.get() {
+                        "transform: translateX(22px); background: rgb(225, 53, 255)"
+                    } else {
+                        "transform: translateX(0); background: rgba(200, 200, 210, 0.6)"
+                    }
+                />
+            </button>
+        </div>
     }
 }
 
