@@ -39,6 +39,11 @@ sdk/packages/*/dist/
 docs/review/
 /t
 
+# Protocol research captures can be hundreds of MB; track decoded notes instead.
+docs/research/**/captures/*.pcap
+docs/research/**/captures/*.pcapng
+docs/research/**/captures/*.tshark.log
+
 # Environment
 .env
 .env.local
