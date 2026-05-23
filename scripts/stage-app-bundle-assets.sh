@@ -243,6 +243,7 @@ stage_binary hypercolor
 
 if is_windows_target; then
   stage_tool_binary hypercolor-smbus-service
+  stage_tool_binary hypercolor-windows-helper
 
   if [[ "${SKIP_PAWNIO}" -ne 1 ]]; then
     stage_pawnio_assets

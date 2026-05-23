@@ -135,6 +135,7 @@ Copy-Sidecar 'hypercolor'
 
 if (Test-WindowsTarget) {
     Copy-WindowsToolBinary 'hypercolor-smbus-service'
+    Copy-WindowsToolBinary 'hypercolor-windows-helper'
 
     if (-not $SkipPawnIo) {
         & (Join-Path $RepoRoot 'scripts\fetch-pawnio-assets.ps1') `
