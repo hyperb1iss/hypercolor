@@ -16,6 +16,7 @@ use super::producer_queue::{ProducerFrame, ProducerFrameState};
 use super::render_groups::{
     GroupCanvasFrame, PendingGroupCanvasFrame, ZoneEffectError, ZoneResult,
 };
+use super::scene_dependency::SceneDependencyKey;
 use super::scene_snapshot::FrameSceneSnapshot;
 #[cfg(feature = "wgpu")]
 use super::sparkleflinger::DisplayFinalizeParams;
@@ -148,20 +149,21 @@ impl ComposeContext<'_> {
         }
 
         let producer_start = Instant::now();
-        let (render_group_result, effect_retained) = {
+        let (render_group_result, effect_retained, live_dependency_key) = {
             let registry = self.state.effect_registry.read().await;
             let live_dependency_key = self
                 .scene_snapshot
                 .scene_runtime
                 .dependency_key(registry.generation());
-            self.compose.reuse_or_render_scene(
+            let (render_group_result, effect_retained) = self.compose.reuse_or_render_scene(
                 self.scene_snapshot,
                 live_dependency_key,
                 &registry,
                 self.skip_decision,
                 self.delta_secs,
                 self.inputs,
-            )
+            );
+            (render_group_result, effect_retained, live_dependency_key)
         };
         if !effect_retained {
             let producer_done_at = Instant::now();
@@ -172,6 +174,7 @@ impl ComposeContext<'_> {
                 producer_us,
                 producer_done_us,
                 false,
+                live_dependency_key,
                 stage_start,
             );
         }
@@ -183,6 +186,7 @@ impl ComposeContext<'_> {
             producer_us,
             producer_done_us,
             effect_retained,
+            live_dependency_key,
             stage_start,
         )
     }
@@ -280,6 +284,7 @@ impl ComposeContext<'_> {
         producer_us: u32,
         producer_done_us: u32,
         effect_retained: bool,
+        dependency_key: SceneDependencyKey,
         stage_start: Instant,
     ) -> RenderStageStats {
         match render_group_result {
@@ -335,6 +340,7 @@ impl ComposeContext<'_> {
                 let group_canvases = self.materialize_group_canvases(
                     render_group_result.group_canvases,
                     &scene_display_frame,
+                    dependency_key,
                 );
                 let composition_bypassed = composed.bypassed;
                 let composition_done_at = Instant::now();
@@ -523,13 +529,52 @@ impl ComposeContext<'_> {
         &mut self,
         group_canvases: Vec<(ZoneId, PendingGroupCanvasFrame)>,
         scene_frame: &ProducerFrame,
+        dependency_key: SceneDependencyKey,
     ) -> Vec<(ZoneId, GroupCanvasFrame)> {
         let (_, display_routes) = self.state.event_bus.display_group_output_routes_snapshot();
         group_canvases
             .into_iter()
             .filter_map(|(group_id, frame)| {
-                self.materialize_group_canvas(frame, scene_frame, display_routes.get(&group_id))
-                    .map(|frame| (group_id, frame))
+                let display_route = display_routes.get(&group_id);
+                let display_target = frame.display_target.clone();
+                // Display-face finalization follows the route cadence,
+                // even when scene rendering is faster.
+                if let Some(route) = display_route
+                    && let Some(frame) = self
+                        .compose
+                        .render_group_runtime
+                        .reuse_retained_materialized_group_frame(
+                            group_id,
+                            self.scene_snapshot.elapsed_ms,
+                            self.scene_snapshot
+                                .scene_runtime
+                                .active_display_group_target_fps
+                                .get(&group_id)
+                                .copied(),
+                            dependency_key,
+                            &display_target,
+                            route,
+                        )
+                {
+                    return Some((group_id, frame));
+                }
+
+                let materialized =
+                    self.materialize_group_canvas(frame, scene_frame, display_route)?;
+                if let Some(route) = display_route {
+                    self.compose
+                        .render_group_runtime
+                        .retain_materialized_group_frame(
+                            group_id,
+                            self.scene_snapshot.elapsed_ms,
+                            dependency_key,
+                            &display_target,
+                            route,
+                            &materialized,
+                        );
+                }
+
+                Some((group_id, materialized))
             })
             .collect()
     }

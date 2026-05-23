@@ -6,7 +6,7 @@ use anyhow::Result;
 use tokio::sync::RwLock;
 
 use hypercolor_core::asset::AssetLibrary;
-use hypercolor_core::bus::{DisplayGroupFrame, DisplayGroupTarget};
+use hypercolor_core::bus::{DisplayGroupFrame, DisplayGroupOutputRoute, DisplayGroupTarget};
 #[cfg(feature = "servo-gpu-import")]
 use hypercolor_core::effect::EffectRenderOutput;
 use hypercolor_core::effect::media::MediaProducer;
@@ -121,6 +121,15 @@ struct RetainedDirectGroupFrame {
     dependency_key: SceneDependencyKey,
 }
 
+#[derive(Clone)]
+struct RetainedMaterializedGroupFrame {
+    frame: GroupCanvasFrame,
+    rendered_at_ms: u32,
+    dependency_key: SceneDependencyKey,
+    display_target: DisplayFaceTarget,
+    display_route: DisplayGroupOutputRoute,
+}
+
 struct CachedGroupProjection {
     scene_width: u32,
     scene_height: u32,
@@ -166,6 +175,7 @@ pub(crate) struct ZoneRuntime {
     spatial_engines: HashMap<ZoneId, SpatialEngine>,
     direct_surface_pools: HashMap<ZoneId, RenderSurfacePool>,
     retained_direct_group_frames: HashMap<ZoneId, RetainedDirectGroupFrame>,
+    retained_materialized_group_frames: HashMap<ZoneId, RetainedMaterializedGroupFrame>,
     scene_surface_pool: RenderSurfacePool,
     reconciled_dependency_key: Option<SceneDependencyKey>,
     retained_frame: Option<RetainedRenderGroupFrame>,
@@ -189,6 +199,7 @@ impl ZoneRuntime {
             spatial_engines: HashMap::new(),
             direct_surface_pools: HashMap::new(),
             retained_direct_group_frames: HashMap::new(),
+            retained_materialized_group_frames: HashMap::new(),
             // 8 slots absorbs typical downstream fan-out (watch channel +
             // display-output dispatch + one pin per display worker mid-
             // encode). The higher cap lets preview/display bursts settle
@@ -329,6 +340,7 @@ impl ZoneRuntime {
         self.spatial_engines.clear();
         self.direct_surface_pools.clear();
         self.retained_direct_group_frames.clear();
+        self.retained_materialized_group_frames.clear();
         self.reconciled_dependency_key = None;
         self.retained_frame = None;
         self.last_effect_error = None;
@@ -369,6 +381,7 @@ impl ZoneRuntime {
             || !self.spatial_engines.is_empty()
             || !self.direct_surface_pools.is_empty()
             || !self.retained_direct_group_frames.is_empty()
+            || !self.retained_materialized_group_frames.is_empty()
             || self.retained_frame.is_some()
             || self.reconciled_dependency_key.is_some()
     }
@@ -602,6 +615,8 @@ impl ZoneRuntime {
         self.direct_surface_pools
             .retain(|group_id, _| direct_group_ids.contains(group_id));
         self.retained_direct_group_frames
+            .retain(|group_id, _| direct_group_ids.contains(group_id));
+        self.retained_materialized_group_frames
             .retain(|group_id, _| direct_group_ids.contains(group_id));
 
         for group in groups {
@@ -922,6 +937,58 @@ impl ZoneRuntime {
                 frame: frame.clone(),
                 rendered_at_ms: elapsed_ms,
                 dependency_key,
+            },
+        );
+    }
+
+    pub(crate) fn reuse_retained_materialized_group_frame(
+        &self,
+        group_id: ZoneId,
+        elapsed_ms: u32,
+        target_fps: Option<u32>,
+        dependency_key: SceneDependencyKey,
+        display_target: &DisplayFaceTarget,
+        display_route: &DisplayGroupOutputRoute,
+    ) -> Option<GroupCanvasFrame> {
+        let target_fps = target_fps?;
+        if display_route.device_id != display_target.device_id {
+            return None;
+        }
+
+        let retained = self.retained_materialized_group_frames.get(&group_id)?;
+        if retained.dependency_key != dependency_key
+            || retained.display_target != *display_target
+            || retained.display_route != *display_route
+        {
+            return None;
+        }
+
+        let frame_interval_ms = 1000_u32.div_ceil(target_fps.max(1));
+        (elapsed_ms.saturating_sub(retained.rendered_at_ms) < frame_interval_ms)
+            .then(|| retained.frame.clone())
+    }
+
+    pub(crate) fn retain_materialized_group_frame(
+        &mut self,
+        group_id: ZoneId,
+        elapsed_ms: u32,
+        dependency_key: SceneDependencyKey,
+        display_target: &DisplayFaceTarget,
+        display_route: &DisplayGroupOutputRoute,
+        frame: &GroupCanvasFrame,
+    ) {
+        if display_route.device_id != display_target.device_id || !frame.display_target.finalized {
+            return;
+        }
+
+        self.retained_materialized_group_frames.insert(
+            group_id,
+            RetainedMaterializedGroupFrame {
+                frame: frame.clone(),
+                rendered_at_ms: elapsed_ms,
+                dependency_key,
+                display_target: display_target.clone(),
+                display_route: display_route.clone(),
             },
         );
     }
@@ -2210,12 +2277,14 @@ mod tests {
     #[cfg(feature = "media-video")]
     use hypercolor_core::asset::AssetTypeHint;
     use hypercolor_core::asset::{AssetLibrary, AssetUploadOptions};
+    use hypercolor_core::bus::DisplayGroupViewport;
     use hypercolor_core::effect::EffectRegistry;
     use hypercolor_core::effect::builtin::register_builtin_effects;
     use hypercolor_core::input::InteractionData;
     use hypercolor_types::asset::AssetId;
     use hypercolor_types::audio::AudioData;
     use hypercolor_types::canvas::Rgba;
+    use hypercolor_types::device::DisplayFrameFormat;
     use hypercolor_types::effect::{ControlValue, EffectId};
     use hypercolor_types::layer::MediaPlayback;
     use hypercolor_types::scene::ZoneRole;
@@ -2315,6 +2384,41 @@ mod tests {
         });
         group.role = ZoneRole::Display;
         group
+    }
+
+    fn sample_group_canvas_frame(
+        display_target: &DisplayFaceTarget,
+        finalized: bool,
+    ) -> GroupCanvasFrame {
+        GroupCanvasFrame {
+            frame: DisplayGroupFrame::empty(),
+            display_target: DisplayGroupTarget {
+                device_id: display_target.device_id,
+                blend_mode: display_target.blend_mode,
+                opacity: display_target.opacity,
+                finalized,
+            },
+        }
+    }
+
+    fn sample_display_route(
+        device_id: hypercolor_types::device::DeviceId,
+    ) -> DisplayGroupOutputRoute {
+        DisplayGroupOutputRoute {
+            device_id,
+            width: 480,
+            height: 480,
+            circular: true,
+            brightness: 1.0,
+            frame_format: DisplayFrameFormat::Jpeg,
+            viewport: DisplayGroupViewport {
+                position: NormalizedPosition { x: 0.5, y: 0.5 },
+                size: NormalizedPosition { x: 1.0, y: 1.0 },
+                rotation: 0.0,
+                scale: 1.0,
+                edge_behavior: EdgeBehavior::Clamp,
+            },
+        }
     }
 
     fn point_zone(id: &str) -> Output {
@@ -2868,10 +2972,26 @@ mod tests {
     fn clear_inactive_groups_releases_cached_group_state() {
         let mut runtime = ZoneRuntime::new(4, 4);
         let group = sample_group(4, 4);
+        let display_group = sample_display_group(4, 4);
+        let display_target = display_group
+            .display_target
+            .as_ref()
+            .expect("display group should have a target")
+            .clone();
+        let display_route = sample_display_route(display_target.device_id);
+        let group_canvas_frame = sample_group_canvas_frame(&display_target, true);
         runtime.target_canvases.insert(group.id, Canvas::new(4, 4));
         runtime
             .spatial_engines
             .insert(group.id, SpatialEngine::new(group.layout.clone()));
+        runtime.retain_materialized_group_frame(
+            display_group.id,
+            100,
+            SceneDependencyKey::new(1, 1),
+            &display_target,
+            &display_route,
+            &group_canvas_frame,
+        );
         runtime.reconciled_dependency_key = Some(SceneDependencyKey::new(1, 1));
 
         assert!(runtime.has_inactive_group_resources());
@@ -2880,6 +3000,137 @@ mod tests {
 
         assert!(!runtime.has_inactive_group_resources());
         assert!(runtime.combined_led_layout.zones.is_empty());
+    }
+
+    #[test]
+    fn materialized_group_reuse_obeys_cadence_and_route_identity() {
+        let mut runtime = ZoneRuntime::new(4, 4);
+        let group = sample_display_group(4, 4);
+        let display_target = group
+            .display_target
+            .as_ref()
+            .expect("display group should have a target")
+            .clone();
+        let display_route = sample_display_route(display_target.device_id);
+        let dependency_key = SceneDependencyKey::new(1, 1);
+        let group_canvas_frame = sample_group_canvas_frame(&display_target, true);
+
+        runtime.retain_materialized_group_frame(
+            group.id,
+            100,
+            dependency_key,
+            &display_target,
+            &display_route,
+            &group_canvas_frame,
+        );
+
+        let reused = runtime
+            .reuse_retained_materialized_group_frame(
+                group.id,
+                120,
+                Some(30),
+                dependency_key,
+                &display_target,
+                &display_route,
+            )
+            .expect("retained materialized frame should be reused within cadence");
+        assert_eq!(reused.display_target, group_canvas_frame.display_target);
+
+        assert!(
+            runtime
+                .reuse_retained_materialized_group_frame(
+                    group.id,
+                    120,
+                    Some(30),
+                    SceneDependencyKey::new(2, 1),
+                    &display_target,
+                    &display_route,
+                )
+                .is_none()
+        );
+        assert!(
+            runtime
+                .reuse_retained_materialized_group_frame(
+                    group.id,
+                    140,
+                    Some(30),
+                    dependency_key,
+                    &display_target,
+                    &display_route,
+                )
+                .is_none()
+        );
+
+        let mut changed_route = display_route.clone();
+        changed_route.width += 1;
+        assert!(
+            runtime
+                .reuse_retained_materialized_group_frame(
+                    group.id,
+                    120,
+                    Some(30),
+                    dependency_key,
+                    &display_target,
+                    &changed_route,
+                )
+                .is_none()
+        );
+
+        let mut changed_target = display_target.clone();
+        changed_target.opacity = 0.5;
+        assert!(
+            runtime
+                .reuse_retained_materialized_group_frame(
+                    group.id,
+                    120,
+                    Some(30),
+                    dependency_key,
+                    &changed_target,
+                    &display_route,
+                )
+                .is_none()
+        );
+        assert!(
+            runtime
+                .reuse_retained_materialized_group_frame(
+                    group.id,
+                    120,
+                    None,
+                    dependency_key,
+                    &display_target,
+                    &display_route,
+                )
+                .is_none()
+        );
+
+        let unfinalized_group = sample_display_group(4, 4);
+        let unfinalized_target = unfinalized_group
+            .display_target
+            .as_ref()
+            .expect("display group should have a target")
+            .clone();
+        let unfinalized_route = sample_display_route(unfinalized_target.device_id);
+        let unfinalized_frame = sample_group_canvas_frame(&unfinalized_target, false);
+        runtime.retain_materialized_group_frame(
+            unfinalized_group.id,
+            100,
+            dependency_key,
+            &unfinalized_target,
+            &unfinalized_route,
+            &unfinalized_frame,
+        );
+        assert!(
+            runtime
+                .reuse_retained_materialized_group_frame(
+                    unfinalized_group.id,
+                    120,
+                    Some(30),
+                    dependency_key,
+                    &unfinalized_target,
+                    &unfinalized_route,
+                )
+                .is_none()
+        );
     }
 
     #[test]
