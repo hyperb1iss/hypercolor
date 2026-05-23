@@ -195,7 +195,7 @@ function Test-HypercolorSmbusBroker {
     Write-Warning "CPU temperature and motherboard RGB discovery need the broker."
     Write-Warning "Fix: open an elevated PowerShell and run:"
     Write-Warning "    sc.exe start HypercolorSmBus"
-    Write-Warning "(Or reboot — broker startup type is Automatic.)"
+    Write-Warning "(Or reboot - broker startup type is Automatic.)"
     Write-Host ""
 }
 
