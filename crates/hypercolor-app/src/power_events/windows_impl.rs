@@ -110,10 +110,10 @@ fn run_message_loop() {
     // outlives the call (`as_ptr` borrow of `Vec<u16>` on stack).
     let atom = unsafe { RegisterClassW(&class) };
     if atom == 0 {
-        tracing::warn!(
-            err = unsafe { windows_sys::Win32::Foundation::GetLastError() },
-            "RegisterClassW failed; power events disabled"
-        );
+        // SAFETY: GetLastError reads thread-local Win32 state with no
+        // pointers or invariants to maintain.
+        let err = unsafe { windows_sys::Win32::Foundation::GetLastError() };
+        tracing::warn!(err, "RegisterClassW failed; power events disabled");
         return;
     }
 
@@ -137,10 +137,10 @@ fn run_message_loop() {
         )
     };
     if hwnd.is_null() {
-        tracing::warn!(
-            err = unsafe { windows_sys::Win32::Foundation::GetLastError() },
-            "CreateWindowExW failed; power events disabled"
-        );
+        // SAFETY: GetLastError reads thread-local Win32 state with no
+        // pointers or invariants to maintain.
+        let err = unsafe { windows_sys::Win32::Foundation::GetLastError() };
+        tracing::warn!(err, "CreateWindowExW failed; power events disabled");
         return;
     }
 
@@ -174,10 +174,10 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
     if msg == WM_POWERBROADCAST {
         #[allow(clippy::cast_possible_truncation)]
         let event = wparam as u32;
-        if event == PBT_APMRESUMEAUTOMATIC || event == PBT_APMRESUMESUSPEND {
-            if let Some(tx) = RESUME_TX.get() {
-                let _ = tx.send(());
-            }
+        if (event == PBT_APMRESUMEAUTOMATIC || event == PBT_APMRESUMESUSPEND)
+            && let Some(tx) = RESUME_TX.get()
+        {
+            let _ = tx.send(());
         }
         return 1; // TRUE — per Microsoft docs, return TRUE from WM_POWERBROADCAST
     }

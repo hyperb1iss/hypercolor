@@ -71,12 +71,12 @@ fn copy_log_files(stage_root: &Path) -> Result<()> {
     // still in the same dir, no separate copy needed.
 
     // PawnIO helper log (Phase 1.0 helper, when wired) lives in ProgramData.
-    if cfg!(target_os = "windows") {
-        if let Ok(program_data) = std::env::var("PROGRAMDATA") {
-            let helper_log = PathBuf::from(program_data).join("hypercolor/helper.log");
-            if helper_log.is_file() {
-                let _ = fs::copy(&helper_log, logs_dir.join("helper.log"));
-            }
+    if cfg!(target_os = "windows")
+        && let Ok(program_data) = std::env::var("PROGRAMDATA")
+    {
+        let helper_log = PathBuf::from(program_data).join("hypercolor/helper.log");
+        if helper_log.is_file() {
+            let _ = fs::copy(&helper_log, logs_dir.join("helper.log"));
         }
     }
 
@@ -98,7 +98,7 @@ fn copy_dir_recent(src: &Path, dst: &Path, limit: usize) -> Result<()> {
             Some((path, modified))
         })
         .collect();
-    entries.sort_by(|left, right| right.1.cmp(&left.1));
+    entries.sort_by_key(|entry| std::cmp::Reverse(entry.1));
     for (path, _) in entries.into_iter().take(limit) {
         if let Some(name) = path.file_name() {
             let _ = fs::copy(&path, dst.join(name));
