@@ -172,6 +172,33 @@ function Set-HypercolorPawnIoModuleDir {
     }
 }
 
+function Test-HypercolorSmbusBroker {
+    # CPU temperature reads and SMBus motherboard / DRAM device
+    # discovery both route through HypercolorSmBus (which runs as
+    # LocalSystem because PawnIO requires admin context). If the
+    # service exists but is stopped, surface a one-line fix instead of
+    # letting the user dig through daemon warnings for "access denied".
+    $query = & sc.exe query HypercolorSmBus 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        # Service not installed; nothing to warn about. The Settings
+        # UI's "Install Support" panel handles first-time setup.
+        return
+    }
+
+    $stateLine = $query | Where-Object { $_ -match '^\s*STATE\s*:' } | Select-Object -First 1
+    if ($stateLine -match 'RUNNING') {
+        return
+    }
+
+    Write-Host ""
+    Write-Warning "HypercolorSmBus broker is installed but not running."
+    Write-Warning "CPU temperature and motherboard RGB discovery need the broker."
+    Write-Warning "Fix: open an elevated PowerShell and run:"
+    Write-Warning "    sc.exe start HypercolorSmBus"
+    Write-Warning "(Or reboot — broker startup type is Automatic.)"
+    Write-Host ""
+}
+
 function Build-HypercolorWindowsHelper {
     # Build the signed elevated helper that the Tauri app shells out to
     # for privileged operations (repair SMBus, install/uninstall hardware
@@ -274,6 +301,7 @@ try {
     Add-HypercolorAngleRuntimePath
     Set-HypercolorPawnIoModuleDir
     Build-HypercolorWindowsHelper
+    Test-HypercolorSmbusBroker
 
     Write-Host '[dev] starting daemon on 127.0.0.1:9420'
     $daemon = Start-HypercolorChild -FilePath $daemonExe -Arguments $daemonArguments -WorkingDirectory $RepoRoot
