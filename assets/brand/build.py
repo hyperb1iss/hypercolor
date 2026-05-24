@@ -378,8 +378,8 @@ def build_tray() -> None:
     sq = pad_to_square(mark)
     base = sq.resize((512, 512), Image.LANCZOS)
 
-    # Color variants (Windows tray uses these)
-    for s in [22, 44, 88, 256]:
+    # Color variants (Windows tray uses these; 32 is for the Rust embed path)
+    for s in [22, 32, 44, 88, 256]:
         base.resize((s, s), Image.LANCZOS).save(out / f"tray-color-{s}.png")
 
     # Monochrome (macOS template image — alpha-only black silhouette)
@@ -387,27 +387,33 @@ def build_tray() -> None:
     mono_full = Image.new("RGBA", base.size, (0, 0, 0, 0))
     black = Image.new("RGBA", base.size, (0, 0, 0, 255))
     mono_full.paste(black, (0, 0), alpha)
-    for s in [22, 44, 88]:
+    for s in [22, 32, 44, 88]:
         mono_full.resize((s, s), Image.LANCZOS).save(out / f"tray-mono-{s}.png")
 
-    # Status variants at the canonical 22/44/88 sizes
-    # paused: desaturated (50% saturation)
+    # Status variants — paused is desaturated
     paused = base.convert("HSV")
     h, s_ch, v = paused.split()
     s_ch = s_ch.point(lambda v: v // 3)
     paused = Image.merge("HSV", (h, s_ch, v)).convert("RGBA")
     paused.putalpha(base.split()[-1])
-    for s in [22, 44, 88]:
+    for s in [22, 32, 44, 88]:
         paused.resize((s, s), Image.LANCZOS).save(out / f"tray-paused-{s}.png")
 
-    # error: single-petal-red tint (entire trinity tinted red, low chroma)
+    # error: red-tinted
     red_tint = Image.new("RGBA", base.size, (255, 70, 70, 255))
     red_tint.putalpha(base.split()[-1])
-    # blend with base at 70% red
     err = Image.blend(base, red_tint, 0.7)
     err.putalpha(base.split()[-1])
-    for s in [22, 44, 88]:
+    for s in [22, 32, 44, 88]:
         err.resize((s, s), Image.LANCZOS).save(out / f"tray-error-{s}.png")
+
+    # Disconnected — same as mono but lighter (gray, low alpha) for "off" state
+    gray_tint = Image.new("RGBA", base.size, (140, 140, 160, 200))
+    gray_tint.putalpha(alpha)
+    disc = Image.blend(base, gray_tint, 0.85)
+    disc.putalpha(Image.eval(alpha, lambda v: v * 6 // 10))
+    for s in [22, 32, 44, 88]:
+        disc.resize((s, s), Image.LANCZOS).save(out / f"tray-disconnected-{s}.png")
 
     print(f"  → tray: {len(list(out.glob('*')))} files")
 

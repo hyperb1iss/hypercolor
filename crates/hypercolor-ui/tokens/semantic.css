@@ -69,6 +69,16 @@
 
     /* Noise overlay intensity */
     --noise-opacity:     0.014;
+
+    /* Brand stage — the canonical hypercolor surface treatment.
+       Deep magenta-velvet bg the trinity is meant to land on; gives the
+       logo a "lit in a real room" feel vs harsh "neon on void black". */
+    --brand-stage-inner: oklch(0.250 0.130 295);
+    --brand-stage-outer: oklch(0.100 0.020 285);
+    --gradient-brand-stage:
+        radial-gradient(ellipse at center top,
+            var(--brand-stage-inner) 0%,
+            var(--brand-stage-outer) 70%);
 }
 
 /* ── Light mode ── */
