@@ -1085,219 +1085,23 @@ body.resizing * {
     transition: opacity 0.6s ease;
 }
 
-/* ── 0: Mark — canonical Hypercolor trinity, crisp magenta glow + breath ── */
+/* ── Mark — canonical Hypercolor trinity, static, chill hue aura ──────── */
 .logo-bg-mark {
-    background: radial-gradient(ellipse at 50% 45%,
-        rgba(225, 53, 255, 0.12) 0%,
-        transparent 60%);
+    background: radial-gradient(ellipse at 50% 50%,
+        rgba(225, 53, 255, 0.18) 0%,
+        transparent 65%);
+    filter: blur(6px);
+    animation: markChillAura 24s linear infinite;
+    will-change: filter;
 }
 
 .logo-mark-image {
-    animation: markBreath 7s ease-in-out infinite;
-    will-change: filter, transform;
+    filter: drop-shadow(0 0 14px rgba(225, 53, 255, 0.32));
 }
 
-@keyframes markBreath {
-    0%, 100% {
-        filter: drop-shadow(0 0 14px rgba(225, 53, 255, 0.32));
-        transform: scale(1);
-    }
-    50% {
-        filter: drop-shadow(0 0 20px rgba(225, 53, 255, 0.50));
-        transform: scale(1.015);
-    }
-}
-
-/* ── 10: Mark Aura — chrome preserved, slow hue cycle overlay ──────────── */
-.logo-bg-aura {
-    background: radial-gradient(ellipse at 50% 50%,
-        rgba(225, 53, 255, 0.12) 0%,
-        transparent 70%);
-    animation: auraBgRotate 14s linear infinite;
-}
-
-.logo-mark-aura {
-    position: relative;
-    aspect-ratio: 1145 / 1032;
-}
-.logo-mark-aura .aura-base {
-    position: absolute;
-    inset: 0;
-    background: url("/assets/brand/mark-color.png") no-repeat center / contain;
-    filter: drop-shadow(0 0 18px rgba(225, 53, 255, 0.4));
-}
-.logo-mark-aura .aura-tint {
-    position: absolute;
-    inset: 0;
-    background: linear-gradient(135deg, #e135ff 0%, #80ffea 50%, #ff6ac1 100%);
-    -webkit-mask: url("/assets/brand/mark-mask.png") center / contain no-repeat;
-    mask: url("/assets/brand/mark-mask.png") center / contain no-repeat;
-    mix-blend-mode: color;
-    opacity: 0.55;
-    animation: auraHueShift 10s linear infinite;
-    will-change: filter;
-}
-
-@keyframes auraHueShift {
-    0%   { filter: hue-rotate(0deg); }
-    100% { filter: hue-rotate(360deg); }
-}
-@keyframes auraBgRotate {
-    0%   { transform: rotate(0deg); }
-    100% { transform: rotate(360deg); }
-}
-
-/* ── 11: Mark Tri — per-petal independent hue cycling ──────────────────── */
-.logo-bg-tri {
-    background: conic-gradient(from 0deg at 50% 50%,
-        rgba(225, 53, 255, 0.12),
-        rgba(128, 255, 234, 0.12),
-        rgba(255, 106, 193, 0.12),
-        rgba(225, 53, 255, 0.12));
-    animation: triBgSpin 22s linear infinite;
-    filter: blur(20px);
-    opacity: 0.7;
-}
-
-.logo-mark-tri {
-    position: relative;
-    aspect-ratio: 1145 / 1032;
-}
-.logo-mark-tri > div {
-    position: absolute;
-    inset: 0;
-    -webkit-mask-size: contain;
-    -webkit-mask-position: center;
-    -webkit-mask-repeat: no-repeat;
-    mask-size: contain;
-    mask-position: center;
-    mask-repeat: no-repeat;
-    mix-blend-mode: screen;
-    filter: drop-shadow(0 0 8px currentColor);
-    animation: triHueShift 12s linear infinite;
-    will-change: filter;
-}
-.logo-mark-tri .petal-top {
-    background: #e135ff;
-    -webkit-mask-image: url("/assets/brand/petal-top-segmented-mask.png");
-    mask-image: url("/assets/brand/petal-top-segmented-mask.png");
-}
-.logo-mark-tri .petal-left {
-    background: #80ffea;
-    -webkit-mask-image: url("/assets/brand/petal-left-segmented-mask.png");
-    mask-image: url("/assets/brand/petal-left-segmented-mask.png");
-    animation-delay: -4s;
-}
-.logo-mark-tri .petal-right {
-    background: #ff6ac1;
-    -webkit-mask-image: url("/assets/brand/petal-right-segmented-mask.png");
-    mask-image: url("/assets/brand/petal-right-segmented-mask.png");
-    animation-delay: -8s;
-}
-
-@keyframes triHueShift {
-    0%   { filter: hue-rotate(0deg)   drop-shadow(0 0 8px currentColor); }
-    100% { filter: hue-rotate(360deg) drop-shadow(0 0 8px currentColor); }
-}
-@keyframes triBgSpin {
-    0%   { transform: rotate(0deg); }
-    100% { transform: rotate(360deg); }
-}
-
-/* ── 3: Pulse — heartbeat double-thump with glow flash ─────────────────── */
-.logo-bg-pulse {
-    background: radial-gradient(ellipse at 50% 45%,
-        rgba(225, 53, 255, 0.10) 0%,
-        transparent 60%);
-    animation: pulseBgEcho 4.5s ease-out infinite;
-}
-
-.logo-mark-pulse {
-    animation: markPulse 4.5s ease-in-out infinite;
-    will-change: filter, transform;
-}
-
-@keyframes markPulse {
-    /* Rest */
-    0%   { transform: scale(1.00); filter: drop-shadow(0 0 12px rgba(225, 53, 255, 0.30)); }
-    /* First thump */
-    7%   { transform: scale(1.07); filter: drop-shadow(0 0 28px rgba(225, 53, 255, 0.70)); }
-    14%  { transform: scale(1.02); filter: drop-shadow(0 0 16px rgba(225, 53, 255, 0.42)); }
-    /* Second thump */
-    22%  { transform: scale(1.10); filter: drop-shadow(0 0 36px rgba(225, 53, 255, 0.85)); }
-    32%  { transform: scale(1.00); filter: drop-shadow(0 0 12px rgba(225, 53, 255, 0.30)); }
-    /* Long rest */
-    100% { transform: scale(1.00); filter: drop-shadow(0 0 12px rgba(225, 53, 255, 0.30)); }
-}
-
-@keyframes pulseBgEcho {
-    0%, 32%, 100% { opacity: 0.6; transform: scale(1); }
-    7%            { opacity: 1.0; transform: scale(1.08); }
-    22%           { opacity: 1.0; transform: scale(1.12); }
-}
-
-/* ── 4: Drift — petals breathe outward + return ────────────────────────── */
-.logo-bg-drift {
-    background: conic-gradient(from 90deg at 50% 50%,
-        rgba(225, 53, 255, 0.10),
-        rgba(128, 255, 234, 0.10),
-        rgba(255, 106, 193, 0.10),
-        rgba(225, 53, 255, 0.10));
-    filter: blur(24px);
-    opacity: 0.55;
-    animation: driftBgSway 18s ease-in-out infinite;
-}
-
-.logo-mark-drift {
-    position: relative;
-    aspect-ratio: 1145 / 1032;
-}
-.logo-mark-drift > div {
-    position: absolute;
-    inset: 0;
-    -webkit-mask-size: contain;
-    -webkit-mask-position: center;
-    -webkit-mask-repeat: no-repeat;
-    mask-size: contain;
-    mask-position: center;
-    mask-repeat: no-repeat;
-    mix-blend-mode: screen;
-    will-change: transform;
-    animation: petalDrift 9s ease-in-out infinite;
-}
-.logo-mark-drift .petal-top {
-    background: #e135ff;
-    -webkit-mask-image: url("/assets/brand/petal-top-segmented-mask.png");
-    mask-image: url("/assets/brand/petal-top-segmented-mask.png");
-    --drift-x: 0px;
-    --drift-y: -5px;
-    filter: drop-shadow(0 -2px 10px rgba(225, 53, 255, 0.45));
-}
-.logo-mark-drift .petal-left {
-    background: #80ffea;
-    -webkit-mask-image: url("/assets/brand/petal-left-segmented-mask.png");
-    mask-image: url("/assets/brand/petal-left-segmented-mask.png");
-    --drift-x: -5px;
-    --drift-y: 3px;
-    filter: drop-shadow(-3px 2px 10px rgba(128, 255, 234, 0.40));
-}
-.logo-mark-drift .petal-right {
-    background: #ff6ac1;
-    -webkit-mask-image: url("/assets/brand/petal-right-segmented-mask.png");
-    mask-image: url("/assets/brand/petal-right-segmented-mask.png");
-    --drift-x: 5px;
-    --drift-y: 3px;
-    filter: drop-shadow(3px 2px 10px rgba(255, 106, 193, 0.40));
-}
-
-@keyframes petalDrift {
-    0%, 100% { transform: translate(0, 0); }
-    50%      { transform: translate(var(--drift-x), var(--drift-y)); }
-}
-
-@keyframes driftBgSway {
-    0%, 100% { transform: rotate(0deg); }
-    50%      { transform: rotate(40deg); }
+@keyframes markChillAura {
+    0%   { filter: blur(6px) hue-rotate(0deg); }
+    100% { filter: blur(6px) hue-rotate(360deg); }
 }
 
 /* ── Reduced motion ──────────────────────────────────────────────────────── */

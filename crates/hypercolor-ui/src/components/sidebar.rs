@@ -17,7 +17,6 @@ use crate::components::canvas_preview::CanvasPreview;
 use crate::config_state::ConfigContext;
 use crate::icons::*;
 use crate::route_ui::{NowPlayingCanvasMode, now_playing_canvas_mode};
-use crate::storage;
 use crate::style_utils::category_accent_rgb;
 use crate::tauri_bridge;
 use hypercolor_leptos_ext::events::Input;
@@ -203,124 +202,40 @@ pub fn Sidebar() -> impl IntoView {
             class:w-56=move || !collapsed.get()
             class:w-14=move || collapsed.get()
         >
-            // Logo — click to cycle through subtle animation variants of the
-            // canonical mark. All five flavors render the real Hypercolor
-            // trinity; the typography experiments are gone.
-            {
-                let logo_mode_count = 5_usize;
-                let default_mode = 0_usize;
-                let initial_mode = storage::get("hc-logo-mode")
-                    .and_then(|v| v.parse::<usize>().ok())
-                    .filter(|m| *m < logo_mode_count)
-                    .unwrap_or(default_mode);
-                let (logo_mode, set_logo_mode) = signal(initial_mode);
-                let cycle_logo = move |_| set_logo_mode.update(|m| {
-                    *m = (*m + 1) % logo_mode_count;
-                    storage::set("hc-logo-mode", &m.to_string());
-                });
+            // Logo — canonical mark, static. The glow layer behind it drifts
+            // through brand hues; the mark itself doesn't move.
+            <div
+                class="w-full border-b border-edge-subtle transition-[height] duration-300"
+                class:h-14=move || collapsed.get()
+                class:h-32=move || !collapsed.get()
+            >
+                // Collapsed: static 32px trinity.
+                <div
+                    class="items-center justify-center h-full logo-container"
+                    style:display=move || if collapsed.get() { "flex" } else { "none" }
+                >
+                    <img
+                        src="/assets/brand/mark-color.png"
+                        alt="Hypercolor"
+                        class="w-8 h-8 select-none logo-mark-image"
+                        draggable="false"
+                    />
+                </div>
 
-                let mode_names = ["mark", "aura", "tri", "pulse", "drift"];
-
-                view! {
-                    <div
-                        class="w-full border-b border-edge-subtle transition-[height] duration-300"
-                        class:h-14=move || collapsed.get()
-                        class:h-32=move || !collapsed.get()
-                    >
-                        // Collapsed state: mode-aware gradient mark
-                        <div
-                            class="items-center justify-center h-full logo-container"
-                            style:display=move || if collapsed.get() { "flex" } else { "none" }
-                            on:click=cycle_logo
-                            title="Click to change logo style"
-                        >
-                            // Collapsed: always the static mark at 32px. Mode-specific
-                            // animations would be illegible this small.
-                            <img
-                                src="/assets/brand/mark-color.png"
-                                alt="Hypercolor"
-                                class="w-8 h-8 select-none logo-mark-image"
-                                draggable="false"
-                            />
-                        </div>
-
-                        // Expanded state: cycling logo modes
-                        <div
-                            class="flex-col items-center justify-center h-full px-3 overflow-hidden logo-container"
-                            style:display=move || if collapsed.get() { "none" } else { "flex" }
-                            on:click=cycle_logo
-                            title="Click to change logo style"
-                        >
-                            // Ambient background glow — changes per mode
-                            <div class=move || {
-                                let bg = match logo_mode.get() {
-                                    0 => "logo-bg-mark",
-                                    1 => "logo-bg-aura",
-                                    2 => "logo-bg-tri",
-                                    3 => "logo-bg-pulse",
-                                    _ => "logo-bg-drift",
-                                };
-                                format!("logo-bg {bg}")
-                            } />
-
-                            {move || {
-                                match logo_mode.get() {
-                                    // 0: Mark — full lockup, subtle magenta breath glow
-                                    0 => view! {
-                                        <img
-                                            src="/assets/brand/lockup-vertical-color.png"
-                                            alt="Hypercolor"
-                                            class="h-24 w-auto select-none object-contain logo-mark-image"
-                                            draggable="false"
-                                        />
-                                    }.into_any(),
-
-                                    // 1: Aura — chrome preserved, slow hue cycle overlay
-                                    1 => view! {
-                                        <div class="logo-mark-aura h-24 w-24">
-                                            <div class="aura-base" />
-                                            <div class="aura-tint" />
-                                        </div>
-                                    }.into_any(),
-
-                                    // 2: Tri — per-petal hue cycling, 120° phase apart
-                                    2 => view! {
-                                        <div class="logo-mark-tri h-24 w-24">
-                                            <div class="petal-top" />
-                                            <div class="petal-left" />
-                                            <div class="petal-right" />
-                                        </div>
-                                    }.into_any(),
-
-                                    // 3: Pulse — heartbeat double-thump with glow flash
-                                    3 => view! {
-                                        <img
-                                            src="/assets/brand/mark-color.png"
-                                            alt="Hypercolor"
-                                            class="h-24 w-24 select-none object-contain logo-mark-pulse"
-                                            draggable="false"
-                                        />
-                                    }.into_any(),
-
-                                    // 4: Drift — petals drift outward + return on long cycle
-                                    _ => view! {
-                                        <div class="logo-mark-drift h-24 w-24">
-                                            <div class="petal-top" />
-                                            <div class="petal-left" />
-                                            <div class="petal-right" />
-                                        </div>
-                                    }.into_any(),
-                                }
-                            }}
-
-                            // Mode name hint — absolutely positioned, doesn't affect centering
-                            <div class="logo-mode-label text-fg-tertiary">
-                                {move || mode_names[logo_mode.get()]}
-                            </div>
-                        </div>
-                    </div>
-                }
-            }
+                // Expanded: full vertical lockup with chill aura behind.
+                <div
+                    class="flex-col items-center justify-center h-full px-3 overflow-hidden logo-container"
+                    style:display=move || if collapsed.get() { "none" } else { "flex" }
+                >
+                    <div class="logo-bg logo-bg-mark" />
+                    <img
+                        src="/assets/brand/lockup-vertical-color.png"
+                        alt="Hypercolor"
+                        class="h-24 w-auto select-none object-contain logo-mark-image"
+                        draggable="false"
+                    />
+                </div>
+            </div>
 
             // Nav items — the set swaps with the studio_ui_beta flag (§5.1).
             <div class="flex-1 py-3 space-y-0.5 px-2">

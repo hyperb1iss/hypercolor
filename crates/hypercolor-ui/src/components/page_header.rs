@@ -84,8 +84,8 @@ pub fn PageHeader(
     let icon_style =
         format!("color: rgb({icon_rgb}); filter: drop-shadow(0 0 10px rgba({icon_rgb}, 0.55))");
     let title_style = format!(
-        "font-family:'Outfit','Satoshi',system-ui,sans-serif; font-weight:400; \
-         font-size:22px; letter-spacing:0.04em; line-height:1; \
+        "font-family:'Sora','Satoshi',system-ui,sans-serif; font-weight:500; \
+         font-size:21px; letter-spacing:0.02em; line-height:1; \
          background-image:{gradient}"
     );
 
