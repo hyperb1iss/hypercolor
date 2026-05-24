@@ -91,6 +91,32 @@ function Copy-WindowsToolBinary {
     Copy-Item -LiteralPath $source -Destination (Join-Path $StageTools "$Name$Exe") -Force
 }
 
+function Copy-AngleRuntime {
+    # Servo's WebGL backend goes through mozangle's libEGL.dll +
+    # libGLESv2.dll. Without these next to hypercolor-daemon.exe the
+    # render thread panics at startup with "egl function was not
+    # loaded" and the daemon dies before serving its first frame.
+    # `cargo build` produces them under target/.../build/mozangle-*/out/
+    # — pick the freshest pair so the bundle matches the daemon binary
+    # we just built.
+    $buildRoot = Join-Path $TargetDir 'release\build'
+    if (-not (Test-Path -LiteralPath $buildRoot)) {
+        throw "missing release build dir: $buildRoot; build hypercolor-daemon before staging"
+    }
+
+    $eglDll = Get-ChildItem -LiteralPath $buildRoot -Recurse -Filter 'libEGL.dll' -ErrorAction SilentlyContinue |
+        Where-Object { Test-Path -LiteralPath (Join-Path $_.DirectoryName 'libGLESv2.dll') } |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1
+
+    if ($null -eq $eglDll) {
+        throw "could not locate libEGL.dll + libGLESv2.dll under $buildRoot; rebuild hypercolor-daemon with the servo feature"
+    }
+
+    Copy-Item -LiteralPath $eglDll.FullName -Destination (Join-Path $StageDlls 'libEGL.dll') -Force
+    Copy-Item -LiteralPath (Join-Path $eglDll.DirectoryName 'libGLESv2.dll') -Destination (Join-Path $StageDlls 'libGLESv2.dll') -Force
+}
+
 function Test-WindowsTarget {
     $Target -like '*windows*' -or $Target -like '*-pc-windows-*'
 }
@@ -124,6 +150,7 @@ $StageBin = Join-Path $StageDir 'binaries'
 $StageUi = Join-Path $StageDir 'ui'
 $StageEffects = Join-Path $StageDir 'effects'
 $StageTools = Join-Path $StageDir 'tools'
+$StageDlls = Join-Path $StageDir 'dlls'
 
 $uiDist = Join-Path $RepoRoot 'crates\hypercolor-ui\dist'
 $uiIndex = Join-Path $uiDist 'index.html'
@@ -144,6 +171,9 @@ Reset-Directory $StageBin
 Reset-Directory $StageUi
 Reset-Directory $StageEffects
 Reset-Directory $StageTools
+if (Test-WindowsTarget) {
+    Reset-Directory $StageDlls
+}
 
 Get-ChildItem -LiteralPath $uiDist -Force |
     Copy-Item -Destination $StageUi -Recurse -Force
@@ -156,6 +186,8 @@ Copy-Sidecar 'hypercolor'
 if (Test-WindowsTarget) {
     Copy-WindowsToolBinary 'hypercolor-smbus-service'
     Copy-WindowsToolBinary 'hypercolor-windows-helper'
+
+    Copy-AngleRuntime
 
     if (-not $SkipPawnIo) {
         & (Join-Path $RepoRoot 'scripts\fetch-pawnio-assets.ps1') `
