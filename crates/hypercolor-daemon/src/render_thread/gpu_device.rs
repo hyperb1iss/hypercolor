@@ -30,6 +30,7 @@ pub(crate) struct GpuRenderDeviceInfo {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GpuBackendPreference {
     Default,
+    #[cfg(all(feature = "servo-gpu-import", target_os = "windows"))]
     VulkanRequiredForServoImport,
 }
 
@@ -43,6 +44,7 @@ impl GpuRenderDevice {
         backend_preference: GpuBackendPreference,
     ) -> Result<Self> {
         let mut instance_descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+        #[cfg(all(feature = "servo-gpu-import", target_os = "windows"))]
         if matches!(
             backend_preference,
             GpuBackendPreference::VulkanRequiredForServoImport
@@ -68,6 +70,7 @@ impl GpuRenderDevice {
         {
             required_features |= wgpu::Features::VULKAN_EXTERNAL_MEMORY_WIN32;
         }
+        #[cfg(all(feature = "servo-gpu-import", target_os = "windows"))]
         if matches!(
             backend_preference,
             GpuBackendPreference::VulkanRequiredForServoImport

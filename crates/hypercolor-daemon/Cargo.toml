@@ -23,7 +23,7 @@ media-video = ["hypercolor-core/media-video"]
 official-cloud = ["cloud"]
 wgpu = ["dep:wgpu", "dep:pollster"]
 servo-gpu-import = ["servo", "wgpu", "hypercolor-core/servo-gpu-import"]
-default = ["builtin-drivers", "wgpu", "servo"]
+default = ["builtin-drivers", "wgpu", "servo", "servo-gpu-import"]
 servo = ["hypercolor-core/servo"]
 
 [dependencies]

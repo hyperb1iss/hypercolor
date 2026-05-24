@@ -174,13 +174,17 @@ $pawnIoHome = Resolve-PawnIoHome
 if (-not $pawnIoHome -or $Force) {
     $installerArgs = if ($Silent) { @("-install", "-silent") } else { @("-install") }
     $process = Start-Process -FilePath $setup -ArgumentList $installerArgs -Wait -PassThru
-    $validExitCodes = @(0, 3010)
+    # 0   = clean install
+    # 3010 = success, reboot required (Microsoft Installer convention)
+    # 183 = ERROR_ALREADY_EXISTS — PawnIO's installer returns this when the
+    #       driver service is already registered with SCM, which is the
+    #       common case on rerun. Treat as benign and continue.
+    $validExitCodes = @(0, 183, 3010)
     if ($validExitCodes -notcontains $process.ExitCode) {
         throw "PawnIO installer failed with exit code $($process.ExitCode)"
     }
     if ($process.ExitCode -eq 3010) {
-        # Microsoft Installer convention: 3010 = success, reboot required to
-        # complete. PawnIO's signed kernel driver may need a reboot to finish
+        # PawnIO's signed kernel driver may need a reboot to finish
         # binding the SCM service entry. Propagate as our own exit code so
         # the parent helper / Tauri command can surface a "Restart Windows"
         # banner in the UI instead of pretending everything is live.

@@ -152,7 +152,7 @@ mod defaults {
         RenderAccelerationMode::Auto
     }
     pub const fn servo_gpu_import_mode() -> ServoGpuImportMode {
-        ServoGpuImportMode::Off
+        ServoGpuImportMode::Auto
     }
     pub const fn max_video_producers() -> u8 {
         2

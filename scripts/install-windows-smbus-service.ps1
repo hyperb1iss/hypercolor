@@ -22,8 +22,17 @@ function Test-IsAdministrator {
 function Test-SmbusBrokerBinary {
     param([string]$Path)
 
-    & $Path --help *> $null
-    return $LASTEXITCODE -eq 0
+    # Filename match instead of runtime exec: the release broker binary
+    # is GUI-subsystem (no console output) and has no clap CLI of its
+    # own — running it with --help either silently no-ops or returns
+    # non-zero from the service-dispatcher path, both of which falsely
+    # fail this check. Trust the caller-supplied path as long as it
+    # looks like the expected binary name.
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return $false
+    }
+    $name = Split-Path -Leaf $Path
+    return $name -match '^hypercolor-smbus-service(\.exe)?$'
 }
 
 function Resolve-SmbusBroker {
