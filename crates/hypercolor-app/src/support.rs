@@ -332,9 +332,10 @@ pub fn launch_pawnio_helper_from_resource_dir(
     validate_pawnio_helper_payload(&tools_dir)?;
 
     let command = build_pawnio_helper_command(&tools_dir, options);
-    let status = Command::new(&command.program)
-        .args(&command.args)
-        .stdin(Stdio::null())
+    let mut child = Command::new(&command.program);
+    child.args(&command.args).stdin(Stdio::null());
+    crate::process_ext::hide_console_window(&mut child);
+    let status = child
         .status()
         .with_context(|| format!("failed to launch {}", command.program.display()))?;
 
@@ -514,9 +515,10 @@ fn detect_conflicting_rgb_tools() -> Vec<ConflictingRgbTool> {
 
 #[cfg(target_os = "windows")]
 fn query_service_status(service_name: &str) -> ServiceSupportStatus {
-    let output = Command::new("sc.exe")
-        .args(["query", service_name])
-        .output();
+    let mut child = Command::new("sc.exe");
+    child.args(["query", service_name]);
+    crate::process_ext::hide_console_window(&mut child);
+    let output = child.output();
     let Ok(output) = output else {
         return ServiceSupportStatus::missing();
     };

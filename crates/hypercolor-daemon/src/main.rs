@@ -1,3 +1,5 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
 use hypercolor_daemon::daemon::{self, DaemonRunOptions};

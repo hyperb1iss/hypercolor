@@ -139,7 +139,8 @@ fn run_platform_probe() -> Option<String> {
     ];
     let script = candidates.iter().find(|path| path.is_file())?;
 
-    let output = Command::new("powershell.exe")
+    let mut child = Command::new("powershell.exe");
+    child
         .args([
             "-NoLogo",
             "-NoProfile",
@@ -147,9 +148,9 @@ fn run_platform_probe() -> Option<String> {
             "Bypass",
             "-File",
         ])
-        .arg(script)
-        .output()
-        .ok()?;
+        .arg(script);
+    crate::process_ext::hide_console_window(&mut child);
+    let output = child.output().ok()?;
 
     let mut buf = String::new();
     let _ = writeln!(buf, "$ powershell.exe -File {}", script.display());
@@ -192,7 +193,8 @@ fn create_zip(stage_root: &Path, zip_path: &Path) -> Result<()> {
     // command or inject extra cmdlets.
     let pattern = ps_single_quote(&format!("{}\\*", stage_root.display()));
     let destination = ps_single_quote(&zip_path.display().to_string());
-    let status = Command::new("powershell.exe")
+    let mut child = Command::new("powershell.exe");
+    child
         .args([
             "-NoLogo",
             "-NoProfile",
@@ -202,7 +204,9 @@ fn create_zip(stage_root: &Path, zip_path: &Path) -> Result<()> {
         ])
         .arg(format!(
             "Compress-Archive -Path {pattern} -DestinationPath {destination} -Force"
-        ))
+        ));
+    crate::process_ext::hide_console_window(&mut child);
+    let status = child
         .status()
         .with_context(|| "spawn powershell Compress-Archive")?;
     if !status.success() {

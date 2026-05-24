@@ -107,7 +107,8 @@ pub fn invoke(resource_dir: Option<&Path>, verb: Verb) -> Result<HelperOutcome> 
     let request_path = write_request_file(verb)?;
     let powershell_command = build_elevation_command(&helper_path, &request_path);
 
-    let status = Command::new("powershell.exe")
+    let mut child = Command::new("powershell.exe");
+    child
         .args([
             "-NoLogo",
             "-NoProfile",
@@ -115,7 +116,9 @@ pub fn invoke(resource_dir: Option<&Path>, verb: Verb) -> Result<HelperOutcome> 
             "-Command",
             &powershell_command,
         ])
-        .stdin(Stdio::null())
+        .stdin(Stdio::null());
+    crate::process_ext::hide_console_window(&mut child);
+    let status = child
         .status()
         .context("powershell.exe failed to launch helper")?;
 

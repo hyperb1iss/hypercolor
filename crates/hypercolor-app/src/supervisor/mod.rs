@@ -811,7 +811,9 @@ fn daemon_log_file() -> std::io::Result<std::fs::File> {
 type PlatformGuard = win32job::Job;
 
 #[cfg(target_os = "windows")]
-fn configure_platform_command(_command: &mut Command) {}
+fn configure_platform_command(command: &mut Command) {
+    crate::process_ext::hide_console_window(command);
+}
 
 #[cfg(target_os = "windows")]
 fn attach_platform_guard(child: &Child) -> Result<PlatformGuard> {

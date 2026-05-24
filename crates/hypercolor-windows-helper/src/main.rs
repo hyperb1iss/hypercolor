@@ -10,6 +10,8 @@
 //! whole workspace still produces a binary, but accidental execution makes
 //! the platform mismatch obvious.
 
+#![cfg_attr(all(target_os = "windows", not(debug_assertions)), windows_subsystem = "windows")]
+
 use std::process::ExitCode;
 
 #[cfg(target_os = "windows")]
