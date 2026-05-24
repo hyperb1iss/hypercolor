@@ -18,16 +18,31 @@
   ; Skips if PawnIO is already present (the script's Resolve-PawnIoHome
   ; short-circuits the setup.exe run). Modules are copied into PawnIO's
   ; install dir so the broker can find them via pawnio_module_dirs().
+  ;
+  ; The bundled script propagates Windows installer exit code 3010
+  ; ("reboot required") when the kernel driver needs a restart to finish
+  ; binding to SCM. We stash that into $R0 so the broker registration
+  ; below can decide whether starting the service makes sense, and so
+  ; we can prompt the user to restart at the end of postinstall.
   DetailPrint "Installing PawnIO hardware access (this may take a moment)..."
   nsExec::ExecToLog 'powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\tools\install-bundled-pawnio.ps1" -AssetRoot "$INSTDIR\tools\pawnio" -Silent'
-  Pop $0
-  DetailPrint "  PawnIO install exit code: $0"
+  Pop $R0
+  DetailPrint "  PawnIO install exit code: $R0"
 
   ; HypercolorSmBus broker service — runs as LocalSystem, owns the
   ; pawnio_open() handle so the daemon (user-mode) can do SMBus / MSR
-  ; / SMN reads without each user needing to elevate.
-  DetailPrint "Registering Hypercolor SMBus broker service..."
-  nsExec::ExecToLog 'powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\tools\install-windows-smbus-service.ps1" -BrokerExe "$INSTDIR\tools\hypercolor-smbus-service.exe" -Reinstall -Start'
+  ; / SMN reads without each user needing to elevate. Skip the -Start
+  ; phase when PawnIO needs a reboot: the broker would just fail to
+  ; open pawnio and either go into restart-loop or rapidly hit its SCM
+  ; failure-actions ceiling. We still register the service so it's
+  ; ready to start after the user reboots.
+  ${If} $R0 = 3010
+    DetailPrint "Registering Hypercolor SMBus broker service (start deferred until reboot)..."
+    nsExec::ExecToLog 'powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\tools\install-windows-smbus-service.ps1" -BrokerExe "$INSTDIR\tools\hypercolor-smbus-service.exe" -Reinstall'
+  ${Else}
+    DetailPrint "Registering Hypercolor SMBus broker service..."
+    nsExec::ExecToLog 'powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\tools\install-windows-smbus-service.ps1" -BrokerExe "$INSTDIR\tools\hypercolor-smbus-service.exe" -Reinstall -Start'
+  ${EndIf}
   Pop $0
   DetailPrint "  Broker install exit code: $0"
 
@@ -45,6 +60,17 @@
   Pop $0
   nsExec::ExecToLog 'netsh.exe advfirewall firewall add rule name="Hypercolor App" dir=in action=allow program="$INSTDIR\hypercolor-app.exe" profile=domain,private,public enable=yes'
   Pop $0
+
+  ; If PawnIO asked for a reboot, surface it. The MUI2 finish page
+  ; doesn't natively expose a reboot prompt for installer-driven
+  ; restarts, so a simple MessageBox keeps the user informed instead
+  ; of letting them launch Hypercolor into a broken hardware-access
+  ; state.
+  ${If} $R0 = 3010
+    MessageBox MB_YESNO|MB_ICONQUESTION "Hypercolor installed successfully, but the PawnIO kernel driver needs a Windows restart before hardware lighting can come online. Restart now?" IDNO no_reboot_now
+      Reboot
+    no_reboot_now:
+  ${EndIf}
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL

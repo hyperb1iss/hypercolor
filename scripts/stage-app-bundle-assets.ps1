@@ -96,12 +96,14 @@ function Copy-AngleRuntime {
     # libGLESv2.dll. Without these next to hypercolor-daemon.exe the
     # render thread panics at startup with "egl function was not
     # loaded" and the daemon dies before serving its first frame.
-    # `cargo build` produces them under target/.../build/mozangle-*/out/
-    # — pick the freshest pair so the bundle matches the daemon binary
-    # we just built.
-    $buildRoot = Join-Path $TargetDir 'release\build'
+    # `cargo build` produces them under <profile>/build/mozangle-*/out/
+    # for the host triple or <target>/<profile>/build/... for a
+    # cross-target build. Mirror $ProfileDir's derivation so a
+    # preview/cross-target build doesn't accidentally pull stale
+    # release-profile DLLs.
+    $buildRoot = Join-Path $ProfileDir 'build'
     if (-not (Test-Path -LiteralPath $buildRoot)) {
-        throw "missing release build dir: $buildRoot; build hypercolor-daemon before staging"
+        throw "missing $Profile build dir: $buildRoot; build hypercolor-daemon before staging"
     }
 
     $eglDll = Get-ChildItem -LiteralPath $buildRoot -Recurse -Filter 'libEGL.dll' -ErrorAction SilentlyContinue |
@@ -110,7 +112,7 @@ function Copy-AngleRuntime {
         Select-Object -First 1
 
     if ($null -eq $eglDll) {
-        throw "could not locate libEGL.dll + libGLESv2.dll under $buildRoot; rebuild hypercolor-daemon with the servo feature"
+        throw "could not locate libEGL.dll + libGLESv2.dll under $buildRoot; rebuild hypercolor-daemon with the servo feature for profile $Profile"
     }
 
     Copy-Item -LiteralPath $eglDll.FullName -Destination (Join-Path $StageDlls 'libEGL.dll') -Force
