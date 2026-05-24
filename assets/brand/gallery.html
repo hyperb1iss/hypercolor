@@ -212,7 +212,7 @@
   /* live demos */
   .demo-stage {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
     gap: 1.5rem;
     margin-bottom: 4rem;
   }
@@ -360,6 +360,47 @@
     mask-image: url("mask/petal-right-segmented-mask.png");
   }
 
+  .mask-inspector {
+    position: relative;
+    width: min(220px, 90%);
+    aspect-ratio: 1145 / 1032;
+  }
+
+  .mask-inspector > div {
+    position: absolute;
+    inset: 0;
+    -webkit-mask-size: contain;
+    -webkit-mask-position: center;
+    -webkit-mask-repeat: no-repeat;
+    mask-size: contain;
+    mask-position: center;
+    mask-repeat: no-repeat;
+  }
+
+  .mask-inspector .full {
+    background: rgba(255, 255, 255, 0.18);
+    -webkit-mask-image: url("mask/mark-mask.png");
+    mask-image: url("mask/mark-mask.png");
+  }
+
+  .mask-inspector .top {
+    background: rgba(225, 53, 255, 0.82);
+    -webkit-mask-image: url("mask/petal-top-segmented-mask.png");
+    mask-image: url("mask/petal-top-segmented-mask.png");
+  }
+
+  .mask-inspector .left {
+    background: rgba(128, 255, 234, 0.82);
+    -webkit-mask-image: url("mask/petal-left-segmented-mask.png");
+    mask-image: url("mask/petal-left-segmented-mask.png");
+  }
+
+  .mask-inspector .right {
+    background: rgba(255, 106, 193, 0.82);
+    -webkit-mask-image: url("mask/petal-right-segmented-mask.png");
+    mask-image: url("mask/petal-right-segmented-mask.png");
+  }
+
   .hc-mark-chrome {
     position: relative;
     width: 200px;
@@ -463,8 +504,8 @@
 
 <!-- ─── live demos ─── -->
 <section id="demos">
-  <h2>live tint demos <span class="count">3 flavors</span><span class="id">section · 01</span></h2>
-  <p class="section-desc">All three render at runtime, using only the masks under <code>mask/</code>. Try the color pickers; click <em>rainbow cycle</em> to see each petal phase 120° apart on the hue wheel.</p>
+  <h2>live tint demos <span class="count">3 flavors + inspector</span><span class="id">section · 01</span></h2>
+  <p class="section-desc">All three render at runtime, using only the masks under <code>mask/</code>. The inspector overlays the full mark mask with the three segmented petal masks on the same canvas.</p>
 
   <div class="demo-stage">
 
@@ -528,6 +569,23 @@
           <input type="color" id="chrome-color" value="#e135ff" />
         </div>
         <button id="chrome-cycle">rainbow cycle</button>
+      </div>
+    </div>
+
+    <div class="demo">
+      <div class="label">mask check</div>
+      <h3>petal alignment</h3>
+      <p class="blurb">Full-mask ghost underneath, three isolated petals above. No offsets, no square-canvas drift.</p>
+      <div class="stage">
+        <div class="mask-inspector">
+          <div class="full"></div>
+          <div class="top"></div>
+          <div class="left"></div>
+          <div class="right"></div>
+        </div>
+      </div>
+      <div class="controls">
+        <button disabled>1145 × 1032 exact canvas</button>
       </div>
     </div>
 
@@ -712,14 +770,14 @@
 <!-- ─── masks ─── -->
 <section id="masks">
   <h2>masks <span class="count">9 files</span><span class="id">section · 03</span></h2>
-  <p class="section-desc">BW luminance masks that drive the dynamic-tint flavors above. White = full presence; black = absent. Checked into git.</p>
+  <p class="section-desc">RGBA mask PNGs that drive the dynamic-tint flavors above. White alpha = full presence; transparent = absent. Checked into git.</p>
 
   <div class="grid">
     <div class="card">
       <div class="preview"><img src="mask/mark-mask.png" /></div>
       <div class="meta">
         <div class="name">mark-mask.png</div>
-        <div class="dims">L · grayscale</div>
+        <div class="dims">RGBA · alpha mask</div>
         <div class="desc">Petals only. Powers Flavor 1 (wash) and Flavor 3 (chrome + tint).</div>
       </div>
     </div>
@@ -727,7 +785,7 @@
       <div class="preview"><img src="mask/wordmark-mask.png" /></div>
       <div class="meta">
         <div class="name">wordmark-mask.png</div>
-        <div class="dims">L · grayscale</div>
+        <div class="dims">RGBA · alpha mask</div>
         <div class="desc">Just the wordmark. Tint the typography independently.</div>
       </div>
     </div>
@@ -735,7 +793,7 @@
       <div class="preview"><img src="mask/lockup-vertical-mask.png" /></div>
       <div class="meta">
         <div class="name">lockup-vertical-mask.png</div>
-        <div class="dims">L · grayscale</div>
+        <div class="dims">RGBA · alpha mask</div>
         <div class="desc">Full vertical lockup (mark + wordmark) as one mask.</div>
       </div>
     </div>
@@ -743,7 +801,7 @@
       <div class="preview"><img src="mask/lockup-horizontal-mask.png" /></div>
       <div class="meta">
         <div class="name">lockup-horizontal-mask.png</div>
-        <div class="dims">L · grayscale</div>
+        <div class="dims">RGBA · alpha mask</div>
         <div class="desc">Horizontal lockup mask.</div>
       </div>
     </div>
@@ -751,7 +809,7 @@
       <div class="preview"><img src="mask/petal-top-mask.png" /></div>
       <div class="meta">
         <div class="name">petal-top-mask.png</div>
-        <div class="dims">L · grayscale</div>
+        <div class="dims">RGBA · alpha mask</div>
         <div class="desc">Single petal isolated. Rotate ±120° for left/right at runtime.</div>
       </div>
     </div>
@@ -759,24 +817,24 @@
       <div class="preview"><img src="mask/petal-top-segmented-mask.png" /></div>
       <div class="meta">
         <div class="name">petal-top-segmented-mask.png</div>
-        <div class="dims">L · grayscale</div>
-        <div class="desc">Top petal from angular segmentation of the full mark. Positionally correct.</div>
+        <div class="dims">RGBA · alpha mask</div>
+        <div class="desc">Top petal from angular segmentation of the full mark. Same canvas as mark-mask.png.</div>
       </div>
     </div>
     <div class="card">
       <div class="preview"><img src="mask/petal-left-segmented-mask.png" /></div>
       <div class="meta">
         <div class="name">petal-left-segmented-mask.png</div>
-        <div class="dims">L · grayscale</div>
-        <div class="desc">Lower-left petal from segmentation. Powers Flavor 2 (tri).</div>
+        <div class="dims">RGBA · alpha mask</div>
+        <div class="desc">Lower-left petal from segmentation. Same canvas as mark-mask.png.</div>
       </div>
     </div>
     <div class="card">
       <div class="preview"><img src="mask/petal-right-segmented-mask.png" /></div>
       <div class="meta">
         <div class="name">petal-right-segmented-mask.png</div>
-        <div class="dims">L · grayscale</div>
-        <div class="desc">Lower-right petal from segmentation. Powers Flavor 2 (tri).</div>
+        <div class="dims">RGBA · alpha mask</div>
+        <div class="desc">Lower-right petal from segmentation. Same canvas as mark-mask.png.</div>
       </div>
     </div>
     <div class="card">
