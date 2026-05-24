@@ -1085,7 +1085,13 @@ body.resizing * {
     transition: opacity 0.6s ease;
 }
 
-/* ── 0: Circuit — PCB silkscreen, cyan-green traces, technical precision ─ */
+/* ── 0: Mark — canonical Hypercolor trinity + wordmark on brand stage ──── */
+.logo-bg-mark {
+    background: var(--gradient-brand-stage);
+    opacity: 0.5;
+}
+
+/* ── 1: Circuit — PCB silkscreen, cyan-green traces, technical precision ─ */
 .logo-circuit {
     position: relative;
     font-family: 'Orbitron', sans-serif;

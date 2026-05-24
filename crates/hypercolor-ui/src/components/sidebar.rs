@@ -205,10 +205,10 @@ pub fn Sidebar() -> impl IntoView {
         >
             // Logo — click to cycle through modes, persisted to localStorage
             {
-                let logo_mode_count = 9_usize;
-                // Circuit is the canonical brand mark (Orbitron, PCB silkscreen).
-                // The other eight modes are opt-in via click; the default lands
-                // in the most on-brand state on first load and after a wipe.
+                let logo_mode_count = 10_usize;
+                // Mode 0 (mark) is the canonical Hypercolor trinity. Modes 1-9
+                // are typography variants kept around as opt-in fun. Default
+                // lands on the real brand on first load and after a wipe.
                 let default_mode = 0_usize;
                 let initial_mode = storage::get("hc-logo-mode")
                     .and_then(|v| v.parse::<usize>().ok())
@@ -221,7 +221,7 @@ pub fn Sidebar() -> impl IntoView {
                 });
 
                 let mode_names = [
-                    "circuit", "silk", "bloom", "whisper", "prism",
+                    "mark", "circuit", "silk", "bloom", "whisper", "prism",
                     "script", "editorial", "neon", "glitch",
                 ];
 
@@ -240,15 +240,27 @@ pub fn Sidebar() -> impl IntoView {
                         >
                             {move || {
                                 let mode = logo_mode.get();
+                                // Mode 0 renders the canonical trinity image; modes 1-9 keep
+                                // the typography-driven gradient marks for fun cycling.
+                                if mode == 0 {
+                                    return view! {
+                                        <img
+                                            src="/assets/brand/mark-color.png"
+                                            alt="Hypercolor"
+                                            class="w-8 h-8 select-none"
+                                            draggable="false"
+                                        />
+                                    }.into_any();
+                                }
                                 let (mark_class, glow, text_class, font, letter) = match mode {
-                                    0 => ("logo-mark-circuit", "128, 255, 234", "text-xs font-semibold", "font-family:'Orbitron',sans-serif", "H"),
-                                    1 => ("logo-mark-silk", "253, 164, 175", "text-sm font-normal", "font-family:'Orbitron',sans-serif", "h"),
-                                    2 => ("logo-mark-bloom", "255, 106, 193", "text-base", "", "\u{2726}"),
-                                    3 => ("logo-mark-whisper", "196, 181, 253", "text-xs font-light", "font-family:'Satoshi',system-ui,sans-serif", "h"),
-                                    4 => ("logo-mark-prism", "225, 53, 255", "text-sm font-black", "font-family:'Orbitron',sans-serif", "H"),
-                                    5 => ("logo-mark-script", "255, 106, 193", "text-lg font-bold", "font-family:'Dancing Script',cursive", "H"),
-                                    6 => ("logo-mark-editorial", "225, 53, 255", "text-base font-bold italic", "font-family:'Playfair Display',Georgia,serif", "H"),
-                                    7 => ("logo-mark-neon", "128, 255, 234", "text-xs font-semibold", "font-family:'JetBrains Mono',monospace", "H"),
+                                    1 => ("logo-mark-circuit", "128, 255, 234", "text-xs font-semibold", "font-family:'Orbitron',sans-serif", "H"),
+                                    2 => ("logo-mark-silk", "253, 164, 175", "text-sm font-normal", "font-family:'Orbitron',sans-serif", "h"),
+                                    3 => ("logo-mark-bloom", "255, 106, 193", "text-base", "", "\u{2726}"),
+                                    4 => ("logo-mark-whisper", "196, 181, 253", "text-xs font-light", "font-family:'Satoshi',system-ui,sans-serif", "h"),
+                                    5 => ("logo-mark-prism", "225, 53, 255", "text-sm font-black", "font-family:'Orbitron',sans-serif", "H"),
+                                    6 => ("logo-mark-script", "255, 106, 193", "text-lg font-bold", "font-family:'Dancing Script',cursive", "H"),
+                                    7 => ("logo-mark-editorial", "225, 53, 255", "text-base font-bold italic", "font-family:'Playfair Display',Georgia,serif", "H"),
+                                    8 => ("logo-mark-neon", "128, 255, 234", "text-xs font-semibold", "font-family:'JetBrains Mono',monospace", "H"),
                                     _ => ("logo-mark-glitch", "225, 53, 255", "text-sm font-black", "font-family:'Orbitron',sans-serif", "H"),
                                 };
                                 view! {
@@ -258,7 +270,7 @@ pub fn Sidebar() -> impl IntoView {
                                     >
                                         <span class=format!("{text_class} text-white") style=font>{letter}</span>
                                     </div>
-                                }
+                                }.into_any()
                             }}
                         </div>
 
@@ -272,14 +284,15 @@ pub fn Sidebar() -> impl IntoView {
                             // Ambient background glow — changes per mode
                             <div class=move || {
                                 let bg = match logo_mode.get() {
-                                    0 => "logo-bg-circuit",
-                                    1 => "logo-bg-silk",
-                                    2 => "logo-bg-bloom",
-                                    3 => "logo-bg-whisper",
-                                    4 => "logo-bg-prism",
-                                    5 => "logo-bg-script",
-                                    6 => "logo-bg-editorial",
-                                    7 => "logo-bg-neon",
+                                    0 => "logo-bg-mark",
+                                    1 => "logo-bg-circuit",
+                                    2 => "logo-bg-silk",
+                                    3 => "logo-bg-bloom",
+                                    4 => "logo-bg-whisper",
+                                    5 => "logo-bg-prism",
+                                    6 => "logo-bg-script",
+                                    7 => "logo-bg-editorial",
+                                    8 => "logo-bg-neon",
                                     _ => "logo-bg-glitch",
                                 };
                                 format!("logo-bg {bg}")
@@ -288,8 +301,18 @@ pub fn Sidebar() -> impl IntoView {
                             {move || {
                                 let mode = logo_mode.get();
                                 match mode {
-                                    // 0: Circuit — PCB silkscreen, trace separator, technical precision
+                                    // 0: Mark — the canonical Hypercolor trinity + wordmark
                                     0 => view! {
+                                        <img
+                                            src="/assets/brand/lockup-vertical-color.png"
+                                            alt="Hypercolor"
+                                            class="h-24 w-auto select-none object-contain"
+                                            draggable="false"
+                                        />
+                                    }.into_any(),
+
+                                    // 1: Circuit — PCB silkscreen, trace separator, technical precision
+                                    1 => view! {
                                         <div class="logo-circuit flex flex-col items-center leading-none gap-1.5">
                                             <span class="logo-gradient-text text-[20px] font-semibold tracking-[0.45em]">"HYPER"</span>
                                             <div class="logo-circuit-trace" />
@@ -297,16 +320,16 @@ pub fn Sidebar() -> impl IntoView {
                                         </div>
                                     }.into_any(),
 
-                                    // 1: Silk — elegant weight contrast, thin over bold
-                                    1 => view! {
+                                    // 2: Silk — elegant weight contrast, thin over bold
+                                    2 => view! {
                                         <div class="logo-silk flex flex-col items-center leading-none">
                                             <span class="logo-gradient-text text-[26px] font-normal tracking-[0.25em]">"Hyper"</span>
                                             <span class="logo-gradient-text text-[28px] font-bold tracking-[0.15em] -mt-0.5">"color"</span>
                                         </div>
                                     }.into_any(),
 
-                                    // 2: Bloom — sparkle divider, coral-pink breathe
-                                    2 => view! {
+                                    // 3: Bloom — sparkle divider, coral-pink breathe
+                                    3 => view! {
                                         <div class="logo-bloom flex flex-col items-center leading-none gap-1">
                                             <span class="logo-gradient-text text-[24px] font-semibold tracking-[0.2em]">"HYPER"</span>
                                             <span class="logo-sparkle text-[14px] leading-none">"✦"</span>
@@ -314,8 +337,8 @@ pub fn Sidebar() -> impl IntoView {
                                         </div>
                                     }.into_any(),
 
-                                    // 3: Whisper — lowercase, ultra-wide, decorative lines
-                                    3 => view! {
+                                    // 4: Whisper — lowercase, ultra-wide, decorative lines
+                                    4 => view! {
                                         <div class="logo-whisper flex flex-col items-center leading-none gap-2.5">
                                             <div class="logo-whisper-line" />
                                             <span class="logo-gradient-text text-[14px] font-normal tracking-[0.45em]">"hypercolor"</span>
@@ -323,24 +346,24 @@ pub fn Sidebar() -> impl IntoView {
                                         </div>
                                     }.into_any(),
 
-                                    // 4: Prism — dramatic size contrast
-                                    4 => view! {
+                                    // 5: Prism — dramatic size contrast
+                                    5 => view! {
                                         <div class="logo-prism flex flex-col items-center leading-none">
                                             <span class="logo-gradient-text text-[14px] font-normal tracking-[0.5em]">"HYPER"</span>
                                             <span class="logo-gradient-text text-[38px] font-black tracking-[0.08em] -mt-1">"COLOR"</span>
                                         </div>
                                     }.into_any(),
 
-                                    // 5: Script — Dancing Script cursive, full femme
-                                    5 => view! {
+                                    // 6: Script — Dancing Script cursive, full femme
+                                    6 => view! {
                                         <div class="logo-script flex flex-col items-center leading-none">
                                             <span class="logo-gradient-text text-[44px] font-bold tracking-[0.02em]">"Hyper"</span>
                                             <span class="logo-gradient-text text-[34px] font-semibold tracking-[0.05em] -mt-3">"color"</span>
                                         </div>
                                     }.into_any(),
 
-                                    // 6: Editorial — Playfair Display, ruled lines
-                                    6 => view! {
+                                    // 7: Editorial — Playfair Display, ruled lines
+                                    7 => view! {
                                         <div class="logo-editorial flex flex-col items-center leading-none gap-1">
                                             <div class="logo-editorial-rule" />
                                             <span class="logo-gradient-text text-[38px] font-bold italic tracking-[0.04em]">"Hyper"</span>
@@ -349,8 +372,8 @@ pub fn Sidebar() -> impl IntoView {
                                         </div>
                                     }.into_any(),
 
-                                    // 7: Neon Mono — split-color hacker femme + cursor
-                                    7 => view! {
+                                    // 8: Neon Mono — split-color hacker femme + cursor
+                                    8 => view! {
                                         <div class="logo-neon flex flex-col items-center leading-none">
                                             <span class="logo-neon-hyper text-[28px] font-semibold tracking-[0.12em]">"hyper"</span>
                                             <div class="flex items-center mt-0.5">
@@ -360,7 +383,7 @@ pub fn Sidebar() -> impl IntoView {
                                         </div>
                                     }.into_any(),
 
-                                    // 8: Glitch — chromatic aberration, chaotic weight/offset
+                                    // 9: Glitch — chromatic aberration, chaotic weight/offset
                                     _ => view! {
                                         <div class="logo-glitch flex flex-col items-start leading-none">
                                             <span class="logo-gradient-text text-[32px] font-black tracking-[0.06em]">"HYPER"</span>
