@@ -115,7 +115,11 @@ if ($Target -ne $HostTarget) {
 
 $Exe = if ($Target -like '*windows*' -or $Target -like '*-pc-windows-*') { '.exe' } else { '' }
 
-$StageDir = Join-Path $TargetDir 'bundle-stage'
+# Tauri bundle config references the stage dir via paths relative to
+# crates/hypercolor-app/ (`../../target/bundle-stage/...`), so the dir
+# must live at `<repo>/target/bundle-stage/` regardless of where
+# CARGO_TARGET_DIR puts the actual cargo build outputs.
+$StageDir = Join-Path $RepoRoot 'target\bundle-stage'
 $StageBin = Join-Path $StageDir 'binaries'
 $StageUi = Join-Path $StageDir 'ui'
 $StageEffects = Join-Path $StageDir 'effects'
