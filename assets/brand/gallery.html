@@ -332,6 +332,12 @@
     width: 200px;
     height: 200px;
   }
+
+  .mark-canvas {
+    display: block;
+    width: min(220px, 90%);
+    aspect-ratio: 1145 / 1032;
+  }
   .hc-mark-tri > div {
     position: absolute;
     inset: 0;
@@ -514,7 +520,7 @@
       <h3>single wash</h3>
       <p class="blurb">Whole trinity tints to one color. Simplest. Drives off <code>average_frame_color</code>.</p>
       <div class="stage">
-        <div class="hc-mark-wash" id="wash" style="--scene-color: #e135ff;"></div>
+        <canvas class="mark-canvas" id="wash" width="1145" height="1032"></canvas>
       </div>
       <div class="controls">
         <div class="swatch-row">
@@ -530,11 +536,7 @@
       <h3>per-petal (tri)</h3>
       <p class="blurb">Three primaries, three independent zones. The killer feature.</p>
       <div class="stage">
-        <div class="hc-mark-tri" id="tri" style="--petal-top: #e135ff; --petal-left: #80ffea; --petal-right: #ff6ac1;">
-          <div class="petal-top"></div>
-          <div class="petal-left"></div>
-          <div class="petal-right"></div>
-        </div>
+        <canvas class="mark-canvas" id="tri" width="1145" height="1032"></canvas>
       </div>
       <div class="controls">
         <div class="swatch-row">
@@ -558,10 +560,7 @@
       <h3>chrome + tint</h3>
       <p class="blurb">Original 3D chrome detail preserved, hue shifts with scene. Prettiest.</p>
       <div class="stage">
-        <div class="hc-mark-chrome" id="chrome" style="--scene-color: #e135ff;">
-          <div class="base"></div>
-          <div class="tint"></div>
-        </div>
+        <canvas class="mark-canvas" id="chrome" width="1145" height="1032"></canvas>
       </div>
       <div class="controls">
         <div class="swatch-row">
@@ -577,12 +576,7 @@
       <h3>petal alignment</h3>
       <p class="blurb">Full-mask ghost underneath, three isolated petals above. No offsets, no square-canvas drift.</p>
       <div class="stage">
-        <div class="mask-inspector">
-          <div class="full"></div>
-          <div class="top"></div>
-          <div class="left"></div>
-          <div class="right"></div>
-        </div>
+        <canvas class="mark-canvas" id="mask-inspector" width="1145" height="1032"></canvas>
       </div>
       <div class="controls">
         <button disabled>1145 × 1032 exact canvas</button>
@@ -1070,34 +1064,154 @@
 </div>
 
 <script>
-  // ─── Flavor 1: wash ───
-  const wash = document.getElementById('wash');
-  const washColor = document.getElementById('wash-color');
+  const canvas = {
+    wash: document.getElementById('wash'),
+    tri: document.getElementById('tri'),
+    chrome: document.getElementById('chrome'),
+    inspector: document.getElementById('mask-inspector'),
+  };
+  const controls = {
+    wash: document.getElementById('wash-color'),
+    triTop: document.getElementById('tri-top'),
+    triLeft: document.getElementById('tri-left'),
+    triRight: document.getElementById('tri-right'),
+    chrome: document.getElementById('chrome-color'),
+  };
   const washCycle = document.getElementById('wash-cycle');
-  washColor.addEventListener('input', e => {
-    wash.style.setProperty('--scene-color', e.target.value);
+  const triCycle = document.getElementById('tri-cycle');
+  const chromeCycle = document.getElementById('chrome-cycle');
+  const state = {
+    wash: controls.wash.value,
+    triTop: controls.triTop.value,
+    triLeft: controls.triLeft.value,
+    triRight: controls.triRight.value,
+    chrome: controls.chrome.value,
+  };
+  const imageSources = {
+    mark: 'master/mark-color.png',
+    markMask: 'mask/mark-mask.png',
+    topMask: 'mask/petal-top-segmented-mask.png',
+    leftMask: 'mask/petal-left-segmented-mask.png',
+    rightMask: 'mask/petal-right-segmented-mask.png',
+  };
+  const images = {};
+
+  function loadImage(src) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = reject;
+      img.src = src;
+    });
+  }
+
+  function fitRect(canvasEl, sourceWidth, sourceHeight) {
+    const bounds = canvasEl.getBoundingClientRect();
+    const scale = Math.min(bounds.width / sourceWidth, bounds.height / sourceHeight);
+    const width = sourceWidth * scale;
+    const height = sourceHeight * scale;
+    return {
+      x: (bounds.width - width) / 2,
+      y: (bounds.height - height) / 2,
+      width,
+      height,
+    };
+  }
+
+  function prepare(canvasEl) {
+    const bounds = canvasEl.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    const width = Math.max(1, Math.round(bounds.width * dpr));
+    const height = Math.max(1, Math.round(bounds.height * dpr));
+    if (canvasEl.width !== width || canvasEl.height !== height) {
+      canvasEl.width = width;
+      canvasEl.height = height;
+    }
+    const ctx = canvasEl.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, bounds.width, bounds.height);
+    return ctx;
+  }
+
+  function tintedMask(mask, color, alpha = 1) {
+    const out = document.createElement('canvas');
+    out.width = mask.naturalWidth;
+    out.height = mask.naturalHeight;
+    const ctx = out.getContext('2d');
+    ctx.drawImage(mask, 0, 0);
+    ctx.globalCompositeOperation = 'source-in';
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = color;
+    ctx.fillRect(0, 0, out.width, out.height);
+    return out;
+  }
+
+  function drawContain(canvasEl, source) {
+    const ctx = prepare(canvasEl);
+    const rect = fitRect(canvasEl, source.width, source.height);
+    ctx.drawImage(source, rect.x, rect.y, rect.width, rect.height);
+  }
+
+  function renderWash() {
+    drawContain(canvas.wash, tintedMask(images.markMask, state.wash));
+  }
+
+  function renderTri() {
+    const out = document.createElement('canvas');
+    out.width = images.markMask.naturalWidth;
+    out.height = images.markMask.naturalHeight;
+    const ctx = out.getContext('2d');
+    ctx.drawImage(tintedMask(images.topMask, state.triTop), 0, 0);
+    ctx.drawImage(tintedMask(images.leftMask, state.triLeft), 0, 0);
+    ctx.drawImage(tintedMask(images.rightMask, state.triRight), 0, 0);
+    drawContain(canvas.tri, out);
+  }
+
+  function renderChrome() {
+    const out = document.createElement('canvas');
+    out.width = images.mark.naturalWidth;
+    out.height = images.mark.naturalHeight;
+    const ctx = out.getContext('2d');
+    ctx.drawImage(images.mark, 0, 0);
+    ctx.globalAlpha = 0.42;
+    ctx.drawImage(tintedMask(images.markMask, state.chrome), 0, 0);
+    drawContain(canvas.chrome, out);
+  }
+
+  function renderInspector() {
+    const out = document.createElement('canvas');
+    out.width = images.markMask.naturalWidth;
+    out.height = images.markMask.naturalHeight;
+    const ctx = out.getContext('2d');
+    ctx.drawImage(tintedMask(images.markMask, 'rgba(255,255,255,0.18)'), 0, 0);
+    ctx.drawImage(tintedMask(images.topMask, 'rgba(225,53,255,0.86)'), 0, 0);
+    ctx.drawImage(tintedMask(images.leftMask, 'rgba(128,255,234,0.86)'), 0, 0);
+    ctx.drawImage(tintedMask(images.rightMask, 'rgba(255,106,193,0.86)'), 0, 0);
+    drawContain(canvas.inspector, out);
+  }
+
+  function renderAll() {
+    if (!images.markMask) return;
+    renderWash();
+    renderTri();
+    renderChrome();
+    renderInspector();
+  }
+
+  controls.wash.addEventListener('input', e => {
+    state.wash = e.target.value;
+    renderWash();
     if (washCycleId) stopCycle('wash');
   });
-
-  // ─── Flavor 2: tri ───
-  const tri = document.getElementById('tri');
-  const triTop = document.getElementById('tri-top');
-  const triLeft = document.getElementById('tri-left');
-  const triRight = document.getElementById('tri-right');
-  triTop.addEventListener('input', e => { tri.style.setProperty('--petal-top', e.target.value); if (triCycleId) stopCycle('tri'); });
-  triLeft.addEventListener('input', e => { tri.style.setProperty('--petal-left', e.target.value); if (triCycleId) stopCycle('tri'); });
-  triRight.addEventListener('input', e => { tri.style.setProperty('--petal-right', e.target.value); if (triCycleId) stopCycle('tri'); });
-
-  // ─── Flavor 3: chrome + tint ───
-  const chromeMark = document.getElementById('chrome');
-  const chromeColor = document.getElementById('chrome-color');
-  const chromeCycle = document.getElementById('chrome-cycle');
-  chromeColor.addEventListener('input', e => {
-    chromeMark.style.setProperty('--scene-color', e.target.value);
+  controls.triTop.addEventListener('input', e => { state.triTop = e.target.value; renderTri(); if (triCycleId) stopCycle('tri'); });
+  controls.triLeft.addEventListener('input', e => { state.triLeft = e.target.value; renderTri(); if (triCycleId) stopCycle('tri'); });
+  controls.triRight.addEventListener('input', e => { state.triRight = e.target.value; renderTri(); if (triCycleId) stopCycle('tri'); });
+  controls.chrome.addEventListener('input', e => {
+    state.chrome = e.target.value;
+    renderChrome();
     if (chromeCycleId) stopCycle('chrome');
   });
 
-  // ─── rainbow cycle ───
   let washCycleId = null, triCycleId = null, chromeCycleId = null;
   let phase = 0;
 
@@ -1119,7 +1233,7 @@
 
   function stopCycle(which) {
     if (which === 'wash') { clearInterval(washCycleId); washCycleId = null; washCycle.classList.remove('active'); }
-    if (which === 'tri') { clearInterval(triCycleId); triCycleId = null; document.getElementById('tri-cycle').classList.remove('active'); }
+    if (which === 'tri') { clearInterval(triCycleId); triCycleId = null; triCycle.classList.remove('active'); }
     if (which === 'chrome') { clearInterval(chromeCycleId); chromeCycleId = null; chromeCycle.classList.remove('active'); }
   }
 
@@ -1129,14 +1243,15 @@
     let p = 0;
     washCycleId = setInterval(() => {
       const c = hslHex(p % 360);
-      wash.style.setProperty('--scene-color', c);
-      washColor.value = c;
+      state.wash = c;
+      controls.wash.value = c;
+      renderWash();
       p += 4;
     }, 50);
   });
 
-  document.getElementById('tri-cycle').addEventListener('click', () => {
-    const btn = document.getElementById('tri-cycle');
+  triCycle.addEventListener('click', () => {
+    const btn = triCycle;
     if (triCycleId) { stopCycle('tri'); return; }
     btn.classList.add('active');
     let p = 0;
@@ -1144,12 +1259,13 @@
       const top = hslHex(p % 360);
       const left = hslHex((p + 120) % 360);
       const right = hslHex((p + 240) % 360);
-      tri.style.setProperty('--petal-top', top);
-      tri.style.setProperty('--petal-left', left);
-      tri.style.setProperty('--petal-right', right);
-      triTop.value = top;
-      triLeft.value = left;
-      triRight.value = right;
+      state.triTop = top;
+      state.triLeft = left;
+      state.triRight = right;
+      controls.triTop.value = top;
+      controls.triLeft.value = left;
+      controls.triRight.value = right;
+      renderTri();
       p += 3;
     }, 50);
   });
@@ -1160,11 +1276,17 @@
     let p = 0;
     chromeCycleId = setInterval(() => {
       const c = hslHex(p % 360);
-      chromeMark.style.setProperty('--scene-color', c);
-      chromeColor.value = c;
+      state.chrome = c;
+      controls.chrome.value = c;
+      renderChrome();
       p += 4;
     }, 50);
   });
+
+  Promise.all(Object.entries(imageSources).map(([name, src]) =>
+    loadImage(src).then(img => { images[name] = img; })
+  )).then(renderAll);
+  window.addEventListener('resize', renderAll);
 </script>
 
 </body>

@@ -25,6 +25,12 @@ MASTER = BRAND / "master"
 MASK = BRAND / "mask"
 DERIVED = BRAND / "derived"
 
+AI_PETAL_SOURCES = {
+    "top": SOURCE / "petal-ai-top.png",
+    "left": SOURCE / "petal-ai-left.png",
+    "right": SOURCE / "petal-ai-right.png",
+}
+
 # Brand colors (R, G, B)
 VOID_BLACK = (10, 6, 18)
 ELECTRIC_MAGENTA = (225, 53, 255)
@@ -268,6 +274,99 @@ def segment_mark_to_wedges(
     return top, left, right
 
 
+def robust_projection_bbox(mask: np.ndarray, min_row: int, min_col: int) -> tuple[int, int, int, int] | None:
+    rows = np.where(mask.sum(axis=1) > min_row)[0]
+    cols = np.where(mask.sum(axis=0) > min_col)[0]
+    if rows.size == 0 or cols.size == 0:
+        return None
+    return int(cols[0]), int(rows[0]), int(cols[-1]) + 1, int(rows[-1]) + 1
+
+
+def extract_black_background_alpha(path: Path) -> Image.Image:
+    src = Image.open(path).convert("RGB")
+    arr = np.asarray(src, dtype=np.float32)
+    h, w = arr.shape[:2]
+    max_channel = arr.max(axis=-1)
+    hard = max_channel > 40
+    hard[int(h * 0.84):, int(w * 0.84):] = False
+
+    bbox = robust_projection_bbox(hard, min_row=24, min_col=24)
+    if bbox is None:
+        raise ValueError(f"could not isolate petal in {path}")
+
+    x0, y0, x1, y1 = bbox
+    crop = arr[y0:y1, x0:x1]
+    max_channel = crop.max(axis=-1)
+    floor = max(12.0, float(np.percentile(max_channel, 2)))
+    alpha = np.clip((max_channel - floor) * 255.0 / (255.0 - floor), 0, 255).astype(np.uint8)
+    alpha[alpha < 12] = 0
+    return Image.fromarray(alpha, "L").filter(ImageFilter.MedianFilter(3))
+
+
+def petal_wedge_masks(
+    shape: tuple[int, int],
+    center: tuple[float, float],
+    rotation_deg: float,
+) -> dict[str, np.ndarray]:
+    h, w = shape
+    cy, cx = center
+    y, x = np.indices((h, w))
+    deg = np.degrees(np.arctan2(x - cx, -(y - cy)))
+    deg = (deg - rotation_deg + 180.0) % 360.0 - 180.0
+    return {
+        "top": (deg >= -60.0) & (deg < 60.0),
+        "right": (deg >= 60.0) & (deg < 180.0),
+        "left": (deg >= -180.0) & (deg < -60.0),
+    }
+
+
+def target_petal_boxes(
+    mark_mask_arr: np.ndarray,
+    wedges: dict[str, np.ndarray],
+) -> dict[str, tuple[int, int, int, int]]:
+    h, w = mark_mask_arr.shape
+    y, x = np.indices((h, w))
+    regions = {
+        "top": (x > w * 0.20) & (x < w * 0.80) & (y > h * 0.02) & (y < h * 0.70),
+        "left": (x > w * 0.02) & (x < w * 0.55) & (y > h * 0.34) & (y < h * 0.98),
+        "right": (x > w * 0.44) & (x < w * 0.98) & (y > h * 0.34) & (y < h * 0.98),
+    }
+    boxes: dict[str, tuple[int, int, int, int]] = {}
+    for name, region in regions.items():
+        bbox = robust_projection_bbox(region & wedges[name] & (mark_mask_arr > 31), min_row=8, min_col=8)
+        if bbox is None:
+            raise ValueError(f"could not find target box for {name} petal")
+        boxes[name] = bbox
+    return boxes
+
+
+def segment_mark_to_ai_petals(mark_mask_arr: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+    if not all(path.exists() for path in AI_PETAL_SOURCES.values()):
+        return None
+
+    center = find_trinity_center(mark_mask_arr)
+    rotation = find_petal_rotation(mark_mask_arr, center)
+    wedges = petal_wedge_masks(mark_mask_arr.shape, center, rotation)
+    boxes = target_petal_boxes(mark_mask_arr, wedges)
+    h, w = mark_mask_arr.shape
+    petals: dict[str, np.ndarray] = {}
+
+    print("  using isolated petal clips for segmented masks")
+    print(f"  trinity center @ ({center[1]:.0f}, {center[0]:.0f}) of {w}x{h}")
+    print(f"  petal rotation = {rotation:+.1f}° (center seams only)")
+
+    for name, path in AI_PETAL_SOURCES.items():
+        x0, y0, x1, y1 = boxes[name]
+        alpha = extract_black_background_alpha(path)
+        resized = alpha.resize((x1 - x0, y1 - y0), Image.LANCZOS)
+        canvas = Image.new("L", (w, h), 0)
+        canvas.paste(resized, (x0, y0))
+        petal = np.where(wedges[name], np.asarray(canvas), 0)
+        petals[name] = np.where(mark_mask_arr > 0, petal, 0).astype(np.uint8)
+
+    return petals["top"], petals["left"], petals["right"]
+
+
 def build_masks() -> None:
     print("\n[2/3] building masks")
     MASK.mkdir(parents=True, exist_ok=True)
@@ -298,20 +397,19 @@ def build_masks() -> None:
     mask_to_css_ready(to_alpha_mask(src)).save(MASK / "petal-top-mask.png")
 
     # 3-channel tri-petal mask: R=top, G=left, B=right.
-    # Derived by angular segmentation of the full mark mask on the original
-    # canvas, so per-petal masks align exactly with `mark-mask.png`.
     mark_arr = np.array(mark_mask)
     h, w = mark_arr.shape
 
-    # Find the trinity center and petal rotation on the native canvas.
-    # Centroid handles vertical offset (2 petals below center vs 1 above);
-    # rotation search handles the case where the logo isn't perfectly aligned
-    # to 12-o'clock — wedges then land in the natural inter-petal gaps.
-    center = find_trinity_center(mark_arr)
-    rotation = find_petal_rotation(mark_arr, center)
-    print(f"  trinity center @ ({center[1]:.0f}, {center[0]:.0f}) of {w}x{h}")
-    print(f"  petal rotation = {rotation:+.1f}° (wedges land in inter-petal gaps)")
-    top, left, right = segment_mark_to_wedges(mark_arr, center=center, rotation_deg=rotation)
+    ai_petals = segment_mark_to_ai_petals(mark_arr)
+    if ai_petals is None:
+        center = find_trinity_center(mark_arr)
+        rotation = find_petal_rotation(mark_arr, center)
+        print("  isolated petal clips not found; using angular fallback")
+        print(f"  trinity center @ ({center[1]:.0f}, {center[0]:.0f}) of {w}x{h}")
+        print(f"  petal rotation = {rotation:+.1f}° (wedges land in inter-petal gaps)")
+        top, left, right = segment_mark_to_wedges(mark_arr, center=center, rotation_deg=rotation)
+    else:
+        top, left, right = ai_petals
 
     # Each as standalone mask (CSS-ready RGBA so mask-image works by default)
     mask_to_css_ready(Image.fromarray(top, "L")).save(MASK / "petal-top-segmented-mask.png")

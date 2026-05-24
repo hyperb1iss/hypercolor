@@ -267,12 +267,11 @@ which is exactly what the brand metaphor promises.
 
 - CSS masks are RGBA PNGs: white RGB with the grayscale mask in alpha.
 - `petal-mask-tri.png` is 8-bit RGB. R = top, G = left, B = right.
-- The segmented per-petal masks were derived by angular-wedge segmentation
-  from `mark-mask.png`; boundaries sit at ±60° from each petal's center
-  direction, so each wedge fully contains exactly one petal.
+- The segmented per-petal masks are derived from isolated petal clips when
+  those source files are present, then wedge-clipped only at the shared center.
 - Per-petal masks use the same `1145x1032` canvas as `mark-mask.png`, so
   layered CSS masks align without compensating offsets.
-- Edges are not anti-aliased at wedge boundaries. The partition is exact:
-  the three petal masks sum back to `mark-mask.png` with no overlap.
+- The three segmented masks do not overlap and are clamped to `mark-mask.png`.
+  They intentionally do not include the full shared outer glow.
 - All masks are regenerated from `mark-color.png` by `../build.py`. Don't
   hand-edit them; they'll be overwritten on next build.
