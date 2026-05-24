@@ -25,21 +25,37 @@ function Get-HypercolorHostTriple {
 function Assert-UnderRepo {
     param([string] $Path)
 
-    $resolvedRepo = [System.IO.Path]::GetFullPath($RepoRoot).TrimEnd(
-        [System.IO.Path]::DirectorySeparatorChar,
-        [System.IO.Path]::AltDirectorySeparatorChar
-    )
     $resolvedPath = [System.IO.Path]::GetFullPath($Path).TrimEnd(
         [System.IO.Path]::DirectorySeparatorChar,
         [System.IO.Path]::AltDirectorySeparatorChar
     )
-    $repoPrefix = "$resolvedRepo$([System.IO.Path]::DirectorySeparatorChar)"
-    if (
-        $resolvedPath -ne $resolvedRepo -and
-        -not $resolvedPath.StartsWith($repoPrefix, [System.StringComparison]::OrdinalIgnoreCase)
-    ) {
-        throw "refusing to modify path outside repository: $resolvedPath"
+
+    # The stage dir intentionally lives under CARGO_TARGET_DIR (which is
+    # commonly set to a cache outside the repo, e.g. ~/.cache/hypercolor/
+    # target/). Treat both repo root and the cargo target dir as safe
+    # roots — the entire purpose of the check is to prevent stray
+    # destruction outside controlled build/cache surfaces.
+    $allowedRoots = @($RepoRoot)
+    if ($env:CARGO_TARGET_DIR) {
+        $allowedRoots += $env:CARGO_TARGET_DIR
     }
+
+    foreach ($root in $allowedRoots) {
+        if (-not $root) { continue }
+        $resolvedRoot = [System.IO.Path]::GetFullPath($root).TrimEnd(
+            [System.IO.Path]::DirectorySeparatorChar,
+            [System.IO.Path]::AltDirectorySeparatorChar
+        )
+        $rootPrefix = "$resolvedRoot$([System.IO.Path]::DirectorySeparatorChar)"
+        if (
+            $resolvedPath -eq $resolvedRoot -or
+            $resolvedPath.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase)
+        ) {
+            return
+        }
+    }
+
+    throw "refusing to modify path outside repo or CARGO_TARGET_DIR: $resolvedPath"
 }
 
 function Reset-Directory {
