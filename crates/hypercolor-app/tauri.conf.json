@@ -32,7 +32,7 @@
       "../../scripts/install-windows-hardware-support.ps1": "tools/install-windows-hardware-support.ps1"
     },
     "windows": {
-      "webviewInstallMode": { "type": "offlineInstaller" },
+      "webviewInstallMode": { "type": "downloadBootstrapper" },
       "nsis": {
         "installMode": "currentUser",
         "displayLanguageSelector": false,
