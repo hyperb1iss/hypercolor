@@ -333,10 +333,14 @@
     height: 200px;
   }
 
-  .mark-canvas {
+  .mark-svg {
     display: block;
     width: min(220px, 90%);
     aspect-ratio: 1145 / 1032;
+  }
+
+  .mark-svg.pending-tint {
+    visibility: hidden;
   }
   .hc-mark-tri > div {
     position: absolute;
@@ -518,9 +522,18 @@
     <div class="demo">
       <div class="label">flavor 01</div>
       <h3>single wash</h3>
-      <p class="blurb">Whole trinity tints to one color. Simplest. Drives off <code>average_frame_color</code>.</p>
+      <p class="blurb">The isolated trinity tints to one color. Simplest. Drives off <code>average_frame_color</code>.</p>
       <div class="stage">
-        <canvas class="mark-canvas" id="wash" width="1145" height="1032"></canvas>
+        <svg class="mark-svg pending-tint" id="wash" viewBox="0 0 1145 1032" role="img" aria-label="single-color mark mask preview">
+          <defs>
+            <filter id="wash-top-filter" color-interpolation-filters="sRGB"><feColorMatrix id="wash-top-matrix" type="matrix" /></filter>
+            <filter id="wash-left-filter" color-interpolation-filters="sRGB"><feColorMatrix id="wash-left-matrix" type="matrix" /></filter>
+            <filter id="wash-right-filter" color-interpolation-filters="sRGB"><feColorMatrix id="wash-right-matrix" type="matrix" /></filter>
+          </defs>
+          <image href="mask/petal-mask-tri.png" width="1145" height="1032" filter="url(#wash-top-filter)" />
+          <image href="mask/petal-mask-tri.png" width="1145" height="1032" filter="url(#wash-left-filter)" />
+          <image href="mask/petal-mask-tri.png" width="1145" height="1032" filter="url(#wash-right-filter)" />
+        </svg>
       </div>
       <div class="controls">
         <div class="swatch-row">
@@ -536,7 +549,16 @@
       <h3>per-petal (tri)</h3>
       <p class="blurb">Three primaries, three independent zones. The killer feature.</p>
       <div class="stage">
-        <canvas class="mark-canvas" id="tri" width="1145" height="1032"></canvas>
+        <svg class="mark-svg pending-tint" id="tri" viewBox="0 0 1145 1032" role="img" aria-label="per-petal mask preview">
+          <defs>
+            <filter id="tri-top-filter" color-interpolation-filters="sRGB"><feColorMatrix id="tri-top-matrix" type="matrix" /></filter>
+            <filter id="tri-left-filter" color-interpolation-filters="sRGB"><feColorMatrix id="tri-left-matrix" type="matrix" /></filter>
+            <filter id="tri-right-filter" color-interpolation-filters="sRGB"><feColorMatrix id="tri-right-matrix" type="matrix" /></filter>
+          </defs>
+          <image href="mask/petal-mask-tri.png" width="1145" height="1032" filter="url(#tri-top-filter)" />
+          <image href="mask/petal-mask-tri.png" width="1145" height="1032" filter="url(#tri-left-filter)" />
+          <image href="mask/petal-mask-tri.png" width="1145" height="1032" filter="url(#tri-right-filter)" />
+        </svg>
       </div>
       <div class="controls">
         <div class="swatch-row">
@@ -558,9 +580,19 @@
     <div class="demo">
       <div class="label">flavor 03</div>
       <h3>chrome + tint</h3>
-      <p class="blurb">Original 3D chrome detail preserved, hue shifts with scene. Prettiest.</p>
+      <p class="blurb">Original 3D chrome detail preserved, isolated petal tint shifts with scene.</p>
       <div class="stage">
-        <canvas class="mark-canvas" id="chrome" width="1145" height="1032"></canvas>
+        <svg class="mark-svg pending-tint" id="chrome" viewBox="0 0 1145 1032" role="img" aria-label="chrome mark with tint preview">
+          <defs>
+            <filter id="chrome-top-filter" color-interpolation-filters="sRGB"><feColorMatrix id="chrome-top-matrix" type="matrix" /></filter>
+            <filter id="chrome-left-filter" color-interpolation-filters="sRGB"><feColorMatrix id="chrome-left-matrix" type="matrix" /></filter>
+            <filter id="chrome-right-filter" color-interpolation-filters="sRGB"><feColorMatrix id="chrome-right-matrix" type="matrix" /></filter>
+          </defs>
+          <image href="master/mark-color.png" width="1145" height="1032" />
+          <image href="mask/petal-mask-tri.png" width="1145" height="1032" filter="url(#chrome-top-filter)" opacity="0.42" />
+          <image href="mask/petal-mask-tri.png" width="1145" height="1032" filter="url(#chrome-left-filter)" opacity="0.42" />
+          <image href="mask/petal-mask-tri.png" width="1145" height="1032" filter="url(#chrome-right-filter)" opacity="0.42" />
+        </svg>
       </div>
       <div class="controls">
         <div class="swatch-row">
@@ -576,7 +608,17 @@
       <h3>petal alignment</h3>
       <p class="blurb">Full-mask ghost underneath, three isolated petals above. No offsets, no square-canvas drift.</p>
       <div class="stage">
-        <canvas class="mark-canvas" id="mask-inspector" width="1145" height="1032"></canvas>
+        <svg class="mark-svg pending-tint" id="mask-inspector" viewBox="0 0 1145 1032" role="img" aria-label="segmented petal alignment inspector">
+          <defs>
+            <filter id="inspector-top-filter" color-interpolation-filters="sRGB"><feColorMatrix id="inspector-top-matrix" type="matrix" /></filter>
+            <filter id="inspector-left-filter" color-interpolation-filters="sRGB"><feColorMatrix id="inspector-left-matrix" type="matrix" /></filter>
+            <filter id="inspector-right-filter" color-interpolation-filters="sRGB"><feColorMatrix id="inspector-right-matrix" type="matrix" /></filter>
+          </defs>
+          <image href="mask/mark-mask.png" width="1145" height="1032" opacity="0.18" />
+          <image href="mask/petal-mask-tri.png" width="1145" height="1032" filter="url(#inspector-top-filter)" opacity="0.86" />
+          <image href="mask/petal-mask-tri.png" width="1145" height="1032" filter="url(#inspector-left-filter)" opacity="0.86" />
+          <image href="mask/petal-mask-tri.png" width="1145" height="1032" filter="url(#inspector-right-filter)" opacity="0.86" />
+        </svg>
       </div>
       <div class="controls">
         <button disabled>1145 × 1032 exact canvas</button>
@@ -812,7 +854,7 @@
       <div class="meta">
         <div class="name">petal-top-segmented-mask.png</div>
         <div class="dims">RGBA · alpha mask</div>
-        <div class="desc">Top petal from angular segmentation of the full mark. Same canvas as mark-mask.png.</div>
+        <div class="desc">Top petal from isolated clip extraction. CSS-mask convenience export on the same canvas as mark-mask.png.</div>
       </div>
     </div>
     <div class="card">
@@ -820,7 +862,7 @@
       <div class="meta">
         <div class="name">petal-left-segmented-mask.png</div>
         <div class="dims">RGBA · alpha mask</div>
-        <div class="desc">Lower-left petal from segmentation. Same canvas as mark-mask.png.</div>
+        <div class="desc">Lower-left petal from isolated clip extraction. CSS-mask convenience export on the same canvas as mark-mask.png.</div>
       </div>
     </div>
     <div class="card">
@@ -828,7 +870,7 @@
       <div class="meta">
         <div class="name">petal-right-segmented-mask.png</div>
         <div class="dims">RGBA · alpha mask</div>
-        <div class="desc">Lower-right petal from segmentation. Same canvas as mark-mask.png.</div>
+        <div class="desc">Lower-right petal from isolated clip extraction. CSS-mask convenience export on the same canvas as mark-mask.png.</div>
       </div>
     </div>
     <div class="card">
@@ -1064,12 +1106,6 @@
 </div>
 
 <script>
-  const canvas = {
-    wash: document.getElementById('wash'),
-    tri: document.getElementById('tri'),
-    chrome: document.getElementById('chrome'),
-    inspector: document.getElementById('mask-inspector'),
-  };
   const controls = {
     wash: document.getElementById('wash-color'),
     triTop: document.getElementById('tri-top'),
@@ -1080,140 +1116,73 @@
   const washCycle = document.getElementById('wash-cycle');
   const triCycle = document.getElementById('tri-cycle');
   const chromeCycle = document.getElementById('chrome-cycle');
-  const state = {
-    wash: controls.wash.value,
-    triTop: controls.triTop.value,
-    triLeft: controls.triLeft.value,
-    triRight: controls.triRight.value,
-    chrome: controls.chrome.value,
-  };
-  const imageSources = {
-    mark: 'master/mark-color.png',
-    markMask: 'mask/mark-mask.png',
-    topMask: 'mask/petal-top-segmented-mask.png',
-    leftMask: 'mask/petal-left-segmented-mask.png',
-    rightMask: 'mask/petal-right-segmented-mask.png',
-  };
-  const images = {};
 
-  function loadImage(src) {
-    return new Promise((resolve, reject) => {
-      const img = new Image();
-      img.onload = () => resolve(img);
-      img.onerror = reject;
-      img.src = src;
+  let washCycleId = null, triCycleId = null, chromeCycleId = null;
+
+  function hexRgb(hex) {
+    let raw = hex.replace('#', '');
+    if (raw.length === 3) {
+      raw = raw.split('').map(c => c + c).join('');
+    }
+    raw = raw.slice(0, 6);
+    return [
+      parseInt(raw.slice(0, 2), 16) / 255,
+      parseInt(raw.slice(2, 4), 16) / 255,
+      parseInt(raw.slice(4, 6), 16) / 255,
+    ];
+  }
+
+  function tintMatrix(hex, channel) {
+    const [r, g, b] = hexRgb(hex);
+    if (channel === 'r') {
+      return `${r} 0 0 0 0 ${g} 0 0 0 0 ${b} 0 0 0 0 1 0 0 0 0`;
+    }
+    if (channel === 'g') {
+      return `0 ${r} 0 0 0 0 ${g} 0 0 0 0 ${b} 0 0 0 0 1 0 0 0`;
+    }
+    if (channel === 'b') {
+      return `0 0 ${r} 0 0 0 0 ${g} 0 0 0 0 ${b} 0 0 0 0 1 0 0`;
+    }
+    throw new Error(`Unknown mask channel: ${channel}`);
+  }
+
+  function setTint(id, hex, channel) {
+    document.getElementById(id).setAttribute('values', tintMatrix(hex, channel));
+  }
+
+  function renderStaticTints() {
+    setTint('wash-top-matrix', controls.wash.value, 'r');
+    setTint('wash-left-matrix', controls.wash.value, 'g');
+    setTint('wash-right-matrix', controls.wash.value, 'b');
+    setTint('tri-top-matrix', controls.triTop.value, 'r');
+    setTint('tri-left-matrix', controls.triLeft.value, 'g');
+    setTint('tri-right-matrix', controls.triRight.value, 'b');
+    setTint('chrome-top-matrix', controls.chrome.value, 'r');
+    setTint('chrome-left-matrix', controls.chrome.value, 'g');
+    setTint('chrome-right-matrix', controls.chrome.value, 'b');
+    setTint('inspector-top-matrix', '#e135ff', 'r');
+    setTint('inspector-left-matrix', '#80ffea', 'g');
+    setTint('inspector-right-matrix', '#ff6ac1', 'b');
+    document.querySelectorAll('.mark-svg.pending-tint').forEach(el => {
+      el.classList.remove('pending-tint');
     });
   }
 
-  function fitRect(canvasEl, sourceWidth, sourceHeight) {
-    const bounds = canvasEl.getBoundingClientRect();
-    const scale = Math.min(bounds.width / sourceWidth, bounds.height / sourceHeight);
-    const width = sourceWidth * scale;
-    const height = sourceHeight * scale;
-    return {
-      x: (bounds.width - width) / 2,
-      y: (bounds.height - height) / 2,
-      width,
-      height,
-    };
-  }
-
-  function prepare(canvasEl) {
-    const bounds = canvasEl.getBoundingClientRect();
-    const dpr = window.devicePixelRatio || 1;
-    const width = Math.max(1, Math.round(bounds.width * dpr));
-    const height = Math.max(1, Math.round(bounds.height * dpr));
-    if (canvasEl.width !== width || canvasEl.height !== height) {
-      canvasEl.width = width;
-      canvasEl.height = height;
-    }
-    const ctx = canvasEl.getContext('2d');
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, bounds.width, bounds.height);
-    return ctx;
-  }
-
-  function tintedMask(mask, color, alpha = 1) {
-    const out = document.createElement('canvas');
-    out.width = mask.naturalWidth;
-    out.height = mask.naturalHeight;
-    const ctx = out.getContext('2d');
-    ctx.drawImage(mask, 0, 0);
-    ctx.globalCompositeOperation = 'source-in';
-    ctx.globalAlpha = alpha;
-    ctx.fillStyle = color;
-    ctx.fillRect(0, 0, out.width, out.height);
-    return out;
-  }
-
-  function drawContain(canvasEl, source) {
-    const ctx = prepare(canvasEl);
-    const rect = fitRect(canvasEl, source.width, source.height);
-    ctx.drawImage(source, rect.x, rect.y, rect.width, rect.height);
-  }
-
-  function renderWash() {
-    drawContain(canvas.wash, tintedMask(images.markMask, state.wash));
-  }
-
-  function renderTri() {
-    const out = document.createElement('canvas');
-    out.width = images.markMask.naturalWidth;
-    out.height = images.markMask.naturalHeight;
-    const ctx = out.getContext('2d');
-    ctx.drawImage(tintedMask(images.topMask, state.triTop), 0, 0);
-    ctx.drawImage(tintedMask(images.leftMask, state.triLeft), 0, 0);
-    ctx.drawImage(tintedMask(images.rightMask, state.triRight), 0, 0);
-    drawContain(canvas.tri, out);
-  }
-
-  function renderChrome() {
-    const out = document.createElement('canvas');
-    out.width = images.mark.naturalWidth;
-    out.height = images.mark.naturalHeight;
-    const ctx = out.getContext('2d');
-    ctx.drawImage(images.mark, 0, 0);
-    ctx.globalAlpha = 0.42;
-    ctx.drawImage(tintedMask(images.markMask, state.chrome), 0, 0);
-    drawContain(canvas.chrome, out);
-  }
-
-  function renderInspector() {
-    const out = document.createElement('canvas');
-    out.width = images.markMask.naturalWidth;
-    out.height = images.markMask.naturalHeight;
-    const ctx = out.getContext('2d');
-    ctx.drawImage(tintedMask(images.markMask, 'rgba(255,255,255,0.18)'), 0, 0);
-    ctx.drawImage(tintedMask(images.topMask, 'rgba(225,53,255,0.86)'), 0, 0);
-    ctx.drawImage(tintedMask(images.leftMask, 'rgba(128,255,234,0.86)'), 0, 0);
-    ctx.drawImage(tintedMask(images.rightMask, 'rgba(255,106,193,0.86)'), 0, 0);
-    drawContain(canvas.inspector, out);
-  }
-
-  function renderAll() {
-    if (!images.markMask) return;
-    renderWash();
-    renderTri();
-    renderChrome();
-    renderInspector();
-  }
-
-  controls.wash.addEventListener('input', e => {
-    state.wash = e.target.value;
-    renderWash();
+  controls.wash.addEventListener('input', () => {
+    setTint('wash-top-matrix', controls.wash.value, 'r');
+    setTint('wash-left-matrix', controls.wash.value, 'g');
+    setTint('wash-right-matrix', controls.wash.value, 'b');
     if (washCycleId) stopCycle('wash');
   });
-  controls.triTop.addEventListener('input', e => { state.triTop = e.target.value; renderTri(); if (triCycleId) stopCycle('tri'); });
-  controls.triLeft.addEventListener('input', e => { state.triLeft = e.target.value; renderTri(); if (triCycleId) stopCycle('tri'); });
-  controls.triRight.addEventListener('input', e => { state.triRight = e.target.value; renderTri(); if (triCycleId) stopCycle('tri'); });
-  controls.chrome.addEventListener('input', e => {
-    state.chrome = e.target.value;
-    renderChrome();
+  controls.triTop.addEventListener('input', () => { setTint('tri-top-matrix', controls.triTop.value, 'r'); if (triCycleId) stopCycle('tri'); });
+  controls.triLeft.addEventListener('input', () => { setTint('tri-left-matrix', controls.triLeft.value, 'g'); if (triCycleId) stopCycle('tri'); });
+  controls.triRight.addEventListener('input', () => { setTint('tri-right-matrix', controls.triRight.value, 'b'); if (triCycleId) stopCycle('tri'); });
+  controls.chrome.addEventListener('input', () => {
+    setTint('chrome-top-matrix', controls.chrome.value, 'r');
+    setTint('chrome-left-matrix', controls.chrome.value, 'g');
+    setTint('chrome-right-matrix', controls.chrome.value, 'b');
     if (chromeCycleId) stopCycle('chrome');
   });
-
-  let washCycleId = null, triCycleId = null, chromeCycleId = null;
-  let phase = 0;
 
   function hslHex(h) {
     // HSL → hex (simplified, full sat, 60% lightness)
@@ -1243,9 +1212,10 @@
     let p = 0;
     washCycleId = setInterval(() => {
       const c = hslHex(p % 360);
-      state.wash = c;
       controls.wash.value = c;
-      renderWash();
+      setTint('wash-top-matrix', c, 'r');
+      setTint('wash-left-matrix', c, 'g');
+      setTint('wash-right-matrix', c, 'b');
       p += 4;
     }, 50);
   });
@@ -1259,13 +1229,12 @@
       const top = hslHex(p % 360);
       const left = hslHex((p + 120) % 360);
       const right = hslHex((p + 240) % 360);
-      state.triTop = top;
-      state.triLeft = left;
-      state.triRight = right;
       controls.triTop.value = top;
       controls.triLeft.value = left;
       controls.triRight.value = right;
-      renderTri();
+      setTint('tri-top-matrix', top, 'r');
+      setTint('tri-left-matrix', left, 'g');
+      setTint('tri-right-matrix', right, 'b');
       p += 3;
     }, 50);
   });
@@ -1276,17 +1245,15 @@
     let p = 0;
     chromeCycleId = setInterval(() => {
       const c = hslHex(p % 360);
-      state.chrome = c;
       controls.chrome.value = c;
-      renderChrome();
+      setTint('chrome-top-matrix', c, 'r');
+      setTint('chrome-left-matrix', c, 'g');
+      setTint('chrome-right-matrix', c, 'b');
       p += 4;
     }, 50);
   });
 
-  Promise.all(Object.entries(imageSources).map(([name, src]) =>
-    loadImage(src).then(img => { images[name] = img; })
-  )).then(renderAll);
-  window.addEventListener('resize', renderAll);
+  renderStaticTints();
 </script>
 
 </body>
