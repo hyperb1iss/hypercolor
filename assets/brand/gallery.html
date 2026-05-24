@@ -1,0 +1,1113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Hypercolor — brand asset gallery</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --void: #0a0612;
+    --void-lighter: #150a22;
+    --surface: #1a0e2e;
+    --surface-light: #251543;
+    --magenta: #e135ff;
+    --cyan: #80ffea;
+    --pink: #ff6ac1;
+    --green: #50fa7b;
+    --yellow: #f1fa8c;
+    --text: #f0e8ff;
+    --text-dim: #9080b0;
+    --border: rgba(225, 53, 255, 0.18);
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--void);
+    color: var(--text);
+    font-family: "Space Grotesk", system-ui, sans-serif;
+    font-weight: 300;
+    line-height: 1.5;
+    min-height: 100vh;
+    background-image:
+      radial-gradient(ellipse at 20% 0%, rgba(225, 53, 255, 0.08) 0%, transparent 50%),
+      radial-gradient(ellipse at 80% 100%, rgba(128, 255, 234, 0.05) 0%, transparent 50%);
+    background-attachment: fixed;
+  }
+
+  code, .mono {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.85em;
+    color: var(--cyan);
+  }
+
+  /* layout */
+  .container {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 4rem 2rem;
+  }
+
+  header.hero {
+    text-align: center;
+    padding: 4rem 0 6rem;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 4rem;
+  }
+
+  .hero img {
+    max-width: 480px;
+    width: 80%;
+    height: auto;
+    filter: drop-shadow(0 0 60px rgba(225, 53, 255, 0.3));
+  }
+
+  h1 {
+    font-weight: 300;
+    font-size: 1.4rem;
+    color: var(--text-dim);
+    margin: 2rem 0 0.5rem;
+    letter-spacing: 0.05em;
+  }
+
+  h1 .accent {
+    color: var(--text);
+    font-weight: 500;
+  }
+
+  .hero p {
+    color: var(--text-dim);
+    max-width: 600px;
+    margin: 0.5rem auto;
+  }
+
+  h2 {
+    font-weight: 400;
+    font-size: 1.8rem;
+    color: var(--text);
+    margin: 5rem 0 0.5rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: baseline;
+    gap: 1rem;
+  }
+
+  h2 .count {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.9rem;
+    color: var(--magenta);
+    font-weight: 400;
+  }
+
+  h2 .id {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    margin-left: auto;
+    font-weight: 400;
+  }
+
+  h3 {
+    font-weight: 400;
+    font-size: 1.15rem;
+    margin: 2rem 0 1rem;
+    color: var(--cyan);
+  }
+
+  .section-desc {
+    color: var(--text-dim);
+    margin: 0 0 2rem;
+    max-width: 760px;
+  }
+
+  /* asset grid */
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 1.5rem;
+  }
+
+  .grid.tight {
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    transition: transform 0.2s, border-color 0.2s, box-shadow 0.2s;
+  }
+
+  .card:hover {
+    transform: translateY(-2px);
+    border-color: rgba(225, 53, 255, 0.4);
+    box-shadow: 0 8px 32px rgba(225, 53, 255, 0.15);
+  }
+
+  .card .preview {
+    background: var(--void);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1.5rem;
+    min-height: 200px;
+    position: relative;
+  }
+
+  .card .preview.light {
+    background: #f5f0ff;
+  }
+
+  .card .preview.checker {
+    background-image:
+      linear-gradient(45deg, rgba(255,255,255,0.04) 25%, transparent 25%),
+      linear-gradient(-45deg, rgba(255,255,255,0.04) 25%, transparent 25%),
+      linear-gradient(45deg, transparent 75%, rgba(255,255,255,0.04) 75%),
+      linear-gradient(-45deg, transparent 75%, rgba(255,255,255,0.04) 75%);
+    background-size: 20px 20px;
+    background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
+    background-color: var(--void);
+  }
+
+  .card .preview img {
+    max-width: 100%;
+    max-height: 200px;
+    object-fit: contain;
+  }
+
+  .card .meta {
+    padding: 1rem 1.25rem;
+    border-top: 1px solid var(--border);
+  }
+
+  .card .name {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.85rem;
+    color: var(--text);
+    word-break: break-all;
+    line-height: 1.4;
+  }
+
+  .card .dims {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.75rem;
+    color: var(--magenta);
+    margin-top: 0.25rem;
+  }
+
+  .card .desc {
+    font-size: 0.85rem;
+    color: var(--text-dim);
+    margin-top: 0.5rem;
+    line-height: 1.5;
+  }
+
+  /* live demos */
+  .demo-stage {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1.5rem;
+    margin-bottom: 4rem;
+  }
+
+  @media (max-width: 900px) {
+    .demo-stage { grid-template-columns: 1fr; }
+  }
+
+  .demo {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 2rem;
+    text-align: center;
+  }
+
+  .demo h3 {
+    margin-top: 0;
+    color: var(--cyan);
+  }
+
+  .demo .label {
+    color: var(--magenta);
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.7rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    margin-bottom: 0.25rem;
+  }
+
+  .demo .blurb {
+    color: var(--text-dim);
+    font-size: 0.85rem;
+    min-height: 2.5rem;
+    margin-bottom: 1.5rem;
+  }
+
+  .demo .stage {
+    height: 260px;
+    background: var(--void);
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 1.5rem;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .demo .controls {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    align-items: stretch;
+  }
+
+  .demo .swatch-row {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    font-size: 0.8rem;
+    color: var(--text-dim);
+  }
+
+  .demo .swatch-row label {
+    width: 4rem;
+    text-align: left;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.75rem;
+  }
+
+  .demo input[type="color"] {
+    flex: 1;
+    height: 32px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--void);
+    cursor: pointer;
+  }
+
+  .demo button {
+    background: var(--surface-light);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 0.5rem 1rem;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.8rem;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.15s;
+    margin-top: 0.5rem;
+  }
+
+  .demo button:hover {
+    border-color: var(--magenta);
+    color: var(--magenta);
+  }
+
+  .demo button.active {
+    background: var(--magenta);
+    color: var(--void);
+    border-color: var(--magenta);
+  }
+
+  /* mark mask renderers */
+  .hc-mark-wash {
+    width: 200px;
+    height: 200px;
+    background-color: var(--scene-color, #e135ff);
+    -webkit-mask: url("mask/mark-mask.png") center / contain no-repeat;
+    mask: url("mask/mark-mask.png") center / contain no-repeat;
+    transition: background-color 0.3s ease;
+  }
+
+  .hc-mark-tri {
+    position: relative;
+    width: 200px;
+    height: 200px;
+  }
+  .hc-mark-tri > div {
+    position: absolute;
+    inset: 0;
+    -webkit-mask-size: contain;
+    -webkit-mask-position: center;
+    -webkit-mask-repeat: no-repeat;
+    mask-size: contain;
+    mask-position: center;
+    mask-repeat: no-repeat;
+    mix-blend-mode: screen;
+    transition: background-color 0.3s ease;
+  }
+  .hc-mark-tri .petal-top {
+    background: var(--petal-top, #e135ff);
+    -webkit-mask-image: url("mask/petal-top-segmented-mask.png");
+    mask-image: url("mask/petal-top-segmented-mask.png");
+  }
+  .hc-mark-tri .petal-left {
+    background: var(--petal-left, #80ffea);
+    -webkit-mask-image: url("mask/petal-left-segmented-mask.png");
+    mask-image: url("mask/petal-left-segmented-mask.png");
+  }
+  .hc-mark-tri .petal-right {
+    background: var(--petal-right, #ff6ac1);
+    -webkit-mask-image: url("mask/petal-right-segmented-mask.png");
+    mask-image: url("mask/petal-right-segmented-mask.png");
+  }
+
+  .hc-mark-chrome {
+    position: relative;
+    width: 200px;
+    height: 200px;
+  }
+  .hc-mark-chrome .base {
+    position: absolute;
+    inset: 0;
+    background: url("master/mark-color.png") no-repeat center / contain;
+  }
+  .hc-mark-chrome .tint {
+    position: absolute;
+    inset: 0;
+    background: var(--scene-color, #e135ff);
+    -webkit-mask: url("mask/mark-mask.png") center / contain no-repeat;
+    mask: url("mask/mark-mask.png") center / contain no-repeat;
+    mix-blend-mode: color;
+    opacity: 0.55;
+    transition: background-color 0.3s ease;
+  }
+
+  /* tray scale demo */
+  .tray-row {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 1rem;
+    background: var(--void);
+    border-radius: 6px;
+  }
+
+  .tray-row img {
+    image-rendering: pixelated;
+  }
+
+  /* footer */
+  footer {
+    margin-top: 6rem;
+    padding: 3rem 0;
+    border-top: 1px solid var(--border);
+    text-align: center;
+    color: var(--text-dim);
+    font-size: 0.85rem;
+  }
+
+  footer code {
+    background: var(--surface);
+    padding: 0.25rem 0.5rem;
+    border-radius: 4px;
+    color: var(--magenta);
+  }
+
+  /* TOC */
+  .toc {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    padding: 1.5rem 0;
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 4rem;
+  }
+
+  .toc a {
+    color: var(--text-dim);
+    text-decoration: none;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.8rem;
+    padding: 0.4rem 0.9rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    transition: all 0.15s;
+  }
+
+  .toc a:hover {
+    color: var(--magenta);
+    border-color: var(--magenta);
+  }
+</style>
+</head>
+<body>
+
+<div class="container">
+
+<header class="hero">
+  <img src="master/lockup-vertical-color.png" alt="hypercolor logo" />
+  <h1><span class="accent">hypercolor</span> · brand asset gallery</h1>
+  <p>Every master file, every mask, every derived size — live previews you can compare side by side. Plus working demos of the three dynamic-tint flavors below.</p>
+</header>
+
+<nav class="toc">
+  <a href="#demos">live tint demos</a>
+  <a href="#masters">masters</a>
+  <a href="#masks">masks</a>
+  <a href="#app-icons">app icons</a>
+  <a href="#tray">tray</a>
+  <a href="#favicons">favicons</a>
+  <a href="#og">og &amp; social</a>
+  <a href="#installer">installer</a>
+</nav>
+
+<!-- ─── live demos ─── -->
+<section id="demos">
+  <h2>live tint demos <span class="count">3 flavors</span><span class="id">section · 01</span></h2>
+  <p class="section-desc">All three render at runtime, using only the masks under <code>mask/</code>. Try the color pickers; click <em>rainbow cycle</em> to see each petal phase 120° apart on the hue wheel.</p>
+
+  <div class="demo-stage">
+
+    <div class="demo">
+      <div class="label">flavor 01</div>
+      <h3>single wash</h3>
+      <p class="blurb">Whole trinity tints to one color. Simplest. Drives off <code>average_frame_color</code>.</p>
+      <div class="stage">
+        <div class="hc-mark-wash" id="wash" style="--scene-color: #e135ff;"></div>
+      </div>
+      <div class="controls">
+        <div class="swatch-row">
+          <label>color</label>
+          <input type="color" id="wash-color" value="#e135ff" />
+        </div>
+        <button id="wash-cycle">rainbow cycle</button>
+      </div>
+    </div>
+
+    <div class="demo">
+      <div class="label">flavor 02</div>
+      <h3>per-petal (tri)</h3>
+      <p class="blurb">Three primaries, three independent zones. The killer feature.</p>
+      <div class="stage">
+        <div class="hc-mark-tri" id="tri" style="--petal-top: #e135ff; --petal-left: #80ffea; --petal-right: #ff6ac1;">
+          <div class="petal-top"></div>
+          <div class="petal-left"></div>
+          <div class="petal-right"></div>
+        </div>
+      </div>
+      <div class="controls">
+        <div class="swatch-row">
+          <label>top</label>
+          <input type="color" id="tri-top" value="#e135ff" />
+        </div>
+        <div class="swatch-row">
+          <label>left</label>
+          <input type="color" id="tri-left" value="#80ffea" />
+        </div>
+        <div class="swatch-row">
+          <label>right</label>
+          <input type="color" id="tri-right" value="#ff6ac1" />
+        </div>
+        <button id="tri-cycle">rainbow cycle</button>
+      </div>
+    </div>
+
+    <div class="demo">
+      <div class="label">flavor 03</div>
+      <h3>chrome + tint</h3>
+      <p class="blurb">Original 3D chrome detail preserved, hue shifts with scene. Prettiest.</p>
+      <div class="stage">
+        <div class="hc-mark-chrome" id="chrome" style="--scene-color: #e135ff;">
+          <div class="base"></div>
+          <div class="tint"></div>
+        </div>
+      </div>
+      <div class="controls">
+        <div class="swatch-row">
+          <label>tint</label>
+          <input type="color" id="chrome-color" value="#e135ff" />
+        </div>
+        <button id="chrome-cycle">rainbow cycle</button>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+
+<!-- ─── masters ─── -->
+<section id="masters">
+  <h2>masters <span class="count">18 files</span><span class="id">section · 02</span></h2>
+  <p class="section-desc">Canonical artwork at native resolution. Tight-cropped, alpha-correct. Everything else derives from here. Checked into git.</p>
+
+  <h3>lockups (mark + wordmark)</h3>
+  <div class="grid">
+
+    <div class="card">
+      <div class="preview checker"><img src="master/lockup-vertical-color.png" /></div>
+      <div class="meta">
+        <div class="name">lockup-vertical-color.png</div>
+        <div class="dims">RGBA · transparent bg</div>
+        <div class="desc">Master vertical lockup with alpha. Use anywhere you control the bg.</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="preview"><img src="master/lockup-vertical-on-black.png" /></div>
+      <div class="meta">
+        <div class="name">lockup-vertical-on-black.png</div>
+        <div class="dims">RGB · solid black</div>
+        <div class="desc">Vertical lockup with the original chrome rendering on black. Safest fallback.</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="preview light"><img src="master/lockup-vertical-on-white.png" /></div>
+      <div class="meta">
+        <div class="name">lockup-vertical-on-white.png</div>
+        <div class="dims">RGB · solid white</div>
+        <div class="desc">Light-mode lockup. Same neon mark, white bg context.</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="preview checker"><img src="master/lockup-horizontal-color.png" /></div>
+      <div class="meta">
+        <div class="name">lockup-horizontal-color.png</div>
+        <div class="dims">RGBA · transparent bg</div>
+        <div class="desc">Horizontal lockup, alpha-cut from on-black. For nav bars, window chrome.</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="preview"><img src="master/lockup-horizontal-on-black.png" /></div>
+      <div class="meta">
+        <div class="name">lockup-horizontal-on-black.png</div>
+        <div class="dims">RGB · solid black</div>
+        <div class="desc">Horizontal lockup, original render on black.</div>
+      </div>
+    </div>
+
+  </div>
+
+  <h3>mark (petals only)</h3>
+  <div class="grid">
+    <div class="card">
+      <div class="preview checker"><img src="master/mark-color.png" /></div>
+      <div class="meta">
+        <div class="name">mark-color.png</div>
+        <div class="dims">RGBA · transparent bg</div>
+        <div class="desc">The trinity with clean alpha. Master for app icons, favicons, hero art.</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="preview"><img src="master/mark-on-black.png" /></div>
+      <div class="meta">
+        <div class="name">mark-on-black.png</div>
+        <div class="dims">RGB · solid black</div>
+        <div class="desc">Trinity on black, no wordmark. Use when you need the icon alone.</div>
+      </div>
+    </div>
+  </div>
+
+  <h3>wordmark</h3>
+  <div class="grid">
+    <div class="card">
+      <div class="preview checker"><img src="master/wordmark-color.png" /></div>
+      <div class="meta">
+        <div class="name">wordmark-color.png</div>
+        <div class="dims">RGBA · transparent bg</div>
+        <div class="desc">Chrome wordmark with subtle rim lighting, alpha-cut.</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="preview"><img src="master/wordmark-on-black.png" /></div>
+      <div class="meta">
+        <div class="name">wordmark-on-black.png</div>
+        <div class="dims">RGB · solid black</div>
+        <div class="desc">Chrome wordmark on black, original render.</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="preview checker"><img src="master/wordmark-glow-color.png" /></div>
+      <div class="meta">
+        <div class="name">wordmark-glow-color.png</div>
+        <div class="dims">RGBA · transparent bg</div>
+        <div class="desc">Wordmark with the dramatic neon glow halo. Marketing / hero usage.</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="preview"><img src="master/wordmark-glow-on-black.png" /></div>
+      <div class="meta">
+        <div class="name">wordmark-glow-on-black.png</div>
+        <div class="dims">RGB · solid black</div>
+        <div class="desc">Glow wordmark, original on black.</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="preview light"><img src="master/wordmark-on-white.png" /></div>
+      <div class="meta">
+        <div class="name">wordmark-on-white.png</div>
+        <div class="dims">RGB · pure black on white</div>
+        <div class="desc">Flat black wordmark on white. For light contexts, print, single-color.</div>
+      </div>
+    </div>
+  </div>
+
+  <h3>petals (top petal in three colors)</h3>
+  <p class="section-desc">⚠ These are all the same upright petal shape, not three positional variants. Use as color swappable assets; for animations rotate ±120° around the canvas center.</p>
+  <div class="grid">
+    <div class="card">
+      <div class="preview checker"><img src="master/petal-top-magenta.png" /></div>
+      <div class="meta">
+        <div class="name">petal-top-magenta.png</div>
+        <div class="dims">RGBA</div>
+        <div class="desc">Magenta petal, alpha-cut.</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="preview"><img src="master/petal-top-magenta-on-black.png" /></div>
+      <div class="meta">
+        <div class="name">petal-top-magenta-on-black.png</div>
+        <div class="dims">RGB</div>
+        <div class="desc">For screen-blend over dark surfaces.</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="preview checker"><img src="master/petal-top-cyan.png" /></div>
+      <div class="meta">
+        <div class="name">petal-top-cyan.png</div>
+        <div class="dims">RGBA</div>
+        <div class="desc">Cyan petal, alpha-cut.</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="preview"><img src="master/petal-top-cyan-on-black.png" /></div>
+      <div class="meta">
+        <div class="name">petal-top-cyan-on-black.png</div>
+        <div class="dims">RGB</div>
+        <div class="desc">For screen-blend.</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="preview checker"><img src="master/petal-top-violet.png" /></div>
+      <div class="meta">
+        <div class="name">petal-top-violet.png</div>
+        <div class="dims">RGBA</div>
+        <div class="desc">Violet petal, alpha-cut.</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="preview"><img src="master/petal-top-violet-on-black.png" /></div>
+      <div class="meta">
+        <div class="name">petal-top-violet-on-black.png</div>
+        <div class="dims">RGB</div>
+        <div class="desc">For screen-blend.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+<!-- ─── masks ─── -->
+<section id="masks">
+  <h2>masks <span class="count">9 files</span><span class="id">section · 03</span></h2>
+  <p class="section-desc">BW luminance masks that drive the dynamic-tint flavors above. White = full presence; black = absent. Checked into git.</p>
+
+  <div class="grid">
+    <div class="card">
+      <div class="preview"><img src="mask/mark-mask.png" /></div>
+      <div class="meta">
+        <div class="name">mark-mask.png</div>
+        <div class="dims">L · grayscale</div>
+        <div class="desc">Petals only. Powers Flavor 1 (wash) and Flavor 3 (chrome + tint).</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="preview"><img src="mask/wordmark-mask.png" /></div>
+      <div class="meta">
+        <div class="name">wordmark-mask.png</div>
+        <div class="dims">L · grayscale</div>
+        <div class="desc">Just the wordmark. Tint the typography independently.</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="preview"><img src="mask/lockup-vertical-mask.png" /></div>
+      <div class="meta">
+        <div class="name">lockup-vertical-mask.png</div>
+        <div class="dims">L · grayscale</div>
+        <div class="desc">Full vertical lockup (mark + wordmark) as one mask.</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="preview"><img src="mask/lockup-horizontal-mask.png" /></div>
+      <div class="meta">
+        <div class="name">lockup-horizontal-mask.png</div>
+        <div class="dims">L · grayscale</div>
+        <div class="desc">Horizontal lockup mask.</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="preview"><img src="mask/petal-top-mask.png" /></div>
+      <div class="meta">
+        <div class="name">petal-top-mask.png</div>
+        <div class="dims">L · grayscale</div>
+        <div class="desc">Single petal isolated. Rotate ±120° for left/right at runtime.</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="preview"><img src="mask/petal-top-segmented-mask.png" /></div>
+      <div class="meta">
+        <div class="name">petal-top-segmented-mask.png</div>
+        <div class="dims">L · grayscale</div>
+        <div class="desc">Top petal from angular segmentation of the full mark. Positionally correct.</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="preview"><img src="mask/petal-left-segmented-mask.png" /></div>
+      <div class="meta">
+        <div class="name">petal-left-segmented-mask.png</div>
+        <div class="dims">L · grayscale</div>
+        <div class="desc">Lower-left petal from segmentation. Powers Flavor 2 (tri).</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="preview"><img src="mask/petal-right-segmented-mask.png" /></div>
+      <div class="meta">
+        <div class="name">petal-right-segmented-mask.png</div>
+        <div class="dims">L · grayscale</div>
+        <div class="desc">Lower-right petal from segmentation. Powers Flavor 2 (tri).</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="preview"><img src="mask/petal-mask-tri.png" /></div>
+      <div class="meta">
+        <div class="name">petal-mask-tri.png</div>
+        <div class="dims">RGB · packed mask</div>
+        <div class="desc">All three petal masks packed into R/G/B channels. One texture lookup, three independent tints in a shader.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+<!-- ─── app icons ─── -->
+<section id="app-icons">
+  <h2>app icons <span class="count">14 files</span><span class="id">section · 04</span></h2>
+  <p class="section-desc">Full sized icon set + Tauri standard names + multi-size <code>icon.ico</code> for Windows. Drop directly into <code>crates/hypercolor-app/icons/</code>.</p>
+
+  <div class="grid tight">
+    <div class="card">
+      <div class="preview" style="min-height: 280px;"><img src="derived/app-icon/icon-512.png" style="max-width: 256px;" /></div>
+      <div class="meta"><div class="name">icon-512.png</div><div class="dims">512 × 512</div></div>
+    </div>
+    <div class="card">
+      <div class="preview"><img src="derived/app-icon/icon-256.png" /></div>
+      <div class="meta"><div class="name">icon-256.png</div><div class="dims">256 × 256</div></div>
+    </div>
+    <div class="card">
+      <div class="preview"><img src="derived/app-icon/icon-128.png" /></div>
+      <div class="meta"><div class="name">icon-128.png · 128x128.png</div><div class="dims">128 × 128 · Tauri standard</div></div>
+    </div>
+    <div class="card">
+      <div class="preview"><img src="derived/app-icon/128x128@2x.png" style="max-width: 128px;" /></div>
+      <div class="meta"><div class="name">128x128@2x.png</div><div class="dims">256 × 256 · Tauri retina</div></div>
+    </div>
+    <div class="card">
+      <div class="preview"><img src="derived/app-icon/icon-64.png" /></div>
+      <div class="meta"><div class="name">icon-64.png</div><div class="dims">64 × 64</div></div>
+    </div>
+    <div class="card">
+      <div class="preview"><img src="derived/app-icon/icon-48.png" /></div>
+      <div class="meta"><div class="name">icon-48.png</div><div class="dims">48 × 48</div></div>
+    </div>
+    <div class="card">
+      <div class="preview"><img src="derived/app-icon/icon-32.png" /></div>
+      <div class="meta"><div class="name">icon-32.png · 32x32.png</div><div class="dims">32 × 32 · Tauri standard</div></div>
+    </div>
+    <div class="card">
+      <div class="preview"><img src="derived/app-icon/icon-24.png" style="image-rendering: pixelated;" /></div>
+      <div class="meta"><div class="name">icon-24.png</div><div class="dims">24 × 24</div></div>
+    </div>
+    <div class="card">
+      <div class="preview"><img src="derived/app-icon/icon-16.png" style="image-rendering: pixelated; width: 64px; height: 64px;" /></div>
+      <div class="meta"><div class="name">icon-16.png</div><div class="dims">16 × 16 (shown 4×)</div></div>
+    </div>
+  </div>
+</section>
+
+
+<!-- ─── tray ─── -->
+<section id="tray">
+  <h2>tray icons <span class="count">13 files</span><span class="id">section · 05</span></h2>
+  <p class="section-desc">For the menubar / system tray. Color for Windows, mono (template image) for macOS. Plus status variants — paused (desaturated), error (red-tinted) — to swap based on daemon state.</p>
+
+  <h3>color (Windows tray)</h3>
+  <div class="tray-row">
+    <img src="derived/tray/tray-color-22.png" /> <span class="mono">22px</span>
+    <img src="derived/tray/tray-color-44.png" /> <span class="mono">44px</span>
+    <img src="derived/tray/tray-color-88.png" /> <span class="mono">88px</span>
+  </div>
+
+  <h3>monochrome (macOS template image)</h3>
+  <div class="tray-row">
+    <img src="derived/tray/tray-mono-22.png" /> <span class="mono">22px</span>
+    <img src="derived/tray/tray-mono-44.png" /> <span class="mono">44px</span>
+    <img src="derived/tray/tray-mono-88.png" /> <span class="mono">88px</span>
+    <span style="margin-left: auto; color: var(--text-dim); font-size: 0.85rem;">macOS tints these via system accent</span>
+  </div>
+
+  <h3>paused state (desaturated)</h3>
+  <div class="tray-row">
+    <img src="derived/tray/tray-paused-22.png" /> <span class="mono">22px</span>
+    <img src="derived/tray/tray-paused-44.png" /> <span class="mono">44px</span>
+    <img src="derived/tray/tray-paused-88.png" /> <span class="mono">88px</span>
+  </div>
+
+  <h3>error state (red-tinted)</h3>
+  <div class="tray-row">
+    <img src="derived/tray/tray-error-22.png" /> <span class="mono">22px</span>
+    <img src="derived/tray/tray-error-44.png" /> <span class="mono">44px</span>
+    <img src="derived/tray/tray-error-88.png" /> <span class="mono">88px</span>
+  </div>
+</section>
+
+
+<!-- ─── favicons ─── -->
+<section id="favicons">
+  <h2>favicons <span class="count">4 files</span><span class="id">section · 06</span></h2>
+  <p class="section-desc">Drop into <code>hypercolor.lighting/public/</code> and replace the Next.js defaults.</p>
+
+  <div class="grid tight">
+    <div class="card">
+      <div class="preview"><img src="derived/favicon/icon-512.png" /></div>
+      <div class="meta"><div class="name">icon-512.png</div><div class="dims">512 · PWA</div></div>
+    </div>
+    <div class="card">
+      <div class="preview"><img src="derived/favicon/icon-192.png" /></div>
+      <div class="meta"><div class="name">icon-192.png</div><div class="dims">192 · PWA</div></div>
+    </div>
+    <div class="card">
+      <div class="preview"><img src="derived/favicon/apple-touch-icon.png" /></div>
+      <div class="meta"><div class="name">apple-touch-icon.png</div><div class="dims">180 · iOS</div></div>
+    </div>
+    <div class="card">
+      <div class="preview"><img src="derived/favicon/icon-512.png" style="max-width: 48px;" /></div>
+      <div class="meta"><div class="name">favicon.ico</div><div class="dims">multi: 16/32/48</div><div class="desc">Browser tabs (preview shown as 48px since browsers can't display ICOs inline reliably).</div></div>
+    </div>
+  </div>
+</section>
+
+
+<!-- ─── og / social ─── -->
+<section id="og">
+  <h2>OG &amp; social <span class="count">7 files</span><span class="id">section · 07</span></h2>
+  <p class="section-desc">Open-graph cards for link sharing, plus profile/banner art for social. All on a deep magenta-to-void radial gradient.</p>
+
+  <h3>open graph cards</h3>
+  <div class="grid">
+    <div class="card">
+      <div class="preview"><img src="derived/og/og-default.png" /></div>
+      <div class="meta">
+        <div class="name">og-default.png</div>
+        <div class="dims">1200 × 630</div>
+        <div class="desc">Default OG image. Facebook, Discord, Slack link unfurls.</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="preview"><img src="derived/og/og-square.png" /></div>
+      <div class="meta">
+        <div class="name">og-square.png</div>
+        <div class="dims">1200 × 1200</div>
+        <div class="desc">Square crop for LinkedIn, Mastodon.</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="preview"><img src="derived/og/twitter-card.png" /></div>
+      <div class="meta">
+        <div class="name">twitter-card.png</div>
+        <div class="dims">1600 × 900</div>
+        <div class="desc">Twitter/X large card.</div>
+      </div>
+    </div>
+  </div>
+
+  <h3>social profiles &amp; banners</h3>
+  <div class="grid">
+    <div class="card">
+      <div class="preview"><img src="derived/social/avatar-1024.png" style="max-width: 200px; border-radius: 50%;" /></div>
+      <div class="meta">
+        <div class="name">avatar-1024.png</div>
+        <div class="dims">1024 × 1024</div>
+        <div class="desc">Profile avatar (preview rounded — Twitter/Mastodon/GitHub all crop to circle).</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="preview"><img src="derived/social/twitter-banner.png" /></div>
+      <div class="meta">
+        <div class="name">twitter-banner.png</div>
+        <div class="dims">1500 × 500</div>
+        <div class="desc">Twitter / X header.</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="preview"><img src="derived/social/github-banner.png" /></div>
+      <div class="meta">
+        <div class="name">github-banner.png</div>
+        <div class="dims">1280 × 640</div>
+        <div class="desc">GitHub org / repo social preview.</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="preview"><img src="derived/social/discord-icon-512.png" /></div>
+      <div class="meta">
+        <div class="name">discord-icon-512.png</div>
+        <div class="dims">512 × 512</div>
+        <div class="desc">Discord server icon.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+<!-- ─── installer ─── -->
+<section id="installer">
+  <h2>installer art <span class="count">3 files</span><span class="id">section · 08</span></h2>
+  <p class="section-desc">WiX bundler wants 24-bit BMPs at exact dimensions. Banner runs along the top of wizard pages; dialog is the sidebar on welcome + complete.</p>
+
+  <div class="grid">
+    <div class="card">
+      <div class="preview" style="min-height: 100px;"><img src="derived/installer-win/wix-banner.bmp" /></div>
+      <div class="meta">
+        <div class="name">wix-banner.bmp</div>
+        <div class="dims">493 × 58 · BMP24</div>
+        <div class="desc">Top banner on installer wizard pages. Horizontal lockup centered-left.</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="preview" style="min-height: 360px;"><img src="derived/installer-win/wix-dialog.bmp" /></div>
+      <div class="meta">
+        <div class="name">wix-dialog.bmp</div>
+        <div class="dims">493 × 312 · BMP24</div>
+        <div class="desc">Sidebar art on welcome + finish pages. Vertical lockup on deep gradient.</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="preview"><img src="derived/app-icon/icon-256.png" /></div>
+      <div class="meta">
+        <div class="name">installer.ico</div>
+        <div class="dims">multi: 16/32/48/256</div>
+        <div class="desc">Shown in Programs &amp; Features and installer titlebar. (preview: 256px PNG)</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+<footer>
+  <p>Rebuild any time with <code>uv run assets/brand/build.py</code></p>
+  <p style="margin-top: 1rem;">All masters &amp; masks are checked into git. <code>source/</code> and <code>derived/</code> are gitignored.</p>
+</footer>
+
+</div>
+
+<script>
+  // ─── Flavor 1: wash ───
+  const wash = document.getElementById('wash');
+  const washColor = document.getElementById('wash-color');
+  const washCycle = document.getElementById('wash-cycle');
+  washColor.addEventListener('input', e => {
+    wash.style.setProperty('--scene-color', e.target.value);
+    if (washCycleId) stopCycle('wash');
+  });
+
+  // ─── Flavor 2: tri ───
+  const tri = document.getElementById('tri');
+  const triTop = document.getElementById('tri-top');
+  const triLeft = document.getElementById('tri-left');
+  const triRight = document.getElementById('tri-right');
+  triTop.addEventListener('input', e => { tri.style.setProperty('--petal-top', e.target.value); if (triCycleId) stopCycle('tri'); });
+  triLeft.addEventListener('input', e => { tri.style.setProperty('--petal-left', e.target.value); if (triCycleId) stopCycle('tri'); });
+  triRight.addEventListener('input', e => { tri.style.setProperty('--petal-right', e.target.value); if (triCycleId) stopCycle('tri'); });
+
+  // ─── Flavor 3: chrome + tint ───
+  const chromeMark = document.getElementById('chrome');
+  const chromeColor = document.getElementById('chrome-color');
+  const chromeCycle = document.getElementById('chrome-cycle');
+  chromeColor.addEventListener('input', e => {
+    chromeMark.style.setProperty('--scene-color', e.target.value);
+    if (chromeCycleId) stopCycle('chrome');
+  });
+
+  // ─── rainbow cycle ───
+  let washCycleId = null, triCycleId = null, chromeCycleId = null;
+  let phase = 0;
+
+  function hslHex(h) {
+    // HSL → hex (simplified, full sat, 60% lightness)
+    const c = 0.7;
+    const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+    const m = 0.6 - c / 2;
+    let r, g, b;
+    if (h < 60)      [r, g, b] = [c, x, 0];
+    else if (h < 120)[r, g, b] = [x, c, 0];
+    else if (h < 180)[r, g, b] = [0, c, x];
+    else if (h < 240)[r, g, b] = [0, x, c];
+    else if (h < 300)[r, g, b] = [x, 0, c];
+    else             [r, g, b] = [c, 0, x];
+    const to = v => Math.round((v + m) * 255).toString(16).padStart(2, '0');
+    return '#' + to(r) + to(g) + to(b);
+  }
+
+  function stopCycle(which) {
+    if (which === 'wash') { clearInterval(washCycleId); washCycleId = null; washCycle.classList.remove('active'); }
+    if (which === 'tri') { clearInterval(triCycleId); triCycleId = null; document.getElementById('tri-cycle').classList.remove('active'); }
+    if (which === 'chrome') { clearInterval(chromeCycleId); chromeCycleId = null; chromeCycle.classList.remove('active'); }
+  }
+
+  washCycle.addEventListener('click', () => {
+    if (washCycleId) { stopCycle('wash'); return; }
+    washCycle.classList.add('active');
+    let p = 0;
+    washCycleId = setInterval(() => {
+      const c = hslHex(p % 360);
+      wash.style.setProperty('--scene-color', c);
+      washColor.value = c;
+      p += 4;
+    }, 50);
+  });
+
+  document.getElementById('tri-cycle').addEventListener('click', () => {
+    const btn = document.getElementById('tri-cycle');
+    if (triCycleId) { stopCycle('tri'); return; }
+    btn.classList.add('active');
+    let p = 0;
+    triCycleId = setInterval(() => {
+      const top = hslHex(p % 360);
+      const left = hslHex((p + 120) % 360);
+      const right = hslHex((p + 240) % 360);
+      tri.style.setProperty('--petal-top', top);
+      tri.style.setProperty('--petal-left', left);
+      tri.style.setProperty('--petal-right', right);
+      triTop.value = top;
+      triLeft.value = left;
+      triRight.value = right;
+      p += 3;
+    }, 50);
+  });
+
+  chromeCycle.addEventListener('click', () => {
+    if (chromeCycleId) { stopCycle('chrome'); return; }
+    chromeCycle.classList.add('active');
+    let p = 0;
+    chromeCycleId = setInterval(() => {
+      const c = hslHex(p % 360);
+      chromeMark.style.setProperty('--scene-color', c);
+      chromeColor.value = c;
+      p += 4;
+    }, 50);
+  });
+</script>
+
+</body>
+</html>

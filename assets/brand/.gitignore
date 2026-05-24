@@ -1,0 +1,7 @@
+# Raw AI gens live in ~/Pictures/hypercolor; we keep a local copy here
+# but don't commit ~25MB of source PNGs.
+source/
+
+# Derived sizes are regenerated from master/ + mask/ by build.py.
+# Build artifacts, not authored assets.
+derived/
