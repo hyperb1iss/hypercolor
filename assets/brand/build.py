@@ -230,15 +230,13 @@ def segment_mark_to_wedges(
     mark_mask_arr: np.ndarray,
     center: tuple[float, float] | None = None,
     rotation_deg: float = 0.0,
-    edge_softness_px: float = 2.0,
+    edge_softness_px: float = 0.0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Split the mark mask into three angular wedges (top/left/right).
 
-    Hard wedge cuts at 60°/180°/300° offset by rotation_deg, with a small
-    Gaussian blur on each wedge mask to anti-alias the cut edges (avoids
-    pixel-step artifacts at boundaries without softening per-zone clarity).
-    Soft partitioning across the whole petal would muddy the three-primary
-    look, so we keep the hard split and only feather the seams.
+    Hard wedge cuts at 60°/180°/300° offset by rotation_deg. The result is an
+    exact partition of the source mask: every alpha pixel belongs to one petal,
+    and all outputs keep the source canvas dimensions for CSS layer alignment.
     """
     h, w = mark_mask_arr.shape
     if center is None:
@@ -299,26 +297,21 @@ def build_masks() -> None:
     src = Image.open(MASTER / "petal-top-cyan.png")
     mask_to_css_ready(to_alpha_mask(src)).save(MASK / "petal-top-mask.png")
 
-    # 3-channel tri-petal mask: R=top, G=left, B=right
-    # Derived by angular segmentation of the full mark mask, centered on the
-    # trinity's actual centroid (not the image center — glow halos skew bbox).
+    # 3-channel tri-petal mask: R=top, G=left, B=right.
+    # Derived by angular segmentation of the full mark mask on the original
+    # canvas, so per-petal masks align exactly with `mark-mask.png`.
     mark_arr = np.array(mark_mask)
     h, w = mark_arr.shape
-    sq = max(h, w)
-    padded = np.zeros((sq, sq), dtype=np.uint8)
-    y_off = (sq - h) // 2
-    x_off = (sq - w) // 2
-    padded[y_off:y_off + h, x_off:x_off + w] = mark_arr
 
-    # Find the trinity center AND petal rotation on the PADDED canvas.
+    # Find the trinity center and petal rotation on the native canvas.
     # Centroid handles vertical offset (2 petals below center vs 1 above);
     # rotation search handles the case where the logo isn't perfectly aligned
     # to 12-o'clock — wedges then land in the natural inter-petal gaps.
-    center = find_trinity_center(padded)
-    rotation = find_petal_rotation(padded, center)
-    print(f"  trinity center @ ({center[1]:.0f}, {center[0]:.0f}) of {sq}x{sq}")
+    center = find_trinity_center(mark_arr)
+    rotation = find_petal_rotation(mark_arr, center)
+    print(f"  trinity center @ ({center[1]:.0f}, {center[0]:.0f}) of {w}x{h}")
     print(f"  petal rotation = {rotation:+.1f}° (wedges land in inter-petal gaps)")
-    top, left, right = segment_mark_to_wedges(padded, center=center, rotation_deg=rotation)
+    top, left, right = segment_mark_to_wedges(mark_arr, center=center, rotation_deg=rotation)
 
     # Each as standalone mask (CSS-ready RGBA so mask-image works by default)
     mask_to_css_ready(Image.fromarray(top, "L")).save(MASK / "petal-top-segmented-mask.png")
