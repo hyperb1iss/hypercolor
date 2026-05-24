@@ -43,6 +43,15 @@ impl GpuRenderDevice {
         label: &'static str,
         backend_preference: GpuBackendPreference,
     ) -> Result<Self> {
+        // The single consumer of backend_preference lives behind the
+        // servo-gpu-import + Windows cfg gate. Discard-bind here so
+        // non-Windows / feature-disabled builds don't trip the unused-
+        // variable lint under `-D warnings`.
+        let _ = backend_preference;
+        #[cfg_attr(
+            not(all(feature = "servo-gpu-import", target_os = "windows")),
+            allow(unused_mut)
+        )]
         let mut instance_descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
         #[cfg(all(feature = "servo-gpu-import", target_os = "windows"))]
         if matches!(

@@ -63,7 +63,7 @@ fn effect_engine_defaults_match_spec() {
 #[test]
 fn rendering_defaults_match_spec() {
     let rendering = RenderingConfig::default();
-    assert_eq!(rendering.servo_gpu_import.mode, ServoGpuImportMode::Off);
+    assert_eq!(rendering.servo_gpu_import.mode, ServoGpuImportMode::Auto);
 }
 
 #[test]
@@ -246,7 +246,7 @@ fn full_config_toml_roundtrip() {
     );
     assert_eq!(
         restored.rendering.servo_gpu_import.mode,
-        ServoGpuImportMode::Off
+        ServoGpuImportMode::Auto
     );
     assert_eq!(restored.media.max_video_producers, 2);
     assert_eq!(restored.discovery.scan_interval_secs, 300);
@@ -280,7 +280,7 @@ fn minimal_toml_fills_defaults() {
     );
     assert_eq!(
         config.rendering.servo_gpu_import.mode,
-        ServoGpuImportMode::Off
+        ServoGpuImportMode::Auto
     );
     assert_eq!(config.media.max_livestream_producers, 1);
     assert_eq!(config.tui.theme, "silkcircuit");

@@ -559,9 +559,9 @@ pub enum RenderAccelerationMode {
 #[serde(rename_all = "snake_case")]
 pub enum ServoGpuImportMode {
     /// Never attempt Servo GPU framebuffer import.
-    #[default]
     Off,
     /// Attempt import when startup capabilities indicate it can work.
+    #[default]
     Auto,
     /// Require import and report frame errors instead of silent CPU fallback.
     On,
