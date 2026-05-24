@@ -205,10 +205,11 @@ pub fn Sidebar() -> impl IntoView {
         >
             // Logo — click to cycle through modes, persisted to localStorage
             {
-                let logo_mode_count = 10_usize;
-                // Mode 0 (mark) is the canonical Hypercolor trinity. Modes 1-9
-                // are typography variants kept around as opt-in fun. Default
-                // lands on the real brand on first load and after a wipe.
+                let logo_mode_count = 12_usize;
+                // Modes 0/10/11 are official-mark variants (static, chrome+hue
+                // aura, per-petal tri). Modes 1-9 are the typography experiments
+                // kept around as opt-in fun. Default lands on the canonical
+                // static mark on first load and after a wipe.
                 let default_mode = 0_usize;
                 let initial_mode = storage::get("hc-logo-mode")
                     .and_then(|v| v.parse::<usize>().ok())
@@ -222,7 +223,7 @@ pub fn Sidebar() -> impl IntoView {
 
                 let mode_names = [
                     "mark", "circuit", "silk", "bloom", "whisper", "prism",
-                    "script", "editorial", "neon", "glitch",
+                    "script", "editorial", "neon", "glitch", "aura", "tri",
                 ];
 
                 view! {
@@ -240,14 +241,14 @@ pub fn Sidebar() -> impl IntoView {
                         >
                             {move || {
                                 let mode = logo_mode.get();
-                                // Mode 0 renders the canonical trinity image; modes 1-9 keep
-                                // the typography-driven gradient marks for fun cycling.
-                                if mode == 0 {
+                                // Modes 0/10/11 (official mark variants) all use the trinity
+                                // image at 32px — too small for the aura/tri effects to read.
+                                if matches!(mode, 0 | 10 | 11) {
                                     return view! {
                                         <img
                                             src="/assets/brand/mark-color.png"
                                             alt="Hypercolor"
-                                            class="w-8 h-8 select-none"
+                                            class="w-8 h-8 select-none logo-mark-image"
                                             draggable="false"
                                         />
                                     }.into_any();
@@ -293,7 +294,9 @@ pub fn Sidebar() -> impl IntoView {
                                     6 => "logo-bg-script",
                                     7 => "logo-bg-editorial",
                                     8 => "logo-bg-neon",
-                                    _ => "logo-bg-glitch",
+                                    9 => "logo-bg-glitch",
+                                    10 => "logo-bg-aura",
+                                    _ => "logo-bg-tri",
                                 };
                                 format!("logo-bg {bg}")
                             } />
@@ -306,7 +309,7 @@ pub fn Sidebar() -> impl IntoView {
                                         <img
                                             src="/assets/brand/lockup-vertical-color.png"
                                             alt="Hypercolor"
-                                            class="h-24 w-auto select-none object-contain"
+                                            class="h-24 w-auto select-none object-contain logo-mark-image"
                                             draggable="false"
                                         />
                                     }.into_any(),
@@ -384,10 +387,27 @@ pub fn Sidebar() -> impl IntoView {
                                     }.into_any(),
 
                                     // 9: Glitch — chromatic aberration, chaotic weight/offset
-                                    _ => view! {
+                                    9 => view! {
                                         <div class="logo-glitch flex flex-col items-start leading-none">
                                             <span class="logo-gradient-text text-[32px] font-black tracking-[0.06em]">"HYPER"</span>
                                             <span class="logo-gradient-text text-[18px] font-light tracking-[0.5em] -mt-1 ml-4">"COLOR"</span>
+                                        </div>
+                                    }.into_any(),
+
+                                    // 10: Aura — official mark with cycling hue tint overlay
+                                    10 => view! {
+                                        <div class="logo-mark-aura h-24 w-24">
+                                            <div class="aura-base" />
+                                            <div class="aura-tint" />
+                                        </div>
+                                    }.into_any(),
+
+                                    // 11: Tri — per-petal hue cycling, 120° phase apart
+                                    _ => view! {
+                                        <div class="logo-mark-tri h-24 w-24">
+                                            <div class="petal-top" />
+                                            <div class="petal-left" />
+                                            <div class="petal-right" />
                                         </div>
                                     }.into_any(),
                                 }
