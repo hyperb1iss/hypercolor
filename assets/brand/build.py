@@ -647,6 +647,50 @@ def build_social() -> None:
     print(f"  → social: {len(list(out.glob('*')))} files")
 
 
+def build_web() -> None:
+    """Web-optimized small variants for hypercolor.lighting consumption.
+
+    Masters are >1 MB at 1145+ px; the marketing site only ever displays
+    them at <500 px. Without these, `next/image` (which the site runs with
+    `unoptimized: true`) downloads megabytes to render a 32 px nav icon.
+    """
+    out = DERIVED / "web"
+    out.mkdir(parents=True, exist_ok=True)
+
+    # Square padded mark for nav / footer / any boxed surface.
+    # The 512 covers OG image embedding (Satori renders at ~420 px).
+    mark_raw = Image.open(MASTER / "mark-color.png").convert("RGBA")
+    mark_sq = pad_to_square(mark_raw)
+    for s in [64, 128, 256, 512]:
+        mark_sq.resize((s, s), Image.LANCZOS).save(
+            out / f"mark-{s}.png", optimize=True, compress_level=9
+        )
+
+    # Horizontal lockup — covers wordmark surfaces (hero, footer).
+    h_lock = Image.open(MASTER / "lockup-horizontal-color.png").convert("RGBA")
+    hw, hh = h_lock.size
+    for target_h in [120, 240, 480]:
+        target_w = int(hw * target_h / hh)
+        h_lock.resize((target_w, target_h), Image.LANCZOS).save(
+            out / f"lockup-horizontal-{target_h}.png",
+            optimize=True,
+            compress_level=9,
+        )
+
+    # Vertical lockup — for centered hero/about usage if wanted.
+    v_lock = Image.open(MASTER / "lockup-vertical-color.png").convert("RGBA")
+    vw, vh = v_lock.size
+    for target_h in [300, 600]:
+        target_w = int(vw * target_h / vh)
+        v_lock.resize((target_w, target_h), Image.LANCZOS).save(
+            out / f"lockup-vertical-{target_h}.png",
+            optimize=True,
+            compress_level=9,
+        )
+
+    print(f"  → web: {len(list(out.glob('*')))} files")
+
+
 def build_derived() -> None:
     print("\n[3/3] building derived")
     build_app_icons()
@@ -655,6 +699,7 @@ def build_derived() -> None:
     build_og()
     build_installer_win()
     build_social()
+    build_web()
 
 
 # ─── orchestration ─────────────────────────────────────────────────────────
