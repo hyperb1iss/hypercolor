@@ -281,15 +281,23 @@ optional PawnIO install — Hypercolor prompts you only if compatible hardware i
 
 ### Install on macOS
 
+Download `Hypercolor-<version>-arm64.dmg` (Apple Silicon) or `-x86_64.dmg` (Intel) from
+[hypercolor.lighting/download](https://hypercolor.lighting/download), drag the app into
+`/Applications`, and launch. Minimum macOS 11 (Big Sur).
+
+Or via Homebrew Cask once the tap is published:
+
 ```bash
-git clone https://github.com/hyperb1iss/hypercolor.git
-cd hypercolor
-cargo build --release
+brew install --cask hyperb1iss/tap/hypercolor-app
 ```
 
-macOS arm64 builds through the release pipeline; a signed `.dmg` ships with each release.
-Service management and permission setup follow the standard LaunchAgent + System Settings
-permission flow on first run.
+> While we're finishing the Developer ID + notarization rollout, current builds are
+> unsigned. Gatekeeper will block them on first launch — right-click the app and choose
+> **Open** to confirm. Signed + notarized builds land with the next release.
+
+Hue, WLED, Nanoleaf, Govee, and USB-HID lighting (Razer, Corsair, Lian Li, etc.) work
+out of the box. On first run, Hypercolor will prompt for Microphone and Screen Recording
+permissions only if you enable audio- or screen-reactive effects.
 
 ### Run
 
