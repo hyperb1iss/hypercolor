@@ -136,6 +136,7 @@ pub struct ServoRenderer {
     include_audio_updates: bool,
     include_screen_updates: bool,
     include_sensor_updates: bool,
+    include_interaction_updates: bool,
     last_animation_fps_cap: Option<u32>,
     animation_cadence: AnimationCadence,
     host_driven_animation: bool,
@@ -166,6 +167,7 @@ impl ServoRenderer {
             include_audio_updates: true,
             include_screen_updates: false,
             include_sensor_updates: false,
+            include_interaction_updates: false,
             last_animation_fps_cap: None,
             animation_cadence: AnimationCadence::MatchRenderLoop,
             host_driven_animation: false,
@@ -197,11 +199,13 @@ impl ServoRenderer {
             self.include_screen_updates,
             self.include_sensor_updates,
         );
-        if let Some(script) = self
-            .runtime
-            .input_update_script_if_changed(&input.interaction)
-        {
-            self.pending_scripts.push(script);
+        if self.include_interaction_updates {
+            if let Some(script) = self
+                .runtime
+                .input_update_script_if_changed(&input.interaction)
+            {
+                self.pending_scripts.push(script);
+            }
         }
         if self.host_driven_animation {
             self.pending_scripts
@@ -273,6 +277,7 @@ impl ServoRenderer {
         self.include_audio_updates = effect_is_audio_reactive(metadata);
         self.include_screen_updates = metadata.screen_reactive;
         self.include_sensor_updates = effect_uses_sensor_data(metadata);
+        self.include_interaction_updates = effect_uses_interaction_data(metadata);
         self.last_animation_fps_cap = None;
         self.animation_cadence = animation_cadence(metadata);
         self.host_driven_animation = host_driven_animation(metadata);
@@ -849,6 +854,7 @@ impl EffectRenderer for ServoRenderer {
         self.include_audio_updates = true;
         self.include_screen_updates = false;
         self.include_sensor_updates = false;
+        self.include_interaction_updates = false;
         self.last_animation_fps_cap = None;
         self.animation_cadence = AnimationCadence::MatchRenderLoop;
         self.last_submit_time_secs = None;
@@ -966,6 +972,16 @@ fn effect_uses_sensor_data(metadata: &EffectMetadata) -> bool {
             .controls
             .iter()
             .any(|control| matches!(control.kind, ControlKind::Sensor))
+}
+
+fn effect_uses_interaction_data(metadata: &EffectMetadata) -> bool {
+    metadata.category == EffectCategory::Interactive
+        || metadata.tags.iter().any(|tag| {
+            tag.eq_ignore_ascii_case("interactive")
+                || tag.eq_ignore_ascii_case("input")
+                || tag.eq_ignore_ascii_case("mouse")
+                || tag.eq_ignore_ascii_case("keyboard")
+        })
 }
 
 fn host_driven_animation(_metadata: &EffectMetadata) -> bool {
@@ -1286,6 +1302,20 @@ mod tests {
             binding: None,
         });
         assert!(effect_uses_sensor_data(&sensor_control));
+    }
+
+    #[test]
+    fn interaction_updates_are_limited_to_interaction_aware_metadata() {
+        let mut ambient = html_metadata(PathBuf::from("ambient.html"));
+        ambient.category = EffectCategory::Ambient;
+        assert!(!effect_uses_interaction_data(&ambient));
+
+        let interactive = html_metadata(PathBuf::from("interactive.html"));
+        assert!(effect_uses_interaction_data(&interactive));
+
+        let mut tagged = ambient.clone();
+        tagged.tags.push("mouse".to_owned());
+        assert!(effect_uses_interaction_data(&tagged));
     }
 
     #[test]
@@ -1803,6 +1833,7 @@ mod tests {
     #[test]
     fn frame_scripts_skip_unchanged_input_updates() {
         let mut renderer = ServoRenderer::new();
+        renderer.include_interaction_updates = true;
 
         renderer.enqueue_frame_scripts(&frame_input(1.0 / 30.0));
         let first_input_scripts = renderer
