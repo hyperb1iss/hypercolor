@@ -4809,6 +4809,7 @@ dependencies = [
  "futures-util",
  "hypercolor-core",
  "hypercolor-types",
+ "image",
  "open",
  "reqwest 0.12.28",
  "serde",

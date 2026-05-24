@@ -1,27 +1,33 @@
 //! Tray icon generation and state management.
 //!
-//! Generates simple colored circle icons programmatically using the `image`
-//! crate. Each icon state maps to a distinct color from the `SilkCircuit` palette.
+//! Pre-baked PNGs of the canonical trinity mark, one per state. Generated
+//! by `assets/brand/build.py` from the master brand and committed under
+//! `crates/hypercolor-tray/icons/tray/`.
 
+use std::io::Cursor;
+
+use image::ImageReader;
 use tray_icon::Icon;
 
-/// Icon size in pixels (width and height).
+/// Icon size in pixels (width and height). Pre-baked PNGs must match this.
 const ICON_SIZE: u32 = 32;
 
-/// Radius of the circle relative to the icon center.
-const CIRCLE_RADIUS: f64 = 13.0;
+const ICON_ACTIVE: &[u8] = include_bytes!("../icons/tray/tray-active-32.png");
+const ICON_PAUSED: &[u8] = include_bytes!("../icons/tray/tray-paused-32.png");
+const ICON_DISCONNECTED: &[u8] = include_bytes!("../icons/tray/tray-disconnected-32.png");
+const ICON_ERROR: &[u8] = include_bytes!("../icons/tray/tray-error-32.png");
 
 /// Visual states for the tray icon.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
 pub enum IconState {
-    /// Daemon running, effect active. Bright magenta/purple (#b537f2).
+    /// Daemon running, effect active.
     Active,
-    /// Daemon running, output paused. Dimmed gray (#808080).
+    /// Daemon running, output paused.
     Paused,
-    /// Daemon not reachable. Transparent outline circle.
+    /// Daemon not reachable.
     Disconnected,
-    /// Daemon error state. Red (#e53e3e).
+    /// Daemon error state.
     Error,
 }
 
@@ -38,97 +44,22 @@ pub fn build_icon(state: IconState) -> anyhow::Result<Icon> {
     Ok(icon)
 }
 
-/// Render a 32x32 RGBA pixel buffer for the given icon state.
-#[allow(
-    clippy::cast_precision_loss,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::as_conversions
-)]
+/// Decode the pre-baked PNG for the given state into an RGBA pixel buffer.
 fn render_icon(state: IconState) -> Vec<u8> {
-    let (r, g, b, filled) = match state {
-        IconState::Active => (0xb5, 0x37, 0xf2, true),
-        IconState::Paused => (0x80, 0x80, 0x80, true),
-        IconState::Disconnected => (0x80, 0x80, 0x80, false),
-        IconState::Error => (0xe5, 0x3e, 0x3e, true),
+    let png_bytes: &[u8] = match state {
+        IconState::Active => ICON_ACTIVE,
+        IconState::Paused => ICON_PAUSED,
+        IconState::Disconnected => ICON_DISCONNECTED,
+        IconState::Error => ICON_ERROR,
     };
 
-    let center = f64::from(ICON_SIZE) / 2.0;
-    let mut pixels = vec![0u8; (ICON_SIZE * ICON_SIZE * 4) as usize];
-
-    for y in 0..ICON_SIZE {
-        for x in 0..ICON_SIZE {
-            let dx = f64::from(x) - center + 0.5;
-            let dy = f64::from(y) - center + 0.5;
-            let dist = (dx * dx + dy * dy).sqrt();
-
-            let offset = ((y * ICON_SIZE + x) * 4) as usize;
-
-            if filled {
-                write_filled_pixel(&mut pixels, offset, r, g, b, dist);
-            } else {
-                write_ring_pixel(&mut pixels, offset, r, g, b, dist);
-            }
-        }
-    }
-
-    pixels
-}
-
-/// Write a single pixel for a filled circle with anti-aliased edge.
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::as_conversions
-)]
-fn write_filled_pixel(pixels: &mut [u8], offset: usize, r: u8, g: u8, b: u8, dist: f64) {
-    let alpha = if dist <= CIRCLE_RADIUS - 1.0 {
-        255.0
-    } else if dist <= CIRCLE_RADIUS {
-        (CIRCLE_RADIUS - dist) * 255.0
-    } else {
-        0.0
-    };
-
-    let a = alpha.round().clamp(0.0, 255.0) as u8;
-    pixels[offset] = r;
-    pixels[offset + 1] = g;
-    pixels[offset + 2] = b;
-    pixels[offset + 3] = a;
-}
-
-/// Write a single pixel for a ring (outline-only circle) with anti-aliased edges.
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::as_conversions
-)]
-fn write_ring_pixel(pixels: &mut [u8], offset: usize, r: u8, g: u8, b: u8, dist: f64) {
-    let ring_outer = CIRCLE_RADIUS;
-    let ring_inner = CIRCLE_RADIUS - 2.0;
-
-    let outer_alpha = if dist <= ring_outer - 1.0 {
-        255.0
-    } else if dist <= ring_outer {
-        (ring_outer - dist) * 255.0
-    } else {
-        0.0
-    };
-
-    let inner_alpha = if dist <= ring_inner - 1.0 {
-        255.0
-    } else if dist <= ring_inner {
-        (ring_inner - dist) * 255.0
-    } else {
-        0.0
-    };
-
-    let ring_alpha = outer_alpha - inner_alpha;
-    let a = ring_alpha.round().clamp(0.0, 255.0) as u8;
-    pixels[offset] = r;
-    pixels[offset + 1] = g;
-    pixels[offset + 2] = b;
-    pixels[offset + 3] = a;
+    let img = ImageReader::with_format(Cursor::new(png_bytes), image::ImageFormat::Png)
+        .decode()
+        .expect("compiled-in PNG decodes")
+        .to_rgba8();
+    debug_assert_eq!(img.width(), ICON_SIZE);
+    debug_assert_eq!(img.height(), ICON_SIZE);
+    img.into_raw()
 }
 
 #[cfg(test)]
@@ -136,9 +67,7 @@ fn write_ring_pixel(pixels: &mut [u8], offset: usize, r: u8, g: u8, b: u8, dist:
 mod tests {
     use super::*;
 
-    const PIXEL_COUNT: usize = ICON_SIZE as usize * ICON_SIZE as usize * 4;
-    const CENTER_OFFSET: usize =
-        ((ICON_SIZE as usize / 2) * ICON_SIZE as usize + ICON_SIZE as usize / 2) * 4;
+    const PIXEL_COUNT: usize = (ICON_SIZE as usize) * (ICON_SIZE as usize) * 4;
 
     #[test]
     fn render_icon_produces_correct_size() {
@@ -154,15 +83,14 @@ mod tests {
     }
 
     #[test]
-    fn active_icon_has_nonzero_alpha_at_center() {
-        let rgba = render_icon(IconState::Active);
-        assert_eq!(rgba[CENTER_OFFSET + 3], 255);
-    }
-
-    #[test]
-    fn disconnected_icon_has_zero_alpha_at_center() {
-        let rgba = render_icon(IconState::Disconnected);
-        // Center of the ring should be transparent.
-        assert_eq!(rgba[CENTER_OFFSET + 3], 0);
+    fn states_render_distinct_icons() {
+        let active = render_icon(IconState::Active);
+        let paused = render_icon(IconState::Paused);
+        let disconnected = render_icon(IconState::Disconnected);
+        let error = render_icon(IconState::Error);
+        assert_ne!(active, paused);
+        assert_ne!(active, disconnected);
+        assert_ne!(active, error);
+        assert_ne!(paused, error);
     }
 }
