@@ -211,6 +211,7 @@ function Cargo-Get {
 Cargo-Get just
 Cargo-Get trunk
 Cargo-Get cargo-deny
+Cargo-Get tauri-cli
 
 if (Has-Cmd sccache) {
     Ok "sccache $(Bin-Version sccache)"

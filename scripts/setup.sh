@@ -327,6 +327,7 @@ cargo_get() {
 cargo_get just
 cargo_get trunk
 cargo_get cargo-deny
+cargo_get tauri-cli
 
 if need sccache; then
   ok "sccache $(bin_version sccache)"

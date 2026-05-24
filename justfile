@@ -389,6 +389,16 @@ app-bundle *args='': app-assets
 windows-installer *args='':
     powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-installer.ps1 {{ args }}
 
+# Build the macOS .app + .dmg bundle (unsigned unless APPLE_SIGNING_IDENTITY is set)
+[macos]
+mac-installer *args='':
+    ./scripts/build-mac-installer.sh {{ args }}
+
+# Regenerate the macOS icon ladder (.icns + PNG ladder) from packaging/icons/hypercolor.svg
+[macos]
+mac-icons:
+    ./scripts/generate-mac-icons.sh
+
 # Run the daemon in release mode with the full renderer set enabled
 [unix]
 daemon-release *args='':
