@@ -512,9 +512,15 @@ pub fn CanvasPreview(
             })
         })
     });
+    // `aspect-ratio` plus `width: 100%` lets the wrapper grow to fill the
+    // parent's content box while preserving the canvas's true aspect ratio.
+    // When the parent is bounded vertically (e.g., the dashboard hero row),
+    // `max-height: 100%` forces the browser to shrink the width too so the
+    // wrapper letterboxes/pillarboxes correctly. Centering happens at the
+    // host (PreviewCabinet adds `flex items-center justify-center`).
     let wrapper_style = Signal::derive(move || {
         let ratio = resolved_aspect_ratio.get();
-        format!("max-width: {max_width}; width: 100%; height: 100%; aspect-ratio: {ratio};")
+        format!("max-width: {max_width}; width: 100%; max-height: 100%; aspect-ratio: {ratio};")
     });
 
     view! {

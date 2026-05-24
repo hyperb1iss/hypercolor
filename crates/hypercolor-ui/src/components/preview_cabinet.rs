@@ -167,10 +167,15 @@ pub fn PreviewCabinet(
     } else {
         "cabinet-accent-transition relative rounded-xl border border-edge-subtle bg-black edge-glow flex flex-col"
     };
+    // `flex items-center justify-center` letterboxes/pillarboxes the
+    // aspect-correct CanvasPreview inside the cabinet's canvas region so
+    // the underlying 320×200 frame is never stretched. The absolute
+    // overlays (scrim, info, fullscreen button) still cover the full
+    // wrapper because they use `inset-0` not `flex` positioning.
     let canvas_wrapper_class = if fill_height {
-        "relative flex-1 min-h-0 overflow-hidden rounded-t-xl"
+        "relative flex-1 min-h-0 overflow-hidden rounded-t-xl flex items-center justify-center"
     } else {
-        "relative overflow-hidden rounded-t-xl"
+        "relative overflow-hidden rounded-t-xl flex items-center justify-center"
     };
 
     view! {

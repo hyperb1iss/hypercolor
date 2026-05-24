@@ -168,7 +168,12 @@ pub fn RadialGauge(
     });
 
     view! {
-        <div class="flex flex-col items-center gap-1" style="contain: layout paint">
+        // `contain: paint` (the previous value) clips painting to the
+        // wrapper's tight bounding box, which is just a hair larger than
+        // the SIZE×SIZE ring and snips the drop-shadow into a visible
+        // square halo. `contain: layout` keeps the perf isolation while
+        // letting the glow spill freely.
+        <div class="flex flex-col items-center gap-1" style="contain: layout">
             {(!caption.is_empty()).then(|| view! {
                 <div class="text-[9px] font-mono uppercase tracking-[0.16em] text-fg-tertiary">
                     {caption}

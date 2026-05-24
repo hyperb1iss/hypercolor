@@ -52,7 +52,7 @@ use timeline::{BackpressureBanner, FrameTimelinePanel, LatestFramePanel, PacingP
 // ── Layout tunables ──────────────────────────────────────────────────
 
 const HISTORY_SIZE: usize = 60;
-const MIN_PREVIEW_WIDTH: f64 = 280.0;
+const MIN_PREVIEW_WIDTH: f64 = 360.0;
 // Absolute ceiling, used only as the upper bound of the viewport-adaptive
 // clamp so a 4K display still behaves sensibly. Day-to-day the practical
 // ceiling comes from `max_preview_width()` below.
@@ -63,9 +63,17 @@ const MIN_ADAPTIVE_MAX_PREVIEW_WIDTH: f64 = 820.0;
 // Room reserved for sidebar + page padding + resize handle + a usable
 // favorites panel when the preview is pushed to its maximum.
 const PREVIEW_MAX_SIBLING_RESERVE_PX: f64 = 600.0;
-const DEFAULT_PREVIEW_WIDTH: f64 = 460.0;
-const HERO_ROW_HEIGHT_PX: f64 = 540.0;
-const PREVIEW_WIDTH_STORAGE_KEY: &str = "hc-dashboard-preview-width";
+// Default preview cabinet width and matching hero row height keep the
+// canvas at its true 320:200 aspect with zero letterbox at the default
+// settings. `720 * 200 / 320 = 450` plus a `~46px` preset strip lands at
+// `~496px` of hero height. Users can drag the splitter to taste; mild
+// letterbox/pillarbox kicks in naturally off-default.
+const DEFAULT_PREVIEW_WIDTH: f64 = 720.0;
+const HERO_ROW_HEIGHT_PX: f64 = 496.0;
+// Bumping the storage key resets the saved width once after this change
+// so reviewers see the new aspect-correct default; previous saves from
+// the old squished layout would otherwise pin the preview at 460px.
+const PREVIEW_WIDTH_STORAGE_KEY: &str = "hc-dashboard-preview-width-v2";
 const DASHBOARD_PREVIEW_FPS_CAP: u32 = 60;
 const DASHBOARD_PREVIEW_MIN_REQUEST_WIDTH: f64 = 480.0;
 const DASHBOARD_PREVIEW_MAX_REQUEST_WIDTH: f64 = 2560.0;
