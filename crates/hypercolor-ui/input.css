@@ -1204,855 +1204,100 @@ body.resizing * {
     100% { transform: rotate(360deg); }
 }
 
-/* ── 1: Circuit — PCB silkscreen, cyan-green traces, technical precision ─ */
-.logo-circuit {
-    position: relative;
-    font-family: 'Orbitron', sans-serif;
-}
-.logo-circuit .logo-gradient-text {
-    background-image: linear-gradient(
-        90deg,
-        #80ffea 0%, #50fa7b 25%, #80ffea 50%, #e135ff 75%, #80ffea 100%
-    );
-    background-size: 200% 100%;
-    animation: logoDrift 24s ease-in-out infinite;
-    filter: drop-shadow(0 0 10px rgba(128, 255, 234, 0.35))
-            drop-shadow(0 0 5px rgba(80, 250, 123, 0.2));
-}
-.logo-circuit-trace {
-    width: 60%;
-    height: 1px;
-    background: linear-gradient(90deg, transparent, rgba(128, 255, 234, 0.6), rgba(80, 250, 123, 0.4), transparent);
-    box-shadow: 0 0 6px rgba(128, 255, 234, 0.3);
-}
-.logo-bg-circuit {
-    background: radial-gradient(ellipse at 50% 50%,
-        rgba(128, 255, 234, 0.08) 0%,
-        rgba(80, 250, 123, 0.04) 40%,
-        transparent 70%);
-}
-
-@keyframes logoDrift {
-    0%   { background-position: 0% 50%; }
-    50%  { background-position: 200% 50%; }
-    100% { background-position: 0% 50%; }
-}
-
-/* ── 1: Silk — elegant weight contrast, rose-lavender palette ────────── */
-.logo-silk {
-    font-family: 'Orbitron', sans-serif;
-}
-.logo-silk .logo-gradient-text {
-    background-image: linear-gradient(
-        90deg,
-        #e135ff 0%, #ff6ac1 30%, #c4b5fd 60%, #fda4af 85%, #e135ff 100%
-    );
-    background-size: 200% 100%;
-    animation: logoDrift 20s ease-in-out infinite;
-    filter: drop-shadow(0 0 14px rgba(225, 53, 255, 0.25))
-            drop-shadow(0 0 6px rgba(253, 164, 175, 0.2));
-}
-.logo-bg-silk {
-    background: radial-gradient(ellipse at 50% 50%,
-        rgba(253, 164, 175, 0.07) 0%,
-        rgba(196, 181, 253, 0.05) 40%,
-        transparent 70%);
-}
-
-/* ── 2: Bloom — sparkle divider, coral-pink breathe ──────────────────── */
-.logo-bloom {
-    font-family: 'Orbitron', sans-serif;
-}
-.logo-bloom .logo-gradient-text {
-    background-image: linear-gradient(
-        90deg,
-        #ff6ac1 0%, #fda4af 25%, #e135ff 50%, #c4b5fd 75%, #ff6ac1 100%
-    );
-    background-size: 300% 100%;
-    animation:
-        logoDrift 18s ease-in-out infinite,
-        logoBloom 5s ease-in-out infinite;
-}
-.logo-bloom .logo-sparkle {
-    display: inline-block;
-    background-image: linear-gradient(
-        90deg,
-        #ff6ac1 0%, #fda4af 50%, #e135ff 100%
-    );
-    background-size: 200% 100%;
-    -webkit-background-clip: text;
-    background-clip: text;
-    -webkit-text-fill-color: transparent;
-    animation: logoDrift 12s ease-in-out infinite, logoSparklePulse 3s ease-in-out infinite;
-}
-.logo-bg-bloom {
-    background: radial-gradient(ellipse at 50% 50%,
-        rgba(255, 106, 193, 0.1) 0%,
-        rgba(253, 164, 175, 0.06) 35%,
-        transparent 65%);
-    animation: logoBgBreathe 5s ease-in-out infinite;
-}
-
-@keyframes logoBloom {
-    0%, 100% {
-        filter: drop-shadow(0 0 8px rgba(255, 106, 193, 0.2))
-                drop-shadow(0 0 3px rgba(253, 164, 175, 0.15));
-    }
-    50% {
-        filter: drop-shadow(0 0 24px rgba(255, 106, 193, 0.45))
-                drop-shadow(0 0 10px rgba(225, 53, 255, 0.3))
-                drop-shadow(0 0 40px rgba(253, 164, 175, 0.15));
-    }
-}
-
-@keyframes logoSparklePulse {
-    0%, 100% { transform: scale(1); opacity: 0.7; }
-    50% { transform: scale(1.2); opacity: 1; }
-}
-
-@keyframes logoBgBreathe {
-    0%, 100% { opacity: 0.3; }
-    50% { opacity: 0.7; }
-}
-
-/* ── 3: Whisper — lowercase, Satoshi, ethereal ultra-wide ────────────── */
-.logo-whisper {
-    font-family: 'Satoshi', system-ui, sans-serif;
-}
-.logo-whisper .logo-gradient-text {
-    background-image: linear-gradient(
-        90deg,
-        #c4b5fd 0%, #e135ff 25%, #fda4af 50%, #80ffea 75%, #c4b5fd 100%
-    );
-    background-size: 300% 100%;
-    animation: logoWhisperDrift 30s ease-in-out infinite;
-    filter: drop-shadow(0 0 20px rgba(196, 181, 253, 0.25))
-            drop-shadow(0 0 8px rgba(225, 53, 255, 0.15));
-}
-/* Thin decorative line above and below */
-.logo-whisper-line {
-    width: 60px;
-    height: 1px;
-    background: linear-gradient(90deg, transparent, rgba(196, 181, 253, 0.3), transparent);
-}
-.logo-bg-whisper {
-    background: radial-gradient(ellipse at 50% 50%,
-        rgba(196, 181, 253, 0.06) 0%,
-        rgba(128, 255, 234, 0.03) 50%,
-        transparent 70%);
-}
-
-@keyframes logoWhisperDrift {
-    0%   { background-position: 0% 50%; }
-    33%  { background-position: 150% 50%; }
-    66%  { background-position: 50% 50%; }
-    100% { background-position: 0% 50%; }
-}
-
-/* ── 4: Prism — dramatic size contrast, big COLOR ────────────────────── */
-.logo-prism {
-    font-family: 'Orbitron', sans-serif;
-}
-.logo-prism .logo-gradient-text {
-    background-image: linear-gradient(
-        135deg,
-        #e135ff 0%, #ff6ac1 20%, #fda4af 40%, #c4b5fd 60%, #80ffea 80%, #e135ff 100%
-    );
-    background-size: 200% 200%;
-    animation: logoPrismShift 16s ease-in-out infinite;
-    filter: drop-shadow(0 0 16px rgba(225, 53, 255, 0.35))
-            drop-shadow(0 0 6px rgba(255, 106, 193, 0.25));
-}
-.logo-bg-prism {
-    background:
-        radial-gradient(ellipse at 30% 60%,
-            rgba(225, 53, 255, 0.06) 0%, transparent 50%),
-        radial-gradient(ellipse at 70% 40%,
-            rgba(128, 255, 234, 0.05) 0%, transparent 50%);
-    animation: logoBgPrism 16s ease-in-out infinite;
-}
-
-@keyframes logoPrismShift {
-    0%   { background-position: 0% 0%; }
-    25%  { background-position: 100% 0%; }
-    50%  { background-position: 100% 100%; }
-    75%  { background-position: 0% 100%; }
-    100% { background-position: 0% 0%; }
-}
-
-@keyframes logoBgPrism {
-    0%, 100% { opacity: 0.4; }
-    50% { opacity: 0.8; }
-}
-
-/* ── 5: Script — Dancing Script cursive, peak femme ──────────────────── */
-.logo-script {
-    font-family: 'Dancing Script', cursive;
-}
-.logo-script .logo-gradient-text {
-    background-image: linear-gradient(
-        90deg,
-        #ff6ac1 0%, #e135ff 30%, #c4b5fd 60%, #fda4af 100%
-    );
-    background-size: 200% 100%;
-    animation: logoDrift 16s ease-in-out infinite, logoScriptFloat 8s ease-in-out infinite;
-    filter: drop-shadow(0 0 16px rgba(255, 106, 193, 0.35))
-            drop-shadow(0 0 8px rgba(225, 53, 255, 0.2));
-}
-.logo-bg-script {
-    background: radial-gradient(ellipse at 50% 60%,
-        rgba(255, 106, 193, 0.09) 0%,
-        rgba(225, 53, 255, 0.04) 40%,
-        transparent 65%);
-}
-
-@keyframes logoScriptFloat {
-    0%, 100% { transform: translateY(0); }
-    50% { transform: translateY(-2px); }
-}
-
-/* ── 6: Editorial — Playfair Display, high-fashion serif ─────────────── */
-.logo-editorial {
-    font-family: 'Playfair Display', Georgia, serif;
-}
-.logo-editorial .logo-gradient-text {
-    background-image: linear-gradient(
-        90deg,
-        #e135ff 0%, #ff6ac1 50%, #e135ff 100%
-    );
-    background-size: 200% 100%;
-    animation: logoDrift 20s ease-in-out infinite;
-    filter: drop-shadow(0 0 10px rgba(225, 53, 255, 0.3))
-            drop-shadow(0 0 4px rgba(255, 106, 193, 0.2));
-}
-/* Decorative rule lines for editorial vibe */
-.logo-editorial-rule {
-    width: 40px;
-    height: 1px;
-    background: linear-gradient(90deg, transparent, rgba(225, 53, 255, 0.25), transparent);
-}
-.logo-bg-editorial {
-    background: radial-gradient(ellipse at 50% 50%,
-        rgba(225, 53, 255, 0.05) 0%,
+/* ── 3: Pulse — heartbeat double-thump with glow flash ─────────────────── */
+.logo-bg-pulse {
+    background: radial-gradient(ellipse at 50% 45%,
+        rgba(225, 53, 255, 0.10) 0%,
         transparent 60%);
+    animation: pulseBgEcho 4.5s ease-out infinite;
 }
 
-/* ── 7: Neon Mono — JetBrains Mono, split color, hacker-femme ────────── */
-.logo-neon {
-    font-family: 'JetBrains Mono', monospace;
+.logo-mark-pulse {
+    animation: markPulse 4.5s ease-in-out infinite;
+    will-change: filter, transform;
 }
-.logo-neon .logo-neon-hyper {
-    background-image: linear-gradient(90deg, #e135ff, #ff6ac1);
-    -webkit-background-clip: text;
-    background-clip: text;
-    -webkit-text-fill-color: transparent;
-    filter: drop-shadow(0 0 12px rgba(225, 53, 255, 0.5));
-    animation: logoNeonPulseA 4s ease-in-out infinite;
+
+@keyframes markPulse {
+    /* Rest */
+    0%   { transform: scale(1.00); filter: drop-shadow(0 0 12px rgba(225, 53, 255, 0.30)); }
+    /* First thump */
+    7%   { transform: scale(1.07); filter: drop-shadow(0 0 28px rgba(225, 53, 255, 0.70)); }
+    14%  { transform: scale(1.02); filter: drop-shadow(0 0 16px rgba(225, 53, 255, 0.42)); }
+    /* Second thump */
+    22%  { transform: scale(1.10); filter: drop-shadow(0 0 36px rgba(225, 53, 255, 0.85)); }
+    32%  { transform: scale(1.00); filter: drop-shadow(0 0 12px rgba(225, 53, 255, 0.30)); }
+    /* Long rest */
+    100% { transform: scale(1.00); filter: drop-shadow(0 0 12px rgba(225, 53, 255, 0.30)); }
 }
-.logo-neon .logo-neon-color {
-    background-image: linear-gradient(90deg, #80ffea, #c4b5fd);
-    -webkit-background-clip: text;
-    background-clip: text;
-    -webkit-text-fill-color: transparent;
-    filter: drop-shadow(0 0 12px rgba(128, 255, 234, 0.5));
-    animation: logoNeonPulseB 4s ease-in-out infinite 2s;
+
+@keyframes pulseBgEcho {
+    0%, 32%, 100% { opacity: 0.6; transform: scale(1); }
+    7%            { opacity: 1.0; transform: scale(1.08); }
+    22%           { opacity: 1.0; transform: scale(1.12); }
 }
-/* Blinking cursor for that terminal vibe */
-.logo-neon-cursor {
-    display: inline-block;
-    width: 2px;
-    height: 24px;
-    background: rgba(128, 255, 234, 0.7);
-    margin-left: 4px;
-    animation: logoCursorBlink 1s step-end infinite;
-    vertical-align: middle;
+
+/* ── 4: Drift — petals breathe outward + return ────────────────────────── */
+.logo-bg-drift {
+    background: conic-gradient(from 90deg at 50% 50%,
+        rgba(225, 53, 255, 0.10),
+        rgba(128, 255, 234, 0.10),
+        rgba(255, 106, 193, 0.10),
+        rgba(225, 53, 255, 0.10));
+    filter: blur(24px);
+    opacity: 0.55;
+    animation: driftBgSway 18s ease-in-out infinite;
 }
-.logo-bg-neon {
-    background:
-        radial-gradient(ellipse at 40% 40%,
-            rgba(225, 53, 255, 0.06) 0%, transparent 50%),
-        radial-gradient(ellipse at 60% 60%,
-            rgba(128, 255, 234, 0.05) 0%, transparent 50%);
-    /* Faint scanlines */
-    background-size: 100% 100%, 100% 100%;
+
+.logo-mark-drift {
+    position: relative;
+    aspect-ratio: 1145 / 1032;
 }
-.logo-bg-neon::after {
-    content: '';
+.logo-mark-drift > div {
     position: absolute;
     inset: 0;
-    background: repeating-linear-gradient(
-        0deg,
-        transparent 0px,
-        transparent 3px,
-        rgba(128, 255, 234, 0.015) 3px,
-        rgba(128, 255, 234, 0.015) 4px
-    );
+    -webkit-mask-size: contain;
+    -webkit-mask-position: center;
+    -webkit-mask-repeat: no-repeat;
+    mask-size: contain;
+    mask-position: center;
+    mask-repeat: no-repeat;
+    mix-blend-mode: screen;
+    will-change: transform;
+    animation: petalDrift 9s ease-in-out infinite;
+}
+.logo-mark-drift .petal-top {
+    background: #e135ff;
+    -webkit-mask-image: url("/assets/brand/petal-top-segmented-mask.png");
+    mask-image: url("/assets/brand/petal-top-segmented-mask.png");
+    --drift-x: 0px;
+    --drift-y: -5px;
+    filter: drop-shadow(0 -2px 10px rgba(225, 53, 255, 0.45));
+}
+.logo-mark-drift .petal-left {
+    background: #80ffea;
+    -webkit-mask-image: url("/assets/brand/petal-left-segmented-mask.png");
+    mask-image: url("/assets/brand/petal-left-segmented-mask.png");
+    --drift-x: -5px;
+    --drift-y: 3px;
+    filter: drop-shadow(-3px 2px 10px rgba(128, 255, 234, 0.40));
+}
+.logo-mark-drift .petal-right {
+    background: #ff6ac1;
+    -webkit-mask-image: url("/assets/brand/petal-right-segmented-mask.png");
+    mask-image: url("/assets/brand/petal-right-segmented-mask.png");
+    --drift-x: 5px;
+    --drift-y: 3px;
+    filter: drop-shadow(3px 2px 10px rgba(255, 106, 193, 0.40));
 }
 
-@keyframes logoNeonPulseA {
-    0%, 100% { filter: drop-shadow(0 0 8px rgba(225, 53, 255, 0.3)); }
-    50% { filter: drop-shadow(0 0 20px rgba(225, 53, 255, 0.6)) drop-shadow(0 0 40px rgba(225, 53, 255, 0.15)); }
-}
-@keyframes logoNeonPulseB {
-    0%, 100% { filter: drop-shadow(0 0 8px rgba(128, 255, 234, 0.3)); }
-    50% { filter: drop-shadow(0 0 20px rgba(128, 255, 234, 0.6)) drop-shadow(0 0 40px rgba(128, 255, 234, 0.15)); }
-}
-@keyframes logoCursorBlink {
-    0%, 50% { opacity: 1; }
-    50.01%, 100% { opacity: 0; }
+@keyframes petalDrift {
+    0%, 100% { transform: translate(0, 0); }
+    50%      { transform: translate(var(--drift-x), var(--drift-y)); }
 }
 
-/* ── 8: Glitch — chromatic aberration, chaotic data corruption ────────── */
-.logo-glitch {
-    font-family: 'Orbitron', sans-serif;
-}
-.logo-glitch .logo-gradient-text {
-    background-image: linear-gradient(
-        90deg,
-        #ff6ac1 0%, #e135ff 20%, #f1fa8c 45%, #ff6ac1 65%, #80ffea 85%, #ff6ac1 100%
-    );
-    background-size: 200% 100%;
-    animation:
-        logoDrift 18s ease-in-out infinite,
-        logoGlitch 12s step-end infinite;
-}
-.logo-bg-glitch {
-    background: radial-gradient(ellipse at 50% 50%,
-        rgba(255, 106, 193, 0.07) 0%,
-        rgba(225, 53, 255, 0.04) 40%,
-        transparent 70%);
-}
-/* Faint scanlines for CRT vibe */
-.logo-bg-glitch::after {
-    content: '';
-    position: absolute;
-    inset: 0;
-    background: repeating-linear-gradient(
-        0deg,
-        transparent 0px,
-        transparent 2px,
-        rgba(225, 53, 255, 0.02) 2px,
-        rgba(225, 53, 255, 0.02) 3px
-    );
-    animation: logoScanlineDrift 8s linear infinite;
-}
-
-@keyframes logoGlitch {
-    0%, 100% {
-        filter: drop-shadow(0 0 12px rgba(225, 53, 255, 0.3))
-                drop-shadow(0 0 5px rgba(128, 255, 234, 0.2));
-        transform: none;
-    }
-    32% { filter: drop-shadow(0 0 12px rgba(225, 53, 255, 0.3)); transform: none; }
-    32.5% {
-        filter: drop-shadow(-2px 0 0 rgba(128, 255, 234, 0.7))
-                drop-shadow(2px 0 0 rgba(225, 53, 255, 0.7))
-                drop-shadow(0 0 16px rgba(255, 106, 193, 0.5));
-        transform: translateX(-1px) skewX(-1deg);
-    }
-    33.5% {
-        filter: drop-shadow(1px 0 0 rgba(241, 250, 140, 0.6))
-                drop-shadow(-1px 0 0 rgba(225, 53, 255, 0.6))
-                drop-shadow(0 0 20px rgba(128, 255, 234, 0.4));
-        transform: translateX(1px) skewX(0.5deg);
-    }
-    34% { filter: drop-shadow(0 0 12px rgba(225, 53, 255, 0.3)); transform: none; }
-    71% { transform: none; }
-    71.5% {
-        filter: drop-shadow(2px 0 0 rgba(128, 255, 234, 0.8))
-                drop-shadow(-2px 0 0 rgba(255, 106, 193, 0.8))
-                drop-shadow(0 0 24px rgba(225, 53, 255, 0.5));
-        transform: translateX(1px);
-    }
-    72% {
-        filter: drop-shadow(-1px 1px 0 rgba(241, 250, 140, 0.5))
-                drop-shadow(1px -1px 0 rgba(128, 255, 234, 0.5));
-        transform: translateX(-1px) skewX(-0.5deg);
-    }
-    72.5% { filter: drop-shadow(0 0 12px rgba(225, 53, 255, 0.3)); transform: none; }
-}
-
-@keyframes logoScanlineDrift {
-    0%   { transform: translateY(0); }
-    100% { transform: translateY(20px); }
-}
-
-/* Logo mode label — absolutely positioned, doesn't affect centering */
-.logo-mode-label {
-    position: absolute;
-    bottom: 6px;
-    left: 0;
-    right: 0;
-    text-align: center;
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 8px;
-    letter-spacing: 0.15em;
-    text-transform: uppercase;
-    opacity: 0;
-    transition: opacity 0.3s ease;
-    pointer-events: none;
-}
-.logo-container:hover .logo-mode-label {
-    opacity: 0.4;
-}
-
-/* ── Enhanced Logo Background Effects ─── v2 boosted ───────────────────── */
-
-/* 0: Circuit — scanning beam + PCB grid traces */
-.logo-bg-circuit::before {
-    content: '';
-    position: absolute;
-    inset: 0;
-    background: linear-gradient(
-        0deg,
-        transparent 0%,
-        rgba(128, 255, 234, 0.12) 44%,
-        rgba(128, 255, 234, 0.4) 49%,
-        rgba(225, 53, 255, 0.35) 51%,
-        rgba(128, 255, 234, 0.12) 56%,
-        transparent 100%
-    );
-    background-size: 100% 300%;
-    animation: circuitScan 3s ease-in-out infinite;
-}
-.logo-bg-circuit::after {
-    content: '';
-    position: absolute;
-    inset: 0;
-    background:
-        repeating-linear-gradient(
-            0deg,
-            transparent 0px, transparent 15px,
-            rgba(225, 53, 255, 0.1) 15px, rgba(225, 53, 255, 0.1) 16px
-        ),
-        repeating-linear-gradient(
-            90deg,
-            transparent 0px, transparent 15px,
-            rgba(128, 255, 234, 0.07) 15px, rgba(128, 255, 234, 0.07) 16px
-        );
-}
-
-@keyframes circuitScan {
-    0%   { background-position: 0% 0%; }
-    100% { background-position: 0% 300%; }
-}
-
-/* 1: Silk — aurora ribbons flowing through */
-.logo-bg-silk::before {
-    content: '';
-    position: absolute;
-    inset: -40%;
-    background: linear-gradient(
-        140deg,
-        transparent 25%,
-        rgba(253, 164, 175, 0.25) 38%,
-        rgba(196, 181, 253, 0.35) 50%,
-        rgba(225, 53, 255, 0.2) 62%,
-        transparent 75%
-    );
-    animation: silkRibbon 10s ease-in-out infinite;
-}
-.logo-bg-silk::after {
-    content: '';
-    position: absolute;
-    inset: -40%;
-    background: linear-gradient(
-        -30deg,
-        transparent 30%,
-        rgba(196, 181, 253, 0.2) 40%,
-        rgba(253, 164, 175, 0.3) 50%,
-        rgba(128, 255, 234, 0.15) 60%,
-        transparent 70%
-    );
-    animation: silkRibbon 14s ease-in-out infinite reverse;
-}
-
-@keyframes silkRibbon {
-    0%   { transform: translateX(-40%) rotate(-8deg); }
-    50%  { transform: translateX(40%) rotate(8deg); }
-    100% { transform: translateX(-40%) rotate(-8deg); }
-}
-
-/* 2: Bloom — floating luminous orbs + sparkle dust motes */
-.logo-bg-bloom::before {
-    content: '';
-    position: absolute;
-    inset: -10%;
-    background:
-        radial-gradient(circle 20px at 20% 30%, rgba(255, 106, 193, 0.45), transparent 70%),
-        radial-gradient(circle 15px at 75% 60%, rgba(225, 53, 255, 0.4), transparent 70%),
-        radial-gradient(circle 18px at 50% 80%, rgba(253, 164, 175, 0.35), transparent 70%);
-    animation: bloomFloat 8s ease-in-out infinite;
-}
-.logo-bg-bloom::after {
-    content: '';
-    position: absolute;
-    width: 2px;
-    height: 2px;
-    top: 10%;
-    left: 10%;
-    background: rgba(255, 106, 193, 0.9);
-    border-radius: 50%;
-    box-shadow:
-        30px 8px 0 0.5px rgba(253, 164, 175, 0.8),
-        65px 20px 0 0 rgba(225, 53, 255, 0.7),
-        120px 5px 0 0.5px rgba(196, 181, 253, 0.8),
-        150px 18px 0 0 rgba(255, 106, 193, 0.6),
-        45px 55px 0 0.5px rgba(225, 53, 255, 0.7),
-        100px 50px 0 0 rgba(253, 164, 175, 0.8),
-        140px 65px 0 0.5px rgba(196, 181, 253, 0.6),
-        20px 80px 0 0 rgba(255, 106, 193, 0.7),
-        80px 85px 0 0.5px rgba(225, 53, 255, 0.6),
-        170px 75px 0 0 rgba(253, 164, 175, 0.7),
-        55px 100px 0 0.5px rgba(196, 181, 253, 0.5),
-        130px 95px 0 0 rgba(225, 53, 255, 0.6);
-    animation: bloomDust 5s ease-in-out infinite;
-}
-
-@keyframes bloomFloat {
-    0%, 100% { transform: translate(0, 0) scale(1); opacity: 0.7; }
-    33% { transform: translate(8px, -5px) scale(1.08); opacity: 1; }
-    66% { transform: translate(-5px, 3px) scale(0.92); opacity: 0.6; }
-}
-@keyframes bloomDust {
-    0%, 100% { opacity: 0.5; transform: translateY(0); }
-    50% { opacity: 1; transform: translateY(-4px); }
-}
-
-/* 3: Whisper — starfield with parallax twinkling layers */
-.logo-bg-whisper::before {
-    content: '';
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    top: 0;
-    left: 0;
-    background: transparent;
-    box-shadow:
-        25px 8px 0 0.5px rgba(196, 181, 253, 0.9),
-        60px 5px 0 0 rgba(128, 255, 234, 0.8),
-        95px 18px 0 0.5px rgba(196, 181, 253, 0.7),
-        135px 10px 0 0 rgba(225, 53, 255, 0.6),
-        170px 22px 0 0.5px rgba(128, 255, 234, 0.9),
-        200px 14px 0 0 rgba(196, 181, 253, 0.7),
-        15px 40px 0 0 rgba(196, 181, 253, 0.6),
-        45px 35px 0 0.5px rgba(128, 255, 234, 0.7),
-        80px 48px 0 0 rgba(225, 53, 255, 0.8),
-        115px 42px 0 0.5px rgba(196, 181, 253, 0.7),
-        150px 50px 0 0 rgba(128, 255, 234, 0.6),
-        190px 38px 0 0.5px rgba(225, 53, 255, 0.65),
-        30px 70px 0 0.5px rgba(225, 53, 255, 0.7),
-        70px 65px 0 0 rgba(196, 181, 253, 0.85),
-        105px 75px 0 0.5px rgba(128, 255, 234, 0.6),
-        140px 68px 0 0 rgba(196, 181, 253, 0.75),
-        175px 72px 0 0.5px rgba(225, 53, 255, 0.6),
-        210px 62px 0 0 rgba(128, 255, 234, 0.7),
-        20px 95px 0 0 rgba(128, 255, 234, 0.8),
-        55px 100px 0 0.5px rgba(196, 181, 253, 0.7),
-        90px 92px 0 0 rgba(225, 53, 255, 0.6),
-        130px 98px 0 0.5px rgba(128, 255, 234, 0.75),
-        165px 90px 0 0 rgba(196, 181, 253, 0.65),
-        40px 120px 0 0.5px rgba(225, 53, 255, 0.7),
-        75px 115px 0 0 rgba(128, 255, 234, 0.6),
-        110px 125px 0 0.5px rgba(196, 181, 253, 0.8),
-        150px 118px 0 0 rgba(225, 53, 255, 0.55),
-        185px 130px 0 0.5px rgba(128, 255, 234, 0.7),
-        215px 110px 0 0 rgba(196, 181, 253, 0.6);
-    animation: whisperTwinkle 6s ease-in-out infinite;
-}
-.logo-bg-whisper::after {
-    content: '';
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    top: 0;
-    left: 0;
-    background: transparent;
-    box-shadow:
-        12px 15px 0 1px rgba(196, 181, 253, 0.5),
-        40px 52px 0 1px rgba(128, 255, 234, 0.45),
-        78px 30px 0 1px rgba(225, 53, 255, 0.4),
-        120px 82px 0 1px rgba(196, 181, 253, 0.5),
-        155px 45px 0 1px rgba(128, 255, 234, 0.4),
-        88px 108px 0 1px rgba(196, 181, 253, 0.45),
-        35px 125px 0 1px rgba(128, 255, 234, 0.35),
-        150px 120px 0 1px rgba(225, 53, 255, 0.4),
-        195px 85px 0 1px rgba(196, 181, 253, 0.4),
-        60px 135px 0 1px rgba(128, 255, 234, 0.3),
-        180px 128px 0 1px rgba(225, 53, 255, 0.35);
-    animation: whisperTwinkle 10s ease-in-out infinite 3s;
-}
-
-@keyframes whisperTwinkle {
-    0%, 100% { opacity: 0.3; }
-    25% { opacity: 0.8; }
-    50% { opacity: 0.4; }
-    75% { opacity: 1; }
-}
-
-/* 4: Prism — rotating conic gradient caustics + light flares */
-.logo-bg-prism::before {
-    content: '';
-    position: absolute;
-    inset: -60%;
-    background: conic-gradient(
-        from 0deg at 50% 50%,
-        rgba(225, 53, 255, 0.15) 0deg,
-        transparent 30deg,
-        rgba(128, 255, 234, 0.18) 60deg,
-        transparent 90deg,
-        rgba(255, 106, 193, 0.15) 120deg,
-        transparent 150deg,
-        rgba(241, 250, 140, 0.12) 180deg,
-        transparent 210deg,
-        rgba(196, 181, 253, 0.15) 240deg,
-        transparent 270deg,
-        rgba(128, 255, 234, 0.12) 300deg,
-        transparent 330deg,
-        rgba(225, 53, 255, 0.15) 360deg
-    );
-    animation: prismRotate 16s linear infinite;
-}
-.logo-bg-prism::after {
-    content: '';
-    position: absolute;
-    inset: 0;
-    background:
-        radial-gradient(circle 25px at 25% 35%, rgba(225, 53, 255, 0.25), transparent),
-        radial-gradient(circle 20px at 75% 65%, rgba(128, 255, 234, 0.2), transparent),
-        radial-gradient(circle 15px at 55% 20%, rgba(255, 106, 193, 0.22), transparent);
-    animation: prismFlare 6s ease-in-out infinite;
-}
-
-@keyframes prismRotate {
-    from { transform: rotate(0deg); }
-    to   { transform: rotate(360deg); }
-}
-@keyframes prismFlare {
-    0%, 100% { opacity: 0.4; transform: scale(1); }
-    50% { opacity: 1; transform: scale(1.15); }
-}
-
-/* 5: Script — rising sparkle motes + soft bokeh circles */
-.logo-bg-script::before {
-    content: '';
-    position: absolute;
-    width: 2px;
-    height: 2px;
-    bottom: 0;
-    left: 8%;
-    background: rgba(255, 106, 193, 0.9);
-    border-radius: 50%;
-    box-shadow:
-        20px 0 0 0.5px rgba(225, 53, 255, 0.8),
-        55px -10px 0 0 rgba(255, 106, 193, 0.7),
-        90px 5px 0 0.5px rgba(196, 181, 253, 0.8),
-        125px -5px 0 0 rgba(253, 164, 175, 0.7),
-        160px 0 0 0.5px rgba(225, 53, 255, 0.6),
-        35px -20px 0 0 rgba(255, 106, 193, 0.5),
-        75px -15px 0 0.5px rgba(196, 181, 253, 0.6),
-        110px -25px 0 0 rgba(225, 53, 255, 0.5),
-        145px -10px 0 0.5px rgba(253, 164, 175, 0.6);
-    animation: scriptRise 5s ease-in-out infinite;
-}
-.logo-bg-script::after {
-    content: '';
-    position: absolute;
-    inset: 0;
-    background:
-        radial-gradient(circle 22px at 20% 45%, rgba(255, 106, 193, 0.2), transparent),
-        radial-gradient(circle 30px at 75% 35%, rgba(225, 53, 255, 0.15), transparent),
-        radial-gradient(circle 18px at 50% 75%, rgba(253, 164, 175, 0.2), transparent);
-    animation: scriptBokeh 8s ease-in-out infinite;
-}
-
-@keyframes scriptRise {
-    0%   { transform: translateY(0); opacity: 0.8; }
-    50%  { transform: translateY(-30px); opacity: 1; }
-    100% { transform: translateY(-60px); opacity: 0; }
-}
-@keyframes scriptBokeh {
-    0%, 100% { opacity: 0.4; transform: scale(1); }
-    50% { opacity: 0.8; transform: scale(1.12); }
-}
-
-/* 6: Editorial — halftone dot pattern + diagonal shimmer sweep */
-.logo-bg-editorial::before {
-    content: '';
-    position: absolute;
-    inset: 0;
-    background: radial-gradient(circle 1.5px at 50% 50%, rgba(225, 53, 255, 0.2), transparent 70%);
-    background-size: 8px 8px;
-}
-.logo-bg-editorial::after {
-    content: '';
-    position: absolute;
-    inset: 0;
-    background: linear-gradient(
-        -45deg,
-        transparent 25%,
-        rgba(225, 53, 255, 0.15) 42%,
-        rgba(255, 106, 193, 0.25) 50%,
-        rgba(225, 53, 255, 0.15) 58%,
-        transparent 75%
-    );
-    background-size: 300% 300%;
-    animation: editorialShimmer 6s ease-in-out infinite;
-}
-
-@keyframes editorialShimmer {
-    0%   { background-position: 100% 100%; }
-    50%  { background-position: 0% 0%; }
-    100% { background-position: 100% 100%; }
-}
-
-/* 7: Neon — vertical digital rain streaks (::after already has scanlines) */
-.logo-bg-neon::before {
-    content: '';
-    position: absolute;
-    inset: 0;
-    background: repeating-linear-gradient(
-        90deg,
-        transparent 0px, transparent 9px,
-        rgba(128, 255, 234, 0.12) 9px, rgba(128, 255, 234, 0.12) 10px,
-        transparent 10px, transparent 17px,
-        rgba(225, 53, 255, 0.08) 17px, rgba(225, 53, 255, 0.08) 18px
-    );
-    -webkit-mask-image: linear-gradient(
-        0deg,
-        rgba(0,0,0,1) 0%, transparent 35%,
-        rgba(0,0,0,0.6) 55%, transparent 100%
-    );
-    mask-image: linear-gradient(
-        0deg,
-        rgba(0,0,0,1) 0%, transparent 35%,
-        rgba(0,0,0,0.6) 55%, transparent 100%
-    );
-    animation: neonRain 2s linear infinite;
-}
-
-@keyframes neonRain {
-    0%   { transform: translateY(-100%); }
-    100% { transform: translateY(100%); }
-}
-
-/* 8: Glitch — horizontal noise bands + RGB tear (::after already has scanlines) */
-.logo-bg-glitch::before {
-    content: '';
-    position: absolute;
-    inset: 0;
-    background: linear-gradient(
-        0deg,
-        transparent 0%,
-        rgba(225, 53, 255, 0.15) 8%, transparent 12%,
-        transparent 23%,
-        rgba(128, 255, 234, 0.18) 25%, transparent 29%,
-        transparent 42%,
-        rgba(241, 250, 140, 0.12) 44%, transparent 48%,
-        transparent 58%,
-        rgba(255, 106, 193, 0.15) 60%, transparent 64%,
-        transparent 78%,
-        rgba(128, 255, 234, 0.12) 80%, transparent 84%,
-        transparent 100%
-    );
-    animation: glitchNoise 3s step-end infinite;
-}
-
-@keyframes glitchNoise {
-    0%   { transform: translateY(0); opacity: 1; }
-    20%  { transform: translateY(-12px); opacity: 0.7; }
-    40%  { transform: translateY(8px); opacity: 1; }
-    60%  { transform: translateY(-5px); opacity: 0.6; }
-    80%  { transform: translateY(10px); opacity: 0.9; }
-    100% { transform: translateY(0); opacity: 1; }
-}
-
-/* ── Light mode overrides ─────────────────────────────────────────────── */
-[data-theme="light"] .logo-gradient-text {
-    background-image: linear-gradient(
-        90deg,
-        #b800d4 0%, #d4007a 25%, #009e8e 50%, #8a7600 75%, #b800d4 100%
-    );
-    background-size: 200% 100%;
-    filter: drop-shadow(0 0 8px rgba(180, 0, 210, 0.25))
-            drop-shadow(0 0 3px rgba(0, 158, 142, 0.2));
-}
-[data-theme="light"] .logo-neon .logo-neon-hyper,
-[data-theme="light"] .logo-neon .logo-neon-color {
-    filter: drop-shadow(0 0 6px rgba(180, 0, 210, 0.3));
-}
-
-/* Shared: collapsed icon mark */
-.logo-mark {
-    background: linear-gradient(135deg, #e135ff 0%, #ff6ac1 50%, #80ffea 100%);
-    background-size: 200% 200%;
-    animation: markShift 6s ease-in-out infinite;
-}
-
-@keyframes markShift {
-    0%, 100% { background-position: 0% 50%; }
-    50%      { background-position: 100% 50%; }
-}
-
-/* Per-mode collapsed marks — each mirrors its expanded logo's palette */
-.logo-mark-circuit {
-    background: linear-gradient(135deg, #80ffea 0%, #50fa7b 50%, #80ffea 100%);
-    background-size: 200% 200%;
-    animation: markShift 6s ease-in-out infinite, breathe 3s ease-in-out infinite;
-}
-.logo-mark-silk {
-    background: linear-gradient(135deg, #e135ff 0%, #ff6ac1 40%, #fda4af 70%, #c4b5fd 100%);
-    background-size: 200% 200%;
-    animation: markShift 6s ease-in-out infinite, breathe 3s ease-in-out infinite;
-}
-.logo-mark-bloom {
-    background: linear-gradient(135deg, #ff6ac1 0%, #fda4af 40%, #e135ff 70%, #c4b5fd 100%);
-    background-size: 200% 200%;
-    animation: markShift 5s ease-in-out infinite, breathe 3s ease-in-out infinite;
-}
-.logo-mark-whisper {
-    background: linear-gradient(135deg, #c4b5fd 0%, #e135ff 50%, #80ffea 100%);
-    background-size: 200% 200%;
-    animation: markShift 8s ease-in-out infinite, breathe 4s ease-in-out infinite;
-}
-.logo-mark-prism {
-    background: linear-gradient(135deg, #e135ff 0%, #ff6ac1 20%, #fda4af 40%, #c4b5fd 60%, #80ffea 80%, #e135ff 100%);
-    background-size: 200% 200%;
-    animation: logoPrismShift 16s ease-in-out infinite, breathe 3s ease-in-out infinite;
-}
-.logo-mark-script {
-    background: linear-gradient(135deg, #ff6ac1 0%, #e135ff 40%, #c4b5fd 70%, #fda4af 100%);
-    background-size: 200% 200%;
-    animation: markShift 6s ease-in-out infinite, breathe 3s ease-in-out infinite;
-}
-.logo-mark-editorial {
-    background: linear-gradient(135deg, #e135ff 0%, #ff6ac1 50%, #e135ff 100%);
-    background-size: 200% 200%;
-    animation: markShift 6s ease-in-out infinite, breathe 3s ease-in-out infinite;
-}
-.logo-mark-neon {
-    background: linear-gradient(180deg, #e135ff 0%, #ff6ac1 45%, #80ffea 55%, #c4b5fd 100%);
-    background-size: 100% 200%;
-    animation: markNeonShift 4s ease-in-out infinite, breathe 3s ease-in-out infinite;
-}
-.logo-mark-glitch {
-    background: linear-gradient(135deg, #ff6ac1 0%, #e135ff 25%, #f1fa8c 50%, #80ffea 75%, #ff6ac1 100%);
-    background-size: 200% 200%;
-    animation: markShift 6s ease-in-out infinite, breathe 3s ease-in-out infinite, logoGlitchMark 12s step-end infinite;
-}
-
-@keyframes markNeonShift {
-    0%, 100% { background-position: 50% 0%; }
-    50%      { background-position: 50% 100%; }
-}
-@keyframes logoGlitchMark {
-    0%, 100% { transform: none; }
-    32%, 71% { transform: none; }
-    32.5% { transform: translateX(-1px) skewX(-2deg); }
-    33.5% { transform: translateX(1px); }
-    34% { transform: none; }
-    71.5% { transform: translateX(1px) skewX(1deg); }
-    72% { transform: none; }
+@keyframes driftBgSway {
+    0%, 100% { transform: rotate(0deg); }
+    50%      { transform: rotate(40deg); }
 }
 
 /* ── Reduced motion ──────────────────────────────────────────────────────── */
@@ -2077,26 +1322,7 @@ body.resizing * {
     .animate-cabinet-ignite,
     .dot-alive,
     .card-glow,
-    .logo-gradient-text,
-    .logo-neon-hyper,
-    .logo-neon-color,
-    .logo-sparkle,
-    .logo-mark,
-    [class*="logo-mark-"],
-    .logo-bg-circuit::before,
-    .logo-bg-silk::before,
-    .logo-bg-silk::after,
-    .logo-bg-bloom::before,
-    .logo-bg-bloom::after,
-    .logo-bg-whisper::before,
-    .logo-bg-whisper::after,
-    .logo-bg-prism::before,
-    .logo-bg-prism::after,
-    .logo-bg-script::before,
-    .logo-bg-script::after,
-    .logo-bg-editorial::after,
-    .logo-bg-neon::before,
-    .logo-bg-glitch::before {
+    .logo-gradient-text {
         animation: none !important;
     }
 

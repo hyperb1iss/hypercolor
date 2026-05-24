@@ -203,13 +203,11 @@ pub fn Sidebar() -> impl IntoView {
             class:w-56=move || !collapsed.get()
             class:w-14=move || collapsed.get()
         >
-            // Logo — click to cycle through modes, persisted to localStorage
+            // Logo — click to cycle through subtle animation variants of the
+            // canonical mark. All five flavors render the real Hypercolor
+            // trinity; the typography experiments are gone.
             {
-                let logo_mode_count = 12_usize;
-                // Modes 0/10/11 are official-mark variants (static, chrome+hue
-                // aura, per-petal tri). Modes 1-9 are the typography experiments
-                // kept around as opt-in fun. Default lands on the canonical
-                // static mark on first load and after a wipe.
+                let logo_mode_count = 5_usize;
                 let default_mode = 0_usize;
                 let initial_mode = storage::get("hc-logo-mode")
                     .and_then(|v| v.parse::<usize>().ok())
@@ -221,10 +219,7 @@ pub fn Sidebar() -> impl IntoView {
                     storage::set("hc-logo-mode", &m.to_string());
                 });
 
-                let mode_names = [
-                    "mark", "circuit", "silk", "bloom", "whisper", "prism",
-                    "script", "editorial", "neon", "glitch", "aura", "tri",
-                ];
+                let mode_names = ["mark", "aura", "tri", "pulse", "drift"];
 
                 view! {
                     <div
@@ -239,40 +234,14 @@ pub fn Sidebar() -> impl IntoView {
                             on:click=cycle_logo
                             title="Click to change logo style"
                         >
-                            {move || {
-                                let mode = logo_mode.get();
-                                // Modes 0/10/11 (official mark variants) all use the trinity
-                                // image at 32px — too small for the aura/tri effects to read.
-                                if matches!(mode, 0 | 10 | 11) {
-                                    return view! {
-                                        <img
-                                            src="/assets/brand/mark-color.png"
-                                            alt="Hypercolor"
-                                            class="w-8 h-8 select-none logo-mark-image"
-                                            draggable="false"
-                                        />
-                                    }.into_any();
-                                }
-                                let (mark_class, glow, text_class, font, letter) = match mode {
-                                    1 => ("logo-mark-circuit", "128, 255, 234", "text-xs font-semibold", "font-family:'Orbitron',sans-serif", "H"),
-                                    2 => ("logo-mark-silk", "253, 164, 175", "text-sm font-normal", "font-family:'Orbitron',sans-serif", "h"),
-                                    3 => ("logo-mark-bloom", "255, 106, 193", "text-base", "", "\u{2726}"),
-                                    4 => ("logo-mark-whisper", "196, 181, 253", "text-xs font-light", "font-family:'Satoshi',system-ui,sans-serif", "h"),
-                                    5 => ("logo-mark-prism", "225, 53, 255", "text-sm font-black", "font-family:'Orbitron',sans-serif", "H"),
-                                    6 => ("logo-mark-script", "255, 106, 193", "text-lg font-bold", "font-family:'Dancing Script',cursive", "H"),
-                                    7 => ("logo-mark-editorial", "225, 53, 255", "text-base font-bold italic", "font-family:'Playfair Display',Georgia,serif", "H"),
-                                    8 => ("logo-mark-neon", "128, 255, 234", "text-xs font-semibold", "font-family:'JetBrains Mono',monospace", "H"),
-                                    _ => ("logo-mark-glitch", "225, 53, 255", "text-sm font-black", "font-family:'Orbitron',sans-serif", "H"),
-                                };
-                                view! {
-                                    <div
-                                        class=format!("w-8 h-8 rounded-lg {mark_class} flex items-center justify-center")
-                                        style=format!("--glow-rgb: {glow}")
-                                    >
-                                        <span class=format!("{text_class} text-white") style=font>{letter}</span>
-                                    </div>
-                                }.into_any()
-                            }}
+                            // Collapsed: always the static mark at 32px. Mode-specific
+                            // animations would be illegible this small.
+                            <img
+                                src="/assets/brand/mark-color.png"
+                                alt="Hypercolor"
+                                class="w-8 h-8 select-none logo-mark-image"
+                                draggable="false"
+                            />
                         </div>
 
                         // Expanded state: cycling logo modes
@@ -286,25 +255,17 @@ pub fn Sidebar() -> impl IntoView {
                             <div class=move || {
                                 let bg = match logo_mode.get() {
                                     0 => "logo-bg-mark",
-                                    1 => "logo-bg-circuit",
-                                    2 => "logo-bg-silk",
-                                    3 => "logo-bg-bloom",
-                                    4 => "logo-bg-whisper",
-                                    5 => "logo-bg-prism",
-                                    6 => "logo-bg-script",
-                                    7 => "logo-bg-editorial",
-                                    8 => "logo-bg-neon",
-                                    9 => "logo-bg-glitch",
-                                    10 => "logo-bg-aura",
-                                    _ => "logo-bg-tri",
+                                    1 => "logo-bg-aura",
+                                    2 => "logo-bg-tri",
+                                    3 => "logo-bg-pulse",
+                                    _ => "logo-bg-drift",
                                 };
                                 format!("logo-bg {bg}")
                             } />
 
                             {move || {
-                                let mode = logo_mode.get();
-                                match mode {
-                                    // 0: Mark — the canonical Hypercolor trinity + wordmark
+                                match logo_mode.get() {
+                                    // 0: Mark — full lockup, subtle magenta breath glow
                                     0 => view! {
                                         <img
                                             src="/assets/brand/lockup-vertical-color.png"
@@ -314,97 +275,36 @@ pub fn Sidebar() -> impl IntoView {
                                         />
                                     }.into_any(),
 
-                                    // 1: Circuit — PCB silkscreen, trace separator, technical precision
+                                    // 1: Aura — chrome preserved, slow hue cycle overlay
                                     1 => view! {
-                                        <div class="logo-circuit flex flex-col items-center leading-none gap-1.5">
-                                            <span class="logo-gradient-text text-[20px] font-semibold tracking-[0.45em]">"HYPER"</span>
-                                            <div class="logo-circuit-trace" />
-                                            <span class="logo-gradient-text text-[20px] font-semibold tracking-[0.45em]">"COLOR"</span>
-                                        </div>
-                                    }.into_any(),
-
-                                    // 2: Silk — elegant weight contrast, thin over bold
-                                    2 => view! {
-                                        <div class="logo-silk flex flex-col items-center leading-none">
-                                            <span class="logo-gradient-text text-[26px] font-normal tracking-[0.25em]">"Hyper"</span>
-                                            <span class="logo-gradient-text text-[28px] font-bold tracking-[0.15em] -mt-0.5">"color"</span>
-                                        </div>
-                                    }.into_any(),
-
-                                    // 3: Bloom — sparkle divider, coral-pink breathe
-                                    3 => view! {
-                                        <div class="logo-bloom flex flex-col items-center leading-none gap-1">
-                                            <span class="logo-gradient-text text-[24px] font-semibold tracking-[0.2em]">"HYPER"</span>
-                                            <span class="logo-sparkle text-[14px] leading-none">"✦"</span>
-                                            <span class="logo-gradient-text text-[24px] font-semibold tracking-[0.2em]">"COLOR"</span>
-                                        </div>
-                                    }.into_any(),
-
-                                    // 4: Whisper — lowercase, ultra-wide, decorative lines
-                                    4 => view! {
-                                        <div class="logo-whisper flex flex-col items-center leading-none gap-2.5">
-                                            <div class="logo-whisper-line" />
-                                            <span class="logo-gradient-text text-[14px] font-normal tracking-[0.45em]">"hypercolor"</span>
-                                            <div class="logo-whisper-line" />
-                                        </div>
-                                    }.into_any(),
-
-                                    // 5: Prism — dramatic size contrast
-                                    5 => view! {
-                                        <div class="logo-prism flex flex-col items-center leading-none">
-                                            <span class="logo-gradient-text text-[14px] font-normal tracking-[0.5em]">"HYPER"</span>
-                                            <span class="logo-gradient-text text-[38px] font-black tracking-[0.08em] -mt-1">"COLOR"</span>
-                                        </div>
-                                    }.into_any(),
-
-                                    // 6: Script — Dancing Script cursive, full femme
-                                    6 => view! {
-                                        <div class="logo-script flex flex-col items-center leading-none">
-                                            <span class="logo-gradient-text text-[44px] font-bold tracking-[0.02em]">"Hyper"</span>
-                                            <span class="logo-gradient-text text-[34px] font-semibold tracking-[0.05em] -mt-3">"color"</span>
-                                        </div>
-                                    }.into_any(),
-
-                                    // 7: Editorial — Playfair Display, ruled lines
-                                    7 => view! {
-                                        <div class="logo-editorial flex flex-col items-center leading-none gap-1">
-                                            <div class="logo-editorial-rule" />
-                                            <span class="logo-gradient-text text-[38px] font-bold italic tracking-[0.04em]">"Hyper"</span>
-                                            <span class="logo-gradient-text text-[18px] font-normal tracking-[0.45em] -mt-1">"COLOR"</span>
-                                            <div class="logo-editorial-rule" />
-                                        </div>
-                                    }.into_any(),
-
-                                    // 8: Neon Mono — split-color hacker femme + cursor
-                                    8 => view! {
-                                        <div class="logo-neon flex flex-col items-center leading-none">
-                                            <span class="logo-neon-hyper text-[28px] font-semibold tracking-[0.12em]">"hyper"</span>
-                                            <div class="flex items-center mt-0.5">
-                                                <span class="logo-neon-color text-[28px] font-semibold tracking-[0.12em]">"color"</span>
-                                                <span class="logo-neon-cursor" />
-                                            </div>
-                                        </div>
-                                    }.into_any(),
-
-                                    // 9: Glitch — chromatic aberration, chaotic weight/offset
-                                    9 => view! {
-                                        <div class="logo-glitch flex flex-col items-start leading-none">
-                                            <span class="logo-gradient-text text-[32px] font-black tracking-[0.06em]">"HYPER"</span>
-                                            <span class="logo-gradient-text text-[18px] font-light tracking-[0.5em] -mt-1 ml-4">"COLOR"</span>
-                                        </div>
-                                    }.into_any(),
-
-                                    // 10: Aura — official mark with cycling hue tint overlay
-                                    10 => view! {
                                         <div class="logo-mark-aura h-24 w-24">
                                             <div class="aura-base" />
                                             <div class="aura-tint" />
                                         </div>
                                     }.into_any(),
 
-                                    // 11: Tri — per-petal hue cycling, 120° phase apart
-                                    _ => view! {
+                                    // 2: Tri — per-petal hue cycling, 120° phase apart
+                                    2 => view! {
                                         <div class="logo-mark-tri h-24 w-24">
+                                            <div class="petal-top" />
+                                            <div class="petal-left" />
+                                            <div class="petal-right" />
+                                        </div>
+                                    }.into_any(),
+
+                                    // 3: Pulse — heartbeat double-thump with glow flash
+                                    3 => view! {
+                                        <img
+                                            src="/assets/brand/mark-color.png"
+                                            alt="Hypercolor"
+                                            class="h-24 w-24 select-none object-contain logo-mark-pulse"
+                                            draggable="false"
+                                        />
+                                    }.into_any(),
+
+                                    // 4: Drift — petals drift outward + return on long cycle
+                                    _ => view! {
+                                        <div class="logo-mark-drift h-24 w-24">
                                             <div class="petal-top" />
                                             <div class="petal-left" />
                                             <div class="petal-right" />
