@@ -175,9 +175,14 @@ function Set-HypercolorPawnIoModuleDir {
 function Test-HypercolorSmbusBroker {
     # CPU temperature reads and SMBus motherboard / DRAM device
     # discovery both route through HypercolorSmBus (which runs as
-    # LocalSystem because PawnIO requires admin context). If the
-    # service exists but is stopped, surface a one-line fix instead of
-    # letting the user dig through daemon warnings for "access denied".
+    # LocalSystem because PawnIO requires admin context). Two ways the
+    # daemon can silently lose CPU temp / SMBus discovery in dev:
+    # (1) broker is installed but not running
+    # (2) broker is running but PawnIO module blobs aren't in any
+    #     of its search paths (most commonly because the install put
+    #     them elsewhere). Surface both with the exact recovery
+    #     command instead of leaving the user to dig through
+    #     daemon warnings.
     $query = & sc.exe query HypercolorSmBus 2>&1
     if ($LASTEXITCODE -ne 0) {
         # Service not installed; nothing to warn about. The Settings
@@ -186,17 +191,53 @@ function Test-HypercolorSmbusBroker {
     }
 
     $stateLine = $query | Where-Object { $_ -match '^\s*STATE\s*:' } | Select-Object -First 1
-    if ($stateLine -match 'RUNNING') {
+    if ($stateLine -notmatch 'RUNNING') {
+        Write-Host ""
+        Write-Warning "HypercolorSmBus broker is installed but not running."
+        Write-Warning "CPU temperature and motherboard RGB discovery need the broker."
+        Write-Warning "Fix: open an elevated PowerShell and run:"
+        Write-Warning "    sc.exe start HypercolorSmBus"
+        Write-Warning "(Or reboot - broker startup type is Automatic.)"
+        Write-Host ""
         return
     }
 
-    Write-Host ""
-    Write-Warning "HypercolorSmBus broker is installed but not running."
-    Write-Warning "CPU temperature and motherboard RGB discovery need the broker."
-    Write-Warning "Fix: open an elevated PowerShell and run:"
-    Write-Warning "    sc.exe start HypercolorSmBus"
-    Write-Warning "(Or reboot - broker startup type is Automatic.)"
-    Write-Host ""
+    # Broker is running. Check that PawnIO has the module blobs the
+    # broker will need to service ReadMsr / SmBus requests. Probe the
+    # standard install location only; other search paths are dev-only.
+    $pawnIoHome = if ($env:HYPERCOLOR_PAWNIO_HOME) {
+        $env:HYPERCOLOR_PAWNIO_HOME
+    } else {
+        $candidate = $null
+        foreach ($root in @($env:ProgramFiles, ${env:ProgramFiles(x86)})) {
+            if (-not $root) { continue }
+            $maybe = Join-Path $root 'PawnIO'
+            if (Test-Path (Join-Path $maybe 'PawnIOLib.dll')) {
+                $candidate = $maybe
+                break
+            }
+        }
+        $candidate
+    }
+
+    if (-not $pawnIoHome) {
+        Write-Host ""
+        Write-Warning "PawnIO is not installed. CPU temperature and motherboard RGB discovery will not work."
+        Write-Warning "Fix: install hardware support from Settings > Device Discovery."
+        Write-Host ""
+        return
+    }
+
+    $moduleDir = Join-Path $pawnIoHome 'modules'
+    $intelMsr = Join-Path $moduleDir 'IntelMSR.bin'
+    if (-not (Test-Path $intelMsr)) {
+        Write-Host ""
+        Write-Warning "PawnIO module blobs are missing from $moduleDir."
+        Write-Warning "Broker can reach PawnIO but cannot load CPU temp / SMBus modules."
+        Write-Warning "Fix: open an elevated PowerShell and run:"
+        Write-Warning "    powershell.exe -File scripts\deploy-pawnio-modules.ps1 -RestartBroker"
+        Write-Host ""
+    }
 }
 
 function Build-HypercolorWindowsHelper {
