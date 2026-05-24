@@ -33,21 +33,36 @@ if (-not $CacheDir) {
 function Assert-UnderRepo {
     param([string]$Path)
 
-    $resolvedRepo = [System.IO.Path]::GetFullPath($RepoRoot).TrimEnd(
-        [System.IO.Path]::DirectorySeparatorChar,
-        [System.IO.Path]::AltDirectorySeparatorChar
-    )
     $resolvedPath = [System.IO.Path]::GetFullPath($Path).TrimEnd(
         [System.IO.Path]::DirectorySeparatorChar,
         [System.IO.Path]::AltDirectorySeparatorChar
     )
-    $repoPrefix = "$resolvedRepo$([System.IO.Path]::DirectorySeparatorChar)"
-    if (
-        $resolvedPath -ne $resolvedRepo -and
-        -not $resolvedPath.StartsWith($repoPrefix, [System.StringComparison]::OrdinalIgnoreCase)
-    ) {
-        throw "refusing to modify path outside repository: $resolvedPath"
+
+    # Allow both the repo root and the cargo target cache (commonly
+    # outside the repo). The bundle staging script writes into the
+    # cargo target dir under bundle-stage/, and we have to be able to
+    # populate the pawnio subdir of that.
+    $allowedRoots = @($RepoRoot)
+    if ($env:CARGO_TARGET_DIR) {
+        $allowedRoots += $env:CARGO_TARGET_DIR
     }
+
+    foreach ($root in $allowedRoots) {
+        if (-not $root) { continue }
+        $resolvedRoot = [System.IO.Path]::GetFullPath($root).TrimEnd(
+            [System.IO.Path]::DirectorySeparatorChar,
+            [System.IO.Path]::AltDirectorySeparatorChar
+        )
+        $rootPrefix = "$resolvedRoot$([System.IO.Path]::DirectorySeparatorChar)"
+        if (
+            $resolvedPath -eq $resolvedRoot -or
+            $resolvedPath.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase)
+        ) {
+            return
+        }
+    }
+
+    throw "refusing to modify path outside repo or CARGO_TARGET_DIR: $resolvedPath"
 }
 
 function Reset-Directory {
