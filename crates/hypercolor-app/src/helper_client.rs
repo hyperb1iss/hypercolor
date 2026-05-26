@@ -42,20 +42,28 @@ pub struct HelperOutcome {
     pub exit_code: Option<i32>,
 }
 
-/// Locate the helper binary across dev and bundle layouts.
+/// Locate the helper binary.
+///
+/// In production, only the bundled helper under `resource_dir/tools/` is
+/// trusted. Dev-only fallbacks (`HYPERCOLOR_HELPER_PATH` and target-dir
+/// probing) are enabled in debug builds to support `just dev`.
 #[must_use]
 pub fn resolve_helper_path(resource_dir: Option<&Path>) -> Option<PathBuf> {
-    if let Some(value) = std::env::var_os(HELPER_PATH_ENV).filter(|v| !v.is_empty()) {
-        let path = PathBuf::from(value);
-        if path.is_file() {
-            return Some(path);
-        }
-    }
-
     if let Some(dir) = resource_dir {
         let bundled = dir.join("tools").join(HELPER_BINARY_NAME);
         if bundled.is_file() {
             return Some(bundled);
+        }
+    }
+
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+
+    if let Some(value) = std::env::var_os(HELPER_PATH_ENV).filter(|v| !v.is_empty()) {
+        let path = PathBuf::from(value);
+        if path.is_file() {
+            return Some(path);
         }
     }
 
@@ -228,6 +236,26 @@ mod tests {
 
         let resolved = resolve_helper_path(Some(temp.path()));
         assert_eq!(resolved.as_deref(), Some(helper.as_path()));
+    }
+
+    #[test]
+    fn resolve_helper_path_prefers_resource_dir_over_env_override() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let tools = temp.path().join("tools");
+        std::fs::create_dir_all(&tools).expect("mkdir tools");
+        let bundled = tools.join(HELPER_BINARY_NAME);
+        std::fs::write(&bundled, b"bundled").expect("write bundled helper");
+
+        let attacker = temp.path().join("attacker").join(HELPER_BINARY_NAME);
+        std::fs::create_dir_all(attacker.parent().expect("attacker parent"))
+            .expect("mkdir attacker dir");
+        std::fs::write(&attacker, b"attacker").expect("write attacker helper");
+
+        unsafe { std::env::set_var(HELPER_PATH_ENV, attacker.as_os_str()) };
+        let resolved = resolve_helper_path(Some(temp.path()));
+        unsafe { std::env::remove_var(HELPER_PATH_ENV) };
+
+        assert_eq!(resolved.as_deref(), Some(bundled.as_path()));
     }
 
     // No "returns None when nothing nearby" test: the dev fallback in
