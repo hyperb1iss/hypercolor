@@ -448,6 +448,11 @@ async fn handle_client_message(
             zone_id,
             layout,
         } => {
+            if let Err(error) = ensure_control_tier(auth_context) {
+                let _ = send_json(socket, &error.into_message()).await;
+                return;
+            }
+
             if let Err(error) = handle_zone_layout_preview(
                 state,
                 zone_layout_preview_keys,
@@ -461,6 +466,11 @@ async fn handle_client_message(
             }
         }
         ClientMessage::ZoneLayoutPreviewClear { scene_id, zone_id } => {
+            if let Err(error) = ensure_control_tier(auth_context) {
+                let _ = send_json(socket, &error.into_message()).await;
+                return;
+            }
+
             if let Err(error) = handle_zone_layout_preview_clear(
                 state,
                 zone_layout_preview_keys,
@@ -472,6 +482,16 @@ async fn handle_client_message(
                 let _ = send_json(socket, &error.into_message()).await;
             }
         }
+    }
+}
+
+fn ensure_control_tier(auth_context: RequestAuthContext) -> Result<(), WsProtocolError> {
+    if auth_context.can_perform_write() {
+        Ok(())
+    } else {
+        Err(WsProtocolError::invalid_request(
+            "Read-only API key cannot perform write operations",
+        ))
     }
 }
 
@@ -658,6 +678,29 @@ async fn send_json(socket: &mut WebSocket, msg: &impl Serialize) -> Result<(), a
         debug!("WebSocket send error: {e}");
         e
     })
+}
+
+#[cfg(test)]
+mod security_tests {
+    use super::ensure_control_tier;
+    use crate::api::security::RequestAuthContext;
+
+    #[test]
+    fn read_only_auth_cannot_mutate_zone_layout_previews() {
+        let error = ensure_control_tier(RequestAuthContext::read_only())
+            .expect_err("read-only auth context should be rejected for mutating preview messages");
+        assert_eq!(error.code, "invalid_request");
+        assert_eq!(
+            error.message,
+            "Read-only API key cannot perform write operations"
+        );
+    }
+
+    #[test]
+    fn unsecured_auth_can_mutate_zone_layout_previews() {
+        ensure_control_tier(RequestAuthContext::unsecured())
+            .expect("unsecured context should continue to allow local mutations");
+    }
 }
 
 #[cfg(test)]
