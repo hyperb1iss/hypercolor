@@ -115,6 +115,28 @@ function Assert-ServicePawnIoPath {
     }
 }
 
+function Assert-ServiceBrokerPath {
+    param([string]$Path)
+
+    $resolved = (Resolve-Path -LiteralPath $Path -ErrorAction Stop).Path
+    $userWritableRoots = @(
+        $env:LOCALAPPDATA,
+        $env:APPDATA,
+        $env:USERPROFILE,
+        (Join-Path $env:SystemDrive 'Users')
+    ) |
+        Where-Object { $_ } |
+        ForEach-Object { (Resolve-Path -LiteralPath $_ -ErrorAction SilentlyContinue).Path } |
+        Where-Object { $_ }
+
+    foreach ($root in $userWritableRoots) {
+        if ($resolved.Equals($root, [System.StringComparison]::OrdinalIgnoreCase) -or
+            $resolved.StartsWith($root + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Broker executable path '$resolved' is under a per-user profile directory ('$root'). Windows services run elevated, so BrokerExe must be administrator-owned (for example under %ProgramFiles%)."
+        }
+    }
+}
+
 function Resolve-PawnIoModuleDir {
     param([string]$ExplicitPath)
 
@@ -149,6 +171,7 @@ if (-not (Test-IsAdministrator)) {
 }
 
 $brokerPath = Resolve-SmbusBroker $BrokerExe
+Assert-ServiceBrokerPath $brokerPath
 $resolvedPawnIoHome = Resolve-PawnIoHome $PawnIoHome
 $resolvedPawnIoModuleDir = Resolve-PawnIoModuleDir $PawnIoModuleDir
 $binaryPath = '"' + $brokerPath + '"'
