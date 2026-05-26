@@ -389,13 +389,22 @@ fn validate_web_url(url: &str) -> anyhow::Result<()> {
         bail!("web viewport rejects local hostnames");
     }
 
-    if let Ok(ip) = host.parse::<IpAddr>()
+    if let Some(ip) = host_as_ip(host)
         && is_private_or_loopback_ip(ip)
     {
         bail!("web viewport rejects loopback/private IP addresses");
     }
 
     Ok(())
+}
+
+
+fn host_as_ip(host: &str) -> Option<IpAddr> {
+    host.strip_prefix('[')
+        .and_then(|inner| inner.strip_suffix(']'))
+        .unwrap_or(host)
+        .parse::<IpAddr>()
+        .ok()
 }
 
 fn is_private_or_loopback_ip(ip: IpAddr) -> bool {
@@ -590,8 +599,9 @@ pub(super) fn metadata() -> EffectMetadata {
 #[cfg(test)]
 mod tests {
     use super::{
-        WebViewportRenderer, default_scheme_for_host_input, is_private_or_loopback_ip,
-        looks_like_host_input, normalize_web_url_input,
+        WebViewportRenderer, default_scheme_for_host_input, host_as_ip,
+        is_private_or_loopback_ip, looks_like_host_input, normalize_web_url_input,
+        validate_web_url,
     };
     use crate::effect::traits::EffectRenderer;
     use hypercolor_types::effect::ControlValue;
@@ -701,6 +711,26 @@ mod tests {
         assert_eq!(default_scheme_for_host_input("127.0.0.1"), "http");
         assert_eq!(default_scheme_for_host_input("printer.local"), "http");
         assert_eq!(default_scheme_for_host_input("example.com"), "https");
+    }
+
+
+    #[test]
+    fn host_as_ip_handles_bracketed_ipv6_literals() {
+        assert_eq!(
+            host_as_ip("[::1]"),
+            Some(IpAddr::V6(Ipv6Addr::LOCALHOST))
+        );
+        assert_eq!(
+            host_as_ip("[::ffff:127.0.0.1]"),
+            Some(IpAddr::V6(Ipv4Addr::LOCALHOST.to_ipv6_mapped()))
+        );
+    }
+
+    #[test]
+    fn validate_web_url_rejects_bracketed_private_or_loopback_ipv6() {
+        assert!(validate_web_url("http://[::1]:8080/").is_err());
+        assert!(validate_web_url("http://[fc00::1]/").is_err());
+        assert!(validate_web_url("http://[::ffff:127.0.0.1]:8080/").is_err());
     }
 
     #[test]
