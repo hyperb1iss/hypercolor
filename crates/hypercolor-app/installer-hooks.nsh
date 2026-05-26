@@ -2,11 +2,9 @@
 ;
 ; Tauri's templated NSIS installer handles the file/registry steps,
 ; but it has no knowledge of our hardware access stack (PawnIO kernel
-; driver + HypercolorSmBus broker service + Windows Firewall exception)
-; and no concept of cleaning that stack up on uninstall. These hooks
-; fill that gap so a fresh install lands ready to drive RGB hardware
-; without the user clicking through additional consent flows, and an
-; uninstall doesn't leave orphan service entries or firewall rules.
+; driver + Windows Firewall exception), and no concept of cleaning that
+; stack up on uninstall. These hooks fill that gap while keeping
+; privileged SMBus broker setup as an explicit administrator action.
 ;
 ; Wired in via bundle.windows.nsis.installerHooks in
 ; tauri.windows.bundle.conf.json. The installer runs elevated
@@ -21,30 +19,16 @@
   ;
   ; The bundled script propagates Windows installer exit code 3010
   ; ("reboot required") when the kernel driver needs a restart to finish
-  ; binding to SCM. We stash that into $R0 so the broker registration
-  ; below can decide whether starting the service makes sense, and so
-  ; we can prompt the user to restart at the end of postinstall.
+  ; binding to SCM. We stash that into $R0 so we can prompt the user to
+  ; restart at the end of postinstall.
   DetailPrint "Installing PawnIO hardware access (this may take a moment)..."
   nsExec::ExecToLog 'powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\tools\install-bundled-pawnio.ps1" -AssetRoot "$INSTDIR\tools\pawnio" -Silent'
   Pop $R0
   DetailPrint "  PawnIO install exit code: $R0"
 
-  ; HypercolorSmBus broker service — runs as LocalSystem, owns the
-  ; pawnio_open() handle so the daemon (user-mode) can do SMBus / MSR
-  ; / SMN reads without each user needing to elevate. Skip the -Start
-  ; phase when PawnIO needs a reboot: the broker would just fail to
-  ; open pawnio and either go into restart-loop or rapidly hit its SCM
-  ; failure-actions ceiling. We still register the service so it's
-  ; ready to start after the user reboots.
-  ${If} $R0 = 3010
-    DetailPrint "Registering Hypercolor SMBus broker service (start deferred until reboot)..."
-    nsExec::ExecToLog 'powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\tools\install-windows-smbus-service.ps1" -BrokerExe "$INSTDIR\tools\hypercolor-smbus-service.exe" -Reinstall'
-  ${Else}
-    DetailPrint "Registering Hypercolor SMBus broker service..."
-    nsExec::ExecToLog 'powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\tools\install-windows-smbus-service.ps1" -BrokerExe "$INSTDIR\tools\hypercolor-smbus-service.exe" -Reinstall -Start'
-  ${EndIf}
-  Pop $0
-  DetailPrint "  Broker install exit code: $0"
+  ; HypercolorSmBus broker service is no longer auto-installed by default.
+  ; Installing and starting a privileged broker remains an explicit
+  ; administrator action outside the main installer.
 
   ; Windows Firewall — pre-grant the daemon so mDNS discovery and any
   ; future inbound traffic don't trigger the "Allow on public networks?"
