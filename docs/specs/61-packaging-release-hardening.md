@@ -267,7 +267,7 @@ cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 ## 6. Out of Scope
 
-- **Tauri desktop shell (`hypercolor-desktop`)** — explicitly excluded from default CI per `Cargo.toml:3` and `ci.yml:30`. No packaging story yet; future spec.
+- **Legacy thin Tauri shell** — removed in favor of the unified `hypercolor-app` packaging path.
 - **Marketing site (`site/`)** — `dist.sh:193-220` builds it opportunistically when present, but the deployment story is separate.
 - **Zola docs site** — handled by `ci.yml`'s `docs:` job and `actions/deploy-pages@v4`. Working as intended.
 - **Window-manager-specific desktop integration** beyond the basic `.desktop` entry.
@@ -326,7 +326,7 @@ For each wave, the validation is:
 
 **Wave 2:**
 
-- `cargo build --workspace --exclude hypercolor-desktop` succeeds with the pinned Rust version.
+- `cargo build --workspace` succeeds with the pinned Rust version.
 - Push two tags rapidly — confirm second one doesn't kill the first build.
 - Confirm tag-push triggers all needs jobs even on commits with no Rust changes.
 

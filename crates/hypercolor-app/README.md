@@ -2,8 +2,7 @@
 
 *Production unified desktop front door — starts and supervises the daemon, owns the tray.*
 
-hypercolor-app is the one-click packaged experience for Hypercolor. Unlike hypercolor-desktop,
-which is a thin shell that assumes a daemon is already running, hypercolor-app owns the full
+hypercolor-app is the one-click packaged experience for Hypercolor. It owns the full
 application lifecycle: it embeds a Tauri 2 webview and system tray, supervises a bundled
 `hypercolor-daemon` child process (or defers to a running systemd user service on Linux, or
 an already-running daemon), handles platform concerns like autostart registration, a

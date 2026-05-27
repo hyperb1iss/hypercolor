@@ -18,7 +18,7 @@ and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Linux-first RGB lighting daemon with REST, WebSocket, and MCP control surfaces.
 - Servo HTML effect renderer for Canvas, WebGL, and GLSL effects.
 - Native wgpu render path and SparkleFlinger frame compositor.
-- Web UI, terminal UI, CLI, tray applet, and Tauri desktop shell.
+- Web UI, terminal UI, CLI, tray applet, and unified Tauri desktop app.
 - TypeScript effect SDK with built-in HTML effect packs.
 - Hardware support for 175 devices across 11 driver families.
 - Network drivers for Hue, Nanoleaf, and WLED.

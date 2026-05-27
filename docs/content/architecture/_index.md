@@ -136,7 +136,6 @@ The project is organized into focused crates with strict dependency boundaries, 
 | `hypercolor-cli`             | `core`           | The `hypercolor` CLI binary — parsing, output formatting, IPC client                |
 | `hypercolor-tui`             | `types`          | Ratatui terminal UI library, launched via `hypercolor tui`                          |
 | `hypercolor-tray`            | `types`, `core`  | System tray applet binary                                                           |
-| `hypercolor-desktop`         | (standalone)     | Tauri 2 native shell — excluded from default CI                                     |
 | `hypercolor-app`             | `types`, `core`  | Unified desktop app shell: supervises daemon, owns tray, handles autostart          |
 | `hypercolor-leptos-ext`      | (standalone)     | Leptos 0.8 extension helpers for the web UI                                         |
 | `hypercolor-leptos-ext-macros`| (standalone)    | Proc macros powering `hypercolor-leptos-ext`                                        |

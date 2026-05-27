@@ -61,7 +61,6 @@ crates/
   hypercolor-cli/                # The `hypercolor` CLI binary
   hypercolor-tui/                # Ratatui terminal UI library, launched via `hypercolor tui`
   hypercolor-tray/               # System tray applet binary
-  hypercolor-desktop/            # Tauri 2 native shell (webview wrapper; excluded from default CI)
   hypercolor-app/                # Unified desktop app shell: supervises the daemon, owns the tray, handles autostart and single-instance
   hypercolor-cloud-api/          # Shared data-contract types for the cloud HTTP API
   hypercolor-cloud-client/       # Daemon-side cloud client (OAuth, keyring, device identity, sync)
@@ -105,7 +104,6 @@ graph TD
     CAPI --> DL[hypercolor-daemon-link]
     D --> CC & DL
     APP[hypercolor-app] --> D & TRAY
-    DT[hypercolor-desktop] ~~~ APP
     T --> UI[hypercolor-ui<br><i>excluded from workspace</i>]
 ```
 

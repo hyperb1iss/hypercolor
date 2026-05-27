@@ -4,7 +4,7 @@
 set dotenv-load := false
 set positional-arguments := true
 
-workspace_args := "--workspace --exclude hypercolor-desktop"
+workspace_args := "--workspace"
 daemon_bind := env_var_or_default("HYPERCOLOR_DAEMON_BIND", "127.0.0.1:9420")
 
 # Show available recipes (default when running `just` with no arguments)

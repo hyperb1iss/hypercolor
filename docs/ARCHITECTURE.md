@@ -121,7 +121,6 @@ graph TD
         TUI[hypercolor-tui]
         TRAY[hypercolor-tray]
         APP[hypercolor-app]
-        DT[hypercolor-desktop<br><i>excluded from default CI</i>]
         UI[hypercolor-ui<br><i>excluded from workspace</i>]
     end
 
@@ -164,7 +163,6 @@ Key rules:
   opt-out crates with no hypercolor deps; they isolate platform calls.
 - `hypercolor-ui` is excluded from the Cargo workspace and builds separately
   through Trunk.
-- `hypercolor-desktop` is in the workspace but excluded from default CI.
 - Cross-crate circular dependencies are forbidden.
 
 ## Interfaces

@@ -51,7 +51,6 @@ env:
   RUST_SHARED_WORKSPACE_ARGS: >-
     --workspace
     --exclude hypercolor-daemon
-    --exclude hypercolor-desktop
     --exclude hypercolor-app
     --exclude hypercolor-tray
   HYPERCOLOR_CACHE_DIR: ${{ github.workspace }}/.cache/hypercolor
