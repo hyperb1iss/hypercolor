@@ -21,7 +21,8 @@ use super::frame_reporting::{FrameCompletionReport, report_active_frame_completi
 use super::frame_sampling::{LedSamplingOutcome, resolve_led_sampling};
 use super::frame_throttle::{maybe_idle_throttle, maybe_sleep_throttle};
 use super::pipeline_runtime::{
-    OutputFrameSource, OutputReuseKey, PendingSamplingWork, PipelineRuntime,
+    CachedUnassignedOutput, OutputFrameSource, OutputReuseKey, PendingSamplingWork,
+    PipelineRuntime, UnassignedOutputCache, UnassignedOutputCacheKey,
 };
 use super::producer_queue::ProducerFrame;
 use super::scene_snapshot::{build_frame_scene_snapshot, refresh_effect_scene_snapshot};
@@ -239,6 +240,7 @@ pub(crate) async fn execute_frame(
             &scene_snapshot.scene_runtime.unassigned_behavior,
             scene_snapshot.scene_runtime.active_render_groups.as_ref(),
             &render_stage.zone_canvases,
+            &mut render.output_artifacts.unassigned_output_cache,
         );
         let device_brightness_generation = manager.output_brightness_generation();
         let routing_signature =
@@ -512,7 +514,39 @@ fn measured_sampling_us(
 
 struct UnassignedOutputPlan {
     layout: Arc<SpatialLayout>,
-    appended_zones: Vec<ZoneColors>,
+    appended_zones: UnassignedOutputZones,
+}
+
+enum UnassignedOutputZones {
+    None,
+    Cached(Arc<[ZoneColors]>),
+    Owned(Vec<ZoneColors>),
+}
+
+impl UnassignedOutputZones {
+    fn is_empty(&self) -> bool {
+        match self {
+            Self::None => true,
+            Self::Cached(zones) => zones.is_empty(),
+            Self::Owned(zones) => zones.is_empty(),
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Self::None => 0,
+            Self::Cached(zones) => zones.len(),
+            Self::Owned(zones) => zones.len(),
+        }
+    }
+
+    fn as_slice(&self) -> &[ZoneColors] {
+        match self {
+            Self::None => &[],
+            Self::Cached(zones) => zones,
+            Self::Owned(zones) => zones,
+        }
+    }
 }
 
 impl UnassignedOutputPlan {
@@ -522,36 +556,37 @@ impl UnassignedOutputPlan {
         behavior: &UnassignedBehavior,
         groups: &[Zone],
         zone_canvases: &[(ZoneId, ProducerFrame)],
+        cache: &mut UnassignedOutputCache,
     ) -> Self {
         if matches!(behavior, UnassignedBehavior::Hold) {
             return Self {
                 layout,
-                appended_zones: Vec::new(),
+                appended_zones: UnassignedOutputZones::None,
             };
         }
 
-        let unassigned_zones = manager.unassigned_output_zones(layout.as_ref());
-        if unassigned_zones.is_empty() {
+        let cached = cached_unassigned_outputs(manager, layout, cache);
+        if cached.zones.is_empty() {
             return Self {
-                layout,
-                appended_zones: Vec::new(),
+                layout: cached.layout,
+                appended_zones: UnassignedOutputZones::None,
             };
         }
 
         let appended_zones = match behavior {
-            UnassignedBehavior::Off => black_zone_colors(&unassigned_zones),
-            UnassignedBehavior::Hold => Vec::new(),
+            UnassignedBehavior::Off => {
+                UnassignedOutputZones::Cached(Arc::clone(&cached.black_zones))
+            }
+            UnassignedBehavior::Hold => UnassignedOutputZones::None,
             UnassignedBehavior::Fallback(group_id) => {
-                fallback_zone_colors(*group_id, groups, zone_canvases, &unassigned_zones)
-                    .unwrap_or_else(|| black_zone_colors(&unassigned_zones))
+                let zones = fallback_zone_colors(*group_id, groups, zone_canvases, &cached.zones)
+                    .unwrap_or_else(|| cached.black_zones.iter().cloned().collect());
+                UnassignedOutputZones::Owned(zones)
             }
         };
 
         Self {
-            layout: Arc::new(layout_with_unassigned_zones(
-                layout.as_ref(),
-                &unassigned_zones,
-            )),
+            layout: cached.layout,
             appended_zones,
         }
     }
@@ -563,9 +598,39 @@ impl UnassignedOutputPlan {
 
         let mut zones = Vec::with_capacity(base.len().saturating_add(self.appended_zones.len()));
         zones.extend_from_slice(base);
-        zones.extend_from_slice(&self.appended_zones);
+        zones.extend_from_slice(self.appended_zones.as_slice());
         zones
     }
+}
+
+fn cached_unassigned_outputs(
+    manager: &BackendManager,
+    layout: Arc<SpatialLayout>,
+    cache: &mut UnassignedOutputCache,
+) -> CachedUnassignedOutput {
+    let key = UnassignedOutputCacheKey::new(&layout, manager.routing_mapping_generation());
+    if let Some(cached) = cache.get(key) {
+        return cached;
+    }
+
+    let unassigned_zones = manager.unassigned_output_zones(layout.as_ref());
+    let cached_layout = if unassigned_zones.is_empty() {
+        layout
+    } else {
+        Arc::new(layout_with_unassigned_zones(
+            layout.as_ref(),
+            &unassigned_zones,
+        ))
+    };
+    let black_zones = black_zone_colors(&unassigned_zones).into();
+    cache.store(
+        key,
+        CachedUnassignedOutput {
+            layout: cached_layout,
+            zones: unassigned_zones.into(),
+            black_zones,
+        },
+    )
 }
 
 fn layout_with_unassigned_zones(
@@ -856,6 +921,7 @@ mod tests {
             &UnassignedBehavior::Off,
             &[],
             &[],
+            &mut super::UnassignedOutputCache::default(),
         );
         let zones = plan.zones_for(&[]);
 
@@ -863,6 +929,40 @@ mod tests {
         assert_eq!(plan.layout.zones[0].device_id, "usb:unassigned");
         assert_eq!(zones.len(), 1);
         assert_eq!(zones[0].colors, vec![[0, 0, 0]; 2]);
+    }
+
+    #[test]
+    fn unassigned_output_plan_reuses_cached_layout_for_stable_mapping() {
+        let mut manager = BackendManager::new();
+        let device_id = DeviceId::new();
+        manager.map_device_with_segment(
+            "usb:unassigned",
+            "mock",
+            device_id,
+            Some(SegmentRange::new(0, 2)),
+        );
+
+        let layout = Arc::new(sample_layout(&[]));
+        let mut cache = super::UnassignedOutputCache::default();
+        let first = super::UnassignedOutputPlan::build(
+            &mut manager,
+            Arc::clone(&layout),
+            &UnassignedBehavior::Off,
+            &[],
+            &[],
+            &mut cache,
+        );
+        let second = super::UnassignedOutputPlan::build(
+            &mut manager,
+            layout,
+            &UnassignedBehavior::Off,
+            &[],
+            &[],
+            &mut cache,
+        );
+
+        assert!(Arc::ptr_eq(&first.layout, &second.layout));
+        assert_eq!(first.zones_for(&[]), second.zones_for(&[]));
     }
 
     #[test]
@@ -886,6 +986,7 @@ mod tests {
             &UnassignedBehavior::Fallback(group_id),
             &groups,
             &zone_canvases,
+            &mut super::UnassignedOutputCache::default(),
         );
         let zones = plan.zones_for(&[]);
 

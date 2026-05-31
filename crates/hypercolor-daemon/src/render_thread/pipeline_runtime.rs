@@ -16,7 +16,7 @@ use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::scene::SceneId;
 use hypercolor_types::sensor::SystemSnapshot;
-use hypercolor_types::spatial::SpatialLayout;
+use hypercolor_types::spatial::{Output, SpatialLayout};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::warn;
@@ -221,6 +221,7 @@ pub(crate) struct CachedStaticSurface {
 pub(crate) struct OutputArtifactsState {
     static_surface_cache: Option<CachedStaticSurface>,
     recycled_frame: FrameData,
+    pub(crate) unassigned_output_cache: UnassignedOutputCache,
 }
 
 impl Default for OutputArtifactsState {
@@ -228,6 +229,7 @@ impl Default for OutputArtifactsState {
         Self {
             static_surface_cache: None,
             recycled_frame: FrameData::empty(),
+            unassigned_output_cache: UnassignedOutputCache::default(),
         }
     }
 }
@@ -266,6 +268,7 @@ impl OutputArtifactsState {
 
     pub(crate) fn reset_for_canvas_resize(&mut self) {
         self.static_surface_cache = None;
+        self.unassigned_output_cache.clear();
     }
 
     pub(crate) fn clear_zones(&mut self) {
@@ -282,6 +285,67 @@ impl OutputArtifactsState {
 
     pub(crate) fn frame_mut(&mut self) -> &mut FrameData {
         &mut self.recycled_frame
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct UnassignedOutputCacheKey {
+    layout_ptr: usize,
+    mapping_generation: u64,
+}
+
+impl UnassignedOutputCacheKey {
+    #[expect(
+        clippy::as_conversions,
+        reason = "Arc pointer identity is the cheapest stable key for the active layout"
+    )]
+    pub(crate) fn new(layout: &Arc<SpatialLayout>, mapping_generation: u64) -> Self {
+        Self {
+            layout_ptr: Arc::as_ptr(layout) as usize,
+            mapping_generation,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct CachedUnassignedOutput {
+    pub(crate) layout: Arc<SpatialLayout>,
+    pub(crate) zones: Arc<[Output]>,
+    pub(crate) black_zones: Arc<[ZoneColors]>,
+}
+
+pub(crate) struct CachedUnassignedOutputEntry {
+    key: UnassignedOutputCacheKey,
+    value: CachedUnassignedOutput,
+}
+
+#[derive(Default)]
+pub(crate) struct UnassignedOutputCache {
+    entry: Option<CachedUnassignedOutputEntry>,
+}
+
+impl UnassignedOutputCache {
+    pub(crate) fn get(&self, key: UnassignedOutputCacheKey) -> Option<CachedUnassignedOutput> {
+        self.entry
+            .as_ref()
+            .filter(|entry| entry.key == key)
+            .map(|entry| entry.value.clone())
+    }
+
+    pub(crate) fn store(
+        &mut self,
+        key: UnassignedOutputCacheKey,
+        value: CachedUnassignedOutput,
+    ) -> CachedUnassignedOutput {
+        self.entry = Some(CachedUnassignedOutputEntry {
+            key,
+            value: value.clone(),
+        });
+        value
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.entry = None;
     }
 }
 
