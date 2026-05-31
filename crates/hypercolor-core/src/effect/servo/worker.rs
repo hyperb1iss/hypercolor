@@ -1600,9 +1600,11 @@ impl ServoWorkerRuntime {
                 .saturating_add(1);
             self.session_mut(session_id)?.renders_since_load = renders_since_load;
 
-            let evaluate_scripts_start = Instant::now();
-            self.evaluate_scripts(session_id, scripts)?;
-            timings.evaluate_scripts_us = elapsed_micros(evaluate_scripts_start);
+            if !scripts.is_empty() {
+                let evaluate_scripts_start = Instant::now();
+                self.evaluate_scripts(session_id, scripts)?;
+                timings.evaluate_scripts_us = elapsed_micros(evaluate_scripts_start);
+            }
 
             // Let timers/RAF advance after this tick's control/audio injection.
             let event_loop_start = Instant::now();

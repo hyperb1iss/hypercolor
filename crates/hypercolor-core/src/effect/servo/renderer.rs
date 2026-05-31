@@ -963,15 +963,14 @@ fn animation_cadence(metadata: &EffectMetadata) -> AnimationCadence {
 }
 
 fn effect_uses_sensor_data(metadata: &EffectMetadata) -> bool {
-    metadata.category == EffectCategory::Display
-        || metadata
-            .tags
-            .iter()
-            .any(|tag| tag == "sensor" || tag == "sensors" || tag == "system-monitor")
-        || metadata
-            .controls
-            .iter()
-            .any(|control| matches!(control.kind, ControlKind::Sensor))
+    metadata.tags.iter().any(|tag| {
+        tag.eq_ignore_ascii_case("sensor")
+            || tag.eq_ignore_ascii_case("sensors")
+            || tag.eq_ignore_ascii_case("system-monitor")
+    }) || metadata
+        .controls
+        .iter()
+        .any(|control| matches!(control.kind, ControlKind::Sensor))
 }
 
 fn effect_uses_interaction_data(metadata: &EffectMetadata) -> bool {
@@ -1282,9 +1281,10 @@ mod tests {
         assert!(!effect_uses_sensor_data(&plain));
 
         let display = display_html_metadata(PathBuf::from("face.html"));
-        assert!(effect_uses_sensor_data(&display));
+        assert!(!effect_uses_sensor_data(&display));
 
         let mut sensor_control = html_metadata(PathBuf::from("sensor.html"));
+        sensor_control.category = EffectCategory::Display;
         sensor_control.controls.push(ControlDefinition {
             id: "targetSensor".to_owned(),
             name: "Sensor".to_owned(),
@@ -1302,6 +1302,10 @@ mod tests {
             binding: None,
         });
         assert!(effect_uses_sensor_data(&sensor_control));
+
+        let mut tagged = plain;
+        tagged.tags.push("system-monitor".to_owned());
+        assert!(effect_uses_sensor_data(&tagged));
     }
 
     #[test]
@@ -1922,6 +1926,7 @@ mod tests {
         let mut renderer = ServoRenderer::new();
         attach_renderer_session(&mut renderer, &worker);
         renderer.initialized = true;
+        renderer.include_interaction_updates = true;
         renderer.enqueue_bootstrap_scripts();
         renderer.set_control("speed", &ControlValue::Float(0.25));
 
