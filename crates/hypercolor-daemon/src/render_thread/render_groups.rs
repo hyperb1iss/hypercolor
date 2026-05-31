@@ -190,6 +190,8 @@ pub(crate) struct ZoneRuntime {
 
 impl ZoneRuntime {
     pub(crate) fn new(scene_width: u32, scene_height: u32) -> Self {
+        let (combined_led_layout, combined_led_spatial_engine) =
+            combined_led_state(empty_group_layout(scene_width, scene_height));
         Self {
             asset_library: None,
             effect_pool: EffectPool::new(),
@@ -214,11 +216,8 @@ impl ZoneRuntime {
             last_effect_error: None,
             recovered_effect_error: None,
             layer_runtime: LayerRuntimeRegistry::default(),
-            combined_led_layout: Arc::new(empty_group_layout(scene_width, scene_height)),
-            combined_led_spatial_engine: SpatialEngine::new(empty_group_layout(
-                scene_width,
-                scene_height,
-            )),
+            combined_led_layout,
+            combined_led_spatial_engine,
             scene_width,
             scene_height,
         }
@@ -346,10 +345,10 @@ impl ZoneRuntime {
         self.last_effect_error = None;
         self.recovered_effect_error = None;
         self.layer_runtime.clear();
-        self.combined_led_layout =
-            Arc::new(empty_group_layout(self.scene_width, self.scene_height));
-        self.combined_led_spatial_engine =
-            SpatialEngine::new(self.combined_led_layout.as_ref().clone());
+        let (layout, engine) =
+            combined_led_state(empty_group_layout(self.scene_width, self.scene_height));
+        self.combined_led_layout = layout;
+        self.combined_led_spatial_engine = engine;
     }
 
     pub(crate) fn reuse_scene(&self, dependency_key: SceneDependencyKey) -> Option<ZoneResult> {
@@ -630,13 +629,7 @@ impl ZoneRuntime {
             self.ensure_spatial_engine(group);
         }
 
-        self.combined_led_layout = Arc::new(combine_led_group_layouts(
-            groups,
-            self.scene_width,
-            self.scene_height,
-        ));
-        self.combined_led_spatial_engine =
-            SpatialEngine::new(self.combined_led_layout.as_ref().clone());
+        self.reconcile_combined_led_state(groups);
         self.reconciled_dependency_key = Some(dependency_key);
 
         Ok(())
@@ -700,6 +693,29 @@ impl ZoneRuntime {
             self.spatial_engines
                 .insert(group.id, SpatialEngine::new(group.layout.clone()));
         }
+    }
+
+    fn reconcile_combined_led_state(&mut self, groups: &[Zone]) {
+        let mut contributing_groups = groups
+            .iter()
+            .filter(|group| group_contributes_to_scene_canvas(group));
+        if let Some(group) = contributing_groups.next()
+            && contributing_groups.next().is_none()
+            && let Some(engine) = self.spatial_engines.get(&group.id)
+        {
+            let engine = engine.clone();
+            self.combined_led_layout = engine.layout();
+            self.combined_led_spatial_engine = engine;
+            return;
+        }
+
+        let (layout, engine) = combined_led_state(combine_led_group_layouts(
+            groups,
+            self.scene_width,
+            self.scene_height,
+        ));
+        self.combined_led_layout = layout;
+        self.combined_led_spatial_engine = engine;
     }
 
     fn render_single_full_scene_group(
@@ -2234,6 +2250,11 @@ fn combine_led_group_layouts(groups: &[Zone], width: u32, height: u32) -> Spatia
     }
     layout.zones = zones;
     layout
+}
+
+fn combined_led_state(layout: SpatialLayout) -> (Arc<SpatialLayout>, SpatialEngine) {
+    let engine = SpatialEngine::new(layout);
+    (engine.layout(), engine)
 }
 
 #[cfg(test)]
