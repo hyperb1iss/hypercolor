@@ -15,7 +15,9 @@ import {
 
 import {
     clamp01,
+    createFaceRoot,
     DISPLAY_FONT_FAMILIES,
+    ensureFaceStyles,
     humanizeSensorLabel,
     mixFaceAccent,
     resolveFaceInk,
@@ -28,71 +30,26 @@ const FACE_SCHEMES = {
     temperature: ['#7ce9ff', '#ffb35f', '#ff6b7a'] as const,
 }
 
-type TextPart = { text: string; family: string; size: number; color: string; yOffset?: number }
-
-type TextLayoutCache = {
-    key: string
-    widths: number[]
-}
+const PULSE_TEMP_STYLE_ID = 'hc-pulse-temp-styles'
 
 function fontStack(family: string): string {
     return `"${family}", sans-serif`
 }
 
-function setTextStyle(c: CanvasRenderingContext2D, family: string, size: number, color: string, weight = 600): void {
-    c.font = `${weight} ${size}px ${fontStack(family)}`
-    c.fillStyle = color
-    c.textBaseline = 'middle'
-}
-
-function drawTextWithGlow(
-    c: CanvasRenderingContext2D,
-    text: string,
-    x: number,
-    y: number,
-    color: string,
-    glowColor: string,
-    blur: number,
-): void {
-    c.save()
-    c.shadowColor = glowColor
-    c.shadowBlur = blur
-    c.fillStyle = color
-    c.fillText(text, x, y)
-    c.restore()
-}
-
-function drawCenteredParts(
-    c: CanvasRenderingContext2D,
-    parts: TextPart[],
-    cx: number,
-    cy: number,
-    gap: number,
-    glowColor: string,
-    glowBlur: number,
-    layoutCache?: TextLayoutCache,
-): TextLayoutCache | undefined {
-    const visible = parts.filter((part) => part.text.length > 0)
-    if (visible.length === 0) return undefined
-
-    const key = visible.map((part) => `${part.text}\0${part.family}\0${part.size}`).join('\u0001')
-    const cacheHit = layoutCache?.key === key
-    const widths = cacheHit
-        ? layoutCache.widths
-        : visible.map((part) => {
-              setTextStyle(c, part.family, part.size, part.color)
-              return c.measureText(part.text).width
-          })
-    const totalWidth = widths.reduce((sum, width) => sum + width, 0) + gap * (visible.length - 1)
-    let x = cx - totalWidth * 0.5
-    c.textAlign = 'left'
-    for (let index = 0; index < visible.length; index += 1) {
-        const part = visible[index]
-        setTextStyle(c, part.family, part.size, part.color)
-        drawTextWithGlow(c, part.text, x, cy + (part.yOffset ?? 0), part.color, glowColor, glowBlur)
-        x += widths[index] + gap
+function setCssVar(element: HTMLElement, name: string, value: string): void {
+    if (element.style.getPropertyValue(name) !== value) {
+        element.style.setProperty(name, value)
     }
-    return cacheHit ? layoutCache : { key, widths }
+}
+
+function setText(element: HTMLElement, value: string): void {
+    if (element.textContent !== value) {
+        element.textContent = value
+    }
+}
+
+function setHidden(element: HTMLElement, hidden: boolean): void {
+    element.classList.toggle('hc-pulse-temp__hidden', hidden)
 }
 
 export default face(
@@ -223,9 +180,136 @@ export default face(
         ],
     },
     (ctx) => {
-        for (const child of [...ctx.container.children]) {
-            if (child !== ctx.canvas) child.remove()
-        }
+        ensureFaceStyles(
+            PULSE_TEMP_STYLE_ID,
+            `
+.hc-pulse-temp {
+    --accent: #80ffea;
+    --dim-ink: rgba(255, 255, 255, 0.56);
+    --detail-glow-blur: 8px;
+    --detail-small-size: 11px;
+    --detail-size: 12px;
+    --glow-color: rgba(128, 255, 234, 0.34);
+    --hero-font: "Rajdhani", sans-serif;
+    --hero-glow-blur: 24px;
+    --hero-glow-soft: 10px;
+    --hero-ink: #f8fbff;
+    --hero-size: 132px;
+    --label-glow-blur: 10px;
+    --ui-font: "Inter", sans-serif;
+    --ui-ink: rgba(236, 244, 255, 0.78);
+    --unit-size: 30px;
+    --unit-y: 10px;
+    box-sizing: border-box;
+    contain: layout paint style;
+    overflow: hidden;
+    text-align: center;
+}
+
+.hc-pulse-temp,
+.hc-pulse-temp * {
+    box-sizing: border-box;
+}
+
+.hc-pulse-temp__readout,
+.hc-pulse-temp__label,
+.hc-pulse-temp__detail {
+    left: 50%;
+    position: absolute;
+    transform: translate(-50%, -50%);
+    white-space: nowrap;
+}
+
+.hc-pulse-temp__readout {
+    align-items: baseline;
+    display: flex;
+    gap: 8px;
+    justify-content: center;
+    top: 50%;
+    width: 100%;
+}
+
+.hc-pulse-temp__number {
+    color: var(--hero-ink);
+    font-family: var(--hero-font);
+    font-size: var(--hero-size);
+    font-weight: 700;
+    letter-spacing: 0;
+    line-height: 0.82;
+    text-shadow:
+        0 0 var(--hero-glow-blur) var(--glow-color),
+        0 0 var(--hero-glow-soft) var(--accent);
+}
+
+.hc-pulse-temp__unit {
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--unit-size);
+    font-weight: 600;
+    letter-spacing: 0;
+    line-height: 1;
+    text-shadow: 0 0 var(--label-glow-blur) var(--glow-color);
+    text-transform: uppercase;
+    transform: translateY(var(--unit-y));
+}
+
+.hc-pulse-temp__label {
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--detail-size);
+    font-weight: 600;
+    letter-spacing: 0;
+    line-height: 1;
+    text-shadow: 0 0 var(--label-glow-blur) var(--glow-color);
+    text-transform: uppercase;
+    top: calc(50% + 74px);
+}
+
+.hc-pulse-temp__detail {
+    align-items: center;
+    color: var(--ui-ink);
+    display: flex;
+    font-family: var(--ui-font);
+    font-size: var(--detail-small-size);
+    font-weight: 600;
+    gap: 18px;
+    justify-content: center;
+    letter-spacing: 0;
+    line-height: 1;
+    text-shadow: 0 0 var(--detail-glow-blur) var(--glow-color);
+    top: calc(50% + 100px);
+}
+
+.hc-pulse-temp__peak {
+    color: var(--dim-ink);
+}
+
+.hc-pulse-temp__hidden {
+    display: none !important;
+}
+`,
+        )
+
+        const root = createFaceRoot(ctx, 'hc-pulse-temp')
+        const readoutElement = document.createElement('div')
+        const numberElement = document.createElement('span')
+        const unitElement = document.createElement('span')
+        const labelElement = document.createElement('div')
+        const detailElement = document.createElement('div')
+        const trendElement = document.createElement('span')
+        const peakElement = document.createElement('span')
+
+        readoutElement.className = 'hc-pulse-temp__readout'
+        numberElement.className = 'hc-pulse-temp__number'
+        unitElement.className = 'hc-pulse-temp__unit'
+        labelElement.className = 'hc-pulse-temp__label'
+        detailElement.className = 'hc-pulse-temp__detail'
+        trendElement.className = 'hc-pulse-temp__trend'
+        peakElement.className = 'hc-pulse-temp__peak'
+
+        readoutElement.append(numberElement, unitElement)
+        detailElement.append(trendElement, peakElement)
+        root.append(readoutElement, labelElement, detailElement)
 
         let smoothValue = 0
         let lastHistoryPush = 0
@@ -233,8 +317,6 @@ export default face(
         let peakDisplay = '--'
         let activeSensor = ''
         let history = new ValueHistory(48)
-        let valueLayoutCache: TextLayoutCache | undefined
-        let detailLayoutCache: TextLayoutCache | undefined
 
         const { width: W, height: H } = ctx
         const cx = W * 0.5
@@ -302,6 +384,43 @@ export default face(
             const showPeak = controls.showPeak as boolean
             const showArc = controls.showArc as boolean
 
+            const glowColor = withAlpha(baseAccent, 0.22 + glow * 0.22)
+            const unitSize = Math.max(20, Math.min(36, heroSize * 0.22))
+            setCssVar(root, '--accent', baseAccent)
+            setCssVar(root, '--dim-ink', ink.dim)
+            setCssVar(root, '--detail-glow-blur', `${4 + glow * 4}px`)
+            setCssVar(root, '--detail-size', `${detailSize}px`)
+            setCssVar(root, '--detail-small-size', `${Math.max(8, detailSize - 1)}px`)
+            setCssVar(root, '--glow-color', glowColor)
+            setCssVar(root, '--hero-font', fontStack(heroFont))
+            setCssVar(root, '--hero-glow-blur', `${18 + glow * 12}px`)
+            setCssVar(root, '--hero-glow-soft', `${(18 + glow * 12) * 0.42}px`)
+            setCssVar(root, '--hero-ink', ink.hero)
+            setCssVar(root, '--hero-size', `${heroSize}px`)
+            setCssVar(root, '--label-glow-blur', `${6 + glow * 5}px`)
+            setCssVar(root, '--ui-font', fontStack(uiFont))
+            setCssVar(root, '--ui-ink', ink.ui)
+            setCssVar(root, '--unit-size', `${unitSize}px`)
+            setCssVar(root, '--unit-y', `${heroSize * 0.08}px`)
+
+            setText(numberElement, numberText)
+            setText(unitElement, unitText)
+            setText(labelElement, labelText.toUpperCase())
+            setText(trendElement, trendText)
+            setText(peakElement, peakText)
+
+            const numberVisible = showNumber && numberText.length > 0
+            const unitVisible = showUnit && unitText.length > 0
+            const trendVisible = showTrend && trendText.length > 0
+            const peakVisible = showPeak && peakText.length > 0
+            setHidden(readoutElement, !numberVisible && !unitVisible)
+            setHidden(numberElement, !numberVisible)
+            setHidden(unitElement, !unitVisible)
+            setHidden(labelElement, !showLabel)
+            setHidden(detailElement, !trendVisible && !peakVisible)
+            setHidden(trendElement, !trendVisible)
+            setHidden(peakElement, !peakVisible)
+
             const c = ctx.ctx
             c.clearRect(0, 0, W, H)
 
@@ -351,44 +470,6 @@ export default face(
                 }
                 c.globalAlpha = 1
             }
-
-            const glowColor = withAlpha(baseAccent, 0.22 + glow * 0.22)
-            const valueParts = [
-                ...(showNumber ? [{ color: ink.hero, family: heroFont, size: heroSize, text: numberText }] : []),
-                ...(showUnit
-                    ? [
-                          {
-                              color: ink.ui,
-                              family: uiFont,
-                              size: Math.max(20, Math.min(36, heroSize * 0.22)),
-                              text: unitText,
-                              yOffset: heroSize * 0.08,
-                          },
-                      ]
-                    : []),
-            ]
-            valueLayoutCache = drawCenteredParts(c, valueParts, cx, cy, 8, glowColor, 18 + glow * 12, valueLayoutCache)
-
-            c.textAlign = 'center'
-            if (showLabel) {
-                setTextStyle(c, uiFont, detailSize, ink.ui)
-                drawTextWithGlow(c, labelText.toUpperCase(), cx, cy + 74, ink.ui, glowColor, 6 + glow * 5)
-            }
-
-            const detailParts = [
-                ...(showTrend ? [{ color: ink.ui, family: uiFont, size: detailSize - 1, text: trendText }] : []),
-                ...(showPeak ? [{ color: ink.dim, family: uiFont, size: detailSize - 1, text: peakText }] : []),
-            ]
-            detailLayoutCache = drawCenteredParts(
-                c,
-                detailParts,
-                cx,
-                cy + 100,
-                18,
-                glowColor,
-                4 + glow * 4,
-                detailLayoutCache,
-            )
             c.restore()
         }
     },
