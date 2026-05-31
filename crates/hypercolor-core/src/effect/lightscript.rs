@@ -66,6 +66,7 @@ pub struct LightscriptRuntime {
     last_controls: HashMap<String, ControlValue>,
     last_interaction: Option<InteractionData>,
     last_sensor_readings: Option<Vec<SensorReading>>,
+    last_sensor_labels: Option<Vec<String>>,
     audio_was_quiet: bool,
     mel_running_max: Vec<f32>,
     audio_state: DerivedAudioState,
@@ -81,6 +82,7 @@ impl LightscriptRuntime {
             last_controls: HashMap::new(),
             last_interaction: None,
             last_sensor_readings: None,
+            last_sensor_labels: None,
             audio_was_quiet: false,
             mel_running_max: vec![MEL_RUNNING_MAX_FLOOR; MEL_BANDS],
             audio_state: DerivedAudioState::default(),
@@ -447,6 +449,7 @@ impl LightscriptRuntime {
         include_audio: bool,
         include_screen: bool,
         include_sensors: bool,
+        selected_sensor_labels: Option<&[String]>,
     ) {
         if include_audio && self.should_emit_audio_update(audio) {
             scripts.push(self.audio_update_script(audio));
@@ -456,14 +459,36 @@ impl LightscriptRuntime {
             scripts.push(Self::screen_update_script(screen));
         }
         if include_sensors {
-            let sensor_readings = sensors.readings();
+            let all_sensor_readings = sensors.readings();
+            let sensor_labels = sensor_labels_from_readings(&all_sensor_readings);
+            let sensor_labels_changed = self
+                .last_sensor_labels
+                .as_ref()
+                .is_none_or(|previous| previous != &sensor_labels);
+            let selected_sensor_readings = selected_sensor_labels
+                .map(|labels| filter_sensor_readings(&all_sensor_readings, labels))
+                .filter(|readings| !readings.is_empty());
+            let replace_sensor_map = selected_sensor_readings.is_none()
+                || self.last_sensor_readings.is_none()
+                || sensor_labels_changed;
+            let sensor_readings = if replace_sensor_map {
+                all_sensor_readings
+            } else {
+                selected_sensor_readings.expect("selected readings checked as present")
+            };
             if self
                 .last_sensor_readings
                 .as_ref()
                 .is_none_or(|previous| previous != &sensor_readings)
+                || sensor_labels_changed
             {
-                scripts.push(Self::sensor_update_script_from_readings(&sensor_readings));
+                scripts.push(Self::sensor_update_script_from_readings(
+                    &sensor_readings,
+                    replace_sensor_map,
+                    sensor_labels_changed.then_some(sensor_labels.as_slice()),
+                ));
                 self.last_sensor_readings = Some(sensor_readings);
+                self.last_sensor_labels = Some(sensor_labels);
             }
         }
         self.push_control_update_scripts(scripts, controls);
@@ -858,32 +883,42 @@ impl LightscriptRuntime {
         script
     }
 
-    fn sensor_update_script_from_readings(readings: &[SensorReading]) -> String {
-        let sensor_list = serde_json::to_string(
-            &readings
-                .iter()
-                .map(|reading| reading.label.clone())
-                .collect::<Vec<_>>(),
-        )
-        .unwrap_or_else(|_| "[]".to_owned());
+    fn sensor_update_script_from_readings(
+        readings: &[SensorReading],
+        replace_sensor_map: bool,
+        sensor_labels: Option<&[String]>,
+    ) -> String {
+        let sensor_list = sensor_labels
+            .map(|labels| serde_json::to_string(labels).unwrap_or_else(|_| "[]".to_owned()));
         let sensors_json =
             serde_json::to_string(&sensor_payload(&readings)).unwrap_or_else(|_| "{}".to_owned());
 
         let mut script = String::with_capacity(
             256_usize
-                .saturating_add(sensor_list.len())
+                .saturating_add(sensor_list.as_ref().map_or(0, String::len))
                 .saturating_add(sensors_json.len()),
         );
         script.push_str("(function(){\n");
         script.push_str(
             "  if (typeof window.engine !== 'object' || window.engine === null) { window.engine = {}; }\n",
         );
-        script.push_str("  window.engine.sensors = ");
-        script.push_str(&sensors_json);
-        script.push_str(";\n");
-        script.push_str("  window.engine.sensorList = ");
-        script.push_str(&sensor_list);
-        script.push_str(";\n");
+        if replace_sensor_map {
+            script.push_str("  window.engine.sensors = ");
+            script.push_str(&sensors_json);
+            script.push_str(";\n");
+        } else {
+            script.push_str(
+                "  if (typeof window.engine.sensors !== 'object' || window.engine.sensors === null) { window.engine.sensors = {}; }\n",
+            );
+            script.push_str("  Object.assign(window.engine.sensors, ");
+            script.push_str(&sensors_json);
+            script.push_str(");\n");
+        }
+        if let Some(sensor_list) = sensor_list {
+            script.push_str("  window.engine.sensorList = ");
+            script.push_str(&sensor_list);
+            script.push_str(";\n");
+        }
         script.push_str(
             "  if (typeof globalThis === 'object' && globalThis !== null) { globalThis.engine = window.engine; }\n",
         );
@@ -1418,6 +1453,35 @@ fn sensor_payload(readings: &[SensorReading]) -> Value {
     Value::Object(sensors)
 }
 
+fn sensor_labels_from_readings(readings: &[SensorReading]) -> Vec<String> {
+    readings
+        .iter()
+        .map(|reading| reading.label.clone())
+        .collect()
+}
+
+fn filter_sensor_readings(
+    readings: &[SensorReading],
+    selected_sensor_labels: &[String],
+) -> Vec<SensorReading> {
+    let mut selected = Vec::with_capacity(selected_sensor_labels.len());
+    for label in selected_sensor_labels {
+        if selected
+            .iter()
+            .any(|reading: &SensorReading| reading.label.eq_ignore_ascii_case(label))
+        {
+            continue;
+        }
+        if let Some(reading) = readings
+            .iter()
+            .find(|reading| reading.label.eq_ignore_ascii_case(label))
+        {
+            selected.push(reading.clone());
+        }
+    }
+    selected
+}
+
 fn default_sensor_range(reading: &SensorReading) -> (f32, f32) {
     match reading.unit {
         SensorUnit::Celsius => (0.0, reading.critical.unwrap_or(100.0)),
@@ -1585,6 +1649,7 @@ mod tests {
             true,
             false,
             false,
+            None,
         );
         assert_eq!(
             scripts
@@ -1609,6 +1674,7 @@ mod tests {
             true,
             false,
             false,
+            None,
         );
         assert!(
             scripts
@@ -1627,6 +1693,7 @@ mod tests {
             true,
             false,
             false,
+            None,
         );
         assert_eq!(
             scripts
@@ -1653,6 +1720,7 @@ mod tests {
             false,
             false,
             false,
+            None,
         );
         assert!(
             scripts
@@ -1677,6 +1745,7 @@ mod tests {
             true,
             false,
             false,
+            None,
         );
         assert!(
             scripts
@@ -1694,6 +1763,7 @@ mod tests {
             true,
             false,
             false,
+            None,
         );
         assert!(
             scripts
@@ -1720,6 +1790,7 @@ mod tests {
             true,
             false,
             false,
+            None,
         );
         scripts.clear();
 
@@ -1732,6 +1803,7 @@ mod tests {
             true,
             false,
             false,
+            None,
         );
         assert!(
             scripts
@@ -1756,6 +1828,7 @@ mod tests {
             false,
             false,
             true,
+            None,
         );
         assert!(
             scripts
@@ -1773,12 +1846,65 @@ mod tests {
             false,
             false,
             true,
+            None,
         );
         assert!(
             scripts
                 .iter()
                 .all(|script| !script.contains("window.engine.sensors ="))
         );
+    }
+
+    #[test]
+    fn push_frame_scripts_scopes_repeated_sensor_updates_to_selected_labels() {
+        let mut runtime = LightscriptRuntime::new(320, 200);
+        let audio = AudioData::silence();
+        let mut sensors = SystemSnapshot::empty();
+        sensors.cpu_temp_celsius = Some(54.0);
+        sensors.gpu_temp_celsius = Some(62.0);
+        let selected = vec!["cpu_temp".to_owned()];
+        let mut scripts = Vec::new();
+
+        runtime.push_frame_scripts(
+            &mut scripts,
+            &audio,
+            None,
+            &sensors,
+            &HashMap::new(),
+            false,
+            false,
+            true,
+            Some(&selected),
+        );
+        let initial_script = scripts
+            .iter()
+            .find(|script| script.contains("window.engine.sensors ="))
+            .expect("initial sensor update should replace the full sensor map");
+        assert!(initial_script.contains("cpu_temp"));
+        assert!(initial_script.contains("gpu_temp"));
+        assert!(initial_script.contains("window.engine.sensorList ="));
+
+        scripts.clear();
+        sensors.cpu_temp_celsius = Some(55.0);
+        sensors.gpu_temp_celsius = Some(63.0);
+        runtime.push_frame_scripts(
+            &mut scripts,
+            &audio,
+            None,
+            &sensors,
+            &HashMap::new(),
+            false,
+            false,
+            true,
+            Some(&selected),
+        );
+        let scoped_script = scripts
+            .iter()
+            .find(|script| script.contains("Object.assign(window.engine.sensors"))
+            .expect("repeated sensor update should merge selected readings");
+        assert!(scoped_script.contains("cpu_temp"));
+        assert!(!scoped_script.contains("gpu_temp"));
+        assert!(!scoped_script.contains("window.engine.sensorList ="));
     }
 
     #[test]
@@ -1797,6 +1923,7 @@ mod tests {
             false,
             false,
             false,
+            None,
         );
 
         assert!(

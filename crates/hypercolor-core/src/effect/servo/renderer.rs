@@ -136,6 +136,7 @@ pub struct ServoRenderer {
     include_audio_updates: bool,
     include_screen_updates: bool,
     include_sensor_updates: bool,
+    scoped_sensor_control_ids: Vec<String>,
     include_interaction_updates: bool,
     last_animation_fps_cap: Option<u32>,
     animation_cadence: AnimationCadence,
@@ -167,6 +168,7 @@ impl ServoRenderer {
             include_audio_updates: true,
             include_screen_updates: false,
             include_sensor_updates: false,
+            scoped_sensor_control_ids: Vec::new(),
             include_interaction_updates: false,
             last_animation_fps_cap: None,
             animation_cadence: AnimationCadence::MatchRenderLoop,
@@ -198,6 +200,7 @@ impl ServoRenderer {
             self.include_audio_updates,
             self.include_screen_updates,
             self.include_sensor_updates,
+            selected_sensor_labels(&self.scoped_sensor_control_ids, &self.controls).as_deref(),
         );
         if self.include_interaction_updates {
             if let Some(script) = self
@@ -277,6 +280,7 @@ impl ServoRenderer {
         self.include_audio_updates = effect_is_audio_reactive(metadata);
         self.include_screen_updates = metadata.screen_reactive;
         self.include_sensor_updates = effect_uses_sensor_data(metadata);
+        self.scoped_sensor_control_ids = scoped_sensor_control_ids(metadata);
         self.include_interaction_updates = effect_uses_interaction_data(metadata);
         self.last_animation_fps_cap = None;
         self.animation_cadence = animation_cadence(metadata);
@@ -854,6 +858,7 @@ impl EffectRenderer for ServoRenderer {
         self.include_audio_updates = true;
         self.include_screen_updates = false;
         self.include_sensor_updates = false;
+        self.scoped_sensor_control_ids.clear();
         self.include_interaction_updates = false;
         self.last_animation_fps_cap = None;
         self.animation_cadence = AnimationCadence::MatchRenderLoop;
@@ -971,6 +976,41 @@ fn effect_uses_sensor_data(metadata: &EffectMetadata) -> bool {
         .controls
         .iter()
         .any(|control| matches!(control.kind, ControlKind::Sensor))
+}
+
+fn scoped_sensor_control_ids(metadata: &EffectMetadata) -> Vec<String> {
+    let has_broad_sensor_tag = metadata.tags.iter().any(|tag| {
+        tag.eq_ignore_ascii_case("sensor")
+            || tag.eq_ignore_ascii_case("sensors")
+            || tag.eq_ignore_ascii_case("system-monitor")
+    });
+    if has_broad_sensor_tag {
+        return Vec::new();
+    }
+
+    metadata
+        .controls
+        .iter()
+        .filter(|control| matches!(control.kind, ControlKind::Sensor))
+        .map(|control| control.control_id().to_owned())
+        .collect()
+}
+
+fn selected_sensor_labels(
+    sensor_control_ids: &[String],
+    controls: &HashMap<String, ControlValue>,
+) -> Option<Vec<String>> {
+    let labels = sensor_control_ids
+        .iter()
+        .filter_map(|control_id| match controls.get(control_id) {
+            Some(ControlValue::Enum(label) | ControlValue::Text(label)) if !label.is_empty() => {
+                Some(label.clone())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    (!labels.is_empty()).then_some(labels)
 }
 
 fn effect_uses_interaction_data(metadata: &EffectMetadata) -> bool {
@@ -1302,10 +1342,15 @@ mod tests {
             binding: None,
         });
         assert!(effect_uses_sensor_data(&sensor_control));
+        assert_eq!(
+            scoped_sensor_control_ids(&sensor_control),
+            vec!["targetSensor".to_owned()]
+        );
 
         let mut tagged = plain;
         tagged.tags.push("system-monitor".to_owned());
         assert!(effect_uses_sensor_data(&tagged));
+        assert!(scoped_sensor_control_ids(&tagged).is_empty());
     }
 
     #[test]
