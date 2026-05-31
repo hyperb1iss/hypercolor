@@ -28,6 +28,13 @@ const FACE_SCHEMES = {
     temperature: ['#7ce9ff', '#ffb35f', '#ff6b7a'] as const,
 }
 
+type TextPart = { text: string; family: string; size: number; color: string; yOffset?: number }
+
+type TextLayoutCache = {
+    key: string
+    widths: number[]
+}
+
 function fontStack(family: string): string {
     return `"${family}", sans-serif`
 }
@@ -57,20 +64,25 @@ function drawTextWithGlow(
 
 function drawCenteredParts(
     c: CanvasRenderingContext2D,
-    parts: Array<{ text: string; family: string; size: number; color: string; yOffset?: number }>,
+    parts: TextPart[],
     cx: number,
     cy: number,
     gap: number,
     glowColor: string,
     glowBlur: number,
-): void {
+    layoutCache?: TextLayoutCache,
+): TextLayoutCache | undefined {
     const visible = parts.filter((part) => part.text.length > 0)
-    if (visible.length === 0) return
+    if (visible.length === 0) return undefined
 
-    const widths = visible.map((part) => {
-        setTextStyle(c, part.family, part.size, part.color)
-        return c.measureText(part.text).width
-    })
+    const key = visible.map((part) => `${part.text}\0${part.family}\0${part.size}`).join('\u0001')
+    const cacheHit = layoutCache?.key === key
+    const widths = cacheHit
+        ? layoutCache.widths
+        : visible.map((part) => {
+              setTextStyle(c, part.family, part.size, part.color)
+              return c.measureText(part.text).width
+          })
     const totalWidth = widths.reduce((sum, width) => sum + width, 0) + gap * (visible.length - 1)
     let x = cx - totalWidth * 0.5
     c.textAlign = 'left'
@@ -80,6 +92,7 @@ function drawCenteredParts(
         drawTextWithGlow(c, part.text, x, cy + (part.yOffset ?? 0), part.color, glowColor, glowBlur)
         x += widths[index] + gap
     }
+    return cacheHit ? layoutCache : { key, widths }
 }
 
 export default face(
@@ -220,6 +233,8 @@ export default face(
         let peakDisplay = '--'
         let activeSensor = ''
         let history = new ValueHistory(48)
+        let valueLayoutCache: TextLayoutCache | undefined
+        let detailLayoutCache: TextLayoutCache | undefined
 
         const { width: W, height: H } = ctx
         const cx = W * 0.5
@@ -352,7 +367,7 @@ export default face(
                       ]
                     : []),
             ]
-            drawCenteredParts(c, valueParts, cx, cy, 8, glowColor, 18 + glow * 12)
+            valueLayoutCache = drawCenteredParts(c, valueParts, cx, cy, 8, glowColor, 18 + glow * 12, valueLayoutCache)
 
             c.textAlign = 'center'
             if (showLabel) {
@@ -364,7 +379,16 @@ export default face(
                 ...(showTrend ? [{ color: ink.ui, family: uiFont, size: detailSize - 1, text: trendText }] : []),
                 ...(showPeak ? [{ color: ink.dim, family: uiFont, size: detailSize - 1, text: peakText }] : []),
             ]
-            drawCenteredParts(c, detailParts, cx, cy + 100, 18, glowColor, 4 + glow * 4)
+            detailLayoutCache = drawCenteredParts(
+                c,
+                detailParts,
+                cx,
+                cy + 100,
+                18,
+                glowColor,
+                4 + glow * 4,
+                detailLayoutCache,
+            )
             c.restore()
         }
     },
