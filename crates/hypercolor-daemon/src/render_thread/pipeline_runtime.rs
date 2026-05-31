@@ -309,7 +309,7 @@ impl UnassignedOutputCacheKey {
 
 #[derive(Clone)]
 pub(crate) struct CachedUnassignedOutput {
-    pub(crate) layout: Arc<SpatialLayout>,
+    pub(crate) source_layout: Arc<SpatialLayout>,
     pub(crate) zones: Arc<[Output]>,
     pub(crate) black_zones: Arc<[ZoneColors]>,
 }

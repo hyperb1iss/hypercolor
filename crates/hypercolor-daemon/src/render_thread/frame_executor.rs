@@ -568,7 +568,7 @@ impl UnassignedOutputPlan {
         let cached = cached_unassigned_outputs(manager, layout, cache);
         if cached.zones.is_empty() {
             return Self {
-                layout: cached.layout,
+                layout: Arc::clone(&cached.source_layout),
                 appended_zones: UnassignedOutputZones::None,
             };
         }
@@ -586,7 +586,10 @@ impl UnassignedOutputPlan {
         };
 
         Self {
-            layout: cached.layout,
+            layout: Arc::new(layout_with_unassigned_zones(
+                cached.source_layout.as_ref(),
+                &cached.zones,
+            )),
             appended_zones,
         }
     }
@@ -614,19 +617,11 @@ fn cached_unassigned_outputs(
     }
 
     let unassigned_zones = manager.unassigned_output_zones(layout.as_ref());
-    let cached_layout = if unassigned_zones.is_empty() {
-        layout
-    } else {
-        Arc::new(layout_with_unassigned_zones(
-            layout.as_ref(),
-            &unassigned_zones,
-        ))
-    };
     let black_zones = black_zone_colors(&unassigned_zones).into();
     cache.store(
         key,
         CachedUnassignedOutput {
-            layout: cached_layout,
+            source_layout: layout,
             zones: unassigned_zones.into(),
             black_zones,
         },
@@ -932,7 +927,7 @@ mod tests {
     }
 
     #[test]
-    fn unassigned_output_plan_reuses_cached_layout_for_stable_mapping() {
+    fn unassigned_output_cache_reuses_zone_metadata_for_stable_mapping() {
         let mut manager = BackendManager::new();
         let device_id = DeviceId::new();
         manager.map_device_with_segment(
@@ -944,25 +939,11 @@ mod tests {
 
         let layout = Arc::new(sample_layout(&[]));
         let mut cache = super::UnassignedOutputCache::default();
-        let first = super::UnassignedOutputPlan::build(
-            &mut manager,
-            Arc::clone(&layout),
-            &UnassignedBehavior::Off,
-            &[],
-            &[],
-            &mut cache,
-        );
-        let second = super::UnassignedOutputPlan::build(
-            &mut manager,
-            layout,
-            &UnassignedBehavior::Off,
-            &[],
-            &[],
-            &mut cache,
-        );
+        let first = super::cached_unassigned_outputs(&manager, Arc::clone(&layout), &mut cache);
+        let second = super::cached_unassigned_outputs(&manager, layout, &mut cache);
 
-        assert!(Arc::ptr_eq(&first.layout, &second.layout));
-        assert_eq!(first.zones_for(&[]), second.zones_for(&[]));
+        assert!(Arc::ptr_eq(&first.zones, &second.zones));
+        assert!(Arc::ptr_eq(&first.black_zones, &second.black_zones));
     }
 
     #[test]
