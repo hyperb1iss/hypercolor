@@ -2220,11 +2220,19 @@ fn render_layer_effect_error(
 
 fn combine_led_group_layouts(groups: &[Zone], width: u32, height: u32) -> SpatialLayout {
     let mut layout = empty_group_layout(width, height);
-    layout.zones = groups
+    let zone_count = groups
         .iter()
         .filter(|group| group_contributes_to_scene_canvas(group))
-        .flat_map(|group| group.layout.zones.clone())
-        .collect();
+        .map(|group| group.layout.zones.len())
+        .sum();
+    let mut zones = Vec::with_capacity(zone_count);
+    for group in groups
+        .iter()
+        .filter(|group| group_contributes_to_scene_canvas(group))
+    {
+        zones.extend_from_slice(&group.layout.zones);
+    }
+    layout.zones = zones;
     layout
 }
 

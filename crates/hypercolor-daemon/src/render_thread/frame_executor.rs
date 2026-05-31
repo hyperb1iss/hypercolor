@@ -572,9 +572,22 @@ fn layout_with_unassigned_zones(
     layout: &SpatialLayout,
     unassigned_zones: &[Output],
 ) -> SpatialLayout {
-    let mut output_layout = layout.clone();
-    output_layout.zones.extend_from_slice(unassigned_zones);
-    output_layout
+    let mut zones = Vec::with_capacity(layout.zones.len().saturating_add(unassigned_zones.len()));
+    zones.extend_from_slice(&layout.zones);
+    zones.extend_from_slice(unassigned_zones);
+
+    SpatialLayout {
+        id: layout.id.clone(),
+        name: layout.name.clone(),
+        description: layout.description.clone(),
+        canvas_width: layout.canvas_width,
+        canvas_height: layout.canvas_height,
+        zones,
+        default_sampling_mode: layout.default_sampling_mode.clone(),
+        default_edge_behavior: layout.default_edge_behavior,
+        spaces: layout.spaces.clone(),
+        version: layout.version,
+    }
 }
 
 fn black_zone_colors(zones: &[Output]) -> Vec<ZoneColors> {
