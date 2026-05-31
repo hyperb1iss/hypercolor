@@ -26,7 +26,7 @@ RELEASE_VERSION=""
 BUILD_ROOT=""
 
 CACHE_ROOT="${HYPERCOLOR_CACHE_DIR:-$HOME/.cache/hypercolor}"
-export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-${CACHE_ROOT}/target}"
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-${ROOT_DIR}/target}"
 
 info()  { printf '\033[38;2;128;255;234m→\033[0m %s\n' "$*"; }
 ok()    { printf '\033[38;2;80;250;123m✅\033[0m %s\n' "$*"; }

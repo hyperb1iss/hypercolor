@@ -16,8 +16,9 @@ just graphics-soak-30 --daemon http://127.0.0.1:9420
 ```
 
 Reports are written to `target/graphics-soak/latest.json` by the 30-minute
-recipe. Use `--out target/graphics-soak/<scenario>.json` when capturing several
-scenarios.
+recipe unless `CARGO_TARGET_DIR` is set. Use
+`--out ${CARGO_TARGET_DIR:-target}/graphics-soak/<scenario>.json` when
+capturing several scenarios.
 
 ## Acceptance Scenarios
 
@@ -32,7 +33,7 @@ Run each scenario against an already-configured daemon:
 For each scenario, let the daemon warm up, then run:
 
 ```bash
-just graphics-soak-30 --out target/graphics-soak/<scenario>.json
+just graphics-soak-30 --out "${CARGO_TARGET_DIR:-target}/graphics-soak/<scenario>.json"
 ```
 
 ## Passing Bar

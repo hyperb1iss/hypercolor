@@ -2,6 +2,8 @@ const HOMEBREW_CASK: &str = include_str!("../../../packaging/homebrew/hypercolor
 const CI_WORKFLOW: &str = include_str!("../../../.github/workflows/ci.yml");
 const JUSTFILE: &str = include_str!("../../../justfile");
 const WINDOWS_INSTALLER_SCRIPT: &str = include_str!("../../../scripts/build-windows-installer.ps1");
+const CARGO_CACHE_BUILD_SH: &str = include_str!("../../../scripts/cargo-cache-build.sh");
+const CARGO_CACHE_BUILD_PS1: &str = include_str!("../../../scripts/cargo-cache-build.ps1");
 const FETCH_PAWNIO_ASSETS_PS1: &str = include_str!("../../../scripts/fetch-pawnio-assets.ps1");
 const INSTALL_BUNDLED_PAWNIO_PS1: &str =
     include_str!("../../../scripts/install-bundled-pawnio.ps1");
@@ -137,6 +139,19 @@ fn bundled_pawnio_installer_uses_embedded_trust_roots() {
 fn justfile_exposes_single_windows_installer_target() {
     assert!(JUSTFILE.contains("windows-installer *args=''"));
     assert!(JUSTFILE.contains("scripts/build-windows-installer.ps1"));
+}
+
+#[test]
+fn local_build_wrappers_default_to_workspace_target_dir() {
+    assert!(
+        CARGO_CACHE_BUILD_SH
+            .contains(r#"export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT_DIR/target}""#)
+    );
+    assert!(CARGO_CACHE_BUILD_PS1.contains("$env:CARGO_TARGET_DIR = Join-Path $RepoRoot 'target'"));
+    assert!(STAGE_APP_BUNDLE_SH.contains(r#"STAGE_DIR="${ROOT_DIR}/target/bundle-stage""#));
+    assert!(
+        STAGE_APP_BUNDLE_PS1.contains("$StageDir = Join-Path $RepoRoot 'target\\bundle-stage'")
+    );
 }
 
 #[test]

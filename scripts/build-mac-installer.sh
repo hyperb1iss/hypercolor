@@ -23,13 +23,11 @@ set -euo pipefail
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT_DIR}"
 
-# Pin CARGO_TARGET_DIR to the workspace target tree so cargo-cache-build.sh,
-# stage-app-bundle-assets.sh, and `cargo tauri build` all resolve consistent
-# paths. The Tauri bundle config references binaries via workspace-relative
-# paths (../../target/bundle-stage/...) which fail when CARGO_TARGET_DIR points
-# elsewhere — CI sets CARGO_TARGET_DIR=target for the same reason. sccache
-# locality is preserved by the shared compiler cache, not the target tree.
-export CARGO_TARGET_DIR="${ROOT_DIR}/target"
+# Default Cargo artifacts to the workspace target tree. The Tauri bundle config
+# references staged inputs through workspace-relative target/bundle-stage paths,
+# while explicit CARGO_TARGET_DIR overrides remain supported for CI or one-off
+# build isolation.
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-${ROOT_DIR}/target}"
 
 PROFILE="release"
 TARGET=""

@@ -7,6 +7,8 @@ if [[ -n "${CRITERION_DIR:-}" ]]; then
   CRITERION_DIR="$CRITERION_DIR"
 elif [[ -n "${CARGO_TARGET_DIR:-}" ]]; then
   CRITERION_DIR="$CARGO_TARGET_DIR/criterion"
+elif [[ -d "$ROOT_DIR/target/criterion" ]]; then
+  CRITERION_DIR="$ROOT_DIR/target/criterion"
 elif [[ -d "$CACHE_ROOT/target/criterion" ]]; then
   CRITERION_DIR="$CACHE_ROOT/target/criterion"
 else

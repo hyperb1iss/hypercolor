@@ -20,7 +20,7 @@ just bench-daemon -- --save-baseline pre-change
 just bench-daemon -- --baseline pre-change
 ```
 
-Criterion reports land under `target/criterion/`.
+Criterion reports land under `${CARGO_TARGET_DIR:-target}/criterion/`.
 
 `just bench-gate` reads Criterion `sample.json` output and reports p95/p99
 warning budgets for the render-pipeline hot paths. By default the gate is

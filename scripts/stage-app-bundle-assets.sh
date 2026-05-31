@@ -6,8 +6,9 @@
 # script also handles artifacts that are platform-conditional or need
 # triple-suffixed sidecars: built binaries and the Windows SMBus + PawnIO payloads.
 #
-# All staging output lives under ${target}/bundle-stage/, which is gitignored
-# along with the rest of target/. The source tree never receives generated files.
+# All staging output lives under the workspace target/bundle-stage/ directory,
+# which is gitignored along with the rest of target/. The source tree never
+# receives generated files.
 
 set -euo pipefail
 
@@ -78,7 +79,7 @@ case "${RUST_TARGET}" in
   *) EXE="" ;;
 esac
 
-STAGE_DIR="${TARGET_DIR}/bundle-stage"
+STAGE_DIR="${ROOT_DIR}/target/bundle-stage"
 STAGE_BIN="${STAGE_DIR}/binaries"
 STAGE_UI="${STAGE_DIR}/ui"
 STAGE_EFFECTS="${STAGE_DIR}/effects"

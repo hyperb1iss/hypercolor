@@ -1,8 +1,9 @@
 # Servo Build Caching
 
 The `servo` crate pulls in `mozjs_sys`, which compiles a large native C++
-codebase. The first build is expensive. Subsequent builds should be fast when
-Cargo, Mozilla build state, and compiler caches reuse the same target layout.
+codebase. The first build is expensive. Subsequent builds should stay fast when
+Cargo uses the workspace target tree and the heavy Mozilla/compiler caches stay
+outside the repo.
 
 Servo is the normal HTML-effect rendering path. CI must keep a real Servo E2E
 lane; the CPU-only E2E lane is a smoke fallback for the builtin renderer shape,
@@ -55,7 +56,7 @@ just e2e-build-cpu
 
 The shared wrapper configures:
 
-- `CARGO_TARGET_DIR=$HOME/.cache/hypercolor/target` (unless already set)
+- `CARGO_TARGET_DIR=<repo>/target` (unless already set)
 - `MOZBUILD_STATE_PATH=$HOME/.cache/hypercolor/mozbuild` (unless already set)
 - Cargo incremental compilation for local dev and preview-style builds
 - `sccache` as `RUSTC_WRAPPER` for release/bench builds, or whenever
@@ -81,6 +82,7 @@ Actions builds with:
 - `HYPERCOLOR_FORCE_SCCACHE=1`
 - `CARGO_INCREMENTAL=0`
 - `Swatinem/rust-cache` for Cargo and extra cache directories
+- `.cache/hypercolor/target` for CI-selected Cargo target shards
 - `.cache/hypercolor/mozbuild`
 - `.cache/hypercolor/toolchain`
 - `.cache/hypercolor/ccache`

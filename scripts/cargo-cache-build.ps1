@@ -42,7 +42,7 @@ function Initialize-HypercolorCargoCache {
     }
 
     if (-not $env:CARGO_TARGET_DIR) {
-        $env:CARGO_TARGET_DIR = Join-Path $cacheRoot 'target'
+        $env:CARGO_TARGET_DIR = Join-Path $RepoRoot 'target'
     }
     if (-not $env:MOZBUILD_STATE_PATH) {
         $env:MOZBUILD_STATE_PATH = Join-Path $cacheRoot 'mozbuild'

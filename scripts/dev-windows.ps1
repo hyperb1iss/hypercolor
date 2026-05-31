@@ -17,7 +17,7 @@ $CacheRoot = if ($env:HYPERCOLOR_CACHE_DIR) {
 }
 
 if (-not $env:CARGO_TARGET_DIR) {
-    $env:CARGO_TARGET_DIR = Join-Path $CacheRoot 'target'
+    $env:CARGO_TARGET_DIR = Join-Path $RepoRoot 'target'
 }
 if (-not $env:MOZBUILD_STATE_PATH) {
     $env:MOZBUILD_STATE_PATH = Join-Path $CacheRoot 'mozbuild'

@@ -67,6 +67,10 @@ const palette = {
     reset: "\x1b[0m",
 }
 
+function cargoTargetDir(): string {
+    return process.env.CARGO_TARGET_DIR ?? "target"
+}
+
 const defaults: Config = {
     daemon: "http://127.0.0.1:9420",
     durationMs: 120_000,
@@ -77,7 +81,7 @@ const defaults: Config = {
     cooldownMs: 5_000,
     repeat: 1,
     modes: ["off", "auto"],
-    outDir: join("target", "servo-import-bench", `suite-${timestampSlug(new Date())}`),
+    outDir: join(cargoTargetDir(), "servo-import-bench", `suite-${timestampSlug(new Date())}`),
     label: "servo-gpu-import-compare",
     profile: "preview",
     features: "servo wgpu servo-gpu-import",

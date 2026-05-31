@@ -7,6 +7,7 @@ set -euo pipefail
 # from scratch on every clean target dir.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # Servo builds spawn hundreds of parallel rustc+sccache clients; source hashing
 # trips EMFILE on macOS launchd's default soft limit (256).
@@ -16,7 +17,7 @@ if [ "$current_nofile" != "unlimited" ] && [ "$current_nofile" -lt 65536 ]; then
 fi
 
 CACHE_ROOT="${HYPERCOLOR_CACHE_DIR:-$HOME/.cache/hypercolor}"
-export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$CACHE_ROOT/target}"
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT_DIR/target}"
 export MOZBUILD_STATE_PATH="${MOZBUILD_STATE_PATH:-$CACHE_ROOT/mozbuild}"
 TOOLCHAIN_DIR="$CACHE_ROOT/toolchain"
 

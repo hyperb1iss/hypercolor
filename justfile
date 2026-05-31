@@ -170,17 +170,14 @@ diagnose *args='':
 
 # Observe an already-running daemon for the 30-minute graphics acceptance soak
 graphics-soak-30 *args='':
-    mkdir -p target/graphics-soak
-    bun scripts/graphics-pipeline-soak.ts --duration 30m --out target/graphics-soak/latest.json {{ args }}
+    out_dir="${CARGO_TARGET_DIR:-target}/graphics-soak"; mkdir -p "$out_dir"; bun scripts/graphics-pipeline-soak.ts --duration 30m --out "$out_dir/latest.json" {{ args }}
 
 # Observe Servo GPU import/readback performance on an already-running daemon
 servo-import-bench *args='':
-    mkdir -p target/servo-import-bench
     bun scripts/servo-gpu-import-benchmark.ts {{ args }}
 
 # Run repeatable Servo GPU import A/B measurements with managed daemon restarts
 servo-import-compare *args='':
-    mkdir -p target/servo-import-bench
     bun scripts/servo-gpu-import-compare.ts {{ args }}
 
 # Compile and smoke-run benchmark targets without full measurement
@@ -189,7 +186,7 @@ bench-smoke:
     ./scripts/cargo-cache-build.sh cargo test -p hypercolor-hal --bench protocol_encoding
     ./scripts/cargo-cache-build.sh cargo test -p hypercolor-daemon --bench render_pipeline
 
-# Run the core benchmark suite (Criterion HTML reports land in the cached Cargo target)
+# Run the core benchmark suite (Criterion HTML reports land in the configured Cargo target)
 bench-core *args='':
     ./scripts/cargo-cache-build.sh cargo bench -p hypercolor-core --bench core_pipeline -- {{ args }}
 
@@ -351,7 +348,7 @@ app-assets:
 [unix]
 app *args='': app-assets
     ./scripts/cargo-cache-build.sh cargo build -p hypercolor-daemon --bin hypercolor-daemon -p hypercolor-app --bin hypercolor-app --profile preview
-    "${CARGO_TARGET_DIR:-${HOME}/.cache/hypercolor/target}/preview/hypercolor-app" {{ args }}
+    "${CARGO_TARGET_DIR:-target}/preview/hypercolor-app" {{ args }}
 
 [windows]
 app *args='': app-assets
@@ -483,9 +480,9 @@ build-servo-release:
 build-servo-release:
     powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo build -p hypercolor-daemon --release --features servo
 
-# Run prebuilt Servo daemon release binary from cache target dir
+# Run prebuilt Servo daemon release binary from the configured target dir
 run-servo-release-bin *args='':
-    ~/.cache/hypercolor/target/release/hypercolor-daemon --bind '{{ daemon_bind }}' {{ args }}
+    "${CARGO_TARGET_DIR:-target}/release/hypercolor-daemon" --bind '{{ daemon_bind }}' {{ args }}
 
 # ─── TUI ─────────────────────────────────────────────────
 

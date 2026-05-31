@@ -30,11 +30,9 @@ function Assert-UnderRepo {
         [System.IO.Path]::AltDirectorySeparatorChar
     )
 
-    # The stage dir intentionally lives under CARGO_TARGET_DIR (which is
-    # commonly set to a cache outside the repo, e.g. ~/.cache/hypercolor/
-    # target/). Treat both repo root and the cargo target dir as safe
-    # roots — the entire purpose of the check is to prevent stray
-    # destruction outside controlled build/cache surfaces.
+    # Build artifacts may live under an explicit CARGO_TARGET_DIR outside
+    # the repo. Treat both repo root and that cargo target dir as safe roots
+    # so staging can read external outputs without allowing stray deletes.
     $allowedRoots = @($RepoRoot)
     if ($env:CARGO_TARGET_DIR) {
         $allowedRoots += $env:CARGO_TARGET_DIR
