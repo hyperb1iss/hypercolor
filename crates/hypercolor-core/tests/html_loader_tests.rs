@@ -490,6 +490,31 @@ fn parse_html_effect_metadata_reads_builtin_and_screen_reactive_meta() {
     assert!(parsed.tags.contains(&"screen-reactive".to_owned()));
 }
 
+#[test]
+fn generated_shader_runtime_does_not_make_arc_storm_interactive() {
+    let root = bundled_effects_root();
+    let path = [
+        root.join("arc-storm.html"),
+        root.join("hypercolor/arc-storm.html"),
+    ]
+    .into_iter()
+    .find(|path| path.exists())
+    .unwrap_or_else(|| root.join("arc-storm.html"));
+    assert!(
+        path.exists(),
+        "expected generated Arc Storm HTML at {}; run `just effects-build` first",
+        path.display()
+    );
+
+    let html = fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()));
+    let parsed = parse_html_effect_metadata(&html);
+
+    assert_eq!(parsed.category, EffectCategory::Generative);
+    assert!(parsed.uses_webgl);
+    assert!(!parsed.tags.contains(&"interactive".to_owned()));
+}
+
 #[cfg(not(feature = "servo"))]
 #[test]
 fn register_html_effects_skips_builtin_html_ports_without_servo() {

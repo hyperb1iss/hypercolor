@@ -195,8 +195,10 @@ pub fn parse_html_effect_metadata(html: &str) -> ParsedHtmlEffectMetadata {
             (uses_canvas2d, uses_webgl)
         }
     };
-    let category = explicit_category
-        .unwrap_or_else(|| infer_category(&lower, &controls, audio_reactive, screen_reactive));
+    let category_basis = category_inference_text(&title, &description, &controls);
+    let category = explicit_category.unwrap_or_else(|| {
+        infer_category(&category_basis, &controls, audio_reactive, screen_reactive)
+    });
     let tags = build_tags(
         &controls,
         category,
@@ -576,13 +578,6 @@ fn infer_category(
 
     if contains_any(
         lower,
-        &["mouse", "keyboard", "tap", "click", "touch", "cursor"],
-    ) {
-        return EffectCategory::Interactive;
-    }
-
-    if contains_any(
-        lower,
         &[
             "firework",
             "meteor",
@@ -635,6 +630,38 @@ fn infer_category(
     }
 
     EffectCategory::Ambient
+}
+
+fn category_inference_text(
+    title: &str,
+    description: &str,
+    controls: &[HtmlControlMetadata],
+) -> String {
+    let mut text = String::new();
+    push_category_text(&mut text, title);
+    push_category_text(&mut text, description);
+
+    for control in controls {
+        push_category_text(&mut text, &control.property);
+        push_category_text(&mut text, &control.label);
+        if let Some(group) = &control.group {
+            push_category_text(&mut text, group);
+        }
+        if let Some(tooltip) = &control.tooltip {
+            push_category_text(&mut text, tooltip);
+        }
+    }
+
+    text.to_ascii_lowercase()
+}
+
+fn push_category_text(out: &mut String, value: &str) {
+    if value.is_empty() {
+        return;
+    }
+
+    out.push(' ');
+    out.push_str(value);
 }
 
 fn parse_effect_category(raw: &str) -> Option<EffectCategory> {
@@ -885,6 +912,28 @@ mod tests {
 
         assert_eq!(parsed.category, EffectCategory::Display);
         assert!(parsed.tags.contains(&"display".to_owned()));
+    }
+
+    #[test]
+    fn category_inference_ignores_bundled_runtime_scaffolding() {
+        let html = r#"
+<head>
+  <title>Arc Storm</title>
+  <meta description="Fractal lightning rakes a high-voltage field." />
+  <meta renderer="webgl" />
+</head>
+<script>
+  if (document.readyState === "complete" || document.readyState === "interactive") {
+    boot();
+  }
+  this.registerUniform("iMouse", [0, 0]);
+</script>
+"#;
+
+        let parsed = parse_html_effect_metadata(html);
+
+        assert_eq!(parsed.category, EffectCategory::Generative);
+        assert!(!parsed.tags.contains(&"interactive".to_owned()));
     }
 
     #[test]
