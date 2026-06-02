@@ -8,7 +8,10 @@ mod render;
 mod worker;
 
 use std::any::Any;
-use std::collections::{HashMap, HashSet, hash_map::DefaultHasher};
+use std::collections::{
+    HashMap, HashSet,
+    hash_map::{DefaultHasher, Entry},
+};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::Duration;
@@ -102,6 +105,13 @@ struct DisplayTarget {
 }
 
 type DisplayWorkerKey = (String, DeviceId);
+
+#[derive(Clone, Debug, PartialEq)]
+struct DisplayFaceTargetBinding {
+    group_id: ZoneId,
+    target: DisplayFaceTarget,
+    finalized: bool,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct DisplayWorkerConfigSignature {
@@ -675,23 +685,7 @@ async fn display_targets(
     };
     let (display_group_targets_revision, published_display_group_targets) =
         event_bus.display_group_targets_snapshot();
-    let display_face_targets = published_display_group_targets
-        .into_iter()
-        .map(|(group_id, target)| {
-            (
-                target.device_id,
-                (
-                    group_id,
-                    DisplayFaceTarget {
-                        device_id: target.device_id,
-                        blend_mode: target.blend_mode,
-                        opacity: target.opacity,
-                    },
-                    target.finalized,
-                ),
-            )
-        })
-        .collect::<HashMap<_, _>>();
+    let display_face_targets = display_face_targets_by_device(published_display_group_targets);
     let logical_store = logical_devices.read().await;
     let display_preview_subscribers = display_frames.read().await.subscribed_device_ids();
     let registry_generation = registry.generation();
@@ -759,13 +753,13 @@ async fn display_targets(
         });
         let display_target = display_face_targets
             .get(&tracked.info.id)
-            .map(|(_, target, _)| target.clone());
+            .map(|binding| binding.target.clone());
         let finalized_face = display_face_targets
             .get(&tracked.info.id)
-            .is_some_and(|(_, _, finalized)| *finalized);
+            .is_some_and(|binding| binding.finalized);
         let canvas_source = display_face_targets
             .get(&tracked.info.id)
-            .map(|(group_id, _, _)| *group_id)
+            .map(|binding| binding.group_id)
             .map_or(DisplayCanvasSource::Scene, |group_id| {
                 DisplayCanvasSource::GroupDirect { group_id }
             });
@@ -854,6 +848,54 @@ fn publish_display_group_output_routes(event_bus: &HypercolorBus, targets: &[Arc
         );
     }
     event_bus.retain_display_group_output_routes(&active_group_ids);
+}
+
+fn display_face_targets_by_device(
+    targets: HashMap<ZoneId, hypercolor_core::bus::DisplayGroupTarget>,
+) -> HashMap<DeviceId, DisplayFaceTargetBinding> {
+    let mut by_device = HashMap::new();
+    for (group_id, target) in targets {
+        let binding = DisplayFaceTargetBinding {
+            group_id,
+            target: DisplayFaceTarget {
+                device_id: target.device_id,
+                blend_mode: target.blend_mode,
+                opacity: target.opacity,
+            },
+            finalized: target.finalized,
+        };
+
+        match by_device.entry(target.device_id) {
+            Entry::Vacant(entry) => {
+                entry.insert(binding);
+            }
+            Entry::Occupied(mut entry) => {
+                let current = entry.get();
+                let replace = display_face_target_binding_preferred(&binding, current);
+                debug!(
+                    device_id = %target.device_id,
+                    current_group_id = %current.group_id,
+                    candidate_group_id = %binding.group_id,
+                    current_finalized = current.finalized,
+                    candidate_finalized = binding.finalized,
+                    selected_group_id = %if replace { binding.group_id } else { current.group_id },
+                    "resolved duplicate display face targets for one device"
+                );
+                if replace {
+                    entry.insert(binding);
+                }
+            }
+        }
+    }
+    by_device
+}
+
+fn display_face_target_binding_preferred(
+    candidate: &DisplayFaceTargetBinding,
+    current: &DisplayFaceTargetBinding,
+) -> bool {
+    (candidate.finalized && !current.finalized)
+        || (candidate.finalized == current.finalized && candidate.group_id.0 > current.group_id.0)
 }
 
 fn display_target_geometry_for_device(
@@ -1029,9 +1071,10 @@ fn panic_payload_message(panic: &(dyn Any + Send + 'static)) -> String {
 
 #[cfg(test)]
 mod tests {
-    use hypercolor_core::bus::{CanvasFrame, DisplayGroupFrame};
+    use hypercolor_core::bus::{CanvasFrame, DisplayGroupFrame, DisplayGroupTarget};
     use hypercolor_types::canvas::Canvas;
     use hypercolor_types::device::DeviceId;
+    use uuid::Uuid;
 
     use super::*;
 
@@ -1077,6 +1120,23 @@ mod tests {
             }),
             finalized_face: false,
             viewport: default_display_viewport(),
+        }
+    }
+
+    fn fixed_device_id(value: u128) -> DeviceId {
+        DeviceId::from_uuid(Uuid::from_u128(value))
+    }
+
+    fn fixed_zone_id(value: u128) -> ZoneId {
+        ZoneId(Uuid::from_u128(value))
+    }
+
+    fn display_group_target(device_id: DeviceId, finalized: bool) -> DisplayGroupTarget {
+        DisplayGroupTarget {
+            device_id,
+            blend_mode: DisplayFaceBlendMode::Replace,
+            opacity: 1.0,
+            finalized,
         }
     }
 
@@ -1239,5 +1299,43 @@ mod tests {
         target.finalized_face = true;
 
         assert_eq!(target.worker_config_signature(), unfinalized);
+    }
+
+    #[test]
+    fn display_face_target_resolution_prefers_finalized_binding() {
+        let device_id = fixed_device_id(1);
+        let old_finalized = fixed_zone_id(1);
+        let new_pending = fixed_zone_id(2);
+        let targets = std::collections::HashMap::from([
+            (new_pending, display_group_target(device_id, false)),
+            (old_finalized, display_group_target(device_id, true)),
+        ]);
+
+        let resolved = display_face_targets_by_device(targets);
+
+        let binding = resolved
+            .get(&device_id)
+            .expect("device target should resolve");
+        assert_eq!(binding.group_id, old_finalized);
+        assert!(binding.finalized);
+    }
+
+    #[test]
+    fn display_face_target_resolution_prefers_newest_equivalent_binding() {
+        let device_id = fixed_device_id(2);
+        let older = fixed_zone_id(1);
+        let newer = fixed_zone_id(2);
+        let targets = std::collections::HashMap::from([
+            (older, display_group_target(device_id, true)),
+            (newer, display_group_target(device_id, true)),
+        ]);
+
+        let resolved = display_face_targets_by_device(targets);
+
+        let binding = resolved
+            .get(&device_id)
+            .expect("device target should resolve");
+        assert_eq!(binding.group_id, newer);
+        assert!(binding.finalized);
     }
 }
