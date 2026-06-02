@@ -24,15 +24,15 @@ alias py := python-verify
 
 # ─── Core ─────────────────────────────────────────────────
 
-# Run all checks (format, lint, test)
-verify: fmt-check lint test
+# Run all checks (boundary, format, lint, test)
+verify: oss-boundary-check-strict fmt-check lint test
     @echo '✅ All checks passed'
 
-# Check OSS/internal boundary guard scaffolding without enforcing extraction yet
+# Check OSS/internal boundary guard scaffolding without strict enforcement
 oss-boundary-check:
     ./scripts/check-oss-boundary.sh
 
-# Strict boundary check for after commercial cloud moves internal
+# Strict boundary check for commercial cloud extraction
 oss-boundary-check-strict:
     ./scripts/check-oss-boundary.sh --strict
 

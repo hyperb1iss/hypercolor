@@ -77,5 +77,5 @@ clean line between "seam added" and "implementation moved."
 - strict mode: fails if Hypercolor Cloud markers remain in OSS, excluding public
   Govee vendor cloud support and the boundary design doc.
 
-Strict mode becomes part of `just verify` only after the extraction commit
-removes the current OSS cloud implementation.
+Strict mode is part of `just verify` after the extraction commit removes the
+current OSS cloud implementation.
