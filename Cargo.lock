@@ -309,17 +309,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "apple-native-keyring-store"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a7be2f067ccd8d4b4d4a66ddafe0f32a5dff31732f32dbff85fefc40929b1f72"
-dependencies = [
- "keyring-core",
- "log",
- "security-framework",
-]
-
-[[package]]
 name = "arbitrary"
 version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2244,7 +2233,6 @@ dependencies = [
  "cfg-if",
  "cpufeatures 0.2.17",
  "curve25519-dalek-derive",
- "digest",
  "fiat-crypto",
  "rustc_version",
  "subtle",
@@ -2348,46 +2336,6 @@ name = "data-url"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be1e0bca6c3637f992fc1cc7cbc52a78c1ef6db076dbf1059c4323d6a2048376"
-
-[[package]]
-name = "dbus"
-version = "0.9.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b942602992bb7acfd1f51c49811c58a610ef9181b6e66f3e519d79b540a3bf73"
-dependencies = [
- "libc",
- "libdbus-sys",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "dbus-secret-service"
-version = "4.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "708b509edf7889e53d7efb0ffadd994cc6c2345ccb62f55cfd6b0682165e4fa6"
-dependencies = [
- "aes",
- "block-padding",
- "cbc",
- "dbus",
- "fastrand",
- "hkdf",
- "num",
- "once_cell",
- "openssl",
- "sha2",
- "zeroize",
-]
-
-[[package]]
-name = "dbus-secret-service-keyring-store"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "21d8f54da401bb5eb2a4d873ac4b359f4a599df2ca8634bb5b8c045e5ee78757"
-dependencies = [
- "dbus-secret-service",
- "keyring-core",
-]
 
 [[package]]
 name = "default-struct-builder"
@@ -2773,31 +2721,6 @@ dependencies = [
  "rfc6979",
  "signature",
  "spki",
-]
-
-[[package]]
-name = "ed25519"
-version = "2.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "115531babc129696a58c64a4fef0a8bf9e9698629fb97e9e40767d235cfbcd53"
-dependencies = [
- "pkcs8",
- "signature",
-]
-
-[[package]]
-name = "ed25519-dalek"
-version = "2.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "70e796c081cee67dc755e1a36a0a172b897fab85fc3f6bc48307991f64e4eca9"
-dependencies = [
- "curve25519-dalek",
- "ed25519",
- "rand_core 0.6.4",
- "serde",
- "sha2",
- "subtle",
- "zeroize",
 ]
 
 [[package]]
@@ -4732,39 +4655,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hypercolor-cloud-api"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "serde",
- "serde_json",
- "ulid",
- "uuid",
-]
-
-[[package]]
-name = "hypercolor-cloud-client"
-version = "0.1.0"
-dependencies = [
- "apple-native-keyring-store",
- "chrono",
- "dbus-secret-service-keyring-store",
- "hypercolor-cloud-api",
- "hypercolor-daemon-link",
- "hypercolor-types",
- "keyring-core",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "toml 0.8.2",
- "uuid",
- "windows-native-keyring-store",
-]
-
-[[package]]
 name = "hypercolor-core"
 version = "0.1.0"
 dependencies = [
@@ -4845,11 +4735,9 @@ dependencies = [
  "cpal",
  "criterion",
  "fast_image_resize",
- "futures-util",
  "gif 0.14.2",
  "http 1.4.0",
  "httpdate",
- "hypercolor-cloud-client",
  "hypercolor-core",
  "hypercolor-driver-api",
  "hypercolor-driver-builtin",
@@ -4861,7 +4749,6 @@ dependencies = [
  "mdns-sd",
  "owo-colors",
  "pollster",
- "rand 0.10.1",
  "reqwest 0.12.28",
  "rmcp",
  "sd-notify",
@@ -4874,7 +4761,6 @@ dependencies = [
  "thiserror 2.0.18",
  "thread-priority",
  "tokio",
- "tokio-tungstenite 0.26.2",
  "tokio-util",
  "toml 0.8.2",
  "tower",
@@ -4888,22 +4774,6 @@ dependencies = [
  "uuid",
  "wgpu",
  "windows-service",
-]
-
-[[package]]
-name = "hypercolor-daemon-link"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "ed25519-dalek",
- "hypercolor-cloud-api",
- "rand_core 0.6.4",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.18",
- "ulid",
- "uuid",
 ]
 
 [[package]]
@@ -6377,15 +6247,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "keyring-core"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fb1e621458ca9c51aa110bd0339d4751a056b9576bf1253aee1aa560dda0fc9d"
-dependencies = [
- "log",
-]
-
-[[package]]
 name = "khronos-egl"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6692,16 +6553,6 @@ name = "libc"
 version = "0.2.183"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b5b646652bf6661599e1da8901b3b9522896f01e736bad5f723fe7a3a27f899d"
-
-[[package]]
-name = "libdbus-sys"
-version = "0.2.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "328c4789d42200f1eeec05bd86c9c13c7f091d2ba9a6ea35acdf51f31bc0f043"
-dependencies = [
- "cc",
- "pkg-config",
-]
 
 [[package]]
 name = "libfuzzer-sys"
@@ -7653,20 +7504,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "num"
-version = "0.4.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "35bd024e8b2ff75562e5f34e7f4905839deb4b22955ef5e73d2fea1b9813cb23"
-dependencies = [
- "num-bigint",
- "num-complex",
- "num-integer",
- "num-iter",
- "num-rational",
- "num-traits",
-]
-
-[[package]]
 name = "num-bigint"
 version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8369,15 +8206,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
-name = "openssl-src"
-version = "300.6.0+3.6.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a8e8cbfd3a4a8c8f089147fd7aaa33cf8c7450c4d09f8f80698a0cf093abeff4"
-dependencies = [
- "cc",
-]
-
-[[package]]
 name = "openssl-sys"
 version = "0.9.112"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8385,7 +8213,6 @@ checksum = "57d55af3b3e226502be1526dfdba67ab0e9c96fc293004e79576b2b9edb0dbdb"
 dependencies = [
  "cc",
  "libc",
- "openssl-src",
  "pkg-config",
  "vcpkg",
 ]
@@ -16167,19 +15994,6 @@ name = "windows-link"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f0805222e57f7521d6a62e36fa9163bc891acd422f971defe97d64e70d0a4fe5"
-
-[[package]]
-name = "windows-native-keyring-store"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b5fd986f648459dd29aa252ed3a5ad11a60c0b1251bf81625fb03a86c69d274e"
-dependencies = [
- "byteorder",
- "keyring-core",
- "regex",
- "windows-sys 0.61.2",
- "zeroize",
-]
 
 [[package]]
 name = "windows-numerics"

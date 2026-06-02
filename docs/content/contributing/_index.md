@@ -85,7 +85,7 @@ docs(api): document WebSocket binary frame format
 
 Scopes match crate short-names (drop the `hypercolor-` prefix):
 
-`types`, `core`, `hal`, `linux-gpu-interop`, `windows-pawnio`, `driver-api`, `driver-builtin`, `driver-hue`, `driver-nanoleaf`, `driver-wled`, `driver-govee`, `network`, `daemon`, `cli`, `tui`, `tray`, `desktop`, `app`, `cloud-api`, `cloud-client`, `daemon-link`, `leptos-ext`, `leptos-ext-macros`, `ui`
+`types`, `core`, `hal`, `linux-gpu-interop`, `windows-pawnio`, `driver-api`, `driver-builtin`, `driver-hue`, `driver-nanoleaf`, `driver-wled`, `driver-govee`, `network`, `daemon`, `cli`, `tui`, `tray`, `desktop`, `app`, `leptos-ext`, `leptos-ext-macros`, `ui`
 
 Use `sdk` for TypeScript SDK changes (not a Rust crate, but follows the same scope convention).
 

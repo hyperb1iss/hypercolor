@@ -124,10 +124,7 @@ The project is organized into focused crates with strict dependency boundaries, 
 
 | Crate                    | Depends On                                                            | Responsibility                                               |
 | ------------------------ | --------------------------------------------------------------------- | ------------------------------------------------------------ |
-| `hypercolor-daemon`      | `types`, `core`, `driver-api`, `network`, `leptos-ext`; optionally `driver-builtin` (hal + drivers), `cloud-client` | Daemon binary: render-loop host, REST/WebSocket/MCP server |
-| `hypercolor-cloud-api`   | `types`                                                               | Shared data-contract types for the cloud HTTP API            |
-| `hypercolor-cloud-client`| `types`, `cloud-api`                                                  | Daemon-side cloud client (OAuth, keyring, identity, sync)    |
-| `hypercolor-daemon-link` | `types`                                                               | Daemon↔cloud multiplexed WebSocket tunnel protocol           |
+| `hypercolor-daemon`      | `types`, `core`, `driver-api`, `network`, `leptos-ext`; optionally `driver-builtin` (hal + drivers) | Daemon binary: render-loop host, REST/WebSocket/MCP server |
 
 ### Clients and UIs
 

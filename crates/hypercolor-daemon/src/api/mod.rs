@@ -8,8 +8,6 @@ pub mod access_log;
 pub mod assets;
 pub mod attachments;
 pub mod capture;
-#[cfg(feature = "cloud")]
-pub mod cloud;
 pub mod config;
 pub mod control_values;
 pub mod controls;
@@ -512,12 +510,6 @@ impl AppState {
             )));
         }
 
-        let extensions = ExtensionRegistry::default();
-        #[cfg(feature = "cloud")]
-        extensions
-            .insert(Arc::new(crate::cloud_state::CloudState::default()))
-            .expect("default app state should register cloud state");
-
         Self {
             device_registry,
             effect_registry,
@@ -539,7 +531,7 @@ impl AppState {
             reconnect_tasks,
             config_manager: None,
             data_dir,
-            extensions,
+            extensions: ExtensionRegistry::default(),
             api_extensions: Vec::new(),
             input_manager,
             discovery_in_progress,
@@ -664,13 +656,6 @@ impl AppState {
             server_identity: daemon.server_identity.clone(),
             security_state: security::SecurityState::from_config(&daemon.config_manager.get()),
         }
-    }
-
-    #[cfg(feature = "cloud")]
-    pub fn cloud_state(&self) -> Arc<crate::cloud_state::CloudState> {
-        self.extensions
-            .get::<crate::cloud_state::CloudState>()
-            .expect("cloud feature should register cloud state")
     }
 }
 
@@ -1376,46 +1361,6 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         )
         // ── WebSocket ────────────────────────────────────────────────
         .route("/ws", axum::routing::get(ws::ws_handler));
-    #[cfg(feature = "cloud")]
-    let api = api
-        // ── Cloud ────────────────────────────────────────────────────
-        .route("/cloud/status", axum::routing::get(cloud::get_status))
-        .route(
-            "/cloud/session",
-            axum::routing::get(cloud::get_session).delete(cloud::logout),
-        )
-        .route(
-            "/cloud/entitlement",
-            axum::routing::get(cloud::get_entitlement_cache),
-        )
-        .route(
-            "/cloud/connection",
-            axum::routing::get(cloud::get_connection),
-        )
-        .route(
-            "/cloud/connection/prepare",
-            axum::routing::post(cloud::prepare_connection),
-        )
-        .route(
-            "/cloud/connection/connect",
-            axum::routing::post(cloud::connect_connection),
-        )
-        .route(
-            "/cloud/connection/disconnect",
-            axum::routing::post(cloud::disconnect_connection),
-        )
-        .route(
-            "/cloud/identity",
-            axum::routing::post(cloud::ensure_identity),
-        )
-        .route(
-            "/cloud/login/start",
-            axum::routing::post(cloud::start_login),
-        )
-        .route(
-            "/cloud/login/{login_id}/poll",
-            axum::routing::post(cloud::poll_login),
-        );
     let mut api = api;
     for extension in &state.api_extensions {
         api = extension.mount_api_routes(api);

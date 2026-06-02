@@ -13,8 +13,7 @@ integrates with systemd via sd-notify; on Windows it can run as a Windows Servic
 
 Leaf binary — the top of the dependency stack. Consumes hypercolor-core, hypercolor-hal (via
 hypercolor-driver-builtin), hypercolor-driver-api, hypercolor-network, hypercolor-types, and
-hypercolor-leptos-ext. Optionally pulls in hypercolor-cloud-client under the `cloud` feature.
-Nothing in the workspace depends on this crate.
+hypercolor-leptos-ext. Nothing in the workspace depends on this crate.
 
 ## Binary
 
@@ -33,8 +32,6 @@ Notable secondary binaries built from `src/bin/`: `hypercolor-debug` (diagnostic
 | `wgpu` | yes | GPU-accelerated effect rendering |
 | `servo` | yes | Servo HTML effect rendering |
 | `servo-gpu-import` | no | Servo/wgpu GPU texture sharing on Linux |
-| `cloud` | no | Enables cloud connectivity via hypercolor-cloud-client |
-| `official-cloud` | no | Alias for `cloud` used in official builds |
 
 ## API Surface
 

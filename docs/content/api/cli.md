@@ -219,20 +219,6 @@ hypercolor diagnose
 
 Checks device connectivity, audio capture status, effect engine health, USB permissions, and configuration validity. Outputs a diagnostic report with pass/fail status for each check.
 
-### `hypercolor cloud`
-
-Hypercolor Cloud account and daemon-link controls.
-
-```bash
-hypercolor cloud login               # Log this daemon into Hypercolor Cloud
-hypercolor cloud logout              # Log this daemon out of Hypercolor Cloud
-hypercolor cloud connection          # Show daemon cloud socket readiness
-hypercolor cloud entitlement         # Show cached cloud entitlement status
-hypercolor cloud status              # Show daemon cloud feature/configuration status
-hypercolor cloud session             # Show local cloud login/session status
-hypercolor cloud identity            # Create or show this daemon's cloud identity
-```
-
 ### `hypercolor servers`
 
 Discover Hypercolor daemons on the local network (mDNS). Different from `server`, which queries the currently connected daemon.

@@ -187,10 +187,6 @@ pub enum Commands {
     #[command(display_order = 32)]
     Service(commands::service::ServiceArgs),
 
-    /// Hypercolor Cloud login and daemon-link controls
-    #[command(display_order = 33)]
-    Cloud(commands::cloud::CloudArgs),
-
     // ── System ────────────────────────────────────────────────
     /// Daemon and CLI configuration
     #[command(display_order = 40)]
@@ -283,7 +279,6 @@ pub async fn run_with_extensions(extensions: &[&dyn CliExtension]) -> Result<()>
         Commands::Server(args) => commands::server::execute(args, &client, &ctx).await,
         Commands::Config(args) => commands::config::execute(args, &client, &ctx).await,
         Commands::Service(args) => commands::service::execute(args, &ctx).await,
-        Commands::Cloud(args) => commands::cloud::execute(args, &client, &ctx).await,
         Commands::Diagnose(args) => commands::diagnose::execute(args, &client, &ctx).await,
         Commands::Servers(args) => commands::servers::execute(args, &ctx).await,
         Commands::External(args) => execute_external_command(args, extensions, &client, &ctx).await,

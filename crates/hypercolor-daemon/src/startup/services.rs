@@ -122,11 +122,6 @@ impl DaemonState {
         let server_identity =
             resolve_server_identity(config).context("failed to resolve server identity")?;
         // ── Configuration ───────────────────────────────────────────────
-        let extensions = ExtensionRegistry::default();
-        #[cfg(feature = "cloud")]
-        extensions
-            .insert(Arc::new(crate::cloud_state::CloudState::default()))
-            .expect("daemon initialization should register cloud state");
         let api_extensions = Vec::new();
         let lifecycle_extensions = Vec::new();
 
@@ -502,7 +497,7 @@ impl DaemonState {
 
         Ok(Self {
             config_manager,
-            extensions,
+            extensions: ExtensionRegistry::default(),
             api_extensions,
             lifecycle_extensions,
             device_registry,

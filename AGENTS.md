@@ -62,9 +62,6 @@ crates/
   hypercolor-tui/                # Ratatui terminal UI library, launched via `hypercolor tui`
   hypercolor-tray/               # System tray applet binary
   hypercolor-app/                # Unified desktop app shell: supervises the daemon, owns the tray, handles autostart and single-instance
-  hypercolor-cloud-api/          # Shared data-contract types for the cloud HTTP API
-  hypercolor-cloud-client/       # Daemon-side cloud client (OAuth, keyring, device identity, sync)
-  hypercolor-daemon-link/        # Daemon↔cloud multiplexed WebSocket tunnel protocol
   hypercolor-leptos-ext/         # Leptos 0.8 extension helpers for the web UI
   hypercolor-leptos-ext-macros/  # Proc macros powering hypercolor-leptos-ext
   hypercolor-ui/                 # Leptos 0.8 CSR web UI (WASM, Trunk) — EXCLUDED from workspace
@@ -100,9 +97,6 @@ graph TD
     CORE --> CLI[hypercolor-cli]
     T --> TUI[hypercolor-tui]
     CORE & T --> TRAY[hypercolor-tray]
-    CAPI[hypercolor-cloud-api] --> CC[hypercolor-cloud-client]
-    CAPI --> DL[hypercolor-daemon-link]
-    D --> CC & DL
     APP[hypercolor-app] --> D & TRAY
     T --> UI[hypercolor-ui<br><i>excluded from workspace</i>]
     LE[hypercolor-leptos-ext] --> UI & D & TUI

@@ -391,11 +391,10 @@ No .NET. No Velopack. No tauri-plugin-updater.
 # crates/hypercolor-daemon/Cargo.toml
 [features]
 default = []
-official-cloud = ["dep:hypercolor-cloud-client"]
 official-updates = ["dep:hypercolor-updater"]
 ```
 
-Official builds enable both. Community builds enable neither, and the binary genuinely contains zero update or cloud client code.
+Official builds enable update support. Community builds leave the feature off, and the binary genuinely contains zero updater client code.
 
 ## CI release workflow
 
@@ -409,7 +408,7 @@ jobs:
       x86_64-pc-windows-msvc
     ]}}
     steps:
-      - cargo build --release --locked --features official-cloud,official-updates --target=$TARGET
+      - cargo build --release --locked --features official-updates --target=$TARGET
       - sign + notarize per OS  (codesign + notarytool, signtool via Azure Artifact Signing, no-op for Linux)
       - tar.zst the artifact (or .msi for Windows desktop, .app.tar.zst for macOS desktop)
       - minisign sign the artifact bytes
