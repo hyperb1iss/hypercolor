@@ -3,7 +3,7 @@
 use hypercolor_types::device::DeviceFamily;
 
 use crate::protocol::Protocol;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 use crate::registry::HidRawReportMode;
 use crate::registry::{DeviceDescriptor, ProtocolBinding, TransportType};
 
@@ -166,7 +166,18 @@ const fn nollie_hid_transport(interface: u8, max_report_len: usize) -> Transport
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+const fn nollie_hid_transport(interface: u8, _max_report_len: usize) -> TransportType {
+    TransportType::UsbHidRaw {
+        interface,
+        report_id: 0x00,
+        report_mode: HidRawReportMode::OutputReportWithReportId,
+        usage_page: None,
+        usage: None,
+    }
+}
+
+#[cfg(all(not(windows), not(target_os = "linux")))]
 const fn nollie_hid_transport(interface: u8, _max_report_len: usize) -> TransportType {
     TransportType::UsbHid { interface }
 }

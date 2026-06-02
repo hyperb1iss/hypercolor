@@ -80,7 +80,19 @@ fn expected_report_id_payload_hid_transport(interface: u8, max_report_len: usize
         }
     }
 
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        let _ = max_report_len;
+        TransportType::UsbHidRaw {
+            interface,
+            report_id: 0x00,
+            report_mode: HidRawReportMode::OutputReportWithReportId,
+            usage_page: None,
+            usage: None,
+        }
+    }
+
+    #[cfg(all(not(windows), not(target_os = "linux")))]
     {
         let _ = max_report_len;
         TransportType::UsbHid { interface }

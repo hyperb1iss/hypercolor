@@ -327,15 +327,17 @@ Nollie16v3 and Nollie32 use a completely new wire format. The fundamental change
 | Settings save    | 513 bytes  | `0x80` mode + idle color                                                                  |
 | Shutdown latch   | 513 bytes  | `0xFF` shutdown trigger                                                                   |
 
-**On-the-wire size is 1024 / 513 bytes including the report ID at offset 0.** This is what
-our `UsbHidTransport` must preserve exactly. A 513-byte settings packet sent
-through a 1024-byte interrupt endpoint must stay 513 bytes on the wire; padding
-it to 1024 leaves the controller in its hardware effect.
+**HID output report size is 1024 / 513 bytes including the report ID at offset 0.**
+Linux hardware testing on `3061:4714` shows the controller responds to
+`/dev/hidraw*` output reports with the report ID included, matching the official
+`device.write(packet, 1024)` path. Raw endpoint-level interrupt OUT writes can
+be accepted by the kernel while leaving the controller in its hardware effect.
 
 Some host libraries annotate these as `1025`/`514` because they inject an extra prefix byte
-at the host abstraction layer. Hypercolor uses `nusb` and writes the report buffer verbatim,
-so the encoded packet includes the report ID and uses `1024` / `513` bytes on the wire.
-Hardware testing should confirm.
+at the host abstraction layer. Hypercolor encodes packets with the report ID in
+byte 0 and routes Nollie HID SKUs through platform HID output-report APIs
+(`hidraw` on Linux, `hidapi` on Windows). A 513-byte settings packet must stay
+513 bytes; padding it to 1024 leaves the controller in its hardware effect.
 
 ### 5.2 LED Count Config — `0x88`
 
@@ -722,7 +724,9 @@ pub struct ProtocolCapabilities {
 }
 ```
 
-`UsbHidTransport` from Spec 16 already supports variable report sizes per write call; no transport changes needed.
+Nollie descriptors use platform HID output-report transports rather than raw
+interrupt endpoint writes: `UsbHidRaw` on Linux and `UsbHidApi` on Windows.
+Packets already include the report ID byte.
 
 ### 7.3 Attachment Profiles
 
