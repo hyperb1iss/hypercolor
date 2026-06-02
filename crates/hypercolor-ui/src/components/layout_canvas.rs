@@ -21,6 +21,7 @@ use hypercolor_leptos_ext::raf::Scheduler;
 
 use crate::app::{DevicesContext, WsContext};
 use crate::components::canvas_preview::CanvasPreview;
+use crate::components::device_card::{DeviceClass, classify_device};
 use crate::compound_selection::{self, CompoundDepth};
 use crate::layout_geometry::{self, ResizeHandle};
 use crate::layout_utils;
@@ -381,6 +382,23 @@ pub fn LayoutCanvas() -> impl IntoView {
                                         zone_display_ctx.attachment_profiles.get().unwrap_or_default();
                                     zones_by_id.with(|map| {
                                         let zone = map.get(&zid)?;
+                                        // A generic ARGB controller is just raw channels until
+                                        // the user attaches a component, so an unattached channel
+                                        // stays out of the layout entirely — only configured
+                                        // hardware draws. Fixed devices (keyboards, AIOs) always
+                                        // render; they have meaningful LEDs without a component.
+                                        if zone.attachment.is_none()
+                                            && devices
+                                                .iter()
+                                                .find(|device| {
+                                                    device.layout_device_id == zone.device_id
+                                                })
+                                                .is_some_and(|device| {
+                                                    classify_device(device) == DeviceClass::Controller
+                                                })
+                                        {
+                                            return None;
+                                        }
                                         let x_pct = zone.position.x * 100.0;
                                         let y_pct = zone.position.y * 100.0;
                                         let w_pct = zone.size.x * 100.0;
