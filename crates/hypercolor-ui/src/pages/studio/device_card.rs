@@ -67,15 +67,17 @@ pub fn StudioDeviceCard(
 
     let Some(device) = device else {
         // Offline or removed: still placed in the layout, but the device
-        // registry has no entry — a muted row, no brand identity. It can
-        // still be removed from the zone; it cannot be identified.
-        let name = row.name;
+        // registry has no entry — a muted row, no brand identity. Its raw
+        // backend id must never reach the user (§4), so it reads as a
+        // plain vendor word with an offline tag. It can still be removed
+        // from the zone; it cannot be identified.
+        let vendor = friendly_offline_label(&row.device_id);
         let leds = led_label(row.led_count);
         let select_body = select.clone();
         return view! {
             <div
                 class="card-hover flex w-full items-center rounded-lg border border-dashed border-edge-subtle/45"
-                title="Offline: placed in the layout but not connected"
+                title="Offline — placed in the layout but not currently connected"
             >
                 <button
                     type="button"
@@ -88,8 +90,11 @@ pub fn StudioDeviceCard(
                         height="12px"
                         style="color: rgba(139, 133, 160, 0.5)"
                     />
-                    <span class="min-w-0 flex-1 truncate text-[11px] text-fg-tertiary/60">
-                        {name}
+                    <span class="min-w-0 flex-1 truncate text-[11px] text-fg-tertiary/65">
+                        {vendor}
+                    </span>
+                    <span class="shrink-0 rounded bg-surface-sunken/70 px-1 py-[1px] text-[8px] font-medium uppercase tracking-wide text-fg-tertiary/50">
+                        "Offline"
                     </span>
                     <span class="shrink-0 font-mono text-[9px] tabular-nums text-fg-tertiary/45">
                         {leds}
@@ -345,6 +350,7 @@ fn card_actions(
     scene_key: Option<String>,
 ) -> impl IntoView {
     let in_zone = select != UNASSIGNED_SURFACE_ID;
+    let (identifying, set_identifying) = signal(false);
     // Hide-all is only meaningful when the card sits in a real zone
     // (so it has a scene_key) and the device actually owns outputs
     // there (otherwise there is nothing to toggle).
@@ -410,14 +416,24 @@ fn card_actions(
                 })}
             {physical_id
                 .map(|id| {
+                    let identify_id = id.clone();
                     view! {
                         <button
                             type="button"
-                            class="btn-press flex h-6 w-6 items-center justify-center rounded-md text-fg-tertiary/55 transition-colors hover:text-fg-secondary"
+                            class="btn-press flex h-6 w-6 items-center justify-center rounded-md text-fg-tertiary/55 transition-colors hover:text-fg-secondary disabled:cursor-wait disabled:opacity-60"
                             title="Identify (flash the hardware)"
-                            on:click=move |_| identify_device_now(&id)
+                            disabled=move || identifying.get()
+                            on:click=move |ev: web_sys::MouseEvent| {
+                                ev.stop_propagation();
+                                if identifying.get_untracked() {
+                                    return;
+                                }
+                                identify_device_now(&identify_id, set_identifying);
+                            }
                         >
-                            <Icon icon=LuZap width="12px" height="12px" />
+                            <span class=move || if identifying.get() { "animate-pulse" } else { "" }>
+                                <Icon icon=LuZap width="12px" height="12px" />
+                            </span>
                         </button>
                     }
                 })}
@@ -636,13 +652,15 @@ fn fetch_attachments_if_needed(studio: StudioContext, physical_device_id: &str) 
 }
 
 /// Flash a device's LEDs so the user can locate it physically.
-fn identify_device_now(device_id: &str) {
+fn identify_device_now(device_id: &str, set_identifying: WriteSignal<bool>) {
     let device_id = device_id.to_owned();
+    set_identifying.set(true);
     spawn_local(async move {
         match api::identify_device(&device_id).await {
             Ok(()) => toasts::toast_success("Flashing device"),
             Err(error) => toasts::toast_error(&format!("Identify failed: {error}")),
         }
+        set_identifying.set(false);
     });
 }
 
@@ -721,6 +739,31 @@ fn display_resolution(device: &DeviceSummary) -> Option<(u32, u32)> {
             Some(ZoneTopologySummary::Display { width, height, .. }) => Some((width, height)),
             _ => None,
         })
+}
+
+/// Vendor stand-in word for a device that is placed in the layout but
+/// absent from the registry. The raw backend id (`razer:1532:…`) is never
+/// shown (§4); this maps its leading backend token to a vendor name, or
+/// the neutral "Device" when the token is unrecognized.
+fn friendly_offline_label(device_id: &str) -> &'static str {
+    let token = device_id.split(':').next().unwrap_or("");
+    match token.to_ascii_lowercase().as_str() {
+        "razer" => "Razer",
+        "corsair" => "Corsair",
+        "asus" | "aura" => "ASUS",
+        "nzxt" => "NZXT",
+        "lianli" | "ene" => "Lian Li",
+        "wled" => "WLED",
+        "hue" | "philips" => "Philips Hue",
+        "govee" => "Govee",
+        "nanoleaf" => "Nanoleaf",
+        "dygma" => "Dygma",
+        "nollie" => "Nollie",
+        "prismrgb" | "prism" => "PrismRGB",
+        "qmk" => "QMK",
+        "ableton" | "push" => "Ableton",
+        _ => "Device",
+    }
 }
 
 /// "1 LED" / "1,406 LEDs".

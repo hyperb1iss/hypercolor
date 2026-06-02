@@ -21,7 +21,7 @@ use crate::ws::messages::group_has_degraded_layer;
 use super::StudioContext;
 use super::device_card::StudioDeviceCard;
 use super::device_grouping::{
-    DeviceMeta, ZoneDeviceRow, device_rows_for_zone, unassigned_device_rows,
+    DeviceMeta, ZoneDeviceRow, device_rows_for_zone, sort_device_rows, unassigned_device_rows,
 };
 use super::surface::{Surface, SurfaceKind, UNASSIGNED_SURFACE_ID, surfaces_from_groups};
 use super::zone_add_device::ZoneAddDevice;
@@ -124,7 +124,9 @@ pub fn ZoneTree() -> impl IntoView {
                     .find(|group| group.id.to_string() == surface.id)
                     .map(|group| group.layout.zones.clone())
                     .unwrap_or_default();
-                let rows = device_rows_for_zone(&outputs, &metas)
+                let mut base_rows = device_rows_for_zone(&outputs, &metas);
+                sort_device_rows(&mut base_rows);
+                let rows = base_rows
                     .into_iter()
                     .map(|row| {
                         let device = by_id.get(&row.device_id).cloned();
@@ -140,7 +142,9 @@ pub fn ZoneTree() -> impl IntoView {
             return Vec::new();
         };
         let by_id = device_by_id.get();
-        unassigned_device_rows(&scene.groups, &device_metas.get())
+        let mut base_rows = unassigned_device_rows(&scene.groups, &device_metas.get());
+        sort_device_rows(&mut base_rows);
+        base_rows
             .into_iter()
             .map(|row| {
                 let device = by_id.get(&row.device_id).cloned();

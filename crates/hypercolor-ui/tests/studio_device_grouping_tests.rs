@@ -14,7 +14,9 @@ use hypercolor_types::spatial::{
     StripDirection,
 };
 
-use device_grouping::{DeviceMeta, device_rows_for_zone, unassigned_device_rows};
+use device_grouping::{
+    DeviceMeta, device_rows_for_zone, sort_device_rows, unassigned_device_rows,
+};
 
 /// One `Output` output: a device id, an optional channel, an LED count.
 fn output(device_id: &str, zone_name: Option<&str>, leds: u32) -> Output {
@@ -117,6 +119,24 @@ fn device_rows_keep_first_seen_order() {
     let rows = device_rows_for_zone(&outputs, &[]);
     let ids: Vec<&str> = rows.iter().map(|row| row.device_id.as_str()).collect();
     assert_eq!(ids, ["c", "a", "b"]);
+}
+
+#[test]
+fn sort_device_rows_orders_connected_then_name_offline_last() {
+    // First-seen order is scrambled and mixes a resolved + unresolved set.
+    let outputs = vec![
+        output("usb:zed", None, 5),
+        output("usb:ghost", None, 3),
+        output("usb:apex", None, 7),
+    ];
+    let devices = vec![meta("usb:zed", "Zebra", 5), meta("usb:apex", "Apex", 7)];
+    let mut rows = device_rows_for_zone(&outputs, &devices);
+    sort_device_rows(&mut rows);
+    let names: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
+    // Connected devices first, alphabetical; the offline row sinks last.
+    assert_eq!(names, ["Apex", "Zebra", "usb:ghost"]);
+    assert!(rows[0].resolved && rows[1].resolved);
+    assert!(!rows[2].resolved);
 }
 
 #[test]

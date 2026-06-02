@@ -67,6 +67,20 @@ pub fn device_rows_for_zone(outputs: &[Output], devices: &[DeviceMeta]) -> Vec<Z
     rows
 }
 
+/// Order a zone's device rows for display: connected devices first, then
+/// case-insensitively by name, with offline (unresolved) rows sunk to the
+/// bottom. A stable sort so the rail reads in a predictable, repeatable
+/// order rather than raw layout sequence. Manual reordering layers on top
+/// of this at the call site.
+pub fn sort_device_rows(rows: &mut [ZoneDeviceRow]) {
+    rows.sort_by(|a, b| {
+        b.resolved
+            .cmp(&a.resolved)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+            .then_with(|| a.device_id.cmp(&b.device_id))
+    });
+}
+
 /// Rows for devices the scene places in no zone — the Unassigned group.
 /// Every registry device that has LEDs and whose id is the `device_id`
 /// of no placed `Output` anywhere in the scene.
