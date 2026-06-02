@@ -20,7 +20,7 @@ use hypercolor_types::canvas::PublishedSurface;
 use hypercolor_types::canvas::{Canvas, RenderSurfacePool, Rgba, RgbaF32, SurfaceDescriptor};
 use hypercolor_types::event::{HypercolorEvent, LayerHealth, ZoneColors};
 use hypercolor_types::layer::{
-    LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, SceneLayer,
+    LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
 };
 use hypercolor_types::scene::{DisplayFaceTarget, SceneId, Zone, ZoneId};
 use hypercolor_types::sensor::SystemSnapshot;
@@ -408,6 +408,8 @@ impl ZoneRuntime {
         zones: &mut Vec<ZoneColors>,
     ) -> Result<ZoneResult> {
         self.reconcile(groups, active_scene_id, dependency_key, registry)?;
+        #[cfg(feature = "wgpu")]
+        sparkleflinger.begin_media_upload_frame();
 
         if let Some(result) = self.render_single_full_scene_group(
             groups,
@@ -1154,6 +1156,7 @@ impl ZoneRuntime {
                 LayerSource::Media { asset_id, playback } => {
                     match self.render_media_layer_frame(
                         *asset_id,
+                        layer_runtime.id,
                         playback,
                         elapsed_ms,
                         sparkleflinger,
@@ -1313,6 +1316,7 @@ impl ZoneRuntime {
     fn render_media_layer_frame(
         &mut self,
         asset_id: AssetId,
+        layer_id: SceneLayerId,
         playback: &hypercolor_types::layer::MediaPlayback,
         elapsed_ms: u32,
         sparkleflinger: &mut SparkleFlinger,
@@ -1365,7 +1369,7 @@ impl ZoneRuntime {
             }
             return MediaLayerFrame::Ready {
                 frame: media_layer_producer_frame(
-                    asset_id,
+                    layer_id,
                     cached.producer.intrinsic_frame(playback, elapsed_ms),
                     &record.mime_type,
                     sparkleflinger,
@@ -1378,7 +1382,7 @@ impl ZoneRuntime {
         }
         MediaLayerFrame::Ready {
             frame: media_layer_producer_frame(
-                asset_id,
+                layer_id,
                 cached.producer.intrinsic_frame(playback, elapsed_ms),
                 &record.mime_type,
                 sparkleflinger,
@@ -2126,23 +2130,21 @@ fn transparent_black_frame(width: u32, height: u32) -> ProducerFrame {
 }
 
 fn media_layer_producer_frame(
-    asset_id: AssetId,
+    layer_id: SceneLayerId,
     canvas: Canvas,
     mime_type: &str,
     sparkleflinger: &mut SparkleFlinger,
 ) -> ProducerFrame {
     #[cfg(feature = "wgpu")]
     if media_mime_prefers_gpu_texture(mime_type)
-        && let Some(frame) = sparkleflinger.upload_media_canvas_frame(
-            MediaTextureSourceKey::new(asset_id.as_uuid().as_u128()),
-            &canvas,
-        )
+        && let Some(frame) = sparkleflinger
+            .upload_media_canvas_frame(MediaTextureSourceKey::from_media_layer(layer_id), &canvas)
     {
         return ProducerFrame::GpuTexture(frame);
     }
 
     #[cfg(not(feature = "wgpu"))]
-    let _ = asset_id;
+    let _ = layer_id;
     #[cfg(not(feature = "wgpu"))]
     let _ = mime_type;
     #[cfg(not(feature = "wgpu"))]

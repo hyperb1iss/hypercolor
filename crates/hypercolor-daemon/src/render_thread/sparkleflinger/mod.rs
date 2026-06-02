@@ -15,6 +15,8 @@ use hypercolor_core::types::canvas::{
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::device::{DeviceId, DisplayFrameFormat};
 use hypercolor_types::event::ZoneColors;
+#[cfg(feature = "wgpu")]
+use hypercolor_types::layer::SceneLayerId;
 use hypercolor_types::layer::{LayerAdjust, LayerTransform};
 use hypercolor_types::scene::{DisplayFaceBlendMode, ZoneId};
 use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition};
@@ -341,7 +343,12 @@ pub(crate) struct MediaTextureSourceKey(u128);
 
 #[cfg(feature = "wgpu")]
 impl MediaTextureSourceKey {
-    pub(crate) const fn new(value: u128) -> Self {
+    pub(crate) fn from_media_layer(layer_id: SceneLayerId) -> Self {
+        Self(layer_id.as_uuid().as_u128())
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn for_test(value: u128) -> Self {
         Self(value)
     }
 }
@@ -549,6 +556,13 @@ impl SparkleFlinger {
                 composed.backend = CompositorBackendKind::GpuFallback;
                 composed
             }
+        }
+    }
+
+    #[cfg(feature = "wgpu")]
+    pub(crate) fn begin_media_upload_frame(&mut self) {
+        if let SparkleFlingerBackend::Gpu { gpu, .. } = &mut self.backend {
+            gpu.begin_media_upload_frame();
         }
     }
 
