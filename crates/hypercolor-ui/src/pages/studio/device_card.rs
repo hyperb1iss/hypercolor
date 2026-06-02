@@ -6,6 +6,8 @@
 //! card body selects the parent zone; trailing actions hide every
 //! output, identify the hardware, and remove it from the zone.
 
+use std::collections::HashSet;
+
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_icons::Icon;
@@ -256,8 +258,31 @@ pub fn StudioDeviceCard(
     // mint outputs and assign them into the zone.
     let add_device = matches!(mode, CardMode::Available).then(|| device.clone());
 
+    // The device's outputs in this zone drive the canvas highlight: clicking
+    // selects them, hovering previews them. Empty for an unplaced (Available)
+    // device, which owns no box on the spatial canvas.
+    let click_outputs = device_output_ids.clone();
+    let enter_outputs = device_output_ids.clone();
+    let sel_check_ids = device_output_ids.clone();
+    let is_card_selected = Signal::derive(move || {
+        !sel_check_ids.is_empty()
+            && studio
+                .selected_output_ids
+                .with(|sel| sel_check_ids.iter().all(|id| sel.contains(id)))
+    });
+    let card_outline_style = move || {
+        if is_card_selected.get() {
+            format!("{card_style}; outline: 1.5px solid rgba(225, 53, 255, 0.55); outline-offset: -1px")
+        } else {
+            card_style.clone()
+        }
+    };
+
     view! {
-        <div class="group/card relative w-full overflow-hidden rounded-lg transition-[border-color,box-shadow] duration-150" style=card_style>
+        <div
+            class="group/card relative w-full overflow-hidden rounded-lg transition-[border-color,box-shadow,outline-color] duration-150"
+            style=card_outline_style
+        >
             // A flat low-alpha hover wash — clean and bandless, no scale,
             // no brightness pump. Replaces card-hover, which squished the
             // whole card on click and pumped a janky radial glow.
@@ -266,7 +291,14 @@ pub fn StudioDeviceCard(
                 <button
                     type="button"
                     class="flex min-w-0 flex-1 items-stretch gap-2.5 px-2.5 py-2 text-left"
-                    on:click=move |_| studio.selected_surface_id.set(Some(select_body.clone()))
+                    on:click=move |_| {
+                        studio.selected_surface_id.set(Some(select_body.clone()));
+                        studio.selected_output_ids.set(click_outputs.iter().cloned().collect());
+                    }
+                    on:mouseenter=move |_| {
+                        studio.hovered_output_ids.set(enter_outputs.iter().cloned().collect());
+                    }
+                    on:mouseleave=move |_| studio.hovered_output_ids.set(HashSet::new())
                 >
                     <div class="w-1 shrink-0 self-stretch rounded-full" style=strip_style />
                     <div class="min-w-0 flex-1 space-y-1">
@@ -580,8 +612,37 @@ fn component_row_view(
             .with(|map| map.get(key).is_some_and(|hidden| hidden.contains(id)))
     });
 
+    // A channel with a placed output is interactive: click highlights it on
+    // the canvas, hover previews it. A channel with no output in this zone
+    // (Unassigned bucket, unplaced segment) just reads as a label.
+    let interactive = output_id.is_some();
+    let click_output = output_id.clone();
+    let enter_output = output_id.clone();
+    let row_selected_id = output_id.clone();
+    let is_row_selected = Signal::derive(move || {
+        row_selected_id
+            .as_ref()
+            .is_some_and(|id| studio.selected_output_ids.with(|sel| sel.contains(id)))
+    });
+
     view! {
-        <div class="flex items-center gap-2 px-1 py-1">
+        <div
+            class="flex items-center gap-2 rounded px-1 py-1 transition-colors"
+            class=("cursor-pointer", move || interactive)
+            class=("bg-accent/12", move || is_row_selected.get())
+            class=("hover:bg-surface-hover/30", move || interactive)
+            on:click=move |_| {
+                if let Some(id) = click_output.clone() {
+                    studio.selected_output_ids.set(HashSet::from([id]));
+                }
+            }
+            on:mouseenter=move |_| {
+                if let Some(id) = enter_output.clone() {
+                    studio.hovered_output_ids.set(HashSet::from([id]));
+                }
+            }
+            on:mouseleave=move |_| studio.hovered_output_ids.set(HashSet::new())
+        >
             <div
                 class="h-3 w-3 shrink-0"
                 style=shape_style

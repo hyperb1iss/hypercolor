@@ -41,6 +41,7 @@ pub fn LayoutCanvas() -> impl IntoView {
     let compound_depth = editor.compound_depth;
     let keep_aspect_ratio = editor.keep_aspect_ratio;
     let hidden_zones = editor.hidden_zones;
+    let hovered_zone_ids = editor.hovered_zone_ids;
     let set_selected_zone_ids = editor.set_selected_zone_ids;
     let set_compound_depth = editor.set_compound_depth;
     let set_layout = editor.set_layout;
@@ -425,6 +426,11 @@ pub fn LayoutCanvas() -> impl IntoView {
                                 Signal::derive(move || selected_zone_ids.with(|ids| ids.contains(&zid)))
                             };
 
+                            let is_hovered = {
+                                let zid = zid.clone();
+                                Signal::derive(move || hovered_zone_ids.with(|ids| ids.contains(&zid)))
+                            };
+
                             let is_hidden = {
                                 let zid = zid.clone();
                                 Signal::derive(move || hidden_zones.get().contains(&zid))
@@ -451,14 +457,24 @@ pub fn LayoutCanvas() -> impl IntoView {
                                         };
                                         let hidden = is_hidden.get();
                                         let selected = is_selected.get();
+                                        // Hover only lifts a box that is not already selected, so
+                                        // the persistent selection always reads stronger.
+                                        let hovered = is_hovered.get() && !selected;
                                         let border = if selected {
                                             format!("border: 2px solid rgba({}, 0.85)", zd.primary_rgb)
+                                        } else if hovered {
+                                            format!("border: 2px solid rgba({}, 0.62)", zd.primary_rgb)
                                         } else {
                                             format!("border: 1.5px solid rgba({}, 0.35)", zd.primary_rgb)
                                         };
                                         let bg = if selected {
                                             format!(
                                                 "background: linear-gradient(135deg, rgba({}, 0.14), rgba({}, 0.08))",
+                                                zd.primary_rgb, zd.secondary_rgb
+                                            )
+                                        } else if hovered {
+                                            format!(
+                                                "background: linear-gradient(135deg, rgba({}, 0.11), rgba({}, 0.05))",
                                                 zd.primary_rgb, zd.secondary_rgb
                                             )
                                         } else {
@@ -472,12 +488,17 @@ pub fn LayoutCanvas() -> impl IntoView {
                                                 "box-shadow: 0 0 28px rgba({}, 0.4), 0 0 8px rgba({}, 0.6), inset 0 1px 0 rgba(255,255,255,0.05)",
                                                 zd.primary_rgb, zd.secondary_rgb
                                             )
+                                        } else if hovered {
+                                            format!(
+                                                "box-shadow: 0 0 16px rgba({}, 0.3), inset 0 1px 0 rgba(255,255,255,0.04)",
+                                                zd.primary_rgb
+                                            )
                                         } else {
                                             "box-shadow: 0 2px 8px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.03)"
                                                 .to_string()
                                         };
                                         let shape = zone_shape_style(&zd.shape);
-                                        let z = if selected { elevated_z_index } else { base_z_index };
+                                        let z = if selected || hovered { elevated_z_index } else { base_z_index };
                                         let visibility = if hidden {
                                             "opacity: 0.08; pointer-events: none; filter: grayscale(1)"
                                         } else {
@@ -850,11 +871,11 @@ pub fn LayoutCanvas() -> impl IntoView {
                                         style="background: radial-gradient(ellipse at center, rgba(0,0,0,0.55) 0%, rgba(0,0,0,0.2) 60%, transparent 100%)"
                                     >
                                         <div
-                                            class="text-[10px] font-semibold leading-snug text-center max-w-full select-none break-words line-clamp-2 shrink-0"
+                                            class="text-[11px] font-semibold leading-tight tracking-tight text-center max-w-full select-none break-words line-clamp-2 shrink-0"
                                             style=move || {
                                                 zone_style.get()
                                                     .map(|zd| format!(
-                                                        "color: rgba({}, 0.95); text-shadow: 0 1px 2px rgba(0,0,0,0.8), 0 0 8px rgba({}, 0.35)",
+                                                        "color: rgba({}, 0.96); text-shadow: 0 1px 2px rgba(0,0,0,0.85), 0 0 10px rgba({}, 0.4)",
                                                         zd.primary_rgb, zd.primary_rgb
                                                     ))
                                                     .unwrap_or_default()
@@ -863,8 +884,8 @@ pub fn LayoutCanvas() -> impl IntoView {
                                             {move || zone_style.get().map(|zd| zd.name.clone()).unwrap_or_default()}
                                         </div>
                                         <div
-                                            class="text-[8px] font-mono select-none tabular-nums mt-0.5 shrink min-h-0 overflow-hidden"
-                                            style="color: rgba(255, 255, 255, 0.55); text-shadow: 0 1px 2px rgba(0,0,0,0.6)"
+                                            class="text-[9px] font-mono select-none tabular-nums mt-1 shrink min-h-0 overflow-hidden"
+                                            style="color: rgba(255, 255, 255, 0.68); text-shadow: 0 1px 2px rgba(0,0,0,0.7)"
                                         >
                                             {move || zone_style.get().map(|zd| format!("{} LEDs", zd.led_count)).unwrap_or_default()}
                                         </div>

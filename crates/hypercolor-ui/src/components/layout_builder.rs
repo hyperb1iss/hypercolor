@@ -263,9 +263,14 @@ pub(crate) struct LayoutEditorContext {
     pub layout: Signal<Option<SpatialLayout>>,
     pub selected_zone_ids: Signal<std::collections::HashSet<String>>,
     pub hidden_zones: Signal<std::collections::HashSet<String>>,
+    /// Outputs the host is transiently highlighting (e.g. the Studio rail
+    /// hovering a device or channel). Rendered as a soft ring, separate
+    /// from the persistent click selection.
+    pub hovered_zone_ids: Signal<std::collections::HashSet<String>>,
     pub keep_aspect_ratio: Signal<bool>,
     pub set_layout: LayoutWriteHandle,
     pub set_selected_zone_ids: WriteSignal<std::collections::HashSet<String>>,
+    pub set_hovered_zone_ids: WriteSignal<std::collections::HashSet<String>>,
     pub compound_depth: Signal<crate::compound_selection::CompoundDepth>,
     pub set_compound_depth: WriteSignal<crate::compound_selection::CompoundDepth>,
     pub set_is_dirty: WriteSignal<bool>,
@@ -360,6 +365,8 @@ pub(crate) fn LayoutEditorProvider(children: Children) -> impl IntoView {
     let (initialized, set_initialized) = signal(false);
     let (keep_aspect_ratio, set_keep_aspect_ratio) = signal(initial_state.keep_aspect_ratio);
     let (hidden_zones, set_hidden_zones) = signal(std::collections::HashSet::<String>::new());
+    let (hovered_zone_ids, set_hovered_zone_ids) =
+        signal(std::collections::HashSet::<String>::new());
 
     let (removed_zone_cache, set_removed_zone_cache) =
         signal(crate::layout_utils::ZoneCache::new());
@@ -386,6 +393,7 @@ pub(crate) fn LayoutEditorProvider(children: Children) -> impl IntoView {
     let compound_depth_signal = Signal::derive(move || compound_depth.get());
     let keep_aspect_ratio_signal = Signal::derive(move || keep_aspect_ratio.get());
     let hidden_zones_signal = Signal::derive(move || hidden_zones.get());
+    let hovered_zone_ids_signal = Signal::derive(move || hovered_zone_ids.get());
     let can_undo = Signal::derive(move || history.get().can_undo());
     let can_redo = Signal::derive(move || history.get().can_redo());
 
@@ -408,9 +416,11 @@ pub(crate) fn LayoutEditorProvider(children: Children) -> impl IntoView {
         layout: layout_signal,
         selected_zone_ids: zone_ids_signal,
         hidden_zones: hidden_zones_signal,
+        hovered_zone_ids: hovered_zone_ids_signal,
         keep_aspect_ratio: keep_aspect_ratio_signal,
         set_layout,
         set_selected_zone_ids,
+        set_hovered_zone_ids,
         set_is_dirty,
         set_hidden_zones,
         set_keep_aspect_ratio,
@@ -1516,6 +1526,8 @@ pub(crate) fn ZoneLayoutProvider(
         signal(crate::compound_selection::CompoundDepth::Root);
     let (keep_aspect_ratio, set_keep_aspect_ratio) = signal(false);
     let (hidden_zones, set_hidden_zones) = signal(std::collections::HashSet::<String>::new());
+    let (hovered_zone_ids, set_hovered_zone_ids) =
+        signal(std::collections::HashSet::<String>::new());
     let (removed_zone_cache, set_removed_zone_cache) =
         signal(crate::layout_utils::ZoneCache::new());
     let (dirty, set_is_dirty) = signal(false);
@@ -1578,9 +1590,11 @@ pub(crate) fn ZoneLayoutProvider(
         layout: layout_signal,
         selected_zone_ids: Signal::derive(move || selected_zone_ids.get()),
         hidden_zones: Signal::derive(move || hidden_zones.get()),
+        hovered_zone_ids: Signal::derive(move || hovered_zone_ids.get()),
         keep_aspect_ratio: Signal::derive(move || keep_aspect_ratio.get()),
         set_layout,
         set_selected_zone_ids,
+        set_hovered_zone_ids,
         set_is_dirty,
         set_hidden_zones,
         set_keep_aspect_ratio,

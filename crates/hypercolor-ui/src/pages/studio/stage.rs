@@ -11,6 +11,8 @@
 //! The synthetic Unassigned entry (§9.4) is not a surface, so it shows
 //! the scene-level unassigned-lights policy instead.
 
+use std::collections::HashSet;
+
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_icons::Icon;
@@ -31,8 +33,8 @@ use crate::toasts;
 use crate::ws::CanvasFrame;
 use crate::ws::messages::group_has_degraded_layer;
 
-use super::StudioContext;
 use super::surface::{Surface, SurfaceKind, UNASSIGNED_SURFACE_ID, surfaces_from_groups};
+use super::{StudioContext, hidden_outputs_storage_key};
 use super::zone_assignment::ZoneAssignment;
 use super::zone_controls::unassigned_behavior_label;
 
@@ -67,6 +69,31 @@ fn SurfaceStage() -> impl IntoView {
     let ws = expect_context::<WsContext>();
     let studio = expect_context::<StudioContext>();
     let displays = expect_context::<DisplaysContext>().displays_resource;
+    let editor = expect_context::<LayoutEditorContext>();
+
+    // The rail (ZoneTree) lives outside the ZoneLayoutProvider, so these
+    // one-way effects push its highlight, hover, and hide state into the
+    // editor context the canvas reads. Clicking a device or channel lights
+    // the matching boxes; the eye toggle dims them (it used to write a
+    // `hidden_outputs` signal nothing consumed — a no-op control).
+    Effect::new(move |_| {
+        editor.set_selected_zone_ids.set(studio.selected_output_ids.get());
+    });
+    Effect::new(move |_| {
+        editor.set_hovered_zone_ids.set(studio.hovered_output_ids.get());
+    });
+    Effect::new(move |_| {
+        let hidden = match (studio.active_scene.get(), studio.selected_surface_id.get()) {
+            (Some(scene), Some(zone)) => {
+                let key = hidden_outputs_storage_key(&scene.id, &zone);
+                studio
+                    .hidden_outputs
+                    .with(|map| map.get(&key).cloned().unwrap_or_default())
+            }
+            _ => HashSet::new(),
+        };
+        editor.set_hidden_zones.set(hidden);
+    });
 
     let selected_surface = Memo::new(move |_| {
         let id = studio.selected_surface_id.get()?;

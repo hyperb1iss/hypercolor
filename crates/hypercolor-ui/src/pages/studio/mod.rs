@@ -88,6 +88,14 @@ pub struct StudioContext {
     /// [`hidden_outputs_storage_key`]. Client UI state only; never
     /// mirrored to the daemon's `layout_auto_exclusions` (Plan 55 §8).
     pub hidden_outputs: RwSignal<HashMap<String, HashSet<String>>>,
+    /// Output ids the rail has highlighted by clicking a device card or one
+    /// of its channels. The Stage bridges this into the canvas selection so
+    /// a rail click lights the matching boxes on the spatial view.
+    pub selected_output_ids: RwSignal<HashSet<String>>,
+    /// Output ids the rail is hovering — a single channel or a whole
+    /// device's outputs. Bridged into the canvas as a transient highlight,
+    /// distinct from the persistent click selection.
+    pub hovered_output_ids: RwSignal<HashSet<String>>,
     /// Cache of component (attachment) bindings per physical device id.
     /// Each device card lazily fills its own entry; channel rows read it
     /// to surface live binding labels without re-fetching per render.
@@ -237,12 +245,24 @@ pub fn StudioPage() -> impl IntoView {
 
     let attachment_cache = RwSignal::new(HashMap::<String, Vec<ComponentBindingSummary>>::new());
 
+    // Rail-driven canvas highlight state. Switching surfaces clears it so a
+    // stale highlight from the previous zone never lingers on the new one.
+    let selected_output_ids = RwSignal::new(HashSet::<String>::new());
+    let hovered_output_ids = RwSignal::new(HashSet::<String>::new());
+    Effect::new(move |_| {
+        let _ = selected_surface_id.get();
+        selected_output_ids.set(HashSet::new());
+        hovered_output_ids.set(HashSet::new());
+    });
+
     provide_context(StudioContext {
         selected_surface_id,
         active_scene,
         refresh_scene,
         composition_open,
         hidden_outputs,
+        selected_output_ids,
+        hovered_output_ids,
         attachment_cache,
     });
 
