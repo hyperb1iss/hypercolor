@@ -21,6 +21,7 @@ pub(crate) struct GpuRenderDeviceInfo {
     pub(crate) adapter_name: String,
     pub(crate) adapter_vendor_id: u32,
     pub(crate) adapter_device_id: u32,
+    pub(crate) adapter_device_type: wgpu::DeviceType,
     pub(crate) backend: wgpu::Backend,
     pub(crate) vulkan_external_memory_win32: bool,
     pub(crate) max_texture_dimension_2d: u32,
@@ -102,6 +103,7 @@ impl GpuRenderDevice {
             adapter_name: adapter_info.name,
             adapter_vendor_id: adapter_info.vendor,
             adapter_device_id: adapter_info.device,
+            adapter_device_type: adapter_info.device_type,
             backend: adapter_info.backend,
             vulkan_external_memory_win32: device
                 .features()
@@ -159,6 +161,16 @@ impl GpuRenderDevice {
 }
 
 impl GpuRenderDeviceInfo {
+    pub(crate) fn software_adapter_reason(&self) -> Option<&'static str> {
+        if matches!(self.adapter_device_type, wgpu::DeviceType::Cpu)
+            || adapter_name_looks_software(&self.adapter_name)
+        {
+            Some("wgpu selected a software adapter; using CPU compositor path")
+        } else {
+            None
+        }
+    }
+
     #[cfg_attr(
         not(feature = "servo-gpu-import"),
         allow(
@@ -237,12 +249,37 @@ pub(crate) fn backend_name(backend: wgpu::Backend) -> &'static str {
     }
 }
 
+pub(crate) const fn device_type_name(device_type: wgpu::DeviceType) -> &'static str {
+    match device_type {
+        wgpu::DeviceType::Other => "other",
+        wgpu::DeviceType::IntegratedGpu => "integrated_gpu",
+        wgpu::DeviceType::DiscreteGpu => "discrete_gpu",
+        wgpu::DeviceType::VirtualGpu => "virtual_gpu",
+        wgpu::DeviceType::Cpu => "cpu",
+    }
+}
+
 pub(crate) fn texture_format_name(format: wgpu::TextureFormat) -> &'static str {
     match format {
         wgpu::TextureFormat::Rgba8Unorm => "rgba8_unorm",
         wgpu::TextureFormat::Rgba8UnormSrgb => "rgba8_unorm_srgb",
         _ => "other",
     }
+}
+
+fn adapter_name_looks_software(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    [
+        "llvmpipe",
+        "lavapipe",
+        "softpipe",
+        "swiftshader",
+        "software rasterizer",
+        "microsoft basic render driver",
+        "warp",
+    ]
+    .iter()
+    .any(|needle| name.contains(needle))
 }
 
 #[cfg(test)]
@@ -257,6 +294,24 @@ mod tests {
         assert_eq!(backend_name(wgpu::Backend::Dx12), "dx12");
         assert_eq!(backend_name(wgpu::Backend::Gl), "gl");
         assert_eq!(backend_name(wgpu::Backend::BrowserWebGpu), "browser_webgpu");
+    }
+
+    #[test]
+    fn maps_device_types_to_stable_status_strings() {
+        assert_eq!(device_type_name(wgpu::DeviceType::Other), "other");
+        assert_eq!(
+            device_type_name(wgpu::DeviceType::IntegratedGpu),
+            "integrated_gpu"
+        );
+        assert_eq!(
+            device_type_name(wgpu::DeviceType::DiscreteGpu),
+            "discrete_gpu"
+        );
+        assert_eq!(
+            device_type_name(wgpu::DeviceType::VirtualGpu),
+            "virtual_gpu"
+        );
+        assert_eq!(device_type_name(wgpu::DeviceType::Cpu), "cpu");
     }
 
     #[test]
@@ -281,6 +336,7 @@ mod tests {
             adapter_name: "test".to_owned(),
             adapter_vendor_id: 0,
             adapter_device_id: 0,
+            adapter_device_type: wgpu::DeviceType::DiscreteGpu,
             backend: wgpu::Backend::Vulkan,
             vulkan_external_memory_win32: true,
             max_texture_dimension_2d: 16_384,
@@ -310,6 +366,7 @@ mod tests {
             adapter_name: "test".to_owned(),
             adapter_vendor_id: 0,
             adapter_device_id: 0,
+            adapter_device_type: wgpu::DeviceType::DiscreteGpu,
             backend: wgpu::Backend::Vulkan,
             vulkan_external_memory_win32: true,
             max_texture_dimension_2d: 16_384,
@@ -345,6 +402,7 @@ mod tests {
             adapter_name: "test".to_owned(),
             adapter_vendor_id: 0,
             adapter_device_id: 0,
+            adapter_device_type: wgpu::DeviceType::DiscreteGpu,
             backend: wgpu::Backend::Vulkan,
             vulkan_external_memory_win32: false,
             max_texture_dimension_2d: 16_384,
@@ -353,7 +411,7 @@ mod tests {
 
         assert_eq!(
             vulkan_without_win32.servo_gpu_import_backend_compatible(),
-            false
+            cfg!(target_os = "linux")
         );
         assert_eq!(
             vulkan_without_win32
@@ -361,5 +419,33 @@ mod tests {
                 .is_some(),
             cfg!(target_os = "windows")
         );
+    }
+
+    #[test]
+    fn software_adapter_reason_catches_cpu_device_type_and_known_names() {
+        let hardware = GpuRenderDeviceInfo {
+            adapter_name: "NVIDIA GeForce RTX".to_owned(),
+            adapter_vendor_id: 0x10de,
+            adapter_device_id: 0,
+            adapter_device_type: wgpu::DeviceType::DiscreteGpu,
+            backend: wgpu::Backend::Vulkan,
+            vulkan_external_memory_win32: true,
+            max_texture_dimension_2d: 16_384,
+            max_storage_textures_per_shader_stage: 8,
+        };
+        assert!(hardware.software_adapter_reason().is_none());
+
+        let cpu = GpuRenderDeviceInfo {
+            adapter_device_type: wgpu::DeviceType::Cpu,
+            ..hardware.clone()
+        };
+        assert!(cpu.software_adapter_reason().is_some());
+
+        let llvmpipe = GpuRenderDeviceInfo {
+            adapter_name: "llvmpipe (LLVM 22.1.5, 256 bits)".to_owned(),
+            adapter_device_type: wgpu::DeviceType::Other,
+            ..hardware
+        };
+        assert!(llvmpipe.software_adapter_reason().is_some());
     }
 }

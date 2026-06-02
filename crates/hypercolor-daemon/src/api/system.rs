@@ -87,10 +87,12 @@ pub struct RenderAccelerationStatus {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct GpuCompositorProbeStatus {
     pub adapter_name: String,
+    pub adapter_device_type: String,
     pub backend: String,
     pub texture_format: String,
     pub max_texture_dimension_2d: u32,
     pub max_storage_textures_per_shader_stage: u32,
+    pub software_adapter_reason: Option<String>,
     pub servo_gpu_import_backend_compatible: bool,
     pub servo_gpu_import_backend_reason: Option<String>,
     pub linux_servo_gpu_import_backend_compatible: bool,
@@ -603,10 +605,12 @@ fn render_acceleration_status(
             .as_ref()
             .map(|probe| GpuCompositorProbeStatus {
                 adapter_name: probe.adapter_name.clone(),
+                adapter_device_type: probe.adapter_device_type.to_owned(),
                 backend: probe.backend.to_owned(),
                 texture_format: probe.texture_format.to_owned(),
                 max_texture_dimension_2d: probe.max_texture_dimension_2d,
                 max_storage_textures_per_shader_stage: probe.max_storage_textures_per_shader_stage,
+                software_adapter_reason: probe.software_adapter_reason.map(str::to_owned),
                 servo_gpu_import_backend_compatible: probe.servo_gpu_import_backend_compatible,
                 servo_gpu_import_backend_reason: probe
                     .servo_gpu_import_backend_reason

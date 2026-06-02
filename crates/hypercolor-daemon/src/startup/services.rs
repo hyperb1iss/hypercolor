@@ -108,10 +108,12 @@ impl DaemonState {
         if let Some(probe) = &render_acceleration.gpu_probe {
             info!(
                 adapter = %probe.adapter_name,
+                adapter_device_type = probe.adapter_device_type,
                 backend = probe.backend,
                 texture_format = probe.texture_format,
                 max_texture_dimension_2d = probe.max_texture_dimension_2d,
                 max_storage_textures_per_shader_stage = probe.max_storage_textures_per_shader_stage,
+                software_adapter_reason = probe.software_adapter_reason,
                 servo_gpu_import_backend_compatible = probe.servo_gpu_import_backend_compatible,
                 servo_gpu_import_backend_reason = probe.servo_gpu_import_backend_reason,
                 linux_servo_gpu_import_backend_compatible = probe.linux_servo_gpu_import_backend_compatible,
