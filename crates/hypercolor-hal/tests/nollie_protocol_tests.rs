@@ -81,6 +81,20 @@ fn nollie1_uses_dense_packet_ids_and_omits_render_commit() {
 }
 
 #[test]
+fn nollie1_oversized_frame_truncates_without_extra_packet() {
+    let protocol = NollieProtocol::new(NollieModel::Nollie1);
+    let mut colors = vec![[1_u8, 2, 3]; 631];
+    colors[629] = [10, 20, 30];
+    colors[630] = [200, 100, 50];
+
+    let commands = protocol.encode_frame(&colors);
+
+    assert_eq!(commands.len(), 30);
+    assert_eq!(commands[29].data[1], 29);
+    assert_eq!(&commands[29].data[62..65], &[20_u8, 10, 30]);
+}
+
+#[test]
 fn nollie28_12_uses_interval_two_rgb_packets_and_commit() {
     let protocol = NollieProtocol::new(NollieModel::Nollie28_12);
     let mut colors = vec![[0_u8, 0_u8, 0_u8]; 504];

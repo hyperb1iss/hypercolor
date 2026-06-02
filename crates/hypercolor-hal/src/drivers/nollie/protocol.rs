@@ -1,7 +1,6 @@
 //! Pure Nollie protocol encoder/decoder.
 
 use std::borrow::Cow;
-use std::cmp::min;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -216,16 +215,19 @@ impl NollieProtocol {
             return Cow::Borrowed(colors);
         }
 
-        let mut normalized = vec![[0_u8; 3]; expected];
-        let copy_len = min(colors.len(), expected);
-        normalized[..copy_len].copy_from_slice(&colors[..copy_len]);
-
         warn!(
             expected,
             actual = colors.len(),
             model = self.model.name(),
             "nollie frame length mismatch; applying truncate/pad"
         );
+
+        if colors.len() > expected {
+            return Cow::Borrowed(&colors[..expected]);
+        }
+
+        let mut normalized = vec![[0_u8; 3]; expected];
+        normalized[..colors.len()].copy_from_slice(colors);
 
         Cow::Owned(normalized)
     }
