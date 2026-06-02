@@ -26,7 +26,7 @@ use crate::api;
 use crate::api::ComponentBindingSummary;
 use crate::apply_target::ApplyTarget;
 use crate::components::layout_builder::ZoneLayoutProvider;
-use crate::components::page_header::{HeaderToolbar, PageAccent, PageHeader};
+use crate::components::page_header::{HeaderTrailing, PageAccent, PageHeader};
 use crate::components::resize_handle::ResizeHandle;
 use crate::icons::*;
 use crate::storage;
@@ -274,9 +274,9 @@ pub fn StudioPage() -> impl IntoView {
                 tagline="Compose scenes across zones"
                 accent=PageAccent::Coral
             >
-                <HeaderToolbar slot>
+                <HeaderTrailing slot>
                     <SceneSelector />
-                </HeaderToolbar>
+                </HeaderTrailing>
             </PageHeader>
             // Narrow-viewport drawer toggle; the tree sits beside the Stage
             // on `lg` and up, so this strip is hidden there.
