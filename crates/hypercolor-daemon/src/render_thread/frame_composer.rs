@@ -333,10 +333,12 @@ impl ComposeContext<'_> {
                 let preview_request = self.preview_surface_request();
                 let preview_surface_pressure = self.preview_surface_pressure();
                 let scene_canvas_forced_surface = self.scene_canvas_forced_surface();
+                let display_blend_requires_scene =
+                    display_group_requires_composed_scene(&render_group_result.group_canvases);
                 let requires_full_composition = render_group_requires_full_composition(
                     compiled_plan.metadata.transition_active,
                     &render_group_result.led_sampling_strategy,
-                )
+                ) || display_blend_requires_scene
                     || producer_frame_requires_composition_for_preview(
                         &scene_frame,
                         preview_request.is_some(),
@@ -1097,13 +1099,21 @@ fn scene_canvas_forces_full_surface(
             && scene_canvas_demand.max_height >= canvas_height)
 }
 
+fn display_group_requires_composed_scene(
+    group_canvases: &[(ZoneId, PendingGroupCanvasFrame)],
+) -> bool {
+    group_canvases
+        .iter()
+        .any(|(_, frame)| frame.display_target.blends_with_effect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        PreviewSurfaceRequest, display_route_matches_target, effective_render_group_layer_count,
-        preview_surface_request, producer_frame_requires_composition_for_preview,
-        render_group_requires_full_composition, requires_cpu_sampling_canvas,
-        requires_published_surface,
+        PreviewSurfaceRequest, display_group_requires_composed_scene, display_route_matches_target,
+        effective_render_group_layer_count, preview_surface_request,
+        producer_frame_requires_composition_for_preview, render_group_requires_full_composition,
+        requires_cpu_sampling_canvas, requires_published_surface,
     };
     use std::sync::Arc;
 
@@ -1111,7 +1121,7 @@ mod tests {
     use hypercolor_core::spatial::SpatialEngine;
     use hypercolor_core::types::canvas::{Canvas, PublishedSurface};
     use hypercolor_types::device::{DeviceId, DisplayFrameFormat};
-    use hypercolor_types::scene::{DisplayFaceBlendMode, DisplayFaceTarget};
+    use hypercolor_types::scene::{DisplayFaceBlendMode, DisplayFaceTarget, ZoneId};
     use hypercolor_types::spatial::{
         EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
         StripDirection,
@@ -1120,6 +1130,7 @@ mod tests {
     use crate::preview_runtime::PreviewDemandSummary;
     use crate::render_thread::frame_sampling::LedSamplingStrategy;
     use crate::render_thread::producer_queue::ProducerFrame;
+    use crate::render_thread::render_groups::PendingGroupCanvasFrame;
     use crate::render_thread::sparkleflinger::SparkleFlinger;
     use hypercolor_types::config::RenderAccelerationMode;
 
@@ -1217,6 +1228,36 @@ mod tests {
         }));
         assert!(!render_group_requires_full_composition(false, &strategy));
         assert!(render_group_requires_full_composition(true, &strategy));
+    }
+
+    #[test]
+    fn blended_display_group_forces_composed_scene_for_finalization() {
+        let device_id = DeviceId::new();
+        let replace = PendingGroupCanvasFrame {
+            frame: ProducerFrame::Canvas(Canvas::new(4, 4)),
+            display_target: DisplayFaceTarget {
+                device_id,
+                blend_mode: DisplayFaceBlendMode::Replace,
+                opacity: 1.0,
+            },
+        };
+        let blended = PendingGroupCanvasFrame {
+            frame: ProducerFrame::Canvas(Canvas::new(4, 4)),
+            display_target: DisplayFaceTarget {
+                device_id,
+                blend_mode: DisplayFaceBlendMode::Alpha,
+                opacity: 0.88,
+            },
+        };
+
+        assert!(!display_group_requires_composed_scene(&[(
+            ZoneId::new(),
+            replace
+        )]));
+        assert!(display_group_requires_composed_scene(&[(
+            ZoneId::new(),
+            blended
+        )]));
     }
 
     #[test]
