@@ -40,7 +40,8 @@ use tower::ServiceExt;
 
 #[tokio::test]
 async fn cloud_status_reports_compiled_config_without_keyring_access() {
-    let app = api::build_router(Arc::new(AppState::new()), None);
+    let (state, _data_dir) = login_test_state(false);
+    let app = api::build_router(state, None);
     let response = app
         .oneshot(
             Request::builder()
@@ -70,7 +71,8 @@ async fn cloud_status_reports_compiled_config_without_keyring_access() {
 #[tokio::test]
 async fn cloud_login_start_stores_session_without_returning_device_code() {
     let (auth_base_url, shutdown_tx, task) = spawn_auth_server().await;
-    let app = api::build_router(cloud_test_state_with_cloud(&auth_base_url, true), None);
+    let (state, _data_dir) = cloud_test_state_with_cloud(&auth_base_url, true);
+    let app = api::build_router(state, None);
 
     let response = app
         .oneshot(
@@ -147,7 +149,8 @@ async fn cloud_login_start_rejects_when_pending_session_limit_reached() {
 #[tokio::test]
 async fn cloud_login_poll_keeps_pending_session_retryable() {
     let (auth_base_url, shutdown_tx, task) = spawn_auth_server().await;
-    let app = api::build_router(cloud_test_state_with_cloud(&auth_base_url, true), None);
+    let (state, _data_dir) = cloud_test_state_with_cloud(&auth_base_url, true);
+    let app = api::build_router(state, None);
 
     let start = app
         .clone()
@@ -192,7 +195,8 @@ async fn cloud_login_poll_keeps_pending_session_retryable() {
 
 #[tokio::test]
 async fn cloud_login_poll_rejects_unknown_session() {
-    let app = api::build_router(Arc::new(AppState::new()), None);
+    let (state, _data_dir) = login_test_state(false);
+    let app = api::build_router(state, None);
     let response = app
         .oneshot(
             Request::builder()
@@ -209,7 +213,7 @@ async fn cloud_login_poll_rejects_unknown_session() {
 
 #[tokio::test]
 async fn cloud_login_prunes_expired_pending_sessions() {
-    let state = AppState::new();
+    let (state, _data_dir) = login_test_state(true);
     let expired_id = uuid::Uuid::new_v4();
     let live_id = uuid::Uuid::new_v4();
     state.cloud_login_sessions.lock().await.insert(
@@ -268,14 +272,16 @@ async fn cloud_entitlement_cache_round_trips_and_deletes_token() {
 
 #[tokio::test]
 async fn cloud_entitlement_status_summarizes_cache_without_jwt() {
-    let (_tempdir, _guard) = set_temp_data_dir();
+    let (state, _data_dir) = login_test_state(false);
     cloud_entitlements::store_entitlement_response(
-        cloud_entitlements::entitlement_cache_path(),
+        state
+            .data_dir
+            .join(cloud_entitlements::ENTITLEMENT_CACHE_FILE),
         &entitlement_token_fixture(),
     )
     .await
     .expect("entitlement should cache");
-    let app = api::build_router(Arc::new(AppState::new()), None);
+    let app = api::build_router(state, None);
 
     let response = app
         .oneshot(
@@ -402,7 +408,8 @@ fn cloud_connection_status_reports_ready_prerequisites_without_live_socket() {
 
 #[tokio::test]
 async fn cloud_connection_prepare_rejects_disabled_cloud_without_keyring() {
-    let app = api::build_router(Arc::new(AppState::new()), None);
+    let (state, _data_dir) = login_test_state(false);
+    let app = api::build_router(state, None);
 
     let response = app
         .oneshot(
@@ -420,7 +427,8 @@ async fn cloud_connection_prepare_rejects_disabled_cloud_without_keyring() {
 
 #[tokio::test]
 async fn cloud_identity_bootstrap_rejects_disabled_cloud_without_keyring() {
-    let app = api::build_router(Arc::new(AppState::new()), None);
+    let (state, _data_dir) = login_test_state(false);
+    let app = api::build_router(state, None);
 
     let response = app
         .oneshot(
@@ -488,7 +496,7 @@ async fn cloud_connection_prepare_stages_signed_request_without_returning_secret
             .local_addr()
             .expect("test server address should resolve")
     );
-    let state = cloud_test_state_with_cloud(&base_url, true);
+    let (state, _data_dir) = cloud_test_state_with_cloud(&base_url, true);
     let store = MemorySecretStore::default();
     let identity = load_or_create_identity(&store).expect("identity should create");
     store_refresh_token(&store, RefreshTokenOwner::Daemon, "refresh-old")
@@ -542,7 +550,7 @@ async fn cloud_connection_prepare_stages_signed_request_without_returning_secret
 
 #[tokio::test]
 async fn cloud_connection_prepare_reports_missing_identity_and_refresh_token() {
-    let state = cloud_test_state_with_cloud("http://127.0.0.1:1", true);
+    let (state, _data_dir) = cloud_test_state_with_cloud("http://127.0.0.1:1", true);
     let store = MemorySecretStore::default();
     let client = CloudClient::new(
         CloudClientConfig::with_auth_base_url("http://127.0.0.1:1", "http://127.0.0.1:1")
@@ -585,7 +593,7 @@ async fn cloud_connection_prepare_reports_missing_identity_and_refresh_token() {
 
 #[tokio::test]
 async fn cloud_connection_prepare_records_network_failure_as_backoff() {
-    let state = cloud_test_state_with_cloud("http://127.0.0.1:1", true);
+    let (state, _data_dir) = cloud_test_state_with_cloud("http://127.0.0.1:1", true);
     let store = MemorySecretStore::default();
     load_or_create_identity(&store).expect("identity should create");
     store_refresh_token(&store, RefreshTokenOwner::Daemon, "refresh-old")
@@ -614,7 +622,6 @@ async fn cloud_connection_prepare_records_network_failure_as_backoff() {
 
 #[tokio::test]
 async fn cloud_connection_connect_starts_socket_task_after_prepare() {
-    let (_tempdir, _guard) = set_temp_data_dir();
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
         .expect("test server should bind");
@@ -624,7 +631,7 @@ async fn cloud_connection_connect_starts_socket_task_after_prepare() {
             .local_addr()
             .expect("test server address should resolve")
     );
-    let state = cloud_test_state_with_cloud(&base_url, true);
+    let (state, _data_dir) = cloud_test_state_with_cloud(&base_url, true);
     let store = MemorySecretStore::default();
     let identity = load_or_create_identity(&store).expect("identity should create");
     store_refresh_token(&store, RefreshTokenOwner::Daemon, "refresh-old")
@@ -728,8 +735,7 @@ async fn cloud_connection_connect_starts_socket_task_after_prepare() {
 
 #[tokio::test]
 async fn cloud_connection_disconnect_clears_runtime_snapshot() {
-    let (_tempdir, _guard) = set_temp_data_dir();
-    let state = cloud_test_state_with_cloud("http://127.0.0.1:1", true);
+    let (state, _data_dir) = cloud_test_state_with_cloud("http://127.0.0.1:1", true);
     let store = MemorySecretStore::default();
     load_or_create_identity(&store).expect("identity should create");
     store_refresh_token(&store, RefreshTokenOwner::Daemon, "refresh-old")
@@ -755,7 +761,6 @@ async fn cloud_connection_disconnect_clears_runtime_snapshot() {
 
 #[tokio::test]
 async fn cloud_connection_disconnect_stops_running_socket_task() {
-    let (_tempdir, _guard) = set_temp_data_dir();
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
         .expect("test server should bind");
@@ -765,7 +770,7 @@ async fn cloud_connection_disconnect_stops_running_socket_task() {
             .local_addr()
             .expect("test server address should resolve")
     );
-    let state = cloud_test_state_with_cloud(&base_url, true);
+    let (state, _data_dir) = cloud_test_state_with_cloud(&base_url, true);
     let store = MemorySecretStore::default();
     let identity = load_or_create_identity(&store).expect("identity should create");
     store_refresh_token(&store, RefreshTokenOwner::Daemon, "refresh-old")
@@ -933,20 +938,6 @@ fn cloud_connection_status_blocks_when_missing_identity_or_disabled() {
     assert!(!disabled.can_connect);
 }
 
-fn set_temp_data_dir() -> (TempDir, DataDirOverrideGuard) {
-    let tempdir = TempDir::new().expect("temp data dir should be created");
-    ConfigManager::set_data_dir_override(Some(tempdir.path().join("data")));
-    (tempdir, DataDirOverrideGuard)
-}
-
-struct DataDirOverrideGuard;
-
-impl Drop for DataDirOverrideGuard {
-    fn drop(&mut self) {
-        ConfigManager::set_data_dir_override(None);
-    }
-}
-
 struct CloudSessionStatusFixture {
     refresh_token_present: bool,
     identity_present: bool,
@@ -979,7 +970,7 @@ impl CloudSessionStatusFixture {
     }
 }
 
-fn cloud_test_state_with_cloud(auth_base_url: &str, enabled: bool) -> Arc<AppState> {
+fn cloud_test_state_with_cloud(auth_base_url: &str, enabled: bool) -> (Arc<AppState>, TempDir) {
     let tempdir = TempDir::new().expect("temp dir should be created");
     let manager = ConfigManager::new(tempdir.path().join("config.toml"))
         .expect("config manager should initialize");
@@ -989,9 +980,9 @@ fn cloud_test_state_with_cloud(auth_base_url: &str, enabled: bool) -> Arc<AppSta
     config.cloud.enabled = enabled;
     manager.update(config);
 
-    let mut state = AppState::new();
+    let mut state = AppState::new_with_data_dir(tempdir.path().join("data"));
     state.config_manager = Some(Arc::new(manager));
-    Arc::new(state)
+    (Arc::new(state), tempdir)
 }
 
 /// Build a fully isolated daemon state for cloud-login tests.

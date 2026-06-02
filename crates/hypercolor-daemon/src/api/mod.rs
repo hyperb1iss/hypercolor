@@ -177,6 +177,9 @@ pub struct AppState {
     /// Configuration manager for config API endpoints.
     pub config_manager: Option<Arc<ConfigManager>>,
 
+    /// Data directory backing state-owned stores and caches.
+    pub data_dir: PathBuf,
+
     /// Live input graph shared with the daemon render thread.
     pub input_manager: Arc<Mutex<InputManager>>,
 
@@ -543,6 +546,7 @@ impl AppState {
             lifecycle_manager,
             reconnect_tasks,
             config_manager: None,
+            data_dir,
             input_manager,
             discovery_in_progress,
             profiles: Arc::new(RwLock::new(profiles)),
@@ -594,7 +598,8 @@ impl AppState {
     /// shared by `Arc::clone` — the API operates on the exact same live
     /// instances as the daemon's render pipeline.
     pub fn from_daemon_state(daemon: &crate::startup::DaemonState) -> Self {
-        let library_path = ConfigManager::data_dir().join("library.json");
+        let data_dir = ConfigManager::data_dir();
+        let library_path = data_dir.join("library.json");
         let library_store: Arc<dyn LibraryStore> =
             match JsonLibraryStore::open(library_path.clone()) {
                 Ok(store) => Arc::new(store),
@@ -607,7 +612,7 @@ impl AppState {
                     Arc::new(InMemoryLibraryStore::new())
                 }
             };
-        let profiles_path = ConfigManager::data_dir().join("profiles.json");
+        let profiles_path = data_dir.join("profiles.json");
         let profiles = ProfileStore::load(&profiles_path).unwrap_or_else(|error| {
             warn!(
                 path = %profiles_path.display(),
@@ -640,6 +645,7 @@ impl AppState {
             lifecycle_manager: Arc::clone(&daemon.lifecycle_manager),
             reconnect_tasks: Arc::clone(&daemon.reconnect_tasks),
             config_manager: Some(Arc::clone(&daemon.config_manager)),
+            data_dir,
             input_manager: Arc::clone(&daemon.input_manager),
             discovery_in_progress: Arc::clone(&daemon.discovery_in_progress),
             profiles: Arc::new(RwLock::new(profiles)),

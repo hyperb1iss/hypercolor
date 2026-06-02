@@ -25,7 +25,7 @@ use crate::cloud_connection::{
     CloudConnectionRuntimeState, CloudConnectionSnapshot, CloudDeniedChannelStatus,
 };
 use crate::cloud_entitlements::{
-    CachedCloudEntitlement, delete_cached_entitlement, entitlement_cache_path,
+    CachedCloudEntitlement, ENTITLEMENT_CACHE_FILE, delete_cached_entitlement,
     iso8601_from_unix_seconds, load_cached_entitlement, store_entitlement_response,
     unix_now_seconds,
 };
@@ -201,8 +201,8 @@ pub async fn get_session() -> Response {
     }
 }
 
-pub async fn get_entitlement_cache() -> Response {
-    match load_cached_entitlement(entitlement_cache_path()).await {
+pub async fn get_entitlement_cache(State(state): State<Arc<AppState>>) -> Response {
+    match load_cached_entitlement(entitlement_cache_path(&state)).await {
         Ok(Some(entitlement)) => ApiResponse::ok(CloudEntitlementStatus::from_cached(&entitlement)),
         Ok(None) => ApiResponse::ok(CloudEntitlementStatus::empty()),
         Err(error) => {
@@ -373,7 +373,7 @@ pub async fn connect_connection_from_store(
     prepare_connection_from_store_locked(state, client, store, input)
         .await
         .map_err(CloudConnectionStartError::Prepare)?;
-    let entitlement = load_cached_entitlement(entitlement_cache_path())
+    let entitlement = load_cached_entitlement(entitlement_cache_path(state))
         .await
         .map_err(|error| CloudConnectionStartError::Entitlement(error.to_string()))?;
     let hello = CloudSocketHelloInput {
@@ -515,7 +515,7 @@ async fn connection_status_from_store(
             return Err(format!("failed to read cloud session: {error}"));
         }
     };
-    let entitlement = match load_cached_entitlement(entitlement_cache_path()).await {
+    let entitlement = match load_cached_entitlement(entitlement_cache_path(state)).await {
         Ok(entitlement) => entitlement,
         Err(error) => {
             return Err(format!("failed to read cloud entitlement cache: {error}"));
@@ -553,7 +553,7 @@ pub async fn logout(State(state): State<Arc<AppState>>) -> Response {
 
     let logout = logout_from_store(&store, cleared_sessions);
     match logout {
-        Ok(mut status) => match delete_cached_entitlement(entitlement_cache_path()).await {
+        Ok(mut status) => match delete_cached_entitlement(entitlement_cache_path(&state)).await {
             Ok(deleted) => {
                 status.entitlement_cache_deleted = deleted;
                 ApiResponse::ok(status)
@@ -887,7 +887,7 @@ async fn complete_authorized_login(
         .await
         .map_err(|error| error.to_string())?;
     let (entitlement_cached, entitlement_error) =
-        cache_entitlement_from_access_token(client, &token.access_token).await;
+        cache_entitlement_from_access_token(state, client, &token.access_token).await;
 
     Ok(CloudLoginPoll {
         login_id: login_id.hyphenated().to_string(),
@@ -906,12 +906,13 @@ async fn complete_authorized_login(
 }
 
 async fn cache_entitlement_from_access_token(
+    state: &AppState,
     client: &CloudClient,
     access_token: &str,
 ) -> (bool, Option<String>) {
     match client.fetch_entitlement_token(access_token).await {
         Ok(entitlement) => {
-            match store_entitlement_response(entitlement_cache_path(), &entitlement).await {
+            match store_entitlement_response(entitlement_cache_path(state), &entitlement).await {
                 Ok(_) => (true, None),
                 Err(error) => (false, Some(error.to_string())),
             }
@@ -924,6 +925,10 @@ fn cloud_client(
     state: &AppState,
 ) -> Result<CloudClient, hypercolor_cloud_client::CloudClientError> {
     CloudClientConfig::try_from(&cloud_config(state)).map(CloudClient::new)
+}
+
+fn entitlement_cache_path(state: &AppState) -> std::path::PathBuf {
+    state.data_dir.join(ENTITLEMENT_CACHE_FILE)
 }
 
 fn cloud_config(state: &AppState) -> CloudConfig {
