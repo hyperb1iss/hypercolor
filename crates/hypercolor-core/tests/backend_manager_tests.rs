@@ -2689,14 +2689,14 @@ fn unassigned_output_zones_treats_slot_ids_as_zone_aliases() {
             origin: DeviceOrigin::native("test", "usb", ConnectionType::Usb),
             zones: vec![
                 ZoneInfo {
-                    name: "Channel 1".to_owned(),
+                    name: "Channel 01".to_owned(),
                     led_count: 256,
                     topology: DeviceTopologyHint::Strip,
                     color_format: DeviceColorFormat::Rgb,
                     layout_hint: None,
                 },
                 ZoneInfo {
-                    name: "Channel 2".to_owned(),
+                    name: "Channel 02".to_owned(),
                     led_count: 256,
                     topology: DeviceTopologyHint::Strip,
                     color_format: DeviceColorFormat::Rgb,
@@ -2731,7 +2731,7 @@ fn unassigned_output_zones_treats_slot_ids_as_zone_aliases() {
     let unassigned = manager.unassigned_output_zones(&layout);
 
     assert_eq!(unassigned.len(), 1);
-    assert_eq!(unassigned[0].zone_name.as_deref(), Some("Channel 2"));
+    assert_eq!(unassigned[0].zone_name.as_deref(), Some("Channel 02"));
 }
 
 #[tokio::test]
@@ -3260,14 +3260,14 @@ async fn write_frame_routes_slot_alias_zone_name_to_hardware_segment() {
             origin: DeviceOrigin::native("test", "usb", ConnectionType::Usb),
             zones: vec![
                 ZoneInfo {
-                    name: "Channel 1".to_owned(),
+                    name: "Channel 01".to_owned(),
                     led_count: 2,
                     topology: DeviceTopologyHint::Strip,
                     color_format: DeviceColorFormat::Rgb,
                     layout_hint: None,
                 },
                 ZoneInfo {
-                    name: "Channel 2".to_owned(),
+                    name: "Channel 02".to_owned(),
                     led_count: 3,
                     topology: DeviceTopologyHint::Strip,
                     color_format: DeviceColorFormat::Rgb,

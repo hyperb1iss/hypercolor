@@ -62,7 +62,9 @@ pub fn slugify_slot_id(raw: &str) -> String {
 /// Return true when a controller slot ID names the same physical zone.
 #[must_use]
 pub fn slot_id_matches_zone_name(slot_id: &str, zone_name: &str) -> bool {
-    slot_id.eq_ignore_ascii_case(zone_name) || slot_id == slugify_slot_id(zone_name)
+    slot_id.eq_ignore_ascii_case(zone_name)
+        || slot_id.eq_ignore_ascii_case(&slugify_slot_id(zone_name))
+        || slot_alias_key(slot_id) == slot_alias_key(zone_name)
 }
 
 /// Symmetric comparison for layout zone names and attachment slot aliases.
@@ -76,6 +78,34 @@ pub fn zone_name_matches_slot_alias(left: Option<&str>, right: Option<&str>) -> 
         }
         (None, None) => true,
         _ => false,
+    }
+}
+
+fn slot_alias_key(raw: &str) -> String {
+    let slug = slugify_slot_id(raw);
+    let mut key = String::with_capacity(slug.len());
+
+    for part in slug.split('-').filter(|part| !part.is_empty()) {
+        if !key.is_empty() {
+            key.push('-');
+        }
+
+        if part.bytes().all(|byte| byte.is_ascii_digit()) {
+            let canonical_number = part.trim_start_matches('0');
+            key.push_str(if canonical_number.is_empty() {
+                "0"
+            } else {
+                canonical_number
+            });
+        } else {
+            key.push_str(part);
+        }
+    }
+
+    if key.is_empty() {
+        "slot".to_owned()
+    } else {
+        key
     }
 }
 

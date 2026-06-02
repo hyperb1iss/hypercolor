@@ -2089,7 +2089,7 @@ fn reconcile_auto_layout_zones_for_device_updates_existing_custom_auto_zone() {
         connection_type: ConnectionType::Usb,
         origin: DeviceOrigin::native("layout-driver", "usb", ConnectionType::Usb),
         zones: vec![ZoneInfo {
-            name: "Main".to_owned(),
+            name: "Channel 1".to_owned(),
             led_count: 10,
             topology: DeviceTopologyHint::Strip,
             color_format: DeviceColorFormat::Rgb,
@@ -2105,10 +2105,10 @@ fn reconcile_auto_layout_zones_for_device_updates_existing_custom_auto_zone() {
         canvas_width: 320,
         canvas_height: 200,
         zones: vec![Output {
-            id: "auto-usb-driver-compact-test-main".to_owned(),
+            id: "auto-usb-driver-compact-test-channel-01".to_owned(),
             name: "Compact Custom Device".to_owned(),
             device_id: "usb:driver:compact:test".to_owned(),
-            zone_name: Some("Main".to_owned()),
+            zone_name: Some("channel-01".to_owned()),
 
             position: NormalizedPosition::new(0.5, 0.5),
             size: NormalizedPosition::new(0.26, 0.1),
@@ -2147,6 +2147,7 @@ fn reconcile_auto_layout_zones_for_device_updates_existing_custom_auto_zone() {
         LedTopology::Custom { positions } => assert_eq!(positions.len(), 10),
         other => panic!("expected custom topology, got {other:?}"),
     }
+    assert_eq!(layout.zones[0].zone_name.as_deref(), Some("Channel 1"));
     assert_eq!(layout.zones[0].size, NormalizedPosition::new(0.2, 0.08));
 }
 

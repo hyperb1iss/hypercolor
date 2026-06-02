@@ -263,6 +263,14 @@ fn zone_name_slot_alias_matching_is_symmetric() {
         Some("Channel 1"),
         Some("channel-1"),
     ));
+    assert!(layout_utils::zone_name_matches_slot_alias(
+        Some("channel-01"),
+        Some("Channel 1"),
+    ));
+    assert!(layout_utils::zone_name_matches_slot_alias(
+        Some("gpu_strimer"),
+        Some("GPU Strimer"),
+    ));
     assert!(!layout_utils::zone_name_matches_slot_alias(
         Some("channel-1"),
         Some("Channel 2"),

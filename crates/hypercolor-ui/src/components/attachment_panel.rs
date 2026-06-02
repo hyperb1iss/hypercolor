@@ -19,6 +19,7 @@ use crate::components::component_picker::ComponentPicker;
 use crate::components::device_card::topology_shape_svg;
 use crate::icons::*;
 use crate::layout_geometry;
+use crate::layout_utils::zone_name_matches_slot_alias;
 use crate::toasts;
 
 // ── Channel panel ───────────────────────────────────────────────────────────
@@ -142,7 +143,18 @@ pub fn WiringPanel(
 
                                             // Match zone for topology + identify
                                             let zone_match = device_zones.iter()
-                                                .find(|z| z.name == slot.name || z.id == slot.id)
+                                                .find(|z| {
+                                                    zone_name_matches_slot_alias(
+                                                        Some(slot.id.as_str()),
+                                                        Some(z.id.as_str()),
+                                                    ) || zone_name_matches_slot_alias(
+                                                        Some(slot.id.as_str()),
+                                                        Some(z.name.as_str()),
+                                                    ) || zone_name_matches_slot_alias(
+                                                        Some(slot.name.as_str()),
+                                                        Some(z.name.as_str()),
+                                                    )
+                                                })
                                                 .cloned();
                                             let zone_svg = zone_match.as_ref()
                                                 .map(|z| topology_shape_svg(&z.topology))

@@ -94,7 +94,10 @@ fn render_device_card(state: PaletteState, idx: usize, dev: api::DeviceSummary) 
                                 return false;
                             }
                             match zone_name_key.as_deref() {
-                                Some(name) => z.zone_name.as_deref() == Some(name),
+                                Some(name) => layout_utils::zone_name_matches_slot_alias(
+                                    z.zone_name.as_deref(),
+                                    Some(name),
+                                ),
                                 None => z.zone_name.is_none(),
                             }
                         })

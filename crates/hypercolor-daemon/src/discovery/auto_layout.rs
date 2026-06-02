@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use hypercolor_core::device::DeviceLifecycleManager;
 use hypercolor_core::spatial::generate_positions;
+use hypercolor_types::attachment::zone_name_matches_slot_alias;
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceTopologyHint};
 use hypercolor_types::spatial::{
     Corner, EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
@@ -326,9 +327,11 @@ pub fn reconcile_auto_layout_zones_for_device(
             return true;
         }
 
-        zone.zone_name
-            .as_deref()
-            .is_some_and(|zone_name| expected_zone_names.contains(zone_name))
+        zone.zone_name.as_deref().is_some_and(|zone_name| {
+            expected_zone_names
+                .iter()
+                .any(|expected| zone_name_matches_slot_alias(Some(zone_name), Some(expected)))
+        })
     });
 
     let mut repaired = before_len.saturating_sub(layout.zones.len());
@@ -363,11 +366,17 @@ pub fn reconcile_auto_layout_zones_for_device(
 
         for zone in layout.zones.iter_mut().filter(|zone| {
             zone.device_id == layout_device_id
-                && zone.zone_name.as_deref() == Some(zone_info.name.as_str())
+                && zone.zone_name.as_deref().is_some_and(|zone_name| {
+                    zone_name_matches_slot_alias(Some(zone_name), Some(zone_info.name.as_str()))
+                })
                 && zone.id.starts_with(&auto_zone_prefix)
         }) {
             let mut changed = false;
 
+            if zone.zone_name.as_deref() != Some(zone_info.name.as_str()) {
+                zone.zone_name = Some(zone_info.name.clone());
+                changed = true;
+            }
             if zone.name != expected_name {
                 zone.name.clone_from(&expected_name);
                 changed = true;
