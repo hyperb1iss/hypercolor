@@ -45,6 +45,7 @@ use crate::device_settings::DeviceSettingsStore;
 use crate::discovery;
 use crate::display_output::DisplayOutputThread;
 use crate::display_preferences::DisplayPreferencesStore;
+use crate::extensions::{ApiExtension, DaemonLifecycleExtension, ExtensionRegistry};
 use crate::layout_auto_exclusions;
 use crate::logical_devices::LogicalDevice;
 use crate::network::DaemonDriverHost;
@@ -87,6 +88,15 @@ pub use signals::install_signal_handlers;
 pub struct DaemonState {
     /// Live configuration manager (lock-free reads via `arc_swap`).
     pub config_manager: Arc<ConfigManager>,
+
+    /// Typed state owned by downstream daemon extensions.
+    pub extensions: ExtensionRegistry,
+
+    /// API route mounters owned by downstream daemon extensions.
+    pub api_extensions: Vec<Arc<dyn ApiExtension>>,
+
+    /// Startup and shutdown hooks owned by downstream daemon extensions.
+    pub lifecycle_extensions: Vec<Arc<dyn DaemonLifecycleExtension>>,
 
     /// Device registry — tracks all known and connected devices.
     pub device_registry: DeviceRegistry,
@@ -262,5 +272,23 @@ impl DaemonState {
 
     pub(super) fn discovery_runtime(&self) -> discovery::DiscoveryRuntime {
         self.driver_host.discovery_runtime()
+    }
+
+    pub fn register_extension_state<T>(
+        &self,
+        value: Arc<T>,
+    ) -> std::result::Result<(), crate::extensions::ExtensionRegistryError>
+    where
+        T: Send + Sync + 'static,
+    {
+        self.extensions.insert(value)
+    }
+
+    pub fn register_api_extension(&mut self, extension: Arc<dyn ApiExtension>) {
+        self.api_extensions.push(extension);
+    }
+
+    pub fn register_lifecycle_extension(&mut self, extension: Arc<dyn DaemonLifecycleExtension>) {
+        self.lifecycle_extensions.push(extension);
     }
 }

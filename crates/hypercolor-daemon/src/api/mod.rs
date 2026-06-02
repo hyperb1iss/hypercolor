@@ -89,6 +89,7 @@ use crate::device_metrics::{DeviceMetricsSnapshot, DeviceMetricsSnapshotStore};
 use crate::device_settings::DeviceSettingsStore;
 use crate::display_frames::DisplayFrameRuntime;
 use crate::display_preferences::DisplayPreferencesStore;
+use crate::extensions::{ApiExtension, ExtensionRegistry};
 use crate::layout_auto_exclusions;
 use crate::library::{InMemoryLibraryStore, JsonLibraryStore, LibraryStore};
 use crate::logical_devices::LogicalDevice;
@@ -179,6 +180,12 @@ pub struct AppState {
 
     /// Data directory backing state-owned stores and caches.
     pub data_dir: PathBuf,
+
+    /// Typed state owned by downstream daemon extensions.
+    pub extensions: ExtensionRegistry,
+
+    /// API route mounters owned by downstream daemon extensions.
+    pub api_extensions: Vec<Arc<dyn ApiExtension>>,
 
     /// Live input graph shared with the daemon render thread.
     pub input_manager: Arc<Mutex<InputManager>>,
@@ -547,6 +554,8 @@ impl AppState {
             reconnect_tasks,
             config_manager: None,
             data_dir,
+            extensions: ExtensionRegistry::default(),
+            api_extensions: Vec::new(),
             input_manager,
             discovery_in_progress,
             profiles: Arc::new(RwLock::new(profiles)),
@@ -646,6 +655,8 @@ impl AppState {
             reconnect_tasks: Arc::clone(&daemon.reconnect_tasks),
             config_manager: Some(Arc::clone(&daemon.config_manager)),
             data_dir,
+            extensions: daemon.extensions.clone(),
+            api_extensions: daemon.api_extensions.clone(),
             input_manager: Arc::clone(&daemon.input_manager),
             discovery_in_progress: Arc::clone(&daemon.discovery_in_progress),
             profiles: Arc::new(RwLock::new(profiles)),
@@ -1429,6 +1440,10 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             "/cloud/login/{login_id}/poll",
             axum::routing::post(cloud::poll_login),
         );
+    let mut api = api;
+    for extension in &state.api_extensions {
+        api = extension.mount_api_routes(api);
+    }
     let mut router = Router::new()
         .nest("/api/v1", api)
         .route("/preview", axum::routing::get(preview::preview_page))
