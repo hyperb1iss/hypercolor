@@ -501,6 +501,61 @@ async fn frame_sink_collapses_burst_to_latest_openrgb_frame() {
     assert_eq!(&update.payload[10..14], &[16, 17, 18, 0]);
 }
 
+#[tokio::test]
+async fn write_colors_does_not_wait_for_slow_openrgb_socket() {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("fake OpenRGB server should bind");
+    let endpoint = listener
+        .local_addr()
+        .expect("fake OpenRGB server should expose local addr");
+    let server = tokio::spawn(run_slow_update_read_server(listener));
+    let config = OpenRgbConfig {
+        endpoints: vec![endpoint],
+        ownership: OpenRgbOwnership {
+            mode: OpenRgbOwnershipMode::OpenRgbOwned,
+            ..OpenRgbOwnership::default()
+        },
+        teardown_policy: OpenRgbTeardownPolicy::LeaveLastFrame,
+        ..OpenRgbConfig::default()
+    };
+    let entry = config_entry(&config);
+    let view = DriverConfigView {
+        driver_id: DESCRIPTOR.id,
+        entry: &entry,
+    };
+    let host = NullHost;
+    let module = OpenRgbDriverModule;
+    let mut backend = module
+        .build_output_backend(&host, view)
+        .expect("backend construction should succeed")
+        .expect("OpenRGB should build an output backend");
+    let devices = backend
+        .discover()
+        .await
+        .expect("backend discovery should read fake OpenRGB controller");
+    let device_id = devices[0].id;
+
+    backend
+        .connect(&device_id)
+        .await
+        .expect("backend should connect selected controller");
+
+    tokio::time::timeout(
+        Duration::from_millis(50),
+        backend.write_colors(&device_id, &[[21, 22, 23], [24, 25, 26]]),
+    )
+    .await
+    .expect("write_colors should enqueue without waiting for socket I/O")
+    .expect("write_colors should accept queued frame");
+
+    let update = server.await.expect("server task should join");
+    assert_eq!(update.header.device_index, 0);
+    assert_eq!(update.header.packet_id, PacketId::UpdateLeds);
+    assert_eq!(&update.payload[6..10], &[21, 22, 23, 0]);
+    assert_eq!(&update.payload[10..14], &[24, 25, 26, 0]);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn disconnect_completes_while_frame_sink_writers_race() {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
@@ -1326,6 +1381,18 @@ async fn run_latest_value_server(listener: TcpListener) -> Packet {
     }
 }
 
+async fn run_slow_update_read_server(listener: TcpListener) -> Packet {
+    loop {
+        let (stream, _) = listener
+            .accept()
+            .await
+            .expect("fake OpenRGB server should accept client");
+        if let Some(update) = handle_slow_update_read_connection(stream).await {
+            return update;
+        }
+    }
+}
+
 async fn run_drain_server(listener: TcpListener) {
     loop {
         let (stream, _) = listener
@@ -1334,6 +1401,64 @@ async fn run_drain_server(listener: TcpListener) {
             .expect("fake OpenRGB server should accept client");
         handle_drain_connection(stream).await;
     }
+}
+
+async fn handle_slow_update_read_connection(mut stream: TcpStream) -> Option<Packet> {
+    let mut decoder = PacketDecoder::new();
+    let mut saw_output_mode_setup = false;
+    while let Some(packet) = read_next_packet(&mut stream, &mut decoder).await {
+        match packet.header.packet_id {
+            PacketId::RequestProtocolVersion => {
+                assert_eq!(
+                    packet.payload,
+                    CLIENT_MAX_PROTOCOL_VERSION.to_le_bytes().to_vec()
+                );
+                send_packet(
+                    &mut stream,
+                    PacketId::RequestProtocolVersion,
+                    0,
+                    CLIENT_MAX_PROTOCOL_VERSION.to_le_bytes().to_vec(),
+                )
+                .await;
+            }
+            PacketId::SetClientName => {
+                assert_eq!(packet.payload, b"Hypercolor\0");
+            }
+            PacketId::RequestControllerCount => {
+                send_packet(
+                    &mut stream,
+                    PacketId::RequestControllerCount,
+                    0,
+                    1_u32.to_le_bytes().to_vec(),
+                )
+                .await;
+            }
+            PacketId::RequestControllerData => {
+                assert_eq!(packet.header.device_index, 0);
+                send_packet(
+                    &mut stream,
+                    PacketId::RequestControllerData,
+                    0,
+                    controller_payload_v5("Board", "SER123", "hidraw0"),
+                )
+                .await;
+                if saw_output_mode_setup {
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
+            }
+            PacketId::SetCustomMode => {
+                assert_eq!(packet.header.device_index, 0);
+            }
+            PacketId::UpdateMode => {
+                assert_eq!(packet.header.device_index, 0);
+                assert!(!packet.payload.is_empty());
+                saw_output_mode_setup = true;
+            }
+            PacketId::UpdateLeds => return Some(packet),
+            other => panic!("unexpected OpenRGB client packet: {other:?}"),
+        }
+    }
+    None
 }
 
 async fn handle_drain_connection(mut stream: TcpStream) {
