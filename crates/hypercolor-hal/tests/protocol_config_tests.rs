@@ -150,6 +150,23 @@ fn nollie32_runtime_config_derives_cable_flags() {
     let config = ProtocolRuntimeConfig::Nollie32(config);
     assert_eq!(config.atx_attachment_leds(), 120);
     assert_eq!(config.gpu_attachment_leds(), 162);
+
+    let protocol = config.build_protocol();
+    let commands = protocol.encode_frame(&vec![
+        [1_u8, 2_u8, 3_u8];
+        usize::try_from(protocol.total_leds())
+            .expect("Nollie32 LED count fits")
+    ]);
+    assert!(
+        commands
+            .iter()
+            .all(|command| command.data[1] != 0x40 && command.data[1] != 0x88)
+    );
+    assert!(
+        commands
+            .iter()
+            .any(|command| command.data[1] == 15 && command.data[2] == 0)
+    );
 }
 
 #[test]

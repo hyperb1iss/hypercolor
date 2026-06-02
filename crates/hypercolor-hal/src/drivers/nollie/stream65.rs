@@ -18,16 +18,18 @@ pub(super) fn encode_frame_into(
     let counts = [u16::try_from(leds_per_channel).unwrap_or(u16::MAX); CHANNELS_NOLLIE_8];
 
     let mut command_buffer = CommandBuffer::new(commands);
-    command_buffer.push_fill(
-        false,
-        Duration::ZERO,
-        Duration::from_millis(200),
-        TransferType::Primary,
-        |buffer| {
-            buffer.resize(GEN1_HID_REPORT_SIZE, 0);
-            fill_count_config_packet(buffer, channels, counts);
-        },
-    );
+    if protocol.stream65_counts_changed(counts) {
+        command_buffer.push_fill(
+            false,
+            Duration::ZERO,
+            Duration::from_millis(200),
+            TransferType::Primary,
+            |buffer| {
+                buffer.resize(GEN1_HID_REPORT_SIZE, 0);
+                fill_count_config_packet(buffer, channels, counts);
+            },
+        );
+    }
 
     let mut packet_index = 0_u8;
     for channel in 0..channels {

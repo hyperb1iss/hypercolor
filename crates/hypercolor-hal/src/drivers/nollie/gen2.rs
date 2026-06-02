@@ -9,8 +9,6 @@ use super::protocol::{
 };
 
 const GROUP_LED_CAP: u16 = 340;
-const FLAG1_CHANNEL: u8 = 15;
-const FLAG2_CHANNEL: u8 = 31;
 const SETTINGS_DELAY: Duration = Duration::from_millis(50);
 const FLAG_BOUNDARY_DELAY: Duration = Duration::from_millis(8);
 
@@ -52,9 +50,10 @@ const EMPTY_GROUP: Group = Group {
 };
 
 pub(super) fn init_sequence(model: NollieModel, config: Nollie32Config) -> Vec<ProtocolCommand> {
-    let counts = default_counts(model, config);
     let mut commands = Vec::new();
-    push_count_config(counts, &mut commands);
+    if uses_count_config(model) {
+        push_count_config(default_counts(model, config), &mut commands);
+    }
     commands.push(settings_command(config, [0, 0, 0]));
     commands
 }
@@ -76,7 +75,7 @@ pub(super) fn encode_frame_into(
     let entries = &entries[..entry_count];
     let counts = counts_for_entries(entries);
     let mut command_buffer = CommandBuffer::new(commands);
-    if protocol.gen2_counts_changed(counts) {
+    if uses_count_config(protocol.model()) && protocol.gen2_counts_changed(counts) {
         push_count_config_into(counts, &mut command_buffer);
     }
 
@@ -312,7 +311,7 @@ fn push_v1_entries(
             |buffer| {
                 buffer.resize(GEN2_COLOR_REPORT_SIZE, 0);
                 buffer[1] = entry.physical;
-                buffer[2] = marker_for_v1(entry.physical);
+                buffer[2] = 0;
                 buffer[3] = u8::try_from(entry.led_count >> 8).unwrap_or(u8::MAX);
                 buffer[4] = u8::try_from(entry.led_count & 0x00FF).unwrap_or(u8::MAX);
                 let _ = encode_entry_colors(buffer, 5, entry, colors);
@@ -471,6 +470,15 @@ fn default_counts(model: NollieModel, config: Nollie32Config) -> [u16; GEN2_PHYS
     counts
 }
 
+const fn uses_count_config(model: NollieModel) -> bool {
+    !matches!(
+        model,
+        NollieModel::Nollie32 {
+            protocol_version: ProtocolVersion::V1
+        }
+    )
+}
+
 fn settings_command(config: Nollie32Config, idle_color: [u8; 3]) -> ProtocolCommand {
     let mut packet = vec![0_u8; GEN2_SETTINGS_REPORT_SIZE];
     packet[1] = 0x80;
@@ -486,12 +494,4 @@ fn shutdown_latch_command() -> ProtocolCommand {
     let mut packet = vec![0_u8; GEN2_SETTINGS_REPORT_SIZE];
     packet[1] = 0xFF;
     command_from_packet(packet, false, Duration::ZERO, SETTINGS_DELAY)
-}
-
-const fn marker_for_v1(physical: u8) -> u8 {
-    match physical {
-        FLAG1_CHANNEL => 1,
-        FLAG2_CHANNEL => 2,
-        _ => 0,
-    }
 }

@@ -50,6 +50,7 @@ Bliss provided the official `~/dev/nolliecontroller` source tree. That source su
 - Discontinued devices under VID `0x16D1`, VID `0x16D2`, and VID `0x16D3` are supported with their official 65-byte packet formats.
 - PID `0x16D2:0x1617` and `0x16D2:0x1618` are Nollie L1/L2 v1.2 in the official source, not Nollie 28/12 rev B/C.
 - `0x16D5:0x1F01` remains ambiguous: existing Hypercolor support treats it as PrismRGB Prism 8, while the NOS2 source also identifies it as Nollie 8 v2. Without a reliable runtime discriminator, the registry keeps the existing Prism 8 descriptor.
+- The official `0x3061:0x4714` Nollie32 script exposes V1/V2 render modes but defaults to V1. That V2 selector is separate from the firmware-2.x/NOS2 source tree.
 
 ### Non-goals
 
@@ -132,7 +133,7 @@ The Nollie family splits cleanly into two protocol generations. They share comma
 | ---------------------- | --------------------------------------------------------- | ------------------------------------------------------- |
 | Devices                | Nollie1, Nollie 8 v2, Nollie 28/12, Prism 8               | Nollie16v3, Nollie32                                    |
 | HID report size        | 65 bytes                                                  | 1024 bytes (color data), 513 bytes (settings)           |
-| Packet addressing      | `packet_id = packet_index + (channel × 6)`                | `[0x40, ch_start, ch_end, marker, ...]` grouped         |
+| Packet addressing      | `packet_id = packet_index + (channel × 6)`                | `[0x40, ch_start, ch_end, marker, ...]` grouped; Nollie32 V1 is standalone |
 | Max LEDs per packet    | 21                                                        | 256 (per channel slot in a group)                       |
 | Max LEDs per group     | n/a                                                       | 340 (cumulative across grouped channels)                |
 | Frame commit           | Explicit `[0x00, 0xFF]` 65-byte packet                    | Implicit (last group's marker = 2)                      |
@@ -140,7 +141,7 @@ The Nollie family splits cleanly into two protocol generations. They share comma
 | Settings save          | `[0xFE, 0x02, ...]` (effect) + `[0xFE, 0x01, ...]` (mode) | `[0x80, mos, effect, R, G, B]` 513-byte                 |
 | Channel remap          | None (logical = physical)                                 | Required (tables in §5.6)                               |
 | Voltage monitoring     | Yes (Nollie 8 v2 firmware ≥ 2)                            | No                                                      |
-| Firmware version query | Yes (`0xFC 0x01`)                                         | No (V1/V2 selectable in plugin)                         |
+| Firmware version query | Yes (`0xFC 0x01`)                                         | Nollie32 yes; Nollie16v3 no                             |
 
 ### 3.2 Color Encoding (both generations)
 
@@ -519,9 +520,9 @@ Nollie32 firmware accepts two render protocols, selectable at runtime:
 
   Each channel's packets are independently transmitted; the firmware buffers them and latches when all 32 physical channels have been written (or a timeout elapses).
 
-- **V2 (grouped, recommended):** Multi-channel packets with `[0x40, ch_start, ch_end, marker]` headers as described in §5.3. The marker `2` provides the explicit frame latch.
+- **V2 (grouped, optional):** Multi-channel packets with `[0x40, ch_start, ch_end, marker]` headers as described in §5.3. The marker `2` provides the explicit frame latch.
 
-V2 is faster (fewer USB transactions) and more reliable (explicit frame boundary). The driver should emit V2 by default and only fall back to V1 if the user explicitly opts in via attachment profile.
+V2 is faster because it uses fewer USB transactions, but the official Nollie32 script defaults to V1. Hypercolor follows the vendor default for `0x3061:0x4714` and keeps V2 in the protocol model for an explicit future selector.
 
 For V1 the per-channel packet template is:
 
@@ -738,7 +739,7 @@ description = "20 main channels, no Strimer cables"
 [config]
 atx_cable_present = false
 gpu_cable_type = "none"   # "none", "dual_8_pin", "triple_8_pin"
-protocol_version = "v2"
+protocol_version = "v1"
 
 # Per-main-channel LED counts and topology hints:
 [[main_channel]]
@@ -876,7 +877,7 @@ The protocol facts in this spec were cross-checked against independent external 
 
 - **Nollie 28/12 PID disambiguation:** three PIDs (`0x1616`, `0x1617`, `0x1618`) appear to share one protocol. We treat all three as the same protocol and surface the PID in the device name for diagnostic clarity.
 - **Voltage monitoring on Nollie1 / Nollie 28/12:** no captured evidence confirms voltage rails for these models. Until we confirm with hardware, **disable** voltage polling on Nollie1 and Nollie 28/12.
-- **Firmware version branching for Gen-2:** V1/V2 appears to be user-selected rather than firmware-detected. Default to V2 unless the user selects V1 via attachment profile.
+- **Firmware version branching for Gen-2:** V1/V2 is user-selected in the official Nollie32 script. Hypercolor defaults to V1 until a UI/runtime selector is added.
 
 ### 9.4 License Hygiene
 
@@ -1060,7 +1061,7 @@ The Gen-1 query/update endianness asymmetry is intentional firmware behavior; do
 
 **Phase 3 — Gen-2 implementation:**
 - [x] Add Gen-2 V2 grouped and Nollie32 V1 standalone frame encoders in `nollie/gen2.rs`.
-- [x] Add `gen2_init_sequence()` returning `[0x88]` count-config + `[0x80]` settings-save with 50ms delays.
+- [x] Add `gen2_init_sequence()` returning `[0x88]` count-config for V2-style Gen-2 paths plus `[0x80]` settings-save with 50ms delays.
 - [x] Add `gen2_shutdown_sequence()` returning `[0x80]` save + `[0xFF]` latch.
 - [x] Add channel remap tables (Nollie16v3, Nollie32 main, Nollie32 ATX, Nollie32 GPU) as `pub const` arrays.
 - [x] Add group/marker algorithm with 340-LED cap.

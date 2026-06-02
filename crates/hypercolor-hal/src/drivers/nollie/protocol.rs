@@ -168,6 +168,7 @@ pub struct NollieProtocol {
     model: NollieModel,
     nollie32_config: Nollie32Config,
     last_gen2_counts: Mutex<[u16; GEN2_PHYSICAL_CHANNELS]>,
+    last_stream65_counts: Mutex<[u16; CHANNELS_NOLLIE_8]>,
 }
 
 impl NollieProtocol {
@@ -180,6 +181,7 @@ impl NollieProtocol {
                 gpu_cable_type: GpuCableType::None,
             },
             last_gen2_counts: Mutex::new([0; GEN2_PHYSICAL_CHANNELS]),
+            last_stream65_counts: Mutex::new([0; CHANNELS_NOLLIE_8]),
         }
     }
 
@@ -228,6 +230,19 @@ impl NollieProtocol {
             .last_gen2_counts
             .lock()
             .expect("gen2 count cache lock should not be poisoned");
+        if *last_counts != counts {
+            *last_counts = counts;
+            return true;
+        }
+
+        false
+    }
+
+    pub(super) fn stream65_counts_changed(&self, counts: [u16; CHANNELS_NOLLIE_8]) -> bool {
+        let mut last_counts = self
+            .last_stream65_counts
+            .lock()
+            .expect("stream65 count cache lock should not be poisoned");
         if *last_counts != counts {
             *last_counts = counts;
             return true;
@@ -368,11 +383,12 @@ impl NollieModel {
     #[must_use]
     pub(super) const fn max_fps(self) -> u32 {
         match self {
-            Self::Nollie32 { .. } | Self::Nollie16v3 => 30,
             Self::Nollie1
             | Self::Nollie8
             | Self::Nollie28_12
             | Self::Prism8
+            | Self::Nollie16v3
+            | Self::Nollie32 { .. }
             | Self::Nollie1Cdc
             | Self::Nollie8Cdc
             | Self::Nollie16v3Nos2

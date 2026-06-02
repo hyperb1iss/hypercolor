@@ -41,7 +41,7 @@ impl ProtocolRuntimeConfig {
             }
             Self::Nollie32(config) => Box::new(
                 NollieProtocol::new(NollieModel::Nollie32 {
-                    protocol_version: ProtocolVersion::V2,
+                    protocol_version: ProtocolVersion::V1,
                 })
                 .with_nollie32_config(config),
             ),

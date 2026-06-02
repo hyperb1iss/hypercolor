@@ -66,7 +66,7 @@ pub fn build_nollie_16_v3_protocol() -> Box<dyn Protocol> {
 
 pub fn build_nollie_32_protocol() -> Box<dyn Protocol> {
     Box::new(NollieProtocol::new(NollieModel::Nollie32 {
-        protocol_version: ProtocolVersion::V2,
+        protocol_version: ProtocolVersion::V1,
     }))
 }
 

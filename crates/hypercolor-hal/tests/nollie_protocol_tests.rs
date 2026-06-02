@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use hypercolor_hal::drivers::nollie::{
     CDC_SERIAL_REPORT_SIZE, GpuCableType, Nollie32Config, NollieModel, NollieProtocol,
-    ProtocolVersion, build_nollie_8_v2_protocol, build_prism_8_protocol,
+    ProtocolVersion, build_nollie_8_v2_protocol, build_nollie_32_protocol, build_prism_8_protocol,
 };
 use hypercolor_hal::protocol::{Protocol, ProtocolCommand};
 use hypercolor_types::device::DeviceTopologyHint;
@@ -231,6 +231,14 @@ fn nollie4_stream65_reuses_command_buffers() {
     let mut commands = Vec::new();
 
     protocol.encode_frame_into(&colors, &mut commands);
+    assert_eq!(commands[0].data[1], 0x86);
+
+    protocol.encode_frame_into(&colors, &mut commands);
+    assert!(
+        commands
+            .iter()
+            .all(|command| command.data.get(1).copied() != Some(0x86))
+    );
     let data_ptrs = command_data_ptrs(&commands);
 
     protocol.encode_frame_into(&colors, &mut commands);
@@ -268,19 +276,53 @@ fn nollie32_v1_uses_standalone_channel_packets_and_boundary_delay() {
     });
     let commands = protocol.encode_frame(&vec![[1, 2, 3]; 5_120]);
 
-    assert_eq!(commands[0].data[1], 0x88);
     assert!(
         commands
             .iter()
-            .skip(1)
-            .all(|command| command.data[1] != 0x40)
+            .all(|command| command.data[1] != 0x40 && command.data[1] != 0x88)
     );
     let flag1 = commands
         .iter()
         .find(|command| command.data[1] == 15)
         .expect("FLAG1 packet should be emitted");
-    assert_eq!(flag1.data[2], 1);
+    assert_eq!(flag1.data[2], 0);
+    assert_eq!(flag1.data[3], 1);
+    assert_eq!(flag1.data[4], 0);
     assert_eq!(flag1.post_delay, Duration::from_millis(8));
+
+    let flag2 = commands
+        .iter()
+        .find(|command| command.data[1] == 31)
+        .expect("FLAG2 packet should be emitted");
+    assert_eq!(flag2.data[2], 0);
+}
+
+#[test]
+fn nollie32_default_builder_uses_official_v1_protocol() {
+    let protocol = build_nollie_32_protocol();
+    let commands = protocol.encode_frame(&vec![[1, 2, 3]; 5_120]);
+
+    assert!(
+        commands
+            .iter()
+            .all(|command| command.data[1] != 0x40 && command.data[1] != 0x88)
+    );
+    assert!(
+        commands
+            .iter()
+            .any(|command| command.data[1] == 15 && command.data[2] == 0)
+    );
+}
+
+#[test]
+fn gen2_models_report_official_sixty_fps_ceiling() {
+    let nollie16v3 = NollieProtocol::new(NollieModel::Nollie16v3);
+    let nollie32 = NollieProtocol::new(NollieModel::Nollie32 {
+        protocol_version: ProtocolVersion::V1,
+    });
+
+    assert_eq!(nollie16v3.capabilities().max_fps, 60);
+    assert_eq!(nollie32.capabilities().max_fps, 60);
 }
 
 #[test]
