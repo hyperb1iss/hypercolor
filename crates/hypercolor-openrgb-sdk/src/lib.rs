@@ -4,10 +4,12 @@
 //! depending on Hypercolor or OpenRGB implementation code.
 
 pub mod error;
+pub mod client;
 pub mod packet;
 pub mod parser;
 pub mod types;
 
+pub use client::{OpenRgbClient, OpenRgbClientConfig};
 pub use error::{OpenRgbError, Result};
 pub use packet::{
     CLIENT_MAX_PROTOCOL_VERSION, HEADER_LEN, MAGIC, MAX_PACKET_PAYLOAD_SIZE, MIN_PROTOCOL_VERSION,

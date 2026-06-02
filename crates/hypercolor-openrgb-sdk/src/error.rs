@@ -47,4 +47,26 @@ pub enum OpenRgbError {
     /// The caller tried to encode a packet this crate intentionally forbids.
     #[error("OpenRGB packet {0:?} is forbidden for Hypercolor clients")]
     ForbiddenPacket(PacketId),
+
+    /// A request received a different packet ID than expected.
+    #[error("unexpected OpenRGB packet: expected {expected:?}, got {actual:?}")]
+    UnexpectedPacket { expected: PacketId, actual: PacketId },
+
+    /// A timed operation exceeded its configured deadline.
+    #[error("OpenRGB {operation} timed out")]
+    Timeout { operation: &'static str },
+
+    /// The TCP peer closed the stream while a packet was expected.
+    #[error("OpenRGB connection closed")]
+    ConnectionClosed,
+
+    /// Socket I/O failed.
+    #[error("OpenRGB I/O error: {0}")]
+    Io(String),
+}
+
+impl From<std::io::Error> for OpenRgbError {
+    fn from(value: std::io::Error) -> Self {
+        Self::Io(value.to_string())
+    }
 }
