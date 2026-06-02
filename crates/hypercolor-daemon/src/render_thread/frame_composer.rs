@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::time::Instant;
 
 use anyhow::Result;
@@ -134,6 +135,16 @@ fn display_route_matches_target(
     display_target: &DisplayFaceTarget,
 ) -> bool {
     display_route.is_some_and(|route| route.device_id == display_target.device_id)
+}
+
+fn display_route_for_group<'a>(
+    group_id: &ZoneId,
+    display_routes: &'a HashMap<ZoneId, DisplayGroupOutputRoute>,
+    fallback_display_routes: &'a HashMap<ZoneId, DisplayGroupOutputRoute>,
+) -> Option<&'a DisplayGroupOutputRoute> {
+    display_routes
+        .get(group_id)
+        .or_else(|| fallback_display_routes.get(group_id))
 }
 
 #[cfg(feature = "wgpu")]
@@ -559,10 +570,15 @@ impl ComposeContext<'_> {
         dependency_key: SceneDependencyKey,
     ) -> Vec<(ZoneId, GroupCanvasFrame)> {
         let (_, display_routes) = self.state.event_bus.display_group_output_routes_snapshot();
+        let fallback_display_routes = &self
+            .scene_snapshot
+            .scene_runtime
+            .active_display_group_output_routes;
         group_canvases
             .into_iter()
             .filter_map(|(group_id, frame)| {
-                let display_route = display_routes.get(&group_id);
+                let display_route =
+                    display_route_for_group(&group_id, &display_routes, fallback_display_routes);
                 let display_target = frame.display_target.clone();
                 // Display-face finalization follows the route cadence,
                 // even when scene rendering is faster.
@@ -1096,11 +1112,12 @@ fn display_group_requires_composed_scene(
 #[cfg(test)]
 mod tests {
     use super::{
-        PreviewSurfaceRequest, display_group_requires_composed_scene, display_route_matches_target,
-        effective_render_group_layer_count, preview_surface_request,
+        PreviewSurfaceRequest, display_group_requires_composed_scene, display_route_for_group,
+        display_route_matches_target, effective_render_group_layer_count, preview_surface_request,
         producer_frame_requires_composition_for_preview, render_group_requires_full_composition,
         requires_cpu_sampling_canvas, requires_published_surface,
     };
+    use std::collections::HashMap;
     use std::sync::Arc;
 
     use hypercolor_core::bus::{DisplayGroupOutputRoute, DisplayGroupViewport};
@@ -1303,6 +1320,43 @@ mod tests {
         assert!(display_route_matches_target(Some(&route), &target));
         assert!(!display_route_matches_target(Some(&other_route), &target));
         assert!(!display_route_matches_target(None, &target));
+    }
+
+    #[test]
+    fn display_route_for_group_falls_back_to_snapshot_route_when_bus_route_is_absent() {
+        let group_id = ZoneId::new();
+        let fallback_device = DeviceId::new();
+        let bus_device = DeviceId::new();
+        let fallback_route = DisplayGroupOutputRoute {
+            device_id: fallback_device,
+            width: 480,
+            height: 480,
+            circular: true,
+            brightness: 0.8,
+            frame_format: DisplayFrameFormat::Jpeg,
+            viewport: DisplayGroupViewport {
+                position: NormalizedPosition::new(0.5, 0.5),
+                size: NormalizedPosition::new(1.0, 1.0),
+                rotation: 0.0,
+                scale: 1.0,
+                edge_behavior: EdgeBehavior::Clamp,
+            },
+        };
+        let mut bus_route = fallback_route.clone();
+        bus_route.device_id = bus_device;
+
+        let fallback_routes = HashMap::from([(group_id, fallback_route.clone())]);
+        let empty_bus_routes = HashMap::new();
+        assert_eq!(
+            display_route_for_group(&group_id, &empty_bus_routes, &fallback_routes),
+            Some(&fallback_route)
+        );
+
+        let bus_routes = HashMap::from([(group_id, bus_route.clone())]);
+        assert_eq!(
+            display_route_for_group(&group_id, &bus_routes, &fallback_routes),
+            Some(&bus_route)
+        );
     }
 
     #[test]

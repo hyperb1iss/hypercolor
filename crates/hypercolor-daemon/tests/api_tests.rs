@@ -9516,6 +9516,33 @@ async fn display_face_endpoints_assign_get_and_delete_face() {
             .expect("zones should serialize as an array")
             .is_empty()
     );
+    let group_id = put_json["data"]["group"]["id"]
+        .as_str()
+        .expect("display face group should include an id");
+
+    let layers_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/v1/scenes/{scene_id}/groups/{group_id}/layers"
+                ))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(layers_response.status(), StatusCode::OK);
+    let layers_json = body_json(layers_response).await;
+    let [layer] = layers_json["data"]["items"]
+        .as_array()
+        .expect("display face layers should serialize as an array")
+        .as_slice()
+    else {
+        panic!("display face should appear in the Studio layer stack");
+    };
+    assert_eq!(layer["source"]["type"], "effect");
+    assert_eq!(layer["source"]["effect_id"], face.id.to_string());
 
     let get_response = app
         .clone()
