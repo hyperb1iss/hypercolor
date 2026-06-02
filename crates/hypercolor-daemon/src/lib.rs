@@ -9,6 +9,8 @@ pub mod cloud_connection;
 pub mod cloud_entitlements;
 #[cfg(feature = "cloud")]
 pub mod cloud_socket;
+#[cfg(feature = "cloud")]
+pub mod cloud_state;
 pub mod daemon;
 pub(crate) mod deadline;
 pub mod device_metrics;
