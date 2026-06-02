@@ -710,6 +710,50 @@ async fn scene_wide_media_broadcast_creates_layers_per_group() {
 }
 
 #[tokio::test]
+async fn scene_wide_media_broadcast_accepts_end_index_after_legacy_effect_layer() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let effect = insert_effect(&state, "broadcast-legacy-index").await;
+    let existing_asset = insert_mp4_asset(&state, "existing.mp4", 7).await;
+    let broadcast_asset = insert_lottie_asset(&state).await;
+    let (scene_id, group_id) =
+        install_scene(&state, effect.id, vec![media_layer(existing_asset)]).await;
+    let app = test_app_with_state(Arc::clone(&state));
+    let uri = format!("/api/v1/scenes/{scene_id}/layers/broadcast-media");
+
+    let response = send(
+        &app,
+        json_request(
+            "POST",
+            uri,
+            serde_json::json!({
+                "asset_id": broadcast_asset,
+                "targets": [
+                    {
+                        "group_id": group_id,
+                        "index": 2,
+                        "expected_layers_version": 0
+                    }
+                ]
+            }),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let json = body_json(response).await;
+    let items = json["data"]["groups"][0]["items"]
+        .as_array()
+        .expect("broadcast response should include items");
+    assert_eq!(items.len(), 3);
+    assert_eq!(items[0]["source"]["type"], "effect");
+    assert_eq!(items[0]["source"]["effect_id"], effect.id.to_string());
+    assert_eq!(items[1]["source"]["type"], "media");
+    assert_eq!(items[1]["source"]["asset_id"], existing_asset.to_string());
+    assert_eq!(items[2]["source"]["type"], "media");
+    assert_eq!(items[2]["source"]["asset_id"], broadcast_asset.to_string());
+}
+
+#[tokio::test]
 async fn scene_wide_media_broadcast_rejects_missing_group() {
     let (state, _tmp) = isolated_state_with_tempdir();
     let effect = insert_effect(&state, "broadcast-missing-group").await;

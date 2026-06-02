@@ -42,6 +42,7 @@ use hypercolor_daemon::session::{
     OutputPowerState, current_global_brightness, set_global_brightness,
 };
 use hypercolor_network::DriverModuleRegistry;
+use hypercolor_types::asset::AssetId;
 use hypercolor_types::canvas::{Canvas, Rgba};
 use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig, RenderAccelerationMode};
 use hypercolor_types::controls::{
@@ -61,6 +62,10 @@ use hypercolor_types::effect::{
 };
 use hypercolor_types::event::{
     ChangeTrigger, EffectStopReason, HypercolorEvent, SceneChangeReason, ZoneChangeKind,
+};
+use hypercolor_types::layer::{
+    LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, MediaPlayback, SceneLayer,
+    SceneLayerId,
 };
 use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::{
@@ -1919,6 +1924,17 @@ async fn activate_display_face_test_scene(
     effect_id: EffectId,
     device_id: DeviceId,
 ) -> SceneId {
+    activate_display_face_test_scene_with_layers(state, name, effect_id, device_id, Vec::new())
+        .await
+}
+
+async fn activate_display_face_test_scene_with_layers(
+    state: &Arc<AppState>,
+    name: &str,
+    effect_id: EffectId,
+    device_id: DeviceId,
+    layers: Vec<SceneLayer>,
+) -> SceneId {
     let scene = Scene {
         id: SceneId::new(),
         name: name.to_owned(),
@@ -1933,7 +1949,7 @@ async fn activate_display_face_test_scene(
             controls: HashMap::new(),
             control_bindings: HashMap::new(),
             preset_id: None,
-            layers: Vec::new(),
+            layers,
             layout: SpatialLayout {
                 id: "display-face-layout".to_owned(),
                 name: "Display Face Layout".to_owned(),
@@ -1976,6 +1992,23 @@ async fn activate_display_face_test_scene(
         .activate(&scene.id, None)
         .expect("display face scene should activate");
     scene.id
+}
+
+fn test_media_layer() -> SceneLayer {
+    SceneLayer {
+        id: SceneLayerId::new(),
+        name: None,
+        source: LayerSource::Media {
+            asset_id: AssetId::new(),
+            playback: MediaPlayback::default(),
+        },
+        blend: LayerBlendMode::Alpha,
+        opacity: 1.0,
+        transform: LayerTransform::default(),
+        adjust: LayerAdjust::default(),
+        bindings: Vec::new(),
+        enabled: true,
+    }
 }
 
 fn default_config_path() -> String {
@@ -9290,6 +9323,52 @@ async fn active_scene_syncs_empty_screen_surface_for_display_device() {
     assert_eq!(face_response.status(), StatusCode::OK);
     let face_json = body_json(face_response).await;
     assert!(face_json["data"].is_null());
+}
+
+#[tokio::test]
+async fn display_face_layer_stack_includes_legacy_face_beside_media() {
+    let state = Arc::new(isolated_state());
+    let display_id = insert_test_display_device(&state, "Pump LCD").await;
+    let face = insert_test_display_face_effect(&state, "System Monitor").await;
+    let scene_id = activate_display_face_test_scene_with_layers(
+        &state,
+        "Desk Scene",
+        face.id,
+        display_id,
+        vec![test_media_layer()],
+    )
+    .await;
+    let group_id = {
+        let manager = state.scene_manager.read().await;
+        manager
+            .active_scene()
+            .and_then(|scene| scene.display_group_for(display_id))
+            .expect("display group should be active")
+            .id
+    };
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/v1/scenes/{scene_id}/groups/{group_id}/layers"
+                ))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    let items = json["data"]["items"]
+        .as_array()
+        .expect("layer stack should serialize as an array");
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0]["source"]["type"], "effect");
+    assert_eq!(items[0]["source"]["effect_id"], face.id.to_string());
+    assert_eq!(items[1]["source"]["type"], "media");
 }
 
 #[tokio::test]

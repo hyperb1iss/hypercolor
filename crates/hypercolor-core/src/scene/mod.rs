@@ -1141,11 +1141,7 @@ impl SceneManager {
             if let Err(errors) = layer.validate() {
                 return Err(LayerMutationError::InvalidLayer { errors });
             }
-            let effective_len = if group.layers.is_empty() && group.effect_id.is_some() {
-                1
-            } else {
-                group.layers.len()
-            };
+            let effective_len = group.effective_layers().len();
             if let Some(index) = insert.index
                 && index > effective_len
             {
@@ -1803,13 +1799,17 @@ pub fn default_primary_group(mut layout: SpatialLayout) -> Zone {
 }
 
 fn materialize_legacy_effect_layer(group: &mut Zone) {
-    if !group.layers.is_empty() {
+    if group
+        .layers
+        .iter()
+        .any(|layer| matches!(layer.source, LayerSource::Effect { .. }))
+    {
         return;
     }
     let Some(effect_id) = group.effect_id else {
         return;
     };
-    group.layers.push(SceneLayer::from_effect(
+    group.layers.insert(0, SceneLayer::from_effect(
         group.legacy_layer_id(),
         effect_id,
         group.controls.clone(),

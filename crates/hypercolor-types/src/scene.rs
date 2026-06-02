@@ -424,19 +424,29 @@ impl Zone {
 
     #[must_use]
     pub fn effective_layers(&self) -> Vec<SceneLayer> {
-        if !self.layers.is_empty() {
+        if self.effect_id.is_none()
+            || self
+                .layers
+                .iter()
+                .any(|layer| matches!(layer.source, LayerSource::Effect { .. }))
+        {
             return self.layers.clone();
         }
 
-        legacy_effect_layer(
+        let Some(legacy_layer) = legacy_effect_layer(
             self.id,
             self.effect_id,
             &self.controls,
             &self.control_bindings,
             self.preset_id,
-        )
-        .into_iter()
-        .collect()
+        ) else {
+            return self.layers.clone();
+        };
+
+        let mut layers = Vec::with_capacity(self.layers.len().saturating_add(1));
+        layers.push(legacy_layer);
+        layers.extend(self.layers.iter().cloned());
+        layers
     }
 
     /// Validate layer-stack invariants owned by this group.

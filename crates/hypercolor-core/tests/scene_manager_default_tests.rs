@@ -6,6 +6,10 @@ use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::{
     ControlBinding, ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource,
 };
+use hypercolor_types::layer::{
+    LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, MediaPlayback, SceneLayer,
+    SceneLayerId,
+};
 use hypercolor_types::scene::{
     DisplayFaceBlendMode, DisplayFaceTarget, SceneId, SceneKind, Zone, ZoneId, ZoneRole,
 };
@@ -70,6 +74,23 @@ fn sample_effect(name: &str) -> EffectMetadata {
             path: PathBuf::from(format!("{name}.wgsl")),
         },
         license: None,
+    }
+}
+
+fn media_layer() -> SceneLayer {
+    SceneLayer {
+        id: SceneLayerId::new(),
+        name: None,
+        source: LayerSource::Media {
+            asset_id: hypercolor_types::asset::AssetId::new(),
+            playback: MediaPlayback::default(),
+        },
+        blend: LayerBlendMode::Alpha,
+        opacity: 1.0,
+        transform: LayerTransform::default(),
+        adjust: LayerAdjust::default(),
+        bindings: Vec::new(),
+        enabled: true,
     }
 }
 
@@ -307,6 +328,90 @@ fn upsert_display_group_reuses_empty_screen_surface() {
             .count(),
         1
     );
+}
+
+#[test]
+fn legacy_display_face_effect_is_effective_beside_media_layers() {
+    let device_id = DeviceId::new();
+    let effect = sample_effect("Clock");
+    let group = Zone {
+        id: ZoneId::new(),
+        name: "Pump LCD".to_owned(),
+        description: None,
+        effect_id: Some(effect.id),
+        controls: HashMap::from([("speed".to_owned(), ControlValue::Float(0.5))]),
+        control_bindings: HashMap::new(),
+        preset_id: None,
+        layers: vec![media_layer()],
+        layout: sample_layout("display"),
+        brightness: 1.0,
+        enabled: true,
+        color: None,
+        display_target: Some(DisplayFaceTarget::new(device_id)),
+        role: ZoneRole::Display,
+        controls_version: 0,
+        layers_version: 2,
+    };
+
+    let layers = group.effective_layers();
+
+    assert_eq!(layers.len(), 2);
+    let LayerSource::Effect {
+        effect_id, controls, ..
+    } = &layers[0].source
+    else {
+        panic!("legacy face should appear before media layers");
+    };
+    assert_eq!(*effect_id, effect.id);
+    assert_eq!(controls.get("speed"), Some(&ControlValue::Float(0.5)));
+    assert!(matches!(layers[1].source, LayerSource::Media { .. }));
+}
+
+#[test]
+fn inserting_layer_materializes_legacy_display_face_before_media() {
+    let device_id = DeviceId::new();
+    let effect = sample_effect("Clock");
+    let mut scene = make_scene("Desk");
+    let scene_id = scene.id;
+    let group_id = ZoneId::new();
+    scene.groups = vec![Zone {
+        id: group_id,
+        name: "Pump LCD".to_owned(),
+        description: None,
+        effect_id: Some(effect.id),
+        controls: HashMap::new(),
+        control_bindings: HashMap::new(),
+        preset_id: None,
+        layers: vec![media_layer()],
+        layout: sample_layout("display"),
+        brightness: 1.0,
+        enabled: true,
+        color: None,
+        display_target: Some(DisplayFaceTarget::new(device_id)),
+        role: ZoneRole::Display,
+        controls_version: 0,
+        layers_version: 2,
+    }];
+    let mut manager = SceneManager::new();
+    manager.create(scene).expect("scene should create");
+    manager
+        .activate(&scene_id, None)
+        .expect("scene should activate");
+
+    let updated = manager
+        .insert_scene_group_layer(scene_id, group_id, media_layer(), None, None)
+        .expect("media insert should preserve legacy face")
+        .0
+        .clone();
+
+    assert_eq!(updated.layers.len(), 3);
+    assert_eq!(updated.layers_version, 3);
+    assert!(matches!(
+        updated.layers[0].source,
+        LayerSource::Effect { effect_id, .. } if effect_id == effect.id
+    ));
+    assert!(matches!(updated.layers[1].source, LayerSource::Media { .. }));
+    assert!(matches!(updated.layers[2].source, LayerSource::Media { .. }));
 }
 
 #[test]
