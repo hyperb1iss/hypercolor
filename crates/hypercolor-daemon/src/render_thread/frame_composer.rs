@@ -537,11 +537,11 @@ impl ComposeContext<'_> {
         group_canvases
             .into_iter()
             .filter_map(|(group_id, frame)| {
-                let display_route = display_routes.get(&group_id).cloned();
+                let display_route = display_routes.get(&group_id);
                 let display_target = frame.display_target.clone();
                 // Display-face finalization follows the route cadence,
                 // even when scene rendering is faster.
-                if let Some(route) = display_route.as_ref()
+                if let Some(route) = display_route
                     && let Some(frame) = self
                         .compose
                         .render_group_runtime
@@ -561,10 +561,13 @@ impl ComposeContext<'_> {
                     return Some((group_id, frame));
                 }
 
-                let materialized = self
-                    .materialize_group_canvas(frame, scene_frame, display_route.as_ref())
-                    .or_else(|| {
-                        display_route.as_ref().and_then(|route| {
+                let (materialized, fresh_materialization) = if let Some(materialized) =
+                    self.materialize_group_canvas(frame, scene_frame, display_route)
+                {
+                    (materialized, true)
+                } else {
+                    (
+                        display_route.and_then(|route| {
                             self.compose
                                 .render_group_runtime
                                 .reuse_latest_materialized_group_frame(
@@ -572,9 +575,11 @@ impl ComposeContext<'_> {
                                     &display_target,
                                     route,
                                 )
-                        })
-                    })?;
-                if let Some(route) = display_route.as_ref() {
+                        })?,
+                        false,
+                    )
+                };
+                if fresh_materialization && let Some(route) = display_route {
                     self.compose
                         .render_group_runtime
                         .retain_materialized_group_frame(
