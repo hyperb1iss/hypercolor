@@ -8,7 +8,8 @@ use crate::registry::HidRawReportMode;
 use crate::registry::{DeviceDescriptor, ProtocolBinding, TransportType};
 
 use super::protocol::{
-    GEN1_HID_REPORT_SIZE, GEN2_COLOR_REPORT_SIZE, NollieModel, NollieProtocol, ProtocolVersion,
+    GEN1_HID_REPORT_SIZE, GEN2_COLOR_REPORT_SIZE, Nollie32Config, NollieModel, NollieProtocol,
+    ProtocolVersion,
 };
 
 pub const PRISM_VENDOR_ID: u16 = 0x16D5;
@@ -65,9 +66,12 @@ pub fn build_nollie_16_v3_protocol() -> Box<dyn Protocol> {
 }
 
 pub fn build_nollie_32_protocol() -> Box<dyn Protocol> {
-    Box::new(NollieProtocol::new(NollieModel::Nollie32 {
-        protocol_version: ProtocolVersion::V1,
-    }))
+    Box::new(
+        NollieProtocol::new(NollieModel::Nollie32 {
+            protocol_version: ProtocolVersion::V1,
+        })
+        .with_nollie32_config(Nollie32Config::OFFICIAL_DEFAULT),
+    )
 }
 
 pub fn build_nollie_1_cdc_protocol() -> Box<dyn Protocol> {

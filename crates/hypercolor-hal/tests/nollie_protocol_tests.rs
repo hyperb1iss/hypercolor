@@ -300,7 +300,13 @@ fn nollie32_v1_uses_standalone_channel_packets_and_boundary_delay() {
 #[test]
 fn nollie32_default_builder_uses_official_v1_protocol() {
     let protocol = build_nollie_32_protocol();
-    let commands = protocol.encode_frame(&vec![[1, 2, 3]; 5_120]);
+    assert_eq!(protocol.total_leds(), 5_402);
+
+    let commands = protocol.encode_frame(&vec![
+        [1, 2, 3];
+        usize::try_from(protocol.total_leds())
+            .expect("Nollie32 LED count fits")
+    ]);
 
     assert!(
         commands
@@ -311,6 +317,16 @@ fn nollie32_default_builder_uses_official_v1_protocol() {
         commands
             .iter()
             .any(|command| command.data[1] == 15 && command.data[2] == 0)
+    );
+    assert!(
+        commands
+            .iter()
+            .any(|command| command.data[1] == 6 && command.data[3] == 0 && command.data[4] == 20)
+    );
+    assert!(
+        commands
+            .iter()
+            .any(|command| command.data[1] == 20 && command.data[3] == 0 && command.data[4] == 27)
     );
 }
 

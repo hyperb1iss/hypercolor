@@ -1621,6 +1621,10 @@ impl DeviceBackend for UsbBackend {
         true
     }
 
+    fn supports_temporary_direct_control(&self, info: &DeviceInfo) -> bool {
+        info.capabilities.supports_direct && info.total_led_count() > 0
+    }
+
     async fn discover(&mut self) -> Result<Vec<hypercolor_types::device::DeviceInfo>> {
         let mut scanner = self
             .enabled_driver_ids
@@ -2198,7 +2202,9 @@ mod tests {
 
     use async_trait::async_trait;
     use hypercolor_hal::protocol::{ProtocolResponse, ProtocolZone, TransferType};
-    use hypercolor_types::device::DeviceCapabilities;
+    use hypercolor_types::device::{
+        ConnectionType, DeviceCapabilities, DeviceFamily, DeviceOrigin, DeviceTopologyHint,
+    };
     use tokio::sync::Mutex as AsyncMutex;
     use tokio::time::timeout;
 
@@ -2206,6 +2212,50 @@ mod tests {
 
     static USB_ACTOR_METRICS_TEST_LOCK: LazyLock<AsyncMutex<()>> =
         LazyLock::new(|| AsyncMutex::new(()));
+
+    fn temporary_control_test_device(supports_direct: bool, led_count: u32) -> DeviceInfo {
+        DeviceInfo {
+            id: DeviceId::new(),
+            name: "USB Test Strip".to_owned(),
+            vendor: "Hypercolor".to_owned(),
+            family: DeviceFamily::new_static("test", "Test"),
+            model: None,
+            connection_type: ConnectionType::Usb,
+            origin: DeviceOrigin::native("test", USB_OUTPUT_BACKEND_ID, ConnectionType::Usb),
+            zones: if led_count == 0 {
+                Vec::new()
+            } else {
+                vec![ZoneInfo {
+                    name: "Main".to_owned(),
+                    led_count,
+                    topology: DeviceTopologyHint::Strip,
+                    color_format: hypercolor_types::device::DeviceColorFormat::Rgb,
+                    layout_hint: None,
+                }]
+            },
+            firmware_version: None,
+            capabilities: DeviceCapabilities {
+                led_count,
+                supports_direct,
+                ..DeviceCapabilities::default()
+            },
+        }
+    }
+
+    #[test]
+    fn usb_backend_supports_temporary_direct_control_for_led_devices() {
+        let backend = UsbBackend::new();
+        let mut info = temporary_control_test_device(true, 8);
+
+        assert!(backend.supports_temporary_direct_control(&info));
+
+        info.capabilities.supports_direct = false;
+        assert!(!backend.supports_temporary_direct_control(&info));
+
+        info.capabilities.supports_direct = true;
+        info.zones.clear();
+        assert!(!backend.supports_temporary_direct_control(&info));
+    }
 
     #[tokio::test]
     async fn display_branch_services_pending_led_frame_before_display_frame() {

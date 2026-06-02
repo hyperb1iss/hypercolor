@@ -76,7 +76,7 @@ Bliss provided the official `~/dev/nolliecontroller` source tree. That source su
 | **Nollie 8 v2**     | `0x16D2` | `0x1F01`                     | Gen-1      | 8                      | 126          | 1,008                          | GRB          | 65              |
 | **Nollie 28/12**    | `0x16D2` | `0x1616`, `0x1617`, `0x1618` | Gen-1      | 12                     | 42           | 504                            | RGB          | 65              |
 | **Nollie16v3**      | `0x3061` | `0x4716`                     | Gen-2      | 16                     | 256          | 4,096                          | GRB          | 1024            |
-| **Nollie32**        | `0x3061` | `0x4714`                     | Gen-2      | 20 + ATX + GPU Strimer | 256          | 5,120 main (+ up to 390 cable) | GRB          | 1024            |
+| **Nollie32**        | `0x3061` | `0x4714`                     | Gen-2      | 20 + ATX + GPU Strimer | 256          | 5,120 main (+ up to 282 cable) | GRB          | 1024            |
 | _Prism 8_ (spec 20) | `0x16D5` | `0x1F01`                     | Gen-1      | 8                      | 126          | 1,008                          | GRB          | 65              |
 
 The "OS2 firmware" alias VID `0x16D5` may also surface for re-flashed Nollie units; treat it as a firmware-distinguished variant of Nollie 8.
@@ -734,11 +734,11 @@ Nollie32 needs an attachment profile schema mirroring Prism S (Spec 20 §5):
 device_family = "prism_rgb"
 device_model = "nollie_32"
 name = "Nollie 32 (default)"
-description = "20 main channels, no Strimer cables"
+description = "Official default: 20 main channels, ATX-24, and triple 8-pin GPU Strimer"
 
 [config]
-atx_cable_present = false
-gpu_cable_type = "none"   # "none", "dual_8_pin", "triple_8_pin"
+atx_cable_present = true
+gpu_cable_type = "triple_8_pin"   # "none", "dual_8_pin", "triple_8_pin"
 protocol_version = "v1"
 
 # Per-main-channel LED counts and topology hints:
@@ -752,7 +752,8 @@ Built-in attachment fixtures we should ship:
 
 | Fixture                         | Description                             |
 | ------------------------------- | --------------------------------------- |
-| `nollie-32-default.toml`        | Bare 20-channel hub, no cables          |
+| `nollie-32-default.toml`        | Official ATX-24 + Triple 8-pin default  |
+| `nollie-32-bare.toml`           | Bare 20-channel hub, no cables          |
 | `nollie-32-atx-only.toml`       | ATX-24 Strimer only                     |
 | `nollie-32-atx-dual-gpu.toml`   | ATX-24 + Dual 8-pin GPU                 |
 | `nollie-32-atx-triple-gpu.toml` | ATX-24 + Triple 8-pin GPU (most common) |
@@ -761,6 +762,10 @@ Built-in attachment fixtures we should ship:
 | `nollie-1-pro.toml`             | Single channel, 525 LEDs (legacy fw)    |
 | `nollie-1-pro-630.toml`         | Single channel, 630 LEDs (newer fw)     |
 | `nollie-28-12-default.toml`     | 12 channels × 42 LEDs                   |
+
+When no Nollie32 attachment profile is stored, Hypercolor follows the official
+controller script defaults (ATX-24 present, triple 8-pin GPU present). A stored
+profile with no enabled bindings is an explicit bare-hub configuration.
 
 ### 7.4 Daemon Integration
 

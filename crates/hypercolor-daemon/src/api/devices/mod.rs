@@ -517,6 +517,7 @@ pub async fn identify_device(
     }
 
     let backend_id = resolved_backend_id(&tracked.info);
+    sync_identify_usb_protocol_config(state.as_ref(), device_id, &tracked.info).await;
     let device_metadata = state.device_registry.metadata_for_id(&device_id).await;
     let connection = device_connection_summary(&tracked.info, device_metadata.as_ref());
     let on_frame = vec![identify_color; led_count];
@@ -647,6 +648,7 @@ pub async fn identify_zone(
     let on_frame = build_zone_identify_frame(&tracked.info, zone_index, identify_color);
 
     let backend_id = resolved_backend_id(&tracked.info);
+    sync_identify_usb_protocol_config(state.as_ref(), device_id, &tracked.info).await;
     let (manager, direct_backend, disconnect_after_identify) = match prepare_identify_backend(
         &state,
         device_id,
@@ -785,6 +787,7 @@ pub async fn identify_attachment(
     };
 
     let backend_id = resolved_backend_id(&tracked.info);
+    sync_identify_usb_protocol_config(state.as_ref(), device_id, &tracked.info).await;
     let (manager, direct_backend, disconnect_after_identify) = match prepare_identify_backend(
         &state,
         device_id,
@@ -850,6 +853,37 @@ pub async fn identify_attachment(
 }
 
 // ── Shared helpers ───────────────────────────────────────────────────────
+
+async fn sync_identify_usb_protocol_config(
+    state: &AppState,
+    device_id: DeviceId,
+    info: &DeviceInfo,
+) {
+    let profile = {
+        let profiles = state.attachment_profiles.read().await;
+        profiles.get(&info.id.to_string()).cloned()
+    };
+
+    let Some(profile) = profile else {
+        state.usb_protocol_configs.remove_device(device_id).await;
+        return;
+    };
+
+    let registry = state.attachment_registry.read().await;
+    let applied = state
+        .usb_protocol_configs
+        .apply_attachment_profile(device_id, info, &profile, &registry)
+        .await;
+    if applied {
+        debug!(
+            device_id = %device_id,
+            device = %info.name,
+            "refreshed USB protocol attachment config before identify"
+        );
+    } else {
+        state.usb_protocol_configs.remove_device(device_id).await;
+    }
+}
 
 pub(super) async fn ensure_default_logical_entry(
     state: &AppState,
@@ -1321,6 +1355,15 @@ async fn prepare_identify_backend(
     let supports_temporary_identify = device_state != DeviceState::Disabled
         && direct_backend.supports_temporary_direct_control(info).await;
     if !device_state.is_renderable() && !supports_temporary_identify {
+        warn!(
+            backend_id = %backend_id,
+            device_id = %device_id,
+            device = %info.name,
+            device_state = %device_state,
+            supports_direct = info.capabilities.supports_direct,
+            led_count = info.total_led_count(),
+            "identify requested for non-renderable device but backend cannot temporarily connect it"
+        );
         return Err(ApiError::conflict(format!(
             "Device is not connected: {} (state={device_state})",
             info.name
@@ -1330,7 +1373,21 @@ async fn prepare_identify_backend(
     let disconnect_after_identify = if device_state.is_renderable() {
         false
     } else if supports_temporary_identify {
+        debug!(
+            backend_id = %backend_id,
+            device_id = %device_id,
+            device = %info.name,
+            device_state = %device_state,
+            "temporarily connecting device for identify"
+        );
         if let Err(error) = direct_backend.connect_with_refresh(device_id).await {
+            warn!(
+                backend_id = %backend_id,
+                device_id = %device_id,
+                device = %info.name,
+                error = %error,
+                "temporary identify connect failed"
+            );
             return Err(ApiError::conflict(format!(
                 "Device is not connected and temporary identify failed for {}: {error}",
                 info.name
@@ -1342,6 +1399,12 @@ async fn prepare_identify_backend(
                 .update_info(&device_id, refreshed_info)
                 .await;
         }
+        debug!(
+            backend_id = %backend_id,
+            device_id = %device_id,
+            device = %info.name,
+            "temporary identify connect succeeded"
+        );
         true
     } else {
         return Err(ApiError::conflict(format!(

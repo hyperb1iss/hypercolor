@@ -144,6 +144,11 @@ pub struct Nollie32Config {
 }
 
 impl Nollie32Config {
+    pub const OFFICIAL_DEFAULT: Self = Self {
+        atx_cable_present: true,
+        gpu_cable_type: GpuCableType::Triple8Pin,
+    };
+
     #[must_use]
     pub const fn cable_leds(self) -> usize {
         (if self.atx_cable_present {

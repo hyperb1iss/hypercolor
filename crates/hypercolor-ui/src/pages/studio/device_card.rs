@@ -25,11 +25,27 @@ use crate::toasts;
 use crate::vendors::{VendorMark, VendorMarkSize};
 
 use super::device_grouping::ZoneDeviceRow;
-use super::surface::UNASSIGNED_SURFACE_ID;
+use super::zone_add_device::assign_device_to_zone;
 use super::{StudioContext, hidden_outputs_storage_key};
 
 /// Components a card lists before the rest collapse into a "+N" tail.
 const MAX_COMPONENTS: usize = 5;
+
+/// How a device card behaves, which decides its trailing actions and
+/// whether it carries an in-zone layout (hidden state, per-output toggles).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CardMode {
+    /// The device is placed in this zone: hide-all, identify, remove.
+    #[default]
+    Placed,
+    /// The device is connected but in no zone — the single-zone fold
+    /// (§3.3). Identify, plus a one-tap add into the zone named by
+    /// `select`.
+    Available,
+    /// The multi-zone Unassigned bucket: identify only. Assignment happens
+    /// in the Stage layout view.
+    Unassigned,
+}
 
 /// One row in the per-channel breakdown beneath the card body.
 ///
@@ -61,6 +77,10 @@ pub fn StudioDeviceCard(
     row: ZoneDeviceRow,
     device: Option<DeviceSummary>,
     select: String,
+    /// Placed by default; the single-zone fold passes `Available`, the
+    /// multi-zone Unassigned bucket passes `Unassigned`.
+    #[prop(optional)]
+    mode: CardMode,
 ) -> impl IntoView {
     let studio = expect_context::<StudioContext>();
     let row_device_id = row.device_id.clone();
@@ -100,7 +120,7 @@ pub fn StudioDeviceCard(
                         {leds}
                     </span>
                 </button>
-                {card_actions(studio, select, row_device_id, None, Vec::new(), None)}
+                {card_actions(studio, mode, select, row_device_id, None, Vec::new(), None, None)}
             </div>
         }
         .into_any();
@@ -142,8 +162,8 @@ pub fn StudioDeviceCard(
     // each channel's output id and to gather the bulk-hide id set.
     // The Unassigned bucket has no layout (its devices are by
     // definition placed in no zone), so the snapshot is `None` there.
-    let in_zone = select != UNASSIGNED_SURFACE_ID;
-    let layout_snapshot: Option<SpatialLayout> = if in_zone {
+    let placed = mode == CardMode::Placed;
+    let layout_snapshot: Option<SpatialLayout> = if placed {
         studio.active_scene.with_untracked(|scene| {
             scene.as_ref().and_then(|scene| {
                 scene
@@ -156,7 +176,7 @@ pub fn StudioDeviceCard(
     } else {
         None
     };
-    let scene_key: Option<String> = in_zone
+    let scene_key: Option<String> = placed
         .then(|| {
             studio.active_scene.with_untracked(|scene| {
                 scene
@@ -235,6 +255,9 @@ pub fn StudioDeviceCard(
 
     let select_body = select.clone();
     let physical_id = device.id.clone();
+    // An Available card carries the device record so its add action can
+    // mint outputs and assign them into the zone.
+    let add_device = matches!(mode, CardMode::Available).then(|| device.clone());
 
     view! {
         <div class="card-hover w-full overflow-hidden rounded-lg" style=card_style>
@@ -295,11 +318,13 @@ pub fn StudioDeviceCard(
                 </button>
                 {card_actions(
                     studio,
+                    mode,
                     select,
                     row_device_id,
                     Some(physical_id),
                     device_output_ids,
                     scene_key.clone(),
+                    add_device,
                 )}
             </div>
             {show_components
@@ -335,21 +360,21 @@ pub fn StudioDeviceCard(
     .into_any()
 }
 
-/// The hide-all, identify, and remove cluster on the trailing edge of
-/// a card. Hide-all toggles every output of this device in the current
-/// zone in unison; identify flashes the hardware and is offered
-/// whenever the device is online (`physical_id` is `Some`); remove
-/// appears only inside a real zone, since the Unassigned entry has
-/// nothing to remove from.
+/// The trailing-edge action cluster. Hide-all toggles every output of a
+/// placed device in unison; identify flashes the hardware whenever it is
+/// online (`physical_id` is `Some`). The final action depends on `mode`:
+/// a placed device offers remove, an available device offers a one-tap
+/// add into the zone, and an Unassigned-bucket row offers neither.
 fn card_actions(
     studio: StudioContext,
+    mode: CardMode,
     select: String,
     device_id: String,
     physical_id: Option<String>,
     output_ids: Vec<String>,
     scene_key: Option<String>,
+    add_device: Option<DeviceSummary>,
 ) -> impl IntoView {
-    let in_zone = select != UNASSIGNED_SURFACE_ID;
     let (identifying, set_identifying) = signal(false);
     // Hide-all is only meaningful when the card sits in a real zone
     // (so it has a scene_key) and the device actually owns outputs
@@ -437,22 +462,51 @@ fn card_actions(
                         </button>
                     }
                 })}
-            {in_zone
-                .then(|| {
-                    view! {
-                        <button
-                            type="button"
-                            class="btn-press flex h-6 w-6 items-center justify-center rounded-md transition-colors"
-                            style="color: rgba(255, 99, 99, 0.5)"
-                            title="Remove from this zone"
-                            on:click=move |_| {
-                                remove_device_from_zone(studio, select.clone(), device_id.clone());
+            {match mode {
+                CardMode::Placed => {
+                    let select = select.clone();
+                    Some(
+                        view! {
+                            <button
+                                type="button"
+                                class="btn-press flex h-6 w-6 items-center justify-center rounded-md transition-colors"
+                                style="color: rgba(255, 99, 99, 0.5)"
+                                title="Remove from this zone"
+                                on:click=move |ev: web_sys::MouseEvent| {
+                                    ev.stop_propagation();
+                                    remove_device_from_zone(studio, select.clone(), device_id.clone());
+                                }
+                            >
+                                <Icon icon=LuTrash2 width="12px" height="12px" />
+                            </button>
+                        }
+                        .into_any(),
+                    )
+                }
+                CardMode::Available => {
+                    add_device
+                        .map(|device| {
+                            let select = select.clone();
+                            view! {
+                                <button
+                                    type="button"
+                                    class="btn-press flex h-6 items-center justify-center gap-1 rounded-md border px-2 text-[10px] font-semibold uppercase tracking-wide transition-colors"
+                                    style="color: rgba(80, 250, 123, 0.92); border-color: rgba(80, 250, 123, 0.32); background: rgba(80, 250, 123, 0.08)"
+                                    title="Add to this zone"
+                                    on:click=move |ev: web_sys::MouseEvent| {
+                                        ev.stop_propagation();
+                                        assign_device_to_zone(studio, device.clone(), select.clone());
+                                    }
+                                >
+                                    <Icon icon=LuPlus width="11px" height="11px" />
+                                    "Add"
+                                </button>
                             }
-                        >
-                            <Icon icon=LuTrash2 width="12px" height="12px" />
-                        </button>
-                    }
-                })}
+                            .into_any()
+                        })
+                }
+                CardMode::Unassigned => None,
+            }}
         </div>
     }
 }

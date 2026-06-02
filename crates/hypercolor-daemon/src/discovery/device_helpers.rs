@@ -103,10 +103,18 @@ pub(super) async fn sync_host_attachment_profile_config(
         return;
     }
 
-    let (profile, registry) = {
-        let registry = runtime.attachment_registry.read().await;
+    let profile = {
         let profiles = runtime.attachment_profiles.read().await;
-        (profiles.get_or_default(&tracked.info), registry.clone())
+        profiles.get(&tracked.info.id.to_string()).cloned()
+    };
+    let Some(profile) = profile else {
+        runtime.usb_protocol_configs.remove_device(device_id).await;
+        return;
+    };
+
+    let registry = {
+        let registry = runtime.attachment_registry.read().await;
+        registry.clone()
     };
     let applied = runtime
         .usb_protocol_configs

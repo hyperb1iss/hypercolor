@@ -837,7 +837,24 @@ async fn nollie32_attachment_slots_support_cable_profiles() {
     );
     assert_eq!(full_json["data"]["suggested_zones"][0]["led_start"], 5_120);
     assert_eq!(full_json["data"]["suggested_zones"][1]["led_start"], 5_240);
+    let config = state
+        .usb_protocol_configs
+        .config(device_id)
+        .await
+        .expect("saved attachment profile should update USB protocol config");
+    assert_eq!(config.atx_attachment_leds(), 120);
+    assert_eq!(config.gpu_attachment_leds(), 162);
+    assert_eq!(config.build_protocol().total_leds(), 5_402);
     assert!(guard.attachment_profiles_path().exists());
+
+    let delete_response = send_empty(
+        &app,
+        "DELETE",
+        format!("/api/v1/devices/{device_id}/attachments"),
+    )
+    .await;
+    assert_eq!(delete_response.status(), StatusCode::OK);
+    assert!(state.usb_protocol_configs.config(device_id).await.is_none());
 }
 
 #[tokio::test]

@@ -7,6 +7,7 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::response::Response;
 use serde::{Deserialize, Serialize};
+use tracing::debug;
 
 use hypercolor_core::attachment::{effective_attachment_slots, normalize_attachment_profile_slots};
 use hypercolor_core::spatial::generate_positions;
@@ -151,11 +152,12 @@ pub async fn update_attachments(
     let device_key = tracked.info.id.to_string();
     {
         let mut profiles = state.attachment_profiles.write().await;
-        profiles.update(&device_key, profile);
+        profiles.update(&device_key, profile.clone());
         if let Err(error) = profiles.save() {
             return ApiError::internal(format!("Failed to persist attachment profile: {error}"));
         }
     }
+    sync_usb_protocol_config(state.as_ref(), device_id, &tracked.info, &profile).await;
 
     let layout_device_id = ensure_default_logical_entry(&state, &tracked.info).await;
     let needs_layout_update =
@@ -225,11 +227,34 @@ pub async fn delete_attachments(
         }
         deleted
     };
+    state.usb_protocol_configs.remove_device(device_id).await;
 
     ApiResponse::ok(serde_json::json!({
         "device_id": tracked.info.id.to_string(),
         "deleted": deleted,
     }))
+}
+
+async fn sync_usb_protocol_config(
+    state: &AppState,
+    device_id: DeviceId,
+    device: &DeviceInfo,
+    profile: &DeviceComponentProfile,
+) {
+    let registry = state.attachment_registry.read().await;
+    let applied = state
+        .usb_protocol_configs
+        .apply_attachment_profile(device_id, device, profile, &registry)
+        .await;
+    if applied {
+        debug!(
+            device_id = %device_id,
+            device = %device.name,
+            "updated USB protocol attachment config"
+        );
+    } else {
+        state.usb_protocol_configs.remove_device(device_id).await;
+    }
 }
 
 fn summarize_attachment_profile(
