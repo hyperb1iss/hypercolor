@@ -30,9 +30,6 @@ use super::device_grouping::ZoneDeviceRow;
 use super::zone_add_device::assign_device_to_zone;
 use super::{StudioContext, hidden_outputs_storage_key};
 
-/// Components a card lists before the rest collapse into a "+N" tail.
-const MAX_COMPONENTS: usize = 5;
-
 /// How a device card behaves, which decides its trailing actions and
 /// whether it carries an in-zone layout (hidden state, per-output toggles).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -203,7 +200,6 @@ pub fn StudioDeviceCard(
     let component_rows: Vec<ComponentRow> = device
         .zones
         .iter()
-        .take(MAX_COMPONENTS)
         .map(|channel| {
             let display_name =
                 channel_names::effective_channel_name(&device.id, &channel.id, &channel.name);
@@ -225,7 +221,6 @@ pub fn StudioDeviceCard(
             }
         })
         .collect();
-    let remaining = total_components.saturating_sub(MAX_COMPONENTS);
     let show_components = total_components > 1;
 
     // Live component bindings for this device — fetched once per card
@@ -377,14 +372,6 @@ pub fn StudioDeviceCard(
                                     )
                                 })
                                 .collect_view()}
-                            {(remaining > 0)
-                                .then(|| {
-                                    view! {
-                                        <div class="pt-0.5 pl-6 text-[9px] text-fg-tertiary/45">
-                                            {format!("+{remaining} more")}
-                                        </div>
-                                    }
-                                })}
                         </div>
                     }
                 })}
