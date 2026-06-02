@@ -16,6 +16,9 @@ pub const MIN_PROTOCOL_VERSION: u32 = 1;
 /// Newest protocol version documented for OpenRGB 1.0.
 pub const CLIENT_MAX_PROTOCOL_VERSION: u32 = 5;
 
+/// Oldest protocol version that documents device rescan requests.
+pub const REQUEST_RESCAN_DEVICES_MIN_PROTOCOL_VERSION: u32 = 5;
+
 /// OpenRGB SDK packet identifiers used by Hypercolor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PacketId {

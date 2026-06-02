@@ -13,7 +13,8 @@ pub use client::{OpenRgbClient, OpenRgbClientConfig};
 pub use error::{OpenRgbError, Result};
 pub use packet::{
     CLIENT_MAX_PROTOCOL_VERSION, HEADER_LEN, MAGIC, MAX_PACKET_PAYLOAD_SIZE, MIN_PROTOCOL_VERSION,
-    Packet, PacketDecoder, PacketHeader, PacketId, encode_client_packet,
+    Packet, PacketDecoder, PacketHeader, PacketId, REQUEST_RESCAN_DEVICES_MIN_PROTOCOL_VERSION,
+    encode_client_packet,
 };
 pub use parser::parse_controller_data;
 pub use types::{

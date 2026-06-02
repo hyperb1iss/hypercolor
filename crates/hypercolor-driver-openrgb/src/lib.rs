@@ -916,7 +916,7 @@ async fn connect_openrgb_client(
     endpoint: SocketAddr,
 ) -> Result<OpenRgbClient> {
     let mut client = OpenRgbClient::connect(endpoint, client_config(config)).await?;
-    if config.startup_rescan {
+    if config.startup_rescan && client.supports_device_rescan() {
         client.request_rescan().await?;
     }
     Ok(client)

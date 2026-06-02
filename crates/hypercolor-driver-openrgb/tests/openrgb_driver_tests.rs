@@ -166,6 +166,20 @@ async fn backend_reconnects_after_openrgb_socket_closes() {
 }
 
 #[tokio::test]
+async fn startup_rescan_skips_protocol_below_v5() {
+    let saw_rescan = discover_with_startup_rescan_server(4).await;
+
+    assert!(!saw_rescan);
+}
+
+#[tokio::test]
+async fn startup_rescan_sends_for_protocol_v5() {
+    let saw_rescan = discover_with_startup_rescan_server(CLIENT_MAX_PROTOCOL_VERSION).await;
+
+    assert!(saw_rescan);
+}
+
+#[tokio::test]
 async fn connect_re_resolves_controller_index_before_mode_setup() {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
         .await
@@ -815,6 +829,89 @@ async fn run_connect_remap_server(listener: TcpListener) -> Packet {
         }
         connection_index = connection_index.saturating_add(1);
     }
+}
+
+async fn discover_with_startup_rescan_server(server_protocol_version: u32) -> bool {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("fake OpenRGB server should bind");
+    let endpoint = listener
+        .local_addr()
+        .expect("fake OpenRGB server should expose local addr");
+    let server = tokio::spawn(run_startup_rescan_server(listener, server_protocol_version));
+    let config = OpenRgbConfig {
+        endpoints: vec![endpoint],
+        ownership: OpenRgbOwnership {
+            mode: OpenRgbOwnershipMode::OpenRgbOwned,
+            ..OpenRgbOwnership::default()
+        },
+        startup_rescan: true,
+        ..OpenRgbConfig::default()
+    };
+    let entry = config_entry(&config);
+    let view = DriverConfigView {
+        driver_id: DESCRIPTOR.id,
+        entry: &entry,
+    };
+    let host = NullHost;
+    let module = OpenRgbDriverModule;
+    let mut backend = module
+        .build_output_backend(&host, view)
+        .expect("backend construction should succeed")
+        .expect("OpenRGB should build an output backend");
+
+    let devices = backend
+        .discover()
+        .await
+        .expect("backend discovery should tolerate empty OpenRGB server");
+    assert!(devices.is_empty());
+
+    server.await.expect("server task should join")
+}
+
+async fn run_startup_rescan_server(listener: TcpListener, server_protocol_version: u32) -> bool {
+    let (mut stream, _) = listener
+        .accept()
+        .await
+        .expect("fake OpenRGB server should accept client");
+    let mut decoder = PacketDecoder::new();
+    let mut saw_rescan = false;
+    while let Some(packet) = read_next_packet(&mut stream, &mut decoder).await {
+        match packet.header.packet_id {
+            PacketId::RequestProtocolVersion => {
+                assert_eq!(
+                    packet.payload,
+                    CLIENT_MAX_PROTOCOL_VERSION.to_le_bytes().to_vec()
+                );
+                send_packet(
+                    &mut stream,
+                    PacketId::RequestProtocolVersion,
+                    0,
+                    server_protocol_version.to_le_bytes().to_vec(),
+                )
+                .await;
+            }
+            PacketId::SetClientName => {
+                assert_eq!(packet.payload, b"Hypercolor\0");
+            }
+            PacketId::RequestRescanDevices => {
+                assert_eq!(server_protocol_version, CLIENT_MAX_PROTOCOL_VERSION);
+                saw_rescan = true;
+            }
+            PacketId::RequestControllerCount => {
+                send_packet(
+                    &mut stream,
+                    PacketId::RequestControllerCount,
+                    0,
+                    0_u32.to_le_bytes().to_vec(),
+                )
+                .await;
+                return saw_rescan;
+            }
+            other => panic!("unexpected OpenRGB client packet: {other:?}"),
+        }
+    }
+    saw_rescan
 }
 
 async fn run_connect_missing_server(listener: TcpListener) {

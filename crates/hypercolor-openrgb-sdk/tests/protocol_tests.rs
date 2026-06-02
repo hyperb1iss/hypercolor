@@ -6,7 +6,8 @@ use hypercolor_openrgb_sdk::packet::{
 use hypercolor_openrgb_sdk::{
     CLIENT_MAX_PROTOCOL_VERSION, ColorMode, ControllerMode, DeviceType, HEADER_LEN,
     MIN_PROTOCOL_VERSION, ModeFlag, ModeFlagPolicy, OpenRgbError, Packet, PacketDecoder,
-    PacketHeader, PacketId as PublicPacketId, RgbColor, parse_controller_data,
+    PacketHeader, PacketId as PublicPacketId, REQUEST_RESCAN_DEVICES_MIN_PROTOCOL_VERSION,
+    RgbColor, parse_controller_data,
 };
 
 #[test]
@@ -117,6 +118,7 @@ fn client_payload_helpers_encode_documented_values() {
         request_controller_data_payload(5),
         5_u32.to_le_bytes().to_vec()
     );
+    assert_eq!(REQUEST_RESCAN_DEVICES_MIN_PROTOCOL_VERSION, 5);
     assert_eq!(validate_protocol_version(0).is_err(), true);
     assert_eq!(validate_protocol_version(5), Ok(5));
 }

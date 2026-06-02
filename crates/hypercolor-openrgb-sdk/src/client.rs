@@ -9,9 +9,10 @@ use tokio::time::timeout;
 
 use crate::error::{OpenRgbError, Result};
 use crate::packet::{
-    CLIENT_MAX_PROTOCOL_VERSION, Packet, PacketDecoder, PacketId, client_name_payload,
-    encode_client_packet, request_controller_data_payload, request_protocol_version_payload,
-    update_leds_payload, update_mode_payload, update_zone_leds_payload, validate_protocol_version,
+    CLIENT_MAX_PROTOCOL_VERSION, Packet, PacketDecoder, PacketId,
+    REQUEST_RESCAN_DEVICES_MIN_PROTOCOL_VERSION, client_name_payload, encode_client_packet,
+    request_controller_data_payload, request_protocol_version_payload, update_leds_payload,
+    update_mode_payload, update_zone_leds_payload, validate_protocol_version,
 };
 use crate::parser::parse_controller_data;
 use crate::types::{ControllerData, ControllerMode, RgbColor};
@@ -80,6 +81,12 @@ impl OpenRgbClient {
         self.protocol_version
     }
 
+    /// Whether the negotiated server protocol documents device rescan requests.
+    #[must_use]
+    pub const fn supports_device_rescan(&self) -> bool {
+        self.protocol_version >= REQUEST_RESCAN_DEVICES_MIN_PROTOCOL_VERSION
+    }
+
     /// Request the controller count.
     ///
     /// # Errors
@@ -119,7 +126,10 @@ impl OpenRgbClient {
         parse_controller_data(&packet.payload, self.protocol_version)
     }
 
-    /// Ask OpenRGB to rescan devices when the negotiated server supports it.
+    /// Ask OpenRGB to rescan devices.
+    ///
+    /// Callers should check [`Self::supports_device_rescan`] before sending
+    /// this request to a negotiated server.
     ///
     /// # Errors
     ///
