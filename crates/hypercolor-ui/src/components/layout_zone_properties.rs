@@ -807,6 +807,9 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                             // trailing edge; wraps below when the row is tight.
                             <div class="flex items-center shrink-0 rounded-md ml-auto"
                                  style="background: rgba(255, 255, 255, 0.02)">
+                                <span class="text-[9px] text-fg-tertiary/40 font-mono uppercase tracking-wider shrink-0 pl-1.5 pr-0.5">
+                                    "Layer"
+                                </span>
                                 {layer_icon_button(LuSkipForward, "Bring to front", {
                                     let zid = zid_front;
                                     move |_| {
