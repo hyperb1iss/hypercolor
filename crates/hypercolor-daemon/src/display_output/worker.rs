@@ -36,17 +36,16 @@ async fn publish_display_frame_snapshot(
     display_frames: &Arc<RwLock<DisplayFrameRuntime>>,
     device_id: DeviceId,
     geometry: &DisplayGeometry,
-    frame_number: u64,
     jpeg: Arc<Vec<u8>>,
 ) {
-    display_frames.write().await.set_frame(
+    display_frames.write().await.set_frame_with_next_number(
         device_id,
         DisplayFrameSnapshot {
             jpeg_data: jpeg,
             width: geometry.width,
             height: geometry.height,
             circular: geometry.circular,
-            frame_number,
+            frame_number: 0,
             captured_at: SystemTime::now(),
         },
     );
@@ -494,11 +493,6 @@ async fn run_display_worker(
     let mut pending = None::<PendingDisplayFrame>;
     let mut retry_after = None::<Instant>;
     let mut delivered_frame_number = 0_u64;
-    // Monotonic per-worker counter incremented on every preview publish so
-    // repeated write failures don't reuse the same ETag for different JPEGs.
-    // Decoupled from delivered_frame_number, which only advances on
-    // successful device writes.
-    let mut preview_frame_number = 0_u64;
     let mut last_delivered_payload = None::<Arc<OwnedDisplayFramePayload>>;
     let mut last_delivered_preview_jpeg = None::<Arc<Vec<u8>>>;
 
@@ -602,12 +596,10 @@ async fn run_display_worker(
                 if let Some(preview_jpeg) =
                     preview_jpeg_for_payload(payload, last_delivered_preview_jpeg.clone())
                 {
-                    preview_frame_number = preview_frame_number.saturating_add(1);
                     publish_display_frame_snapshot(
                         &display_frames,
                         device_id,
                         &target.geometry,
-                        preview_frame_number,
                         preview_jpeg,
                     )
                     .await;
@@ -670,12 +662,10 @@ async fn run_display_worker(
             if let Some(preview_jpeg) =
                 preview_jpeg_for_payload(payload, last_delivered_preview_jpeg.clone())
             {
-                preview_frame_number = preview_frame_number.saturating_add(1);
                 publish_display_frame_snapshot(
                     &display_frames,
                     device_id,
                     &target.geometry,
-                    preview_frame_number,
                     preview_jpeg,
                 )
                 .await;
@@ -818,12 +808,10 @@ async fn run_display_worker(
             DisplayFrameFormat::Rgb => encoded.preview_jpeg.map(Arc::new),
         };
         if let Some(preview_jpeg) = preview_jpeg.as_ref() {
-            preview_frame_number = preview_frame_number.saturating_add(1);
             publish_display_frame_snapshot(
                 &display_frames,
                 device_id,
                 &target.geometry,
-                preview_frame_number,
                 Arc::clone(preview_jpeg),
             )
             .await;
@@ -874,11 +862,6 @@ async fn run_display_worker(
             next_send_at = advance_deadline(next_send_at, interval, Instant::now());
         }
     }
-
-    // Drop the last-published preview so /api/v1/displays/{id}/preview.jpg
-    // stops serving a stale frame after the device goes away and the JPEG
-    // bytes stop being pinned in the runtime.
-    display_frames.write().await.remove(device_id);
 }
 
 fn target_interval_for_fps(target_fps: u32) -> Option<Duration> {

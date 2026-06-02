@@ -112,7 +112,6 @@ pub(super) struct DisplayWorkerConfigSignature {
     canvas_source: DisplayCanvasSourceSignature,
     face_blend_mode: DisplayFaceBlendMode,
     face_opacity_bits: u32,
-    finalized_face: bool,
     viewport: DisplayViewportSignature,
 }
 
@@ -260,7 +259,6 @@ impl DisplayTarget {
             canvas_source: self.canvas_source.signature(),
             face_blend_mode: self.face_blend_mode(),
             face_opacity_bits: self.face_opacity().to_bits(),
-            finalized_face: self.finalized_face,
             viewport: display_viewport_signature(&self.viewport),
         }
     }
@@ -600,7 +598,7 @@ async fn reconcile_display_workers(
 
     for key in stale_keys {
         if let Some(worker) = workers.remove(&key) {
-            retire_display_worker(worker);
+            retire_display_worker(worker, Arc::clone(&state.display_frames), key.1, true);
         }
     }
 
@@ -610,7 +608,7 @@ async fn reconcile_display_workers(
             .get(&key)
             .is_some_and(|worker| worker.config_signature != target.worker_config_signature());
         if needs_restart && let Some(worker) = workers.remove(&key) {
-            retire_display_worker(worker);
+            retire_display_worker(worker, Arc::clone(&state.display_frames), key.1, false);
         }
 
         if workers.contains_key(&key) {
@@ -649,9 +647,17 @@ async fn reconcile_display_workers(
     }
 }
 
-fn retire_display_worker(worker: DisplayWorkerHandle) {
+fn retire_display_worker(
+    worker: DisplayWorkerHandle,
+    display_frames: Arc<RwLock<DisplayFrameRuntime>>,
+    device_id: DeviceId,
+    clear_preview: bool,
+) {
     std::mem::drop(tokio::spawn(async move {
         worker.shutdown().await;
+        if clear_preview {
+            display_frames.write().await.remove(device_id);
+        }
     }));
 }
 
@@ -1223,5 +1229,15 @@ mod tests {
             stable_display_group_source_identity(face_frame.as_ref())
                 .expect("face should be stable")
         );
+    }
+
+    #[test]
+    fn finalized_display_face_does_not_change_worker_config_signature() {
+        let mut target = display_target(DisplayFaceBlendMode::Alpha);
+        let unfinalized = target.worker_config_signature();
+
+        target.finalized_face = true;
+
+        assert_eq!(target.worker_config_signature(), unfinalized);
     }
 }

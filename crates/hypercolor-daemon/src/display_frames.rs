@@ -116,6 +116,23 @@ impl DisplayFrameRuntime {
         }
     }
 
+    /// Replace the stored frame with the next monotonic frame number for
+    /// this device. Display workers can restart independently, so the
+    /// counter lives in the shared runtime rather than in each worker task.
+    pub fn set_frame_with_next_number(
+        &mut self,
+        device_id: DeviceId,
+        mut frame: DisplayFrameSnapshot,
+    ) -> u64 {
+        let next_frame_number = self
+            .frames
+            .get(&device_id)
+            .map_or(1, |current| current.frame_number.saturating_add(1));
+        frame.frame_number = next_frame_number;
+        self.set_frame(device_id, frame);
+        next_frame_number
+    }
+
     /// Record a successful display encode.
     pub fn record_encode_success(&mut self, elapsed: Duration, encoded_bytes: usize) {
         self.record_encode_attempt(elapsed);

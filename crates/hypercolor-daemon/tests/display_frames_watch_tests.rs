@@ -60,6 +60,20 @@ async fn set_frame_notifies_active_subscribers() {
 }
 
 #[tokio::test]
+async fn set_frame_with_next_number_advances_across_publishers() {
+    let mut runtime = DisplayFrameRuntime::new();
+    let device = make_device();
+
+    assert_eq!(runtime.set_frame_with_next_number(device, snapshot(99)), 1);
+    assert_eq!(runtime.set_frame_with_next_number(device, snapshot(7)), 2);
+
+    let Some(frame) = runtime.frame(device) else {
+        panic!("runtime should retain the latest numbered snapshot");
+    };
+    assert_eq!(frame.frame_number, 2);
+}
+
+#[tokio::test]
 async fn remove_signals_stream_end() {
     let mut runtime = DisplayFrameRuntime::new();
     let device = make_device();

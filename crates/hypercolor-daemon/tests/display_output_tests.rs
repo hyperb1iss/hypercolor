@@ -2413,6 +2413,103 @@ async fn automatic_display_output_updates_direct_faces_without_scene_canvas_tick
 }
 
 #[tokio::test]
+async fn display_preview_survives_display_face_worker_config_restart() {
+    let _guard = display_output_test_guard().await;
+    let event_bus = Arc::new(HypercolorBus::new());
+    let device_registry = DeviceRegistry::new();
+    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
+    let display_writes = Arc::new(Mutex::new(Vec::new()));
+    let display_frames = Arc::new(RwLock::new(DisplayFrameRuntime::new()));
+    let device_id = DeviceId::new();
+    let group_id = ZoneId::new();
+
+    let mut backend_manager = BackendManager::new();
+    backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
+        device_id,
+        Arc::clone(&display_writes),
+    )));
+    backend_manager
+        .connect_device("usb", device_id, "corsair:test-display")
+        .await
+        .expect("backend should connect");
+
+    let tracked_id = device_registry
+        .add(display_device_info(device_id, true, 320, 320, true))
+        .await;
+    assert_eq!(tracked_id, device_id);
+    assert!(
+        device_registry
+            .set_state(&device_id, DeviceState::Active)
+            .await
+    );
+
+    publish_direct_display_face_route(event_bus.as_ref(), device_id, group_id);
+
+    let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
+        backend_manager: Arc::new(Mutex::new(backend_manager)),
+        device_registry: device_registry.clone(),
+        spatial_engine: Arc::clone(&spatial_engine),
+        logical_devices: Arc::clone(&logical_devices),
+        event_bus: Arc::clone(&event_bus),
+        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
+        power_state: default_power_state_rx(),
+        static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        display_frames: Arc::clone(&display_frames),
+    });
+
+    event_bus
+        .group_canvas_sender(group_id)
+        .send_replace(DisplayGroupFrame::Canvas(display_group_frame(
+            &solid_canvas(Rgba::new(0, 0, 255, 255)),
+            1,
+            16,
+        )));
+    let initial = wait_for_display_frame_snapshot(&display_frames, device_id).await;
+    assert_eq!(initial.frame_number, 1);
+
+    let mut preview_rx = display_frames.write().await.subscribe(device_id);
+    assert!(preview_rx.borrow_and_update().is_some());
+    event_bus.upsert_display_group_target(
+        group_id,
+        DisplayGroupTarget {
+            device_id,
+            blend_mode: DisplayFaceBlendMode::Alpha,
+            opacity: 0.5,
+            finalized: false,
+        },
+    );
+
+    let updated = tokio::time::timeout(DISPLAY_TEST_TIMEOUT, async {
+        loop {
+            preview_rx
+                .changed()
+                .await
+                .expect("display preview watch should stay open across config restart");
+            let frame = preview_rx.borrow().clone();
+            let Some(frame) = frame else {
+                panic!("display preview should not blank during config restart");
+            };
+            if frame.frame_number > initial.frame_number {
+                return frame;
+            }
+        }
+    })
+    .await
+    .expect("display preview should republish after config restart");
+
+    assert!(updated.frame_number > initial.frame_number);
+    let image = decode_jpeg(updated.jpeg_data.as_slice());
+    let pixel = image.get_pixel(image.width() / 2, image.height() / 2);
+    assert!(
+        pixel[2] > 70,
+        "expected restarted display worker to republish the retained face, got {pixel:?}"
+    );
+
+    thread.shutdown().await.expect("display thread should stop");
+}
+
+#[tokio::test]
 async fn display_group_alpha_blends_face_with_effect_canvas() {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
