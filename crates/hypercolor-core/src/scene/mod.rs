@@ -779,8 +779,9 @@ impl SceneManager {
             for group in &mut scene.groups {
                 group.layout.zones.retain(|zone| zone.id != device_zone.id);
             }
+            let slot = scene.groups[target_index].layout.zones.len();
             let mut moved = device_zone;
-            reset_device_zone_placement(&mut moved);
+            reset_device_zone_placement(&mut moved, slot);
             scene.groups[target_index].layout.zones.push(moved);
         }
 
@@ -1814,12 +1815,22 @@ fn empty_default_spatial_layout() -> SpatialLayout {
     }
 }
 
-fn reset_device_zone_placement(zone: &mut Output) {
-    zone.position = NormalizedPosition::new(0.5, 0.5);
-    zone.size = NormalizedPosition::new(1.0, 1.0);
+/// Place a freshly assigned output at a modest default size, cascaded by
+/// its slot in the target zone so successive adds neither stack on one
+/// spot nor blanket the whole canvas. `size` is a normalized extent and
+/// `position` is the box center, so a 0.2 x 0.15 box centered inside the
+/// canvas stays small and movable; the user repositions from there.
+fn reset_device_zone_placement(zone: &mut Output, slot: usize) {
+    const COLS: usize = 5;
+    let col = (slot % COLS) as f32;
+    let row = (slot / COLS) as f32;
+    let x = (0.2 + col * 0.15).min(0.9);
+    let y = (0.2 + row * 0.2).clamp(0.1, 0.9);
+    zone.position = NormalizedPosition::new(x, y);
+    zone.size = NormalizedPosition::new(0.2, 0.15);
     zone.rotation = 0.0;
     zone.scale = 1.0;
-    zone.display_order = 0;
+    zone.display_order = i32::try_from(slot).unwrap_or(0);
 }
 
 fn replace_legacy_effect_layer_stack(
