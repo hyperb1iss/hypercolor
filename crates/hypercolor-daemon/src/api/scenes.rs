@@ -132,6 +132,8 @@ pub async fn get_scene(State(state): State<Arc<AppState>>, Path(id): Path<String
 
 /// `GET /api/v1/scenes/active` — Get the currently active scene, including Default.
 pub async fn get_active_scene(State(state): State<Arc<AppState>>) -> Response {
+    crate::api::displays::sync_active_display_surfaces(&state).await;
+
     let manager = state.scene_manager.read().await;
     let Some(scene) = manager.active_scene() else {
         return ApiError::not_found("No active scene".to_owned());

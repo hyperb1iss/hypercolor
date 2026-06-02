@@ -582,6 +582,67 @@ impl SceneManager {
             .expect("display group should exist after upsert"))
     }
 
+    pub fn ensure_display_group_surface(
+        &mut self,
+        device_id: DeviceId,
+        device_name: &str,
+        layout: SpatialLayout,
+    ) -> Result<&Zone> {
+        let scene = self
+            .active_scene_mut()
+            .ok_or_else(|| anyhow::anyhow!("no active scene"))?;
+
+        let mut structural_changed = false;
+        if let Some(group) = scene.display_group_for_mut(device_id) {
+            if group.role != ZoneRole::Display {
+                group.role = ZoneRole::Display;
+                structural_changed = true;
+            }
+            if group.display_target.is_none() {
+                group.display_target = Some(DisplayFaceTarget::new(device_id));
+                structural_changed = true;
+            }
+            if group.layout != layout {
+                group.layout = layout;
+                structural_changed = true;
+            }
+            if group.name.trim().is_empty() {
+                group.name = device_name.to_owned();
+                structural_changed = true;
+            }
+        } else {
+            scene.groups.push(Zone {
+                id: ZoneId::new(),
+                name: device_name.to_owned(),
+                description: Some(format!("Screen surface for {device_name}")),
+                effect_id: None,
+                controls: HashMap::new(),
+                control_bindings: HashMap::new(),
+                preset_id: None,
+                layers: Vec::new(),
+                layout,
+                brightness: 1.0,
+                enabled: true,
+                color: None,
+                display_target: Some(DisplayFaceTarget::new(device_id)),
+                role: ZoneRole::Display,
+                controls_version: 0,
+                layers_version: 0,
+            });
+            structural_changed = true;
+        }
+
+        if structural_changed {
+            bump_groups_revision(scene);
+            self.refresh_active_render_groups();
+        }
+
+        Ok(self
+            .active_scene()
+            .and_then(|scene| scene.display_group_for(device_id))
+            .expect("display group should exist after sync"))
+    }
+
     pub fn remove_display_group(&mut self, device_id: DeviceId) -> Result<bool> {
         let Some(scene) = self.active_scene_mut() else {
             bail!("no active scene");

@@ -242,6 +242,74 @@ fn upsert_display_group_uniqueness_per_device() {
 }
 
 #[test]
+fn ensure_display_group_surface_creates_empty_screen_surface() {
+    let mut manager = SceneManager::with_default();
+    let device_id = DeviceId::new();
+    let group = manager
+        .ensure_display_group_surface(device_id, "Push 2", sample_layout("push-display"))
+        .expect("display surface sync should succeed")
+        .clone();
+
+    assert_eq!(group.name, "Push 2");
+    assert_eq!(group.role, ZoneRole::Display);
+    assert_eq!(group.effect_id, None);
+    assert!(group.layers.is_empty());
+    assert!(group.effective_layers().is_empty());
+    assert_eq!(group.layout.id, "layout-push-display");
+    assert_eq!(
+        group
+            .display_target
+            .as_ref()
+            .expect("display target should be present")
+            .device_id,
+        device_id
+    );
+    assert_eq!(
+        manager
+            .active_scene()
+            .expect("default scene should remain active")
+            .groups_revision,
+        1
+    );
+}
+
+#[test]
+fn upsert_display_group_reuses_empty_screen_surface() {
+    let mut manager = SceneManager::with_default();
+    let device_id = DeviceId::new();
+    let group_id = manager
+        .ensure_display_group_surface(device_id, "Push 2", sample_layout("push-display"))
+        .expect("display surface sync should succeed")
+        .id;
+    let effect = sample_effect("Clock");
+    let updated = manager
+        .upsert_display_group(
+            device_id,
+            "Push 2",
+            &effect,
+            HashMap::new(),
+            sample_layout("push-face"),
+        )
+        .expect("face assignment should reuse synced surface")
+        .clone();
+
+    assert_eq!(updated.id, group_id);
+    assert_eq!(updated.effect_id, Some(effect.id));
+    assert_eq!(updated.effective_layers().len(), 1);
+    assert_eq!(updated.layout.id, "layout-push-face");
+    assert_eq!(
+        manager
+            .active_scene()
+            .expect("default scene should remain active")
+            .groups
+            .iter()
+            .filter(|group| group.role == ZoneRole::Display)
+            .count(),
+        1
+    );
+}
+
+#[test]
 fn patch_display_group_target_preserves_opacity_for_effect_blends_and_normalizes_replace() {
     let mut manager = SceneManager::with_default();
     let device_id = DeviceId::new();

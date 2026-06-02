@@ -9218,6 +9218,105 @@ async fn list_displays_only_returns_display_capable_devices() {
 }
 
 #[tokio::test]
+async fn active_scene_syncs_empty_screen_surface_for_display_device() {
+    let state = Arc::new(isolated_state());
+    let display_id = insert_test_display_device(&state, "Ableton Push 2").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/scenes/active")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    let groups = json["data"]["groups"]
+        .as_array()
+        .expect("groups should be an array");
+    let display_group = groups
+        .iter()
+        .find(|group| group["role"] == "display")
+        .expect("display-capable device should have a screen surface");
+    assert_eq!(display_group["name"], "Ableton Push 2");
+    assert_eq!(
+        display_group["display_target"]["device_id"],
+        display_id.to_string()
+    );
+    assert!(display_group["effect_id"].is_null());
+    assert_eq!(display_group["layers"].as_array().map(Vec::len), Some(0));
+    assert_eq!(display_group["layout"]["canvas_width"], 320);
+    assert_eq!(display_group["layout"]["canvas_height"], 320);
+
+    let scene_id = json["data"]["id"]
+        .as_str()
+        .expect("scene id should be present");
+    let group_id = display_group["id"]
+        .as_str()
+        .expect("group id should be present");
+    let layers_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/v1/scenes/{scene_id}/groups/{group_id}/layers"
+                ))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(layers_response.status(), StatusCode::OK);
+    let layers_json = body_json(layers_response).await;
+    assert_eq!(
+        layers_json["data"]["items"].as_array().map(Vec::len),
+        Some(0)
+    );
+
+    let face_response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/displays/{display_id}/face"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(face_response.status(), StatusCode::OK);
+    let face_json = body_json(face_response).await;
+    assert!(face_json["data"].is_null());
+}
+
+#[tokio::test]
+async fn active_scene_does_not_sync_screen_surfaces_into_snapshot_scene() {
+    let state = Arc::new(isolated_state());
+    let _display_id = insert_test_display_device(&state, "Ableton Push 2").await;
+    let scene_id =
+        activate_empty_test_scene_with_mode(&state, "Locked", SceneMutationMode::Snapshot).await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/scenes/active")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["id"], scene_id.to_string());
+    assert_eq!(json["data"]["groups"].as_array().map(Vec::len), Some(0));
+}
+
+#[tokio::test]
 async fn delete_face_idempotent_when_no_group_present() {
     let state = Arc::new(isolated_state());
     let display_id = insert_test_display_device(&state, "Pump LCD").await;

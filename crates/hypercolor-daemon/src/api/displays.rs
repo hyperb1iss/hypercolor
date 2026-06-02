@@ -14,6 +14,7 @@ use hypercolor_types::event::ZoneChangeKind;
 use hypercolor_types::scene::{DisplayFaceBlendMode, DisplayFaceTarget, Zone};
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 use crate::api::AppState;
 use crate::api::devices;
@@ -113,6 +114,56 @@ pub async fn list_displays(State(state): State<Arc<AppState>>) -> Response {
     ApiResponse::ok(displays)
 }
 
+pub(crate) async fn sync_active_display_surfaces(state: &Arc<AppState>) -> bool {
+    let mut displays = state
+        .device_registry
+        .list()
+        .await
+        .into_iter()
+        .filter_map(|tracked| {
+            let surface = display_surface_info(&tracked.info)?;
+            let layout = display_face_layout(tracked.info.id, tracked.info.name.as_str(), surface);
+            Some((tracked.info.id, tracked.info.name, layout))
+        })
+        .collect::<Vec<_>>();
+    displays.sort_by(|left, right| {
+        left.1
+            .cmp(&right.1)
+            .then(left.0.to_string().cmp(&right.0.to_string()))
+    });
+
+    if displays.is_empty() {
+        return false;
+    }
+
+    let mut scene_manager = state.scene_manager.write().await;
+    let Some(active_scene) = scene_manager.active_scene() else {
+        return false;
+    };
+    if active_scene.blocks_runtime_mutation() {
+        return false;
+    }
+
+    let mut changed = false;
+    for (device_id, device_name, layout) in displays {
+        let before_revision = scene_manager
+            .active_scene()
+            .map_or(0, |scene| scene.groups_revision);
+        if let Err(error) =
+            scene_manager.ensure_display_group_surface(device_id, device_name.as_str(), layout)
+        {
+            warn!(%error, %device_id, "Failed to sync display screen surface");
+            continue;
+        }
+        let after_revision = scene_manager
+            .active_scene()
+            .map_or(before_revision, |scene| scene.groups_revision);
+        changed |= after_revision != before_revision;
+    }
+
+    changed
+}
+
 /// `GET /api/v1/displays/{id}/preview.jpg` — latest composited frame for a display.
 ///
 /// Honors `If-None-Match` (ETag derived from the monotonic frame counter) and
@@ -170,7 +221,7 @@ pub async fn get_display_face(
         scene_manager
             .active_scene()
             .and_then(|scene| scene.display_group_for(device_id))
-            .is_some()
+            .is_some_and(display_group_has_face_assignment)
     };
     if !has_face_assignment {
         return ApiResponse::ok(None::<DisplayFaceResponse>);
@@ -654,6 +705,10 @@ fn compact_display_face_assignment_group(mut group: Zone) -> Zone {
         target.blend_mode = DisplayFaceBlendMode::Alpha;
     }
     group
+}
+
+fn display_group_has_face_assignment(group: &Zone) -> bool {
+    group.effect_id.is_some()
 }
 
 pub(crate) fn display_face_layout(
