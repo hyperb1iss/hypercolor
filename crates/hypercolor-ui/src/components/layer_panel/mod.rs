@@ -14,8 +14,8 @@
 //! - **`layers_version`** — read from `layers_resource`; threaded as the
 //!   `If-Match` precondition on every mutation. A stale write is reported
 //!   and the stack refetched, never silently lost.
-//! - **Five-source picker** — Add-layer opens [`picker::AddLayerPicker`],
-//!   covering Effect, Media, Screen Capture, Web Page, and Color.
+//! - **Add-layer picker** — Add-layer opens [`picker::AddLayerPicker`],
+//!   covering effects/faces plus media assets.
 //! - **One mutation callback** — `on_layers_mutated: Callback<()>` fires
 //!   after every applied or rejected mutation; the host refetches the
 //!   stack (and active scene) in response. There is exactly one.
@@ -128,6 +128,15 @@ pub fn LayerPanel(
             .get()
             .map(|scene| available_add_layer_scopes(&scene.groups))
             .unwrap_or_default()
+    });
+    let selected_group_role = Signal::derive(move || {
+        let selected = selected_group_id.get()?;
+        active_scene
+            .get()?
+            .groups
+            .into_iter()
+            .find(|group| group.id.to_string() == selected)
+            .map(|group| group.role)
     });
 
     let add_layer = Callback::new(move |(draft, scope): (NewLayerDraft, AddLayerScope)| {
@@ -312,6 +321,7 @@ pub fn LayerPanel(
                 <AddLayerPicker
                     assets=assets
                     scopes=scopes
+                    selected_surface_role=selected_group_role
                     on_pick=add_layer
                     on_cancel=Callback::new(move |()| set_show_picker.set(false))
                 />

@@ -1,5 +1,5 @@
 //! Leptos-free vocabulary for the layer panel: blend/fit option lists,
-//! source labels, and the five-source `LayerSourceKind` picker model.
+//! source labels, and the Add-layer picker model.
 //!
 //! Deliberately free of `leptos` and `crate::` paths so the layer-panel
 //! contract is exercisable from `tests/layer_panel_tests.rs` via a
@@ -8,43 +8,82 @@
 use std::collections::HashMap;
 
 use hypercolor_types::asset::AssetId;
-use hypercolor_types::canvas::srgb_to_linear;
 use hypercolor_types::effect::EffectId;
-use hypercolor_types::layer::{LayerBlendMode, LayerSource, MediaPlayback, WebViewportRender};
+use hypercolor_types::layer::{LayerBlendMode, LayerSource, MediaPlayback};
 use hypercolor_types::scene::{Zone, ZoneRole};
-use hypercolor_types::viewport::{FitMode, ViewportRect};
+use hypercolor_types::viewport::FitMode;
 use uuid::Uuid;
 
-/// The five content sources a layer can draw from — one tab per variant in
-/// the Add-layer picker. Mirrors `LayerSource` minus its payloads.
+/// Content sources exposed directly by the Add-layer picker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LayerSourceKind {
     Effect,
     Media,
-    ScreenCapture,
-    WebPage,
-    Color,
 }
 
 impl LayerSourceKind {
     /// Tab order for the picker.
-    pub const ALL: [Self; 5] = [
-        Self::Effect,
-        Self::Media,
-        Self::ScreenCapture,
-        Self::WebPage,
-        Self::Color,
-    ];
+    pub const ALL: [Self; 2] = [Self::Effect, Self::Media];
 
     /// User-facing tab label.
     #[must_use]
-    pub fn label(self) -> &'static str {
+    pub const fn label(self) -> &'static str {
         match self {
             Self::Effect => "Effect",
             Self::Media => "Media",
-            Self::ScreenCapture => "Screen Capture",
-            Self::WebPage => "Web Page",
-            Self::Color => "Color",
+        }
+    }
+}
+
+/// Which effect category domain the picker should show for the current
+/// target surfaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EffectPickerMode {
+    Effects,
+    Faces,
+    Mixed,
+}
+
+impl EffectPickerMode {
+    #[must_use]
+    pub const fn tab_label(self) -> &'static str {
+        match self {
+            Self::Faces => "Face",
+            Self::Effects | Self::Mixed => "Effect",
+        }
+    }
+
+    #[must_use]
+    pub const fn search_placeholder(self) -> &'static str {
+        match self {
+            Self::Faces => "Search faces and effects...",
+            Self::Effects | Self::Mixed => "Search effects...",
+        }
+    }
+
+    #[must_use]
+    pub const fn empty_detail(self) -> &'static str {
+        match self {
+            Self::Faces => "No matching faces or effects",
+            Self::Effects | Self::Mixed => "No matching effects",
+        }
+    }
+
+    #[must_use]
+    pub fn includes_category(self, category: &str) -> bool {
+        let is_display = category.eq_ignore_ascii_case("display");
+        match self {
+            Self::Effects => !is_display,
+            Self::Faces | Self::Mixed => true,
+        }
+    }
+
+    #[must_use]
+    pub fn sort_bucket(self, category: &str) -> u8 {
+        if self == Self::Faces && category.eq_ignore_ascii_case("display") {
+            0
+        } else {
+            1
         }
     }
 }
@@ -75,6 +114,45 @@ impl AddLayerScope {
             Self::WholeScene => "Whole scene",
         }
     }
+}
+
+#[must_use]
+pub fn effect_picker_mode(
+    scope: AddLayerScope,
+    selected_role: Option<ZoneRole>,
+) -> EffectPickerMode {
+    match scope {
+        AddLayerScope::AllScreens => EffectPickerMode::Faces,
+        AddLayerScope::AllZones => EffectPickerMode::Effects,
+        AddLayerScope::WholeScene => EffectPickerMode::Mixed,
+        AddLayerScope::ThisSurface => {
+            if selected_role == Some(ZoneRole::Display) {
+                EffectPickerMode::Faces
+            } else {
+                EffectPickerMode::Effects
+            }
+        }
+    }
+}
+
+#[must_use]
+pub fn effect_category_label(category: &str) -> String {
+    if category.eq_ignore_ascii_case("display") {
+        "face".to_owned()
+    } else {
+        category.to_owned()
+    }
+}
+
+#[must_use]
+pub fn effect_picker_matches_query(name: &str, category: &str, query: &str) -> bool {
+    let query = query.trim().to_lowercase();
+    query.is_empty()
+        || name.to_lowercase().contains(&query)
+        || category.to_lowercase().contains(&query)
+        || effect_category_label(category)
+            .to_lowercase()
+            .contains(&query)
 }
 
 /// The scopes worth offering for a scene. With one surface there is
@@ -147,54 +225,6 @@ pub fn media_layer_source(asset_id: &str) -> Result<LayerSource, String> {
         asset_id,
         playback: MediaPlayback::default(),
     })
-}
-
-/// Build a full-canvas screen-capture layer source.
-#[must_use]
-pub fn screen_layer_source() -> LayerSource {
-    LayerSource::ScreenRegion {
-        viewport: ViewportRect::default(),
-    }
-}
-
-/// Build a web-page layer source for the given URL. The caller is
-/// responsible for rejecting a blank URL before offering the action.
-#[must_use]
-pub fn web_layer_source(url: &str) -> LayerSource {
-    LayerSource::WebViewport {
-        url: url.trim().to_owned(),
-        viewport: ViewportRect::default(),
-        render: WebViewportRender::default(),
-    }
-}
-
-/// Build a constant-color layer source from a linear-space RGBA.
-#[must_use]
-pub fn color_layer_source(rgba: [f32; 4]) -> LayerSource {
-    LayerSource::ColorFill { rgba }
-}
-
-/// Parse a `#rrggbb` / `rrggbb` / `#rgb` hex string into a linear-space
-/// `[r, g, b, a]` for `LayerSource::ColorFill`. The compositor works in
-/// linear light, so the sRGB hex is converted on the way in.
-#[must_use]
-pub fn hex_to_layer_rgba(hex: &str) -> Option<[f32; 4]> {
-    let trimmed = hex.trim();
-    let body = trimmed.strip_prefix('#').unwrap_or(trimmed);
-    let expanded = match body.len() {
-        3 => body.chars().flat_map(|ch| [ch, ch]).collect::<String>(),
-        6 => body.to_owned(),
-        _ => return None,
-    };
-    let red = u8::from_str_radix(&expanded[0..2], 16).ok()?;
-    let green = u8::from_str_radix(&expanded[2..4], 16).ok()?;
-    let blue = u8::from_str_radix(&expanded[4..6], 16).ok()?;
-    Some([
-        srgb_to_linear(f32::from(red) / 255.0),
-        srgb_to_linear(f32::from(green) / 255.0),
-        srgb_to_linear(f32::from(blue) / 255.0),
-        1.0,
-    ])
 }
 
 /// Human-readable description of a layer's content source. `media_names`

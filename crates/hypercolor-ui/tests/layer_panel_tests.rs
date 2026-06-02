@@ -1,8 +1,8 @@
 //! Contract tests for the extracted layer panel (Spec 65 §10).
 //!
 //! Exercises the leptos-free source vocabulary — the blend/fit options,
-//! source labels, and the five-source builders — so the prop/event
-//! surface Studio mounts cannot drift unnoticed.
+//! source labels, and picker targeting — so the prop/event surface Studio
+//! mounts cannot drift unnoticed.
 
 #![allow(dead_code, unused_imports)]
 
@@ -11,32 +11,116 @@ mod source;
 
 use std::collections::HashMap;
 
+use hypercolor_types::layer::WebViewportRender;
 use hypercolor_types::layer::{LayerBlendMode, LayerSource};
 use hypercolor_types::scene::{Zone, ZoneId, ZoneRole};
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
-use hypercolor_types::viewport::FitMode;
+use hypercolor_types::viewport::{FitMode, ViewportRect};
 
 use source::{
-    AddLayerScope, LayerSourceKind, available_add_layer_scopes, blend_options, blend_value,
-    color_layer_source, effect_layer_source, fit_options, fit_value, hex_to_layer_rgba,
-    layer_source_label, media_layer_source, parse_blend, parse_fit, resolve_add_layer_targets,
-    screen_layer_source, web_layer_source,
+    AddLayerScope, EffectPickerMode, LayerSourceKind, available_add_layer_scopes, blend_options,
+    blend_value, effect_category_label, effect_layer_source, effect_picker_matches_query,
+    effect_picker_mode, fit_options, fit_value, layer_source_label, media_layer_source,
+    parse_blend, parse_fit, resolve_add_layer_targets,
 };
 
 /// A valid UUID string for effect/media id parsing.
 const SAMPLE_ID: &str = "0192f5a0-1234-7890-abcd-ef0123456789";
 
 #[test]
-fn picker_exposes_exactly_the_five_layer_sources() {
-    assert_eq!(LayerSourceKind::ALL.len(), 5);
+fn picker_exposes_only_effect_and_media_sources() {
+    assert_eq!(LayerSourceKind::ALL.len(), 2);
     let labels: Vec<&str> = LayerSourceKind::ALL
         .iter()
         .map(|kind| kind.label())
         .collect();
+    assert_eq!(labels, ["Effect", "Media"]);
+}
+
+#[test]
+fn effect_picker_mode_tracks_surface_and_scope() {
     assert_eq!(
-        labels,
-        ["Effect", "Media", "Screen Capture", "Web Page", "Color"]
+        effect_picker_mode(AddLayerScope::ThisSurface, Some(ZoneRole::Display)),
+        EffectPickerMode::Faces
     );
+    assert_eq!(
+        effect_picker_mode(AddLayerScope::ThisSurface, Some(ZoneRole::Primary)),
+        EffectPickerMode::Effects
+    );
+    assert_eq!(
+        effect_picker_mode(AddLayerScope::AllScreens, Some(ZoneRole::Primary)),
+        EffectPickerMode::Faces
+    );
+    assert_eq!(
+        effect_picker_mode(AddLayerScope::AllZones, Some(ZoneRole::Display)),
+        EffectPickerMode::Effects
+    );
+    assert_eq!(
+        effect_picker_mode(AddLayerScope::WholeScene, Some(ZoneRole::Display)),
+        EffectPickerMode::Mixed
+    );
+    assert_eq!(
+        effect_picker_mode(AddLayerScope::ThisSurface, None),
+        EffectPickerMode::Effects
+    );
+
+    assert_eq!(EffectPickerMode::Faces.tab_label(), "Face");
+    assert_eq!(EffectPickerMode::Effects.tab_label(), "Effect");
+    assert_eq!(EffectPickerMode::Mixed.tab_label(), "Effect");
+    assert_eq!(
+        EffectPickerMode::Faces.search_placeholder(),
+        "Search faces and effects..."
+    );
+    assert_eq!(
+        EffectPickerMode::Effects.search_placeholder(),
+        "Search effects..."
+    );
+    assert_eq!(
+        EffectPickerMode::Mixed.empty_detail(),
+        "No matching effects"
+    );
+    assert_eq!(
+        EffectPickerMode::Faces.empty_detail(),
+        "No matching faces or effects"
+    );
+    assert!(EffectPickerMode::Faces.includes_category("display"));
+    assert!(EffectPickerMode::Faces.includes_category("source"));
+    assert!(EffectPickerMode::Faces.includes_category("utility"));
+    assert!(EffectPickerMode::Faces.includes_category("ambient"));
+    assert!(EffectPickerMode::Effects.includes_category("source"));
+    assert!(!EffectPickerMode::Effects.includes_category("display"));
+    assert!(EffectPickerMode::Mixed.includes_category("display"));
+    assert!(EffectPickerMode::Mixed.includes_category("ambient"));
+    assert_eq!(EffectPickerMode::Faces.sort_bucket("display"), 0);
+    assert_eq!(EffectPickerMode::Faces.sort_bucket("source"), 1);
+    assert_eq!(EffectPickerMode::Effects.sort_bucket("display"), 1);
+}
+
+#[test]
+fn effect_category_label_renames_display_to_face() {
+    assert_eq!(effect_category_label("display"), "face");
+    assert_eq!(effect_category_label("DiSpLaY"), "face");
+    assert_eq!(effect_category_label("source"), "source");
+}
+
+#[test]
+fn effect_picker_query_matches_display_by_face_label() {
+    assert!(effect_picker_matches_query("LCD Gauge", "display", "face"));
+    assert!(effect_picker_matches_query(
+        "Screen Cast",
+        "utility",
+        "cast"
+    ));
+    assert!(effect_picker_matches_query(
+        "Screen Cast",
+        "utility",
+        "utility"
+    ));
+    assert!(!effect_picker_matches_query(
+        "Screen Cast",
+        "utility",
+        "face"
+    ));
 }
 
 #[test]
@@ -126,52 +210,6 @@ fn media_source_requires_a_uuid() {
 }
 
 #[test]
-fn screen_source_is_a_screen_region() {
-    assert!(matches!(
-        screen_layer_source(),
-        LayerSource::ScreenRegion { .. }
-    ));
-}
-
-#[test]
-fn web_source_trims_the_url() {
-    match web_layer_source("  https://example.com  ") {
-        LayerSource::WebViewport { url, .. } => assert_eq!(url, "https://example.com"),
-        other => panic!("expected a WebViewport source, got {other:?}"),
-    }
-}
-
-#[test]
-fn color_source_carries_its_rgba() {
-    let rgba = [0.12, 0.34, 0.56, 1.0];
-    match color_layer_source(rgba) {
-        LayerSource::ColorFill { rgba: out } => assert_eq!(out, rgba),
-        other => panic!("expected a ColorFill source, got {other:?}"),
-    }
-}
-
-#[test]
-fn hex_parses_to_linear_rgba() {
-    let white = hex_to_layer_rgba("#ffffff").expect("white is valid");
-    assert!((white[0] - 1.0).abs() < 1e-3);
-    assert_eq!(white[3], 1.0);
-
-    assert_eq!(
-        hex_to_layer_rgba("#000000").expect("black is valid"),
-        [0.0, 0.0, 0.0, 1.0]
-    );
-
-    // Three-digit shorthand expands, and a leading `#` is optional.
-    let short = hex_to_layer_rgba("#fff").expect("shorthand is valid");
-    assert!((short[0] - 1.0).abs() < 1e-3);
-    assert!(hex_to_layer_rgba("ffffff").is_some());
-
-    assert!(hex_to_layer_rgba("#xyz123").is_none());
-    assert!(hex_to_layer_rgba("#12345").is_none());
-    assert!(hex_to_layer_rgba("").is_none());
-}
-
-#[test]
 fn layer_source_label_resolves_names_and_never_leaks_raw_types() {
     let mut media_names = HashMap::new();
     media_names.insert(SAMPLE_ID.to_owned(), "paimon.gif".to_owned());
@@ -209,19 +247,33 @@ fn layer_source_label_resolves_names_and_never_leaks_raw_types() {
     );
 
     assert_eq!(
-        layer_source_label(&screen_layer_source(), &media_names, &effect_names),
+        layer_source_label(
+            &LayerSource::ScreenRegion {
+                viewport: ViewportRect::default()
+            },
+            &media_names,
+            &effect_names
+        ),
         "Screen region"
     );
     assert_eq!(
         layer_source_label(
-            &web_layer_source("https://hyperb1iss.dev"),
+            &LayerSource::WebViewport {
+                url: "https://hyperb1iss.dev".to_owned(),
+                viewport: ViewportRect::default(),
+                render: WebViewportRender::default(),
+            },
             &media_names,
             &effect_names,
         ),
         "Web https://hyperb1iss.dev"
     );
     assert_eq!(
-        layer_source_label(&color_layer_source([0.0; 4]), &media_names, &effect_names),
+        layer_source_label(
+            &LayerSource::ColorFill { rgba: [0.0; 4] },
+            &media_names,
+            &effect_names
+        ),
         "Color fill"
     );
 }
