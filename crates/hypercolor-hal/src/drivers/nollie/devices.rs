@@ -87,7 +87,10 @@ pub fn build_nollie_16_v3_nos2_protocol() -> Box<dyn Protocol> {
 }
 
 pub fn build_nollie_32_nos2_protocol() -> Box<dyn Protocol> {
-    Box::new(NollieProtocol::new(NollieModel::Nollie32Nos2))
+    Box::new(
+        NollieProtocol::new(NollieModel::Nollie32Nos2)
+            .with_nollie32_config(Nollie32Config::OFFICIAL_DEFAULT),
+    )
 }
 
 pub fn build_nollie_matrix_protocol() -> Box<dyn Protocol> {

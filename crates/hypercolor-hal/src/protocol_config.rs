@@ -105,13 +105,13 @@ pub fn runtime_config_for_attachment_profile(
 
     if has_protocol(device, NOLLIE32_PROTOCOL_ID) {
         return Some(ProtocolRuntimeConfig::Nollie32(
-            nollie32_config_for_attachment_profile(profile, binding_led_count),
+            nollie32_config_for_attachment_profile(device, profile, binding_led_count),
         ));
     }
 
     if has_any_protocol(device, NOLLIE32_NOS2_PROTOCOL_IDS) {
         return Some(ProtocolRuntimeConfig::Nollie32Nos2(
-            nollie32_config_for_attachment_profile(profile, binding_led_count),
+            nollie32_config_for_attachment_profile(device, profile, binding_led_count),
         ));
     }
 
@@ -150,26 +150,60 @@ fn prism_s_config_for_attachment_profile(
 }
 
 fn nollie32_config_for_attachment_profile(
+    device: &DeviceInfo,
     profile: &DeviceComponentProfile,
     mut binding_led_count: impl FnMut(&ComponentBinding) -> Option<u32>,
 ) -> Nollie32Config {
-    let mut config = Nollie32Config::default();
+    let mut config =
+        nollie32_config_from_device_zones(device).unwrap_or(Nollie32Config::OFFICIAL_DEFAULT);
 
-    for binding in profile.bindings.iter().filter(|binding| binding.enabled) {
+    for binding in &profile.bindings {
         match binding.slot_id.as_str() {
-            "atx-strimer" => config.atx_cable_present = true,
+            "atx-strimer" => config.atx_cable_present = binding.enabled,
             "gpu-strimer" => {
-                config.gpu_cable_type = match binding_led_count(binding) {
-                    Some(108) => GpuCableType::Dual8Pin,
-                    Some(162) => GpuCableType::Triple8Pin,
-                    _ => config.gpu_cable_type,
-                };
+                config.gpu_cable_type = if binding.enabled {
+                    gpu_cable_type_for_led_count(binding_led_count(binding))
+                        .unwrap_or(config.gpu_cable_type)
+                } else {
+                    GpuCableType::None
+                }
             }
             _ => {}
         }
     }
 
     config
+}
+
+fn nollie32_config_from_device_zones(device: &DeviceInfo) -> Option<Nollie32Config> {
+    let mut config = Nollie32Config::default();
+    let mut has_cable_zone = false;
+
+    for zone in &device.zones {
+        match zone.name.as_str() {
+            "ATX Strimer" => {
+                config.atx_cable_present = true;
+                has_cable_zone = true;
+            }
+            "GPU Strimer" => {
+                if let Some(cable_type) = gpu_cable_type_for_led_count(Some(zone.led_count)) {
+                    config.gpu_cable_type = cable_type;
+                    has_cable_zone = true;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    has_cable_zone.then_some(config)
+}
+
+fn gpu_cable_type_for_led_count(led_count: Option<u32>) -> Option<GpuCableType> {
+    match led_count {
+        Some(108) => Some(GpuCableType::Dual8Pin),
+        Some(162) => Some(GpuCableType::Triple8Pin),
+        _ => None,
+    }
 }
 
 fn has_protocol(device: &DeviceInfo, protocol_id: &str) -> bool {

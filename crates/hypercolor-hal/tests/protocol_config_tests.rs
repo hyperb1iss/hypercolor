@@ -80,6 +80,13 @@ fn binding(slot_id: &str, template_id: &str) -> ComponentBinding {
     }
 }
 
+fn disabled_binding(slot_id: &str, template_id: &str) -> ComponentBinding {
+    ComponentBinding {
+        enabled: false,
+        ..binding(slot_id, template_id)
+    }
+}
+
 fn template_leds(binding: &ComponentBinding) -> Option<u32> {
     match binding.template_id.as_str() {
         "gpu-dual" => Some(108),
@@ -129,6 +136,26 @@ fn prism_s_runtime_config_derives_gpu_cable_from_binding_led_count() {
 }
 
 #[test]
+fn nollie32_runtime_config_preserves_official_default_without_bindings() {
+    let config = runtime_config_for_attachment_profile(
+        &nollie32_info(),
+        &profile(Vec::new()),
+        template_leds,
+    )
+    .expect("Nollie32 runtime config");
+
+    let ProtocolRuntimeConfig::Nollie32(config) = config else {
+        panic!("expected Nollie32 config");
+    };
+
+    assert!(config.atx_cable_present);
+    assert_eq!(config.gpu_cable_type, GpuCableType::Triple8Pin);
+
+    let protocol = ProtocolRuntimeConfig::Nollie32(config).build_protocol();
+    assert_eq!(protocol.total_leds(), 5_402);
+}
+
+#[test]
 fn nollie32_runtime_config_derives_cable_flags() {
     let config = runtime_config_for_attachment_profile(
         &nollie32_info(),
@@ -170,6 +197,29 @@ fn nollie32_runtime_config_derives_cable_flags() {
 }
 
 #[test]
+fn nollie32_runtime_config_honors_disabled_cable_bindings() {
+    let config = runtime_config_for_attachment_profile(
+        &nollie32_info(),
+        &profile(vec![
+            disabled_binding("atx-strimer", "atx"),
+            disabled_binding("gpu-strimer", "gpu-triple"),
+        ]),
+        template_leds,
+    )
+    .expect("Nollie32 runtime config");
+
+    let ProtocolRuntimeConfig::Nollie32(config) = config else {
+        panic!("expected Nollie32 config");
+    };
+
+    assert!(!config.atx_cable_present);
+    assert_eq!(config.gpu_cable_type, GpuCableType::None);
+
+    let protocol = ProtocolRuntimeConfig::Nollie32(config).build_protocol();
+    assert_eq!(protocol.total_leds(), 5_120);
+}
+
+#[test]
 fn nollie32_nos2_runtime_config_builds_nos2_protocol() {
     let config = runtime_config_for_attachment_profile(
         &nollie32_nos2_info(),
@@ -182,12 +232,12 @@ fn nollie32_nos2_runtime_config_builds_nos2_protocol() {
         panic!("expected Nollie32 NOS2 config");
     };
 
-    assert!(!config.atx_cable_present);
+    assert!(config.atx_cable_present);
     assert_eq!(config.gpu_cable_type, GpuCableType::Dual8Pin);
 
     let protocol = ProtocolRuntimeConfig::Nollie32Nos2(config).build_protocol();
     assert_eq!(protocol.name(), "Nollie 32 NOS2");
-    assert_eq!(protocol.total_leds(), 5_228);
+    assert_eq!(protocol.total_leds(), 5_348);
 }
 
 #[test]
