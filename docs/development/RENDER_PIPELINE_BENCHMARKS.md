@@ -39,6 +39,9 @@ Use `just bench-gate --strict` when a branch should fail on over-budget samples.
 - `cpu_zone_sample_640x480` measures CPU LED sampling against a retained canvas.
 - `gpu_zone_sample_640x480` samples fresh GPU outputs so cached zone results do not hide dispatch and readback cost.
 - `cpu_compose_and_zone_sample_640x480` and `gpu_compose_and_zone_sample_640x480` measure end-to-end preview composition plus LED sampling.
+- `gpu_extreme_64_zones_16k_leds_12_layers_no_surface_readback` measures a dense GPU scene
+  with 12 blended layers, 64 zones, and 16,384 sampled LEDs without a full-surface
+  readback.
 - `gpu_*_no_readback` separates GPU composition dispatch cost from readback cost.
 - `gpu_alpha_two_layer_compose_640x480_scaled_preview_320x240` measures GPU preview scaling plus preview readback.
 

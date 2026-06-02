@@ -42,6 +42,10 @@ const FRAME_INTERVAL_MS: u32 = 16;
 const BENCH_DEVICE_COUNT: usize = 3;
 const BENCH_LEDS_PER_DEVICE: u32 = 120;
 const CANVAS_RGBA_BYTES: u64 = 320_u64 * 200_u64 * 4;
+const EXTREME_LAYER_COUNT: usize = 12;
+const EXTREME_GRID_WIDTH: usize = 8;
+const EXTREME_ZONE_COUNT: usize = 64;
+const EXTREME_LEDS_PER_ZONE: u32 = 256;
 
 static SILENCE: LazyLock<AudioData> = LazyLock::new(AudioData::silence);
 static DEFAULT_INTERACTION: LazyLock<InteractionData> = LazyLock::new(InteractionData::default);
@@ -54,13 +58,29 @@ fn benchmark_config() -> Criterion {
 }
 
 fn strip_zone(id: &str, device_id: &str, led_count: u32) -> Output {
+    strip_zone_at(
+        id,
+        device_id,
+        led_count,
+        NormalizedPosition::new(0.5, 0.5),
+        NormalizedPosition::new(1.0, 1.0),
+    )
+}
+
+fn strip_zone_at(
+    id: &str,
+    device_id: &str,
+    led_count: u32,
+    position: NormalizedPosition,
+    size: NormalizedPosition,
+) -> Output {
     Output {
         id: id.to_owned(),
         name: id.to_owned(),
         device_id: device_id.to_owned(),
         zone_name: None,
-        position: NormalizedPosition::new(0.5, 0.5),
-        size: NormalizedPosition::new(1.0, 1.0),
+        position,
+        size,
         rotation: 0.0,
         scale: 1.0,
         orientation: None,
@@ -81,12 +101,16 @@ fn strip_zone(id: &str, device_id: &str, led_count: u32) -> Output {
 }
 
 fn layout_with_zones(zones: Vec<Output>) -> SpatialLayout {
+    layout_with_zones_for(CANVAS_WIDTH, CANVAS_HEIGHT, zones)
+}
+
+fn layout_with_zones_for(width: u32, height: u32, zones: Vec<Output>) -> SpatialLayout {
     SpatialLayout {
         id: "daemon-bench-layout".to_owned(),
         name: "Daemon Bench Layout".to_owned(),
         description: None,
-        canvas_width: CANVAS_WIDTH,
-        canvas_height: CANVAS_HEIGHT,
+        canvas_width: width,
+        canvas_height: height,
         zones,
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
@@ -210,6 +234,72 @@ fn inverse_patterned_canvas_for(width: u32, height: u32) -> Canvas {
         }
     }
     canvas
+}
+
+fn extreme_layer_canvas(width: u32, height: u32, variant: u32, layer: u32) -> Canvas {
+    let mut canvas = Canvas::new(width, height);
+    let red_phase = 17_u32
+        .saturating_mul(variant)
+        .saturating_add(23_u32.saturating_mul(layer));
+    let green_phase = 31_u32
+        .saturating_mul(variant)
+        .saturating_add(19_u32.saturating_mul(layer));
+    let blue_phase = 47_u32
+        .saturating_mul(variant)
+        .saturating_add(13_u32.saturating_mul(layer));
+    for y in 0..height {
+        for x in 0..width {
+            let red = u8::try_from((x + red_phase) & u32::from(u8::MAX)).expect("red fits");
+            let green = u8::try_from((y + green_phase) & u32::from(u8::MAX)).expect("green fits");
+            let blue = u8::try_from((x ^ y ^ blue_phase) & u32::from(u8::MAX)).expect("blue fits");
+            let alpha = if layer == 0 { 255 } else { 176 };
+            canvas.set_pixel(x, y, Rgba::new(red, green, blue, alpha));
+        }
+    }
+    canvas
+}
+
+fn extreme_composition_plans(width: u32, height: u32) -> Vec<CompositionPlan> {
+    (0..4_u32)
+        .map(|variant| {
+            let layers = (0..EXTREME_LAYER_COUNT)
+                .map(|layer_index| {
+                    let layer = u32::try_from(layer_index).expect("layer index fits");
+                    let canvas = extreme_layer_canvas(width, height, variant, layer);
+                    if layer_index == 0 {
+                        return CompositionLayer::replace_canvas(canvas);
+                    }
+                    match layer_index % 3 {
+                        0 => CompositionLayer::alpha_canvas(canvas, 0.42),
+                        1 => CompositionLayer::add_canvas(canvas, 0.18),
+                        _ => CompositionLayer::screen_canvas(canvas, 0.32),
+                    }
+                })
+                .collect();
+            CompositionPlan::with_layers(width, height, layers).with_cpu_replay_cacheable(false)
+        })
+        .collect()
+}
+
+fn extreme_zones() -> Vec<Output> {
+    debug_assert_eq!(EXTREME_GRID_WIDTH * EXTREME_GRID_WIDTH, EXTREME_ZONE_COUNT);
+    let cell = 1.0_f32 / EXTREME_GRID_WIDTH as f32;
+    (0..EXTREME_ZONE_COUNT)
+        .map(|index| {
+            let row = index / EXTREME_GRID_WIDTH;
+            let column = index % EXTREME_GRID_WIDTH;
+            let position =
+                NormalizedPosition::new((column as f32 + 0.5) * cell, (row as f32 + 0.5) * cell);
+            let size = NormalizedPosition::new(cell, cell);
+            strip_zone_at(
+                &format!("extreme-zone-{index}"),
+                &format!("extreme-device-{index}"),
+                EXTREME_LEDS_PER_ZONE,
+                position,
+                size,
+            )
+        })
+        .collect()
 }
 
 fn multi_blend_plan_for(width: u32, height: u32) -> CompositionPlan {
@@ -568,6 +658,9 @@ fn bench_sparkleflinger(c: &mut Criterion) {
             strip_zone("bench-zone-2", "bench-device-2", 120),
         ]));
         let sampling_plan = sampling_engine.sampling_plan();
+        let default_sampling_total_leds = u64::try_from(BENCH_DEVICE_COUNT)
+            .unwrap_or(u64::MAX)
+            .saturating_mul(u64::from(BENCH_LEDS_PER_DEVICE));
         let bypass_surface_plan = CompositionPlan::single(
             PREVIEW_WIDTH,
             PREVIEW_HEIGHT,
@@ -587,6 +680,7 @@ fn bench_sparkleflinger(c: &mut Criterion) {
         };
         let cpu_preview = SparkleFlinger::cpu().compose(preview_plan.clone());
         let mut cpu_sampled = Vec::new();
+        group.throughput(Throughput::Elements(default_sampling_total_leds));
         group.bench_function("cpu_zone_sample_640x480", |b| {
             b.iter(|| {
                 sampling_engine.sample_into(
@@ -742,6 +836,7 @@ fn bench_sparkleflinger(c: &mut Criterion) {
         );
         let mut gpu_bypass_sparkleflinger = SparkleFlinger::new(RenderAccelerationMode::Gpu)
             .expect("GPU SparkleFlinger should initialize for bypass sampling");
+        group.throughput(Throughput::Bytes(preview_rgba_bytes));
         group.bench_function(
             "gpu_single_replace_surface_compose_640x480_no_readback",
             |b| {
@@ -756,6 +851,7 @@ fn bench_sparkleflinger(c: &mut Criterion) {
             },
         );
         let mut gpu_sample_plan_index = 0_usize;
+        group.throughput(Throughput::Elements(default_sampling_total_leds));
         group.bench_function("gpu_zone_sample_640x480", |b| {
             b.iter(|| {
                 let composed = preview_sparkleflinger.compose_for_outputs(
@@ -779,6 +875,7 @@ fn bench_sparkleflinger(c: &mut Criterion) {
 
         let mut cpu_end_to_end = SparkleFlinger::cpu();
         let mut cpu_end_to_end_sampled = Vec::new();
+        group.throughput(Throughput::Elements(default_sampling_total_leds));
         group.bench_function("cpu_compose_and_zone_sample_640x480", |b| {
             b.iter(|| {
                 let composed = cpu_end_to_end.compose(preview_plan.clone());
@@ -795,6 +892,7 @@ fn bench_sparkleflinger(c: &mut Criterion) {
         let mut cpu_fresh_end_to_end = SparkleFlinger::cpu();
         let mut cpu_fresh_end_to_end_sampled = Vec::new();
         let mut cpu_fresh_plan_index = 0_usize;
+        group.throughput(Throughput::Elements(default_sampling_total_leds));
         group.bench_function("cpu_compose_and_zone_sample_640x480_fresh", |b| {
             b.iter(|| {
                 let composed = cpu_fresh_end_to_end.compose(black_box(
@@ -816,6 +914,7 @@ fn bench_sparkleflinger(c: &mut Criterion) {
         let mut cpu_fresh_canvas_only = SparkleFlinger::cpu();
         let mut cpu_fresh_canvas_only_sampled = Vec::new();
         let mut cpu_fresh_canvas_only_plan_index = 0_usize;
+        group.throughput(Throughput::Elements(default_sampling_total_leds));
         group.bench_function(
             "cpu_compose_and_zone_sample_640x480_fresh_canvas_only",
             |b| {
@@ -843,6 +942,7 @@ fn bench_sparkleflinger(c: &mut Criterion) {
         );
         let mut cpu_bypass_end_to_end = SparkleFlinger::cpu();
         let mut cpu_bypass_sampled = Vec::new();
+        group.throughput(Throughput::Elements(default_sampling_total_leds));
         group.bench_function("cpu_single_replace_surface_and_zone_sample_640x480", |b| {
             b.iter(|| {
                 let composed = cpu_bypass_end_to_end.compose(bypass_surface_plan.clone());
@@ -861,6 +961,7 @@ fn bench_sparkleflinger(c: &mut Criterion) {
             .expect("GPU SparkleFlinger should initialize for end-to-end sampling");
         let mut gpu_end_to_end_sampled = Vec::new();
         let mut gpu_end_to_end_plan_index = 0_usize;
+        group.throughput(Throughput::Elements(default_sampling_total_leds));
         group.bench_function("gpu_compose_and_zone_sample_640x480", |b| {
             b.iter(|| {
                 let composed = gpu_end_to_end.compose_for_outputs(
@@ -883,9 +984,49 @@ fn bench_sparkleflinger(c: &mut Criterion) {
                 black_box(gpu_end_to_end_sampled.first());
             });
         });
+
+        let extreme_sampling_engine = SpatialEngine::new(layout_with_zones_for(
+            PREVIEW_WIDTH,
+            PREVIEW_HEIGHT,
+            extreme_zones(),
+        ));
+        let extreme_sampling_plan = extreme_sampling_engine.sampling_plan();
+        let extreme_plans = extreme_composition_plans(PREVIEW_WIDTH, PREVIEW_HEIGHT);
+        let extreme_total_leds = u64::try_from(EXTREME_ZONE_COUNT)
+            .unwrap_or(u64::MAX)
+            .saturating_mul(u64::from(EXTREME_LEDS_PER_ZONE));
+        let mut gpu_extreme = SparkleFlinger::new(RenderAccelerationMode::Gpu)
+            .expect("GPU SparkleFlinger should initialize for extreme sampling");
+        let mut gpu_extreme_sampled = Vec::new();
+        let mut gpu_extreme_plan_index = 0_usize;
+        group.throughput(Throughput::Elements(extreme_total_leds));
+        group.bench_function(
+            "gpu_extreme_64_zones_16k_leds_12_layers_no_surface_readback",
+            |b| {
+                b.iter(|| {
+                    let composed = gpu_extreme.compose_for_outputs(
+                        black_box(extreme_plans[gpu_extreme_plan_index].clone()),
+                        false,
+                        None,
+                    );
+                    gpu_extreme_plan_index = (gpu_extreme_plan_index + 1) % extreme_plans.len();
+                    black_box(composed.bypassed);
+                    assert!(
+                        gpu_extreme
+                            .sample_zone_plan_into(
+                                extreme_sampling_plan.as_ref(),
+                                &mut gpu_extreme_sampled,
+                            )
+                            .expect("GPU extreme zone sampling should not fail")
+                    );
+                    black_box(gpu_extreme_sampled.first());
+                });
+            },
+        );
         let mut gpu_bypass_end_to_end = SparkleFlinger::new(RenderAccelerationMode::Gpu)
             .expect("GPU SparkleFlinger should initialize for bypass end-to-end sampling");
         let mut gpu_bypass_end_to_end_sampled = Vec::new();
+        group.throughput(Throughput::Elements(default_sampling_total_leds));
         group.bench_function("gpu_single_replace_surface_and_zone_sample_640x480", |b| {
             b.iter(|| {
                 let composed = gpu_bypass_end_to_end.compose_for_outputs(
