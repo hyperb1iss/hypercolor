@@ -5,6 +5,10 @@
 Planned. Implementation is gated on the provenance, ownership, and distribution
 decisions in this spec.
 
+Current implementation scope is the clean SDK crate and Bridge driver against a
+user-installed or externally managed OpenRGB server. Bundled OpenRGB supervision
+and release distribution lanes are deferred.
+
 ## Goal
 
 Hypercolor remains the primary effects, spatial mapping, audio, scene, and render
@@ -299,4 +303,3 @@ Each implementation slice runs focused crate tests. Before merge:
 - `just verify`
 - independent review of SDK parser and ownership logic
 - legal checkpoint before distributing OpenRGB artifacts
-

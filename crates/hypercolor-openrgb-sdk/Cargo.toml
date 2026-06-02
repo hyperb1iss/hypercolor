@@ -1,0 +1,16 @@
+[package]
+name = "hypercolor-openrgb-sdk"
+description = "Clean OpenRGB SDK protocol client for Hypercolor"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+
