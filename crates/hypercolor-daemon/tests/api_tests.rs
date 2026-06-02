@@ -18,9 +18,9 @@ use hypercolor_daemon::device_metrics::{DeviceMetrics, DeviceMetricsSnapshot};
 use hypercolor_daemon::device_settings::DeviceSettingsStore;
 use hypercolor_daemon::logical_devices::{LogicalDevice, LogicalDeviceKind};
 use hypercolor_driver_api::{
-    BackendInfo, ControlApplyTarget, DeviceBackend, DiscoveryCapability, DiscoveryRequest,
-    DiscoveryResult, DriverConfigView, DriverControlProvider, DriverDescriptor, DriverHost,
-    DriverModule, ValidatedControlChanges,
+    BackendInfo, ControlApplyTarget, DeviceBackend, DiscoveredDevice, DiscoveryCapability,
+    DiscoveryConnectBehavior, DiscoveryRequest, DiscoveryResult, DriverConfigView,
+    DriverControlProvider, DriverDescriptor, DriverHost, DriverModule, ValidatedControlChanges,
 };
 #[cfg(feature = "builtin-drivers")]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -31,6 +31,7 @@ use tower::ServiceExt;
 use uuid::Uuid;
 
 use hypercolor_core::bus::{CanvasFrame, DisplayGroupFrame, DisplayGroupTarget};
+use hypercolor_core::device::DeviceLifecycleManager;
 use hypercolor_core::effect::EffectEntry;
 use hypercolor_core::engine::RenderLoopState;
 use hypercolor_daemon::api::{self, AppState};
@@ -8279,6 +8280,91 @@ async fn update_device_persists_name_enabled_and_brightness_state() {
     let reenable_json = body_json(reenable_response).await;
     assert_eq!(reenable_json["data"]["status"], "known");
     assert_eq!(reenable_json["data"]["brightness"], 27);
+}
+
+#[tokio::test]
+async fn update_device_enable_activates_layout_targeted_deferred_device() {
+    let state = Arc::new(isolated_state());
+    register_noop_backend(&state, "wled", "WLED Test Backend").await;
+
+    let device_id = DeviceId::new();
+    let info = DeviceInfo {
+        id: device_id,
+        name: "Studio Strip".to_owned(),
+        vendor: "test-vendor".to_owned(),
+        family: DeviceFamily::new_static("wled", "WLED"),
+        model: None,
+        connection_type: ConnectionType::Network,
+        origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
+        zones: vec![ZoneInfo {
+            name: "Main".to_owned(),
+            led_count: 60,
+            topology: DeviceTopologyHint::Strip,
+            color_format: DeviceColorFormat::Rgb,
+            layout_hint: None,
+        }],
+        firmware_version: Some("0.1.0".to_owned()),
+        capabilities: DeviceCapabilities {
+            led_count: 60,
+            supports_direct: true,
+            supports_brightness: true,
+            has_display: false,
+            display_resolution: None,
+            max_fps: 60,
+            color_space: hypercolor_types::device::DeviceColorSpace::default(),
+            features: DeviceFeatures::default(),
+        },
+    };
+    let fingerprint = DeviceFingerprint("wled:studio-strip".to_owned());
+    state
+        .device_registry
+        .add_discovered(DiscoveredDevice {
+            fingerprint: fingerprint.clone(),
+            connect_behavior: DiscoveryConnectBehavior::Deferred,
+            info: info.clone(),
+            metadata: HashMap::new(),
+        })
+        .await;
+    state
+        .device_registry
+        .update_user_settings(&device_id, None, Some(false), None)
+        .await
+        .expect("device settings should update");
+    state
+        .device_registry
+        .set_state(&device_id, DeviceState::Disabled)
+        .await;
+
+    let layout_device_id =
+        DeviceLifecycleManager::canonical_layout_device_id(&info, Some(&fingerprint));
+    set_layout_targeting_device(&state, &layout_device_id, 60).await;
+
+    let app = test_app_with_state(Arc::clone(&state));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/devices/{device_id}"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"enabled":true}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["status"], "connected");
+
+    let routing = state.backend_manager.lock().await.routing_snapshot();
+    assert!(
+        routing.mappings.iter().any(|entry| {
+            entry.backend_id == "wled"
+                && entry.device_id == device_id.to_string()
+                && entry.layout_device_id == layout_device_id
+        }),
+        "re-enabled layout-targeted device should be mapped for rendering"
+    );
 }
 
 #[tokio::test]

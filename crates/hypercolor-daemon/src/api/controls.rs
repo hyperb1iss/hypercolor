@@ -1435,5 +1435,8 @@ async fn apply_device_control_changes(
     }
     devices::sync_device_output_brightness(state, device_id, &updated.user_settings).await;
     devices::publish_device_settings_changed(state, device_id, &updated.user_settings);
+    if changes.enabled == Some(true) {
+        devices::activate_reenabled_layout_device(state, device_id, &updated.info).await;
+    }
     Ok(())
 }

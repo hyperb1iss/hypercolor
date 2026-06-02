@@ -432,6 +432,12 @@ pub async fn update_device(
     }
     sync_device_output_brightness(&state, device_id, &updated.user_settings).await;
     publish_device_settings_changed(&state, device_id, &updated.user_settings);
+    if body.enabled == Some(true) {
+        activate_reenabled_layout_device(&state, device_id, &updated.info).await;
+        if let Some(tracked) = state.device_registry.get(&device_id).await {
+            updated = tracked;
+        }
+    }
 
     let layout_device_id = ensure_default_logical_entry(&state, &updated.info).await;
     let metadata = state
@@ -1135,6 +1141,27 @@ pub(crate) fn publish_device_settings_changed(
             device_id: device_id.to_string(),
             changes,
         });
+}
+
+pub(crate) async fn activate_reenabled_layout_device(
+    state: &AppState,
+    device_id: DeviceId,
+    info: &DeviceInfo,
+) {
+    let runtime = super::discovery_runtime(state);
+    let backend_id = resolved_backend_id(info);
+    match core_discovery::activate_pairable_device(&runtime, device_id, &backend_id).await {
+        Ok(_) => {}
+        Err(error) => {
+            warn!(
+                backend_id = %backend_id,
+                device_id = %device_id,
+                device = %info.name,
+                error = %error,
+                "failed to activate re-enabled device for active layout"
+            );
+        }
+    }
 }
 
 fn summarize_zone_topology(topology: &DeviceTopologyHint) -> ZoneTopologySummary {
