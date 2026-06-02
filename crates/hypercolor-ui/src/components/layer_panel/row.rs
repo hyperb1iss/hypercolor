@@ -126,7 +126,7 @@ pub fn LayerRow(
     };
 
     view! {
-        <article class="overflow-hidden rounded-xl border border-edge-subtle/70 bg-surface-sunken/50 card-hover">
+        <article class="overflow-hidden rounded-xl border border-edge-subtle/70 bg-surface-sunken/50 transition-colors duration-150 hover:border-edge-subtle">
             // ── Header: identity + ordering + delete ──────────────────
             <div class="flex items-center gap-2.5 px-3 py-2.5">
                 <span

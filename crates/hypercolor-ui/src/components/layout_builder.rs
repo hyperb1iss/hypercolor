@@ -1424,8 +1424,11 @@ pub(crate) fn LayoutWorkspace(
 
                 // Main area: canvas above, zone properties below
                 <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
-                    // Canvas viewport — flexes to fill remaining space
-                    <div class="relative min-h-0 flex-1 overflow-hidden">
+                    // Canvas viewport — flexes to fill remaining space.
+                    // `isolate` traps the high per-box z-indexes in their own
+                    // stacking context so device blocks never punch through an
+                    // overlaid panel (the Studio composition slide-over).
+                    <div class="relative isolate min-h-0 flex-1 overflow-hidden">
                         <LayoutCanvas />
                     </div>
 
