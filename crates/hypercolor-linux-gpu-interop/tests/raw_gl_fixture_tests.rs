@@ -258,6 +258,61 @@ fn raw_gl_pipelined_importer_reuses_latest_completed_frame_when_slots_are_held()
     importer.destroy_gl_resources(&raw_gl.gl);
 }
 
+#[test]
+fn raw_gl_pipelined_importer_replaces_completed_identity_when_slot_is_reused() {
+    if std::env::var_os(RUN_FIXTURE_ENV).is_none() {
+        eprintln!("set {RUN_FIXTURE_ENV}=1 to run the raw GL import fixture");
+        return;
+    }
+
+    let wgpu = WgpuFixture::new().expect("raw GL import fixture should create wgpu device");
+    let raw_gl =
+        RawGlFixture::new(WIDTH, HEIGHT).expect("raw GL import fixture should create GL surface");
+    let gl_external_memory = raw_gl
+        .load_external_memory_functions()
+        .expect("raw GL fixture should load GL external memory functions");
+    let descriptor =
+        LinuxGlFramebufferImportDescriptor::new(WIDTH, HEIGHT, ImportedFrameFormat::Rgba8Unorm)
+            .expect("fixture dimensions should be valid");
+    let mut importer = LinuxGlFramebufferImporter::new(
+        &wgpu.device,
+        &raw_gl.gl,
+        gl_external_memory,
+        descriptor,
+        1,
+    )
+    .expect("raw GL fixture should create pooled importer");
+
+    let first_color = [255, 64, 0, 255];
+    raw_gl.clear(first_color);
+    let first = importer
+        .import_framebuffer_pipelined(
+            &raw_gl.gl,
+            GlFramebufferSource::Framebuffer(raw_gl.framebuffer),
+        )
+        .expect("first pipelined import should complete");
+    let first_storage_id = first.storage_id;
+    drop(first);
+
+    let second_color = [0, 192, 255, 255];
+    raw_gl.clear(second_color);
+    let second = importer
+        .import_framebuffer_pipelined(
+            &raw_gl.gl,
+            GlFramebufferSource::Framebuffer(raw_gl.framebuffer),
+        )
+        .expect("reused slot should wait for the new completed frame");
+    assert_ne!(second.storage_id, first_storage_id);
+    let pixels = read_texture_pixels(&wgpu.device, &wgpu.queue, &second.texture, WIDTH, HEIGHT);
+    for pixel in pixels.chunks_exact(4) {
+        assert_eq!(pixel, second_color);
+    }
+
+    drop(second);
+    let _ = wgpu.device.poll(wgpu::PollType::Poll);
+    importer.destroy_gl_resources(&raw_gl.gl);
+}
+
 struct WgpuFixture {
     _instance: wgpu::Instance,
     device: wgpu::Device,

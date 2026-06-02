@@ -407,6 +407,7 @@ impl LinuxGlFramebufferImporter {
                 descriptor,
             )?;
             pending.timings.total_us = elapsed_micros(total_start);
+            slot.completed = None;
             slot.pending = Some(pending);
             self.next_slot = (index + 1) % self.slots.len();
             Some(index)
