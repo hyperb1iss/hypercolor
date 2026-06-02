@@ -50,7 +50,10 @@ pub enum OpenRgbError {
 
     /// A request received a different packet ID than expected.
     #[error("unexpected OpenRGB packet: expected {expected:?}, got {actual:?}")]
-    UnexpectedPacket { expected: PacketId, actual: PacketId },
+    UnexpectedPacket {
+        expected: PacketId,
+        actual: PacketId,
+    },
 
     /// A timed operation exceeded its configured deadline.
     #[error("OpenRGB {operation} timed out")]

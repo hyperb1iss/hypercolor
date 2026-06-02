@@ -156,11 +156,7 @@ impl OpenRgbClient {
     /// # Errors
     ///
     /// Returns an error when the payload cannot be encoded or written.
-    pub async fn update_leds(
-        &mut self,
-        controller_index: u32,
-        colors: &[RgbColor],
-    ) -> Result<()> {
+    pub async fn update_leds(&mut self, controller_index: u32, colors: &[RgbColor]) -> Result<()> {
         let payload = update_leds_payload(colors)?;
         self.send_packet(PacketId::UpdateLeds, controller_index, payload)
             .await

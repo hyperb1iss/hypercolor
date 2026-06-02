@@ -21,6 +21,8 @@ use hypercolor_driver_govee::GoveeDriverModule;
 use hypercolor_driver_hue::HueDriverModule;
 #[cfg(feature = "nanoleaf")]
 use hypercolor_driver_nanoleaf::NanoleafDriverModule;
+#[cfg(feature = "openrgb")]
+use hypercolor_driver_openrgb::OpenRgbDriverModule;
 #[cfg(feature = "wled")]
 use hypercolor_driver_wled::WledDriverModule;
 
@@ -54,6 +56,7 @@ pub fn register_driver_modules(
         feature = "govee",
         feature = "hue",
         feature = "nanoleaf",
+        feature = "openrgb",
         feature = "hal"
     )))]
     let _ = registry;
@@ -83,6 +86,9 @@ pub fn register_driver_modules(
         config.discovery.mdns_enabled,
     ))?;
 
+    #[cfg(feature = "openrgb")]
+    registry.register(OpenRgbDriverModule)?;
+
     #[cfg(feature = "hal")]
     {
         for driver in hal::hal_catalog_driver_modules() {
@@ -100,6 +106,7 @@ pub fn normalize_driver_config_entries(config: &mut HypercolorConfig) {
         feature = "govee",
         feature = "hue",
         feature = "nanoleaf",
+        feature = "openrgb",
         feature = "hal"
     )))]
     let _ = config;
@@ -127,6 +134,16 @@ pub fn normalize_driver_config_entries(config: &mut HypercolorConfig) {
         .drivers
         .entry(hypercolor_driver_nanoleaf::DESCRIPTOR.id.to_owned())
         .or_default();
+
+    #[cfg(feature = "openrgb")]
+    config
+        .drivers
+        .entry(hypercolor_driver_openrgb::DESCRIPTOR.id.to_owned())
+        .or_insert_with(|| {
+            hypercolor_types::config::DriverConfigEntry::disabled(
+                std::collections::BTreeMap::default(),
+            )
+        });
 
     #[cfg(feature = "hal")]
     for descriptor in hal::hal_module_descriptors() {

@@ -4,7 +4,7 @@ use hypercolor_driver_api::CredentialStore;
 use hypercolor_driver_builtin::build_driver_module_registry;
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::HypercolorConfig;
-#[cfg(feature = "hal")]
+#[cfg(any(feature = "hal", feature = "openrgb"))]
 use hypercolor_types::device::DriverModuleKind;
 use tempfile::tempdir;
 
@@ -29,6 +29,7 @@ fn build_driver_module_registry_registers_compiled_in_drivers() {
         assert!(ids.contains(&"govee".to_owned()));
         assert!(ids.contains(&"hue".to_owned()));
         assert!(ids.contains(&"nanoleaf".to_owned()));
+        assert!(ids.contains(&"openrgb".to_owned()));
     }
 
     #[cfg(feature = "hal")]
@@ -50,6 +51,31 @@ fn build_driver_module_registry_registers_compiled_in_drivers() {
             .expect("config provider should be present")
             .validate_config(&driver.config().expect("config provider").default_config())
             .expect("default config should validate");
+    }
+
+    #[cfg(feature = "openrgb")]
+    {
+        let openrgb = registry
+            .get("openrgb")
+            .expect("OpenRGB bridge driver should resolve");
+        let descriptor = openrgb.module_descriptor();
+        assert_eq!(descriptor.module_kind, DriverModuleKind::Bridge);
+        assert!(!descriptor.default_enabled);
+        assert!(descriptor.capabilities.config);
+        assert!(descriptor.capabilities.discovery);
+        assert!(descriptor.capabilities.output_backend);
+        assert!(descriptor.capabilities.presentation);
+        assert!(!descriptor.capabilities.controls);
+        openrgb
+            .config()
+            .expect("OpenRGB config provider should be present")
+            .validate_config(
+                &openrgb
+                    .config()
+                    .expect("OpenRGB config provider")
+                    .default_config(),
+            )
+            .expect("OpenRGB default config should validate");
     }
 
     #[cfg(feature = "hal")]
@@ -86,6 +112,8 @@ fn register_driver_modules_appends_to_existing_registry() {
 
     #[cfg(feature = "network")]
     assert!(registry.get("wled").is_some());
+    #[cfg(feature = "openrgb")]
+    assert!(registry.get("openrgb").is_some());
     #[cfg(feature = "hal")]
     assert!(registry.get("nollie").is_some());
 }

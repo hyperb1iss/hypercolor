@@ -5057,6 +5057,7 @@ dependencies = [
  "hypercolor-driver-govee",
  "hypercolor-driver-hue",
  "hypercolor-driver-nanoleaf",
+ "hypercolor-driver-openrgb",
  "hypercolor-driver-wled",
  "hypercolor-hal",
  "hypercolor-network",
@@ -5114,6 +5115,21 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "hypercolor-driver-openrgb"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "hypercolor-driver-api",
+ "hypercolor-openrgb-sdk",
+ "hypercolor-types",
+ "serde",
+ "serde_json",
  "tokio",
  "tracing",
 ]

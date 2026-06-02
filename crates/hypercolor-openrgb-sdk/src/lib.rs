@@ -3,8 +3,8 @@
 //! This crate implements the documented OpenRGB SDK wire format without
 //! depending on Hypercolor or OpenRGB implementation code.
 
-pub mod error;
 pub mod client;
+pub mod error;
 pub mod packet;
 pub mod parser;
 pub mod types;
