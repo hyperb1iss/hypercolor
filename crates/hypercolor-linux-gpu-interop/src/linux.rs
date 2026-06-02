@@ -491,8 +491,16 @@ impl LinuxGlFramebufferImporter {
     }
 
     fn poll_pending_imports(&mut self, gl: &glow::Context) -> Result<()> {
+        let mut first_error = None;
         for slot in &mut self.slots {
-            slot.poll_pending_import(gl)?;
+            if let Err(error) = slot.poll_pending_import(gl)
+                && first_error.is_none()
+            {
+                first_error = Some(error);
+            }
+        }
+        if let Some(error) = first_error {
+            return Err(error);
         }
         Ok(())
     }
@@ -946,7 +954,8 @@ impl ImportedFrameSlot {
         let status = match poll_gl_fence(gl, pending.fence) {
             Ok(status) => status,
             Err(error) => {
-                self.pending = Some(pending);
+                delete_gl_fence(gl, pending.fence);
+                clear_gl_errors(gl);
                 return Err(error);
             }
         };
