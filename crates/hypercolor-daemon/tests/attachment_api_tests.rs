@@ -822,7 +822,7 @@ async fn nollie32_attachment_slots_support_cable_profiles() {
         json!({
             "bindings": [{
                 "slot_id": "gpu-strimer",
-                "template_id": "nollie-gpu-strimer-4x27",
+                "template_id": "lian-li-gpu-strimer-4x27",
                 "instances": 1,
                 "led_offset": 0
             }]
@@ -842,13 +842,13 @@ async fn nollie32_attachment_slots_support_cable_profiles() {
             "bindings": [
                 {
                     "slot_id": "atx-strimer",
-                    "template_id": "nollie-atx-strimer",
+                    "template_id": "lian-li-atx-strimer",
                     "instances": 1,
                     "led_offset": 0
                 },
                 {
                     "slot_id": "gpu-strimer",
-                    "template_id": "nollie-gpu-strimer-6x27",
+                    "template_id": "lian-li-gpu-strimer-6x27",
                     "instances": 1,
                     "led_offset": 0
                 }
@@ -860,11 +860,11 @@ async fn nollie32_attachment_slots_support_cable_profiles() {
     let full_json = body_json(full_response).await;
     assert_eq!(
         full_json["data"]["suggested_zones"][0]["template_id"],
-        "nollie-atx-strimer"
+        "lian-li-atx-strimer"
     );
     assert_eq!(
         full_json["data"]["suggested_zones"][1]["template_id"],
-        "nollie-gpu-strimer-6x27"
+        "lian-li-gpu-strimer-6x27"
     );
     assert_eq!(full_json["data"]["suggested_zones"][0]["led_start"], 5_120);
     assert_eq!(full_json["data"]["suggested_zones"][1]["led_start"], 5_240);

@@ -107,7 +107,7 @@ async fn prism_s_config_derives_dual_gpu_from_attachment_binding() {
     profile.bindings = vec![
         ComponentBinding {
             slot_id: "atx-strimer".to_owned(),
-            template_id: "nollie-atx-strimer".to_owned(),
+            template_id: "lian-li-atx-strimer".to_owned(),
             name: None,
             enabled: true,
             instances: 1,
@@ -210,7 +210,7 @@ async fn nollie32_config_derives_cables_from_attachment_bindings() {
         },
         ComponentBinding {
             slot_id: "gpu-strimer".to_owned(),
-            template_id: "nollie-gpu-strimer-6x27".to_owned(),
+            template_id: "lian-li-gpu-strimer-6x27".to_owned(),
             name: None,
             enabled: true,
             instances: 1,

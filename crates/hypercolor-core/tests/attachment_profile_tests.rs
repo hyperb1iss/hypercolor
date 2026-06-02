@@ -113,7 +113,7 @@ fn prism_s_dual_slot_profiles_keep_gpu_after_atx() {
 fn nollie32_attachment_slots_append_strimer_cables() {
     let slots = effective_attachment_slots(
         &nollie32_info(),
-        &[binding("atx-strimer", "nollie-atx-strimer")],
+        &[binding("atx-strimer", "lian-li-atx-strimer")],
     );
     let atx = slots
         .iter()
@@ -132,7 +132,7 @@ fn nollie32_attachment_slots_append_strimer_cables() {
 fn nollie32_gpu_slot_rebases_when_atx_is_not_enabled() {
     let slots = effective_attachment_slots(
         &nollie32_info(),
-        &[binding("gpu-strimer", "nollie-gpu-strimer-6x27")],
+        &[binding("gpu-strimer", "lian-li-gpu-strimer-6x27")],
     );
     let gpu = slots
         .iter()
@@ -146,7 +146,7 @@ fn nollie32_gpu_slot_rebases_when_atx_is_not_enabled() {
 fn nollie32_nos2_attachment_slots_append_strimer_cables() {
     let slots = effective_attachment_slots(
         &nollie32_nos2_info(),
-        &[binding("atx-strimer", "nollie-atx-strimer")],
+        &[binding("atx-strimer", "lian-li-atx-strimer")],
     );
     let gpu = slots
         .iter()

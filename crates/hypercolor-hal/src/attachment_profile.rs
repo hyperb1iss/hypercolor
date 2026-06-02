@@ -111,10 +111,7 @@ fn append_nollie32_cable_slots(device: &DeviceInfo, slots: &mut Vec<ComponentSlo
             led_start: main_leds,
             led_count: 120,
             suggested_categories: vec![ComponentCategory::Strimer, ComponentCategory::Matrix],
-            allowed_templates: vec![
-                "nollie-atx-strimer".to_owned(),
-                "lian-li-atx-strimer".to_owned(),
-            ],
+            allowed_templates: vec!["lian-li-atx-strimer".to_owned()],
             allow_custom: true,
         });
     }
@@ -127,8 +124,6 @@ fn append_nollie32_cable_slots(device: &DeviceInfo, slots: &mut Vec<ComponentSlo
             led_count: 162,
             suggested_categories: vec![ComponentCategory::Strimer, ComponentCategory::Matrix],
             allowed_templates: vec![
-                "nollie-gpu-strimer-4x27".to_owned(),
-                "nollie-gpu-strimer-6x27".to_owned(),
                 "lian-li-gpu-strimer-4x27".to_owned(),
                 "lian-li-gpu-strimer-6x27".to_owned(),
             ],
