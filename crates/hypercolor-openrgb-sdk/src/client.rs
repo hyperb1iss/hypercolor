@@ -1,3 +1,4 @@
+use std::io::ErrorKind;
 use std::net::SocketAddr;
 use std::time::Duration;
 
@@ -176,6 +177,29 @@ impl OpenRgbClient {
         let payload = update_zone_leds_payload(zone_index, colors)?;
         self.send_packet(PacketId::UpdateZoneLeds, controller_index, payload)
             .await
+    }
+
+    /// Drain packets already available on the socket without waiting.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when pending bytes contain a malformed packet or the
+    /// TCP stream reports a terminal read error.
+    pub fn drain_pending_packets(&mut self) -> Result<Vec<Packet>> {
+        let mut packets = Vec::new();
+        loop {
+            while let Some(packet) = self.decoder.next_packet()? {
+                packets.push(packet);
+            }
+
+            let mut buf = [0_u8; 4096];
+            match self.stream.try_read(&mut buf) {
+                Ok(0) => return Err(OpenRgbError::ConnectionClosed),
+                Ok(read) => self.decoder.push(&buf[..read]),
+                Err(error) if error.kind() == ErrorKind::WouldBlock => return Ok(packets),
+                Err(error) => return Err(error.into()),
+            }
+        }
     }
 
     async fn negotiate_protocol_version(&mut self) -> Result<u32> {

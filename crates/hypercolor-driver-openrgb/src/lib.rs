@@ -8,17 +8,17 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Error, Result, bail};
 use async_trait::async_trait;
 use hypercolor_driver_api::{
     BackendInfo, DeviceBackend, DeviceFrameSink, DiscoveredDevice, DiscoveryCapability,
     DiscoveryConnectBehavior, DiscoveryRequest, DiscoveryResult, DriverConfigProvider,
     DriverConfigView, DriverDescriptor, DriverDiscoveredDevice, DriverHost, DriverModule,
-    DriverPresentationProvider,
+    DriverPresentationProvider, HealthStatus,
 };
 use hypercolor_openrgb_sdk::{
     ControllerData, ControllerMode, ControllerZone, DeviceType, ModeFlagPolicy, OpenRgbClient,
-    OpenRgbClientConfig, RgbColor,
+    OpenRgbClientConfig, PacketId, RgbColor,
 };
 use hypercolor_types::config::DriverConfigEntry;
 use hypercolor_types::device::{
@@ -66,6 +66,7 @@ const DEFAULT_OPENRGB_PORT: u16 = 6742;
 const DEFAULT_TIMEOUT_MS: u64 = 750;
 const DEFAULT_TARGET_FPS: u32 = 30;
 const MAX_TIMEOUT_MS: u64 = 10_000;
+const MAX_CONTROLLERS_PER_ENDPOINT: u32 = 1024;
 
 /// Driver configuration for the OpenRGB fallback bridge.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -322,23 +323,15 @@ impl DeviceBackend for OpenRgbBackend {
             bail!("OpenRGB controller {id} is output-disabled: {reason}");
         }
 
-        let mut client =
-            OpenRgbClient::connect(route.endpoint, client_config(&self.config)).await?;
-        if self.config.startup_rescan {
-            client.request_rescan().await?;
-        }
-        client.set_custom_mode(route.controller_index).await?;
-        if let Some((mode_index, mode)) = route.writable_mode.clone() {
-            client
-                .update_mode(route.controller_index, mode_index, &mode)
-                .await?;
-        }
+        let mut client = connect_openrgb_client(&self.config, route.endpoint).await?;
+        configure_controller_output(&mut client, &route).await?;
 
         self.connected.insert(
             *id,
             Arc::new(Mutex::new(ConnectedController {
                 route,
                 client,
+                config: self.config.clone(),
                 consecutive_failures: 0,
             })),
         );
@@ -369,14 +362,18 @@ impl DeviceBackend for OpenRgbBackend {
             .or_else(|| self.discovered.get(id).map(|route| route.target_fps))
     }
 
-    async fn health_check(&self, id: &DeviceId) -> Result<hypercolor_driver_api::HealthStatus> {
-        if self.connected.contains_key(id) {
-            return Ok(hypercolor_driver_api::HealthStatus::Healthy);
+    async fn health_check(&self, id: &DeviceId) -> Result<HealthStatus> {
+        if let Some(controller) = self.connected.get(id) {
+            let controller = controller.lock().await;
+            if controller.consecutive_failures == 0 {
+                return Ok(HealthStatus::Healthy);
+            }
+            return Ok(HealthStatus::Degraded);
         }
         if self.discovered.contains_key(id) {
-            return Ok(hypercolor_driver_api::HealthStatus::Degraded);
+            return Ok(HealthStatus::Degraded);
         }
-        Ok(hypercolor_driver_api::HealthStatus::Unreachable)
+        Ok(HealthStatus::Unreachable)
     }
 
     fn frame_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {
@@ -404,30 +401,106 @@ async fn write_controller_colors(
     colors: &[[u8; 3]],
 ) -> Result<()> {
     let mut controller = controller.lock().await;
+    prepare_controller_for_write(&mut controller).await?;
+
     let colors = colors
         .iter()
         .map(|[red, green, blue]| RgbColor::new(*red, *green, *blue))
         .collect::<Vec<_>>();
-    let controller_index = controller.route.controller_index;
-    match controller
-        .client
-        .update_leds(controller_index, &colors)
-        .await
-    {
+    match write_prepared_controller_colors(&mut controller, &colors).await {
         Ok(()) => {
             controller.consecutive_failures = 0;
             Ok(())
         }
         Err(error) => {
             controller.consecutive_failures = controller.consecutive_failures.saturating_add(1);
-            Err(error).context("OpenRGB update_leds failed")
+            let write_error = Error::new(error).context("OpenRGB update_leds failed");
+            reconnect_connected_controller(&mut controller)
+                .await
+                .map_err(|reconnect_error| {
+                    write_error.context(format!("OpenRGB reconnect failed: {reconnect_error}"))
+                })?;
+            write_prepared_controller_colors(&mut controller, &colors)
+                .await
+                .map_err(|retry_error| {
+                    controller.consecutive_failures =
+                        controller.consecutive_failures.saturating_add(1);
+                    Error::new(retry_error).context("OpenRGB update_leds failed after reconnect")
+                })?;
+            controller.consecutive_failures = 0;
+            Ok(())
         }
     }
+}
+
+async fn prepare_controller_for_write(controller: &mut ConnectedController) -> Result<()> {
+    let packets = match controller.client.drain_pending_packets() {
+        Ok(packets) => packets,
+        Err(error) => {
+            controller.consecutive_failures = controller.consecutive_failures.saturating_add(1);
+            reconnect_connected_controller(controller)
+                .await
+                .with_context(|| format!("OpenRGB notification drain failed: {error}"))?;
+            return Ok(());
+        }
+    };
+    if packets
+        .iter()
+        .any(|packet| packet.header.packet_id == PacketId::DeviceListUpdated)
+        && let Err(error) = refresh_connected_route(controller).await
+    {
+        controller.consecutive_failures = controller.consecutive_failures.saturating_add(1);
+        return Err(error);
+    }
+    Ok(())
+}
+
+async fn write_prepared_controller_colors(
+    controller: &mut ConnectedController,
+    colors: &[RgbColor],
+) -> hypercolor_openrgb_sdk::Result<()> {
+    controller
+        .client
+        .update_leds(controller.route.controller_index, colors)
+        .await
+}
+
+async fn reconnect_connected_controller(controller: &mut ConnectedController) -> Result<()> {
+    let mut client = connect_openrgb_client(&controller.config, controller.route.endpoint).await?;
+    let route = find_current_route(
+        &mut client,
+        controller.route.endpoint,
+        &controller.route.fingerprint,
+        &controller.config,
+    )
+    .await?;
+    ensure_route_output_enabled(&route)?;
+    configure_controller_output(&mut client, &route).await?;
+    controller.client = client;
+    controller.route = route;
+    controller.consecutive_failures = 0;
+    Ok(())
+}
+
+async fn refresh_connected_route(controller: &mut ConnectedController) -> Result<()> {
+    let route = find_current_route(
+        &mut controller.client,
+        controller.route.endpoint,
+        &controller.route.fingerprint,
+        &controller.config,
+    )
+    .await?;
+    ensure_route_output_enabled(&route)?;
+    configure_controller_output(&mut controller.client, &route).await?;
+    controller.route = route;
+    controller.consecutive_failures = 0;
+    Ok(())
 }
 
 struct ConnectedController {
     route: ControllerRoute,
     client: OpenRgbClient,
+    config: OpenRgbConfig,
     consecutive_failures: u32,
 }
 
@@ -506,16 +579,35 @@ async fn discover_endpoint(
     endpoint: SocketAddr,
     config: &OpenRgbConfig,
 ) -> Result<Vec<ControllerRoute>> {
-    let mut client = OpenRgbClient::connect(endpoint, client_config(config)).await?;
-    if config.startup_rescan {
-        client.request_rescan().await?;
-    }
+    let mut client = connect_openrgb_client(config, endpoint).await?;
 
     let protocol_version = client.protocol_version();
     let count = client.controller_count().await?;
+    let count = if count > MAX_CONTROLLERS_PER_ENDPOINT {
+        debug!(
+            endpoint = %endpoint,
+            reported = count,
+            max = MAX_CONTROLLERS_PER_ENDPOINT,
+            "OpenRGB endpoint reported excessive controller count"
+        );
+        MAX_CONTROLLERS_PER_ENDPOINT
+    } else {
+        count
+    };
     let mut routes = Vec::new();
     for controller_index in 0..count {
-        let controller = client.controller_data(controller_index).await?;
+        let controller = match client.controller_data(controller_index).await {
+            Ok(controller) => controller,
+            Err(error) => {
+                debug!(
+                    endpoint = %endpoint,
+                    controller_index,
+                    error = %error,
+                    "OpenRGB controller data parse failed"
+                );
+                continue;
+            }
+        };
         routes.push(build_route(
             endpoint,
             controller_index,
@@ -524,7 +616,110 @@ async fn discover_endpoint(
             config,
         ));
     }
+    disambiguate_duplicate_fingerprints(&mut routes);
     Ok(routes)
+}
+
+async fn connect_openrgb_client(
+    config: &OpenRgbConfig,
+    endpoint: SocketAddr,
+) -> Result<OpenRgbClient> {
+    let mut client = OpenRgbClient::connect(endpoint, client_config(config)).await?;
+    if config.startup_rescan {
+        client.request_rescan().await?;
+    }
+    Ok(client)
+}
+
+async fn find_current_route(
+    client: &mut OpenRgbClient,
+    endpoint: SocketAddr,
+    fingerprint: &DeviceFingerprint,
+    config: &OpenRgbConfig,
+) -> Result<ControllerRoute> {
+    let protocol_version = client.protocol_version();
+    let count = client.controller_count().await?;
+    let count = count.min(MAX_CONTROLLERS_PER_ENDPOINT);
+    let mut routes = Vec::new();
+    for controller_index in 0..count {
+        let controller = match client.controller_data(controller_index).await {
+            Ok(controller) => controller,
+            Err(error) => {
+                debug!(
+                    endpoint = %endpoint,
+                    controller_index,
+                    error = %error,
+                    "OpenRGB controller data parse failed during remap"
+                );
+                continue;
+            }
+        };
+        routes.push(build_route(
+            endpoint,
+            controller_index,
+            protocol_version,
+            controller,
+            config,
+        ));
+    }
+    disambiguate_duplicate_fingerprints(&mut routes);
+    if let Some(route) = routes
+        .into_iter()
+        .find(|route| route.fingerprint == *fingerprint)
+    {
+        return Ok(route);
+    }
+    bail!(
+        "OpenRGB controller fingerprint '{}' disappeared",
+        fingerprint.0
+    )
+}
+
+async fn configure_controller_output(
+    client: &mut OpenRgbClient,
+    route: &ControllerRoute,
+) -> Result<()> {
+    client.set_custom_mode(route.controller_index).await?;
+    if let Some((mode_index, mode)) = route.writable_mode.clone() {
+        client
+            .update_mode(route.controller_index, mode_index, &mode)
+            .await?;
+    }
+    Ok(())
+}
+
+fn ensure_route_output_enabled(route: &ControllerRoute) -> Result<()> {
+    if let Some(reason) = &route.disabled_reason {
+        bail!(
+            "OpenRGB controller {} is output-disabled after refresh: {reason}",
+            route.info.id
+        );
+    }
+    Ok(())
+}
+
+fn disambiguate_duplicate_fingerprints(routes: &mut [ControllerRoute]) {
+    let mut counts = HashMap::<DeviceFingerprint, usize>::new();
+    for route in routes.iter() {
+        *counts.entry(route.fingerprint.clone()).or_default() += 1;
+    }
+
+    let mut seen = HashMap::<DeviceFingerprint, usize>::new();
+    for route in routes.iter_mut() {
+        if counts.get(&route.fingerprint).copied().unwrap_or_default() <= 1 {
+            continue;
+        }
+        let ordinal = seen.entry(route.fingerprint.clone()).or_default();
+        *ordinal += 1;
+        let base = route.fingerprint.0.clone();
+        route.fingerprint = DeviceFingerprint(format!("{base}:duplicate:{ordinal}"));
+        route.info.id = route.fingerprint.stable_device_id();
+        route.info.capabilities.supports_direct = false;
+        route.disabled_reason = Some(
+            "OpenRGB identity collides with another controller; assign a stable identity"
+                .to_owned(),
+        );
+    }
 }
 
 fn build_route(
@@ -651,8 +846,17 @@ fn output_disabled_reason(
             "OpenRGB detector class '{detector_class}' is reserved for native Hypercolor drivers"
         ));
     }
-    if confidence == IdentityConfidence::Low && !ownership.allow_low_confidence {
-        return Some("OpenRGB identity confidence is low; assign ownership explicitly".to_owned());
+    if confidence == IdentityConfidence::Low {
+        if detector_class == "hid" || detector_class == "smbus" {
+            return Some(
+                "OpenRGB index-only identity is not safe for contention-prone output".to_owned(),
+            );
+        }
+        if !ownership.allow_low_confidence {
+            return Some(
+                "OpenRGB identity confidence is low; assign ownership explicitly".to_owned(),
+            );
+        }
     }
     if writable_mode.is_none() {
         return Some("OpenRGB controller has no approved per-LED writable mode".to_owned());
@@ -957,13 +1161,44 @@ mod tests {
         let reason = output_disabled_reason(
             &ownership,
             IdentityConfidence::Low,
-            "hid",
+            "virtual",
             Some(&(0, sample_mode())),
         );
         assert!(
             reason
                 .expect("low-confidence controller should be disabled")
                 .contains("low")
+        );
+    }
+
+    #[test]
+    fn ownership_filter_blocks_index_only_hid_even_with_override() {
+        let ownership = OpenRgbOwnership {
+            mode: OpenRgbOwnershipMode::OpenRgbOwned,
+            allow_low_confidence: true,
+            ..OpenRgbOwnership::default()
+        };
+
+        let reason = output_disabled_reason(
+            &ownership,
+            IdentityConfidence::Low,
+            "hid",
+            Some(&(0, sample_mode())),
+        );
+
+        assert!(
+            reason
+                .expect("index-only HID controller should be disabled")
+                .contains("index-only")
+        );
+        assert!(
+            output_disabled_reason(
+                &ownership,
+                IdentityConfidence::Low,
+                "virtual",
+                Some(&(0, sample_mode()))
+            )
+            .is_none()
         );
     }
 
@@ -1012,6 +1247,40 @@ mod tests {
         let route = build_route(default_endpoints()[0], 0, 5, controller, &config);
         assert!(route.disabled_reason.is_some());
         assert!(!route.info.capabilities.supports_direct);
+    }
+
+    #[test]
+    fn duplicate_medium_fingerprints_are_disambiguated_and_disabled() {
+        let mut first = sample_controller();
+        first.serial.clear();
+        first.location.clear();
+        let second = first.clone();
+        let config = OpenRgbConfig {
+            ownership: OpenRgbOwnership {
+                mode: OpenRgbOwnershipMode::OpenRgbOwned,
+                ..OpenRgbOwnership::default()
+            },
+            ..OpenRgbConfig::default()
+        };
+        let endpoint = default_endpoints()[0];
+        let mut routes = vec![
+            build_route(endpoint, 0, 5, first, &config),
+            build_route(endpoint, 1, 5, second, &config),
+        ];
+
+        disambiguate_duplicate_fingerprints(&mut routes);
+
+        assert_ne!(routes[0].fingerprint, routes[1].fingerprint);
+        assert_ne!(routes[0].info.id, routes[1].info.id);
+        for route in routes {
+            assert!(
+                route
+                    .disabled_reason
+                    .expect("duplicate fingerprint should be disabled")
+                    .contains("collides")
+            );
+            assert!(!route.info.capabilities.supports_direct);
+        }
     }
 
     fn sample_controller() -> ControllerData {

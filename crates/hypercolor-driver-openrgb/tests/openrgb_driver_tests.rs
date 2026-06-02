@@ -94,13 +94,14 @@ async fn driver_discovers_connects_and_writes_through_sdk_bridge() {
         .await
         .expect("backend should connect selected controller");
     assert_eq!(backend.target_fps(&device_id), Some(45));
+    tokio::time::sleep(Duration::from_millis(20)).await;
     backend
         .write_colors(&device_id, &[[10, 20, 30], [40, 50, 60]])
         .await
         .expect("backend should stream colors through SDK");
 
     let update = server.await.expect("server task should join");
-    assert_eq!(update.header.device_index, 0);
+    assert_eq!(update.header.device_index, 1);
     assert_eq!(update.header.packet_id, PacketId::UpdateLeds);
     assert_eq!(update.payload.len(), 14);
     assert_eq!(&update.payload[0..4], &14_u32.to_le_bytes());
@@ -123,6 +124,8 @@ async fn run_driver_server(listener: TcpListener) -> Packet {
 
 async fn handle_driver_connection(mut stream: TcpStream) -> Option<Packet> {
     let mut decoder = PacketDecoder::new();
+    let mut reordered = false;
+    let mut notified_reorder = false;
     while let Some(packet) = read_next_packet(&mut stream, &mut decoder).await {
         match packet.header.packet_id {
             PacketId::RequestProtocolVersion => {
@@ -142,34 +145,44 @@ async fn handle_driver_connection(mut stream: TcpStream) -> Option<Packet> {
                 assert_eq!(packet.payload, b"Hypercolor\0");
             }
             PacketId::RequestControllerCount => {
+                let count = if reordered { 2_u32 } else { 1_u32 };
                 send_packet(
                     &mut stream,
                     PacketId::RequestControllerCount,
                     0,
-                    1_u32.to_le_bytes().to_vec(),
+                    count.to_le_bytes().to_vec(),
                 )
                 .await;
             }
             PacketId::RequestControllerData => {
-                assert_eq!(packet.header.device_index, 0);
                 assert_eq!(
                     packet.payload,
                     CLIENT_MAX_PROTOCOL_VERSION.to_le_bytes().to_vec()
                 );
+                let payload = if reordered && packet.header.device_index == 0 {
+                    controller_payload_v5("Other Board", "OTHER", "hidraw1")
+                } else {
+                    controller_payload_v5("Board", "SER123", "hidraw0")
+                };
                 send_packet(
                     &mut stream,
                     PacketId::RequestControllerData,
-                    0,
-                    controller_payload_v5(),
+                    packet.header.device_index,
+                    payload,
                 )
                 .await;
             }
             PacketId::SetCustomMode => {
-                assert_eq!(packet.header.device_index, 0);
+                assert!(packet.header.device_index <= 1);
             }
             PacketId::UpdateMode => {
-                assert_eq!(packet.header.device_index, 0);
+                assert!(packet.header.device_index <= 1);
                 assert!(!packet.payload.is_empty());
+                if !notified_reorder {
+                    send_packet(&mut stream, PacketId::DeviceListUpdated, 0, Vec::new()).await;
+                    reordered = true;
+                    notified_reorder = true;
+                }
             }
             PacketId::UpdateLeds => return Some(packet),
             other => panic!("unexpected OpenRGB client packet: {other:?}"),
@@ -231,16 +244,16 @@ fn config_entry(config: &OpenRgbConfig) -> DriverConfigEntry {
     DriverConfigEntry::enabled(settings)
 }
 
-fn controller_payload_v5() -> Vec<u8> {
+fn controller_payload_v5(name: &str, serial: &str, location: &str) -> Vec<u8> {
     let mut body = Vec::new();
     push_u32(&mut body, 0);
     push_i32(&mut body, 5);
-    push_str(&mut body, "Board");
+    push_str(&mut body, name);
     push_str(&mut body, "Acme");
     push_str(&mut body, "Keyboard controller");
     push_str(&mut body, "1.2.3");
-    push_str(&mut body, "SER123");
-    push_str(&mut body, "hidraw0");
+    push_str(&mut body, serial);
+    push_str(&mut body, location);
     push_u16(&mut body, 1);
     push_i32(&mut body, 0);
     push_mode(&mut body);
