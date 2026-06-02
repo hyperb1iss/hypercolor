@@ -2,12 +2,12 @@
 
 ## Status
 
-Planned. Implementation is gated on the provenance, ownership, and distribution
-decisions in this spec.
+Driver slice implemented. The active milestone is the clean SDK crate and Bridge
+driver against a user-installed or externally managed OpenRGB server.
 
-Current implementation scope is the clean SDK crate and Bridge driver against a
-user-installed or externally managed OpenRGB server. Bundled OpenRGB supervision
-and release distribution lanes are deferred.
+Bundled OpenRGB supervision, post-install download/install flows, Steam lanes,
+and release distribution compliance artifacts are deferred to later milestones.
+They must not block the driver slice and must not be quietly folded into it.
 
 ## Goal
 
@@ -210,7 +210,9 @@ cadence. The global render tier is never lowered because of OpenRGB. SMBus
 cadence limits are hardware-fundamental bus-protection constraints, not
 performance nerfs; hammering SMBus can stall other bus traffic.
 
-The driver advertises realistic per-device `target_fps` values and health state:
+The driver advertises realistic per-device `target_fps` values, tracks
+per-controller health inputs, and derives coarse health through the current
+driver API:
 
 - connection state
 - negotiated protocol version
@@ -219,7 +221,15 @@ The driver advertises realistic per-device `target_fps` values and health state:
 - consecutive write failures
 - output-disabled reason
 
-## App Supervisor
+The current `DeviceBackend::health_check` contract exposes only
+`healthy`/`degraded`/`unreachable`. Negotiated protocol and output-disabled
+reason already surface through discovery metadata, and exact SDK write failures
+surface through the daemon's async device-output metrics after the output queue
+observes the driver's frame-sink error. Structured per-controller health
+metadata in one typed health payload, such as last success timestamp, protocol,
+and output-disabled reason, requires a future driver-health schema expansion.
+
+## App Supervisor (Deferred)
 
 The app supervisor is separate from the driver. The driver receives endpoints and
 does not care whether they come from a system OpenRGB server or a supervised
@@ -235,7 +245,7 @@ Supervisor behavior:
 - Explain privilege requirements and the Windows WinRing0/blocklist caveat.
 - Avoid orphaning supervised OpenRGB on shutdown or uninstall.
 
-## Distribution
+## Distribution (Deferred)
 
 The default Steam lane is post-install OpenRGB download or installation from a
 Hypercolor-controlled distribution endpoint, outside the Steam depot and outside
@@ -257,6 +267,8 @@ Any lane where Hypercolor distributes OpenRGB must:
 
 ## Tests
 
+Current driver slice:
+
 SDK tests:
 
 - packet header, endian, and size round trips
@@ -271,6 +283,13 @@ SDK tests:
 - persistent mode rejection
 - `SAVEMODE` and `RESIZEZONE` never emitted
 - `UPDATELEDS` and `UPDATEZONELEDS` payloads
+- synthesized golden controller-data corpus for supported protocol versions
+- fake SDK server integration coverage for client request/response flow
+
+The active slice uses public-doc synthesized golden fixtures and fake SDK
+servers. A real black-box packet corpus from an unmodified OpenRGB SDK server is
+a future compatibility-hardening gate, not a provenance requirement for this
+milestone.
 
 Driver tests:
 
@@ -286,6 +305,8 @@ Driver tests:
 - health state
 - per-controller `target_fps`
 - slow-controller isolation
+
+Deferred supervisor and distribution tests:
 
 Supervisor and packaging tests:
 
@@ -303,3 +324,9 @@ Each implementation slice runs focused crate tests. Before merge:
 - `just verify`
 - independent review of SDK parser and ownership logic
 - legal checkpoint before distributing OpenRGB artifacts
+
+For the active driver slice, focused verification is:
+
+- `cargo test -p hypercolor-openrgb-sdk -p hypercolor-driver-openrgb`
+- `cargo clippy -p hypercolor-openrgb-sdk -p hypercolor-driver-openrgb -- -D warnings`
+- `cargo test -p hypercolor-driver-builtin`
