@@ -96,7 +96,7 @@ pub fn StudioDeviceCard(
         let select_body = select.clone();
         return view! {
             <div
-                class="card-hover flex w-full items-center rounded-lg border border-dashed border-edge-subtle/45"
+                class="flex w-full items-center rounded-lg border border-dashed border-edge-subtle/45 transition-colors duration-150"
                 title="Offline — placed in the layout but not currently connected"
             >
                 <button
@@ -235,17 +235,14 @@ pub fn StudioDeviceCard(
     });
     let physical_id_for_rows = device.id.clone();
 
-    // The duotone radial hero glow and ambient inner/outer glow that
-    // give the card its brand identity — a flat linear wash reads as
-    // generic chrome, not hardware.
+    // A single smooth diagonal brand wash — the duotone left strip carries
+    // the hardware identity. Low-alpha radial gradients banded and
+    // pixelated against the dark surface, so the card stays linear.
     let card_style = format!(
-        "border: 1px solid rgba({primary}, 0.24); \
-         background: \
-         radial-gradient(ellipse at 14% 0%, rgba({primary}, 0.24), transparent 60%), \
-         radial-gradient(ellipse at 100% 6%, rgba({secondary}, 0.15), transparent 64%), \
-         linear-gradient(160deg, rgba({primary}, 0.07), transparent 72%); \
-         box-shadow: inset 0 0 20px rgba({primary}, 0.06), \
-         0 0 14px rgba({primary}, 0.07), 0 1px 3px rgba(0, 0, 0, 0.28)"
+        "border: 1px solid rgba({primary}, 0.20); \
+         background: linear-gradient(135deg, rgba({primary}, 0.11), \
+         rgba({secondary}, 0.045) 58%, transparent 90%); \
+         box-shadow: 0 1px 2px rgba(0, 0, 0, 0.22)"
     );
     let strip_style =
         format!("background: linear-gradient(180deg, rgb({primary}), rgb({secondary}))");
@@ -260,7 +257,11 @@ pub fn StudioDeviceCard(
     let add_device = matches!(mode, CardMode::Available).then(|| device.clone());
 
     view! {
-        <div class="card-hover w-full overflow-hidden rounded-lg" style=card_style>
+        <div class="group/card relative w-full overflow-hidden rounded-lg transition-[border-color,box-shadow] duration-150" style=card_style>
+            // A flat low-alpha hover wash — clean and bandless, no scale,
+            // no brightness pump. Replaces card-hover, which squished the
+            // whole card on click and pumped a janky radial glow.
+            <div class="pointer-events-none absolute inset-0 bg-white/0 transition-colors duration-150 group-hover/card:bg-white/[0.03]" />
             <div class="flex items-stretch">
                 <button
                     type="button"
@@ -490,16 +491,15 @@ fn card_actions(
                             view! {
                                 <button
                                     type="button"
-                                    class="btn-press flex h-6 items-center justify-center gap-1 rounded-md border px-2 text-[10px] font-semibold uppercase tracking-wide transition-colors"
-                                    style="color: rgba(80, 250, 123, 0.92); border-color: rgba(80, 250, 123, 0.32); background: rgba(80, 250, 123, 0.08)"
+                                    class="btn-press flex h-6 w-6 items-center justify-center rounded-md transition-colors"
+                                    style="color: rgba(80, 250, 123, 0.78)"
                                     title="Add to this zone"
                                     on:click=move |ev: web_sys::MouseEvent| {
                                         ev.stop_propagation();
                                         assign_device_to_zone(studio, device.clone(), select.clone());
                                     }
                                 >
-                                    <Icon icon=LuPlus width="11px" height="11px" />
-                                    "Add"
+                                    <Icon icon=LuPlus width="13px" height="13px" />
                                 </button>
                             }
                             .into_any()
