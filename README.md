@@ -398,14 +398,6 @@ graph TD
         D[REST API · WebSocket · MCP<br><i>Axum on :9420</i>]
     end
 
-    subgraph cloud [Cloud]
-        CAPI[cloud-api<br><i>contract types</i>]
-        CC[cloud-client<br><i>OAuth · sync</i>]
-        DL[daemon-link<br><i>mux WebSocket tunnel</i>]
-        CAPI --> CC
-        CAPI --> DL
-    end
-
     subgraph clients [Clients]
         CLI[CLI<br><i>hypercolor</i>]
         TUI[TUI<br><i>Ratatui</i>]
@@ -421,7 +413,6 @@ graph TD
     C --> API
     H --> DB
     C & H & DB --> D
-    D --> CC & DL
     D --> CLI & TUI & UI
     APP --> DT & TR & D
 ```

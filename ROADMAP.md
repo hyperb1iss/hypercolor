@@ -74,10 +74,6 @@ Servo effects currently read back through CPU (`glReadPixels`). The Linux GPU su
 
 A community effect gallery — browse, install, and share effects without leaving the UI. The infrastructure depends on the Wasmtime plugin system and npm publication being stable first.
 
-### Cloud Sync
-
-Profile, scene, and layout sync across machines. The architecture (cloud-api contract types, OAuth client, daemon-link WebSocket tunnel) is designed and partially stubbed in the codebase. No deployment timeline.
-
 ### Interactive Viewport Designer
 
 A live 2D canvas editor where you draw zones, masks, and spatial regions and see them mapped to LEDs in real time. The spec exists; it builds on the existing spatial engine.

@@ -31,7 +31,6 @@ on hypercolor-tui (feature-gated). Nothing in the workspace depends on this crat
 | `audio` | Audio input configuration |
 | `library` | Manage favorite effects |
 | `profiles` | Save and load profiles |
-| `cloud` | Cloud login and account |
 | `server` | Daemon connection settings |
 | `servers` | Multi-server management |
 | `service` | Daemon lifecycle (start/stop/status) |
