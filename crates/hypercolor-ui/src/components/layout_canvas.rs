@@ -42,6 +42,11 @@ pub fn LayoutCanvas() -> impl IntoView {
     let keep_aspect_ratio = editor.keep_aspect_ratio;
     let hidden_zones = editor.hidden_zones;
     let hovered_zone_ids = editor.hovered_zone_ids;
+    // When anything is focused (selected or hovered), the rest of the canvas
+    // recedes so a dense layout reads clearly around the focus.
+    let has_focus = Signal::derive(move || {
+        !selected_zone_ids.get().is_empty() || !hovered_zone_ids.get().is_empty()
+    });
     let set_selected_zone_ids = editor.set_selected_zone_ids;
     let set_compound_depth = editor.set_compound_depth;
     let set_layout = editor.set_layout;
@@ -499,10 +504,15 @@ pub fn LayoutCanvas() -> impl IntoView {
                                         };
                                         let shape = zone_shape_style(&zd.shape);
                                         let z = if selected || hovered { elevated_z_index } else { base_z_index };
+                                        // A box not in focus while something else is recedes,
+                                        // so a dense canvas reads around the selection/hover.
+                                        let dimmed_by_focus = has_focus.get() && !selected && !hovered;
                                         let visibility = if hidden {
-                                            "opacity: 0.08; pointer-events: none; filter: grayscale(1)"
+                                            "opacity: 0.08; pointer-events: none; filter: grayscale(1)".to_string()
+                                        } else if dimmed_by_focus {
+                                            "opacity: 0.26".to_string()
                                         } else {
-                                            "opacity: 1"
+                                            "opacity: 1".to_string()
                                         };
                                         format!(
                                             "{}; {}; {}; {}; {}; z-index: {z}; backdrop-filter: blur(4px) saturate(120%); {}",
