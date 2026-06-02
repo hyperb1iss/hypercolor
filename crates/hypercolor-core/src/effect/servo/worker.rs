@@ -52,6 +52,8 @@ use super::worker_client::{
 };
 use crate::effect::servo_bootstrap::{ServoRenderingContextHandle, bootstrap_rendering_context};
 use crate::effect::traits::EffectRenderOutput;
+#[cfg(feature = "servo-gpu-import")]
+use crate::effect::traits::ImportedEffectFrame;
 
 #[cfg(all(feature = "servo-gpu-import", target_os = "macos"))]
 type PlatformServoGpuImporter = hypercolor_macos_gpu_interop::MacosIosurfaceImporter;
@@ -831,6 +833,18 @@ fn should_reuse_cached_canvas_after_transparent_readback(
         && canvas_is_fully_transparent(candidate)
 }
 
+#[cfg(feature = "servo-gpu-import")]
+fn can_reuse_cached_gpu_frame(
+    reuse_cached_on_no_ready: bool,
+    frame_ready: bool,
+    cached_width: u32,
+    cached_height: u32,
+    width: u32,
+    height: u32,
+) -> bool {
+    reuse_cached_on_no_ready && !frame_ready && cached_width == width && cached_height == height
+}
+
 fn canvas_has_visible_alpha(canvas: &Canvas) -> bool {
     canvas
         .as_rgba_bytes()
@@ -1042,6 +1056,8 @@ struct ServoSession {
     renders_since_load: u64,
     #[cfg(feature = "servo-gpu-import")]
     gpu_import_transient_failures: u32,
+    #[cfg(feature = "servo-gpu-import")]
+    last_gpu_frame: Option<ImportedEffectFrame>,
     /// Most recent successful readback, retained so ticks where Servo has
     /// nothing new to composite can skip `read_to_image` entirely. Cloning a
     /// `Canvas` is an Arc refcount bump (zero-copy), so repeated reuse costs
@@ -1364,6 +1380,8 @@ impl ServoWorkerRuntime {
                 renders_since_load: 0,
                 #[cfg(feature = "servo-gpu-import")]
                 gpu_import_transient_failures: 0,
+                #[cfg(feature = "servo-gpu-import")]
+                last_gpu_frame: None,
                 last_canvas: None,
                 consecutive_no_ready_frames: 0,
             },
@@ -1460,6 +1478,7 @@ impl ServoWorkerRuntime {
             {
                 session.gpu_import_retry_after = None;
                 session.gpu_import_transient_failures = 0;
+                session.last_gpu_frame = None;
             }
             session.loaded_at = None;
             session.renders_since_load = 0;
@@ -1658,10 +1677,42 @@ impl ServoWorkerRuntime {
                 return Ok(EffectRenderOutput::Cpu(cached.clone()));
             }
 
+            #[cfg(feature = "servo-gpu-import")]
+            if mode.prefers_gpu()
+                && let Some(cached) = self.session(session_id)?.last_gpu_frame.as_ref()
+                && can_reuse_cached_gpu_frame(
+                    mode.reuse_cached_gpu_frame_on_no_ready(),
+                    frame_ready,
+                    cached.width,
+                    cached.height,
+                    width,
+                    height,
+                )
+            {
+                let cached = cached.clone();
+                timings.total_us = elapsed_micros(frame_start);
+                log_servo_render_stage_timings(
+                    session_id,
+                    width,
+                    height,
+                    script_count,
+                    script_bytes,
+                    frame_ready,
+                    false,
+                    true,
+                    timings,
+                );
+                return Ok(EffectRenderOutput::Gpu(cached));
+            }
+
             let output = render_servo_framebuffer(self, session_id, mode, &mut timings)?;
             let output = match output {
                 EffectRenderOutput::Cpu(canvas) => {
                     let session = self.session_mut(session_id)?;
+                    #[cfg(feature = "servo-gpu-import")]
+                    {
+                        session.last_gpu_frame = None;
+                    }
                     if should_reuse_cached_canvas_after_transparent_readback(
                         session.last_canvas.as_ref(),
                         &canvas,
@@ -1695,7 +1746,11 @@ impl ServoWorkerRuntime {
                     EffectRenderOutput::Cpu(output_canvas)
                 }
                 #[cfg(feature = "servo-gpu-import")]
-                EffectRenderOutput::Gpu(frame) => EffectRenderOutput::Gpu(frame),
+                EffectRenderOutput::Gpu(frame) => {
+                    let session = self.session_mut(session_id)?;
+                    session.last_gpu_frame = Some(frame.clone());
+                    EffectRenderOutput::Gpu(frame)
+                }
             };
             let emitted_cpu_frame = output.as_cpu_canvas().is_some();
             timings.total_us = elapsed_micros(frame_start);
@@ -1920,7 +1975,11 @@ impl ServoWorkerRuntime {
         if let Some(importer) = self.session_mut(session_id)?.gpu_importer.as_mut() {
             importer.destroy_gl_resources(gl.as_ref());
         }
-        self.session_mut(session_id)?.gpu_importer = None;
+        {
+            let session = self.session_mut(session_id)?;
+            session.gpu_importer = None;
+            session.last_gpu_frame = None;
+        }
         let importer = hypercolor_linux_gpu_interop::LinuxGlFramebufferImporter::new_from_process(
             device,
             gl.as_ref(),
@@ -2028,6 +2087,9 @@ impl ServoWorkerRuntime {
     }
 
     fn clear_gpu_importer(&mut self, session_id: ServoSessionId) {
+        if let Ok(session) = self.session_mut(session_id) {
+            session.last_gpu_frame = None;
+        }
         let Ok(session) = self.session(session_id) else {
             return;
         };
@@ -2047,6 +2109,7 @@ impl ServoWorkerRuntime {
             importer.destroy_gl_resources(gl.as_ref());
         }
         session.gpu_importer = None;
+        session.last_gpu_frame = None;
     }
 
     fn destroy_gpu_importer_for_session(session: &mut ServoSession) {
@@ -2059,6 +2122,7 @@ impl ServoWorkerRuntime {
             importer.destroy_gl_resources(gl.as_ref());
         }
         session.gpu_importer = None;
+        session.last_gpu_frame = None;
     }
 }
 
@@ -2105,11 +2169,15 @@ impl ServoWorkerRuntime {
             return Ok(());
         }
 
-        self.session_mut(session_id)?.gpu_importer = Some(
-            hypercolor_windows_gpu_interop::WindowsD3d11SharedTextureImporter::new(
-                device, descriptor,
-            )?,
-        );
+        {
+            let session = self.session_mut(session_id)?;
+            session.gpu_importer = Some(
+                hypercolor_windows_gpu_interop::WindowsD3d11SharedTextureImporter::new(
+                    device, descriptor,
+                )?,
+            );
+            session.last_gpu_frame = None;
+        }
         Ok(())
     }
 
@@ -2162,11 +2230,13 @@ impl ServoWorkerRuntime {
     fn clear_gpu_importer(&mut self, session_id: ServoSessionId) {
         if let Ok(session) = self.session_mut(session_id) {
             session.gpu_importer = None;
+            session.last_gpu_frame = None;
         }
     }
 
     fn destroy_gpu_importer_for_session(session: &mut ServoSession) {
         session.gpu_importer = None;
+        session.last_gpu_frame = None;
     }
 }
 
@@ -2214,9 +2284,13 @@ impl ServoWorkerRuntime {
             return Ok(());
         }
 
-        self.session_mut(session_id)?.gpu_importer = Some(
-            hypercolor_macos_gpu_interop::MacosIosurfaceImporter::new(device, descriptor)?,
-        );
+        {
+            let session = self.session_mut(session_id)?;
+            session.gpu_importer = Some(hypercolor_macos_gpu_interop::MacosIosurfaceImporter::new(
+                device, descriptor,
+            )?);
+            session.last_gpu_frame = None;
+        }
         Ok(())
     }
 
@@ -2255,11 +2329,13 @@ impl ServoWorkerRuntime {
     fn clear_gpu_importer(&mut self, session_id: ServoSessionId) {
         if let Ok(session) = self.session_mut(session_id) {
             session.gpu_importer = None;
+            session.last_gpu_frame = None;
         }
     }
 
     fn destroy_gpu_importer_for_session(session: &mut ServoSession) {
         session.gpu_importer = None;
+        session.last_gpu_frame = None;
     }
 }
 
@@ -2283,7 +2359,7 @@ fn render_servo_framebuffer(
         i32::try_from(size.height).context("canvas height overflow for Servo readback")?;
 
     #[cfg(feature = "servo-gpu-import")]
-    if matches!(mode, ServoRenderMode::GpuPreferred) {
+    if mode.prefers_gpu() {
         let auto_import = matches!(
             super::servo_gpu_import_mode(),
             hypercolor_types::config::ServoGpuImportMode::Auto
@@ -2783,8 +2859,6 @@ pub(super) mod test_support {
     use crate::effect::traits::EffectRenderOutput;
 
     use super::super::memory::{ServoMemoryReportSnapshot, ServoMemoryReportTotals};
-    #[cfg(feature = "servo-gpu-import")]
-    use super::super::worker_client::ServoRenderMode;
     use super::super::worker_client::{
         ServoWorkerClient, ServoWorkerClientSharedState, WorkerCommand,
     };
@@ -2799,6 +2873,8 @@ pub(super) mod test_support {
         pub height: u32,
         #[cfg(feature = "servo-gpu-import")]
         pub prefer_gpu: bool,
+        #[cfg(feature = "servo-gpu-import")]
+        pub reuse_cached_on_no_ready: bool,
     }
 
     pub struct RecordedLoadCommand {
@@ -2895,7 +2971,9 @@ pub(super) mod test_support {
                         ..
                     } => {
                         #[cfg(feature = "servo-gpu-import")]
-                        let prefer_gpu = matches!(mode, ServoRenderMode::GpuPreferred);
+                        let prefer_gpu = mode.prefers_gpu();
+                        #[cfg(feature = "servo-gpu-import")]
+                        let reuse_cached_on_no_ready = mode.reuse_cached_gpu_frame_on_no_ready();
                         #[cfg(not(feature = "servo-gpu-import"))]
                         let _ = mode;
                         let _ = render_tx.send(RecordedRenderCommand {
@@ -2904,6 +2982,8 @@ pub(super) mod test_support {
                             height,
                             #[cfg(feature = "servo-gpu-import")]
                             prefer_gpu,
+                            #[cfg(feature = "servo-gpu-import")]
+                            reuse_cached_on_no_ready,
                         });
                         let result = result_rx
                             .recv()
@@ -3245,6 +3325,18 @@ mod tests {
             Some(ScheduledServoWork::Command(WorkerCommand::Shutdown { .. }))
         ));
         assert!(scheduler.next().is_none());
+    }
+
+    #[cfg(feature = "servo-gpu-import")]
+    #[test]
+    fn cached_gpu_frame_reuse_requires_policy_no_ready_and_matching_size() {
+        assert!(can_reuse_cached_gpu_frame(true, false, 480, 480, 480, 480));
+        assert!(!can_reuse_cached_gpu_frame(
+            false, false, 480, 480, 480, 480
+        ));
+        assert!(!can_reuse_cached_gpu_frame(true, true, 480, 480, 480, 480));
+        assert!(!can_reuse_cached_gpu_frame(true, false, 480, 480, 640, 480));
+        assert!(!can_reuse_cached_gpu_frame(true, false, 480, 480, 480, 640));
     }
 
     #[cfg(feature = "servo-gpu-import")]

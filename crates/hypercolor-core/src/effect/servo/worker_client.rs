@@ -118,7 +118,26 @@ pub(super) enum WorkerCommand {
 pub(super) enum ServoRenderMode {
     Cpu,
     #[cfg(feature = "servo-gpu-import")]
-    GpuPreferred,
+    GpuPreferred {
+        reuse_cached_on_no_ready: bool,
+    },
+}
+
+impl ServoRenderMode {
+    #[cfg(feature = "servo-gpu-import")]
+    pub(super) const fn prefers_gpu(self) -> bool {
+        matches!(self, Self::GpuPreferred { .. })
+    }
+
+    #[cfg(feature = "servo-gpu-import")]
+    pub(super) const fn reuse_cached_gpu_frame_on_no_ready(self) -> bool {
+        match self {
+            Self::Cpu => false,
+            Self::GpuPreferred {
+                reuse_cached_on_no_ready,
+            } => reuse_cached_on_no_ready,
+        }
+    }
 }
 
 /// Receipt for an in-flight render request.

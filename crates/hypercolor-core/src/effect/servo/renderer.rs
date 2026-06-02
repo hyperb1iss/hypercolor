@@ -131,6 +131,8 @@ pub struct ServoRenderer {
     last_canvas: Option<Canvas>,
     #[cfg(feature = "servo-gpu-import")]
     last_gpu_frame: Option<ImportedEffectFrame>,
+    #[cfg(feature = "servo-gpu-import")]
+    reuse_cached_gpu_frame_on_no_ready: bool,
     warned_fallback_frame: bool,
     warned_stalled_frame: bool,
     include_audio_updates: bool,
@@ -163,6 +165,8 @@ impl ServoRenderer {
             last_canvas: None,
             #[cfg(feature = "servo-gpu-import")]
             last_gpu_frame: None,
+            #[cfg(feature = "servo-gpu-import")]
+            reuse_cached_gpu_frame_on_no_ready: false,
             warned_fallback_frame: false,
             warned_stalled_frame: false,
             include_audio_updates: true,
@@ -282,6 +286,11 @@ impl ServoRenderer {
         self.include_sensor_updates = effect_uses_sensor_data(metadata);
         self.scoped_sensor_control_ids = scoped_sensor_control_ids(metadata);
         self.include_interaction_updates = effect_uses_interaction_data(metadata);
+        #[cfg(feature = "servo-gpu-import")]
+        {
+            self.reuse_cached_gpu_frame_on_no_ready =
+                should_reuse_cached_gpu_frame_on_no_ready(metadata);
+        }
         self.last_animation_fps_cap = None;
         self.animation_cadence = animation_cadence(metadata);
         self.host_driven_animation = host_driven_animation(metadata);
@@ -556,6 +565,8 @@ impl ServoRenderer {
         }
         let scripts = self.take_pending_scripts();
         let request_result = {
+            #[cfg(feature = "servo-gpu-import")]
+            let reuse_cached_on_no_ready = self.reuse_cached_gpu_frame_on_no_ready;
             let session = self
                 .session
                 .as_mut()
@@ -563,7 +574,7 @@ impl ServoRenderer {
             if prefer_gpu {
                 #[cfg(feature = "servo-gpu-import")]
                 {
-                    session.request_render_gpu(scripts)
+                    session.request_render_gpu(scripts, reuse_cached_on_no_ready)
                 }
                 #[cfg(not(feature = "servo-gpu-import"))]
                 {
@@ -860,6 +871,10 @@ impl EffectRenderer for ServoRenderer {
         self.include_sensor_updates = false;
         self.scoped_sensor_control_ids.clear();
         self.include_interaction_updates = false;
+        #[cfg(feature = "servo-gpu-import")]
+        {
+            self.reuse_cached_gpu_frame_on_no_ready = false;
+        }
         self.last_animation_fps_cap = None;
         self.animation_cadence = AnimationCadence::MatchRenderLoop;
         self.last_submit_time_secs = None;
@@ -1025,6 +1040,11 @@ fn effect_uses_interaction_data(metadata: &EffectMetadata) -> bool {
 
 fn host_driven_animation(_metadata: &EffectMetadata) -> bool {
     false
+}
+
+#[cfg(feature = "servo-gpu-import")]
+fn should_reuse_cached_gpu_frame_on_no_ready(metadata: &EffectMetadata) -> bool {
+    metadata.category == EffectCategory::Display
 }
 
 #[cfg(test)]
@@ -1256,6 +1276,16 @@ mod tests {
 
     #[cfg(feature = "servo-gpu-import")]
     #[test]
+    fn no_ready_gpu_cache_reuse_is_display_only() {
+        let html = html_metadata(PathBuf::from("effect.html"));
+        let display = display_html_metadata(PathBuf::from("display.html"));
+
+        assert!(!should_reuse_cached_gpu_frame_on_no_ready(&html));
+        assert!(should_reuse_cached_gpu_frame_on_no_ready(&display));
+    }
+
+    #[cfg(feature = "servo-gpu-import")]
+    #[test]
     fn display_faces_submit_gpu_preferred_renders_when_import_is_on() {
         let _lock = SHARED_WORKER_STATE_TEST_LOCK
             .lock()
@@ -1295,6 +1325,7 @@ mod tests {
             .recv_timeout(Duration::from_millis(100))
             .expect("render command should be queued");
         assert!(render.prefer_gpu);
+        assert!(render.reuse_cached_on_no_ready);
         assert_eq!(render.width, 640);
         assert_eq!(render.height, 480);
 

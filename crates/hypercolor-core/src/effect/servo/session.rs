@@ -75,8 +75,17 @@ impl ServoSessionHandle {
     }
 
     #[cfg(feature = "servo-gpu-import")]
-    pub fn request_render_gpu(&mut self, scripts: Vec<String>) -> Result<()> {
-        self.request_render_with_mode(scripts, ServoRenderMode::GpuPreferred)
+    pub fn request_render_gpu(
+        &mut self,
+        scripts: Vec<String>,
+        reuse_cached_on_no_ready: bool,
+    ) -> Result<()> {
+        self.request_render_with_mode(
+            scripts,
+            ServoRenderMode::GpuPreferred {
+                reuse_cached_on_no_ready,
+            },
+        )
     }
 
     #[cfg(feature = "servo-gpu-import")]
