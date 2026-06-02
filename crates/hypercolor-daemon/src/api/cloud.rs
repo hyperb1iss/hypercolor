@@ -30,6 +30,7 @@ use crate::cloud_entitlements::{
     unix_now_seconds,
 };
 use crate::cloud_socket::{CloudSocketHelloInput, CloudSocketStartError};
+use crate::cloud_state::CloudState;
 
 const CONNECT_INTENT_HEADER: &str = "x-hypercolor-connect-intent";
 const CONNECT_INTENT_VALUE: &str = "manual";
@@ -366,9 +367,10 @@ pub async fn connect_connection_from_store(
     store: &impl SecretStore,
     input: CloudConnectionPrepareInput<'_>,
 ) -> Result<CloudConnectionStatus, CloudConnectionStartError> {
-    reject_running_cloud_socket(state).await?;
-    let _prepare_guard = state.cloud_connection_prepare_lock.lock().await;
-    reject_running_cloud_socket(state).await?;
+    let cloud = state.cloud_state();
+    reject_running_cloud_socket(&cloud).await?;
+    let _prepare_guard = cloud.connection_prepare_lock.lock().await;
+    reject_running_cloud_socket(&cloud).await?;
 
     prepare_connection_from_store_locked(state, client, store, input)
         .await
@@ -381,14 +383,14 @@ pub async fn connect_connection_from_store(
         tunnel_resume: None,
         studio_preview: false,
     };
-    let mut cloud_socket = state.cloud_socket.lock().await;
+    let mut cloud_socket = cloud.socket.lock().await;
     if cloud_socket.is_running() {
         return Err(CloudConnectionStartError::Socket(
             CloudSocketStartError::AlreadyRunning,
         ));
     }
     cloud_socket
-        .spawn_prepared_session(Arc::clone(&state.cloud_connection), hello)
+        .spawn_prepared_session(Arc::clone(&cloud.connection), hello)
         .await
         .map_err(CloudConnectionStartError::Socket)?;
 
@@ -401,12 +403,13 @@ pub async fn disconnect_connection_from_store(
     state: &AppState,
     store: &impl SecretStore,
 ) -> Result<CloudConnectionStatus, String> {
-    let _prepare_guard = state.cloud_connection_prepare_lock.lock().await;
-    state
-        .cloud_socket
+    let cloud = state.cloud_state();
+    let _prepare_guard = cloud.connection_prepare_lock.lock().await;
+    cloud
+        .socket
         .lock()
         .await
-        .disconnect(&state.cloud_connection)
+        .disconnect(&cloud.connection)
         .await;
     connection_status_from_store(state, store).await
 }
@@ -417,14 +420,15 @@ pub async fn prepare_connection_from_store(
     store: &impl SecretStore,
     input: CloudConnectionPrepareInput<'_>,
 ) -> Result<CloudConnectionStatus, CloudConnectionPrepareError> {
-    let mut cloud_socket = state.cloud_socket.lock().await;
+    let cloud = state.cloud_state();
+    let mut cloud_socket = cloud.socket.lock().await;
     if cloud_socket.is_running() {
         return Err(CloudConnectionPrepareError::AlreadyRunning);
     }
     drop(cloud_socket);
 
-    let _prepare_guard = state.cloud_connection_prepare_lock.lock().await;
-    let mut cloud_socket = state.cloud_socket.lock().await;
+    let _prepare_guard = cloud.connection_prepare_lock.lock().await;
+    let mut cloud_socket = cloud.socket.lock().await;
     if cloud_socket.is_running() {
         return Err(CloudConnectionPrepareError::AlreadyRunning);
     }
@@ -433,8 +437,8 @@ pub async fn prepare_connection_from_store(
     prepare_connection_from_store_locked(state, client, store, input).await
 }
 
-async fn reject_running_cloud_socket(state: &AppState) -> Result<(), CloudConnectionStartError> {
-    let mut cloud_socket = state.cloud_socket.lock().await;
+async fn reject_running_cloud_socket(cloud: &CloudState) -> Result<(), CloudConnectionStartError> {
+    let mut cloud_socket = cloud.socket.lock().await;
     if cloud_socket.is_running() {
         return Err(CloudConnectionStartError::Socket(
             CloudSocketStartError::AlreadyRunning,
@@ -449,16 +453,13 @@ async fn prepare_connection_from_store_locked(
     store: &impl SecretStore,
     input: CloudConnectionPrepareInput<'_>,
 ) -> Result<CloudConnectionStatus, CloudConnectionPrepareError> {
+    let cloud = state.cloud_state();
     let mut inflight =
-        CloudConnectionPrepareInflight::mark_connecting(Arc::clone(&state.cloud_connection)).await;
+        CloudConnectionPrepareInflight::mark_connecting(Arc::clone(&cloud.connection)).await;
     let result = client
         .prepare_stored_daemon_connect(store, input.into_stored_daemon_connect_input())
         .await;
-    let prepare = state
-        .cloud_connection
-        .write()
-        .await
-        .record_prepare_result(result);
+    let prepare = cloud.connection.write().await.record_prepare_result(result);
     inflight.disarm();
     let prepare = prepare.map_err(CloudConnectionPrepareError::Prepare)?;
 
@@ -521,7 +522,8 @@ async fn connection_status_from_store(
             return Err(format!("failed to read cloud entitlement cache: {error}"));
         }
     };
-    let runtime = state.cloud_connection.read().await.snapshot();
+    let cloud = state.cloud_state();
+    let runtime = cloud.connection.read().await.snapshot();
 
     Ok(connection_status_from_parts(
         &cloud_config,
@@ -537,15 +539,16 @@ pub async fn logout(State(state): State<Arc<AppState>>) -> Response {
         Err(error) => return ApiError::internal(format!("failed to open cloud keyring: {error}")),
     };
 
-    let _prepare_guard = state.cloud_connection_prepare_lock.lock().await;
-    state
-        .cloud_socket
+    let cloud = state.cloud_state();
+    let _prepare_guard = cloud.connection_prepare_lock.lock().await;
+    cloud
+        .socket
         .lock()
         .await
-        .disconnect(&state.cloud_connection)
+        .disconnect(&cloud.connection)
         .await;
     let cleared_sessions = {
-        let mut sessions = state.cloud_login_sessions.lock().await;
+        let mut sessions = cloud.login_sessions.lock().await;
         let count = sessions.len();
         sessions.clear();
         count
@@ -576,7 +579,8 @@ pub async fn start_login(State(state): State<Arc<AppState>>) -> Response {
 
     prune_expired_login_sessions(&state).await;
 
-    if state.cloud_login_sessions.lock().await.len() >= MAX_PENDING_CLOUD_LOGIN_SESSIONS {
+    let cloud = state.cloud_state();
+    if cloud.login_sessions.lock().await.len() >= MAX_PENDING_CLOUD_LOGIN_SESSIONS {
         return ApiError::rate_limited("too many pending cloud login sessions");
     }
 
@@ -603,17 +607,14 @@ pub async fn start_login(State(state): State<Arc<AppState>>) -> Response {
         return ApiError::conflict("cloud login authorization expired immediately");
     }
 
-    state
-        .cloud_login_sessions
-        .lock()
-        .await
-        .insert(login_id, session);
+    cloud.login_sessions.lock().await.insert(login_id, session);
 
     ApiResponse::created(response)
 }
 
 pub async fn prune_expired_login_sessions(state: &AppState) -> usize {
-    let mut sessions = state.cloud_login_sessions.lock().await;
+    let cloud = state.cloud_state();
+    let mut sessions = cloud.login_sessions.lock().await;
     let before = sessions.len();
     sessions.retain(|_, session| !session.is_expired());
     before - sessions.len()
@@ -628,29 +629,22 @@ pub async fn poll_login(
         Err(error) => return ApiError::internal(format!("invalid cloud configuration: {error}")),
     };
 
-    let Some(mut session) = state.cloud_login_sessions.lock().await.remove(&login_id) else {
+    let cloud = state.cloud_state();
+    let Some(mut session) = cloud.login_sessions.lock().await.remove(&login_id) else {
         return ApiError::not_found(format!("cloud login session {login_id} was not found"));
     };
 
     let status = match client.poll_device_authorization(&mut session).await {
         Ok(status) => status,
         Err(error) => {
-            state
-                .cloud_login_sessions
-                .lock()
-                .await
-                .insert(login_id, session);
+            cloud.login_sessions.lock().await.insert(login_id, session);
             return ApiError::internal(format!("failed to poll cloud login: {error}"));
         }
     };
 
     match status {
         DeviceAuthorizationStatus::Pending { error, retry_after } => {
-            state
-                .cloud_login_sessions
-                .lock()
-                .await
-                .insert(login_id, session);
+            cloud.login_sessions.lock().await.insert(login_id, session);
             ApiResponse::ok(CloudLoginPoll::pending(login_id, error, retry_after))
         }
         DeviceAuthorizationStatus::Authorized(token) => {

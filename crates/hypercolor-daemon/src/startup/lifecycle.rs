@@ -195,11 +195,8 @@ impl DaemonState {
 
         #[cfg(feature = "cloud")]
         {
-            self.cloud_socket
-                .lock()
-                .await
-                .shutdown(&self.cloud_connection)
-                .await;
+            let cloud = self.cloud_state();
+            cloud.socket.lock().await.shutdown(&cloud.connection).await;
         }
 
         // 1. Stop render loop — next tick() will return false.

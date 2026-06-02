@@ -36,10 +36,6 @@ use hypercolor_types::server::ServerIdentity;
 use hypercolor_types::spatial::SpatialLayout;
 
 use crate::attachment_profiles::ComponentProfileStore;
-#[cfg(feature = "cloud")]
-use crate::cloud_connection::CloudConnectionRuntime;
-#[cfg(feature = "cloud")]
-use crate::cloud_socket::CloudSocketRuntime;
 use crate::device_metrics::DeviceMetricsSnapshotStore;
 use crate::device_settings::DeviceSettingsStore;
 use crate::discovery;
@@ -248,18 +244,6 @@ pub struct DaemonState {
 
     /// Stable network identity exposed by discovery and API responses.
     pub server_identity: ServerIdentity,
-
-    /// Live Hypercolor Cloud daemon-link state.
-    #[cfg(feature = "cloud")]
-    pub cloud_connection: Arc<RwLock<CloudConnectionRuntime>>,
-
-    /// Serializes cloud connection preparation across daemon and API callers.
-    #[cfg(feature = "cloud")]
-    pub cloud_connection_prepare_lock: Arc<Mutex<()>>,
-
-    /// Active Hypercolor Cloud daemon-link socket task.
-    #[cfg(feature = "cloud")]
-    pub cloud_socket: Arc<Mutex<CloudSocketRuntime>>,
 }
 
 impl DaemonState {
@@ -290,5 +274,12 @@ impl DaemonState {
 
     pub fn register_lifecycle_extension(&mut self, extension: Arc<dyn DaemonLifecycleExtension>) {
         self.lifecycle_extensions.push(extension);
+    }
+
+    #[cfg(feature = "cloud")]
+    pub fn cloud_state(&self) -> Arc<crate::cloud_state::CloudState> {
+        self.extensions
+            .get::<crate::cloud_state::CloudState>()
+            .expect("cloud feature should register cloud state")
     }
 }

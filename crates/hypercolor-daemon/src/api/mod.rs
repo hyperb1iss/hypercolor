@@ -81,10 +81,6 @@ use uuid::Uuid;
 
 use crate::api::envelope::ApiError;
 use crate::attachment_profiles::ComponentProfileStore;
-#[cfg(feature = "cloud")]
-use crate::cloud_connection::CloudConnectionRuntime;
-#[cfg(feature = "cloud")]
-use crate::cloud_socket::CloudSocketRuntime;
 use crate::device_metrics::{DeviceMetricsSnapshot, DeviceMetricsSnapshotStore};
 use crate::device_settings::DeviceSettingsStore;
 use crate::display_frames::DisplayFrameRuntime;
@@ -273,23 +269,6 @@ pub struct AppState {
 
     /// Shared API auth and rate-limiting state for HTTP and WS command dispatch.
     pub security_state: security::SecurityState,
-
-    /// Pending Hypercolor Cloud device authorization sessions.
-    #[cfg(feature = "cloud")]
-    pub cloud_login_sessions:
-        Arc<Mutex<HashMap<Uuid, hypercolor_cloud_client::DeviceAuthorizationSession>>>,
-
-    /// Live Hypercolor Cloud daemon-link state.
-    #[cfg(feature = "cloud")]
-    pub cloud_connection: Arc<RwLock<CloudConnectionRuntime>>,
-
-    /// Serializes cloud connection preparation across refresh/register cycles.
-    #[cfg(feature = "cloud")]
-    pub cloud_connection_prepare_lock: Arc<Mutex<()>>,
-
-    /// Active Hypercolor Cloud daemon-link socket task.
-    #[cfg(feature = "cloud")]
-    pub cloud_socket: Arc<Mutex<CloudSocketRuntime>>,
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -533,6 +512,12 @@ impl AppState {
             )));
         }
 
+        let extensions = ExtensionRegistry::default();
+        #[cfg(feature = "cloud")]
+        extensions
+            .insert(Arc::new(crate::cloud_state::CloudState::default()))
+            .expect("default app state should register cloud state");
+
         Self {
             device_registry,
             effect_registry,
@@ -554,7 +539,7 @@ impl AppState {
             reconnect_tasks,
             config_manager: None,
             data_dir,
-            extensions: ExtensionRegistry::default(),
+            extensions,
             api_extensions: Vec::new(),
             input_manager,
             discovery_in_progress,
@@ -589,14 +574,6 @@ impl AppState {
                 version: env!("CARGO_PKG_VERSION").to_owned(),
             },
             security_state: security::SecurityState::from_config(&HypercolorConfig::default()),
-            #[cfg(feature = "cloud")]
-            cloud_login_sessions: Arc::new(Mutex::new(HashMap::new())),
-            #[cfg(feature = "cloud")]
-            cloud_connection: Arc::new(RwLock::new(CloudConnectionRuntime::default())),
-            #[cfg(feature = "cloud")]
-            cloud_connection_prepare_lock: Arc::new(Mutex::new(())),
-            #[cfg(feature = "cloud")]
-            cloud_socket: Arc::new(Mutex::new(CloudSocketRuntime::default())),
         }
     }
 
@@ -686,15 +663,14 @@ impl AppState {
             start_time: daemon.start_time,
             server_identity: daemon.server_identity.clone(),
             security_state: security::SecurityState::from_config(&daemon.config_manager.get()),
-            #[cfg(feature = "cloud")]
-            cloud_login_sessions: Arc::new(Mutex::new(HashMap::new())),
-            #[cfg(feature = "cloud")]
-            cloud_connection: Arc::clone(&daemon.cloud_connection),
-            #[cfg(feature = "cloud")]
-            cloud_connection_prepare_lock: Arc::clone(&daemon.cloud_connection_prepare_lock),
-            #[cfg(feature = "cloud")]
-            cloud_socket: Arc::clone(&daemon.cloud_socket),
         }
+    }
+
+    #[cfg(feature = "cloud")]
+    pub fn cloud_state(&self) -> Arc<crate::cloud_state::CloudState> {
+        self.extensions
+            .get::<crate::cloud_state::CloudState>()
+            .expect("cloud feature should register cloud state")
     }
 }
 

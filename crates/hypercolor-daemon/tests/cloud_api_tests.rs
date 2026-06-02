@@ -124,8 +124,9 @@ async fn cloud_login_start_rejects_when_cloud_disabled() {
 #[tokio::test]
 async fn cloud_login_start_rejects_when_pending_session_limit_reached() {
     let (state, _data_dir) = login_test_state(true);
+    let cloud = state.cloud_state();
     for _ in 0..128 {
-        state.cloud_login_sessions.lock().await.insert(
+        cloud.login_sessions.lock().await.insert(
             uuid::Uuid::new_v4(),
             DeviceAuthorizationSession::new(device_code_fixture(900)),
         );
@@ -214,19 +215,20 @@ async fn cloud_login_poll_rejects_unknown_session() {
 #[tokio::test]
 async fn cloud_login_prunes_expired_pending_sessions() {
     let (state, _data_dir) = login_test_state(true);
+    let cloud = state.cloud_state();
     let expired_id = uuid::Uuid::new_v4();
     let live_id = uuid::Uuid::new_v4();
-    state.cloud_login_sessions.lock().await.insert(
+    cloud.login_sessions.lock().await.insert(
         expired_id,
         DeviceAuthorizationSession::new(device_code_fixture(0)),
     );
-    state.cloud_login_sessions.lock().await.insert(
+    cloud.login_sessions.lock().await.insert(
         live_id,
         DeviceAuthorizationSession::new(device_code_fixture(900)),
     );
 
     assert_eq!(cloud::prune_expired_login_sessions(&state).await, 1);
-    let sessions = state.cloud_login_sessions.lock().await;
+    let sessions = cloud.login_sessions.lock().await;
     assert!(!sessions.contains_key(&expired_id));
     assert!(sessions.contains_key(&live_id));
 }
@@ -536,8 +538,9 @@ async fn cloud_connection_prepare_stages_signed_request_without_returning_secret
     assert!(status.can_connect);
     assert!(status.last_error.is_none());
 
-    let request = state
-        .cloud_connection
+    let cloud = state.cloud_state();
+    let request = cloud
+        .connection
         .write()
         .await
         .take_prepared_connect()
@@ -583,7 +586,8 @@ async fn cloud_connection_prepare_reports_missing_identity_and_refresh_token() {
         missing_refresh,
         cloud::CloudConnectionPrepareError::MissingRefreshToken
     ));
-    let snapshot = state.cloud_connection.read().await.snapshot();
+    let cloud = state.cloud_state();
+    let snapshot = cloud.connection.read().await.snapshot();
     assert_eq!(snapshot.runtime_state, CloudConnectionRuntimeState::Backoff);
     assert_eq!(
         snapshot.last_error.as_deref(),
@@ -615,7 +619,8 @@ async fn cloud_connection_prepare_records_network_failure_as_backoff() {
         error,
         cloud::CloudConnectionPrepareError::Prepare(_)
     ));
-    let snapshot = state.cloud_connection.read().await.snapshot();
+    let cloud = state.cloud_state();
+    let snapshot = cloud.connection.read().await.snapshot();
     assert_eq!(snapshot.runtime_state, CloudConnectionRuntimeState::Backoff);
     assert!(snapshot.last_error.is_some());
 }
@@ -671,7 +676,8 @@ async fn cloud_connection_connect_starts_socket_task_after_prepare() {
         .expect("welcome should arrive")
         .expect("welcome signal should send");
     wait_for_cloud_runtime_state(&state, CloudConnectionRuntimeState::Connected).await;
-    let snapshot = state.cloud_connection.read().await.snapshot();
+    let cloud = state.cloud_state();
+    let snapshot = cloud.connection.read().await.snapshot();
     assert_eq!(
         snapshot.runtime_state,
         CloudConnectionRuntimeState::Connected
@@ -714,18 +720,13 @@ async fn cloud_connection_connect_starts_socket_task_after_prepare() {
         .expect("test server should finish")
         .expect("test server should not panic");
     wait_for_cloud_runtime_state(&state, CloudConnectionRuntimeState::Backoff).await;
-    let snapshot = state.cloud_connection.read().await.snapshot();
+    let snapshot = cloud.connection.read().await.snapshot();
     assert_eq!(
         snapshot.last_error.as_deref(),
         Some("cloud websocket closed")
     );
-    state
-        .cloud_socket
-        .lock()
-        .await
-        .shutdown(&state.cloud_connection)
-        .await;
-    let snapshot = state.cloud_connection.read().await.snapshot();
+    cloud.socket.lock().await.shutdown(&cloud.connection).await;
+    let snapshot = cloud.connection.read().await.snapshot();
     assert_eq!(snapshot.runtime_state, CloudConnectionRuntimeState::Backoff);
     assert_eq!(
         snapshot.last_error.as_deref(),
@@ -740,8 +741,9 @@ async fn cloud_connection_disconnect_clears_runtime_snapshot() {
     load_or_create_identity(&store).expect("identity should create");
     store_refresh_token(&store, RefreshTokenOwner::Daemon, "refresh-old")
         .expect("refresh token should store");
-    state
-        .cloud_connection
+    let cloud = state.cloud_state();
+    cloud
+        .connection
         .write()
         .await
         .mark_backoff("stale cloud error");
@@ -754,7 +756,7 @@ async fn cloud_connection_disconnect_clears_runtime_snapshot() {
     assert!(!status.connected);
     assert!(status.last_error.is_none());
     assert_eq!(
-        state.cloud_connection.read().await.snapshot().runtime_state,
+        cloud.connection.read().await.snapshot().runtime_state,
         CloudConnectionRuntimeState::Idle
     );
 }
@@ -822,8 +824,9 @@ async fn cloud_connection_disconnect_stops_running_socket_task() {
 
 async fn wait_for_cloud_runtime_state(state: &AppState, expected: CloudConnectionRuntimeState) {
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    let cloud = state.cloud_state();
     loop {
-        if state.cloud_connection.read().await.snapshot().runtime_state == expected {
+        if cloud.connection.read().await.snapshot().runtime_state == expected {
             return;
         }
         assert!(
