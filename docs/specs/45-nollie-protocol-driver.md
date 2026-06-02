@@ -328,9 +328,9 @@ Nollie16v3 and Nollie32 use a completely new wire format. The fundamental change
 | Shutdown latch   | 513 bytes  | `0xFF` shutdown trigger                                                                   |
 
 **On-the-wire size is 1024 / 513 bytes including the report ID at offset 0.** This is what
-our existing `UsbHidTransport` already supports (see
-[`crates/hypercolor-hal/src/transport/hid.rs`](../../crates/hypercolor-hal/src/transport/hid.rs)
--- variable-size writes around lines 418/422).
+our `UsbHidTransport` must preserve exactly. A 513-byte settings packet sent
+through a 1024-byte interrupt endpoint must stay 513 bytes on the wire; padding
+it to 1024 leaves the controller in its hardware effect.
 
 Some host libraries annotate these as `1025`/`514` because they inject an extra prefix byte
 at the host abstraction layer. Hypercolor uses `nusb` and writes the report buffer verbatim,
@@ -1071,7 +1071,8 @@ The Gen-1 query/update endianness asymmetry is intentional firmware behavior; do
 - [x] Add channel remap tables (Nollie16v3, Nollie32 main, Nollie32 ATX, Nollie32 GPU) as `pub const` arrays.
 - [x] Add group/marker algorithm with 340-LED cap.
 - [x] Add `NOLLIE_16_V3` and `NOLLIE_32` device descriptors.
-- [x] Verify `UsbHidTransport` supports 1024-byte and 513-byte writes (already does per `crates/hypercolor-hal/src/transport/hid.rs`; add explicit test).
+- [x] Verify `UsbHidTransport` supports exact 1024-byte and 513-byte writes,
+      including 513-byte reports on a 1024-byte endpoint.
 
 **Phase 4 — Data + integration:**
 - [x] Split native Nollie SKUs into `data/drivers/vendors/nollie.toml`; keep Prism 8 under PrismRGB branding while routing it through the `nollie` driver.

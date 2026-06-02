@@ -423,6 +423,10 @@ fn normalize_outgoing_packet(data: &[u8], endpoint_packet_size: usize) -> Vec<u8
         return data[1..].to_vec();
     }
 
+    if endpoint_packet_size > HID_REPORT_SIZE && data.len() > HID_REPORT_SIZE {
+        return data.to_vec();
+    }
+
     if data.len() <= endpoint_packet_size {
         let mut padded = vec![0_u8; endpoint_packet_size];
         padded[..data.len()].copy_from_slice(data);

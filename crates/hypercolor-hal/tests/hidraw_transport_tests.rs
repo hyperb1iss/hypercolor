@@ -46,6 +46,10 @@ fn hid_interrupt_normalization_preserves_large_reports_verbatim() {
         normalize_outgoing_packet_for_testing(&settings_report, 64),
         settings_report
     );
+    assert_eq!(
+        normalize_outgoing_packet_for_testing(&settings_report, 1024),
+        settings_report
+    );
 }
 
 #[test]
