@@ -53,6 +53,7 @@ const FIELD_DEFAULT_TARGET_FPS: &str = "default_target_fps";
 const FIELD_CONTROLLER_FPS: &str = "controller_fps";
 const FIELD_MODE_PER_LED_MASK: &str = "mode_per_led_mask";
 const FIELD_MODE_PERSISTENT_MASK: &str = "mode_persistent_mask";
+const FIELD_TEARDOWN_POLICY: &str = "teardown_policy";
 
 const METADATA_ENDPOINT: &str = "endpoint";
 const METADATA_CONTROLLER_INDEX: &str = "controller_index";
@@ -96,6 +97,8 @@ pub struct OpenRgbConfig {
     pub mode_per_led_mask: u32,
     #[serde(default)]
     pub mode_persistent_mask: u32,
+    #[serde(default)]
+    pub teardown_policy: OpenRgbTeardownPolicy,
 }
 
 impl Default for OpenRgbConfig {
@@ -112,6 +115,7 @@ impl Default for OpenRgbConfig {
             controller_fps: BTreeMap::new(),
             mode_per_led_mask: default_per_led_mask(),
             mode_persistent_mask: 0,
+            teardown_policy: OpenRgbTeardownPolicy::default(),
         }
     }
 }
@@ -151,6 +155,21 @@ pub enum OpenRgbOwnershipMode {
     DetectorPartitioned,
     /// OpenRGB owns every detector class it reports.
     OpenRgbOwned,
+}
+
+/// Disconnect behavior for controllers left in OpenRGB direct mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OpenRgbTeardownPolicy {
+    /// Restore the pre-connect mode when known, otherwise leave the last frame.
+    #[default]
+    RestorePreviousOrLeave,
+    /// Restore the pre-connect mode when known, otherwise write black.
+    RestorePreviousOrBlackout,
+    /// Always write black before disconnecting.
+    Blackout,
+    /// Leave whatever frame OpenRGB last received.
+    LeaveLastFrame,
 }
 
 /// Confidence assigned to OpenRGB identity data.
@@ -332,6 +351,7 @@ impl DeviceBackend for OpenRgbBackend {
         self.connected.insert(
             *id,
             Arc::new(Mutex::new(ConnectedController {
+                previous_mode: route.previous_mode.clone(),
                 route,
                 client,
                 config: self.config.clone(),
@@ -343,7 +363,10 @@ impl DeviceBackend for OpenRgbBackend {
     }
 
     async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
-        self.connected.remove(id);
+        if let Some(controller) = self.connected.remove(id) {
+            let mut controller = controller.lock().await;
+            teardown_connected_controller(&mut controller).await?;
+        }
         Ok(())
     }
 
@@ -531,6 +554,7 @@ async fn refresh_connected_route(controller: &mut ConnectedController) -> Result
 }
 
 struct ConnectedController {
+    previous_mode: Option<(u32, ControllerMode)>,
     route: ControllerRoute,
     client: OpenRgbClient,
     config: OpenRgbConfig,
@@ -589,6 +613,7 @@ struct ControllerRoute {
     detector_class: String,
     disabled_reason: Option<String>,
     writable_mode: Option<(u32, ControllerMode)>,
+    previous_mode: Option<(u32, ControllerMode)>,
     target_fps: u32,
     info: DeviceInfo,
     protocol_version: u32,
@@ -764,6 +789,47 @@ async fn configure_controller_output(
     Ok(())
 }
 
+async fn teardown_connected_controller(controller: &mut ConnectedController) -> Result<()> {
+    match controller.config.teardown_policy {
+        OpenRgbTeardownPolicy::RestorePreviousOrLeave => {
+            try_restore_previous_mode(controller).await?;
+        }
+        OpenRgbTeardownPolicy::RestorePreviousOrBlackout => {
+            if !try_restore_previous_mode(controller).await.unwrap_or(false) {
+                blackout_controller(controller).await?;
+            }
+        }
+        OpenRgbTeardownPolicy::Blackout => {
+            blackout_controller(controller).await?;
+        }
+        OpenRgbTeardownPolicy::LeaveLastFrame => {}
+    }
+    Ok(())
+}
+
+async fn try_restore_previous_mode(controller: &mut ConnectedController) -> Result<bool> {
+    let Some((mode_index, mode)) = controller.previous_mode.clone() else {
+        return Ok(false);
+    };
+    controller
+        .client
+        .update_mode(controller.route.controller_index, mode_index, &mode)
+        .await
+        .context("OpenRGB previous mode restore failed")?;
+    Ok(true)
+}
+
+async fn blackout_controller(controller: &mut ConnectedController) -> Result<()> {
+    let led_count = usize::try_from(controller.route.info.capabilities.led_count)
+        .context("OpenRGB LED count does not fit usize")?;
+    let colors = vec![RgbColor::new(0, 0, 0); led_count];
+    controller
+        .client
+        .update_leds(controller.route.controller_index, &colors)
+        .await
+        .context("OpenRGB blackout teardown failed")
+}
+
 fn ensure_route_output_enabled(route: &ControllerRoute) -> Result<()> {
     if let Some(reason) = &route.disabled_reason {
         bail!(
@@ -820,6 +886,7 @@ fn build_route(
         &detector_class,
         writable_mode.as_ref(),
     );
+    let previous_mode = active_mode_snapshot(&controller);
     let fingerprint = controller_fingerprint(endpoint, &controller, confidence, controller_index);
     let device_id = fingerprint.stable_device_id();
     let target_fps = target_fps(config, &fingerprint.0, &detector_class);
@@ -841,6 +908,7 @@ fn build_route(
         detector_class,
         disabled_reason,
         writable_mode,
+        previous_mode,
         target_fps,
         info,
         protocol_version,
@@ -897,6 +965,12 @@ fn select_writable_mode(
         .enumerate()
         .find(|(_, mode)| mode.is_realtime_writable(policy))
         .and_then(|(index, mode)| u32::try_from(index).ok().map(|index| (index, mode.clone())))
+}
+
+fn active_mode_snapshot(controller: &ControllerData) -> Option<(u32, ControllerMode)> {
+    let index = u32::try_from(controller.active_mode).ok()?;
+    let mode = controller.modes.get(usize::try_from(index).ok()?)?.clone();
+    Some((index, mode))
 }
 
 fn output_disabled_reason(
@@ -1151,6 +1225,10 @@ fn openrgb_config_settings(config: &OpenRgbConfig) -> BTreeMap<String, serde_jso
             FIELD_MODE_PERSISTENT_MASK.to_owned(),
             json!(config.mode_persistent_mask),
         ),
+        (
+            FIELD_TEARDOWN_POLICY.to_owned(),
+            json!(config.teardown_policy),
+        ),
     ])
 }
 
@@ -1199,6 +1277,10 @@ mod tests {
         .expect("default config should parse");
         assert_eq!(config.endpoints, default_endpoints());
         assert!(!config.allow_insecure_remote);
+        assert_eq!(
+            config.teardown_policy,
+            OpenRgbTeardownPolicy::RestorePreviousOrLeave
+        );
         validate_openrgb_config(&config).expect("default config should validate");
     }
 
@@ -1357,6 +1439,21 @@ mod tests {
             );
             assert!(!route.info.capabilities.supports_direct);
         }
+    }
+
+    #[test]
+    fn active_mode_snapshot_uses_nonnegative_mode_index() {
+        let mut controller = sample_controller();
+        controller.active_mode = 0;
+        let snapshot = active_mode_snapshot(&controller).expect("active mode should exist");
+        assert_eq!(snapshot.0, 0);
+        assert_eq!(snapshot.1.name, "Direct");
+
+        controller.active_mode = -1;
+        assert!(active_mode_snapshot(&controller).is_none());
+
+        controller.active_mode = 99;
+        assert!(active_mode_snapshot(&controller).is_none());
     }
 
     #[test]

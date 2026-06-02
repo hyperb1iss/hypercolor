@@ -10,6 +10,7 @@ use hypercolor_driver_api::{
 };
 use hypercolor_driver_openrgb::{
     DESCRIPTOR, OpenRgbConfig, OpenRgbDriverModule, OpenRgbOwnership, OpenRgbOwnershipMode,
+    OpenRgbTeardownPolicy,
 };
 use hypercolor_openrgb_sdk::{
     CLIENT_MAX_PROTOCOL_VERSION, ColorMode, ModeFlag, Packet, PacketDecoder, PacketHeader,
@@ -161,6 +162,56 @@ async fn backend_reconnects_after_openrgb_socket_closes() {
     assert_eq!(&update.payload[10..14], &[60, 50, 40, 0]);
 }
 
+#[tokio::test]
+async fn disconnect_restores_previous_openrgb_mode() {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("fake OpenRGB server should bind");
+    let endpoint = listener
+        .local_addr()
+        .expect("fake OpenRGB server should expose local addr");
+    let server = tokio::spawn(run_restore_on_disconnect_server(listener));
+    let config = OpenRgbConfig {
+        endpoints: vec![endpoint],
+        ownership: OpenRgbOwnership {
+            mode: OpenRgbOwnershipMode::OpenRgbOwned,
+            ..OpenRgbOwnership::default()
+        },
+        teardown_policy: OpenRgbTeardownPolicy::RestorePreviousOrLeave,
+        ..OpenRgbConfig::default()
+    };
+    let entry = config_entry(&config);
+    let view = DriverConfigView {
+        driver_id: DESCRIPTOR.id,
+        entry: &entry,
+    };
+    let host = NullHost;
+    let module = OpenRgbDriverModule;
+    let mut backend = module
+        .build_output_backend(&host, view)
+        .expect("backend construction should succeed")
+        .expect("OpenRGB should build an output backend");
+    let devices = backend
+        .discover()
+        .await
+        .expect("backend discovery should read fake OpenRGB controller");
+    let device_id = devices[0].id;
+
+    backend
+        .connect(&device_id)
+        .await
+        .expect("backend should connect selected controller");
+    backend
+        .disconnect(&device_id)
+        .await
+        .expect("backend should restore previous mode on disconnect");
+
+    let restore = server.await.expect("server task should join");
+    assert_eq!(restore.header.device_index, 0);
+    assert_eq!(restore.header.packet_id, PacketId::UpdateMode);
+    assert_eq!(&restore.payload[4..8], &1_u32.to_le_bytes());
+}
+
 async fn run_driver_server(listener: TcpListener) -> Packet {
     loop {
         let (stream, _) = listener
@@ -236,6 +287,83 @@ async fn handle_driver_connection(mut stream: TcpStream) -> Option<Packet> {
                 }
             }
             PacketId::UpdateLeds => return Some(packet),
+            other => panic!("unexpected OpenRGB client packet: {other:?}"),
+        }
+    }
+    None
+}
+
+async fn run_restore_on_disconnect_server(listener: TcpListener) -> Packet {
+    loop {
+        let (stream, _) = listener
+            .accept()
+            .await
+            .expect("fake OpenRGB server should accept client");
+        if let Some(update) = handle_restore_connection(stream).await {
+            return update;
+        }
+    }
+}
+
+async fn handle_restore_connection(mut stream: TcpStream) -> Option<Packet> {
+    let mut decoder = PacketDecoder::new();
+    let mut output_mode_updates = 0_u32;
+    while let Some(packet) = read_next_packet(&mut stream, &mut decoder).await {
+        match packet.header.packet_id {
+            PacketId::RequestProtocolVersion => {
+                assert_eq!(
+                    packet.payload,
+                    CLIENT_MAX_PROTOCOL_VERSION.to_le_bytes().to_vec()
+                );
+                send_packet(
+                    &mut stream,
+                    PacketId::RequestProtocolVersion,
+                    0,
+                    CLIENT_MAX_PROTOCOL_VERSION.to_le_bytes().to_vec(),
+                )
+                .await;
+            }
+            PacketId::SetClientName => {
+                assert_eq!(packet.payload, b"Hypercolor\0");
+            }
+            PacketId::RequestControllerCount => {
+                send_packet(
+                    &mut stream,
+                    PacketId::RequestControllerCount,
+                    0,
+                    1_u32.to_le_bytes().to_vec(),
+                )
+                .await;
+            }
+            PacketId::RequestControllerData => {
+                assert_eq!(packet.header.device_index, 0);
+                send_packet(
+                    &mut stream,
+                    PacketId::RequestControllerData,
+                    0,
+                    controller_payload_v5_with_restore_mode("Board", "SER123", "hidraw0"),
+                )
+                .await;
+            }
+            PacketId::SetCustomMode => {
+                assert_eq!(packet.header.device_index, 0);
+            }
+            PacketId::UpdateMode => {
+                assert_eq!(packet.header.device_index, 0);
+                let mode_index = u32::from_le_bytes([
+                    packet.payload[4],
+                    packet.payload[5],
+                    packet.payload[6],
+                    packet.payload[7],
+                ]);
+                if output_mode_updates == 0 {
+                    assert_eq!(mode_index, 0);
+                    output_mode_updates += 1;
+                } else {
+                    assert_eq!(mode_index, 1);
+                    return Some(packet);
+                }
+            }
             other => panic!("unexpected OpenRGB client packet: {other:?}"),
         }
     }
@@ -370,6 +498,19 @@ fn config_entry(config: &OpenRgbConfig) -> DriverConfigEntry {
 }
 
 fn controller_payload_v5(name: &str, serial: &str, location: &str) -> Vec<u8> {
+    controller_payload_v5_inner(name, serial, location, false)
+}
+
+fn controller_payload_v5_with_restore_mode(name: &str, serial: &str, location: &str) -> Vec<u8> {
+    controller_payload_v5_inner(name, serial, location, true)
+}
+
+fn controller_payload_v5_inner(
+    name: &str,
+    serial: &str,
+    location: &str,
+    include_restore_mode: bool,
+) -> Vec<u8> {
     let mut body = Vec::new();
     push_u32(&mut body, 0);
     push_i32(&mut body, 5);
@@ -379,9 +520,12 @@ fn controller_payload_v5(name: &str, serial: &str, location: &str) -> Vec<u8> {
     push_str(&mut body, "1.2.3");
     push_str(&mut body, serial);
     push_str(&mut body, location);
-    push_u16(&mut body, 1);
-    push_i32(&mut body, 0);
+    push_u16(&mut body, if include_restore_mode { 2 } else { 1 });
+    push_i32(&mut body, if include_restore_mode { 1 } else { 0 });
     push_mode(&mut body);
+    if include_restore_mode {
+        push_restore_mode(&mut body);
+    }
     push_u16(&mut body, 1);
     push_zone(&mut body);
     push_u16(&mut body, 2);
@@ -414,6 +558,24 @@ fn push_mode(body: &mut Vec<u8>) {
     push_u32(body, 0);
     push_u32(body, ColorMode::PerLed.raw());
     push_u16(body, 0);
+}
+
+fn push_restore_mode(body: &mut Vec<u8>) {
+    push_str(body, "Static");
+    push_i32(body, 1);
+    push_u32(body, 0);
+    push_u32(body, 0);
+    push_u32(body, 100);
+    push_u32(body, 0);
+    push_u32(body, 100);
+    push_u32(body, 0);
+    push_u32(body, 0);
+    push_u32(body, 0);
+    push_u32(body, 50);
+    push_u32(body, 0);
+    push_u32(body, ColorMode::ModeSpecific.raw());
+    push_u16(body, 1);
+    body.extend_from_slice(&RgbColor::new(8, 9, 10).to_wire_bytes());
 }
 
 fn push_zone(body: &mut Vec<u8>) {
