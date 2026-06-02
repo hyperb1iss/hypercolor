@@ -118,6 +118,17 @@ fn fade_attenuation(position: vec2<f32>, edge_behavior: u32, falloff: f32) -> f3
     return clamp(exp(-distance * falloff), 0.0, 1.0);
 }
 
+fn premultiply_srgba(color: vec4<f32>) -> vec4<f32> {
+    return vec4<f32>(color.rgb * color.a, color.a);
+}
+
+fn unpremultiply_srgba(color: vec4<f32>) -> vec4<f32> {
+    if (color.a <= 0.000001) {
+        return vec4<f32>(0.0);
+    }
+    return vec4<f32>(color.rgb / color.a, color.a);
+}
+
 fn sample_srgba(
     source: texture_2d<f32>,
     source_size: vec2<u32>,
@@ -131,8 +142,8 @@ fn sample_srgba(
     );
     let max_x = source_size.x - 1u;
     let max_y = source_size.y - 1u;
-    let source_x = sample_position.x * f32(max_x);
-    let source_y = sample_position.y * f32(max_y);
+    let source_x = clamp(sample_position.x * f32(source_size.x) - 0.5, 0.0, f32(max_x));
+    let source_y = clamp(sample_position.y * f32(source_size.y) - 0.5, 0.0, f32(max_y));
     let x0 = u32(floor(source_x));
     let y0 = u32(floor(source_y));
     let x1 = min(x0 + 1u, max_x);
@@ -140,13 +151,13 @@ fn sample_srgba(
     let tx = source_x - f32(x0);
     let ty = source_y - f32(y0);
 
-    let top_left = textureLoad(source, vec2<i32>(i32(x0), i32(y0)), 0);
-    let top_right = textureLoad(source, vec2<i32>(i32(x1), i32(y0)), 0);
-    let bottom_left = textureLoad(source, vec2<i32>(i32(x0), i32(y1)), 0);
-    let bottom_right = textureLoad(source, vec2<i32>(i32(x1), i32(y1)), 0);
+    let top_left = premultiply_srgba(textureLoad(source, vec2<i32>(i32(x0), i32(y0)), 0));
+    let top_right = premultiply_srgba(textureLoad(source, vec2<i32>(i32(x1), i32(y0)), 0));
+    let bottom_left = premultiply_srgba(textureLoad(source, vec2<i32>(i32(x0), i32(y1)), 0));
+    let bottom_right = premultiply_srgba(textureLoad(source, vec2<i32>(i32(x1), i32(y1)), 0));
     let top = mix(top_left, top_right, tx);
     let bottom = mix(bottom_left, bottom_right, tx);
-    var sampled = mix(top, bottom, ty);
+    var sampled = unpremultiply_srgba(mix(top, bottom, ty));
     let attenuation = fade_attenuation(position, edge_behavior, fade_falloff);
     return vec4<f32>(sampled.rgb * attenuation, sampled.a);
 }

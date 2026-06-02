@@ -4227,6 +4227,26 @@ mod tests {
     }
 
     #[test]
+    fn gpu_display_finalize_yuv420_samples_same_size_face_on_texel_centers() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+        let scene = ProducerFrame::Canvas(solid_canvas_with_size(2, 1, Rgba::new(0, 0, 0, 255)));
+        let mut face_canvas = Canvas::new(2, 1);
+        face_canvas.set_pixel(0, 0, Rgba::new(255, 0, 255, 0));
+        face_canvas.set_pixel(1, 0, Rgba::new(0, 0, 255, 255));
+        let face = ProducerFrame::Canvas(face_canvas);
+        let params = display_finalize_params(2, 1, DisplayFaceBlendMode::Replace);
+
+        let frame = finalize_display_face_yuv420_blocking(&mut compositor, &scene, &face, params);
+
+        assert_eq!(frame.width, 2);
+        assert_eq!(frame.height, 1);
+        assert_eq!(frame.y_plane(), &[0, 29]);
+    }
+
+    #[test]
     fn gpu_compositor_reuses_matching_surface_sizes() {
         let mut compositor = match GpuSparkleFlinger::new() {
             Ok(compositor) => compositor,
