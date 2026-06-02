@@ -82,11 +82,6 @@ pub fn ZoneAddDevice(zone_id: String) -> impl IntoView {
         if layout_device_id.is_empty() {
             return;
         }
-        let Some(scene) = studio.active_scene.get_untracked() else {
-            toasts::toast_error("No active scene is available");
-            return;
-        };
-        let target = zone_id.get_value();
         let registry = devices
             .devices_resource
             .get_untracked()
@@ -99,47 +94,7 @@ pub fn ZoneAddDevice(zone_id: String) -> impl IntoView {
             toasts::toast_error("Device is no longer in the registry");
             return;
         };
-
-        let mut assignments: Vec<OutputAssignment> = Vec::new();
-        for group in &scene.groups {
-            if group.id.to_string() == target {
-                continue;
-            }
-            for output in &group.layout.zones {
-                if output.device_id == layout_device_id {
-                    assignments.push(OutputAssignment::Existing {
-                        id: output.id.clone(),
-                    });
-                }
-            }
-        }
-        if assignments.is_empty() {
-            assignments = mint_device_zones(&device);
-        }
-        if assignments.is_empty() {
-            // No existing outputs and no channels to mint from; nothing
-            // the daemon can place.
-            toasts::toast_error("Device has no channels to add");
-            return;
-        }
-
-        let scene_id = scene.id.clone();
-        let revision = scene.groups_revision;
-        let device_name = device.name.clone();
-        spawn_local(async move {
-            match api::zones::assign_devices(&scene_id, &target, assignments, Some(revision)).await
-            {
-                Ok(ZoneOutcome::Applied(_)) => {
-                    toasts::toast_success(&format!("{device_name} added to the zone"));
-                    studio.refresh_scene.run(());
-                }
-                Ok(ZoneOutcome::Stale { .. }) => {
-                    toasts::toast_error("Scene changed elsewhere — reloaded, try again");
-                    studio.refresh_scene.run(());
-                }
-                Err(error) => toasts::toast_error(&format!("Add failed: {error}")),
-            }
-        });
+        assign_device_to_zone(studio, device, zone_id.get_value());
     });
 
     view! {
@@ -190,6 +145,59 @@ pub fn ZoneAddDevice(zone_id: String) -> impl IntoView {
             }
         }}
     }
+}
+
+/// Bring a device's outputs into `zone_id`. Existing outputs in another
+/// zone are moved; a device the scene has not placed is minted fresh (the
+/// daemon resets placement on assign). Shared by the per-zone picker and
+/// the single-zone "available device" add button on the device card.
+pub(super) fn assign_device_to_zone(
+    studio: StudioContext,
+    device: api::DeviceSummary,
+    zone_id: String,
+) {
+    let Some(scene) = studio.active_scene.get_untracked() else {
+        toasts::toast_error("No active scene is available");
+        return;
+    };
+    let mut assignments: Vec<OutputAssignment> = Vec::new();
+    for group in &scene.groups {
+        if group.id.to_string() == zone_id {
+            continue;
+        }
+        for output in &group.layout.zones {
+            if output.device_id == device.layout_device_id {
+                assignments.push(OutputAssignment::Existing {
+                    id: output.id.clone(),
+                });
+            }
+        }
+    }
+    if assignments.is_empty() {
+        assignments = mint_device_zones(&device);
+    }
+    if assignments.is_empty() {
+        // No existing outputs and no channels to mint from; nothing the
+        // daemon can place.
+        toasts::toast_error("Device has no channels to add");
+        return;
+    }
+    let scene_id = scene.id.clone();
+    let revision = scene.groups_revision;
+    let device_name = device.name.clone();
+    spawn_local(async move {
+        match api::zones::assign_devices(&scene_id, &zone_id, assignments, Some(revision)).await {
+            Ok(ZoneOutcome::Applied(_)) => {
+                toasts::toast_success(&format!("{device_name} added to the zone"));
+                studio.refresh_scene.run(());
+            }
+            Ok(ZoneOutcome::Stale { .. }) => {
+                toasts::toast_error("Scene changed elsewhere — reloaded, try again");
+                studio.refresh_scene.run(());
+            }
+            Err(error) => toasts::toast_error(&format!("Add failed: {error}")),
+        }
+    });
 }
 
 /// Build a fresh `Output` per channel for a device that no scene

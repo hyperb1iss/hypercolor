@@ -19,7 +19,7 @@ use crate::storage;
 use crate::ws::messages::group_has_degraded_layer;
 
 use super::StudioContext;
-use super::device_card::StudioDeviceCard;
+use super::device_card::{CardMode, StudioDeviceCard};
 use super::device_grouping::{
     DeviceMeta, ZoneDeviceRow, device_rows_for_zone, sort_device_rows, unassigned_device_rows,
 };
@@ -170,6 +170,14 @@ pub fn ZoneTree() -> impl IntoView {
                     </div>
                     {move || {
                         let rows = zone_rows.get();
+                        // Single-zone folds devices-in-no-zone under the sole
+                        // LED zone as one-tap "available" rows (§3.3); only a
+                        // genuinely multi-zone scene keeps the Unassigned bucket.
+                        let available_rows = if multi_zone.get() {
+                            Vec::new()
+                        } else {
+                            unassigned.get()
+                        };
                         if rows.is_empty() {
                             view! {
                                 <div class="rounded-lg border border-dashed border-edge-subtle/45 px-3 py-4 text-center text-[11px] text-fg-tertiary/55">
@@ -179,11 +187,18 @@ pub fn ZoneTree() -> impl IntoView {
                                 .into_any()
                         } else {
                             rows.into_iter()
-                                .map(|(surface, devices)| {
+                                .enumerate()
+                                .map(|(index, (surface, devices))| {
+                                    let available = if index == 0 {
+                                        available_rows.clone()
+                                    } else {
+                                        Vec::new()
+                                    };
                                     view! {
                                         <ZoneNode
                                             surface=surface
                                             devices=devices
+                                            available=available
                                             collapsed=collapsed
                                         />
                                     }
@@ -192,9 +207,7 @@ pub fn ZoneTree() -> impl IntoView {
                                 .into_any()
                         }
                     }}
-                    <Show when=move || {
-                        multi_zone.get() || !unassigned.get().is_empty()
-                    }>
+                    <Show when=move || multi_zone.get()>
                         <UnassignedNode rows=unassigned />
                     </Show>
                     <Show when=move || zone_crud_ready.get()>
@@ -233,12 +246,19 @@ pub fn ZoneTree() -> impl IntoView {
 fn ZoneNode(
     surface: Surface,
     devices: Vec<(ZoneDeviceRow, Option<DeviceSummary>)>,
+    /// Connected devices in no zone, folded under the sole LED zone in a
+    /// single-zone scene (§3.3); empty otherwise. Each offers a one-tap add.
+    available: Vec<(ZoneDeviceRow, Option<DeviceSummary>)>,
     collapsed: RwSignal<HashSet<String>>,
 ) -> impl IntoView {
     let studio = expect_context::<StudioContext>();
     let ws = use_context::<WsContext>();
     let zone_id = surface.id.clone();
     let device_count = devices.len();
+    // Captured before the device lists move `available`; gates the
+    // Available section and suppresses the redundant picker when the
+    // one-tap rows already cover adding hardware.
+    let has_available = !available.is_empty();
 
     let is_selected = Signal::derive({
         let zone_id = zone_id.clone();
@@ -360,29 +380,59 @@ fn ZoneNode(
                 class="space-y-1.5 border-t border-edge-subtle/45 bg-surface-sunken/60 px-1.5 py-2"
                 class=("hidden", move || !is_open.get())
             >
-                {if devices.is_empty() {
-                    view! {
-                        <div class="px-2 py-1.5 text-[10px] text-fg-tertiary/50">
-                            "No devices yet"
-                        </div>
-                    }
-                        .into_any()
-                } else {
+                {(devices.is_empty() && !has_available)
+                    .then(|| {
+                        view! {
+                            <div class="px-2 py-1.5 text-[10px] text-fg-tertiary/50">
+                                "No devices yet"
+                            </div>
+                        }
+                    })}
+                {
+                    let zone_id = zone_id.clone();
                     devices
                         .into_iter()
-                        .map(|(row, device)| {
+                        .map(move |(row, device)| {
                             view! {
-                                <StudioDeviceCard
-                                    row=row
-                                    device=device
-                                    select=zone_id.clone()
-                                />
+                                <StudioDeviceCard row=row device=device select=zone_id.clone() />
                             }
                         })
                         .collect_view()
-                        .into_any()
-                }}
-                <ZoneAddDevice zone_id=zone_id.clone() />
+                }
+                {has_available
+                    .then({
+                        let zone_id = zone_id.clone();
+                        move || {
+                            view! {
+                                <div class="mt-1 space-y-1.5 border-t border-edge-subtle/30 pt-2">
+                                    <div class="flex items-center gap-1.5 px-1">
+                                        <span class=label_class(
+                                            LabelSize::Micro,
+                                            LabelTone::Default,
+                                        )>"Available"</span>
+                                        <span class="text-[9px] text-fg-tertiary/45">
+                                            "tap + to add"
+                                        </span>
+                                    </div>
+                                    {available
+                                        .into_iter()
+                                        .map(move |(row, device)| {
+                                            view! {
+                                                <StudioDeviceCard
+                                                    row=row
+                                                    device=device
+                                                    select=zone_id.clone()
+                                                    mode=CardMode::Available
+                                                />
+                                            }
+                                        })
+                                        .collect_view()}
+                                </div>
+                            }
+                        }
+                    })}
+                {(!has_available)
+                    .then(move || view! { <ZoneAddDevice zone_id=zone_id.clone() /> })}
             </div>
         </div>
     }
@@ -439,6 +489,7 @@ fn UnassignedNode(rows: Memo<Vec<(ZoneDeviceRow, Option<DeviceSummary>)>>) -> im
                                             row=row
                                             device=device
                                             select=UNASSIGNED_SURFACE_ID.to_owned()
+                                            mode=CardMode::Unassigned
                                         />
                                     }
                                 })
