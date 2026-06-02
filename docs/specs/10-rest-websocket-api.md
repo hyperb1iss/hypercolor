@@ -2,7 +2,7 @@
 
 > The HTTP surface of Hypercolor: every endpoint, every schema, every byte on the wire.
 
-**Status:** Implemented (spec partially predates display faces, device metrics, and cloud endpoints)
+**Status:** Implemented (spec partially predates display faces and device metrics)
 
 ---
 
