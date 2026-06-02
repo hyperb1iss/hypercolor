@@ -326,7 +326,8 @@ impl DeviceBackend for OpenRgbBackend {
     }
 
     async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
-        let routes = discover_routes(&self.config).await?;
+        let mut routes = discover_routes(&self.config).await?;
+        self.preserve_connected_previous_modes(&mut routes).await;
         self.discovered = routes
             .iter()
             .cloned()
@@ -355,6 +356,7 @@ impl DeviceBackend for OpenRgbBackend {
                 route,
                 client,
                 config: self.config.clone(),
+                accepting_frames: true,
                 consecutive_failures: 0,
                 reconnect_backoff: ReconnectBackoff::default(),
             })),
@@ -365,7 +367,14 @@ impl DeviceBackend for OpenRgbBackend {
     async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
         if let Some(controller) = self.connected.remove(id) {
             let mut controller = controller.lock().await;
-            teardown_connected_controller(&mut controller).await?;
+            controller.accepting_frames = false;
+            if let Err(error) = teardown_connected_controller(&mut controller).await {
+                debug!(
+                    device_id = %id,
+                    error = %error,
+                    "OpenRGB teardown failed during disconnect"
+                );
+            }
         }
         Ok(())
     }
@@ -412,6 +421,18 @@ impl DeviceBackend for OpenRgbBackend {
     }
 }
 
+impl OpenRgbBackend {
+    async fn preserve_connected_previous_modes(&self, routes: &mut [ControllerRoute]) {
+        for route in routes {
+            let Some(controller) = self.connected.get(&route.info.id) else {
+                continue;
+            };
+            let controller = controller.lock().await;
+            route.previous_mode.clone_from(&controller.previous_mode);
+        }
+    }
+}
+
 struct OpenRgbFrameSink {
     controller: Arc<Mutex<ConnectedController>>,
 }
@@ -428,6 +449,9 @@ async fn write_controller_colors(
     colors: &[[u8; 3]],
 ) -> Result<()> {
     let mut controller = controller.lock().await;
+    if !controller.accepting_frames {
+        bail!("OpenRGB controller is disconnected");
+    }
     prepare_controller_for_write(&mut controller).await?;
 
     let colors = colors
@@ -558,6 +582,7 @@ struct ConnectedController {
     route: ControllerRoute,
     client: OpenRgbClient,
     config: OpenRgbConfig,
+    accepting_frames: bool,
     consecutive_failures: u32,
     reconnect_backoff: ReconnectBackoff,
 }
@@ -792,11 +817,27 @@ async fn configure_controller_output(
 async fn teardown_connected_controller(controller: &mut ConnectedController) -> Result<()> {
     match controller.config.teardown_policy {
         OpenRgbTeardownPolicy::RestorePreviousOrLeave => {
-            try_restore_previous_mode(controller).await?;
+            if let Err(error) = try_restore_previous_mode(controller).await {
+                debug!(
+                    controller_index = controller.route.controller_index,
+                    error = %error,
+                    "OpenRGB previous mode restore failed; leaving last frame"
+                );
+            }
         }
         OpenRgbTeardownPolicy::RestorePreviousOrBlackout => {
-            if !try_restore_previous_mode(controller).await.unwrap_or(false) {
-                blackout_controller(controller).await?;
+            match try_restore_previous_mode(controller).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    blackout_controller(controller).await?;
+                }
+                Err(error) => {
+                    debug!(
+                        controller_index = controller.route.controller_index,
+                        error = %error,
+                        "OpenRGB previous mode restore failed; leaving last frame"
+                    );
+                }
             }
         }
         OpenRgbTeardownPolicy::Blackout => {
@@ -886,7 +927,7 @@ fn build_route(
         &detector_class,
         writable_mode.as_ref(),
     );
-    let previous_mode = active_mode_snapshot(&controller);
+    let previous_mode = previous_mode_snapshot(&controller, writable_mode.as_ref());
     let fingerprint = controller_fingerprint(endpoint, &controller, confidence, controller_index);
     let device_id = fingerprint.stable_device_id();
     let target_fps = target_fps(config, &fingerprint.0, &detector_class);
@@ -971,6 +1012,17 @@ fn active_mode_snapshot(controller: &ControllerData) -> Option<(u32, ControllerM
     let index = u32::try_from(controller.active_mode).ok()?;
     let mode = controller.modes.get(usize::try_from(index).ok()?)?.clone();
     Some((index, mode))
+}
+
+fn previous_mode_snapshot(
+    controller: &ControllerData,
+    writable_mode: Option<&(u32, ControllerMode)>,
+) -> Option<(u32, ControllerMode)> {
+    let snapshot = active_mode_snapshot(controller)?;
+    if writable_mode.is_some_and(|(index, _)| snapshot.0 == *index) {
+        return None;
+    }
+    Some(snapshot)
 }
 
 fn output_disabled_reason(
@@ -1454,6 +1506,33 @@ mod tests {
 
         controller.active_mode = 99;
         assert!(active_mode_snapshot(&controller).is_none());
+    }
+
+    #[test]
+    fn previous_mode_snapshot_skips_selected_writable_mode() {
+        let mut controller = sample_controller();
+        let writable_mode = select_writable_mode(
+            &controller,
+            ModeFlagPolicy {
+                per_led_color_mask: default_per_led_mask(),
+                persistent_mask: 0,
+            },
+        )
+        .expect("sample controller should have writable mode");
+
+        assert!(previous_mode_snapshot(&controller, Some(&writable_mode)).is_none());
+
+        let mut previous_mode = sample_mode();
+        previous_mode.name = "Static".to_owned();
+        previous_mode.flags = 0;
+        previous_mode.color_mode = ColorMode::ModeSpecific;
+        controller.modes.push(previous_mode);
+        controller.active_mode = 1;
+
+        let snapshot =
+            previous_mode_snapshot(&controller, Some(&writable_mode)).expect("mode should restore");
+        assert_eq!(snapshot.0, 1);
+        assert_eq!(snapshot.1.name, "Static");
     }
 
     #[test]

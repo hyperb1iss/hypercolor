@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::net::Ipv4Addr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -170,7 +171,11 @@ async fn disconnect_restores_previous_openrgb_mode() {
     let endpoint = listener
         .local_addr()
         .expect("fake OpenRGB server should expose local addr");
-    let server = tokio::spawn(run_restore_on_disconnect_server(listener));
+    let server = tokio::spawn(run_teardown_on_disconnect_server(
+        listener,
+        controller_payload_v5_with_restore_mode("Board", "SER123", "hidraw0"),
+        DisconnectExpectation::RestoreMode(1),
+    ));
     let config = OpenRgbConfig {
         endpoints: vec![endpoint],
         ownership: OpenRgbOwnership {
@@ -201,15 +206,196 @@ async fn disconnect_restores_previous_openrgb_mode() {
         .connect(&device_id)
         .await
         .expect("backend should connect selected controller");
+    let frame_sink = backend
+        .frame_sink(&device_id)
+        .expect("connected controller should expose frame sink");
     backend
         .disconnect(&device_id)
         .await
         .expect("backend should restore previous mode on disconnect");
+    let error = frame_sink
+        .write_colors_shared(Arc::new(vec![[20, 30, 40]; 2]))
+        .await
+        .expect_err("stale frame sink should stop after disconnect");
+    assert!(error.to_string().contains("disconnected"));
 
-    let restore = server.await.expect("server task should join");
+    let TeardownOutcome::Packet(restore) = server.await.expect("server task should join") else {
+        panic!("restore teardown should write a packet");
+    };
     assert_eq!(restore.header.device_index, 0);
     assert_eq!(restore.header.packet_id, PacketId::UpdateMode);
     assert_eq!(&restore.payload[4..8], &1_u32.to_le_bytes());
+}
+
+#[tokio::test]
+async fn disconnect_fallback_blacks_out_without_previous_mode() {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("fake OpenRGB server should bind");
+    let endpoint = listener
+        .local_addr()
+        .expect("fake OpenRGB server should expose local addr");
+    let server = tokio::spawn(run_teardown_on_disconnect_server(
+        listener,
+        controller_payload_v5("Board", "SER123", "hidraw0"),
+        DisconnectExpectation::Blackout,
+    ));
+    let config = OpenRgbConfig {
+        endpoints: vec![endpoint],
+        ownership: OpenRgbOwnership {
+            mode: OpenRgbOwnershipMode::OpenRgbOwned,
+            ..OpenRgbOwnership::default()
+        },
+        teardown_policy: OpenRgbTeardownPolicy::RestorePreviousOrBlackout,
+        ..OpenRgbConfig::default()
+    };
+    let entry = config_entry(&config);
+    let view = DriverConfigView {
+        driver_id: DESCRIPTOR.id,
+        entry: &entry,
+    };
+    let host = NullHost;
+    let module = OpenRgbDriverModule;
+    let mut backend = module
+        .build_output_backend(&host, view)
+        .expect("backend construction should succeed")
+        .expect("OpenRGB should build an output backend");
+    let devices = backend
+        .discover()
+        .await
+        .expect("backend discovery should read fake OpenRGB controller");
+    let device_id = devices[0].id;
+
+    backend
+        .connect(&device_id)
+        .await
+        .expect("backend should connect selected controller");
+    backend
+        .disconnect(&device_id)
+        .await
+        .expect("backend should blackout on disconnect");
+
+    let TeardownOutcome::Packet(blackout) = server.await.expect("server task should join") else {
+        panic!("blackout teardown should write a packet");
+    };
+    assert_blackout_packet(&blackout);
+}
+
+#[tokio::test]
+async fn disconnect_blackout_policy_writes_zero_frame() {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("fake OpenRGB server should bind");
+    let endpoint = listener
+        .local_addr()
+        .expect("fake OpenRGB server should expose local addr");
+    let server = tokio::spawn(run_teardown_on_disconnect_server(
+        listener,
+        controller_payload_v5_with_restore_mode("Board", "SER123", "hidraw0"),
+        DisconnectExpectation::Blackout,
+    ));
+    let config = OpenRgbConfig {
+        endpoints: vec![endpoint],
+        ownership: OpenRgbOwnership {
+            mode: OpenRgbOwnershipMode::OpenRgbOwned,
+            ..OpenRgbOwnership::default()
+        },
+        teardown_policy: OpenRgbTeardownPolicy::Blackout,
+        ..OpenRgbConfig::default()
+    };
+    let entry = config_entry(&config);
+    let view = DriverConfigView {
+        driver_id: DESCRIPTOR.id,
+        entry: &entry,
+    };
+    let host = NullHost;
+    let module = OpenRgbDriverModule;
+    let mut backend = module
+        .build_output_backend(&host, view)
+        .expect("backend construction should succeed")
+        .expect("OpenRGB should build an output backend");
+    let devices = backend
+        .discover()
+        .await
+        .expect("backend discovery should read fake OpenRGB controller");
+    let device_id = devices[0].id;
+
+    backend
+        .connect(&device_id)
+        .await
+        .expect("backend should connect selected controller");
+    backend
+        .disconnect(&device_id)
+        .await
+        .expect("backend should blackout on disconnect");
+
+    let TeardownOutcome::Packet(blackout) = server.await.expect("server task should join") else {
+        panic!("blackout teardown should write a packet");
+    };
+    assert_blackout_packet(&blackout);
+}
+
+#[tokio::test]
+async fn disconnect_leave_last_frame_sends_no_teardown_packet() {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("fake OpenRGB server should bind");
+    let endpoint = listener
+        .local_addr()
+        .expect("fake OpenRGB server should expose local addr");
+    let server = tokio::spawn(run_teardown_on_disconnect_server(
+        listener,
+        controller_payload_v5_with_restore_mode("Board", "SER123", "hidraw0"),
+        DisconnectExpectation::LeaveLastFrame,
+    ));
+    let config = OpenRgbConfig {
+        endpoints: vec![endpoint],
+        ownership: OpenRgbOwnership {
+            mode: OpenRgbOwnershipMode::OpenRgbOwned,
+            ..OpenRgbOwnership::default()
+        },
+        teardown_policy: OpenRgbTeardownPolicy::LeaveLastFrame,
+        ..OpenRgbConfig::default()
+    };
+    let entry = config_entry(&config);
+    let view = DriverConfigView {
+        driver_id: DESCRIPTOR.id,
+        entry: &entry,
+    };
+    let host = NullHost;
+    let module = OpenRgbDriverModule;
+    let mut backend = module
+        .build_output_backend(&host, view)
+        .expect("backend construction should succeed")
+        .expect("OpenRGB should build an output backend");
+    let devices = backend
+        .discover()
+        .await
+        .expect("backend discovery should read fake OpenRGB controller");
+    let device_id = devices[0].id;
+
+    backend
+        .connect(&device_id)
+        .await
+        .expect("backend should connect selected controller");
+    backend
+        .disconnect(&device_id)
+        .await
+        .expect("backend should leave last frame on disconnect");
+
+    let TeardownOutcome::NoPacket = server.await.expect("server task should join") else {
+        panic!("leave-last-frame teardown should not write a packet");
+    };
+}
+
+fn assert_blackout_packet(packet: &Packet) {
+    assert_eq!(packet.header.device_index, 0);
+    assert_eq!(packet.header.packet_id, PacketId::UpdateLeds);
+    assert_eq!(packet.payload.len(), 14);
+    assert_eq!(&packet.payload[0..4], &14_u32.to_le_bytes());
+    assert_eq!(&packet.payload[4..6], &2_u16.to_le_bytes());
+    assert_eq!(&packet.payload[6..10], &[0, 0, 0, 0]);
+    assert_eq!(&packet.payload[10..14], &[0, 0, 0, 0]);
 }
 
 async fn run_driver_server(listener: TcpListener) -> Packet {
@@ -293,21 +479,45 @@ async fn handle_driver_connection(mut stream: TcpStream) -> Option<Packet> {
     None
 }
 
-async fn run_restore_on_disconnect_server(listener: TcpListener) -> Packet {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DisconnectExpectation {
+    RestoreMode(u32),
+    Blackout,
+    LeaveLastFrame,
+}
+
+#[derive(Debug)]
+enum TeardownOutcome {
+    Packet(Packet),
+    NoPacket,
+}
+
+async fn run_teardown_on_disconnect_server(
+    listener: TcpListener,
+    controller_payload: Vec<u8>,
+    expectation: DisconnectExpectation,
+) -> TeardownOutcome {
     loop {
         let (stream, _) = listener
             .accept()
             .await
             .expect("fake OpenRGB server should accept client");
-        if let Some(update) = handle_restore_connection(stream).await {
-            return update;
+        if let Some(outcome) =
+            handle_teardown_connection(stream, &controller_payload, expectation).await
+        {
+            return outcome;
         }
     }
 }
 
-async fn handle_restore_connection(mut stream: TcpStream) -> Option<Packet> {
+async fn handle_teardown_connection(
+    mut stream: TcpStream,
+    controller_payload: &[u8],
+    expectation: DisconnectExpectation,
+) -> Option<TeardownOutcome> {
     let mut decoder = PacketDecoder::new();
     let mut output_mode_updates = 0_u32;
+    let mut saw_output_mode_setup = false;
     while let Some(packet) = read_next_packet(&mut stream, &mut decoder).await {
         match packet.header.packet_id {
             PacketId::RequestProtocolVersion => {
@@ -341,7 +551,7 @@ async fn handle_restore_connection(mut stream: TcpStream) -> Option<Packet> {
                     &mut stream,
                     PacketId::RequestControllerData,
                     0,
-                    controller_payload_v5_with_restore_mode("Board", "SER123", "hidraw0"),
+                    controller_payload.to_vec(),
                 )
                 .await;
             }
@@ -359,15 +569,29 @@ async fn handle_restore_connection(mut stream: TcpStream) -> Option<Packet> {
                 if output_mode_updates == 0 {
                     assert_eq!(mode_index, 0);
                     output_mode_updates += 1;
+                    saw_output_mode_setup = true;
                 } else {
-                    assert_eq!(mode_index, 1);
-                    return Some(packet);
+                    let DisconnectExpectation::RestoreMode(expected_mode_index) = expectation
+                    else {
+                        panic!("unexpected restore mode teardown packet");
+                    };
+                    assert_eq!(mode_index, expected_mode_index);
+                    return Some(TeardownOutcome::Packet(packet));
                 }
+            }
+            PacketId::UpdateLeds => {
+                assert_eq!(expectation, DisconnectExpectation::Blackout);
+                assert_blackout_packet(&packet);
+                return Some(TeardownOutcome::Packet(packet));
             }
             other => panic!("unexpected OpenRGB client packet: {other:?}"),
         }
     }
-    None
+    if saw_output_mode_setup && expectation == DisconnectExpectation::LeaveLastFrame {
+        Some(TeardownOutcome::NoPacket)
+    } else {
+        None
+    }
 }
 
 async fn run_reconnect_server(listener: TcpListener) -> Packet {
