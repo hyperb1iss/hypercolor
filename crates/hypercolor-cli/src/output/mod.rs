@@ -98,7 +98,6 @@ impl OutputContext {
     }
 
     /// Print JSON output to stdout.
-    #[expect(clippy::unused_self)]
     pub fn print_json(&self, value: &serde_json::Value) -> anyhow::Result<()> {
         let output = serde_json::to_string_pretty(value)?;
         let mut stdout = std::io::stdout().lock();
