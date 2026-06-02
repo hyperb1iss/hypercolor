@@ -932,6 +932,7 @@ pub(super) struct MetricsEffectHealth {
     pub(super) servo_gpu_import_max_ms: f64,
     pub(super) producer_cpu_frames_total: u64,
     pub(super) producer_gpu_frames_total: u64,
+    pub(super) producer_gpu_cpu_materialization_blocked_total: u64,
     pub(super) sparkleflinger_gpu_source_upload_skipped_total: u64,
     pub(super) sparkleflinger_media_texture_allocations_total: u64,
     pub(super) sparkleflinger_media_texture_upload_bytes_total: u64,

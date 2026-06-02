@@ -495,9 +495,15 @@ fn zone_preview_frame_from_producer(
                 .with_frame_metadata(frame_number, elapsed_ms),
         )),
         #[cfg(feature = "servo-gpu-import")]
-        ProducerFrame::Gpu(_) => None,
+        ProducerFrame::Gpu(_) => {
+            frame.record_cpu_materialization_blocked();
+            None
+        }
         #[cfg(feature = "wgpu")]
-        ProducerFrame::GpuTexture(_) => None,
+        ProducerFrame::GpuTexture(_) => {
+            frame.record_cpu_materialization_blocked();
+            None
+        }
     }
 }
 

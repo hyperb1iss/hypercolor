@@ -15,11 +15,13 @@ pub(crate) struct GpuTextureFrame {
 
 static PRODUCER_CPU_FRAMES_TOTAL: AtomicU64 = AtomicU64::new(0);
 static PRODUCER_GPU_FRAMES_TOTAL: AtomicU64 = AtomicU64::new(0);
+static PRODUCER_GPU_CPU_MATERIALIZATION_BLOCKED_TOTAL: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct ProducerFrameCounts {
-    pub(crate) cpu_frames_total: u64,
-    pub(crate) gpu_frames_total: u64,
+    pub(crate) cpu_frames: u64,
+    pub(crate) gpu_frames: u64,
+    pub(crate) gpu_cpu_materialization_blocked: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -33,6 +35,36 @@ pub(crate) enum ProducerFrame {
 }
 
 impl ProducerFrame {
+    #[cfg_attr(
+        not(any(feature = "wgpu", feature = "servo-gpu-import")),
+        allow(
+            dead_code,
+            reason = "GPU residency helpers are inert without GPU producers"
+        )
+    )]
+    pub(crate) const fn is_gpu_resident(&self) -> bool {
+        match self {
+            #[cfg(feature = "servo-gpu-import")]
+            Self::Gpu(_) => true,
+            #[cfg(feature = "wgpu")]
+            Self::GpuTexture(_) => true,
+            Self::Canvas(_) | Self::Surface(_) => false,
+        }
+    }
+
+    #[cfg_attr(
+        not(any(feature = "wgpu", feature = "servo-gpu-import")),
+        allow(
+            dead_code,
+            reason = "GPU residency helpers are inert without GPU producers"
+        )
+    )]
+    pub(crate) fn record_cpu_materialization_blocked(&self) {
+        if self.is_gpu_resident() {
+            record_gpu_cpu_materialization_blocked();
+        }
+    }
+
     #[cfg(feature = "wgpu")]
     #[cfg_attr(
         not(feature = "servo-gpu-import"),
@@ -46,9 +78,15 @@ impl ProducerFrame {
             Self::Canvas(canvas) => Some(canvas.as_rgba_bytes()),
             Self::Surface(surface) => Some(surface.rgba_bytes()),
             #[cfg(feature = "servo-gpu-import")]
-            Self::Gpu(_) => None,
+            Self::Gpu(_) => {
+                self.record_cpu_materialization_blocked();
+                None
+            }
             #[cfg(feature = "wgpu")]
-            Self::GpuTexture(_) => None,
+            Self::GpuTexture(_) => {
+                self.record_cpu_materialization_blocked();
+                None
+            }
         }
     }
 
@@ -88,9 +126,17 @@ impl ProducerFrame {
                 Some((Canvas::from_published_surface(&surface), Some(surface)))
             }
             #[cfg(feature = "servo-gpu-import")]
-            Self::Gpu(_) => None,
+            Self::Gpu(frame) => {
+                let frame = Self::Gpu(frame);
+                frame.record_cpu_materialization_blocked();
+                None
+            }
             #[cfg(feature = "wgpu")]
-            Self::GpuTexture(_) => None,
+            Self::GpuTexture(frame) => {
+                let frame = Self::GpuTexture(frame);
+                frame.record_cpu_materialization_blocked();
+                None
+            }
         }
     }
 
@@ -126,9 +172,22 @@ impl ProducerFrame {
 
 pub(crate) fn producer_frame_counts() -> ProducerFrameCounts {
     ProducerFrameCounts {
-        cpu_frames_total: PRODUCER_CPU_FRAMES_TOTAL.load(Ordering::Relaxed),
-        gpu_frames_total: PRODUCER_GPU_FRAMES_TOTAL.load(Ordering::Relaxed),
+        cpu_frames: PRODUCER_CPU_FRAMES_TOTAL.load(Ordering::Relaxed),
+        gpu_frames: PRODUCER_GPU_FRAMES_TOTAL.load(Ordering::Relaxed),
+        gpu_cpu_materialization_blocked: PRODUCER_GPU_CPU_MATERIALIZATION_BLOCKED_TOTAL
+            .load(Ordering::Relaxed),
     }
+}
+
+#[cfg_attr(
+    not(any(feature = "wgpu", feature = "servo-gpu-import")),
+    allow(
+        dead_code,
+        reason = "GPU residency counters are inert without GPU producers"
+    )
+)]
+fn record_gpu_cpu_materialization_blocked() {
+    let _ = PRODUCER_GPU_CPU_MATERIALIZATION_BLOCKED_TOTAL.fetch_add(1, Ordering::Relaxed);
 }
 
 pub(crate) fn record_producer_frame(frame: &ProducerFrame) {

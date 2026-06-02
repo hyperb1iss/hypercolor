@@ -2232,9 +2232,17 @@ fn copy_producer_frame_to_canvas(
             true
         }
         #[cfg(feature = "servo-gpu-import")]
-        ProducerFrame::Gpu(_) => false,
+        ProducerFrame::Gpu(frame) => {
+            let frame = ProducerFrame::Gpu(frame);
+            frame.record_cpu_materialization_blocked();
+            false
+        }
         #[cfg(feature = "wgpu")]
-        ProducerFrame::GpuTexture(_) => false,
+        ProducerFrame::GpuTexture(frame) => {
+            let frame = ProducerFrame::GpuTexture(frame);
+            frame.record_cpu_materialization_blocked();
+            false
+        }
     }
 }
 
@@ -3953,8 +3961,8 @@ mod tests {
         assert_eq!(sampled.len(), 1);
         assert_eq!(sampled[0].colors.first().copied(), Some([255, 0, 0]));
         assert!(
-            crate::render_thread::producer_frame_counts().cpu_frames_total
-                > producer_counts_before.cpu_frames_total
+            crate::render_thread::producer_frame_counts().cpu_frames
+                > producer_counts_before.cpu_frames
         );
         assert_eq!(
             runtime

@@ -758,6 +758,7 @@ async fn metrics_message_includes_latest_frame_timeline() {
         json["effect_health"]["servo_render_frame_max_ms"],
         std::time::Duration::from_micros(servo_health.render_frame_max_us).as_secs_f64() * 1000.0
     );
+    assert!(json["effect_health"]["producer_gpu_cpu_materialization_blocked_total"].is_number());
     assert!(json["effect_health"]["sparkleflinger_media_texture_allocations_total"].is_number());
     assert!(json["effect_health"]["sparkleflinger_media_texture_upload_bytes_total"].is_number());
     assert!(

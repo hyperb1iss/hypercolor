@@ -1418,6 +1418,8 @@ pub(super) async fn build_metrics_message(
                 servo_gpu_import_max_ms: us_to_ms_f64(servo_health.render_gpu_import_max_us),
                 producer_cpu_frames_total: pipeline_health.cpu_producer_frames,
                 producer_gpu_frames_total: pipeline_health.gpu_producer_frames,
+                producer_gpu_cpu_materialization_blocked_total: pipeline_health
+                    .gpu_cpu_materialization_blocked_total,
                 sparkleflinger_gpu_source_upload_skipped_total: pipeline_health
                     .skipped_gpu_source_uploads,
                 sparkleflinger_media_texture_allocations_total: pipeline_health
@@ -1804,6 +1806,7 @@ const fn servo_effect_health_counts() -> ServoEffectHealthCounts {
 struct RenderPipelineHealthCounts {
     cpu_producer_frames: u64,
     gpu_producer_frames: u64,
+    gpu_cpu_materialization_blocked_total: u64,
     skipped_gpu_source_uploads: u64,
     media_texture_allocations_total: u64,
     media_texture_upload_bytes_total: u64,
@@ -1821,8 +1824,9 @@ fn render_pipeline_health_counts() -> RenderPipelineHealthCounts {
     let producer = crate::render_thread::producer_frame_counts();
     let gpu = gpu_sparkleflinger_health_counts();
     RenderPipelineHealthCounts {
-        cpu_producer_frames: producer.cpu_frames_total,
-        gpu_producer_frames: producer.gpu_frames_total,
+        cpu_producer_frames: producer.cpu_frames,
+        gpu_producer_frames: producer.gpu_frames,
+        gpu_cpu_materialization_blocked_total: producer.gpu_cpu_materialization_blocked,
         skipped_gpu_source_uploads: gpu.source_upload_skipped_total,
         media_texture_allocations_total: gpu.media_texture_allocations_total,
         media_texture_upload_bytes_total: gpu.media_texture_upload_bytes_total,

@@ -686,9 +686,15 @@ fn producer_frame_canvas(frame: &ProducerFrame) -> Option<Canvas> {
         ProducerFrame::Canvas(canvas) => Some(canvas.clone()),
         ProducerFrame::Surface(surface) => Some(Canvas::from_published_surface(surface)),
         #[cfg(feature = "servo-gpu-import")]
-        ProducerFrame::Gpu(_) => None,
+        ProducerFrame::Gpu(_) => {
+            frame.record_cpu_materialization_blocked();
+            None
+        }
         #[cfg(feature = "wgpu")]
-        ProducerFrame::GpuTexture(_) => None,
+        ProducerFrame::GpuTexture(_) => {
+            frame.record_cpu_materialization_blocked();
+            None
+        }
     }
 }
 

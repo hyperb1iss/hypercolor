@@ -4716,6 +4716,28 @@ mod tests {
     }
 
     #[test]
+    fn gpu_texture_frame_records_blocked_cpu_materialization() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+        let source = MediaTextureSourceKey::for_test(7);
+        let canvas = solid_canvas_with_size(4, 4, Rgba::new(32, 96, 160, 255));
+        let before = crate::render_thread::producer_frame_counts().gpu_cpu_materialization_blocked;
+
+        let Some(frame) = compositor.upload_media_canvas_frame(source, &canvas) else {
+            panic!("media upload should return a GPU texture frame");
+        };
+        let producer_frame = ProducerFrame::GpuTexture(frame);
+
+        assert!(producer_frame.cpu_rgba_bytes().is_none());
+        assert_eq!(
+            crate::render_thread::producer_frame_counts().gpu_cpu_materialization_blocked,
+            before.saturating_add(1)
+        );
+    }
+
+    #[test]
     fn gpu_display_finalize_async_ring_releases_slots_after_discard() {
         let mut compositor = match GpuSparkleFlinger::new() {
             Ok(compositor) => compositor,
