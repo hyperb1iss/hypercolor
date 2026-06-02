@@ -606,18 +606,14 @@ impl ComposeContext<'_> {
                     ) {
                     (materialized, true)
                 } else {
-                    (
-                        display_route.and_then(|route| {
-                            self.compose
-                                .render_group_runtime
-                                .reuse_latest_materialized_group_frame(
-                                    group_id,
-                                    &display_target,
-                                    route,
-                                )
-                        })?,
-                        false,
-                    )
+                    let retained = display_route.and_then(|route| {
+                        self.compose
+                            .render_group_runtime
+                            .reuse_latest_materialized_group_frame(group_id, &display_target, route)
+                    })?;
+                    #[cfg(feature = "wgpu")]
+                    crate::render_thread::sparkleflinger::gpu::record_gpu_display_finalize_latch();
+                    (retained, false)
                 };
                 if fresh_materialization && let Some(route) = display_route {
                     self.compose

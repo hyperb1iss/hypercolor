@@ -939,6 +939,7 @@ pub(super) struct MetricsEffectHealth {
     pub(super) sparkleflinger_display_finalize_yuv_attempts_total: u64,
     pub(super) sparkleflinger_display_finalize_successes_total: u64,
     pub(super) sparkleflinger_display_finalize_misses_total: u64,
+    pub(super) sparkleflinger_display_finalize_latches_total: u64,
     pub(super) sparkleflinger_display_finalize_blocking_wait_total_ms: f64,
     pub(super) sparkleflinger_display_finalize_blocking_wait_max_ms: f64,
     pub(super) sparkleflinger_display_finalize_surface_reallocs_total: u64,

@@ -768,6 +768,7 @@ async fn metrics_message_includes_latest_frame_timeline() {
     );
     assert!(json["effect_health"]["sparkleflinger_display_finalize_successes_total"].is_number());
     assert!(json["effect_health"]["sparkleflinger_display_finalize_misses_total"].is_number());
+    assert!(json["effect_health"]["sparkleflinger_display_finalize_latches_total"].is_number());
     assert!(
         json["effect_health"]["sparkleflinger_display_finalize_blocking_wait_total_ms"].is_number()
     );

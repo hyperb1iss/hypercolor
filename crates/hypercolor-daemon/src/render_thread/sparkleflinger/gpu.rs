@@ -51,6 +51,7 @@ static GPU_DISPLAY_FINALIZE_RGBA_ATTEMPTS_TOTAL: AtomicU64 = AtomicU64::new(0);
 static GPU_DISPLAY_FINALIZE_YUV_ATTEMPTS_TOTAL: AtomicU64 = AtomicU64::new(0);
 static GPU_DISPLAY_FINALIZE_SUCCESSES_TOTAL: AtomicU64 = AtomicU64::new(0);
 static GPU_DISPLAY_FINALIZE_MISSES_TOTAL: AtomicU64 = AtomicU64::new(0);
+static GPU_DISPLAY_FINALIZE_LATCHES_TOTAL: AtomicU64 = AtomicU64::new(0);
 static GPU_DISPLAY_FINALIZE_BLOCKING_WAIT_TOTAL_US: AtomicU64 = AtomicU64::new(0);
 static GPU_DISPLAY_FINALIZE_BLOCKING_WAIT_MAX_US: AtomicU64 = AtomicU64::new(0);
 static GPU_DISPLAY_FINALIZE_SURFACE_REALLOCS_TOTAL: AtomicU64 = AtomicU64::new(0);
@@ -64,6 +65,7 @@ pub(crate) struct GpuSparkleFlingerTelemetrySnapshot {
     pub(crate) display_finalize_yuv_attempts_total: u64,
     pub(crate) display_finalize_successes_total: u64,
     pub(crate) display_finalize_misses_total: u64,
+    pub(crate) display_finalize_latches_total: u64,
     pub(crate) display_finalize_blocking_wait_total_us: u64,
     pub(crate) display_finalize_blocking_wait_max_us: u64,
     pub(crate) display_finalize_surface_reallocs_total: u64,
@@ -83,6 +85,7 @@ pub(crate) fn gpu_sparkleflinger_telemetry_snapshot() -> GpuSparkleFlingerTeleme
         display_finalize_successes_total: GPU_DISPLAY_FINALIZE_SUCCESSES_TOTAL
             .load(Ordering::Relaxed),
         display_finalize_misses_total: GPU_DISPLAY_FINALIZE_MISSES_TOTAL.load(Ordering::Relaxed),
+        display_finalize_latches_total: GPU_DISPLAY_FINALIZE_LATCHES_TOTAL.load(Ordering::Relaxed),
         display_finalize_blocking_wait_total_us: GPU_DISPLAY_FINALIZE_BLOCKING_WAIT_TOTAL_US
             .load(Ordering::Relaxed),
         display_finalize_blocking_wait_max_us: GPU_DISPLAY_FINALIZE_BLOCKING_WAIT_MAX_US
@@ -120,6 +123,10 @@ fn record_gpu_display_finalize_result(success: bool) {
         &GPU_DISPLAY_FINALIZE_MISSES_TOTAL
     };
     let _ = counter.fetch_add(1, Ordering::Relaxed);
+}
+
+pub(crate) fn record_gpu_display_finalize_latch() {
+    let _ = GPU_DISPLAY_FINALIZE_LATCHES_TOTAL.fetch_add(1, Ordering::Relaxed);
 }
 
 #[cfg(test)]

@@ -1432,6 +1432,8 @@ pub(super) async fn build_metrics_message(
                     .display_finalize_successes_total,
                 sparkleflinger_display_finalize_misses_total: pipeline_health
                     .display_finalize_misses_total,
+                sparkleflinger_display_finalize_latches_total: pipeline_health
+                    .display_finalize_latches_total,
                 sparkleflinger_display_finalize_blocking_wait_total_ms: us_to_ms_f64(
                     pipeline_health.display_finalize_blocking_wait_total_us,
                 ),
@@ -1809,6 +1811,7 @@ struct RenderPipelineHealthCounts {
     display_finalize_yuv_attempts_total: u64,
     display_finalize_successes_total: u64,
     display_finalize_misses_total: u64,
+    display_finalize_latches_total: u64,
     display_finalize_blocking_wait_total_us: u64,
     display_finalize_blocking_wait_max_us: u64,
     display_finalize_surface_reallocs_total: u64,
@@ -1827,6 +1830,7 @@ fn render_pipeline_health_counts() -> RenderPipelineHealthCounts {
         display_finalize_yuv_attempts_total: gpu.display_finalize_yuv_attempts_total,
         display_finalize_successes_total: gpu.display_finalize_successes_total,
         display_finalize_misses_total: gpu.display_finalize_misses_total,
+        display_finalize_latches_total: gpu.display_finalize_latches_total,
         display_finalize_blocking_wait_total_us: gpu.display_finalize_blocking_wait_total_us,
         display_finalize_blocking_wait_max_us: gpu.display_finalize_blocking_wait_max_us,
         display_finalize_surface_reallocs_total: gpu.display_finalize_surface_reallocs_total,
@@ -1845,6 +1849,7 @@ fn gpu_sparkleflinger_health_counts() -> GpuSparkleFlingerHealthCounts {
         display_finalize_yuv_attempts_total: snapshot.display_finalize_yuv_attempts_total,
         display_finalize_successes_total: snapshot.display_finalize_successes_total,
         display_finalize_misses_total: snapshot.display_finalize_misses_total,
+        display_finalize_latches_total: snapshot.display_finalize_latches_total,
         display_finalize_blocking_wait_total_us: snapshot.display_finalize_blocking_wait_total_us,
         display_finalize_blocking_wait_max_us: snapshot.display_finalize_blocking_wait_max_us,
         display_finalize_surface_reallocs_total: snapshot.display_finalize_surface_reallocs_total,
@@ -1861,6 +1866,7 @@ const fn gpu_sparkleflinger_health_counts() -> GpuSparkleFlingerHealthCounts {
         display_finalize_yuv_attempts_total: 0,
         display_finalize_successes_total: 0,
         display_finalize_misses_total: 0,
+        display_finalize_latches_total: 0,
         display_finalize_blocking_wait_total_us: 0,
         display_finalize_blocking_wait_max_us: 0,
         display_finalize_surface_reallocs_total: 0,
@@ -1876,6 +1882,7 @@ struct GpuSparkleFlingerHealthCounts {
     display_finalize_yuv_attempts_total: u64,
     display_finalize_successes_total: u64,
     display_finalize_misses_total: u64,
+    display_finalize_latches_total: u64,
     display_finalize_blocking_wait_total_us: u64,
     display_finalize_blocking_wait_max_us: u64,
     display_finalize_surface_reallocs_total: u64,
