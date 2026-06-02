@@ -24,7 +24,9 @@ use super::sparkleflinger::{
     ComposedFrameSet, CompositionLayer, CompositionPlan, PreviewSurfaceRequest,
 };
 #[cfg(feature = "wgpu")]
-use super::sparkleflinger::{DisplayFinalizeDispatch, DisplayFinalizeFrame, DisplayFinalizeParams};
+use super::sparkleflinger::{
+    DisplayFinalizeCacheKey, DisplayFinalizeDispatch, DisplayFinalizeFrame, DisplayFinalizeParams,
+};
 use super::{RenderThreadState, micros_between, micros_u32};
 use crate::performance::FullFrameCopyMetrics;
 use crate::preview_runtime::PreviewDemandSummary;
@@ -767,6 +769,14 @@ impl ComposeContext<'_> {
         display_route: &DisplayGroupOutputRoute,
     ) -> Option<DisplayGroupFrame> {
         let params = DisplayFinalizeParams {
+            cache_key: DisplayFinalizeCacheKey {
+                group_id,
+                device_id: display_route.device_id,
+                width: display_route.width,
+                height: display_route.height,
+                circular: display_route.circular,
+                frame_format: display_route.frame_format,
+            },
             width: display_route.width,
             height: display_route.height,
             circular: display_route.circular,

@@ -895,7 +895,7 @@ impl fmt::Display for DeviceColorFormat {
 }
 
 /// Pixel payload format for display-capable devices.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DisplayFrameFormat {
     /// JPEG-compressed image bytes.

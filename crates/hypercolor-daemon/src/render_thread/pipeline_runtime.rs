@@ -851,6 +851,9 @@ impl ComposeRuntime<'_> {
             self.display_sparkleflinger
                 .discard_pending_display_finalization(pending.pending);
         }
+        #[cfg(feature = "wgpu")]
+        self.display_sparkleflinger
+            .retain_display_finalize_groups(&[]);
         self.render_group_runtime.clear_inactive_groups();
     }
 
@@ -863,6 +866,8 @@ impl ComposeRuntime<'_> {
             self.display_sparkleflinger
                 .discard_pending_display_finalization(pending.pending);
         }
+        self.display_sparkleflinger
+            .retain_display_finalize_groups(active_group_ids);
     }
 
     pub(crate) fn reuse_or_render_scene(
@@ -1112,6 +1117,9 @@ impl RenderCaches {
             self.display_sparkleflinger
                 .discard_pending_display_finalization(pending.pending);
         }
+        #[cfg(feature = "wgpu")]
+        self.display_sparkleflinger
+            .retain_display_finalize_groups(&[]);
         self.render_group_runtime.clear_inactive_groups();
     }
 

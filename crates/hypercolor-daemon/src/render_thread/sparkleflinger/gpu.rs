@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, TryRecvError};
@@ -13,12 +14,12 @@ use hypercolor_core::types::canvas::{
     SurfaceDescriptor,
 };
 use hypercolor_types::event::ZoneColors;
-use hypercolor_types::scene::DisplayFaceBlendMode;
+use hypercolor_types::scene::{DisplayFaceBlendMode, ZoneId};
 use hypercolor_types::spatial::EdgeBehavior;
 
 use super::{
-    ComposedFrameSet, CompositionLayer, CompositionMode, CompositionPlan, DisplayFinalizeParams,
-    PreviewSurfaceRequest,
+    ComposedFrameSet, CompositionLayer, CompositionMode, CompositionPlan, DisplayFinalizeCacheKey,
+    DisplayFinalizeParams, PreviewSurfaceRequest,
 };
 use crate::performance::CompositorBackendKind;
 use crate::render_thread::gpu_device::{
@@ -155,7 +156,7 @@ pub(crate) struct GpuSparkleFlinger {
     pipeline: GpuCompositorPipeline,
     spatial_sampler: GpuSpatialSampler,
     surfaces: Option<GpuCompositorSurfaceSet>,
-    display_finalize_surfaces: Option<GpuDisplayFinalizeSurfaceSet>,
+    display_finalize_surfaces: HashMap<DisplayFinalizeCacheKey, GpuDisplayFinalizeSurfaceSet>,
     display_finalize_generation: u64,
     preview_surfaces: Option<GpuPreviewSurfaceSet>,
     current_output: Option<GpuCompositorOutputSurface>,
@@ -216,8 +217,7 @@ struct GpuCompositorSurfaceSet {
 }
 
 struct GpuDisplayFinalizeSurfaceSet {
-    width: u32,
-    height: u32,
+    generation: u64,
     padded_bytes_per_row: u32,
     yuv_layout: DisplayYuv420Layout,
     output: GpuCompositorTexture,
@@ -274,6 +274,7 @@ pub(crate) enum GpuDisplayFinalizeDispatch {
 }
 
 pub(crate) struct PendingGpuDisplayFinalize {
+    cache_key: DisplayFinalizeCacheKey,
     surface_generation: u64,
     format: GpuDisplayFinalizeFormat,
     width: u32,
@@ -519,7 +520,7 @@ impl GpuSparkleFlinger {
             pipeline,
             spatial_sampler,
             surfaces: None,
-            display_finalize_surfaces: None,
+            display_finalize_surfaces: HashMap::new(),
             display_finalize_generation: 0,
             preview_surfaces: None,
             current_output: None,
@@ -702,27 +703,29 @@ impl GpuSparkleFlinger {
 
         record_gpu_display_finalize_attempt(format == GpuDisplayFinalizeFormat::Yuv420);
         self.flush_pending_output_submission()?;
-        self.ensure_display_finalize_surface_size(params.width, params.height);
-        let surface_generation = self.display_finalize_generation;
+        self.retain_current_display_finalize_route(params.cache_key);
+        self.ensure_display_finalize_surfaces(params.cache_key);
+        let device = &self.device;
+        let queue = &self.queue;
+        let pipeline = &self.pipeline;
         let surfaces = self
             .display_finalize_surfaces
-            .as_mut()
+            .get_mut(&params.cache_key)
             .expect("display finalize surfaces should exist after allocation");
+        let surface_generation = surfaces.generation;
         let Some((readback_slot, readback_buffer)) = surfaces.next_readback_buffer(format) else {
             record_gpu_display_finalize_result(false);
             return Ok(GpuDisplayFinalizeDispatch::Saturated);
         };
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("SparkleFlinger GPU display finalize"),
-            });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("SparkleFlinger GPU display finalize"),
+        });
 
         let scene_gpu = gpu_source_frame(scene);
         prepare_display_source_texture(
-            &self.device,
-            &self.queue,
-            &self.pipeline,
+            device,
+            queue,
+            pipeline,
             &mut encoder,
             &mut surfaces.scene_source,
             scene,
@@ -733,9 +736,9 @@ impl GpuSparkleFlinger {
         );
         let face_gpu = gpu_source_frame(face);
         prepare_display_source_texture(
-            &self.device,
-            &self.queue,
-            &self.pipeline,
+            device,
+            queue,
+            pipeline,
             &mut encoder,
             &mut surfaces.face_source,
             face,
@@ -770,15 +773,15 @@ impl GpuSparkleFlinger {
                     .view
             });
         let bind_group = create_display_finalize_bind_group(
-            &self.device,
-            &self.pipeline,
+            device,
+            pipeline,
             scene_view,
             face_view,
             &surfaces.output.view,
             &surfaces.yuv_output,
         );
-        self.queue.write_buffer(
-            &self.pipeline.display_finalize_params_buffer,
+        queue.write_buffer(
+            &pipeline.display_finalize_params_buffer,
             0,
             &encode_display_finalize_params(&params, scene, face),
         );
@@ -790,7 +793,7 @@ impl GpuSparkleFlinger {
                         label: Some("SparkleFlinger GPU display finalize pass"),
                         timestamp_writes: None,
                     });
-                    pass.set_pipeline(&self.pipeline.display_finalize_pipeline);
+                    pass.set_pipeline(&pipeline.display_finalize_pipeline);
                     pass.set_bind_group(0, &bind_group, &[]);
                     pass.dispatch_workgroups(
                         params.width.div_ceil(COMPOSE_WORKGROUP_WIDTH),
@@ -829,7 +832,7 @@ impl GpuSparkleFlinger {
                         label: Some("SparkleFlinger GPU display finalize YUV420 pass"),
                         timestamp_writes: None,
                     });
-                    pass.set_pipeline(&self.pipeline.display_finalize_yuv_pipeline);
+                    pass.set_pipeline(&pipeline.display_finalize_yuv_pipeline);
                     pass.set_bind_group(0, &bind_group, &[]);
                     pass.dispatch_workgroups(
                         params.width.div_ceil(COMPOSE_WORKGROUP_WIDTH),
@@ -854,8 +857,9 @@ impl GpuSparkleFlinger {
                 )
             }
         };
-        let submission_index = self.queue.submit(Some(encoder.finish()));
+        let submission_index = queue.submit(Some(encoder.finish()));
         let pending = begin_display_finalize_readback(PendingGpuDisplayFinalize {
+            cache_key: params.cache_key,
             surface_generation,
             format,
             width: params.width,
@@ -888,11 +892,19 @@ impl GpuSparkleFlinger {
             Ok(frame) => frame,
             Err(error) => {
                 pending.buffer.unmap();
-                self.release_display_finalize_slot(pending.surface_generation, pending.slot);
+                self.release_display_finalize_slot(
+                    pending.cache_key,
+                    pending.surface_generation,
+                    pending.slot,
+                );
                 return Err(error);
             }
         };
-        self.release_display_finalize_slot(pending.surface_generation, pending.slot);
+        self.release_display_finalize_slot(
+            pending.cache_key,
+            pending.surface_generation,
+            pending.slot,
+        );
         record_gpu_display_finalize_result(true);
         Ok(Some(frame))
     }
@@ -902,7 +914,11 @@ impl GpuSparkleFlinger {
         pending: PendingGpuDisplayFinalize,
     ) {
         pending.buffer.unmap();
-        self.release_display_finalize_slot(pending.surface_generation, pending.slot);
+        self.release_display_finalize_slot(
+            pending.cache_key,
+            pending.surface_generation,
+            pending.slot,
+        );
     }
 
     fn discard_pending_display_finalization_slot(
@@ -910,7 +926,11 @@ impl GpuSparkleFlinger {
         pending: &mut PendingGpuDisplayFinalize,
     ) {
         pending.unmap_after_failed_map();
-        self.release_display_finalize_slot(pending.surface_generation, pending.slot);
+        self.release_display_finalize_slot(
+            pending.cache_key,
+            pending.surface_generation,
+            pending.slot,
+        );
     }
 
     #[cfg(test)]
@@ -936,11 +956,19 @@ impl GpuSparkleFlinger {
             Ok(frame) => frame,
             Err(error) => {
                 pending.buffer.unmap();
-                self.release_display_finalize_slot(pending.surface_generation, pending.slot);
+                self.release_display_finalize_slot(
+                    pending.cache_key,
+                    pending.surface_generation,
+                    pending.slot,
+                );
                 return Err(error);
             }
         };
-        self.release_display_finalize_slot(pending.surface_generation, pending.slot);
+        self.release_display_finalize_slot(
+            pending.cache_key,
+            pending.surface_generation,
+            pending.slot,
+        );
         record_gpu_display_finalize_result(true);
         Ok(Some(frame))
     }
@@ -953,8 +981,8 @@ impl GpuSparkleFlinger {
             GpuDisplayFinalizeFormat::Rgba => {
                 let surfaces = self
                     .display_finalize_surfaces
-                    .as_mut()
-                    .filter(|_| self.display_finalize_generation == pending.surface_generation)
+                    .get_mut(&pending.cache_key)
+                    .filter(|surfaces| surfaces.generation == pending.surface_generation)
                     .context("GPU display finalize surfaces changed before RGBA readback")?;
                 copy_mapped_readback_buffer_into_surface(
                     &pending.buffer,
@@ -974,32 +1002,41 @@ impl GpuSparkleFlinger {
         }
     }
 
-    fn ensure_display_finalize_surface_size(&mut self, width: u32, height: u32) {
-        if matches!(
-            self.display_finalize_surfaces,
-            Some(GpuDisplayFinalizeSurfaceSet {
-                width: current_width,
-                height: current_height,
-                ..
-            }) if current_width == width && current_height == height
-        ) {
-            return;
+    fn ensure_display_finalize_surfaces(&mut self, key: DisplayFinalizeCacheKey) {
+        if !self.display_finalize_surfaces.contains_key(&key) {
+            record_gpu_display_finalize_surface_realloc();
+            self.display_finalize_generation = self.display_finalize_generation.saturating_add(1);
+            self.display_finalize_surfaces.insert(
+                key,
+                GpuDisplayFinalizeSurfaceSet::new(
+                    &self.device,
+                    self.display_finalize_generation,
+                    key.width,
+                    key.height,
+                ),
+            );
         }
-
-        record_gpu_display_finalize_surface_realloc();
-        self.display_finalize_generation = self.display_finalize_generation.saturating_add(1);
-        self.display_finalize_surfaces = Some(GpuDisplayFinalizeSurfaceSet::new(
-            &self.device,
-            width,
-            height,
-        ));
     }
 
-    fn release_display_finalize_slot(&mut self, surface_generation: u64, slot: usize) {
-        if self.display_finalize_generation != surface_generation {
-            return;
-        }
-        if let Some(surfaces) = self.display_finalize_surfaces.as_mut() {
+    fn retain_current_display_finalize_route(&mut self, key: DisplayFinalizeCacheKey) {
+        self.display_finalize_surfaces
+            .retain(|cached_key, _| cached_key.group_id != key.group_id || *cached_key == key);
+    }
+
+    pub(crate) fn retain_display_finalize_groups(&mut self, active_group_ids: &[ZoneId]) {
+        self.display_finalize_surfaces
+            .retain(|key, _| active_group_ids.contains(&key.group_id));
+    }
+
+    fn release_display_finalize_slot(
+        &mut self,
+        key: DisplayFinalizeCacheKey,
+        surface_generation: u64,
+        slot: usize,
+    ) {
+        if let Some(surfaces) = self.display_finalize_surfaces.get_mut(&key)
+            && surfaces.generation == surface_generation
+        {
             surfaces.release_readback_slot(slot);
         }
     }
@@ -2465,7 +2502,7 @@ impl DisplayYuv420Layout {
 }
 
 impl GpuDisplayFinalizeSurfaceSet {
-    fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
+    fn new(device: &wgpu::Device, generation: u64, width: u32, height: u32) -> Self {
         let padded_bytes_per_row = padded_bytes_per_row(width);
         let yuv_layout = DisplayYuv420Layout::new(width, height);
         let yuv_output = device.create_buffer(&wgpu::BufferDescriptor {
@@ -2479,8 +2516,7 @@ impl GpuDisplayFinalizeSurfaceSet {
         let readback_size = u64::from(padded_bytes_per_row) * u64::from(height);
         let yuv_readback_size = u64::from(yuv_layout.word_len);
         Self {
-            width,
-            height,
+            generation,
             padded_bytes_per_row,
             yuv_layout,
             output: GpuCompositorTexture::new(
@@ -3981,8 +4017,9 @@ mod tests {
     use hypercolor_core::types::canvas::{
         Canvas, PublishedSurface, RenderSurfacePool, Rgba, SurfaceDescriptor,
     };
+    use hypercolor_types::device::{DeviceId, DisplayFrameFormat};
     use hypercolor_types::event::ZoneColors;
-    use hypercolor_types::scene::DisplayFaceBlendMode;
+    use hypercolor_types::scene::{DisplayFaceBlendMode, ZoneId};
     use hypercolor_types::spatial::{
         EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
         StripDirection,
@@ -3990,13 +4027,14 @@ mod tests {
 
     use super::{
         DISPLAY_FINALIZE_READBACK_SLOT_COUNT, DisplayYuv420Frame, GpuDisplayFinalizeDispatch,
-        GpuSparkleFlinger, GpuZoneSamplingDispatch, PendingPreviewMap, PendingPreviewReadback,
+        GpuDisplayFinalizeFrame, GpuSparkleFlinger, GpuZoneSamplingDispatch, PendingPreviewMap,
+        PendingPreviewReadback,
     };
     use crate::render_thread::producer_queue::ProducerFrame;
     use crate::render_thread::sparkleflinger::gpu_sampling::GpuSamplingPlan;
     use crate::render_thread::sparkleflinger::{
-        CompositionLayer, CompositionPlan, DisplayFinalizeParams, PreviewSurfaceRequest,
-        cpu::CpuSparkleFlinger,
+        CompositionLayer, CompositionPlan, DisplayFinalizeCacheKey, DisplayFinalizeParams,
+        PreviewSurfaceRequest, cpu::CpuSparkleFlinger,
     };
 
     fn solid_canvas(color: Rgba) -> Canvas {
@@ -4016,7 +4054,24 @@ mod tests {
         height: u32,
         blend_mode: DisplayFaceBlendMode,
     ) -> DisplayFinalizeParams {
+        display_finalize_params_for_format(width, height, blend_mode, DisplayFrameFormat::Rgb)
+    }
+
+    fn display_finalize_params_for_format(
+        width: u32,
+        height: u32,
+        blend_mode: DisplayFaceBlendMode,
+        frame_format: DisplayFrameFormat,
+    ) -> DisplayFinalizeParams {
         DisplayFinalizeParams {
+            cache_key: DisplayFinalizeCacheKey {
+                group_id: ZoneId::new(),
+                device_id: DeviceId::new(),
+                width,
+                height,
+                circular: false,
+                frame_format,
+            },
             width,
             height,
             circular: false,
@@ -4177,8 +4232,9 @@ mod tests {
         compositor: &mut GpuSparkleFlinger,
         scene: &ProducerFrame,
         face: &ProducerFrame,
-        params: DisplayFinalizeParams,
+        mut params: DisplayFinalizeParams,
     ) -> DisplayYuv420Frame {
+        params.cache_key.frame_format = DisplayFrameFormat::Jpeg;
         for _ in 0..16 {
             if let Some(frame) = compositor
                 .finalize_display_face_yuv420(scene, face, params)
@@ -4515,6 +4571,85 @@ mod tests {
                 panic!("discarded display finalizer slots should be reusable");
             }
         }
+    }
+
+    #[test]
+    fn gpu_display_finalize_keeps_route_surface_sets_independent() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+        let scene_small =
+            ProducerFrame::Canvas(solid_canvas_with_size(2, 2, Rgba::new(0, 0, 255, 255)));
+        let face_small =
+            ProducerFrame::Canvas(solid_canvas_with_size(2, 2, Rgba::new(255, 0, 0, 255)));
+        let scene_large =
+            ProducerFrame::Canvas(solid_canvas_with_size(4, 4, Rgba::new(0, 255, 0, 255)));
+        let face_large =
+            ProducerFrame::Canvas(solid_canvas_with_size(4, 4, Rgba::new(0, 0, 255, 255)));
+        let small_params = display_finalize_params(2, 2, DisplayFaceBlendMode::Replace);
+        let large_params = display_finalize_params(4, 4, DisplayFaceBlendMode::Replace);
+
+        let small_pending = match compositor
+            .begin_finalize_display_face(&scene_small, &face_small, small_params)
+            .expect("small display finalize should not fail")
+        {
+            GpuDisplayFinalizeDispatch::Pending(work) => work,
+            GpuDisplayFinalizeDispatch::Unsupported | GpuDisplayFinalizeDispatch::Saturated => {
+                panic!("small display finalizer route should accept work");
+            }
+        };
+        let large_pending = match compositor
+            .begin_finalize_display_face(&scene_large, &face_large, large_params)
+            .expect("large display finalize should not fail")
+        {
+            GpuDisplayFinalizeDispatch::Pending(work) => work,
+            GpuDisplayFinalizeDispatch::Unsupported | GpuDisplayFinalizeDispatch::Saturated => {
+                panic!("large display finalizer route should accept work");
+            }
+        };
+
+        assert_eq!(compositor.display_finalize_surfaces.len(), 2);
+        assert!(
+            compositor
+                .display_finalize_surfaces
+                .contains_key(&small_params.cache_key)
+        );
+        assert!(
+            compositor
+                .display_finalize_surfaces
+                .contains_key(&large_params.cache_key)
+        );
+
+        let small = compositor
+            .finish_pending_display_finalization_blocking(small_pending)
+            .expect("small pending finalization should not fail")
+            .expect("small pending finalization should complete");
+        let large = compositor
+            .finish_pending_display_finalization_blocking(large_pending)
+            .expect("large pending finalization should not fail")
+            .expect("large pending finalization should complete");
+
+        let GpuDisplayFinalizeFrame::Rgba(small) = small else {
+            panic!("small display finalization should produce RGBA");
+        };
+        let GpuDisplayFinalizeFrame::Rgba(large) = large else {
+            panic!("large display finalization should produce RGBA");
+        };
+        assert_eq!((small.width(), small.height()), (2, 2));
+        assert_eq!((large.width(), large.height()), (4, 4));
+
+        compositor.retain_display_finalize_groups(&[small_params.cache_key.group_id]);
+        assert!(
+            compositor
+                .display_finalize_surfaces
+                .contains_key(&small_params.cache_key)
+        );
+        assert!(
+            !compositor
+                .display_finalize_surfaces
+                .contains_key(&large_params.cache_key)
+        );
     }
 
     #[test]

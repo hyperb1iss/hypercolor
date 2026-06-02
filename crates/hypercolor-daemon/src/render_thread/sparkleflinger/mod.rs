@@ -13,9 +13,10 @@ use hypercolor_core::types::canvas::{
     Canvas, PublishedSurface, RenderSurfacePool, SurfaceDescriptor,
 };
 use hypercolor_types::config::RenderAccelerationMode;
+use hypercolor_types::device::{DeviceId, DisplayFrameFormat};
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::layer::{LayerAdjust, LayerTransform};
-use hypercolor_types::scene::DisplayFaceBlendMode;
+use hypercolor_types::scene::{DisplayFaceBlendMode, ZoneId};
 use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition};
 use hypercolor_types::viewport::FitMode;
 
@@ -334,8 +335,19 @@ impl CompositionPlan {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct DisplayFinalizeCacheKey {
+    pub(crate) group_id: ZoneId,
+    pub(crate) device_id: DeviceId,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) circular: bool,
+    pub(crate) frame_format: DisplayFrameFormat,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct DisplayFinalizeParams {
+    pub(crate) cache_key: DisplayFinalizeCacheKey,
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) circular: bool,
@@ -620,6 +632,16 @@ impl SparkleFlinger {
             (SparkleFlingerBackend::Cpu(_), _) => {}
             (SparkleFlingerBackend::Gpu { gpu, .. }, PendingDisplayFinalization(pending)) => {
                 gpu.discard_pending_display_finalization(pending);
+            }
+        }
+    }
+
+    #[cfg(feature = "wgpu")]
+    pub(crate) fn retain_display_finalize_groups(&mut self, active_group_ids: &[ZoneId]) {
+        match &mut self.backend {
+            SparkleFlingerBackend::Cpu(_) => {}
+            SparkleFlingerBackend::Gpu { gpu, .. } => {
+                gpu.retain_display_finalize_groups(active_group_ids);
             }
         }
     }
