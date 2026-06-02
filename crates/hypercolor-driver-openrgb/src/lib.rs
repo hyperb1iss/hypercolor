@@ -5,7 +5,8 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use anyhow::{Context, Error, Result, bail};
@@ -29,8 +30,9 @@ use hypercolor_types::device::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tokio::sync::Mutex;
-use tokio::time::Instant;
+use tokio::sync::{Mutex, watch};
+use tokio::task::JoinHandle;
+use tokio::time::{Instant, sleep};
 use tracing::debug;
 
 /// OpenRGB driver descriptor.
@@ -71,6 +73,7 @@ const MAX_TIMEOUT_MS: u64 = 10_000;
 const MAX_CONTROLLERS_PER_ENDPOINT: u32 = 1024;
 const INITIAL_RECONNECT_BACKOFF: Duration = Duration::from_millis(250);
 const MAX_RECONNECT_BACKOFF: Duration = Duration::from_secs(5);
+const OUTPUT_WORKER_STOP_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Driver configuration for the OpenRGB fallback bridge.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -295,7 +298,7 @@ impl DiscoveryCapability for OpenRgbDriverModule {
 pub struct OpenRgbBackend {
     config: OpenRgbConfig,
     discovered: HashMap<DeviceId, ControllerRoute>,
-    connected: HashMap<DeviceId, Arc<Mutex<ConnectedController>>>,
+    connected: HashMap<DeviceId, ConnectedOutput>,
 }
 
 impl OpenRgbBackend {
@@ -349,23 +352,23 @@ impl DeviceBackend for OpenRgbBackend {
         let mut client = connect_openrgb_client(&self.config, route.endpoint).await?;
         configure_controller_output(&mut client, &route).await?;
 
-        self.connected.insert(
-            *id,
-            Arc::new(Mutex::new(ConnectedController {
-                previous_mode: route.previous_mode.clone(),
-                route,
-                client,
-                config: self.config.clone(),
-                accepting_frames: true,
-                consecutive_failures: 0,
-                reconnect_backoff: ReconnectBackoff::default(),
-            })),
-        );
+        let controller = Arc::new(Mutex::new(ConnectedController {
+            previous_mode: route.previous_mode.clone(),
+            route,
+            client,
+            config: self.config.clone(),
+            accepting_frames: true,
+            consecutive_failures: 0,
+            reconnect_backoff: ReconnectBackoff::default(),
+        }));
+        self.connected
+            .insert(*id, ConnectedOutput::spawn(controller));
         Ok(())
     }
 
     async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
-        if let Some(controller) = self.connected.remove(id) {
+        if let Some(output) = self.connected.remove(id) {
+            let controller = output.stop().await;
             let mut controller = controller.lock().await;
             controller.accepting_frames = false;
             if let Err(error) = teardown_connected_controller(&mut controller).await {
@@ -380,27 +383,28 @@ impl DeviceBackend for OpenRgbBackend {
     }
 
     async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
-        let Some(controller) = self.connected.get(id) else {
+        let Some(output) = self.connected.get(id) else {
             bail!("OpenRGB controller {id} is not connected");
         };
-        write_controller_colors(controller, colors).await
+        output.enqueue_colors(Arc::new(colors.to_vec()))
     }
 
     fn target_fps(&self, id: &DeviceId) -> Option<u32> {
         self.connected
             .get(id)
-            .and_then(|controller| {
-                controller
+            .and_then(|output| {
+                output
+                    .controller
                     .try_lock()
                     .ok()
-                    .map(|route| route.route.target_fps)
+                    .map(|controller| controller.route.target_fps)
             })
             .or_else(|| self.discovered.get(id).map(|route| route.target_fps))
     }
 
     async fn health_check(&self, id: &DeviceId) -> Result<HealthStatus> {
-        if let Some(controller) = self.connected.get(id) {
-            let controller = controller.lock().await;
+        if let Some(output) = self.connected.get(id) {
+            let controller = output.controller.lock().await;
             if controller.consecutive_failures == 0 {
                 return Ok(HealthStatus::Healthy);
             }
@@ -413,11 +417,9 @@ impl DeviceBackend for OpenRgbBackend {
     }
 
     fn frame_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {
-        self.connected.get(id).map(|controller| {
-            Arc::new(OpenRgbFrameSink {
-                controller: Arc::clone(controller),
-            }) as Arc<dyn DeviceFrameSink>
-        })
+        self.connected
+            .get(id)
+            .map(|output| output.frame_sink() as Arc<dyn DeviceFrameSink>)
     }
 }
 
@@ -427,20 +429,166 @@ impl OpenRgbBackend {
             let Some(controller) = self.connected.get(&route.info.id) else {
                 continue;
             };
-            let controller = controller.lock().await;
+            let controller = controller.controller.lock().await;
             route.previous_mode.clone_from(&controller.previous_mode);
         }
     }
 }
 
-struct OpenRgbFrameSink {
+struct ConnectedOutput {
     controller: Arc<Mutex<ConnectedController>>,
+    frame_tx: watch::Sender<Option<Arc<Vec<[u8; 3]>>>>,
+    io_task: Option<JoinHandle<()>>,
+    active: Arc<AtomicBool>,
+    last_async_error: Arc<StdMutex<Option<String>>>,
+}
+
+impl ConnectedOutput {
+    fn spawn(controller: Arc<Mutex<ConnectedController>>) -> Self {
+        let (frame_tx, frame_rx) = watch::channel(None::<Arc<Vec<[u8; 3]>>>);
+        let active = Arc::new(AtomicBool::new(true));
+        let last_async_error = Arc::new(StdMutex::new(None::<String>));
+        let io_task = tokio::spawn(run_openrgb_output_worker(
+            Arc::clone(&controller),
+            frame_rx,
+            Arc::clone(&active),
+            Arc::clone(&last_async_error),
+        ));
+
+        Self {
+            controller,
+            frame_tx,
+            io_task: Some(io_task),
+            active,
+            last_async_error,
+        }
+    }
+
+    fn frame_sink(&self) -> Arc<OpenRgbFrameSink> {
+        Arc::new(OpenRgbFrameSink {
+            frame_tx: self.frame_tx.clone(),
+            active: Arc::clone(&self.active),
+            last_async_error: Arc::clone(&self.last_async_error),
+        })
+    }
+
+    fn enqueue_colors(&self, colors: Arc<Vec<[u8; 3]>>) -> Result<()> {
+        enqueue_openrgb_colors(&self.frame_tx, &self.active, &self.last_async_error, colors)
+    }
+
+    async fn stop(mut self) -> Arc<Mutex<ConnectedController>> {
+        self.active.store(false, Ordering::Release);
+        {
+            let mut controller = self.controller.lock().await;
+            controller.accepting_frames = false;
+        }
+        let controller = Arc::clone(&self.controller);
+        self.frame_tx.send_replace(None);
+        if let Some(mut io_task) = self.io_task.take() {
+            tokio::select! {
+                result = &mut io_task => {
+                    if let Err(error) = result {
+                        debug!(error = %error, "OpenRGB output worker did not stop cleanly");
+                    }
+                }
+                () = sleep(OUTPUT_WORKER_STOP_TIMEOUT) => {
+                    io_task.abort();
+                    let _ = io_task.await;
+                    debug!(
+                        timeout_ms = OUTPUT_WORKER_STOP_TIMEOUT.as_millis(),
+                        "OpenRGB output worker stop timed out"
+                    );
+                }
+            }
+        }
+        controller
+    }
+}
+
+impl Drop for ConnectedOutput {
+    fn drop(&mut self) {
+        self.active.store(false, Ordering::Release);
+        if let Some(io_task) = &self.io_task {
+            io_task.abort();
+        }
+    }
+}
+
+struct OpenRgbFrameSink {
+    frame_tx: watch::Sender<Option<Arc<Vec<[u8; 3]>>>>,
+    active: Arc<AtomicBool>,
+    last_async_error: Arc<StdMutex<Option<String>>>,
 }
 
 #[async_trait]
 impl DeviceFrameSink for OpenRgbFrameSink {
     async fn write_colors_shared(&self, colors: Arc<Vec<[u8; 3]>>) -> Result<()> {
-        write_controller_colors(&self.controller, colors.as_slice()).await
+        enqueue_openrgb_colors(&self.frame_tx, &self.active, &self.last_async_error, colors)
+    }
+}
+
+fn enqueue_openrgb_colors(
+    frame_tx: &watch::Sender<Option<Arc<Vec<[u8; 3]>>>>,
+    active: &AtomicBool,
+    last_async_error: &StdMutex<Option<String>>,
+    colors: Arc<Vec<[u8; 3]>>,
+) -> Result<()> {
+    if !active.load(Ordering::Acquire) {
+        bail!("OpenRGB controller is disconnected");
+    }
+    if let Some(error) = last_async_error
+        .lock()
+        .map_err(|_| anyhow::anyhow!("OpenRGB async error state lock poisoned"))?
+        .take()
+    {
+        bail!("{error}");
+    }
+    frame_tx.send_replace(Some(colors));
+    Ok(())
+}
+
+async fn run_openrgb_output_worker(
+    controller: Arc<Mutex<ConnectedController>>,
+    mut frame_rx: watch::Receiver<Option<Arc<Vec<[u8; 3]>>>>,
+    active: Arc<AtomicBool>,
+    last_async_error: Arc<StdMutex<Option<String>>>,
+) {
+    loop {
+        if frame_rx.changed().await.is_err() {
+            break;
+        }
+        if !active.load(Ordering::Acquire) {
+            break;
+        }
+        let Some(mut colors) = frame_rx.borrow_and_update().clone() else {
+            break;
+        };
+        while frame_rx.has_changed().unwrap_or(false) {
+            if frame_rx.changed().await.is_err() {
+                return;
+            }
+            if !active.load(Ordering::Acquire) {
+                return;
+            }
+            let Some(latest) = frame_rx.borrow_and_update().clone() else {
+                return;
+            };
+            colors = latest;
+        }
+
+        match write_controller_colors(&controller, colors.as_slice()).await {
+            Ok(()) => {
+                if let Ok(mut error) = last_async_error.lock() {
+                    *error = None;
+                }
+            }
+            Err(error) => {
+                let error = error.to_string();
+                if let Ok(mut last_error) = last_async_error.lock() {
+                    *last_error = Some(error);
+                }
+            }
+        }
     }
 }
 
