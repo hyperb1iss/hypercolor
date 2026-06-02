@@ -44,8 +44,11 @@ A passing soak shows:
 - WebSocket backpressure uses latest-value drops, not unbounded buffering.
 - Display write failures, retries, and output-error frames do not grow.
 - Full-frame copy counters stay at zero after warmup.
+- GPU-to-CPU producer materialization blocks stay at zero after warmup.
 - Render-surface pool saturation does not grow after warmup.
 - Servo stalls, breaker opens, lifecycle failures, and pending render age do not
+  grow after warmup.
+- GPU display finalizer misses, blocking waits, and surface reallocations do not
   grow after warmup.
 - Display-lane priority wait stays within one LED frame interval.
 
@@ -59,6 +62,10 @@ The JSON report and terminal summary call out these pressure lanes:
 - `servo qos`: render queue wait, pending render age, queue depth, and
   superseded render deltas.
 - `servo lifecycle`: renderer load wait/failures and destroy wait.
+- `gpu residency`: forbidden producer materialization blocks and GPU residency
+  failures.
+- `display finalizer`: finalization attempts, successes, misses, retained-frame
+  latches, and surface reallocations.
 - `display_output`: write failures, retry attempts, last failure age, and
   display-lane LED-priority wait.
 

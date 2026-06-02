@@ -17,11 +17,15 @@ type Config = {
     maxPoolSaturationDelta: number
     maxEffectFallbackDelta: number
     maxProducerGpuReadbackFailureDelta: number
+    maxGpuCpuMaterializationBlockDelta: number
     maxGpuReadbackFailedFrames: number
     maxServoStallDelta: number
     maxServoBreakerDelta: number
     maxServoFailureDelta: number
     maxServoQueueWaitMs: number
+    maxDisplayFinalizeMissDelta: number
+    maxDisplayFinalizeBlockingWaitMs: number
+    maxDisplayFinalizeSurfaceReallocDelta: number
     maxDisplayLanePriorityWaitMs: number
     out?: string
     json: boolean
@@ -81,11 +85,15 @@ const defaults: Config = {
     maxPoolSaturationDelta: 0,
     maxEffectFallbackDelta: 0,
     maxProducerGpuReadbackFailureDelta: 0,
+    maxGpuCpuMaterializationBlockDelta: 0,
     maxGpuReadbackFailedFrames: 0,
     maxServoStallDelta: 0,
     maxServoBreakerDelta: 0,
     maxServoFailureDelta: 0,
     maxServoQueueWaitMs: 100,
+    maxDisplayFinalizeMissDelta: 0,
+    maxDisplayFinalizeBlockingWaitMs: 0,
+    maxDisplayFinalizeSurfaceReallocDelta: 0,
     maxDisplayLanePriorityWaitMs: 16.7,
     json: false,
 }
@@ -116,12 +124,20 @@ Options:
   --max-effect-fallback-delta <n>      Maximum effect fallbacks [${defaults.maxEffectFallbackDelta}]
   --max-producer-gpu-readback-failure-delta <n>
                                       Maximum GPU producer residency failures [${defaults.maxProducerGpuReadbackFailureDelta}]
+  --max-gpu-cpu-materialization-block-delta <n>
+                                      Maximum forbidden GPU-to-CPU materialization attempts [${defaults.maxGpuCpuMaterializationBlockDelta}]
   --max-gpu-readback-failed-frames <n>
                                       Maximum rolling GPU residency-failure frames [${defaults.maxGpuReadbackFailedFrames}]
   --max-servo-stall-delta <n>          Maximum Servo soft stalls [${defaults.maxServoStallDelta}]
   --max-servo-breaker-delta <n>        Maximum Servo breaker opens [${defaults.maxServoBreakerDelta}]
   --max-servo-failure-delta <n>        Maximum total Servo lifecycle failures [${defaults.maxServoFailureDelta}]
   --max-servo-queue-wait-ms <ms>       Maximum Servo render queue wait [${defaults.maxServoQueueWaitMs}]
+  --max-display-finalize-miss-delta <n>
+                                      Maximum GPU display finalizer misses after warmup [${defaults.maxDisplayFinalizeMissDelta}]
+  --max-display-finalize-blocking-wait-ms <ms>
+                                      Maximum GPU display finalizer blocking wait [${defaults.maxDisplayFinalizeBlockingWaitMs}]
+  --max-display-finalize-surface-realloc-delta <n>
+                                      Maximum GPU display finalizer surface reallocs after warmup [${defaults.maxDisplayFinalizeSurfaceReallocDelta}]
   --max-display-lane-priority-wait-ms <ms>
                                       Maximum LED-priority display wait [${defaults.maxDisplayLanePriorityWaitMs}]
   --out <path>                         Write JSON report
@@ -200,6 +216,9 @@ function parseArgs(argv: string[]): Config {
             case "--max-producer-gpu-readback-failure-delta":
                 config.maxProducerGpuReadbackFailureDelta = parseNonNegativeInt(arg, value)
                 break
+            case "--max-gpu-cpu-materialization-block-delta":
+                config.maxGpuCpuMaterializationBlockDelta = parseNonNegativeInt(arg, value)
+                break
             case "--max-gpu-readback-failed-frames":
                 config.maxGpuReadbackFailedFrames = parseNonNegativeInt(arg, value)
                 break
@@ -214,6 +233,15 @@ function parseArgs(argv: string[]): Config {
                 break
             case "--max-servo-queue-wait-ms":
                 config.maxServoQueueWaitMs = parseNonNegativeNumber(arg, value)
+                break
+            case "--max-display-finalize-miss-delta":
+                config.maxDisplayFinalizeMissDelta = parseNonNegativeInt(arg, value)
+                break
+            case "--max-display-finalize-blocking-wait-ms":
+                config.maxDisplayFinalizeBlockingWaitMs = parseNonNegativeNumber(arg, value)
+                break
+            case "--max-display-finalize-surface-realloc-delta":
+                config.maxDisplayFinalizeSurfaceReallocDelta = parseNonNegativeInt(arg, value)
                 break
             case "--max-display-lane-priority-wait-ms":
                 config.maxDisplayLanePriorityWaitMs = parseNonNegativeNumber(arg, value)
@@ -422,6 +450,14 @@ function analyze(config: Config, samples: MetricSample[], backpressure: Backpres
     const poolSaturationDelta =
         delta(first.data, last.data, ["render_surfaces", "preview_pool_saturation_reallocs"]) +
         delta(first.data, last.data, ["render_surfaces", "direct_pool_saturation_reallocs"])
+    const displayFinalizeMissDelta = delta(first.data, last.data, [
+        "effect_health",
+        "sparkleflinger_display_finalize_misses_total",
+    ])
+    const displayFinalizeSurfaceReallocDelta = delta(first.data, last.data, [
+        "effect_health",
+        "sparkleflinger_display_finalize_surface_reallocs_total",
+    ])
     const frameP95BudgetMs = targetFps > 0 ? (1_000 / targetFps) * 1.25 : Number.POSITIVE_INFINITY
     const maxFrameP95Ms = maxAt(observed, ["frame_time", "p95_ms"])
 
@@ -474,6 +510,16 @@ function analyze(config: Config, samples: MetricSample[], backpressure: Backpres
     )
     checks.push(
         checkAtMost(
+            "GPU-to-CPU materialization block delta",
+            delta(first.data, last.data, [
+                "effect_health",
+                "producer_gpu_cpu_materialization_blocked_total",
+            ]),
+            config.maxGpuCpuMaterializationBlockDelta,
+        ),
+    )
+    checks.push(
+        checkAtMost(
             "GPU residency failed frames",
             maxAt(observed, ["pacing", "gpu_readback_failed_frames"]),
             config.maxGpuReadbackFailedFrames,
@@ -506,6 +552,30 @@ function analyze(config: Config, samples: MetricSample[], backpressure: Backpres
             "Servo pending render age growth ms",
             maxIncreaseAt(observed, ["effect_health", "servo_render_pending_age_max_ms"]),
             config.maxServoQueueWaitMs,
+        ),
+    )
+    checks.push(
+        checkAtMost(
+            "display finalizer miss delta",
+            displayFinalizeMissDelta,
+            config.maxDisplayFinalizeMissDelta,
+        ),
+    )
+    checks.push(
+        checkAtMost(
+            "display finalizer blocking wait ms",
+            maxAt(observed, [
+                "effect_health",
+                "sparkleflinger_display_finalize_blocking_wait_max_ms",
+            ]),
+            config.maxDisplayFinalizeBlockingWaitMs,
+        ),
+    )
+    checks.push(
+        checkAtMost(
+            "display finalizer surface realloc delta",
+            displayFinalizeSurfaceReallocDelta,
+            config.maxDisplayFinalizeSurfaceReallocDelta,
         ),
     )
     checks.push(
@@ -545,6 +615,10 @@ function analyze(config: Config, samples: MetricSample[], backpressure: Backpres
             "effect_health",
             "producer_gpu_readback_failures_total",
         ]),
+        gpuCpuMaterializationBlockDelta: delta(first.data, last.data, [
+            "effect_health",
+            "producer_gpu_cpu_materialization_blocked_total",
+        ]),
         maxGpuReadbackFailedFrames: maxAt(observed, ["pacing", "gpu_readback_failed_frames"]),
         servoFailureDelta,
         servoQueueWaitMaxMs: round(maxAt(observed, ["effect_health", "servo_render_queue_wait_max_ms"])),
@@ -566,6 +640,31 @@ function analyze(config: Config, samples: MetricSample[], backpressure: Backpres
             "servo_renderer_load_failures_total",
         ]),
         servoDestroyWaitMaxMs: round(maxAt(observed, ["effect_health", "servo_destroy_wait_max_ms"])),
+        displayFinalizeAttemptDelta:
+            delta(first.data, last.data, [
+                "effect_health",
+                "sparkleflinger_display_finalize_rgba_attempts_total",
+            ]) +
+            delta(first.data, last.data, [
+                "effect_health",
+                "sparkleflinger_display_finalize_yuv_attempts_total",
+            ]),
+        displayFinalizeSuccessDelta: delta(first.data, last.data, [
+            "effect_health",
+            "sparkleflinger_display_finalize_successes_total",
+        ]),
+        displayFinalizeMissDelta,
+        displayFinalizeLatchDelta: delta(first.data, last.data, [
+            "effect_health",
+            "sparkleflinger_display_finalize_latches_total",
+        ]),
+        displayFinalizeBlockingWaitMaxMs: round(
+            maxAt(observed, [
+                "effect_health",
+                "sparkleflinger_display_finalize_blocking_wait_max_ms",
+            ]),
+        ),
+        displayFinalizeSurfaceReallocDelta,
         displayLanePriorityWaitMaxMs: round(
             requiredMaxAt(observed, [
                 "display_output",
@@ -711,6 +810,15 @@ function printReport(report: Report): void {
     console.log(
         `${palette.cyan}servo lifecycle${palette.reset} load_wait=${summary.servoRendererLoadWaitMaxMs}ms ` +
             `load_failures=${summary.servoRendererLoadFailuresDelta} destroy_wait=${summary.servoDestroyWaitMaxMs}ms`,
+    )
+    console.log(
+        `${palette.cyan}gpu residency${palette.reset} materialization_blocks=${summary.gpuCpuMaterializationBlockDelta} ` +
+            `producer_failures=${summary.producerGpuReadbackFailureDelta} failed_frames=${summary.maxGpuReadbackFailedFrames}`,
+    )
+    console.log(
+        `${palette.cyan}display finalizer${palette.reset} attempts=${summary.displayFinalizeAttemptDelta} ` +
+            `successes=${summary.displayFinalizeSuccessDelta} misses=${summary.displayFinalizeMissDelta} ` +
+            `latches=${summary.displayFinalizeLatchDelta} reallocs=${summary.displayFinalizeSurfaceReallocDelta}`,
     )
 }
 
