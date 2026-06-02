@@ -20,6 +20,8 @@ pub mod layout_canvas;
 pub mod layout_palette;
 pub mod layout_zone_properties;
 pub mod media_grid;
+pub mod media_kind;
+pub mod media_preview;
 pub mod page_header;
 pub mod page_search_bar;
 pub mod perf_charts;

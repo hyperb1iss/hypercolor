@@ -12,9 +12,11 @@ use leptos::prelude::*;
 use leptos_icons::Icon;
 
 use crate::api;
-use crate::components::media_grid::{
-    MediaGrid, MediaGridEmpty, asset_dimensions, asset_kind, format_bytes, format_duration,
+use crate::components::media_grid::{MediaGrid, MediaGridEmpty, asset_kind};
+use crate::components::media_kind::{
+    format_bytes, format_duration, format_timecode, kind_accent, kind_icon, kind_label,
 };
+use crate::components::media_preview::{MediaPreview, VideoMeta};
 use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, PageHeader};
 use crate::components::page_search_bar::PageSearchBar;
 use crate::icons::*;
@@ -225,15 +227,21 @@ fn MediaDetail(
 ) -> impl IntoView {
     let (draft_name, set_draft_name) = signal(String::new());
     let (draft_tags, set_draft_tags) = signal(String::new());
+    let video_meta = RwSignal::new(None::<VideoMeta>);
 
     Effect::new(move |_| {
-        if let Some(asset) = asset.get() {
-            set_draft_name.set(asset.name);
-            set_draft_tags.set(asset.tags.join(", "));
-        } else {
-            set_draft_name.set(String::new());
-            set_draft_tags.set(String::new());
+        match asset.get() {
+            Some(asset) => {
+                set_draft_name.set(asset.name);
+                set_draft_tags.set(asset.tags.join(", "));
+            }
+            None => {
+                set_draft_name.set(String::new());
+                set_draft_tags.set(String::new());
+            }
         }
+        // A fresh selection forgets any video metadata probed from the player.
+        video_meta.set(None);
     });
 
     let save = Callback::new(move |()| {
@@ -270,43 +278,83 @@ fn MediaDetail(
         });
     });
 
+    let on_video_loaded = Callback::new(move |meta: VideoMeta| video_meta.set(Some(meta)));
+
     view! {
-        <section class="rounded-xl border border-edge-subtle/70 bg-surface-overlay/50">
-            <div class="flex items-center justify-between gap-3 border-b border-edge-subtle/60 px-4 py-3">
-                <div>
-                    <div class="text-sm font-semibold text-fg-primary">"Selected Media"</div>
-                    <div class="text-[11px] text-fg-tertiary">"File details and metadata"</div>
-                </div>
-                <Icon icon=LuFolder width="16px" height="16px" style="color: rgba(255, 106, 193, 0.7)" />
-            </div>
+        <section class="overflow-hidden rounded-xl border border-edge-subtle/70 bg-surface-overlay/50">
             {move || match asset.get() {
                 Some(asset) => {
-                    let duration = asset.duration_us.map(format_duration);
-                    let hash = asset
+                    let kind = asset_kind(&asset);
+                    let accent = kind_accent(kind);
+                    let icon = kind_icon(kind);
+                    let label = kind_label(kind);
+                    let blob_url = format!("/api/v1/assets/{}/blob", asset.id);
+                    let header_name = asset.name.clone();
+                    let download_name = asset.name.clone();
+                    let type_text = asset.mime_type.clone();
+                    let size_text = format_bytes(asset.byte_len);
+                    let frames_text = asset
+                        .frame_count
+                        .map(|count| count.to_string())
+                        .unwrap_or_else(|| "single".to_owned());
+                    let hash_text = asset
                         .hash_sha256
                         .get(..12)
                         .map(|prefix| format!("{prefix}…"))
                         .unwrap_or_else(|| "unknown".to_owned());
+                    let asset_dims = (asset.intrinsic_width, asset.intrinsic_height);
+                    let asset_duration_us = asset.duration_us;
+
+                    let pixels = move || match asset_dims {
+                        (Some(width), Some(height)) => format!("{width}×{height}"),
+                        _ => video_meta
+                            .get()
+                            .map(|meta| format!("{}×{}", meta.width, meta.height))
+                            .unwrap_or_else(|| "—".to_owned()),
+                    };
+                    let duration_value = move || {
+                        if let Some(micros) = asset_duration_us {
+                            format_duration(micros)
+                        } else if let Some(meta) = video_meta.get() {
+                            format_timecode(meta.duration_secs)
+                        } else if kind == "video" {
+                            "—".to_owned()
+                        } else {
+                            "still".to_owned()
+                        }
+                    };
+
                     view! {
+                        <div
+                            class="flex items-center gap-2.5 border-b border-edge-subtle/55 px-4 py-3"
+                            style=format!("background: linear-gradient(180deg, rgba({accent}, 0.08), transparent)")
+                        >
+                            <div
+                                class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg"
+                                style=format!("background: rgba({accent}, 0.14); border: 1px solid rgba({accent}, 0.3)")
+                            >
+                                <Icon icon=icon width="15px" height="15px" style=format!("color: rgba({accent}, 0.95)") />
+                            </div>
+                            <div class="min-w-0 flex-1">
+                                <div class="truncate text-sm font-semibold text-fg-primary">{header_name}</div>
+                                <div class="text-[11px] font-medium" style=format!("color: rgba({accent}, 0.85)")>
+                                    {label}
+                                </div>
+                            </div>
+                        </div>
+
                         <div class="space-y-4 px-4 py-4">
-                            <div class="overflow-hidden rounded-lg border border-edge-subtle/60 bg-surface-sunken/60">
-                                <img
-                                    src=format!("/api/v1/assets/{}/thumbnail", asset.id)
-                                    alt=""
-                                    class="aspect-video w-full object-cover"
-                                />
-                            </div>
+                            <MediaPreview asset=asset on_video_loaded=Some(on_video_loaded) />
+
                             <div class="grid grid-cols-2 gap-2 text-[11px]">
-                                <MediaFact label="Type" value=asset_kind(&asset).to_owned() />
-                                <MediaFact label="Size" value=format_bytes(asset.byte_len) />
-                                <MediaFact label="Pixels" value=asset_dimensions(&asset) />
-                                <MediaFact
-                                    label="Frames"
-                                    value=asset.frame_count.map(|count| count.to_string()).unwrap_or_else(|| "single".to_owned())
-                                />
-                                <MediaFact label="Duration" value=duration.unwrap_or_else(|| "still".to_owned()) />
-                                <MediaFact label="Hash" value=hash />
+                                <MediaFact label="Type" value=Signal::derive(move || type_text.clone()) />
+                                <MediaFact label="Size" value=Signal::derive(move || size_text.clone()) />
+                                <MediaFact label="Pixels" value=Signal::derive(pixels) />
+                                <MediaFact label="Frames" value=Signal::derive(move || frames_text.clone()) />
+                                <MediaFact label="Duration" value=Signal::derive(duration_value) />
+                                <MediaFact label="Hash" value=Signal::derive(move || hash_text.clone()) />
                             </div>
+
                             <label class="block space-y-1.5">
                                 <span class="text-[10px] font-mono uppercase tracking-wide text-fg-tertiary/70">"Name"</span>
                                 <input
@@ -342,6 +390,14 @@ fn MediaDetail(
                                     <Icon icon=LuSave width="13px" height="13px" />
                                     "Save"
                                 </button>
+                                <a
+                                    href=blob_url
+                                    download=download_name
+                                    title="Download original"
+                                    class="inline-flex items-center justify-center rounded-lg border border-edge-subtle bg-surface-sunken/45 p-2 text-fg-secondary transition-colors hover:bg-surface-hover/30 hover:text-fg-primary btn-press"
+                                >
+                                    <Icon icon=LuDownload width="14px" height="14px" />
+                                </a>
                                 <button
                                     type="button"
                                     class="inline-flex items-center justify-center rounded-lg border border-red-400/20 bg-red-400/5 p-2 text-red-300 transition-colors hover:bg-red-400/10 btn-press"
@@ -351,7 +407,8 @@ fn MediaDetail(
                                 </button>
                             </div>
                         </div>
-                    }.into_any()
+                    }
+                    .into_any()
                 }
                 None => view! {
                     <div class="flex flex-col items-center justify-center gap-2 px-4 py-10 text-center">
@@ -365,11 +422,11 @@ fn MediaDetail(
 }
 
 #[component]
-fn MediaFact(label: &'static str, value: String) -> impl IntoView {
+fn MediaFact(label: &'static str, #[prop(into)] value: Signal<String>) -> impl IntoView {
     view! {
         <div class="rounded-lg border border-edge-subtle/55 bg-surface-sunken/45 px-2.5 py-2">
             <div class="font-mono text-[9px] uppercase tracking-wide text-fg-tertiary/55">{label}</div>
-            <div class="mt-1 truncate text-xs font-medium text-fg-secondary">{value}</div>
+            <div class="mt-1 truncate text-xs font-medium text-fg-secondary">{move || value.get()}</div>
         </div>
     }
 }
@@ -377,9 +434,9 @@ fn MediaFact(label: &'static str, value: String) -> impl IntoView {
 #[component]
 fn MediaLoadingSkeleton() -> impl IntoView {
     view! {
-        <div class="grid grid-cols-[repeat(auto-fill,minmax(210px,1fr))] gap-3">
+        <div class="grid grid-cols-[repeat(auto-fill,minmax(212px,1fr))] gap-3.5">
             {(0..8).map(|_| view! {
-                <div class="h-[220px] rounded-xl border border-edge-subtle/50 bg-surface-overlay/30 animate-pulse" />
+                <div class="aspect-[4/3] rounded-xl border border-edge-subtle/50 bg-surface-overlay/30 animate-pulse" />
             }).collect_view()}
         </div>
     }
