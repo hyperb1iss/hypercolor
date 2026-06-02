@@ -181,11 +181,11 @@ impl DisplayFrameRuntime {
     /// Return a point-in-time display output metrics snapshot.
     #[must_use]
     pub fn metrics_snapshot(&self) -> DisplayOutputMetricsSnapshot {
-        let encode_avg_us = if self.metrics.encode_attempts_total == 0 {
-            0
-        } else {
-            self.metrics.encode_total_us / self.metrics.encode_attempts_total
-        };
+        let encode_avg_us = self
+            .metrics
+            .encode_total_us
+            .checked_div(self.metrics.encode_attempts_total)
+            .unwrap_or(0);
 
         DisplayOutputMetricsSnapshot {
             captured_devices: self.frames.len(),

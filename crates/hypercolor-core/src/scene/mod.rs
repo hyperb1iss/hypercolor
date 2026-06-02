@@ -607,7 +607,7 @@ impl SceneManager {
                 structural_changed = true;
             }
             if group.name.trim().is_empty() {
-                group.name = device_name.to_owned();
+                device_name.clone_into(&mut group.name);
                 structural_changed = true;
             }
         } else {

@@ -206,13 +206,12 @@ impl ServoRenderer {
             self.include_sensor_updates,
             selected_sensor_labels(&self.scoped_sensor_control_ids, &self.controls).as_deref(),
         );
-        if self.include_interaction_updates {
-            if let Some(script) = self
+        if self.include_interaction_updates
+            && let Some(script) = self
                 .runtime
                 .input_update_script_if_changed(&input.interaction)
-            {
-                self.pending_scripts.push(script);
-            }
+        {
+            self.pending_scripts.push(script);
         }
         if self.host_driven_animation {
             self.pending_scripts
