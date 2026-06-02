@@ -46,6 +46,7 @@ use crate::cloud_socket::CloudSocketRuntime;
 use crate::device_metrics::DeviceMetricsSnapshot;
 use crate::device_settings::DeviceSettingsStore;
 use crate::effect_layouts;
+use crate::extensions::ExtensionRegistry;
 use crate::layout_auto_exclusions;
 use crate::network::{self, DaemonDriverHost};
 use crate::performance::PerformanceTracker;
@@ -132,6 +133,10 @@ impl DaemonState {
         let cloud_socket = Arc::new(Mutex::new(CloudSocketRuntime::default()));
 
         // ── Configuration ───────────────────────────────────────────────
+        let extensions = ExtensionRegistry::default();
+        let api_extensions = Vec::new();
+        let lifecycle_extensions = Vec::new();
+
         let config_manager =
             ConfigManager::new(config_path).context("failed to initialize config manager")?;
         config_manager.update(config.clone());
@@ -504,6 +509,9 @@ impl DaemonState {
 
         Ok(Self {
             config_manager,
+            extensions,
+            api_extensions,
+            lifecycle_extensions,
             device_registry,
             effect_registry,
             scene_manager,

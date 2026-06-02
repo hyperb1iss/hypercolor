@@ -146,6 +146,13 @@ impl DaemonState {
         self.spawn_display_preference_sync_worker();
         self.spawn_discovery_worker(Arc::clone(&config));
 
+        for extension in self.lifecycle_extensions.clone() {
+            info!(extension = extension.name(), "Starting daemon extension");
+            extension.start(self).await.with_context(|| {
+                format!("failed to start daemon extension {}", extension.name())
+            })?;
+        }
+
         info!("Daemon is running");
         Ok(())
     }
@@ -170,6 +177,20 @@ impl DaemonState {
 
         if let Some(controller) = self.session_controller.take() {
             controller.shutdown().await;
+        }
+
+        for extension in self.lifecycle_extensions.clone().iter().rev() {
+            info!(
+                extension = extension.name(),
+                "Shutting down daemon extension"
+            );
+            if let Err(error) = extension.shutdown(self).await {
+                warn!(
+                    extension = extension.name(),
+                    %error,
+                    "daemon extension shutdown error"
+                );
+            }
         }
 
         #[cfg(feature = "cloud")]
