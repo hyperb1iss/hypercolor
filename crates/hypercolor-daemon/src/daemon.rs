@@ -48,6 +48,15 @@ pub struct DaemonRunOptions {
     pub ui_dir: Option<PathBuf>,
 }
 
+pub trait DaemonExtensionInstaller: Send + Sync {
+    /// Install extension state, API routes, and lifecycle hooks before startup.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the extension cannot register itself.
+    fn install(&self, daemon: &mut DaemonState) -> Result<()>;
+}
+
 /// Build the daemon's main Tokio runtime.
 ///
 /// # Errors
@@ -70,6 +79,20 @@ pub fn build_main_runtime() -> Result<tokio::runtime::Runtime> {
 ///
 /// Returns an error when startup, serving, or graceful shutdown fails.
 pub async fn run(options: DaemonRunOptions, shutdown_rx: watch::Receiver<bool>) -> Result<()> {
+    run_with_extensions(options, shutdown_rx, &[]).await
+}
+
+/// Run the daemon with downstream extension installers.
+///
+/// # Errors
+///
+/// Returns an error when startup, extension installation, serving, or graceful
+/// shutdown fails.
+pub async fn run_with_extensions(
+    options: DaemonRunOptions,
+    shutdown_rx: watch::Receiver<bool>,
+    extension_installers: &[&dyn DaemonExtensionInstaller],
+) -> Result<()> {
     // Load configuration before tracing so we can honor config-driven log
     // levels when the CLI flag is omitted.
     let (mut config, config_path) = load_config(options.config.as_deref()).await?;
@@ -139,6 +162,9 @@ pub async fn run(options: DaemonRunOptions, shutdown_rx: watch::Receiver<bool>) 
         .context("failed to read API listener address")?;
 
     let mut daemon_state = DaemonState::initialize(&config, config_path)?;
+    for installer in extension_installers {
+        installer.install(&mut daemon_state)?;
+    }
     daemon_state.start().await?;
 
     let ui_dir = resolve_ui_dir(options.ui_dir);
