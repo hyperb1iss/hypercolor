@@ -28,6 +28,14 @@ alias py := python-verify
 verify: fmt-check lint test
     @echo '✅ All checks passed'
 
+# Check OSS/internal boundary guard scaffolding without enforcing extraction yet
+oss-boundary-check:
+    ./scripts/check-oss-boundary.sh
+
+# Strict boundary check for after commercial cloud moves internal
+oss-boundary-check-strict:
+    ./scripts/check-oss-boundary.sh --strict
+
 # Build the workspace with the daemon's full feature set
 [unix]
 build *args='':
