@@ -20,7 +20,7 @@ euclid = { version = "0.22", optional = true }
 gleam = { version = "0.15", optional = true }
 glow = { workspace = true }
 libc = { workspace = true }
-servo = { version = "0.1.0", default-features = false, features = ["baked-in-resources", "js_jit"], optional = true }
+servo = { version = "0.1.1", default-features = false, features = ["baked-in-resources", "js_jit"], optional = true }
 surfman = { version = "0.11", features = ["sm-x11"], optional = true }
 thiserror = { workspace = true }
 wgpu = { workspace = true }

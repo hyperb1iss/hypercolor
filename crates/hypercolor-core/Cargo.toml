@@ -79,7 +79,7 @@ profile_traits = { package = "servo-profile-traits", version = "0.1.0", optional
 wgpu = { workspace = true, optional = true }
 dpi = { workspace = true, optional = true }
 nvml-wrapper = { workspace = true }
-servo = { version = "0.1.0", default-features = false, features = ["baked-in-resources", "js_jit"], optional = true }
+servo = { version = "0.1.1", default-features = false, features = ["baked-in-resources", "js_jit"], optional = true }
 # Pinned to match servo-paint-api's `Rc<dyn gleam::gl::Gl>` so the direct
 # glReadPixels path in servo/worker.rs can call into Servo's context.
 gleam = { version = "0.15", optional = true }
@@ -95,7 +95,7 @@ zbus = { workspace = true }
 [target.'cfg(target_os = "windows")'.dependencies]
 servo = { version = "0.1.0", default-features = false, features = ["baked-in-resources", "js_jit", "no-wgl"], optional = true }
 raw-window-handle = { version = "0.6", optional = true }
-tao = { version = "0.34", default-features = false, features = ["rwh_06"], optional = true }
+tao = { version = "0.35", default-features = false, features = ["rwh_06"], optional = true }
 wmi = { workspace = true }
 hypercolor-windows-pawnio = { path = "../hypercolor-windows-pawnio" }
 
