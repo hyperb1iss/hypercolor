@@ -27,9 +27,11 @@ implementations, or GPL Rust bindings when writing this crate.
 The SDK currently supports protocol versions 1 through 5. Protocol version 0 is
 unversioned and is rejected by negotiation code.
 
-Mode flag semantics are limited to the public RGBController API. Device-specific
-persisting mode behavior must come from a later approved source before the
-driver auto-enables those modes.
+Mode flag semantics are limited to the public RGBController API. Those docs
+define mode bits 0 through 7 and do not define a persistence or auto-save bit.
+The SDK exposes a configurable persistent-mode mask, but the default mask stays
+empty until device-specific persisting behavior comes from a later approved
+source.
 
 The active driver slice uses synthesized golden controller-data fixtures for
 supported protocol versions plus fake SDK server integration tests. A real

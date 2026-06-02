@@ -152,9 +152,12 @@ Supported protocol versions must be pinned before implementation. Negotiation is
 version fail with an actionable error instead of best-effort parsing.
 
 Writable modes are selected by capability flags, not by the display name
-"Direct." The mode must support per-LED color writes and must not persist writes
-to device flash. Modes with auto-save semantics are rejected even if `SAVEMODE`
-is never sent.
+"Direct." The mode must support per-LED color writes. Hypercolor never emits
+`SAVEMODE`, and persistent-mode rejection is driven only by documented or
+user-approved mode flag masks. The public RGBController API currently documents
+mode bits 0 through 7 and does not define a persistence or auto-save bit, so
+device-specific persistence semantics require a future approved source before
+the default policy can reject them automatically.
 
 ## Driver Behavior
 

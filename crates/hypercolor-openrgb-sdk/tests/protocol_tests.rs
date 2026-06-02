@@ -5,9 +5,9 @@ use hypercolor_openrgb_sdk::packet::{
 };
 use hypercolor_openrgb_sdk::{
     CLIENT_MAX_PROTOCOL_VERSION, ColorMode, ControllerMode, DeviceType, HEADER_LEN,
-    MIN_PROTOCOL_VERSION, ModeFlag, ModeFlagPolicy, OpenRgbError, Packet, PacketDecoder,
-    PacketHeader, PacketId as PublicPacketId, REQUEST_RESCAN_DEVICES_MIN_PROTOCOL_VERSION,
-    RgbColor, parse_controller_data,
+    MAX_PACKET_PAYLOAD_SIZE, MIN_PROTOCOL_VERSION, ModeFlag, ModeFlagPolicy, OpenRgbError, Packet,
+    PacketDecoder, PacketHeader, PacketId as PublicPacketId,
+    REQUEST_RESCAN_DEVICES_MIN_PROTOCOL_VERSION, RgbColor, ZoneType, parse_controller_data,
 };
 
 #[test]
@@ -42,6 +42,25 @@ fn packet_decode_rejects_bad_magic() {
     assert_eq!(
         PacketHeader::decode(&bytes),
         Err(OpenRgbError::InvalidMagic(*b"XRGB"))
+    );
+}
+
+#[test]
+fn packet_header_rejects_oversized_payload() {
+    let oversized = MAX_PACKET_PAYLOAD_SIZE + 1;
+    let header = PacketHeader {
+        device_index: 0,
+        packet_id: PacketId::RequestControllerData,
+        size: u32::try_from(oversized).expect("fixture size should fit u32"),
+    }
+    .encode();
+
+    assert_eq!(
+        PacketHeader::decode(&header),
+        Err(OpenRgbError::PacketTooLarge {
+            size: oversized,
+            max: MAX_PACKET_PAYLOAD_SIZE,
+        })
     );
 }
 
@@ -200,6 +219,23 @@ fn parse_protocol_v5_controller_data() {
 }
 
 #[test]
+fn parse_protocol_v5_matrix_zone_data() {
+    let payload = controller_payload_with_zone(5, |body, protocol_version| {
+        push_matrix_zone(body, protocol_version, 2, 3, &[0, 1, 2, 3, 4, 5]);
+    });
+    let controller = parse_controller_data(&payload, 5).expect("controller should parse");
+    let matrix = controller.zones[0]
+        .matrix
+        .as_ref()
+        .expect("matrix zone should expose a matrix map");
+
+    assert_eq!(controller.zones[0].zone_type, ZoneType::Matrix);
+    assert_eq!(matrix.height, 2);
+    assert_eq!(matrix.width, 3);
+    assert_eq!(matrix.values, vec![0, 1, 2, 3, 4, 5]);
+}
+
+#[test]
 fn parse_protocol_v4_controller_data() {
     let payload = controller_payload(4);
     let controller = parse_controller_data(&payload, 4).expect("controller should parse");
@@ -280,6 +316,20 @@ fn parser_rejects_losing_nul_byte() {
     );
 }
 
+#[test]
+fn parser_rejects_invalid_matrix_lengths() {
+    for matrix_len in [4_u16, 10] {
+        let payload = controller_payload_with_zone(5, |body, protocol_version| {
+            push_invalid_matrix_zone(body, protocol_version, matrix_len);
+        });
+
+        assert_eq!(
+            parse_controller_data(&payload, 5),
+            Err(OpenRgbError::InvalidMatrixLength(usize::from(matrix_len)))
+        );
+    }
+}
+
 fn sample_mode(flags: u32, color_mode: ColorMode) -> ControllerMode {
     ControllerMode {
         name: "Direct".to_owned(),
@@ -304,6 +354,13 @@ fn controller_payload_v5() -> Vec<u8> {
 }
 
 fn controller_payload(protocol_version: u32) -> Vec<u8> {
+    controller_payload_with_zone(protocol_version, push_zone)
+}
+
+fn controller_payload_with_zone(
+    protocol_version: u32,
+    push_controller_zone: impl FnOnce(&mut Vec<u8>, u32),
+) -> Vec<u8> {
     let mut body = Vec::new();
     push_u32(&mut body, 0);
     push_i32(&mut body, 5);
@@ -317,7 +374,7 @@ fn controller_payload(protocol_version: u32) -> Vec<u8> {
     push_i32(&mut body, 0);
     push_mode(&mut body, protocol_version);
     push_u16(&mut body, 1);
-    push_zone(&mut body, protocol_version);
+    push_controller_zone(&mut body, protocol_version);
     push_u16(&mut body, 2);
     push_str(&mut body, "LED 0");
     push_u32(&mut body, 0);
@@ -374,6 +431,49 @@ fn push_zone(body: &mut Vec<u8>, protocol_version: u32) {
     if protocol_version >= 5 {
         push_u32(body, 0);
     }
+}
+
+fn push_matrix_zone(
+    body: &mut Vec<u8>,
+    protocol_version: u32,
+    height: u32,
+    width: u32,
+    values: &[u32],
+) {
+    push_str(body, "Main");
+    push_i32(body, 2);
+    push_u32(body, 2);
+    push_u32(body, 2);
+    push_u32(body, 2);
+    let matrix_len = 8 + values.len() * 4;
+    push_u16(
+        body,
+        u16::try_from(matrix_len).expect("fixture matrix should fit u16"),
+    );
+    push_u32(body, height);
+    push_u32(body, width);
+    for value in values {
+        push_u32(body, *value);
+    }
+    if protocol_version >= 4 {
+        push_u16(body, 1);
+        push_str(body, "Half");
+        push_i32(body, 1);
+        push_u32(body, 0);
+        push_u32(body, 2);
+    }
+    if protocol_version >= 5 {
+        push_u32(body, 0);
+    }
+}
+
+fn push_invalid_matrix_zone(body: &mut Vec<u8>, _protocol_version: u32, matrix_len: u16) {
+    push_str(body, "Main");
+    push_i32(body, 2);
+    push_u32(body, 2);
+    push_u32(body, 2);
+    push_u32(body, 2);
+    push_u16(body, matrix_len);
 }
 
 fn push_str(body: &mut Vec<u8>, value: &str) {
