@@ -290,7 +290,7 @@ fn ZoneNode(
 
     view! {
         <div
-            class="overflow-hidden rounded-xl border bg-surface-overlay/40 transition-all"
+            class="overflow-hidden rounded-xl border bg-surface-overlay/40 transition-[border-color,opacity] duration-200"
             class=("border-accent-muted", move || is_selected.get())
             class=("border-edge-subtle/70", move || !is_selected.get())
             class=("opacity-55", move || dimmed)
@@ -448,7 +448,7 @@ fn UnassignedNode(rows: Memo<Vec<(ZoneDeviceRow, Option<DeviceSummary>)>>) -> im
 
     view! {
         <div
-            class="overflow-hidden rounded-xl border border-dashed transition-all"
+            class="overflow-hidden rounded-xl border border-dashed transition-[border-color] duration-200"
             class=("border-accent-muted", move || is_selected.get())
             class=("border-edge-subtle/55", move || !is_selected.get())
         >
@@ -516,7 +516,7 @@ fn ScreenRow(surface: Surface) -> impl IntoView {
 
     view! {
         <div
-            class="rounded-xl border transition-all"
+            class="rounded-xl border transition-[border-color,background-color] duration-200"
             class=("border-accent-muted", move || is_selected.get())
             class=("bg-accent/8", move || is_selected.get())
             class=("border-edge-subtle/70", move || !is_selected.get())
