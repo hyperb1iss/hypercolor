@@ -2,8 +2,8 @@ use std::net::Ipv4Addr;
 use std::time::Duration;
 
 use hypercolor_openrgb_sdk::{
-    CLIENT_MAX_PROTOCOL_VERSION, ColorMode, ModeFlag, OpenRgbClient, OpenRgbClientConfig, Packet,
-    PacketDecoder, PacketHeader, PacketId, RgbColor,
+    CLIENT_MAX_PROTOCOL_VERSION, ColorMode, ModeFlag, OpenRgbClient, OpenRgbClientConfig,
+    OpenRgbError, Packet, PacketDecoder, PacketHeader, PacketId, RgbColor, parse_controller_data,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -42,6 +42,17 @@ async fn client_negotiates_fetches_controller_and_streams_leds() {
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].header.packet_id, PacketId::DeviceListUpdated);
 
+    let payload = client
+        .controller_data_payload(0)
+        .await
+        .expect("raw controller data payload should be captured");
+    assert_eq!(payload, controller_payload_v5());
+    let controller =
+        parse_controller_data(&payload, client.protocol_version()).expect("payload should parse");
+    assert_eq!(controller.name, "Board");
+    assert_eq!(controller.vendor, "Acme");
+    assert_eq!(controller.leds.len(), 2);
+
     let controller = client
         .controller_data(0)
         .await
@@ -49,6 +60,20 @@ async fn client_negotiates_fetches_controller_and_streams_leds() {
     assert_eq!(controller.name, "Board");
     assert_eq!(controller.vendor, "Acme");
     assert_eq!(controller.leds.len(), 2);
+
+    let malformed_payload = client
+        .controller_data_payload(0)
+        .await
+        .expect("malformed raw controller data payload should still be captured");
+    assert_eq!(malformed_payload, malformed_controller_payload_v5());
+    assert!(
+        matches!(
+            parse_controller_data(&malformed_payload, client.protocol_version()),
+            Err(OpenRgbError::DataSizeMismatch { actual, advertised })
+                if actual == malformed_payload.len() && advertised > actual
+        ),
+        "malformed capture should fail on the advertised payload-size guard"
+    );
 
     client
         .update_leds(0, &[RgbColor::new(10, 20, 30), RgbColor::new(40, 50, 60)])
@@ -101,6 +126,23 @@ async fn run_client_server(listener: TcpListener) -> Packet {
     )
     .await;
 
+    for _ in 0..2 {
+        let packet = read_next_packet(&mut stream, &mut decoder).await;
+        assert_eq!(packet.header.device_index, 0);
+        assert_eq!(packet.header.packet_id, PacketId::RequestControllerData);
+        assert_eq!(
+            packet.payload,
+            CLIENT_MAX_PROTOCOL_VERSION.to_le_bytes().to_vec()
+        );
+        send_packet(
+            &mut stream,
+            PacketId::RequestControllerData,
+            0,
+            controller_payload_v5(),
+        )
+        .await;
+    }
+
     let packet = read_next_packet(&mut stream, &mut decoder).await;
     assert_eq!(packet.header.device_index, 0);
     assert_eq!(packet.header.packet_id, PacketId::RequestControllerData);
@@ -112,7 +154,7 @@ async fn run_client_server(listener: TcpListener) -> Packet {
         &mut stream,
         PacketId::RequestControllerData,
         0,
-        controller_payload_v5(),
+        malformed_controller_payload_v5(),
     )
     .await;
 
@@ -187,6 +229,10 @@ fn controller_payload_v5() -> Vec<u8> {
     let size = u32::try_from(body.len()).expect("fixture should fit u32");
     body[0..4].copy_from_slice(&size.to_le_bytes());
     body
+}
+
+fn malformed_controller_payload_v5() -> Vec<u8> {
+    controller_payload_v5()[..8].to_vec()
 }
 
 fn push_mode(body: &mut Vec<u8>) {

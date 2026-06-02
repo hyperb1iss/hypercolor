@@ -116,6 +116,17 @@ impl OpenRgbClient {
     ///
     /// Returns an error when the request fails or controller data is malformed.
     pub async fn controller_data(&mut self, controller_index: u32) -> Result<ControllerData> {
+        let payload = self.controller_data_payload(controller_index).await?;
+        parse_controller_data(&payload, self.protocol_version)
+    }
+
+    /// Request one raw controller data payload without parsing it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the request fails or the SDK response packet
+    /// cannot be decoded.
+    pub async fn controller_data_payload(&mut self, controller_index: u32) -> Result<Vec<u8>> {
         self.send_packet(
             PacketId::RequestControllerData,
             controller_index,
@@ -123,7 +134,7 @@ impl OpenRgbClient {
         )
         .await?;
         let packet = self.expect_packet(PacketId::RequestControllerData).await?;
-        parse_controller_data(&packet.payload, self.protocol_version)
+        Ok(packet.payload)
     }
 
     /// Ask OpenRGB to rescan devices.

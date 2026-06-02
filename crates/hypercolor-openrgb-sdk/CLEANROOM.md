@@ -37,3 +37,11 @@ The active driver slice uses synthesized golden controller-data fixtures for
 supported protocol versions plus fake SDK server integration tests. A real
 captured packet corpus is a future compatibility-hardening gate, not a
 requirement for the clean SDK crate to exist in this milestone.
+
+Use `cargo run -p hypercolor-openrgb-sdk --example capture_corpus -- [addr]
+[output.md]` to capture raw `REQUEST_CONTROLLER_DATA` payloads from a user-run
+OpenRGB SDK server. The example connects only to the supplied numeric endpoint,
+such as `127.0.0.1:6742`, does not start or supervise OpenRGB, and records
+unredacted payload hex plus parsed summary fields for parser fixture promotion.
+Captured hex can contain device serial and location strings; scrub those fields
+while preserving wire lengths before committing promoted fixtures.
