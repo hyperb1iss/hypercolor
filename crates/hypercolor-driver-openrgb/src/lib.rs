@@ -835,8 +835,9 @@ async fn teardown_connected_controller(controller: &mut ConnectedController) -> 
                     debug!(
                         controller_index = controller.route.controller_index,
                         error = %error,
-                        "OpenRGB previous mode restore failed; leaving last frame"
+                        "OpenRGB previous mode restore failed; blacking out"
                     );
+                    blackout_controller(controller).await?;
                 }
             }
         }
