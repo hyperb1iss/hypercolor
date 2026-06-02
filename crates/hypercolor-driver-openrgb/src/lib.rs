@@ -30,6 +30,7 @@ use hypercolor_types::device::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::Mutex;
+use tokio::time::Instant;
 use tracing::debug;
 
 /// OpenRGB driver descriptor.
@@ -67,6 +68,8 @@ const DEFAULT_TIMEOUT_MS: u64 = 750;
 const DEFAULT_TARGET_FPS: u32 = 30;
 const MAX_TIMEOUT_MS: u64 = 10_000;
 const MAX_CONTROLLERS_PER_ENDPOINT: u32 = 1024;
+const INITIAL_RECONNECT_BACKOFF: Duration = Duration::from_millis(250);
+const MAX_RECONNECT_BACKOFF: Duration = Duration::from_secs(5);
 
 /// Driver configuration for the OpenRGB fallback bridge.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -333,6 +336,7 @@ impl DeviceBackend for OpenRgbBackend {
                 client,
                 config: self.config.clone(),
                 consecutive_failures: 0,
+                reconnect_backoff: ReconnectBackoff::default(),
             })),
         );
         Ok(())
@@ -466,19 +470,48 @@ async fn write_prepared_controller_colors(
 }
 
 async fn reconnect_connected_controller(controller: &mut ConnectedController) -> Result<()> {
-    let mut client = connect_openrgb_client(&controller.config, controller.route.endpoint).await?;
-    let route = find_current_route(
+    let now = Instant::now();
+    if !controller.reconnect_backoff.can_attempt(now) {
+        bail!(
+            "OpenRGB reconnect backoff is active for {} ms",
+            controller.reconnect_backoff.remaining(now).as_millis()
+        );
+    }
+
+    let mut client =
+        match connect_openrgb_client(&controller.config, controller.route.endpoint).await {
+            Ok(client) => client,
+            Err(error) => {
+                controller.reconnect_backoff.record_failure(now);
+                return Err(error);
+            }
+        };
+    let route_result = find_current_route(
         &mut client,
         controller.route.endpoint,
         &controller.route.fingerprint,
         &controller.config,
     )
-    .await?;
-    ensure_route_output_enabled(&route)?;
-    configure_controller_output(&mut client, &route).await?;
+    .await
+    .and_then(|route| {
+        ensure_route_output_enabled(&route)?;
+        Ok(route)
+    });
+    let route = match route_result {
+        Ok(route) => route,
+        Err(error) => {
+            controller.reconnect_backoff.record_failure(now);
+            return Err(error);
+        }
+    };
+    if let Err(error) = configure_controller_output(&mut client, &route).await {
+        controller.reconnect_backoff.record_failure(now);
+        return Err(error);
+    }
     controller.client = client;
     controller.route = route;
     controller.consecutive_failures = 0;
+    controller.reconnect_backoff.reset();
     Ok(())
 }
 
@@ -502,6 +535,49 @@ struct ConnectedController {
     client: OpenRgbClient,
     config: OpenRgbConfig,
     consecutive_failures: u32,
+    reconnect_backoff: ReconnectBackoff,
+}
+
+#[derive(Debug, Clone)]
+struct ReconnectBackoff {
+    next_attempt_at: Option<Instant>,
+    next_delay: Duration,
+}
+
+impl Default for ReconnectBackoff {
+    fn default() -> Self {
+        Self {
+            next_attempt_at: None,
+            next_delay: INITIAL_RECONNECT_BACKOFF,
+        }
+    }
+}
+
+impl ReconnectBackoff {
+    fn can_attempt(&self, now: Instant) -> bool {
+        self.next_attempt_at.is_none_or(|deadline| now >= deadline)
+    }
+
+    fn remaining(&self, now: Instant) -> Duration {
+        self.next_attempt_at
+            .and_then(|deadline| deadline.checked_duration_since(now))
+            .unwrap_or_default()
+    }
+
+    fn record_failure(&mut self, now: Instant) {
+        self.next_attempt_at = Some(now + self.next_delay);
+        self.next_delay = self
+            .next_delay
+            .checked_mul(2)
+            .map_or(MAX_RECONNECT_BACKOFF, |delay| {
+                delay.min(MAX_RECONNECT_BACKOFF)
+            });
+    }
+
+    fn reset(&mut self) {
+        self.next_attempt_at = None;
+        self.next_delay = INITIAL_RECONNECT_BACKOFF;
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1281,6 +1357,27 @@ mod tests {
             );
             assert!(!route.info.capabilities.supports_direct);
         }
+    }
+
+    #[test]
+    fn reconnect_backoff_blocks_until_deadline_and_caps_delay() {
+        let now = Instant::now();
+        let mut backoff = ReconnectBackoff::default();
+
+        assert!(backoff.can_attempt(now));
+        backoff.record_failure(now);
+        assert!(!backoff.can_attempt(now));
+        assert_eq!(backoff.remaining(now), INITIAL_RECONNECT_BACKOFF);
+        assert!(backoff.can_attempt(now + INITIAL_RECONNECT_BACKOFF));
+
+        for _ in 0..8 {
+            backoff.record_failure(now);
+        }
+        assert_eq!(backoff.next_delay, MAX_RECONNECT_BACKOFF);
+
+        backoff.reset();
+        assert!(backoff.can_attempt(now));
+        assert_eq!(backoff.next_delay, INITIAL_RECONNECT_BACKOFF);
     }
 
     fn sample_controller() -> ControllerData {
