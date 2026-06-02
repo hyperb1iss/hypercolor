@@ -247,7 +247,7 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                     return view! {
                         <div class="space-y-2">
                             // ── Row 1: Group identity + master brightness ──
-                            <div class="flex items-center gap-3 min-w-0">
+                            <div class="flex flex-wrap items-center gap-x-3 gap-y-2 min-w-0">
                                 <div class="flex items-center gap-1.5 min-w-0">
                                     <span
                                         class="shrink-0 px-2 py-0.5 rounded-md text-[10px] font-mono tabular-nums"
@@ -266,7 +266,7 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                             </div>
 
                             // ── Row 2: Group transform controls ──
-                            <div class="flex items-center gap-1.5">
+                            <div class="flex flex-wrap items-center gap-1.5">
                                 // Group position (centroid)
                                 <div class="flex items-center gap-1.5 shrink-0 rounded-lg px-2 py-1"
                                      style="background: rgba(255, 255, 255, 0.02)">
@@ -724,7 +724,9 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                 view! {
                     <div class="space-y-2">
                         // ── Row 1: Identity · Metadata · Assignment · Layer · Actions ──
-                        <div class="flex items-center gap-3 min-w-0">
+                        // Wraps so the toolbar reflows down instead of
+                        // overflowing and overlapping as the window narrows.
+                        <div class="flex flex-wrap items-center gap-x-3 gap-y-2 min-w-0">
                             // Name + Channel
                             <div class="flex items-center gap-1.5 min-w-0 shrink">
                                 <input
@@ -801,10 +803,9 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                 })}
                             </div>
 
-                            <div class="flex-1" />
-
-                            // Layer controls — compact pill
-                            <div class="flex items-center shrink-0 rounded-md"
+                            // Layer controls — compact pill, pushed to the
+                            // trailing edge; wraps below when the row is tight.
+                            <div class="flex items-center shrink-0 rounded-md ml-auto"
                                  style="background: rgba(255, 255, 255, 0.02)">
                                 {layer_icon_button(LuSkipForward, "Bring to front", {
                                     let zid = zid_front;
@@ -1029,7 +1030,9 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                         </div>
 
                         // ── Row 2: Transform controls in pill sections ──
-                        <div class="flex items-center gap-1.5">
+                        // Each pill is a wrap unit, so Pos / Size / Rot / Scale
+                        // flow onto the next line rather than overflowing.
+                        <div class="flex flex-wrap items-center gap-1.5">
                             // Position
                             <div class="flex items-center gap-1.5 shrink-0 rounded-lg px-2 py-1"
                                  style="background: rgba(255, 255, 255, 0.02)">
