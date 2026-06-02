@@ -123,9 +123,6 @@ windows-native-keyring-store = "1.0.0"
 
 # Workspace crates
 hypercolor-types = { path = "crates/hypercolor-types" }
-hypercolor-cloud-api = { path = "crates/hypercolor-cloud-api" }
-hypercolor-daemon-link = { path = "crates/hypercolor-daemon-link" }
-hypercolor-cloud-client = { path = "crates/hypercolor-cloud-client" }
 hypercolor-hal = { path = "crates/hypercolor-hal" }
 hypercolor-core = { path = "crates/hypercolor-core" }
 hypercolor-linux-gpu-interop = { path = "crates/hypercolor-linux-gpu-interop" }

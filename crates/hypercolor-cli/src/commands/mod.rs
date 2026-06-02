@@ -2,7 +2,6 @@
 
 pub mod audio;
 pub mod brightness;
-pub mod cloud;
 pub mod completions;
 pub mod config;
 pub mod controls;

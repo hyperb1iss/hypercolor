@@ -1,11 +1,11 @@
 //! Tests for configuration types — defaults, serde roundtrips, partial deserialization.
 
 use hypercolor_types::config::{
-    AudioConfig, CaptureConfig, CloudConfig, DaemonConfig, DbusConfig, DiscoveryConfig,
-    DisplayConfig, EffectEngineConfig, EffectErrorFallbackPolicy, FeatureFlags, GoveeConfig,
-    HypercolorConfig, LogLevel, McpConfig, MediaConfig, NetworkAccessMode, NetworkClientScope,
-    NetworkConfig, RenderAccelerationMode, RenderingConfig, ServoGpuImportConfig,
-    ServoGpuImportMode, ShutdownBehavior, TuiConfig, WebConfig, default_driver_configs,
+    AudioConfig, CaptureConfig, DaemonConfig, DbusConfig, DiscoveryConfig, DisplayConfig,
+    EffectEngineConfig, EffectErrorFallbackPolicy, FeatureFlags, GoveeConfig, HypercolorConfig,
+    LogLevel, McpConfig, MediaConfig, NetworkAccessMode, NetworkClientScope, NetworkConfig,
+    RenderAccelerationMode, RenderingConfig, ServoGpuImportConfig, ServoGpuImportMode,
+    ShutdownBehavior, TuiConfig, WebConfig, default_driver_configs,
 };
 use hypercolor_types::session::{OffOutputBehavior, SessionConfig};
 
@@ -132,18 +132,6 @@ fn network_defaults_match_spec() {
 }
 
 #[test]
-fn cloud_defaults_match_spec() {
-    let c = CloudConfig::default();
-    assert!(!c.enabled);
-    assert_eq!(c.base_url, "https://api.hypercolor.lighting");
-    assert_eq!(c.auth_base_url, "https://hypercolor.lighting");
-    assert_eq!(c.app_base_url, "https://app.hypercolor.lighting");
-    assert_eq!(c.device_client_id, "hypercolor-daemon");
-    assert_eq!(c.device_scope, "openid profile email");
-    assert!(c.connect_on_start);
-}
-
-#[test]
 fn driver_registry_defaults_are_driver_agnostic() {
     let drivers = default_driver_configs();
     assert!(drivers.is_empty());
@@ -254,7 +242,6 @@ fn full_config_toml_roundtrip() {
         display: DisplayConfig::default(),
         discovery: DiscoveryConfig::default(),
         network: NetworkConfig::default(),
-        cloud: CloudConfig::default(),
         drivers: default_driver_configs(),
         dbus: DbusConfig::default(),
         tui: TuiConfig::default(),
@@ -285,8 +272,6 @@ fn full_config_toml_roundtrip() {
     assert!(!restored.network.remote_access);
     assert!(!restored.network.allow_unauthenticated_remote_access);
     assert!(restored.network.allowed_clients.is_empty());
-    assert!(!restored.cloud.enabled);
-    assert_eq!(restored.cloud.base_url, "https://api.hypercolor.lighting");
     assert!(restored.drivers.is_empty());
     assert!(restored.dbus.enabled);
     assert_eq!(restored.tui.theme, "silkcircuit");
@@ -319,9 +304,6 @@ fn minimal_toml_fills_defaults() {
     assert!(!config.network.remote_access);
     assert!(!config.network.allow_unauthenticated_remote_access);
     assert!(config.network.allowed_clients.is_empty());
-    assert!(!config.cloud.enabled);
-    assert_eq!(config.cloud.base_url, "https://api.hypercolor.lighting");
-    assert!(config.cloud.connect_on_start);
     assert!(config.drivers.is_empty());
 }
 
@@ -472,15 +454,6 @@ allow_unauthenticated_remote_access = true
 allowed_clients = ["192.168.1.0/24", "fd00::/8"]
 instance_name = "desk-pc"
 
-[cloud]
-enabled = true
-base_url = "https://api.staging.hypercolor.lighting"
-auth_base_url = "https://staging.hypercolor.lighting"
-app_base_url = "https://app.staging.hypercolor.lighting"
-device_client_id = "hypercolor-daemon-dev"
-device_scope = "openid profile email cloud"
-connect_on_start = false
-
 [drivers.fixture-driver]
 default_protocol = "e131"
 known_ips = ["192.168.1.50"]
@@ -508,22 +481,6 @@ dedup_threshold = 0
         vec!["192.168.1.0/24".to_owned(), "fd00::/8".to_owned()]
     );
     assert_eq!(config.network.instance_name.as_deref(), Some("desk-pc"));
-    assert!(config.cloud.enabled);
-    assert_eq!(
-        config.cloud.base_url,
-        "https://api.staging.hypercolor.lighting"
-    );
-    assert_eq!(
-        config.cloud.auth_base_url,
-        "https://staging.hypercolor.lighting"
-    );
-    assert_eq!(
-        config.cloud.app_base_url,
-        "https://app.staging.hypercolor.lighting"
-    );
-    assert_eq!(config.cloud.device_client_id, "hypercolor-daemon-dev");
-    assert_eq!(config.cloud.device_scope, "openid profile email cloud");
-    assert!(!config.cloud.connect_on_start);
     // Audio fields not overridden keep defaults
     assert!((config.audio.smoothing - 0.8).abs() < f32::EPSILON);
     assert_eq!(

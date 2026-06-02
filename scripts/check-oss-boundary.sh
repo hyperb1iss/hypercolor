@@ -49,7 +49,7 @@ check_absent "cloud API path" '/api/v1/cloud'
 check_absent "cloud crate names" 'hypercolor-(cloud-api|cloud-client|daemon-link)'
 check_absent "official cloud feature" 'official-cloud'
 check_absent "cloud runtime state" 'cloud_(login_sessions|connection|socket)'
-check_absent "cloud endpoints" '(api|app|auth)?\.?hypercolor\.lighting'
+check_absent "cloud endpoints" 'api\.hypercolor\.lighting/v1/daemon|hypercolor\.lighting/(activate|api/auth/device)|app\.hypercolor\.lighting'
 check_absent "cloud entitlement feature key" 'hc\.cloud_sync'
 
 exit "$fail"

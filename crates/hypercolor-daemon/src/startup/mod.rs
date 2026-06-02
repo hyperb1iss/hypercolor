@@ -275,11 +275,4 @@ impl DaemonState {
     pub fn register_lifecycle_extension(&mut self, extension: Arc<dyn DaemonLifecycleExtension>) {
         self.lifecycle_extensions.push(extension);
     }
-
-    #[cfg(feature = "cloud")]
-    pub fn cloud_state(&self) -> Arc<crate::cloud_state::CloudState> {
-        self.extensions
-            .get::<crate::cloud_state::CloudState>()
-            .expect("cloud feature should register cloud state")
-    }
 }

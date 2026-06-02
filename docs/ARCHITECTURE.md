@@ -104,12 +104,6 @@ graph TD
         NET[hypercolor-network]
     end
 
-    subgraph Cloud
-        CAPI[hypercolor-cloud-api]
-        DLINK[hypercolor-daemon-link]
-        CCLI[hypercolor-cloud-client]
-    end
-
     subgraph UITooling["UI Tooling"]
         LEXT[hypercolor-leptos-ext]
         LMAC[hypercolor-leptos-ext-macros]
@@ -134,12 +128,9 @@ graph TD
     DAPI --> GOV
     DAPI & CORE --> DBI
     DAPI --> NET
-    CAPI --> DLINK
-    DLINK --> CCLI
     LMAC --> LEXT
     CORE & HAL & DAPI & NET --> D
     LEXT --> D
-    CCLI -.->|optional| D
     DBI -.->|optional| D
     CORE --> CLI
     T --> TUI
@@ -155,8 +146,6 @@ Key rules:
 - Network and hardware drivers depend on `hypercolor-driver-api`.
 - `hypercolor-driver-builtin` aggregates the optional driver crates behind
   feature flags.
-- `hypercolor-cloud-api` → `hypercolor-daemon-link` → `hypercolor-cloud-client`
-  is the cloud type chain; cloud-client is an optional daemon dependency.
 - `hypercolor-leptos-ext-macros` is a proc-macro crate with no hypercolor deps;
   `hypercolor-leptos-ext` depends on it and on no other internal crate.
 - `hypercolor-linux-gpu-interop` and `hypercolor-windows-pawnio` are unsafe
