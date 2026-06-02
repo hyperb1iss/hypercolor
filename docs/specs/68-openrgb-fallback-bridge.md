@@ -165,9 +165,16 @@ Driver config lives under `[drivers.openrgb]` and includes:
 - `auto_connect`
 - `startup_rescan`
 - detector ownership partition
+- detector partition confirmation for externally managed OpenRGB instances
 - controller cadence overrides
 - teardown policy
 - explicit insecure non-loopback opt-in
+
+`auto_connect=false` keeps discovered controllers visible but defers activation
+until a manual connect path selects them. Detector-partitioned ownership, or any
+enabled ownership mode with native-claimed detector classes, requires
+`detector_partition_confirmed=true` after the external OpenRGB instance has been
+configured not to scan or claim native-owned detector classes.
 
 Loopback endpoints are the default. Non-loopback endpoints are refused unless the
 user explicitly enables insecure remote SDK access. The OpenRGB SDK protocol has

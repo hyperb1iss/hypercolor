@@ -50,7 +50,9 @@ const FIELD_CONNECT_TIMEOUT_MS: &str = "connect_timeout_ms";
 const FIELD_READ_TIMEOUT_MS: &str = "read_timeout_ms";
 const FIELD_WRITE_TIMEOUT_MS: &str = "write_timeout_ms";
 const FIELD_STARTUP_RESCAN: &str = "startup_rescan";
+const FIELD_AUTO_CONNECT: &str = "auto_connect";
 const FIELD_OWNERSHIP: &str = "ownership";
+const FIELD_DETECTOR_PARTITION_CONFIRMED: &str = "detector_partition_confirmed";
 const FIELD_DEFAULT_TARGET_FPS: &str = "default_target_fps";
 const FIELD_CONTROLLER_FPS: &str = "controller_fps";
 const FIELD_MODE_PER_LED_MASK: &str = "mode_per_led_mask";
@@ -90,8 +92,12 @@ pub struct OpenRgbConfig {
     pub write_timeout_ms: u64,
     #[serde(default)]
     pub startup_rescan: bool,
+    #[serde(default = "default_auto_connect")]
+    pub auto_connect: bool,
     #[serde(default)]
     pub ownership: OpenRgbOwnership,
+    #[serde(default)]
+    pub detector_partition_confirmed: bool,
     #[serde(default = "default_target_fps")]
     pub default_target_fps: u32,
     #[serde(default)]
@@ -113,7 +119,9 @@ impl Default for OpenRgbConfig {
             read_timeout_ms: default_timeout_ms(),
             write_timeout_ms: default_timeout_ms(),
             startup_rescan: false,
+            auto_connect: default_auto_connect(),
             ownership: OpenRgbOwnership::default(),
+            detector_partition_confirmed: false,
             default_target_fps: default_target_fps(),
             controller_fps: BTreeMap::new(),
             mode_per_led_mask: default_per_led_mask(),
@@ -788,6 +796,7 @@ struct ControllerRoute {
     writable_mode: Option<(u32, ControllerMode)>,
     previous_mode: Option<(u32, ControllerMode)>,
     target_fps: u32,
+    auto_connect: bool,
     info: DeviceInfo,
     protocol_version: u32,
 }
@@ -820,7 +829,7 @@ impl From<ControllerRoute> for DiscoveredDevice {
         }
         Self {
             fingerprint: route.fingerprint,
-            connect_behavior: if route.disabled_reason.is_none() {
+            connect_behavior: if route.disabled_reason.is_none() && route.auto_connect {
                 DiscoveryConnectBehavior::AutoConnect
             } else {
                 DiscoveryConnectBehavior::Deferred
@@ -1100,6 +1109,7 @@ fn build_route(
         writable_mode,
         previous_mode,
         target_fps,
+        auto_connect: config.auto_connect,
         info,
         protocol_version,
     }
@@ -1383,7 +1393,23 @@ fn validate_openrgb_config(config: &OpenRgbConfig) -> Result<()> {
     if config.default_target_fps == 0 {
         bail!("OpenRGB default_target_fps must be at least 1");
     }
+    if openrgb_detector_partition_needs_confirmation(config)
+        && !config.detector_partition_confirmed
+    {
+        bail!(
+            "OpenRGB detector_partition_confirmed must be true after configuring OpenRGB detectors for the requested ownership partition"
+        );
+    }
     Ok(())
+}
+
+fn openrgb_detector_partition_needs_confirmation(config: &OpenRgbConfig) -> bool {
+    if config.ownership.mode == OpenRgbOwnershipMode::Disabled {
+        return false;
+    }
+
+    config.ownership.mode == OpenRgbOwnershipMode::DetectorPartitioned
+        || !normalized_set(&config.ownership.native_claimed_detector_classes).is_empty()
 }
 
 fn openrgb_config_settings(config: &OpenRgbConfig) -> BTreeMap<String, serde_json::Value> {
@@ -1409,7 +1435,12 @@ fn openrgb_config_settings(config: &OpenRgbConfig) -> BTreeMap<String, serde_jso
             FIELD_STARTUP_RESCAN.to_owned(),
             json!(config.startup_rescan),
         ),
+        (FIELD_AUTO_CONNECT.to_owned(), json!(config.auto_connect)),
         (FIELD_OWNERSHIP.to_owned(), json!(config.ownership)),
+        (
+            FIELD_DETECTOR_PARTITION_CONFIRMED.to_owned(),
+            json!(config.detector_partition_confirmed),
+        ),
         (
             FIELD_DEFAULT_TARGET_FPS.to_owned(),
             json!(config.default_target_fps),
@@ -1456,6 +1487,10 @@ const fn default_target_fps() -> u32 {
     DEFAULT_TARGET_FPS
 }
 
+const fn default_auto_connect() -> bool {
+    true
+}
+
 const fn default_per_led_mask() -> u32 {
     hypercolor_openrgb_sdk::ModeFlag::PerLedColor.mask()
 }
@@ -1478,6 +1513,8 @@ mod tests {
         .expect("default config should parse");
         assert_eq!(config.endpoints, default_endpoints());
         assert!(!config.allow_insecure_remote);
+        assert!(config.auto_connect);
+        assert!(!config.detector_partition_confirmed);
         assert_eq!(
             config.teardown_policy,
             OpenRgbTeardownPolicy::RestorePreviousOrLeave
@@ -1495,6 +1532,75 @@ mod tests {
         assert!(validate_openrgb_config(&config).is_err());
         config.allow_insecure_remote = true;
         validate_openrgb_config(&config).expect("explicit opt-in should validate");
+    }
+
+    #[test]
+    fn config_requires_detector_partition_confirmation_for_partitioned_ownership() {
+        let mut config = OpenRgbConfig {
+            ownership: OpenRgbOwnership {
+                mode: OpenRgbOwnershipMode::DetectorPartitioned,
+                allowed_detector_classes: vec!["hid".to_owned()],
+                ..OpenRgbOwnership::default()
+            },
+            ..OpenRgbConfig::default()
+        };
+
+        let error =
+            validate_openrgb_config(&config).expect_err("unconfirmed partition should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("detector_partition_confirmed")
+        );
+
+        config.detector_partition_confirmed = true;
+        validate_openrgb_config(&config).expect("confirmed partition should validate");
+    }
+
+    #[test]
+    fn config_requires_detector_partition_confirmation_for_native_claims() {
+        let mut config = OpenRgbConfig {
+            ownership: OpenRgbOwnership {
+                mode: OpenRgbOwnershipMode::OpenRgbOwned,
+                native_claimed_detector_classes: vec!["smbus".to_owned()],
+                ..OpenRgbOwnership::default()
+            },
+            ..OpenRgbConfig::default()
+        };
+
+        assert!(validate_openrgb_config(&config).is_err());
+        config.detector_partition_confirmed = true;
+        validate_openrgb_config(&config).expect("confirmed native claims should validate");
+    }
+
+    #[test]
+    fn openrgb_owned_without_native_claims_does_not_require_partition_confirmation() {
+        let config = OpenRgbConfig {
+            ownership: OpenRgbOwnership {
+                mode: OpenRgbOwnershipMode::OpenRgbOwned,
+                ..OpenRgbOwnership::default()
+            },
+            ..OpenRgbConfig::default()
+        };
+
+        assert!(!openrgb_detector_partition_needs_confirmation(&config));
+        validate_openrgb_config(&config).expect("owned static partition should validate");
+    }
+
+    #[test]
+    fn disabled_ownership_never_requires_partition_confirmation() {
+        let config = OpenRgbConfig {
+            ownership: OpenRgbOwnership {
+                mode: OpenRgbOwnershipMode::Disabled,
+                native_claimed_detector_classes: vec!["smbus".to_owned()],
+                ..OpenRgbOwnership::default()
+            },
+            detector_partition_confirmed: false,
+            ..OpenRgbConfig::default()
+        };
+
+        assert!(!openrgb_detector_partition_needs_confirmation(&config));
+        validate_openrgb_config(&config).expect("disabled ownership should validate");
     }
 
     #[test]
@@ -1606,6 +1712,27 @@ mod tests {
         let route = build_route(default_endpoints()[0], 0, 5, controller, &config);
         assert!(route.disabled_reason.is_some());
         assert!(!route.info.capabilities.supports_direct);
+    }
+
+    #[test]
+    fn auto_connect_false_defers_output_enabled_routes() {
+        let config = OpenRgbConfig {
+            ownership: OpenRgbOwnership {
+                mode: OpenRgbOwnershipMode::OpenRgbOwned,
+                ..OpenRgbOwnership::default()
+            },
+            auto_connect: false,
+            ..OpenRgbConfig::default()
+        };
+
+        let route = build_route(default_endpoints()[0], 0, 5, sample_controller(), &config);
+        assert!(route.disabled_reason.is_none());
+
+        let discovered = DiscoveredDevice::from(route);
+        assert_eq!(
+            discovered.connect_behavior,
+            DiscoveryConnectBehavior::Deferred
+        );
     }
 
     #[test]

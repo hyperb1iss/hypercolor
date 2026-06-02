@@ -40,6 +40,7 @@ async fn driver_discovers_connects_and_writes_through_sdk_bridge() {
             native_claimed_detector_classes: Vec::new(),
             allow_low_confidence: false,
         },
+        detector_partition_confirmed: true,
         controller_fps: BTreeMap::from([("hid".to_owned(), 45)]),
         ..OpenRgbConfig::default()
     };
