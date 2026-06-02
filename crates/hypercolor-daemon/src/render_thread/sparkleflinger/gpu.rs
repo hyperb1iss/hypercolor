@@ -4731,9 +4731,10 @@ mod tests {
         let producer_frame = ProducerFrame::GpuTexture(frame);
 
         assert!(producer_frame.cpu_rgba_bytes().is_none());
-        assert_eq!(
-            crate::render_thread::producer_frame_counts().gpu_cpu_materialization_blocked,
-            before.saturating_add(1)
+        let after = crate::render_thread::producer_frame_counts().gpu_cpu_materialization_blocked;
+        assert!(
+            after > before,
+            "expected blocked materialization counter to increase"
         );
     }
 

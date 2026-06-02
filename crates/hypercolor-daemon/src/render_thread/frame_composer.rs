@@ -126,17 +126,7 @@ fn producer_frame_requires_composition_for_preview(
     frame: &ProducerFrame,
     preview_requested: bool,
 ) -> bool {
-    preview_requested && producer_frame_is_gpu_resident(frame)
-}
-
-fn producer_frame_is_gpu_resident(frame: &ProducerFrame) -> bool {
-    match frame {
-        #[cfg(feature = "servo-gpu-import")]
-        ProducerFrame::Gpu(_) => true,
-        #[cfg(feature = "wgpu")]
-        ProducerFrame::GpuTexture(_) => true,
-        ProducerFrame::Canvas(_) | ProducerFrame::Surface(_) => false,
-    }
+    preview_requested && frame.is_gpu_resident()
 }
 
 fn display_route_matches_target(

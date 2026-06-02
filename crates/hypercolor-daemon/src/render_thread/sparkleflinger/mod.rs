@@ -1078,9 +1078,15 @@ fn preview_surface_for_frame(
             )
         }
         #[cfg(feature = "servo-gpu-import")]
-        ProducerFrame::Gpu(_) => None,
+        ProducerFrame::Gpu(_) => {
+            frame.record_cpu_materialization_blocked();
+            None
+        }
         #[cfg(feature = "wgpu")]
-        ProducerFrame::GpuTexture(_) => None,
+        ProducerFrame::GpuTexture(_) => {
+            frame.record_cpu_materialization_blocked();
+            None
+        }
     }
 }
 
