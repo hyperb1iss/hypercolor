@@ -219,7 +219,7 @@ pub fn LayerRow(
                 <div class="flex items-center gap-2">
                     <button
                         type="button"
-                        class="flex items-center gap-2 rounded-lg border border-edge-subtle/55 bg-surface-overlay/35 px-2.5 py-1.5 text-[11px] font-medium text-fg-secondary chip-interactive"
+                        class="flex items-center gap-2 rounded-lg border border-edge-subtle/55 bg-surface-overlay/35 px-2.5 py-1.5 text-xs font-medium text-fg-secondary transition-colors duration-200 hover:border-accent-muted/50"
                         on:click=toggle_enabled
                     >
                         <LayerToggleTrack on=enabled />
@@ -245,21 +245,26 @@ pub fn LayerRow(
                                 }
                             })
                             placeholder="Blend"
-                            class="w-full border border-edge-subtle bg-surface-overlay/45 px-2.5 py-1.5 text-[11px] text-fg-primary"
-                            label_class="font-mono"
+                            class="w-full border border-edge-subtle bg-surface-overlay/45 px-2.5 py-1.5 text-xs text-fg-primary"
+                            label_class="font-medium"
                         />
                     </div>
                 </div>
 
-                // ── Opacity ───────────────────────────────────────────
-                <label class="grid grid-cols-[64px_1fr_44px] items-center gap-2 text-[10px] font-mono uppercase tracking-wide text-fg-tertiary/75">
-                    <span>"Opacity"</span>
+                // ── Opacity — same slider chrome as the Effects controls ──
+                <div
+                    class="flex items-center gap-2.5 rounded-lg px-3 py-2 transition-colors duration-200 hover:bg-surface-hover/20"
+                    style="--glow-rgb: 225, 53, 255"
+                >
+                    <span class="min-w-[64px] shrink-0 truncate text-xs font-medium text-fg-secondary">
+                        "Opacity"
+                    </span>
                     <input
                         type="range"
                         min="0"
                         max="1"
                         step="0.01"
-                        class="w-full accent-accent"
+                        class="slider-silk min-w-0 flex-1 cursor-pointer"
                         prop:value=format!("{opacity:.2}")
                         on:change={
                             let scene_id = scene_id.clone();
@@ -279,10 +284,13 @@ pub fn LayerRow(
                             }
                         }
                     />
-                    <span class="text-right tabular-nums">
+                    <span
+                        class="w-[40px] shrink-0 rounded px-1.5 py-0.5 text-right font-mono text-[10px] tabular-nums"
+                        style="color: rgba(225, 53, 255, 0.85); background: rgba(225, 53, 255, 0.1)"
+                    >
                         {format!("{:.0}%", opacity * 100.0)}
                     </span>
-                </label>
+                </div>
 
                 // ── Source-specific controls ──────────────────────────
                 {is_effect
