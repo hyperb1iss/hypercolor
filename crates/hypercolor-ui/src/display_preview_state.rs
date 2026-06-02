@@ -7,8 +7,12 @@ pub fn use_display_preview_subscription(
     ws: WsContext,
     selected_display_id: Signal<Option<String>>,
 ) {
-    Effect::new(move |_| {
-        ws.set_display_preview_device.set(selected_display_id.get());
+    Effect::new(move |previous_device: Option<Option<String>>| {
+        let current_device = selected_display_id.get();
+        if previous_device.as_ref() != Some(&current_device) {
+            ws.set_display_preview_device.set(current_device.clone());
+        }
+        current_device
     });
     on_cleanup(move || {
         ws.set_display_preview_device.set(None);

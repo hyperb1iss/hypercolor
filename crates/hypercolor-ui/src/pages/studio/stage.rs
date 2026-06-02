@@ -163,9 +163,12 @@ fn SurfaceStage() -> impl IntoView {
     });
 
     let screen_frame = RwSignal::new(None::<CanvasFrame>);
-    Effect::new(move |_| {
-        display_device.track();
-        screen_frame.set(None);
+    Effect::new(move |previous_device: Option<Option<String>>| {
+        let current_device = display_device.get();
+        if previous_device.as_ref() != Some(&current_device) {
+            screen_frame.set(None);
+        }
+        current_device
     });
     Effect::new(move |_| {
         let frame = ws.display_preview_frame.get();
