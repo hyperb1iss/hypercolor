@@ -471,6 +471,10 @@ impl ZoneRuntime {
                     &mut producer_full_frame_copy,
                 )?
                 else {
+                    if let Some(retained) = self.reuse_latest_direct_group_frame(group) {
+                        zone_canvases.push((group.id, retained.frame.clone()));
+                        group_canvases.push((group.id, retained));
+                    }
                     continue;
                 };
                 render_us = render_us.saturating_add(micros_u32(render_start.elapsed()));
@@ -828,6 +832,10 @@ impl ZoneRuntime {
                 &mut producer_full_frame_copy,
             )?
             else {
+                if let Some(retained) = self.reuse_latest_direct_group_frame(group) {
+                    zone_canvases.push((group.id, retained.frame.clone()));
+                    group_canvases.push((group.id, retained));
+                }
                 continue;
             };
             render_us = render_us.saturating_add(micros_u32(render_start.elapsed()));
@@ -959,6 +967,22 @@ impl ZoneRuntime {
                 dependency_key,
             },
         );
+    }
+
+    fn reuse_latest_direct_group_frame(&self, group: &Zone) -> Option<PendingGroupCanvasFrame> {
+        if !group_publishes_direct_canvas(group) {
+            return None;
+        }
+        let retained = self.retained_direct_group_frames.get(&group.id)?;
+        let display_target = group.display_target.as_ref()?;
+        if retained.frame.display_target != *display_target
+            || retained.frame.frame.width() != group.layout.canvas_width
+            || retained.frame.frame.height() != group.layout.canvas_height
+        {
+            return None;
+        }
+
+        Some(retained.frame.clone())
     }
 
     pub(crate) fn reuse_retained_materialized_group_frame(
@@ -3230,6 +3254,48 @@ mod tests {
                     &unfinalized_target,
                     &unfinalized_route,
                 )
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn latest_direct_group_reuse_keeps_display_face_visible_across_dependency_change() {
+        let mut runtime = ZoneRuntime::new(4, 4);
+        let group = sample_display_group(4, 4);
+        let display_target = group
+            .display_target
+            .as_ref()
+            .expect("display group should have a target")
+            .clone();
+        let retained = PendingGroupCanvasFrame {
+            frame: ProducerFrame::Canvas(Canvas::new(4, 4)),
+            display_target: display_target.clone(),
+        };
+
+        runtime.retain_direct_group_frame(group.id, 100, SceneDependencyKey::new(1, 1), &retained);
+
+        let reused = runtime
+            .reuse_latest_direct_group_frame(&group)
+            .expect("pending display face should reuse the previous direct frame");
+        assert_eq!(reused.display_target, display_target);
+
+        let mut changed_target = group.clone();
+        changed_target
+            .display_target
+            .as_mut()
+            .expect("display group should have a target")
+            .opacity = 0.5;
+        assert!(
+            runtime
+                .reuse_latest_direct_group_frame(&changed_target)
+                .is_none()
+        );
+
+        let mut changed_size = group;
+        changed_size.layout.canvas_width += 1;
+        assert!(
+            runtime
+                .reuse_latest_direct_group_frame(&changed_size)
                 .is_none()
         );
     }
