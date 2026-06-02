@@ -36,6 +36,11 @@ async fn client_negotiates_fetches_controller_and_streams_leds() {
             .expect("controller count should parse"),
         1
     );
+    let pending = client
+        .drain_pending_packets()
+        .expect("async notifications should remain queued");
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].header.packet_id, PacketId::DeviceListUpdated);
 
     let controller = client
         .controller_data(0)

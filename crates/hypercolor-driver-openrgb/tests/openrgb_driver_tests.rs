@@ -165,6 +165,96 @@ async fn backend_reconnects_after_openrgb_socket_closes() {
 }
 
 #[tokio::test]
+async fn connect_rejects_unapproved_active_mode_after_setup() {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("fake OpenRGB server should bind");
+    let endpoint = listener
+        .local_addr()
+        .expect("fake OpenRGB server should expose local addr");
+    let server = tokio::spawn(run_setup_readback_server(
+        listener,
+        controller_payload_v5_with_restore_mode("Board", "SER123", "hidraw0"),
+    ));
+    let config = OpenRgbConfig {
+        endpoints: vec![endpoint],
+        ownership: OpenRgbOwnership {
+            mode: OpenRgbOwnershipMode::OpenRgbOwned,
+            ..OpenRgbOwnership::default()
+        },
+        ..OpenRgbConfig::default()
+    };
+    let entry = config_entry(&config);
+    let view = DriverConfigView {
+        driver_id: DESCRIPTOR.id,
+        entry: &entry,
+    };
+    let host = NullHost;
+    let module = OpenRgbDriverModule;
+    let mut backend = module
+        .build_output_backend(&host, view)
+        .expect("backend construction should succeed")
+        .expect("OpenRGB should build an output backend");
+    let devices = backend
+        .discover()
+        .await
+        .expect("backend discovery should read fake OpenRGB controller");
+    let device_id = devices[0].id;
+
+    let error = backend
+        .connect(&device_id)
+        .await
+        .expect_err("backend should reject non-writable active readback");
+    assert!(error.to_string().contains("active mode"));
+    server.await.expect("server task should join");
+}
+
+#[tokio::test]
+async fn connect_rejects_missing_active_mode_after_setup() {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("fake OpenRGB server should bind");
+    let endpoint = listener
+        .local_addr()
+        .expect("fake OpenRGB server should expose local addr");
+    let server = tokio::spawn(run_setup_readback_server(
+        listener,
+        controller_payload_v5_with_invalid_active_mode("Board", "SER123", "hidraw0"),
+    ));
+    let config = OpenRgbConfig {
+        endpoints: vec![endpoint],
+        ownership: OpenRgbOwnership {
+            mode: OpenRgbOwnershipMode::OpenRgbOwned,
+            ..OpenRgbOwnership::default()
+        },
+        ..OpenRgbConfig::default()
+    };
+    let entry = config_entry(&config);
+    let view = DriverConfigView {
+        driver_id: DESCRIPTOR.id,
+        entry: &entry,
+    };
+    let host = NullHost;
+    let module = OpenRgbDriverModule;
+    let mut backend = module
+        .build_output_backend(&host, view)
+        .expect("backend construction should succeed")
+        .expect("OpenRGB should build an output backend");
+    let devices = backend
+        .discover()
+        .await
+        .expect("backend discovery should read fake OpenRGB controller");
+    let device_id = devices[0].id;
+
+    let error = backend
+        .connect(&device_id)
+        .await
+        .expect_err("backend should reject missing active readback");
+    assert!(error.to_string().contains("no active mode"));
+    server.await.expect("server task should join");
+}
+
+#[tokio::test]
 async fn frame_sink_collapses_burst_to_latest_openrgb_frame() {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
         .await
@@ -680,13 +770,12 @@ async fn handle_teardown_connection(
             }
             PacketId::RequestControllerData => {
                 assert_eq!(packet.header.device_index, 0);
-                send_packet(
-                    &mut stream,
-                    PacketId::RequestControllerData,
-                    0,
-                    controller_payload.to_vec(),
-                )
-                .await;
+                let payload = if saw_output_mode_setup {
+                    controller_payload_v5("Board", "SER123", "hidraw0")
+                } else {
+                    controller_payload.to_vec()
+                };
+                send_packet(&mut stream, PacketId::RequestControllerData, 0, payload).await;
             }
             PacketId::SetCustomMode => {
                 assert_eq!(packet.header.device_index, 0);
@@ -725,6 +814,77 @@ async fn handle_teardown_connection(
     } else {
         None
     }
+}
+
+async fn run_setup_readback_server(listener: TcpListener, setup_readback_payload: Vec<u8>) {
+    loop {
+        let (stream, _) = listener
+            .accept()
+            .await
+            .expect("fake OpenRGB server should accept client");
+        if handle_setup_readback_connection(stream, &setup_readback_payload).await {
+            return;
+        }
+    }
+}
+
+async fn handle_setup_readback_connection(
+    mut stream: TcpStream,
+    setup_readback_payload: &[u8],
+) -> bool {
+    let mut decoder = PacketDecoder::new();
+    let mut saw_output_mode_setup = false;
+    while let Some(packet) = read_next_packet(&mut stream, &mut decoder).await {
+        match packet.header.packet_id {
+            PacketId::RequestProtocolVersion => {
+                assert_eq!(
+                    packet.payload,
+                    CLIENT_MAX_PROTOCOL_VERSION.to_le_bytes().to_vec()
+                );
+                send_packet(
+                    &mut stream,
+                    PacketId::RequestProtocolVersion,
+                    0,
+                    CLIENT_MAX_PROTOCOL_VERSION.to_le_bytes().to_vec(),
+                )
+                .await;
+            }
+            PacketId::SetClientName => {
+                assert_eq!(packet.payload, b"Hypercolor\0");
+            }
+            PacketId::RequestControllerCount => {
+                send_packet(
+                    &mut stream,
+                    PacketId::RequestControllerCount,
+                    0,
+                    1_u32.to_le_bytes().to_vec(),
+                )
+                .await;
+            }
+            PacketId::RequestControllerData => {
+                assert_eq!(packet.header.device_index, 0);
+                let payload = if saw_output_mode_setup {
+                    setup_readback_payload.to_vec()
+                } else {
+                    controller_payload_v5("Board", "SER123", "hidraw0")
+                };
+                send_packet(&mut stream, PacketId::RequestControllerData, 0, payload).await;
+                if saw_output_mode_setup {
+                    return true;
+                }
+            }
+            PacketId::SetCustomMode => {
+                assert_eq!(packet.header.device_index, 0);
+            }
+            PacketId::UpdateMode => {
+                assert_eq!(packet.header.device_index, 0);
+                assert!(!packet.payload.is_empty());
+                saw_output_mode_setup = true;
+            }
+            other => panic!("unexpected OpenRGB client packet: {other:?}"),
+        }
+    }
+    false
 }
 
 async fn run_reconnect_server(listener: TcpListener) -> Packet {
@@ -931,11 +1091,36 @@ fn controller_payload_v5_with_restore_mode(name: &str, serial: &str, location: &
     controller_payload_v5_inner(name, serial, location, true)
 }
 
+fn controller_payload_v5_with_invalid_active_mode(
+    name: &str,
+    serial: &str,
+    location: &str,
+) -> Vec<u8> {
+    controller_payload_v5_with_active_mode(name, serial, location, false, 99)
+}
+
 fn controller_payload_v5_inner(
     name: &str,
     serial: &str,
     location: &str,
     include_restore_mode: bool,
+) -> Vec<u8> {
+    let active_mode = if include_restore_mode { 1 } else { 0 };
+    controller_payload_v5_with_active_mode(
+        name,
+        serial,
+        location,
+        include_restore_mode,
+        active_mode,
+    )
+}
+
+fn controller_payload_v5_with_active_mode(
+    name: &str,
+    serial: &str,
+    location: &str,
+    include_restore_mode: bool,
+    active_mode: i32,
 ) -> Vec<u8> {
     let mut body = Vec::new();
     push_u32(&mut body, 0);
@@ -947,7 +1132,7 @@ fn controller_payload_v5_inner(
     push_str(&mut body, serial);
     push_str(&mut body, location);
     push_u16(&mut body, if include_restore_mode { 2 } else { 1 });
-    push_i32(&mut body, if include_restore_mode { 1 } else { 0 });
+    push_i32(&mut body, active_mode);
     push_mode(&mut body);
     if include_restore_mode {
         push_restore_mode(&mut body);

@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::io::ErrorKind;
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -41,6 +42,7 @@ impl Default for OpenRgbClientConfig {
 pub struct OpenRgbClient {
     stream: TcpStream,
     decoder: PacketDecoder,
+    pending_packets: VecDeque<Packet>,
     config: OpenRgbClientConfig,
     protocol_version: u32,
 }
@@ -62,6 +64,7 @@ impl OpenRgbClient {
         let mut client = Self {
             stream,
             decoder: PacketDecoder::new(),
+            pending_packets: VecDeque::new(),
             config,
             protocol_version: 0,
         };
@@ -186,7 +189,7 @@ impl OpenRgbClient {
     /// Returns an error when pending bytes contain a malformed packet or the
     /// TCP stream reports a terminal read error.
     pub fn drain_pending_packets(&mut self) -> Result<Vec<Packet>> {
-        let mut packets = Vec::new();
+        let mut packets = self.pending_packets.drain(..).collect::<Vec<_>>();
         loop {
             while let Some(packet) = self.decoder.next_packet()? {
                 packets.push(packet);
@@ -251,6 +254,7 @@ impl OpenRgbClient {
         loop {
             let packet = self.read_packet().await?;
             if packet.header.packet_id == PacketId::DeviceListUpdated {
+                self.pending_packets.push_back(packet);
                 continue;
             }
             if packet.header.packet_id != expected {

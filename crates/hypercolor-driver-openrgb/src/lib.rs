@@ -358,7 +358,7 @@ impl DeviceBackend for OpenRgbBackend {
         }
 
         let mut client = connect_openrgb_client(&self.config, route.endpoint).await?;
-        configure_controller_output(&mut client, &route).await?;
+        configure_controller_output(&mut client, &route, &self.config).await?;
 
         let controller = Arc::new(Mutex::new(ConnectedController {
             previous_mode: route.previous_mode.clone(),
@@ -707,7 +707,7 @@ async fn reconnect_connected_controller(controller: &mut ConnectedController) ->
             return Err(error);
         }
     };
-    if let Err(error) = configure_controller_output(&mut client, &route).await {
+    if let Err(error) = configure_controller_output(&mut client, &route, &controller.config).await {
         controller.reconnect_backoff.record_failure(now);
         return Err(error);
     }
@@ -727,7 +727,7 @@ async fn refresh_connected_route(controller: &mut ConnectedController) -> Result
     )
     .await?;
     ensure_route_output_enabled(&route)?;
-    configure_controller_output(&mut controller.client, &route).await?;
+    configure_controller_output(&mut controller.client, &route, &controller.config).await?;
     controller.route = route;
     controller.consecutive_failures = 0;
     Ok(())
@@ -961,6 +961,7 @@ async fn find_current_route(
 async fn configure_controller_output(
     client: &mut OpenRgbClient,
     route: &ControllerRoute,
+    config: &OpenRgbConfig,
 ) -> Result<()> {
     client.set_custom_mode(route.controller_index).await?;
     if let Some((mode_index, mode)) = route.writable_mode.clone() {
@@ -968,7 +969,39 @@ async fn configure_controller_output(
             .update_mode(route.controller_index, mode_index, &mode)
             .await?;
     }
+    verify_controller_output_mode(client, route, mode_flag_policy(config)).await?;
     Ok(())
+}
+
+async fn verify_controller_output_mode(
+    client: &mut OpenRgbClient,
+    route: &ControllerRoute,
+    policy: ModeFlagPolicy,
+) -> Result<()> {
+    let controller = match client.controller_data(route.controller_index).await {
+        Ok(controller) => controller,
+        Err(error) => {
+            debug!(
+                controller_index = route.controller_index,
+                error = %error,
+                "OpenRGB active mode readback unavailable after output setup"
+            );
+            return Ok(());
+        }
+    };
+    let Some((mode_index, mode)) = active_mode_snapshot(&controller) else {
+        bail!(
+            "OpenRGB controller {} has no active mode after output setup",
+            route.info.id
+        );
+    };
+    if mode.is_realtime_writable(policy) {
+        return Ok(());
+    }
+    bail!(
+        "OpenRGB controller {} active mode {mode_index} is not approved for realtime output",
+        route.info.id
+    )
 }
 
 async fn teardown_connected_controller(controller: &mut ConnectedController) -> Result<()> {
@@ -1072,13 +1105,7 @@ fn build_route(
 ) -> ControllerRoute {
     let confidence = identity_confidence(&controller);
     let detector_class = detector_class(&controller.device_type).to_owned();
-    let writable_mode = select_writable_mode(
-        &controller,
-        ModeFlagPolicy {
-            per_led_color_mask: config.mode_per_led_mask,
-            persistent_mask: config.mode_persistent_mask,
-        },
-    );
+    let writable_mode = select_writable_mode(&controller, mode_flag_policy(config));
     let disabled_reason = output_disabled_reason(
         &config.ownership,
         confidence,
@@ -1165,6 +1192,13 @@ fn select_writable_mode(
         .enumerate()
         .find(|(_, mode)| mode.is_realtime_writable(policy))
         .and_then(|(index, mode)| u32::try_from(index).ok().map(|index| (index, mode.clone())))
+}
+
+fn mode_flag_policy(config: &OpenRgbConfig) -> ModeFlagPolicy {
+    ModeFlagPolicy {
+        per_led_color_mask: config.mode_per_led_mask,
+        persistent_mask: config.mode_persistent_mask,
+    }
 }
 
 fn active_mode_snapshot(controller: &ControllerData) -> Option<(u32, ControllerMode)> {
@@ -1393,8 +1427,7 @@ fn validate_openrgb_config(config: &OpenRgbConfig) -> Result<()> {
     if config.default_target_fps == 0 {
         bail!("OpenRGB default_target_fps must be at least 1");
     }
-    if openrgb_detector_partition_needs_confirmation(config)
-        && !config.detector_partition_confirmed
+    if openrgb_detector_partition_needs_confirmation(config) && !config.detector_partition_confirmed
     {
         bail!(
             "OpenRGB detector_partition_confirmed must be true after configuring OpenRGB detectors for the requested ownership partition"
@@ -1547,11 +1580,7 @@ mod tests {
 
         let error =
             validate_openrgb_config(&config).expect_err("unconfirmed partition should fail");
-        assert!(
-            error
-                .to_string()
-                .contains("detector_partition_confirmed")
-        );
+        assert!(error.to_string().contains("detector_partition_confirmed"));
 
         config.detector_partition_confirmed = true;
         validate_openrgb_config(&config).expect("confirmed partition should validate");
