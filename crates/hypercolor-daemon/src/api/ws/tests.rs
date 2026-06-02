@@ -109,6 +109,13 @@ const fn current_servo_effect_health() -> ServoEffectHealthForTests {
         render_gpu_import_windows_sync_mode: None,
         render_gpu_import_stale_frame_total: 0,
         render_gpu_import_adapter_mismatch_total: 0,
+        render_gpu_import_slot_count: 0,
+        render_gpu_import_pending_slots: 0,
+        render_gpu_import_pending_slots_max: 0,
+        render_gpu_import_completed_slots: 0,
+        render_gpu_import_available_slots: 0,
+        render_gpu_import_available_slots_min: 0,
+        render_gpu_import_oldest_pending_age_max_us: 0,
         render_gpu_import_blit_total_us: 0,
         render_gpu_import_blit_max_us: 0,
         render_gpu_import_sync_total_us: 0,
@@ -165,6 +172,13 @@ struct ServoEffectHealthForTests {
     render_gpu_import_windows_sync_mode: Option<&'static str>,
     render_gpu_import_stale_frame_total: u64,
     render_gpu_import_adapter_mismatch_total: u64,
+    render_gpu_import_slot_count: u64,
+    render_gpu_import_pending_slots: u64,
+    render_gpu_import_pending_slots_max: u64,
+    render_gpu_import_completed_slots: u64,
+    render_gpu_import_available_slots: u64,
+    render_gpu_import_available_slots_min: u64,
+    render_gpu_import_oldest_pending_age_max_us: u64,
     render_gpu_import_blit_total_us: u64,
     render_gpu_import_blit_max_us: u64,
     render_gpu_import_sync_total_us: u64,
@@ -636,6 +650,36 @@ async fn metrics_message_includes_latest_frame_timeline() {
         servo_health.render_gpu_import_adapter_mismatch_total
     );
     assert_eq!(
+        json["effect_health"]["servo_gpu_import_slot_count"],
+        servo_health.render_gpu_import_slot_count
+    );
+    assert_eq!(
+        json["effect_health"]["servo_gpu_import_pending_slots"],
+        servo_health.render_gpu_import_pending_slots
+    );
+    assert_eq!(
+        json["effect_health"]["servo_gpu_import_pending_slots_max"],
+        servo_health.render_gpu_import_pending_slots_max
+    );
+    assert_eq!(
+        json["effect_health"]["servo_gpu_import_completed_slots"],
+        servo_health.render_gpu_import_completed_slots
+    );
+    assert_eq!(
+        json["effect_health"]["servo_gpu_import_available_slots"],
+        servo_health.render_gpu_import_available_slots
+    );
+    assert_eq!(
+        json["effect_health"]["servo_gpu_import_available_slots_min"],
+        servo_health.render_gpu_import_available_slots_min
+    );
+    assert_eq!(
+        json["effect_health"]["servo_gpu_import_oldest_pending_age_max_ms"],
+        std::time::Duration::from_micros(servo_health.render_gpu_import_oldest_pending_age_max_us)
+            .as_secs_f64()
+            * 1000.0
+    );
+    assert_eq!(
         json["effect_health"]["servo_gpu_import_blit_total_ms"],
         std::time::Duration::from_micros(servo_health.render_gpu_import_blit_total_us)
             .as_secs_f64()
@@ -713,6 +757,25 @@ async fn metrics_message_includes_latest_frame_timeline() {
     assert_eq!(
         json["effect_health"]["servo_render_frame_max_ms"],
         std::time::Duration::from_micros(servo_health.render_frame_max_us).as_secs_f64() * 1000.0
+    );
+    assert!(json["effect_health"]["sparkleflinger_media_texture_allocations_total"].is_number());
+    assert!(json["effect_health"]["sparkleflinger_media_texture_upload_bytes_total"].is_number());
+    assert!(
+        json["effect_health"]["sparkleflinger_display_finalize_rgba_attempts_total"].is_number()
+    );
+    assert!(
+        json["effect_health"]["sparkleflinger_display_finalize_yuv_attempts_total"].is_number()
+    );
+    assert!(json["effect_health"]["sparkleflinger_display_finalize_successes_total"].is_number());
+    assert!(json["effect_health"]["sparkleflinger_display_finalize_misses_total"].is_number());
+    assert!(
+        json["effect_health"]["sparkleflinger_display_finalize_blocking_wait_total_ms"].is_number()
+    );
+    assert!(
+        json["effect_health"]["sparkleflinger_display_finalize_blocking_wait_max_ms"].is_number()
+    );
+    assert!(
+        json["effect_health"]["sparkleflinger_display_finalize_surface_reallocs_total"].is_number()
     );
     assert_eq!(json["display_output"]["write_attempts_total"], 2);
     assert_eq!(json["display_output"]["write_successes_total"], 1);

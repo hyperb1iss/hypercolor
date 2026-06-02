@@ -197,6 +197,13 @@ pub struct EffectHealthStatus {
     pub servo_gpu_import_windows_sync_mode: Option<&'static str>,
     pub servo_gpu_import_stale_frame_total: u64,
     pub servo_gpu_import_adapter_mismatch_total: u64,
+    pub servo_gpu_import_slot_count: u64,
+    pub servo_gpu_import_pending_slots: u64,
+    pub servo_gpu_import_pending_slots_max: u64,
+    pub servo_gpu_import_completed_slots: u64,
+    pub servo_gpu_import_available_slots: u64,
+    pub servo_gpu_import_available_slots_min: u64,
+    pub servo_gpu_import_oldest_pending_age_max_ms: f64,
     pub servo_gpu_import_blit_total_ms: f64,
     pub servo_gpu_import_blit_max_ms: f64,
     pub servo_gpu_import_sync_total_ms: f64,
@@ -206,6 +213,15 @@ pub struct EffectHealthStatus {
     pub producer_cpu_frames_total: u64,
     pub producer_gpu_frames_total: u64,
     pub sparkleflinger_gpu_source_upload_skipped_total: u64,
+    pub sparkleflinger_media_texture_allocations_total: u64,
+    pub sparkleflinger_media_texture_upload_bytes_total: u64,
+    pub sparkleflinger_display_finalize_rgba_attempts_total: u64,
+    pub sparkleflinger_display_finalize_yuv_attempts_total: u64,
+    pub sparkleflinger_display_finalize_successes_total: u64,
+    pub sparkleflinger_display_finalize_misses_total: u64,
+    pub sparkleflinger_display_finalize_blocking_wait_total_ms: f64,
+    pub sparkleflinger_display_finalize_blocking_wait_max_ms: f64,
+    pub sparkleflinger_display_finalize_surface_reallocs_total: u64,
     pub servo_render_evaluate_scripts_total_ms: f64,
     pub servo_render_evaluate_scripts_max_ms: f64,
     pub servo_render_event_loop_total_ms: f64,
@@ -369,6 +385,15 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
         servo_gpu_import_stale_frame_total: servo_health.render_gpu_import_stale_frame_total,
         servo_gpu_import_adapter_mismatch_total: servo_health
             .render_gpu_import_adapter_mismatch_total,
+        servo_gpu_import_slot_count: servo_health.render_gpu_import_slot_count,
+        servo_gpu_import_pending_slots: servo_health.render_gpu_import_pending_slots,
+        servo_gpu_import_pending_slots_max: servo_health.render_gpu_import_pending_slots_max,
+        servo_gpu_import_completed_slots: servo_health.render_gpu_import_completed_slots,
+        servo_gpu_import_available_slots: servo_health.render_gpu_import_available_slots,
+        servo_gpu_import_available_slots_min: servo_health.render_gpu_import_available_slots_min,
+        servo_gpu_import_oldest_pending_age_max_ms: us_to_ms_f64(
+            servo_health.render_gpu_import_oldest_pending_age_max_us,
+        ),
         servo_gpu_import_blit_total_ms: us_to_ms_f64(servo_health.render_gpu_import_blit_total_us),
         servo_gpu_import_blit_max_ms: us_to_ms_f64(servo_health.render_gpu_import_blit_max_us),
         servo_gpu_import_sync_total_ms: us_to_ms_f64(servo_health.render_gpu_import_sync_total_us),
@@ -378,6 +403,25 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
         producer_cpu_frames_total: pipeline_health.cpu_producer_frames,
         producer_gpu_frames_total: pipeline_health.gpu_producer_frames,
         sparkleflinger_gpu_source_upload_skipped_total: pipeline_health.skipped_gpu_source_uploads,
+        sparkleflinger_media_texture_allocations_total: pipeline_health
+            .media_texture_allocations_total,
+        sparkleflinger_media_texture_upload_bytes_total: pipeline_health
+            .media_texture_upload_bytes_total,
+        sparkleflinger_display_finalize_rgba_attempts_total: pipeline_health
+            .display_finalize_rgba_attempts_total,
+        sparkleflinger_display_finalize_yuv_attempts_total: pipeline_health
+            .display_finalize_yuv_attempts_total,
+        sparkleflinger_display_finalize_successes_total: pipeline_health
+            .display_finalize_successes_total,
+        sparkleflinger_display_finalize_misses_total: pipeline_health.display_finalize_misses_total,
+        sparkleflinger_display_finalize_blocking_wait_total_ms: us_to_ms_f64(
+            pipeline_health.display_finalize_blocking_wait_total_us,
+        ),
+        sparkleflinger_display_finalize_blocking_wait_max_ms: us_to_ms_f64(
+            pipeline_health.display_finalize_blocking_wait_max_us,
+        ),
+        sparkleflinger_display_finalize_surface_reallocs_total: pipeline_health
+            .display_finalize_surface_reallocs_total,
         servo_render_evaluate_scripts_total_ms: us_to_ms_f64(
             servo_health.render_evaluate_scripts_total_us,
         ),
@@ -682,6 +726,13 @@ struct ServoEffectHealthCounts {
     render_gpu_import_windows_sync_mode: Option<&'static str>,
     render_gpu_import_stale_frame_total: u64,
     render_gpu_import_adapter_mismatch_total: u64,
+    render_gpu_import_slot_count: u64,
+    render_gpu_import_pending_slots: u64,
+    render_gpu_import_pending_slots_max: u64,
+    render_gpu_import_completed_slots: u64,
+    render_gpu_import_available_slots: u64,
+    render_gpu_import_available_slots_min: u64,
+    render_gpu_import_oldest_pending_age_max_us: u64,
     render_gpu_import_blit_total_us: u64,
     render_gpu_import_blit_max_us: u64,
     render_gpu_import_sync_total_us: u64,
@@ -728,6 +779,14 @@ fn servo_effect_health_counts() -> ServoEffectHealthCounts {
         render_gpu_import_windows_sync_mode: snapshot.render_gpu_import_windows_sync_mode,
         render_gpu_import_stale_frame_total: snapshot.render_gpu_import_stale_frame_total,
         render_gpu_import_adapter_mismatch_total: snapshot.render_gpu_import_adapter_mismatch_total,
+        render_gpu_import_slot_count: snapshot.render_gpu_import_slot_count,
+        render_gpu_import_pending_slots: snapshot.render_gpu_import_pending_slots,
+        render_gpu_import_pending_slots_max: snapshot.render_gpu_import_pending_slots_max,
+        render_gpu_import_completed_slots: snapshot.render_gpu_import_completed_slots,
+        render_gpu_import_available_slots: snapshot.render_gpu_import_available_slots,
+        render_gpu_import_available_slots_min: snapshot.render_gpu_import_available_slots_min,
+        render_gpu_import_oldest_pending_age_max_us: snapshot
+            .render_gpu_import_oldest_pending_age_max_us,
         render_gpu_import_blit_total_us: snapshot.render_gpu_import_blit_total_us,
         render_gpu_import_blit_max_us: snapshot.render_gpu_import_blit_max_us,
         render_gpu_import_sync_total_us: snapshot.render_gpu_import_sync_total_us,
@@ -774,6 +833,13 @@ const fn servo_effect_health_counts() -> ServoEffectHealthCounts {
         render_gpu_import_windows_sync_mode: None,
         render_gpu_import_stale_frame_total: 0,
         render_gpu_import_adapter_mismatch_total: 0,
+        render_gpu_import_slot_count: 0,
+        render_gpu_import_pending_slots: 0,
+        render_gpu_import_pending_slots_max: 0,
+        render_gpu_import_completed_slots: 0,
+        render_gpu_import_available_slots: 0,
+        render_gpu_import_available_slots_min: 0,
+        render_gpu_import_oldest_pending_age_max_us: 0,
         render_gpu_import_blit_total_us: 0,
         render_gpu_import_blit_max_us: 0,
         render_gpu_import_sync_total_us: 0,
@@ -798,25 +864,82 @@ struct RenderPipelineHealthCounts {
     cpu_producer_frames: u64,
     gpu_producer_frames: u64,
     skipped_gpu_source_uploads: u64,
+    media_texture_allocations_total: u64,
+    media_texture_upload_bytes_total: u64,
+    display_finalize_rgba_attempts_total: u64,
+    display_finalize_yuv_attempts_total: u64,
+    display_finalize_successes_total: u64,
+    display_finalize_misses_total: u64,
+    display_finalize_blocking_wait_total_us: u64,
+    display_finalize_blocking_wait_max_us: u64,
+    display_finalize_surface_reallocs_total: u64,
 }
 
 fn render_pipeline_health_counts() -> RenderPipelineHealthCounts {
     let producer = crate::render_thread::producer_frame_counts();
+    let gpu = gpu_sparkleflinger_health_counts();
     RenderPipelineHealthCounts {
         cpu_producer_frames: producer.cpu_frames_total,
         gpu_producer_frames: producer.gpu_frames_total,
-        skipped_gpu_source_uploads: gpu_source_upload_skipped_total(),
+        skipped_gpu_source_uploads: gpu.source_upload_skipped_total,
+        media_texture_allocations_total: gpu.media_texture_allocations_total,
+        media_texture_upload_bytes_total: gpu.media_texture_upload_bytes_total,
+        display_finalize_rgba_attempts_total: gpu.display_finalize_rgba_attempts_total,
+        display_finalize_yuv_attempts_total: gpu.display_finalize_yuv_attempts_total,
+        display_finalize_successes_total: gpu.display_finalize_successes_total,
+        display_finalize_misses_total: gpu.display_finalize_misses_total,
+        display_finalize_blocking_wait_total_us: gpu.display_finalize_blocking_wait_total_us,
+        display_finalize_blocking_wait_max_us: gpu.display_finalize_blocking_wait_max_us,
+        display_finalize_surface_reallocs_total: gpu.display_finalize_surface_reallocs_total,
     }
 }
 
 #[cfg(feature = "wgpu")]
-fn gpu_source_upload_skipped_total() -> u64 {
-    crate::render_thread::sparkleflinger::gpu::gpu_source_upload_skipped_total()
+fn gpu_sparkleflinger_health_counts() -> GpuSparkleFlingerHealthCounts {
+    let snapshot =
+        crate::render_thread::sparkleflinger::gpu::gpu_sparkleflinger_telemetry_snapshot();
+    GpuSparkleFlingerHealthCounts {
+        source_upload_skipped_total: snapshot.source_upload_skipped_total,
+        media_texture_allocations_total: snapshot.media_texture_allocations_total,
+        media_texture_upload_bytes_total: snapshot.media_texture_upload_bytes_total,
+        display_finalize_rgba_attempts_total: snapshot.display_finalize_rgba_attempts_total,
+        display_finalize_yuv_attempts_total: snapshot.display_finalize_yuv_attempts_total,
+        display_finalize_successes_total: snapshot.display_finalize_successes_total,
+        display_finalize_misses_total: snapshot.display_finalize_misses_total,
+        display_finalize_blocking_wait_total_us: snapshot.display_finalize_blocking_wait_total_us,
+        display_finalize_blocking_wait_max_us: snapshot.display_finalize_blocking_wait_max_us,
+        display_finalize_surface_reallocs_total: snapshot.display_finalize_surface_reallocs_total,
+    }
 }
 
 #[cfg(not(feature = "wgpu"))]
-const fn gpu_source_upload_skipped_total() -> u64 {
-    0
+const fn gpu_sparkleflinger_health_counts() -> GpuSparkleFlingerHealthCounts {
+    GpuSparkleFlingerHealthCounts {
+        source_upload_skipped_total: 0,
+        media_texture_allocations_total: 0,
+        media_texture_upload_bytes_total: 0,
+        display_finalize_rgba_attempts_total: 0,
+        display_finalize_yuv_attempts_total: 0,
+        display_finalize_successes_total: 0,
+        display_finalize_misses_total: 0,
+        display_finalize_blocking_wait_total_us: 0,
+        display_finalize_blocking_wait_max_us: 0,
+        display_finalize_surface_reallocs_total: 0,
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct GpuSparkleFlingerHealthCounts {
+    source_upload_skipped_total: u64,
+    media_texture_allocations_total: u64,
+    media_texture_upload_bytes_total: u64,
+    display_finalize_rgba_attempts_total: u64,
+    display_finalize_yuv_attempts_total: u64,
+    display_finalize_successes_total: u64,
+    display_finalize_misses_total: u64,
+    display_finalize_blocking_wait_total_us: u64,
+    display_finalize_blocking_wait_max_us: u64,
+    display_finalize_surface_reallocs_total: u64,
 }
 
 fn latest_frame_status(frame: &LatestFrameMetrics, render_elapsed_ms: f64) -> LatestFrameStatus {
@@ -1322,6 +1445,26 @@ mod tests {
         assert_eq!(
             json["data"]["effect_health"]["servo_render_cached_frames_total"],
             servo_health.render_cached_frames_total
+        );
+        assert_eq!(
+            json["data"]["effect_health"]["servo_gpu_import_slot_count"],
+            servo_health.render_gpu_import_slot_count
+        );
+        assert_eq!(
+            json["data"]["effect_health"]["servo_gpu_import_pending_slots"],
+            servo_health.render_gpu_import_pending_slots
+        );
+        assert_eq!(
+            json["data"]["effect_health"]["servo_gpu_import_available_slots"],
+            servo_health.render_gpu_import_available_slots
+        );
+        assert!(
+            json["data"]["effect_health"]["sparkleflinger_display_finalize_blocking_wait_total_ms"]
+                .is_number()
+        );
+        assert!(
+            json["data"]["effect_health"]["sparkleflinger_media_texture_allocations_total"]
+                .is_number()
         );
         assert_eq!(
             json["data"]["effect_health"]["servo_render_evaluate_scripts_total_ms"],

@@ -37,6 +37,13 @@ pub struct ServoTelemetrySnapshot {
     pub render_gpu_import_windows_sync_mode: Option<&'static str>,
     pub render_gpu_import_stale_frame_total: u64,
     pub render_gpu_import_adapter_mismatch_total: u64,
+    pub render_gpu_import_slot_count: u64,
+    pub render_gpu_import_pending_slots: u64,
+    pub render_gpu_import_pending_slots_max: u64,
+    pub render_gpu_import_completed_slots: u64,
+    pub render_gpu_import_available_slots: u64,
+    pub render_gpu_import_available_slots_min: u64,
+    pub render_gpu_import_oldest_pending_age_max_us: u64,
     pub render_gpu_import_blit_total_us: u64,
     pub render_gpu_import_blit_max_us: u64,
     pub render_gpu_import_sync_total_us: u64,
@@ -89,6 +96,13 @@ static SERVO_RENDER_GPU_IMPORT_FALLBACK_REASON: AtomicU64 = AtomicU64::new(0);
 // These classify import failures before CPU-fallback filtering.
 static SERVO_RENDER_GPU_IMPORT_STALE_FRAME_TOTAL: AtomicU64 = AtomicU64::new(0);
 static SERVO_RENDER_GPU_IMPORT_ADAPTER_MISMATCH_TOTAL: AtomicU64 = AtomicU64::new(0);
+static SERVO_RENDER_GPU_IMPORT_SLOT_COUNT: AtomicU64 = AtomicU64::new(0);
+static SERVO_RENDER_GPU_IMPORT_PENDING_SLOTS: AtomicU64 = AtomicU64::new(0);
+static SERVO_RENDER_GPU_IMPORT_PENDING_SLOTS_MAX: AtomicU64 = AtomicU64::new(0);
+static SERVO_RENDER_GPU_IMPORT_COMPLETED_SLOTS: AtomicU64 = AtomicU64::new(0);
+static SERVO_RENDER_GPU_IMPORT_AVAILABLE_SLOTS: AtomicU64 = AtomicU64::new(0);
+static SERVO_RENDER_GPU_IMPORT_AVAILABLE_SLOTS_MIN: AtomicU64 = AtomicU64::new(u64::MAX);
+static SERVO_RENDER_GPU_IMPORT_OLDEST_PENDING_AGE_MAX_US: AtomicU64 = AtomicU64::new(0);
 static SERVO_RENDER_GPU_IMPORT_BLIT_TOTAL_US: AtomicU64 = AtomicU64::new(0);
 static SERVO_RENDER_GPU_IMPORT_BLIT_MAX_US: AtomicU64 = AtomicU64::new(0);
 static SERVO_RENDER_GPU_IMPORT_SYNC_TOTAL_US: AtomicU64 = AtomicU64::new(0);
@@ -287,6 +301,32 @@ pub(super) fn record_servo_gpu_import_failure(
     }
 }
 
+#[cfg(feature = "servo-gpu-import")]
+pub(super) fn record_servo_gpu_import_slot_state(
+    slot_count: usize,
+    pending_slots: usize,
+    completed_slots: usize,
+    available_slots: usize,
+    oldest_pending_age_ms: Option<u64>,
+) {
+    let slot_count = u64::try_from(slot_count).unwrap_or(u64::MAX);
+    let pending_slots = u64::try_from(pending_slots).unwrap_or(u64::MAX);
+    let completed_slots = u64::try_from(completed_slots).unwrap_or(u64::MAX);
+    let available_slots = u64::try_from(available_slots).unwrap_or(u64::MAX);
+    SERVO_RENDER_GPU_IMPORT_SLOT_COUNT.store(slot_count, Ordering::Relaxed);
+    SERVO_RENDER_GPU_IMPORT_PENDING_SLOTS.store(pending_slots, Ordering::Relaxed);
+    let _ = SERVO_RENDER_GPU_IMPORT_PENDING_SLOTS_MAX.fetch_max(pending_slots, Ordering::Relaxed);
+    SERVO_RENDER_GPU_IMPORT_COMPLETED_SLOTS.store(completed_slots, Ordering::Relaxed);
+    SERVO_RENDER_GPU_IMPORT_AVAILABLE_SLOTS.store(available_slots, Ordering::Relaxed);
+    let _ =
+        SERVO_RENDER_GPU_IMPORT_AVAILABLE_SLOTS_MIN.fetch_min(available_slots, Ordering::Relaxed);
+    if let Some(oldest_pending_age_ms) = oldest_pending_age_ms {
+        let oldest_pending_age_us = oldest_pending_age_ms.saturating_mul(1_000);
+        let _ = SERVO_RENDER_GPU_IMPORT_OLDEST_PENDING_AGE_MAX_US
+            .fetch_max(oldest_pending_age_us, Ordering::Relaxed);
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ServoGpuImportFallbackReason {
     DeviceUnavailable,
@@ -416,6 +456,7 @@ impl ServoGpuImportFallbackReason {
 
 #[must_use]
 pub fn servo_telemetry_snapshot() -> ServoTelemetrySnapshot {
+    let available_slots_min = SERVO_RENDER_GPU_IMPORT_AVAILABLE_SLOTS_MIN.load(Ordering::Relaxed);
     ServoTelemetrySnapshot {
         soft_stalls_total: SERVO_SOFT_STALLS_TOTAL.load(Ordering::Relaxed),
         breaker_opens_total: SERVO_BREAKER_OPENS_TOTAL.load(Ordering::Relaxed),
@@ -459,6 +500,22 @@ pub fn servo_telemetry_snapshot() -> ServoTelemetrySnapshot {
             .load(Ordering::Relaxed),
         render_gpu_import_adapter_mismatch_total: SERVO_RENDER_GPU_IMPORT_ADAPTER_MISMATCH_TOTAL
             .load(Ordering::Relaxed),
+        render_gpu_import_slot_count: SERVO_RENDER_GPU_IMPORT_SLOT_COUNT.load(Ordering::Relaxed),
+        render_gpu_import_pending_slots: SERVO_RENDER_GPU_IMPORT_PENDING_SLOTS
+            .load(Ordering::Relaxed),
+        render_gpu_import_pending_slots_max: SERVO_RENDER_GPU_IMPORT_PENDING_SLOTS_MAX
+            .load(Ordering::Relaxed),
+        render_gpu_import_completed_slots: SERVO_RENDER_GPU_IMPORT_COMPLETED_SLOTS
+            .load(Ordering::Relaxed),
+        render_gpu_import_available_slots: SERVO_RENDER_GPU_IMPORT_AVAILABLE_SLOTS
+            .load(Ordering::Relaxed),
+        render_gpu_import_available_slots_min: if available_slots_min == u64::MAX {
+            0
+        } else {
+            available_slots_min
+        },
+        render_gpu_import_oldest_pending_age_max_us:
+            SERVO_RENDER_GPU_IMPORT_OLDEST_PENDING_AGE_MAX_US.load(Ordering::Relaxed),
         render_gpu_import_blit_total_us: SERVO_RENDER_GPU_IMPORT_BLIT_TOTAL_US
             .load(Ordering::Relaxed),
         render_gpu_import_blit_max_us: SERVO_RENDER_GPU_IMPORT_BLIT_MAX_US.load(Ordering::Relaxed),
@@ -615,6 +672,7 @@ mod tests {
             false,
         );
         record_servo_gpu_import_failure(ServoGpuImportFallbackReason::AdapterLuidMismatch, false);
+        record_servo_gpu_import_slot_state(8, 3, 5, 2, Some(17));
 
         let after = servo_telemetry_snapshot();
         assert!(after.render_gpu_frames_total > before.render_gpu_frames_total);
@@ -627,6 +685,13 @@ mod tests {
             after.render_gpu_import_adapter_mismatch_total
                 > before.render_gpu_import_adapter_mismatch_total
         );
+        assert_eq!(after.render_gpu_import_slot_count, 8);
+        assert_eq!(after.render_gpu_import_pending_slots, 3);
+        assert!(after.render_gpu_import_pending_slots_max >= 3);
+        assert_eq!(after.render_gpu_import_completed_slots, 5);
+        assert_eq!(after.render_gpu_import_available_slots, 2);
+        assert!(after.render_gpu_import_available_slots_min <= 2);
+        assert!(after.render_gpu_import_oldest_pending_age_max_us >= 17_000);
         assert_eq!(
             after.render_gpu_import_fallback_reason,
             Some("missing_gl_function")

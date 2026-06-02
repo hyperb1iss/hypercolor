@@ -40,6 +40,7 @@ use super::memory::ServoMemoryReportSnapshot;
 #[cfg(feature = "servo-gpu-import")]
 use super::telemetry::{
     ServoGpuImportFallbackReason, record_servo_gpu_import_failure, record_servo_gpu_import_frame,
+    record_servo_gpu_import_slot_state,
 };
 use super::telemetry::{
     record_servo_cpu_render_frame, record_servo_destroy_wait, record_servo_gpu_render_frame,
@@ -2056,10 +2057,13 @@ impl ServoWorkerRuntime {
             .as_mut()
             .ok_or_else(|| anyhow!("Servo GPU importer was not initialized"))?;
         let importer_before = importer.state_snapshot();
+        record_linux_gpu_importer_state(importer_before);
         let blit_before = importer.framebuffer_state_for_blit(gl.as_ref(), source_framebuffer);
         let import_result = importer.import_framebuffer_pipelined(gl.as_ref(), source_framebuffer);
+        record_linux_gpu_importer_state(importer.state_snapshot());
         if let Err(error) = import_result.as_ref() {
             let importer_after = importer.state_snapshot();
+            record_linux_gpu_importer_state(importer_after);
             let blit_after = importer.framebuffer_state_for_blit(gl.as_ref(), source_framebuffer);
             let loaded_html_path = loaded_html_path
                 .as_deref()
@@ -2124,6 +2128,19 @@ impl ServoWorkerRuntime {
         session.gpu_importer = None;
         session.last_gpu_frame = None;
     }
+}
+
+#[cfg(all(feature = "servo-gpu-import", target_os = "linux"))]
+fn record_linux_gpu_importer_state(
+    snapshot: hypercolor_linux_gpu_interop::LinuxGlImporterStateSnapshot,
+) {
+    record_servo_gpu_import_slot_state(
+        snapshot.slot_count,
+        snapshot.pending_slots,
+        snapshot.completed_slots,
+        snapshot.available_slots,
+        snapshot.oldest_pending_age_ms,
+    );
 }
 
 #[cfg(all(feature = "servo-gpu-import", target_os = "windows"))]
