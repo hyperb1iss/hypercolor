@@ -1119,7 +1119,8 @@ fn build_route(
         confidence,
         &detector_class,
         writable_mode.as_ref(),
-    );
+    )
+    .or_else(|| topology_disabled_reason(&controller));
     let previous_mode = previous_mode_snapshot(&controller, writable_mode.as_ref());
     let fingerprint = controller_fingerprint(endpoint, &controller, confidence, controller_index);
     let device_id = fingerprint.stable_device_id();
@@ -1267,6 +1268,32 @@ fn output_disabled_reason(
     None
 }
 
+fn topology_disabled_reason(controller: &ControllerData) -> Option<String> {
+    let Some(reported_zone_led_count) = zone_led_count(controller) else {
+        return Some("OpenRGB zone LED count overflowed".to_owned());
+    };
+    let Some(reported_controller_led_count) = controller_led_count(controller) else {
+        return Some("OpenRGB controller LED list count overflowed".to_owned());
+    };
+    if reported_zone_led_count != reported_controller_led_count {
+        return Some(format!(
+            "OpenRGB zone LED count {reported_zone_led_count} does not match controller LED list {reported_controller_led_count}"
+        ));
+    }
+    None
+}
+
+fn zone_led_count(controller: &ControllerData) -> Option<u32> {
+    controller
+        .zones
+        .iter()
+        .try_fold(0_u32, |total, zone| total.checked_add(zone.leds_count))
+}
+
+fn controller_led_count(controller: &ControllerData) -> Option<u32> {
+    u32::try_from(controller.leds.len()).ok()
+}
+
 fn build_device_info(
     id: DeviceId,
     controller: &ControllerData,
@@ -1277,7 +1304,7 @@ fn build_device_info(
     output_enabled: bool,
 ) -> DeviceInfo {
     let zones = controller.zones.iter().map(zone_info).collect::<Vec<_>>();
-    let led_count = zones.iter().map(|zone| zone.led_count).sum();
+    let led_count = controller_led_count(controller).unwrap_or(0);
     let display_name = if controller.vendor.trim().is_empty() {
         controller.name.clone()
     } else {
@@ -1749,6 +1776,30 @@ mod tests {
         let route = build_route(default_endpoints()[0], 0, 5, controller, &config);
         assert!(route.disabled_reason.is_some());
         assert!(!route.info.capabilities.supports_direct);
+    }
+
+    #[test]
+    fn route_disables_output_for_mismatched_led_topology() {
+        let mut controller = sample_controller();
+        controller.zones[0].leds_count = 5;
+        let config = OpenRgbConfig {
+            ownership: OpenRgbOwnership {
+                mode: OpenRgbOwnershipMode::OpenRgbOwned,
+                ..OpenRgbOwnership::default()
+            },
+            ..OpenRgbConfig::default()
+        };
+
+        let route = build_route(default_endpoints()[0], 0, 5, controller, &config);
+
+        assert_eq!(route.info.capabilities.led_count, 4);
+        assert!(!route.info.capabilities.supports_direct);
+        assert!(
+            route
+                .disabled_reason
+                .expect("mismatched topology should disable output")
+                .contains("does not match controller LED list")
+        );
     }
 
     #[test]
