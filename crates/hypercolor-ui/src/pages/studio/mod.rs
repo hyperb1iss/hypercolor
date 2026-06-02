@@ -26,7 +26,8 @@ use crate::api;
 use crate::api::ComponentBindingSummary;
 use crate::apply_target::ApplyTarget;
 use crate::components::layout_builder::ZoneLayoutProvider;
-use crate::components::page_header::{HeaderTrailing, PageAccent, PageHeader};
+use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, PageHeader};
+use crate::components::page_search_bar::PageSearchBar;
 use crate::components::resize_handle::ResizeHandle;
 use crate::icons::*;
 use crate::storage;
@@ -100,6 +101,9 @@ pub struct StudioContext {
     /// Each device card lazily fills its own entry; channel rows read it
     /// to surface live binding labels without re-fetching per render.
     pub attachment_cache: RwSignal<HashMap<String, Vec<ComponentBindingSummary>>>,
+    /// Header search term. Filters the zone tree's device rows by name,
+    /// filling the header toolbar the way every other page's search does.
+    pub device_search: Signal<String>,
 }
 
 #[component]
@@ -255,6 +259,8 @@ pub fn StudioPage() -> impl IntoView {
         hovered_output_ids.set(HashSet::new());
     });
 
+    let (device_search, set_device_search) = signal(String::new());
+
     provide_context(StudioContext {
         selected_surface_id,
         active_scene,
@@ -264,6 +270,7 @@ pub fn StudioPage() -> impl IntoView {
         selected_output_ids,
         hovered_output_ids,
         attachment_cache,
+        device_search: device_search.into(),
     });
 
     view! {
@@ -277,6 +284,13 @@ pub fn StudioPage() -> impl IntoView {
                 <HeaderTrailing slot>
                     <SceneSelector />
                 </HeaderTrailing>
+                <HeaderToolbar slot>
+                    <PageSearchBar
+                        placeholder="Search devices...".to_string()
+                        value=device_search
+                        set_value=set_device_search
+                    />
+                </HeaderToolbar>
             </PageHeader>
             // Narrow-viewport drawer toggle; the tree sits beside the Stage
             // on `lg` and up, so this strip is hidden there.

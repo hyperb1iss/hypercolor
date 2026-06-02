@@ -42,6 +42,14 @@ fn load_collapsed() -> HashSet<String> {
         .unwrap_or_default()
 }
 
+/// Keep only device rows whose name matches the header search term — a
+/// case-insensitive substring. An empty term leaves every row untouched.
+fn retain_by_search(rows: &mut Vec<ZoneDeviceRow>, search: &str) {
+    if !search.is_empty() {
+        rows.retain(|row| row.name.to_lowercase().contains(search));
+    }
+}
+
 /// The left column. Reads the active scene and the device registry, and
 /// drives the selected-surface state.
 #[component]
@@ -114,6 +122,7 @@ pub fn ZoneTree() -> impl IntoView {
         };
         let metas = device_metas.get();
         let by_id = device_by_id.get();
+        let search = studio.device_search.get().trim().to_lowercase();
         lights
             .get()
             .into_iter()
@@ -126,6 +135,7 @@ pub fn ZoneTree() -> impl IntoView {
                     .unwrap_or_default();
                 let mut base_rows = device_rows_for_zone(&outputs, &metas);
                 sort_device_rows(&mut base_rows);
+                retain_by_search(&mut base_rows, &search);
                 let rows = base_rows
                     .into_iter()
                     .map(|row| {
@@ -142,8 +152,10 @@ pub fn ZoneTree() -> impl IntoView {
             return Vec::new();
         };
         let by_id = device_by_id.get();
+        let search = studio.device_search.get().trim().to_lowercase();
         let mut base_rows = unassigned_device_rows(&scene.groups, &device_metas.get());
         sort_device_rows(&mut base_rows);
+        retain_by_search(&mut base_rows, &search);
         base_rows
             .into_iter()
             .map(|row| {
