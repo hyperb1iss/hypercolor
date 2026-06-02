@@ -1317,6 +1317,8 @@ impl ServoWorkerRuntime {
                     height,
                     response_tx,
                 }) => {
+                    #[cfg(feature = "servo-gpu-import")]
+                    self.clear_all_gpu_importers();
                     let result = self.create_session(session_id, producer_role, width, height);
                     let _ = response_tx.send(result);
                 }
@@ -1526,6 +1528,8 @@ impl ServoWorkerRuntime {
     ) -> Result<()> {
         {
             #[cfg(feature = "servo-gpu-import")]
+            self.clear_gpu_importers_except(session_id);
+            #[cfg(feature = "servo-gpu-import")]
             self.clear_gpu_importer(session_id);
             let session = self.session_mut(session_id)?;
             session.delegate.reset_navigation_state();
@@ -1632,6 +1636,8 @@ impl ServoWorkerRuntime {
         reason = "callers invoke with `?` alongside other fallible session ops; keeping the Result keeps the dispatch uniform"
     )]
     fn destroy_session(&mut self, session_id: ServoSessionId) -> Result<()> {
+        #[cfg(feature = "servo-gpu-import")]
+        self.clear_gpu_importers_except(session_id);
         let Some(mut session) = self.sessions.remove(&session_id) else {
             return Ok(());
         };
@@ -1975,6 +1981,27 @@ impl ServoWorkerRuntime {
                 bail!("{message}");
             }
             std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    #[cfg(feature = "servo-gpu-import")]
+    fn clear_all_gpu_importers(&mut self) {
+        let session_ids: Vec<_> = self.sessions.keys().copied().collect();
+        for session_id in session_ids {
+            self.clear_gpu_importer(session_id);
+        }
+    }
+
+    #[cfg(feature = "servo-gpu-import")]
+    fn clear_gpu_importers_except(&mut self, retained_session_id: ServoSessionId) {
+        let session_ids: Vec<_> = self
+            .sessions
+            .keys()
+            .copied()
+            .filter(|session_id| *session_id != retained_session_id)
+            .collect();
+        for session_id in session_ids {
+            self.clear_gpu_importer(session_id);
         }
     }
 }
@@ -2413,6 +2440,13 @@ impl ServoWorkerRuntime {
     }
 }
 
+#[cfg(feature = "servo-gpu-import")]
+fn present_after_gpu_import_skip(runtime: &ServoWorkerRuntime, session_id: ServoSessionId) {
+    if let Ok(session) = runtime.session(session_id) {
+        session.rendering_context.present();
+    }
+}
+
 fn render_servo_framebuffer(
     runtime: &mut ServoWorkerRuntime,
     session_id: ServoSessionId,
@@ -2461,6 +2495,7 @@ fn render_servo_framebuffer(
                 transient_failures = session.gpu_import_transient_failures,
                 "Servo GPU framebuffer import retry cooling down after transient failure"
             );
+            present_after_gpu_import_skip(runtime, session_id);
             return Err(ServoFrameUnavailable {
                 reason: "transient_retry_cooldown",
                 detail: "gpu import retry is cooling down".to_owned(),
@@ -2480,6 +2515,7 @@ fn render_servo_framebuffer(
             }
             Err(error) => {
                 if error.downcast_ref::<ServoFrameUnavailable>().is_some() {
+                    present_after_gpu_import_skip(runtime, session_id);
                     return Err(error);
                 }
                 let reason = classify_servo_gpu_import_error(&error);
@@ -2525,6 +2561,7 @@ fn render_servo_framebuffer(
                         has_cached_canvas = session.last_canvas.is_some(),
                         "Servo GPU framebuffer import hit transient GL state; deferring frame until retry"
                     );
+                    present_after_gpu_import_skip(runtime, session_id);
                     return Err(ServoFrameUnavailable {
                         reason: reason.as_str(),
                         detail,
@@ -2547,6 +2584,7 @@ fn render_servo_framebuffer(
                         cooldown_ms,
                         "Servo GPU framebuffer import failed; refusing CPU readback fallback"
                     );
+                    present_after_gpu_import_skip(runtime, session_id);
                     return Err(error).context(
                         "Servo GPU framebuffer import failed without CPU readback fallback",
                     );

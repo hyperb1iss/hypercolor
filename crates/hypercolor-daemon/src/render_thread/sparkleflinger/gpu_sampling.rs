@@ -671,6 +671,10 @@ impl GpuSpatialSampler {
         bind_group
     }
 
+    pub(super) fn clear_bind_groups(&mut self) {
+        self.cached_bind_groups.clear();
+    }
+
     #[cfg(test)]
     pub(super) fn cached_bind_group_count(&self) -> usize {
         self.cached_bind_groups.len()

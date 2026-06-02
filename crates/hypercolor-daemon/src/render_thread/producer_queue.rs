@@ -9,8 +9,16 @@ pub(crate) struct GpuTextureFrame {
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) storage_id: u64,
+    pub(crate) origin: GpuTextureFrameOrigin,
     pub(crate) texture: wgpu::Texture,
     pub(crate) view: wgpu::TextureView,
+}
+
+#[cfg(feature = "wgpu")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GpuTextureFrameOrigin {
+    CompositorOutput,
+    ProducerTexture,
 }
 
 static PRODUCER_CPU_FRAMES_TOTAL: AtomicU64 = AtomicU64::new(0);

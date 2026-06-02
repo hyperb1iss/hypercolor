@@ -25,7 +25,7 @@ use crate::performance::CompositorBackendKind;
 use crate::render_thread::gpu_device::{
     GpuBackendPreference, GpuRenderDevice, backend_name, device_type_name, texture_format_name,
 };
-use crate::render_thread::producer_queue::{GpuTextureFrame, ProducerFrame};
+use crate::render_thread::producer_queue::{GpuTextureFrame, GpuTextureFrameOrigin, ProducerFrame};
 use crate::render_thread::sparkleflinger::gpu_sampling::{
     GpuSampleSource, GpuSamplingPlan, GpuSamplingPlanKey, GpuSpatialSampler,
     PendingGpuSampleReadback,
@@ -603,6 +603,7 @@ impl GpuSparkleFlinger {
             width: surfaces.width,
             height: surfaces.height,
             storage_id: self.output_generation,
+            origin: GpuTextureFrameOrigin::CompositorOutput,
             texture: texture.texture.clone(),
             view: texture.view.clone(),
         }))
@@ -668,6 +669,7 @@ impl GpuSparkleFlinger {
             width: canvas.width(),
             height: canvas.height(),
             storage_id: self.producer_texture_generation,
+            origin: GpuTextureFrameOrigin::ProducerTexture,
             texture: texture.texture.clone(),
             view: texture.view.clone(),
         })
@@ -1131,6 +1133,22 @@ impl GpuSparkleFlinger {
     ) -> Result<ComposedFrameSet> {
         let requires_preview_surface = preview_surface_request.is_some();
         let readback_key = cached_readback_key(plan);
+        if plan.layers.len() == 1
+            && let Some(layer) = plan.layers.first()
+            && self.layer_reuses_current_output_texture(layer, plan.width, plan.height)
+        {
+            if !requires_cpu_sampling_canvas && !requires_preview_surface {
+                return Ok(gpu_composed_without_surfaces());
+            }
+            return self.read_back_current_output_surface(
+                plan.width,
+                plan.height,
+                readback_key,
+                requires_cpu_sampling_canvas,
+                preview_surface_request,
+                None,
+            );
+        }
         if plan.layers.len() == 1
             && let Some(layer) = plan.layers.first()
             && layer.is_bypass_candidate()
@@ -1642,6 +1660,28 @@ impl GpuSparkleFlinger {
         self.pending_preview_map = None;
         self.ready_preview_surface = None;
         self.cached_sample_result = None;
+        self.spatial_sampler.clear_bind_groups();
+    }
+
+    fn layer_reuses_current_output_texture(
+        &self,
+        layer: &CompositionLayer,
+        width: u32,
+        height: u32,
+    ) -> bool {
+        self.current_output.is_some()
+            && layer.mode == CompositionMode::Replace
+            && layer.opacity >= 1.0
+            && layer.transform.is_none()
+            && layer.adjust.is_none()
+            && matches!(
+                &layer.frame,
+                ProducerFrame::GpuTexture(frame)
+                    if frame.origin == GpuTextureFrameOrigin::CompositorOutput
+                        && frame.storage_id == self.output_generation
+                        && frame.width == width
+                        && frame.height == height
+            )
     }
 
     pub(crate) fn surface_snapshot(&self) -> Option<GpuCompositorSurfaceSnapshot> {
@@ -4118,7 +4158,7 @@ mod tests {
         MEDIA_UPLOAD_TEXTURE_POOL_IDLE_FRAMES, MEDIA_UPLOAD_TEXTURE_RING_LEN,
         MediaTextureSourceKey, MediaUploadTextureKey, PendingPreviewMap, PendingPreviewReadback,
     };
-    use crate::render_thread::producer_queue::ProducerFrame;
+    use crate::render_thread::producer_queue::{GpuTextureFrameOrigin, ProducerFrame};
     use crate::render_thread::sparkleflinger::gpu_sampling::GpuSamplingPlan;
     use crate::render_thread::sparkleflinger::{
         CompositionLayer, CompositionPlan, DisplayFinalizeCacheKey, DisplayFinalizeParams,
@@ -4899,6 +4939,110 @@ mod tests {
         compositor.ensure_surface_size(8, 8);
 
         assert!(compositor.ready_preview_surface.is_none());
+    }
+
+    #[test]
+    fn gpu_resize_clears_sampling_bind_groups() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+        let engine = SpatialEngine::new(sampling_layout(SamplingMode::Bilinear));
+        let plan = CompositionPlan::single(
+            4,
+            4,
+            CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(3))),
+        );
+
+        compositor
+            .compose(&plan, false, None)
+            .expect("GPU composition should succeed before sampling");
+        let mut sampled = Vec::new();
+        let _pending = compositor
+            .begin_sample_zone_plan_into(engine.sampling_plan().as_ref(), &mut sampled)
+            .expect("GPU sample dispatch should succeed");
+
+        assert!(compositor.spatial_sampler.cached_bind_group_count() > 0);
+
+        compositor.ensure_surface_size(8, 8);
+
+        assert_eq!(compositor.spatial_sampler.cached_bind_group_count(), 0);
+    }
+
+    #[test]
+    fn gpu_compositor_passthroughs_current_output_texture() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+        let source_plan = CompositionPlan::single(
+            4,
+            4,
+            CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(7))),
+        );
+
+        compositor
+            .compose(&source_plan, false, None)
+            .expect("initial GPU composition should succeed");
+        let output_generation = compositor.output_generation;
+        let output_surface = compositor.current_output;
+        let frame = compositor
+            .current_output_frame()
+            .expect("current output frame lookup should succeed")
+            .expect("current output frame should exist");
+
+        assert_eq!(frame.origin, GpuTextureFrameOrigin::CompositorOutput);
+
+        let passthrough_plan = CompositionPlan::single(
+            4,
+            4,
+            CompositionLayer::replace(ProducerFrame::GpuTexture(frame)),
+        );
+        let composed = compositor
+            .compose(&passthrough_plan, false, None)
+            .expect("current output texture pass-through should succeed");
+
+        assert!(composed.sampling_canvas.is_none());
+        assert_eq!(compositor.output_generation, output_generation);
+        assert_eq!(compositor.current_output, output_surface);
+    }
+
+    #[test]
+    fn gpu_compositor_does_not_passthrough_producer_texture() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+        let source_plan = CompositionPlan::single(
+            4,
+            4,
+            CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(9))),
+        );
+
+        compositor
+            .compose(&source_plan, false, None)
+            .expect("initial GPU composition should succeed");
+        let output_generation = compositor.output_generation;
+        let producer_frame = compositor
+            .upload_canvas_frame(&patterned_canvas(11))
+            .expect("producer canvas upload should succeed");
+
+        assert_eq!(
+            producer_frame.origin,
+            GpuTextureFrameOrigin::ProducerTexture
+        );
+        assert_eq!(producer_frame.storage_id, output_generation);
+
+        let producer_plan = CompositionPlan::single(
+            4,
+            4,
+            CompositionLayer::replace(ProducerFrame::GpuTexture(producer_frame)),
+        );
+        compositor
+            .compose(&producer_plan, false, None)
+            .expect("producer texture composition should not be passed through");
+
+        assert_eq!(compositor.output_generation, output_generation + 1);
     }
 
     #[test]
