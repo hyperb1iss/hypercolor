@@ -135,6 +135,13 @@ fn producer_frame_is_gpu_resident(frame: &ProducerFrame) -> bool {
     }
 }
 
+fn display_route_matches_target(
+    display_route: Option<&DisplayGroupOutputRoute>,
+    display_target: &DisplayFaceTarget,
+) -> bool {
+    display_route.is_some_and(|route| route.device_id == display_target.device_id)
+}
+
 impl ComposeContext<'_> {
     async fn compose(&mut self) -> RenderStageStats {
         self.compose_render_group_frame_set(Instant::now()).await
@@ -627,6 +634,9 @@ impl ComposeContext<'_> {
                 },
             });
         }
+        if display_route_matches_target(display_route, &display_target) {
+            return None;
+        }
 
         let surface = match frame {
             ProducerFrame::Canvas(canvas) => PublishedSurface::from_owned_canvas(canvas, 0, 0),
@@ -970,14 +980,18 @@ fn scene_canvas_forces_full_surface(
 #[cfg(test)]
 mod tests {
     use super::{
-        PreviewSurfaceRequest, effective_render_group_layer_count, preview_surface_request,
-        producer_frame_requires_composition_for_preview, render_group_requires_full_composition,
-        requires_cpu_sampling_canvas, requires_published_surface,
+        PreviewSurfaceRequest, display_route_matches_target, effective_render_group_layer_count,
+        preview_surface_request, producer_frame_requires_composition_for_preview,
+        render_group_requires_full_composition, requires_cpu_sampling_canvas,
+        requires_published_surface,
     };
     use std::sync::Arc;
 
+    use hypercolor_core::bus::{DisplayGroupOutputRoute, DisplayGroupViewport};
     use hypercolor_core::spatial::SpatialEngine;
     use hypercolor_core::types::canvas::{Canvas, PublishedSurface};
+    use hypercolor_types::device::{DeviceId, DisplayFrameFormat};
+    use hypercolor_types::scene::{DisplayFaceBlendMode, DisplayFaceTarget};
     use hypercolor_types::spatial::{
         EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
         StripDirection,
@@ -1111,6 +1125,37 @@ mod tests {
     #[test]
     fn published_surface_depends_on_scene_canvas_receivers() {
         assert!(requires_published_surface(false, false, false, false, 1));
+    }
+
+    #[test]
+    fn display_route_matching_requires_the_target_device() {
+        let device_id = DeviceId::new();
+        let target = DisplayFaceTarget {
+            device_id,
+            blend_mode: DisplayFaceBlendMode::Replace,
+            opacity: 1.0,
+        };
+        let route = DisplayGroupOutputRoute {
+            device_id,
+            width: 480,
+            height: 480,
+            circular: true,
+            brightness: 1.0,
+            frame_format: DisplayFrameFormat::Jpeg,
+            viewport: DisplayGroupViewport {
+                position: NormalizedPosition::new(0.5, 0.5),
+                size: NormalizedPosition::new(1.0, 1.0),
+                rotation: 0.0,
+                scale: 1.0,
+                edge_behavior: EdgeBehavior::Clamp,
+            },
+        };
+        let mut other_route = route.clone();
+        other_route.device_id = DeviceId::new();
+
+        assert!(display_route_matches_target(Some(&route), &target));
+        assert!(!display_route_matches_target(Some(&other_route), &target));
+        assert!(!display_route_matches_target(None, &target));
     }
 
     #[test]
