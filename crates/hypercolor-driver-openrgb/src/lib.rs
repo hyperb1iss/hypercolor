@@ -358,6 +358,14 @@ impl DeviceBackend for OpenRgbBackend {
         }
 
         let mut client = connect_openrgb_client(&self.config, route.endpoint).await?;
+        let route = find_current_route(
+            &mut client,
+            route.endpoint,
+            &route.fingerprint,
+            &self.config,
+        )
+        .await?;
+        ensure_route_output_enabled(&route)?;
         configure_controller_output(&mut client, &route, &self.config).await?;
 
         let controller = Arc::new(Mutex::new(ConnectedController {

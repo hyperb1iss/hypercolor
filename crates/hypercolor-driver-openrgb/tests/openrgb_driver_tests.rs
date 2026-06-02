@@ -166,6 +166,98 @@ async fn backend_reconnects_after_openrgb_socket_closes() {
 }
 
 #[tokio::test]
+async fn connect_re_resolves_controller_index_before_mode_setup() {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("fake OpenRGB server should bind");
+    let endpoint = listener
+        .local_addr()
+        .expect("fake OpenRGB server should expose local addr");
+    let server = tokio::spawn(run_connect_remap_server(listener));
+    let config = OpenRgbConfig {
+        endpoints: vec![endpoint],
+        ownership: OpenRgbOwnership {
+            mode: OpenRgbOwnershipMode::OpenRgbOwned,
+            ..OpenRgbOwnership::default()
+        },
+        ..OpenRgbConfig::default()
+    };
+    let entry = config_entry(&config);
+    let view = DriverConfigView {
+        driver_id: DESCRIPTOR.id,
+        entry: &entry,
+    };
+    let host = NullHost;
+    let module = OpenRgbDriverModule;
+    let mut backend = module
+        .build_output_backend(&host, view)
+        .expect("backend construction should succeed")
+        .expect("OpenRGB should build an output backend");
+    let devices = backend
+        .discover()
+        .await
+        .expect("backend discovery should read fake OpenRGB controller");
+    let device_id = devices[0].id;
+
+    backend
+        .connect(&device_id)
+        .await
+        .expect("backend should connect remapped controller");
+    backend
+        .write_colors(&device_id, &[[9, 8, 7], [6, 5, 4]])
+        .await
+        .expect("backend should stream to remapped index");
+
+    let update = server.await.expect("server task should join");
+    assert_eq!(update.header.device_index, 1);
+    assert_eq!(update.header.packet_id, PacketId::UpdateLeds);
+    assert_eq!(&update.payload[6..10], &[9, 8, 7, 0]);
+    assert_eq!(&update.payload[10..14], &[6, 5, 4, 0]);
+}
+
+#[tokio::test]
+async fn connect_fails_when_re_resolved_controller_disappears() {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("fake OpenRGB server should bind");
+    let endpoint = listener
+        .local_addr()
+        .expect("fake OpenRGB server should expose local addr");
+    let server = tokio::spawn(run_connect_missing_server(listener));
+    let config = OpenRgbConfig {
+        endpoints: vec![endpoint],
+        ownership: OpenRgbOwnership {
+            mode: OpenRgbOwnershipMode::OpenRgbOwned,
+            ..OpenRgbOwnership::default()
+        },
+        ..OpenRgbConfig::default()
+    };
+    let entry = config_entry(&config);
+    let view = DriverConfigView {
+        driver_id: DESCRIPTOR.id,
+        entry: &entry,
+    };
+    let host = NullHost;
+    let module = OpenRgbDriverModule;
+    let mut backend = module
+        .build_output_backend(&host, view)
+        .expect("backend construction should succeed")
+        .expect("OpenRGB should build an output backend");
+    let devices = backend
+        .discover()
+        .await
+        .expect("backend discovery should read fake OpenRGB controller");
+    let device_id = devices[0].id;
+
+    let error = backend
+        .connect(&device_id)
+        .await
+        .expect_err("backend should reject disappeared remap");
+    assert!(error.to_string().contains("disappeared"));
+    server.await.expect("server task should join");
+}
+
+#[tokio::test]
 async fn backend_reports_openrgb_health_states() {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
         .await
@@ -709,6 +801,151 @@ async fn run_driver_server(listener: TcpListener) -> Packet {
             return update;
         }
     }
+}
+
+async fn run_connect_remap_server(listener: TcpListener) -> Packet {
+    let mut connection_index = 0_u32;
+    loop {
+        let (stream, _) = listener
+            .accept()
+            .await
+            .expect("fake OpenRGB server should accept client");
+        if let Some(update) = handle_connect_remap_connection(stream, connection_index).await {
+            return update;
+        }
+        connection_index = connection_index.saturating_add(1);
+    }
+}
+
+async fn run_connect_missing_server(listener: TcpListener) {
+    let mut connection_index = 0_u32;
+    loop {
+        let (stream, _) = listener
+            .accept()
+            .await
+            .expect("fake OpenRGB server should accept client");
+        if handle_connect_missing_connection(stream, connection_index).await {
+            return;
+        }
+        connection_index = connection_index.saturating_add(1);
+    }
+}
+
+async fn handle_connect_missing_connection(mut stream: TcpStream, connection_index: u32) -> bool {
+    let mut decoder = PacketDecoder::new();
+    while let Some(packet) = read_next_packet(&mut stream, &mut decoder).await {
+        match packet.header.packet_id {
+            PacketId::RequestProtocolVersion => {
+                assert_eq!(
+                    packet.payload,
+                    CLIENT_MAX_PROTOCOL_VERSION.to_le_bytes().to_vec()
+                );
+                send_packet(
+                    &mut stream,
+                    PacketId::RequestProtocolVersion,
+                    0,
+                    CLIENT_MAX_PROTOCOL_VERSION.to_le_bytes().to_vec(),
+                )
+                .await;
+            }
+            PacketId::SetClientName => {
+                assert_eq!(packet.payload, b"Hypercolor\0");
+            }
+            PacketId::RequestControllerCount => {
+                send_packet(
+                    &mut stream,
+                    PacketId::RequestControllerCount,
+                    0,
+                    1_u32.to_le_bytes().to_vec(),
+                )
+                .await;
+            }
+            PacketId::RequestControllerData => {
+                assert_eq!(packet.header.device_index, 0);
+                let payload = if connection_index == 0 {
+                    controller_payload_v5("Board", "SER123", "hidraw0")
+                } else {
+                    controller_payload_v5("Other Board", "OTHER", "hidraw1")
+                };
+                send_packet(&mut stream, PacketId::RequestControllerData, 0, payload).await;
+                if connection_index > 0 {
+                    return true;
+                }
+            }
+            PacketId::SetCustomMode | PacketId::UpdateMode | PacketId::UpdateLeds => {
+                panic!("connect should fail before OpenRGB output setup")
+            }
+            other => panic!("unexpected OpenRGB client packet: {other:?}"),
+        }
+    }
+    false
+}
+
+async fn handle_connect_remap_connection(
+    mut stream: TcpStream,
+    connection_index: u32,
+) -> Option<Packet> {
+    let mut decoder = PacketDecoder::new();
+    while let Some(packet) = read_next_packet(&mut stream, &mut decoder).await {
+        match packet.header.packet_id {
+            PacketId::RequestProtocolVersion => {
+                assert_eq!(
+                    packet.payload,
+                    CLIENT_MAX_PROTOCOL_VERSION.to_le_bytes().to_vec()
+                );
+                send_packet(
+                    &mut stream,
+                    PacketId::RequestProtocolVersion,
+                    0,
+                    CLIENT_MAX_PROTOCOL_VERSION.to_le_bytes().to_vec(),
+                )
+                .await;
+            }
+            PacketId::SetClientName => {
+                assert_eq!(packet.payload, b"Hypercolor\0");
+            }
+            PacketId::RequestControllerCount => {
+                let count = if connection_index == 0 { 1_u32 } else { 2_u32 };
+                send_packet(
+                    &mut stream,
+                    PacketId::RequestControllerCount,
+                    0,
+                    count.to_le_bytes().to_vec(),
+                )
+                .await;
+            }
+            PacketId::RequestControllerData => {
+                assert!(
+                    connection_index > 0 || packet.header.device_index == 0,
+                    "discovery should only request the initial controller"
+                );
+                let payload = if connection_index > 0 && packet.header.device_index == 0 {
+                    controller_payload_v5("Other Board", "OTHER", "hidraw1")
+                } else {
+                    controller_payload_v5("Board", "SER123", "hidraw0")
+                };
+                send_packet(
+                    &mut stream,
+                    PacketId::RequestControllerData,
+                    packet.header.device_index,
+                    payload,
+                )
+                .await;
+            }
+            PacketId::SetCustomMode => {
+                assert_eq!(connection_index, 1);
+                assert_eq!(packet.header.device_index, 1);
+            }
+            PacketId::UpdateMode => {
+                assert_eq!(connection_index, 1);
+                assert_eq!(packet.header.device_index, 1);
+                assert!(!packet.payload.is_empty());
+            }
+            PacketId::UpdateLeds => return Some(packet),
+            other => panic!("unexpected OpenRGB client packet: {other:?}"),
+        }
+    }
+    None
 }
 
 async fn handle_driver_connection(mut stream: TcpStream) -> Option<Packet> {
