@@ -33,6 +33,8 @@ use super::frame_sampling::{LedSamplingStrategy, RetainedLedSamplingStrategy};
 use super::layer_runtime::LayerRuntimeRegistry;
 use super::producer_queue::{ProducerFrame, record_producer_frame};
 use super::scene_dependency::SceneDependencyKey;
+#[cfg(feature = "wgpu")]
+use super::sparkleflinger::MediaTextureSourceKey;
 use super::sparkleflinger::{
     ComposedFrameSet, CompositionAdjust, CompositionLayer, CompositionMode, CompositionPlan,
     CompositionTransform, PreviewSurfaceRequest, SparkleFlinger,
@@ -1363,6 +1365,7 @@ impl ZoneRuntime {
             }
             return MediaLayerFrame::Ready {
                 frame: media_layer_producer_frame(
+                    asset_id,
                     cached.producer.intrinsic_frame(playback, elapsed_ms),
                     &record.mime_type,
                     sparkleflinger,
@@ -1375,6 +1378,7 @@ impl ZoneRuntime {
         }
         MediaLayerFrame::Ready {
             frame: media_layer_producer_frame(
+                asset_id,
                 cached.producer.intrinsic_frame(playback, elapsed_ms),
                 &record.mime_type,
                 sparkleflinger,
@@ -2122,17 +2126,25 @@ fn transparent_black_frame(width: u32, height: u32) -> ProducerFrame {
 }
 
 fn media_layer_producer_frame(
+    asset_id: AssetId,
     canvas: Canvas,
     mime_type: &str,
     sparkleflinger: &mut SparkleFlinger,
 ) -> ProducerFrame {
     #[cfg(feature = "wgpu")]
     if media_mime_prefers_gpu_texture(mime_type)
-        && let Some(frame) = sparkleflinger.upload_canvas_frame(&canvas)
+        && let Some(frame) = sparkleflinger.upload_media_canvas_frame(
+            MediaTextureSourceKey::new(asset_id.as_uuid().as_u128()),
+            &canvas,
+        )
     {
         return ProducerFrame::GpuTexture(frame);
     }
 
+    #[cfg(not(feature = "wgpu"))]
+    let _ = asset_id;
+    #[cfg(not(feature = "wgpu"))]
+    let _ = mime_type;
     #[cfg(not(feature = "wgpu"))]
     let _ = sparkleflinger;
 

@@ -335,6 +335,17 @@ impl CompositionPlan {
     }
 }
 
+#[cfg(feature = "wgpu")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct MediaTextureSourceKey(u128);
+
+#[cfg(feature = "wgpu")]
+impl MediaTextureSourceKey {
+    pub(crate) const fn new(value: u128) -> Self {
+        Self(value)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct DisplayFinalizeCacheKey {
     pub(crate) group_id: ZoneId,
@@ -856,11 +867,23 @@ impl SparkleFlinger {
         }
     }
 
-    #[cfg(feature = "wgpu")]
+    #[cfg(all(test, feature = "wgpu"))]
     pub(crate) fn upload_canvas_frame(&mut self, canvas: &Canvas) -> Option<GpuTextureFrame> {
         match &mut self.backend {
             SparkleFlingerBackend::Cpu(_) => None,
             SparkleFlingerBackend::Gpu { gpu, .. } => gpu.upload_canvas_frame(canvas),
+        }
+    }
+
+    #[cfg(feature = "wgpu")]
+    pub(crate) fn upload_media_canvas_frame(
+        &mut self,
+        source: MediaTextureSourceKey,
+        canvas: &Canvas,
+    ) -> Option<GpuTextureFrame> {
+        match &mut self.backend {
+            SparkleFlingerBackend::Cpu(_) => None,
+            SparkleFlingerBackend::Gpu { gpu, .. } => gpu.upload_media_canvas_frame(source, canvas),
         }
     }
 

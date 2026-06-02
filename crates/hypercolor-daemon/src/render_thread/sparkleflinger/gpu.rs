@@ -19,7 +19,7 @@ use hypercolor_types::spatial::EdgeBehavior;
 
 use super::{
     ComposedFrameSet, CompositionLayer, CompositionMode, CompositionPlan, DisplayFinalizeCacheKey,
-    DisplayFinalizeParams, PreviewSurfaceRequest,
+    DisplayFinalizeParams, MediaTextureSourceKey, PreviewSurfaceRequest,
 };
 use crate::performance::CompositorBackendKind;
 use crate::render_thread::gpu_device::{
@@ -40,6 +40,7 @@ const DISPLAY_FINALIZE_PARAM_BYTES: usize = 96;
 const PREVIEW_SCALE_PARAM_BYTES: usize = 16;
 const MAX_CACHED_PREVIEW_SURFACES: usize = 3;
 const MAX_CACHED_PREVIEW_READBACK_POOLS: usize = 3;
+const MEDIA_UPLOAD_TEXTURE_RING_LEN: usize = 3;
 const PREVIEW_READBACK_SLOT_COUNT: usize = 2;
 const DISPLAY_FINALIZE_READBACK_SLOT_COUNT: usize = 3;
 #[cfg(test)]
@@ -99,8 +100,11 @@ fn record_gpu_source_upload_skipped() {
     let _ = GPU_SOURCE_UPLOAD_SKIPPED_TOTAL.fetch_add(1, Ordering::Relaxed);
 }
 
-fn record_gpu_media_texture_upload(width: u32, height: u32) {
+fn record_gpu_media_texture_allocation() {
     let _ = GPU_MEDIA_TEXTURE_ALLOCATIONS_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+fn record_gpu_media_texture_upload(width: u32, height: u32) {
     let bytes = u64::from(width)
         .saturating_mul(u64::from(height))
         .saturating_mul(u64::try_from(BYTES_PER_PIXEL).unwrap_or(u64::MAX));
@@ -166,6 +170,7 @@ pub(crate) struct GpuSparkleFlinger {
     display_finalize_surfaces: HashMap<DisplayFinalizeCacheKey, GpuDisplayFinalizeSurfaceSet>,
     display_finalize_generation: u64,
     preview_surfaces: Option<GpuPreviewSurfaceSet>,
+    media_texture_pools: HashMap<MediaUploadTextureKey, MediaUploadTexturePool>,
     current_output: Option<GpuCompositorOutputSurface>,
     cached_composition_key: Option<CachedReadbackKey>,
     cached_readback_surface: Option<CachedReadbackSurface>,
@@ -326,6 +331,18 @@ struct GpuPreviewSurfaceSet {
     last_readback_bytes: u64,
     #[cfg(test)]
     readback_surface_pool_allocation_count: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct MediaUploadTextureKey {
+    source: MediaTextureSourceKey,
+    width: u32,
+    height: u32,
+}
+
+struct MediaUploadTexturePool {
+    textures: Vec<GpuCompositorTexture>,
+    next_slot: usize,
 }
 
 struct GpuCompositorTexture {
@@ -530,6 +547,7 @@ impl GpuSparkleFlinger {
             display_finalize_surfaces: HashMap::new(),
             display_finalize_generation: 0,
             preview_surfaces: None,
+            media_texture_pools: HashMap::new(),
             current_output: None,
             cached_composition_key: None,
             cached_readback_surface: None,
@@ -586,7 +604,16 @@ impl GpuSparkleFlinger {
         }))
     }
 
+    #[cfg(test)]
     pub(crate) fn upload_canvas_frame(&mut self, canvas: &Canvas) -> Option<GpuTextureFrame> {
+        self.upload_media_canvas_frame(MediaTextureSourceKey::new(0), canvas)
+    }
+
+    pub(crate) fn upload_media_canvas_frame(
+        &mut self,
+        source: MediaTextureSourceKey,
+        canvas: &Canvas,
+    ) -> Option<GpuTextureFrame> {
         let max_texture_dimension = self.probe.max_texture_dimension_2d;
         if canvas.width() == 0
             || canvas.height() == 0
@@ -601,12 +628,16 @@ impl GpuSparkleFlinger {
             );
             return None;
         }
-        let texture = GpuCompositorTexture::new(
-            &self.device,
-            canvas.width(),
-            canvas.height(),
-            "SparkleFlinger GPU media producer texture",
-        );
+        let key = MediaUploadTextureKey {
+            source,
+            width: canvas.width(),
+            height: canvas.height(),
+        };
+        let pool = self
+            .media_texture_pools
+            .entry(key)
+            .or_insert_with(MediaUploadTexturePool::new);
+        let texture = pool.next_texture(&self.device, key);
         record_gpu_media_texture_upload(canvas.width(), canvas.height());
         write_rgba_texture(
             &self.queue,
@@ -620,8 +651,8 @@ impl GpuSparkleFlinger {
             width: canvas.width(),
             height: canvas.height(),
             storage_id: self.producer_texture_generation,
-            texture: texture.texture,
-            view: texture.view,
+            texture: texture.texture.clone(),
+            view: texture.view.clone(),
         })
     }
 
@@ -2606,6 +2637,35 @@ impl GpuDisplaySourceTexture {
     }
 }
 
+impl MediaUploadTexturePool {
+    fn new() -> Self {
+        Self {
+            textures: Vec::with_capacity(MEDIA_UPLOAD_TEXTURE_RING_LEN),
+            next_slot: 0,
+        }
+    }
+
+    fn next_texture(
+        &mut self,
+        device: &wgpu::Device,
+        key: MediaUploadTextureKey,
+    ) -> &GpuCompositorTexture {
+        if self.textures.len() < MEDIA_UPLOAD_TEXTURE_RING_LEN {
+            self.textures.push(GpuCompositorTexture::new(
+                device,
+                key.width,
+                key.height,
+                "SparkleFlinger GPU pooled media producer texture",
+            ));
+            record_gpu_media_texture_allocation();
+        }
+
+        let slot = self.next_slot % self.textures.len();
+        self.next_slot = (slot + 1) % MEDIA_UPLOAD_TEXTURE_RING_LEN;
+        &self.textures[slot]
+    }
+}
+
 impl GpuPreviewSurfaceSet {
     fn new(
         device: &wgpu::Device,
@@ -4034,8 +4094,9 @@ mod tests {
 
     use super::{
         DISPLAY_FINALIZE_READBACK_SLOT_COUNT, DisplayYuv420Frame, GpuDisplayFinalizeDispatch,
-        GpuDisplayFinalizeFrame, GpuSparkleFlinger, GpuZoneSamplingDispatch, PendingPreviewMap,
-        PendingPreviewReadback,
+        GpuDisplayFinalizeFrame, GpuSparkleFlinger, GpuZoneSamplingDispatch,
+        MEDIA_UPLOAD_TEXTURE_RING_LEN, MediaTextureSourceKey, MediaUploadTextureKey,
+        PendingPreviewMap, PendingPreviewReadback,
     };
     use crate::render_thread::producer_queue::ProducerFrame;
     use crate::render_thread::sparkleflinger::gpu_sampling::GpuSamplingPlan;
@@ -4531,6 +4592,46 @@ mod tests {
         assert_eq!(frame.width, 2);
         assert_eq!(frame.height, 1);
         assert_eq!(frame.y_plane(), &[0, 29]);
+    }
+
+    #[test]
+    fn gpu_media_upload_reuses_source_size_texture_ring() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+        let source = MediaTextureSourceKey::new(7);
+        let canvas = solid_canvas_with_size(4, 4, Rgba::new(32, 96, 160, 255));
+        let Some(frame) = compositor.upload_media_canvas_frame(source, &canvas) else {
+            panic!("media upload should return a GPU texture frame");
+        };
+        assert_eq!(frame.width, 4);
+        assert_eq!(frame.height, 4);
+
+        let key = MediaUploadTextureKey {
+            source,
+            width: 4,
+            height: 4,
+        };
+        let pool = compositor
+            .media_texture_pools
+            .get(&key)
+            .expect("media upload should retain a source-size texture pool");
+        assert_eq!(pool.textures.len(), 1);
+
+        for _ in 1..(MEDIA_UPLOAD_TEXTURE_RING_LEN * 2) {
+            let Some(frame) = compositor.upload_media_canvas_frame(source, &canvas) else {
+                panic!("media upload should return a GPU texture frame");
+            };
+            assert_eq!(frame.width, 4);
+            assert_eq!(frame.height, 4);
+        }
+
+        let pool = compositor
+            .media_texture_pools
+            .get(&key)
+            .expect("media upload should retain a source-size texture pool");
+        assert_eq!(pool.textures.len(), MEDIA_UPLOAD_TEXTURE_RING_LEN);
     }
 
     #[test]
