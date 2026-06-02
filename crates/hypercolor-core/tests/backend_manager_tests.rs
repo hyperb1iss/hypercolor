@@ -2672,6 +2672,68 @@ fn unassigned_output_zones_reports_missing_segments_for_partially_assigned_devic
     assert_eq!(unassigned[0].topology.led_count(), 3);
 }
 
+#[test]
+fn unassigned_output_zones_treats_slot_ids_as_zone_aliases() {
+    let device_id = DeviceId::new();
+    let mut manager = BackendManager::new();
+    manager.map_device("usb:nollie-32", "usb", device_id);
+    assert!(manager.set_device_zone_segments(
+        "usb:nollie-32",
+        &DeviceInfo {
+            id: device_id,
+            name: "Nollie 32".to_owned(),
+            vendor: "Nollie".to_owned(),
+            family: DeviceFamily::new_static("nollie", "Nollie"),
+            model: Some("nollie_32".to_owned()),
+            connection_type: ConnectionType::Usb,
+            origin: DeviceOrigin::native("test", "usb", ConnectionType::Usb),
+            zones: vec![
+                ZoneInfo {
+                    name: "Channel 1".to_owned(),
+                    led_count: 256,
+                    topology: DeviceTopologyHint::Strip,
+                    color_format: DeviceColorFormat::Rgb,
+                    layout_hint: None,
+                },
+                ZoneInfo {
+                    name: "Channel 2".to_owned(),
+                    led_count: 256,
+                    topology: DeviceTopologyHint::Strip,
+                    color_format: DeviceColorFormat::Rgb,
+                    layout_hint: None,
+                },
+            ],
+            firmware_version: None,
+            capabilities: DeviceCapabilities {
+                led_count: 512,
+                supports_direct: true,
+                supports_brightness: true,
+                has_display: false,
+                display_resolution: None,
+                max_fps: 60,
+                color_space: hypercolor_types::device::DeviceColorSpace::default(),
+                features: DeviceFeatures::default(),
+            },
+        }
+    ));
+
+    let mut channel_1 = make_zone("attachment-channel-1", "usb:nollie-32", 20);
+    channel_1.zone_name = Some("channel-1".to_owned());
+    channel_1.attachment = Some(OutputComponent {
+        template_id: "lian-li-sl-infinity-fan".to_owned(),
+        slot_id: "channel-1".to_owned(),
+        instance: 0,
+        led_start: Some(0),
+        led_count: Some(20),
+        led_mapping: None,
+    });
+    let layout = make_layout(vec![channel_1]);
+    let unassigned = manager.unassigned_output_zones(&layout);
+
+    assert_eq!(unassigned.len(), 1);
+    assert_eq!(unassigned[0].zone_name.as_deref(), Some("Channel 2"));
+}
+
 #[tokio::test]
 async fn write_frame_unmapped_zones_are_silently_skipped() {
     let mut manager = BackendManager::new();
@@ -3162,6 +3224,92 @@ async fn write_frame_routes_multi_zone_device_by_zone_name() {
             [0, 0, 255],
             [0, 0, 255],
         ]
+    );
+}
+
+#[tokio::test]
+async fn write_frame_routes_slot_alias_zone_name_to_hardware_segment() {
+    let device_id = DeviceId::new();
+    let writes = Arc::new(Mutex::new(Vec::<Vec<[u8; 3]>>::new()));
+    let write_count = Arc::new(AtomicUsize::new(0));
+
+    let backend = SlowRecordingBackend::new(
+        device_id,
+        Duration::from_millis(10),
+        writes.clone(),
+        write_count,
+    );
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(backend));
+    manager.map_device_with_segment(
+        "usb:nollie-32",
+        "slow",
+        device_id,
+        Some(SegmentRange::new(0, 5)),
+    );
+    assert!(manager.set_device_zone_segments(
+        "usb:nollie-32",
+        &DeviceInfo {
+            id: device_id,
+            name: "Nollie 32".to_owned(),
+            vendor: "Nollie".to_owned(),
+            family: DeviceFamily::new_static("nollie", "Nollie"),
+            model: Some("nollie_32".to_owned()),
+            connection_type: ConnectionType::Usb,
+            origin: DeviceOrigin::native("test", "usb", ConnectionType::Usb),
+            zones: vec![
+                ZoneInfo {
+                    name: "Channel 1".to_owned(),
+                    led_count: 2,
+                    topology: DeviceTopologyHint::Strip,
+                    color_format: DeviceColorFormat::Rgb,
+                    layout_hint: None,
+                },
+                ZoneInfo {
+                    name: "Channel 2".to_owned(),
+                    led_count: 3,
+                    topology: DeviceTopologyHint::Strip,
+                    color_format: DeviceColorFormat::Rgb,
+                    layout_hint: None,
+                },
+            ],
+            firmware_version: None,
+            capabilities: DeviceCapabilities {
+                led_count: 5,
+                supports_direct: true,
+                supports_brightness: true,
+                has_display: false,
+                display_resolution: None,
+                max_fps: 60,
+                color_space: hypercolor_types::device::DeviceColorSpace::default(),
+                features: DeviceFeatures::default(),
+            },
+        }
+    ));
+
+    let mut channel_2 = make_zone("zone_channel_2", "usb:nollie-32", 3);
+    channel_2.zone_name = Some("channel-2".to_owned());
+    let layout = make_layout(vec![channel_2]);
+    let zone_colors = vec![ZoneColors {
+        zone_id: "zone_channel_2".into(),
+        colors: vec![[12, 34, 56]; 3],
+    }];
+
+    let stats = manager.write_frame(&zone_colors, &layout).await;
+    assert_eq!(stats.devices_written, 1);
+    assert_eq!(stats.total_leds, 5);
+    assert!(stats.errors.is_empty());
+
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    let writes = writes.lock().await;
+    let frame = writes.first().expect("one frame should be written");
+    assert_eq!(frame.len(), 5);
+    assert!(frame[..2].iter().all(|color| *color == [0, 0, 0]));
+    assert!(
+        frame[2..]
+            .iter()
+            .all(|color| *color == expected_led_color([12, 34, 56]))
     );
 }
 

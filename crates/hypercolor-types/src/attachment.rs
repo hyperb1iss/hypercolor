@@ -32,6 +32,53 @@ fn other_attachment_category() -> ComponentCategory {
     ComponentCategory::Other("other".to_owned())
 }
 
+/// Stable slug form used for controller attachment slot IDs.
+#[must_use]
+pub fn slugify_slot_id(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut previous_dash = false;
+
+    for ch in raw.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+            previous_dash = false;
+            continue;
+        }
+
+        if !out.is_empty() && !previous_dash {
+            out.push('-');
+            previous_dash = true;
+        }
+    }
+
+    let trimmed = out.trim_matches('-');
+    if trimmed.is_empty() {
+        return "slot".to_owned();
+    }
+
+    trimmed.to_owned()
+}
+
+/// Return true when a controller slot ID names the same physical zone.
+#[must_use]
+pub fn slot_id_matches_zone_name(slot_id: &str, zone_name: &str) -> bool {
+    slot_id.eq_ignore_ascii_case(zone_name) || slot_id == slugify_slot_id(zone_name)
+}
+
+/// Symmetric comparison for layout zone names and attachment slot aliases.
+#[must_use]
+pub fn zone_name_matches_slot_alias(left: Option<&str>, right: Option<&str>) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => {
+            left.eq_ignore_ascii_case(right)
+                || slot_id_matches_zone_name(left, right)
+                || slot_id_matches_zone_name(right, left)
+        }
+        (None, None) => true,
+        _ => false,
+    }
+}
+
 /// Template category used for filtering and UI grouping.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ComponentCategory {
@@ -506,31 +553,6 @@ fn suggested_categories(topology: &DeviceTopologyHint) -> Vec<ComponentCategory>
         }
         DeviceTopologyHint::Custom => vec![other_attachment_category()],
     }
-}
-
-fn slugify_slot_id(raw: &str) -> String {
-    let mut out = String::with_capacity(raw.len());
-    let mut previous_dash = false;
-
-    for ch in raw.chars() {
-        if ch.is_ascii_alphanumeric() {
-            out.push(ch.to_ascii_lowercase());
-            previous_dash = false;
-            continue;
-        }
-
-        if !out.is_empty() && !previous_dash {
-            out.push('-');
-            previous_dash = true;
-        }
-    }
-
-    let trimmed = out.trim_matches('-');
-    if trimmed.is_empty() {
-        return "slot".to_owned();
-    }
-
-    trimmed.to_owned()
 }
 
 fn dedupe_slot_id(slot_ids: &mut HashMap<String, u32>, base_id: &str) -> String {

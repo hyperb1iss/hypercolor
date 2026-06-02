@@ -22,6 +22,7 @@ use tokio::sync::{Mutex, watch};
 use tokio::task::JoinHandle;
 use tracing::{debug, trace, warn};
 
+use hypercolor_types::attachment::zone_name_matches_slot_alias;
 use hypercolor_types::canvas::{linear_to_output_u8, srgb_to_linear};
 use hypercolor_types::device::{DeviceId, DeviceInfo, OwnedDisplayFramePayload, ZoneInfo};
 use hypercolor_types::event::ZoneColors;
@@ -1847,7 +1848,9 @@ impl BackendManager {
                 let mut segment_names = mapping.zone_segments.keys().cloned().collect::<Vec<_>>();
                 segment_names.sort_unstable();
                 for zone_name in segment_names {
-                    if assigned_zone_names.is_some_and(|names| names.contains(&zone_name)) {
+                    if assigned_zone_names
+                        .is_some_and(|names| zone_name_covered_by_layout(names, &zone_name))
+                    {
                         continue;
                     }
                     let Some(segment) = mapping.zone_segments.get(&zone_name).copied() else {
@@ -2602,6 +2605,12 @@ fn layout_output_coverage(layout: &SpatialLayout) -> HashMap<&str, LayoutOutputC
     coverage
 }
 
+fn zone_name_covered_by_layout(assigned_zone_names: &HashSet<String>, zone_name: &str) -> bool {
+    assigned_zone_names
+        .iter()
+        .any(|assigned| zone_name_matches_slot_alias(Some(assigned.as_str()), Some(zone_name)))
+}
+
 fn unassigned_output_zone(
     layout_device_id: &str,
     zone_name: Option<&str>,
@@ -2953,7 +2962,7 @@ fn mapped_segment_for_zone_name(
     let Some(zone_name) = zone_name else {
         return mapping.segment;
     };
-    let Some(zone_segment) = mapping.zone_segments.get(zone_name).copied() else {
+    let Some(zone_segment) = zone_segment_for_name(&mapping.zone_segments, zone_name) else {
         return mapping.segment;
     };
 
@@ -2997,6 +3006,17 @@ fn mapped_segment_for_zone_name(
         "ignoring hardware zone segment because it does not overlap the mapped logical segment"
     );
     Some(base_segment)
+}
+
+fn zone_segment_for_name(
+    zone_segments: &HashMap<String, SegmentRange>,
+    zone_name: &str,
+) -> Option<SegmentRange> {
+    zone_segments.get(zone_name).copied().or_else(|| {
+        zone_segments.iter().find_map(|(candidate, segment)| {
+            zone_name_matches_slot_alias(Some(zone_name), Some(candidate)).then_some(*segment)
+        })
+    })
 }
 
 fn layout_routing_signature(layout: &SpatialLayout) -> u64 {

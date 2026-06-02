@@ -9,6 +9,7 @@ use crate::api::{self, ZoneSummary};
 use crate::channel_names;
 use crate::layout_geometry;
 use crate::style_utils::uuid_v4_hex;
+pub use hypercolor_types::attachment::{slot_id_matches_zone_name, zone_name_matches_slot_alias};
 use hypercolor_types::spatial::{NormalizedPosition, Output, SpatialLayout};
 
 /// Type alias for the removed-zone stash, keyed by (device_id, zone_name).
@@ -629,23 +630,6 @@ pub fn replace_attachment_layout(
     layout.zones.extend(seeded.zones);
 }
 
-/// Check if a slot ID matches a zone name (case-insensitive or slugified).
-pub fn slot_id_matches_zone_name(slot_id: &str, zone_name: &str) -> bool {
-    slot_id.eq_ignore_ascii_case(zone_name) || slot_id == slugify_slot_name(zone_name)
-}
-
-pub fn zone_name_matches_slot_alias(left: Option<&str>, right: Option<&str>) -> bool {
-    match (left, right) {
-        (Some(left), Some(right)) => {
-            left.eq_ignore_ascii_case(right)
-                || slot_id_matches_zone_name(left, right)
-                || slot_id_matches_zone_name(right, left)
-        }
-        (None, None) => true,
-        _ => false,
-    }
-}
-
 pub fn attachment_binding_matches_slot_alias(
     binding_slot_id: &str,
     zone_id: Option<&str>,
@@ -750,24 +734,4 @@ pub fn suppressed_attachment_source_zone_ids(layout: &SpatialLayout) -> HashSet<
             .then(|| zone.id.clone())
         })
         .collect()
-}
-
-fn slugify_slot_name(raw: &str) -> String {
-    let mut out = String::with_capacity(raw.len());
-    let mut previous_dash = false;
-
-    for ch in raw.chars() {
-        if ch.is_ascii_alphanumeric() {
-            out.push(ch.to_ascii_lowercase());
-            previous_dash = false;
-            continue;
-        }
-
-        if !out.is_empty() && !previous_dash {
-            out.push('-');
-            previous_dash = true;
-        }
-    }
-
-    out.trim_matches('-').to_owned()
 }
