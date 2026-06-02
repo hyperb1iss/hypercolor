@@ -11,6 +11,8 @@ use hypercolor_types::scene::{DisplayFaceTarget, ZoneId};
 
 use super::frame_policy::SkipDecision;
 use super::frame_sampling::LedSamplingStrategy;
+#[cfg(feature = "wgpu")]
+use super::pipeline_runtime::PendingDisplayFinalizeWork;
 use super::pipeline_runtime::{ComposeRuntime, FrameInputs};
 use super::producer_queue::{ProducerFrame, ProducerFrameState};
 use super::render_groups::{
@@ -18,11 +20,11 @@ use super::render_groups::{
 };
 use super::scene_dependency::SceneDependencyKey;
 use super::scene_snapshot::FrameSceneSnapshot;
-#[cfg(feature = "wgpu")]
-use super::sparkleflinger::DisplayFinalizeParams;
 use super::sparkleflinger::{
     ComposedFrameSet, CompositionLayer, CompositionPlan, PreviewSurfaceRequest,
 };
+#[cfg(feature = "wgpu")]
+use super::sparkleflinger::{DisplayFinalizeDispatch, DisplayFinalizeFrame, DisplayFinalizeParams};
 use super::{RenderThreadState, micros_between, micros_u32};
 use crate::performance::FullFrameCopyMetrics;
 use crate::preview_runtime::PreviewDemandSummary;
@@ -142,6 +144,23 @@ fn display_route_matches_target(
     display_route.is_some_and(|route| route.device_id == display_target.device_id)
 }
 
+#[cfg(feature = "wgpu")]
+fn display_finalize_frame_to_group(
+    frame: DisplayFinalizeFrame,
+    frame_format: DisplayFrameFormat,
+) -> Option<DisplayGroupFrame> {
+    match (frame_format, frame) {
+        (DisplayFrameFormat::Jpeg, DisplayFinalizeFrame::Yuv420(frame)) => {
+            Some(DisplayGroupFrame::Yuv420(frame))
+        }
+        (DisplayFrameFormat::Rgb, DisplayFinalizeFrame::Rgba(surface)) => {
+            Some(DisplayGroupFrame::from_surface(surface))
+        }
+        (DisplayFrameFormat::Jpeg, DisplayFinalizeFrame::Rgba(_))
+        | (DisplayFrameFormat::Rgb, DisplayFinalizeFrame::Yuv420(_)) => None,
+    }
+}
+
 impl ComposeContext<'_> {
     async fn compose(&mut self) -> RenderStageStats {
         self.compose_render_group_frame_set(Instant::now()).await
@@ -201,7 +220,7 @@ impl ComposeContext<'_> {
     }
 
     fn compose_idle_frame_set(&mut self, stage_start: Instant) -> RenderStageStats {
-        self.compose.render_group_runtime.clear_inactive_groups();
+        self.compose.clear_inactive_groups();
         let ProducedFrame {
             frame: source_frame,
             opaque_hint: source_frame_opaque,
@@ -346,6 +365,10 @@ impl ComposeContext<'_> {
                 };
                 let scene_display_frame =
                     self.scene_display_frame_for_groups(&scene_frame, requires_full_composition);
+                #[cfg(feature = "wgpu")]
+                self.compose.discard_display_finalizations_except(
+                    &render_group_result.active_group_canvas_ids,
+                );
                 let group_canvases = self.materialize_group_canvases(
                     render_group_result.group_canvases,
                     &scene_display_frame,
@@ -389,6 +412,7 @@ impl ComposeContext<'_> {
             }
             Err(error) => {
                 self.publish_layer_runtime_events();
+                self.compose.clear_inactive_groups();
                 if self.publish_effect_error(&error)
                     || error.downcast_ref::<ZoneEffectError>().is_none()
                 {
@@ -568,9 +592,14 @@ impl ComposeContext<'_> {
                     return Some((group_id, frame));
                 }
 
-                let (materialized, fresh_materialization) = if let Some(materialized) =
-                    self.materialize_group_canvas(frame, scene_frame, display_route)
-                {
+                let (materialized, fresh_materialization) = if let Some(materialized) = self
+                    .materialize_group_canvas(
+                        group_id,
+                        frame,
+                        scene_frame,
+                        dependency_key,
+                        display_route,
+                    ) {
                     (materialized, true)
                 } else {
                     (
@@ -613,17 +642,24 @@ impl ComposeContext<'_> {
     )]
     fn materialize_group_canvas(
         &mut self,
+        group_id: ZoneId,
         group_canvas: PendingGroupCanvasFrame,
         scene_frame: &ProducerFrame,
+        dependency_key: SceneDependencyKey,
         display_route: Option<&DisplayGroupOutputRoute>,
     ) -> Option<GroupCanvasFrame> {
         let PendingGroupCanvasFrame {
             frame,
             display_target,
         } = group_canvas;
-        if let Some(frame) =
-            self.finalize_display_group_canvas(scene_frame, &frame, &display_target, display_route)
-        {
+        if let Some(frame) = self.finalize_display_group_canvas(
+            group_id,
+            scene_frame,
+            &frame,
+            dependency_key,
+            &display_target,
+            display_route,
+        ) {
             return Some(GroupCanvasFrame {
                 frame,
                 display_target: DisplayGroupTarget {
@@ -678,8 +714,10 @@ impl ComposeContext<'_> {
 
     fn finalize_display_group_canvas(
         &mut self,
+        group_id: ZoneId,
         scene_frame: &ProducerFrame,
         face_frame: &ProducerFrame,
+        dependency_key: SceneDependencyKey,
         display_target: &DisplayFaceTarget,
         display_route: Option<&DisplayGroupOutputRoute>,
     ) -> Option<DisplayGroupFrame> {
@@ -690,8 +728,10 @@ impl ComposeContext<'_> {
         };
 
         self.finalize_display_group_canvas_with_route(
+            group_id,
             scene_frame,
             face_frame,
+            dependency_key,
             display_target,
             display_route,
         )
@@ -700,13 +740,17 @@ impl ComposeContext<'_> {
     #[cfg(not(feature = "wgpu"))]
     fn finalize_display_group_canvas_with_route(
         &mut self,
+        group_id: ZoneId,
         scene_frame: &ProducerFrame,
         face_frame: &ProducerFrame,
+        dependency_key: SceneDependencyKey,
         display_target: &DisplayFaceTarget,
         display_route: &DisplayGroupOutputRoute,
     ) -> Option<DisplayGroupFrame> {
+        let _ = group_id;
         let _ = scene_frame;
         let _ = face_frame;
+        let _ = dependency_key;
         let _ = display_target;
         let _ = display_route;
         None
@@ -715,8 +759,10 @@ impl ComposeContext<'_> {
     #[cfg(feature = "wgpu")]
     fn finalize_display_group_canvas_with_route(
         &mut self,
+        group_id: ZoneId,
         scene_frame: &ProducerFrame,
         face_frame: &ProducerFrame,
+        dependency_key: SceneDependencyKey,
         display_target: &DisplayFaceTarget,
         display_route: &DisplayGroupOutputRoute,
     ) -> Option<DisplayGroupFrame> {
@@ -734,28 +780,92 @@ impl ComposeContext<'_> {
             opacity: display_target.opacity,
         };
 
-        if display_route.frame_format == DisplayFrameFormat::Jpeg {
-            return match self
-                .compose
-                .display_sparkleflinger
-                .finalize_display_face_yuv420(scene_frame, face_frame, params)
-            {
-                Ok(frame) => frame.map(DisplayGroupFrame::Yuv420),
-                Err(error) => {
-                    debug!(%error, "GPU display-face YUV finalization fell back to worker blend");
-                    None
-                }
-            };
+        if let Some(frame) = self.finish_pending_display_finalize_work(
+            group_id,
+            dependency_key,
+            display_target,
+            display_route,
+        ) {
+            return Some(frame);
         }
 
-        match self.compose.display_sparkleflinger.finalize_display_face(
-            scene_frame,
-            face_frame,
-            params,
-        ) {
-            Ok(surface) => surface.map(DisplayGroupFrame::from_surface),
+        let dispatch = if display_route.frame_format == DisplayFrameFormat::Jpeg {
+            self.compose
+                .display_sparkleflinger
+                .begin_finalize_display_face_yuv420(scene_frame, face_frame, params)
+        } else {
+            self.compose
+                .display_sparkleflinger
+                .begin_finalize_display_face(scene_frame, face_frame, params)
+        };
+
+        match dispatch {
+            Ok(DisplayFinalizeDispatch::Pending(pending)) => {
+                let mut work = PendingDisplayFinalizeWork {
+                    dependency_key,
+                    display_target: display_target.clone(),
+                    display_route: display_route.clone(),
+                    frame_format: display_route.frame_format,
+                    pending,
+                };
+                if let Some(frame) = self.try_finish_display_finalize_work(&mut work) {
+                    return Some(frame);
+                }
+                self.compose.display_finalize_runtime.insert(group_id, work);
+                None
+            }
+            Ok(DisplayFinalizeDispatch::Unsupported | DisplayFinalizeDispatch::Saturated) => None,
             Err(error) => {
-                debug!(%error, "GPU display-face finalization fell back to worker blend");
+                debug!(%error, "GPU display-face finalization deferred to retained frame");
+                None
+            }
+        }
+    }
+
+    #[cfg(feature = "wgpu")]
+    fn finish_pending_display_finalize_work(
+        &mut self,
+        group_id: ZoneId,
+        dependency_key: SceneDependencyKey,
+        display_target: &DisplayFaceTarget,
+        display_route: &DisplayGroupOutputRoute,
+    ) -> Option<DisplayGroupFrame> {
+        let Some(mut work) = self.compose.display_finalize_runtime.take(group_id) else {
+            return None;
+        };
+        if !work.matches(
+            dependency_key,
+            display_target,
+            display_route,
+            display_route.frame_format,
+        ) {
+            self.compose
+                .display_sparkleflinger
+                .discard_pending_display_finalization(work.pending);
+            return None;
+        }
+
+        let frame = self.try_finish_display_finalize_work(&mut work);
+        if frame.is_none() {
+            self.compose.display_finalize_runtime.insert(group_id, work);
+        }
+        frame
+    }
+
+    #[cfg(feature = "wgpu")]
+    fn try_finish_display_finalize_work(
+        &mut self,
+        work: &mut PendingDisplayFinalizeWork,
+    ) -> Option<DisplayGroupFrame> {
+        match self
+            .compose
+            .display_sparkleflinger
+            .try_finish_pending_display_finalization(&mut work.pending)
+        {
+            Ok(Some(frame)) => display_finalize_frame_to_group(frame, work.frame_format),
+            Ok(None) => None,
+            Err(error) => {
+                debug!(%error, "GPU display-face finalization deferred to retained frame");
                 None
             }
         }

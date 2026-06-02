@@ -25,7 +25,10 @@ use crate::performance::CompositorBackendKind;
 #[cfg(feature = "wgpu")]
 use crate::render_thread::gpu_device::GpuRenderDevice;
 #[cfg(feature = "wgpu")]
-use crate::render_thread::sparkleflinger::gpu::{GpuZoneSamplingDispatch, PendingGpuZoneSampling};
+use crate::render_thread::sparkleflinger::gpu::{
+    GpuDisplayFinalizeDispatch, GpuDisplayFinalizeFrame, GpuZoneSamplingDispatch,
+    PendingGpuDisplayFinalize, PendingGpuZoneSampling,
+};
 
 use super::producer_queue::ProducerFrame;
 
@@ -396,6 +399,22 @@ pub(crate) enum PendingZoneSampling {
     Gpu(PendingGpuZoneSampling),
 }
 
+#[cfg(feature = "wgpu")]
+pub(crate) enum DisplayFinalizeDispatch {
+    Unsupported,
+    Saturated,
+    Pending(PendingDisplayFinalization),
+}
+
+#[cfg(feature = "wgpu")]
+pub(crate) enum DisplayFinalizeFrame {
+    Rgba(PublishedSurface),
+    Yuv420(DisplayYuv420Frame),
+}
+
+#[cfg(feature = "wgpu")]
+pub(crate) struct PendingDisplayFinalization(PendingGpuDisplayFinalize);
+
 impl SparkleFlinger {
     pub fn cpu() -> Self {
         Self {
@@ -547,32 +566,60 @@ impl SparkleFlinger {
         face_overlay::blend_face_overlay_rgba(scene_rgba, face_rgba, blend_mode, opacity);
     }
 
-    pub(crate) fn finalize_display_face(
+    #[cfg(feature = "wgpu")]
+    pub(crate) fn begin_finalize_display_face(
         &mut self,
         scene: &ProducerFrame,
         face: &ProducerFrame,
         params: DisplayFinalizeParams,
-    ) -> Result<Option<PublishedSurface>> {
+    ) -> Result<DisplayFinalizeDispatch> {
         match &mut self.backend {
-            SparkleFlingerBackend::Cpu(_) => Ok(None),
-            #[cfg(feature = "wgpu")]
-            SparkleFlingerBackend::Gpu { gpu, .. } => {
-                gpu.finalize_display_face(scene, face, params)
+            SparkleFlingerBackend::Cpu(_) => Ok(DisplayFinalizeDispatch::Unsupported),
+            SparkleFlingerBackend::Gpu { gpu, .. } => Ok(map_gpu_display_finalize_dispatch(
+                gpu.begin_finalize_display_face(scene, face, params)?,
+            )),
+        }
+    }
+
+    #[cfg(feature = "wgpu")]
+    pub(crate) fn begin_finalize_display_face_yuv420(
+        &mut self,
+        scene: &ProducerFrame,
+        face: &ProducerFrame,
+        params: DisplayFinalizeParams,
+    ) -> Result<DisplayFinalizeDispatch> {
+        match &mut self.backend {
+            SparkleFlingerBackend::Cpu(_) => Ok(DisplayFinalizeDispatch::Unsupported),
+            SparkleFlingerBackend::Gpu { gpu, .. } => Ok(map_gpu_display_finalize_dispatch(
+                gpu.begin_finalize_display_face_yuv420(scene, face, params)?,
+            )),
+        }
+    }
+
+    #[cfg(feature = "wgpu")]
+    pub(crate) fn try_finish_pending_display_finalization(
+        &mut self,
+        pending: &mut PendingDisplayFinalization,
+    ) -> Result<Option<DisplayFinalizeFrame>> {
+        match (&mut self.backend, pending) {
+            (SparkleFlingerBackend::Cpu(_), _) => Ok(None),
+            (SparkleFlingerBackend::Gpu { gpu, .. }, PendingDisplayFinalization(pending)) => {
+                Ok(gpu
+                    .try_finish_pending_display_finalization(pending)?
+                    .map(map_gpu_display_finalize_frame))
             }
         }
     }
 
-    pub(crate) fn finalize_display_face_yuv420(
+    #[cfg(feature = "wgpu")]
+    pub(crate) fn discard_pending_display_finalization(
         &mut self,
-        scene: &ProducerFrame,
-        face: &ProducerFrame,
-        params: DisplayFinalizeParams,
-    ) -> Result<Option<DisplayYuv420Frame>> {
-        match &mut self.backend {
-            SparkleFlingerBackend::Cpu(_) => Ok(None),
-            #[cfg(feature = "wgpu")]
-            SparkleFlingerBackend::Gpu { gpu, .. } => {
-                gpu.finalize_display_face_yuv420(scene, face, params)
+        pending: PendingDisplayFinalization,
+    ) {
+        match (&mut self.backend, pending) {
+            (SparkleFlingerBackend::Cpu(_), _) => {}
+            (SparkleFlingerBackend::Gpu { gpu, .. }, PendingDisplayFinalization(pending)) => {
+                gpu.discard_pending_display_finalization(pending);
             }
         }
     }
@@ -817,6 +864,27 @@ impl SparkleFlinger {
             #[cfg(feature = "wgpu")]
             SparkleFlingerBackend::Gpu { .. } => CompositorBackendKind::Gpu,
         }
+    }
+}
+
+#[cfg(feature = "wgpu")]
+fn map_gpu_display_finalize_dispatch(
+    dispatch: GpuDisplayFinalizeDispatch,
+) -> DisplayFinalizeDispatch {
+    match dispatch {
+        GpuDisplayFinalizeDispatch::Unsupported => DisplayFinalizeDispatch::Unsupported,
+        GpuDisplayFinalizeDispatch::Saturated => DisplayFinalizeDispatch::Saturated,
+        GpuDisplayFinalizeDispatch::Pending(pending) => {
+            DisplayFinalizeDispatch::Pending(PendingDisplayFinalization(pending))
+        }
+    }
+}
+
+#[cfg(feature = "wgpu")]
+fn map_gpu_display_finalize_frame(frame: GpuDisplayFinalizeFrame) -> DisplayFinalizeFrame {
+    match frame {
+        GpuDisplayFinalizeFrame::Rgba(surface) => DisplayFinalizeFrame::Rgba(surface),
+        GpuDisplayFinalizeFrame::Yuv420(frame) => DisplayFinalizeFrame::Yuv420(frame),
     }
 }
 

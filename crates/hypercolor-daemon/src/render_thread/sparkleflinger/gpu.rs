@@ -1,7 +1,9 @@
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, TryRecvError};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(test)]
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use hypercolor_core::bus::DisplayYuv420Frame;
@@ -38,6 +40,8 @@ const PREVIEW_SCALE_PARAM_BYTES: usize = 16;
 const MAX_CACHED_PREVIEW_SURFACES: usize = 3;
 const MAX_CACHED_PREVIEW_READBACK_POOLS: usize = 3;
 const PREVIEW_READBACK_SLOT_COUNT: usize = 2;
+const DISPLAY_FINALIZE_READBACK_SLOT_COUNT: usize = 3;
+#[cfg(test)]
 const GPU_READBACK_WAIT_TIMEOUT: Duration = Duration::from_millis(8);
 static GPU_SOURCE_UPLOAD_SKIPPED_TOTAL: AtomicU64 = AtomicU64::new(0);
 static GPU_MEDIA_TEXTURE_ALLOCATIONS_TOTAL: AtomicU64 = AtomicU64::new(0);
@@ -117,6 +121,7 @@ fn record_gpu_display_finalize_result(success: bool) {
     let _ = counter.fetch_add(1, Ordering::Relaxed);
 }
 
+#[cfg(test)]
 fn record_gpu_display_finalize_blocking_wait(wait: Duration) {
     let wait_us = u64::try_from(wait.as_micros()).unwrap_or(u64::MAX);
     let _ = GPU_DISPLAY_FINALIZE_BLOCKING_WAIT_TOTAL_US.fetch_add(wait_us, Ordering::Relaxed);
@@ -151,6 +156,7 @@ pub(crate) struct GpuSparkleFlinger {
     spatial_sampler: GpuSpatialSampler,
     surfaces: Option<GpuCompositorSurfaceSet>,
     display_finalize_surfaces: Option<GpuDisplayFinalizeSurfaceSet>,
+    display_finalize_generation: u64,
     preview_surfaces: Option<GpuPreviewSurfaceSet>,
     current_output: Option<GpuCompositorOutputSurface>,
     cached_composition_key: Option<CachedReadbackKey>,
@@ -216,8 +222,10 @@ struct GpuDisplayFinalizeSurfaceSet {
     yuv_layout: DisplayYuv420Layout,
     output: GpuCompositorTexture,
     yuv_output: wgpu::Buffer,
-    readback: wgpu::Buffer,
-    yuv_readback: wgpu::Buffer,
+    readbacks: [wgpu::Buffer; DISPLAY_FINALIZE_READBACK_SLOT_COUNT],
+    yuv_readbacks: [wgpu::Buffer; DISPLAY_FINALIZE_READBACK_SLOT_COUNT],
+    readback_slots_in_use: [bool; DISPLAY_FINALIZE_READBACK_SLOT_COUNT],
+    next_readback_slot: usize,
     readback_surfaces: RenderSurfacePool,
     scene_source: Option<GpuDisplaySourceTexture>,
     face_source: Option<GpuDisplaySourceTexture>,
@@ -246,6 +254,47 @@ struct GpuDisplaySourceTexture {
     height: u32,
     texture: GpuCompositorTexture,
     cached_upload: Option<CachedSourceUpload>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GpuDisplayFinalizeFormat {
+    Rgba,
+    Yuv420,
+}
+
+pub(crate) enum GpuDisplayFinalizeFrame {
+    Rgba(PublishedSurface),
+    Yuv420(DisplayYuv420Frame),
+}
+
+pub(crate) enum GpuDisplayFinalizeDispatch {
+    Unsupported,
+    Saturated,
+    Pending(PendingGpuDisplayFinalize),
+}
+
+pub(crate) struct PendingGpuDisplayFinalize {
+    surface_generation: u64,
+    format: GpuDisplayFinalizeFormat,
+    width: u32,
+    height: u32,
+    padded_bytes_per_row: u32,
+    yuv_layout: DisplayYuv420Layout,
+    used_bytes: u64,
+    mapped_bytes: u64,
+    submission_index: wgpu::SubmissionIndex,
+    buffer: wgpu::Buffer,
+    receiver: Option<mpsc::Receiver<std::result::Result<(), wgpu::BufferAsyncError>>>,
+    map_ready: bool,
+    slot: usize,
+}
+
+impl PendingGpuDisplayFinalize {
+    fn unmap_after_failed_map(&mut self) {
+        self.receiver = None;
+        self.map_ready = false;
+        self.buffer.unmap();
+    }
 }
 
 struct GpuPreviewSurfaceSet {
@@ -471,6 +520,7 @@ impl GpuSparkleFlinger {
             spatial_sampler,
             surfaces: None,
             display_finalize_surfaces: None,
+            display_finalize_generation: 0,
             preview_surfaces: None,
             current_output: None,
             cached_composition_key: None,
@@ -577,12 +627,69 @@ impl GpuSparkleFlinger {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn finalize_display_face(
         &mut self,
         scene: &ProducerFrame,
         face: &ProducerFrame,
         params: DisplayFinalizeParams,
     ) -> Result<Option<PublishedSurface>> {
+        let pending = match self.begin_finalize_display_face(scene, face, params)? {
+            GpuDisplayFinalizeDispatch::Pending(pending) => pending,
+            GpuDisplayFinalizeDispatch::Unsupported | GpuDisplayFinalizeDispatch::Saturated => {
+                return Ok(None);
+            }
+        };
+        match self.finish_pending_display_finalization_blocking(pending)? {
+            Some(GpuDisplayFinalizeFrame::Rgba(surface)) => Ok(Some(surface)),
+            Some(GpuDisplayFinalizeFrame::Yuv420(_)) | None => Ok(None),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn finalize_display_face_yuv420(
+        &mut self,
+        scene: &ProducerFrame,
+        face: &ProducerFrame,
+        params: DisplayFinalizeParams,
+    ) -> Result<Option<DisplayYuv420Frame>> {
+        let pending = match self.begin_finalize_display_face_yuv420(scene, face, params)? {
+            GpuDisplayFinalizeDispatch::Pending(pending) => pending,
+            GpuDisplayFinalizeDispatch::Unsupported | GpuDisplayFinalizeDispatch::Saturated => {
+                return Ok(None);
+            }
+        };
+        match self.finish_pending_display_finalization_blocking(pending)? {
+            Some(GpuDisplayFinalizeFrame::Yuv420(frame)) => Ok(Some(frame)),
+            Some(GpuDisplayFinalizeFrame::Rgba(_)) | None => Ok(None),
+        }
+    }
+
+    pub(crate) fn begin_finalize_display_face(
+        &mut self,
+        scene: &ProducerFrame,
+        face: &ProducerFrame,
+        params: DisplayFinalizeParams,
+    ) -> Result<GpuDisplayFinalizeDispatch> {
+        self.begin_display_finalize(scene, face, params, GpuDisplayFinalizeFormat::Rgba)
+    }
+
+    pub(crate) fn begin_finalize_display_face_yuv420(
+        &mut self,
+        scene: &ProducerFrame,
+        face: &ProducerFrame,
+        params: DisplayFinalizeParams,
+    ) -> Result<GpuDisplayFinalizeDispatch> {
+        self.begin_display_finalize(scene, face, params, GpuDisplayFinalizeFormat::Yuv420)
+    }
+
+    fn begin_display_finalize(
+        &mut self,
+        scene: &ProducerFrame,
+        face: &ProducerFrame,
+        params: DisplayFinalizeParams,
+        format: GpuDisplayFinalizeFormat,
+    ) -> Result<GpuDisplayFinalizeDispatch> {
         if params.width == 0
             || params.height == 0
             || scene.width() == 0
@@ -590,16 +697,21 @@ impl GpuSparkleFlinger {
             || face.width() == 0
             || face.height() == 0
         {
-            return Ok(None);
+            return Ok(GpuDisplayFinalizeDispatch::Unsupported);
         }
 
-        record_gpu_display_finalize_attempt(false);
+        record_gpu_display_finalize_attempt(format == GpuDisplayFinalizeFormat::Yuv420);
         self.flush_pending_output_submission()?;
         self.ensure_display_finalize_surface_size(params.width, params.height);
+        let surface_generation = self.display_finalize_generation;
         let surfaces = self
             .display_finalize_surfaces
             .as_mut()
             .expect("display finalize surfaces should exist after allocation");
+        let Some((readback_slot, readback_buffer)) = surfaces.next_readback_buffer(format) else {
+            record_gpu_display_finalize_result(false);
+            return Ok(GpuDisplayFinalizeDispatch::Saturated);
+        };
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -671,190 +783,195 @@ impl GpuSparkleFlinger {
             &encode_display_finalize_params(&params, scene, face),
         );
 
-        {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("SparkleFlinger GPU display finalize pass"),
-                timestamp_writes: None,
-            });
-            pass.set_pipeline(&self.pipeline.display_finalize_pipeline);
-            pass.set_bind_group(0, &bind_group, &[]);
-            pass.dispatch_workgroups(
-                params.width.div_ceil(COMPOSE_WORKGROUP_WIDTH),
-                params.height.div_ceil(COMPOSE_WORKGROUP_HEIGHT),
-                1,
-            );
-        }
-        encoder.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo {
-                texture: &surfaces.output.texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyBufferInfo {
-                buffer: &surfaces.readback,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(surfaces.padded_bytes_per_row),
-                    rows_per_image: Some(params.height),
-                },
-            },
-            texture_extent(params.width, params.height),
-        );
-
-        let wait_start = Instant::now();
-        let result = try_read_back_texture_into_surface(
-            &self.device,
-            &surfaces.readback,
-            u64::from(surfaces.padded_bytes_per_row) * u64::from(params.height),
-            params.width,
-            params.height,
-            surfaces.padded_bytes_per_row,
-            self.queue.submit(Some(encoder.finish())),
-            &mut surfaces.readback_surfaces,
-            #[cfg(test)]
-            &mut surfaces.last_readback_bytes,
-        );
-        record_gpu_display_finalize_blocking_wait(wait_start.elapsed());
-        if let Ok(frame) = result.as_ref() {
-            record_gpu_display_finalize_result(frame.is_some());
-        }
-        result
+        let (used_bytes, mapped_bytes) = match format {
+            GpuDisplayFinalizeFormat::Rgba => {
+                {
+                    let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                        label: Some("SparkleFlinger GPU display finalize pass"),
+                        timestamp_writes: None,
+                    });
+                    pass.set_pipeline(&self.pipeline.display_finalize_pipeline);
+                    pass.set_bind_group(0, &bind_group, &[]);
+                    pass.dispatch_workgroups(
+                        params.width.div_ceil(COMPOSE_WORKGROUP_WIDTH),
+                        params.height.div_ceil(COMPOSE_WORKGROUP_HEIGHT),
+                        1,
+                    );
+                }
+                encoder.copy_texture_to_buffer(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &surfaces.output.texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    wgpu::TexelCopyBufferInfo {
+                        buffer: &readback_buffer,
+                        layout: wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(surfaces.padded_bytes_per_row),
+                            rows_per_image: Some(params.height),
+                        },
+                    },
+                    texture_extent(params.width, params.height),
+                );
+                let bytes = u64::from(surfaces.padded_bytes_per_row) * u64::from(params.height);
+                #[cfg(test)]
+                {
+                    surfaces.last_readback_bytes = bytes;
+                }
+                (bytes, bytes)
+            }
+            GpuDisplayFinalizeFormat::Yuv420 => {
+                encoder.clear_buffer(&surfaces.yuv_output, 0, None);
+                {
+                    let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                        label: Some("SparkleFlinger GPU display finalize YUV420 pass"),
+                        timestamp_writes: None,
+                    });
+                    pass.set_pipeline(&self.pipeline.display_finalize_yuv_pipeline);
+                    pass.set_bind_group(0, &bind_group, &[]);
+                    pass.dispatch_workgroups(
+                        params.width.div_ceil(COMPOSE_WORKGROUP_WIDTH),
+                        params.height.div_ceil(COMPOSE_WORKGROUP_HEIGHT),
+                        1,
+                    );
+                }
+                encoder.copy_buffer_to_buffer(
+                    &surfaces.yuv_output,
+                    0,
+                    &readback_buffer,
+                    0,
+                    u64::from(surfaces.yuv_layout.word_len),
+                );
+                #[cfg(test)]
+                {
+                    surfaces.last_yuv_readback_bytes = u64::from(surfaces.yuv_layout.total_len);
+                }
+                (
+                    u64::from(surfaces.yuv_layout.total_len),
+                    u64::from(surfaces.yuv_layout.word_len),
+                )
+            }
+        };
+        let submission_index = self.queue.submit(Some(encoder.finish()));
+        let pending = begin_display_finalize_readback(PendingGpuDisplayFinalize {
+            surface_generation,
+            format,
+            width: params.width,
+            height: params.height,
+            padded_bytes_per_row: surfaces.padded_bytes_per_row,
+            yuv_layout: surfaces.yuv_layout,
+            used_bytes,
+            mapped_bytes,
+            submission_index,
+            buffer: readback_buffer,
+            receiver: None,
+            map_ready: false,
+            slot: readback_slot,
+        });
+        Ok(GpuDisplayFinalizeDispatch::Pending(pending))
     }
 
-    pub(crate) fn finalize_display_face_yuv420(
+    pub(crate) fn try_finish_pending_display_finalization(
         &mut self,
-        scene: &ProducerFrame,
-        face: &ProducerFrame,
-        params: DisplayFinalizeParams,
-    ) -> Result<Option<DisplayYuv420Frame>> {
-        if params.width == 0
-            || params.height == 0
-            || scene.width() == 0
-            || scene.height() == 0
-            || face.width() == 0
-            || face.height() == 0
-        {
+        pending: &mut PendingGpuDisplayFinalize,
+    ) -> Result<Option<GpuDisplayFinalizeFrame>> {
+        if let Err(error) = poll_display_finalize_readback_ready(&self.device, pending) {
+            self.discard_pending_display_finalization_slot(pending);
+            return Err(error);
+        }
+        if !pending.map_ready {
             return Ok(None);
         }
+        let frame = match self.finish_display_finalize_readback(pending) {
+            Ok(frame) => frame,
+            Err(error) => {
+                pending.buffer.unmap();
+                self.release_display_finalize_slot(pending.surface_generation, pending.slot);
+                return Err(error);
+            }
+        };
+        self.release_display_finalize_slot(pending.surface_generation, pending.slot);
+        record_gpu_display_finalize_result(true);
+        Ok(Some(frame))
+    }
 
-        record_gpu_display_finalize_attempt(true);
-        self.flush_pending_output_submission()?;
-        self.ensure_display_finalize_surface_size(params.width, params.height);
-        let surfaces = self
-            .display_finalize_surfaces
-            .as_mut()
-            .expect("display finalize surfaces should exist after allocation");
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("SparkleFlinger GPU display finalize YUV420"),
-            });
+    pub(crate) fn discard_pending_display_finalization(
+        &mut self,
+        pending: PendingGpuDisplayFinalize,
+    ) {
+        pending.buffer.unmap();
+        self.release_display_finalize_slot(pending.surface_generation, pending.slot);
+    }
 
-        let scene_gpu = gpu_source_frame(scene);
-        prepare_display_source_texture(
-            &self.device,
-            &self.queue,
-            &self.pipeline,
-            &mut encoder,
-            &mut surfaces.scene_source,
-            scene,
-            scene_gpu.as_ref(),
-            "SparkleFlinger Display Scene Source",
-            #[cfg(test)]
-            &mut surfaces.scene_upload_count,
-        );
-        let face_gpu = gpu_source_frame(face);
-        prepare_display_source_texture(
-            &self.device,
-            &self.queue,
-            &self.pipeline,
-            &mut encoder,
-            &mut surfaces.face_source,
-            face,
-            face_gpu.as_ref(),
-            "SparkleFlinger Display Face Source",
-            #[cfg(test)]
-            &mut surfaces.face_upload_count,
-        );
+    fn discard_pending_display_finalization_slot(
+        &mut self,
+        pending: &mut PendingGpuDisplayFinalize,
+    ) {
+        pending.unmap_after_failed_map();
+        self.release_display_finalize_slot(pending.surface_generation, pending.slot);
+    }
 
-        let scene_view = scene_gpu
-            .as_ref()
-            .filter(|frame| !frame.needs_shader_copy())
-            .map(GpuSourceFrame::view)
-            .unwrap_or_else(|| {
-                &surfaces
-                    .scene_source
-                    .as_ref()
-                    .expect("uploaded scene source should exist")
-                    .texture
-                    .view
-            });
-        let face_view = face_gpu
-            .as_ref()
-            .filter(|frame| !frame.needs_shader_copy())
-            .map(GpuSourceFrame::view)
-            .unwrap_or_else(|| {
-                &surfaces
-                    .face_source
-                    .as_ref()
-                    .expect("uploaded face source should exist")
-                    .texture
-                    .view
-            });
-        let bind_group = create_display_finalize_bind_group(
-            &self.device,
-            &self.pipeline,
-            scene_view,
-            face_view,
-            &surfaces.output.view,
-            &surfaces.yuv_output,
-        );
-        self.queue.write_buffer(
-            &self.pipeline.display_finalize_params_buffer,
-            0,
-            &encode_display_finalize_params(&params, scene, face),
-        );
-
-        encoder.clear_buffer(&surfaces.yuv_output, 0, None);
-        {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("SparkleFlinger GPU display finalize YUV420 pass"),
-                timestamp_writes: None,
-            });
-            pass.set_pipeline(&self.pipeline.display_finalize_yuv_pipeline);
-            pass.set_bind_group(0, &bind_group, &[]);
-            pass.dispatch_workgroups(
-                params.width.div_ceil(COMPOSE_WORKGROUP_WIDTH),
-                params.height.div_ceil(COMPOSE_WORKGROUP_HEIGHT),
-                1,
-            );
-        }
-        encoder.copy_buffer_to_buffer(
-            &surfaces.yuv_output,
-            0,
-            &surfaces.yuv_readback,
-            0,
-            u64::from(surfaces.yuv_layout.word_len),
-        );
-
+    #[cfg(test)]
+    fn finish_pending_display_finalization_blocking(
+        &mut self,
+        mut pending: PendingGpuDisplayFinalize,
+    ) -> Result<Option<GpuDisplayFinalizeFrame>> {
         let wait_start = Instant::now();
-        let result = try_read_back_yuv420_buffer(
-            &self.device,
-            &surfaces.yuv_readback,
-            u64::from(surfaces.yuv_layout.total_len),
-            params.width,
-            params.height,
-            surfaces.yuv_layout,
-            self.queue.submit(Some(encoder.finish())),
-            #[cfg(test)]
-            &mut surfaces.last_yuv_readback_bytes,
-        );
+        let ready = match wait_for_display_finalize_readback(&self.device, &mut pending) {
+            Ok(ready) => ready,
+            Err(error) => {
+                self.discard_pending_display_finalization_slot(&mut pending);
+                return Err(error);
+            }
+        };
         record_gpu_display_finalize_blocking_wait(wait_start.elapsed());
-        if let Ok(frame) = result.as_ref() {
-            record_gpu_display_finalize_result(frame.is_some());
+        if !ready {
+            self.discard_pending_display_finalization(pending);
+            record_gpu_display_finalize_result(false);
+            return Ok(None);
         }
-        result
+        let frame = match self.finish_display_finalize_readback(&pending) {
+            Ok(frame) => frame,
+            Err(error) => {
+                pending.buffer.unmap();
+                self.release_display_finalize_slot(pending.surface_generation, pending.slot);
+                return Err(error);
+            }
+        };
+        self.release_display_finalize_slot(pending.surface_generation, pending.slot);
+        record_gpu_display_finalize_result(true);
+        Ok(Some(frame))
+    }
+
+    fn finish_display_finalize_readback(
+        &mut self,
+        pending: &PendingGpuDisplayFinalize,
+    ) -> Result<GpuDisplayFinalizeFrame> {
+        match pending.format {
+            GpuDisplayFinalizeFormat::Rgba => {
+                let surfaces = self
+                    .display_finalize_surfaces
+                    .as_mut()
+                    .filter(|_| self.display_finalize_generation == pending.surface_generation)
+                    .context("GPU display finalize surfaces changed before RGBA readback")?;
+                copy_mapped_readback_buffer_into_surface(
+                    &pending.buffer,
+                    pending.used_bytes,
+                    pending.width,
+                    pending.height,
+                    pending.padded_bytes_per_row,
+                    &mut surfaces.readback_surfaces,
+                    #[cfg(test)]
+                    &mut surfaces.last_readback_bytes,
+                )
+                .map(GpuDisplayFinalizeFrame::Rgba)
+            }
+            GpuDisplayFinalizeFormat::Yuv420 => {
+                finish_yuv420_display_readback(pending).map(GpuDisplayFinalizeFrame::Yuv420)
+            }
+        }
     }
 
     fn ensure_display_finalize_surface_size(&mut self, width: u32, height: u32) {
@@ -870,11 +987,21 @@ impl GpuSparkleFlinger {
         }
 
         record_gpu_display_finalize_surface_realloc();
+        self.display_finalize_generation = self.display_finalize_generation.saturating_add(1);
         self.display_finalize_surfaces = Some(GpuDisplayFinalizeSurfaceSet::new(
             &self.device,
             width,
             height,
         ));
+    }
+
+    fn release_display_finalize_slot(&mut self, surface_generation: u64, slot: usize) {
+        if self.display_finalize_generation != surface_generation {
+            return;
+        }
+        if let Some(surfaces) = self.display_finalize_surfaces.as_mut() {
+            surfaces.release_readback_slot(slot);
+        }
     }
 
     fn cached_preview_surface(&self, key: &CachedPreviewSurfaceKey) -> Option<PublishedSurface> {
@@ -2341,12 +2468,6 @@ impl GpuDisplayFinalizeSurfaceSet {
     fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
         let padded_bytes_per_row = padded_bytes_per_row(width);
         let yuv_layout = DisplayYuv420Layout::new(width, height);
-        let readback = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("SparkleFlinger GPU display finalize readback"),
-            size: u64::from(padded_bytes_per_row) * u64::from(height),
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
         let yuv_output = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("SparkleFlinger GPU display finalize YUV output"),
             size: u64::from(yuv_layout.word_len),
@@ -2355,12 +2476,8 @@ impl GpuDisplayFinalizeSurfaceSet {
                 | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let yuv_readback = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("SparkleFlinger GPU display finalize YUV readback"),
-            size: u64::from(yuv_layout.word_len),
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
+        let readback_size = u64::from(padded_bytes_per_row) * u64::from(height);
+        let yuv_readback_size = u64::from(yuv_layout.word_len);
         Self {
             width,
             height,
@@ -2373,8 +2490,24 @@ impl GpuDisplayFinalizeSurfaceSet {
                 "SparkleFlinger Display Finalize Output",
             ),
             yuv_output,
-            readback,
-            yuv_readback,
+            readbacks: std::array::from_fn(|_| {
+                device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("SparkleFlinger GPU display finalize readback"),
+                    size: readback_size,
+                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                    mapped_at_creation: false,
+                })
+            }),
+            yuv_readbacks: std::array::from_fn(|_| {
+                device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("SparkleFlinger GPU display finalize YUV readback"),
+                    size: yuv_readback_size,
+                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                    mapped_at_creation: false,
+                })
+            }),
+            readback_slots_in_use: [false; DISPLAY_FINALIZE_READBACK_SLOT_COUNT],
+            next_readback_slot: 0,
             readback_surfaces: RenderSurfacePool::with_slot_count(
                 SurfaceDescriptor::rgba8888(width, height),
                 3,
@@ -2389,6 +2522,32 @@ impl GpuDisplayFinalizeSurfaceSet {
             last_readback_bytes: 0,
             #[cfg(test)]
             last_yuv_readback_bytes: 0,
+        }
+    }
+
+    fn next_readback_buffer(
+        &mut self,
+        format: GpuDisplayFinalizeFormat,
+    ) -> Option<(usize, wgpu::Buffer)> {
+        for offset in 0..DISPLAY_FINALIZE_READBACK_SLOT_COUNT {
+            let slot = (self.next_readback_slot + offset) % DISPLAY_FINALIZE_READBACK_SLOT_COUNT;
+            if !self.readback_slots_in_use[slot] {
+                self.readback_slots_in_use[slot] = true;
+                self.next_readback_slot = (slot + 1) % DISPLAY_FINALIZE_READBACK_SLOT_COUNT;
+                let buffer = match format {
+                    GpuDisplayFinalizeFormat::Rgba => self.readbacks[slot].clone(),
+                    GpuDisplayFinalizeFormat::Yuv420 => self.yuv_readbacks[slot].clone(),
+                };
+                return Some((slot, buffer));
+            }
+        }
+
+        None
+    }
+
+    fn release_readback_slot(&mut self, slot: usize) {
+        if slot < DISPLAY_FINALIZE_READBACK_SLOT_COUNT {
+            self.readback_slots_in_use[slot] = false;
         }
     }
 }
@@ -3305,151 +3464,124 @@ fn set_texture_contents(
     }
 }
 
-fn try_read_back_texture_into_surface(
-    device: &wgpu::Device,
-    buffer: &wgpu::Buffer,
-    used_bytes: u64,
-    width: u32,
-    height: u32,
-    padded_bytes_per_row: u32,
-    submission_index: wgpu::SubmissionIndex,
-    surfaces: &mut RenderSurfacePool,
-    #[cfg(test)] last_readback_bytes: &mut u64,
-) -> Result<Option<PublishedSurface>> {
-    #[cfg(test)]
-    {
-        *last_readback_bytes = used_bytes;
-    }
-    match device.poll(wgpu::PollType::Wait {
-        submission_index: Some(submission_index.clone()),
-        timeout: Some(GPU_READBACK_WAIT_TIMEOUT),
-    }) {
-        Ok(_) => {}
-        Err(wgpu::PollError::Timeout) => return Ok(None),
-        Err(error) => return Err(error).context("GPU readback readiness poll failed"),
-    }
-
-    let slice = buffer.slice(..used_bytes);
-    let (sender, receiver) = mpsc::channel();
+fn begin_display_finalize_readback(
+    mut pending: PendingGpuDisplayFinalize,
+) -> PendingGpuDisplayFinalize {
+    let slice = pending.buffer.slice(..pending.mapped_bytes);
+    let (sender, receiver) = mpsc::channel::<std::result::Result<(), wgpu::BufferAsyncError>>();
     slice.map_async(wgpu::MapMode::Read, move |result| {
         let _ = sender.send(result);
     });
-    match device.poll(wgpu::PollType::Wait {
-        submission_index: Some(submission_index),
-        timeout: Some(GPU_READBACK_WAIT_TIMEOUT),
-    }) {
-        Ok(_) => {}
-        Err(wgpu::PollError::Timeout) => {
-            buffer.unmap();
-            return Ok(None);
-        }
-        Err(error) => {
-            buffer.unmap();
-            return Err(error).context("GPU readback map poll failed");
-        }
-    }
-    match receiver.try_recv() {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => {
-            buffer.unmap();
-            return Err(error).context("GPU readback buffer mapping failed");
-        }
-        Err(TryRecvError::Disconnected) => {
-            buffer.unmap();
-            anyhow::bail!("GPU readback channel closed before map completion");
-        }
-        Err(TryRecvError::Empty) => {
-            buffer.unmap();
-            return Ok(None);
-        }
-    }
-
-    copy_mapped_readback_buffer_into_surface(
-        buffer,
-        used_bytes,
-        width,
-        height,
-        padded_bytes_per_row,
-        surfaces,
-        #[cfg(test)]
-        last_readback_bytes,
-    )
-    .map(Some)
+    pending.receiver = Some(receiver);
+    pending
 }
 
-fn try_read_back_yuv420_buffer(
+fn poll_display_finalize_readback_ready(
     device: &wgpu::Device,
-    buffer: &wgpu::Buffer,
-    used_bytes: u64,
-    width: u32,
-    height: u32,
-    layout: DisplayYuv420Layout,
-    submission_index: wgpu::SubmissionIndex,
-    #[cfg(test)] last_readback_bytes: &mut u64,
-) -> Result<Option<DisplayYuv420Frame>> {
-    #[cfg(test)]
-    {
-        *last_readback_bytes = used_bytes;
+    pending: &mut PendingGpuDisplayFinalize,
+) -> Result<bool> {
+    if pending.map_ready {
+        return Ok(true);
     }
+
+    device
+        .poll(wgpu::PollType::Poll)
+        .context("GPU display finalize callback poll failed")?;
+    if take_display_finalize_readback_ready(pending)? {
+        return Ok(true);
+    }
+
     match device.poll(wgpu::PollType::Wait {
-        submission_index: Some(submission_index.clone()),
+        submission_index: Some(pending.submission_index.clone()),
+        timeout: Some(Duration::ZERO),
+    }) {
+        Ok(_) | Err(wgpu::PollError::Timeout) => {}
+        Err(error) => {
+            return Err(error).context("GPU display finalize readiness poll failed");
+        }
+    }
+
+    device
+        .poll(wgpu::PollType::Poll)
+        .context("GPU display finalize callback poll failed")?;
+    take_display_finalize_readback_ready(pending)
+}
+
+#[cfg(test)]
+fn wait_for_display_finalize_readback(
+    device: &wgpu::Device,
+    pending: &mut PendingGpuDisplayFinalize,
+) -> Result<bool> {
+    if pending.map_ready {
+        return Ok(true);
+    }
+
+    match device.poll(wgpu::PollType::Wait {
+        submission_index: Some(pending.submission_index.clone()),
         timeout: Some(GPU_READBACK_WAIT_TIMEOUT),
     }) {
         Ok(_) => {}
-        Err(wgpu::PollError::Timeout) => return Ok(None),
-        Err(error) => return Err(error).context("GPU YUV readback readiness poll failed"),
+        Err(wgpu::PollError::Timeout) => return Ok(false),
+        Err(error) => return Err(error).context("GPU display finalize wait failed"),
     }
 
-    let mapped_bytes = u64::from(layout.word_len);
-    let slice = buffer.slice(..mapped_bytes);
-    let (sender, receiver) = mpsc::channel();
-    slice.map_async(wgpu::MapMode::Read, move |result| {
-        let _ = sender.send(result);
-    });
+    if take_display_finalize_readback_ready(pending)? {
+        return Ok(true);
+    }
+
     device
-        .poll(wgpu::PollType::Wait {
-            submission_index: Some(submission_index),
-            timeout: Some(GPU_READBACK_WAIT_TIMEOUT),
-        })
-        .map_err(|error| {
-            buffer.unmap();
-            error
-        })
-        .context("GPU YUV readback map poll failed")?;
+        .poll(wgpu::PollType::Poll)
+        .context("GPU display finalize callback poll failed")?;
+    take_display_finalize_readback_ready(pending)
+}
+
+fn take_display_finalize_readback_ready(pending: &mut PendingGpuDisplayFinalize) -> Result<bool> {
+    let Some(receiver) = pending.receiver.take() else {
+        return Ok(pending.map_ready);
+    };
     match receiver.try_recv() {
-        Ok(Ok(())) => {}
+        Ok(Ok(())) => {
+            pending.map_ready = true;
+            Ok(true)
+        }
         Ok(Err(error)) => {
-            buffer.unmap();
-            return Err(error).context("GPU YUV readback buffer mapping failed");
+            pending.buffer.unmap();
+            Err(error).context("GPU display finalize buffer mapping failed")
         }
         Err(TryRecvError::Disconnected) => {
-            buffer.unmap();
-            anyhow::bail!("GPU YUV readback channel closed before map completion");
+            pending.buffer.unmap();
+            anyhow::bail!("GPU display finalize channel closed before map completion");
         }
         Err(TryRecvError::Empty) => {
-            buffer.unmap();
-            return Ok(None);
+            pending.receiver = Some(receiver);
+            Ok(false)
         }
     }
+}
 
+fn finish_yuv420_display_readback(
+    pending: &PendingGpuDisplayFinalize,
+) -> Result<DisplayYuv420Frame> {
+    let slice = pending.buffer.slice(..pending.mapped_bytes);
     let mapped = slice.get_mapped_range();
-    let used_len = usize::try_from(used_bytes).expect("YUV readback should fit usize");
+    let used_len = usize::try_from(pending.used_bytes).expect("YUV readback should fit usize");
     let mut data = Vec::with_capacity(used_len);
     data.extend_from_slice(&mapped[..used_len]);
     drop(mapped);
-    buffer.unmap();
+    pending.buffer.unmap();
+    let layout = pending.yuv_layout;
 
-    Ok(Some(DisplayYuv420Frame::from_vec(
+    Ok(DisplayYuv420Frame::from_vec(
         data,
-        width,
-        height,
+        pending.width,
+        pending.height,
         layout.y_stride,
         layout.uv_stride,
         usize::try_from(layout.y_plane_len).expect("Y plane length should fit usize"),
         usize::try_from(layout.u_plane_len).expect("U plane length should fit usize"),
         0,
         0,
-    )))
+    ))
 }
 
 fn copy_mapped_readback_buffer_into_surface(
@@ -3859,8 +3991,8 @@ mod tests {
     };
 
     use super::{
-        DisplayYuv420Frame, GpuSparkleFlinger, GpuZoneSamplingDispatch, PendingPreviewMap,
-        PendingPreviewReadback,
+        DISPLAY_FINALIZE_READBACK_SLOT_COUNT, DisplayYuv420Frame, GpuDisplayFinalizeDispatch,
+        GpuSparkleFlinger, GpuZoneSamplingDispatch, PendingPreviewMap, PendingPreviewReadback,
     };
     use crate::render_thread::producer_queue::ProducerFrame;
     use crate::render_thread::sparkleflinger::gpu_sampling::GpuSamplingPlan;
@@ -4338,6 +4470,53 @@ mod tests {
         assert_eq!(frame.width, 2);
         assert_eq!(frame.height, 1);
         assert_eq!(frame.y_plane(), &[0, 29]);
+    }
+
+    #[test]
+    fn gpu_display_finalize_async_ring_releases_slots_after_discard() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+        let scene = ProducerFrame::Canvas(solid_canvas_with_size(2, 2, Rgba::new(0, 0, 255, 255)));
+        let face = ProducerFrame::Canvas(solid_canvas_with_size(2, 2, Rgba::new(255, 0, 0, 255)));
+        let params = display_finalize_params(2, 2, DisplayFaceBlendMode::Replace);
+        let mut pending = Vec::new();
+
+        for _ in 0..DISPLAY_FINALIZE_READBACK_SLOT_COUNT {
+            match compositor
+                .begin_finalize_display_face(&scene, &face, params)
+                .expect("display finalize should not fail")
+            {
+                GpuDisplayFinalizeDispatch::Pending(work) => pending.push(work),
+                GpuDisplayFinalizeDispatch::Unsupported | GpuDisplayFinalizeDispatch::Saturated => {
+                    panic!("display finalizer ring should accept available slots");
+                }
+            }
+        }
+
+        assert!(matches!(
+            compositor
+                .begin_finalize_display_face(&scene, &face, params)
+                .expect("display finalize should not fail"),
+            GpuDisplayFinalizeDispatch::Saturated,
+        ));
+
+        for work in pending {
+            compositor.discard_pending_display_finalization(work);
+        }
+
+        match compositor
+            .begin_finalize_display_face(&scene, &face, params)
+            .expect("display finalize should not fail")
+        {
+            GpuDisplayFinalizeDispatch::Pending(work) => {
+                compositor.discard_pending_display_finalization(work);
+            }
+            GpuDisplayFinalizeDispatch::Unsupported | GpuDisplayFinalizeDispatch::Saturated => {
+                panic!("discarded display finalizer slots should be reusable");
+            }
+        }
     }
 
     #[test]

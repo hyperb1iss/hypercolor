@@ -73,6 +73,6 @@ async fn clear_inactive_render_groups(state: &RenderThreadState, runtime: &mut P
     };
 
     if active_group_count == 0 {
-        runtime.render.render_group_runtime.clear_inactive_groups();
+        runtime.render.clear_inactive_groups();
     }
 }

@@ -1,8 +1,9 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
 
 use anyhow::Result;
 use hypercolor_core::asset::AssetLibrary;
+use hypercolor_core::bus::DisplayGroupOutputRoute;
 use hypercolor_core::effect::EffectRegistry;
 use hypercolor_core::engine::FpsTier;
 use hypercolor_core::input::{InputData, InteractionData, ScreenData};
@@ -13,8 +14,9 @@ use hypercolor_core::types::canvas::{
 };
 use hypercolor_core::types::event::{FrameData, HypercolorEvent};
 use hypercolor_types::config::RenderAccelerationMode;
+use hypercolor_types::device::DisplayFrameFormat;
 use hypercolor_types::event::ZoneColors;
-use hypercolor_types::scene::SceneId;
+use hypercolor_types::scene::{DisplayFaceTarget, SceneId, ZoneId};
 use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::spatial::{Output, SpatialLayout};
 use std::sync::Arc;
@@ -35,6 +37,8 @@ use super::scene_dependency::SceneDependencyKey;
 use super::scene_snapshot::{FrameSceneSnapshot, SceneSnapshotCache};
 use super::scene_state::RenderSceneState;
 use super::screen_canvas::screen_data_to_surface;
+#[cfg(feature = "wgpu")]
+use super::sparkleflinger::PendingDisplayFinalization;
 use super::sparkleflinger::{PendingZoneSampling, SparkleFlinger};
 use super::{RenderThreadState, micros_u32};
 
@@ -756,6 +760,8 @@ pub(crate) struct RenderCaches {
     pub(crate) sparkleflinger: SparkleFlinger,
     #[cfg(feature = "wgpu")]
     pub(crate) display_sparkleflinger: SparkleFlinger,
+    #[cfg(feature = "wgpu")]
+    pub(crate) display_finalize_runtime: DisplayFinalizeRuntime,
     pub(crate) deferred_sampling: DeferredSamplingState,
     pub(crate) zone_transition_planner: ZoneTransitionPlanner,
     pub(crate) render_group_runtime: ZoneRuntime,
@@ -769,11 +775,96 @@ pub(crate) struct ComposeRuntime<'a> {
     pub(crate) sparkleflinger: &'a mut SparkleFlinger,
     #[cfg(feature = "wgpu")]
     pub(crate) display_sparkleflinger: &'a mut SparkleFlinger,
+    #[cfg(feature = "wgpu")]
+    pub(crate) display_finalize_runtime: &'a mut DisplayFinalizeRuntime,
     pub(crate) render_group_runtime: &'a mut ZoneRuntime,
     pub(crate) output_artifacts: &'a mut OutputArtifactsState,
 }
 
+#[cfg(feature = "wgpu")]
+pub(crate) struct PendingDisplayFinalizeWork {
+    pub(crate) dependency_key: SceneDependencyKey,
+    pub(crate) display_target: DisplayFaceTarget,
+    pub(crate) display_route: DisplayGroupOutputRoute,
+    pub(crate) frame_format: DisplayFrameFormat,
+    pub(crate) pending: PendingDisplayFinalization,
+}
+
+#[cfg(feature = "wgpu")]
+impl PendingDisplayFinalizeWork {
+    pub(crate) fn matches(
+        &self,
+        dependency_key: SceneDependencyKey,
+        display_target: &DisplayFaceTarget,
+        display_route: &DisplayGroupOutputRoute,
+        frame_format: DisplayFrameFormat,
+    ) -> bool {
+        self.dependency_key == dependency_key
+            && self.display_target == *display_target
+            && self.display_route == *display_route
+            && self.frame_format == frame_format
+    }
+}
+
+#[cfg(feature = "wgpu")]
+#[derive(Default)]
+pub(crate) struct DisplayFinalizeRuntime {
+    pending: HashMap<ZoneId, PendingDisplayFinalizeWork>,
+}
+
+#[cfg(feature = "wgpu")]
+impl DisplayFinalizeRuntime {
+    pub(crate) fn take(&mut self, group_id: ZoneId) -> Option<PendingDisplayFinalizeWork> {
+        self.pending.remove(&group_id)
+    }
+
+    pub(crate) fn insert(&mut self, group_id: ZoneId, work: PendingDisplayFinalizeWork) {
+        self.pending.insert(group_id, work);
+    }
+
+    pub(crate) fn drain(&mut self) -> impl Iterator<Item = PendingDisplayFinalizeWork> + '_ {
+        self.pending.drain().map(|(_, pending)| pending)
+    }
+
+    pub(crate) fn take_inactive(
+        &mut self,
+        active_group_ids: &[ZoneId],
+    ) -> Vec<PendingDisplayFinalizeWork> {
+        let inactive_group_ids = self
+            .pending
+            .keys()
+            .copied()
+            .filter(|group_id| !active_group_ids.iter().any(|active| active == group_id))
+            .collect::<Vec<_>>();
+
+        inactive_group_ids
+            .into_iter()
+            .filter_map(|group_id| self.pending.remove(&group_id))
+            .collect()
+    }
+}
+
 impl ComposeRuntime<'_> {
+    pub(crate) fn clear_inactive_groups(&mut self) {
+        #[cfg(feature = "wgpu")]
+        for pending in self.display_finalize_runtime.drain() {
+            self.display_sparkleflinger
+                .discard_pending_display_finalization(pending.pending);
+        }
+        self.render_group_runtime.clear_inactive_groups();
+    }
+
+    #[cfg(feature = "wgpu")]
+    pub(crate) fn discard_display_finalizations_except(&mut self, active_group_ids: &[ZoneId]) {
+        for pending in self
+            .display_finalize_runtime
+            .take_inactive(active_group_ids)
+        {
+            self.display_sparkleflinger
+                .discard_pending_display_finalization(pending.pending);
+        }
+    }
+
     pub(crate) fn reuse_or_render_scene(
         &mut self,
         scene_snapshot: &FrameSceneSnapshot,
@@ -1015,6 +1106,15 @@ impl ZoneTransitionPlanner {
 }
 
 impl RenderCaches {
+    pub(crate) fn clear_inactive_groups(&mut self) {
+        #[cfg(feature = "wgpu")]
+        for pending in self.display_finalize_runtime.drain() {
+            self.display_sparkleflinger
+                .discard_pending_display_finalization(pending.pending);
+        }
+        self.render_group_runtime.clear_inactive_groups();
+    }
+
     pub(crate) fn compose_runtime(&mut self) -> ComposeRuntime<'_> {
         ComposeRuntime {
             screen_queue: &mut self.screen_queue,
@@ -1022,6 +1122,8 @@ impl RenderCaches {
             sparkleflinger: &mut self.sparkleflinger,
             #[cfg(feature = "wgpu")]
             display_sparkleflinger: &mut self.display_sparkleflinger,
+            #[cfg(feature = "wgpu")]
+            display_finalize_runtime: &mut self.display_finalize_runtime,
             render_group_runtime: &mut self.render_group_runtime,
             output_artifacts: &mut self.output_artifacts,
         }
@@ -1050,6 +1152,11 @@ impl RenderCaches {
     pub(crate) fn apply_canvas_resize(&mut self, width: u32, height: u32) {
         self.deferred_sampling
             .clear_for_canvas_resize(&mut self.sparkleflinger);
+        #[cfg(feature = "wgpu")]
+        for pending in self.display_finalize_runtime.drain() {
+            self.display_sparkleflinger
+                .discard_pending_display_finalization(pending.pending);
+        }
         self.render_surface_pool = RenderSurfacePool::with_slot_count(
             SurfaceDescriptor::rgba8888(width, height),
             desired_render_surface_slots(0),
@@ -1186,6 +1293,8 @@ impl PipelineRuntime {
                     #[cfg(feature = "wgpu")]
                     render_gpu_device,
                 )?,
+                #[cfg(feature = "wgpu")]
+                display_finalize_runtime: DisplayFinalizeRuntime::default(),
                 deferred_sampling: DeferredSamplingState::default(),
                 zone_transition_planner: ZoneTransitionPlanner::default(),
                 render_group_runtime: match asset_library {
