@@ -15,9 +15,7 @@ import {
 
 import {
     clamp01,
-    createFaceRoot,
     DISPLAY_FONT_FAMILIES,
-    ensureFaceStyles,
     humanizeSensorLabel,
     mixFaceAccent,
     resolveFaceInk,
@@ -30,26 +28,134 @@ const FACE_SCHEMES = {
     temperature: ['#7ce9ff', '#ffb35f', '#ff6b7a'] as const,
 }
 
-const PULSE_TEMP_STYLE_ID = 'hc-pulse-temp-styles'
-
 function fontStack(family: string): string {
     return `"${family}", sans-serif`
 }
 
-function setCssVar(element: HTMLElement, name: string, value: string): void {
-    if (element.style.getPropertyValue(name) !== value) {
-        element.style.setProperty(name, value)
+function canvasFont(size: number, weight: number, family: string): string {
+    return `${weight} ${size}px ${fontStack(family)}`
+}
+
+function measureText(ctx: CanvasRenderingContext2D, text: string, font: string): number {
+    if (text.length === 0) return 0
+    ctx.font = font
+    return ctx.measureText(text).width
+}
+
+function fillGlowingText(
+    ctx: CanvasRenderingContext2D,
+    text: string,
+    x: number,
+    y: number,
+    fontSpec: string,
+    fill: string,
+    shadowColor: string,
+    shadowBlur: number,
+): void {
+    if (text.length === 0) return
+    ctx.save()
+    ctx.font = fontSpec
+    ctx.fillStyle = fill
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.shadowColor = shadowColor
+    ctx.shadowBlur = shadowBlur
+    ctx.fillText(text, x, y)
+    ctx.restore()
+}
+
+function drawReadout(
+    ctx: CanvasRenderingContext2D,
+    cx: number,
+    cy: number,
+    maxWidth: number,
+    numberText: string,
+    unitText: string,
+    heroFont: string,
+    uiFont: string,
+    heroSize: number,
+    unitSize: number,
+    ink: string,
+    uiInk: string,
+    glowColor: string,
+    accent: string,
+    glow: number,
+): void {
+    const numberVisible = numberText.length > 0
+    const unitVisible = unitText.length > 0
+    if (!numberVisible && !unitVisible) return
+
+    let fittedHeroSize = heroSize
+    let fittedUnitSize = unitSize
+    let gap = numberVisible && unitVisible ? 8 : 0
+    let numberFont = canvasFont(fittedHeroSize, 700, heroFont)
+    let unitFont = canvasFont(fittedUnitSize, 600, uiFont)
+    let numberWidth = measureText(ctx, numberText, numberFont)
+    let unitWidth = measureText(ctx, unitText, unitFont)
+    let totalWidth = numberWidth + unitWidth + gap
+
+    if (totalWidth > maxWidth) {
+        const scale = maxWidth / totalWidth
+        fittedHeroSize = Math.max(42, fittedHeroSize * scale)
+        fittedUnitSize = Math.max(16, fittedUnitSize * scale)
+        gap *= scale
+        numberFont = canvasFont(fittedHeroSize, 700, heroFont)
+        unitFont = canvasFont(fittedUnitSize, 600, uiFont)
+        numberWidth = measureText(ctx, numberText, numberFont)
+        unitWidth = measureText(ctx, unitText, unitFont)
+        totalWidth = numberWidth + unitWidth + gap
+    }
+
+    let x = cx - totalWidth * 0.5
+    if (numberVisible) {
+        const numberX = x + numberWidth * 0.5
+        fillGlowingText(ctx, numberText, numberX, cy, numberFont, ink, glowColor, 18 + glow * 12)
+        fillGlowingText(ctx, numberText, numberX, cy, numberFont, ink, accent, (18 + glow * 12) * 0.42)
+        x += numberWidth + gap
+    }
+    if (unitVisible) {
+        fillGlowingText(
+            ctx,
+            unitText,
+            x + unitWidth * 0.5,
+            cy + fittedHeroSize * 0.08,
+            unitFont,
+            uiInk,
+            glowColor,
+            6 + glow * 5,
+        )
     }
 }
 
-function setText(element: HTMLElement, value: string): void {
-    if (element.textContent !== value) {
-        element.textContent = value
-    }
-}
+function drawDetailLine(
+    ctx: CanvasRenderingContext2D,
+    cx: number,
+    y: number,
+    trendText: string,
+    peakText: string,
+    fontSpec: string,
+    uiInk: string,
+    dimInk: string,
+    glowColor: string,
+    glow: number,
+): void {
+    const trendVisible = trendText.length > 0
+    const peakVisible = peakText.length > 0
+    if (!trendVisible && !peakVisible) return
 
-function setHidden(element: HTMLElement, hidden: boolean): void {
-    element.classList.toggle('hc-pulse-temp__hidden', hidden)
+    const gap = trendVisible && peakVisible ? 18 : 0
+    const trendWidth = measureText(ctx, trendText, fontSpec)
+    const peakWidth = measureText(ctx, peakText, fontSpec)
+    const totalWidth = trendWidth + peakWidth + gap
+    let x = cx - totalWidth * 0.5
+
+    if (trendVisible) {
+        fillGlowingText(ctx, trendText, x + trendWidth * 0.5, y, fontSpec, uiInk, glowColor, 4 + glow * 4)
+        x += trendWidth + gap
+    }
+    if (peakVisible) {
+        fillGlowingText(ctx, peakText, x + peakWidth * 0.5, y, fontSpec, dimInk, glowColor, 4 + glow * 4)
+    }
 }
 
 export default face(
@@ -180,137 +286,6 @@ export default face(
         ],
     },
     (ctx) => {
-        ensureFaceStyles(
-            PULSE_TEMP_STYLE_ID,
-            `
-.hc-pulse-temp {
-    --accent: #80ffea;
-    --dim-ink: rgba(255, 255, 255, 0.56);
-    --detail-glow-blur: 8px;
-    --detail-small-size: 11px;
-    --detail-size: 12px;
-    --glow-color: rgba(128, 255, 234, 0.34);
-    --hero-font: "Rajdhani", sans-serif;
-    --hero-glow-blur: 24px;
-    --hero-glow-soft: 10px;
-    --hero-ink: #f8fbff;
-    --hero-size: 132px;
-    --label-glow-blur: 10px;
-    --ui-font: "Inter", sans-serif;
-    --ui-ink: rgba(236, 244, 255, 0.78);
-    --unit-size: 30px;
-    --unit-y: 10px;
-    box-sizing: border-box;
-    contain: layout paint style;
-    overflow: hidden;
-    text-align: center;
-}
-
-.hc-pulse-temp,
-.hc-pulse-temp * {
-    box-sizing: border-box;
-}
-
-.hc-pulse-temp__readout,
-.hc-pulse-temp__label,
-.hc-pulse-temp__detail {
-    left: 50%;
-    position: absolute;
-    transform: translate(-50%, -50%);
-    white-space: nowrap;
-}
-
-.hc-pulse-temp__readout {
-    align-items: baseline;
-    display: flex;
-    gap: 8px;
-    justify-content: center;
-    top: 50%;
-    width: 100%;
-}
-
-.hc-pulse-temp__number {
-    color: var(--hero-ink);
-    font-family: var(--hero-font);
-    font-size: var(--hero-size);
-    font-weight: 700;
-    letter-spacing: 0;
-    line-height: 0.82;
-    text-shadow:
-        0 0 var(--hero-glow-blur) var(--glow-color),
-        0 0 var(--hero-glow-soft) var(--accent);
-}
-
-.hc-pulse-temp__unit {
-    color: var(--ui-ink);
-    font-family: var(--ui-font);
-    font-size: var(--unit-size);
-    font-weight: 600;
-    letter-spacing: 0;
-    line-height: 1;
-    text-shadow: 0 0 var(--label-glow-blur) var(--glow-color);
-    text-transform: uppercase;
-    transform: translateY(var(--unit-y));
-}
-
-.hc-pulse-temp__label {
-    color: var(--ui-ink);
-    font-family: var(--ui-font);
-    font-size: var(--detail-size);
-    font-weight: 600;
-    letter-spacing: 0;
-    line-height: 1;
-    text-shadow: 0 0 var(--label-glow-blur) var(--glow-color);
-    text-transform: uppercase;
-    top: calc(50% + 74px);
-}
-
-.hc-pulse-temp__detail {
-    align-items: center;
-    color: var(--ui-ink);
-    display: flex;
-    font-family: var(--ui-font);
-    font-size: var(--detail-small-size);
-    font-weight: 600;
-    gap: 18px;
-    justify-content: center;
-    letter-spacing: 0;
-    line-height: 1;
-    text-shadow: 0 0 var(--detail-glow-blur) var(--glow-color);
-    top: calc(50% + 100px);
-}
-
-.hc-pulse-temp__peak {
-    color: var(--dim-ink);
-}
-
-.hc-pulse-temp__hidden {
-    display: none !important;
-}
-`,
-        )
-
-        const root = createFaceRoot(ctx, 'hc-pulse-temp')
-        const readoutElement = document.createElement('div')
-        const numberElement = document.createElement('span')
-        const unitElement = document.createElement('span')
-        const labelElement = document.createElement('div')
-        const detailElement = document.createElement('div')
-        const trendElement = document.createElement('span')
-        const peakElement = document.createElement('span')
-
-        readoutElement.className = 'hc-pulse-temp__readout'
-        numberElement.className = 'hc-pulse-temp__number'
-        unitElement.className = 'hc-pulse-temp__unit'
-        labelElement.className = 'hc-pulse-temp__label'
-        detailElement.className = 'hc-pulse-temp__detail'
-        trendElement.className = 'hc-pulse-temp__trend'
-        peakElement.className = 'hc-pulse-temp__peak'
-
-        readoutElement.append(numberElement, unitElement)
-        detailElement.append(trendElement, peakElement)
-        root.append(readoutElement, labelElement, detailElement)
-
         let smoothValue = 0
         let lastHistoryPush = 0
         let peakReading = Number.NEGATIVE_INFINITY
@@ -386,40 +361,11 @@ export default face(
 
             const glowColor = withAlpha(baseAccent, 0.22 + glow * 0.22)
             const unitSize = Math.max(20, Math.min(36, heroSize * 0.22))
-            setCssVar(root, '--accent', baseAccent)
-            setCssVar(root, '--dim-ink', ink.dim)
-            setCssVar(root, '--detail-glow-blur', `${4 + glow * 4}px`)
-            setCssVar(root, '--detail-size', `${detailSize}px`)
-            setCssVar(root, '--detail-small-size', `${Math.max(8, detailSize - 1)}px`)
-            setCssVar(root, '--glow-color', glowColor)
-            setCssVar(root, '--hero-font', fontStack(heroFont))
-            setCssVar(root, '--hero-glow-blur', `${18 + glow * 12}px`)
-            setCssVar(root, '--hero-glow-soft', `${(18 + glow * 12) * 0.42}px`)
-            setCssVar(root, '--hero-ink', ink.hero)
-            setCssVar(root, '--hero-size', `${heroSize}px`)
-            setCssVar(root, '--label-glow-blur', `${6 + glow * 5}px`)
-            setCssVar(root, '--ui-font', fontStack(uiFont))
-            setCssVar(root, '--ui-ink', ink.ui)
-            setCssVar(root, '--unit-size', `${unitSize}px`)
-            setCssVar(root, '--unit-y', `${heroSize * 0.08}px`)
-
-            setText(numberElement, numberText)
-            setText(unitElement, unitText)
-            setText(labelElement, labelText.toUpperCase())
-            setText(trendElement, trendText)
-            setText(peakElement, peakText)
 
             const numberVisible = showNumber && numberText.length > 0
             const unitVisible = showUnit && unitText.length > 0
             const trendVisible = showTrend && trendText.length > 0
             const peakVisible = showPeak && peakText.length > 0
-            setHidden(readoutElement, !numberVisible && !unitVisible)
-            setHidden(numberElement, !numberVisible)
-            setHidden(unitElement, !unitVisible)
-            setHidden(labelElement, !showLabel)
-            setHidden(detailElement, !trendVisible && !peakVisible)
-            setHidden(trendElement, !trendVisible)
-            setHidden(peakElement, !peakVisible)
 
             const c = ctx.ctx
             c.clearRect(0, 0, W, H)
@@ -471,6 +417,50 @@ export default face(
                 c.globalAlpha = 1
             }
             c.restore()
+
+            drawReadout(
+                c,
+                cx,
+                cy,
+                W * 0.84,
+                numberVisible ? numberText : '',
+                unitVisible ? unitText.toUpperCase() : '',
+                heroFont,
+                uiFont,
+                heroSize,
+                unitSize,
+                ink.hero,
+                ink.ui,
+                glowColor,
+                baseAccent,
+                glow,
+            )
+
+            if (showLabel) {
+                fillGlowingText(
+                    c,
+                    labelText.toUpperCase(),
+                    cx,
+                    cy + 74,
+                    canvasFont(detailSize, 600, uiFont),
+                    ink.ui,
+                    glowColor,
+                    6 + glow * 5,
+                )
+            }
+
+            drawDetailLine(
+                c,
+                cx,
+                cy + 100,
+                trendVisible ? trendText : '',
+                peakVisible ? peakText : '',
+                canvasFont(Math.max(8, detailSize - 1), 600, uiFont),
+                ink.ui,
+                ink.dim,
+                glowColor,
+                glow,
+            )
         }
     },
 )
