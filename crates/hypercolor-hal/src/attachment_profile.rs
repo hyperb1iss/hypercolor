@@ -11,6 +11,9 @@ const NOLLIE32_NOS2_PROTOCOL_IDS: &[&str] = &["nollie/nollie-32-nos2", "nollie/n
 const GENERIC_CHANNEL_PROTOCOL_IDS: &[&str] = &[
     "nollie/prism-8",
     "nollie/nollie-8-v2",
+    "nollie/nollie-32",
+    "nollie/nollie-32-nos2",
+    "nollie/nollie-32-nos2-alt",
     "prismrgb/prism-mini",
 ];
 

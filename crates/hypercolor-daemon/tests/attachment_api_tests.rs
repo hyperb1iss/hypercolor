@@ -764,6 +764,37 @@ async fn prism_8_accepts_driver_scoped_templates() {
 }
 
 #[tokio::test]
+async fn nollie32_channel_slots_accept_fan_profiles() {
+    let _guard = TestDataDirGuard::new().await;
+    let state = Arc::new(AppState::new());
+    let app = test_app_with_state(Arc::clone(&state));
+    let device_id = insert_nollie32_test_device(&state).await;
+
+    let update_response = send_json(
+        &app,
+        "PUT",
+        format!("/api/v1/devices/{device_id}/attachments"),
+        json!({
+            "bindings": [{
+                "slot_id": "channel-1",
+                "template_id": "lian-li-sl-infinity-fan",
+                "instances": 1,
+                "led_offset": 0
+            }]
+        }),
+    )
+    .await;
+    assert_eq!(update_response.status(), StatusCode::OK);
+    let update_json = body_json(update_response).await;
+    assert_eq!(
+        update_json["data"]["bindings"][0]["template_id"],
+        "lian-li-sl-infinity-fan"
+    );
+    assert_eq!(update_json["data"]["suggested_zones"][0]["led_start"], 0);
+    assert_eq!(update_json["data"]["suggested_zones"][0]["led_count"], 20);
+}
+
+#[tokio::test]
 async fn nollie32_attachment_slots_support_cable_profiles() {
     let guard = TestDataDirGuard::new().await;
     let state = Arc::new(AppState::new());

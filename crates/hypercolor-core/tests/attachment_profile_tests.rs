@@ -188,3 +188,25 @@ fn generic_channel_protocol_slots_allow_fan_attachments() {
             .contains(&hypercolor_types::attachment::ComponentCategory::Ring)
     );
 }
+
+#[test]
+fn nollie32_channel_slots_allow_fan_attachments() {
+    let slots = effective_attachment_slots(&nollie32_info(), &[]);
+    let slot = slots
+        .iter()
+        .find(|slot| slot.id == "channel-1")
+        .expect("channel slot should exist");
+
+    assert!(
+        slot.suggested_categories
+            .contains(&hypercolor_types::attachment::ComponentCategory::Strip)
+    );
+    assert!(
+        slot.suggested_categories
+            .contains(&hypercolor_types::attachment::ComponentCategory::Fan)
+    );
+    assert!(
+        slot.suggested_categories
+            .contains(&hypercolor_types::attachment::ComponentCategory::Ring)
+    );
+}
