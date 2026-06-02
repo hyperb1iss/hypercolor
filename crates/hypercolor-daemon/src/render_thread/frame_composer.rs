@@ -20,7 +20,9 @@ use super::scene_dependency::SceneDependencyKey;
 use super::scene_snapshot::FrameSceneSnapshot;
 #[cfg(feature = "wgpu")]
 use super::sparkleflinger::DisplayFinalizeParams;
-use super::sparkleflinger::{ComposedFrameSet, PreviewSurfaceRequest};
+use super::sparkleflinger::{
+    ComposedFrameSet, CompositionLayer, CompositionPlan, PreviewSurfaceRequest,
+};
 use super::{RenderThreadState, micros_between, micros_u32};
 use crate::performance::FullFrameCopyMetrics;
 use crate::preview_runtime::PreviewDemandSummary;
@@ -535,11 +537,11 @@ impl ComposeContext<'_> {
         group_canvases
             .into_iter()
             .filter_map(|(group_id, frame)| {
-                let display_route = display_routes.get(&group_id);
+                let display_route = display_routes.get(&group_id).cloned();
                 let display_target = frame.display_target.clone();
                 // Display-face finalization follows the route cadence,
                 // even when scene rendering is faster.
-                if let Some(route) = display_route
+                if let Some(route) = display_route.as_ref()
                     && let Some(frame) = self
                         .compose
                         .render_group_runtime
@@ -559,9 +561,20 @@ impl ComposeContext<'_> {
                     return Some((group_id, frame));
                 }
 
-                let materialized =
-                    self.materialize_group_canvas(frame, scene_frame, display_route)?;
-                if let Some(route) = display_route {
+                let materialized = self
+                    .materialize_group_canvas(frame, scene_frame, display_route.as_ref())
+                    .or_else(|| {
+                        display_route.as_ref().and_then(|route| {
+                            self.compose
+                                .render_group_runtime
+                                .reuse_latest_materialized_group_frame(
+                                    group_id,
+                                    &display_target,
+                                    route,
+                                )
+                        })
+                    })?;
+                if let Some(route) = display_route.as_ref() {
                     self.compose
                         .render_group_runtime
                         .retain_materialized_group_frame(
@@ -734,8 +747,32 @@ impl ComposeContext<'_> {
     }
 
     #[cfg(feature = "wgpu")]
-    fn materialize_gpu_group_canvas(&mut self, _frame: ProducerFrame) -> Option<PublishedSurface> {
-        None
+    fn materialize_gpu_group_canvas(&mut self, frame: ProducerFrame) -> Option<PublishedSurface> {
+        if frame.width() == 0 || frame.height() == 0 {
+            return None;
+        }
+
+        let preview_surface_request = PreviewSurfaceRequest {
+            width: frame.width(),
+            height: frame.height(),
+        };
+        let plan = CompositionPlan::single(
+            preview_surface_request.width,
+            preview_surface_request.height,
+            CompositionLayer::replace(frame),
+        )
+        .with_cpu_replay_cacheable(false);
+        let composed = self.compose.display_sparkleflinger.compose_for_outputs(
+            plan,
+            false,
+            Some(preview_surface_request),
+        );
+
+        if composed.gpu_readback_failed {
+            debug!("GPU display-face materialization missed; retaining prior frame if available");
+        }
+
+        composed.preview_surface.or(composed.sampling_surface)
     }
 
     fn publish_effect_error(&mut self, error: &anyhow::Error) -> bool {

@@ -984,6 +984,24 @@ impl ZoneRuntime {
             .then(|| retained.frame.clone())
     }
 
+    pub(crate) fn reuse_latest_materialized_group_frame(
+        &self,
+        group_id: ZoneId,
+        display_target: &DisplayFaceTarget,
+        display_route: &DisplayGroupOutputRoute,
+    ) -> Option<GroupCanvasFrame> {
+        if display_route.device_id != display_target.device_id {
+            return None;
+        }
+
+        let retained = self.retained_materialized_group_frames.get(&group_id)?;
+        if retained.display_target != *display_target || retained.display_route != *display_route {
+            return None;
+        }
+
+        Some(retained.frame.clone())
+    }
+
     pub(crate) fn retain_materialized_group_frame(
         &mut self,
         group_id: ZoneId,
@@ -3158,6 +3176,63 @@ mod tests {
                     &unfinalized_target,
                     &unfinalized_route,
                 )
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn latest_materialized_group_reuse_ignores_cadence_for_missed_frames() {
+        let mut runtime = ZoneRuntime::new(4, 4);
+        let group = sample_display_group(4, 4);
+        let display_target = group
+            .display_target
+            .as_ref()
+            .expect("display group should have a target")
+            .clone();
+        let display_route = sample_display_route(display_target.device_id);
+        let dependency_key = SceneDependencyKey::new(1, 1);
+        let group_canvas_frame = sample_group_canvas_frame(&display_target, true);
+
+        runtime.retain_materialized_group_frame(
+            group.id,
+            100,
+            dependency_key,
+            &display_target,
+            &display_route,
+            &group_canvas_frame,
+        );
+
+        assert!(
+            runtime
+                .reuse_retained_materialized_group_frame(
+                    group.id,
+                    140,
+                    Some(30),
+                    dependency_key,
+                    &display_target,
+                    &display_route,
+                )
+                .is_none()
+        );
+
+        let reused = runtime
+            .reuse_latest_materialized_group_frame(group.id, &display_target, &display_route)
+            .expect("latest materialized frame should latch when a fresh frame misses");
+        assert_eq!(reused.display_target, group_canvas_frame.display_target);
+
+        let mut changed_route = display_route.clone();
+        changed_route.width += 1;
+        assert!(
+            runtime
+                .reuse_latest_materialized_group_frame(group.id, &display_target, &changed_route)
+                .is_none()
+        );
+
+        let mut changed_target = display_target.clone();
+        changed_target.opacity = 0.5;
+        assert!(
+            runtime
+                .reuse_latest_materialized_group_frame(group.id, &changed_target, &display_route)
                 .is_none()
         );
     }
