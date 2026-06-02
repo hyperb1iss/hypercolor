@@ -241,15 +241,12 @@ These items are explicitly out of scope for the v1 launch per
   shipped path; universal2 is reachable later via
   `cargo tauri build --target universal-apple-darwin` once it earns the build
   time.
-- `tauri-plugin-updater` integration for in-app self-update. Sparkle-equivalent
-  flow; design lives in [`docs/design/50-update-pipeline.md`](../design/50-update-pipeline.md).
+- In-app self-update. The OSS build is intentionally self-update-free.
 - DMG background image. Layout positions are already configured in
   `tauri.conf.json`; adding `packaging/icons/dmg-background.png` and wiring it
   through `bundle.macOS.dmg.background` lands as a polish pass.
 - Mac App Store companion. Sandboxed `device.usb` access for arbitrary RGB
-  hardware is the architectural blocker; a network-drivers-plus-cloud-remote
-  companion is a separate product surface and tracked under
-  [`docs/design/48-hypercolor-remote.md`](../design/48-hypercolor-remote.md).
+  hardware is the architectural blocker.
 
 ---
 

@@ -97,7 +97,7 @@ This is especially bad for:
 
 - Dynamic backend loading or a full plugin/wasm runtime
 - A complete credential-management dashboard
-- OAuth/cloud account linking
+- Account linking
 - Multi-device bulk pairing in v1
 
 Note: this spec does define a cleaner pairing interface that is compatible with a

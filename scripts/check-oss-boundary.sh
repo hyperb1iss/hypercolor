@@ -54,5 +54,8 @@ check_absent "cloud CLI command docs" 'hypercolor cloud|`cloud`[[:space:]]*\|[[:
 check_absent "cloud runtime state" 'cloud_(login_sessions|connection|socket)'
 check_absent "cloud endpoints" 'api\.hypercolor\.lighting/v1/daemon|hypercolor\.lighting/(activate|api/auth/device)|app\.hypercolor\.lighting'
 check_absent "cloud entitlement feature key" 'hc\.cloud_sync'
+check_absent "commercial updater crate" 'hypercolor-updater'
+check_absent "commercial update endpoints" '/v1/updates|updates\.hypercolor\.lighting'
+check_absent "commercial update docs" 'entitlement-gated|proprietary cloud server|docs/design/(50-update-pipeline|52-updater-client)'
 
 exit "$fail"

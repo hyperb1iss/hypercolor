@@ -26,8 +26,7 @@ pub enum Verb {
     InstallHardwareSupport,
     RepairSmbusService,
     /// Replace `hypercolor-smbus-service.exe` under
-    /// `C:\Program Files\Hypercolor\smbus-service\`. Invoked by
-    /// `hypercolor-updater` per RFC 52.
+    /// `C:\Program Files\Hypercolor\smbus-service\`.
     SwapSmbusBinary,
     UninstallSmbusService,
     UninstallPawnio,
