@@ -38,6 +38,23 @@ pub(super) const UNLOAD_TIMEOUT: Duration = Duration::from_secs(8);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) struct ServoSessionId(pub(super) u64);
 
+/// Producer domain for Servo work that shares one process-global runtime.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub(crate) enum ServoProducerRole {
+    #[default]
+    SceneHtml,
+    DisplayFaceHtml,
+}
+
+impl ServoProducerRole {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::SceneHtml => "scene_html",
+            Self::DisplayFaceHtml => "display_face_html",
+        }
+    }
+}
+
 /// Lifecycle state a `ServoWorkerClient` tracks from the caller side.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum WorkerClientState {
@@ -75,6 +92,7 @@ impl WorkerClientState {
 pub(super) enum WorkerCommand {
     CreateSession {
         session_id: ServoSessionId,
+        producer_role: ServoProducerRole,
         width: u32,
         height: u32,
         response_tx: SyncSender<Result<()>>,
@@ -95,6 +113,7 @@ pub(super) enum WorkerCommand {
     },
     Render {
         session_id: ServoSessionId,
+        producer_role: ServoProducerRole,
         scripts: Vec<String>,
         width: u32,
         height: u32,
@@ -158,12 +177,14 @@ pub(super) struct ServoWorkerClient {
 
 struct ClientStateSlot {
     current: AtomicU8,
+    producer_role: ServoProducerRole,
 }
 
 impl ClientStateSlot {
-    fn new() -> Self {
+    fn new(producer_role: ServoProducerRole) -> Self {
         Self {
             current: AtomicU8::new(WorkerClientState::Idle.as_u8()),
+            producer_role,
         }
     }
 
@@ -173,6 +194,10 @@ impl ClientStateSlot {
 
     fn store(&self, state: WorkerClientState) {
         self.current.store(state.as_u8(), Ordering::Release);
+    }
+
+    const fn producer_role(&self) -> ServoProducerRole {
+        self.producer_role
     }
 }
 
@@ -205,21 +230,27 @@ impl ServoWorkerClient {
             .expect("test session should exist")
     }
 
-    pub(super) fn create_session_only(&self, width: u32, height: u32) -> Result<ServoSessionId> {
+    pub(super) fn create_session_only_with_role(
+        &self,
+        width: u32,
+        height: u32,
+        producer_role: ServoProducerRole,
+    ) -> Result<ServoSessionId> {
         let session_id = ServoSessionId(self.shared.next_id.fetch_add(1, Ordering::AcqRel));
-        self.create_session(session_id, width, height)?;
+        self.create_session_with_role(session_id, width, height, producer_role)?;
         Ok(session_id)
     }
 
-    pub(super) fn create_session(
+    pub(super) fn create_session_with_role(
         &self,
         session_id: ServoSessionId,
         width: u32,
         height: u32,
+        producer_role: ServoProducerRole,
     ) -> Result<()> {
         let inserted = self.with_sessions(|sessions| {
             sessions
-                .insert(session_id, ClientStateSlot::new())
+                .insert(session_id, ClientStateSlot::new(producer_role))
                 .is_none()
         });
         if !inserted {
@@ -229,6 +260,7 @@ impl ServoWorkerClient {
         let (response_tx, response_rx) = mpsc::sync_channel(1);
         if let Err(error) = self.command_tx.send(WorkerCommand::CreateSession {
             session_id,
+            producer_role,
             width,
             height,
             response_tx,
@@ -363,26 +395,29 @@ impl ServoWorkerClient {
         height: u32,
         mode: ServoRenderMode,
     ) -> Result<PendingServoFrame> {
-        let state = self.with_session_slot(session_id, ClientStateSlot::load)?;
+        let (state, producer_role) =
+            self.with_session_slot(session_id, |slot| (slot.load(), slot.producer_role()))?;
         if state != WorkerClientState::Running {
             bail!("Servo session {session_id:?} is not ready to render (state: {state:?})");
         }
 
+        let submitted_at = Instant::now();
         let (response_tx, response_rx) = mpsc::sync_channel(1);
         self.command_tx
             .send(WorkerCommand::Render {
                 session_id,
+                producer_role,
                 scripts,
                 width,
                 height,
                 mode,
-                submitted_at: Instant::now(),
+                submitted_at,
                 response_tx,
             })
             .context("failed to send render command to Servo worker")?;
         Ok(PendingServoFrame {
             response_rx,
-            submitted_at: Instant::now(),
+            submitted_at,
         })
     }
 
@@ -502,7 +537,10 @@ mod tests {
 
         let session_id = ServoSessionId(7);
         client.with_sessions(|sessions| {
-            sessions.insert(session_id, ClientStateSlot::new());
+            sessions.insert(
+                session_id,
+                ClientStateSlot::new(ServoProducerRole::SceneHtml),
+            );
         });
 
         assert_eq!(client.state(session_id), WorkerClientState::Idle);
@@ -516,7 +554,10 @@ mod tests {
 
         let session_id = ServoSessionId(7);
         client.with_sessions(|sessions| {
-            sessions.insert(session_id, ClientStateSlot::new());
+            sessions.insert(
+                session_id,
+                ClientStateSlot::new(ServoProducerRole::SceneHtml),
+            );
         });
 
         client

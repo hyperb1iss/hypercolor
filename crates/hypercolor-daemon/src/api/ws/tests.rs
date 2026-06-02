@@ -96,6 +96,12 @@ const fn current_servo_effect_health() -> ServoEffectHealthForTests {
         render_requests_total: 0,
         render_queue_wait_total_us: 0,
         render_queue_wait_max_us: 0,
+        render_scene_requests_total: 0,
+        render_scene_queue_wait_total_us: 0,
+        render_scene_queue_wait_max_us: 0,
+        render_display_requests_total: 0,
+        render_display_queue_wait_total_us: 0,
+        render_display_queue_wait_max_us: 0,
         render_queue_depth: 0,
         render_queue_depth_max: 0,
         render_superseded_total: 0,
@@ -159,6 +165,12 @@ struct ServoEffectHealthForTests {
     render_requests_total: u64,
     render_queue_wait_total_us: u64,
     render_queue_wait_max_us: u64,
+    render_scene_requests_total: u64,
+    render_scene_queue_wait_total_us: u64,
+    render_scene_queue_wait_max_us: u64,
+    render_display_requests_total: u64,
+    render_display_queue_wait_total_us: u64,
+    render_display_queue_wait_max_us: u64,
     render_queue_depth: u64,
     render_queue_depth_max: u64,
     render_superseded_total: u64,
@@ -594,6 +606,37 @@ async fn metrics_message_includes_latest_frame_timeline() {
     assert_eq!(
         json["effect_health"]["servo_render_queue_wait_max_ms"],
         std::time::Duration::from_micros(servo_health.render_queue_wait_max_us).as_secs_f64()
+            * 1000.0
+    );
+    assert_eq!(
+        json["effect_health"]["servo_render_scene_requests_total"],
+        servo_health.render_scene_requests_total
+    );
+    assert_eq!(
+        json["effect_health"]["servo_render_scene_queue_wait_total_ms"],
+        std::time::Duration::from_micros(servo_health.render_scene_queue_wait_total_us)
+            .as_secs_f64()
+            * 1000.0
+    );
+    assert_eq!(
+        json["effect_health"]["servo_render_scene_queue_wait_max_ms"],
+        std::time::Duration::from_micros(servo_health.render_scene_queue_wait_max_us).as_secs_f64()
+            * 1000.0
+    );
+    assert_eq!(
+        json["effect_health"]["servo_render_display_requests_total"],
+        servo_health.render_display_requests_total
+    );
+    assert_eq!(
+        json["effect_health"]["servo_render_display_queue_wait_total_ms"],
+        std::time::Duration::from_micros(servo_health.render_display_queue_wait_total_us)
+            .as_secs_f64()
+            * 1000.0
+    );
+    assert_eq!(
+        json["effect_health"]["servo_render_display_queue_wait_max_ms"],
+        std::time::Duration::from_micros(servo_health.render_display_queue_wait_max_us)
+            .as_secs_f64()
             * 1000.0
     );
     assert_eq!(

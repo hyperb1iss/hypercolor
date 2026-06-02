@@ -3,6 +3,8 @@
 use anyhow::{Context, Result, bail};
 
 use hypercolor_types::config::RenderAccelerationMode;
+#[cfg(feature = "servo")]
+use hypercolor_types::effect::EffectCategory;
 use hypercolor_types::effect::{EffectMetadata, EffectSource};
 
 use super::builtin::create_builtin_renderer;
@@ -105,8 +107,12 @@ fn create_renderer_for_metadata_internal(
 }
 
 #[cfg(feature = "servo")]
-fn create_html_renderer(_metadata: &EffectMetadata) -> Box<dyn EffectRenderer> {
-    Box::new(super::servo::ServoRenderer::new())
+fn create_html_renderer(metadata: &EffectMetadata) -> Box<dyn EffectRenderer> {
+    if metadata.category == EffectCategory::Display {
+        Box::new(super::servo::ServoRenderer::new_display_face())
+    } else {
+        Box::new(super::servo::ServoRenderer::new())
+    }
 }
 
 #[cfg(not(feature = "servo"))]

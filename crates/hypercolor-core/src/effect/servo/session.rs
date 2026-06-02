@@ -10,13 +10,14 @@ use crate::effect::traits::EffectRenderOutput;
 use super::worker::{acquire_servo_worker, poison_shared_servo_worker_if_fatal};
 #[cfg(feature = "servo-gpu-import")]
 use super::worker_client::ServoRenderMode;
-use super::worker_client::{PendingServoFrame, ServoWorkerClient};
+use super::worker_client::{PendingServoFrame, ServoProducerRole, ServoWorkerClient};
 
 #[derive(Debug, Clone, Copy)]
 pub struct SessionConfig {
     pub render_width: u32,
     pub render_height: u32,
     pub inject_engine_globals: bool,
+    pub producer_role: ServoProducerRole,
 }
 
 pub struct ServoSessionHandle {
@@ -39,7 +40,11 @@ impl ServoSessionHandle {
     pub(super) fn new(worker: ServoWorkerClient, config: SessionConfig) -> Result<Self> {
         let render_width = config.render_width.max(1);
         let render_height = config.render_height.max(1);
-        let session_id = worker.create_session_only(render_width, render_height)?;
+        let session_id = worker.create_session_only_with_role(
+            render_width,
+            render_height,
+            config.producer_role,
+        )?;
         Ok(Self {
             worker,
             session_id,

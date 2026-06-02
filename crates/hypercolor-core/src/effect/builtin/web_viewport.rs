@@ -12,7 +12,9 @@ use hypercolor_types::viewport::{FitMode, ViewportRect};
 use super::common::{
     builtin_effect_id, dropdown_control, rect_control, slider_control, text_control,
 };
-use crate::effect::servo::{ServoSessionHandle, SessionConfig, note_servo_session_error};
+use crate::effect::servo::{
+    ServoProducerRole, ServoSessionHandle, SessionConfig, note_servo_session_error,
+};
 use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
 use crate::spatial::sample_viewport;
 
@@ -101,6 +103,7 @@ impl WebViewportRenderer {
             render_width: self.render_width,
             render_height: self.render_height,
             inject_engine_globals: false,
+            producer_role: ServoProducerRole::SceneHtml,
         }
     }
 

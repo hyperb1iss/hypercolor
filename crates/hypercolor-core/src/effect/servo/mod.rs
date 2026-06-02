@@ -46,3 +46,4 @@ pub use renderer::ServoRenderer;
 pub use session::{ServoSessionHandle, SessionConfig, note_servo_session_error};
 pub use telemetry::{ServoTelemetrySnapshot, servo_telemetry_snapshot};
 pub use worker::{servo_memory_report_snapshot, shutdown_servo_runtime};
+pub(crate) use worker_client::ServoProducerRole;

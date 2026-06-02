@@ -32,6 +32,7 @@ use super::worker::{
     RENDER_RESPONSE_TIMEOUT, effect_is_audio_reactive, prepare_runtime_html_source,
     servo_worker_is_fatal_error,
 };
+use super::worker_client::ServoProducerRole;
 use super::{ServoSessionHandle, SessionConfig, note_servo_session_error};
 use crate::effect::lightscript::LightscriptRuntime;
 use crate::effect::paths::resolve_html_source_path;
@@ -144,12 +145,23 @@ pub struct ServoRenderer {
     animation_cadence: AnimationCadence,
     host_driven_animation: bool,
     last_submit_time_secs: Option<f32>,
+    producer_role: ServoProducerRole,
 }
 
 impl ServoRenderer {
     /// Create a new Servo renderer instance.
     #[must_use]
     pub fn new() -> Self {
+        Self::new_with_producer_role(ServoProducerRole::SceneHtml)
+    }
+
+    /// Create a Servo renderer dedicated to display-face HTML producers.
+    #[must_use]
+    pub fn new_display_face() -> Self {
+        Self::new_with_producer_role(ServoProducerRole::DisplayFaceHtml)
+    }
+
+    fn new_with_producer_role(producer_role: ServoProducerRole) -> Self {
         Self {
             html_source: None,
             html_resolved_path: None,
@@ -178,6 +190,7 @@ impl ServoRenderer {
             animation_cadence: AnimationCadence::MatchRenderLoop,
             host_driven_animation: false,
             last_submit_time_secs: None,
+            producer_role,
         }
     }
 
@@ -329,6 +342,7 @@ impl ServoRenderer {
             self.controls.clone(),
             canvas_width,
             canvas_height,
+            self.producer_role,
         ));
 
         info!(
@@ -629,6 +643,7 @@ fn start_servo_load_task(
     controls: HashMap<String, ControlValue>,
     canvas_width: u32,
     canvas_height: u32,
+    producer_role: ServoProducerRole,
 ) -> ServoLoadTask {
     let (response_tx, response_rx) = mpsc::sync_channel(1);
     let response_tx_for_thread = response_tx.clone();
@@ -643,6 +658,7 @@ fn start_servo_load_task(
                 &controls,
                 canvas_width,
                 canvas_height,
+                producer_role,
             );
             match result {
                 Ok(loaded) => {
@@ -708,6 +724,7 @@ fn load_servo_session(
     controls: &HashMap<String, ControlValue>,
     canvas_width: u32,
     canvas_height: u32,
+    producer_role: ServoProducerRole,
 ) -> Result<LoadedServoSession> {
     use anyhow::Context;
 
@@ -731,6 +748,7 @@ fn load_servo_session(
         render_width: canvas_width,
         render_height: canvas_height,
         inject_engine_globals: true,
+        producer_role,
     }) {
         Ok(session) => {
             record_servo_session_create(session_create_started.elapsed(), true);
@@ -1190,6 +1208,7 @@ mod tests {
                 render_width: DEFAULT_CANVAS_WIDTH,
                 render_height: DEFAULT_CANVAS_HEIGHT,
                 inject_engine_globals: true,
+                producer_role: ServoProducerRole::SceneHtml,
             },
         )
         .expect("test session should initialize");
@@ -1583,6 +1602,7 @@ mod tests {
                 render_width: 640,
                 render_height: 480,
                 inject_engine_globals: true,
+                producer_role: ServoProducerRole::SceneHtml,
             },
         )
         .expect("test session should initialize");

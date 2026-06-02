@@ -188,6 +188,12 @@ pub struct EffectHealthStatus {
     pub servo_render_requests_total: u64,
     pub servo_render_queue_wait_total_ms: f64,
     pub servo_render_queue_wait_max_ms: f64,
+    pub servo_render_scene_requests_total: u64,
+    pub servo_render_scene_queue_wait_total_ms: f64,
+    pub servo_render_scene_queue_wait_max_ms: f64,
+    pub servo_render_display_requests_total: u64,
+    pub servo_render_display_queue_wait_total_ms: f64,
+    pub servo_render_display_queue_wait_max_ms: f64,
     pub servo_render_cpu_frames_total: u64,
     pub servo_render_cached_frames_total: u64,
     pub servo_render_gpu_frames_total: u64,
@@ -377,6 +383,20 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
         servo_render_requests_total: servo_health.render_requests_total,
         servo_render_queue_wait_total_ms: us_to_ms_f64(servo_health.render_queue_wait_total_us),
         servo_render_queue_wait_max_ms: us_to_ms_f64(servo_health.render_queue_wait_max_us),
+        servo_render_scene_requests_total: servo_health.render_scene_requests_total,
+        servo_render_scene_queue_wait_total_ms: us_to_ms_f64(
+            servo_health.render_scene_queue_wait_total_us,
+        ),
+        servo_render_scene_queue_wait_max_ms: us_to_ms_f64(
+            servo_health.render_scene_queue_wait_max_us,
+        ),
+        servo_render_display_requests_total: servo_health.render_display_requests_total,
+        servo_render_display_queue_wait_total_ms: us_to_ms_f64(
+            servo_health.render_display_queue_wait_total_us,
+        ),
+        servo_render_display_queue_wait_max_ms: us_to_ms_f64(
+            servo_health.render_display_queue_wait_max_us,
+        ),
         servo_render_cpu_frames_total: servo_health.render_cpu_frames_total,
         servo_render_cached_frames_total: servo_health.render_cached_frames_total,
         servo_render_gpu_frames_total: servo_health.render_gpu_frames_total,
@@ -723,6 +743,12 @@ struct ServoEffectHealthCounts {
     render_requests_total: u64,
     render_queue_wait_total_us: u64,
     render_queue_wait_max_us: u64,
+    render_scene_requests_total: u64,
+    render_scene_queue_wait_total_us: u64,
+    render_scene_queue_wait_max_us: u64,
+    render_display_requests_total: u64,
+    render_display_queue_wait_total_us: u64,
+    render_display_queue_wait_max_us: u64,
     render_cpu_frames_total: u64,
     render_cached_frames_total: u64,
     render_gpu_frames_total: u64,
@@ -776,6 +802,12 @@ fn servo_effect_health_counts() -> ServoEffectHealthCounts {
         render_requests_total: snapshot.render_requests_total,
         render_queue_wait_total_us: snapshot.render_queue_wait_total_us,
         render_queue_wait_max_us: snapshot.render_queue_wait_max_us,
+        render_scene_requests_total: snapshot.render_scene_requests_total,
+        render_scene_queue_wait_total_us: snapshot.render_scene_queue_wait_total_us,
+        render_scene_queue_wait_max_us: snapshot.render_scene_queue_wait_max_us,
+        render_display_requests_total: snapshot.render_display_requests_total,
+        render_display_queue_wait_total_us: snapshot.render_display_queue_wait_total_us,
+        render_display_queue_wait_max_us: snapshot.render_display_queue_wait_max_us,
         render_cpu_frames_total: snapshot.render_cpu_frames_total,
         render_cached_frames_total: snapshot.render_cached_frames_total,
         render_gpu_frames_total: snapshot.render_gpu_frames_total,
@@ -830,6 +862,12 @@ const fn servo_effect_health_counts() -> ServoEffectHealthCounts {
         render_requests_total: 0,
         render_queue_wait_total_us: 0,
         render_queue_wait_max_us: 0,
+        render_scene_requests_total: 0,
+        render_scene_queue_wait_total_us: 0,
+        render_scene_queue_wait_max_us: 0,
+        render_display_requests_total: 0,
+        render_display_queue_wait_total_us: 0,
+        render_display_queue_wait_max_us: 0,
         render_cpu_frames_total: 0,
         render_cached_frames_total: 0,
         render_gpu_frames_total: 0,
@@ -1450,6 +1488,30 @@ mod tests {
         assert_eq!(
             json["data"]["effect_health"]["servo_render_queue_wait_max_ms"],
             us_to_ms_f64(servo_health.render_queue_wait_max_us)
+        );
+        assert_eq!(
+            json["data"]["effect_health"]["servo_render_scene_requests_total"],
+            servo_health.render_scene_requests_total
+        );
+        assert_eq!(
+            json["data"]["effect_health"]["servo_render_scene_queue_wait_total_ms"],
+            us_to_ms_f64(servo_health.render_scene_queue_wait_total_us)
+        );
+        assert_eq!(
+            json["data"]["effect_health"]["servo_render_scene_queue_wait_max_ms"],
+            us_to_ms_f64(servo_health.render_scene_queue_wait_max_us)
+        );
+        assert_eq!(
+            json["data"]["effect_health"]["servo_render_display_requests_total"],
+            servo_health.render_display_requests_total
+        );
+        assert_eq!(
+            json["data"]["effect_health"]["servo_render_display_queue_wait_total_ms"],
+            us_to_ms_f64(servo_health.render_display_queue_wait_total_us)
+        );
+        assert_eq!(
+            json["data"]["effect_health"]["servo_render_display_queue_wait_max_ms"],
+            us_to_ms_f64(servo_health.render_display_queue_wait_max_us)
         );
         assert_eq!(
             json["data"]["effect_health"]["servo_render_cpu_frames_total"],

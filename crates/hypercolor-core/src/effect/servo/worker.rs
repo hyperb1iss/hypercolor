@@ -48,8 +48,8 @@ use super::telemetry::{
     record_servo_render_superseded,
 };
 use super::worker_client::{
-    ServoRenderMode, ServoSessionId, ServoWorkerClient, ServoWorkerClientSharedState,
-    WORKER_READY_TIMEOUT, WorkerCommand,
+    ServoProducerRole, ServoRenderMode, ServoSessionId, ServoWorkerClient,
+    ServoWorkerClientSharedState, WORKER_READY_TIMEOUT, WorkerCommand,
 };
 use crate::effect::servo_bootstrap::{ServoRenderingContextHandle, bootstrap_rendering_context};
 use crate::effect::traits::EffectRenderOutput;
@@ -1108,6 +1108,7 @@ struct ServoWorkerRuntime {
 
 struct PendingRenderCommand {
     session_id: ServoSessionId,
+    producer_role: ServoProducerRole,
     scripts: Vec<String>,
     width: u32,
     height: u32,
@@ -1125,6 +1126,7 @@ enum ServoWorkKey {
     Command(WorkerCommand),
     Render {
         session_id: ServoSessionId,
+        producer_role: ServoProducerRole,
         slot: u64,
     },
 }
@@ -1135,6 +1137,7 @@ struct ServoWorkerScheduler {
     pending_renders: HashMap<(ServoSessionId, u64), PendingRenderCommand>,
     open_render_slots: HashMap<ServoSessionId, u64>,
     next_render_slot: u64,
+    last_render_role: Option<ServoProducerRole>,
 }
 
 impl ServoWorkerScheduler {
@@ -1154,6 +1157,7 @@ impl ServoWorkerScheduler {
         match command {
             WorkerCommand::Render {
                 session_id,
+                producer_role,
                 scripts,
                 width,
                 height,
@@ -1163,6 +1167,7 @@ impl ServoWorkerScheduler {
             } => {
                 let pending = PendingRenderCommand {
                     session_id,
+                    producer_role,
                     scripts,
                     width,
                     height,
@@ -1176,8 +1181,11 @@ impl ServoWorkerScheduler {
                     let slot = self.next_render_slot;
                     self.next_render_slot = self.next_render_slot.saturating_add(1);
                     self.open_render_slots.insert(session_id, slot);
-                    self.queue
-                        .push_back(ServoWorkKey::Render { session_id, slot });
+                    self.queue.push_back(ServoWorkKey::Render {
+                        session_id,
+                        producer_role,
+                        slot,
+                    });
                     slot
                 };
                 if let Some(replaced) = self.pending_renders.insert((session_id, slot), pending) {
@@ -1197,29 +1205,68 @@ impl ServoWorkerScheduler {
     }
 
     fn next(&mut self) -> Option<ScheduledServoWork> {
-        while let Some(key) = self.queue.pop_front() {
-            match key {
-                ServoWorkKey::Command(command) => {
-                    self.record_depth();
-                    return Some(ScheduledServoWork::Command(command));
+        loop {
+            let Some(front) = self.queue.front() else {
+                self.record_depth();
+                return None;
+            };
+            if matches!(front, ServoWorkKey::Command(_)) {
+                let Some(ServoWorkKey::Command(command)) = self.queue.pop_front() else {
+                    unreachable!("front was checked as a command")
+                };
+                self.record_depth();
+                return Some(ScheduledServoWork::Command(command));
+            }
+
+            let Some(index) = self.next_render_index_before_barrier() else {
+                let _ = self.queue.pop_front();
+                continue;
+            };
+            let Some(ServoWorkKey::Render {
+                session_id, slot, ..
+            }) = self.queue.remove(index)
+            else {
+                continue;
+            };
+            if let Some(render) = self.pending_renders.remove(&(session_id, slot)) {
+                if self
+                    .open_render_slots
+                    .get(&session_id)
+                    .is_some_and(|open_slot| *open_slot == slot)
+                {
+                    self.open_render_slots.remove(&session_id);
                 }
-                ServoWorkKey::Render { session_id, slot } => {
-                    if let Some(render) = self.pending_renders.remove(&(session_id, slot)) {
-                        if self
-                            .open_render_slots
-                            .get(&session_id)
-                            .is_some_and(|open_slot| *open_slot == slot)
-                        {
-                            self.open_render_slots.remove(&session_id);
-                        }
-                        self.record_depth();
-                        return Some(ScheduledServoWork::Render(render));
+                self.last_render_role = Some(render.producer_role);
+                self.record_depth();
+                return Some(ScheduledServoWork::Render(render));
+            }
+        }
+    }
+
+    fn next_render_index_before_barrier(&self) -> Option<usize> {
+        let mut first_valid = None;
+        for (index, key) in self.queue.iter().enumerate() {
+            match key {
+                ServoWorkKey::Command(_) => break,
+                ServoWorkKey::Render {
+                    session_id,
+                    producer_role,
+                    slot,
+                } => {
+                    if !self.pending_renders.contains_key(&(*session_id, *slot)) {
+                        continue;
+                    }
+                    first_valid.get_or_insert(index);
+                    if self
+                        .last_render_role
+                        .is_some_and(|last_role| *producer_role != last_role)
+                    {
+                        return Some(index);
                     }
                 }
             }
         }
-        self.record_depth();
-        None
+        first_valid
     }
 }
 
@@ -1265,11 +1312,12 @@ impl ServoWorkerRuntime {
             match work {
                 ScheduledServoWork::Command(WorkerCommand::CreateSession {
                     session_id,
+                    producer_role,
                     width,
                     height,
                     response_tx,
                 }) => {
-                    let result = self.create_session(session_id, width, height);
+                    let result = self.create_session(session_id, producer_role, width, height);
                     let _ = response_tx.send(result);
                 }
                 ScheduledServoWork::Command(WorkerCommand::Load {
@@ -1294,6 +1342,7 @@ impl ServoWorkerRuntime {
                 }
                 ScheduledServoWork::Render(PendingRenderCommand {
                     session_id,
+                    producer_role,
                     scripts,
                     width,
                     height,
@@ -1301,7 +1350,7 @@ impl ServoWorkerRuntime {
                     submitted_at,
                     response_tx,
                 }) => {
-                    record_servo_render_queue_wait(submitted_at.elapsed());
+                    record_servo_render_queue_wait(producer_role, submitted_at.elapsed());
                     let result = self.render_frame(session_id, &scripts, width, height, mode);
                     let _ = response_tx.send(result);
                 }
@@ -1336,10 +1385,17 @@ impl ServoWorkerRuntime {
     fn create_session(
         &mut self,
         session_id: ServoSessionId,
+        producer_role: ServoProducerRole,
         width: u32,
         height: u32,
     ) -> Result<()> {
-        debug!(?session_id, width, height, "Creating Servo session");
+        debug!(
+            ?session_id,
+            producer_role = producer_role.as_str(),
+            width,
+            height,
+            "Creating Servo session"
+        );
         if self.sessions.contains_key(&session_id) {
             bail!("Servo session {session_id:?} already exists");
         }
@@ -3188,10 +3244,19 @@ mod tests {
         session_id: ServoSessionId,
         script: &str,
     ) -> (WorkerCommand, mpsc::Receiver<Result<EffectRenderOutput>>) {
+        queued_render_command_with_role(session_id, ServoProducerRole::SceneHtml, script)
+    }
+
+    fn queued_render_command_with_role(
+        session_id: ServoSessionId,
+        producer_role: ServoProducerRole,
+        script: &str,
+    ) -> (WorkerCommand, mpsc::Receiver<Result<EffectRenderOutput>>) {
         let (response_tx, response_rx) = mpsc::sync_channel(1);
         (
             WorkerCommand::Render {
                 session_id,
+                producer_role,
                 scripts: vec![script.to_owned()],
                 width: 320,
                 height: 200,
@@ -3319,6 +3384,7 @@ mod tests {
 
         scheduler.push(WorkerCommand::CreateSession {
             session_id: ServoSessionId(7),
+            producer_role: ServoProducerRole::SceneHtml,
             width: 320,
             height: 200,
             response_tx: create_tx,
@@ -3342,6 +3408,47 @@ mod tests {
             scheduler.next(),
             Some(ScheduledServoWork::Command(WorkerCommand::Shutdown { .. }))
         ));
+        assert!(scheduler.next().is_none());
+    }
+
+    #[test]
+    fn scheduler_alternates_scene_and_display_render_lanes_before_barrier() {
+        let mut scheduler = ServoWorkerScheduler::default();
+        let scene_a = ServoSessionId(1);
+        let scene_b = ServoSessionId(2);
+        let display = ServoSessionId(3);
+
+        let (scene_first, _scene_first_rx) =
+            queued_render_command_with_role(scene_a, ServoProducerRole::SceneHtml, "scene-a()");
+        let (scene_second, _scene_second_rx) =
+            queued_render_command_with_role(scene_b, ServoProducerRole::SceneHtml, "scene-b()");
+        let (display_work, _display_rx) = queued_render_command_with_role(
+            display,
+            ServoProducerRole::DisplayFaceHtml,
+            "display()",
+        );
+
+        scheduler.push(scene_first);
+        scheduler.push(scene_second);
+        scheduler.push(display_work);
+
+        let Some(ScheduledServoWork::Render(render)) = scheduler.next() else {
+            panic!("expected first scene render");
+        };
+        assert_eq!(render.session_id, scene_a);
+        assert_eq!(render.producer_role, ServoProducerRole::SceneHtml);
+
+        let Some(ScheduledServoWork::Render(render)) = scheduler.next() else {
+            panic!("expected display render to alternate after scene lane");
+        };
+        assert_eq!(render.session_id, display);
+        assert_eq!(render.producer_role, ServoProducerRole::DisplayFaceHtml);
+
+        let Some(ScheduledServoWork::Render(render)) = scheduler.next() else {
+            panic!("expected remaining scene render");
+        };
+        assert_eq!(render.session_id, scene_b);
+        assert_eq!(render.producer_role, ServoProducerRole::SceneHtml);
         assert!(scheduler.next().is_none());
     }
 

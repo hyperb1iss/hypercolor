@@ -1,6 +1,8 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use super::worker_client::ServoProducerRole;
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ServoTelemetrySnapshot {
     pub soft_stalls_total: u64,
@@ -24,6 +26,12 @@ pub struct ServoTelemetrySnapshot {
     pub render_requests_total: u64,
     pub render_queue_wait_total_us: u64,
     pub render_queue_wait_max_us: u64,
+    pub render_scene_requests_total: u64,
+    pub render_scene_queue_wait_total_us: u64,
+    pub render_scene_queue_wait_max_us: u64,
+    pub render_display_requests_total: u64,
+    pub render_display_queue_wait_total_us: u64,
+    pub render_display_queue_wait_max_us: u64,
     pub render_queue_depth: u64,
     pub render_queue_depth_max: u64,
     pub render_superseded_total: u64,
@@ -83,6 +91,12 @@ static SERVO_DESTROY_WAIT_MAX_US: AtomicU64 = AtomicU64::new(0);
 static SERVO_RENDER_REQUESTS_TOTAL: AtomicU64 = AtomicU64::new(0);
 static SERVO_RENDER_QUEUE_WAIT_TOTAL_US: AtomicU64 = AtomicU64::new(0);
 static SERVO_RENDER_QUEUE_WAIT_MAX_US: AtomicU64 = AtomicU64::new(0);
+static SERVO_RENDER_SCENE_REQUESTS_TOTAL: AtomicU64 = AtomicU64::new(0);
+static SERVO_RENDER_SCENE_QUEUE_WAIT_TOTAL_US: AtomicU64 = AtomicU64::new(0);
+static SERVO_RENDER_SCENE_QUEUE_WAIT_MAX_US: AtomicU64 = AtomicU64::new(0);
+static SERVO_RENDER_DISPLAY_REQUESTS_TOTAL: AtomicU64 = AtomicU64::new(0);
+static SERVO_RENDER_DISPLAY_QUEUE_WAIT_TOTAL_US: AtomicU64 = AtomicU64::new(0);
+static SERVO_RENDER_DISPLAY_QUEUE_WAIT_MAX_US: AtomicU64 = AtomicU64::new(0);
 static SERVO_RENDER_QUEUE_DEPTH: AtomicU64 = AtomicU64::new(0);
 static SERVO_RENDER_QUEUE_DEPTH_MAX: AtomicU64 = AtomicU64::new(0);
 static SERVO_RENDER_SUPERSEDED_TOTAL: AtomicU64 = AtomicU64::new(0);
@@ -179,13 +193,27 @@ pub(super) fn record_servo_destroy_wait(wait: Duration) {
     );
 }
 
-pub(super) fn record_servo_render_queue_wait(wait: Duration) {
+pub(super) fn record_servo_render_queue_wait(producer_role: ServoProducerRole, wait: Duration) {
     record_wait(
         wait,
         &SERVO_RENDER_REQUESTS_TOTAL,
         &SERVO_RENDER_QUEUE_WAIT_TOTAL_US,
         &SERVO_RENDER_QUEUE_WAIT_MAX_US,
     );
+    match producer_role {
+        ServoProducerRole::SceneHtml => record_wait(
+            wait,
+            &SERVO_RENDER_SCENE_REQUESTS_TOTAL,
+            &SERVO_RENDER_SCENE_QUEUE_WAIT_TOTAL_US,
+            &SERVO_RENDER_SCENE_QUEUE_WAIT_MAX_US,
+        ),
+        ServoProducerRole::DisplayFaceHtml => record_wait(
+            wait,
+            &SERVO_RENDER_DISPLAY_REQUESTS_TOTAL,
+            &SERVO_RENDER_DISPLAY_QUEUE_WAIT_TOTAL_US,
+            &SERVO_RENDER_DISPLAY_QUEUE_WAIT_MAX_US,
+        ),
+    }
 }
 
 pub(super) fn record_servo_render_queue_depth(depth: usize) {
@@ -480,6 +508,16 @@ pub fn servo_telemetry_snapshot() -> ServoTelemetrySnapshot {
         render_requests_total: SERVO_RENDER_REQUESTS_TOTAL.load(Ordering::Relaxed),
         render_queue_wait_total_us: SERVO_RENDER_QUEUE_WAIT_TOTAL_US.load(Ordering::Relaxed),
         render_queue_wait_max_us: SERVO_RENDER_QUEUE_WAIT_MAX_US.load(Ordering::Relaxed),
+        render_scene_requests_total: SERVO_RENDER_SCENE_REQUESTS_TOTAL.load(Ordering::Relaxed),
+        render_scene_queue_wait_total_us: SERVO_RENDER_SCENE_QUEUE_WAIT_TOTAL_US
+            .load(Ordering::Relaxed),
+        render_scene_queue_wait_max_us: SERVO_RENDER_SCENE_QUEUE_WAIT_MAX_US
+            .load(Ordering::Relaxed),
+        render_display_requests_total: SERVO_RENDER_DISPLAY_REQUESTS_TOTAL.load(Ordering::Relaxed),
+        render_display_queue_wait_total_us: SERVO_RENDER_DISPLAY_QUEUE_WAIT_TOTAL_US
+            .load(Ordering::Relaxed),
+        render_display_queue_wait_max_us: SERVO_RENDER_DISPLAY_QUEUE_WAIT_MAX_US
+            .load(Ordering::Relaxed),
         render_queue_depth: SERVO_RENDER_QUEUE_DEPTH.load(Ordering::Relaxed),
         render_queue_depth_max: SERVO_RENDER_QUEUE_DEPTH_MAX.load(Ordering::Relaxed),
         render_superseded_total: SERVO_RENDER_SUPERSEDED_TOTAL.load(Ordering::Relaxed),
@@ -640,6 +678,11 @@ mod tests {
 
         record_servo_renderer_load(Duration::from_micros(15), false);
         record_servo_destroy_wait(Duration::from_micros(25));
+        record_servo_render_queue_wait(ServoProducerRole::SceneHtml, Duration::from_micros(45));
+        record_servo_render_queue_wait(
+            ServoProducerRole::DisplayFaceHtml,
+            Duration::from_micros(55),
+        );
         record_servo_render_queue_depth(3);
         record_servo_render_superseded();
         record_servo_pending_render_age(Duration::from_micros(35));
@@ -651,6 +694,19 @@ mod tests {
         assert!(after.renderer_load_wait_max_us >= 15);
         assert!(after.destroy_wait_total_us >= before.destroy_wait_total_us + 25);
         assert!(after.destroy_wait_max_us >= 25);
+        assert!(after.render_requests_total >= before.render_requests_total + 2);
+        assert!(after.render_queue_wait_total_us >= before.render_queue_wait_total_us + 100);
+        assert!(after.render_scene_requests_total >= before.render_scene_requests_total + 1);
+        assert!(
+            after.render_scene_queue_wait_total_us >= before.render_scene_queue_wait_total_us + 45
+        );
+        assert!(after.render_scene_queue_wait_max_us >= 45);
+        assert!(after.render_display_requests_total >= before.render_display_requests_total + 1);
+        assert!(
+            after.render_display_queue_wait_total_us
+                >= before.render_display_queue_wait_total_us + 55
+        );
+        assert!(after.render_display_queue_wait_max_us >= 55);
         assert!(after.render_queue_depth_max >= 3);
         assert!(after.render_queue_depth <= after.render_queue_depth_max);
         assert!(after.render_superseded_total > before.render_superseded_total);

@@ -622,6 +622,12 @@ function analyze(config: Config, samples: MetricSample[], backpressure: Backpres
         maxGpuReadbackFailedFrames: maxAt(observed, ["pacing", "gpu_readback_failed_frames"]),
         servoFailureDelta,
         servoQueueWaitMaxMs: round(maxAt(observed, ["effect_health", "servo_render_queue_wait_max_ms"])),
+        servoSceneQueueWaitMaxMs: round(
+            maxAt(observed, ["effect_health", "servo_render_scene_queue_wait_max_ms"]),
+        ),
+        servoDisplayQueueWaitMaxMs: round(
+            maxAt(observed, ["effect_health", "servo_render_display_queue_wait_max_ms"]),
+        ),
         servoQueueWaitMaxGrowthMs: round(
             maxIncreaseAt(observed, ["effect_health", "servo_render_queue_wait_max_ms"]),
         ),
@@ -804,6 +810,7 @@ function printReport(report: Report): void {
     )
     console.log(
         `${palette.cyan}servo qos${palette.reset} queue_wait=${summary.servoQueueWaitMaxMs}ms ` +
+            `scene=${summary.servoSceneQueueWaitMaxMs}ms display=${summary.servoDisplayQueueWaitMaxMs}ms ` +
             `pending_age=${summary.servoPendingAgeMaxMs}ms depth=${summary.servoRenderQueueDepthMax} ` +
             `superseded=${summary.servoRenderSupersededDelta}`,
     )
