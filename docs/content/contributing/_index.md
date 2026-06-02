@@ -96,7 +96,7 @@ Each crate has clear ownership. Respect the dependency graph:
 - **`hypercolor-types`** depends on nothing. All shared data types live here.
 - **`hypercolor-core`** depends on `types`. Engine logic, traits, and abstractions.
 - **`hypercolor-hal`** depends on `types`. Device drivers only.
-- **`hypercolor-daemon`** depends directly on `core`, `driver-api`, `network`, and `leptos-ext`; optionally on `driver-builtin` (which bundles `hal` and the network drivers) and `cloud-client`. Binary crate — not imported upstream.
+- **`hypercolor-daemon`** depends directly on `core`, `driver-api`, `network`, and `leptos-ext`; optionally on `driver-builtin` (which bundles `hal` and the network drivers). Binary crate — not imported upstream.
 
 Do NOT create circular dependencies between crates. If you need a type in multiple crates, it belongs in `hypercolor-types`.
 
