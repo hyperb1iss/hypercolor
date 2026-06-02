@@ -4,9 +4,9 @@ use hypercolor_openrgb_sdk::packet::{
     update_zone_leds_payload, validate_protocol_version,
 };
 use hypercolor_openrgb_sdk::{
-    CLIENT_MAX_PROTOCOL_VERSION, ColorMode, ControllerMode, DeviceType, HEADER_LEN, ModeFlag,
-    ModeFlagPolicy, OpenRgbError, Packet, PacketDecoder, PacketHeader, PacketId as PublicPacketId,
-    RgbColor, parse_controller_data,
+    CLIENT_MAX_PROTOCOL_VERSION, ColorMode, ControllerMode, DeviceType, HEADER_LEN,
+    MIN_PROTOCOL_VERSION, ModeFlag, ModeFlagPolicy, OpenRgbError, Packet, PacketDecoder,
+    PacketHeader, PacketId as PublicPacketId, RgbColor, parse_controller_data,
 };
 
 #[test]
@@ -133,6 +133,19 @@ fn update_leds_payload_uses_rgbcolor_wire_order() {
 }
 
 #[test]
+fn update_leds_payload_rejects_u16_count_overflow() {
+    let colors = vec![RgbColor::new(0, 0, 0); usize::from(u16::MAX) + 1];
+
+    assert_eq!(
+        update_leds_payload(&colors),
+        Err(OpenRgbError::CountOverflow {
+            count: usize::from(u16::MAX) + 1,
+            element_size: RgbColor::WIRE_SIZE,
+        })
+    );
+}
+
+#[test]
 fn update_zone_leds_payload_includes_zone_index() {
     let payload =
         update_zone_leds_payload(9, &[RgbColor::new(10, 20, 30)]).expect("payload should encode");
@@ -216,6 +229,33 @@ fn parse_protocol_v1_controller_data() {
     assert_eq!(controller.zones[0].flags, None);
     assert!(controller.led_alt_names.is_empty());
     assert_eq!(controller.flags, None);
+}
+
+#[test]
+fn parser_rejects_below_minimum_protocol_version() {
+    assert_eq!(
+        parse_controller_data(&[], MIN_PROTOCOL_VERSION - 1),
+        Err(OpenRgbError::UnsupportedProtocolVersion {
+            version: MIN_PROTOCOL_VERSION - 1,
+            min: MIN_PROTOCOL_VERSION,
+            max: CLIENT_MAX_PROTOCOL_VERSION,
+        })
+    );
+}
+
+#[test]
+fn parser_rejects_lying_advertised_size() {
+    let mut payload = controller_payload_v5();
+    let advertised = u32::try_from(payload.len() + 4).expect("fixture should fit u32");
+    payload[0..4].copy_from_slice(&advertised.to_le_bytes());
+
+    assert_eq!(
+        parse_controller_data(&payload, 5),
+        Err(OpenRgbError::DataSizeMismatch {
+            advertised: payload.len() + 4,
+            actual: payload.len(),
+        })
+    );
 }
 
 #[test]
