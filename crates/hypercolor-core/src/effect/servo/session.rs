@@ -117,6 +117,7 @@ impl ServoSessionHandle {
             EffectRenderOutput::Gpu(_) => Err(anyhow!(
                 "Servo worker returned a GPU frame to a CPU-only poller"
             )),
+            EffectRenderOutput::Pending => Ok(None),
         }
     }
 

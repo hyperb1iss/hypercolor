@@ -1752,6 +1752,7 @@ impl ServoWorkerRuntime {
                     session.last_gpu_frame = Some(frame.clone());
                     EffectRenderOutput::Gpu(frame)
                 }
+                EffectRenderOutput::Pending => EffectRenderOutput::Pending,
             };
             let emitted_cpu_frame = output.as_cpu_canvas().is_some();
             timings.total_us = elapsed_micros(frame_start);

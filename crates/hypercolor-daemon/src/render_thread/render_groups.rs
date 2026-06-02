@@ -1050,16 +1050,20 @@ impl ZoneRuntime {
             .clone()
             .expect("direct display group should carry a display target");
 
-        let frame = if let Some(frame) = self.render_passthrough_effect_layer_frame(
-            group,
-            active_scene_id,
-            registry,
-            delta_secs,
-            audio,
-            interaction,
-            screen,
-            sensors,
-        )? {
+        let frame = if passthrough_effect_layer(group).is_some() {
+            let Some(frame) = self.render_passthrough_effect_layer_frame(
+                group,
+                active_scene_id,
+                registry,
+                delta_secs,
+                audio,
+                interaction,
+                screen,
+                sensors,
+            )?
+            else {
+                return Ok(None);
+            };
             frame
         } else {
             let Some(frame) = self.render_group_frame(
@@ -1140,9 +1144,11 @@ impl ZoneRuntime {
                     screen,
                     sensors,
                 )?,
-                LayerSource::ColorFill { rgba } => {
-                    color_fill_frame(group.layout.canvas_width, group.layout.canvas_height, *rgba)
-                }
+                LayerSource::ColorFill { rgba } => Some(color_fill_frame(
+                    group.layout.canvas_width,
+                    group.layout.canvas_height,
+                    *rgba,
+                )),
                 LayerSource::Media { asset_id, playback } => {
                     match self.render_media_layer_frame(
                         *asset_id,
@@ -1157,7 +1163,7 @@ impl ZoneRuntime {
                                 layer_runtime.id,
                                 health,
                             );
-                            frame
+                            Some(frame)
                         }
                         MediaLayerFrame::Loading => {
                             self.layer_runtime.note_health(
@@ -1166,10 +1172,10 @@ impl ZoneRuntime {
                                 layer_runtime.id,
                                 LayerHealth::Loading,
                             );
-                            transparent_black_frame(
+                            Some(transparent_black_frame(
                                 group.layout.canvas_width,
                                 group.layout.canvas_height,
-                            )
+                            ))
                         }
                         MediaLayerFrame::Missing => {
                             self.layer_runtime.note_health(
@@ -1178,10 +1184,10 @@ impl ZoneRuntime {
                                 layer_runtime.id,
                                 LayerHealth::AssetMissing,
                             );
-                            transparent_black_frame(
+                            Some(transparent_black_frame(
                                 group.layout.canvas_width,
                                 group.layout.canvas_height,
-                            )
+                            ))
                         }
                         MediaLayerFrame::Failed(reason) => {
                             self.layer_runtime.note_health(
@@ -1190,10 +1196,10 @@ impl ZoneRuntime {
                                 layer_runtime.id,
                                 LayerHealth::Failed { reason },
                             );
-                            transparent_black_frame(
+                            Some(transparent_black_frame(
                                 group.layout.canvas_width,
                                 group.layout.canvas_height,
-                            )
+                            ))
                         }
                     }
                 }
@@ -1205,7 +1211,7 @@ impl ZoneRuntime {
                             layer_runtime.id,
                             LayerHealth::Active,
                         );
-                        frame
+                        Some(frame)
                     } else {
                         self.layer_runtime.note_health(
                             active_scene_id,
@@ -1213,10 +1219,10 @@ impl ZoneRuntime {
                             layer_runtime.id,
                             LayerHealth::Loading,
                         );
-                        transparent_black_frame(
+                        Some(transparent_black_frame(
                             group.layout.canvas_width,
                             group.layout.canvas_height,
-                        )
+                        ))
                     }
                 }
                 #[cfg(not(feature = "servo"))]
@@ -1229,8 +1235,20 @@ impl ZoneRuntime {
                             reason: "web viewport layer source requires the servo feature".into(),
                         },
                     );
-                    transparent_black_frame(group.layout.canvas_width, group.layout.canvas_height)
+                    Some(transparent_black_frame(
+                        group.layout.canvas_width,
+                        group.layout.canvas_height,
+                    ))
                 }
+            };
+            let Some(frame) = frame else {
+                self.layer_runtime.note_health(
+                    active_scene_id,
+                    group.id,
+                    layer_runtime.id,
+                    LayerHealth::Loading,
+                );
+                continue;
             };
             if matches!(
                 &layer_runtime.source,
@@ -1394,9 +1412,22 @@ impl ZoneRuntime {
             screen,
             sensors,
         )?;
-        self.layer_runtime
-            .note_health(active_scene_id, group.id, layer.id, LayerHealth::Active);
-        Ok(Some(frame))
+        if frame.is_some() {
+            self.layer_runtime.note_health(
+                active_scene_id,
+                group.id,
+                layer.id,
+                LayerHealth::Active,
+            );
+        } else {
+            self.layer_runtime.note_health(
+                active_scene_id,
+                group.id,
+                layer.id,
+                LayerHealth::Loading,
+            );
+        }
+        Ok(frame)
     }
 
     #[expect(
@@ -1413,7 +1444,7 @@ impl ZoneRuntime {
         interaction: &InteractionData,
         screen: Option<&ScreenData>,
         sensors: &SystemSnapshot,
-    ) -> Result<ProducerFrame> {
+    ) -> Result<Option<ProducerFrame>> {
         #[cfg(feature = "servo-gpu-import")]
         {
             match self
@@ -1430,8 +1461,9 @@ impl ZoneRuntime {
                 .map_err(|error| {
                     anyhow::Error::new(render_layer_effect_error(group, layer, registry, error))
                 })? {
-                EffectRenderOutput::Cpu(canvas) => Ok(ProducerFrame::Canvas(canvas)),
-                EffectRenderOutput::Gpu(frame) => Ok(ProducerFrame::Gpu(frame)),
+                EffectRenderOutput::Cpu(canvas) => Ok(Some(ProducerFrame::Canvas(canvas))),
+                EffectRenderOutput::Gpu(frame) => Ok(Some(ProducerFrame::Gpu(frame))),
+                EffectRenderOutput::Pending => Ok(None),
             }
         }
 
@@ -1452,7 +1484,7 @@ impl ZoneRuntime {
                 .map_err(|error| {
                     anyhow::Error::new(render_layer_effect_error(group, layer, registry, error))
                 })?;
-            Ok(ProducerFrame::Canvas(canvas))
+            Ok(Some(ProducerFrame::Canvas(canvas)))
         }
     }
 

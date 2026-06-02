@@ -499,6 +499,7 @@ impl ServoRenderer {
                 self.last_gpu_frame = Some(frame);
                 self.warned_fallback_frame = false;
             }
+            Ok(Some(EffectRenderOutput::Pending)) => {}
             Ok(None) => {
                 if !self.warned_stalled_frame
                     && pending_age.is_some_and(|age| age >= soft_stall_timeout)
@@ -835,6 +836,11 @@ impl EffectRenderer for ServoRenderer {
             && canvas.height() == input.canvas_height
         {
             return Ok(EffectRenderOutput::Cpu(canvas.clone()));
+        }
+
+        #[cfg(feature = "servo-gpu-import")]
+        if self.reuse_cached_gpu_frame_on_no_ready {
+            return Ok(EffectRenderOutput::Pending);
         }
 
         let mut placeholder = Canvas::new(input.canvas_width, input.canvas_height);
@@ -1319,7 +1325,7 @@ mod tests {
                 480,
             ))
             .expect("display render should submit");
-        assert!(matches!(output, EffectRenderOutput::Cpu(_)));
+        assert!(matches!(output, EffectRenderOutput::Pending));
 
         let render = render_rx
             .recv_timeout(Duration::from_millis(100))

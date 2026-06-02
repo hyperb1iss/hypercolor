@@ -81,6 +81,8 @@ pub enum EffectRenderOutput {
     /// GPU-resident imported texture.
     #[cfg(feature = "servo-gpu-import")]
     Gpu(ImportedEffectFrame),
+    /// Renderer has no completed output for this frame.
+    Pending,
 }
 
 impl EffectRenderOutput {
@@ -91,6 +93,7 @@ impl EffectRenderOutput {
             Self::Cpu(canvas) => Some(canvas),
             #[cfg(feature = "servo-gpu-import")]
             Self::Gpu(_) => None,
+            Self::Pending => None,
         }
     }
 
@@ -101,6 +104,7 @@ impl EffectRenderOutput {
             Self::Cpu(canvas) => Some(canvas),
             #[cfg(feature = "servo-gpu-import")]
             Self::Gpu(_) => None,
+            Self::Pending => None,
         }
     }
 }
