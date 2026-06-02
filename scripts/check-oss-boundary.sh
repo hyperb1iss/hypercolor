@@ -39,8 +39,8 @@ check_absent() {
 }
 
 if [[ "$strict" == false ]]; then
-  echo "OSS boundary strict mode is staged but not enforced yet."
-  echo "Run scripts/check-oss-boundary.sh --strict after cloud extraction."
+  echo "OSS boundary baseline mode is advisory."
+  echo "Run scripts/check-oss-boundary.sh --strict or just verify for enforcement."
   exit 0
 fi
 
