@@ -185,6 +185,40 @@ fn parse_protocol_v5_controller_data() {
 }
 
 #[test]
+fn parse_protocol_v4_controller_data() {
+    let payload = controller_payload(4);
+    let controller = parse_controller_data(&payload, 4).expect("controller should parse");
+
+    assert_eq!(controller.device_type, DeviceType::Keyboard);
+    assert_eq!(controller.modes.len(), 1);
+    assert_eq!(controller.modes[0].brightness_min, Some(0));
+    assert_eq!(controller.modes[0].brightness_max, Some(100));
+    assert_eq!(controller.modes[0].brightness, Some(100));
+    assert_eq!(controller.zones.len(), 1);
+    assert_eq!(controller.zones[0].segments.len(), 1);
+    assert_eq!(controller.zones[0].flags, None);
+    assert!(controller.led_alt_names.is_empty());
+    assert_eq!(controller.flags, None);
+}
+
+#[test]
+fn parse_protocol_v1_controller_data() {
+    let payload = controller_payload(1);
+    let controller = parse_controller_data(&payload, 1).expect("controller should parse");
+
+    assert_eq!(controller.device_type, DeviceType::Keyboard);
+    assert_eq!(controller.modes.len(), 1);
+    assert_eq!(controller.modes[0].brightness_min, None);
+    assert_eq!(controller.modes[0].brightness_max, None);
+    assert_eq!(controller.modes[0].brightness, None);
+    assert_eq!(controller.zones.len(), 1);
+    assert!(controller.zones[0].segments.is_empty());
+    assert_eq!(controller.zones[0].flags, None);
+    assert!(controller.led_alt_names.is_empty());
+    assert_eq!(controller.flags, None);
+}
+
+#[test]
 fn parser_rejects_lacking_length_body() {
     let mut payload = controller_payload_v5();
     payload.truncate(payload.len() - 3);
@@ -224,6 +258,10 @@ fn sample_mode(flags: u32, color_mode: ColorMode) -> ControllerMode {
 }
 
 fn controller_payload_v5() -> Vec<u8> {
+    controller_payload(5)
+}
+
+fn controller_payload(protocol_version: u32) -> Vec<u8> {
     let mut body = Vec::new();
     push_u32(&mut body, 0);
     push_i32(&mut body, 5);
@@ -235,9 +273,9 @@ fn controller_payload_v5() -> Vec<u8> {
     push_str(&mut body, "hidraw0");
     push_u16(&mut body, 1);
     push_i32(&mut body, 0);
-    push_mode(&mut body);
+    push_mode(&mut body, protocol_version);
     push_u16(&mut body, 1);
-    push_zone(&mut body);
+    push_zone(&mut body, protocol_version);
     push_u16(&mut body, 2);
     push_str(&mut body, "LED 0");
     push_u32(&mut body, 0);
@@ -246,44 +284,54 @@ fn controller_payload_v5() -> Vec<u8> {
     push_u16(&mut body, 2);
     body.extend_from_slice(&RgbColor::new(1, 2, 3).to_wire_bytes());
     body.extend_from_slice(&RgbColor::new(4, 5, 6).to_wire_bytes());
-    push_u16(&mut body, 1);
-    push_str(&mut body, "Alt 0");
-    push_u32(&mut body, 0xA5);
+    if protocol_version >= 5 {
+        push_u16(&mut body, 1);
+        push_str(&mut body, "Alt 0");
+        push_u32(&mut body, 0xA5);
+    }
     let size = u32::try_from(body.len()).expect("fixture should fit u32");
     body[0..4].copy_from_slice(&size.to_le_bytes());
     body
 }
 
-fn push_mode(body: &mut Vec<u8>) {
+fn push_mode(body: &mut Vec<u8>, protocol_version: u32) {
     push_str(body, "Direct");
     push_i32(body, 0);
     push_u32(body, ModeFlag::PerLedColor.mask());
     push_u32(body, 0);
     push_u32(body, 100);
+    if protocol_version >= 3 {
+        push_u32(body, 0);
+        push_u32(body, 100);
+    }
     push_u32(body, 0);
-    push_u32(body, 100);
     push_u32(body, 0);
     push_u32(body, 0);
-    push_u32(body, 0);
-    push_u32(body, 100);
+    if protocol_version >= 3 {
+        push_u32(body, 100);
+    }
     push_u32(body, 0);
     push_u32(body, ColorMode::PerLed.raw());
     push_u16(body, 0);
 }
 
-fn push_zone(body: &mut Vec<u8>) {
+fn push_zone(body: &mut Vec<u8>, protocol_version: u32) {
     push_str(body, "Main");
     push_i32(body, 1);
     push_u32(body, 2);
     push_u32(body, 2);
     push_u32(body, 2);
     push_u16(body, 0);
-    push_u16(body, 1);
-    push_str(body, "Half");
-    push_i32(body, 1);
-    push_u32(body, 0);
-    push_u32(body, 2);
-    push_u32(body, 0);
+    if protocol_version >= 4 {
+        push_u16(body, 1);
+        push_str(body, "Half");
+        push_i32(body, 1);
+        push_u32(body, 0);
+        push_u32(body, 2);
+    }
+    if protocol_version >= 5 {
+        push_u32(body, 0);
+    }
 }
 
 fn push_str(body: &mut Vec<u8>, value: &str) {
