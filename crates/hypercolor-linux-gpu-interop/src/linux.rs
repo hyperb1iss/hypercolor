@@ -5,15 +5,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use ash::vk;
-use glow::HasContext;
 use thiserror::Error;
 
-const GL_TIMEOUT_IGNORED_NS: i32 = -1;
 const DEFAULT_IMPORT_SLOT_COUNT: usize = 8;
 const MAX_RECOVERABLE_POLL_ERRORS_WITHOUT_COMPLETION: u32 = 16;
 static NEXT_STORAGE_ID: AtomicU64 = AtomicU64::new(1);
 
 mod capabilities;
+mod fence;
 mod gl_external_memory;
 mod loader;
 mod vulkan_export;
@@ -23,10 +22,9 @@ pub use capabilities::{
     missing_gl_external_memory_functions, missing_process_gl_external_memory_functions,
     report_linux_gpu_import_capabilities,
 };
+use fence::{GlFenceStatus, delete_gl_fence, poll_gl_fence, wait_for_gl_fence_completion};
 pub use gl_external_memory::GlExternalMemoryFunctions;
-use gl_external_memory::{
-    GlImportedImageBinding, check_gl_error, clear_gl_errors, current_gl_framebuffer_state,
-};
+use gl_external_memory::{GlImportedImageBinding, clear_gl_errors, current_gl_framebuffer_state};
 use vulkan_export::ExportableVulkanImage;
 
 /// Result type for Linux GPU interop operations.
@@ -825,72 +823,6 @@ impl ImportedFrameSlot {
     }
 }
 
-enum GlFenceStatus {
-    Complete,
-    Pending,
-}
-
-fn create_gl_fence(gl: &glow::Context) -> Result<glow::NativeFence> {
-    // SAFETY: the caller holds the current GL context and the fence is inserted
-    // after the framebuffer blit commands issued on that same context.
-    let fence = unsafe {
-        gl.fence_sync(glow::SYNC_GPU_COMMANDS_COMPLETE, 0)
-            .map_err(|message| LinuxGpuInteropError::GlCreateResource {
-                resource: "sync object",
-                message,
-            })?
-    };
-    if fence.0.is_null() {
-        return Err(LinuxGpuInteropError::GlCreateResource {
-            resource: "sync object",
-            message: "glFenceSync returned null".to_owned(),
-        });
-    }
-    check_gl_error(gl, "glFenceSync")?;
-    Ok(fence)
-}
-
-fn wait_for_gl_blit_completion(gl: &glow::Context) -> Result<u64> {
-    let fence = create_gl_fence(gl)?;
-    let result = wait_for_gl_fence_completion(gl, fence);
-    delete_gl_fence(gl, fence);
-    result
-}
-
-fn wait_for_gl_fence_completion(gl: &glow::Context, fence: glow::NativeFence) -> Result<u64> {
-    let sync_start = Instant::now();
-    // SAFETY: `fence` was created in this context above and remains live until
-    // the caller deletes it after the wait returns.
-    let status =
-        unsafe { gl.client_wait_sync(fence, glow::SYNC_FLUSH_COMMANDS_BIT, GL_TIMEOUT_IGNORED_NS) };
-    let sync_us = elapsed_micros(sync_start);
-    check_gl_error(gl, "glClientWaitSync")?;
-
-    match status {
-        glow::ALREADY_SIGNALED | glow::CONDITION_SATISFIED => Ok(sync_us),
-        code => Err(LinuxGpuInteropError::GlOperation {
-            operation: "glClientWaitSync",
-            code,
-        }),
-    }
-}
-
-fn poll_gl_fence(gl: &glow::Context, fence: glow::NativeFence) -> Result<GlFenceStatus> {
-    // SAFETY: `fence` was created in this context and remains live while owned
-    // by the pending import slot.
-    let status = unsafe { gl.client_wait_sync(fence, 0, 0) };
-    check_gl_error(gl, "glClientWaitSync")?;
-
-    match status {
-        glow::ALREADY_SIGNALED | glow::CONDITION_SATISFIED => Ok(GlFenceStatus::Complete),
-        glow::TIMEOUT_EXPIRED => Ok(GlFenceStatus::Pending),
-        code => Err(LinuxGpuInteropError::GlOperation {
-            operation: "glClientWaitSync",
-            code,
-        }),
-    }
-}
-
 fn is_recoverable_poll_error(error: &LinuxGpuInteropError) -> bool {
     matches!(
         error,
@@ -920,14 +852,6 @@ fn poll_error_should_propagate(
 
     *errors_without_completion = errors_without_completion.saturating_add(1);
     should_escalate_recoverable_poll_error(*errors_without_completion)
-}
-
-fn delete_gl_fence(gl: &glow::Context, fence: glow::NativeFence) {
-    // SAFETY: the fence belongs to this current GL context and is no longer
-    // needed by the caller.
-    unsafe {
-        gl.delete_sync(fence);
-    }
 }
 
 fn elapsed_micros(start: Instant) -> u64 {

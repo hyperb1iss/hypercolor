@@ -4,11 +4,11 @@ use std::time::Instant;
 
 use glow::HasContext;
 
+use super::fence::{create_gl_fence, delete_gl_fence, wait_for_gl_blit_completion};
 use super::loader::{lookup_process_gl_symbol, process_gl_loader_available};
 use super::{
     GlFramebufferSource, GlFramebufferStateSnapshot, ImportedFrameTimings,
-    LinuxGlFramebufferImportDescriptor, LinuxGpuInteropError, Result, create_gl_fence,
-    delete_gl_fence, elapsed_micros, wait_for_gl_blit_completion,
+    LinuxGlFramebufferImportDescriptor, LinuxGpuInteropError, Result, elapsed_micros,
 };
 
 const GL_DEDICATED_MEMORY_OBJECT_EXT: u32 = 0x9581;
