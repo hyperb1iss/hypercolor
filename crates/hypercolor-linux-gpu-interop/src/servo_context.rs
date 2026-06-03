@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use dpi::PhysicalSize;
 use gleam::gl::{self, Gl};
+use glow::HasContext;
 use servo::{DeviceIntRect, RenderingContext, RgbaImage};
 use surfman::chains::{PreserveBuffer, SwapChain};
 use surfman::{
@@ -122,6 +123,29 @@ impl LinuxServoRenderingContext {
     fn bind_framebuffer(&self) {
         self.gleam_gl
             .bind_framebuffer(gl::FRAMEBUFFER, self.framebuffer_id());
+    }
+
+    /// Replaces the attached surfman back buffer without changing dimensions.
+    pub fn refresh_surface(&self) -> Result<(), Error> {
+        self.make_current()?;
+        // SAFETY: the context is current and this is a lifecycle boundary used
+        // before replacing the attached surfman surface.
+        unsafe {
+            self.glow_gl.finish();
+        }
+        let size = self.size.get();
+        let surfman_size = euclid::default::Size2D::new(size.width as i32, size.height as i32);
+        let mut pending_surface = self.swap_chain.take_pending_surface();
+        {
+            let device = &mut self.device.borrow_mut();
+            let context = &mut self.context.borrow_mut();
+            if let Some(surface) = pending_surface.as_mut() {
+                device.destroy_surface(context, surface)?;
+            }
+            self.swap_chain.resize(device, context, surfman_size)?;
+        }
+        self.bind_framebuffer();
+        Ok(())
     }
 
     fn read_framebuffer_to_image(

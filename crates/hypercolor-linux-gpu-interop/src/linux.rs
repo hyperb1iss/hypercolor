@@ -1519,6 +1519,7 @@ impl GlImportedImageBinding {
         source_framebuffer: GlFramebufferSource,
     ) -> GlFramebufferStateSnapshot {
         let bindings = capture_gl_bindings(gl);
+        clear_gl_errors(gl);
         bind_source_framebuffer_for_blit(gl, source_framebuffer);
         // SAFETY: the bindings are restored before returning. The caller owns
         // the current context and this mirrors the import blit's bind sequence.
@@ -1528,6 +1529,7 @@ impl GlImportedImageBinding {
         }
         let state = current_gl_framebuffer_state(gl);
         restore_gl_bindings(gl, bindings);
+        clear_gl_errors(gl);
         state
     }
 

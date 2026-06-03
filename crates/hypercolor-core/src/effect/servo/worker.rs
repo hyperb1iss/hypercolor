@@ -1673,6 +1673,8 @@ impl ServoWorkerRuntime {
         }
 
         drop(session);
+        #[cfg(all(feature = "servo-gpu-import", target_os = "linux"))]
+        self.refresh_linux_surfaces_after_peer_destroy(session_id);
         Ok(())
     }
 
@@ -2166,6 +2168,65 @@ impl ServoWorkerRuntime {
             );
         }
         Ok(import_result?)
+    }
+
+    fn refresh_linux_surfaces_after_peer_destroy(&mut self, destroyed_session_id: ServoSessionId) {
+        let remaining_session_ids = self.sessions.keys().copied().collect::<Vec<_>>();
+        for session_id in remaining_session_ids {
+            if let Err(error) =
+                self.refresh_linux_surface_after_peer_destroy(destroyed_session_id, session_id)
+            {
+                debug!(
+                    %error,
+                    ?destroyed_session_id,
+                    ?session_id,
+                    "Servo Linux surface refresh skipped after peer session teardown"
+                );
+            }
+        }
+    }
+
+    fn refresh_linux_surface_after_peer_destroy(
+        &mut self,
+        destroyed_session_id: ServoSessionId,
+        session_id: ServoSessionId,
+    ) -> Result<()> {
+        let (rendering_context, linux_context, before_surface) = {
+            let session = self.session(session_id)?;
+            let Some(linux_context) = session.linux_context.clone() else {
+                return Ok(());
+            };
+            (
+                Rc::clone(&session.rendering_context),
+                linux_context,
+                session
+                    .linux_context
+                    .as_ref()
+                    .and_then(|context| context.surface_snapshot()),
+            )
+        };
+
+        linux_context
+            .refresh_surface()
+            .map_err(|error| anyhow!("failed to refresh Linux Servo surface: {error:?}"))?;
+        rendering_context.prepare_for_rendering();
+        let after_surface = linux_context.surface_snapshot();
+        let size = rendering_context.size();
+        {
+            let session = self.session_mut(session_id)?;
+            session.gpu_import_retry_after = None;
+            session.gpu_import_transient_failures = 0;
+        }
+        debug!(
+            ?destroyed_session_id,
+            ?session_id,
+            width = size.width,
+            height = size.height,
+            ?before_surface,
+            ?after_surface,
+            "Refreshed surviving Servo Linux surface after peer session teardown"
+        );
+        Ok(())
     }
 
     fn clear_gpu_importer(&mut self, session_id: ServoSessionId) {
