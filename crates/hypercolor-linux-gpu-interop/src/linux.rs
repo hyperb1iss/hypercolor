@@ -15,6 +15,7 @@ const GL_DEDICATED_MEMORY_OBJECT_EXT: u32 = 0x9581;
 const GL_HANDLE_TYPE_OPAQUE_FD_EXT: u32 = 0x9586;
 const GL_TIMEOUT_IGNORED_NS: i32 = -1;
 const DEFAULT_IMPORT_SLOT_COUNT: usize = 8;
+const MAX_RECOVERABLE_POLL_ERRORS_WITHOUT_COMPLETION: u32 = 16;
 static NEXT_STORAGE_ID: AtomicU64 = AtomicU64::new(1);
 static PROCESS_GL_LOADER: OnceLock<Option<ProcessGlLoader>> = OnceLock::new();
 
@@ -257,6 +258,7 @@ pub struct LinuxGlFramebufferImporter {
     descriptor: LinuxGlFramebufferImportDescriptor,
     slots: Vec<ImportedFrameSlot>,
     next_slot: usize,
+    recoverable_poll_errors_without_completion: u32,
 }
 
 impl LinuxGlFramebufferImporter {
@@ -313,6 +315,7 @@ impl LinuxGlFramebufferImporter {
             descriptor,
             slots,
             next_slot: 0,
+            recoverable_poll_errors_without_completion: 0,
         })
     }
 
@@ -491,6 +494,7 @@ impl LinuxGlFramebufferImporter {
     }
 
     fn poll_pending_imports(&mut self, gl: &glow::Context) -> Result<()> {
+        let latest_before = self.latest_completed_storage_id();
         let mut first_error = None;
         for slot in &mut self.slots {
             if let Err(error) = slot.poll_pending_import(gl)
@@ -499,8 +503,18 @@ impl LinuxGlFramebufferImporter {
                 first_error = Some(error);
             }
         }
+        let latest_after = self.latest_completed_storage_id();
+        let completed_advanced = latest_after != latest_before && latest_after.is_some();
+        if completed_advanced {
+            self.recoverable_poll_errors_without_completion = 0;
+        }
         if let Some(error) = first_error
-            && (self.latest_completed_frame().is_none() || !is_recoverable_poll_error(&error))
+            && poll_error_should_propagate(
+                &error,
+                latest_after,
+                completed_advanced,
+                &mut self.recoverable_poll_errors_without_completion,
+            )
         {
             return Err(error);
         }
@@ -1682,6 +1696,27 @@ fn is_recoverable_poll_error(error: &LinuxGpuInteropError) -> bool {
     )
 }
 
+fn should_escalate_recoverable_poll_error(errors_without_completion: u32) -> bool {
+    errors_without_completion > MAX_RECOVERABLE_POLL_ERRORS_WITHOUT_COMPLETION
+}
+
+fn poll_error_should_propagate(
+    error: &LinuxGpuInteropError,
+    latest_completed_storage_id: Option<u64>,
+    completed_advanced: bool,
+    errors_without_completion: &mut u32,
+) -> bool {
+    if latest_completed_storage_id.is_none() || !is_recoverable_poll_error(error) {
+        return true;
+    }
+    if completed_advanced {
+        return false;
+    }
+
+    *errors_without_completion = errors_without_completion.saturating_add(1);
+    should_escalate_recoverable_poll_error(*errors_without_completion)
+}
+
 fn delete_gl_fence(gl: &glow::Context, fence: glow::NativeFence) {
     // SAFETY: the fence belongs to this current GL context and is no longer
     // needed by the caller.
@@ -1879,5 +1914,69 @@ mod tests {
         assert!(!is_recoverable_poll_error(
             &LinuxGpuInteropError::ImportSlotsExhausted { slot_count: 8 }
         ));
+    }
+
+    #[test]
+    fn recoverable_poll_errors_escalate_after_streak_limit() {
+        assert!(!should_escalate_recoverable_poll_error(
+            MAX_RECOVERABLE_POLL_ERRORS_WITHOUT_COMPLETION,
+        ));
+        assert!(should_escalate_recoverable_poll_error(
+            MAX_RECOVERABLE_POLL_ERRORS_WITHOUT_COMPLETION + 1,
+        ));
+    }
+
+    #[test]
+    fn poll_error_decision_tracks_progress_and_escalation() {
+        let recoverable = LinuxGpuInteropError::GlOperation {
+            operation: "glClientWaitSync",
+            code: glow::INVALID_OPERATION,
+        };
+        let non_recoverable = LinuxGpuInteropError::GlOperation {
+            operation: "glBlitFramebuffer",
+            code: glow::INVALID_OPERATION,
+        };
+        let mut streak = 0;
+
+        assert!(poll_error_should_propagate(
+            &recoverable,
+            None,
+            false,
+            &mut streak,
+        ));
+        assert_eq!(streak, 0);
+
+        assert!(!poll_error_should_propagate(
+            &recoverable,
+            Some(41),
+            true,
+            &mut streak,
+        ));
+        assert_eq!(streak, 0);
+
+        for _ in 0..MAX_RECOVERABLE_POLL_ERRORS_WITHOUT_COMPLETION {
+            assert!(!poll_error_should_propagate(
+                &recoverable,
+                Some(41),
+                false,
+                &mut streak,
+            ));
+        }
+        assert_eq!(streak, MAX_RECOVERABLE_POLL_ERRORS_WITHOUT_COMPLETION);
+        assert!(poll_error_should_propagate(
+            &recoverable,
+            Some(41),
+            false,
+            &mut streak,
+        ));
+
+        streak = 0;
+        assert!(poll_error_should_propagate(
+            &non_recoverable,
+            Some(41),
+            false,
+            &mut streak,
+        ));
+        assert_eq!(streak, 0);
     }
 }
