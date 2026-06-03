@@ -11,7 +11,7 @@
   "license": "Apache-2.0",
   "type": "commonjs",
   "devDependencies": {
-    "@tailwindcss/cli": "4.2.1",
-    "tailwindcss": "4.2.1"
+    "@tailwindcss/cli": "4.3.0",
+    "tailwindcss": "4.3.0"
   }
 }
