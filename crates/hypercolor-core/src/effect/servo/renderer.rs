@@ -196,6 +196,10 @@ impl ServoRenderer {
 
     fn enqueue_bootstrap_scripts(&mut self) {
         self.pending_scripts.push(self.runtime.bootstrap_script());
+        if self.host_driven_animation {
+            self.pending_scripts
+                .push(host_driven_animation_flag_script());
+        }
         self.last_animation_fps_cap = Some(DEFAULT_EFFECT_FPS_CAP);
     }
 
@@ -343,6 +347,7 @@ impl ServoRenderer {
             canvas_width,
             canvas_height,
             self.producer_role,
+            self.host_driven_animation,
         ));
 
         info!(
@@ -644,6 +649,7 @@ fn start_servo_load_task(
     canvas_width: u32,
     canvas_height: u32,
     producer_role: ServoProducerRole,
+    host_driven_animation: bool,
 ) -> ServoLoadTask {
     let (response_tx, response_rx) = mpsc::sync_channel(1);
     let response_tx_for_thread = response_tx.clone();
@@ -659,6 +665,7 @@ fn start_servo_load_task(
                 canvas_width,
                 canvas_height,
                 producer_role,
+                host_driven_animation,
             );
             match result {
                 Ok(loaded) => {
@@ -725,6 +732,7 @@ fn load_servo_session(
     canvas_width: u32,
     canvas_height: u32,
     producer_role: ServoProducerRole,
+    host_driven_animation: bool,
 ) -> Result<LoadedServoSession> {
     use anyhow::Context;
 
@@ -735,13 +743,15 @@ fn load_servo_session(
         )
     })?;
 
-    let (runtime_source, runtime_html_path) = prepare_runtime_html_source(&resolved, controls)
-        .with_context(|| {
-            format!(
-                "failed to prepare runtime HTML source for '{}'",
-                resolved.display()
-            )
-        })?;
+    let (runtime_source, runtime_html_path) =
+        prepare_runtime_html_source(&resolved, controls, host_driven_animation).with_context(
+            || {
+                format!(
+                    "failed to prepare runtime HTML source for '{}'",
+                    resolved.display()
+                )
+            },
+        )?;
 
     let session_create_started = Instant::now();
     let mut session = match ServoSessionHandle::new_shared(SessionConfig {
@@ -900,6 +910,7 @@ impl EffectRenderer for ServoRenderer {
         }
         self.last_animation_fps_cap = None;
         self.animation_cadence = AnimationCadence::MatchRenderLoop;
+        self.host_driven_animation = false;
         self.last_submit_time_secs = None;
     }
 }
@@ -1061,8 +1072,18 @@ fn effect_uses_interaction_data(metadata: &EffectMetadata) -> bool {
         })
 }
 
-fn host_driven_animation(_metadata: &EffectMetadata) -> bool {
-    false
+fn host_driven_animation(metadata: &EffectMetadata) -> bool {
+    metadata.category == EffectCategory::Display
+}
+
+fn host_driven_animation_flag_script() -> String {
+    concat!(
+        "(function(){\n",
+        "  window.__hypercolorHostDrivenAnimation = true;\n",
+        "  if (typeof globalThis === 'object' && globalThis !== null) { globalThis.__hypercolorHostDrivenAnimation = true; }\n",
+        "})();",
+    )
+    .to_owned()
 }
 
 #[cfg(feature = "servo-gpu-import")]
@@ -1235,6 +1256,7 @@ mod tests {
         renderer.warned_fallback_frame = true;
         renderer.warned_stalled_frame = true;
         renderer.include_audio_updates = false;
+        renderer.host_driven_animation = true;
         renderer.queued_frame = Some(QueuedFrameInput::from_input(&frame_input(1.0 / 30.0)));
         renderer
             .session
@@ -1266,6 +1288,7 @@ mod tests {
         assert!(!renderer.warned_stalled_frame);
         assert!(renderer.include_audio_updates);
         assert!(!renderer.include_sensor_updates);
+        assert!(!renderer.host_driven_animation);
 
         drop(worker);
         assert!(stopped.load(Ordering::SeqCst));
@@ -1286,6 +1309,27 @@ mod tests {
                 .pending_scripts
                 .iter()
                 .all(|script| !script.contains("__hypercolorFpsCap"))
+        );
+        assert!(
+            renderer
+                .pending_scripts
+                .iter()
+                .all(|script| !script.contains("__hypercolorHostDrivenAnimation"))
+        );
+    }
+
+    #[test]
+    fn display_bootstrap_marks_host_driven_animation() {
+        let mut renderer = ServoRenderer::new();
+        renderer.host_driven_animation = true;
+
+        renderer.enqueue_bootstrap_scripts();
+
+        assert!(
+            renderer
+                .pending_scripts
+                .iter()
+                .any(|script| script.contains("__hypercolorHostDrivenAnimation = true"))
         );
     }
 
@@ -1740,7 +1784,7 @@ mod tests {
     fn display_frame_scripts_keep_fixed_animation_cap() {
         let mut renderer = ServoRenderer::new();
         renderer.animation_cadence = AnimationCadence::Fixed(30);
-        renderer.host_driven_animation = false;
+        renderer.host_driven_animation = true;
         renderer.enqueue_bootstrap_scripts();
         renderer.pending_scripts.clear();
 
@@ -1757,8 +1801,17 @@ mod tests {
             renderer
                 .pending_scripts
                 .iter()
-                .all(|script| !script.contains("instance.render"))
+                .any(|script| script.contains("window.__hypercolorRenderHostFrame"))
         );
+    }
+
+    #[test]
+    fn display_html_uses_host_driven_animation() {
+        let html = html_metadata(PathBuf::from("effect.html"));
+        let display = display_html_metadata(PathBuf::from("display.html"));
+
+        assert!(!host_driven_animation(&html));
+        assert!(host_driven_animation(&display));
     }
 
     #[test]

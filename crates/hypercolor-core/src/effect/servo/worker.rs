@@ -316,6 +316,7 @@ pub(super) fn effect_is_audio_reactive(metadata: &EffectMetadata) -> bool {
 pub(super) fn prepare_runtime_html_source(
     original_path: &Path,
     controls: &HashMap<String, ControlValue>,
+    host_driven_animation: bool,
 ) -> Result<(PathBuf, Option<PathBuf>)> {
     let html = std::fs::read_to_string(original_path).with_context(|| {
         format!(
@@ -324,7 +325,7 @@ pub(super) fn prepare_runtime_html_source(
         )
     })?;
 
-    let preamble = build_control_preamble_script(controls);
+    let preamble = build_control_preamble_script(controls, host_driven_animation);
     let base_tag = original_path
         .parent()
         .and_then(|parent| Url::from_directory_path(parent).ok())
@@ -354,16 +355,25 @@ pub(super) fn prepare_runtime_html_source(
     Ok((runtime_path.clone(), Some(runtime_path)))
 }
 
-fn build_control_preamble_script(controls: &HashMap<String, ControlValue>) -> String {
+fn build_control_preamble_script(
+    controls: &HashMap<String, ControlValue>,
+    host_driven_animation: bool,
+) -> String {
     let mut sorted_controls: Vec<_> = controls.iter().collect();
     sorted_controls.sort_by_key(|(name, _)| *name);
 
     let mut script = String::from("(function(){\n");
     script.push_str("  window.__hypercolorCaptureMode = true;\n");
     script.push_str("  window.__hypercolorPreserveDrawingBuffer = false;\n");
+    if host_driven_animation {
+        script.push_str("  window.__hypercolorHostDrivenAnimation = true;\n");
+    }
     script.push_str("  if (typeof globalThis === 'object' && globalThis !== null) {\n");
     script.push_str("    globalThis.__hypercolorCaptureMode = true;\n");
     script.push_str("    globalThis.__hypercolorPreserveDrawingBuffer = false;\n");
+    if host_driven_animation {
+        script.push_str("    globalThis.__hypercolorHostDrivenAnimation = true;\n");
+    }
     script.push_str("  }\n");
     for (name, value) in sorted_controls {
         let key_literal = serde_json::to_string(name).unwrap_or_else(|_| "\"invalid\"".to_owned());
@@ -3605,7 +3615,7 @@ mod tests {
         controls.insert("enabled".to_owned(), ControlValue::Boolean(true));
         controls.insert("color".to_owned(), ControlValue::Text("#00ffaa".to_owned()));
 
-        let script = build_control_preamble_script(&controls);
+        let script = build_control_preamble_script(&controls, false);
 
         assert!(script.contains("globalThis[\"speed\"] = 42"));
         assert!(script.contains("globalThis[\"enabled\"] = true"));
@@ -3614,6 +3624,17 @@ mod tests {
         assert!(script.contains("window.__hypercolorPreserveDrawingBuffer = false"));
         assert!(script.contains("globalThis.__hypercolorCaptureMode = true"));
         assert!(script.contains("globalThis.__hypercolorPreserveDrawingBuffer = false"));
+        assert!(!script.contains("__hypercolorHostDrivenAnimation"));
+    }
+
+    #[test]
+    fn control_preamble_marks_host_driven_animation_before_effect_script_runs() {
+        let controls = HashMap::new();
+
+        let script = build_control_preamble_script(&controls, true);
+
+        assert!(script.contains("window.__hypercolorHostDrivenAnimation = true"));
+        assert!(script.contains("globalThis.__hypercolorHostDrivenAnimation = true"));
     }
 
     #[test]
@@ -3636,7 +3657,7 @@ mod tests {
     }
 
     #[test]
-    fn prepare_runtime_html_source_injects_capture_flags_without_controls() {
+    fn prepare_runtime_html_source_injects_capture_and_host_flags_before_script() {
         let temp = tempfile::tempdir().expect("tempdir should create");
         let html_path = temp.path().join("effect.html");
         std::fs::write(
@@ -3647,7 +3668,8 @@ mod tests {
 
         let controls = HashMap::new();
         let (runtime_path, runtime_html_path) =
-            prepare_runtime_html_source(&html_path, &controls).expect("runtime html should build");
+            prepare_runtime_html_source(&html_path, &controls, true)
+                .expect("runtime html should build");
 
         assert_ne!(runtime_path, html_path);
         assert_eq!(runtime_html_path.as_deref(), Some(runtime_path.as_path()));
@@ -3656,6 +3678,11 @@ mod tests {
             std::fs::read_to_string(&runtime_path).expect("runtime html should be readable");
         assert!(runtime_html.contains("window.__hypercolorCaptureMode = true"));
         assert!(runtime_html.contains("window.__hypercolorPreserveDrawingBuffer = false"));
+        assert!(runtime_html.contains("window.__hypercolorHostDrivenAnimation = true"));
+        assert!(
+            runtime_html.find("window.__hypercolorHostDrivenAnimation = true")
+                < runtime_html.find("<script>run()</script>")
+        );
     }
 
     #[test]

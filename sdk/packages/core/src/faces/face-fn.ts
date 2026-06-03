@@ -207,6 +207,15 @@ function shouldLoadRemoteFaceFonts(): boolean {
     )
 }
 
+function shouldUseHostDrivenFaceLoop(): boolean {
+    return (
+        typeof globalThis === 'object' &&
+        globalThis !== null &&
+        Boolean((globalThis as Record<string, unknown>).__hypercolorCaptureMode) &&
+        Boolean((globalThis as Record<string, unknown>).__hypercolorHostDrivenAnimation)
+    )
+}
+
 /**
  * Load only the currently selected face fonts instead of the whole picker menu.
  */
@@ -247,19 +256,29 @@ function startFaceLoop(
     const updateFn = setupFn(ctx)
     const sensorAccessor = buildSensorAccessor()
 
-    function tick(timestamp: number): void {
-        const time = timestamp / 1000
-
-        // Clear the canvas overlay each frame
+    const renderAt = (time: number): void => {
         ctx.ctx.clearRect(0, 0, ctx.width, ctx.height)
-
-        // Read current control values (may have been updated by the daemon)
         const controls = resolveControlValues(resolvedControls)
         void loadFaceFonts(fontControls, controls)
-
-        // Call the face's update function
         updateFn(time, controls, sensorAccessor)
+    }
 
+    const host = window as Window & { __hypercolorRenderHostFrame?: () => void }
+    host.__hypercolorRenderHostFrame = () => {
+        const time =
+            window.performance && typeof window.performance.now === 'function'
+                ? window.performance.now() * 0.001
+                : Date.now() * 0.001
+        renderAt(time)
+    }
+
+    if (shouldUseHostDrivenFaceLoop()) {
+        host.__hypercolorRenderHostFrame()
+        return
+    }
+
+    function tick(timestamp: number): void {
+        renderAt(timestamp / 1000)
         requestAnimationFrame(tick)
     }
 
@@ -354,4 +373,6 @@ export const __testing = {
     resolveFaceFontControls,
     resolveFaceFontFamilies,
     shouldLoadRemoteFaceFonts,
+    shouldUseHostDrivenFaceLoop,
+    startFaceLoop,
 }

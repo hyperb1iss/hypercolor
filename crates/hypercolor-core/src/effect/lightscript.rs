@@ -380,6 +380,7 @@ impl LightscriptRuntime {
         script.push_str("  }\n");
         script.push_str("  window.__hypercolorControlsDirty = true;\n");
         script.push_str("  window.__hypercolorLastControlUpdateTime = -Infinity;\n");
+        script.push_str("  if (typeof window.__hypercolorRenderHostFrame !== 'function') {\n");
         script.push_str("  window.__hypercolorRenderHostFrame = function() {\n");
         script.push_str(
             "    if (!window.__hypercolorCaptureMode || typeof window !== 'object') return;\n",
@@ -408,6 +409,7 @@ impl LightscriptRuntime {
         script.push_str("    }\n");
         script.push_str("    instance.render(time);\n");
         script.push_str("  };\n");
+        script.push_str("  }\n");
         script.push_str("  if (typeof globalThis === 'object' && globalThis !== null) { globalThis.engine = window.engine; }\n");
         script.push_str("})();");
         script
@@ -1608,6 +1610,7 @@ mod tests {
         let runtime = LightscriptRuntime::new(320, 200);
         let script = runtime.bootstrap_script();
 
+        assert!(script.contains("if (typeof window.__hypercolorRenderHostFrame !== 'function')"));
         assert!(script.contains("window.__hypercolorRenderHostFrame = function()"));
         assert!(script.contains("window.__hypercolorCaptureMode"));
         assert!(script.contains("window.cancelAnimationFrame"));
@@ -1620,6 +1623,21 @@ mod tests {
         assert!(script.contains("window.__hypercolorLastControlUpdateTime = time"));
         assert!(script.contains("window.performance.now() * 0.001"));
         assert!(script.contains("instance.render(time)"));
+    }
+
+    #[test]
+    fn bootstrap_script_preserves_existing_host_frame_renderer() {
+        let runtime = LightscriptRuntime::new(320, 200);
+        let script = runtime.bootstrap_script();
+
+        let guard_index = script
+            .find("if (typeof window.__hypercolorRenderHostFrame !== 'function')")
+            .expect("host frame renderer should be guarded");
+        let assignment_index = script
+            .find("window.__hypercolorRenderHostFrame = function()")
+            .expect("host frame renderer should still be assigned for canvas effects");
+
+        assert!(guard_index < assignment_index);
     }
 
     #[test]
