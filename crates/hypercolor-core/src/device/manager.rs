@@ -31,7 +31,9 @@ use super::traits::{DeviceBackend, DeviceDisplaySink, DeviceFrameSink};
 
 mod output_color;
 
-use output_color::{apply_zone_brightness, prepare_output_for_led_ranges};
+use output_color::{
+    apply_zone_brightness, prepare_output_for_led_ranges, remap_zone_colors, write_segment_colors,
+};
 
 type BackendHandle = Arc<Mutex<Box<dyn DeviceBackend>>>;
 type DeviceFrameSinkHandle = Arc<dyn DeviceFrameSink>;
@@ -1887,90 +1889,6 @@ fn unassigned_output_zone_id(layout_device_id: &str, zone_name: Option<&str>) ->
 
 fn should_use_ordered_routing(zone: &Output) -> bool {
     is_led_sampled_zone(zone)
-}
-
-fn remap_zone_colors<'a>(
-    zone_id: &str,
-    colors: &'a [[u8; 3]],
-    led_mapping: Option<&[u32]>,
-    scratch: &'a mut Vec<[u8; 3]>,
-) -> &'a [[u8; 3]] {
-    let Some(led_mapping) = led_mapping else {
-        return colors;
-    };
-
-    if led_mapping.len() != colors.len() {
-        warn!(
-            zone_id = %zone_id,
-            mapping_len = led_mapping.len(),
-            color_len = colors.len(),
-            "ignoring zone LED mapping because it does not match the sampled LED count"
-        );
-        return colors;
-    }
-
-    scratch.clear();
-    scratch.resize(colors.len(), [0, 0, 0]);
-    for (spatial_index, &physical_index) in led_mapping.iter().enumerate() {
-        let Ok(physical_index) = usize::try_from(physical_index) else {
-            warn!(
-                zone_id = %zone_id,
-                mapping_index = physical_index,
-                "ignoring zone LED mapping because one physical index does not fit in usize"
-            );
-            return colors;
-        };
-        if physical_index >= scratch.len() {
-            warn!(
-                zone_id = %zone_id,
-                mapping_index = physical_index,
-                color_len = colors.len(),
-                "ignoring zone LED mapping because one physical index is out of bounds"
-            );
-            return colors;
-        }
-        scratch[physical_index] = colors[spatial_index];
-    }
-
-    scratch.as_slice()
-}
-
-fn write_segment_colors(
-    output: &mut Vec<[u8; 3]>,
-    segment: SegmentRange,
-    colors: &[[u8; 3]],
-) -> bool {
-    if segment.length == 0 {
-        return true;
-    }
-    if colors.is_empty() {
-        return false;
-    }
-
-    let start = segment.start;
-    let end = segment.end();
-    if output.len() < end {
-        output.resize(end, [0, 0, 0]);
-    }
-    let target = &mut output[start..end];
-
-    match colors.len().cmp(&segment.length) {
-        std::cmp::Ordering::Equal => target.copy_from_slice(colors),
-        std::cmp::Ordering::Less | std::cmp::Ordering::Greater => {
-            if colors.len() == 1 {
-                target.fill(colors[0]);
-            } else {
-                let source_len = colors.len();
-                let target_len = target.len();
-                for (index, color) in target.iter_mut().enumerate() {
-                    let source_index = index.saturating_mul(source_len) / target_len;
-                    *color = colors[source_index.min(source_len - 1)];
-                }
-            }
-        }
-    }
-
-    true
 }
 
 fn normalized_led_mapping(led_mapping: Option<&[u32]>) -> Option<Box<[u32]>> {

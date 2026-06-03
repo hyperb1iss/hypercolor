@@ -2,6 +2,9 @@ use std::ops::Range;
 use std::sync::OnceLock;
 
 use hypercolor_types::canvas::{linear_to_output_u8, srgb_to_linear};
+use tracing::warn;
+
+use super::SegmentRange;
 
 const LED_PERCEPTUAL_COMPENSATION_STRENGTH: f32 = 0.22;
 const LED_NEUTRAL_COMPENSATION_WEIGHT: f32 = 0.25;
@@ -91,6 +94,90 @@ pub(super) fn apply_zone_brightness(colors: &mut [[u8; 3]], zone_brightness: f32
             color[2] = (f32::from(color[2]) * zone_brightness) as u8;
         }
     }
+}
+
+pub(super) fn remap_zone_colors<'a>(
+    zone_id: &str,
+    colors: &'a [[u8; 3]],
+    led_mapping: Option<&[u32]>,
+    scratch: &'a mut Vec<[u8; 3]>,
+) -> &'a [[u8; 3]] {
+    let Some(led_mapping) = led_mapping else {
+        return colors;
+    };
+
+    if led_mapping.len() != colors.len() {
+        warn!(
+            zone_id = %zone_id,
+            mapping_len = led_mapping.len(),
+            color_len = colors.len(),
+            "ignoring zone LED mapping because it does not match the sampled LED count"
+        );
+        return colors;
+    }
+
+    scratch.clear();
+    scratch.resize(colors.len(), [0, 0, 0]);
+    for (spatial_index, &physical_index) in led_mapping.iter().enumerate() {
+        let Ok(physical_index) = usize::try_from(physical_index) else {
+            warn!(
+                zone_id = %zone_id,
+                mapping_index = physical_index,
+                "ignoring zone LED mapping because one physical index does not fit in usize"
+            );
+            return colors;
+        };
+        if physical_index >= scratch.len() {
+            warn!(
+                zone_id = %zone_id,
+                mapping_index = physical_index,
+                color_len = colors.len(),
+                "ignoring zone LED mapping because one physical index is out of bounds"
+            );
+            return colors;
+        }
+        scratch[physical_index] = colors[spatial_index];
+    }
+
+    scratch.as_slice()
+}
+
+pub(super) fn write_segment_colors(
+    output: &mut Vec<[u8; 3]>,
+    segment: SegmentRange,
+    colors: &[[u8; 3]],
+) -> bool {
+    if segment.length == 0 {
+        return true;
+    }
+    if colors.is_empty() {
+        return false;
+    }
+
+    let start = segment.start;
+    let end = segment.end();
+    if output.len() < end {
+        output.resize(end, [0, 0, 0]);
+    }
+    let target = &mut output[start..end];
+
+    match colors.len().cmp(&segment.length) {
+        std::cmp::Ordering::Equal => target.copy_from_slice(colors),
+        std::cmp::Ordering::Less | std::cmp::Ordering::Greater => {
+            if colors.len() == 1 {
+                target.fill(colors[0]);
+            } else {
+                let source_len = colors.len();
+                let target_len = target.len();
+                for (index, color) in target.iter_mut().enumerate() {
+                    let source_index = index.saturating_mul(source_len) / target_len;
+                    *color = colors[source_index.min(source_len - 1)];
+                }
+            }
+        }
+    }
+
+    true
 }
 
 fn prepare_output_for_leds_scaled(colors: &mut [[u8; 3]], brightness: f32) {
