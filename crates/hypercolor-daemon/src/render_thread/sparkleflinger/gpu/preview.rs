@@ -6,7 +6,7 @@ use hypercolor_core::types::canvas::{
     BYTES_PER_PIXEL, PublishedSurface, RenderSurfacePool, SurfaceDescriptor,
 };
 
-use super::super::PreviewSurfaceRequest;
+use super::super::{ComposedFrameSet, PreviewSurfaceRequest};
 use super::frame_set::{gpu_composed_with_preview_surface, gpu_composed_without_surfaces};
 use super::readback::{
     CachedReadbackKey, CachedReadbackSurface, copy_mapped_readback_buffer_into_surface,
@@ -370,7 +370,7 @@ impl GpuSparkleFlinger {
         request: PreviewSurfaceRequest,
         cache_as_full_size: bool,
         encoder: Option<wgpu::CommandEncoder>,
-    ) -> Result<super::ComposedFrameSet> {
+    ) -> Result<ComposedFrameSet> {
         if !cache_as_full_size
             && let Some(key) = readback_key.as_ref()
             && let Some(cached) = self.cached_preview_surface(&CachedPreviewSurfaceKey {
