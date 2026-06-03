@@ -670,7 +670,7 @@ fn lookup_returns_prism_s_descriptor() {
     assert_eq!(descriptor.protocol.id, "prismrgb/prism-s");
     assert_eq!(
         descriptor.transport,
-        expected_report_id_payload_hid_transport(2, PRISMRGB_REPORT_SIZE)
+        expected_windows_hidapi_or_usb_hid(2, 0x00, PRISMRGB_REPORT_SIZE)
     );
 
     let protocol = (descriptor.protocol.build)();
@@ -691,7 +691,7 @@ fn lookup_returns_prism_mini_descriptor() {
     assert_eq!(descriptor.protocol.id, "prismrgb/prism-mini");
     assert_eq!(
         descriptor.transport,
-        expected_report_id_payload_hid_transport(2, PRISMRGB_REPORT_SIZE)
+        expected_windows_hidapi_or_usb_hid(2, 0x00, PRISMRGB_REPORT_SIZE)
     );
 
     let protocol = (descriptor.protocol.build)();
