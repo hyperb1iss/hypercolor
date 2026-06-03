@@ -142,6 +142,28 @@ struct GroupFrameRequirements {
     requires_published_surface: bool,
 }
 
+#[derive(Default)]
+struct RenderedGroupSet {
+    group_canvases: Vec<(ZoneId, PendingGroupCanvasFrame)>,
+    zone_canvases: Vec<(ZoneId, ProducerFrame)>,
+    active_group_canvas_ids: Vec<ZoneId>,
+}
+
+impl RenderedGroupSet {
+    fn mark_direct_group_active(&mut self, group_id: ZoneId) {
+        self.active_group_canvas_ids.push(group_id);
+    }
+
+    fn push_direct_group_frame(&mut self, group_id: ZoneId, frame: PendingGroupCanvasFrame) {
+        self.zone_canvases.push((group_id, frame.frame.clone()));
+        self.group_canvases.push((group_id, frame));
+    }
+
+    fn push_scene_group_frame(&mut self, group_id: ZoneId, frame: ProducerFrame) {
+        self.zone_canvases.push((group_id, frame));
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("zone '{group_name}' effect '{effect_name}' ({effect_id}) failed: {error}")]
 pub(crate) struct ZoneEffectError {
@@ -458,9 +480,7 @@ impl ZoneRuntime {
 
         let mut render_us = 0_u32;
         let mut producer_full_frame_copy = FullFrameCopyMetrics::default();
-        let mut group_canvases = Vec::new();
-        let mut zone_canvases = Vec::new();
-        let mut active_group_canvas_ids = Vec::new();
+        let mut rendered_groups = RenderedGroupSet::default();
         let project_scene_with_sparkleflinger = sparkleflinger.supports_gpu_output_frames()
             && groups_support_projection_composition(context.groups, &self.scene_projection_cache);
         let mut projected_scene_layers = Vec::new();
@@ -470,15 +490,14 @@ impl ZoneRuntime {
             }
 
             if group_publishes_direct_canvas(group) {
-                active_group_canvas_ids.push(group.id);
+                rendered_groups.mark_direct_group_active(group.id);
                 if let Some(retained) = self.reuse_retained_direct_group_frame(
                     group,
                     context.elapsed_ms,
                     context.display_group_target_fps,
                     context.dependency_key,
                 ) {
-                    zone_canvases.push((group.id, retained.frame.clone()));
-                    group_canvases.push((group.id, retained));
+                    rendered_groups.push_direct_group_frame(group.id, retained);
                     continue;
                 }
                 let render_start = Instant::now();
@@ -490,8 +509,7 @@ impl ZoneRuntime {
                 )?
                 else {
                     if let Some(retained) = self.reuse_latest_direct_group_frame(group) {
-                        zone_canvases.push((group.id, retained.frame.clone()));
-                        group_canvases.push((group.id, retained));
+                        rendered_groups.push_direct_group_frame(group.id, retained);
                     }
                     continue;
                 };
@@ -502,8 +520,7 @@ impl ZoneRuntime {
                     context.dependency_key,
                     &frame,
                 );
-                zone_canvases.push((group.id, frame.frame.clone()));
-                group_canvases.push((group.id, frame));
+                rendered_groups.push_direct_group_frame(group.id, frame);
                 continue;
             }
 
@@ -553,7 +570,7 @@ impl ZoneRuntime {
                 target.clear();
                 continue;
             }
-            zone_canvases.push((group.id, ProducerFrame::Canvas(target.clone())));
+            rendered_groups.push_scene_group_frame(group.id, ProducerFrame::Canvas(target.clone()));
             render_us = render_us.saturating_add(micros_u32(render_start.elapsed()));
         }
         zones.clear();
@@ -583,9 +600,9 @@ impl ZoneRuntime {
 
         let result = ZoneResult {
             scene_frame,
-            group_canvases,
-            zone_canvases,
-            active_group_canvas_ids,
+            group_canvases: rendered_groups.group_canvases,
+            zone_canvases: rendered_groups.zone_canvases,
+            active_group_canvas_ids: rendered_groups.active_group_canvas_ids,
             led_sampling_strategy,
             producer_full_frame_copy,
             render_us,
@@ -785,9 +802,8 @@ impl ZoneRuntime {
         if !scene_group.layout.zones.is_empty() {
             zones.clear();
         }
-        let mut group_canvases = Vec::new();
-        let mut zone_canvases = vec![(scene_group.id, scene_frame.clone())];
-        let mut active_group_canvas_ids = Vec::new();
+        let mut rendered_groups = RenderedGroupSet::default();
+        rendered_groups.push_scene_group_frame(scene_group.id, scene_frame.clone());
         for group in context.groups {
             if !group.enabled || group.id == scene_group.id {
                 continue;
@@ -796,15 +812,14 @@ impl ZoneRuntime {
                 continue;
             }
 
-            active_group_canvas_ids.push(group.id);
+            rendered_groups.mark_direct_group_active(group.id);
             if let Some(retained) = self.reuse_retained_direct_group_frame(
                 group,
                 context.elapsed_ms,
                 context.display_group_target_fps,
                 context.dependency_key,
             ) {
-                zone_canvases.push((group.id, retained.frame.clone()));
-                group_canvases.push((group.id, retained));
+                rendered_groups.push_direct_group_frame(group.id, retained);
                 continue;
             }
 
@@ -817,8 +832,7 @@ impl ZoneRuntime {
             )?
             else {
                 if let Some(retained) = self.reuse_latest_direct_group_frame(group) {
-                    zone_canvases.push((group.id, retained.frame.clone()));
-                    group_canvases.push((group.id, retained));
+                    rendered_groups.push_direct_group_frame(group.id, retained);
                 }
                 continue;
             };
@@ -829,16 +843,15 @@ impl ZoneRuntime {
                 context.dependency_key,
                 &frame,
             );
-            zone_canvases.push((group.id, frame.frame.clone()));
-            group_canvases.push((group.id, frame));
+            rendered_groups.push_direct_group_frame(group.id, frame);
         }
         zones.clear();
 
         Ok(Some(ZoneResult {
             scene_frame,
-            group_canvases,
-            zone_canvases,
-            active_group_canvas_ids,
+            group_canvases: rendered_groups.group_canvases,
+            zone_canvases: rendered_groups.zone_canvases,
+            active_group_canvas_ids: rendered_groups.active_group_canvas_ids,
             led_sampling_strategy: LedSamplingStrategy::SparkleFlinger(spatial_engine),
             producer_full_frame_copy,
             render_us,
