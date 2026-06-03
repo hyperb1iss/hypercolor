@@ -101,11 +101,61 @@ pub(super) struct GroupFrameRequirements {
     pub(super) requires_published_surface: bool,
 }
 
-#[derive(Default)]
-pub(super) struct RenderedGroupSet {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum RenderedGroupFrameTarget {
+    Scene,
+    Display,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum RenderedGroupResidency {
+    Cpu,
+    Gpu,
+}
+
+impl RenderedGroupResidency {
+    fn from_producer_frame(frame: &ProducerFrame) -> Self {
+        match frame {
+            ProducerFrame::Canvas(_) | ProducerFrame::Surface(_) => Self::Cpu,
+            #[cfg(feature = "servo-gpu-import")]
+            ProducerFrame::Gpu(_) => Self::Gpu,
+            #[cfg(feature = "wgpu")]
+            ProducerFrame::GpuTexture(_) => Self::Gpu,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum RenderedGroupFreshness {
+    Fresh,
+    Retained,
+}
+
+#[derive(Clone)]
+enum RenderedGroupFramePayload {
+    Scene(ProducerFrame),
+    Display(PendingGroupCanvasFrame),
+}
+
+#[derive(Clone)]
+pub(super) struct RenderedGroupFrame {
+    pub(super) group_id: ZoneId,
+    pub(super) target: RenderedGroupFrameTarget,
+    pub(super) residency: RenderedGroupResidency,
+    pub(super) freshness: RenderedGroupFreshness,
+    payload: RenderedGroupFramePayload,
+}
+
+pub(super) struct RenderedGroupParts {
     pub(super) group_canvases: Vec<(ZoneId, PendingGroupCanvasFrame)>,
     pub(super) zone_canvases: Vec<(ZoneId, ProducerFrame)>,
     pub(super) active_group_canvas_ids: Vec<ZoneId>,
+}
+
+#[derive(Default)]
+pub(super) struct RenderedGroupSet {
+    frames: Vec<RenderedGroupFrame>,
+    active_group_canvas_ids: Vec<ZoneId>,
 }
 
 impl RenderedGroupSet {
@@ -113,17 +163,90 @@ impl RenderedGroupSet {
         self.active_group_canvas_ids.push(group_id);
     }
 
-    pub(super) fn push_direct_group_frame(
+    pub(super) fn push_fresh_direct_group_frame(
         &mut self,
         group_id: ZoneId,
         frame: PendingGroupCanvasFrame,
     ) {
-        self.zone_canvases.push((group_id, frame.frame.clone()));
-        self.group_canvases.push((group_id, frame));
+        self.push_direct_group_frame(group_id, frame, RenderedGroupFreshness::Fresh);
     }
 
-    pub(super) fn push_scene_group_frame(&mut self, group_id: ZoneId, frame: ProducerFrame) {
-        self.zone_canvases.push((group_id, frame));
+    pub(super) fn push_retained_direct_group_frame(
+        &mut self,
+        group_id: ZoneId,
+        frame: PendingGroupCanvasFrame,
+    ) {
+        self.push_direct_group_frame(group_id, frame, RenderedGroupFreshness::Retained);
+    }
+
+    pub(super) fn push_fresh_scene_group_frame(&mut self, group_id: ZoneId, frame: ProducerFrame) {
+        let residency = RenderedGroupResidency::from_producer_frame(&frame);
+        self.frames.push(RenderedGroupFrame {
+            group_id,
+            target: RenderedGroupFrameTarget::Scene,
+            residency,
+            freshness: RenderedGroupFreshness::Fresh,
+            payload: RenderedGroupFramePayload::Scene(frame),
+        });
+    }
+
+    pub(super) fn into_parts(self) -> RenderedGroupParts {
+        let mut parts = RenderedGroupParts {
+            group_canvases: Vec::new(),
+            zone_canvases: Vec::new(),
+            active_group_canvas_ids: self.active_group_canvas_ids,
+        };
+        for frame in self.frames {
+            let RenderedGroupFrame {
+                group_id,
+                target,
+                residency,
+                freshness,
+                payload,
+            } = frame;
+            debug_assert!(matches!(
+                freshness,
+                RenderedGroupFreshness::Fresh | RenderedGroupFreshness::Retained
+            ));
+            match payload {
+                RenderedGroupFramePayload::Scene(scene_frame) => {
+                    debug_assert_eq!(target, RenderedGroupFrameTarget::Scene);
+                    debug_assert_eq!(
+                        residency,
+                        RenderedGroupResidency::from_producer_frame(&scene_frame)
+                    );
+                    parts.zone_canvases.push((group_id, scene_frame));
+                }
+                RenderedGroupFramePayload::Display(display_frame) => {
+                    debug_assert_eq!(target, RenderedGroupFrameTarget::Display);
+                    debug_assert_eq!(
+                        residency,
+                        RenderedGroupResidency::from_producer_frame(&display_frame.frame)
+                    );
+                    parts
+                        .zone_canvases
+                        .push((group_id, display_frame.frame.clone()));
+                    parts.group_canvases.push((group_id, display_frame));
+                }
+            }
+        }
+        parts
+    }
+
+    fn push_direct_group_frame(
+        &mut self,
+        group_id: ZoneId,
+        frame: PendingGroupCanvasFrame,
+        freshness: RenderedGroupFreshness,
+    ) {
+        let residency = RenderedGroupResidency::from_producer_frame(&frame.frame);
+        self.frames.push(RenderedGroupFrame {
+            group_id,
+            target: RenderedGroupFrameTarget::Display,
+            residency,
+            freshness,
+            payload: RenderedGroupFramePayload::Display(frame),
+        });
     }
 }
 

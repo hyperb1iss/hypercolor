@@ -261,7 +261,7 @@ impl ZoneRuntime {
                     context.display_group_target_fps,
                     context.dependency_key,
                 ) {
-                    rendered_groups.push_direct_group_frame(group.id, retained);
+                    rendered_groups.push_retained_direct_group_frame(group.id, retained);
                     continue;
                 }
                 let render_start = Instant::now();
@@ -273,7 +273,7 @@ impl ZoneRuntime {
                 )?
                 else {
                     if let Some(retained) = self.reuse_latest_direct_group_frame(group) {
-                        rendered_groups.push_direct_group_frame(group.id, retained);
+                        rendered_groups.push_retained_direct_group_frame(group.id, retained);
                     }
                     continue;
                 };
@@ -284,7 +284,7 @@ impl ZoneRuntime {
                     context.dependency_key,
                     &frame,
                 );
-                rendered_groups.push_direct_group_frame(group.id, frame);
+                rendered_groups.push_fresh_direct_group_frame(group.id, frame);
                 continue;
             }
 
@@ -334,7 +334,8 @@ impl ZoneRuntime {
                 target.clear();
                 continue;
             }
-            rendered_groups.push_scene_group_frame(group.id, ProducerFrame::Canvas(target.clone()));
+            rendered_groups
+                .push_fresh_scene_group_frame(group.id, ProducerFrame::Canvas(target.clone()));
             render_us = render_us.saturating_add(micros_u32(render_start.elapsed()));
         }
         zones.clear();
@@ -362,11 +363,12 @@ impl ZoneRuntime {
             LedSamplingStrategy::PreSampled(Arc::clone(&self.combined_led_layout))
         };
 
+        let rendered_parts = rendered_groups.into_parts();
         let result = ZoneResult {
             scene_frame,
-            group_canvases: rendered_groups.group_canvases,
-            zone_canvases: rendered_groups.zone_canvases,
-            active_group_canvas_ids: rendered_groups.active_group_canvas_ids,
+            group_canvases: rendered_parts.group_canvases,
+            zone_canvases: rendered_parts.zone_canvases,
+            active_group_canvas_ids: rendered_parts.active_group_canvas_ids,
             led_sampling_strategy,
             producer_full_frame_copy,
             render_us,
@@ -567,7 +569,7 @@ impl ZoneRuntime {
             zones.clear();
         }
         let mut rendered_groups = RenderedGroupSet::default();
-        rendered_groups.push_scene_group_frame(scene_group.id, scene_frame.clone());
+        rendered_groups.push_fresh_scene_group_frame(scene_group.id, scene_frame.clone());
         for group in context.groups {
             if !group.enabled || group.id == scene_group.id {
                 continue;
@@ -583,7 +585,7 @@ impl ZoneRuntime {
                 context.display_group_target_fps,
                 context.dependency_key,
             ) {
-                rendered_groups.push_direct_group_frame(group.id, retained);
+                rendered_groups.push_retained_direct_group_frame(group.id, retained);
                 continue;
             }
 
@@ -596,7 +598,7 @@ impl ZoneRuntime {
             )?
             else {
                 if let Some(retained) = self.reuse_latest_direct_group_frame(group) {
-                    rendered_groups.push_direct_group_frame(group.id, retained);
+                    rendered_groups.push_retained_direct_group_frame(group.id, retained);
                 }
                 continue;
             };
@@ -607,15 +609,16 @@ impl ZoneRuntime {
                 context.dependency_key,
                 &frame,
             );
-            rendered_groups.push_direct_group_frame(group.id, frame);
+            rendered_groups.push_fresh_direct_group_frame(group.id, frame);
         }
         zones.clear();
 
+        let rendered_parts = rendered_groups.into_parts();
         Ok(Some(ZoneResult {
             scene_frame,
-            group_canvases: rendered_groups.group_canvases,
-            zone_canvases: rendered_groups.zone_canvases,
-            active_group_canvas_ids: rendered_groups.active_group_canvas_ids,
+            group_canvases: rendered_parts.group_canvases,
+            zone_canvases: rendered_parts.zone_canvases,
+            active_group_canvas_ids: rendered_parts.active_group_canvas_ids,
             led_sampling_strategy: LedSamplingStrategy::SparkleFlinger(spatial_engine),
             producer_full_frame_copy,
             render_us,
