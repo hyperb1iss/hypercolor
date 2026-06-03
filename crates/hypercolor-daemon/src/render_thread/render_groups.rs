@@ -24,9 +24,11 @@ use hypercolor_types::event::{HypercolorEvent, LayerHealth, ZoneColors};
 #[cfg(test)]
 use hypercolor_types::layer::{LayerAdjust, LayerBlendMode, LayerTransform};
 use hypercolor_types::layer::{LayerSource, SceneLayer, SceneLayerId};
-use hypercolor_types::scene::{DisplayFaceTarget, SceneId, Zone, ZoneId, ZoneRole};
+use hypercolor_types::scene::{DisplayFaceTarget, SceneId, Zone, ZoneId};
 use hypercolor_types::sensor::SystemSnapshot;
-use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
+use hypercolor_types::spatial::SpatialLayout;
+#[cfg(test)]
+use hypercolor_types::spatial::{EdgeBehavior, SamplingMode};
 
 use super::binding_eval::evaluate_layer_runtime;
 use super::frame_sampling::{LedSamplingStrategy, RetainedLedSamplingStrategy};
@@ -45,6 +47,11 @@ use frame_helpers::{
     copy_producer_frame_to_canvas, media_layer_producer_frame, passthrough_effect_layer,
     producer_frame_is_gpu, screen_region_layer_frame, surface_backed_frame,
     transparent_black_frame,
+};
+use group_state::{
+    combine_led_group_layouts, combined_led_state, desired_media_asset_ids, empty_group_layout,
+    enabled_layer_count, group_contributes_to_scene_canvas, group_is_active,
+    group_publishes_direct_canvas, group_publishes_empty_direct_canvas, scene_logical_layer_count,
 };
 use projection::{
     CachedGroupProjection, build_group_projection, compose_authoritative_scene_canvas,
@@ -1623,76 +1630,6 @@ fn compose_preview_grid_canvas(
     }
 }
 
-fn group_is_active(group: &Zone) -> bool {
-    enabled_layer_count(group) > 0 || group_publishes_empty_direct_canvas(group)
-}
-
-fn group_contributes_to_scene_canvas(group: &Zone) -> bool {
-    group_is_active(group) && group.display_target.is_none()
-}
-
-fn group_publishes_direct_canvas(group: &Zone) -> bool {
-    group.enabled
-        && group.display_target.is_some()
-        && (enabled_layer_count(group) > 0 || group_publishes_empty_direct_canvas(group))
-}
-
-fn group_publishes_empty_direct_canvas(group: &Zone) -> bool {
-    group.enabled
-        && group.display_target.is_some()
-        && group.role == ZoneRole::Display
-        && enabled_layer_count(group) == 0
-}
-
-fn enabled_layer_count(group: &Zone) -> u32 {
-    if !group.enabled {
-        return 0;
-    }
-    u32::try_from(
-        group
-            .effective_layers()
-            .into_iter()
-            .filter(|layer| layer.enabled)
-            .count(),
-    )
-    .unwrap_or(u32::MAX)
-}
-
-fn desired_media_asset_ids(groups: &[Zone]) -> HashSet<AssetId> {
-    groups
-        .iter()
-        .filter(|group| group.enabled)
-        .flat_map(Zone::effective_layers)
-        .filter_map(|layer| match layer.source {
-            LayerSource::Media { asset_id, .. } if layer.enabled => Some(asset_id),
-            _ => None,
-        })
-        .collect()
-}
-
-fn scene_logical_layer_count(groups: &[Zone]) -> u32 {
-    groups
-        .iter()
-        .filter(|group| group_contributes_to_scene_canvas(group))
-        .map(enabled_layer_count)
-        .fold(0_u32, u32::saturating_add)
-}
-
-fn empty_group_layout(width: u32, height: u32) -> SpatialLayout {
-    SpatialLayout {
-        id: "scene-groups".into(),
-        name: "Scene Groups".into(),
-        description: Some("Combined render-group routing layout".into()),
-        canvas_width: width,
-        canvas_height: height,
-        zones: Vec::new(),
-        default_sampling_mode: SamplingMode::Bilinear,
-        default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
-        version: 1,
-    }
-}
-
 fn render_layer_effect_error(
     group: &Zone,
     layer: &SceneLayer,
@@ -1726,29 +1663,6 @@ fn render_layer_effect_error(
         group_name: group.name.clone(),
         error: error.to_string(),
     }
-}
-
-fn combine_led_group_layouts(groups: &[Zone], width: u32, height: u32) -> SpatialLayout {
-    let mut layout = empty_group_layout(width, height);
-    let zone_count = groups
-        .iter()
-        .filter(|group| group_contributes_to_scene_canvas(group))
-        .map(|group| group.layout.zones.len())
-        .sum();
-    let mut zones = Vec::with_capacity(zone_count);
-    for group in groups
-        .iter()
-        .filter(|group| group_contributes_to_scene_canvas(group))
-    {
-        zones.extend_from_slice(&group.layout.zones);
-    }
-    layout.zones = zones;
-    layout
-}
-
-fn combined_led_state(layout: SpatialLayout) -> (Arc<SpatialLayout>, SpatialEngine) {
-    let engine = SpatialEngine::new(layout);
-    (engine.layout(), engine)
 }
 
 #[cfg(test)]
@@ -1792,6 +1706,7 @@ fn blit_scaled_tile(target: &mut Canvas, source: &Canvas, x0: u32, y0: u32, x1: 
 }
 
 mod frame_helpers;
+mod group_state;
 mod projection;
 #[cfg(test)]
 mod tests;

@@ -9,7 +9,7 @@ use hypercolor_types::spatial::{
 
 use super::super::producer_queue::ProducerFrame;
 use super::super::sparkleflinger::CompositionLayer;
-use super::group_contributes_to_scene_canvas;
+use super::group_state::group_contributes_to_scene_canvas;
 
 pub(super) struct CachedGroupProjection {
     pub(super) scene_width: u32,
