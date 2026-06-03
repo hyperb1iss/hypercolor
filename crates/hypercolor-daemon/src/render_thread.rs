@@ -44,6 +44,7 @@ mod scene_state;
 mod screen_canvas;
 #[doc(hidden)]
 pub mod sparkleflinger;
+mod unassigned_output;
 
 use std::any::Any;
 use std::sync::Arc;
