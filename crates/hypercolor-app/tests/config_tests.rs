@@ -115,7 +115,7 @@ fn tauri_config_declares_installer_targets() {
 }
 
 #[test]
-fn tauri_config_uses_current_user_nsis_installs() {
+fn tauri_config_uses_per_machine_nsis_installs() {
     let config = tauri_config();
     let install_mode = config
         .get("bundle")
@@ -124,9 +124,9 @@ fn tauri_config_uses_current_user_nsis_installs() {
         .and_then(|nsis| nsis.get("installMode"))
         .and_then(serde_json::Value::as_str);
 
-    // currentUser per RFC 46 §10.1.7 — base app install does not require UAC;
-    // only optional hardware support (PawnIO + broker) elevates.
-    assert_eq!(install_mode, Some("currentUser"));
+    // Installer hooks perform one-shot hardware setup for PawnIO, the broker
+    // service, and firewall rules, so NSIS must run elevated.
+    assert_eq!(install_mode, Some("perMachine"));
 }
 
 #[test]
