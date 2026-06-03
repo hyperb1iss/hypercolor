@@ -289,7 +289,13 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
                 self.compose.display_finalize_runtime.insert(group_id, work);
                 None
             }
-            Ok(DisplayFinalizeDispatch::Unsupported | DisplayFinalizeDispatch::Saturated) => None,
+            Ok(
+                dispatch @ (DisplayFinalizeDispatch::Unsupported
+                | DisplayFinalizeDispatch::Saturated),
+            ) => {
+                debug_assert!(display_finalize_dispatch_reuses_retained_frame(&dispatch));
+                None
+            }
             Err(error) => {
                 debug!(%error, "GPU display-face finalization deferred to retained frame");
                 None
@@ -362,6 +368,14 @@ pub(super) fn display_groups_require_composed_scene(
 }
 
 #[cfg(feature = "wgpu")]
+fn display_finalize_dispatch_reuses_retained_frame(dispatch: &DisplayFinalizeDispatch) -> bool {
+    match dispatch {
+        DisplayFinalizeDispatch::Unsupported | DisplayFinalizeDispatch::Saturated => true,
+        DisplayFinalizeDispatch::Pending(_) => false,
+    }
+}
+
+#[cfg(feature = "wgpu")]
 fn display_finalize_frame_to_group(
     frame: DisplayFinalizeFrame,
     frame_format: DisplayFrameFormat,
@@ -382,15 +396,42 @@ fn display_finalize_frame_to_group(
 mod tests {
     use std::collections::HashMap;
 
-    use hypercolor_core::bus::{DisplayGroupOutputRoute, DisplayGroupViewport};
+    use hypercolor_core::bus::{
+        DisplayGroupFrame, DisplayGroupOutputRoute, DisplayGroupTarget, DisplayGroupViewport,
+        DisplayYuv420Frame,
+    };
     use hypercolor_core::types::canvas::Canvas;
+    use hypercolor_types::canvas::Rgba;
     use hypercolor_types::device::{DeviceId, DisplayFrameFormat};
     use hypercolor_types::scene::{DisplayFaceBlendMode, DisplayFaceTarget, ZoneId};
     use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition};
 
+    #[cfg(feature = "wgpu")]
+    use super::{
+        DisplayLaneContext, DisplayLaneMaterializer, DisplayLaneRoutes,
+        display_finalize_dispatch_reuses_retained_frame, display_finalize_frame_to_group,
+        display_groups_require_composed_scene,
+    };
+    #[cfg(not(feature = "wgpu"))]
     use super::{DisplayLaneRoutes, display_groups_require_composed_scene};
+    #[cfg(feature = "wgpu")]
+    use crate::render_thread::composition_planner::CompositionPlanner;
+    #[cfg(feature = "wgpu")]
+    use crate::render_thread::pipeline_runtime::{
+        ComposeRuntime, DisplayFinalizeRuntime, OutputArtifactsState,
+    };
     use crate::render_thread::producer_queue::ProducerFrame;
+    #[cfg(feature = "wgpu")]
+    use crate::render_thread::producer_queue::ProducerQueue;
     use crate::render_thread::render_groups::PendingGroupCanvasFrame;
+    #[cfg(feature = "wgpu")]
+    use crate::render_thread::render_groups::{GroupCanvasFrame, ZoneRuntime};
+    #[cfg(feature = "wgpu")]
+    use crate::render_thread::scene_dependency::SceneDependencyKey;
+    #[cfg(feature = "wgpu")]
+    use crate::render_thread::sparkleflinger::{
+        DisplayFinalizeDispatch, DisplayFinalizeFrame, SparkleFlinger,
+    };
 
     #[test]
     fn blended_display_group_forces_composed_scene_for_finalization() {
@@ -469,6 +510,162 @@ mod tests {
         assert_eq!(routes.route_for_group(&group_id), Some(&bus_route));
     }
 
+    #[cfg(feature = "wgpu")]
+    #[test]
+    fn display_lane_reuses_retained_materialized_frame_within_route_cadence() {
+        let group_id = ZoneId::new();
+        let device_id = DeviceId::new();
+        let display_target = DisplayFaceTarget::new(device_id);
+        let display_route = display_route(device_id, 1.0);
+        let retained_frame = group_canvas_frame(&display_target, [255, 0, 0], true);
+        let dependency_key = SceneDependencyKey::new(1, 1);
+        let mut harness = DisplayLaneHarness::new();
+        harness
+            .render_group_runtime
+            .retain_materialized_group_frame(
+                group_id,
+                100,
+                dependency_key,
+                &display_target,
+                &display_route,
+                false,
+                &retained_frame,
+            );
+
+        let current_routes = HashMap::from([(group_id, display_route)]);
+        let fallback_routes = HashMap::new();
+        let target_fps = HashMap::from([(group_id, 30)]);
+        let context = DisplayLaneContext {
+            elapsed_ms: 120,
+            dependency_key,
+            target_fps: &target_fps,
+            routes: DisplayLaneRoutes {
+                current: &current_routes,
+                fallback: &fallback_routes,
+            },
+        };
+        let scene_frame = ProducerFrame::Canvas(color_canvas([0, 0, 255]));
+        let fresh_frame = PendingGroupCanvasFrame {
+            frame: ProducerFrame::Canvas(color_canvas([0, 255, 0])),
+            display_target,
+            empty_direct_shell: false,
+        };
+
+        let mut compose = harness.compose_runtime();
+        let materialized = DisplayLaneMaterializer::new(&mut compose, context)
+            .materialize_group_canvases(&[group_id], vec![(group_id, fresh_frame)], &scene_frame);
+
+        assert_eq!(materialized.len(), 1);
+        assert_eq!(first_pixel(&materialized[0].1.frame), [255, 0, 0, 255]);
+    }
+
+    #[cfg(feature = "wgpu")]
+    #[test]
+    fn unsupported_display_finalize_reuses_latest_retained_materialized_frame() {
+        let group_id = ZoneId::new();
+        let device_id = DeviceId::new();
+        let display_target = DisplayFaceTarget::new(device_id);
+        let display_route = display_route(device_id, 1.0);
+        let retained_frame = group_canvas_frame(&display_target, [255, 0, 0], true);
+        let dependency_key = SceneDependencyKey::new(1, 1);
+        let mut harness = DisplayLaneHarness::new();
+        harness
+            .render_group_runtime
+            .retain_materialized_group_frame(
+                group_id,
+                100,
+                dependency_key,
+                &display_target,
+                &display_route,
+                false,
+                &retained_frame,
+            );
+
+        let current_routes = HashMap::from([(group_id, display_route)]);
+        let fallback_routes = HashMap::new();
+        let target_fps = HashMap::from([(group_id, 30)]);
+        let context = DisplayLaneContext {
+            elapsed_ms: 140,
+            dependency_key,
+            target_fps: &target_fps,
+            routes: DisplayLaneRoutes {
+                current: &current_routes,
+                fallback: &fallback_routes,
+            },
+        };
+        let scene_frame = ProducerFrame::Canvas(color_canvas([0, 0, 255]));
+        let fresh_frame = PendingGroupCanvasFrame {
+            frame: ProducerFrame::Canvas(color_canvas([0, 255, 0])),
+            display_target,
+            empty_direct_shell: false,
+        };
+
+        let mut compose = harness.compose_runtime();
+        let materialized = DisplayLaneMaterializer::new(&mut compose, context)
+            .materialize_group_canvases(&[group_id], vec![(group_id, fresh_frame)], &scene_frame);
+
+        assert_eq!(materialized.len(), 1);
+        assert_eq!(first_pixel(&materialized[0].1.frame), [255, 0, 0, 255]);
+    }
+
+    #[cfg(feature = "wgpu")]
+    #[test]
+    fn unsupported_and_saturated_display_finalize_dispatches_retain_previous_frame() {
+        assert!(display_finalize_dispatch_reuses_retained_frame(
+            &DisplayFinalizeDispatch::Unsupported
+        ));
+        assert!(display_finalize_dispatch_reuses_retained_frame(
+            &DisplayFinalizeDispatch::Saturated
+        ));
+    }
+
+    #[cfg(feature = "wgpu")]
+    #[test]
+    fn display_finalize_frame_format_dispatch_rejects_mismatched_frames() {
+        let surface = hypercolor_core::types::canvas::PublishedSurface::from_owned_canvas(
+            color_canvas([255, 0, 0]),
+            7,
+            11,
+        );
+        let yuv = DisplayYuv420Frame::from_vec(vec![0; 6], 2, 2, 2, 1, 4, 1, 7, 11);
+
+        let rgb_frame = display_finalize_frame_to_group(
+            DisplayFinalizeFrame::Rgba(surface),
+            DisplayFrameFormat::Rgb,
+        )
+        .expect("RGB finalize should accept RGBA display frames");
+        assert!(matches!(rgb_frame, DisplayGroupFrame::Canvas(_)));
+
+        let jpeg_frame = display_finalize_frame_to_group(
+            DisplayFinalizeFrame::Yuv420(yuv),
+            DisplayFrameFormat::Jpeg,
+        )
+        .expect("JPEG finalize should accept YUV420 display frames");
+        assert!(matches!(jpeg_frame, DisplayGroupFrame::Yuv420(_)));
+
+        let mismatched_surface =
+            hypercolor_core::types::canvas::PublishedSurface::from_owned_canvas(
+                color_canvas([255, 0, 0]),
+                7,
+                11,
+            );
+        let mismatched_yuv = DisplayYuv420Frame::from_vec(vec![0; 6], 2, 2, 2, 1, 4, 1, 7, 11);
+        assert!(
+            display_finalize_frame_to_group(
+                DisplayFinalizeFrame::Rgba(mismatched_surface),
+                DisplayFrameFormat::Jpeg,
+            )
+            .is_none()
+        );
+        assert!(
+            display_finalize_frame_to_group(
+                DisplayFinalizeFrame::Yuv420(mismatched_yuv),
+                DisplayFrameFormat::Rgb,
+            )
+            .is_none()
+        );
+    }
+
     fn display_route(device_id: DeviceId, brightness: f32) -> DisplayGroupOutputRoute {
         DisplayGroupOutputRoute {
             device_id,
@@ -484,6 +681,84 @@ mod tests {
                 scale: 1.0,
                 edge_behavior: EdgeBehavior::Clamp,
             },
+        }
+    }
+
+    #[cfg(feature = "wgpu")]
+    fn color_canvas(rgb: [u8; 3]) -> Canvas {
+        let mut canvas = Canvas::new(2, 2);
+        canvas.fill(Rgba::new(rgb[0], rgb[1], rgb[2], 255));
+        canvas
+    }
+
+    #[cfg(feature = "wgpu")]
+    fn group_canvas_frame(
+        display_target: &DisplayFaceTarget,
+        rgb: [u8; 3],
+        finalized: bool,
+    ) -> GroupCanvasFrame {
+        GroupCanvasFrame {
+            frame: DisplayGroupFrame::from_surface(
+                hypercolor_core::types::canvas::PublishedSurface::from_owned_canvas(
+                    color_canvas(rgb),
+                    0,
+                    0,
+                ),
+            ),
+            display_target: DisplayGroupTarget {
+                device_id: display_target.device_id,
+                blend_mode: display_target.blend_mode,
+                opacity: display_target.opacity,
+                finalized,
+            },
+        }
+    }
+
+    #[cfg(feature = "wgpu")]
+    fn first_pixel(frame: &DisplayGroupFrame) -> [u8; 4] {
+        match frame {
+            DisplayGroupFrame::Canvas(frame) => frame.rgba_bytes()[0..4]
+                .try_into()
+                .expect("canvas frame should have at least one pixel"),
+            DisplayGroupFrame::Yuv420(_) => panic!("expected RGBA display frame"),
+        }
+    }
+
+    #[cfg(feature = "wgpu")]
+    struct DisplayLaneHarness {
+        screen_queue: ProducerQueue,
+        composition_planner: CompositionPlanner,
+        sparkleflinger: SparkleFlinger,
+        display_sparkleflinger: SparkleFlinger,
+        display_finalize_runtime: DisplayFinalizeRuntime,
+        render_group_runtime: ZoneRuntime,
+        output_artifacts: OutputArtifactsState,
+    }
+
+    #[cfg(feature = "wgpu")]
+    impl DisplayLaneHarness {
+        fn new() -> Self {
+            Self {
+                screen_queue: ProducerQueue::new(),
+                composition_planner: CompositionPlanner::new(),
+                sparkleflinger: SparkleFlinger::cpu(),
+                display_sparkleflinger: SparkleFlinger::cpu(),
+                display_finalize_runtime: DisplayFinalizeRuntime::default(),
+                render_group_runtime: ZoneRuntime::new(2, 2),
+                output_artifacts: OutputArtifactsState::default(),
+            }
+        }
+
+        fn compose_runtime(&mut self) -> ComposeRuntime<'_> {
+            ComposeRuntime {
+                screen_queue: &mut self.screen_queue,
+                composition_planner: &mut self.composition_planner,
+                sparkleflinger: &mut self.sparkleflinger,
+                display_sparkleflinger: &mut self.display_sparkleflinger,
+                display_finalize_runtime: &mut self.display_finalize_runtime,
+                render_group_runtime: &mut self.render_group_runtime,
+                output_artifacts: &mut self.output_artifacts,
+            }
         }
     }
 }
