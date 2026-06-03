@@ -3,7 +3,6 @@ use std::fmt;
 use std::num::NonZeroU32;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::sync::Arc;
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
@@ -17,7 +16,15 @@ const GL_TIMEOUT_IGNORED_NS: i32 = -1;
 const DEFAULT_IMPORT_SLOT_COUNT: usize = 8;
 const MAX_RECOVERABLE_POLL_ERRORS_WITHOUT_COMPLETION: u32 = 16;
 static NEXT_STORAGE_ID: AtomicU64 = AtomicU64::new(1);
-static PROCESS_GL_LOADER: OnceLock<Option<ProcessGlLoader>> = OnceLock::new();
+
+mod capabilities;
+mod loader;
+
+pub use capabilities::{
+    LinuxGpuImportCapabilities, check_wgpu_vulkan_external_memory_fd,
+    missing_gl_external_memory_functions, missing_process_gl_external_memory_functions,
+    report_linux_gpu_import_capabilities,
+};
 
 /// Result type for Linux GPU interop operations.
 pub type Result<T> = std::result::Result<T, LinuxGpuInteropError>;
@@ -528,27 +535,6 @@ impl LinuxGlFramebufferImporter {
     }
 }
 
-/// Capability report for the Linux zero-copy import path.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LinuxGpuImportCapabilities {
-    /// Whether the active wgpu device exposes its Vulkan HAL.
-    pub wgpu_vulkan_device: bool,
-    /// Whether the Vulkan device has `VK_KHR_external_memory_fd`.
-    pub vulkan_external_memory_fd: bool,
-    /// Whether the GL context exposes `GL_EXT_memory_object_fd`.
-    pub gl_memory_object_fd: bool,
-    /// Missing capabilities, in stable diagnostic order.
-    pub missing: Vec<&'static str>,
-}
-
-impl LinuxGpuImportCapabilities {
-    /// Returns `true` when all required capabilities are present.
-    #[must_use]
-    pub fn supported(&self) -> bool {
-        self.missing.is_empty()
-    }
-}
-
 type GlCreateMemoryObjectsExt = unsafe extern "system" fn(i32, *mut u32);
 type GlMemoryObjectParameterivExt = unsafe extern "system" fn(u32, u32, *const i32);
 type GlImportMemoryFdExt = unsafe extern "system" fn(u32, u64, u32, i32);
@@ -639,90 +625,10 @@ impl GlExternalMemoryFunctions {
 
     /// Loads required entry points from libGL/libEGL process loaders.
     pub fn load_from_process() -> Result<Self> {
-        let loader = PROCESS_GL_LOADER
-            .get_or_init(ProcessGlLoader::load)
-            .ok_or(LinuxGpuInteropError::GlProcLoaderUnavailable)?;
-        Self::load_from(|symbol| loader.lookup(symbol))
-    }
-}
-
-/// Reports missing GL entry points for `GL_EXT_memory_object_fd`.
-#[must_use]
-pub fn missing_gl_external_memory_functions(
-    mut get_proc_address: impl FnMut(&CStr) -> *const c_void,
-) -> Vec<&'static str> {
-    [
-        (c"glCreateMemoryObjectsEXT", "glCreateMemoryObjectsEXT"),
-        (
-            c"glMemoryObjectParameterivEXT",
-            "glMemoryObjectParameterivEXT",
-        ),
-        (c"glImportMemoryFdEXT", "glImportMemoryFdEXT"),
-        (c"glTexStorageMem2DEXT", "glTexStorageMem2DEXT"),
-        (c"glDeleteMemoryObjectsEXT", "glDeleteMemoryObjectsEXT"),
-    ]
-    .into_iter()
-    .filter_map(|(symbol, name)| get_proc_address(symbol).is_null().then_some(name))
-    .collect()
-}
-
-/// Reports missing `GL_EXT_memory_object_fd` entry points through libGL/libEGL.
-#[must_use]
-pub fn missing_process_gl_external_memory_functions() -> Vec<&'static str> {
-    let Some(loader) = PROCESS_GL_LOADER.get_or_init(ProcessGlLoader::load) else {
-        return vec!["libGL.so.1", "libEGL.so.1"];
-    };
-    missing_gl_external_memory_functions(|symbol| loader.lookup(symbol))
-}
-
-/// Verifies that the active wgpu device can expose Vulkan external memory FDs.
-pub fn check_wgpu_vulkan_external_memory_fd(device: &wgpu::Device) -> Result<()> {
-    // SAFETY: this only borrows the underlying HAL device long enough to inspect
-    // immutable device-extension metadata; no raw handles are retained.
-    let hal_device = unsafe { device.as_hal::<wgpu_hal::api::Vulkan>() }
-        .ok_or(LinuxGpuInteropError::MissingWgpuVulkanDevice)?;
-
-    if hal_device
-        .enabled_device_extensions()
-        .contains(&khr::external_memory_fd::NAME)
-    {
-        Ok(())
-    } else {
-        Err(LinuxGpuInteropError::MissingVulkanDeviceExtension(
-            "VK_KHR_external_memory_fd",
-        ))
-    }
-}
-
-/// Collects the import capability status for the active GL and wgpu contexts.
-#[must_use]
-pub fn report_linux_gpu_import_capabilities(
-    device: &wgpu::Device,
-    get_proc_address: impl FnMut(&CStr) -> *const c_void,
-) -> LinuxGpuImportCapabilities {
-    let vulkan_result = check_wgpu_vulkan_external_memory_fd(device);
-    let missing_gl = missing_gl_external_memory_functions(get_proc_address);
-
-    let mut missing = Vec::new();
-    let wgpu_vulkan_device = !matches!(
-        vulkan_result,
-        Err(LinuxGpuInteropError::MissingWgpuVulkanDevice)
-    );
-    let vulkan_external_memory_fd = vulkan_result.is_ok();
-
-    if !wgpu_vulkan_device {
-        missing.push("wgpu_vulkan_device");
-    }
-    if wgpu_vulkan_device && !vulkan_external_memory_fd {
-        missing.push("VK_KHR_external_memory_fd");
-    }
-    missing.extend(missing_gl.iter().copied());
-
-    LinuxGpuImportCapabilities {
-        wgpu_vulkan_device,
-        vulkan_external_memory_fd,
-        gl_memory_object_fd: missing_gl.is_empty(),
-        missing,
+        if !loader::process_gl_loader_available() {
+            return Err(LinuxGpuInteropError::GlProcLoaderUnavailable);
+        }
+        Self::load_from(loader::lookup_process_gl_symbol)
     }
 }
 
@@ -1557,91 +1463,6 @@ fn duplicate_fd(fd: i32) -> Result<i32> {
                 .unwrap_or_default(),
         })
     }
-}
-
-#[derive(Clone, Copy)]
-struct ProcessGlLoader {
-    lib_gl: Option<usize>,
-    lib_egl: Option<usize>,
-    glx_get_proc_address: Option<GlxGetProcAddress>,
-    egl_get_proc_address: Option<EglGetProcAddress>,
-}
-
-type GlxGetProcAddress = unsafe extern "C" fn(*const u8) -> *const c_void;
-type EglGetProcAddress = unsafe extern "C" fn(*const i8) -> *const c_void;
-
-impl ProcessGlLoader {
-    fn load() -> Option<Self> {
-        let lib_gl = open_library(c"libGL.so.1").or_else(|| open_library(c"libGL.so"));
-        let lib_egl = open_library(c"libEGL.so.1").or_else(|| open_library(c"libEGL.so"));
-        let glx_get_proc_address = lib_gl.and_then(|handle| {
-            lookup_raw_symbol(handle, c"glXGetProcAddressARB")
-                .or_else(|| lookup_raw_symbol(handle, c"glXGetProcAddress"))
-                .map(|ptr| {
-                    // SAFETY: symbol names are the GLX resolver entry points
-                    // with the standard C ABI.
-                    unsafe { std::mem::transmute::<*const c_void, GlxGetProcAddress>(ptr) }
-                })
-        });
-        let egl_get_proc_address = lib_egl.and_then(|handle| {
-            lookup_raw_symbol(handle, c"eglGetProcAddress").map(|ptr| {
-                // SAFETY: symbol name is the EGL resolver entry point with the
-                // standard C ABI.
-                unsafe { std::mem::transmute::<*const c_void, EglGetProcAddress>(ptr) }
-            })
-        });
-
-        (lib_gl.is_some()
-            || lib_egl.is_some()
-            || glx_get_proc_address.is_some()
-            || egl_get_proc_address.is_some())
-        .then_some(Self {
-            lib_gl,
-            lib_egl,
-            glx_get_proc_address,
-            egl_get_proc_address,
-        })
-    }
-
-    fn lookup(&self, symbol: &CStr) -> *const c_void {
-        self.lib_gl
-            .and_then(|handle| lookup_raw_symbol(handle, symbol))
-            .or_else(|| {
-                self.lib_egl
-                    .and_then(|handle| lookup_raw_symbol(handle, symbol))
-            })
-            .or_else(|| {
-                self.glx_get_proc_address.and_then(|get_proc_address| {
-                    // SAFETY: GLX resolver accepts a NUL-terminated GL symbol
-                    // name and returns null when unavailable.
-                    let ptr = unsafe { get_proc_address(symbol.as_ptr().cast::<u8>()) };
-                    (!ptr.is_null()).then_some(ptr)
-                })
-            })
-            .or_else(|| {
-                self.egl_get_proc_address.and_then(|get_proc_address| {
-                    // SAFETY: EGL resolver accepts a NUL-terminated GL symbol
-                    // name and returns null when unavailable.
-                    let ptr = unsafe { get_proc_address(symbol.as_ptr()) };
-                    (!ptr.is_null()).then_some(ptr)
-                })
-            })
-            .unwrap_or(std::ptr::null())
-    }
-}
-
-fn open_library(name: &CStr) -> Option<usize> {
-    // SAFETY: dlopen receives a static NUL-terminated library name. Handles are
-    // intentionally retained for process lifetime so resolved function pointers
-    // remain valid while Servo's GL context is alive.
-    let handle = unsafe { libc::dlopen(name.as_ptr(), libc::RTLD_LAZY | libc::RTLD_LOCAL) };
-    (!handle.is_null()).then_some(handle as usize)
-}
-
-fn lookup_raw_symbol(handle: usize, symbol: &CStr) -> Option<*const c_void> {
-    // SAFETY: handle came from dlopen and symbol is NUL-terminated.
-    let ptr = unsafe { libc::dlsym(handle as *mut c_void, symbol.as_ptr()) };
-    (!ptr.is_null()).then_some(ptr.cast_const())
 }
 
 enum GlFenceStatus {
