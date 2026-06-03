@@ -30,15 +30,21 @@ use crate::render_thread::sparkleflinger::gpu_sampling::{
     PendingGpuSampleReadback,
 };
 
+mod media_upload;
 mod telemetry;
 
+#[cfg(test)]
+use media_upload::MEDIA_UPLOAD_TEXTURE_RING_LEN;
+use media_upload::{
+    MEDIA_UPLOAD_TEXTURE_POOL_IDLE_FRAMES, MediaUploadTextureKey, MediaUploadTexturePool,
+};
 #[cfg(test)]
 use telemetry::record_gpu_display_finalize_blocking_wait;
 pub(crate) use telemetry::{GpuSparkleFlingerTelemetrySnapshot, record_gpu_display_finalize_latch};
 use telemetry::{
     record_gpu_display_finalize_attempt, record_gpu_display_finalize_result,
-    record_gpu_display_finalize_surface_realloc, record_gpu_media_texture_allocation,
-    record_gpu_media_texture_upload, record_gpu_source_upload_skipped,
+    record_gpu_display_finalize_surface_realloc, record_gpu_media_texture_upload,
+    record_gpu_source_upload_skipped,
 };
 
 pub(crate) fn gpu_sparkleflinger_telemetry_snapshot() -> GpuSparkleFlingerTelemetrySnapshot {
@@ -54,8 +60,6 @@ const DISPLAY_FINALIZE_PARAM_BYTES: usize = 96;
 const PREVIEW_SCALE_PARAM_BYTES: usize = 16;
 const MAX_CACHED_PREVIEW_SURFACES: usize = 3;
 const MAX_CACHED_PREVIEW_READBACK_POOLS: usize = 3;
-const MEDIA_UPLOAD_TEXTURE_RING_LEN: usize = 3;
-const MEDIA_UPLOAD_TEXTURE_POOL_IDLE_FRAMES: u64 = 300;
 const PREVIEW_READBACK_SLOT_COUNT: usize = 2;
 const DISPLAY_FINALIZE_READBACK_SLOT_COUNT: usize = 3;
 #[cfg(test)]
@@ -250,19 +254,6 @@ struct GpuPreviewSurfaceSet {
     last_readback_bytes: u64,
     #[cfg(test)]
     readback_surface_pool_allocation_count: usize,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct MediaUploadTextureKey {
-    source: MediaTextureSourceKey,
-    width: u32,
-    height: u32,
-}
-
-struct MediaUploadTexturePool {
-    textures: Vec<GpuCompositorTexture>,
-    next_slot: usize,
-    last_used_epoch: u64,
 }
 
 struct GpuCompositorTexture {
@@ -2616,38 +2607,6 @@ impl GpuDisplaySourceTexture {
             cached_upload: None,
             cached_gpu_copy: None,
         }
-    }
-}
-
-impl MediaUploadTexturePool {
-    fn new() -> Self {
-        Self {
-            textures: Vec::with_capacity(MEDIA_UPLOAD_TEXTURE_RING_LEN),
-            next_slot: 0,
-            last_used_epoch: 0,
-        }
-    }
-
-    fn next_texture(
-        &mut self,
-        device: &wgpu::Device,
-        key: MediaUploadTextureKey,
-        media_texture_epoch: u64,
-    ) -> &GpuCompositorTexture {
-        self.last_used_epoch = media_texture_epoch;
-        if self.textures.len() < MEDIA_UPLOAD_TEXTURE_RING_LEN {
-            self.textures.push(GpuCompositorTexture::new(
-                device,
-                key.width,
-                key.height,
-                "SparkleFlinger GPU pooled media producer texture",
-            ));
-            record_gpu_media_texture_allocation();
-        }
-
-        let slot = self.next_slot % self.textures.len();
-        self.next_slot = (slot + 1) % MEDIA_UPLOAD_TEXTURE_RING_LEN;
-        &self.textures[slot]
     }
 }
 
