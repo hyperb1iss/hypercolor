@@ -170,22 +170,16 @@ impl BackendManager {
             };
 
             let backend = self.backends.get(backend_id.as_str()).cloned();
-            let Some(queue) = self.output.ensure_queue_for_key(key, backend) else {
+            let led_count = values.len();
+            if !self.output.push_staged_frame(key, backend, values) {
                 stats
                     .errors
                     .push(format!("backend '{backend_id}' not registered"));
-                if let Some(staging) = self.output.staging_mut(key) {
-                    staging.output = values;
-                }
                 continue;
-            };
+            }
 
             stats.devices_written += 1;
-            stats.total_leds += values.len();
-            let recycled = queue.push(values);
-            if let (Some(staging), Some(recycled)) = (self.output.staging_mut(key), recycled) {
-                staging.output = recycled;
-            }
+            stats.total_leds += led_count;
         }
 
         self.output.restore_active_staging_keys(active_staging_keys);

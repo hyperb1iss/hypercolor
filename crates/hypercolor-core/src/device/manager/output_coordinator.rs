@@ -216,6 +216,26 @@ impl DeviceOutputCoordinator {
         self.queues.get_mut(key)
     }
 
+    pub(super) fn push_staged_frame(
+        &mut self,
+        key: &BackendDeviceKey,
+        backend: Option<BackendHandle>,
+        values: Vec<[u8; 3]>,
+    ) -> bool {
+        let Some(queue) = self.ensure_queue_for_key(key, backend) else {
+            if let Some(staging) = self.staging.get_mut(key) {
+                staging.output = values;
+            }
+            return false;
+        };
+
+        let recycled = queue.push(values);
+        if let (Some(staging), Some(recycled)) = (self.staging.get_mut(key), recycled) {
+            staging.output = recycled;
+        }
+        true
+    }
+
     pub(super) fn queues(&self) -> impl Iterator<Item = (&BackendDeviceKey, &OutputQueue)> + '_ {
         self.queues.iter()
     }
