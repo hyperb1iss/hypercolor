@@ -11,7 +11,6 @@ use hypercolor_core::bus::DisplayYuv420Frame;
 use hypercolor_core::spatial::PreparedZonePlan;
 use hypercolor_core::types::canvas::{
     BYTES_PER_PIXEL, Canvas, PublishedSurface, PublishedSurfaceStorageIdentity, RenderSurfacePool,
-    SurfaceDescriptor,
 };
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::scene::ZoneId;
@@ -32,6 +31,7 @@ use crate::render_thread::sparkleflinger::gpu_sampling::{
 
 mod display_finalize;
 mod media_upload;
+mod preview;
 mod telemetry;
 
 #[cfg(test)]
@@ -49,6 +49,11 @@ use display_finalize::{
 use media_upload::MEDIA_UPLOAD_TEXTURE_RING_LEN;
 use media_upload::{
     MEDIA_UPLOAD_TEXTURE_POOL_IDLE_FRAMES, MediaUploadTextureKey, MediaUploadTexturePool,
+};
+use preview::{
+    CachedPreviewSurface, CachedPreviewSurfaceKey, GpuPreviewSurfaceSet, PendingPreviewMap,
+    PendingPreviewReadback, bypass_preview_surface, encode_preview_scale_params,
+    preview_request_matches_plan,
 };
 #[cfg(test)]
 use telemetry::record_gpu_display_finalize_blocking_wait;
@@ -71,8 +76,6 @@ const SOURCE_COPY_PARAM_BYTES: usize = 16;
 const DISPLAY_FINALIZE_PARAM_BYTES: usize = 96;
 const PREVIEW_SCALE_PARAM_BYTES: usize = 16;
 const MAX_CACHED_PREVIEW_SURFACES: usize = 3;
-const MAX_CACHED_PREVIEW_READBACK_POOLS: usize = 3;
-const PREVIEW_READBACK_SLOT_COUNT: usize = 2;
 
 #[derive(Debug, Clone)]
 pub(crate) struct GpuCompositorProbe {
@@ -159,29 +162,6 @@ struct GpuCompositorSurfaceSet {
     compose_param_write_count: usize,
 }
 
-struct GpuPreviewSurfaceSet {
-    width: u32,
-    height: u32,
-    capacity_width: u32,
-    capacity_height: u32,
-    padded_bytes_per_row: u32,
-    output_buffer: wgpu::Buffer,
-    readbacks: [wgpu::Buffer; PREVIEW_READBACK_SLOT_COUNT],
-    next_readback_slot: usize,
-    bind_groups: GpuPreviewScaleBindGroups,
-    readback_surfaces: RenderSurfacePool,
-    cached_readback_surfaces: Vec<CachedPreviewReadbackSurfaces>,
-    cached_scale_params: Option<[u8; PREVIEW_SCALE_PARAM_BYTES]>,
-    #[cfg(test)]
-    scale_param_write_count: usize,
-    #[cfg(test)]
-    preview_bind_group_count: usize,
-    #[cfg(test)]
-    last_readback_bytes: u64,
-    #[cfg(test)]
-    readback_surface_pool_allocation_count: usize,
-}
-
 struct GpuCompositorTexture {
     texture: wgpu::Texture,
     view: wgpu::TextureView,
@@ -190,11 +170,6 @@ struct GpuCompositorTexture {
 struct GpuCompositorBindGroups {
     front_to_back: wgpu::BindGroup,
     back_to_front: wgpu::BindGroup,
-}
-
-struct GpuPreviewScaleBindGroups {
-    front_to_preview: wgpu::BindGroup,
-    back_to_preview: wgpu::BindGroup,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -252,51 +227,6 @@ struct CachedReadbackAdjust {
 struct CachedReadbackSurface {
     key: Option<CachedReadbackKey>,
     surface: PublishedSurface,
-}
-
-#[derive(Debug, Clone)]
-struct CachedPreviewSurface {
-    key: CachedPreviewSurfaceKey,
-    surface: PublishedSurface,
-}
-
-struct CachedPreviewReadbackSurfaces {
-    request: PreviewSurfaceRequest,
-    surfaces: RenderSurfacePool,
-}
-
-#[derive(Debug, Clone)]
-enum PendingPreviewReadback {
-    PreviewBuffer {
-        request: PreviewSurfaceRequest,
-        readback_key: Option<CachedReadbackKey>,
-        cache_as_full_size: bool,
-        slot: usize,
-    },
-}
-
-struct PendingPreviewMap {
-    readback: PendingPreviewReadback,
-    used_bytes: u64,
-    receiver: mpsc::Receiver<std::result::Result<(), wgpu::BufferAsyncError>>,
-}
-
-impl PendingPreviewReadback {
-    fn matches_request(&self, request: PreviewSurfaceRequest) -> bool {
-        matches!(
-            self,
-            Self::PreviewBuffer {
-                request: pending_request,
-                ..
-            } if *pending_request == request
-        )
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct CachedPreviewSurfaceKey {
-    composition: CachedReadbackKey,
-    request: PreviewSurfaceRequest,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2401,147 +2331,6 @@ impl GpuCompositorSurfaceSet {
     }
 }
 
-impl GpuPreviewSurfaceSet {
-    fn new(
-        device: &wgpu::Device,
-        pipeline: &GpuCompositorPipeline,
-        front_view: &wgpu::TextureView,
-        back_view: &wgpu::TextureView,
-        width: u32,
-        height: u32,
-    ) -> Self {
-        let padded_bytes_per_row = width * BYTES_PER_PIXEL as u32;
-        let output_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("SparkleFlinger GPU preview output"),
-            size: u64::from(width)
-                .saturating_mul(u64::from(height))
-                .saturating_mul(BYTES_PER_PIXEL as u64),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-        let readbacks = std::array::from_fn(|slot| {
-            device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some(match slot {
-                    0 => "SparkleFlinger GPU preview readback A",
-                    1 => "SparkleFlinger GPU preview readback B",
-                    _ => "SparkleFlinger GPU preview readback",
-                }),
-                size: u64::from(width)
-                    .saturating_mul(u64::from(height))
-                    .saturating_mul(BYTES_PER_PIXEL as u64),
-                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                mapped_at_creation: false,
-            })
-        });
-        Self {
-            width,
-            height,
-            capacity_width: width,
-            capacity_height: height,
-            padded_bytes_per_row,
-            readbacks,
-            next_readback_slot: 0,
-            bind_groups: GpuPreviewScaleBindGroups::new(
-                device,
-                pipeline,
-                front_view,
-                back_view,
-                &output_buffer,
-            ),
-            output_buffer,
-            readback_surfaces: RenderSurfacePool::new(SurfaceDescriptor::rgba8888(width, height)),
-            cached_readback_surfaces: Vec::with_capacity(MAX_CACHED_PREVIEW_READBACK_POOLS),
-            cached_scale_params: None,
-            #[cfg(test)]
-            scale_param_write_count: 0,
-            #[cfg(test)]
-            preview_bind_group_count: 2,
-            #[cfg(test)]
-            last_readback_bytes: 0,
-            #[cfg(test)]
-            readback_surface_pool_allocation_count: 1,
-        }
-    }
-
-    fn fits_request(&self, width: u32, height: u32) -> bool {
-        width <= self.capacity_width && height <= self.capacity_height
-    }
-
-    fn reconfigure(&mut self, width: u32, height: u32) {
-        if self.width == width && self.height == height {
-            return;
-        }
-        let next_request = PreviewSurfaceRequest { width, height };
-        let next_surfaces = self
-            .take_cached_readback_surfaces(next_request)
-            .unwrap_or_else(|| {
-                #[cfg(test)]
-                {
-                    self.readback_surface_pool_allocation_count = self
-                        .readback_surface_pool_allocation_count
-                        .saturating_add(1);
-                }
-                RenderSurfacePool::new(SurfaceDescriptor::rgba8888(width, height))
-            });
-        let current_request = PreviewSurfaceRequest {
-            width: self.width,
-            height: self.height,
-        };
-        let current_surfaces = std::mem::replace(&mut self.readback_surfaces, next_surfaces);
-        self.store_cached_readback_surfaces(current_request, current_surfaces);
-        self.width = width;
-        self.height = height;
-        self.padded_bytes_per_row = width * BYTES_PER_PIXEL as u32;
-    }
-
-    fn select_readback_slot(&mut self, mapped_slot: Option<usize>) -> usize {
-        for offset in 0..PREVIEW_READBACK_SLOT_COUNT {
-            let slot = (self.next_readback_slot + offset) % PREVIEW_READBACK_SLOT_COUNT;
-            if Some(slot) != mapped_slot {
-                self.next_readback_slot = (slot + 1) % PREVIEW_READBACK_SLOT_COUNT;
-                return slot;
-            }
-        }
-        mapped_slot
-            .map(|slot| (slot + 1) % PREVIEW_READBACK_SLOT_COUNT)
-            .unwrap_or(0)
-    }
-
-    fn readback(&self, slot: usize) -> &wgpu::Buffer {
-        &self.readbacks[slot]
-    }
-
-    fn take_cached_readback_surfaces(
-        &mut self,
-        request: PreviewSurfaceRequest,
-    ) -> Option<RenderSurfacePool> {
-        self.cached_readback_surfaces
-            .iter()
-            .position(|cached| cached.request == request)
-            .map(|index| self.cached_readback_surfaces.remove(index).surfaces)
-    }
-
-    fn store_cached_readback_surfaces(
-        &mut self,
-        request: PreviewSurfaceRequest,
-        surfaces: RenderSurfacePool,
-    ) {
-        if let Some(index) = self
-            .cached_readback_surfaces
-            .iter()
-            .position(|cached| cached.request == request)
-        {
-            self.cached_readback_surfaces.remove(index);
-        }
-        self.cached_readback_surfaces
-            .insert(0, CachedPreviewReadbackSurfaces { request, surfaces });
-        if self.cached_readback_surfaces.len() > MAX_CACHED_PREVIEW_READBACK_POOLS {
-            self.cached_readback_surfaces
-                .truncate(MAX_CACHED_PREVIEW_READBACK_POOLS);
-        }
-    }
-}
-
 impl GpuCompositorTexture {
     fn new(device: &wgpu::Device, width: u32, height: u32, label: &'static str) -> Self {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -2586,33 +2375,6 @@ impl GpuCompositorBindGroups {
                 &source.view,
                 &front.view,
                 "SparkleFlinger GPU bind group back->front",
-            ),
-        }
-    }
-}
-
-impl GpuPreviewScaleBindGroups {
-    fn new(
-        device: &wgpu::Device,
-        pipeline: &GpuCompositorPipeline,
-        front_view: &wgpu::TextureView,
-        back_view: &wgpu::TextureView,
-        preview_buffer: &wgpu::Buffer,
-    ) -> Self {
-        Self {
-            front_to_preview: create_preview_scale_bind_group(
-                device,
-                pipeline,
-                front_view,
-                preview_buffer,
-                "SparkleFlinger GPU preview scale bind group front->preview",
-            ),
-            back_to_preview: create_preview_scale_bind_group(
-                device,
-                pipeline,
-                back_view,
-                preview_buffer,
-                "SparkleFlinger GPU preview scale bind group back->preview",
             ),
         }
     }
@@ -3303,24 +3065,6 @@ fn gpu_bypassed_canvas_frame(
     }
 }
 
-fn bypass_preview_surface(frame: &ProducerFrame) -> Option<PublishedSurface> {
-    match frame {
-        ProducerFrame::Surface(surface) => Some(surface.clone()),
-        ProducerFrame::Canvas(_) => None,
-        #[cfg(feature = "servo-gpu-import")]
-        ProducerFrame::Gpu(_) => None,
-        ProducerFrame::GpuTexture(_) => None,
-    }
-}
-
-fn preview_request_matches_plan(
-    request: Option<PreviewSurfaceRequest>,
-    width: u32,
-    height: u32,
-) -> bool {
-    request.is_none_or(|request| request.width == width && request.height == height)
-}
-
 fn set_texture_contents(
     surfaces: &mut GpuCompositorSurfaceSet,
     output: GpuCompositorOutputSurface,
@@ -3439,33 +3183,6 @@ fn create_source_copy_bind_group(
     })
 }
 
-fn create_preview_scale_bind_group(
-    device: &wgpu::Device,
-    pipeline: &GpuCompositorPipeline,
-    source: &wgpu::TextureView,
-    output: &wgpu::Buffer,
-    label: &'static str,
-) -> wgpu::BindGroup {
-    device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some(label),
-        layout: &pipeline.preview_scale_bind_group_layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(source),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: output.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: pipeline.preview_scale_params_buffer.as_entire_binding(),
-            },
-        ],
-    })
-}
-
 fn texture_extent(width: u32, height: u32) -> wgpu::Extent3d {
     wgpu::Extent3d {
         width,
@@ -3529,20 +3246,6 @@ fn encode_source_copy_params(
     bytes[0..4].copy_from_slice(&width.to_le_bytes());
     bytes[4..8].copy_from_slice(&height.to_le_bytes());
     bytes[8..12].copy_from_slice(&u32::from(flip_y).to_le_bytes());
-    bytes
-}
-
-fn encode_preview_scale_params(
-    source_width: u32,
-    source_height: u32,
-    preview_width: u32,
-    preview_height: u32,
-) -> [u8; PREVIEW_SCALE_PARAM_BYTES] {
-    let mut bytes = [0u8; PREVIEW_SCALE_PARAM_BYTES];
-    bytes[0..4].copy_from_slice(&source_width.to_le_bytes());
-    bytes[4..8].copy_from_slice(&source_height.to_le_bytes());
-    bytes[8..12].copy_from_slice(&preview_width.to_le_bytes());
-    bytes[12..16].copy_from_slice(&preview_height.to_le_bytes());
     bytes
 }
 
