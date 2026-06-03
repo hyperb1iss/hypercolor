@@ -14,11 +14,12 @@ use anyhow::{Context, Result, bail};
 use tokio::sync::Mutex;
 use tracing::debug;
 
-use hypercolor_types::device::{DeviceId, DeviceInfo, OwnedDisplayFramePayload};
+use hypercolor_types::device::{DeviceId, DeviceInfo};
 
 use super::traits::{DeviceBackend, DeviceFrameSink};
 
 mod backend_io;
+mod display_output;
 mod output_color;
 mod output_frame;
 mod output_telemetry;
@@ -414,60 +415,6 @@ impl BackendManager {
     #[must_use]
     pub fn output_brightness_generation(&self) -> u64 {
         self.device_brightness_generation
-    }
-
-    /// Write one immediate JPEG display payload to a specific physical device.
-    ///
-    /// This bypasses spatial routing and targets display-capable backends
-    /// directly for screen/LCD updates.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the backend is missing or the backend write fails.
-    pub async fn write_device_display_frame(
-        &mut self,
-        backend_id: &str,
-        device_id: DeviceId,
-        jpeg_data: &[u8],
-    ) -> Result<()> {
-        let Some(io) = self.backend_io(backend_id) else {
-            bail!("backend '{backend_id}' is not registered");
-        };
-        io.write_display_frame(device_id, jpeg_data).await
-    }
-
-    /// Write one owned JPEG display payload to a specific physical device.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the backend is missing or the backend write fails.
-    pub async fn write_device_display_frame_owned(
-        &mut self,
-        backend_id: &str,
-        device_id: DeviceId,
-        jpeg_data: Arc<Vec<u8>>,
-    ) -> Result<()> {
-        let Some(io) = self.backend_io(backend_id) else {
-            bail!("backend '{backend_id}' is not registered");
-        };
-        io.write_display_frame_owned(device_id, jpeg_data).await
-    }
-
-    /// Write one owned display payload to a specific physical device.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the backend is missing or the backend write fails.
-    pub async fn write_device_display_payload_owned(
-        &mut self,
-        backend_id: &str,
-        device_id: DeviceId,
-        payload: Arc<OwnedDisplayFramePayload>,
-    ) -> Result<()> {
-        let Some(io) = self.backend_io(backend_id) else {
-            bail!("backend '{backend_id}' is not registered");
-        };
-        io.write_display_payload_owned(device_id, payload).await
     }
 
     /// Cache a backend-provided output FPS for a physical device.
