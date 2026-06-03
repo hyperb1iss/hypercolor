@@ -437,3 +437,179 @@ impl ScreenScriptPayload {
         script
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn input_script_matches_adapter_contract() {
+        let payload = InputScriptPayload {
+            keyboard_keys: r#"{"A":true}"#.to_owned(),
+            recent_keys: r#"["A"]"#.to_owned(),
+            mouse_x: -4,
+            mouse_y: 12,
+            mouse_down: true,
+            mouse_buttons: r#"{"left":true}"#.to_owned(),
+        };
+
+        assert_eq!(
+            payload.script(),
+            r#"(function(){
+  if (typeof window.engine !== 'object' || window.engine === null) { window.engine = {}; }
+  if (typeof window.engine.keyboard !== 'object' || window.engine.keyboard === null) { window.engine.keyboard = {}; }
+  if (typeof window.engine.mouse !== 'object' || window.engine.mouse === null) { window.engine.mouse = {}; }
+  window.engine.keyboard.keys = {"A":true};
+  window.engine.keyboard.recent = ["A"];
+  window.engine.mouse.x = -4;
+  window.engine.mouse.y = 12;
+  window.engine.mouse.down = true;
+  window.engine.mouse.buttons = {"left":true};
+  if (typeof globalThis === 'object' && globalThis !== null) { globalThis.engine = window.engine; }
+})();"#
+        );
+    }
+
+    #[test]
+    fn audio_script_matches_adapter_contract() {
+        let payload = AudioScriptPayload {
+            level_db: -12.5,
+            level_linear: 1.5,
+            level_short: 2.5,
+            level_long: 3.5,
+            raw_rms: 4.5,
+            peak: 5.5,
+            bass: 6.5,
+            bass_env: 7.5,
+            mid: 8.5,
+            mid_env: 9.5,
+            treble: 10.5,
+            treble_env: 11.5,
+            density: 12.5,
+            momentum: 13.5,
+            swell: 14.5,
+            width: 15.5,
+            bpm: 128.0,
+            tempo: 129.0,
+            beat: true,
+            beat_pulse: 16.5,
+            beat_phase: 17.5,
+            beat_confidence: 18.5,
+            onset: false,
+            onset_pulse: 19.5,
+            spectral_flux: 20.5,
+            spectral_flux_bands_csv: "0.4,0.5".to_owned(),
+            brightness: 21.5,
+            spread: 22.5,
+            rolloff: 23.5,
+            roughness: 24.5,
+            harmonic_hue: 25.5,
+            chord_mood: 26.5,
+            dominant_pitch: 27.5,
+            dominant_pitch_confidence: 28.5,
+            frequency_raw_csv: "-1,2".to_owned(),
+            spectrum_csv: "0.25,0.5".to_owned(),
+            frequency_weighted_csv: "0.75".to_owned(),
+            mel_csv: "1,0".to_owned(),
+            mel_norm_csv: "0.1,0.2".to_owned(),
+            chroma_csv: "0.3".to_owned(),
+        };
+
+        assert_eq!(
+            payload.script(),
+            r#"(function(){
+  if (typeof window.engine !== 'object' || window.engine === null) { window.engine = {}; }
+  if (typeof window.engine.audio !== 'object' || window.engine.audio === null) { window.engine.audio = {}; }
+  window.engine.audio.level = -12.5;
+  window.engine.audio.levelRaw = -12.5;
+  window.engine.audio.levelLinear = 1.5;
+  window.engine.audio.levelShort = 2.5;
+  window.engine.audio.levelLong = 3.5;
+  window.engine.audio.rms = 4.5;
+  window.engine.audio.peak = 5.5;
+  window.engine.audio.bass = 6.5;
+  window.engine.audio.bassEnv = 7.5;
+  window.engine.audio.mid = 8.5;
+  window.engine.audio.midEnv = 9.5;
+  window.engine.audio.treble = 10.5;
+  window.engine.audio.trebleEnv = 11.5;
+  window.engine.audio.density = 12.5;
+  window.engine.audio.momentum = 13.5;
+  window.engine.audio.swell = 14.5;
+  window.engine.audio.width = 15.5;
+  window.engine.audio.bpm = 128;
+  window.engine.audio.tempo = 129;
+  window.engine.audio.beat = true;
+  window.engine.audio.beatPulse = 16.5;
+  window.engine.audio.beatPhase = 17.5;
+  window.engine.audio.beatConfidence = 18.5;
+  window.engine.audio.confidence = 18.5;
+  window.engine.audio.onset = false;
+  window.engine.audio.onsetPulse = 19.5;
+  window.engine.audio.spectralFlux = 20.5;
+  window.engine.audio.spectralFluxBands = new Float32Array([0.4,0.5]);
+  window.engine.audio.brightness = 21.5;
+  window.engine.audio.spread = 22.5;
+  window.engine.audio.rolloff = 23.5;
+  window.engine.audio.roughness = 24.5;
+  window.engine.audio.harmonicHue = 25.5;
+  window.engine.audio.chordMood = 26.5;
+  window.engine.audio.dominantPitch = 27.5;
+  window.engine.audio.dominantPitchConfidence = 28.5;
+  window.engine.audio.freq = new Int8Array([-1,2]);
+  window.engine.audio.frequencyRaw = new Int8Array([-1,2]);
+  window.engine.audio.frequency = new Float32Array([0.25,0.5]);
+  window.engine.audio.frequencyWeighted = new Float32Array([0.75]);
+  window.engine.audio.melBands = new Float32Array([1,0]);
+  window.engine.audio.melBandsNormalized = new Float32Array([0.1,0.2]);
+  window.engine.audio.chromagram = new Float32Array([0.3]);
+  if (typeof globalThis === 'object' && globalThis !== null) { globalThis.engine = window.engine; }
+})();"#
+        );
+    }
+
+    #[test]
+    fn sensor_script_matches_adapter_contract() {
+        let payload = SensorScriptPayload {
+            sensor_list: Some(r#"["gpu"]"#.to_owned()),
+            sensors_json: r#"{"gpu":{"value":42}}"#.to_owned(),
+            replace_sensor_map: false,
+        };
+
+        assert_eq!(
+            payload.script(),
+            r#"(function(){
+  if (typeof window.engine !== 'object' || window.engine === null) { window.engine = {}; }
+  if (typeof window.engine.sensors !== 'object' || window.engine.sensors === null) { window.engine.sensors = {}; }
+  Object.assign(window.engine.sensors, {"gpu":{"value":42}});
+  window.engine.sensorList = ["gpu"];
+  if (typeof globalThis === 'object' && globalThis !== null) { globalThis.engine = window.engine; }
+})();"#
+        );
+    }
+
+    #[test]
+    fn screen_script_matches_adapter_contract() {
+        let payload = ScreenScriptPayload {
+            grid_width: 2,
+            grid_height: 1,
+            hue_csv: "0,120".to_owned(),
+            saturation_csv: "127,0".to_owned(),
+            lightness_csv: "64,32".to_owned(),
+        };
+
+        assert_eq!(
+            payload.script(),
+            r#"(function(){
+  if (typeof window.engine !== 'object' || window.engine === null) { window.engine = {}; }
+  if (typeof window.engine.zone !== 'object' || window.engine.zone === null) { window.engine.zone = {}; }
+  window.engine.zone.width = 2;
+  window.engine.zone.height = 1;
+  window.engine.zone.hue = new Int16Array([0,120]);
+  window.engine.zone.saturation = new Int8Array([127,0]);
+  window.engine.zone.lightness = new Int8Array([64,32]);
+  if (typeof globalThis === 'object' && globalThis !== null) { globalThis.engine = window.engine; }
+})();"#
+        );
+    }
+}
