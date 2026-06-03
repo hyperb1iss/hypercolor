@@ -23,6 +23,8 @@ mod circuit_breaker;
 mod delegate;
 #[cfg(feature = "servo-gpu-import")]
 mod gpu_import;
+#[cfg(feature = "servo-gpu-import")]
+mod gpu_import_backend;
 mod memory;
 mod renderer;
 mod session;

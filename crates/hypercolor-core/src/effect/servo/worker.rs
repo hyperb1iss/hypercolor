@@ -33,12 +33,18 @@ use tracing::{debug, trace, warn};
 
 use super::circuit_breaker::ServoCircuitBreaker;
 use super::delegate::HypercolorWebViewDelegate;
+#[cfg(feature = "servo-gpu-import")]
+use super::gpu_import_backend::{
+    ServoFrameUnavailable, ServoGpuImportBackend, ServoGpuImportSessionContext,
+    classify_failure as classify_servo_gpu_import_error,
+    failure_detail as servo_gpu_import_failure_detail,
+    failure_is_transient as servo_gpu_import_failure_is_transient,
+    failure_should_clear_importer as servo_gpu_import_failure_should_clear_importer,
+    record_imported_frame,
+};
 use super::memory::ServoMemoryReportSnapshot;
 #[cfg(feature = "servo-gpu-import")]
-use super::telemetry::{
-    ServoGpuImportFallbackReason, record_servo_gpu_import_failure, record_servo_gpu_import_frame,
-    record_servo_gpu_import_slot_state,
-};
+use super::telemetry::record_servo_gpu_import_failure;
 use super::telemetry::{
     record_servo_cpu_render_frame, record_servo_destroy_wait, record_servo_gpu_render_frame,
     record_servo_render_queue_depth, record_servo_render_queue_wait,
@@ -64,13 +70,6 @@ use console::{
 use readback::read_framebuffer_into_canvas;
 pub(super) use runtime_html::{effect_is_audio_reactive, prepare_runtime_html_source};
 
-#[cfg(all(feature = "servo-gpu-import", target_os = "macos"))]
-type PlatformServoGpuImporter = hypercolor_macos_gpu_interop::MacosIosurfaceImporter;
-#[cfg(all(feature = "servo-gpu-import", target_os = "linux"))]
-type PlatformServoGpuImporter = hypercolor_linux_gpu_interop::LinuxGlFramebufferImporter;
-#[cfg(all(feature = "servo-gpu-import", target_os = "windows"))]
-type PlatformServoGpuImporter = hypercolor_windows_gpu_interop::WindowsD3d11SharedTextureImporter;
-
 pub(super) const LOAD_TIMEOUT: Duration = Duration::from_secs(5);
 const URL_LOAD_TIMEOUT: Duration = Duration::from_secs(15);
 const SCRIPT_TIMEOUT: Duration = Duration::from_millis(250);
@@ -80,8 +79,6 @@ const SCHEDULER_DRAIN_LIMIT: usize = 64;
 const JS_TIMER_MIN_DURATION_MS: i64 = 4;
 const MAX_SERVO_READBACK_RETIREES: usize = 8;
 const STATIC_CANVAS_REUSE_NO_READY_FRAMES: u32 = 2;
-#[cfg(feature = "servo-gpu-import")]
-const SERVO_GPU_IMPORT_TRANSIENT_RETRY: Duration = Duration::from_millis(250);
 
 /// Per-frame Servo render timings, split by stage. All durations in
 /// microseconds; the shared `_us` suffix is deliberate.
@@ -96,32 +93,6 @@ struct ServoRenderStageTimings {
     paint_us: u64,
     readback_us: u64,
     total_us: u64,
-}
-
-#[cfg(feature = "servo-gpu-import")]
-#[derive(Debug, thiserror::Error)]
-#[error(
-    "Servo GPU framebuffer import is temporarily unavailable: {reason} ({detail}); retry in {retry_ms}ms"
-)]
-pub(super) struct ServoFrameUnavailable {
-    reason: &'static str,
-    detail: String,
-    retry_ms: u64,
-}
-
-#[cfg(feature = "servo-gpu-import")]
-impl ServoFrameUnavailable {
-    pub(super) const fn reason(&self) -> &'static str {
-        self.reason
-    }
-
-    pub(super) fn detail(&self) -> &str {
-        &self.detail
-    }
-
-    pub(super) const fn retry_ms(&self) -> u64 {
-        self.retry_ms
-    }
 }
 
 // The shared worker. Servo can only exist once per process; this OnceLock
@@ -610,26 +581,14 @@ impl Drop for ServoWorker {
 struct ServoSession {
     webview: Option<WebView>,
     rendering_context: Rc<dyn RenderingContext>,
-    #[cfg(all(feature = "servo-gpu-import", target_os = "linux"))]
-    linux_context: Option<Rc<hypercolor_linux_gpu_interop::LinuxServoRenderingContext>>,
-    #[cfg(all(feature = "servo-gpu-import", target_os = "macos"))]
-    macos_hardware_context: Option<Rc<hypercolor_macos_gpu_interop::MacosHardwareRenderingContext>>,
-    #[cfg(all(feature = "servo-gpu-import", target_os = "windows"))]
-    windows_angle_context: Option<Rc<hypercolor_windows_gpu_interop::WindowsAngleRenderingContext>>,
     delegate: Rc<HypercolorWebViewDelegate>,
     loaded_html_path: Option<PathBuf>,
     script_buffer: String,
     readback_buffers: ServoReadbackBuffers,
     #[cfg(feature = "servo-gpu-import")]
-    gpu_importer: Option<PlatformServoGpuImporter>,
-    #[cfg(feature = "servo-gpu-import")]
-    gpu_import_retry_after: Option<Instant>,
+    gpu_import: ServoGpuImportBackend,
     loaded_at: Option<Instant>,
     renders_since_load: u64,
-    #[cfg(feature = "servo-gpu-import")]
-    gpu_import_transient_failures: u32,
-    #[cfg(feature = "servo-gpu-import")]
-    last_gpu_frame: Option<ImportedEffectFrame>,
     /// Most recent successful readback, retained so ticks where Servo has
     /// nothing new to composite can skip `read_to_image` entirely. Cloning a
     /// `Canvas` is an Arc refcount bump (zero-copy), so repeated reuse costs
@@ -971,8 +930,10 @@ impl ServoWorkerRuntime {
             bail!("Servo session {session_id:?} already exists");
         }
 
-        let rendering_context_handle = Self::create_rendering_context(width, height)?;
+        let mut rendering_context_handle = Self::create_rendering_context(width, height)?;
         let rendering_context = rendering_context_handle.rendering_context.clone();
+        #[cfg(feature = "servo-gpu-import")]
+        let gpu_import = ServoGpuImportBackend::new(&mut rendering_context_handle);
         rendering_context.make_current().map_err(|error| {
             anyhow!("failed to make Servo rendering context current: {error:?}")
         })?;
@@ -990,26 +951,14 @@ impl ServoWorkerRuntime {
             ServoSession {
                 webview: Some(webview),
                 rendering_context,
-                #[cfg(all(feature = "servo-gpu-import", target_os = "linux"))]
-                linux_context: rendering_context_handle.linux_context,
-                #[cfg(all(feature = "servo-gpu-import", target_os = "macos"))]
-                macos_hardware_context: rendering_context_handle.macos_hardware_context,
-                #[cfg(all(feature = "servo-gpu-import", target_os = "windows"))]
-                windows_angle_context: rendering_context_handle.windows_angle_context,
                 delegate,
                 loaded_html_path: None,
                 script_buffer: String::new(),
                 readback_buffers: ServoReadbackBuffers::default(),
                 #[cfg(feature = "servo-gpu-import")]
-                gpu_importer: None,
-                #[cfg(feature = "servo-gpu-import")]
-                gpu_import_retry_after: None,
+                gpu_import,
                 loaded_at: None,
                 renders_since_load: 0,
-                #[cfg(feature = "servo-gpu-import")]
-                gpu_import_transient_failures: 0,
-                #[cfg(feature = "servo-gpu-import")]
-                last_gpu_frame: None,
                 last_canvas: None,
                 consecutive_no_ready_frames: 0,
             },
@@ -1036,24 +985,7 @@ impl ServoWorkerRuntime {
         let Ok(session) = self.session(session_id) else {
             return;
         };
-        let Some(context) = session.macos_hardware_context.as_ref() else {
-            return;
-        };
-        match context.native_frame() {
-            Ok(frame) => {
-                debug!(
-                    width = frame.width,
-                    height = frame.height,
-                    surface_id = frame.surface_id,
-                    format = ?frame.format,
-                    origin = ?frame.origin,
-                    "macOS Servo hardware context exposes IOSurface"
-                );
-            }
-            Err(error) => {
-                debug!(%error, "macOS Servo IOSurface diagnostics unavailable");
-            }
-        }
+        session.gpu_import.trace_macos_native_surface(session_id);
     }
 
     fn build_webview(
@@ -1114,9 +1046,7 @@ impl ServoWorkerRuntime {
             session.readback_buffers = ServoReadbackBuffers::default();
             #[cfg(feature = "servo-gpu-import")]
             {
-                session.gpu_import_retry_after = None;
-                session.gpu_import_transient_failures = 0;
-                session.last_gpu_frame = None;
+                session.gpu_import.reset_retry_state();
             }
             session.loaded_at = None;
             session.renders_since_load = 0;
@@ -1227,7 +1157,9 @@ impl ServoWorkerRuntime {
         );
 
         #[cfg(feature = "servo-gpu-import")]
-        Self::destroy_gpu_importer_for_session(&mut session);
+        session
+            .gpu_import
+            .clear_importer(&session.rendering_context);
         if let Some(webview) = session.webview.take() {
             drop(webview);
             self.servo.spin_event_loop();
@@ -1320,7 +1252,7 @@ impl ServoWorkerRuntime {
 
             #[cfg(feature = "servo-gpu-import")]
             if mode.prefers_gpu()
-                && let Some(cached) = self.session(session_id)?.last_gpu_frame.as_ref()
+                && let Some(cached) = self.session(session_id)?.gpu_import.cached_frame()
                 && can_reuse_cached_gpu_frame(
                     mode.reuse_cached_gpu_frame_on_no_ready(),
                     frame_ready,
@@ -1352,7 +1284,7 @@ impl ServoWorkerRuntime {
                     let session = self.session_mut(session_id)?;
                     #[cfg(feature = "servo-gpu-import")]
                     {
-                        session.last_gpu_frame = None;
+                        session.gpu_import.clear_cached_frame();
                     }
                     if should_reuse_cached_canvas_after_transparent_readback(
                         session.last_canvas.as_ref(),
@@ -1389,7 +1321,7 @@ impl ServoWorkerRuntime {
                 #[cfg(feature = "servo-gpu-import")]
                 EffectRenderOutput::Gpu(frame) => {
                     let session = self.session_mut(session_id)?;
-                    session.last_gpu_frame = Some(frame.clone());
+                    session.gpu_import.store_frame(frame.clone());
                     EffectRenderOutput::Gpu(frame)
                 }
                 EffectRenderOutput::Pending => EffectRenderOutput::Pending,
@@ -1563,7 +1495,7 @@ impl ServoWorkerRuntime {
     }
 }
 
-#[cfg(all(feature = "servo-gpu-import", target_os = "linux"))]
+#[cfg(feature = "servo-gpu-import")]
 impl ServoWorkerRuntime {
     fn warm_gpu_importer_if_available(
         &mut self,
@@ -1571,166 +1503,61 @@ impl ServoWorkerRuntime {
         width: u32,
         height: u32,
     ) {
-        if !super::servo_gpu_import_should_attempt() {
-            return;
-        }
-        let Ok(device) = super::gpu_import::servo_gpu_import_device() else {
-            return;
-        };
-        let Ok(descriptor) = hypercolor_linux_gpu_interop::LinuxGlFramebufferImportDescriptor::new(
-            width,
-            height,
-            hypercolor_linux_gpu_interop::ImportedFrameFormat::Rgba8Unorm,
-        ) else {
+        let Ok(rendering_context) = self
+            .session(session_id)
+            .map(|session| Rc::clone(&session.rendering_context))
+        else {
             return;
         };
-        if let Err(error) = self.ensure_gpu_importer(session_id, device, descriptor) {
-            debug!(%error, "Servo GPU import pool warmup skipped");
-        }
-    }
-
-    fn ensure_gpu_importer(
-        &mut self,
-        session_id: ServoSessionId,
-        device: &wgpu::Device,
-        descriptor: hypercolor_linux_gpu_interop::LinuxGlFramebufferImportDescriptor,
-    ) -> Result<()> {
-        let should_recreate = self
-            .session(session_id)?
-            .gpu_importer
-            .as_ref()
-            .is_none_or(|importer| importer.descriptor() != descriptor);
-        if !should_recreate {
-            return Ok(());
-        }
-
-        let gl = {
-            let session = self.session(session_id)?;
+        if let Ok(session) = self.session_mut(session_id) {
             session
-                .rendering_context
-                .make_current()
-                .map_err(|error| anyhow!("failed to make Servo GL context current: {error:?}"))?;
-            session.rendering_context.prepare_for_rendering();
-            session.rendering_context.glow_gl_api()
-        };
-
-        if let Some(importer) = self.session_mut(session_id)?.gpu_importer.as_mut() {
-            importer.destroy_gl_resources(gl.as_ref());
+                .gpu_import
+                .warm_if_available(&rendering_context, width, height);
         }
-        {
-            let session = self.session_mut(session_id)?;
-            session.gpu_importer = None;
-            session.last_gpu_frame = None;
-        }
-        let importer = hypercolor_linux_gpu_interop::LinuxGlFramebufferImporter::new_from_process(
-            device,
-            gl.as_ref(),
-            descriptor,
-        )?;
-        self.session_mut(session_id)?.gpu_importer = Some(importer);
-
-        Ok(())
     }
 
     fn import_gpu_frame(
         &mut self,
         session_id: ServoSessionId,
-        device: &wgpu::Device,
-        descriptor: hypercolor_linux_gpu_interop::LinuxGlFramebufferImportDescriptor,
-    ) -> Result<crate::effect::traits::ImportedEffectFrame> {
-        let (gl, source_framebuffer, linux_surface) = {
+        width: u32,
+        height: u32,
+    ) -> Result<ImportedEffectFrame> {
+        let (rendering_context, loaded_html_path, loaded_at, renders_since_load) = {
             let session = self.session(session_id)?;
-            session
-                .rendering_context
-                .make_current()
-                .map_err(|error| anyhow!("failed to make Servo GL context current: {error:?}"))?;
-            session.rendering_context.prepare_for_rendering();
-            let linux_context = session
-                .linux_context
-                .as_ref()
-                .ok_or_else(|| anyhow!("Linux Servo GPU import context is unavailable"))?;
-            let linux_surface = linux_context.surface_snapshot();
-            let framebuffer = linux_context.framebuffer().ok_or_else(|| {
-                anyhow!(
-                    "Linux Servo GPU import surface did not expose a framebuffer: {linux_surface:?}"
-                )
-            })?;
-            let source_framebuffer =
-                hypercolor_linux_gpu_interop::GlFramebufferSource::Framebuffer(Some(framebuffer));
             (
-                session.rendering_context.glow_gl_api(),
-                source_framebuffer,
-                linux_surface,
-            )
-        };
-        if let Err(error) = self.ensure_gpu_importer(session_id, device, descriptor) {
-            let loaded_html_path = self
-                .session(session_id)
-                .ok()
-                .and_then(|session| session.loaded_html_path.as_ref())
-                .map_or_else(String::new, |path| path.display().to_string());
-            debug!(
-                %error,
-                ?session_id,
-                width = descriptor.width,
-                height = descriptor.height,
-                loaded_html_path,
-                "Servo GPU importer setup failed"
-            );
-            return Err(error);
-        }
-        let (loaded_html_path, context_width, context_height, page_age_ms, renders_since_load) = {
-            let session = self.session(session_id)?;
-            let size = session.rendering_context.size();
-            (
+                Rc::clone(&session.rendering_context),
                 session.loaded_html_path.clone(),
-                size.width,
-                size.height,
-                session
-                    .loaded_at
-                    .map(|loaded_at| duration_millis_u64(loaded_at.elapsed())),
+                session.loaded_at,
                 session.renders_since_load,
             )
         };
-        let importer = self
-            .session_mut(session_id)?
-            .gpu_importer
-            .as_mut()
-            .ok_or_else(|| anyhow!("Servo GPU importer was not initialized"))?;
-        let importer_before = importer.state_snapshot();
-        record_linux_gpu_importer_state(importer_before);
-        let blit_before = importer.framebuffer_state_for_blit(gl.as_ref(), source_framebuffer);
-        let import_result = importer.import_framebuffer_pipelined(gl.as_ref(), source_framebuffer);
-        record_linux_gpu_importer_state(importer.state_snapshot());
-        if let Err(error) = import_result.as_ref() {
-            let importer_after = importer.state_snapshot();
-            record_linux_gpu_importer_state(importer_after);
-            let blit_after = importer.framebuffer_state_for_blit(gl.as_ref(), source_framebuffer);
-            let loaded_html_path = loaded_html_path
-                .as_deref()
-                .map_or_else(String::new, |path| path.display().to_string());
-            debug!(
-                %error,
-                ?session_id,
-                width = descriptor.width,
-                height = descriptor.height,
-                context_width,
-                context_height,
-                loaded_html_path,
-                page_age_ms,
-                renders_since_load,
-                ?source_framebuffer,
-                ?linux_surface,
-                ?importer_before,
-                ?importer_after,
-                ?blit_before,
-                ?blit_after,
-                "Servo GPU import GL diagnostics"
-            );
-        }
-        Ok(import_result?)
+        let context = ServoGpuImportSessionContext {
+            session_id,
+            rendering_context: &rendering_context,
+            loaded_html_path: loaded_html_path.as_deref(),
+            loaded_at,
+            renders_since_load,
+        };
+        self.session_mut(session_id)?
+            .gpu_import
+            .import_frame(context, width, height)
     }
 
+    fn clear_gpu_importer(&mut self, session_id: ServoSessionId) {
+        let Ok(rendering_context) = self
+            .session(session_id)
+            .map(|session| Rc::clone(&session.rendering_context))
+        else {
+            return;
+        };
+        if let Ok(session) = self.session_mut(session_id) {
+            session.gpu_import.clear_importer(&rendering_context);
+        }
+    }
+}
+
+#[cfg(all(feature = "servo-gpu-import", target_os = "linux"))]
+impl ServoWorkerRuntime {
     fn refresh_linux_surfaces_after_peer_destroy(&mut self, destroyed_session_id: ServoSessionId) {
         let remaining_session_ids = self.sessions.keys().copied().collect::<Vec<_>>();
         for session_id in remaining_session_ids {
@@ -1752,307 +1579,17 @@ impl ServoWorkerRuntime {
         destroyed_session_id: ServoSessionId,
         session_id: ServoSessionId,
     ) -> Result<()> {
-        let (rendering_context, linux_context, before_surface) = {
+        let rendering_context = {
             let session = self.session(session_id)?;
-            let Some(linux_context) = session.linux_context.clone() else {
-                return Ok(());
-            };
-            (
-                Rc::clone(&session.rendering_context),
-                linux_context,
-                session
-                    .linux_context
-                    .as_ref()
-                    .and_then(|context| context.surface_snapshot()),
+            Rc::clone(&session.rendering_context)
+        };
+        self.session_mut(session_id)?
+            .gpu_import
+            .refresh_linux_surface_after_peer_destroy(
+                destroyed_session_id,
+                session_id,
+                &rendering_context,
             )
-        };
-
-        linux_context
-            .refresh_surface()
-            .map_err(|error| anyhow!("failed to refresh Linux Servo surface: {error:?}"))?;
-        rendering_context.prepare_for_rendering();
-        let after_surface = linux_context.surface_snapshot();
-        let size = rendering_context.size();
-        {
-            let session = self.session_mut(session_id)?;
-            session.gpu_import_retry_after = None;
-            session.gpu_import_transient_failures = 0;
-        }
-        debug!(
-            ?destroyed_session_id,
-            ?session_id,
-            width = size.width,
-            height = size.height,
-            ?before_surface,
-            ?after_surface,
-            "Refreshed surviving Servo Linux surface after peer session teardown"
-        );
-        Ok(())
-    }
-
-    fn clear_gpu_importer(&mut self, session_id: ServoSessionId) {
-        if let Ok(session) = self.session_mut(session_id) {
-            session.last_gpu_frame = None;
-        }
-        let Ok(session) = self.session(session_id) else {
-            return;
-        };
-        if let Err(error) = session.rendering_context.make_current() {
-            debug!(?error, "Servo GPU import pool cleanup skipped");
-            return;
-        }
-        let gl = session.rendering_context.glow_gl_api();
-        let Ok(session) = self
-            .sessions
-            .get_mut(&session_id)
-            .ok_or_else(|| anyhow!("Servo session {session_id:?} is not initialized"))
-        else {
-            return;
-        };
-        if let Some(importer) = session.gpu_importer.as_mut() {
-            importer.destroy_gl_resources(gl.as_ref());
-        }
-        session.gpu_importer = None;
-        session.last_gpu_frame = None;
-    }
-
-    fn destroy_gpu_importer_for_session(session: &mut ServoSession) {
-        if let Some(importer) = session.gpu_importer.as_mut() {
-            if let Err(error) = session.rendering_context.make_current() {
-                debug!(?error, "Servo GPU import pool cleanup skipped");
-                return;
-            }
-            let gl = session.rendering_context.glow_gl_api();
-            importer.destroy_gl_resources(gl.as_ref());
-        }
-        session.gpu_importer = None;
-        session.last_gpu_frame = None;
-    }
-}
-
-#[cfg(all(feature = "servo-gpu-import", target_os = "linux"))]
-fn record_linux_gpu_importer_state(
-    snapshot: hypercolor_linux_gpu_interop::LinuxGlImporterStateSnapshot,
-) {
-    record_servo_gpu_import_slot_state(
-        snapshot.slot_count,
-        snapshot.pending_slots,
-        snapshot.completed_slots,
-        snapshot.available_slots,
-        snapshot.oldest_pending_age_ms,
-    );
-}
-
-#[cfg(all(feature = "servo-gpu-import", target_os = "windows"))]
-impl ServoWorkerRuntime {
-    fn warm_gpu_importer_if_available(
-        &mut self,
-        session_id: ServoSessionId,
-        width: u32,
-        height: u32,
-    ) {
-        if !super::servo_gpu_import_should_attempt() {
-            return;
-        }
-        let Ok(device) = super::gpu_import::servo_gpu_import_device() else {
-            return;
-        };
-        let Ok(descriptor) =
-            hypercolor_windows_gpu_interop::WindowsD3d11SharedTextureImportDescriptor::new(
-                width,
-                height,
-                hypercolor_windows_gpu_interop::ImportedFrameFormat::Bgra8Unorm,
-            )
-        else {
-            return;
-        };
-        if let Err(error) = self.ensure_gpu_importer(session_id, device, descriptor) {
-            debug!(%error, "Servo GPU import pool warmup skipped");
-        }
-    }
-
-    fn ensure_gpu_importer(
-        &mut self,
-        session_id: ServoSessionId,
-        device: &wgpu::Device,
-        descriptor: hypercolor_windows_gpu_interop::WindowsD3d11SharedTextureImportDescriptor,
-    ) -> Result<()> {
-        let should_recreate = self
-            .session(session_id)?
-            .gpu_importer
-            .as_ref()
-            .is_none_or(|importer| importer.descriptor() != descriptor);
-        if !should_recreate {
-            return Ok(());
-        }
-
-        {
-            let session = self.session_mut(session_id)?;
-            session.gpu_importer = Some(
-                hypercolor_windows_gpu_interop::WindowsD3d11SharedTextureImporter::new(
-                    device, descriptor,
-                )?,
-            );
-            session.last_gpu_frame = None;
-        }
-        Ok(())
-    }
-
-    fn import_gpu_frame(
-        &mut self,
-        session_id: ServoSessionId,
-        device: &wgpu::Device,
-    ) -> Result<crate::effect::traits::ImportedEffectFrame> {
-        let context = self.windows_angle_context(session_id)?;
-        let Some(native_frame) = context.publish_current_frame()? else {
-            return Err(ServoFrameUnavailable {
-                reason: "windows_import_warmup",
-                detail: "Windows ANGLE fence ring has no completed frame yet".to_owned(),
-                retry_ms: 0,
-            }
-            .into());
-        };
-        let descriptor =
-            hypercolor_windows_gpu_interop::WindowsD3d11SharedTextureImportDescriptor::new(
-                native_frame.width,
-                native_frame.height,
-                native_frame.format,
-            )?;
-        self.ensure_gpu_importer(session_id, device, descriptor)?;
-        let imported = {
-            let importer = self
-                .session_mut(session_id)?
-                .gpu_importer
-                .as_mut()
-                .ok_or_else(|| anyhow!("Servo GPU importer was not initialized"))?;
-            importer.import_servo_native_frame(device, native_frame)?
-        };
-        Ok(imported)
-    }
-
-    fn windows_angle_context(
-        &self,
-        session_id: ServoSessionId,
-    ) -> Result<Rc<hypercolor_windows_gpu_interop::WindowsAngleRenderingContext>> {
-        self.session(session_id)?
-            .windows_angle_context
-            .as_ref()
-            .cloned()
-            .ok_or_else(|| {
-                hypercolor_windows_gpu_interop::WindowsGpuInteropError::MissingWindowsAngleContext
-                    .into()
-            })
-    }
-
-    fn clear_gpu_importer(&mut self, session_id: ServoSessionId) {
-        if let Ok(session) = self.session_mut(session_id) {
-            session.gpu_importer = None;
-            session.last_gpu_frame = None;
-        }
-    }
-
-    fn destroy_gpu_importer_for_session(session: &mut ServoSession) {
-        session.gpu_importer = None;
-        session.last_gpu_frame = None;
-    }
-}
-
-#[cfg(all(feature = "servo-gpu-import", target_os = "macos"))]
-impl ServoWorkerRuntime {
-    fn warm_gpu_importer_if_available(
-        &mut self,
-        session_id: ServoSessionId,
-        _width: u32,
-        _height: u32,
-    ) {
-        if !super::servo_gpu_import_should_attempt() {
-            return;
-        }
-        let Ok(device) = super::gpu_import::servo_gpu_import_device() else {
-            return;
-        };
-        let Ok(native_frame) = self.macos_native_frame(session_id) else {
-            return;
-        };
-        let Ok(descriptor) = hypercolor_macos_gpu_interop::MacosIosurfaceImportDescriptor::new(
-            native_frame.width,
-            native_frame.height,
-            native_frame.format,
-        ) else {
-            return;
-        };
-        if let Err(error) = self.ensure_gpu_importer(session_id, device, descriptor) {
-            debug!(%error, "Servo GPU import pool warmup skipped");
-        }
-    }
-
-    fn ensure_gpu_importer(
-        &mut self,
-        session_id: ServoSessionId,
-        device: &wgpu::Device,
-        descriptor: hypercolor_macos_gpu_interop::MacosIosurfaceImportDescriptor,
-    ) -> Result<()> {
-        let should_recreate = self
-            .session(session_id)?
-            .gpu_importer
-            .as_ref()
-            .is_none_or(|importer| importer.descriptor() != descriptor);
-        if !should_recreate {
-            return Ok(());
-        }
-
-        {
-            let session = self.session_mut(session_id)?;
-            session.gpu_importer = Some(hypercolor_macos_gpu_interop::MacosIosurfaceImporter::new(
-                device, descriptor,
-            )?);
-            session.last_gpu_frame = None;
-        }
-        Ok(())
-    }
-
-    fn import_gpu_frame(
-        &mut self,
-        session_id: ServoSessionId,
-        device: &wgpu::Device,
-    ) -> Result<crate::effect::traits::ImportedEffectFrame> {
-        let native_frame = self.macos_native_frame(session_id)?;
-        let descriptor = hypercolor_macos_gpu_interop::MacosIosurfaceImportDescriptor::new(
-            native_frame.width,
-            native_frame.height,
-            native_frame.format,
-        )?;
-        self.ensure_gpu_importer(session_id, device, descriptor)?;
-        let importer = self
-            .session_mut(session_id)?
-            .gpu_importer
-            .as_mut()
-            .ok_or_else(|| anyhow!("Servo GPU importer was not initialized"))?;
-        Ok(importer.import_iosurface(device, &native_frame.iosurface)?)
-    }
-
-    fn macos_native_frame(
-        &self,
-        session_id: ServoSessionId,
-    ) -> Result<hypercolor_macos_gpu_interop::MacosServoNativeFrame> {
-        let session = self.session(session_id)?;
-        let context = session
-            .macos_hardware_context
-            .as_ref()
-            .ok_or(hypercolor_macos_gpu_interop::MacosGpuInteropError::MissingServoSurface)?;
-        Ok(context.native_frame()?)
-    }
-
-    fn clear_gpu_importer(&mut self, session_id: ServoSessionId) {
-        if let Ok(session) = self.session_mut(session_id) {
-            session.gpu_importer = None;
-            session.last_gpu_frame = None;
-        }
-    }
-
-    fn destroy_gpu_importer_for_session(session: &mut ServoSession) {
-        session.gpu_importer = None;
-        session.last_gpu_frame = None;
     }
 }
 
@@ -2098,10 +1635,7 @@ fn render_servo_framebuffer(
         );
         let retry_delay = if auto_import {
             let now = Instant::now();
-            runtime
-                .session(session_id)?
-                .gpu_import_retry_after
-                .and_then(|retry_after| retry_after.checked_duration_since(now))
+            runtime.session(session_id)?.gpu_import.retry_delay(now)
         } else {
             None
         };
@@ -2116,23 +1650,22 @@ fn render_servo_framebuffer(
                     .loaded_at
                     .map(|loaded_at| duration_millis_u64(loaded_at.elapsed())),
                 renders_since_load = session.renders_since_load,
-                transient_failures = session.gpu_import_transient_failures,
+                transient_failures = session.gpu_import.transient_failures(),
                 "Servo GPU framebuffer import retry cooling down after transient failure"
             );
             present_after_gpu_import_skip(runtime, session_id);
-            return Err(ServoFrameUnavailable {
-                reason: "transient_retry_cooldown",
-                detail: "gpu import retry is cooling down".to_owned(),
+            return Err(ServoFrameUnavailable::new(
+                "transient_retry_cooldown",
+                "gpu import retry is cooling down".to_owned(),
                 retry_ms,
-            }
+            )
             .into());
         }
         match import_servo_framebuffer_into_wgpu(runtime, session_id, size.width, size.height) {
             Ok(frame) => {
                 let session = runtime.session_mut(session_id)?;
-                session.gpu_import_retry_after = None;
-                session.gpu_import_transient_failures = 0;
-                record_imported_gpu_frame(&frame);
+                session.gpu_import.note_success();
+                record_imported_frame(&frame);
                 super::servo_gpu_import_note_success();
                 runtime.session(session_id)?.rendering_context.present();
                 return Ok(EffectRenderOutput::Gpu(frame));
@@ -2147,11 +1680,7 @@ fn render_servo_framebuffer(
                 let transient = servo_gpu_import_failure_is_transient(reason);
                 let retry_ms = if transient && auto_import {
                     let session = runtime.session_mut(session_id)?;
-                    session.gpu_import_retry_after =
-                        Some(Instant::now() + SERVO_GPU_IMPORT_TRANSIENT_RETRY);
-                    session.gpu_import_transient_failures =
-                        session.gpu_import_transient_failures.saturating_add(1);
-                    Some(duration_millis_u64(SERVO_GPU_IMPORT_TRANSIENT_RETRY))
+                    Some(session.gpu_import.schedule_transient_retry())
                 } else {
                     None
                 };
@@ -2181,17 +1710,16 @@ fn render_servo_framebuffer(
                         retry_ms,
                         page_age_ms,
                         renders_since_load = session.renders_since_load,
-                        transient_failures = session.gpu_import_transient_failures,
+                        transient_failures = session.gpu_import.transient_failures(),
                         has_cached_canvas = session.last_canvas.is_some(),
                         "Servo GPU framebuffer import hit transient GL state; deferring frame until retry"
                     );
                     present_after_gpu_import_skip(runtime, session_id);
-                    return Err(ServoFrameUnavailable {
-                        reason: reason.as_str(),
+                    return Err(ServoFrameUnavailable::new(
+                        reason.as_str(),
                         detail,
-                        retry_ms: retry_ms
-                            .expect("transient auto import failures should schedule retry"),
-                    }
+                        retry_ms.expect("transient auto import failures should schedule retry"),
+                    )
                     .into());
                 }
 
@@ -2245,280 +1773,21 @@ fn render_servo_framebuffer(
     Ok(EffectRenderOutput::Cpu(canvas))
 }
 
-#[cfg(all(feature = "servo-gpu-import", target_os = "linux"))]
+#[cfg(feature = "servo-gpu-import")]
 fn import_servo_framebuffer_into_wgpu(
     runtime: &mut ServoWorkerRuntime,
     session_id: ServoSessionId,
     width: u32,
     height: u32,
-) -> Result<crate::effect::traits::ImportedEffectFrame> {
-    use hypercolor_linux_gpu_interop::{ImportedFrameFormat, LinuxGlFramebufferImportDescriptor};
-
-    let device = super::gpu_import::servo_gpu_import_device()?;
-    let descriptor =
-        LinuxGlFramebufferImportDescriptor::new(width, height, ImportedFrameFormat::Rgba8Unorm)?;
+) -> Result<ImportedEffectFrame> {
     runtime
-        .import_gpu_frame(session_id, device, descriptor)
-        .context("failed to import Servo GL framebuffer into wgpu")
-}
-
-#[cfg(all(feature = "servo-gpu-import", target_os = "windows"))]
-fn import_servo_framebuffer_into_wgpu(
-    runtime: &mut ServoWorkerRuntime,
-    session_id: ServoSessionId,
-    _width: u32,
-    _height: u32,
-) -> Result<crate::effect::traits::ImportedEffectFrame> {
-    let device = super::gpu_import::servo_gpu_import_device()?;
-    runtime
-        .import_gpu_frame(session_id, device)
-        .context("failed to import Servo D3D11 shared texture into wgpu")
-}
-
-#[cfg(all(feature = "servo-gpu-import", target_os = "macos"))]
-fn import_servo_framebuffer_into_wgpu(
-    runtime: &mut ServoWorkerRuntime,
-    session_id: ServoSessionId,
-    _width: u32,
-    _height: u32,
-) -> Result<crate::effect::traits::ImportedEffectFrame> {
-    let device = super::gpu_import::servo_gpu_import_device()?;
-    runtime
-        .import_gpu_frame(session_id, device)
-        .context("failed to import Servo IOSurface into wgpu")
-}
-
-#[cfg(all(feature = "servo-gpu-import", target_os = "linux"))]
-fn record_imported_gpu_frame(frame: &crate::effect::traits::ImportedEffectFrame) {
-    record_servo_gpu_import_frame(
-        frame.timings.blit_us,
-        frame.timings.sync_us,
-        frame.timings.total_us,
-    );
-}
-
-#[cfg(all(feature = "servo-gpu-import", target_os = "macos"))]
-fn record_imported_gpu_frame(frame: &crate::effect::traits::ImportedEffectFrame) {
-    record_servo_gpu_import_frame(frame.timings.wrap_us, 0, frame.timings.total_us);
-}
-
-#[cfg(all(feature = "servo-gpu-import", target_os = "windows"))]
-fn record_imported_gpu_frame(frame: &crate::effect::traits::ImportedEffectFrame) {
-    record_servo_gpu_import_frame(
-        frame.timings.wrap_us,
-        frame.timings.sync_us,
-        frame.timings.total_us,
-    );
+        .import_gpu_frame(session_id, width, height)
+        .context("failed to import Servo framebuffer into wgpu")
 }
 
 #[cfg(feature = "servo-gpu-import")]
 fn duration_millis_u64(duration: Duration) -> u64 {
     duration.as_millis().try_into().unwrap_or(u64::MAX)
-}
-
-#[cfg(feature = "servo-gpu-import")]
-fn servo_gpu_import_failure_is_transient(reason: ServoGpuImportFallbackReason) -> bool {
-    matches!(
-        reason,
-        ServoGpuImportFallbackReason::GlOperation
-            | ServoGpuImportFallbackReason::GlFramebufferIncomplete
-            | ServoGpuImportFallbackReason::ImportSlotsExhausted
-            | ServoGpuImportFallbackReason::MissingMacosServoSurface
-            | ServoGpuImportFallbackReason::WindowsImportStaleFrame
-    )
-}
-
-#[cfg(feature = "servo-gpu-import")]
-fn servo_gpu_import_failure_should_clear_importer(reason: ServoGpuImportFallbackReason) -> bool {
-    !servo_gpu_import_failure_is_transient(reason)
-}
-
-#[cfg(feature = "servo-gpu-import")]
-fn servo_gpu_import_failure_detail(error: &anyhow::Error) -> String {
-    for cause in error.chain() {
-        #[cfg(target_os = "linux")]
-        if let Some(error) =
-            cause.downcast_ref::<hypercolor_linux_gpu_interop::LinuxGpuInteropError>()
-        {
-            return match error {
-                hypercolor_linux_gpu_interop::LinuxGpuInteropError::GlOperation {
-                    operation,
-                    code,
-                } => format!("gl_operation={operation} gl_error=0x{code:04x}"),
-                hypercolor_linux_gpu_interop::LinuxGpuInteropError::GlFramebufferIncomplete {
-                    status,
-                } => format!("gl_framebuffer_status=0x{status:04x}"),
-                hypercolor_linux_gpu_interop::LinuxGpuInteropError::ImportSlotsExhausted {
-                    slot_count,
-                } => format!("import_slots_exhausted={slot_count}"),
-                _ => error.to_string(),
-            };
-        }
-
-        #[cfg(target_os = "macos")]
-        if let Some(error) =
-            cause.downcast_ref::<hypercolor_macos_gpu_interop::MacosGpuInteropError>()
-        {
-            return error.to_string();
-        }
-
-        #[cfg(target_os = "windows")]
-        if let Some(error) =
-            cause.downcast_ref::<hypercolor_windows_gpu_interop::WindowsGpuInteropError>()
-        {
-            return error.to_string();
-        }
-    }
-
-    error.to_string()
-}
-
-#[cfg(feature = "servo-gpu-import")]
-fn classify_servo_gpu_import_error(error: &anyhow::Error) -> ServoGpuImportFallbackReason {
-    for cause in error.chain() {
-        #[cfg(target_os = "macos")]
-        if let Some(error) =
-            cause.downcast_ref::<hypercolor_macos_gpu_interop::MacosGpuInteropError>()
-        {
-            return match error {
-                hypercolor_macos_gpu_interop::MacosGpuInteropError::MissingWgpuMetalDevice => {
-                    ServoGpuImportFallbackReason::MissingWgpuMetalDevice
-                }
-                hypercolor_macos_gpu_interop::MacosGpuInteropError::InvalidDimensions { .. }
-                | hypercolor_macos_gpu_interop::MacosGpuInteropError::IosurfaceShapeMismatch {
-                    ..
-                }
-                | hypercolor_macos_gpu_interop::MacosGpuInteropError::PixelBufferSizeMismatch {
-                    ..
-                } => ServoGpuImportFallbackReason::InvalidDimensions,
-                hypercolor_macos_gpu_interop::MacosGpuInteropError::ServoContext { .. }
-                | hypercolor_macos_gpu_interop::MacosGpuInteropError::MissingServoSurface => {
-                    ServoGpuImportFallbackReason::MissingMacosServoSurface
-                }
-                hypercolor_macos_gpu_interop::MacosGpuInteropError::IosurfacePixelFormatMismatch {
-                    ..
-                } => ServoGpuImportFallbackReason::IosurfacePixelFormatMismatch,
-                hypercolor_macos_gpu_interop::MacosGpuInteropError::MetalTextureCreateFailed => {
-                    ServoGpuImportFallbackReason::MetalTextureCreateFailed
-                }
-                _ => ServoGpuImportFallbackReason::Other,
-            };
-        }
-
-        #[cfg(target_os = "windows")]
-        if let Some(error) =
-            cause.downcast_ref::<hypercolor_windows_gpu_interop::WindowsGpuInteropError>()
-        {
-            use hypercolor_windows_gpu_interop::WINDOWS_ANGLE_CLIENT_BUFFER_SURFACE_OPERATION;
-
-            return match error {
-                hypercolor_windows_gpu_interop::WindowsGpuInteropError::MissingWgpuVulkanDevice => {
-                    ServoGpuImportFallbackReason::MissingWgpuVulkanDevice
-                }
-                hypercolor_windows_gpu_interop::WindowsGpuInteropError::MissingVulkanExternalMemoryWin32 => {
-                    ServoGpuImportFallbackReason::MissingVulkanExternalMemoryWin32
-                }
-                hypercolor_windows_gpu_interop::WindowsGpuInteropError::MissingWindowsAngleContext => {
-                    ServoGpuImportFallbackReason::MissingWindowsAngleContext
-                }
-                hypercolor_windows_gpu_interop::WindowsGpuInteropError::WindowsImportStaleFrame => {
-                    ServoGpuImportFallbackReason::WindowsImportStaleFrame
-                }
-                hypercolor_windows_gpu_interop::WindowsGpuInteropError::DxgiAdapterNotFound {
-                    ..
-                } => ServoGpuImportFallbackReason::AdapterLuidMismatch,
-                hypercolor_windows_gpu_interop::WindowsGpuInteropError::D3d11DeviceCreateFailed {
-                    ..
-                }
-                | hypercolor_windows_gpu_interop::WindowsGpuInteropError::D3d11ImmediateContextUnavailable => {
-                    ServoGpuImportFallbackReason::D3d11DeviceCreateFailed
-                }
-                hypercolor_windows_gpu_interop::WindowsGpuInteropError::D3d11SharedTextureCreateFailed {
-                    ..
-                }
-                | hypercolor_windows_gpu_interop::WindowsGpuInteropError::D3d11TextureInterfaceQueryFailed {
-                    ..
-                } => ServoGpuImportFallbackReason::D3d11SharedTextureCreateFailed,
-                hypercolor_windows_gpu_interop::WindowsGpuInteropError::D3d11SharedHandleCreateFailed {
-                    ..
-                } => ServoGpuImportFallbackReason::D3d11SharedHandleCreateFailed,
-                hypercolor_windows_gpu_interop::WindowsGpuInteropError::InvalidDimensions {
-                    ..
-                } => ServoGpuImportFallbackReason::InvalidDimensions,
-                hypercolor_windows_gpu_interop::WindowsGpuInteropError::VulkanD3d11ImportFailed => {
-                    ServoGpuImportFallbackReason::VulkanD3d11ImportFailed
-                }
-                hypercolor_windows_gpu_interop::WindowsGpuInteropError::ServoContext {
-                    operation,
-                    ..
-                } if *operation == WINDOWS_ANGLE_CLIENT_BUFFER_SURFACE_OPERATION => {
-                    ServoGpuImportFallbackReason::AngleClientBufferSurfaceFailed
-                }
-                _ => ServoGpuImportFallbackReason::Other,
-            };
-        }
-
-        if let Some(error) =
-            cause.downcast_ref::<hypercolor_linux_gpu_interop::LinuxGpuInteropError>()
-        {
-            #[cfg(target_os = "linux")]
-            return match error {
-                hypercolor_linux_gpu_interop::LinuxGpuInteropError::MissingWgpuVulkanDevice => {
-                    ServoGpuImportFallbackReason::MissingWgpuVulkanDevice
-                }
-                hypercolor_linux_gpu_interop::LinuxGpuInteropError::MissingVulkanDeviceExtension(
-                    _,
-                ) => ServoGpuImportFallbackReason::MissingVulkanExternalMemoryFd,
-                hypercolor_linux_gpu_interop::LinuxGpuInteropError::MissingGlFunction(_) => {
-                    ServoGpuImportFallbackReason::MissingGlFunction
-                }
-                hypercolor_linux_gpu_interop::LinuxGpuInteropError::GlProcLoaderUnavailable => {
-                    ServoGpuImportFallbackReason::GlProcLoaderUnavailable
-                }
-                hypercolor_linux_gpu_interop::LinuxGpuInteropError::InvalidDimensions { .. } => {
-                    ServoGpuImportFallbackReason::InvalidDimensions
-                }
-                hypercolor_linux_gpu_interop::LinuxGpuInteropError::Vulkan { .. }
-                | hypercolor_linux_gpu_interop::LinuxGpuInteropError::MemoryTypeUnavailable
-                | hypercolor_linux_gpu_interop::LinuxGpuInteropError::DuplicateFdFailed {
-                    ..
-                } => ServoGpuImportFallbackReason::Vulkan,
-                hypercolor_linux_gpu_interop::LinuxGpuInteropError::GlCreateResource {
-                    ..
-                } => ServoGpuImportFallbackReason::GlResource,
-                hypercolor_linux_gpu_interop::LinuxGpuInteropError::GlOperation { .. } => {
-                    ServoGpuImportFallbackReason::GlOperation
-                }
-                hypercolor_linux_gpu_interop::LinuxGpuInteropError::GlFramebufferIncomplete {
-                    ..
-                } => ServoGpuImportFallbackReason::GlFramebufferIncomplete,
-                hypercolor_linux_gpu_interop::LinuxGpuInteropError::ImportSlotsExhausted {
-                    ..
-                } => ServoGpuImportFallbackReason::ImportSlotsExhausted,
-                _ => ServoGpuImportFallbackReason::Other,
-            };
-            #[cfg(not(target_os = "linux"))]
-            return match error {
-                hypercolor_linux_gpu_interop::LinuxGpuInteropError::UnsupportedPlatform => {
-                    ServoGpuImportFallbackReason::UnsupportedPlatform
-                }
-                hypercolor_linux_gpu_interop::LinuxGpuInteropError::InvalidDimensions {
-                    ..
-                } => ServoGpuImportFallbackReason::InvalidDimensions,
-                hypercolor_linux_gpu_interop::LinuxGpuInteropError::ImportSlotsExhausted {
-                    ..
-                } => ServoGpuImportFallbackReason::ImportSlotsExhausted,
-                _ => ServoGpuImportFallbackReason::Other,
-            };
-        }
-    }
-
-    let message = error.to_string().to_ascii_lowercase();
-    if message.contains("not installed") || message.contains("device is not installed") {
-        ServoGpuImportFallbackReason::DeviceUnavailable
-    } else {
-        ServoGpuImportFallbackReason::Other
-    }
 }
 
 fn load_completion_url_matches(expected_url: Option<&str>, current_url: Option<&str>) -> bool {
@@ -2582,911 +1851,7 @@ pub(super) fn shared_worker_is_vacant() -> bool {
 }
 
 #[cfg(test)]
-pub(super) mod test_support {
-    use std::sync::Arc;
-    use std::sync::LazyLock;
-    use std::sync::Mutex as StdMutex;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::mpsc::{self, Receiver, Sender};
-    use std::thread;
-
-    use hypercolor_types::canvas::Canvas;
-
-    use crate::effect::traits::EffectRenderOutput;
-
-    use super::super::memory::{ServoMemoryReportSnapshot, ServoMemoryReportTotals};
-    use super::super::worker_client::{
-        ServoWorkerClient, ServoWorkerClientSharedState, WorkerCommand,
-    };
-    use super::ServoWorker;
-
-    pub static SHARED_WORKER_STATE_TEST_LOCK: LazyLock<StdMutex<()>> =
-        LazyLock::new(|| StdMutex::new(()));
-
-    pub struct RecordedRenderCommand {
-        pub scripts: Vec<String>,
-        pub width: u32,
-        pub height: u32,
-        #[cfg(feature = "servo-gpu-import")]
-        pub prefer_gpu: bool,
-        #[cfg(feature = "servo-gpu-import")]
-        pub reuse_cached_on_no_ready: bool,
-    }
-
-    pub struct RecordedLoadCommand {
-        pub width: u32,
-        pub height: u32,
-    }
-
-    fn solid_canvas(r: u8, g: u8, b: u8) -> Canvas {
-        use hypercolor_types::canvas::{DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, Rgba};
-        let mut canvas = Canvas::new(DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT);
-        canvas.fill(Rgba::new(r, g, b, 255));
-        canvas
-    }
-
-    fn empty_memory_report() -> ServoMemoryReportSnapshot {
-        ServoMemoryReportSnapshot {
-            processes: Vec::new(),
-            totals: ServoMemoryReportTotals::default(),
-        }
-    }
-
-    pub fn spawn_test_worker() -> (ServoWorker, Arc<AtomicBool>) {
-        let (command_tx, command_rx) = mpsc::channel();
-        let client_state = Arc::new(ServoWorkerClientSharedState::new());
-        let stopped = Arc::new(AtomicBool::new(false));
-        let stopped_clone = Arc::clone(&stopped);
-        let thread_handle = thread::spawn(move || {
-            while let Ok(command) = command_rx.recv() {
-                match command {
-                    WorkerCommand::CreateSession { response_tx, .. }
-                    | WorkerCommand::Load { response_tx, .. }
-                    | WorkerCommand::LoadUrl { response_tx, .. }
-                    | WorkerCommand::DestroySession { response_tx, .. } => {
-                        let _ = response_tx.send(Ok(()));
-                    }
-                    WorkerCommand::Shutdown { response_tx } => {
-                        stopped_clone.store(true, Ordering::SeqCst);
-                        let _ = response_tx.send(());
-                        break;
-                    }
-                    WorkerCommand::MemoryReport { response_tx } => {
-                        let _ = response_tx.send(Ok(empty_memory_report()));
-                    }
-                    WorkerCommand::Render { response_tx, .. } => {
-                        let _ =
-                            response_tx.send(Ok(EffectRenderOutput::Cpu(solid_canvas(12, 34, 56))));
-                    }
-                }
-            }
-        });
-
-        (
-            ServoWorker {
-                command_tx: Some(command_tx),
-                thread_handle: Some(thread_handle),
-                client_state,
-            },
-            stopped,
-        )
-    }
-
-    #[allow(
-        clippy::type_complexity,
-        reason = "test harness returns all the plumbing in one tuple; breaking it into a named type would only move the noise"
-    )]
-    pub fn spawn_render_test_worker() -> (
-        ServoWorker,
-        Receiver<RecordedRenderCommand>,
-        Sender<anyhow::Result<Canvas>>,
-        Receiver<()>,
-        Receiver<()>,
-        Arc<AtomicBool>,
-    ) {
-        let (command_tx, command_rx) = mpsc::channel();
-        let client_state = Arc::new(ServoWorkerClientSharedState::new());
-        let (render_tx, render_rx) = mpsc::channel();
-        let (result_tx, result_rx) = mpsc::channel();
-        let (delivered_tx, delivered_rx) = mpsc::channel();
-        let (unload_tx, unload_rx) = mpsc::channel();
-        let stopped = Arc::new(AtomicBool::new(false));
-        let stopped_clone = Arc::clone(&stopped);
-        let thread_handle = thread::spawn(move || {
-            while let Ok(command) = command_rx.recv() {
-                match command {
-                    WorkerCommand::CreateSession { response_tx, .. } => {
-                        let _ = response_tx.send(Ok(()));
-                    }
-                    WorkerCommand::Render {
-                        scripts,
-                        width,
-                        height,
-                        mode,
-                        response_tx,
-                        ..
-                    } => {
-                        #[cfg(feature = "servo-gpu-import")]
-                        let prefer_gpu = mode.prefers_gpu();
-                        #[cfg(feature = "servo-gpu-import")]
-                        let reuse_cached_on_no_ready = mode.reuse_cached_gpu_frame_on_no_ready();
-                        #[cfg(not(feature = "servo-gpu-import"))]
-                        let _ = mode;
-                        let _ = render_tx.send(RecordedRenderCommand {
-                            scripts,
-                            width,
-                            height,
-                            #[cfg(feature = "servo-gpu-import")]
-                            prefer_gpu,
-                            #[cfg(feature = "servo-gpu-import")]
-                            reuse_cached_on_no_ready,
-                        });
-                        let result = result_rx
-                            .recv()
-                            .unwrap_or_else(|_| Ok(solid_canvas(12, 34, 56)));
-                        let _ = response_tx.send(result.map(EffectRenderOutput::Cpu));
-                        let _ = delivered_tx.send(());
-                    }
-                    WorkerCommand::DestroySession { response_tx, .. } => {
-                        let _ = unload_tx.send(());
-                        let _ = response_tx.send(Ok(()));
-                    }
-                    WorkerCommand::Shutdown { response_tx } => {
-                        stopped_clone.store(true, Ordering::SeqCst);
-                        let _ = response_tx.send(());
-                        break;
-                    }
-                    WorkerCommand::Load { response_tx, .. } => {
-                        let _ = response_tx.send(Ok(()));
-                    }
-                    WorkerCommand::LoadUrl { response_tx, .. } => {
-                        let _ = response_tx.send(Ok(()));
-                    }
-                    WorkerCommand::MemoryReport { response_tx } => {
-                        let _ = response_tx.send(Ok(empty_memory_report()));
-                    }
-                }
-            }
-        });
-
-        (
-            ServoWorker {
-                command_tx: Some(command_tx),
-                thread_handle: Some(thread_handle),
-                client_state,
-            },
-            render_rx,
-            result_tx,
-            delivered_rx,
-            unload_rx,
-            stopped,
-        )
-    }
-
-    pub fn spawn_load_test_worker() -> (
-        ServoWorker,
-        Receiver<RecordedLoadCommand>,
-        Receiver<()>,
-        Arc<AtomicBool>,
-    ) {
-        let (command_tx, command_rx) = mpsc::channel();
-        let client_state = Arc::new(ServoWorkerClientSharedState::new());
-        let (load_tx, load_rx) = mpsc::channel();
-        let (unload_tx, unload_rx) = mpsc::channel();
-        let stopped = Arc::new(AtomicBool::new(false));
-        let stopped_clone = Arc::clone(&stopped);
-        let thread_handle = thread::spawn(move || {
-            while let Ok(command) = command_rx.recv() {
-                match command {
-                    WorkerCommand::CreateSession {
-                        width,
-                        height,
-                        response_tx,
-                        ..
-                    } => {
-                        let _ = load_tx.send(RecordedLoadCommand { width, height });
-                        let _ = response_tx.send(Ok(()));
-                    }
-                    WorkerCommand::Load { response_tx, .. } => {
-                        let _ = response_tx.send(Ok(()));
-                    }
-                    WorkerCommand::LoadUrl { response_tx, .. } => {
-                        let _ = response_tx.send(Ok(()));
-                    }
-                    WorkerCommand::DestroySession { response_tx, .. } => {
-                        let _ = unload_tx.send(());
-                        let _ = response_tx.send(Ok(()));
-                    }
-                    WorkerCommand::Render { response_tx, .. } => {
-                        let _ =
-                            response_tx.send(Ok(EffectRenderOutput::Cpu(solid_canvas(12, 34, 56))));
-                    }
-                    WorkerCommand::Shutdown { response_tx } => {
-                        stopped_clone.store(true, Ordering::SeqCst);
-                        let _ = response_tx.send(());
-                        break;
-                    }
-                    WorkerCommand::MemoryReport { response_tx } => {
-                        let _ = response_tx.send(Ok(empty_memory_report()));
-                    }
-                }
-            }
-        });
-
-        (
-            ServoWorker {
-                command_tx: Some(command_tx),
-                thread_handle: Some(thread_handle),
-                client_state,
-            },
-            load_rx,
-            unload_rx,
-            stopped,
-        )
-    }
-
-    pub fn spawn_blocking_load_test_worker() -> (
-        ServoWorker,
-        Receiver<RecordedLoadCommand>,
-        Sender<()>,
-        Receiver<()>,
-        Arc<AtomicBool>,
-    ) {
-        let (command_tx, command_rx) = mpsc::channel();
-        let client_state = Arc::new(ServoWorkerClientSharedState::new());
-        let (load_tx, load_rx) = mpsc::channel();
-        let (release_tx, release_rx) = mpsc::channel();
-        let (unload_tx, unload_rx) = mpsc::channel();
-        let stopped = Arc::new(AtomicBool::new(false));
-        let stopped_clone = Arc::clone(&stopped);
-        let thread_handle = thread::spawn(move || {
-            while let Ok(command) = command_rx.recv() {
-                match command {
-                    WorkerCommand::CreateSession {
-                        width,
-                        height,
-                        response_tx,
-                        ..
-                    } => {
-                        let _ = load_tx.send(RecordedLoadCommand { width, height });
-                        let _ = release_rx.recv();
-                        let _ = response_tx.send(Ok(()));
-                    }
-                    WorkerCommand::Load { response_tx, .. }
-                    | WorkerCommand::LoadUrl { response_tx, .. } => {
-                        let _ = response_tx.send(Ok(()));
-                    }
-                    WorkerCommand::DestroySession { response_tx, .. } => {
-                        let _ = unload_tx.send(());
-                        let _ = response_tx.send(Ok(()));
-                    }
-                    WorkerCommand::Render { response_tx, .. } => {
-                        let _ =
-                            response_tx.send(Ok(EffectRenderOutput::Cpu(solid_canvas(12, 34, 56))));
-                    }
-                    WorkerCommand::Shutdown { response_tx } => {
-                        stopped_clone.store(true, Ordering::SeqCst);
-                        let _ = response_tx.send(());
-                        break;
-                    }
-                    WorkerCommand::MemoryReport { response_tx } => {
-                        let _ = response_tx.send(Ok(empty_memory_report()));
-                    }
-                }
-            }
-        });
-
-        (
-            ServoWorker {
-                command_tx: Some(command_tx),
-                thread_handle: Some(thread_handle),
-                client_state,
-            },
-            load_rx,
-            release_tx,
-            unload_rx,
-            stopped,
-        )
-    }
-
-    pub fn worker_client_from(worker: &ServoWorker) -> ServoWorkerClient {
-        worker.client().expect("test worker client")
-    }
-}
+pub(super) mod test_support;
 
 #[cfg(test)]
-mod tests {
-    use super::super::telemetry::servo_telemetry_snapshot;
-    use super::*;
-    use std::sync::atomic::Ordering;
-    use std::sync::mpsc::TryRecvError;
-
-    fn queued_render_command(
-        session_id: ServoSessionId,
-        script: &str,
-    ) -> (WorkerCommand, mpsc::Receiver<Result<EffectRenderOutput>>) {
-        queued_render_command_with_role(session_id, ServoProducerRole::SceneHtml, script)
-    }
-
-    fn queued_render_command_with_role(
-        session_id: ServoSessionId,
-        producer_role: ServoProducerRole,
-        script: &str,
-    ) -> (WorkerCommand, mpsc::Receiver<Result<EffectRenderOutput>>) {
-        let (response_tx, response_rx) = mpsc::sync_channel(1);
-        (
-            WorkerCommand::Render {
-                session_id,
-                producer_role,
-                scripts: vec![script.to_owned()],
-                width: 320,
-                height: 200,
-                mode: ServoRenderMode::Cpu,
-                submitted_at: Instant::now(),
-                response_tx,
-            },
-            response_rx,
-        )
-    }
-
-    #[test]
-    fn scheduler_coalesces_redundant_renders_by_session() {
-        let mut scheduler = ServoWorkerScheduler::default();
-        let before = servo_telemetry_snapshot();
-        let session_id = ServoSessionId(42);
-        let (first, first_rx) = queued_render_command(session_id, "old()");
-        let (second, second_rx) = queued_render_command(session_id, "new()");
-
-        scheduler.push(first);
-        scheduler.push(second);
-
-        let superseded = first_rx
-            .recv_timeout(Duration::from_millis(100))
-            .expect("superseded render should receive a response");
-        assert!(superseded.is_err());
-        let after = servo_telemetry_snapshot();
-        assert!(after.render_superseded_total > before.render_superseded_total);
-
-        let Some(ScheduledServoWork::Render(render)) = scheduler.next() else {
-            panic!("expected latest render work");
-        };
-        assert_eq!(render.session_id, session_id);
-        assert_eq!(render.scripts, vec!["new()"]);
-        assert_eq!(render.width, 320);
-        assert_eq!(render.height, 200);
-        assert!(matches!(second_rx.try_recv(), Err(TryRecvError::Empty)));
-        assert!(scheduler.next().is_none());
-        assert!(scheduler.is_empty());
-    }
-
-    #[test]
-    fn scheduler_keeps_one_fair_render_slot_per_session() {
-        let mut scheduler = ServoWorkerScheduler::default();
-        let first_session = ServoSessionId(1);
-        let second_session = ServoSessionId(2);
-        let (first, first_rx) = queued_render_command(first_session, "first-old()");
-        let (second, _second_rx) = queued_render_command(second_session, "second()");
-        let (latest_first, _latest_first_rx) = queued_render_command(first_session, "first-new()");
-
-        scheduler.push(first);
-        scheduler.push(second);
-        scheduler.push(latest_first);
-
-        let superseded = first_rx
-            .recv_timeout(Duration::from_millis(100))
-            .expect("superseded render should receive a response");
-        assert!(superseded.is_err());
-
-        let Some(ScheduledServoWork::Render(render)) = scheduler.next() else {
-            panic!("expected first session render");
-        };
-        assert_eq!(render.session_id, first_session);
-        assert_eq!(render.scripts, vec!["first-new()"]);
-
-        let Some(ScheduledServoWork::Render(render)) = scheduler.next() else {
-            panic!("expected second session render");
-        };
-        assert_eq!(render.session_id, second_session);
-        assert_eq!(render.scripts, vec!["second()"]);
-
-        assert!(scheduler.next().is_none());
-    }
-
-    #[test]
-    fn scheduler_bounds_heavy_session_churn_to_one_slot() {
-        let mut scheduler = ServoWorkerScheduler::default();
-        let display_session = ServoSessionId(1);
-        let led_session = ServoSessionId(2);
-        let (display, display_rx) = queued_render_command(display_session, "display-face-0()");
-        let (led, led_rx) = queued_render_command(led_session, "led-html()");
-        let mut superseded_receivers = vec![display_rx];
-        let mut latest_display_rx = None;
-
-        scheduler.push(display);
-        scheduler.push(led);
-        for frame in 1..=64 {
-            if let Some(rx) = latest_display_rx.take() {
-                superseded_receivers.push(rx);
-            }
-            let script = format!("display-face-{frame}()");
-            let (display, display_rx) = queued_render_command(display_session, &script);
-            scheduler.push(display);
-            latest_display_rx = Some(display_rx);
-        }
-
-        for rx in superseded_receivers {
-            let superseded = rx
-                .recv_timeout(Duration::from_millis(100))
-                .expect("superseded display render should receive a response");
-            assert!(superseded.is_err());
-        }
-
-        let Some(ScheduledServoWork::Render(render)) = scheduler.next() else {
-            panic!("expected latest display render");
-        };
-        assert_eq!(render.session_id, display_session);
-        assert_eq!(render.scripts, vec!["display-face-64()"]);
-
-        let Some(ScheduledServoWork::Render(render)) = scheduler.next() else {
-            panic!("expected led render after display slot");
-        };
-        assert_eq!(render.session_id, led_session);
-        assert_eq!(render.scripts, vec!["led-html()"]);
-        assert!(matches!(led_rx.try_recv(), Err(TryRecvError::Empty)));
-        assert!(scheduler.next().is_none());
-    }
-
-    #[test]
-    fn scheduler_preserves_lifecycle_command_order() {
-        let mut scheduler = ServoWorkerScheduler::default();
-        let (create_tx, _create_rx) = mpsc::sync_channel(1);
-        let (render, _render_rx) = queued_render_command(ServoSessionId(7), "tick()");
-        let (shutdown_tx, _shutdown_rx) = mpsc::sync_channel(1);
-
-        scheduler.push(WorkerCommand::CreateSession {
-            session_id: ServoSessionId(7),
-            producer_role: ServoProducerRole::SceneHtml,
-            width: 320,
-            height: 200,
-            response_tx: create_tx,
-        });
-        scheduler.push(render);
-        scheduler.push(WorkerCommand::Shutdown {
-            response_tx: shutdown_tx,
-        });
-
-        assert!(matches!(
-            scheduler.next(),
-            Some(ScheduledServoWork::Command(
-                WorkerCommand::CreateSession { .. }
-            ))
-        ));
-        assert!(matches!(
-            scheduler.next(),
-            Some(ScheduledServoWork::Render(PendingRenderCommand { .. }))
-        ));
-        assert!(matches!(
-            scheduler.next(),
-            Some(ScheduledServoWork::Command(WorkerCommand::Shutdown { .. }))
-        ));
-        assert!(scheduler.next().is_none());
-    }
-
-    #[test]
-    fn scheduler_alternates_scene_and_display_render_lanes_before_barrier() {
-        let mut scheduler = ServoWorkerScheduler::default();
-        let scene_a = ServoSessionId(1);
-        let scene_b = ServoSessionId(2);
-        let display = ServoSessionId(3);
-
-        let (scene_first, _scene_first_rx) =
-            queued_render_command_with_role(scene_a, ServoProducerRole::SceneHtml, "scene-a()");
-        let (scene_second, _scene_second_rx) =
-            queued_render_command_with_role(scene_b, ServoProducerRole::SceneHtml, "scene-b()");
-        let (display_work, _display_rx) = queued_render_command_with_role(
-            display,
-            ServoProducerRole::DisplayFaceHtml,
-            "display()",
-        );
-
-        scheduler.push(scene_first);
-        scheduler.push(scene_second);
-        scheduler.push(display_work);
-
-        let Some(ScheduledServoWork::Render(render)) = scheduler.next() else {
-            panic!("expected first scene render");
-        };
-        assert_eq!(render.session_id, scene_a);
-        assert_eq!(render.producer_role, ServoProducerRole::SceneHtml);
-
-        let Some(ScheduledServoWork::Render(render)) = scheduler.next() else {
-            panic!("expected display render to alternate after scene lane");
-        };
-        assert_eq!(render.session_id, display);
-        assert_eq!(render.producer_role, ServoProducerRole::DisplayFaceHtml);
-
-        let Some(ScheduledServoWork::Render(render)) = scheduler.next() else {
-            panic!("expected remaining scene render");
-        };
-        assert_eq!(render.session_id, scene_b);
-        assert_eq!(render.producer_role, ServoProducerRole::SceneHtml);
-        assert!(scheduler.next().is_none());
-    }
-
-    #[cfg(feature = "servo-gpu-import")]
-    #[test]
-    fn cached_gpu_frame_reuse_requires_policy_no_ready_and_matching_size() {
-        assert!(can_reuse_cached_gpu_frame(true, false, 480, 480, 480, 480));
-        assert!(!can_reuse_cached_gpu_frame(
-            false, false, 480, 480, 480, 480
-        ));
-        assert!(!can_reuse_cached_gpu_frame(true, true, 480, 480, 480, 480));
-        assert!(!can_reuse_cached_gpu_frame(true, false, 480, 480, 640, 480));
-        assert!(!can_reuse_cached_gpu_frame(true, false, 480, 480, 480, 640));
-    }
-
-    #[cfg(feature = "servo-gpu-import")]
-    #[test]
-    fn classify_gpu_import_slot_exhaustion() {
-        let error = anyhow::anyhow!(
-            hypercolor_linux_gpu_interop::LinuxGpuInteropError::ImportSlotsExhausted {
-                slot_count: 8
-            }
-        );
-
-        assert_eq!(
-            classify_servo_gpu_import_error(&error),
-            ServoGpuImportFallbackReason::ImportSlotsExhausted
-        );
-    }
-
-    #[cfg(feature = "servo-gpu-import")]
-    #[test]
-    fn transient_gpu_import_failures_skip_global_auto_backoff() {
-        assert!(servo_gpu_import_failure_is_transient(
-            ServoGpuImportFallbackReason::GlOperation
-        ));
-        assert!(servo_gpu_import_failure_is_transient(
-            ServoGpuImportFallbackReason::GlFramebufferIncomplete
-        ));
-        assert!(servo_gpu_import_failure_is_transient(
-            ServoGpuImportFallbackReason::ImportSlotsExhausted
-        ));
-        assert!(!servo_gpu_import_failure_is_transient(
-            ServoGpuImportFallbackReason::MissingWgpuVulkanDevice
-        ));
-    }
-
-    #[cfg(feature = "servo-gpu-import")]
-    #[test]
-    fn transient_gpu_import_failures_preserve_importer_state() {
-        assert!(!servo_gpu_import_failure_should_clear_importer(
-            ServoGpuImportFallbackReason::GlOperation
-        ));
-        assert!(!servo_gpu_import_failure_should_clear_importer(
-            ServoGpuImportFallbackReason::GlFramebufferIncomplete
-        ));
-        assert!(!servo_gpu_import_failure_should_clear_importer(
-            ServoGpuImportFallbackReason::ImportSlotsExhausted
-        ));
-        assert!(servo_gpu_import_failure_should_clear_importer(
-            ServoGpuImportFallbackReason::GlResource
-        ));
-        assert!(servo_gpu_import_failure_should_clear_importer(
-            ServoGpuImportFallbackReason::MissingWgpuVulkanDevice
-        ));
-    }
-
-    #[test]
-    fn scheduler_treats_lifecycle_commands_as_render_barriers() {
-        let mut scheduler = ServoWorkerScheduler::default();
-        let session_id = ServoSessionId(7);
-        let (old_render, old_rx) = queued_render_command(session_id, "old()");
-        let (destroy_tx, _destroy_rx) = mpsc::sync_channel(1);
-        let (new_render, new_rx) = queued_render_command(session_id, "new()");
-
-        scheduler.push(old_render);
-        scheduler.push(WorkerCommand::DestroySession {
-            session_id,
-            response_tx: destroy_tx,
-        });
-        scheduler.push(new_render);
-
-        assert!(matches!(old_rx.try_recv(), Err(TryRecvError::Empty)));
-        assert!(matches!(new_rx.try_recv(), Err(TryRecvError::Empty)));
-
-        let Some(ScheduledServoWork::Render(render)) = scheduler.next() else {
-            panic!("expected old render before destroy");
-        };
-        assert_eq!(render.scripts, vec!["old()"]);
-
-        assert!(matches!(
-            scheduler.next(),
-            Some(ScheduledServoWork::Command(
-                WorkerCommand::DestroySession { .. }
-            ))
-        ));
-
-        let Some(ScheduledServoWork::Render(render)) = scheduler.next() else {
-            panic!("expected new render after destroy");
-        };
-        assert_eq!(render.scripts, vec!["new()"]);
-
-        assert!(scheduler.next().is_none());
-    }
-
-    #[test]
-    fn fatal_classifier_keeps_session_local_page_failures_local() {
-        let page_timeout = anyhow!(
-            "timed out waiting for Servo page load completion (expected_url=Some(\"file:///bad.html\"), current_url=about:blank)"
-        );
-        let javascript_timeout = anyhow!("timed out waiting for JavaScript callback");
-        let javascript_error = anyhow!("javascript evaluation failed: TypeError: boom");
-
-        assert!(!servo_worker_is_fatal_error(&page_timeout));
-        assert!(!servo_worker_is_fatal_error(&javascript_timeout));
-        assert!(!servo_worker_is_fatal_error(&javascript_error));
-    }
-
-    #[test]
-    fn fatal_classifier_keeps_transport_failures_global() {
-        let worker_timeout = anyhow!("timed out waiting for Servo worker readiness after 10000ms");
-        let client_page_timeout = anyhow!("timed out waiting for Servo page load after 10000ms");
-        let disconnected = anyhow!("Servo worker disconnected before returning a frame");
-        let send_failure = anyhow!("failed to send render command to Servo worker");
-
-        assert!(servo_worker_is_fatal_error(&worker_timeout));
-        assert!(servo_worker_is_fatal_error(&client_page_timeout));
-        assert!(servo_worker_is_fatal_error(&disconnected));
-        assert!(servo_worker_is_fatal_error(&send_failure));
-    }
-
-    #[test]
-    fn cached_canvas_reuse_waits_for_settled_no_ready_frames() {
-        let cached = Canvas::new(320, 200);
-
-        assert!(!can_reuse_cached_canvas(
-            false,
-            0,
-            1,
-            Some(&cached),
-            320,
-            200
-        ));
-        assert!(can_reuse_cached_canvas(
-            false,
-            0,
-            STATIC_CANVAS_REUSE_NO_READY_FRAMES,
-            Some(&cached),
-            320,
-            200
-        ));
-        assert!(!can_reuse_cached_canvas(
-            false,
-            1,
-            STATIC_CANVAS_REUSE_NO_READY_FRAMES,
-            Some(&cached),
-            320,
-            200
-        ));
-        assert!(!can_reuse_cached_canvas(
-            true,
-            0,
-            STATIC_CANVAS_REUSE_NO_READY_FRAMES,
-            Some(&cached),
-            320,
-            200
-        ));
-    }
-
-    #[test]
-    fn cached_canvas_reuse_requires_matching_dimensions() {
-        let cached = Canvas::new(320, 200);
-
-        assert!(!can_reuse_cached_canvas(
-            false,
-            0,
-            STATIC_CANVAS_REUSE_NO_READY_FRAMES,
-            Some(&cached),
-            640,
-            360
-        ));
-        assert!(!can_reuse_cached_canvas(
-            false,
-            0,
-            STATIC_CANVAS_REUSE_NO_READY_FRAMES,
-            None,
-            320,
-            200
-        ));
-    }
-
-    #[test]
-    fn transparent_readback_reuses_visible_cached_canvas() {
-        use hypercolor_types::canvas::Rgba;
-
-        let mut cached = Canvas::new(320, 200);
-        cached.fill(Rgba::new(12, 34, 56, 255));
-        let transparent = Canvas::from_vec(vec![0; 320 * 200 * 4], 320, 200);
-        let mut visible = Canvas::new(320, 200);
-        visible.fill(Rgba::new(12, 34, 56, 255));
-
-        assert!(should_reuse_cached_canvas_after_transparent_readback(
-            Some(&cached),
-            &transparent,
-            320,
-            200
-        ));
-        assert!(!should_reuse_cached_canvas_after_transparent_readback(
-            Some(&cached),
-            &visible,
-            320,
-            200
-        ));
-        assert!(!should_reuse_cached_canvas_after_transparent_readback(
-            Some(&cached),
-            &transparent,
-            480,
-            480
-        ));
-        assert!(!should_reuse_cached_canvas_after_transparent_readback(
-            Some(&transparent),
-            &transparent,
-            320,
-            200
-        ));
-    }
-
-    #[test]
-    fn trimmed_servo_preferences_use_transparent_shell_background() {
-        assert_eq!(
-            trimmed_servo_preferences().shell_background_color_rgba,
-            [0.0, 0.0, 0.0, 0.0]
-        );
-    }
-
-    #[test]
-    fn trimmed_servo_preferences_leave_jit_enabled() {
-        let preferences = trimmed_servo_preferences();
-        assert!(!preferences.js_disable_jit);
-        assert!(preferences.js_baseline_jit_enabled);
-        assert!(preferences.js_ion_enabled);
-        assert!(preferences.js_offthread_compilation_enabled);
-    }
-
-    #[test]
-    fn trimmed_servo_preferences_tighten_embedder_gc_policy() {
-        let preferences = trimmed_servo_preferences();
-        assert_eq!(preferences.js_mem_gc_empty_chunk_count_min, 0);
-        assert_eq!(preferences.js_mem_gc_high_frequency_heap_growth_max, 150);
-        assert_eq!(preferences.js_mem_gc_high_frequency_heap_growth_min, 120);
-        assert_eq!(preferences.js_mem_gc_high_frequency_high_limit_mb, 128);
-        assert_eq!(preferences.js_mem_gc_high_frequency_low_limit_mb, 64);
-        assert_eq!(preferences.js_mem_gc_low_frequency_heap_growth, 120);
-    }
-
-    #[test]
-    fn servo_readback_buffers_reuse_exclusive_retired_canvas_storage() {
-        let pixels = vec![0x7f; 16];
-        let original_ptr = pixels.as_ptr();
-        let mut buffers = ServoReadbackBuffers::default();
-        buffers.retire_canvas(Canvas::from_vec(pixels, 2, 2));
-
-        let reused = buffers.take_buffer(16);
-
-        assert_eq!(reused.as_ptr(), original_ptr);
-        assert!(buffers.retired_canvases.is_empty());
-    }
-
-    #[test]
-    fn servo_readback_buffers_wait_for_downstream_canvas_release() {
-        let pixels = vec![0x3f; 16];
-        let original_ptr = pixels.as_ptr();
-        let canvas = Canvas::from_vec(pixels, 2, 2);
-        let downstream = canvas.clone();
-        let mut buffers = ServoReadbackBuffers::default();
-        buffers.retire_canvas(canvas);
-
-        let first = buffers.take_buffer(16);
-        assert_ne!(first.as_ptr(), original_ptr);
-        assert_eq!(buffers.retired_canvases.len(), 1);
-
-        drop(downstream);
-        let reused = buffers.take_buffer(16);
-        assert_eq!(reused.as_ptr(), original_ptr);
-    }
-
-    #[test]
-    fn servo_worker_shutdown_joins_thread() {
-        let (mut worker, stopped) = test_support::spawn_test_worker();
-
-        worker.shutdown().expect("worker shutdown should succeed");
-
-        assert!(stopped.load(Ordering::SeqCst));
-        assert!(worker.command_tx.is_none());
-        assert!(worker.thread_handle.is_none());
-    }
-
-    #[test]
-    fn poisoned_shared_worker_requires_daemon_restart() {
-        let _lock = test_support::SHARED_WORKER_STATE_TEST_LOCK
-            .lock()
-            .expect("shared worker test lock");
-        reset_shared_servo_worker_state();
-
-        install_poisoned_shared_worker("test failure");
-
-        let result = acquire_servo_worker();
-        assert!(result.is_err(), "poisoned worker should fail closed");
-        let error = result.err().expect("poisoned worker should fail closed");
-        assert!(
-            error
-                .to_string()
-                .contains("Servo runtime is unrecoverable until the daemon restarts")
-        );
-
-        reset_shared_servo_worker_state();
-    }
-
-    #[test]
-    fn shutdown_clears_poisoned_shared_worker_state() {
-        let _lock = test_support::SHARED_WORKER_STATE_TEST_LOCK
-            .lock()
-            .expect("shared worker test lock");
-        reset_shared_servo_worker_state();
-
-        install_poisoned_shared_worker("test failure");
-
-        shutdown_shared_servo_worker().expect("shutdown should clear poisoned state");
-
-        assert!(shared_worker_is_vacant());
-    }
-
-    #[test]
-    fn process_exit_shutdown_retires_shared_worker() {
-        let _lock = test_support::SHARED_WORKER_STATE_TEST_LOCK
-            .lock()
-            .expect("shared worker test lock");
-        reset_shared_servo_worker_state();
-        let (worker, stopped) = test_support::spawn_test_worker();
-        install_running_shared_worker(worker);
-
-        shutdown_servo_runtime().expect("process-exit shutdown should stop shared worker");
-
-        assert!(stopped.load(Ordering::SeqCst));
-        let result = acquire_servo_worker();
-        assert!(
-            result.is_err(),
-            "Servo runtime should not restart after process-exit shutdown"
-        );
-        reset_shared_servo_worker_state();
-    }
-
-    #[test]
-    fn load_completion_url_matches_exact_expected_url() {
-        assert!(load_completion_url_matches(
-            Some("https://example.com"),
-            Some("https://example.com")
-        ));
-    }
-
-    #[test]
-    fn load_completion_url_matches_redirected_url() {
-        assert!(load_completion_url_matches(
-            Some("https://example.com"),
-            Some("https://www.example.com/en")
-        ));
-    }
-
-    #[test]
-    fn load_completion_url_rejects_blank_page() {
-        assert!(!load_completion_url_matches(
-            Some("https://example.com"),
-            Some("about:blank")
-        ));
-        assert!(!load_completion_url_matches(
-            Some("https://example.com"),
-            None
-        ));
-    }
-}
+mod tests;

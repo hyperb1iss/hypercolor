@@ -22,12 +22,12 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 
+#[cfg(feature = "servo-gpu-import")]
+use super::gpu_import_backend::ServoFrameUnavailable;
 use super::telemetry::{
     record_servo_detached_destroy, record_servo_page_load, record_servo_pending_render_age,
     record_servo_renderer_load, record_servo_session_create, record_servo_soft_stall,
 };
-#[cfg(feature = "servo-gpu-import")]
-use super::worker::ServoFrameUnavailable;
 use super::worker::{
     RENDER_RESPONSE_TIMEOUT, effect_is_audio_reactive, prepare_runtime_html_source,
     servo_worker_is_fatal_error,
