@@ -27,6 +27,8 @@ use servo::{
     JSValue, JavaScriptEvaluationError, Preferences, RenderingContext, Servo, ServoBuilder,
     WebView, WebViewBuilder,
 };
+#[cfg(feature = "servo-gpu-import")]
+use tracing::warn;
 use tracing::{debug, trace};
 
 use super::delegate::HypercolorWebViewDelegate;
@@ -483,6 +485,9 @@ impl ServoWorkerRuntime {
             bail!("Servo session {session_id:?} already exists");
         }
 
+        #[cfg(feature = "servo-gpu-import")]
+        let mut rendering_context_handle = Self::create_rendering_context(width, height)?;
+        #[cfg(not(feature = "servo-gpu-import"))]
         let rendering_context_handle = Self::create_rendering_context(width, height)?;
         let rendering_context = rendering_context_handle.rendering_context.clone();
         #[cfg(feature = "servo-gpu-import")]
