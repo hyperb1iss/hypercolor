@@ -1,84 +1,59 @@
-use std::fmt::Write as _;
+use std::collections::BTreeMap;
 
-use hypercolor_types::sensor::SensorReading;
+use hypercolor_types::effect::ControlValue;
+use hypercolor_types::sensor::{SensorReading, SensorUnit};
+use serde::Serialize;
 
 use crate::input::{InteractionData, ScreenData};
 
 use super::{
-    DEFAULT_ZONE_HEIGHT, DEFAULT_ZONE_SAMPLES, DEFAULT_ZONE_WIDTH, join_i8_csv, join_i16_csv,
-    js_bool, js_true_object_literal, keyboard_lookup_keys, mouse_lookup_keys,
-    push_js_bool_assignment, push_js_csv_typed_array_assignment, push_js_f32_assignment,
-    rgb_to_hsl, sensor_payload,
+    DEFAULT_ZONE_HEIGHT, DEFAULT_ZONE_SAMPLES, DEFAULT_ZONE_WIDTH, keyboard_lookup_keys,
+    mouse_lookup_keys, rgb_to_hsl,
 };
 
-pub(super) struct InputScriptPayload {
-    keyboard_keys: String,
-    recent_keys: String,
-    mouse_x: i32,
-    mouse_y: i32,
-    mouse_down: bool,
-    mouse_buttons: String,
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct LightScriptFramePayload {
+    pub(super) timing: LightScriptTimingPayload,
+    pub(super) canvas: LightScriptCanvasPayload,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) audio: Option<LightScriptAudioPayload>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) screen: Option<LightScriptScreenPayload>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) sensors: Option<LightScriptSensorPayload>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub(super) controls: BTreeMap<String, LightScriptControlValue>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) interaction: Option<LightScriptInteractionPayload>,
+    #[serde(skip_serializing_if = "is_false")]
+    pub(super) render_host_frame: bool,
 }
 
-impl InputScriptPayload {
-    pub(super) fn from_interaction(interaction: &InteractionData) -> Self {
-        Self {
-            keyboard_keys: js_true_object_literal(&keyboard_lookup_keys(
-                &interaction.keyboard.pressed_keys,
-            )),
-            recent_keys: serde_json::to_string(&interaction.keyboard.recent_keys)
-                .unwrap_or_else(|_| "[]".to_owned()),
-            mouse_x: interaction.mouse.x,
-            mouse_y: interaction.mouse.y,
-            mouse_down: interaction.mouse.down,
-            mouse_buttons: js_true_object_literal(&mouse_lookup_keys(&interaction.mouse.buttons)),
-        }
-    }
-
-    pub(super) fn script(&self) -> String {
-        let mut script = String::with_capacity(
-            320_usize
-                .saturating_add(self.keyboard_keys.len())
-                .saturating_add(self.recent_keys.len())
-                .saturating_add(self.mouse_buttons.len()),
-        );
-        script.push_str("(function(){\n");
-        script.push_str(
-            "  if (typeof window.engine !== 'object' || window.engine === null) { window.engine = {}; }\n",
-        );
-        script.push_str(
-            "  if (typeof window.engine.keyboard !== 'object' || window.engine.keyboard === null) { window.engine.keyboard = {}; }\n",
-        );
-        script.push_str(
-            "  if (typeof window.engine.mouse !== 'object' || window.engine.mouse === null) { window.engine.mouse = {}; }\n",
-        );
-        script.push_str("  window.engine.keyboard.keys = ");
-        script.push_str(&self.keyboard_keys);
-        script.push_str(";\n");
-        script.push_str("  window.engine.keyboard.recent = ");
-        script.push_str(&self.recent_keys);
-        script.push_str(";\n");
-        script.push_str("  window.engine.mouse.x = ");
-        let _ = write!(&mut script, "{}", self.mouse_x);
-        script.push_str(";\n");
-        script.push_str("  window.engine.mouse.y = ");
-        let _ = write!(&mut script, "{}", self.mouse_y);
-        script.push_str(";\n");
-        script.push_str("  window.engine.mouse.down = ");
-        script.push_str(js_bool(self.mouse_down));
-        script.push_str(";\n");
-        script.push_str("  window.engine.mouse.buttons = ");
-        script.push_str(&self.mouse_buttons);
-        script.push_str(";\n");
-        script.push_str(
-            "  if (typeof globalThis === 'object' && globalThis !== null) { globalThis.engine = window.engine; }\n",
-        );
-        script.push_str("})();");
-        script
+impl LightScriptFramePayload {
+    pub(super) fn delivery_script(&self) -> String {
+        let payload = serde_json::to_string(self).unwrap_or_else(|_| "{}".to_owned());
+        format!("window.__hypercolorApplyFramePayload({payload});")
     }
 }
 
-pub(super) struct AudioScriptPayload {
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct LightScriptTimingPayload {
+    pub(super) time_secs: f32,
+    pub(super) delta_secs: f32,
+    pub(super) frame_number: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub(super) struct LightScriptCanvasPayload {
+    pub(super) width: u32,
+    pub(super) height: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct LightScriptAudioPayload {
     pub(super) level_db: f32,
     pub(super) level_linear: f32,
     pub(super) level_short: f32,
@@ -104,7 +79,7 @@ pub(super) struct AudioScriptPayload {
     pub(super) onset: bool,
     pub(super) onset_pulse: f32,
     pub(super) spectral_flux: f32,
-    pub(super) spectral_flux_bands_csv: String,
+    pub(super) spectral_flux_bands: Vec<f32>,
     pub(super) brightness: f32,
     pub(super) spread: f32,
     pub(super) rolloff: f32,
@@ -113,257 +88,115 @@ pub(super) struct AudioScriptPayload {
     pub(super) chord_mood: f32,
     pub(super) dominant_pitch: f32,
     pub(super) dominant_pitch_confidence: f32,
-    pub(super) frequency_raw_csv: String,
-    pub(super) spectrum_csv: String,
-    pub(super) frequency_weighted_csv: String,
-    pub(super) mel_csv: String,
-    pub(super) mel_norm_csv: String,
-    pub(super) chroma_csv: String,
+    pub(super) frequency_raw: Vec<i8>,
+    pub(super) frequency: Vec<f32>,
+    pub(super) frequency_weighted: Vec<f32>,
+    pub(super) mel_bands: Vec<f32>,
+    pub(super) mel_bands_normalized: Vec<f32>,
+    pub(super) chromagram: Vec<f32>,
 }
 
-impl AudioScriptPayload {
-    pub(super) fn script(&self) -> String {
-        let mut script = String::with_capacity(
-            1200_usize
-                .saturating_add(self.spectrum_csv.len())
-                .saturating_add(self.frequency_raw_csv.len().saturating_mul(2))
-                .saturating_add(self.frequency_weighted_csv.len())
-                .saturating_add(self.mel_csv.len().saturating_mul(2))
-                .saturating_add(self.chroma_csv.len())
-                .saturating_add(self.spectral_flux_bands_csv.len()),
-        );
-        script.push_str("(function(){\n");
-        script.push_str(
-            "  if (typeof window.engine !== 'object' || window.engine === null) { window.engine = {}; }\n",
-        );
-        script.push_str(
-            "  if (typeof window.engine.audio !== 'object' || window.engine.audio === null) { window.engine.audio = {}; }\n",
-        );
-        push_js_f32_assignment(&mut script, "window.engine.audio.level", self.level_db);
-        push_js_f32_assignment(&mut script, "window.engine.audio.levelRaw", self.level_db);
-        push_js_f32_assignment(
-            &mut script,
-            "window.engine.audio.levelLinear",
-            self.level_linear,
-        );
-        push_js_f32_assignment(
-            &mut script,
-            "window.engine.audio.levelShort",
-            self.level_short,
-        );
-        push_js_f32_assignment(
-            &mut script,
-            "window.engine.audio.levelLong",
-            self.level_long,
-        );
-        push_js_f32_assignment(&mut script, "window.engine.audio.rms", self.raw_rms);
-        push_js_f32_assignment(&mut script, "window.engine.audio.peak", self.peak);
-        push_js_f32_assignment(&mut script, "window.engine.audio.bass", self.bass);
-        push_js_f32_assignment(&mut script, "window.engine.audio.bassEnv", self.bass_env);
-        push_js_f32_assignment(&mut script, "window.engine.audio.mid", self.mid);
-        push_js_f32_assignment(&mut script, "window.engine.audio.midEnv", self.mid_env);
-        push_js_f32_assignment(&mut script, "window.engine.audio.treble", self.treble);
-        push_js_f32_assignment(
-            &mut script,
-            "window.engine.audio.trebleEnv",
-            self.treble_env,
-        );
-        push_js_f32_assignment(&mut script, "window.engine.audio.density", self.density);
-        push_js_f32_assignment(&mut script, "window.engine.audio.momentum", self.momentum);
-        push_js_f32_assignment(&mut script, "window.engine.audio.swell", self.swell);
-        push_js_f32_assignment(&mut script, "window.engine.audio.width", self.width);
-        push_js_f32_assignment(&mut script, "window.engine.audio.bpm", self.bpm);
-        push_js_f32_assignment(&mut script, "window.engine.audio.tempo", self.tempo);
-        push_js_bool_assignment(&mut script, "window.engine.audio.beat", self.beat);
-        push_js_f32_assignment(
-            &mut script,
-            "window.engine.audio.beatPulse",
-            self.beat_pulse,
-        );
-        push_js_f32_assignment(
-            &mut script,
-            "window.engine.audio.beatPhase",
-            self.beat_phase,
-        );
-        push_js_f32_assignment(
-            &mut script,
-            "window.engine.audio.beatConfidence",
-            self.beat_confidence,
-        );
-        push_js_f32_assignment(
-            &mut script,
-            "window.engine.audio.confidence",
-            self.beat_confidence,
-        );
-        push_js_bool_assignment(&mut script, "window.engine.audio.onset", self.onset);
-        push_js_f32_assignment(
-            &mut script,
-            "window.engine.audio.onsetPulse",
-            self.onset_pulse,
-        );
-        push_js_f32_assignment(
-            &mut script,
-            "window.engine.audio.spectralFlux",
-            self.spectral_flux,
-        );
-        push_js_csv_typed_array_assignment(
-            &mut script,
-            "window.engine.audio.spectralFluxBands",
-            "Float32Array",
-            &self.spectral_flux_bands_csv,
-        );
-        push_js_f32_assignment(
-            &mut script,
-            "window.engine.audio.brightness",
-            self.brightness,
-        );
-        push_js_f32_assignment(&mut script, "window.engine.audio.spread", self.spread);
-        push_js_f32_assignment(&mut script, "window.engine.audio.rolloff", self.rolloff);
-        push_js_f32_assignment(&mut script, "window.engine.audio.roughness", self.roughness);
-        push_js_f32_assignment(
-            &mut script,
-            "window.engine.audio.harmonicHue",
-            self.harmonic_hue,
-        );
-        push_js_f32_assignment(
-            &mut script,
-            "window.engine.audio.chordMood",
-            self.chord_mood,
-        );
-        push_js_f32_assignment(
-            &mut script,
-            "window.engine.audio.dominantPitch",
-            self.dominant_pitch,
-        );
-        push_js_f32_assignment(
-            &mut script,
-            "window.engine.audio.dominantPitchConfidence",
-            self.dominant_pitch_confidence,
-        );
-        push_js_csv_typed_array_assignment(
-            &mut script,
-            "window.engine.audio.freq",
-            "Int8Array",
-            &self.frequency_raw_csv,
-        );
-        push_js_csv_typed_array_assignment(
-            &mut script,
-            "window.engine.audio.frequencyRaw",
-            "Int8Array",
-            &self.frequency_raw_csv,
-        );
-        push_js_csv_typed_array_assignment(
-            &mut script,
-            "window.engine.audio.frequency",
-            "Float32Array",
-            &self.spectrum_csv,
-        );
-        push_js_csv_typed_array_assignment(
-            &mut script,
-            "window.engine.audio.frequencyWeighted",
-            "Float32Array",
-            &self.frequency_weighted_csv,
-        );
-        push_js_csv_typed_array_assignment(
-            &mut script,
-            "window.engine.audio.melBands",
-            "Float32Array",
-            &self.mel_csv,
-        );
-        push_js_csv_typed_array_assignment(
-            &mut script,
-            "window.engine.audio.melBandsNormalized",
-            "Float32Array",
-            &self.mel_norm_csv,
-        );
-        push_js_csv_typed_array_assignment(
-            &mut script,
-            "window.engine.audio.chromagram",
-            "Float32Array",
-            &self.chroma_csv,
-        );
-        script.push_str("  if (typeof globalThis === 'object' && globalThis !== null) { globalThis.engine = window.engine; }\n");
-        script.push_str("})();");
-        script
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub(super) struct LightScriptInteractionPayload {
+    pub(super) keyboard: LightScriptKeyboardPayload,
+    pub(super) mouse: LightScriptMousePayload,
+}
+
+impl LightScriptInteractionPayload {
+    pub(super) fn from_interaction(interaction: &InteractionData) -> Self {
+        Self {
+            keyboard: LightScriptKeyboardPayload {
+                keys: keyboard_lookup_keys(&interaction.keyboard.pressed_keys),
+                recent: interaction.keyboard.recent_keys.clone(),
+            },
+            mouse: LightScriptMousePayload {
+                x: interaction.mouse.x,
+                y: interaction.mouse.y,
+                down: interaction.mouse.down,
+                buttons: mouse_lookup_keys(&interaction.mouse.buttons),
+            },
+        }
     }
 }
 
-pub(super) struct SensorScriptPayload {
-    sensor_list: Option<String>,
-    sensors_json: String,
-    replace_sensor_map: bool,
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(super) struct LightScriptKeyboardPayload {
+    pub(super) keys: Vec<String>,
+    pub(super) recent: Vec<String>,
 }
 
-impl SensorScriptPayload {
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(super) struct LightScriptMousePayload {
+    pub(super) x: i32,
+    pub(super) y: i32,
+    pub(super) down: bool,
+    pub(super) buttons: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct LightScriptSensorPayload {
+    pub(super) readings: BTreeMap<String, LightScriptSensorReading>,
+    pub(super) replace_sensor_map: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) sensor_list: Option<Vec<String>>,
+}
+
+impl LightScriptSensorPayload {
     pub(super) fn from_readings(
         readings: &[SensorReading],
         replace_sensor_map: bool,
         sensor_labels: Option<&[String]>,
     ) -> Self {
-        Self {
-            sensor_list: sensor_labels
-                .map(|labels| serde_json::to_string(labels).unwrap_or_else(|_| "[]".to_owned())),
-            sensors_json: serde_json::to_string(&sensor_payload(readings))
-                .unwrap_or_else(|_| "{}".to_owned()),
-            replace_sensor_map,
-        }
-    }
-
-    pub(super) fn script(&self) -> String {
-        let mut script = String::with_capacity(
-            256_usize
-                .saturating_add(self.sensor_list.as_ref().map_or(0, String::len))
-                .saturating_add(self.sensors_json.len()),
-        );
-        script.push_str("(function(){\n");
-        script.push_str(
-            "  if (typeof window.engine !== 'object' || window.engine === null) { window.engine = {}; }\n",
-        );
-        if self.replace_sensor_map {
-            script.push_str("  window.engine.sensors = ");
-            script.push_str(&self.sensors_json);
-            script.push_str(";\n");
-        } else {
-            script.push_str(
-                "  if (typeof window.engine.sensors !== 'object' || window.engine.sensors === null) { window.engine.sensors = {}; }\n",
+        let mut payload_readings = BTreeMap::new();
+        for reading in readings {
+            let (default_min, default_max) = default_sensor_range(reading);
+            payload_readings.insert(
+                reading.label.clone(),
+                LightScriptSensorReading {
+                    value: sanitize_f32(reading.value),
+                    min: sanitize_f32(reading.min.unwrap_or(default_min)),
+                    max: sanitize_f32(reading.max.or(reading.critical).unwrap_or(default_max)),
+                    unit: reading.unit.symbol(),
+                },
             );
-            script.push_str("  Object.assign(window.engine.sensors, ");
-            script.push_str(&self.sensors_json);
-            script.push_str(");\n");
         }
-        if let Some(sensor_list) = &self.sensor_list {
-            script.push_str("  window.engine.sensorList = ");
-            script.push_str(sensor_list);
-            script.push_str(";\n");
+
+        Self {
+            readings: payload_readings,
+            replace_sensor_map,
+            sensor_list: sensor_labels.map(<[String]>::to_vec),
         }
-        script.push_str(
-            "  if (typeof globalThis === 'object' && globalThis !== null) { globalThis.engine = window.engine; }\n",
-        );
-        script.push_str("})();");
-        script
     }
 }
 
-pub(super) struct ScreenScriptPayload {
-    grid_width: u32,
-    grid_height: u32,
-    hue_csv: String,
-    saturation_csv: String,
-    lightness_csv: String,
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub(super) struct LightScriptSensorReading {
+    pub(super) value: f32,
+    pub(super) min: f32,
+    pub(super) max: f32,
+    pub(super) unit: &'static str,
 }
 
-impl ScreenScriptPayload {
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct LightScriptScreenPayload {
+    pub(super) grid_width: u32,
+    pub(super) grid_height: u32,
+    pub(super) hue: Vec<i16>,
+    pub(super) saturation: Vec<i8>,
+    pub(super) lightness: Vec<i8>,
+}
+
+impl LightScriptScreenPayload {
     pub(super) fn from_screen(screen: Option<&ScreenData>) -> Self {
         let Some(screen) = screen else {
-            let sample_count = DEFAULT_ZONE_SAMPLES;
-            let zero_hues = vec![0_i16; sample_count];
-            let zero_channels = vec![0_i8; sample_count];
             return Self {
                 grid_width: DEFAULT_ZONE_WIDTH as u32,
                 grid_height: DEFAULT_ZONE_HEIGHT as u32,
-                hue_csv: join_i16_csv(&zero_hues),
-                saturation_csv: join_i8_csv(&zero_channels),
-                lightness_csv: join_i8_csv(&zero_channels),
+                hue: vec![0_i16; DEFAULT_ZONE_SAMPLES],
+                saturation: vec![0_i8; DEFAULT_ZONE_SAMPLES],
+                lightness: vec![0_i8; DEFAULT_ZONE_SAMPLES],
             };
         };
 
@@ -389,227 +222,298 @@ impl ScreenScriptPayload {
         Self {
             grid_width,
             grid_height,
-            hue_csv: join_i16_csv(&hue),
-            saturation_csv: join_i8_csv(&saturation),
-            lightness_csv: join_i8_csv(&lightness),
+            hue,
+            saturation,
+            lightness,
         }
     }
+}
 
-    pub(super) fn script(&self) -> String {
-        let mut script = String::with_capacity(
-            320_usize
-                .saturating_add(self.hue_csv.len())
-                .saturating_add(self.saturation_csv.len())
-                .saturating_add(self.lightness_csv.len()),
-        );
-        script.push_str("(function(){\n");
-        script.push_str(
-            "  if (typeof window.engine !== 'object' || window.engine === null) { window.engine = {}; }\n",
-        );
-        script.push_str(
-            "  if (typeof window.engine.zone !== 'object' || window.engine.zone === null) { window.engine.zone = {}; }\n",
-        );
-        let _ = writeln!(script, "  window.engine.zone.width = {};", self.grid_width);
-        let _ = writeln!(
-            script,
-            "  window.engine.zone.height = {};",
-            self.grid_height
-        );
-        let _ = writeln!(
-            script,
-            "  window.engine.zone.hue = new Int16Array([{}]);",
-            self.hue_csv
-        );
-        let _ = writeln!(
-            script,
-            "  window.engine.zone.saturation = new Int8Array([{}]);",
-            self.saturation_csv
-        );
-        let _ = writeln!(
-            script,
-            "  window.engine.zone.lightness = new Int8Array([{}]);",
-            self.lightness_csv
-        );
-        script.push_str(
-            "  if (typeof globalThis === 'object' && globalThis !== null) { globalThis.engine = window.engine; }\n",
-        );
-        script.push_str("})();");
-        script
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub(super) enum LightScriptControlValue {
+    Float(f32),
+    Integer(i32),
+    Boolean(bool),
+    Text(String),
+    Gradient(Vec<LightScriptGradientStop>),
+    Rect(LightScriptRect),
+}
+
+impl LightScriptControlValue {
+    pub(super) fn from_control_value(value: &ControlValue) -> Self {
+        match value {
+            ControlValue::Float(value) => Self::Float(sanitize_f32(*value)),
+            ControlValue::Integer(value) => Self::Integer(*value),
+            ControlValue::Boolean(value) => Self::Boolean(*value),
+            ControlValue::Color([red, green, blue, _alpha]) => Self::Text(format!(
+                "#{:02x}{:02x}{:02x}",
+                color_byte(*red),
+                color_byte(*green),
+                color_byte(*blue)
+            )),
+            ControlValue::Gradient(stops) => Self::Gradient(
+                stops
+                    .iter()
+                    .map(|stop| LightScriptGradientStop {
+                        pos: sanitize_f32(stop.position),
+                        color: stop.color.map(sanitize_f32),
+                    })
+                    .collect(),
+            ),
+            ControlValue::Enum(value) | ControlValue::Text(value) => Self::Text(value.clone()),
+            ControlValue::Rect(rect) => Self::Rect(LightScriptRect {
+                x: sanitize_f32(rect.x),
+                y: sanitize_f32(rect.y),
+                width: sanitize_f32(rect.width),
+                height: sanitize_f32(rect.height),
+            }),
+        }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub(super) struct LightScriptGradientStop {
+    pub(super) pos: f32,
+    pub(super) color: [f32; 4],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub(super) struct LightScriptRect {
+    pub(super) x: f32,
+    pub(super) y: f32,
+    pub(super) width: f32,
+    pub(super) height: f32,
+}
+
+fn color_byte(value: f32) -> u8 {
+    #[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
+    let scaled = (sanitize_f32(value).clamp(0.0, 1.0) * 255.0).round() as u16;
+    u8::try_from(scaled).unwrap_or(u8::MAX)
+}
+
+fn default_sensor_range(reading: &SensorReading) -> (f32, f32) {
+    match reading.unit {
+        SensorUnit::Celsius => (0.0, reading.critical.unwrap_or(100.0)),
+        SensorUnit::Percent => (0.0, 100.0),
+        SensorUnit::Megabytes => (0.0, reading.max.unwrap_or(reading.value.max(1.0))),
+        SensorUnit::Rpm => (0.0, reading.max.unwrap_or(5000.0)),
+        SensorUnit::Watts => (0.0, reading.max.unwrap_or(500.0)),
+        SensorUnit::Mhz => (0.0, reading.max.unwrap_or(5000.0)),
+    }
+}
+
+pub(super) fn sanitize_f32(value: f32) -> f32 {
+    if value.is_finite() { value } else { 0.0 }
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn assert_f32_json_array(value: &serde_json::Value, expected: &[f64]) {
+        let values = value.as_array().expect("value should be an array");
+        assert_eq!(values.len(), expected.len());
+        for (value, expected) in values.iter().zip(expected.iter().copied()) {
+            let value = value.as_f64().expect("item should be a number");
+            assert!((value - expected).abs() < 0.0001);
+        }
+    }
+
     #[test]
-    fn input_script_matches_adapter_contract() {
-        let payload = InputScriptPayload {
-            keyboard_keys: r#"{"A":true}"#.to_owned(),
-            recent_keys: r#"["A"]"#.to_owned(),
-            mouse_x: -4,
-            mouse_y: 12,
-            mouse_down: true,
-            mouse_buttons: r#"{"left":true}"#.to_owned(),
+    fn frame_payload_serializes_stable_json_shape() {
+        let mut controls = BTreeMap::new();
+        controls.insert(
+            "frontColor".to_owned(),
+            LightScriptControlValue::Text("#00ffcc".to_owned()),
+        );
+        let payload = LightScriptFramePayload {
+            timing: LightScriptTimingPayload {
+                time_secs: 1.5,
+                delta_secs: 0.016,
+                frame_number: 42,
+            },
+            canvas: LightScriptCanvasPayload {
+                width: 320,
+                height: 200,
+            },
+            audio: Some(LightScriptAudioPayload {
+                level_db: -12.5,
+                level_linear: 0.5,
+                level_short: 0.6,
+                level_long: 0.4,
+                raw_rms: 0.25,
+                peak: 0.7,
+                bass: 0.2,
+                bass_env: 0.3,
+                mid: 0.4,
+                mid_env: 0.5,
+                treble: 0.6,
+                treble_env: 0.7,
+                density: 0.8,
+                momentum: -0.1,
+                swell: 0.2,
+                width: 0.5,
+                bpm: 128.0,
+                tempo: 128.0,
+                beat: true,
+                beat_pulse: 0.9,
+                beat_phase: 0.25,
+                beat_confidence: 0.75,
+                onset: false,
+                onset_pulse: 0.1,
+                spectral_flux: 0.2,
+                spectral_flux_bands: vec![0.1, 0.2, 0.3],
+                brightness: 0.4,
+                spread: 0.5,
+                rolloff: 0.6,
+                roughness: 0.7,
+                harmonic_hue: 90.0,
+                chord_mood: -0.2,
+                dominant_pitch: 3.0,
+                dominant_pitch_confidence: 0.8,
+                frequency_raw: vec![-1, 2],
+                frequency: vec![0.25, 0.5],
+                frequency_weighted: vec![0.2],
+                mel_bands: vec![0.3],
+                mel_bands_normalized: vec![0.4],
+                chromagram: vec![0.5],
+            }),
+            screen: Some(LightScriptScreenPayload {
+                grid_width: 2,
+                grid_height: 1,
+                hue: vec![0, 120],
+                saturation: vec![100, 0],
+                lightness: vec![50, 25],
+            }),
+            sensors: Some(LightScriptSensorPayload {
+                readings: BTreeMap::from([(
+                    "gpu".to_owned(),
+                    LightScriptSensorReading {
+                        value: 42.0,
+                        min: 0.0,
+                        max: 100.0,
+                        unit: "%",
+                    },
+                )]),
+                replace_sensor_map: false,
+                sensor_list: Some(vec!["gpu".to_owned()]),
+            }),
+            controls,
+            interaction: Some(LightScriptInteractionPayload {
+                keyboard: LightScriptKeyboardPayload {
+                    keys: vec!["A".to_owned()],
+                    recent: vec!["A".to_owned()],
+                },
+                mouse: LightScriptMousePayload {
+                    x: -4,
+                    y: 12,
+                    down: true,
+                    buttons: vec!["left".to_owned()],
+                },
+            }),
+            render_host_frame: true,
         };
 
+        let value = serde_json::to_value(&payload).expect("payload should serialize");
+        assert_eq!(value["timing"]["timeSecs"], serde_json::json!(1.5));
+        let delta_secs = value["timing"]["deltaSecs"]
+            .as_f64()
+            .expect("deltaSecs should serialize as a number");
+        assert!((delta_secs - 0.016).abs() < 0.0001);
+        assert_eq!(value["timing"]["frameNumber"], serde_json::json!(42));
         assert_eq!(
-            payload.script(),
-            r#"(function(){
-  if (typeof window.engine !== 'object' || window.engine === null) { window.engine = {}; }
-  if (typeof window.engine.keyboard !== 'object' || window.engine.keyboard === null) { window.engine.keyboard = {}; }
-  if (typeof window.engine.mouse !== 'object' || window.engine.mouse === null) { window.engine.mouse = {}; }
-  window.engine.keyboard.keys = {"A":true};
-  window.engine.keyboard.recent = ["A"];
-  window.engine.mouse.x = -4;
-  window.engine.mouse.y = 12;
-  window.engine.mouse.down = true;
-  window.engine.mouse.buttons = {"left":true};
-  if (typeof globalThis === 'object' && globalThis !== null) { globalThis.engine = window.engine; }
-})();"#
+            value["canvas"],
+            serde_json::json!({ "width": 320, "height": 200 })
+        );
+        assert_eq!(value["audio"]["levelDb"], serde_json::json!(-12.5));
+        assert_eq!(value["audio"]["levelLinear"], serde_json::json!(0.5));
+        assert_f32_json_array(&value["audio"]["spectralFluxBands"], &[0.1, 0.2, 0.3]);
+        assert_eq!(value["audio"]["frequencyRaw"], serde_json::json!([-1, 2]));
+        assert_f32_json_array(&value["audio"]["frequency"], &[0.25, 0.5]);
+        assert_f32_json_array(&value["audio"]["frequencyWeighted"], &[0.2]);
+        assert_f32_json_array(&value["audio"]["melBands"], &[0.3]);
+        assert_f32_json_array(&value["audio"]["melBandsNormalized"], &[0.4]);
+        assert_f32_json_array(&value["audio"]["chromagram"], &[0.5]);
+        assert_eq!(value["screen"]["gridWidth"], serde_json::json!(2));
+        assert_eq!(value["screen"]["hue"], serde_json::json!([0, 120]));
+        assert_eq!(value["screen"]["saturation"], serde_json::json!([100, 0]));
+        assert_eq!(value["screen"]["lightness"], serde_json::json!([50, 25]));
+        assert_eq!(
+            value["sensors"]["readings"]["gpu"]["value"],
+            serde_json::json!(42.0)
+        );
+        assert_eq!(
+            value["sensors"]["replaceSensorMap"],
+            serde_json::json!(false)
+        );
+        assert_eq!(value["sensors"]["sensorList"], serde_json::json!(["gpu"]));
+        assert_eq!(
+            value["controls"]["frontColor"],
+            serde_json::json!("#00ffcc")
+        );
+        assert_eq!(
+            value["interaction"]["keyboard"]["keys"],
+            serde_json::json!(["A"])
+        );
+        assert_eq!(
+            value["interaction"]["mouse"]["down"],
+            serde_json::json!(true)
+        );
+        assert_eq!(value["renderHostFrame"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn control_values_serialize_as_lightscript_globals() {
+        assert_eq!(
+            serde_json::to_value(LightScriptControlValue::from_control_value(
+                &ControlValue::Color([0.0, 0.5, 1.0, 1.0]),
+            ))
+            .expect("color should serialize"),
+            serde_json::json!("#0080ff")
+        );
+        assert_eq!(
+            serde_json::to_value(LightScriptControlValue::from_control_value(
+                &ControlValue::Float(f32::NAN),
+            ))
+            .expect("float should serialize"),
+            serde_json::json!(0.0)
         );
     }
 
     #[test]
-    fn audio_script_matches_adapter_contract() {
-        let payload = AudioScriptPayload {
-            level_db: -12.5,
-            level_linear: 1.5,
-            level_short: 2.5,
-            level_long: 3.5,
-            raw_rms: 4.5,
-            peak: 5.5,
-            bass: 6.5,
-            bass_env: 7.5,
-            mid: 8.5,
-            mid_env: 9.5,
-            treble: 10.5,
-            treble_env: 11.5,
-            density: 12.5,
-            momentum: 13.5,
-            swell: 14.5,
-            width: 15.5,
-            bpm: 128.0,
-            tempo: 129.0,
-            beat: true,
-            beat_pulse: 16.5,
-            beat_phase: 17.5,
-            beat_confidence: 18.5,
-            onset: false,
-            onset_pulse: 19.5,
-            spectral_flux: 20.5,
-            spectral_flux_bands_csv: "0.4,0.5".to_owned(),
-            brightness: 21.5,
-            spread: 22.5,
-            rolloff: 23.5,
-            roughness: 24.5,
-            harmonic_hue: 25.5,
-            chord_mood: 26.5,
-            dominant_pitch: 27.5,
-            dominant_pitch_confidence: 28.5,
-            frequency_raw_csv: "-1,2".to_owned(),
-            spectrum_csv: "0.25,0.5".to_owned(),
-            frequency_weighted_csv: "0.75".to_owned(),
-            mel_csv: "1,0".to_owned(),
-            mel_norm_csv: "0.1,0.2".to_owned(),
-            chroma_csv: "0.3".to_owned(),
-        };
+    fn interaction_payload_uses_lookup_key_arrays() {
+        let payload = LightScriptInteractionPayload::from_interaction(&InteractionData {
+            keyboard: crate::input::KeyboardData {
+                pressed_keys: vec!["a".to_owned(), "Space".to_owned()],
+                recent_keys: vec!["a".to_owned()],
+            },
+            mouse: crate::input::MouseData {
+                x: 42,
+                y: 24,
+                buttons: vec!["left".to_owned()],
+                down: true,
+            },
+        });
 
-        assert_eq!(
-            payload.script(),
-            r"(function(){
-  if (typeof window.engine !== 'object' || window.engine === null) { window.engine = {}; }
-  if (typeof window.engine.audio !== 'object' || window.engine.audio === null) { window.engine.audio = {}; }
-  window.engine.audio.level = -12.5;
-  window.engine.audio.levelRaw = -12.5;
-  window.engine.audio.levelLinear = 1.5;
-  window.engine.audio.levelShort = 2.5;
-  window.engine.audio.levelLong = 3.5;
-  window.engine.audio.rms = 4.5;
-  window.engine.audio.peak = 5.5;
-  window.engine.audio.bass = 6.5;
-  window.engine.audio.bassEnv = 7.5;
-  window.engine.audio.mid = 8.5;
-  window.engine.audio.midEnv = 9.5;
-  window.engine.audio.treble = 10.5;
-  window.engine.audio.trebleEnv = 11.5;
-  window.engine.audio.density = 12.5;
-  window.engine.audio.momentum = 13.5;
-  window.engine.audio.swell = 14.5;
-  window.engine.audio.width = 15.5;
-  window.engine.audio.bpm = 128;
-  window.engine.audio.tempo = 129;
-  window.engine.audio.beat = true;
-  window.engine.audio.beatPulse = 16.5;
-  window.engine.audio.beatPhase = 17.5;
-  window.engine.audio.beatConfidence = 18.5;
-  window.engine.audio.confidence = 18.5;
-  window.engine.audio.onset = false;
-  window.engine.audio.onsetPulse = 19.5;
-  window.engine.audio.spectralFlux = 20.5;
-  window.engine.audio.spectralFluxBands = new Float32Array([0.4,0.5]);
-  window.engine.audio.brightness = 21.5;
-  window.engine.audio.spread = 22.5;
-  window.engine.audio.rolloff = 23.5;
-  window.engine.audio.roughness = 24.5;
-  window.engine.audio.harmonicHue = 25.5;
-  window.engine.audio.chordMood = 26.5;
-  window.engine.audio.dominantPitch = 27.5;
-  window.engine.audio.dominantPitchConfidence = 28.5;
-  window.engine.audio.freq = new Int8Array([-1,2]);
-  window.engine.audio.frequencyRaw = new Int8Array([-1,2]);
-  window.engine.audio.frequency = new Float32Array([0.25,0.5]);
-  window.engine.audio.frequencyWeighted = new Float32Array([0.75]);
-  window.engine.audio.melBands = new Float32Array([1,0]);
-  window.engine.audio.melBandsNormalized = new Float32Array([0.1,0.2]);
-  window.engine.audio.chromagram = new Float32Array([0.3]);
-  if (typeof globalThis === 'object' && globalThis !== null) { globalThis.engine = window.engine; }
-})();"
-        );
+        assert!(payload.keyboard.keys.contains(&"A".to_owned()));
+        assert!(payload.keyboard.keys.contains(&"KeyA".to_owned()));
+        assert!(payload.keyboard.keys.contains(&"Spacebar".to_owned()));
+        assert!(payload.mouse.buttons.contains(&"primary".to_owned()));
     }
 
     #[test]
-    fn sensor_script_matches_adapter_contract() {
-        let payload = SensorScriptPayload {
-            sensor_list: Some(r#"["gpu"]"#.to_owned()),
-            sensors_json: r#"{"gpu":{"value":42}}"#.to_owned(),
-            replace_sensor_map: false,
-        };
+    fn screen_payload_defaults_to_black_zone_grid() {
+        let payload = LightScriptScreenPayload::from_screen(None);
 
-        assert_eq!(
-            payload.script(),
-            r#"(function(){
-  if (typeof window.engine !== 'object' || window.engine === null) { window.engine = {}; }
-  if (typeof window.engine.sensors !== 'object' || window.engine.sensors === null) { window.engine.sensors = {}; }
-  Object.assign(window.engine.sensors, {"gpu":{"value":42}});
-  window.engine.sensorList = ["gpu"];
-  if (typeof globalThis === 'object' && globalThis !== null) { globalThis.engine = window.engine; }
-})();"#
-        );
-    }
-
-    #[test]
-    fn screen_script_matches_adapter_contract() {
-        let payload = ScreenScriptPayload {
-            grid_width: 2,
-            grid_height: 1,
-            hue_csv: "0,120".to_owned(),
-            saturation_csv: "127,0".to_owned(),
-            lightness_csv: "64,32".to_owned(),
-        };
-
-        assert_eq!(
-            payload.script(),
-            r"(function(){
-  if (typeof window.engine !== 'object' || window.engine === null) { window.engine = {}; }
-  if (typeof window.engine.zone !== 'object' || window.engine.zone === null) { window.engine.zone = {}; }
-  window.engine.zone.width = 2;
-  window.engine.zone.height = 1;
-  window.engine.zone.hue = new Int16Array([0,120]);
-  window.engine.zone.saturation = new Int8Array([127,0]);
-  window.engine.zone.lightness = new Int8Array([64,32]);
-  if (typeof globalThis === 'object' && globalThis !== null) { globalThis.engine = window.engine; }
-})();"
-        );
+        assert_eq!(payload.grid_width, DEFAULT_ZONE_WIDTH as u32);
+        assert_eq!(payload.grid_height, DEFAULT_ZONE_HEIGHT as u32);
+        assert_eq!(payload.hue, vec![0_i16; DEFAULT_ZONE_SAMPLES]);
+        assert_eq!(payload.saturation, vec![0_i8; DEFAULT_ZONE_SAMPLES]);
+        assert_eq!(payload.lightness, vec![0_i8; DEFAULT_ZONE_SAMPLES]);
     }
 }

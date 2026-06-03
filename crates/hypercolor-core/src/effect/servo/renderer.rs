@@ -34,7 +34,7 @@ use super::worker::{
 };
 use super::worker_client::ServoProducerRole;
 use super::{ServoSessionHandle, SessionConfig, note_servo_session_error};
-use crate::effect::lightscript::LightscriptRuntime;
+use crate::effect::lightscript::{LightScriptFrameUpdateOptions, LightscriptRuntime};
 use crate::effect::paths::resolve_html_source_path;
 #[cfg(feature = "servo-gpu-import")]
 use crate::effect::traits::{EffectRenderOutput, ImportedEffectFrame};
@@ -206,34 +206,23 @@ impl ServoRenderer {
     fn enqueue_frame_scripts(&mut self, input: &FrameInput) {
         let fps_cap = self.animation_cadence.fps_cap(input.delta_secs);
         self.last_animation_fps_cap = Some(fps_cap);
-        if let Some(script) = self
-            .runtime
-            .resize_script(input.canvas_width, input.canvas_height)
-        {
-            self.pending_scripts.push(script);
-        }
-        self.runtime.push_frame_scripts(
+        self.runtime.push_frame_payload_script(
             &mut self.pending_scripts,
-            &input.audio,
-            input.screen,
-            input.sensors,
+            input,
             &self.controls,
-            self.include_audio_updates,
-            self.include_screen_updates,
-            self.include_sensor_updates,
-            selected_sensor_labels(&self.scoped_sensor_control_ids, &self.controls).as_deref(),
+            LightScriptFrameUpdateOptions {
+                include_audio: self.include_audio_updates,
+                include_screen: self.include_screen_updates,
+                include_sensors: self.include_sensor_updates,
+                include_interaction: self.include_interaction_updates,
+                render_host_frame: self.host_driven_animation,
+                selected_sensor_labels: selected_sensor_labels(
+                    &self.scoped_sensor_control_ids,
+                    &self.controls,
+                )
+                .as_deref(),
+            },
         );
-        if self.include_interaction_updates
-            && let Some(script) = self
-                .runtime
-                .input_update_script_if_changed(&input.interaction)
-        {
-            self.pending_scripts.push(script);
-        }
-        if self.host_driven_animation {
-            self.pending_scripts
-                .push(LightscriptRuntime::host_frame_script());
-        }
     }
 
     fn render_placeholder_into(target: &mut Canvas, input: &FrameInput) {
@@ -1138,6 +1127,18 @@ mod tests {
         }
     }
 
+    fn frame_payload_script_value(scripts: &[String]) -> serde_json::Value {
+        let payload = scripts
+            .iter()
+            .find_map(|script| {
+                script
+                    .strip_prefix("window.__hypercolorApplyFramePayload(")
+                    .and_then(|script| script.strip_suffix(");"))
+            })
+            .expect("render should include a frame payload delivery script");
+        serde_json::from_str(payload).expect("frame payload should be valid JSON")
+    }
+
     fn custom_interaction(
         recent_keys: &[&str],
         pressed_keys: &[&str],
@@ -1797,11 +1798,9 @@ mod tests {
                 .iter()
                 .all(|script| !script.contains("__hypercolorFpsCap"))
         );
-        assert!(
-            renderer
-                .pending_scripts
-                .iter()
-                .any(|script| script.contains("window.__hypercolorRenderHostFrame"))
+        assert_eq!(
+            frame_payload_script_value(&renderer.pending_scripts)["renderHostFrame"],
+            serde_json::json!(true)
         );
     }
 
@@ -1994,21 +1993,12 @@ mod tests {
         renderer.include_interaction_updates = true;
 
         renderer.enqueue_frame_scripts(&frame_input(1.0 / 30.0));
-        let first_input_scripts = renderer
-            .pending_scripts
-            .iter()
-            .filter(|script| script.contains("window.engine.keyboard.keys"))
-            .count();
-        assert_eq!(first_input_scripts, 1);
+        let first_payload = frame_payload_script_value(&renderer.pending_scripts);
+        assert!(first_payload["interaction"].is_object());
 
         renderer.pending_scripts.clear();
         renderer.enqueue_frame_scripts(&frame_input(1.0 / 30.0));
-        let second_input_scripts = renderer
-            .pending_scripts
-            .iter()
-            .filter(|script| script.contains("window.engine.keyboard.keys"))
-            .count();
-        assert_eq!(second_input_scripts, 0);
+        assert!(renderer.pending_scripts.is_empty());
     }
 
     #[test]
@@ -2098,12 +2088,8 @@ mod tests {
             .expect("first render command");
         assert_eq!(first_render.width, 320);
         assert_eq!(first_render.height, 200);
-        assert!(
-            first_render
-                .scripts
-                .iter()
-                .any(|script| script.contains("window[\"speed\"] = 0.25"))
-        );
+        let first_payload = frame_payload_script_value(&first_render.scripts);
+        assert_eq!(first_payload["controls"]["speed"], serde_json::json!(0.25));
 
         renderer.set_control("speed", &ControlValue::Float(0.75));
         let second_audio = custom_audio(0.6);
@@ -2140,26 +2126,18 @@ mod tests {
                 .iter()
                 .all(|script| !script.contains("__hypercolorFpsCap"))
         );
-        assert!(
-            second_render
-                .scripts
-                .iter()
-                .any(|script| script.contains("window.engine.width = 640"))
+        let second_payload = frame_payload_script_value(&second_render.scripts);
+        assert_eq!(second_payload["canvas"]["width"], serde_json::json!(640));
+        assert_eq!(second_payload["controls"]["speed"], serde_json::json!(0.75));
+        let recent_keys = second_payload["interaction"]["keyboard"]["recent"]
+            .as_array()
+            .expect("recent keys should be an array");
+        assert!(recent_keys.contains(&serde_json::json!("b")));
+        assert!(recent_keys.contains(&serde_json::json!("c")));
+        assert_eq!(
+            second_payload["interaction"]["mouse"]["down"],
+            serde_json::json!(false)
         );
-        assert!(
-            second_render
-                .scripts
-                .iter()
-                .any(|script| script.contains("window[\"speed\"] = 0.75"))
-        );
-        let interaction_script = second_render
-            .scripts
-            .iter()
-            .find(|script| script.contains("window.engine.keyboard.recent"))
-            .expect("interaction update script");
-        assert!(interaction_script.contains("\"b\""));
-        assert!(interaction_script.contains("\"c\""));
-        assert!(interaction_script.contains("window.engine.mouse.down = false"));
 
         result_tx
             .send(Ok(solid_canvas(640, 360, 1, 1, 1)))

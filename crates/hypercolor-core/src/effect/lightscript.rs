@@ -3,19 +3,22 @@
 //! This module builds JavaScript snippets for bootstrapping and per-frame
 //! runtime injection without binding directly to any specific web engine.
 
-use std::collections::HashMap;
-use std::fmt::Write as _;
+use std::collections::{BTreeMap, HashMap};
 
 use hypercolor_types::audio::{AudioData, CHROMA_BINS, MEL_BANDS, SPECTRUM_BINS};
 use hypercolor_types::effect::ControlValue;
-use hypercolor_types::sensor::{SensorReading, SensorUnit, SystemSnapshot};
-use serde_json::{Map, Value, json};
+use hypercolor_types::sensor::{SensorReading, SystemSnapshot};
 
-use crate::input::{InteractionData, ScreenData};
+use crate::input::InteractionData;
 
 mod payload;
 
-use payload::{AudioScriptPayload, InputScriptPayload, ScreenScriptPayload, SensorScriptPayload};
+use super::traits::FrameInput;
+use payload::{
+    LightScriptAudioPayload, LightScriptCanvasPayload, LightScriptControlValue,
+    LightScriptFramePayload, LightScriptInteractionPayload, LightScriptScreenPayload,
+    LightScriptSensorPayload, LightScriptTimingPayload, sanitize_f32,
+};
 
 const LEVEL_FLOOR_DB: f32 = -100.0;
 const DEFAULT_ZONE_WIDTH: usize = 28;
@@ -60,6 +63,16 @@ impl DerivedAudioState {
     fn reset(&mut self) {
         *self = Self::default();
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct LightScriptFrameUpdateOptions<'a> {
+    pub include_audio: bool,
+    pub include_screen: bool,
+    pub include_sensors: bool,
+    pub include_interaction: bool,
+    pub render_host_frame: bool,
+    pub selected_sensor_labels: Option<&'a [String]>,
 }
 
 /// Runtime state for Lightscript injection.
@@ -414,103 +427,82 @@ impl LightscriptRuntime {
         script.push_str("    instance.render(time);\n");
         script.push_str("  };\n");
         script.push_str("  }\n");
+        script.push_str(frame_payload_adapter_script());
         script.push_str("  if (typeof globalThis === 'object' && globalThis !== null) { globalThis.engine = window.engine; }\n");
         script.push_str("})();");
         script
     }
 
-    /// Build JavaScript to update `window.engine` dimensions when canvas size
-    /// changes.
-    ///
-    /// Returns `None` when dimensions are unchanged.
-    #[must_use]
-    pub fn resize_script(&mut self, width: u32, height: u32) -> Option<String> {
+    pub fn push_frame_payload_script(
+        &mut self,
+        scripts: &mut Vec<String>,
+        input: &FrameInput<'_>,
+        controls: &HashMap<String, ControlValue>,
+        options: LightScriptFrameUpdateOptions<'_>,
+    ) {
+        if let Some(payload) = self.frame_payload(input, controls, options) {
+            scripts.push(payload.delivery_script());
+        }
+    }
+
+    fn frame_payload(
+        &mut self,
+        input: &FrameInput<'_>,
+        controls: &HashMap<String, ControlValue>,
+        options: LightScriptFrameUpdateOptions<'_>,
+    ) -> Option<LightScriptFramePayload> {
+        let canvas_changed = self.update_canvas_size(input.canvas_width, input.canvas_height);
+        let audio = (options.include_audio && self.should_emit_audio_update(input.audio))
+            .then(|| self.audio_payload(input.audio));
+        let screen = options
+            .include_screen
+            .then(|| LightScriptScreenPayload::from_screen(input.screen));
+        let sensors = options
+            .include_sensors
+            .then(|| self.sensor_payload(input.sensors, options.selected_sensor_labels))
+            .flatten();
+        let controls = self.changed_control_payload(controls);
+        let interaction = (options.include_interaction
+            && self.last_interaction.as_ref() != Some(input.interaction))
+        .then(|| {
+            self.last_interaction = Some(input.interaction.clone());
+            LightScriptInteractionPayload::from_interaction(input.interaction)
+        });
+
+        let should_emit = canvas_changed
+            || audio.is_some()
+            || screen.is_some()
+            || sensors.is_some()
+            || !controls.is_empty()
+            || interaction.is_some()
+            || options.render_host_frame;
+        should_emit.then(|| LightScriptFramePayload {
+            timing: LightScriptTimingPayload {
+                time_secs: sanitize_f32(input.time_secs),
+                delta_secs: sanitize_f32(input.delta_secs),
+                frame_number: input.frame_number,
+            },
+            canvas: LightScriptCanvasPayload {
+                width: self.width,
+                height: self.height,
+            },
+            audio,
+            screen,
+            sensors,
+            controls,
+            interaction,
+            render_host_frame: options.render_host_frame,
+        })
+    }
+
+    fn update_canvas_size(&mut self, width: u32, height: u32) -> bool {
         if self.width == width && self.height == height {
-            return None;
+            return false;
         }
 
         self.width = width;
         self.height = height;
-
-        Some(format!(
-            concat!(
-                "(function(){{\n",
-                "  if (typeof window.engine !== 'object' || window.engine === null) {{ window.engine = {{}}; }}\n",
-                "  window.engine.width = {};\n",
-                "  window.engine.height = {};\n",
-                "}})();",
-            ),
-            width, height
-        ))
-    }
-
-    /// Append JavaScript for one frame's audio + changed control updates.
-    pub fn push_frame_scripts(
-        &mut self,
-        scripts: &mut Vec<String>,
-        audio: &AudioData,
-        screen: Option<&ScreenData>,
-        sensors: &SystemSnapshot,
-        controls: &HashMap<String, ControlValue>,
-        include_audio: bool,
-        include_screen: bool,
-        include_sensors: bool,
-        selected_sensor_labels: Option<&[String]>,
-    ) {
-        if include_audio && self.should_emit_audio_update(audio) {
-            scripts.push(self.audio_update_script(audio));
-        }
-
-        if include_screen {
-            scripts.push(Self::screen_update_script(screen));
-        }
-        if include_sensors {
-            let all_sensor_readings = sensors.readings();
-            let sensor_labels = sensor_labels_from_readings(&all_sensor_readings);
-            let sensor_labels_changed = self
-                .last_sensor_labels
-                .as_ref()
-                .is_none_or(|previous| previous != &sensor_labels);
-            let selected_sensor_readings = selected_sensor_labels
-                .map(|labels| filter_sensor_readings(&all_sensor_readings, labels))
-                .filter(|readings| !readings.is_empty());
-            let replace_sensor_map = selected_sensor_readings.is_none()
-                || self.last_sensor_readings.is_none()
-                || sensor_labels_changed;
-            let sensor_readings = if replace_sensor_map {
-                all_sensor_readings
-            } else {
-                selected_sensor_readings.expect("selected readings checked as present")
-            };
-            if self
-                .last_sensor_readings
-                .as_ref()
-                .is_none_or(|previous| previous != &sensor_readings)
-                || sensor_labels_changed
-            {
-                scripts.push(Self::sensor_update_script_from_readings(
-                    &sensor_readings,
-                    replace_sensor_map,
-                    sensor_labels_changed.then_some(sensor_labels.as_slice()),
-                ));
-                self.last_sensor_readings = Some(sensor_readings);
-                self.last_sensor_labels = Some(sensor_labels);
-            }
-        }
-        self.push_control_update_scripts(scripts, controls);
-    }
-
-    /// Build JavaScript that renders SDK canvas effects from Servo's page clock
-    /// instead of injecting a fresh timestamp script every frame.
-    #[must_use]
-    pub fn host_frame_script() -> String {
-        let mut script = String::with_capacity(128);
-        script.push_str("(function(){\n");
-        script.push_str(
-            "  if (typeof window.__hypercolorRenderHostFrame === 'function') { window.__hypercolorRenderHostFrame(); }\n",
-        );
-        script.push_str("})();");
-        script
+        true
     }
 
     fn should_emit_audio_update(&mut self, audio: &AudioData) -> bool {
@@ -518,26 +510,6 @@ impl LightscriptRuntime {
         let should_emit = !audio_is_quiet || !self.audio_was_quiet;
         self.audio_was_quiet = audio_is_quiet;
         should_emit
-    }
-
-    /// Build JavaScript to update `window.engine.keyboard` and `window.engine.mouse`.
-    #[must_use]
-    pub fn input_update_script(interaction: &InteractionData) -> String {
-        InputScriptPayload::from_interaction(interaction).script()
-    }
-
-    /// Build JavaScript for interaction state when the payload changed.
-    #[must_use]
-    pub fn input_update_script_if_changed(
-        &mut self,
-        interaction: &InteractionData,
-    ) -> Option<String> {
-        if self.last_interaction.as_ref() == Some(interaction) {
-            return None;
-        }
-
-        self.last_interaction = Some(interaction.clone());
-        Some(Self::input_update_script(interaction))
     }
 
     #[allow(
@@ -584,7 +556,7 @@ impl LightscriptRuntime {
         clamp_unit(level_linear / band_mix)
     }
 
-    fn audio_update_script(&mut self, audio: &AudioData) -> String {
+    fn audio_payload(&mut self, audio: &AudioData) -> LightScriptAudioPayload {
         let raw_rms = clamp_unit(audio.rms_level);
         let peak = clamp_unit(audio.peak_level);
         let quiet_frame = audio_is_quiet(audio);
@@ -710,15 +682,7 @@ impl LightscriptRuntime {
             120.0
         };
 
-        let spectrum_csv = join_padded_f32_csv(&shaped_spectrum, SPECTRUM_BINS);
-        let frequency_raw_csv = join_padded_normalized_i8_csv(&shaped_spectrum, SPECTRUM_BINS);
-        let frequency_weighted_csv = join_weighted_spectrum_csv(&shaped_spectrum, SPECTRUM_BINS);
-        let mel_csv = join_padded_f32_csv(&shaped_mel, MEL_BANDS);
-        let mel_norm_csv = join_padded_f32_csv(&mel_normalized, MEL_BANDS);
-        let chroma_csv = join_padded_f32_csv(&audio.chromagram, CHROMA_BINS);
-        let flux_bands_csv = join_f32_csv(&spectral_flux_bands);
-
-        AudioScriptPayload {
+        LightScriptAudioPayload {
             level_db,
             level_linear,
             level_short,
@@ -744,7 +708,7 @@ impl LightscriptRuntime {
             onset: audio.onset_detected,
             onset_pulse,
             spectral_flux: motion,
-            spectral_flux_bands_csv: flux_bands_csv,
+            spectral_flux_bands: spectral_flux_bands.map(sanitize_f32).to_vec(),
             brightness,
             spread,
             rolloff,
@@ -753,33 +717,60 @@ impl LightscriptRuntime {
             chord_mood,
             dominant_pitch: f32::from(dominant_pitch),
             dominant_pitch_confidence,
-            frequency_raw_csv,
-            spectrum_csv,
-            frequency_weighted_csv,
-            mel_csv,
-            mel_norm_csv,
-            chroma_csv,
+            frequency_raw: padded_normalized_i8_vec(&shaped_spectrum, SPECTRUM_BINS),
+            frequency: padded_f32_vec(&shaped_spectrum, SPECTRUM_BINS),
+            frequency_weighted: weighted_spectrum_vec(&shaped_spectrum, SPECTRUM_BINS),
+            mel_bands: padded_f32_vec(&shaped_mel, MEL_BANDS),
+            mel_bands_normalized: padded_f32_vec(&mel_normalized, MEL_BANDS),
+            chromagram: padded_f32_vec(&audio.chromagram, CHROMA_BINS),
         }
-        .script()
     }
 
-    fn sensor_update_script_from_readings(
-        readings: &[SensorReading],
-        replace_sensor_map: bool,
-        sensor_labels: Option<&[String]>,
-    ) -> String {
-        SensorScriptPayload::from_readings(readings, replace_sensor_map, sensor_labels).script()
-    }
-
-    fn screen_update_script(screen: Option<&ScreenData>) -> String {
-        ScreenScriptPayload::from_screen(screen).script()
-    }
-
-    fn push_control_update_scripts(
+    fn sensor_payload(
         &mut self,
-        scripts: &mut Vec<String>,
+        sensors: &SystemSnapshot,
+        selected_sensor_labels: Option<&[String]>,
+    ) -> Option<LightScriptSensorPayload> {
+        let all_sensor_readings = sensors.readings();
+        let sensor_labels = sensor_labels_from_readings(&all_sensor_readings);
+        let sensor_labels_changed = self
+            .last_sensor_labels
+            .as_ref()
+            .is_none_or(|previous| previous != &sensor_labels);
+        let selected_sensor_readings = selected_sensor_labels
+            .map(|labels| filter_sensor_readings(&all_sensor_readings, labels))
+            .filter(|readings| !readings.is_empty());
+        let replace_sensor_map = selected_sensor_readings.is_none()
+            || self.last_sensor_readings.is_none()
+            || sensor_labels_changed;
+        let sensor_readings = if replace_sensor_map {
+            all_sensor_readings
+        } else {
+            selected_sensor_readings.expect("selected readings checked as present")
+        };
+        if self
+            .last_sensor_readings
+            .as_ref()
+            .is_none_or(|previous| previous != &sensor_readings)
+            || sensor_labels_changed
+        {
+            self.last_sensor_readings = Some(sensor_readings.clone());
+            self.last_sensor_labels = Some(sensor_labels.clone());
+            return Some(LightScriptSensorPayload::from_readings(
+                &sensor_readings,
+                replace_sensor_map,
+                sensor_labels_changed.then_some(sensor_labels.as_slice()),
+            ));
+        }
+
+        None
+    }
+
+    fn changed_control_payload(
+        &mut self,
         controls: &HashMap<String, ControlValue>,
-    ) {
+    ) -> BTreeMap<String, LightScriptControlValue> {
+        let mut changed_controls = BTreeMap::new();
         for (name, value) in controls {
             let changed = self
                 .last_controls
@@ -790,34 +781,160 @@ impl LightscriptRuntime {
                 continue;
             }
 
-            scripts.push(control_update_script(name, value));
+            changed_controls.insert(
+                name.clone(),
+                LightScriptControlValue::from_control_value(value),
+            );
             self.last_controls.insert(name.clone(), value.clone());
         }
+        changed_controls
     }
 }
 
-/// Convert a control update into JavaScript assignment + change hook call.
-#[must_use]
-pub fn control_update_script(name: &str, value: &ControlValue) -> String {
-    let key_literal = serde_json::to_string(name).unwrap_or_else(|_| "\"invalid\"".to_owned());
-    let callback_literal = serde_json::to_string(&format!("on{name}Changed"))
-        .unwrap_or_else(|_| "\"oninvalidChanged\"".to_owned());
-
-    format!(
-        concat!(
-            "(function(){{\n",
-            "  const callback = {};\n",
-            "  window[{}] = {};\n",
-            "  window.__hypercolorControlsDirty = true;\n",
-            "  if (typeof window[callback] === 'function') {{\n",
-            "    try {{ window[callback](); }} catch (_err) {{}}\n",
-            "  }}\n",
-            "}})();",
-        ),
-        callback_literal,
-        key_literal,
-        value.to_js_literal(),
-    )
+fn frame_payload_adapter_script() -> &'static str {
+    r"  if (typeof window.__hypercolorApplyFramePayload !== 'function') {
+    const finiteNumber = function(value, fallback) {
+      const number = Number(value);
+      return Number.isFinite(number) ? number : fallback;
+    };
+    const trueObject = function(values) {
+      const object = {};
+      if (!Array.isArray(values)) { return object; }
+      for (let index = 0; index < values.length; index += 1) {
+        const value = values[index];
+        if (typeof value === 'string' && value.length > 0) { object[value] = true; }
+      }
+      return object;
+    };
+    const assignFloat32Array = function(current, values) {
+      if (!Array.isArray(values)) { return current instanceof Float32Array ? current : new Float32Array(0); }
+      const array = current instanceof Float32Array && current.length === values.length ? current : new Float32Array(values.length);
+      for (let index = 0; index < values.length; index += 1) { array[index] = finiteNumber(values[index], 0); }
+      return array;
+    };
+    const assignInt8Array = function(current, values) {
+      if (!Array.isArray(values)) { return current instanceof Int8Array ? current : new Int8Array(0); }
+      const array = current instanceof Int8Array && current.length === values.length ? current : new Int8Array(values.length);
+      for (let index = 0; index < values.length; index += 1) { array[index] = finiteNumber(values[index], 0); }
+      return array;
+    };
+    const assignInt16Array = function(current, values) {
+      if (!Array.isArray(values)) { return current instanceof Int16Array ? current : new Int16Array(0); }
+      const array = current instanceof Int16Array && current.length === values.length ? current : new Int16Array(values.length);
+      for (let index = 0; index < values.length; index += 1) { array[index] = finiteNumber(values[index], 0); }
+      return array;
+    };
+    const applyAudio = function(engine, audio) {
+      if (typeof audio !== 'object' || audio === null) { return; }
+      if (typeof engine.audio !== 'object' || engine.audio === null) { engine.audio = {}; }
+      engine.audio.level = finiteNumber(audio.levelDb, 0);
+      engine.audio.levelRaw = finiteNumber(audio.levelDb, 0);
+      engine.audio.levelLinear = finiteNumber(audio.levelLinear, 0);
+      engine.audio.levelShort = finiteNumber(audio.levelShort, 0);
+      engine.audio.levelLong = finiteNumber(audio.levelLong, 0);
+      engine.audio.rms = finiteNumber(audio.rawRms, 0);
+      engine.audio.peak = finiteNumber(audio.peak, 0);
+      engine.audio.bass = finiteNumber(audio.bass, 0);
+      engine.audio.bassEnv = finiteNumber(audio.bassEnv, 0);
+      engine.audio.mid = finiteNumber(audio.mid, 0);
+      engine.audio.midEnv = finiteNumber(audio.midEnv, 0);
+      engine.audio.treble = finiteNumber(audio.treble, 0);
+      engine.audio.trebleEnv = finiteNumber(audio.trebleEnv, 0);
+      engine.audio.density = finiteNumber(audio.density, 0);
+      engine.audio.momentum = finiteNumber(audio.momentum, 0);
+      engine.audio.swell = finiteNumber(audio.swell, 0);
+      engine.audio.width = finiteNumber(audio.width, 0.5);
+      engine.audio.bpm = finiteNumber(audio.bpm, 0);
+      engine.audio.tempo = finiteNumber(audio.tempo, 120);
+      engine.audio.beat = audio.beat === true;
+      engine.audio.beatPulse = finiteNumber(audio.beatPulse, 0);
+      engine.audio.beatPhase = finiteNumber(audio.beatPhase, 0);
+      engine.audio.beatConfidence = finiteNumber(audio.beatConfidence, 0);
+      engine.audio.confidence = engine.audio.beatConfidence;
+      engine.audio.onset = audio.onset === true;
+      engine.audio.onsetPulse = finiteNumber(audio.onsetPulse, 0);
+      engine.audio.spectralFlux = finiteNumber(audio.spectralFlux, 0);
+      engine.audio.spectralFluxBands = assignFloat32Array(engine.audio.spectralFluxBands, audio.spectralFluxBands);
+      engine.audio.brightness = finiteNumber(audio.brightness, 0.5);
+      engine.audio.spread = finiteNumber(audio.spread, 0.3);
+      engine.audio.rolloff = finiteNumber(audio.rolloff, 0.5);
+      engine.audio.roughness = finiteNumber(audio.roughness, 0.2);
+      engine.audio.harmonicHue = finiteNumber(audio.harmonicHue, 0);
+      engine.audio.chordMood = finiteNumber(audio.chordMood, 0);
+      engine.audio.dominantPitch = finiteNumber(audio.dominantPitch, 0);
+      engine.audio.dominantPitchConfidence = finiteNumber(audio.dominantPitchConfidence, 0);
+      engine.audio.freq = assignInt8Array(engine.audio.freq, audio.frequencyRaw);
+      engine.audio.frequencyRaw = assignInt8Array(engine.audio.frequencyRaw, audio.frequencyRaw);
+      engine.audio.frequency = assignFloat32Array(engine.audio.frequency, audio.frequency);
+      engine.audio.frequencyWeighted = assignFloat32Array(engine.audio.frequencyWeighted, audio.frequencyWeighted);
+      engine.audio.melBands = assignFloat32Array(engine.audio.melBands, audio.melBands);
+      engine.audio.melBandsNormalized = assignFloat32Array(engine.audio.melBandsNormalized, audio.melBandsNormalized);
+      engine.audio.chromagram = assignFloat32Array(engine.audio.chromagram, audio.chromagram);
+    };
+    const applyScreen = function(engine, screen) {
+      if (typeof screen !== 'object' || screen === null) { return; }
+      if (typeof engine.zone !== 'object' || engine.zone === null) { engine.zone = {}; }
+      engine.zone.width = finiteNumber(screen.gridWidth, engine.zone.width || 0);
+      engine.zone.height = finiteNumber(screen.gridHeight, engine.zone.height || 0);
+      engine.zone.hue = assignInt16Array(engine.zone.hue, screen.hue);
+      engine.zone.saturation = assignInt8Array(engine.zone.saturation, screen.saturation);
+      engine.zone.lightness = assignInt8Array(engine.zone.lightness, screen.lightness);
+    };
+    const applySensors = function(engine, sensors) {
+      if (typeof sensors !== 'object' || sensors === null) { return; }
+      const readings = typeof sensors.readings === 'object' && sensors.readings !== null ? sensors.readings : {};
+      if (sensors.replaceSensorMap || typeof engine.sensors !== 'object' || engine.sensors === null) { engine.sensors = {}; }
+      Object.assign(engine.sensors, readings);
+      if (Array.isArray(sensors.sensorList)) { engine.sensorList = sensors.sensorList.slice(); }
+    };
+    const applyControls = function(controls) {
+      if (typeof controls !== 'object' || controls === null) { return; }
+      const names = Object.keys(controls);
+      if (names.length === 0) { return; }
+      window.__hypercolorControlsDirty = true;
+      for (let index = 0; index < names.length; index += 1) {
+        const name = names[index];
+        const callback = 'on' + name + 'Changed';
+        window[name] = controls[name];
+        if (typeof window[callback] === 'function') {
+          try { window[callback](); } catch (_err) {}
+        }
+      }
+    };
+    const applyInteraction = function(engine, interaction) {
+      if (typeof interaction !== 'object' || interaction === null) { return; }
+      if (typeof engine.keyboard !== 'object' || engine.keyboard === null) { engine.keyboard = {}; }
+      if (typeof engine.mouse !== 'object' || engine.mouse === null) { engine.mouse = {}; }
+      const keyboard = typeof interaction.keyboard === 'object' && interaction.keyboard !== null ? interaction.keyboard : {};
+      const mouse = typeof interaction.mouse === 'object' && interaction.mouse !== null ? interaction.mouse : {};
+      engine.keyboard.keys = trueObject(keyboard.keys);
+      engine.keyboard.recent = Array.isArray(keyboard.recent) ? keyboard.recent.slice() : [];
+      engine.mouse.x = finiteNumber(mouse.x, 0);
+      engine.mouse.y = finiteNumber(mouse.y, 0);
+      engine.mouse.down = mouse.down === true;
+      engine.mouse.buttons = trueObject(mouse.buttons);
+    };
+    window.__hypercolorApplyFramePayload = function(payload) {
+      if (typeof payload !== 'object' || payload === null) { return; }
+      if (typeof window.engine !== 'object' || window.engine === null) { window.engine = {}; }
+      const engine = window.engine;
+      const timing = typeof payload.timing === 'object' && payload.timing !== null ? payload.timing : {};
+      const canvas = typeof payload.canvas === 'object' && payload.canvas !== null ? payload.canvas : {};
+      engine.time = finiteNumber(timing.timeSecs, engine.time || 0);
+      engine.deltaTime = finiteNumber(timing.deltaSecs, engine.deltaTime || 0);
+      engine.frame = finiteNumber(timing.frameNumber, engine.frame || 0);
+      engine.width = finiteNumber(canvas.width, engine.width || 1);
+      engine.height = finiteNumber(canvas.height, engine.height || 1);
+      applyAudio(engine, payload.audio);
+      applyScreen(engine, payload.screen);
+      applySensors(engine, payload.sensors);
+      applyControls(payload.controls);
+      applyInteraction(engine, payload.interaction);
+      if (typeof globalThis === 'object' && globalThis !== null) { globalThis.engine = engine; }
+      if (payload.renderHostFrame && typeof window.__hypercolorRenderHostFrame === 'function') { window.__hypercolorRenderHostFrame(); }
+    };
+  }
+"
 }
 
 /// Convert normalized 0..1 level to dB scale used by many `LightScript` effects.
@@ -917,72 +1034,17 @@ fn normalized_to_int8(value: f32) -> i8 {
     i8::try_from(scaled).unwrap_or_default()
 }
 
-fn push_js_f32_assignment(script: &mut String, path: &str, value: f32) {
-    script.push_str("  ");
-    script.push_str(path);
-    script.push_str(" = ");
-    push_js_number_literal(script, value);
-    script.push_str(";\n");
-}
-
-fn push_js_bool_assignment(script: &mut String, path: &str, value: bool) {
-    let _ = writeln!(script, "  {path} = {};", js_bool(value));
-}
-
-fn push_js_csv_typed_array_assignment(
-    script: &mut String,
-    path: &str,
-    typed_array: &str,
-    csv: &str,
-) {
-    let _ = writeln!(script, "  {path} = new {typed_array}([{csv}]);");
-}
-
-fn push_js_number_literal(script: &mut String, value: f32) {
-    if value.is_finite() {
-        let _ = write!(script, "{value}");
-    } else {
-        script.push('0');
-    }
-}
-
-fn join_f32_csv(values: &[f32]) -> String {
-    let mut csv = String::with_capacity(values.len().saturating_mul(8));
-    for (index, value) in values.iter().copied().enumerate() {
-        if index > 0 {
-            csv.push(',');
-        }
-        if value.is_finite() {
-            let _ = write!(&mut csv, "{value}");
-        } else {
-            csv.push('0');
-        }
-    }
-    csv
-}
-
-fn join_padded_f32_csv(values: &[f32], expected_len: usize) -> String {
-    let mut csv = String::with_capacity(expected_len.saturating_mul(8));
+fn padded_f32_vec(values: &[f32], expected_len: usize) -> Vec<f32> {
+    let mut padded = Vec::with_capacity(expected_len);
     for index in 0..expected_len {
-        if index > 0 {
-            csv.push(',');
-        }
-        let value = values.get(index).copied().unwrap_or_default();
-        if value.is_finite() {
-            let _ = write!(&mut csv, "{value}");
-        } else {
-            csv.push('0');
-        }
+        padded.push(sanitize_f32(values.get(index).copied().unwrap_or_default()));
     }
-    csv
+    padded
 }
 
-fn join_weighted_spectrum_csv(values: &[f32], expected_len: usize) -> String {
-    let mut csv = String::with_capacity(expected_len.saturating_mul(8));
+fn weighted_spectrum_vec(values: &[f32], expected_len: usize) -> Vec<f32> {
+    let mut weighted = Vec::with_capacity(expected_len);
     for index in 0..expected_len {
-        if index > 0 {
-            csv.push(',');
-        }
         let value = values.get(index).copied().map_or(0.0, clamp_unit);
         let t = if expected_len <= 1 {
             0.0
@@ -990,31 +1052,19 @@ fn join_weighted_spectrum_csv(values: &[f32], expected_len: usize) -> String {
             f32::from(u16::try_from(index).unwrap_or(u16::MAX))
                 / f32::from(u16::try_from(expected_len - 1).unwrap_or(u16::MAX))
         };
-        push_js_number_literal(&mut csv, value * (0.82 + t * 0.2));
+        weighted.push(sanitize_f32(value * (0.82 + t * 0.2)));
     }
-    csv
+    weighted
 }
 
-fn join_i16_csv(values: &[i16]) -> String {
-    let mut csv = String::with_capacity(values.len().saturating_mul(5));
-    for (index, value) in values.iter().copied().enumerate() {
-        if index > 0 {
-            csv.push(',');
-        }
-        let _ = write!(&mut csv, "{value}");
+fn padded_normalized_i8_vec(values: &[f32], expected_len: usize) -> Vec<i8> {
+    let mut padded = Vec::with_capacity(expected_len);
+    for index in 0..expected_len {
+        padded.push(normalized_to_int8(
+            values.get(index).copied().unwrap_or_default(),
+        ));
     }
-    csv
-}
-
-fn join_i8_csv(values: &[i8]) -> String {
-    let mut csv = String::with_capacity(values.len().saturating_mul(4));
-    for (index, value) in values.iter().copied().enumerate() {
-        if index > 0 {
-            csv.push(',');
-        }
-        let _ = write!(&mut csv, "{value}");
-    }
-    csv
+    padded
 }
 
 #[allow(
@@ -1052,40 +1102,6 @@ fn rgb_to_hsl(r: u8, g: u8, b: u8) -> (i16, i8, i8) {
         (saturation.clamp(0.0, 1.0) * 100.0).round() as i8,
         (lightness.clamp(0.0, 1.0) * 100.0).round() as i8,
     )
-}
-
-fn join_padded_normalized_i8_csv(values: &[f32], expected_len: usize) -> String {
-    let mut csv = String::with_capacity(expected_len.saturating_mul(4));
-    for index in 0..expected_len {
-        if index > 0 {
-            csv.push(',');
-        }
-        let _ = write!(
-            &mut csv,
-            "{}",
-            normalized_to_int8(values.get(index).copied().unwrap_or_default())
-        );
-    }
-    csv
-}
-
-fn js_true_object_literal(values: &[String]) -> String {
-    if values.is_empty() {
-        return "{}".to_owned();
-    }
-
-    let mut object = String::with_capacity(values.len().saturating_mul(16));
-    object.push('{');
-    for (index, value) in values.iter().enumerate() {
-        if index > 0 {
-            object.push(',');
-        }
-        let key = serde_json::to_string(value).unwrap_or_else(|_| "\"invalid\"".to_owned());
-        object.push_str(&key);
-        object.push_str(":true");
-    }
-    object.push('}');
-    object
 }
 
 fn keyboard_lookup_keys(pressed_keys: &[String]) -> Vec<String> {
@@ -1202,27 +1218,6 @@ fn single_ascii_digit(name: &str) -> Option<char> {
     (chars.next().is_none() && ch.is_ascii_digit()).then_some(ch)
 }
 
-const fn js_bool(value: bool) -> &'static str {
-    if value { "true" } else { "false" }
-}
-
-fn sensor_payload(readings: &[SensorReading]) -> Value {
-    let mut sensors = Map::with_capacity(readings.len());
-    for reading in readings {
-        let (default_min, default_max) = default_sensor_range(reading);
-        sensors.insert(
-            reading.label.clone(),
-            json!({
-                "value": reading.value,
-                "min": reading.min.unwrap_or(default_min),
-                "max": reading.max.or(reading.critical).unwrap_or(default_max),
-                "unit": reading.unit.symbol(),
-            }),
-        );
-    }
-    Value::Object(sensors)
-}
-
 fn sensor_labels_from_readings(readings: &[SensorReading]) -> Vec<String> {
     readings
         .iter()
@@ -1250,17 +1245,6 @@ fn filter_sensor_readings(
         }
     }
     selected
-}
-
-fn default_sensor_range(reading: &SensorReading) -> (f32, f32) {
-    match reading.unit {
-        SensorUnit::Celsius => (0.0, reading.critical.unwrap_or(100.0)),
-        SensorUnit::Percent => (0.0, 100.0),
-        SensorUnit::Megabytes => (0.0, reading.max.unwrap_or(reading.value.max(1.0))),
-        SensorUnit::Rpm => (0.0, reading.max.unwrap_or(5000.0)),
-        SensorUnit::Watts => (0.0, reading.max.unwrap_or(500.0)),
-        SensorUnit::Mhz => (0.0, reading.max.unwrap_or(5000.0)),
-    }
 }
 
 fn audio_is_quiet(audio: &AudioData) -> bool {
@@ -1292,45 +1276,58 @@ fn audio_is_quiet(audio: &AudioData) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::input::ScreenData;
 
-    fn extract_assignment(script: &str, path: &str) -> f32 {
-        let marker = format!("{path} = ");
-        let start = script
-            .find(&marker)
-            .map(|index| index + marker.len())
-            .expect("assignment should exist");
-        let rest = &script[start..];
-        let end = rest.find(';').expect("assignment should terminate");
-        rest[..end]
-            .trim()
-            .parse::<f32>()
-            .expect("assignment should parse as f32")
+    fn default_options() -> LightScriptFrameUpdateOptions<'static> {
+        LightScriptFrameUpdateOptions {
+            include_audio: true,
+            include_screen: false,
+            include_sensors: false,
+            include_interaction: false,
+            render_host_frame: false,
+            selected_sensor_labels: None,
+        }
     }
 
-    fn extract_f32_array_assignment(script: &str, path: &str) -> Vec<f32> {
-        let marker = format!("{path} = new Float32Array([");
-        let start = script
-            .find(&marker)
-            .map(|index| index + marker.len())
-            .expect("typed array assignment should exist");
-        let rest = &script[start..];
-        let end = rest
-            .find("]);")
-            .expect("typed array assignment should terminate");
-        rest[..end]
-            .split(',')
-            .filter(|value| !value.trim().is_empty())
-            .map(|value| {
-                value
-                    .trim()
-                    .parse::<f32>()
-                    .expect("typed array item should parse as f32")
-            })
-            .collect()
+    fn frame_input_with<'a>(
+        audio: &'a AudioData,
+        interaction: &'a InteractionData,
+        sensors: &'a SystemSnapshot,
+        screen: Option<&'a ScreenData>,
+        width: u32,
+        height: u32,
+    ) -> FrameInput<'a> {
+        FrameInput {
+            time_secs: 1.5,
+            delta_secs: 1.0 / 30.0,
+            frame_number: 42,
+            audio,
+            interaction,
+            screen,
+            sensors,
+            canvas_width: width,
+            canvas_height: height,
+        }
+    }
+
+    fn payload_from_script(script: &str) -> serde_json::Value {
+        let payload = script
+            .strip_prefix("window.__hypercolorApplyFramePayload(")
+            .and_then(|script| script.strip_suffix(");"))
+            .expect("script should be one frame payload delivery call");
+        serde_json::from_str(payload).expect("payload should be valid JSON")
+    }
+
+    fn quiet_frame<'a>(
+        audio: &'a AudioData,
+        interaction: &'a InteractionData,
+        sensors: &'a SystemSnapshot,
+    ) -> FrameInput<'a> {
+        frame_input_with(audio, interaction, sensors, None, 320, 200)
     }
 
     #[test]
-    fn bootstrap_script_contains_runtime_shape() {
+    fn bootstrap_script_contains_runtime_shape_and_frame_adapter() {
         let runtime = LightscriptRuntime::new(320, 200);
         let script = runtime.bootstrap_script();
 
@@ -1338,13 +1335,13 @@ mod tests {
         assert!(script.contains("window.engine.height = 200"));
         assert!(script.contains("window.engine.audio.freq = new Int8Array(200)"));
         assert!(script.contains("window.engine.audio.frequencyWeighted = new Float32Array(200)"));
-        assert!(script.contains("window.engine.audio.levelShort = 0"));
-        assert!(script.contains("window.engine.audio.bassEnv = 0"));
-        assert!(script.contains("window.engine.audio.tempo = 120"));
         assert!(script.contains("window.engine.zone.hue = new Int16Array(560)"));
         assert!(script.contains("window.engine.getSensorValue = function(name)"));
         assert!(script.contains("window.engine.keyboard.isKeyDown = function(key)"));
-        assert!(script.contains("window.engine.onCanvasTapped = function(x, y)"));
+        assert!(script.contains("window.__hypercolorApplyFramePayload = function(payload)"));
+        assert!(script.contains("applyAudio(engine, payload.audio)"));
+        assert!(script.contains("applyControls(payload.controls)"));
+        assert!(script.contains("applyInteraction(engine, payload.interaction)"));
     }
 
     #[test]
@@ -1355,372 +1352,166 @@ mod tests {
     }
 
     #[test]
-    fn control_update_script_escapes_key_and_invokes_callback() {
-        let script = control_update_script("frontColor", &ControlValue::Text("#00ffcc".to_owned()));
-
-        assert!(script.contains("window[\"frontColor\"]"));
-        assert!(script.contains("const callback = \"onfrontColorChanged\""));
-        assert!(script.contains("window.__hypercolorControlsDirty = true"));
-        assert!(script.contains("window[callback]"));
-        assert!(script.contains("try { window[callback](); } catch (_err) {}"));
-        assert!(script.contains("\"#00ffcc\""));
-    }
-
-    #[test]
-    fn control_update_script_supports_non_identifier_keys() {
-        let script = control_update_script("my-control", &ControlValue::Float(1.0));
-        assert!(script.contains("window[\"my-control\"] = 1"));
-        assert!(script.contains("const callback = \"onmy-controlChanged\""));
-    }
-
-    #[test]
-    fn bootstrap_script_defines_host_frame_renderer() {
-        let runtime = LightscriptRuntime::new(320, 200);
-        let script = runtime.bootstrap_script();
-
-        assert!(script.contains("if (typeof window.__hypercolorRenderHostFrame !== 'function')"));
-        assert!(script.contains("window.__hypercolorRenderHostFrame = function()"));
-        assert!(script.contains("window.__hypercolorCaptureMode"));
-        assert!(script.contains("window.cancelAnimationFrame"));
-        assert!(script.contains("instance.syncCanvasSizeFromEngine"));
-        assert!(script.contains("window.__hypercolorControlsDirty = true"));
-        assert!(script.contains("window.__hypercolorLastControlUpdateTime = -Infinity"));
-        assert!(script.contains("time - window.__hypercolorLastControlUpdateTime >= 0.1"));
-        assert!(script.contains("window.update(false)"));
-        assert!(script.contains("window.__hypercolorControlsDirty = false"));
-        assert!(script.contains("window.__hypercolorLastControlUpdateTime = time"));
-        assert!(script.contains("window.performance.now() * 0.001"));
-        assert!(script.contains("instance.render(time)"));
-    }
-
-    #[test]
-    fn bootstrap_script_preserves_existing_host_frame_renderer() {
-        let runtime = LightscriptRuntime::new(320, 200);
-        let script = runtime.bootstrap_script();
-
-        let guard_index = script
-            .find("if (typeof window.__hypercolorRenderHostFrame !== 'function')")
-            .expect("host frame renderer should be guarded");
-        let assignment_index = script
-            .find("window.__hypercolorRenderHostFrame = function()")
-            .expect("host frame renderer should still be assigned for canvas effects");
-
-        assert!(guard_index < assignment_index);
-    }
-
-    #[test]
-    fn host_frame_script_calls_static_renderer() {
-        let script = LightscriptRuntime::host_frame_script();
-
-        assert!(script.contains("window.__hypercolorRenderHostFrame"));
-        assert!(!script.contains("instance.render("));
-    }
-
-    #[test]
-    fn push_frame_scripts_emit_control_deltas_only() {
+    fn frame_delivery_script_wraps_only_serialized_payload() {
         let mut runtime = LightscriptRuntime::new(320, 200);
         let audio = AudioData::silence();
+        let interaction = InteractionData::default();
         let sensors = SystemSnapshot::empty();
         let mut scripts = Vec::new();
 
+        runtime.push_frame_payload_script(
+            &mut scripts,
+            &quiet_frame(&audio, &interaction, &sensors),
+            &HashMap::new(),
+            default_options(),
+        );
+
+        assert_eq!(scripts.len(), 1);
+        assert!(!scripts[0].contains("window.engine.audio.level ="));
+        assert_eq!(
+            payload_from_script(&scripts[0])["timing"]["frameNumber"],
+            serde_json::json!(42)
+        );
+        assert_eq!(
+            payload_from_script(&scripts[0])["canvas"],
+            serde_json::json!({ "width": 320, "height": 200 })
+        );
+    }
+
+    #[test]
+    fn frame_payload_emits_control_deltas_only() {
+        let mut runtime = LightscriptRuntime::new(320, 200);
+        let audio = AudioData::silence();
+        let interaction = InteractionData::default();
+        let sensors = SystemSnapshot::empty();
+        let input = quiet_frame(&audio, &interaction, &sensors);
         let mut controls = HashMap::new();
         controls.insert("speed".to_owned(), ControlValue::Float(0.5));
+        let options = LightScriptFrameUpdateOptions {
+            include_audio: false,
+            ..default_options()
+        };
 
-        runtime.push_frame_scripts(
-            &mut scripts,
-            &audio,
-            None,
-            &sensors,
-            &controls,
-            true,
-            false,
-            false,
-            None,
-        );
-        assert_eq!(
-            scripts
-                .iter()
-                .filter(|script| script.contains("window[\"speed\"]"))
-                .count(),
-            1
-        );
-        assert!(
-            scripts
-                .iter()
-                .any(|script| script.contains("window.engine.audio.level"))
-        );
-
-        scripts.clear();
-        runtime.push_frame_scripts(
-            &mut scripts,
-            &audio,
-            None,
-            &sensors,
-            &controls,
-            true,
-            false,
-            false,
-            None,
-        );
-        assert!(
-            scripts
-                .iter()
-                .all(|script| !script.contains("window[\"speed\"]"))
-        );
+        let first = runtime
+            .frame_payload(&input, &controls, options)
+            .expect("changed control should emit");
+        assert_eq!(first.controls["speed"], LightScriptControlValue::Float(0.5));
+        assert!(runtime.frame_payload(&input, &controls, options).is_none());
 
         controls.insert("speed".to_owned(), ControlValue::Float(0.8));
-        scripts.clear();
-        runtime.push_frame_scripts(
-            &mut scripts,
-            &audio,
-            None,
-            &sensors,
-            &controls,
-            true,
-            false,
-            false,
-            None,
-        );
+        let changed = runtime
+            .frame_payload(&input, &controls, options)
+            .expect("updated control should emit");
         assert_eq!(
-            scripts
-                .iter()
-                .filter(|script| script.contains("window[\"speed\"]"))
-                .count(),
-            1
+            changed.controls["speed"],
+            LightScriptControlValue::Float(0.8)
         );
     }
 
     #[test]
-    fn push_frame_scripts_can_skip_audio_update() {
+    fn frame_payload_suppresses_repeated_quiet_audio_updates() {
         let mut runtime = LightscriptRuntime::new(320, 200);
         let audio = AudioData::silence();
+        let interaction = InteractionData::default();
         let sensors = SystemSnapshot::empty();
-        let mut scripts = Vec::new();
+        let input = quiet_frame(&audio, &interaction, &sensors);
 
-        runtime.push_frame_scripts(
-            &mut scripts,
-            &audio,
-            None,
-            &sensors,
-            &HashMap::new(),
-            false,
-            false,
-            false,
-            None,
+        assert!(
+            runtime
+                .frame_payload(&input, &HashMap::new(), default_options())
+                .expect("first quiet audio frame initializes the runtime")
+                .audio
+                .is_some()
         );
         assert!(
-            scripts
-                .iter()
-                .all(|script| !script.contains("window.engine.audio.level"))
+            runtime
+                .frame_payload(&input, &HashMap::new(), default_options())
+                .is_none()
         );
     }
 
     #[test]
-    fn push_frame_scripts_suppresses_repeated_quiet_audio_updates() {
-        let mut runtime = LightscriptRuntime::new(320, 200);
-        let quiet_audio = AudioData::silence();
-        let sensors = SystemSnapshot::empty();
-        let mut scripts = Vec::new();
-
-        runtime.push_frame_scripts(
-            &mut scripts,
-            &quiet_audio,
-            None,
-            &sensors,
-            &HashMap::new(),
-            true,
-            false,
-            false,
-            None,
-        );
-        assert!(
-            scripts
-                .iter()
-                .any(|script| script.contains("window.engine.audio.level"))
-        );
-
-        scripts.clear();
-        runtime.push_frame_scripts(
-            &mut scripts,
-            &quiet_audio,
-            None,
-            &sensors,
-            &HashMap::new(),
-            true,
-            false,
-            false,
-            None,
-        );
-        assert!(
-            scripts
-                .iter()
-                .all(|script| !script.contains("window.engine.audio.level"))
-        );
-    }
-
-    #[test]
-    fn push_frame_scripts_emits_audio_when_quiet_state_ends() {
+    fn frame_payload_emits_audio_when_quiet_state_ends() {
         let mut runtime = LightscriptRuntime::new(320, 200);
         let quiet_audio = AudioData::silence();
         let mut active_audio = AudioData::silence();
         active_audio.rms_level = 0.2;
+        let interaction = InteractionData::default();
         let sensors = SystemSnapshot::empty();
-        let mut scripts = Vec::new();
+        let quiet = quiet_frame(&quiet_audio, &interaction, &sensors);
+        let active = quiet_frame(&active_audio, &interaction, &sensors);
 
-        runtime.push_frame_scripts(
-            &mut scripts,
-            &quiet_audio,
-            None,
-            &sensors,
-            &HashMap::new(),
-            true,
-            false,
-            false,
-            None,
-        );
-        scripts.clear();
-
-        runtime.push_frame_scripts(
-            &mut scripts,
-            &active_audio,
-            None,
-            &sensors,
-            &HashMap::new(),
-            true,
-            false,
-            false,
-            None,
-        );
-        assert!(
-            scripts
-                .iter()
-                .any(|script| script.contains("window.engine.audio.level"))
-        );
+        runtime.frame_payload(&quiet, &HashMap::new(), default_options());
+        let payload = runtime
+            .frame_payload(&active, &HashMap::new(), default_options())
+            .expect("active audio should emit after quiet frame");
+        assert!(payload.audio.is_some());
     }
 
     #[test]
-    fn push_frame_scripts_suppresses_unchanged_sensor_updates() {
+    fn frame_payload_scopes_repeated_sensor_updates_to_selected_labels() {
         let mut runtime = LightscriptRuntime::new(320, 200);
         let audio = AudioData::silence();
-        let sensors = SystemSnapshot::empty();
-        let mut scripts = Vec::new();
-
-        runtime.push_frame_scripts(
-            &mut scripts,
-            &audio,
-            None,
-            &sensors,
-            &HashMap::new(),
-            false,
-            false,
-            true,
-            None,
-        );
-        assert!(
-            scripts
-                .iter()
-                .any(|script| script.contains("window.engine.sensors ="))
-        );
-
-        scripts.clear();
-        runtime.push_frame_scripts(
-            &mut scripts,
-            &audio,
-            None,
-            &sensors,
-            &HashMap::new(),
-            false,
-            false,
-            true,
-            None,
-        );
-        assert!(
-            scripts
-                .iter()
-                .all(|script| !script.contains("window.engine.sensors ="))
-        );
-    }
-
-    #[test]
-    fn push_frame_scripts_scopes_repeated_sensor_updates_to_selected_labels() {
-        let mut runtime = LightscriptRuntime::new(320, 200);
-        let audio = AudioData::silence();
+        let interaction = InteractionData::default();
         let mut sensors = SystemSnapshot::empty();
         sensors.cpu_temp_celsius = Some(54.0);
         sensors.gpu_temp_celsius = Some(62.0);
         let selected = vec!["cpu_temp".to_owned()];
-        let mut scripts = Vec::new();
+        let options = LightScriptFrameUpdateOptions {
+            include_audio: false,
+            include_sensors: true,
+            selected_sensor_labels: Some(&selected),
+            ..default_options()
+        };
 
-        runtime.push_frame_scripts(
-            &mut scripts,
-            &audio,
-            None,
-            &sensors,
-            &HashMap::new(),
-            false,
-            false,
-            true,
-            Some(&selected),
-        );
-        let initial_script = scripts
-            .iter()
-            .find(|script| script.contains("window.engine.sensors ="))
-            .expect("initial sensor update should replace the full sensor map");
-        assert!(initial_script.contains("cpu_temp"));
-        assert!(initial_script.contains("gpu_temp"));
-        assert!(initial_script.contains("window.engine.sensorList ="));
+        let input = quiet_frame(&audio, &interaction, &sensors);
+        let initial = runtime
+            .frame_payload(&input, &HashMap::new(), options)
+            .expect("initial sensors should emit");
+        let initial_sensors = initial.sensors.expect("sensor payload should exist");
+        assert!(initial_sensors.replace_sensor_map);
+        assert!(initial_sensors.readings.contains_key("cpu_temp"));
+        assert!(initial_sensors.readings.contains_key("gpu_temp"));
+        assert!(initial_sensors.sensor_list.is_some());
 
-        scripts.clear();
         sensors.cpu_temp_celsius = Some(55.0);
         sensors.gpu_temp_celsius = Some(63.0);
-        runtime.push_frame_scripts(
-            &mut scripts,
-            &audio,
-            None,
-            &sensors,
-            &HashMap::new(),
-            false,
-            false,
-            true,
-            Some(&selected),
-        );
-        let scoped_script = scripts
-            .iter()
-            .find(|script| script.contains("Object.assign(window.engine.sensors"))
-            .expect("repeated sensor update should merge selected readings");
-        assert!(scoped_script.contains("cpu_temp"));
-        assert!(!scoped_script.contains("gpu_temp"));
-        assert!(!scoped_script.contains("window.engine.sensorList ="));
+        let changed_input = quiet_frame(&audio, &interaction, &sensors);
+        let changed = runtime
+            .frame_payload(&changed_input, &HashMap::new(), options)
+            .expect("selected sensor update should emit");
+        let changed_sensors = changed.sensors.expect("sensor payload should exist");
+        assert!(!changed_sensors.replace_sensor_map);
+        assert!(changed_sensors.readings.contains_key("cpu_temp"));
+        assert!(!changed_sensors.readings.contains_key("gpu_temp"));
+        assert!(changed_sensors.sensor_list.is_none());
     }
 
     #[test]
-    fn push_frame_scripts_can_skip_sensor_updates() {
+    fn frame_payload_can_skip_sensor_updates() {
         let mut runtime = LightscriptRuntime::new(320, 200);
         let audio = AudioData::silence();
+        let interaction = InteractionData::default();
         let sensors = SystemSnapshot::empty();
-        let mut scripts = Vec::new();
-
-        runtime.push_frame_scripts(
-            &mut scripts,
-            &audio,
-            None,
-            &sensors,
-            &HashMap::new(),
-            false,
-            false,
-            false,
-            None,
-        );
+        let options = LightScriptFrameUpdateOptions {
+            include_audio: false,
+            include_sensors: false,
+            ..default_options()
+        };
 
         assert!(
-            scripts
-                .iter()
-                .all(|script| !script.contains("window.engine.sensors ="))
+            runtime
+                .frame_payload(
+                    &quiet_frame(&audio, &interaction, &sensors),
+                    &HashMap::new(),
+                    options,
+                )
+                .is_none()
         );
     }
 
     #[test]
-    fn audio_script_contains_level_and_freq_payload() {
+    fn audio_payload_contains_level_and_frequency_vectors() {
         let mut runtime = LightscriptRuntime::new(320, 200);
         let mut audio = AudioData::silence();
         audio.rms_level = 1.0;
@@ -1731,40 +1522,21 @@ mod tests {
         audio.mel_bands = vec![1.0; MEL_BANDS];
         audio.chromagram = vec![0.1, 0.6, 0.2];
 
-        let script = runtime.audio_update_script(&audio);
-        let level_short = extract_assignment(&script, "window.engine.audio.levelShort");
-        let level_long = extract_assignment(&script, "window.engine.audio.levelLong");
-        assert!(script.contains("window.engine.audio.level = 0"));
-        assert!(script.contains("window.engine.audio.levelRaw = 0"));
-        assert!(
-            level_short > 0.5 && level_short < 1.0,
-            "levelShort should react quickly without being a raw copy: {level_short}"
-        );
-        assert!(
-            level_long > 0.1 && level_long < level_short,
-            "levelLong should lag behind the short envelope: {level_long}"
-        );
-        assert!(script.contains("window.engine.audio.bassEnv ="));
-        assert!(script.contains("window.engine.audio.midEnv ="));
-        assert!(script.contains("window.engine.audio.trebleEnv ="));
-        assert!(script.contains("window.engine.audio.momentum ="));
-        assert!(script.contains("window.engine.audio.swell ="));
-        assert!(script.contains("window.engine.audio.beatPulse = 0.75"));
-        assert!(script.contains("window.engine.audio.onsetPulse = 0.5"));
-        assert!(script.contains("window.engine.audio.beatPhase = 0.25"));
-        assert!(script.contains("window.engine.audio.freq = new Int8Array([127,127,127"));
-        assert!(script.contains("window.engine.audio.frequency = new Float32Array([1,1,1"));
-        assert!(script.contains("window.engine.audio.frequencyWeighted = new Float32Array([0.82,"));
-        assert!(script.contains("window.engine.audio.dominantPitch = 1"));
-        assert!(script.contains("window.engine.audio.melBands = new Float32Array(["));
-        assert!(
-            script.contains("window.engine.audio.melBandsNormalized = new Float32Array([1,1,1")
-        );
-        assert!(script.contains("window.engine.audio.chromagram = new Float32Array(["));
+        let payload = runtime.audio_payload(&audio);
+        assert_eq!(payload.level_db, 0.0);
+        assert!(payload.level_short > 0.5 && payload.level_short < 1.0);
+        assert!(payload.level_long > 0.1 && payload.level_long < payload.level_short);
+        assert_eq!(&payload.frequency_raw[..3], &[127, 127, 127]);
+        assert_eq!(&payload.frequency[..3], &[1.0, 1.0, 1.0]);
+        assert!((payload.frequency_weighted[0] - 0.82).abs() < 0.0001);
+        assert_eq!(payload.dominant_pitch, 1.0);
+        assert_eq!(payload.mel_bands.len(), MEL_BANDS);
+        assert_eq!(payload.mel_bands_normalized[0], 1.0);
+        assert_eq!(payload.chromagram.len(), CHROMA_BINS);
     }
 
     #[test]
-    fn audio_script_sanitizes_non_finite_values() {
+    fn audio_payload_sanitizes_non_finite_values() {
         let mut runtime = LightscriptRuntime::new(320, 200);
         let mut audio = AudioData::silence();
         audio.rms_level = f32::NAN;
@@ -1774,12 +1546,20 @@ mod tests {
         audio.bpm = f32::INFINITY;
         audio.spectral_flux = f32::NEG_INFINITY;
 
-        let script = runtime.audio_update_script(&audio);
-        assert!(!script.contains("inf"));
-        assert!(!script.contains("NaN"));
-        assert!(script.contains("window.engine.audio.freq = new Int8Array([0,0,0"));
-        assert!(script.contains("window.engine.audio.frequency = new Float32Array([0,0,0"));
-        assert!(script.contains("window.engine.audio.melBands = new Float32Array([0,0"));
+        let payload = runtime.audio_payload(&audio);
+        assert_eq!(&payload.frequency_raw[..3], &[0, 0, 0]);
+        assert_eq!(&payload.frequency[..3], &[0.0, 0.0, 0.0]);
+        assert_eq!(&payload.mel_bands[..2], &[0.0, 0.0]);
+        assert!(
+            serde_json::to_string(&payload)
+                .expect("payload serializes")
+                .contains('0')
+        );
+        assert!(
+            !serde_json::to_string(&payload)
+                .expect("payload serializes")
+                .contains("NaN")
+        );
     }
 
     #[test]
@@ -1799,7 +1579,7 @@ mod tests {
     }
 
     #[test]
-    fn audio_script_curves_live_like_band_energy_into_reactive_range() {
+    fn audio_payload_curves_live_band_energy_into_reactive_range() {
         let mut runtime = LightscriptRuntime::new(320, 200);
         let mut audio = AudioData::silence();
         audio.rms_level = 0.08;
@@ -1814,78 +1594,16 @@ mod tests {
         }
         audio.mel_bands = vec![0.64; MEL_BANDS];
 
-        let script = runtime.audio_update_script(&audio);
-        let bass = extract_assignment(&script, "window.engine.audio.bass");
-        let mid = extract_assignment(&script, "window.engine.audio.mid");
-        let treble = extract_assignment(&script, "window.engine.audio.treble");
-        let level = extract_assignment(&script, "window.engine.audio.levelLinear");
-
-        assert!(
-            bass > 0.09 && bass < 0.12,
-            "bass should follow loudness instead of pinning: {bass}"
-        );
-        assert!(
-            mid > 0.08 && mid < 0.11,
-            "mid should track body without flooding the shader: {mid}"
-        );
-        assert!(
-            treble > 0.01 && treble < 0.02,
-            "treble should stay present but restrained: {treble}"
-        );
-        assert!(
-            level > 0.07 && level < 0.09,
-            "overall level should stay close to measured loudness: {level}"
-        );
-        assert!(
-            (extract_assignment(&script, "window.engine.audio.rms") - 0.08).abs() < 0.0001,
-            "raw RMS should stay available for diagnostics"
-        );
+        let payload = runtime.audio_payload(&audio);
+        assert!(payload.bass > 0.09 && payload.bass < 0.12);
+        assert!(payload.mid > 0.08 && payload.mid < 0.11);
+        assert!(payload.treble > 0.01 && payload.treble < 0.02);
+        assert!(payload.level_linear > 0.07 && payload.level_linear < 0.09);
+        assert!((payload.raw_rms - 0.08).abs() < 0.0001);
     }
 
     #[test]
-    fn audio_script_transient_channels_follow_measured_loudness() {
-        let mut runtime = LightscriptRuntime::new(320, 200);
-        let mut audio = AudioData::silence();
-        audio.rms_level = 0.08;
-        audio.beat_pulse = 1.0;
-        audio.onset_pulse = 0.9;
-        audio.spectral_flux = 0.8;
-        for value in &mut audio.spectrum[..SPECTRUM_BASS_END] {
-            *value = 0.64;
-        }
-        for value in &mut audio.spectrum[SPECTRUM_BASS_END..SPECTRUM_MID_END] {
-            *value = 0.60;
-        }
-        for value in &mut audio.spectrum[SPECTRUM_MID_END..] {
-            *value = 0.20;
-        }
-
-        let script = runtime.audio_update_script(&audio);
-        let beat_pulse = extract_assignment(&script, "window.engine.audio.beatPulse");
-        let onset_pulse = extract_assignment(&script, "window.engine.audio.onsetPulse");
-        let spectral_flux = extract_assignment(&script, "window.engine.audio.spectralFlux");
-        let swell = extract_assignment(&script, "window.engine.audio.swell");
-
-        assert!(
-            beat_pulse > 0.20 && beat_pulse < 0.24,
-            "quiet material should not export near-full beat pulses: {beat_pulse}"
-        );
-        assert!(
-            onset_pulse > 0.17 && onset_pulse < 0.21,
-            "quiet material should keep onset pulses in check: {onset_pulse}"
-        );
-        assert!(
-            spectral_flux > 0.17 && spectral_flux < 0.19,
-            "spectral flux should track loudness instead of flooding motion: {spectral_flux}"
-        );
-        assert!(
-            swell < 0.27,
-            "swell should stay restrained for quiet content: {swell}"
-        );
-    }
-
-    #[test]
-    fn audio_script_keeps_strong_bass_hits_capable_of_triggering_shockwave() {
+    fn audio_payload_keeps_strong_bass_hits_capable_of_triggering_shockwave() {
         let mut runtime = LightscriptRuntime::new(320, 200);
         let mut audio = AudioData::silence();
         audio.rms_level = 0.28;
@@ -1902,83 +1620,15 @@ mod tests {
             *value = 0.33;
         }
 
-        let script = runtime.audio_update_script(&audio);
-        let bass = extract_assignment(&script, "window.engine.audio.bass");
-        let beat_pulse = extract_assignment(&script, "window.engine.audio.beatPulse");
-        let onset_pulse = extract_assignment(&script, "window.engine.audio.onsetPulse");
-        let level = extract_assignment(&script, "window.engine.audio.levelLinear");
-
-        assert!(
-            bass > 0.55,
-            "strong bass hits should stay substantial: {bass}"
-        );
-        assert!(
-            beat_pulse > 0.75,
-            "loud beats should still export punchy beat pulses: {beat_pulse}"
-        );
-        assert!(
-            onset_pulse > 0.75,
-            "loud onsets should still export punchy onset pulses: {onset_pulse}"
-        );
-        assert!(
-            level > 0.40,
-            "overall level should rise for big transients: {level}"
-        );
+        let payload = runtime.audio_payload(&audio);
+        assert!(payload.bass > 0.55);
+        assert!(payload.beat_pulse > 0.75);
+        assert!(payload.onset_pulse > 0.75);
+        assert!(payload.level_linear > 0.40);
     }
 
     #[test]
-    fn audio_script_derived_envelopes_keep_decay_after_a_drop() {
-        let mut runtime = LightscriptRuntime::new(320, 200);
-        let mut loud = AudioData::silence();
-        loud.rms_level = 0.26;
-        loud.beat_pulse = 0.7;
-        loud.onset_pulse = 0.55;
-        for value in &mut loud.spectrum[..SPECTRUM_BASS_END] {
-            *value = 0.88;
-        }
-        for value in &mut loud.spectrum[SPECTRUM_BASS_END..SPECTRUM_MID_END] {
-            *value = 0.58;
-        }
-        for value in &mut loud.spectrum[SPECTRUM_MID_END..] {
-            *value = 0.24;
-        }
-        runtime.audio_update_script(&loud);
-
-        let mut quiet = AudioData::silence();
-        quiet.rms_level = 0.03;
-        for value in &mut quiet.spectrum[..SPECTRUM_BASS_END] {
-            *value = 0.12;
-        }
-        for value in &mut quiet.spectrum[SPECTRUM_BASS_END..SPECTRUM_MID_END] {
-            *value = 0.09;
-        }
-        for value in &mut quiet.spectrum[SPECTRUM_MID_END..] {
-            *value = 0.04;
-        }
-
-        let script = runtime.audio_update_script(&quiet);
-        let bass = extract_assignment(&script, "window.engine.audio.bass");
-        let bass_env = extract_assignment(&script, "window.engine.audio.bassEnv");
-        let level = extract_assignment(&script, "window.engine.audio.levelLinear");
-        let level_short = extract_assignment(&script, "window.engine.audio.levelShort");
-        let level_long = extract_assignment(&script, "window.engine.audio.levelLong");
-
-        assert!(
-            bass_env > bass,
-            "bassEnv should preserve transient decay: bass={bass}, bassEnv={bass_env}"
-        );
-        assert!(
-            level_short > level,
-            "levelShort should hold above the instantaneous level after a drop: level={level}, levelShort={level_short}"
-        );
-        assert!(
-            level_long > level,
-            "levelLong should remain above the instantaneous level after a drop: level={level}, levelLong={level_long}"
-        );
-    }
-
-    #[test]
-    fn audio_script_flux_bands_track_change_not_steady_loudness() {
+    fn audio_payload_flux_bands_track_change_not_steady_loudness() {
         let mut runtime = LightscriptRuntime::new(320, 200);
         let mut audio = AudioData::silence();
         audio.rms_level = 0.2;
@@ -1992,23 +1642,16 @@ mod tests {
             *value = 0.18;
         }
 
-        let first = runtime.audio_update_script(&audio);
-        let first_flux =
-            extract_f32_array_assignment(&first, "window.engine.audio.spectralFluxBands");
-        let second = runtime.audio_update_script(&audio);
-        let second_flux =
-            extract_f32_array_assignment(&second, "window.engine.audio.spectralFluxBands");
-
-        assert!(
-            first_flux[0] > second_flux[0],
-            "steady audio should reduce bass motion on the next frame: first={:?}, second={:?}",
-            first_flux,
-            second_flux
-        );
+        let first = runtime.audio_payload(&audio);
+        let second = runtime.audio_payload(&audio);
+        assert!(first.spectral_flux_bands[0] > second.spectral_flux_bands[0]);
     }
 
     #[test]
-    fn input_script_populates_keyboard_and_mouse_state() {
+    fn interaction_payload_populates_keyboard_and_mouse_state_on_change() {
+        let mut runtime = LightscriptRuntime::new(320, 200);
+        let audio = AudioData::silence();
+        let sensors = SystemSnapshot::empty();
         let interaction = InteractionData {
             keyboard: crate::input::KeyboardData {
                 pressed_keys: vec!["a".to_owned(), "Space".to_owned()],
@@ -2021,73 +1664,73 @@ mod tests {
                 down: true,
             },
         };
-
-        let script = LightscriptRuntime::input_update_script(&interaction);
-        assert!(script.contains("window.engine.keyboard.keys = {"));
-        assert!(script.contains("\"a\":true"));
-        assert!(script.contains("\"A\":true"));
-        assert!(script.contains("\"KeyA\":true"));
-        assert!(script.contains("\"Space\":true"));
-        assert!(script.contains("\"space\":true"));
-        assert!(script.contains("\" \":true"));
-        assert!(script.contains("\"Spacebar\":true"));
-        assert!(script.contains("window.engine.keyboard.recent = [\"a\"]"));
-        assert!(script.contains("window.engine.mouse.x = 42"));
-        assert!(script.contains("window.engine.mouse.y = 24"));
-        assert!(script.contains("window.engine.mouse.down = true"));
-        assert!(script.contains("window.engine.mouse.buttons = {"));
-        assert!(script.contains("\"left\":true"));
-        assert!(script.contains("\"1\":true"));
-        assert!(script.contains("\"primary\":true"));
-    }
-
-    #[test]
-    fn resize_script_emits_only_on_dimension_change() {
-        let mut runtime = LightscriptRuntime::new(320, 200);
-        assert!(runtime.resize_script(320, 200).is_none());
-
-        let resize = runtime
-            .resize_script(640, 360)
-            .expect("resize should emit when dimensions change");
-        assert!(resize.contains("window.engine.width = 640"));
-        assert!(resize.contains("window.engine.height = 360"));
-        assert!(runtime.resize_script(640, 360).is_none());
-    }
-
-    #[test]
-    fn input_update_script_emits_only_on_change() {
-        let mut runtime = LightscriptRuntime::new(320, 200);
-        let interaction = InteractionData {
-            keyboard: crate::input::KeyboardData {
-                pressed_keys: vec!["a".to_owned()],
-                recent_keys: vec!["a".to_owned()],
-            },
-            mouse: crate::input::MouseData {
-                x: 1,
-                y: 2,
-                buttons: vec![],
-                down: false,
-            },
+        let options = LightScriptFrameUpdateOptions {
+            include_audio: false,
+            include_interaction: true,
+            ..default_options()
         };
+        let input = quiet_frame(&audio, &interaction, &sensors);
 
+        let payload = runtime
+            .frame_payload(&input, &HashMap::new(), options)
+            .expect("changed interaction should emit");
+        let interaction_payload = payload.interaction.expect("interaction payload");
+        assert!(interaction_payload.keyboard.keys.contains(&"A".to_owned()));
         assert!(
-            runtime
-                .input_update_script_if_changed(&interaction)
-                .is_some()
+            interaction_payload
+                .keyboard
+                .keys
+                .contains(&"KeyA".to_owned())
+        );
+        assert!(
+            interaction_payload
+                .keyboard
+                .keys
+                .contains(&"Spacebar".to_owned())
+        );
+        assert_eq!(interaction_payload.keyboard.recent, vec!["a".to_owned()]);
+        assert_eq!(interaction_payload.mouse.x, 42);
+        assert!(
+            interaction_payload
+                .mouse
+                .buttons
+                .contains(&"primary".to_owned())
         );
         assert!(
             runtime
-                .input_update_script_if_changed(&interaction)
+                .frame_payload(&input, &HashMap::new(), options)
                 .is_none()
         );
+    }
 
-        let changed = InteractionData {
-            keyboard: crate::input::KeyboardData {
-                pressed_keys: vec!["b".to_owned()],
-                recent_keys: vec!["b".to_owned()],
-            },
-            mouse: interaction.mouse.clone(),
+    #[test]
+    fn canvas_dimensions_emit_only_on_change() {
+        let mut runtime = LightscriptRuntime::new(320, 200);
+        let audio = AudioData::silence();
+        let interaction = InteractionData::default();
+        let sensors = SystemSnapshot::empty();
+        let options = LightScriptFrameUpdateOptions {
+            include_audio: false,
+            ..default_options()
         };
-        assert!(runtime.input_update_script_if_changed(&changed).is_some());
+
+        assert!(
+            runtime
+                .frame_payload(
+                    &quiet_frame(&audio, &interaction, &sensors),
+                    &HashMap::new(),
+                    options,
+                )
+                .is_none()
+        );
+        let resized = runtime
+            .frame_payload(
+                &frame_input_with(&audio, &interaction, &sensors, None, 640, 360),
+                &HashMap::new(),
+                options,
+            )
+            .expect("resize should emit");
+        assert_eq!(resized.canvas.width, 640);
+        assert_eq!(resized.canvas.height, 360);
     }
 }

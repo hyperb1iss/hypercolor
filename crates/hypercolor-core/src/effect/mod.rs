@@ -26,7 +26,7 @@ pub use factory::{
     create_renderer_for_metadata_with_effect_acceleration,
     resolve_effect_renderer_acceleration_mode,
 };
-pub use lightscript::{LightscriptRuntime, control_update_script, normalized_level_to_db};
+pub use lightscript::{LightScriptFrameUpdateOptions, LightscriptRuntime, normalized_level_to_db};
 pub use loader::{
     HtmlDiscoveryReport, default_effect_search_paths, html_path_effect_id_for_testing,
     load_html_effect_file, register_html_effects,
