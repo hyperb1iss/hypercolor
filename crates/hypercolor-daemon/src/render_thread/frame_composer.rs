@@ -1,33 +1,24 @@
-use std::collections::HashMap;
 use std::time::Instant;
 
 use anyhow::Result;
 use tracing::{debug, warn};
 
-use hypercolor_core::bus::{DisplayGroupFrame, DisplayGroupOutputRoute, DisplayGroupTarget};
 use hypercolor_core::types::canvas::PublishedSurface;
-use hypercolor_types::device::DisplayFrameFormat;
 use hypercolor_types::event::{EffectDegradationState, HypercolorEvent};
-use hypercolor_types::scene::{DisplayFaceTarget, ZoneId};
+use hypercolor_types::scene::ZoneId;
 
+use super::display_lane::{
+    DisplayLaneContext, DisplayLaneMaterializer, DisplayLaneRoutes,
+    display_groups_require_composed_scene,
+};
 use super::frame_policy::SkipDecision;
 use super::frame_sampling::LedSamplingStrategy;
-#[cfg(feature = "wgpu")]
-use super::pipeline_runtime::PendingDisplayFinalizeWork;
 use super::pipeline_runtime::{ComposeRuntime, FrameInputs};
 use super::producer_queue::{ProducerFrame, ProducerFrameState};
-use super::render_groups::{
-    GroupCanvasFrame, PendingGroupCanvasFrame, ZoneEffectError, ZoneResult,
-};
+use super::render_groups::{GroupCanvasFrame, ZoneEffectError, ZoneResult};
 use super::scene_dependency::SceneDependencyKey;
 use super::scene_snapshot::FrameSceneSnapshot;
-use super::sparkleflinger::{
-    ComposedFrameSet, CompositionLayer, CompositionPlan, PreviewSurfaceRequest,
-};
-#[cfg(feature = "wgpu")]
-use super::sparkleflinger::{
-    DisplayFinalizeCacheKey, DisplayFinalizeDispatch, DisplayFinalizeFrame, DisplayFinalizeParams,
-};
+use super::sparkleflinger::{ComposedFrameSet, PreviewSurfaceRequest};
 use super::{RenderThreadState, micros_between, micros_u32};
 use crate::performance::FullFrameCopyMetrics;
 use crate::preview_runtime::PreviewDemandSummary;
@@ -128,40 +119,6 @@ fn producer_frame_requires_composition_for_preview(
     preview_requested: bool,
 ) -> bool {
     preview_requested && frame.is_gpu_resident()
-}
-
-fn display_route_matches_target(
-    display_route: Option<&DisplayGroupOutputRoute>,
-    display_target: &DisplayFaceTarget,
-) -> bool {
-    display_route.is_some_and(|route| route.device_id == display_target.device_id)
-}
-
-fn display_route_for_group<'a>(
-    group_id: &ZoneId,
-    display_routes: &'a HashMap<ZoneId, DisplayGroupOutputRoute>,
-    fallback_display_routes: &'a HashMap<ZoneId, DisplayGroupOutputRoute>,
-) -> Option<&'a DisplayGroupOutputRoute> {
-    display_routes
-        .get(group_id)
-        .or_else(|| fallback_display_routes.get(group_id))
-}
-
-#[cfg(feature = "wgpu")]
-fn display_finalize_frame_to_group(
-    frame: DisplayFinalizeFrame,
-    frame_format: DisplayFrameFormat,
-) -> Option<DisplayGroupFrame> {
-    match (frame_format, frame) {
-        (DisplayFrameFormat::Jpeg, DisplayFinalizeFrame::Yuv420(frame)) => {
-            Some(DisplayGroupFrame::Yuv420(frame))
-        }
-        (DisplayFrameFormat::Rgb, DisplayFinalizeFrame::Rgba(surface)) => {
-            Some(DisplayGroupFrame::from_surface(surface))
-        }
-        (DisplayFrameFormat::Jpeg, DisplayFinalizeFrame::Rgba(_))
-        | (DisplayFrameFormat::Rgb, DisplayFinalizeFrame::Yuv420(_)) => None,
-    }
 }
 
 impl ComposeContext<'_> {
@@ -335,7 +292,7 @@ impl ComposeContext<'_> {
                 let preview_surface_pressure = self.preview_surface_pressure();
                 let scene_canvas_forced_surface = self.scene_canvas_forced_surface();
                 let display_blend_requires_scene =
-                    display_group_requires_composed_scene(&render_group_result.group_canvases);
+                    display_groups_require_composed_scene(&render_group_result.group_canvases);
                 let requires_full_composition = render_group_requires_full_composition(
                     compiled_plan.metadata.transition_active,
                     &render_group_result.led_sampling_strategy,
@@ -370,15 +327,30 @@ impl ComposeContext<'_> {
                 };
                 let scene_display_frame =
                     self.scene_display_frame_for_groups(&scene_frame, requires_full_composition);
-                #[cfg(feature = "wgpu")]
-                self.compose.discard_display_finalizations_except(
-                    &render_group_result.active_group_canvas_ids,
-                );
-                let group_canvases = self.materialize_group_canvases(
-                    render_group_result.group_canvases,
-                    &scene_display_frame,
+                let (_, display_routes) =
+                    self.state.event_bus.display_group_output_routes_snapshot();
+                let display_lane_context = DisplayLaneContext {
+                    elapsed_ms: self.scene_snapshot.elapsed_ms,
                     dependency_key,
-                );
+                    target_fps: &self
+                        .scene_snapshot
+                        .scene_runtime
+                        .active_display_group_target_fps,
+                    routes: DisplayLaneRoutes {
+                        current: &display_routes,
+                        fallback: &self
+                            .scene_snapshot
+                            .scene_runtime
+                            .active_display_group_output_routes,
+                    },
+                };
+                let group_canvases =
+                    DisplayLaneMaterializer::new(&mut self.compose, display_lane_context)
+                        .materialize_group_canvases(
+                            &render_group_result.active_group_canvas_ids,
+                            render_group_result.group_canvases,
+                            &scene_display_frame,
+                        );
                 let composition_bypassed = composed.bypassed;
                 let composition_done_at = Instant::now();
                 let composition_us = micros_between(composition_start, composition_done_at);
@@ -563,151 +535,6 @@ impl ComposeContext<'_> {
         )
     }
 
-    fn materialize_group_canvases(
-        &mut self,
-        group_canvases: Vec<(ZoneId, PendingGroupCanvasFrame)>,
-        scene_frame: &ProducerFrame,
-        dependency_key: SceneDependencyKey,
-    ) -> Vec<(ZoneId, GroupCanvasFrame)> {
-        let (_, display_routes) = self.state.event_bus.display_group_output_routes_snapshot();
-        let fallback_display_routes = &self
-            .scene_snapshot
-            .scene_runtime
-            .active_display_group_output_routes;
-        group_canvases
-            .into_iter()
-            .filter_map(|(group_id, frame)| {
-                let display_route =
-                    display_route_for_group(&group_id, &display_routes, fallback_display_routes);
-                let display_target = frame.display_target.clone();
-                let empty_direct_shell = frame.empty_direct_shell;
-                // Display-face finalization follows the route cadence,
-                // even when scene rendering is faster.
-                if let Some(route) = display_route
-                    && let Some(frame) = self
-                        .compose
-                        .render_group_runtime
-                        .reuse_retained_materialized_group_frame(
-                            group_id,
-                            self.scene_snapshot.elapsed_ms,
-                            self.scene_snapshot
-                                .scene_runtime
-                                .active_display_group_target_fps
-                                .get(&group_id)
-                                .copied(),
-                            dependency_key,
-                            &display_target,
-                            route,
-                            empty_direct_shell,
-                        )
-                {
-                    return Some((group_id, frame));
-                }
-
-                let (materialized, fresh_materialization) = if let Some(materialized) = self
-                    .materialize_group_canvas(
-                        group_id,
-                        frame,
-                        scene_frame,
-                        dependency_key,
-                        display_route,
-                    ) {
-                    (materialized, true)
-                } else {
-                    let retained = display_route.and_then(|route| {
-                        self.compose
-                            .render_group_runtime
-                            .reuse_latest_materialized_group_frame(
-                                group_id,
-                                &display_target,
-                                route,
-                                empty_direct_shell,
-                            )
-                    })?;
-                    #[cfg(feature = "wgpu")]
-                    crate::render_thread::sparkleflinger::gpu::record_gpu_display_finalize_latch();
-                    (retained, false)
-                };
-                if fresh_materialization && let Some(route) = display_route {
-                    self.compose
-                        .render_group_runtime
-                        .retain_materialized_group_frame(
-                            group_id,
-                            self.scene_snapshot.elapsed_ms,
-                            dependency_key,
-                            &display_target,
-                            route,
-                            empty_direct_shell,
-                            &materialized,
-                        );
-                }
-
-                Some((group_id, materialized))
-            })
-            .collect()
-    }
-
-    #[cfg_attr(
-        not(feature = "wgpu"),
-        expect(
-            clippy::unnecessary_wraps,
-            reason = "the return type stays feature-stable because GPU readback can skip a frame"
-        )
-    )]
-    fn materialize_group_canvas(
-        &mut self,
-        group_id: ZoneId,
-        group_canvas: PendingGroupCanvasFrame,
-        scene_frame: &ProducerFrame,
-        dependency_key: SceneDependencyKey,
-        display_route: Option<&DisplayGroupOutputRoute>,
-    ) -> Option<GroupCanvasFrame> {
-        let PendingGroupCanvasFrame {
-            frame,
-            display_target,
-            ..
-        } = group_canvas;
-        if let Some(frame) = self.finalize_display_group_canvas(
-            group_id,
-            scene_frame,
-            &frame,
-            dependency_key,
-            &display_target,
-            display_route,
-        ) {
-            return Some(GroupCanvasFrame {
-                frame,
-                display_target: DisplayGroupTarget {
-                    device_id: display_target.device_id,
-                    blend_mode: display_target.blend_mode,
-                    opacity: display_target.opacity,
-                    finalized: true,
-                },
-            });
-        }
-        if display_route_matches_target(display_route, &display_target) {
-            return None;
-        }
-
-        let surface = match frame {
-            ProducerFrame::Canvas(canvas) => PublishedSurface::from_owned_canvas(canvas, 0, 0),
-            ProducerFrame::Surface(surface) => surface,
-            #[cfg(feature = "servo-gpu-import")]
-            ProducerFrame::Gpu(frame) => {
-                self.materialize_gpu_group_canvas(ProducerFrame::Gpu(frame))?
-            }
-            #[cfg(feature = "wgpu")]
-            ProducerFrame::GpuTexture(frame) => {
-                self.materialize_gpu_group_canvas(ProducerFrame::GpuTexture(frame))?
-            }
-        };
-
-        Some(GroupCanvasFrame {
-            frame: DisplayGroupFrame::from_surface(surface),
-            display_target: (&display_target).into(),
-        })
-    }
-
     fn scene_display_frame_for_groups(
         &mut self,
         fallback: &ProducerFrame,
@@ -725,202 +552,6 @@ impl ComposeContext<'_> {
         }
 
         fallback.clone()
-    }
-
-    fn finalize_display_group_canvas(
-        &mut self,
-        group_id: ZoneId,
-        scene_frame: &ProducerFrame,
-        face_frame: &ProducerFrame,
-        dependency_key: SceneDependencyKey,
-        display_target: &DisplayFaceTarget,
-        display_route: Option<&DisplayGroupOutputRoute>,
-    ) -> Option<DisplayGroupFrame> {
-        let Some(display_route) =
-            display_route.filter(|route| route.device_id == display_target.device_id)
-        else {
-            return None;
-        };
-
-        self.finalize_display_group_canvas_with_route(
-            group_id,
-            scene_frame,
-            face_frame,
-            dependency_key,
-            display_target,
-            display_route,
-        )
-    }
-
-    #[cfg(not(feature = "wgpu"))]
-    fn finalize_display_group_canvas_with_route(
-        &mut self,
-        group_id: ZoneId,
-        scene_frame: &ProducerFrame,
-        face_frame: &ProducerFrame,
-        dependency_key: SceneDependencyKey,
-        display_target: &DisplayFaceTarget,
-        display_route: &DisplayGroupOutputRoute,
-    ) -> Option<DisplayGroupFrame> {
-        let _ = group_id;
-        let _ = scene_frame;
-        let _ = face_frame;
-        let _ = dependency_key;
-        let _ = display_target;
-        let _ = display_route;
-        None
-    }
-
-    #[cfg(feature = "wgpu")]
-    fn finalize_display_group_canvas_with_route(
-        &mut self,
-        group_id: ZoneId,
-        scene_frame: &ProducerFrame,
-        face_frame: &ProducerFrame,
-        dependency_key: SceneDependencyKey,
-        display_target: &DisplayFaceTarget,
-        display_route: &DisplayGroupOutputRoute,
-    ) -> Option<DisplayGroupFrame> {
-        let params = DisplayFinalizeParams {
-            cache_key: DisplayFinalizeCacheKey {
-                group_id,
-                device_id: display_route.device_id,
-                width: display_route.width,
-                height: display_route.height,
-                circular: display_route.circular,
-                frame_format: display_route.frame_format,
-            },
-            width: display_route.width,
-            height: display_route.height,
-            circular: display_route.circular,
-            brightness: display_route.brightness,
-            viewport_position: display_route.viewport.position,
-            viewport_size: display_route.viewport.size,
-            viewport_rotation: display_route.viewport.rotation,
-            viewport_scale: display_route.viewport.scale,
-            viewport_edge_behavior: display_route.viewport.edge_behavior,
-            blend_mode: display_target.blend_mode,
-            opacity: display_target.opacity,
-        };
-
-        if let Some(frame) = self.finish_pending_display_finalize_work(
-            group_id,
-            dependency_key,
-            display_target,
-            display_route,
-        ) {
-            return Some(frame);
-        }
-
-        let dispatch = if display_route.frame_format == DisplayFrameFormat::Jpeg {
-            self.compose
-                .display_sparkleflinger
-                .begin_finalize_display_face_yuv420(scene_frame, face_frame, params)
-        } else {
-            self.compose
-                .display_sparkleflinger
-                .begin_finalize_display_face(scene_frame, face_frame, params)
-        };
-
-        match dispatch {
-            Ok(DisplayFinalizeDispatch::Pending(pending)) => {
-                let mut work = PendingDisplayFinalizeWork {
-                    dependency_key,
-                    display_target: display_target.clone(),
-                    display_route: display_route.clone(),
-                    frame_format: display_route.frame_format,
-                    pending,
-                };
-                if let Some(frame) = self.try_finish_display_finalize_work(&mut work) {
-                    return Some(frame);
-                }
-                self.compose.display_finalize_runtime.insert(group_id, work);
-                None
-            }
-            Ok(DisplayFinalizeDispatch::Unsupported | DisplayFinalizeDispatch::Saturated) => None,
-            Err(error) => {
-                debug!(%error, "GPU display-face finalization deferred to retained frame");
-                None
-            }
-        }
-    }
-
-    #[cfg(feature = "wgpu")]
-    fn finish_pending_display_finalize_work(
-        &mut self,
-        group_id: ZoneId,
-        dependency_key: SceneDependencyKey,
-        display_target: &DisplayFaceTarget,
-        display_route: &DisplayGroupOutputRoute,
-    ) -> Option<DisplayGroupFrame> {
-        let Some(mut work) = self.compose.display_finalize_runtime.take(group_id) else {
-            return None;
-        };
-        if !work.matches(
-            dependency_key,
-            display_target,
-            display_route,
-            display_route.frame_format,
-        ) {
-            self.compose
-                .display_sparkleflinger
-                .discard_pending_display_finalization(work.pending);
-            return None;
-        }
-
-        let frame = self.try_finish_display_finalize_work(&mut work);
-        if frame.is_none() {
-            self.compose.display_finalize_runtime.insert(group_id, work);
-        }
-        frame
-    }
-
-    #[cfg(feature = "wgpu")]
-    fn try_finish_display_finalize_work(
-        &mut self,
-        work: &mut PendingDisplayFinalizeWork,
-    ) -> Option<DisplayGroupFrame> {
-        match self
-            .compose
-            .display_sparkleflinger
-            .try_finish_pending_display_finalization(&mut work.pending)
-        {
-            Ok(Some(frame)) => display_finalize_frame_to_group(frame, work.frame_format),
-            Ok(None) => None,
-            Err(error) => {
-                debug!(%error, "GPU display-face finalization deferred to retained frame");
-                None
-            }
-        }
-    }
-
-    #[cfg(feature = "wgpu")]
-    fn materialize_gpu_group_canvas(&mut self, frame: ProducerFrame) -> Option<PublishedSurface> {
-        if frame.width() == 0 || frame.height() == 0 {
-            return None;
-        }
-
-        let preview_surface_request = PreviewSurfaceRequest {
-            width: frame.width(),
-            height: frame.height(),
-        };
-        let plan = CompositionPlan::single(
-            preview_surface_request.width,
-            preview_surface_request.height,
-            CompositionLayer::replace(frame),
-        )
-        .with_cpu_replay_cacheable(false);
-        let composed = self.compose.display_sparkleflinger.compose_for_outputs(
-            plan,
-            false,
-            Some(preview_surface_request),
-        );
-
-        if composed.gpu_readback_failed {
-            debug!("GPU display-face materialization missed; retaining prior frame if available");
-        }
-
-        composed.preview_surface.or(composed.sampling_surface)
     }
 
     fn publish_effect_error(&mut self, error: &anyhow::Error) -> bool {
@@ -1110,30 +741,17 @@ fn scene_canvas_forces_full_surface(
             && scene_canvas_demand.max_height >= canvas_height)
 }
 
-fn display_group_requires_composed_scene(
-    group_canvases: &[(ZoneId, PendingGroupCanvasFrame)],
-) -> bool {
-    group_canvases
-        .iter()
-        .any(|(_, frame)| frame.display_target.blends_with_effect())
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        PreviewSurfaceRequest, display_group_requires_composed_scene, display_route_for_group,
-        display_route_matches_target, effective_render_group_layer_count, preview_surface_request,
+        PreviewSurfaceRequest, effective_render_group_layer_count, preview_surface_request,
         producer_frame_requires_composition_for_preview, render_group_requires_full_composition,
         requires_cpu_sampling_canvas, requires_published_surface,
     };
-    use std::collections::HashMap;
     use std::sync::Arc;
 
-    use hypercolor_core::bus::{DisplayGroupOutputRoute, DisplayGroupViewport};
     use hypercolor_core::spatial::SpatialEngine;
     use hypercolor_core::types::canvas::{Canvas, PublishedSurface};
-    use hypercolor_types::device::{DeviceId, DisplayFrameFormat};
-    use hypercolor_types::scene::{DisplayFaceBlendMode, DisplayFaceTarget, ZoneId};
     use hypercolor_types::spatial::{
         EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
         StripDirection,
@@ -1142,7 +760,6 @@ mod tests {
     use crate::preview_runtime::PreviewDemandSummary;
     use crate::render_thread::frame_sampling::LedSamplingStrategy;
     use crate::render_thread::producer_queue::ProducerFrame;
-    use crate::render_thread::render_groups::PendingGroupCanvasFrame;
     use crate::render_thread::sparkleflinger::SparkleFlinger;
     use hypercolor_types::config::RenderAccelerationMode;
 
@@ -1243,38 +860,6 @@ mod tests {
     }
 
     #[test]
-    fn blended_display_group_forces_composed_scene_for_finalization() {
-        let device_id = DeviceId::new();
-        let replace = PendingGroupCanvasFrame {
-            frame: ProducerFrame::Canvas(Canvas::new(4, 4)),
-            display_target: DisplayFaceTarget {
-                device_id,
-                blend_mode: DisplayFaceBlendMode::Replace,
-                opacity: 1.0,
-            },
-            empty_direct_shell: false,
-        };
-        let blended = PendingGroupCanvasFrame {
-            frame: ProducerFrame::Canvas(Canvas::new(4, 4)),
-            display_target: DisplayFaceTarget {
-                device_id,
-                blend_mode: DisplayFaceBlendMode::Alpha,
-                opacity: 0.88,
-            },
-            empty_direct_shell: false,
-        };
-
-        assert!(!display_group_requires_composed_scene(&[(
-            ZoneId::new(),
-            replace
-        )]));
-        assert!(display_group_requires_composed_scene(&[(
-            ZoneId::new(),
-            blended
-        )]));
-    }
-
-    #[test]
     fn cpu_producer_preview_does_not_force_full_composition() {
         let canvas = Canvas::new(4, 4);
         let surface = PublishedSurface::from_owned_canvas(Canvas::new(4, 4), 1, 16);
@@ -1300,74 +885,6 @@ mod tests {
     #[test]
     fn published_surface_depends_on_scene_canvas_receivers() {
         assert!(requires_published_surface(false, false, false, false, 1));
-    }
-
-    #[test]
-    fn display_route_matching_requires_the_target_device() {
-        let device_id = DeviceId::new();
-        let target = DisplayFaceTarget {
-            device_id,
-            blend_mode: DisplayFaceBlendMode::Replace,
-            opacity: 1.0,
-        };
-        let route = DisplayGroupOutputRoute {
-            device_id,
-            width: 480,
-            height: 480,
-            circular: true,
-            brightness: 1.0,
-            frame_format: DisplayFrameFormat::Jpeg,
-            viewport: DisplayGroupViewport {
-                position: NormalizedPosition::new(0.5, 0.5),
-                size: NormalizedPosition::new(1.0, 1.0),
-                rotation: 0.0,
-                scale: 1.0,
-                edge_behavior: EdgeBehavior::Clamp,
-            },
-        };
-        let mut other_route = route.clone();
-        other_route.device_id = DeviceId::new();
-
-        assert!(display_route_matches_target(Some(&route), &target));
-        assert!(!display_route_matches_target(Some(&other_route), &target));
-        assert!(!display_route_matches_target(None, &target));
-    }
-
-    #[test]
-    fn display_route_for_group_falls_back_to_snapshot_route_when_bus_route_is_absent() {
-        let group_id = ZoneId::new();
-        let fallback_device = DeviceId::new();
-        let bus_device = DeviceId::new();
-        let fallback_route = DisplayGroupOutputRoute {
-            device_id: fallback_device,
-            width: 480,
-            height: 480,
-            circular: true,
-            brightness: 0.8,
-            frame_format: DisplayFrameFormat::Jpeg,
-            viewport: DisplayGroupViewport {
-                position: NormalizedPosition::new(0.5, 0.5),
-                size: NormalizedPosition::new(1.0, 1.0),
-                rotation: 0.0,
-                scale: 1.0,
-                edge_behavior: EdgeBehavior::Clamp,
-            },
-        };
-        let mut bus_route = fallback_route.clone();
-        bus_route.device_id = bus_device;
-
-        let fallback_routes = HashMap::from([(group_id, fallback_route.clone())]);
-        let empty_bus_routes = HashMap::new();
-        assert_eq!(
-            display_route_for_group(&group_id, &empty_bus_routes, &fallback_routes),
-            Some(&fallback_route)
-        );
-
-        let bus_routes = HashMap::from([(group_id, bus_route.clone())]);
-        assert_eq!(
-            display_route_for_group(&group_id, &bus_routes, &fallback_routes),
-            Some(&bus_route)
-        );
     }
 
     #[test]

@@ -20,6 +20,7 @@
 mod binding_eval;
 mod capture_demand;
 mod composition_planner;
+mod display_lane;
 mod frame_admission;
 mod frame_composer;
 mod frame_executor;
