@@ -21,12 +21,14 @@ use super::traits::{DeviceBackend, DeviceFrameSink};
 mod backend_io;
 mod display_output;
 mod output_color;
+mod output_coordinator;
 mod output_frame;
 mod output_lanes;
 mod output_telemetry;
 mod routing;
 
 pub use backend_io::BackendIo;
+use output_coordinator::DeviceOutputCoordinator;
 use routing::{DeviceMapping, RoutingPlan, device_output_len, zone_segments_from_device_info};
 
 type BackendHandle = Arc<Mutex<Box<dyn DeviceBackend>>>;
@@ -62,7 +64,6 @@ pub use super::output_queue::{
     DeviceOutputStatistics, LayoutRoutingDebugEntry, OrphanedQueueDebugEntry,
     OutputQueueDebugSnapshot,
 };
-use super::output_queue::{DeviceStagingBuffer, OutputQueue};
 
 // ── BackendManager ──────────────────────────────────────────────────────────
 
@@ -83,33 +84,14 @@ pub struct BackendManager {
     /// resolved to an actual connected device.
     device_map: HashMap<String, DeviceMapping>,
 
-    /// Per-target latest-frame output queues.
-    output_queues: HashMap<BackendDeviceKey, OutputQueue>,
-
-    /// Per-target output lanes that bypass backend-wide locks on the frame hot path.
-    device_frame_sinks: HashMap<BackendDeviceKey, DeviceFrameSinkHandle>,
-
-    /// Reusable per-device color staging for steady-state frame routing.
-    device_staging: HashMap<BackendDeviceKey, DeviceStagingBuffer>,
-
-    /// Device staging keys touched during recent frames.
-    active_staging_keys: Vec<BackendDeviceKey>,
-    active_staging_len: usize,
-
-    /// Monotonic frame generation for staging reset bookkeeping.
-    staging_generation: u64,
-
-    /// Preferred output FPS for connected devices, captured at connect time.
-    device_fps_cache: HashMap<BackendDeviceKey, u32>,
+    /// Per-target output queue, frame-sink, staging, FPS, and direct-control state.
+    output: DeviceOutputCoordinator,
 
     /// User-configured per-device output brightness scalar.
     device_brightness: HashMap<DeviceId, f32>,
 
     /// Incremented whenever software output brightness state changes.
     device_brightness_generation: u64,
-
-    /// Reference-counted direct-control locks that suppress queued frame writes.
-    direct_control_locks: HashMap<BackendDeviceKey, usize>,
 
     /// Layout device IDs already warned as unmapped in the current layout state.
     warned_unmapped_layout_devices: HashSet<String>,
@@ -122,9 +104,6 @@ pub struct BackendManager {
 
     /// Last warning time for zone-to-segment color length mismatches.
     last_segment_mismatch_warn_at: HashMap<String, Instant>,
-
-    /// Connected devices already reported as unused by the active layout.
-    warned_inactive_layout_devices: HashSet<BackendDeviceKey>,
 
     /// Incremented whenever routing-relevant device mappings change.
     routing_mapping_generation: u64,
@@ -173,18 +152,7 @@ impl BackendManager {
 
         // If a backend gets replaced, drop all output queues bound to that ID.
         // They are lazily recreated on the next frame.
-        self.output_queues
-            .retain(|(queued_backend_id, _), _| queued_backend_id != &backend_id);
-        self.device_frame_sinks
-            .retain(|(sink_backend_id, _), _| sink_backend_id != &backend_id);
-        self.device_staging
-            .retain(|(staged_backend_id, _), _| staged_backend_id != &backend_id);
-        self.device_fps_cache
-            .retain(|(cached_backend_id, _), _| cached_backend_id != &backend_id);
-        self.direct_control_locks
-            .retain(|(locked_backend_id, _), _| locked_backend_id != &backend_id);
-        self.warned_inactive_layout_devices
-            .retain(|(warn_backend_id, _)| warn_backend_id != &backend_id);
+        self.output.remove_backend_state(&backend_id);
 
         self.backends
             .insert(backend_id, Arc::new(Mutex::new(backend)));
@@ -289,8 +257,7 @@ impl BackendManager {
         };
         let target_fps = io.connect_with_refresh(device_id).await?;
         let frame_sink = io.frame_sink(device_id).await;
-        self.device_fps_cache
-            .insert((backend_id.to_owned(), device_id), target_fps);
+        self.set_cached_target_fps(backend_id, device_id, target_fps);
         self.set_device_frame_sink(backend_id, device_id, frame_sink);
 
         self.map_device(
@@ -425,8 +392,8 @@ impl BackendManager {
         device_id: DeviceId,
         target_fps: u32,
     ) {
-        self.device_fps_cache
-            .insert((backend_id.to_owned(), device_id), target_fps);
+        self.output
+            .set_target_fps(backend_id, device_id, target_fps);
     }
 
     /// Remove a device mapping.
@@ -442,7 +409,7 @@ impl BackendManager {
 
         if !still_used {
             let key = (mapping.backend_id, mapping.device_id);
-            self.remove_device_target_state(&key);
+            self.output.remove_target_state(&key);
         }
 
         self.invalidate_routing_plan();
@@ -467,7 +434,7 @@ impl BackendManager {
             .any(|mapping| mapping.backend_id == backend_id && mapping.device_id == device_id)
         {
             let key = (backend_id.to_owned(), device_id);
-            self.remove_device_target_state(&key);
+            self.output.remove_target_state(&key);
         }
 
         if removed > 0 {
@@ -530,20 +497,9 @@ impl BackendManager {
         self.device_map.len()
     }
 
-    fn remove_device_target_state(&mut self, key: &BackendDeviceKey) {
-        self.output_queues.remove(key);
-        self.device_frame_sinks.remove(key);
-        self.device_staging.remove(key);
-        self.device_fps_cache.remove(key);
-        self.direct_control_locks.remove(key);
-        self.warned_inactive_layout_devices.remove(key);
-    }
-
     /// Return the cached target FPS for a connected physical device, if present.
     #[must_use]
     pub fn cached_target_fps(&self, backend_id: &str, device_id: DeviceId) -> Option<u32> {
-        self.device_fps_cache
-            .get(&(backend_id.to_owned(), device_id))
-            .copied()
+        self.output.target_fps(backend_id, device_id)
     }
 }

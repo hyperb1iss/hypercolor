@@ -313,9 +313,9 @@ impl BackendManager {
     #[must_use]
     pub fn can_reuse_routed_frame_outputs(&mut self, layout: &SpatialLayout) -> bool {
         let plan = self.routing_plan(layout);
-        plan.active_target_keys.iter().all(|key| {
-            self.is_direct_control_active_key(key) || self.output_queues.contains_key(key)
-        })
+        plan.active_target_keys
+            .iter()
+            .all(|key| self.is_direct_control_active_key(key) || self.output.has_queue(key))
     }
 
     /// Stable identity for the active routed-output lane.
@@ -343,7 +343,7 @@ impl BackendManager {
                 continue;
             }
 
-            let Some(queue) = self.output_queues.get_mut(key) else {
+            let Some(queue) = self.output.queue_mut(key) else {
                 continue;
             };
             if let Some(led_count) = queue.retry_latest_after_error() {
@@ -377,15 +377,15 @@ impl BackendManager {
                     backend_id: mapping.backend_id.clone(),
                     device_id: mapping.device_id.to_string(),
                     backend_registered: self.backends.contains_key(&mapping.backend_id),
-                    queue_active: self.output_queues.contains_key(&key),
+                    queue_active: self.output.has_queue(&key),
                 }
             })
             .collect::<Vec<_>>();
         mappings.sort_by(|left, right| left.layout_device_id.cmp(&right.layout_device_id));
 
         let mut orphaned_queues = self
-            .output_queues
-            .keys()
+            .output
+            .queue_keys()
             .filter(|key| !mapped_keys.contains(*key))
             .map(|(backend_id, device_id)| OrphanedQueueDebugEntry {
                 backend_id: backend_id.clone(),
@@ -401,7 +401,7 @@ impl BackendManager {
         BackendRoutingDebugSnapshot {
             backend_ids,
             mapping_count: self.device_map.len(),
-            queue_count: self.output_queues.len(),
+            queue_count: self.output.queue_count(),
             mappings,
             orphaned_queues,
         }

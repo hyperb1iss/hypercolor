@@ -10,8 +10,8 @@ impl BackendManager {
     #[must_use]
     pub fn async_write_failures(&self) -> Vec<AsyncWriteFailure> {
         let mut failures = self
-            .output_queues
-            .iter()
+            .output
+            .queues()
             .filter_map(|((backend_id, device_id), queue)| {
                 let error = queue.last_error()?;
 
@@ -46,8 +46,8 @@ impl BackendManager {
             ids.sort_unstable();
         }
 
-        let mut queues = Vec::with_capacity(self.output_queues.len());
-        for ((backend_id, device_id), queue) in &self.output_queues {
+        let mut queues = Vec::with_capacity(self.output.queue_count());
+        for ((backend_id, device_id), queue) in self.output.queues() {
             let mapped_layout_ids = layout_ids_by_key
                 .get(&(backend_id.clone(), *device_id))
                 .cloned()

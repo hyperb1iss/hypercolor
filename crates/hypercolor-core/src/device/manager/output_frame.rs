@@ -10,54 +10,9 @@ use super::output_color::{
     apply_zone_brightness, prepare_output_for_led_ranges, remap_zone_colors, write_segment_colors,
 };
 use super::routing::{PlannedZoneRoute, attachment_segment_for_zone};
-use super::{
-    BackendDeviceKey, BackendManager, DeviceStagingBuffer, FrameWriteStats, OutputQueue,
-    UNMAPPED_LAYOUT_WARN_INTERVAL,
-};
+use super::{BackendManager, FrameWriteStats, UNMAPPED_LAYOUT_WARN_INTERVAL};
 
 impl BackendManager {
-    fn begin_staging_frame(&mut self) {
-        self.staging_generation = self.staging_generation.saturating_add(1);
-        self.active_staging_len = 0;
-    }
-
-    fn staging_buffer(&mut self, key: &BackendDeviceKey) -> &mut DeviceStagingBuffer {
-        let generation = self.staging_generation;
-        let mut became_active = false;
-
-        if let Some(staging) = self.device_staging.get_mut(key) {
-            if staging.frame_generation != generation {
-                staging.output.clear();
-                staging.required_len = 0;
-                staging.written_ranges.clear();
-                staging.has_segmented_write = false;
-                staging.frame_generation = generation;
-                became_active = true;
-            }
-        } else {
-            let staging = self.device_staging.entry(key.clone()).or_default();
-            staging.output.clear();
-            staging.required_len = 0;
-            staging.written_ranges.clear();
-            staging.has_segmented_write = false;
-            staging.frame_generation = generation;
-            became_active = true;
-        }
-
-        if became_active {
-            if self.active_staging_len < self.active_staging_keys.len() {
-                self.active_staging_keys[self.active_staging_len].clone_from(key);
-            } else {
-                self.active_staging_keys.push(key.clone());
-            }
-            self.active_staging_len += 1;
-        }
-
-        self.device_staging
-            .get_mut(key)
-            .expect("staging buffer must exist after entry initialization")
-    }
-
     /// Push frame color data to all mapped devices.
     ///
     /// For each zone in `zone_colors`, looks up the target device via the
@@ -93,19 +48,14 @@ impl BackendManager {
         global_brightness: f32,
         device_brightness: Option<&HashMap<DeviceId, f32>>,
     ) -> FrameWriteStats {
-        self.begin_staging_frame();
+        self.output.begin_staging_frame();
         let plan = self.routing_plan(layout);
         self.warned_unmapped_layout_devices
             .retain(|layout_device_id| plan.active_layout_device_ids.contains(layout_device_id));
 
         let mut stats = FrameWriteStats::default();
 
-        let newly_inactive = plan
-            .inactive_devices
-            .iter()
-            .filter(|key| !self.warned_inactive_layout_devices.contains(*key))
-            .cloned()
-            .collect::<Vec<_>>();
+        let newly_inactive = self.output.newly_inactive_devices(&plan.inactive_devices);
 
         if !newly_inactive.is_empty() {
             let devices = newly_inactive
@@ -146,9 +96,7 @@ impl BackendManager {
                 );
             }
         }
-        self.warned_inactive_layout_devices.clear();
-        self.warned_inactive_layout_devices
-            .extend(plan.inactive_devices.iter().cloned());
+        self.output.replace_inactive_devices(&plan.inactive_devices);
 
         if zone_colors.len() == plan.ordered_zone_routes.len()
             && zone_colors
@@ -173,10 +121,7 @@ impl BackendManager {
             }
         }
 
-        let active_staging_len = self.active_staging_len;
-        let mut active_staging_keys = Vec::new();
-        std::mem::swap(&mut active_staging_keys, &mut self.active_staging_keys);
-        self.active_staging_len = 0;
+        let (active_staging_keys, active_staging_len) = self.output.take_active_staging_keys();
 
         for key in active_staging_keys.iter().take(active_staging_len) {
             let (backend_id, device_id) = key;
@@ -206,8 +151,8 @@ impl BackendManager {
 
             let values = {
                 let staging = self
-                    .device_staging
-                    .get_mut(key)
+                    .output
+                    .staging_mut(key)
                     .expect("active staging key should resolve to a staging buffer");
                 if staging.output.len() < staging.required_len {
                     staging.output.resize(staging.required_len, [0, 0, 0]);
@@ -224,11 +169,12 @@ impl BackendManager {
                 values
             };
 
-            let Some(queue) = self.ensure_output_queue_for_key(key) else {
+            let backend = self.backends.get(backend_id.as_str()).cloned();
+            let Some(queue) = self.output.ensure_queue_for_key(key, backend) else {
                 stats
                     .errors
                     .push(format!("backend '{backend_id}' not registered"));
-                if let Some(staging) = self.device_staging.get_mut(key) {
+                if let Some(staging) = self.output.staging_mut(key) {
                     staging.output = values;
                 }
                 continue;
@@ -237,12 +183,12 @@ impl BackendManager {
             stats.devices_written += 1;
             stats.total_leds += values.len();
             let recycled = queue.push(values);
-            if let (Some(staging), Some(recycled)) = (self.device_staging.get_mut(key), recycled) {
+            if let (Some(staging), Some(recycled)) = (self.output.staging_mut(key), recycled) {
                 staging.output = recycled;
             }
         }
 
-        self.active_staging_keys = active_staging_keys;
+        self.output.restore_active_staging_keys(active_staging_keys);
 
         stats
     }
@@ -280,7 +226,7 @@ impl BackendManager {
             colors.len(),
         );
         let mismatch = {
-            let staging = self.staging_buffer(&route.target_key);
+            let staging = self.output.staging_buffer(&route.target_key);
             staging.required_len = staging
                 .required_len
                 .max(route.physical_led_count.unwrap_or_default());
@@ -349,26 +295,5 @@ impl BackendManager {
                     .insert(warn_key, Instant::now());
             }
         }
-    }
-
-    fn ensure_output_queue_for_key(&mut self, key: &BackendDeviceKey) -> Option<&mut OutputQueue> {
-        let frame_sink = self.device_frame_sinks.get(key).cloned();
-        let should_replace_queue = self
-            .output_queues
-            .get(key)
-            .is_some_and(|queue| queue.uses_frame_sink() != frame_sink.is_some());
-
-        if should_replace_queue {
-            self.output_queues.remove(key);
-        }
-
-        if !self.output_queues.contains_key(key) {
-            let backend = self.backends.get(key.0.as_str())?.clone();
-            let target_fps = self.device_fps_cache.get(key).copied().unwrap_or(60);
-            let queue = OutputQueue::spawn(key.0.clone(), key.1, backend, frame_sink, target_fps);
-            self.output_queues.insert(key.clone(), queue);
-        }
-
-        self.output_queues.get_mut(key)
     }
 }

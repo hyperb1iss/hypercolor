@@ -1,0 +1,230 @@
+use std::collections::{HashMap, HashSet};
+
+use hypercolor_types::device::DeviceId;
+
+use crate::device::output_queue::{DeviceStagingBuffer, OutputQueue};
+
+use super::{BackendDeviceKey, BackendHandle, DeviceFrameSinkHandle};
+
+#[derive(Default)]
+pub(super) struct DeviceOutputCoordinator {
+    queues: HashMap<BackendDeviceKey, OutputQueue>,
+    frame_sinks: HashMap<BackendDeviceKey, DeviceFrameSinkHandle>,
+    staging: HashMap<BackendDeviceKey, DeviceStagingBuffer>,
+    active_staging_keys: Vec<BackendDeviceKey>,
+    active_staging_len: usize,
+    staging_generation: u64,
+    target_fps: HashMap<BackendDeviceKey, u32>,
+    direct_control_locks: HashMap<BackendDeviceKey, usize>,
+    warned_inactive_layout_devices: HashSet<BackendDeviceKey>,
+}
+
+impl DeviceOutputCoordinator {
+    pub(super) fn remove_backend_state(&mut self, backend_id: &str) {
+        self.queues
+            .retain(|(queued_backend_id, _), _| queued_backend_id != backend_id);
+        self.frame_sinks
+            .retain(|(sink_backend_id, _), _| sink_backend_id != backend_id);
+        self.staging
+            .retain(|(staged_backend_id, _), _| staged_backend_id != backend_id);
+        self.target_fps
+            .retain(|(cached_backend_id, _), _| cached_backend_id != backend_id);
+        self.direct_control_locks
+            .retain(|(locked_backend_id, _), _| locked_backend_id != backend_id);
+        self.warned_inactive_layout_devices
+            .retain(|(warn_backend_id, _)| warn_backend_id != backend_id);
+    }
+
+    pub(super) fn remove_target_state(&mut self, key: &BackendDeviceKey) {
+        self.queues.remove(key);
+        self.frame_sinks.remove(key);
+        self.staging.remove(key);
+        self.target_fps.remove(key);
+        self.direct_control_locks.remove(key);
+        self.warned_inactive_layout_devices.remove(key);
+    }
+
+    pub(super) fn set_frame_sink(
+        &mut self,
+        backend_id: &str,
+        device_id: DeviceId,
+        frame_sink: Option<DeviceFrameSinkHandle>,
+    ) {
+        let key = (backend_id.to_owned(), device_id);
+        self.queues.remove(&key);
+        if let Some(frame_sink) = frame_sink {
+            self.frame_sinks.insert(key, frame_sink);
+        } else {
+            self.frame_sinks.remove(&key);
+        }
+    }
+
+    pub(super) fn begin_direct_control(&mut self, backend_id: &str, device_id: DeviceId) -> usize {
+        let key = (backend_id.to_owned(), device_id);
+        let count = self.direct_control_locks.entry(key).or_insert(0);
+        *count = count.saturating_add(1);
+        *count
+    }
+
+    pub(super) fn end_direct_control(&mut self, backend_id: &str, device_id: DeviceId) -> usize {
+        let key = (backend_id.to_owned(), device_id);
+        let Some(count) = self.direct_control_locks.get_mut(&key) else {
+            return 0;
+        };
+
+        *count = count.saturating_sub(1);
+        let remaining = *count;
+        if remaining == 0 {
+            self.direct_control_locks.remove(&key);
+        }
+
+        remaining
+    }
+
+    pub(super) fn is_direct_control_active_key(&self, key: &BackendDeviceKey) -> bool {
+        self.direct_control_locks
+            .get(key)
+            .is_some_and(|count| *count > 0)
+    }
+
+    pub(super) fn set_target_fps(
+        &mut self,
+        backend_id: &str,
+        device_id: DeviceId,
+        target_fps: u32,
+    ) {
+        self.target_fps
+            .insert((backend_id.to_owned(), device_id), target_fps);
+    }
+
+    pub(super) fn target_fps(&self, backend_id: &str, device_id: DeviceId) -> Option<u32> {
+        self.target_fps
+            .get(&(backend_id.to_owned(), device_id))
+            .copied()
+    }
+
+    pub(super) fn begin_staging_frame(&mut self) {
+        self.staging_generation = self.staging_generation.saturating_add(1);
+        self.active_staging_len = 0;
+    }
+
+    pub(super) fn staging_buffer(&mut self, key: &BackendDeviceKey) -> &mut DeviceStagingBuffer {
+        let generation = self.staging_generation;
+        let mut became_active = false;
+
+        if let Some(staging) = self.staging.get_mut(key) {
+            if staging.frame_generation != generation {
+                staging.output.clear();
+                staging.required_len = 0;
+                staging.written_ranges.clear();
+                staging.has_segmented_write = false;
+                staging.frame_generation = generation;
+                became_active = true;
+            }
+        } else {
+            let staging = self.staging.entry(key.clone()).or_default();
+            staging.output.clear();
+            staging.required_len = 0;
+            staging.written_ranges.clear();
+            staging.has_segmented_write = false;
+            staging.frame_generation = generation;
+            became_active = true;
+        }
+
+        if became_active {
+            if self.active_staging_len < self.active_staging_keys.len() {
+                self.active_staging_keys[self.active_staging_len].clone_from(key);
+            } else {
+                self.active_staging_keys.push(key.clone());
+            }
+            self.active_staging_len += 1;
+        }
+
+        self.staging
+            .get_mut(key)
+            .expect("staging buffer must exist after entry initialization")
+    }
+
+    pub(super) fn take_active_staging_keys(&mut self) -> (Vec<BackendDeviceKey>, usize) {
+        let active_staging_len = self.active_staging_len;
+        let active_staging_keys = std::mem::take(&mut self.active_staging_keys);
+        self.active_staging_len = 0;
+        (active_staging_keys, active_staging_len)
+    }
+
+    pub(super) fn restore_active_staging_keys(
+        &mut self,
+        active_staging_keys: Vec<BackendDeviceKey>,
+    ) {
+        self.active_staging_keys = active_staging_keys;
+    }
+
+    pub(super) fn staging_mut(
+        &mut self,
+        key: &BackendDeviceKey,
+    ) -> Option<&mut DeviceStagingBuffer> {
+        self.staging.get_mut(key)
+    }
+
+    pub(super) fn newly_inactive_devices(
+        &self,
+        inactive_devices: &[BackendDeviceKey],
+    ) -> Vec<BackendDeviceKey> {
+        inactive_devices
+            .iter()
+            .filter(|key| !self.warned_inactive_layout_devices.contains(*key))
+            .cloned()
+            .collect()
+    }
+
+    pub(super) fn replace_inactive_devices(&mut self, inactive_devices: &[BackendDeviceKey]) {
+        self.warned_inactive_layout_devices.clear();
+        self.warned_inactive_layout_devices
+            .extend(inactive_devices.iter().cloned());
+    }
+
+    pub(super) fn has_queue(&self, key: &BackendDeviceKey) -> bool {
+        self.queues.contains_key(key)
+    }
+
+    pub(super) fn queue_mut(&mut self, key: &BackendDeviceKey) -> Option<&mut OutputQueue> {
+        self.queues.get_mut(key)
+    }
+
+    pub(super) fn ensure_queue_for_key(
+        &mut self,
+        key: &BackendDeviceKey,
+        backend: Option<BackendHandle>,
+    ) -> Option<&mut OutputQueue> {
+        let frame_sink = self.frame_sinks.get(key).cloned();
+        let should_replace_queue = self
+            .queues
+            .get(key)
+            .is_some_and(|queue| queue.uses_frame_sink() != frame_sink.is_some());
+
+        if should_replace_queue {
+            self.queues.remove(key);
+        }
+
+        if !self.queues.contains_key(key) {
+            let backend = backend?;
+            let target_fps = self.target_fps.get(key).copied().unwrap_or(60);
+            let queue = OutputQueue::spawn(key.0.clone(), key.1, backend, frame_sink, target_fps);
+            self.queues.insert(key.clone(), queue);
+        }
+
+        self.queues.get_mut(key)
+    }
+
+    pub(super) fn queues(&self) -> impl Iterator<Item = (&BackendDeviceKey, &OutputQueue)> + '_ {
+        self.queues.iter()
+    }
+
+    pub(super) fn queue_keys(&self) -> impl Iterator<Item = &BackendDeviceKey> + '_ {
+        self.queues.keys()
+    }
+
+    pub(super) fn queue_count(&self) -> usize {
+        self.queues.len()
+    }
+}
