@@ -268,6 +268,7 @@ struct GpuDisplaySourceTexture {
     height: u32,
     texture: GpuCompositorTexture,
     cached_upload: Option<CachedSourceUpload>,
+    cached_gpu_copy: Option<CachedGpuSourceCopy>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -367,6 +368,13 @@ struct GpuPreviewScaleBindGroups {
 struct CachedSourceUpload {
     storage: PublishedSurfaceStorageIdentity,
     generation: u64,
+    width: u32,
+    height: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CachedGpuSourceCopy {
+    storage_id: u64,
     width: u32,
     height: u32,
 }
@@ -807,7 +815,7 @@ impl GpuSparkleFlinger {
 
         let scene_view = scene_gpu
             .as_ref()
-            .filter(|frame| !frame.needs_shader_copy())
+            .filter(|frame| !frame.needs_display_source_copy())
             .map(GpuSourceFrame::view)
             .unwrap_or_else(|| {
                 &surfaces
@@ -819,7 +827,7 @@ impl GpuSparkleFlinger {
             });
         let face_view = face_gpu
             .as_ref()
-            .filter(|frame| !frame.needs_shader_copy())
+            .filter(|frame| !frame.needs_display_source_copy())
             .map(GpuSourceFrame::view)
             .unwrap_or_else(|| {
                 &surfaces
@@ -2690,6 +2698,7 @@ impl GpuDisplaySourceTexture {
             height,
             texture: GpuCompositorTexture::new(device, width, height, label),
             cached_upload: None,
+            cached_gpu_copy: None,
         }
     }
 }
@@ -2975,6 +2984,7 @@ fn prepare_display_source_texture(
         let source = source
             .as_mut()
             .expect("display source texture should exist before upload");
+        source.cached_gpu_copy = None;
         upload_frame_into_cached_texture(
             queue,
             &source.texture.texture,
@@ -2986,7 +2996,7 @@ fn prepare_display_source_texture(
         return;
     };
 
-    if !gpu_frame.needs_shader_copy() {
+    if !gpu_frame.needs_display_source_copy() {
         return;
     }
 
@@ -2994,6 +3004,10 @@ fn prepare_display_source_texture(
     let source = source
         .as_mut()
         .expect("display source texture should exist before GPU copy");
+    let next_copy = gpu_frame.cached_display_source_copy();
+    if source.cached_gpu_copy == Some(next_copy) {
+        return;
+    }
     record_gpu_source_upload_skipped();
     copy_gpu_source_frame_into_texture(
         device,
@@ -3004,6 +3018,7 @@ fn prepare_display_source_texture(
         &source.texture,
     );
     source.cached_upload = None;
+    source.cached_gpu_copy = Some(next_copy);
 }
 
 fn compose_layer_into_gpu(
@@ -3262,6 +3277,30 @@ impl GpuSourceFrame<'_> {
             #[cfg(all(feature = "servo-gpu-import", target_os = "linux"))]
             Self::Imported(_) => false,
             Self::Texture(_) => false,
+        }
+    }
+
+    const fn needs_display_source_copy(&self) -> bool {
+        match self {
+            #[cfg(feature = "servo-gpu-import")]
+            Self::Imported(_) => true,
+            Self::Texture(_) => false,
+        }
+    }
+
+    const fn cached_display_source_copy(&self) -> CachedGpuSourceCopy {
+        match self {
+            #[cfg(feature = "servo-gpu-import")]
+            Self::Imported(frame) => CachedGpuSourceCopy {
+                storage_id: frame.storage_id,
+                width: frame.width,
+                height: frame.height,
+            },
+            Self::Texture(frame) => CachedGpuSourceCopy {
+                storage_id: frame.storage_id,
+                width: frame.width,
+                height: frame.height,
+            },
         }
     }
 
@@ -4135,7 +4174,10 @@ fn display_brightness_factor(brightness: f32) -> u32 {
 #[cfg(test)]
 #[allow(clippy::manual_let_else)]
 mod tests {
-    #[cfg(all(feature = "servo-gpu-import", target_os = "macos"))]
+    #[cfg(any(
+        all(feature = "servo-gpu-import", target_os = "linux"),
+        all(feature = "servo-gpu-import", target_os = "macos")
+    ))]
     use std::sync::Arc;
     use std::sync::mpsc;
 
@@ -4152,6 +4194,8 @@ mod tests {
         StripDirection,
     };
 
+    #[cfg(all(feature = "servo-gpu-import", target_os = "linux"))]
+    use super::CachedGpuSourceCopy;
     use super::{
         DISPLAY_FINALIZE_READBACK_SLOT_COUNT, DisplayYuv420Frame, GpuDisplayFinalizeDispatch,
         GpuDisplayFinalizeFrame, GpuSparkleFlinger, GpuZoneSamplingDispatch,
@@ -4652,6 +4696,97 @@ mod tests {
         assert_eq!(frame.width, 2);
         assert_eq!(frame.height, 1);
         assert_eq!(frame.y_plane(), &[0, 29]);
+    }
+
+    #[cfg(all(feature = "servo-gpu-import", target_os = "linux"))]
+    #[test]
+    fn gpu_display_finalize_copies_imported_face_into_owned_source_texture() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+        let width = 2;
+        let height = 2;
+        let texture = compositor.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("SparkleFlinger test imported display face"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let top_left_origin = [
+            255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
+        ];
+        compositor.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &top_left_origin,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 4),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let face = ProducerFrame::Gpu(hypercolor_core::effect::ImportedEffectFrame {
+            width,
+            height,
+            format: hypercolor_core::effect::ImportedFrameFormat::Rgba8Unorm,
+            storage_id: 42,
+            texture: Arc::new(texture),
+            view: Arc::new(view),
+            timings: hypercolor_core::effect::ImportedFrameTimings::default(),
+        });
+        let scene = ProducerFrame::Canvas(solid_canvas_with_size(
+            width,
+            height,
+            Rgba::new(0, 0, 0, 255),
+        ));
+        let params = display_finalize_params_for_format(
+            width,
+            height,
+            DisplayFaceBlendMode::Replace,
+            DisplayFrameFormat::Jpeg,
+        );
+
+        let frame = finalize_display_face_yuv420_blocking(&mut compositor, &scene, &face, params);
+        let surfaces = compositor
+            .display_finalize_surfaces
+            .get(&params.cache_key)
+            .expect("display finalize surfaces should remain cached");
+        let face_source = surfaces
+            .face_source
+            .as_ref()
+            .expect("imported face should be copied into owned display source");
+
+        assert_eq!(frame.y_plane(), &[76, 150, 29, 255]);
+        assert_eq!(
+            face_source.cached_gpu_copy,
+            Some(CachedGpuSourceCopy {
+                storage_id: 42,
+                width,
+                height,
+            }),
+        );
+        assert!(face_source.cached_upload.is_none());
     }
 
     #[test]
