@@ -23,7 +23,6 @@ use anyhow::{Context, Result, anyhow, bail};
 use base::generic_channel::GenericCallback;
 use dpi::PhysicalSize;
 use hypercolor_types::canvas::Canvas;
-use hypercolor_types::effect::{ControlValue, EffectCategory, EffectMetadata};
 use profile_traits::mem::MemoryReportResult;
 use reqwest::Url;
 use servo::{
@@ -56,12 +55,14 @@ use crate::effect::traits::ImportedEffectFrame;
 
 mod console;
 mod readback;
+mod runtime_html;
 
 use console::{
     find_initialization_failure_message, format_console_message, panic_payload_message,
     summarize_console_messages, truncate_for_log,
 };
 use readback::read_framebuffer_into_canvas;
+pub(super) use runtime_html::{effect_is_audio_reactive, prepare_runtime_html_source};
 
 #[cfg(all(feature = "servo-gpu-import", target_os = "macos"))]
 type PlatformServoGpuImporter = hypercolor_macos_gpu_interop::MacosIosurfaceImporter;
@@ -297,116 +298,6 @@ fn retire_shared_servo_worker(replacement: SharedServoWorkerState) -> Result<()>
         SharedServoWorkerState::Vacant | SharedServoWorkerState::Poisoned { .. } => Ok(()),
         SharedServoWorkerState::Running(mut worker) => worker.shutdown(),
     }
-}
-
-/// Whether an effect should receive `engine.audio.*` updates each frame.
-pub(super) fn effect_is_audio_reactive(metadata: &EffectMetadata) -> bool {
-    if metadata.audio_reactive {
-        return true;
-    }
-
-    if matches!(metadata.category, EffectCategory::Audio) {
-        return true;
-    }
-
-    metadata
-        .tags
-        .iter()
-        .any(|tag| tag.eq_ignore_ascii_case("audio") || tag.eq_ignore_ascii_case("audio-reactive"))
-}
-
-/// Prepare an HTML file with a runtime control preamble injected into `<head>`.
-pub(super) fn prepare_runtime_html_source(
-    original_path: &Path,
-    controls: &HashMap<String, ControlValue>,
-    host_driven_animation: bool,
-) -> Result<(PathBuf, Option<PathBuf>)> {
-    let html = std::fs::read_to_string(original_path).with_context(|| {
-        format!(
-            "failed to read HTML effect file while preparing runtime source: {}",
-            original_path.display()
-        )
-    })?;
-
-    let preamble = build_control_preamble_script(controls, host_driven_animation);
-    let base_tag = original_path
-        .parent()
-        .and_then(|parent| Url::from_directory_path(parent).ok())
-        .map_or_else(String::new, |url| format!("<base href=\"{url}\">\n"));
-    let injected_block = format!("{base_tag}<script>\n{preamble}\n</script>\n");
-    let runtime_html = inject_runtime_head_block(&html, &injected_block);
-
-    let cache_root = dirs::cache_dir()
-        .unwrap_or_else(std::env::temp_dir)
-        .join("hypercolor")
-        .join("servo-runtime");
-    std::fs::create_dir_all(&cache_root).with_context(|| {
-        format!(
-            "failed to create Servo runtime cache directory: {}",
-            cache_root.display()
-        )
-    })?;
-
-    let runtime_path = cache_root.join(format!("effect-{}.html", uuid::Uuid::now_v7()));
-    std::fs::write(&runtime_path, runtime_html).with_context(|| {
-        format!(
-            "failed to write runtime HTML source '{}'",
-            runtime_path.display()
-        )
-    })?;
-
-    Ok((runtime_path.clone(), Some(runtime_path)))
-}
-
-fn build_control_preamble_script(
-    controls: &HashMap<String, ControlValue>,
-    host_driven_animation: bool,
-) -> String {
-    let mut sorted_controls: Vec<_> = controls.iter().collect();
-    sorted_controls.sort_by_key(|(name, _)| *name);
-
-    let mut script = String::from("(function(){\n");
-    script.push_str("  window.__hypercolorCaptureMode = true;\n");
-    script.push_str("  window.__hypercolorPreserveDrawingBuffer = false;\n");
-    if host_driven_animation {
-        script.push_str("  window.__hypercolorHostDrivenAnimation = true;\n");
-    }
-    script.push_str("  if (typeof globalThis === 'object' && globalThis !== null) {\n");
-    script.push_str("    globalThis.__hypercolorCaptureMode = true;\n");
-    script.push_str("    globalThis.__hypercolorPreserveDrawingBuffer = false;\n");
-    if host_driven_animation {
-        script.push_str("    globalThis.__hypercolorHostDrivenAnimation = true;\n");
-    }
-    script.push_str("  }\n");
-    for (name, value) in sorted_controls {
-        let key_literal = serde_json::to_string(name).unwrap_or_else(|_| "\"invalid\"".to_owned());
-        let _ = writeln!(
-            script,
-            "  if (typeof globalThis[{key_literal}] === 'undefined') globalThis[{key_literal}] = {};",
-            value.to_js_literal()
-        );
-    }
-    script.push_str("})();");
-    script
-}
-
-fn inject_runtime_head_block(html: &str, block: &str) -> String {
-    let lowered = html.to_ascii_lowercase();
-
-    if let Some(head_start) = lowered.find("<head")
-        && let Some(head_close_offset) = lowered[head_start..].find('>')
-    {
-        let insert_at = head_start + head_close_offset + 1;
-        let (before, after) = html.split_at(insert_at);
-        return format!("{before}\n{block}{after}");
-    }
-
-    if let Some(script_start) = lowered.find("<script") {
-        let (before, after) = html.split_at(script_start);
-        return format!("{before}\n{block}{after}");
-    }
-
-    format!("{block}{html}")
 }
 
 fn install_rustls_provider() {
@@ -3007,7 +2898,6 @@ pub(super) mod test_support {
 mod tests {
     use super::super::telemetry::servo_telemetry_snapshot;
     use super::*;
-    use std::path::PathBuf;
     use std::sync::atomic::Ordering;
     use std::sync::mpsc::TryRecvError;
 
@@ -3349,158 +3239,6 @@ mod tests {
         assert!(servo_worker_is_fatal_error(&client_page_timeout));
         assert!(servo_worker_is_fatal_error(&disconnected));
         assert!(servo_worker_is_fatal_error(&send_failure));
-    }
-
-    #[test]
-    fn control_preamble_assigns_all_defaults() {
-        let mut controls = HashMap::new();
-        controls.insert("speed".to_owned(), ControlValue::Float(42.0));
-        controls.insert("enabled".to_owned(), ControlValue::Boolean(true));
-        controls.insert("color".to_owned(), ControlValue::Text("#00ffaa".to_owned()));
-
-        let script = build_control_preamble_script(&controls, false);
-
-        assert!(script.contains("globalThis[\"speed\"] = 42"));
-        assert!(script.contains("globalThis[\"enabled\"] = true"));
-        assert!(script.contains("globalThis[\"color\"] = \"#00ffaa\""));
-        assert!(script.contains("window.__hypercolorCaptureMode = true"));
-        assert!(script.contains("window.__hypercolorPreserveDrawingBuffer = false"));
-        assert!(script.contains("globalThis.__hypercolorCaptureMode = true"));
-        assert!(script.contains("globalThis.__hypercolorPreserveDrawingBuffer = false"));
-        assert!(!script.contains("__hypercolorHostDrivenAnimation"));
-    }
-
-    #[test]
-    fn control_preamble_marks_host_driven_animation_before_effect_script_runs() {
-        let controls = HashMap::new();
-
-        let script = build_control_preamble_script(&controls, true);
-
-        assert!(script.contains("window.__hypercolorHostDrivenAnimation = true"));
-        assert!(script.contains("globalThis.__hypercolorHostDrivenAnimation = true"));
-    }
-
-    #[test]
-    fn inject_runtime_block_prefers_head_tag() {
-        let html = "<html><head><title>x</title></head><body><script>run()</script></body></html>";
-        let block = "<script>bootstrap()</script>\n";
-
-        let injected = inject_runtime_head_block(html, block);
-        let expected = "<html><head>\n<script>bootstrap()</script>\n<title>x</title></head>";
-        assert!(injected.contains(expected));
-    }
-
-    #[test]
-    fn inject_runtime_block_falls_back_to_first_script() {
-        let html = "<body><script>run()</script></body>";
-        let block = "<script>bootstrap()</script>\n";
-
-        let injected = inject_runtime_head_block(html, block);
-        assert!(injected.starts_with("<body>\n<script>bootstrap()</script>"));
-    }
-
-    #[test]
-    fn prepare_runtime_html_source_injects_capture_and_host_flags_before_script() {
-        let temp = tempfile::tempdir().expect("tempdir should create");
-        let html_path = temp.path().join("effect.html");
-        std::fs::write(
-            &html_path,
-            "<html><head><title>x</title></head><body><script>run()</script></body></html>",
-        )
-        .expect("html write should work");
-
-        let controls = HashMap::new();
-        let (runtime_path, runtime_html_path) =
-            prepare_runtime_html_source(&html_path, &controls, true)
-                .expect("runtime html should build");
-
-        assert_ne!(runtime_path, html_path);
-        assert_eq!(runtime_html_path.as_deref(), Some(runtime_path.as_path()));
-
-        let runtime_html =
-            std::fs::read_to_string(&runtime_path).expect("runtime html should be readable");
-        assert!(runtime_html.contains("window.__hypercolorCaptureMode = true"));
-        assert!(runtime_html.contains("window.__hypercolorPreserveDrawingBuffer = false"));
-        assert!(runtime_html.contains("window.__hypercolorHostDrivenAnimation = true"));
-        assert!(
-            runtime_html.find("window.__hypercolorHostDrivenAnimation = true")
-                < runtime_html.find("<script>run()</script>")
-        );
-    }
-
-    #[test]
-    fn effect_is_audio_reactive_for_audio_category() {
-        use hypercolor_types::effect::{EffectId, EffectSource};
-        use uuid::Uuid;
-        let metadata = EffectMetadata {
-            id: EffectId::from(Uuid::nil()),
-            name: "Audio".to_owned(),
-            author: "hypercolor".to_owned(),
-            version: "0.1.0".to_owned(),
-            description: "Audio reactive".to_owned(),
-            category: EffectCategory::Audio,
-            tags: Vec::new(),
-            controls: Vec::new(),
-            presets: Vec::new(),
-            audio_reactive: true,
-            screen_reactive: false,
-            source: EffectSource::Html {
-                path: PathBuf::from("effects/audio.html"),
-            },
-            license: None,
-        };
-
-        assert!(effect_is_audio_reactive(&metadata));
-    }
-
-    #[test]
-    fn effect_is_audio_reactive_for_audio_tags() {
-        use hypercolor_types::effect::{EffectId, EffectSource};
-        use uuid::Uuid;
-        let metadata = EffectMetadata {
-            id: EffectId::from(Uuid::nil()),
-            name: "Ambient Audio".to_owned(),
-            author: "hypercolor".to_owned(),
-            version: "0.1.0".to_owned(),
-            description: "Ambient effect with audio response".to_owned(),
-            category: EffectCategory::Ambient,
-            tags: vec!["visual".to_owned(), "audio-reactive".to_owned()],
-            controls: Vec::new(),
-            presets: Vec::new(),
-            audio_reactive: false,
-            screen_reactive: false,
-            source: EffectSource::Html {
-                path: PathBuf::from("effects/ambient-audio.html"),
-            },
-            license: None,
-        };
-
-        assert!(effect_is_audio_reactive(&metadata));
-    }
-
-    #[test]
-    fn effect_is_not_audio_reactive_without_audio_signals() {
-        use hypercolor_types::effect::{EffectId, EffectSource};
-        use uuid::Uuid;
-        let metadata = EffectMetadata {
-            id: EffectId::from(Uuid::nil()),
-            name: "Electric Colors".to_owned(),
-            author: "hypercolor".to_owned(),
-            version: "0.1.0".to_owned(),
-            description: "Ambient effect".to_owned(),
-            category: EffectCategory::Ambient,
-            tags: vec!["ambient".to_owned(), "canvas2d".to_owned()],
-            controls: Vec::new(),
-            presets: Vec::new(),
-            audio_reactive: false,
-            screen_reactive: false,
-            source: EffectSource::Html {
-                path: PathBuf::from("effects/electric-colors.html"),
-            },
-            license: None,
-        };
-
-        assert!(!effect_is_audio_reactive(&metadata));
     }
 
     #[test]
