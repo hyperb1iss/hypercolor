@@ -1,6 +1,7 @@
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 
 use hypercolor_types::attachment::zone_name_matches_slot_alias;
 use hypercolor_types::device::{DeviceId, DeviceInfo, ZoneInfo};
@@ -11,7 +12,10 @@ use tracing::{debug, warn};
 
 use crate::spatial::is_led_sampled_zone;
 
-use super::{BackendDeviceKey, SegmentRange};
+use super::{
+    BackendDeviceKey, BackendManager, BackendRoutingDebugSnapshot, FrameWriteStats,
+    LayoutRoutingDebugEntry, OrphanedQueueDebugEntry, SegmentRange,
+};
 
 /// Internal mapping from a layout device identifier to a backend + device.
 #[derive(Debug, Clone)]
@@ -67,6 +71,340 @@ pub(super) struct LayoutOutputCoverage {
 impl LayoutOutputCoverage {
     pub(super) const fn covers_whole_device(&self) -> bool {
         self.covers_whole_device
+    }
+}
+
+impl BackendManager {
+    pub(super) fn invalidate_routing_plan(&mut self) {
+        self.routing_mapping_generation = self.routing_mapping_generation.saturating_add(1);
+        self.routing_plan = None;
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub fn ordered_routing_zone_count(&mut self, layout: &SpatialLayout) -> usize {
+        self.routing_plan(layout).ordered_zone_routes.len()
+    }
+
+    /// Monotonic generation for routing-relevant device mappings.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn routing_mapping_generation(&self) -> u64 {
+        self.routing_mapping_generation
+    }
+
+    /// Physical devices that are connected and mapped, but not referenced by the active layout.
+    ///
+    /// This is a diagnostic view over the current routing table. Devices in this list
+    /// will not receive queued frame writes until a layout zone targets one of their aliases.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn connected_devices_without_layout_targets(
+        &self,
+        layout: &SpatialLayout,
+    ) -> Vec<(String, DeviceId)> {
+        let targeted = layout
+            .zones
+            .iter()
+            .filter_map(|zone| {
+                self.device_map
+                    .get(zone.device_id.as_str())
+                    .map(|mapping| (mapping.backend_id.clone(), mapping.device_id))
+            })
+            .collect::<HashSet<_>>();
+
+        let mut inactive = self
+            .device_map
+            .values()
+            .map(|mapping| (mapping.backend_id.clone(), mapping.device_id))
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .filter(|key| !targeted.contains(key))
+            .collect::<Vec<_>>();
+
+        inactive.sort_by(|left, right| {
+            left.0
+                .cmp(&right.0)
+                .then_with(|| left.1.to_string().cmp(&right.1.to_string()))
+        });
+        inactive
+    }
+
+    /// Build transient layout zones for connected outputs absent from `layout`.
+    ///
+    /// These zones are never persisted. The render thread uses them to route
+    /// `UnassignedBehavior::Off` and `Fallback` through the same segmented
+    /// backend path as normal scene-owned zones.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn unassigned_output_zones(&self, layout: &SpatialLayout) -> Vec<Output> {
+        let coverage = layout_output_coverage(layout);
+        let mut layout_ids = self.device_map.keys().cloned().collect::<Vec<_>>();
+        layout_ids.sort_unstable();
+
+        let mut zones = Vec::new();
+        for layout_device_id in layout_ids {
+            let Some(mapping) = self.device_map.get(layout_device_id.as_str()) else {
+                continue;
+            };
+            let coverage = coverage.get(layout_device_id.as_str());
+
+            if !mapping.zone_segments.is_empty() {
+                if coverage.is_some_and(LayoutOutputCoverage::covers_whole_device) {
+                    continue;
+                }
+
+                let assigned_zone_names = coverage.map(|coverage| &coverage.zone_names);
+                let mut segment_names = mapping.zone_segments.keys().cloned().collect::<Vec<_>>();
+                segment_names.sort_unstable();
+                for zone_name in segment_names {
+                    if assigned_zone_names
+                        .is_some_and(|names| zone_name_covered_by_layout(names, &zone_name))
+                    {
+                        continue;
+                    }
+                    let Some(segment) = mapping.zone_segments.get(&zone_name).copied() else {
+                        continue;
+                    };
+                    if segment.length == 0 {
+                        continue;
+                    }
+                    zones.push(unassigned_output_zone(
+                        layout_device_id.as_str(),
+                        Some(zone_name.as_str()),
+                        segment.length,
+                    ));
+                }
+                continue;
+            }
+
+            if coverage.is_some() {
+                continue;
+            }
+
+            let led_count = mapping
+                .segment
+                .map_or(mapping.physical_led_count.unwrap_or_default(), |segment| {
+                    segment.length
+                });
+            if led_count == 0 {
+                continue;
+            }
+            zones.push(unassigned_output_zone(
+                layout_device_id.as_str(),
+                None,
+                led_count,
+            ));
+        }
+
+        zones
+    }
+
+    pub(super) fn routing_plan(&mut self, layout: &SpatialLayout) -> Arc<RoutingPlan> {
+        let layout_signature = layout_routing_signature(layout);
+        let needs_rebuild = self.routing_plan.as_ref().is_none_or(|plan| {
+            plan.layout_signature != layout_signature
+                || plan.mapping_generation != self.routing_mapping_generation
+        });
+
+        if needs_rebuild {
+            let plan = Arc::new(self.compile_routing_plan(layout, layout_signature));
+            self.routing_plan = Some(Arc::clone(&plan));
+            self.routing_plan_rebuild_count = self.routing_plan_rebuild_count.saturating_add(1);
+            return plan;
+        }
+
+        Arc::clone(
+            self.routing_plan
+                .as_ref()
+                .expect("routing plan should exist when cache is valid"),
+        )
+    }
+
+    fn compile_routing_plan(&self, layout: &SpatialLayout, layout_signature: u64) -> RoutingPlan {
+        let mut active_layout_device_ids = HashSet::with_capacity(layout.zones.len());
+        let mut active_target_keys = HashSet::with_capacity(layout.zones.len());
+        let mut zone_routes = HashMap::with_capacity(layout.zones.len());
+        let mut ordered_zone_routes = Vec::with_capacity(layout.zones.len());
+
+        for zone in &layout.zones {
+            active_layout_device_ids.insert(zone.device_id.clone());
+            let zone_brightness = normalized_zone_brightness(zone.brightness);
+
+            let route = if let Some(mapping) = self.device_map.get(zone.device_id.as_str()) {
+                let target_key = (mapping.backend_id.clone(), mapping.device_id);
+                active_target_keys.insert(target_key.clone());
+                PlannedZoneRoute::Mapped(CompiledZoneRoute {
+                    layout_device_id: zone.device_id.clone(),
+                    target_key,
+                    led_mapping: normalized_led_mapping(zone.led_mapping.as_deref()),
+                    segment: mapped_segment_for_zone_name(
+                        &zone.id,
+                        zone.zone_name.as_deref(),
+                        mapping,
+                    ),
+                    attachment: zone.attachment.clone(),
+                    physical_led_count: mapping.physical_led_count,
+                    zone_brightness,
+                })
+            } else {
+                PlannedZoneRoute::Unmapped {
+                    layout_device_id: zone.device_id.clone(),
+                }
+            };
+
+            if should_use_ordered_routing(zone) {
+                ordered_zone_routes.push(OrderedZoneRoute {
+                    zone_id: zone.id.clone(),
+                    route: route.clone(),
+                });
+            }
+            zone_routes.insert(zone.id.clone(), route);
+        }
+
+        let mut mapped_layout_ids_by_device: HashMap<BackendDeviceKey, Vec<String>> =
+            HashMap::new();
+        for (layout_device_id, mapping) in &self.device_map {
+            mapped_layout_ids_by_device
+                .entry((mapping.backend_id.clone(), mapping.device_id))
+                .or_default()
+                .push(layout_device_id.clone());
+        }
+        for ids in mapped_layout_ids_by_device.values_mut() {
+            ids.sort_unstable();
+        }
+
+        let mut inactive_devices = mapped_layout_ids_by_device
+            .keys()
+            .filter(|key| !active_target_keys.contains(*key))
+            .cloned()
+            .collect::<Vec<_>>();
+        inactive_devices.sort_by(|left, right| {
+            left.0
+                .cmp(&right.0)
+                .then_with(|| left.1.to_string().cmp(&right.1.to_string()))
+        });
+
+        RoutingPlan {
+            layout_signature,
+            mapping_generation: self.routing_mapping_generation,
+            active_layout_device_ids,
+            active_target_keys: {
+                let mut active_target_keys = active_target_keys.into_iter().collect::<Vec<_>>();
+                active_target_keys.sort_by(|left, right| {
+                    left.0
+                        .cmp(&right.0)
+                        .then_with(|| left.1.to_string().cmp(&right.1.to_string()))
+                });
+                active_target_keys
+            },
+            zone_routes,
+            ordered_zone_routes,
+            inactive_devices,
+            mapped_layout_ids_by_device,
+        }
+    }
+
+    /// Whether existing queued outputs can be reused for the active layout.
+    ///
+    /// Returns `true` when every active physical target already has an output
+    /// queue, so a retained frame can skip re-routing and reuse the latest
+    /// queued payloads.
+    #[must_use]
+    pub fn can_reuse_routed_frame_outputs(&mut self, layout: &SpatialLayout) -> bool {
+        let plan = self.routing_plan(layout);
+        plan.active_target_keys.iter().all(|key| {
+            self.is_direct_control_active_key(key) || self.output_queues.contains_key(key)
+        })
+    }
+
+    /// Stable identity for the active routed-output lane.
+    #[must_use]
+    pub fn routed_output_signature(&mut self, layout: &SpatialLayout) -> u64 {
+        let plan = self.routing_plan(layout);
+        let mut hasher = DefaultHasher::new();
+        plan.layout_signature.hash(&mut hasher);
+        plan.mapping_generation.hash(&mut hasher);
+        plan.active_target_keys.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Reuse the latest routed outputs for the active layout.
+    ///
+    /// This only nudges queues that need a retry after an asynchronous write
+    /// failure; successfully queued or in-flight identical payloads are left
+    /// untouched.
+    pub fn reuse_routed_frame_outputs(&mut self, layout: &SpatialLayout) -> FrameWriteStats {
+        let plan = self.routing_plan(layout);
+        let mut stats = FrameWriteStats::default();
+
+        for key in &plan.active_target_keys {
+            if self.is_direct_control_active_key(key) {
+                continue;
+            }
+
+            let Some(queue) = self.output_queues.get_mut(key) else {
+                continue;
+            };
+            if let Some(led_count) = queue.retry_latest_after_error() {
+                stats.devices_written = stats.devices_written.saturating_add(1);
+                stats.total_leds = stats.total_leds.saturating_add(led_count);
+            }
+        }
+
+        stats
+    }
+
+    /// Build a routing-focused debug snapshot (layout IDs -> backend targets).
+    #[must_use]
+    pub fn routing_snapshot(&self) -> BackendRoutingDebugSnapshot {
+        let mut backend_ids = self.backends.keys().cloned().collect::<Vec<_>>();
+        backend_ids.sort_unstable();
+
+        let mapped_keys = self
+            .device_map
+            .values()
+            .map(|mapping| (mapping.backend_id.clone(), mapping.device_id))
+            .collect::<HashSet<_>>();
+
+        let mut mappings = self
+            .device_map
+            .iter()
+            .map(|(layout_device_id, mapping)| {
+                let key = (mapping.backend_id.clone(), mapping.device_id);
+                LayoutRoutingDebugEntry {
+                    layout_device_id: layout_device_id.clone(),
+                    backend_id: mapping.backend_id.clone(),
+                    device_id: mapping.device_id.to_string(),
+                    backend_registered: self.backends.contains_key(&mapping.backend_id),
+                    queue_active: self.output_queues.contains_key(&key),
+                }
+            })
+            .collect::<Vec<_>>();
+        mappings.sort_by(|left, right| left.layout_device_id.cmp(&right.layout_device_id));
+
+        let mut orphaned_queues = self
+            .output_queues
+            .keys()
+            .filter(|key| !mapped_keys.contains(*key))
+            .map(|(backend_id, device_id)| OrphanedQueueDebugEntry {
+                backend_id: backend_id.clone(),
+                device_id: device_id.to_string(),
+            })
+            .collect::<Vec<_>>();
+        orphaned_queues.sort_by(|left, right| {
+            left.backend_id
+                .cmp(&right.backend_id)
+                .then(left.device_id.cmp(&right.device_id))
+        });
+
+        BackendRoutingDebugSnapshot {
+            backend_ids,
+            mapping_count: self.device_map.len(),
+            queue_count: self.output_queues.len(),
+            mappings,
+            orphaned_queues,
+        }
     }
 }
 
