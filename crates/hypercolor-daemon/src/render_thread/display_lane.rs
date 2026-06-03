@@ -17,8 +17,7 @@ use super::render_groups::{GroupCanvasFrame, PendingGroupCanvasFrame};
 use super::scene_dependency::SceneDependencyKey;
 #[cfg(feature = "wgpu")]
 use super::sparkleflinger::{
-    CompositionLayer, CompositionPlan, DisplayFinalizeCacheKey, DisplayFinalizeDispatch,
-    DisplayFinalizeFrame, DisplayFinalizeParams, PreviewSurfaceRequest,
+    DisplayFinalizeCacheKey, DisplayFinalizeDispatch, DisplayFinalizeFrame, DisplayFinalizeParams,
 };
 
 pub(super) struct DisplayLaneRoutes<'a> {
@@ -171,13 +170,15 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
             ProducerFrame::Canvas(canvas) => PublishedSurface::from_owned_canvas(canvas, 0, 0),
             ProducerFrame::Surface(surface) => surface,
             #[cfg(feature = "servo-gpu-import")]
-            ProducerFrame::Gpu(frame) => {
-                self.materialize_gpu_group_canvas(ProducerFrame::Gpu(frame))?
-            }
+            ProducerFrame::Gpu(frame) => self
+                .compose
+                .display_sparkleflinger
+                .materialize_output_surface(ProducerFrame::Gpu(frame))?,
             #[cfg(feature = "wgpu")]
-            ProducerFrame::GpuTexture(frame) => {
-                self.materialize_gpu_group_canvas(ProducerFrame::GpuTexture(frame))?
-            }
+            ProducerFrame::GpuTexture(frame) => self
+                .compose
+                .display_sparkleflinger
+                .materialize_output_surface(ProducerFrame::GpuTexture(frame))?,
         };
 
         Some(GroupCanvasFrame {
@@ -342,35 +343,6 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
                 None
             }
         }
-    }
-
-    #[cfg(feature = "wgpu")]
-    fn materialize_gpu_group_canvas(&mut self, frame: ProducerFrame) -> Option<PublishedSurface> {
-        if frame.width() == 0 || frame.height() == 0 {
-            return None;
-        }
-
-        let display_materialization = PreviewSurfaceRequest {
-            width: frame.width(),
-            height: frame.height(),
-        };
-        let plan = CompositionPlan::single(
-            display_materialization.width,
-            display_materialization.height,
-            CompositionLayer::replace(frame),
-        )
-        .with_cpu_replay_cacheable(false);
-        let composed = self.compose.display_sparkleflinger.compose_for_outputs(
-            plan,
-            false,
-            Some(display_materialization),
-        );
-
-        if composed.gpu_readback_failed {
-            debug!("GPU display-face materialization missed; retaining prior frame if available");
-        }
-
-        composed.preview_surface.or(composed.sampling_surface)
     }
 }
 

@@ -560,6 +560,36 @@ impl SparkleFlinger {
     }
 
     #[cfg(feature = "wgpu")]
+    pub(crate) fn materialize_output_surface(
+        &mut self,
+        frame: ProducerFrame,
+    ) -> Option<PublishedSurface> {
+        if frame.width() == 0 || frame.height() == 0 {
+            return None;
+        }
+
+        let output_request = PreviewSurfaceRequest {
+            width: frame.width(),
+            height: frame.height(),
+        };
+        let plan = CompositionPlan::single(
+            output_request.width,
+            output_request.height,
+            CompositionLayer::replace(frame),
+        )
+        .with_cpu_replay_cacheable(false);
+        let composed = self.compose_for_outputs(plan, false, Some(output_request));
+
+        if composed.gpu_readback_failed {
+            tracing::debug!(
+                "GPU output surface materialization missed; retaining prior frame if available"
+            );
+        }
+
+        composed.preview_surface.or(composed.sampling_surface)
+    }
+
+    #[cfg(feature = "wgpu")]
     pub(crate) fn begin_media_upload_frame(&mut self) {
         if let SparkleFlingerBackend::Gpu { gpu, .. } = &mut self.backend {
             gpu.begin_media_upload_frame();
