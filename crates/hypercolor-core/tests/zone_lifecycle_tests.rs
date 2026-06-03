@@ -285,10 +285,11 @@ fn assignment_moves_zones_and_resets_cross_zone_placement() {
         .and_then(|group| group.layout.zones.first())
         .expect("custom group should own moved zone");
     assert_eq!(custom_zone.id, "device-zone");
-    assert_eq!(custom_zone.position, NormalizedPosition::new(0.5, 0.5));
-    assert_eq!(custom_zone.size, NormalizedPosition::new(1.0, 1.0));
+    assert_eq!(custom_zone.position, NormalizedPosition::new(0.2, 0.2));
+    assert_eq!(custom_zone.size, NormalizedPosition::new(0.2, 0.15));
     assert_eq!(custom_zone.rotation, 0.0);
     assert_eq!(custom_zone.scale, 1.0);
+    assert_eq!(custom_zone.display_order, 0);
     assert_eq!(custom_zone.led_mapping, Some(vec![2, 1, 0]));
     assert!(
         scene
