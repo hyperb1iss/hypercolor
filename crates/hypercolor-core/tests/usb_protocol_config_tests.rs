@@ -176,7 +176,7 @@ async fn prism_s_config_supports_gpu_only_profiles() {
 }
 
 #[tokio::test]
-async fn nollie32_config_defaults_to_bare_hub_without_bindings() {
+async fn nollie32_config_preserves_official_default_without_bindings() {
     let info = nollie32_info();
     let registry = attachment_registry();
     let profile = info.default_attachment_profile();
@@ -190,8 +190,35 @@ async fn nollie32_config_defaults_to_bare_hub_without_bindings() {
 
     let config = stored_config(&configs, info.id).await;
     assert_eq!(config.protocol_id(), "nollie/nollie-32");
-    assert_eq!(config.atx_attachment_leds(), 0);
-    assert_eq!(config.gpu_attachment_leds(), 0);
+    assert_eq!(config.atx_attachment_leds(), 120);
+    assert_eq!(config.gpu_attachment_leds(), 162);
+}
+
+#[tokio::test]
+async fn nollie32_config_preserves_cables_with_channel_fan_binding() {
+    let info = nollie32_info();
+    let registry = attachment_registry();
+    let mut profile = info.default_attachment_profile();
+    profile.bindings = vec![ComponentBinding {
+        slot_id: "channel-1".to_owned(),
+        template_id: "lian-li-sl-infinity-fan".to_owned(),
+        name: None,
+        enabled: true,
+        instances: 1,
+        led_offset: 0,
+    }];
+    let configs = UsbProtocolConfigStore::new();
+
+    assert!(
+        configs
+            .apply_attachment_profile(info.id, &info, &profile, &registry)
+            .await
+    );
+
+    let config = stored_config(&configs, info.id).await;
+    assert_eq!(config.protocol_id(), "nollie/nollie-32");
+    assert_eq!(config.atx_attachment_leds(), 120);
+    assert_eq!(config.gpu_attachment_leds(), 162);
 }
 
 #[tokio::test]

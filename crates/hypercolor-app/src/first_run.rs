@@ -35,8 +35,7 @@ pub fn is_pending() -> bool {
 pub fn mark_complete() -> Result<()> {
     let path = marker_path().context("LOCALAPPDATA / app data directory is unavailable")?;
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("create {}", parent.display()))?;
+        std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     }
     std::fs::write(&path, b"").with_context(|| format!("write {}", path.display()))?;
     Ok(())
@@ -56,9 +55,7 @@ pub fn reset() -> Result<()> {
     match std::fs::remove_file(&path) {
         Ok(()) => Ok(()),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(err) => {
-            Err(err).with_context(|| format!("remove {}", path.display()))
-        }
+        Err(err) => Err(err).with_context(|| format!("remove {}", path.display())),
     }
 }
 

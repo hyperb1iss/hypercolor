@@ -51,11 +51,9 @@ pub fn WelcomeOverlay() -> impl IntoView {
     // SMBus broker isn't already running. Avoids steering Mac/Linux
     // users (or Windows users on non-RGB hardware) toward a flow that
     // won't help them.
-    let should_offer_hardware = Signal::derive(move || {
-        match pawnio.get() {
-            Some(Ok(Some(status))) => hardware_offer_visible(&status),
-            _ => false,
-        }
+    let should_offer_hardware = Signal::derive(move || match pawnio.get() {
+        Some(Ok(Some(status))) => hardware_offer_visible(&status),
+        _ => false,
     });
 
     // Callbacks (rather than raw closures) so the outer view closure
@@ -295,10 +293,7 @@ mod tests {
 }
 
 #[component]
-fn AutostartRow(
-    #[prop(into)] enabled: Signal<bool>,
-    on_toggle: Callback<()>,
-) -> impl IntoView {
+fn AutostartRow(#[prop(into)] enabled: Signal<bool>, on_toggle: Callback<()>) -> impl IntoView {
     view! {
         <div
             class="mt-5 flex items-center justify-between gap-3 rounded-lg px-3 py-2.5"

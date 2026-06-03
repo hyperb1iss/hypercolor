@@ -30,7 +30,10 @@ pub(super) fn motherboard_info() -> Option<MotherboardInfo> {
     };
 
     let row = results.into_iter().next()?;
-    let manufacturer = row.manufacturer.map(trim_string).filter(|s| !s.is_empty())?;
+    let manufacturer = row
+        .manufacturer
+        .map(trim_string)
+        .filter(|s| !s.is_empty())?;
     let product = row.product.map(trim_string).filter(|s| !s.is_empty())?;
     let version = row.version.map(trim_string).filter(|s| !s.is_empty());
 

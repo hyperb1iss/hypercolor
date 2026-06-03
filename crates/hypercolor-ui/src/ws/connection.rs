@@ -559,15 +559,13 @@ impl WsManager {
             connect_fn();
         }
 
-        let send_zone_layout_preview = Callback::new(move |(scene_id, zone_id, layout): (
-            String,
-            String,
-            SpatialLayout,
-        )| {
-            if let Some(ws) = ws_handle.get_value() {
-                super::preview::send_zone_layout_preview(&ws, &scene_id, &zone_id, &layout);
-            }
-        });
+        let send_zone_layout_preview = Callback::new(
+            move |(scene_id, zone_id, layout): (String, String, SpatialLayout)| {
+                if let Some(ws) = ws_handle.get_value() {
+                    super::preview::send_zone_layout_preview(&ws, &scene_id, &zone_id, &layout);
+                }
+            },
+        );
         let clear_zone_layout_preview =
             Callback::new(move |(scene_id, zone_id): (String, String)| {
                 if let Some(ws) = ws_handle.get_value() {

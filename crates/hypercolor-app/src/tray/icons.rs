@@ -18,8 +18,7 @@ const ICON_SIZE: u32 = 32;
 
 const ICON_ACTIVE: &[u8] = include_bytes!("../../icons/tray/tray-active-32.png");
 const ICON_PAUSED: &[u8] = include_bytes!("../../icons/tray/tray-paused-32.png");
-const ICON_DISCONNECTED: &[u8] =
-    include_bytes!("../../icons/tray/tray-disconnected-32.png");
+const ICON_DISCONNECTED: &[u8] = include_bytes!("../../icons/tray/tray-disconnected-32.png");
 const ICON_ERROR: &[u8] = include_bytes!("../../icons/tray/tray-error-32.png");
 
 /// Visual states for the tray icon.

@@ -42,7 +42,8 @@ pub fn run() -> Result<(), VerbError> {
             // match by string fragment — the message includes the
             // service name verbatim.
             let message = err.to_string();
-            if message.contains("does not exist") || message.contains("ERROR_SERVICE_DOES_NOT_EXIST")
+            if message.contains("does not exist")
+                || message.contains("ERROR_SERVICE_DOES_NOT_EXIST")
             {
                 info!("uninstall: service already absent");
                 return Ok(());

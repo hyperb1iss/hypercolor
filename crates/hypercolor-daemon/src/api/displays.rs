@@ -427,29 +427,53 @@ pub async fn delete_display_face(
         Ok(id) => id,
         Err(response) => return response,
     };
+    let Some(tracked) = state.device_registry.get(&device_id).await else {
+        return ApiError::not_found(format!("Device not found: {device}"));
+    };
+    let Some(surface) = display_surface_info(&tracked.info) else {
+        return ApiError::validation(format!(
+            "Device does not support display faces: {}",
+            tracked.info.name
+        ));
+    };
 
-    let (scene_id, removed_group) = {
+    let (scene_id, previous_group, cleared_group) = {
         let mut scene_manager = state.scene_manager.write().await;
         let active_scene_id = match active_scene_id_for_runtime_mutation(&scene_manager) {
             Ok(scene_id) => scene_id,
             Err(error) => return error.api_response("removing a display face"),
         };
-        let removed_group = scene_manager
+        let previous_group = scene_manager
             .active_scene()
             .and_then(|scene| scene.display_group_for(device_id))
             .cloned();
-        if let Err(error) = scene_manager.remove_display_group(device_id) {
-            return ApiError::internal(format!("Failed to update active scene: {error}"));
-        }
-        (active_scene_id, removed_group)
+        let layout = display_face_layout(device_id, tracked.info.name.as_str(), surface);
+        let cleared_group = match scene_manager.clear_display_group_assignment(
+            device_id,
+            tracked.info.name.as_str(),
+            layout,
+        ) {
+            Ok(group) => group.clone(),
+            Err(error) => {
+                return ApiError::internal(format!("Failed to update active scene: {error}"));
+            }
+        };
+        (active_scene_id, previous_group, cleared_group)
     };
 
-    if let Some(removed_group) = removed_group.as_ref() {
+    if previous_group.is_some() {
         publish_render_group_changed(
             state.as_ref(),
             scene_id,
-            removed_group,
-            ZoneChangeKind::Removed,
+            &cleared_group,
+            ZoneChangeKind::Updated,
+        );
+    } else {
+        publish_render_group_changed(
+            state.as_ref(),
+            scene_id,
+            &cleared_group,
+            ZoneChangeKind::Created,
         );
     }
     crate::api::persist_runtime_session(&state).await;

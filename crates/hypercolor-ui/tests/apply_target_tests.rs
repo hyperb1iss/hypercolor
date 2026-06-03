@@ -20,10 +20,7 @@ fn select_values_round_trip_through_apply_targets() {
     );
 
     assert_eq!(ApplyTarget::Primary.select_value(), "");
-    assert_eq!(
-        ApplyTarget::AllZones.select_value(),
-        ALL_ZONES_VALUE,
-    );
+    assert_eq!(ApplyTarget::AllZones.select_value(), ALL_ZONES_VALUE,);
     assert_eq!(
         ApplyTarget::Zone("zone-123".to_owned()).select_value(),
         "zone-123",

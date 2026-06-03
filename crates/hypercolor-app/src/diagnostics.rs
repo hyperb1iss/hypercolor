@@ -113,13 +113,19 @@ fn collect_system_info() -> String {
     let _ = writeln!(info, "Generated: {}", Local::now().to_rfc3339());
     let _ = writeln!(info, "App version: {}", env!("CARGO_PKG_VERSION"));
     let _ = writeln!(info, "Daemon URL (default): {}", crate::DEFAULT_DAEMON_URL);
-    let _ = writeln!(info, "Daemon executable: {}", supervisor::daemon_executable_name());
+    let _ = writeln!(
+        info,
+        "Daemon executable: {}",
+        supervisor::daemon_executable_name()
+    );
     let _ = writeln!(info, "Target OS: {}", std::env::consts::OS);
     let _ = writeln!(info, "Target arch: {}", std::env::consts::ARCH);
     if let Some(pid) = std::env::var_os("PROCESSOR_IDENTIFIER") {
         let _ = writeln!(info, "Processor: {}", pid.to_string_lossy());
     }
-    if let Ok(motherboard) = serde_json::to_string_pretty(&hypercolor_core::system::motherboard_info()) {
+    if let Ok(motherboard) =
+        serde_json::to_string_pretty(&hypercolor_core::system::motherboard_info())
+    {
         let _ = writeln!(info, "\nMotherboard:\n{motherboard}");
     }
     info
@@ -133,9 +139,16 @@ fn run_platform_probe() -> Option<String> {
     let candidates = [
         exe.parent()?.join("tools").join("diagnose-windows.ps1"),
         exe.parent()?.join("scripts").join("diagnose-windows.ps1"),
-        exe.parent()?.parent()?.join("scripts").join("diagnose-windows.ps1"),
+        exe.parent()?
+            .parent()?
+            .join("scripts")
+            .join("diagnose-windows.ps1"),
         // Repo layout: target/debug/hypercolor-app.exe → repo/scripts/...
-        exe.parent()?.parent()?.parent()?.join("scripts").join("diagnose-windows.ps1"),
+        exe.parent()?
+            .parent()?
+            .parent()?
+            .join("scripts")
+            .join("diagnose-windows.ps1"),
     ];
     let script = candidates.iter().find(|path| path.is_file())?;
 
@@ -168,8 +181,7 @@ fn run_platform_probe() -> Option<String> {
 }
 
 fn write_text(path: &Path, content: &str) -> Result<()> {
-    fs::write(path, content)
-        .with_context(|| format!("write `{}`", path.display()))?;
+    fs::write(path, content).with_context(|| format!("write `{}`", path.display()))?;
     Ok(())
 }
 

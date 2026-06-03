@@ -38,7 +38,7 @@ fn unknown_verb_rejected() {
         "install-anything",
         "delete-all",
         "../uninstall-pawnio",
-        "InstallPawnIo", // wrong case
+        "InstallPawnIo",  // wrong case
         "install_pawnio", // wrong separator
         "",
     ] {

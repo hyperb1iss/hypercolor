@@ -522,10 +522,7 @@ impl WindowsSensorExtras {
                         }
                     }
                     snapshot.components.push(SensorReading::new(
-                        format!(
-                            "{label_prefix}_{}",
-                            sanitize_zone_label(&sensor.identifier)
-                        ),
+                        format!("{label_prefix}_{}", sanitize_zone_label(&sensor.identifier)),
                         value,
                         SensorUnit::Celsius,
                         None,
@@ -565,17 +562,12 @@ impl WindowsSensorExtras {
 /// the rest of the session (after access-denied or similar permanent
 /// failure).
 #[cfg(target_os = "windows")]
-fn merge_acpi_thermal_zones(
-    con: &wmi::WMIConnection,
-    snapshot: &mut SystemSnapshot,
-) -> bool {
+fn merge_acpi_thermal_zones(con: &wmi::WMIConnection, snapshot: &mut SystemSnapshot) -> bool {
     let zones: Vec<MSAcpi_ThermalZoneTemperature> = match con.query() {
         Ok(zones) => zones,
         Err(err) => {
             if wmi_access_denied(&err) {
-                debug!(
-                    "ACPI thermal zone query denied; disabling for this session"
-                );
+                debug!("ACPI thermal zone query denied; disabling for this session");
                 return false;
             }
             debug!("ACPI thermal zone query failed: {err}");

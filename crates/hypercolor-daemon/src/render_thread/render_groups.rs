@@ -22,7 +22,7 @@ use hypercolor_types::event::{HypercolorEvent, LayerHealth, ZoneColors};
 use hypercolor_types::layer::{
     LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
 };
-use hypercolor_types::scene::{DisplayFaceTarget, SceneId, Zone, ZoneId};
+use hypercolor_types::scene::{DisplayFaceTarget, SceneId, Zone, ZoneId, ZoneRole};
 use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::spatial::{
     EdgeBehavior, NormalizedPosition, Output, SamplingMode, SpatialLayout,
@@ -1080,7 +1080,9 @@ impl ZoneRuntime {
             .clone()
             .expect("direct display group should carry a display target");
 
-        let frame = if passthrough_effect_layer(group).is_some() {
+        let frame = if enabled_layer_count(group) == 0 {
+            transparent_black_frame(group.layout.canvas_width, group.layout.canvas_height)
+        } else if passthrough_effect_layer(group).is_some() {
             let Some(frame) = self.render_passthrough_effect_layer_frame(
                 group,
                 active_scene_id,
@@ -2011,7 +2013,7 @@ fn compose_preview_grid_canvas(
 }
 
 fn group_is_active(group: &Zone) -> bool {
-    enabled_layer_count(group) > 0
+    enabled_layer_count(group) > 0 || group_publishes_empty_direct_canvas(group)
 }
 
 fn group_contributes_to_scene_canvas(group: &Zone) -> bool {
@@ -2019,7 +2021,16 @@ fn group_contributes_to_scene_canvas(group: &Zone) -> bool {
 }
 
 fn group_publishes_direct_canvas(group: &Zone) -> bool {
-    group_is_active(group) && group.display_target.is_some()
+    group.enabled
+        && group.display_target.is_some()
+        && (enabled_layer_count(group) > 0 || group_publishes_empty_direct_canvas(group))
+}
+
+fn group_publishes_empty_direct_canvas(group: &Zone) -> bool {
+    group.enabled
+        && group.display_target.is_some()
+        && group.role == ZoneRole::Display
+        && enabled_layer_count(group) == 0
 }
 
 fn passthrough_effect_layer(group: &Zone) -> Option<SceneLayer> {
@@ -4078,6 +4089,42 @@ mod tests {
         assert_eq!(
             group_canvas_frame.surface_for_test().get_pixel(0, 0),
             Rgba::new(0, 0, 255, 255)
+        );
+        assert!(zones.is_empty());
+    }
+
+    #[test]
+    fn empty_display_group_publishes_transparent_direct_surface() {
+        let mut runtime = ZoneRuntime::new(4, 4);
+        let registry = builtin_registry();
+        let mut group = sample_display_group(4, 4);
+        group.name = "Display Shell".into();
+        group.effect_id = None;
+        group.controls.clear();
+        group.layers.clear();
+        let mut zones = Vec::new();
+        let display_group_target_fps = HashMap::new();
+
+        let result = render_scene_for_test(
+            &mut runtime,
+            std::slice::from_ref(&group),
+            1,
+            0,
+            &display_group_target_fps,
+            &registry,
+            &mut zones,
+        )
+        .expect("empty display group should render a stable direct surface");
+
+        let [(_, group_canvas_frame)] = &result.group_canvases[..] else {
+            panic!("empty display group should publish a direct surface");
+        };
+
+        assert_eq!(result.active_group_canvas_ids, vec![group.id]);
+        assert_eq!(result.logical_layer_count, 0);
+        assert_eq!(
+            group_canvas_frame.surface_for_test().get_pixel(0, 0),
+            Rgba::TRANSPARENT
         );
         assert!(zones.is_empty());
     }

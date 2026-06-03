@@ -188,5 +188,8 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
 }
 
 fn wide_str(value: &str) -> Vec<u16> {
-    OsStr::new(value).encode_wide().chain(std::iter::once(0)).collect()
+    OsStr::new(value)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
 }

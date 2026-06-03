@@ -662,6 +662,77 @@ impl SceneManager {
         Ok(removed)
     }
 
+    pub fn clear_display_group_assignment(
+        &mut self,
+        device_id: DeviceId,
+        device_name: &str,
+        layout: SpatialLayout,
+    ) -> Result<&Zone> {
+        let scene = self
+            .active_scene_mut()
+            .ok_or_else(|| anyhow::anyhow!("no active scene"))?;
+
+        let structural_changed = if let Some(group) = scene.display_group_for_mut(device_id) {
+            let changed = group.effect_id.is_some()
+                || !group.controls.is_empty()
+                || !group.control_bindings.is_empty()
+                || group.preset_id.is_some()
+                || !group.layers.is_empty()
+                || group.layout != layout
+                || !group.enabled
+                || group.display_target != Some(DisplayFaceTarget::new(device_id))
+                || group.role != ZoneRole::Display
+                || group.name.trim().is_empty();
+            group.effect_id = None;
+            group.controls.clear();
+            group.control_bindings.clear();
+            group.preset_id = None;
+            group.layers.clear();
+            group.layout = layout;
+            group.enabled = true;
+            group.display_target = Some(DisplayFaceTarget::new(device_id));
+            group.role = ZoneRole::Display;
+            if group.name.trim().is_empty() {
+                device_name.clone_into(&mut group.name);
+            }
+            if changed {
+                group.controls_version = group.controls_version.saturating_add(1);
+                group.layers_version = group.layers_version.saturating_add(1);
+            }
+            changed
+        } else {
+            scene.groups.push(Zone {
+                id: ZoneId::new(),
+                name: device_name.to_owned(),
+                description: Some(format!("Screen surface for {device_name}")),
+                effect_id: None,
+                controls: HashMap::new(),
+                control_bindings: HashMap::new(),
+                preset_id: None,
+                layers: Vec::new(),
+                layout,
+                brightness: 1.0,
+                enabled: true,
+                color: None,
+                display_target: Some(DisplayFaceTarget::new(device_id)),
+                role: ZoneRole::Display,
+                controls_version: 0,
+                layers_version: 0,
+            });
+            true
+        };
+
+        if structural_changed {
+            bump_groups_revision(scene);
+            self.refresh_active_render_groups();
+        }
+
+        Ok(self
+            .active_scene()
+            .and_then(|scene| scene.display_group_for(device_id))
+            .expect("display group should exist after clearing assignment"))
+    }
+
     /// Create an empty `Custom` LED zone in the target scene.
     ///
     /// The zone inherits its canvas from an existing LED group so it stays
@@ -1809,13 +1880,16 @@ fn materialize_legacy_effect_layer(group: &mut Zone) {
     let Some(effect_id) = group.effect_id else {
         return;
     };
-    group.layers.insert(0, SceneLayer::from_effect(
-        group.legacy_layer_id(),
-        effect_id,
-        group.controls.clone(),
-        group.control_bindings.clone(),
-        group.preset_id,
-    ));
+    group.layers.insert(
+        0,
+        SceneLayer::from_effect(
+            group.legacy_layer_id(),
+            effect_id,
+            group.controls.clone(),
+            group.control_bindings.clone(),
+            group.preset_id,
+        ),
+    );
 }
 
 fn bump_groups_revision(scene: &mut Scene) {

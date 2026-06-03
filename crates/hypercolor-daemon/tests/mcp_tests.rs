@@ -795,15 +795,27 @@ async fn stateful_display_face_tool_assigns_and_clears_face_groups() {
     .expect("display face clear should succeed");
     assert_eq!(clear_result["scene_id"], SceneId::DEFAULT.to_string());
     assert_eq!(clear_result["cleared"], true);
+    assert_eq!(
+        clear_result["group"]["display_target"]["device_id"],
+        display_id.to_string()
+    );
+    assert!(clear_result["group"]["effect_id"].is_null());
+    assert_eq!(
+        clear_result["group"]["layers"].as_array().map(Vec::len),
+        Some(0)
+    );
 
     let clear_snapshot = runtime_state::load(&state.runtime_state_path)
         .expect("runtime snapshot should load")
         .expect("runtime snapshot should exist");
-    assert_eq!(clear_snapshot.default_scene_groups.len(), 1);
-    assert_eq!(
-        clear_snapshot.default_scene_groups[0].role,
-        hypercolor_types::scene::ZoneRole::Primary
-    );
+    assert_eq!(clear_snapshot.default_scene_groups.len(), 2);
+    let display_group = clear_snapshot
+        .default_scene_groups
+        .iter()
+        .find(|group| group.role == hypercolor_types::scene::ZoneRole::Display)
+        .expect("display screen surface should survive face clear");
+    assert_eq!(display_group.effect_id, None);
+    assert!(display_group.layers.is_empty());
 
     let mut saw_clear_event = false;
     while let Ok(timestamped) = clear_events.try_recv() {
@@ -816,7 +828,7 @@ async fn stateful_display_face_tool_assigns_and_clears_face_groups() {
         {
             assert_eq!(scene_id, SceneId::DEFAULT);
             assert_eq!(role, hypercolor_types::scene::ZoneRole::Display);
-            assert_eq!(kind, ZoneChangeKind::Removed);
+            assert_eq!(kind, ZoneChangeKind::Updated);
             saw_clear_event = true;
         }
     }

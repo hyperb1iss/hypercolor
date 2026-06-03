@@ -201,8 +201,7 @@ mod tests {
     #[test]
     fn elevation_command_quotes_both_paths_and_propagates_exit_code() {
         let helper = PathBuf::from(r"C:\Program Files\Hypercolor\hypercolor-windows-helper.exe");
-        let request =
-            PathBuf::from(r"C:\Users\x\AppData\Local\hypercolor\helper-requests\42.json");
+        let request = PathBuf::from(r"C:\Users\x\AppData\Local\hypercolor\helper-requests\42.json");
         let cmd = build_elevation_command(&helper, &request);
         assert!(
             cmd.contains("'C:\\Program Files\\Hypercolor\\hypercolor-windows-helper.exe'"),

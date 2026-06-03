@@ -1327,8 +1327,6 @@ impl ServoWorkerRuntime {
                     height,
                     response_tx,
                 }) => {
-                    #[cfg(feature = "servo-gpu-import")]
-                    self.clear_all_gpu_importers();
                     let result = self.create_session(session_id, producer_role, width, height);
                     let _ = response_tx.send(result);
                 }
@@ -1538,8 +1536,6 @@ impl ServoWorkerRuntime {
     ) -> Result<()> {
         {
             #[cfg(feature = "servo-gpu-import")]
-            self.clear_gpu_importers_except(session_id);
-            #[cfg(feature = "servo-gpu-import")]
             self.clear_gpu_importer(session_id);
             let session = self.session_mut(session_id)?;
             session.delegate.reset_navigation_state();
@@ -1646,8 +1642,6 @@ impl ServoWorkerRuntime {
         reason = "callers invoke with `?` alongside other fallible session ops; keeping the Result keeps the dispatch uniform"
     )]
     fn destroy_session(&mut self, session_id: ServoSessionId) -> Result<()> {
-        #[cfg(feature = "servo-gpu-import")]
-        self.clear_gpu_importers_except(session_id);
         let Some(mut session) = self.sessions.remove(&session_id) else {
             return Ok(());
         };
@@ -1991,27 +1985,6 @@ impl ServoWorkerRuntime {
                 bail!("{message}");
             }
             std::thread::sleep(Duration::from_millis(1));
-        }
-    }
-
-    #[cfg(feature = "servo-gpu-import")]
-    fn clear_all_gpu_importers(&mut self) {
-        let session_ids: Vec<_> = self.sessions.keys().copied().collect();
-        for session_id in session_ids {
-            self.clear_gpu_importer(session_id);
-        }
-    }
-
-    #[cfg(feature = "servo-gpu-import")]
-    fn clear_gpu_importers_except(&mut self, retained_session_id: ServoSessionId) {
-        let session_ids: Vec<_> = self
-            .sessions
-            .keys()
-            .copied()
-            .filter(|session_id| *session_id != retained_session_id)
-            .collect();
-        for session_id in session_ids {
-            self.clear_gpu_importer(session_id);
         }
     }
 }
@@ -2716,7 +2689,7 @@ fn servo_gpu_import_failure_is_transient(reason: ServoGpuImportFallbackReason) -
 
 #[cfg(feature = "servo-gpu-import")]
 fn servo_gpu_import_failure_should_clear_importer(reason: ServoGpuImportFallbackReason) -> bool {
-    !matches!(reason, ServoGpuImportFallbackReason::ImportSlotsExhausted)
+    !servo_gpu_import_failure_is_transient(reason)
 }
 
 #[cfg(feature = "servo-gpu-import")]
@@ -3540,6 +3513,26 @@ mod tests {
             ServoGpuImportFallbackReason::ImportSlotsExhausted
         ));
         assert!(!servo_gpu_import_failure_is_transient(
+            ServoGpuImportFallbackReason::MissingWgpuVulkanDevice
+        ));
+    }
+
+    #[cfg(feature = "servo-gpu-import")]
+    #[test]
+    fn transient_gpu_import_failures_preserve_importer_state() {
+        assert!(!servo_gpu_import_failure_should_clear_importer(
+            ServoGpuImportFallbackReason::GlOperation
+        ));
+        assert!(!servo_gpu_import_failure_should_clear_importer(
+            ServoGpuImportFallbackReason::GlFramebufferIncomplete
+        ));
+        assert!(!servo_gpu_import_failure_should_clear_importer(
+            ServoGpuImportFallbackReason::ImportSlotsExhausted
+        ));
+        assert!(servo_gpu_import_failure_should_clear_importer(
+            ServoGpuImportFallbackReason::GlResource
+        ));
+        assert!(servo_gpu_import_failure_should_clear_importer(
             ServoGpuImportFallbackReason::MissingWgpuVulkanDevice
         ));
     }

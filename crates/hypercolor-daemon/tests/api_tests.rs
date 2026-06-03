@@ -9678,7 +9678,14 @@ async fn display_face_endpoints_assign_get_and_delete_face() {
 
     let manager = state.scene_manager.read().await;
     let active_scene = manager.active_scene().expect("scene should remain active");
-    assert!(active_scene.groups.is_empty());
+    let display_group = active_scene
+        .display_group_for(display_id)
+        .expect("display screen surface should survive face deletion");
+    assert_eq!(display_group.id.to_string(), group_id);
+    assert_eq!(display_group.role, ZoneRole::Display);
+    assert_eq!(display_group.effect_id, None);
+    assert!(display_group.layers.is_empty());
+    assert!(display_group.effective_layers().is_empty());
 }
 
 #[tokio::test]

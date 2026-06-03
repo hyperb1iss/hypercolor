@@ -118,7 +118,9 @@ impl SupervisorState {
     }
 
     fn child_guard(&self) -> MutexGuard<'_, Option<u32>> {
-        self.child_pid.lock().unwrap_or_else(PoisonError::into_inner)
+        self.child_pid
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -536,7 +538,11 @@ async fn run_watchdog_loop(
         };
         let pid = daemon.id();
         state.replace_child_pid(pid);
-        tracing::info!(pid, attempt = restart_count + 1, "supervisor: daemon spawned");
+        tracing::info!(
+            pid,
+            attempt = restart_count + 1,
+            "supervisor: daemon spawned"
+        );
 
         let healthy = wait_until_healthy(
             &client,

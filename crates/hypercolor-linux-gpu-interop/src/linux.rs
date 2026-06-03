@@ -499,7 +499,9 @@ impl LinuxGlFramebufferImporter {
                 first_error = Some(error);
             }
         }
-        if let Some(error) = first_error {
+        if let Some(error) = first_error
+            && (self.latest_completed_frame().is_none() || !is_recoverable_poll_error(&error))
+        {
             return Err(error);
         }
         Ok(())
@@ -1670,6 +1672,16 @@ fn poll_gl_fence(gl: &glow::Context, fence: glow::NativeFence) -> Result<GlFence
     }
 }
 
+fn is_recoverable_poll_error(error: &LinuxGpuInteropError) -> bool {
+    matches!(
+        error,
+        LinuxGpuInteropError::GlOperation {
+            operation: "glClientWaitSync",
+            code: glow::INVALID_OPERATION,
+        }
+    )
+}
+
 fn delete_gl_fence(gl: &glow::Context, fence: glow::NativeFence) {
     // SAFETY: the fence belongs to this current GL context and is no longer
     // needed by the caller.
@@ -1843,5 +1855,29 @@ fn hal_texture_descriptor(
             | wgpu::TextureUses::COLOR_TARGET,
         memory_flags: wgpu_hal::MemoryFlags::empty(),
         view_formats: Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gl_client_wait_sync_poll_errors_are_recoverable() {
+        assert!(is_recoverable_poll_error(
+            &LinuxGpuInteropError::GlOperation {
+                operation: "glClientWaitSync",
+                code: glow::INVALID_OPERATION,
+            }
+        ));
+        assert!(!is_recoverable_poll_error(
+            &LinuxGpuInteropError::GlOperation {
+                operation: "glBlitFramebuffer",
+                code: glow::INVALID_OPERATION,
+            }
+        ));
+        assert!(!is_recoverable_poll_error(
+            &LinuxGpuInteropError::ImportSlotsExhausted { slot_count: 8 }
+        ));
     }
 }

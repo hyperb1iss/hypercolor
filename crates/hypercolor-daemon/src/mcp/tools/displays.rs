@@ -74,37 +74,35 @@ pub(super) async fn handle_set_display_face_with_state(
     let controls = parse_controls_map(params.get("controls"))?;
 
     if clear {
-        let (active_scene_id, removed_group) = {
+        let (active_scene_id, previous_group, cleared_group) = {
             let mut scene_manager = state.scene_manager.write().await;
             let active_scene_id = crate::api::active_scene_id_for_runtime_mutation(&scene_manager)
                 .map_err(|error| ToolError::Conflict(error.message("removing a display face")))?;
-            let removed_group = scene_manager
+            let previous_group = scene_manager
                 .active_scene()
                 .and_then(|scene| scene.display_group_for(device_id))
                 .cloned();
-            let removed = scene_manager
-                .remove_display_group(device_id)
-                .map_err(|error| ToolError::Internal(error.to_string()))?;
-            if !removed {
-                return Err(ToolError::InvalidParam {
-                    param: "device".into(),
-                    reason: format!("no display face is assigned to {device_id}"),
-                });
-            }
-            (active_scene_id, removed_group)
+            let cleared_group = scene_manager
+                .clear_display_group_assignment(
+                    device_id,
+                    info.name.as_str(),
+                    display_face_layout(device_id, info.name.as_str(), surface),
+                )
+                .map_err(|error| ToolError::Internal(error.to_string()))?
+                .clone();
+            (active_scene_id, previous_group, cleared_group)
         };
-        if let Some(removed_group) = removed_group.as_ref() {
-            publish_render_group_changed(
-                state,
-                active_scene_id,
-                removed_group,
-                ZoneChangeKind::Removed,
-            );
-        }
+        let change_kind = if previous_group.is_some() {
+            ZoneChangeKind::Updated
+        } else {
+            ZoneChangeKind::Created
+        };
+        publish_render_group_changed(state, active_scene_id, &cleared_group, change_kind);
         save_runtime_session_snapshot(state).await;
         return Ok(json!({
             "device": display_device_payload(&info, surface),
             "scene_id": active_scene_id.to_string(),
+            "group": cleared_group,
             "cleared": true,
         }));
     }

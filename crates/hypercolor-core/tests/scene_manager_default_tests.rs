@@ -331,6 +331,44 @@ fn upsert_display_group_reuses_empty_screen_surface() {
 }
 
 #[test]
+fn clear_display_group_assignment_preserves_screen_surface() {
+    let mut manager = SceneManager::with_default();
+    let device_id = DeviceId::new();
+    let effect = sample_effect("Clock");
+    let group_id = manager
+        .upsert_display_group(
+            device_id,
+            "Pump LCD",
+            &effect,
+            HashMap::from([("label".to_owned(), ControlValue::Text("cpu".to_owned()))]),
+            sample_layout("face"),
+        )
+        .expect("face assignment should be created")
+        .id;
+
+    let cleared = manager
+        .clear_display_group_assignment(device_id, "Pump LCD", sample_layout("surface"))
+        .expect("face assignment should clear into a surface shell")
+        .clone();
+
+    assert_eq!(cleared.id, group_id);
+    assert_eq!(cleared.role, ZoneRole::Display);
+    assert_eq!(cleared.effect_id, None);
+    assert!(cleared.controls.is_empty());
+    assert!(cleared.layers.is_empty());
+    assert!(cleared.effective_layers().is_empty());
+    assert_eq!(cleared.layout.id, "layout-surface");
+    assert_eq!(
+        cleared
+            .display_target
+            .as_ref()
+            .expect("display target should remain bound")
+            .device_id,
+        device_id
+    );
+}
+
+#[test]
 fn legacy_display_face_effect_is_effective_beside_media_layers() {
     let device_id = DeviceId::new();
     let effect = sample_effect("Clock");
@@ -357,7 +395,9 @@ fn legacy_display_face_effect_is_effective_beside_media_layers() {
 
     assert_eq!(layers.len(), 2);
     let LayerSource::Effect {
-        effect_id, controls, ..
+        effect_id,
+        controls,
+        ..
     } = &layers[0].source
     else {
         panic!("legacy face should appear before media layers");
@@ -410,8 +450,14 @@ fn inserting_layer_materializes_legacy_display_face_before_media() {
         updated.layers[0].source,
         LayerSource::Effect { effect_id, .. } if effect_id == effect.id
     ));
-    assert!(matches!(updated.layers[1].source, LayerSource::Media { .. }));
-    assert!(matches!(updated.layers[2].source, LayerSource::Media { .. }));
+    assert!(matches!(
+        updated.layers[1].source,
+        LayerSource::Media { .. }
+    ));
+    assert!(matches!(
+        updated.layers[2].source,
+        LayerSource::Media { .. }
+    ));
 }
 
 #[test]
