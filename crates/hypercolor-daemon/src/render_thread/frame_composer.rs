@@ -499,23 +499,29 @@ impl ComposeContext<'_> {
     }
 
     fn preview_surface_request(&self) -> Option<PreviewSurfaceRequest> {
-        preview_surface_request(
-            self.state.canvas_dims.width(),
-            self.state.canvas_dims.height(),
-            self.publish_canvas_preview,
-            self.publish_screen_canvas_preview,
-            self.scene_snapshot.effect_demand.effect_running,
-            self.scene_snapshot.effect_demand.screen_capture_active,
-            self.state.scene_canvas_receiver_count(),
-            self.state.preview_runtime.scene_canvas_receiver_count(),
-            self.state.preview_runtime.scene_canvas_demand(),
-            self.state.preview_canvas_receiver_count(),
-            self.state.preview_runtime.tracked_canvas_receiver_count(),
-            self.state.preview_runtime.tracked_canvas_demand(),
-            self.state.event_bus.screen_canvas_receiver_count(),
-            self.state.preview_runtime.screen_canvas_receiver_count(),
-            self.state.preview_runtime.screen_canvas_demand(),
-        )
+        preview_surface_request(PreviewSurfaceRequestContext {
+            canvas_width: self.state.canvas_dims.width(),
+            canvas_height: self.state.canvas_dims.height(),
+            publish_canvas_preview: self.publish_canvas_preview,
+            publish_screen_canvas_preview: self.publish_screen_canvas_preview,
+            effect_running: self.scene_snapshot.effect_demand.effect_running,
+            screen_capture_active: self.scene_snapshot.effect_demand.screen_capture_active,
+            scene_canvas: PreviewSurfaceDemandLane {
+                receivers: self.state.scene_canvas_receiver_count(),
+                tracked_receivers: self.state.preview_runtime.scene_canvas_receiver_count(),
+                demand: self.state.preview_runtime.scene_canvas_demand(),
+            },
+            canvas: PreviewSurfaceDemandLane {
+                receivers: self.state.preview_canvas_receiver_count(),
+                tracked_receivers: self.state.preview_runtime.tracked_canvas_receiver_count(),
+                demand: self.state.preview_runtime.tracked_canvas_demand(),
+            },
+            screen_canvas: PreviewSurfaceDemandLane {
+                receivers: self.state.event_bus.screen_canvas_receiver_count(),
+                tracked_receivers: self.state.preview_runtime.screen_canvas_receiver_count(),
+                demand: self.state.preview_runtime.screen_canvas_demand(),
+            },
+        })
     }
 
     fn preview_surface_pressure(&self) -> bool {
@@ -635,87 +641,86 @@ fn requires_published_surface(
         || (publish_screen_canvas_preview && !effect_running && screen_capture_active)
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "preview request sizing depends on tracked demand and receiver topology"
-)]
-#[allow(
-    clippy::fn_params_excessive_bools,
-    reason = "preview request sizing combines a fixed set of orthogonal publication switches"
-)]
-fn preview_surface_request(
+#[derive(Clone, Copy, Default)]
+struct PreviewSurfaceDemandLane {
+    receivers: usize,
+    tracked_receivers: usize,
+    demand: PreviewDemandSummary,
+}
+
+#[derive(Clone, Copy, Default)]
+struct PreviewSurfaceRequestContext {
     canvas_width: u32,
     canvas_height: u32,
     publish_canvas_preview: bool,
     publish_screen_canvas_preview: bool,
     effect_running: bool,
     screen_capture_active: bool,
-    scene_canvas_receivers: usize,
-    tracked_scene_canvas_receivers: usize,
-    scene_canvas_demand: PreviewDemandSummary,
-    canvas_receivers: usize,
-    tracked_canvas_receivers: usize,
-    canvas_demand: PreviewDemandSummary,
-    screen_canvas_receivers: usize,
-    tracked_screen_canvas_receivers: usize,
-    screen_canvas_demand: PreviewDemandSummary,
-) -> Option<PreviewSurfaceRequest> {
-    let wants_screen_passthrough =
-        publish_screen_canvas_preview && !effect_running && screen_capture_active;
+    scene_canvas: PreviewSurfaceDemandLane,
+    canvas: PreviewSurfaceDemandLane,
+    screen_canvas: PreviewSurfaceDemandLane,
+}
+
+fn preview_surface_request(context: PreviewSurfaceRequestContext) -> Option<PreviewSurfaceRequest> {
+    let wants_screen_passthrough = context.publish_screen_canvas_preview
+        && !context.effect_running
+        && context.screen_capture_active;
     if !requires_published_surface(
-        publish_canvas_preview,
-        publish_screen_canvas_preview,
-        effect_running,
-        screen_capture_active,
-        scene_canvas_receivers,
+        context.publish_canvas_preview,
+        context.publish_screen_canvas_preview,
+        context.effect_running,
+        context.screen_capture_active,
+        context.scene_canvas.receivers,
     ) {
         return None;
     }
 
-    if scene_canvas_receivers > tracked_scene_canvas_receivers
-        || (publish_canvas_preview && canvas_receivers > tracked_canvas_receivers)
-        || (wants_screen_passthrough && screen_canvas_receivers > tracked_screen_canvas_receivers)
+    if context.scene_canvas.receivers > context.scene_canvas.tracked_receivers
+        || (context.publish_canvas_preview
+            && context.canvas.receivers > context.canvas.tracked_receivers)
+        || (wants_screen_passthrough
+            && context.screen_canvas.receivers > context.screen_canvas.tracked_receivers)
     {
         return Some(PreviewSurfaceRequest {
-            width: canvas_width,
-            height: canvas_height,
+            width: context.canvas_width,
+            height: context.canvas_height,
         });
     }
 
     let mut max_width = 0;
     let mut max_height = 0;
     let mut any_full_resolution = false;
-    if publish_canvas_preview {
-        max_width = max_width.max(canvas_demand.max_width);
-        max_height = max_height.max(canvas_demand.max_height);
-        any_full_resolution |= canvas_demand.any_full_resolution;
+    if context.publish_canvas_preview {
+        max_width = max_width.max(context.canvas.demand.max_width);
+        max_height = max_height.max(context.canvas.demand.max_height);
+        any_full_resolution |= context.canvas.demand.any_full_resolution;
     }
-    if scene_canvas_receivers > 0 {
-        max_width = max_width.max(scene_canvas_demand.max_width);
-        max_height = max_height.max(scene_canvas_demand.max_height);
-        any_full_resolution |= scene_canvas_demand.any_full_resolution;
+    if context.scene_canvas.receivers > 0 {
+        max_width = max_width.max(context.scene_canvas.demand.max_width);
+        max_height = max_height.max(context.scene_canvas.demand.max_height);
+        any_full_resolution |= context.scene_canvas.demand.any_full_resolution;
     }
     if wants_screen_passthrough {
-        max_width = max_width.max(screen_canvas_demand.max_width);
-        max_height = max_height.max(screen_canvas_demand.max_height);
-        any_full_resolution |= screen_canvas_demand.any_full_resolution;
+        max_width = max_width.max(context.screen_canvas.demand.max_width);
+        max_height = max_height.max(context.screen_canvas.demand.max_height);
+        any_full_resolution |= context.screen_canvas.demand.any_full_resolution;
     }
 
     if any_full_resolution
-        || canvas_width == 0
-        || canvas_height == 0
+        || context.canvas_width == 0
+        || context.canvas_height == 0
         || max_width == 0
         || max_height == 0
     {
         return Some(PreviewSurfaceRequest {
-            width: canvas_width,
-            height: canvas_height,
+            width: context.canvas_width,
+            height: context.canvas_height,
         });
     }
 
     Some(PreviewSurfaceRequest {
-        width: max_width.clamp(1, canvas_width),
-        height: max_height.clamp(1, canvas_height),
+        width: max_width.clamp(1, context.canvas_width),
+        height: max_height.clamp(1, context.canvas_height),
     })
 }
 
@@ -744,7 +749,8 @@ fn scene_canvas_forces_full_surface(
 #[cfg(test)]
 mod tests {
     use super::{
-        PreviewSurfaceRequest, effective_render_group_layer_count, preview_surface_request,
+        PreviewSurfaceDemandLane, PreviewSurfaceRequest, PreviewSurfaceRequestContext,
+        effective_render_group_layer_count, preview_surface_request,
         producer_frame_requires_composition_for_preview, render_group_requires_full_composition,
         requires_cpu_sampling_canvas, requires_published_surface,
     };
@@ -887,32 +893,39 @@ mod tests {
         assert!(requires_published_surface(false, false, false, false, 1));
     }
 
+    fn demand_lane(
+        receivers: usize,
+        tracked_receivers: usize,
+        demand: PreviewDemandSummary,
+    ) -> PreviewSurfaceDemandLane {
+        PreviewSurfaceDemandLane {
+            receivers,
+            tracked_receivers,
+            demand,
+        }
+    }
+
     #[test]
     fn preview_surface_request_uses_scaled_tracked_demand() {
         assert_eq!(
-            preview_surface_request(
-                1280,
-                720,
-                true,
-                false,
-                true,
-                false,
-                0,
-                0,
-                PreviewDemandSummary::default(),
-                1,
-                1,
-                PreviewDemandSummary {
-                    subscribers: 1,
-                    max_fps: 20,
-                    max_width: 640,
-                    max_height: 360,
-                    ..PreviewDemandSummary::default()
-                },
-                0,
-                0,
-                PreviewDemandSummary::default(),
-            ),
+            preview_surface_request(PreviewSurfaceRequestContext {
+                canvas_width: 1280,
+                canvas_height: 720,
+                publish_canvas_preview: true,
+                effect_running: true,
+                canvas: demand_lane(
+                    1,
+                    1,
+                    PreviewDemandSummary {
+                        subscribers: 1,
+                        max_fps: 20,
+                        max_width: 640,
+                        max_height: 360,
+                        ..PreviewDemandSummary::default()
+                    },
+                ),
+                ..PreviewSurfaceRequestContext::default()
+            }),
             Some(PreviewSurfaceRequest {
                 width: 640,
                 height: 360,
@@ -926,29 +939,24 @@ mod tests {
         // `max_width.clamp(1, canvas_width)`, which panics when the canvas
         // dimension is 0 because `clamp` requires `min <= max`.
         assert_eq!(
-            preview_surface_request(
-                0,
-                480,
-                true,
-                false,
-                true,
-                false,
-                0,
-                0,
-                PreviewDemandSummary::default(),
-                1,
-                1,
-                PreviewDemandSummary {
-                    subscribers: 1,
-                    max_fps: 20,
-                    max_width: 320,
-                    max_height: 240,
-                    ..PreviewDemandSummary::default()
-                },
-                0,
-                0,
-                PreviewDemandSummary::default(),
-            ),
+            preview_surface_request(PreviewSurfaceRequestContext {
+                canvas_width: 0,
+                canvas_height: 480,
+                publish_canvas_preview: true,
+                effect_running: true,
+                canvas: demand_lane(
+                    1,
+                    1,
+                    PreviewDemandSummary {
+                        subscribers: 1,
+                        max_fps: 20,
+                        max_width: 320,
+                        max_height: 240,
+                        ..PreviewDemandSummary::default()
+                    },
+                ),
+                ..PreviewSurfaceRequestContext::default()
+            }),
             Some(PreviewSurfaceRequest {
                 width: 0,
                 height: 480,
@@ -956,29 +964,24 @@ mod tests {
         );
 
         assert_eq!(
-            preview_surface_request(
-                640,
-                0,
-                true,
-                false,
-                true,
-                false,
-                0,
-                0,
-                PreviewDemandSummary::default(),
-                1,
-                1,
-                PreviewDemandSummary {
-                    subscribers: 1,
-                    max_fps: 20,
-                    max_width: 320,
-                    max_height: 240,
-                    ..PreviewDemandSummary::default()
-                },
-                0,
-                0,
-                PreviewDemandSummary::default(),
-            ),
+            preview_surface_request(PreviewSurfaceRequestContext {
+                canvas_width: 640,
+                canvas_height: 0,
+                publish_canvas_preview: true,
+                effect_running: true,
+                canvas: demand_lane(
+                    1,
+                    1,
+                    PreviewDemandSummary {
+                        subscribers: 1,
+                        max_fps: 20,
+                        max_width: 320,
+                        max_height: 240,
+                        ..PreviewDemandSummary::default()
+                    },
+                ),
+                ..PreviewSurfaceRequestContext::default()
+            }),
             Some(PreviewSurfaceRequest {
                 width: 640,
                 height: 0,
@@ -989,29 +992,24 @@ mod tests {
     #[test]
     fn preview_surface_request_falls_back_to_full_size_for_untracked_receivers() {
         assert_eq!(
-            preview_surface_request(
-                1280,
-                720,
-                true,
-                false,
-                true,
-                false,
-                0,
-                0,
-                PreviewDemandSummary::default(),
-                2,
-                1,
-                PreviewDemandSummary {
-                    subscribers: 1,
-                    max_fps: 20,
-                    max_width: 640,
-                    max_height: 360,
-                    ..PreviewDemandSummary::default()
-                },
-                0,
-                0,
-                PreviewDemandSummary::default(),
-            ),
+            preview_surface_request(PreviewSurfaceRequestContext {
+                canvas_width: 1280,
+                canvas_height: 720,
+                publish_canvas_preview: true,
+                effect_running: true,
+                canvas: demand_lane(
+                    2,
+                    1,
+                    PreviewDemandSummary {
+                        subscribers: 1,
+                        max_fps: 20,
+                        max_width: 640,
+                        max_height: 360,
+                        ..PreviewDemandSummary::default()
+                    },
+                ),
+                ..PreviewSurfaceRequestContext::default()
+            }),
             Some(PreviewSurfaceRequest {
                 width: 1280,
                 height: 720,
@@ -1022,29 +1020,23 @@ mod tests {
     #[test]
     fn preview_surface_request_uses_scaled_tracked_scene_canvas_demand() {
         assert_eq!(
-            preview_surface_request(
-                1280,
-                720,
-                false,
-                false,
-                true,
-                false,
-                1,
-                1,
-                PreviewDemandSummary {
-                    subscribers: 1,
-                    max_fps: 20,
-                    max_width: 320,
-                    max_height: 180,
-                    ..PreviewDemandSummary::default()
-                },
-                0,
-                0,
-                PreviewDemandSummary::default(),
-                0,
-                0,
-                PreviewDemandSummary::default(),
-            ),
+            preview_surface_request(PreviewSurfaceRequestContext {
+                canvas_width: 1280,
+                canvas_height: 720,
+                effect_running: true,
+                scene_canvas: demand_lane(
+                    1,
+                    1,
+                    PreviewDemandSummary {
+                        subscribers: 1,
+                        max_fps: 20,
+                        max_width: 320,
+                        max_height: 180,
+                        ..PreviewDemandSummary::default()
+                    },
+                ),
+                ..PreviewSurfaceRequestContext::default()
+            }),
             Some(PreviewSurfaceRequest {
                 width: 320,
                 height: 180,
@@ -1055,23 +1047,13 @@ mod tests {
     #[test]
     fn preview_surface_request_uses_full_resolution_for_authoritative_global_lane() {
         assert_eq!(
-            preview_surface_request(
-                1280,
-                720,
-                false,
-                false,
-                true,
-                false,
-                1,
-                0,
-                PreviewDemandSummary::default(),
-                0,
-                0,
-                PreviewDemandSummary::default(),
-                0,
-                0,
-                PreviewDemandSummary::default(),
-            ),
+            preview_surface_request(PreviewSurfaceRequestContext {
+                canvas_width: 1280,
+                canvas_height: 720,
+                effect_running: true,
+                scene_canvas: demand_lane(1, 0, PreviewDemandSummary::default()),
+                ..PreviewSurfaceRequestContext::default()
+            }),
             Some(PreviewSurfaceRequest {
                 width: 1280,
                 height: 720,
