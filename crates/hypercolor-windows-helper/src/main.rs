@@ -79,13 +79,9 @@ fn emit_error(err: &HelperError) -> ExitCode {
     ExitCode::from(1)
 }
 
-#[cfg(not(target_os = "windows"))]
-fn emit_error(_err: &HelperError) -> ExitCode {
-    ExitCode::from(1)
-}
-
 /// Structured helper failure used to populate the stderr JSON envelope the
 /// parent app parses (see §8 Hardware Setup Failure Modes in the roadmap).
+#[cfg(target_os = "windows")]
 #[derive(Debug)]
 struct HelperError {
     verb: Option<String>,
@@ -93,6 +89,7 @@ struct HelperError {
     detail: String,
 }
 
+#[cfg(target_os = "windows")]
 impl HelperError {
     fn new(kind: impl Into<String>, detail: impl Into<String>) -> Self {
         Self {
