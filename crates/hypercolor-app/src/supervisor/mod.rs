@@ -814,7 +814,7 @@ fn daemon_log_file() -> std::io::Result<std::fs::File> {
 }
 
 #[cfg(target_os = "windows")]
-type PlatformGuard = win32job::Job;
+pub(crate) type PlatformGuard = win32job::Job;
 
 #[cfg(target_os = "windows")]
 fn configure_platform_command(command: &mut Command) {
@@ -834,7 +834,7 @@ fn attach_platform_guard(child: &Child) -> Result<PlatformGuard> {
 
 #[cfg(unix)]
 #[derive(Debug)]
-struct PlatformGuard;
+pub(crate) struct PlatformGuard;
 
 #[cfg(unix)]
 fn configure_platform_command(command: &mut Command) {

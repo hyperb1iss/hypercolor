@@ -517,7 +517,7 @@ mod tests {
 
         assert_eq!(
             payload.script(),
-            r#"(function(){
+            r"(function(){
   if (typeof window.engine !== 'object' || window.engine === null) { window.engine = {}; }
   if (typeof window.engine.audio !== 'object' || window.engine.audio === null) { window.engine.audio = {}; }
   window.engine.audio.level = -12.5;
@@ -564,7 +564,7 @@ mod tests {
   window.engine.audio.melBandsNormalized = new Float32Array([0.1,0.2]);
   window.engine.audio.chromagram = new Float32Array([0.3]);
   if (typeof globalThis === 'object' && globalThis !== null) { globalThis.engine = window.engine; }
-})();"#
+})();"
         );
     }
 
@@ -600,7 +600,7 @@ mod tests {
 
         assert_eq!(
             payload.script(),
-            r#"(function(){
+            r"(function(){
   if (typeof window.engine !== 'object' || window.engine === null) { window.engine = {}; }
   if (typeof window.engine.zone !== 'object' || window.engine.zone === null) { window.engine.zone = {}; }
   window.engine.zone.width = 2;
@@ -609,7 +609,7 @@ mod tests {
   window.engine.zone.saturation = new Int8Array([127,0]);
   window.engine.zone.lightness = new Int8Array([64,32]);
   if (typeof globalThis === 'object' && globalThis !== null) { globalThis.engine = window.engine; }
-})();"#
+})();"
         );
     }
 }

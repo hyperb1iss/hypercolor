@@ -696,12 +696,12 @@ mod tests {
         assert!(after.destroy_wait_max_us >= 25);
         assert!(after.render_requests_total >= before.render_requests_total + 2);
         assert!(after.render_queue_wait_total_us >= before.render_queue_wait_total_us + 100);
-        assert!(after.render_scene_requests_total >= before.render_scene_requests_total + 1);
+        assert!(after.render_scene_requests_total > before.render_scene_requests_total);
         assert!(
             after.render_scene_queue_wait_total_us >= before.render_scene_queue_wait_total_us + 45
         );
         assert!(after.render_scene_queue_wait_max_us >= 45);
-        assert!(after.render_display_requests_total >= before.render_display_requests_total + 1);
+        assert!(after.render_display_requests_total > before.render_display_requests_total);
         assert!(
             after.render_display_queue_wait_total_us
                 >= before.render_display_queue_wait_total_us + 55
