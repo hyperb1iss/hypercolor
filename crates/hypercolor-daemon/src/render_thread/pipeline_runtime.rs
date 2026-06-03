@@ -32,7 +32,7 @@ use super::frame_policy::SkipDecision;
 #[cfg(feature = "wgpu")]
 use super::gpu_device::GpuRenderDevice;
 use super::producer_queue::ProducerQueue;
-use super::render_groups::{ZoneResult, ZoneRuntime};
+use super::render_groups::{RenderSceneContext, ZoneFrameInputs, ZoneResult, ZoneRuntime};
 use super::scene_dependency::SceneDependencyKey;
 use super::scene_snapshot::{FrameSceneSnapshot, SceneSnapshotCache};
 use super::scene_state::RenderSceneState;
@@ -886,22 +886,24 @@ impl ComposeRuntime<'_> {
         }
 
         let zones = self.output_artifacts.zones_mut();
-        (
-            self.render_group_runtime.render_scene(
-                scene_snapshot.scene_runtime.active_render_groups.as_ref(),
-                scene_snapshot.scene_runtime.active_scene_id,
-                dependency_key,
-                scene_snapshot.elapsed_ms,
-                &scene_snapshot.scene_runtime.active_display_group_target_fps,
-                registry,
+        let context = RenderSceneContext {
+            groups: scene_snapshot.scene_runtime.active_render_groups.as_ref(),
+            active_scene_id: scene_snapshot.scene_runtime.active_scene_id,
+            dependency_key,
+            elapsed_ms: scene_snapshot.elapsed_ms,
+            display_group_target_fps: &scene_snapshot.scene_runtime.active_display_group_target_fps,
+            registry,
+            inputs: ZoneFrameInputs {
                 delta_secs,
-                &inputs.audio,
-                &inputs.interaction,
-                inputs.screen_data.as_ref(),
-                inputs.sensors.as_ref(),
-                self.sparkleflinger,
-                zones,
-            ),
+                audio: &inputs.audio,
+                interaction: &inputs.interaction,
+                screen: inputs.screen_data.as_ref(),
+                sensors: inputs.sensors.as_ref(),
+            },
+        };
+        (
+            self.render_group_runtime
+                .render_scene(context, self.sparkleflinger, zones),
             false,
         )
     }

@@ -97,6 +97,51 @@ pub(crate) struct ZoneResult {
     pub logical_layer_count: u32,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct ZoneFrameInputs<'a> {
+    pub(crate) delta_secs: f32,
+    pub(crate) audio: &'a AudioData,
+    pub(crate) interaction: &'a InteractionData,
+    pub(crate) screen: Option<&'a ScreenData>,
+    pub(crate) sensors: &'a SystemSnapshot,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct RenderSceneContext<'a> {
+    pub(crate) groups: &'a [Zone],
+    pub(crate) active_scene_id: Option<SceneId>,
+    pub(crate) dependency_key: SceneDependencyKey,
+    pub(crate) elapsed_ms: u32,
+    pub(crate) display_group_target_fps: &'a HashMap<ZoneId, u32>,
+    pub(crate) registry: &'a EffectRegistry,
+    pub(crate) inputs: ZoneFrameInputs<'a>,
+}
+
+#[derive(Clone, Copy)]
+struct GroupFrameContext<'a> {
+    active_scene_id: Option<SceneId>,
+    elapsed_ms: u32,
+    registry: &'a EffectRegistry,
+    inputs: ZoneFrameInputs<'a>,
+}
+
+impl<'a> RenderSceneContext<'a> {
+    fn group_context(&self) -> GroupFrameContext<'a> {
+        GroupFrameContext {
+            active_scene_id: self.active_scene_id,
+            elapsed_ms: self.elapsed_ms,
+            registry: self.registry,
+            inputs: self.inputs,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct GroupFrameRequirements {
+    requires_cpu_sampling_canvas: bool,
+    requires_published_surface: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("zone '{group_name}' effect '{effect_name}' ({effect_id}) failed: {error}")]
 pub(crate) struct ZoneEffectError {
@@ -390,47 +435,24 @@ impl ZoneRuntime {
             || self.reconciled_dependency_key.is_some()
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "render-scene orchestration needs the full frame context plus reusable zone storage"
-    )]
     pub(crate) fn render_scene(
         &mut self,
-        groups: &[Zone],
-        active_scene_id: Option<SceneId>,
-        dependency_key: SceneDependencyKey,
-        elapsed_ms: u32,
-        display_group_target_fps: &HashMap<ZoneId, u32>,
-        registry: &EffectRegistry,
-        delta_secs: f32,
-        audio: &AudioData,
-        interaction: &InteractionData,
-        screen: Option<&ScreenData>,
-        sensors: &SystemSnapshot,
+        context: RenderSceneContext<'_>,
         sparkleflinger: &mut SparkleFlinger,
         zones: &mut Vec<ZoneColors>,
     ) -> Result<ZoneResult> {
-        self.reconcile(groups, active_scene_id, dependency_key, registry)?;
+        self.reconcile(
+            context.groups,
+            context.active_scene_id,
+            context.dependency_key,
+            context.registry,
+        )?;
         #[cfg(feature = "wgpu")]
         sparkleflinger.begin_media_upload_frame();
 
-        if let Some(result) = self.render_single_full_scene_group(
-            groups,
-            active_scene_id,
-            elapsed_ms,
-            display_group_target_fps,
-            dependency_key,
-            registry,
-            delta_secs,
-            audio,
-            interaction,
-            screen,
-            sensors,
-            sparkleflinger,
-            zones,
-        )? {
+        if let Some(result) = self.render_single_full_scene_group(context, sparkleflinger, zones)? {
             self.clear_effect_error();
-            self.retain_frame(dependency_key, &result, &[]);
+            self.retain_frame(context.dependency_key, &result, &[]);
             return Ok(result);
         }
 
@@ -440,9 +462,9 @@ impl ZoneRuntime {
         let mut zone_canvases = Vec::new();
         let mut active_group_canvas_ids = Vec::new();
         let project_scene_with_sparkleflinger = sparkleflinger.supports_gpu_output_frames()
-            && groups_support_projection_composition(groups, &self.scene_projection_cache);
+            && groups_support_projection_composition(context.groups, &self.scene_projection_cache);
         let mut projected_scene_layers = Vec::new();
-        for group in groups {
+        for group in context.groups {
             if !group_is_active(group) {
                 continue;
             }
@@ -451,9 +473,9 @@ impl ZoneRuntime {
                 active_group_canvas_ids.push(group.id);
                 if let Some(retained) = self.reuse_retained_direct_group_frame(
                     group,
-                    elapsed_ms,
-                    display_group_target_fps,
-                    dependency_key,
+                    context.elapsed_ms,
+                    context.display_group_target_fps,
+                    context.dependency_key,
                 ) {
                     zone_canvases.push((group.id, retained.frame.clone()));
                     group_canvases.push((group.id, retained));
@@ -462,14 +484,7 @@ impl ZoneRuntime {
                 let render_start = Instant::now();
                 let Some(frame) = self.render_direct_group_frame(
                     group,
-                    active_scene_id,
-                    elapsed_ms,
-                    registry,
-                    delta_secs,
-                    audio,
-                    interaction,
-                    screen,
-                    sensors,
+                    context.group_context(),
                     sparkleflinger,
                     &mut producer_full_frame_copy,
                 )?
@@ -481,7 +496,12 @@ impl ZoneRuntime {
                     continue;
                 };
                 render_us = render_us.saturating_add(micros_u32(render_start.elapsed()));
-                self.retain_direct_group_frame(group.id, elapsed_ms, dependency_key, &frame);
+                self.retain_direct_group_frame(
+                    group.id,
+                    context.elapsed_ms,
+                    context.dependency_key,
+                    &frame,
+                );
                 zone_canvases.push((group.id, frame.frame.clone()));
                 group_canvases.push((group.id, frame));
                 continue;
@@ -490,32 +510,22 @@ impl ZoneRuntime {
             let render_start = Instant::now();
             let mut frame = self.render_group_frame(
                 group,
-                active_scene_id,
-                elapsed_ms,
-                registry,
-                delta_secs,
-                audio,
-                interaction,
-                screen,
-                sensors,
+                context.group_context(),
                 sparkleflinger,
-                !project_scene_with_sparkleflinger,
-                false,
+                GroupFrameRequirements {
+                    requires_cpu_sampling_canvas: !project_scene_with_sparkleflinger,
+                    requires_published_surface: false,
+                },
             )?;
             if frame.is_none() && project_scene_with_sparkleflinger {
                 frame = self.render_group_frame(
                     group,
-                    active_scene_id,
-                    elapsed_ms,
-                    registry,
-                    delta_secs,
-                    audio,
-                    interaction,
-                    screen,
-                    sensors,
+                    context.group_context(),
                     sparkleflinger,
-                    true,
-                    false,
+                    GroupFrameRequirements {
+                        requires_cpu_sampling_canvas: true,
+                        requires_published_surface: false,
+                    },
                 )?;
             }
             let Some(target) = self.target_canvases.get_mut(&group.id) else {
@@ -547,22 +557,22 @@ impl ZoneRuntime {
             render_us = render_us.saturating_add(micros_u32(render_start.elapsed()));
         }
         zones.clear();
-        let logical_layer_count = scene_logical_layer_count(groups);
+        let logical_layer_count = scene_logical_layer_count(context.groups);
         let use_gpu_scene_sampling =
             project_scene_with_sparkleflinger && !self.combined_led_layout.zones.is_empty();
         let sample_us = if use_gpu_scene_sampling {
             0
         } else {
             let sample_start = Instant::now();
-            self.sample_scene_group_led_zones(groups, zones);
+            self.sample_scene_group_led_zones(context.groups, zones);
             micros_u32(sample_start.elapsed())
         };
         let scene_compose_start = Instant::now();
         let scene_frame = if project_scene_with_sparkleflinger {
             self.compose_projected_scene_frame(projected_scene_layers, sparkleflinger)
-                .unwrap_or_else(|| self.compose_scene_frame(groups))
+                .unwrap_or_else(|| self.compose_scene_frame(context.groups))
         } else {
-            self.compose_scene_frame(groups)
+            self.compose_scene_frame(context.groups)
         };
         let scene_compose_us = micros_u32(scene_compose_start.elapsed());
         let led_sampling_strategy = if use_gpu_scene_sampling {
@@ -584,7 +594,7 @@ impl ZoneRuntime {
             logical_layer_count,
         };
         self.clear_effect_error();
-        self.retain_frame(dependency_key, &result, zones);
+        self.retain_frame(context.dependency_key, &result, zones);
         Ok(result)
     }
 
@@ -731,21 +741,11 @@ impl ZoneRuntime {
 
     fn render_single_full_scene_group(
         &mut self,
-        groups: &[Zone],
-        active_scene_id: Option<SceneId>,
-        elapsed_ms: u32,
-        display_group_target_fps: &HashMap<ZoneId, u32>,
-        dependency_key: SceneDependencyKey,
-        registry: &EffectRegistry,
-        delta_secs: f32,
-        audio: &AudioData,
-        interaction: &InteractionData,
-        screen: Option<&ScreenData>,
-        sensors: &SystemSnapshot,
+        context: RenderSceneContext<'_>,
         sparkleflinger: &mut SparkleFlinger,
         zones: &mut Vec<ZoneColors>,
     ) -> Result<Option<ZoneResult>> {
-        let Some(scene_group) = self.single_full_scene_group(groups) else {
+        let Some(scene_group) = self.single_full_scene_group(context.groups) else {
             return Ok(None);
         };
         let Some(spatial_engine) = self.spatial_engines.get(&scene_group.id).cloned() else {
@@ -754,31 +754,19 @@ impl ZoneRuntime {
 
         let mut producer_full_frame_copy = FullFrameCopyMetrics::default();
         let render_start = Instant::now();
-        let scene_frame = if let Some(frame) = self.render_passthrough_effect_layer_frame(
-            scene_group,
-            active_scene_id,
-            registry,
-            delta_secs,
-            audio,
-            interaction,
-            screen,
-            sensors,
-        )? {
+        let scene_frame = if let Some(frame) =
+            self.render_passthrough_effect_layer_frame(scene_group, context.group_context())?
+        {
             frame
         } else {
             let Some(frame) = self.render_group_frame(
                 scene_group,
-                active_scene_id,
-                elapsed_ms,
-                registry,
-                delta_secs,
-                audio,
-                interaction,
-                screen,
-                sensors,
+                context.group_context(),
                 sparkleflinger,
-                true,
-                true,
+                GroupFrameRequirements {
+                    requires_cpu_sampling_canvas: true,
+                    requires_published_surface: true,
+                },
             )?
             else {
                 return Ok(None);
@@ -800,7 +788,7 @@ impl ZoneRuntime {
         let mut group_canvases = Vec::new();
         let mut zone_canvases = vec![(scene_group.id, scene_frame.clone())];
         let mut active_group_canvas_ids = Vec::new();
-        for group in groups {
+        for group in context.groups {
             if !group.enabled || group.id == scene_group.id {
                 continue;
             }
@@ -811,9 +799,9 @@ impl ZoneRuntime {
             active_group_canvas_ids.push(group.id);
             if let Some(retained) = self.reuse_retained_direct_group_frame(
                 group,
-                elapsed_ms,
-                display_group_target_fps,
-                dependency_key,
+                context.elapsed_ms,
+                context.display_group_target_fps,
+                context.dependency_key,
             ) {
                 zone_canvases.push((group.id, retained.frame.clone()));
                 group_canvases.push((group.id, retained));
@@ -823,14 +811,7 @@ impl ZoneRuntime {
             let render_start = Instant::now();
             let Some(frame) = self.render_direct_group_frame(
                 group,
-                active_scene_id,
-                elapsed_ms,
-                registry,
-                delta_secs,
-                audio,
-                interaction,
-                screen,
-                sensors,
+                context.group_context(),
                 sparkleflinger,
                 &mut producer_full_frame_copy,
             )?
@@ -842,7 +823,12 @@ impl ZoneRuntime {
                 continue;
             };
             render_us = render_us.saturating_add(micros_u32(render_start.elapsed()));
-            self.retain_direct_group_frame(group.id, elapsed_ms, dependency_key, &frame);
+            self.retain_direct_group_frame(
+                group.id,
+                context.elapsed_ms,
+                context.dependency_key,
+                &frame,
+            );
             zone_canvases.push((group.id, frame.frame.clone()));
             group_canvases.push((group.id, frame));
         }
@@ -1073,21 +1059,10 @@ impl ZoneRuntime {
         );
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "direct display rendering uses the same per-frame inputs as scene rendering"
-    )]
     fn render_direct_group_frame(
         &mut self,
         group: &Zone,
-        active_scene_id: Option<SceneId>,
-        elapsed_ms: u32,
-        registry: &EffectRegistry,
-        delta_secs: f32,
-        audio: &AudioData,
-        interaction: &InteractionData,
-        screen: Option<&ScreenData>,
-        sensors: &SystemSnapshot,
+        context: GroupFrameContext<'_>,
         sparkleflinger: &mut SparkleFlinger,
         full_frame_copy: &mut FullFrameCopyMetrics,
     ) -> Result<Option<PendingGroupCanvasFrame>> {
@@ -1102,34 +1077,19 @@ impl ZoneRuntime {
             self.retained_materialized_group_frames.remove(&group.id);
             transparent_black_frame(group.layout.canvas_width, group.layout.canvas_height)
         } else if passthrough_effect_layer(group).is_some() {
-            let Some(frame) = self.render_passthrough_effect_layer_frame(
-                group,
-                active_scene_id,
-                registry,
-                delta_secs,
-                audio,
-                interaction,
-                screen,
-                sensors,
-            )?
-            else {
+            let Some(frame) = self.render_passthrough_effect_layer_frame(group, context)? else {
                 return Ok(None);
             };
             frame
         } else {
             let Some(frame) = self.render_group_frame(
                 group,
-                active_scene_id,
-                elapsed_ms,
-                registry,
-                delta_secs,
-                audio,
-                interaction,
-                screen,
-                sensors,
+                context,
                 sparkleflinger,
-                true,
-                true,
+                GroupFrameRequirements {
+                    requires_cpu_sampling_canvas: true,
+                    requires_published_surface: true,
+                },
             )?
             else {
                 return Ok(None);
@@ -1147,24 +1107,12 @@ impl ZoneRuntime {
         }))
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "layer rendering uses the same per-frame inputs as group rendering"
-    )]
     fn render_group_frame(
         &mut self,
         group: &Zone,
-        active_scene_id: Option<SceneId>,
-        elapsed_ms: u32,
-        registry: &EffectRegistry,
-        delta_secs: f32,
-        audio: &AudioData,
-        interaction: &InteractionData,
-        screen: Option<&ScreenData>,
-        sensors: &SystemSnapshot,
+        context: GroupFrameContext<'_>,
         sparkleflinger: &mut SparkleFlinger,
-        requires_cpu_sampling_canvas: bool,
-        requires_published_surface: bool,
+        requirements: GroupFrameRequirements,
     ) -> Result<Option<ProducerFrame>> {
         let mut composition_layers = Vec::new();
         let mut gpu_source_layers = Vec::new();
@@ -1172,30 +1120,21 @@ impl ZoneRuntime {
             if !layer.enabled {
                 continue;
             }
-            let layer_runtime =
-                evaluate_layer_runtime(&layer, audio, sensors, elapsed_ms).apply_to_layer(&layer);
+            let layer_runtime = evaluate_layer_runtime(
+                &layer,
+                context.inputs.audio,
+                context.inputs.sensors,
+                context.elapsed_ms,
+            )
+            .apply_to_layer(&layer);
             let frame = match &layer_runtime.source {
-                LayerSource::Effect { .. } => self.render_effect_layer_frame(
-                    group,
-                    &layer_runtime,
-                    registry,
-                    delta_secs,
-                    audio,
-                    interaction,
-                    screen,
-                    sensors,
-                )?,
+                LayerSource::Effect { .. } => {
+                    self.render_effect_layer_frame(group, &layer_runtime, context)?
+                }
                 #[cfg(feature = "servo")]
-                LayerSource::WebViewport { .. } => self.render_effect_layer_frame(
-                    group,
-                    &layer_runtime,
-                    registry,
-                    delta_secs,
-                    audio,
-                    interaction,
-                    screen,
-                    sensors,
-                )?,
+                LayerSource::WebViewport { .. } => {
+                    self.render_effect_layer_frame(group, &layer_runtime, context)?
+                }
                 LayerSource::ColorFill { rgba } => Some(color_fill_frame(
                     group.layout.canvas_width,
                     group.layout.canvas_height,
@@ -1206,12 +1145,12 @@ impl ZoneRuntime {
                         *asset_id,
                         layer_runtime.id,
                         playback,
-                        elapsed_ms,
+                        context.elapsed_ms,
                         sparkleflinger,
                     ) {
                         MediaLayerFrame::Ready { frame, health } => {
                             self.layer_runtime.note_health(
-                                active_scene_id,
+                                context.active_scene_id,
                                 group.id,
                                 layer_runtime.id,
                                 health,
@@ -1220,7 +1159,7 @@ impl ZoneRuntime {
                         }
                         MediaLayerFrame::Loading => {
                             self.layer_runtime.note_health(
-                                active_scene_id,
+                                context.active_scene_id,
                                 group.id,
                                 layer_runtime.id,
                                 LayerHealth::Loading,
@@ -1232,7 +1171,7 @@ impl ZoneRuntime {
                         }
                         MediaLayerFrame::Missing => {
                             self.layer_runtime.note_health(
-                                active_scene_id,
+                                context.active_scene_id,
                                 group.id,
                                 layer_runtime.id,
                                 LayerHealth::AssetMissing,
@@ -1244,7 +1183,7 @@ impl ZoneRuntime {
                         }
                         MediaLayerFrame::Failed(reason) => {
                             self.layer_runtime.note_health(
-                                active_scene_id,
+                                context.active_scene_id,
                                 group.id,
                                 layer_runtime.id,
                                 LayerHealth::Failed { reason },
@@ -1257,9 +1196,10 @@ impl ZoneRuntime {
                     }
                 }
                 LayerSource::ScreenRegion { viewport } => {
-                    if let Some(frame) = screen_region_layer_frame(screen, *viewport) {
+                    if let Some(frame) = screen_region_layer_frame(context.inputs.screen, *viewport)
+                    {
                         self.layer_runtime.note_health(
-                            active_scene_id,
+                            context.active_scene_id,
                             group.id,
                             layer_runtime.id,
                             LayerHealth::Active,
@@ -1267,7 +1207,7 @@ impl ZoneRuntime {
                         Some(frame)
                     } else {
                         self.layer_runtime.note_health(
-                            active_scene_id,
+                            context.active_scene_id,
                             group.id,
                             layer_runtime.id,
                             LayerHealth::Loading,
@@ -1281,7 +1221,7 @@ impl ZoneRuntime {
                 #[cfg(not(feature = "servo"))]
                 LayerSource::WebViewport { .. } => {
                     self.layer_runtime.note_health(
-                        active_scene_id,
+                        context.active_scene_id,
                         group.id,
                         layer_runtime.id,
                         LayerHealth::Failed {
@@ -1296,7 +1236,7 @@ impl ZoneRuntime {
             };
             let Some(frame) = frame else {
                 self.layer_runtime.note_health(
-                    active_scene_id,
+                    context.active_scene_id,
                     group.id,
                     layer_runtime.id,
                     LayerHealth::Loading,
@@ -1308,7 +1248,7 @@ impl ZoneRuntime {
                 LayerSource::Effect { .. } | LayerSource::ColorFill { .. }
             ) {
                 self.layer_runtime.note_health(
-                    active_scene_id,
+                    context.active_scene_id,
                     group.id,
                     layer_runtime.id,
                     LayerHealth::Active,
@@ -1340,16 +1280,18 @@ impl ZoneRuntime {
         };
         let composed = sparkleflinger.compose_for_outputs(
             plan.with_cpu_replay_cacheable(false),
-            requires_cpu_sampling_canvas,
-            requires_published_surface.then_some(PreviewSurfaceRequest {
-                width: group.layout.canvas_width,
-                height: group.layout.canvas_height,
-            }),
+            requirements.requires_cpu_sampling_canvas,
+            requirements
+                .requires_published_surface
+                .then_some(PreviewSurfaceRequest {
+                    width: group.layout.canvas_width,
+                    height: group.layout.canvas_height,
+                }),
         );
         if composed.gpu_readback_failed {
             for layer_id in gpu_source_layers {
                 self.layer_runtime.note_health(
-                    active_scene_id,
+                    context.active_scene_id,
                     group.id,
                     layer_id,
                     LayerHealth::Failed {
@@ -1439,45 +1381,26 @@ impl ZoneRuntime {
         }
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "effect layer rendering uses the full frame input"
-    )]
     fn render_passthrough_effect_layer_frame(
         &mut self,
         group: &Zone,
-        active_scene_id: Option<SceneId>,
-        registry: &EffectRegistry,
-        delta_secs: f32,
-        audio: &AudioData,
-        interaction: &InteractionData,
-        screen: Option<&ScreenData>,
-        sensors: &SystemSnapshot,
+        context: GroupFrameContext<'_>,
     ) -> Result<Option<ProducerFrame>> {
         let Some(layer) = passthrough_effect_layer(group) else {
             return Ok(None);
         };
 
-        let frame = self.render_effect_layer_frame(
-            group,
-            &layer,
-            registry,
-            delta_secs,
-            audio,
-            interaction,
-            screen,
-            sensors,
-        )?;
+        let frame = self.render_effect_layer_frame(group, &layer, context)?;
         if frame.is_some() {
             self.layer_runtime.note_health(
-                active_scene_id,
+                context.active_scene_id,
                 group.id,
                 layer.id,
                 LayerHealth::Active,
             );
         } else {
             self.layer_runtime.note_health(
-                active_scene_id,
+                context.active_scene_id,
                 group.id,
                 layer.id,
                 LayerHealth::Loading,
@@ -1486,20 +1409,11 @@ impl ZoneRuntime {
         Ok(frame)
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "effect layer rendering uses the full frame input"
-    )]
     fn render_effect_layer_frame(
         &mut self,
         group: &Zone,
         layer: &SceneLayer,
-        registry: &EffectRegistry,
-        delta_secs: f32,
-        audio: &AudioData,
-        interaction: &InteractionData,
-        screen: Option<&ScreenData>,
-        sensors: &SystemSnapshot,
+        context: GroupFrameContext<'_>,
     ) -> Result<Option<ProducerFrame>> {
         #[cfg(feature = "servo-gpu-import")]
         {
@@ -1508,14 +1422,19 @@ impl ZoneRuntime {
                 .render_layer_output(
                     group,
                     layer,
-                    delta_secs,
-                    audio,
-                    interaction,
-                    screen,
-                    sensors,
+                    context.inputs.delta_secs,
+                    context.inputs.audio,
+                    context.inputs.interaction,
+                    context.inputs.screen,
+                    context.inputs.sensors,
                 )
                 .map_err(|error| {
-                    anyhow::Error::new(render_layer_effect_error(group, layer, registry, error))
+                    anyhow::Error::new(render_layer_effect_error(
+                        group,
+                        layer,
+                        context.registry,
+                        error,
+                    ))
                 })? {
                 EffectRenderOutput::Cpu(canvas) => Ok(Some(ProducerFrame::Canvas(canvas))),
                 EffectRenderOutput::Gpu(frame) => Ok(Some(ProducerFrame::Gpu(frame))),
@@ -1530,15 +1449,20 @@ impl ZoneRuntime {
                 .render_layer_into(
                     group,
                     layer,
-                    delta_secs,
-                    audio,
-                    interaction,
-                    screen,
-                    sensors,
+                    context.inputs.delta_secs,
+                    context.inputs.audio,
+                    context.inputs.interaction,
+                    context.inputs.screen,
+                    context.inputs.sensors,
                     &mut canvas,
                 )
                 .map_err(|error| {
-                    anyhow::Error::new(render_layer_effect_error(group, layer, registry, error))
+                    anyhow::Error::new(render_layer_effect_error(
+                        group,
+                        layer,
+                        context.registry,
+                        error,
+                    ))
                 })?;
             Ok(Some(ProducerFrame::Canvas(canvas)))
         }
@@ -2712,21 +2636,23 @@ mod tests {
         screen: Option<&ScreenData>,
     ) -> Result<ZoneResult> {
         let mut sparkleflinger = SparkleFlinger::cpu();
-        runtime.render_scene(
+        let inputs = ZoneFrameInputs {
+            delta_secs: 1.0 / 60.0,
+            audio: &AudioData::silence(),
+            interaction: &InteractionData::default(),
+            screen,
+            sensors: &SystemSnapshot::empty(),
+        };
+        let context = RenderSceneContext {
             groups,
-            Some(SceneId::DEFAULT),
-            SceneDependencyKey::new(groups_revision, registry.generation()),
+            active_scene_id: Some(SceneId::DEFAULT),
+            dependency_key: SceneDependencyKey::new(groups_revision, registry.generation()),
             elapsed_ms,
             display_group_target_fps,
             registry,
-            1.0 / 60.0,
-            &AudioData::silence(),
-            &InteractionData::default(),
-            screen,
-            &SystemSnapshot::empty(),
-            &mut sparkleflinger,
-            zones,
-        )
+            inputs,
+        };
+        runtime.render_scene(context, &mut sparkleflinger, zones)
     }
 
     fn blit_general_zone_projection(
