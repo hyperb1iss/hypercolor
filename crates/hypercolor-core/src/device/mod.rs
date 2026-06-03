@@ -12,6 +12,7 @@ mod lifecycle;
 pub mod manager;
 pub mod mock;
 pub mod net;
+mod output_queue;
 mod registry;
 pub mod smbus_backend;
 pub mod smbus_scanner;
