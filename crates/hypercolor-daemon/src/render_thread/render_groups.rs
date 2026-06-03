@@ -110,6 +110,7 @@ pub(crate) struct ZoneEffectError {
 struct RetainedRenderGroupFrame {
     dependency_key: SceneDependencyKey,
     scene_frame: ProducerFrame,
+    group_canvases: Vec<(ZoneId, PendingGroupCanvasFrame)>,
     active_group_canvas_ids: Vec<ZoneId>,
     zone_canvases: Vec<(ZoneId, ProducerFrame)>,
     led_sampling_strategy: RetainedLedSamplingStrategy,
@@ -361,7 +362,7 @@ impl ZoneRuntime {
 
         Some(ZoneResult {
             scene_frame: retained.scene_frame.clone(),
-            group_canvases: Vec::new(),
+            group_canvases: retained.group_canvases.clone(),
             zone_canvases: retained.zone_canvases.clone(),
             active_group_canvas_ids: retained.active_group_canvas_ids.clone(),
             led_sampling_strategy: LedSamplingStrategy::from_retained(
@@ -908,6 +909,7 @@ impl ZoneRuntime {
         self.retained_frame = Some(RetainedRenderGroupFrame {
             dependency_key,
             scene_frame: result.scene_frame.clone(),
+            group_canvases: result.group_canvases.clone(),
             active_group_canvas_ids: result.active_group_canvas_ids.clone(),
             zone_canvases: result.zone_canvases.clone(),
             led_sampling_strategy: result.led_sampling_strategy.retain(zones),
@@ -4144,6 +4146,13 @@ mod tests {
         assert_eq!(sampled.len(), 1);
         assert_eq!(sampled[0].zone_id, "zone_preview");
         assert_eq!(sampled[0].colors.first().copied(), Some([255, 0, 0]));
+        let [(_, reused_group_canvas_frame)] = &reused.group_canvases[..] else {
+            panic!("retained scene should keep direct display canvases");
+        };
+        assert_eq!(
+            reused_group_canvas_frame.surface_for_test().get_pixel(0, 0),
+            Rgba::new(0, 0, 255, 255)
+        );
         assert_eq!(reused_spatial_engine.layout().zones.len(), 1);
         assert_eq!(reused_spatial_engine.layout().zones[0].id, "zone_preview");
     }
@@ -4451,6 +4460,7 @@ mod tests {
         else {
             panic!("display-only scene should keep an empty retained LED layout");
         };
+        assert_eq!(reused.group_canvases.len(), 2);
         assert!(layout.zones.is_empty());
         assert!(zones.is_empty());
     }
