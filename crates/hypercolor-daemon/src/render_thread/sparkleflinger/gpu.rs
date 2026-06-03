@@ -9,9 +9,7 @@ use anyhow::{Context, Result};
 #[cfg(test)]
 use hypercolor_core::bus::DisplayYuv420Frame;
 use hypercolor_core::spatial::PreparedZonePlan;
-use hypercolor_core::types::canvas::{
-    BYTES_PER_PIXEL, Canvas, PublishedSurface, RenderSurfacePool,
-};
+use hypercolor_core::types::canvas::{BYTES_PER_PIXEL, Canvas, PublishedSurface};
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::scene::ZoneId;
 
@@ -33,6 +31,7 @@ mod display_finalize;
 mod media_upload;
 mod pipeline;
 mod preview;
+mod readback;
 mod source;
 mod telemetry;
 
@@ -57,6 +56,9 @@ use preview::{
     CachedPreviewSurface, CachedPreviewSurfaceKey, GpuPreviewSurfaceSet, PendingPreviewMap,
     PendingPreviewReadback, bypass_preview_surface, encode_preview_scale_params,
     preview_request_matches_plan,
+};
+use readback::{
+    CachedReadbackKey, CachedReadbackSurface, copy_mapped_readback_buffer_into_surface,
 };
 use source::{
     CachedGpuSourceCopy, CachedSourceUpload, GpuSourceFrame, cached_readback_key,
@@ -163,48 +165,6 @@ struct GpuCompositorTexture {
 struct GpuCompositorBindGroups {
     front_to_back: wgpu::BindGroup,
     back_to_front: wgpu::BindGroup,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct CachedReadbackKey {
-    width: u32,
-    height: u32,
-    layers: Vec<CachedReadbackLayer>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct CachedReadbackLayer {
-    source: CachedSourceUpload,
-    mode: CompositionMode,
-    opacity_bits: u32,
-    transform: Option<CachedReadbackTransform>,
-    adjust: Option<CachedReadbackAdjust>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct CachedReadbackTransform {
-    anchor_x_bits: u32,
-    anchor_y_bits: u32,
-    scale_x_bits: u32,
-    scale_y_bits: u32,
-    rotation_bits: u32,
-    fit: hypercolor_types::viewport::FitMode,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct CachedReadbackAdjust {
-    brightness: u32,
-    saturation: u32,
-    hue_shift: u32,
-    tint: [u32; 4],
-    tint_strength: u32,
-    contrast: u32,
-}
-
-#[derive(Debug, Clone)]
-struct CachedReadbackSurface {
-    key: Option<CachedReadbackKey>,
-    surface: PublishedSurface,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2349,55 +2309,6 @@ fn set_texture_contents(
         GpuCompositorOutputSurface::Front => surfaces.front_contents = contents,
         GpuCompositorOutputSurface::Back => surfaces.back_contents = contents,
     }
-}
-
-fn copy_mapped_readback_buffer_into_surface(
-    buffer: &wgpu::Buffer,
-    used_bytes: u64,
-    width: u32,
-    height: u32,
-    padded_bytes_per_row: u32,
-    surfaces: &mut RenderSurfacePool,
-    #[cfg(test)] last_readback_bytes: &mut u64,
-) -> Result<PublishedSurface> {
-    #[cfg(test)]
-    {
-        *last_readback_bytes = used_bytes;
-    }
-    let slice = buffer.slice(..used_bytes);
-    let mapped = slice.get_mapped_range();
-    let unpadded_bytes_per_row = width * BYTES_PER_PIXEL as u32;
-    let Some(mut lease) = surfaces.dequeue() else {
-        drop(mapped);
-        buffer.unmap();
-        anyhow::bail!("GPU readback surface pool should provide a reusable slot");
-    };
-    let target = lease.canvas_mut().as_rgba_bytes_mut();
-    if padded_bytes_per_row == unpadded_bytes_per_row {
-        target.copy_from_slice(
-            &mapped[..usize::try_from(unpadded_bytes_per_row)
-                .expect("row width should fit in usize")
-                .saturating_mul(height as usize)],
-        );
-    } else {
-        let row_width = usize::try_from(unpadded_bytes_per_row).expect("row width should fit");
-        let padded_row_width =
-            usize::try_from(padded_bytes_per_row).expect("row pitch should fit in usize");
-        for (target_row, row) in target.chunks_exact_mut(row_width).zip(
-            mapped
-                .chunks(
-                    usize::try_from(padded_bytes_per_row).expect("row pitch should fit in usize"),
-                )
-                .take(height as usize),
-        ) {
-            debug_assert_eq!(row.len(), padded_row_width);
-            target_row.copy_from_slice(&row[..row_width]);
-        }
-    }
-    drop(mapped);
-    buffer.unmap();
-
-    Ok(lease.submit(0, 0))
 }
 
 fn create_compose_bind_group(

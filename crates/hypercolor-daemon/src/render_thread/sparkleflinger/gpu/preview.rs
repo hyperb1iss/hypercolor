@@ -3,7 +3,8 @@ use hypercolor_core::types::canvas::{
 };
 
 use super::super::PreviewSurfaceRequest;
-use super::{CachedReadbackKey, GpuCompositorPipeline, PREVIEW_SCALE_PARAM_BYTES};
+use super::readback::CachedReadbackKey;
+use super::{GpuCompositorPipeline, PREVIEW_SCALE_PARAM_BYTES};
 use crate::render_thread::producer_queue::ProducerFrame;
 
 const MAX_CACHED_PREVIEW_READBACK_POOLS: usize = 3;

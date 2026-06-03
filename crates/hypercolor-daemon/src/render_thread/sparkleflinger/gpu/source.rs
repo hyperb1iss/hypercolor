@@ -1,10 +1,13 @@
 use hypercolor_core::types::canvas::{BYTES_PER_PIXEL, PublishedSurfaceStorageIdentity};
 
 use super::super::{CompositionAdjust, CompositionPlan, CompositionTransform};
+use super::readback::{
+    CachedReadbackAdjust, CachedReadbackKey, CachedReadbackLayer, CachedReadbackTransform,
+};
 use super::{
-    COMPOSE_WORKGROUP_HEIGHT, COMPOSE_WORKGROUP_WIDTH, CachedReadbackAdjust, CachedReadbackKey,
-    CachedReadbackLayer, CachedReadbackTransform, GpuCompositorPipeline, GpuCompositorSurfaceSet,
-    GpuCompositorTexture, GpuDisplaySourceTexture, SOURCE_COPY_PARAM_BYTES, texture_extent,
+    COMPOSE_WORKGROUP_HEIGHT, COMPOSE_WORKGROUP_WIDTH, GpuCompositorPipeline,
+    GpuCompositorSurfaceSet, GpuCompositorTexture, GpuDisplaySourceTexture,
+    SOURCE_COPY_PARAM_BYTES, texture_extent,
 };
 use crate::render_thread::producer_queue::{GpuTextureFrame, ProducerFrame};
 use crate::render_thread::sparkleflinger::gpu::telemetry::record_gpu_source_upload_skipped;
