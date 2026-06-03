@@ -629,11 +629,15 @@ mod tests {
         }
     }
 
-    fn expected_default_targets(state: &AppState) -> Vec<DiscoveryTarget> {
+    fn expected_default_targets(
+        state: &AppState,
+        config: &HypercolorConfig,
+    ) -> Vec<DiscoveryTarget> {
         let mut targets = state
             .driver_registry
             .discovery_drivers()
             .into_iter()
+            .filter(|driver| crate::network::module_enabled(config, &driver.module_descriptor()))
             .map(|driver| DiscoveryTarget::driver(driver.descriptor().id))
             .collect::<Vec<_>>();
         targets.extend([
@@ -684,7 +688,7 @@ mod tests {
         let cfg = HypercolorConfig::default();
         let resolved = resolve_targets(None, &cfg, state.driver_registry.as_ref())
             .expect("default targets should resolve");
-        assert_eq!(resolved, expected_default_targets(&state));
+        assert_eq!(resolved, expected_default_targets(&state, &cfg));
     }
 
     #[test]
@@ -818,7 +822,7 @@ mod tests {
 
         let resolved = resolve_targets(None, &cfg, state.driver_registry.as_ref())
             .expect("default targets should still resolve");
-        assert_eq!(resolved, expected_default_targets(&state));
+        assert_eq!(resolved, expected_default_targets(&state, &cfg));
     }
 
     #[test]
