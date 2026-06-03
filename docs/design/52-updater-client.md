@@ -258,7 +258,7 @@ If `_NSGetExecutablePath` shows the app is **translocated** (running from quaran
 
 ### Windows — single binary
 
-Daemon at `%LOCALAPPDATA%\Hypercolor\bin\hypercolor-daemon.exe`. Per-user, no SCM, no UAC.
+Standalone daemon at `%LOCALAPPDATA%\Hypercolor\bin\hypercolor-daemon.exe`. Per-user, no SCM, no UAC.
 
 1. Stream download to `%LOCALAPPDATA%\Hypercolor\bin\hypercolor-daemon.new.exe`.
 2. Verify minisign over downloaded bytes.
@@ -301,7 +301,9 @@ If the daemon is installed as a Windows Service, the path requires `windows-serv
 
 ### Windows — NSIS (v1)
 
-The desktop shell ships an NSIS installer (`currentUser` mode per RFC 46 §10.1.7). The updater downloads the new NSIS installer, verifies minisign, signals the running daemon to exit cleanly, then runs `installer.exe /S` for silent in-place upgrade. NSIS handles registry updates and shortcut maintenance.
+The desktop shell ships an NSIS installer (`perMachine` mode per RFC 46 §10.1.7). The updater downloads the new NSIS installer, verifies minisign, signals the running daemon to exit cleanly, then runs `installer.exe /S` for silent in-place upgrade. NSIS handles registry updates and shortcut maintenance.
+
+Amended 2026-06-03 from the earlier `currentUser` plan. Reason: the Windows bundle now stages PawnIO, broker-service, and firewall-helper payloads that need an elevated install context, so the installer contract matches the shipped `tauri.conf.json` mode.
 
 Amended 2026-05-22 from the original MSI-driven design. Reason: the production build pipeline ships NSIS today (see RFC 46 §10.1), maintaining a parallel MSI bundle target would double artifact storage and CI time, and the "single helper invocation per upgrade" elevation cost is the same regardless of installer format. MSI is deferred to a Phase 4 enterprise concern alongside Group Policy deployability — see windows-experience execution roadmap §7.3 (D5).
 
@@ -318,7 +320,7 @@ The privileged broker-service binary swap (replacing `hypercolor-smbus-service.e
 | Windows Service | `windows-service` 0.8 → `ControlService(STOP)` then `StartServiceW` | `windows-service` |
 | Windows per-user (recommended) | Helper kills PID, spawns new exe | `std::process::Command` |
 
-Default: install hypercolor as a **user-mode** service on every platform. No polkit, no UAC, no admin password. Aligns with the "RGB lighting doesn't need root" non-goal.
+Default: run hypercolor as a **user-mode** service on every platform. Installer elevation is packaging-specific: the Windows desktop NSIS path is per-machine so it can stage hardware-support payloads, while the daemon runtime still avoids a privileged always-on service unless the user opts into SMBus support.
 
 ## Crate layout
 
@@ -446,5 +448,5 @@ None blocking implementation. Future work:
 - **2026-05-03.** Headless update UX: download silent, restart in maintenance window (default 03:00-05:00 local), defer if render pipeline busy, escalate after 3 deferrals. Resolves decision-blocker.
 - **2026-05-03.** Manifest fallback chain: entitlement-gated primary → R2 public secondary → cached. Backoff to 24h ceiling, 7-day warn. Resolves decision-blocker.
 - **2026-05-03.** Entitlement grace: 14-day soft TTL on cache, then "frozen updates" state without breaking app function. JetBrains-style perpetual-fallback inspired.
-- **2026-05-03.** Hypercolor installs as a user-mode service everywhere by default. No polkit, no UAC, no admin password. Aligns with "no root for RGB" principle.
+- **2026-05-03.** Hypercolor runs as a user-mode service everywhere by default. Later packaging work moved Windows desktop NSIS to `perMachine` for hardware-support staging; the no-root principle remains a runtime daemon constraint, not a promise that every installer path avoids elevation.
 - **2026-05-03.** Tauri desktop shell consumes `hypercolor-updater` directly via a Tauri command rather than running `tauri-plugin-updater` in parallel. One updater, one manifest, no divergence risk.

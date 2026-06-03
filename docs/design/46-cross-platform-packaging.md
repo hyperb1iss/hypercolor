@@ -802,7 +802,7 @@ mode only. App always uses file logs.
     "windows": {
       "webviewInstallMode": { "type": "downloadBootstrapper" },
       "nsis": {
-        "installMode": "currentUser",
+        "installMode": "perMachine",
         "installerIcon": "icons/installer.ico",
         "headerImage": "icons/installer-header.png",
         "sidebarImage": "icons/installer-sidebar.bmp",
@@ -818,8 +818,10 @@ mode only. App always uses file logs.
 }
 ```
 
-> **Codex correction**: Tauri NSIS uses `currentUser` (not `perUser`). Verified against
-> https://tauri.app/distribute/windows-installer/.
+> **Codex correction**: Hypercolor's shipped Tauri NSIS config uses `perMachine`.
+> The earlier `currentUser` plan was superseded once the Windows bundle began
+> staging PawnIO, broker-service, and firewall-helper payloads that need an
+> elevated install context.
 
 **`installer.nsh` custom hook** does what Tauri's defaults can't:
 
@@ -1241,7 +1243,7 @@ Add Tauri build deps to CI runners:
 | 4 | Daemon supervisor + `win32job` (Windows) / process group (Unix) | All | |
 | 5 | Window-hidden preview gating | All | Visibility API + Tauri event |
 | 6 | Rolling file logs + Export Diagnostics | All | |
-| 7 | NSIS installer with `currentUser` + custom hook | Windows | PATH editing, effects copy |
+| 7 | NSIS installer with `perMachine` + custom hook | Windows | Hardware support payloads, PATH editing, effects copy |
 | 8 | DMG bundle + entitlements | macOS | Hardened runtime |
 | 9 | Notarization workflow | macOS | GitHub Actions |
 | 10 | Microsoft Trusted Signing | Windows | All exes + installer |
