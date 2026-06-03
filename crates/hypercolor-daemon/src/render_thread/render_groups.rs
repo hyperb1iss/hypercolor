@@ -47,19 +47,17 @@ use crate::performance::FullFrameCopyMetrics;
 use frame_helpers::media_mime_prefers_gpu_texture;
 use frame_helpers::{
     color_fill_frame, composed_frame_to_producer_frame, composition_layer_for_scene_layer,
-    copy_producer_frame_to_canvas, media_layer_producer_frame, passthrough_effect_layer,
-    producer_frame_is_gpu, screen_region_layer_frame, surface_backed_frame,
-    transparent_black_frame,
+    media_layer_producer_frame, passthrough_effect_layer, producer_frame_is_gpu,
+    screen_region_layer_frame, surface_backed_frame, transparent_black_frame,
 };
 use group_state::{
     combine_led_group_layouts, combined_led_state, desired_media_asset_ids, empty_group_layout,
-    enabled_layer_count, group_contributes_to_scene_canvas, group_is_active,
-    group_publishes_direct_canvas, group_publishes_empty_direct_canvas, scene_logical_layer_count,
+    enabled_layer_count, group_contributes_to_scene_canvas, group_publishes_direct_canvas,
+    group_publishes_empty_direct_canvas, scene_logical_layer_count,
 };
 use model::{
     CachedMediaProducer, GroupFrameContext, GroupFrameRequirements, MediaLayerFrame,
-    RenderedGroupSet, RetainedDirectGroupFrame, RetainedMaterializedGroupFrame,
-    RetainedRenderGroupFrame,
+    RetainedDirectGroupFrame, RetainedMaterializedGroupFrame, RetainedRenderGroupFrame,
 };
 pub(crate) use model::{
     GroupCanvasFrame, PendingGroupCanvasFrame, RenderSceneContext, ZoneEffectError,
@@ -67,12 +65,14 @@ pub(crate) use model::{
 };
 use projection::{
     CachedGroupProjection, build_group_projection, compose_authoritative_scene_canvas,
-    groups_support_projection_composition, projection_composition_layers_for_group,
+    groups_support_projection_composition,
 };
 #[cfg(test)]
 use projection::{
-    blit_zone_projection, copy_full_scene_identity_projection, zone_local_position_for_scene_pixel,
+    blit_zone_projection, copy_full_scene_identity_projection,
+    projection_composition_layers_for_group, zone_local_position_for_scene_pixel,
 };
+use render_pass::RenderedGroupPassOutput;
 
 /// Initial slot count for the full-resolution scene surface pool. Sized to absorb
 /// typical downstream pins: the canvas watch channel, display-output
@@ -242,102 +242,16 @@ impl ZoneRuntime {
             return Ok(result);
         }
 
-        let mut render_us = 0_u32;
-        let mut producer_full_frame_copy = FullFrameCopyMetrics::default();
-        let mut rendered_groups = RenderedGroupSet::default();
+        let mut rendered_groups = RenderedGroupPassOutput::default();
         let project_scene_with_sparkleflinger = sparkleflinger.supports_gpu_output_frames()
             && groups_support_projection_composition(context.groups, &self.scene_projection_cache);
-        let mut projected_scene_layers = Vec::new();
-        for group in context.groups {
-            if !group_is_active(group) {
-                continue;
-            }
-
-            if group_publishes_direct_canvas(group) {
-                rendered_groups.mark_direct_group_active(group.id);
-                if let Some(retained) = self.reuse_retained_direct_group_frame(
-                    group,
-                    context.elapsed_ms,
-                    context.display_group_target_fps,
-                    context.dependency_key,
-                ) {
-                    rendered_groups.push_retained_direct_group_frame(group.id, retained);
-                    continue;
-                }
-                let render_start = Instant::now();
-                let Some(frame) = self.render_direct_group_frame(
-                    group,
-                    context.group_context(),
-                    sparkleflinger,
-                    &mut producer_full_frame_copy,
-                )?
-                else {
-                    if let Some(retained) = self.reuse_latest_direct_group_frame(group) {
-                        rendered_groups.push_retained_direct_group_frame(group.id, retained);
-                    }
-                    continue;
-                };
-                render_us = render_us.saturating_add(micros_u32(render_start.elapsed()));
-                self.retain_direct_group_frame(
-                    group.id,
-                    context.elapsed_ms,
-                    context.dependency_key,
-                    &frame,
-                );
-                rendered_groups.push_fresh_direct_group_frame(group.id, frame);
-                continue;
-            }
-
-            let render_start = Instant::now();
-            let mut frame = self.render_group_frame(
-                group,
-                context.group_context(),
-                sparkleflinger,
-                GroupFrameRequirements {
-                    requires_cpu_sampling_canvas: !project_scene_with_sparkleflinger,
-                    requires_published_surface: false,
-                },
-            )?;
-            if frame.is_none() && project_scene_with_sparkleflinger {
-                frame = self.render_group_frame(
-                    group,
-                    context.group_context(),
-                    sparkleflinger,
-                    GroupFrameRequirements {
-                        requires_cpu_sampling_canvas: true,
-                        requires_published_surface: false,
-                    },
-                )?;
-            }
-            let Some(target) = self.target_canvases.get_mut(&group.id) else {
-                continue;
-            };
-            let Some(frame) = frame else {
-                target.clear();
-                continue;
-            };
-            if project_scene_with_sparkleflinger
-                && let Some(projection) = self.scene_projection_cache.get(&group.id)
-                && let Some(layers) = projection_composition_layers_for_group(
-                    &frame,
-                    group,
-                    projection,
-                    self.scene_width,
-                    self.scene_height,
-                )
-            {
-                projected_scene_layers.extend(layers);
-                render_us = render_us.saturating_add(micros_u32(render_start.elapsed()));
-                continue;
-            }
-            if !copy_producer_frame_to_canvas(frame, target, &mut producer_full_frame_copy) {
-                target.clear();
-                continue;
-            }
-            rendered_groups
-                .push_fresh_scene_group_frame(group.id, ProducerFrame::Canvas(target.clone()));
-            render_us = render_us.saturating_add(micros_u32(render_start.elapsed()));
-        }
+        let projected_scene_layers = self.render_scene_contributor_frames(
+            context,
+            sparkleflinger,
+            project_scene_with_sparkleflinger,
+            &mut rendered_groups,
+        )?;
+        self.render_display_group_frames(context, sparkleflinger, None, &mut rendered_groups)?;
         zones.clear();
         let logical_layer_count = scene_logical_layer_count(context.groups);
         let use_gpu_scene_sampling =
@@ -363,15 +277,17 @@ impl ZoneRuntime {
             LedSamplingStrategy::PreSampled(Arc::clone(&self.combined_led_layout))
         };
 
-        let rendered_parts = rendered_groups.into_parts();
+        let rendered_parts = rendered_groups
+            .rendered_groups
+            .into_parts_for_group_order(context.groups);
         let result = ZoneResult {
             scene_frame,
             group_canvases: rendered_parts.group_canvases,
             zone_canvases: rendered_parts.zone_canvases,
             active_group_canvas_ids: rendered_parts.active_group_canvas_ids,
             led_sampling_strategy,
-            producer_full_frame_copy,
-            render_us,
+            producer_full_frame_copy: rendered_groups.producer_full_frame_copy,
+            render_us: rendered_groups.render_us,
             sample_us,
             scene_compose_us,
             logical_layer_count,
@@ -535,7 +451,7 @@ impl ZoneRuntime {
             return Ok(None);
         };
 
-        let mut producer_full_frame_copy = FullFrameCopyMetrics::default();
+        let mut rendered_groups = RenderedGroupPassOutput::default();
         let render_start = Instant::now();
         let scene_frame = if let Some(frame) =
             self.render_passthrough_effect_layer_frame(scene_group, context.group_context())?
@@ -556,72 +472,38 @@ impl ZoneRuntime {
             };
             frame
         };
-        let Some(scene_frame) =
-            self.surface_backed_scene_frame(scene_frame, &mut producer_full_frame_copy)
+        let Some(scene_frame) = self
+            .surface_backed_scene_frame(scene_frame, &mut rendered_groups.producer_full_frame_copy)
         else {
             return Ok(None);
         };
         record_producer_frame(&scene_frame);
-        let mut render_us = micros_u32(render_start.elapsed());
+        rendered_groups.record_render_elapsed(render_start);
 
         let sample_us = 0_u32;
         if !scene_group.layout.zones.is_empty() {
             zones.clear();
         }
-        let mut rendered_groups = RenderedGroupSet::default();
-        rendered_groups.push_fresh_scene_group_frame(scene_group.id, scene_frame.clone());
-        for group in context.groups {
-            if !group.enabled || group.id == scene_group.id {
-                continue;
-            }
-            if !group_publishes_direct_canvas(group) {
-                continue;
-            }
-
-            rendered_groups.mark_direct_group_active(group.id);
-            if let Some(retained) = self.reuse_retained_direct_group_frame(
-                group,
-                context.elapsed_ms,
-                context.display_group_target_fps,
-                context.dependency_key,
-            ) {
-                rendered_groups.push_retained_direct_group_frame(group.id, retained);
-                continue;
-            }
-
-            let render_start = Instant::now();
-            let Some(frame) = self.render_direct_group_frame(
-                group,
-                context.group_context(),
-                sparkleflinger,
-                &mut producer_full_frame_copy,
-            )?
-            else {
-                if let Some(retained) = self.reuse_latest_direct_group_frame(group) {
-                    rendered_groups.push_retained_direct_group_frame(group.id, retained);
-                }
-                continue;
-            };
-            render_us = render_us.saturating_add(micros_u32(render_start.elapsed()));
-            self.retain_direct_group_frame(
-                group.id,
-                context.elapsed_ms,
-                context.dependency_key,
-                &frame,
-            );
-            rendered_groups.push_fresh_direct_group_frame(group.id, frame);
-        }
+        rendered_groups
+            .rendered_groups
+            .push_fresh_scene_group_frame(scene_group.id, scene_frame.clone());
+        self.render_display_group_frames(
+            context,
+            sparkleflinger,
+            Some(scene_group.id),
+            &mut rendered_groups,
+        )?;
         zones.clear();
 
-        let rendered_parts = rendered_groups.into_parts();
+        let rendered_parts = rendered_groups.rendered_groups.into_parts();
         Ok(Some(ZoneResult {
             scene_frame,
             group_canvases: rendered_parts.group_canvases,
             zone_canvases: rendered_parts.zone_canvases,
             active_group_canvas_ids: rendered_parts.active_group_canvas_ids,
             led_sampling_strategy: LedSamplingStrategy::SparkleFlinger(spatial_engine),
-            producer_full_frame_copy,
-            render_us,
+            producer_full_frame_copy: rendered_groups.producer_full_frame_copy,
+            render_us: rendered_groups.render_us,
             sample_us,
             scene_compose_us: 0,
             logical_layer_count: enabled_layer_count(scene_group),
@@ -1477,6 +1359,7 @@ mod frame_helpers;
 mod group_state;
 mod model;
 mod projection;
+mod render_pass;
 mod surface_pools;
 #[cfg(test)]
 mod tests;

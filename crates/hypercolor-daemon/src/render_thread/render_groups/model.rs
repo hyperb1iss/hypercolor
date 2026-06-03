@@ -154,7 +154,8 @@ pub(super) struct RenderedGroupParts {
 
 #[derive(Default)]
 pub(super) struct RenderedGroupSet {
-    frames: Vec<RenderedGroupFrame>,
+    scene_frames: Vec<RenderedGroupFrame>,
+    display_frames: Vec<RenderedGroupFrame>,
     active_group_canvas_ids: Vec<ZoneId>,
 }
 
@@ -181,7 +182,7 @@ impl RenderedGroupSet {
 
     pub(super) fn push_fresh_scene_group_frame(&mut self, group_id: ZoneId, frame: ProducerFrame) {
         let residency = RenderedGroupResidency::from_producer_frame(&frame);
-        self.frames.push(RenderedGroupFrame {
+        self.scene_frames.push(RenderedGroupFrame {
             group_id,
             target: RenderedGroupFrameTarget::Scene,
             residency,
@@ -196,39 +197,30 @@ impl RenderedGroupSet {
             zone_canvases: Vec::new(),
             active_group_canvas_ids: self.active_group_canvas_ids,
         };
-        for frame in self.frames {
-            let RenderedGroupFrame {
-                group_id,
-                target,
-                residency,
-                freshness,
-                payload,
-            } = frame;
-            debug_assert!(matches!(
-                freshness,
-                RenderedGroupFreshness::Fresh | RenderedGroupFreshness::Retained
-            ));
-            match payload {
-                RenderedGroupFramePayload::Scene(scene_frame) => {
-                    debug_assert_eq!(target, RenderedGroupFrameTarget::Scene);
-                    debug_assert_eq!(
-                        residency,
-                        RenderedGroupResidency::from_producer_frame(&scene_frame)
-                    );
-                    parts.zone_canvases.push((group_id, scene_frame));
-                }
-                RenderedGroupFramePayload::Display(display_frame) => {
-                    debug_assert_eq!(target, RenderedGroupFrameTarget::Display);
-                    debug_assert_eq!(
-                        residency,
-                        RenderedGroupResidency::from_producer_frame(&display_frame.frame)
-                    );
-                    parts
-                        .zone_canvases
-                        .push((group_id, display_frame.frame.clone()));
-                    parts.group_canvases.push((group_id, display_frame));
-                }
+        for frame in self.scene_frames {
+            push_rendered_group_frame(&mut parts, frame);
+        }
+        for frame in self.display_frames {
+            push_rendered_group_frame(&mut parts, frame);
+        }
+        parts
+    }
+
+    pub(super) fn into_parts_for_group_order(self, groups: &[Zone]) -> RenderedGroupParts {
+        let mut parts = RenderedGroupParts {
+            group_canvases: Vec::new(),
+            zone_canvases: Vec::new(),
+            active_group_canvas_ids: self.active_group_canvas_ids,
+        };
+        let mut frames = self.scene_frames;
+        frames.extend(self.display_frames);
+        for group in groups {
+            while let Some(position) = frames.iter().position(|frame| frame.group_id == group.id) {
+                push_rendered_group_frame(&mut parts, frames.remove(position));
             }
+        }
+        for frame in frames {
+            push_rendered_group_frame(&mut parts, frame);
         }
         parts
     }
@@ -240,13 +232,48 @@ impl RenderedGroupSet {
         freshness: RenderedGroupFreshness,
     ) {
         let residency = RenderedGroupResidency::from_producer_frame(&frame.frame);
-        self.frames.push(RenderedGroupFrame {
+        self.display_frames.push(RenderedGroupFrame {
             group_id,
             target: RenderedGroupFrameTarget::Display,
             residency,
             freshness,
             payload: RenderedGroupFramePayload::Display(frame),
         });
+    }
+}
+
+fn push_rendered_group_frame(parts: &mut RenderedGroupParts, frame: RenderedGroupFrame) {
+    let RenderedGroupFrame {
+        group_id,
+        target,
+        residency,
+        freshness,
+        payload,
+    } = frame;
+    debug_assert!(matches!(
+        freshness,
+        RenderedGroupFreshness::Fresh | RenderedGroupFreshness::Retained
+    ));
+    match payload {
+        RenderedGroupFramePayload::Scene(scene_frame) => {
+            debug_assert_eq!(target, RenderedGroupFrameTarget::Scene);
+            debug_assert_eq!(
+                residency,
+                RenderedGroupResidency::from_producer_frame(&scene_frame)
+            );
+            parts.zone_canvases.push((group_id, scene_frame));
+        }
+        RenderedGroupFramePayload::Display(display_frame) => {
+            debug_assert_eq!(target, RenderedGroupFrameTarget::Display);
+            debug_assert_eq!(
+                residency,
+                RenderedGroupResidency::from_producer_frame(&display_frame.frame)
+            );
+            parts
+                .zone_canvases
+                .push((group_id, display_frame.frame.clone()));
+            parts.group_canvases.push((group_id, display_frame));
+        }
     }
 }
 
