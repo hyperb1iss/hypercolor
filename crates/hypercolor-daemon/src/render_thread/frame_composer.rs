@@ -580,6 +580,7 @@ impl ComposeContext<'_> {
                 let display_route =
                     display_route_for_group(&group_id, &display_routes, fallback_display_routes);
                 let display_target = frame.display_target.clone();
+                let empty_direct_shell = frame.empty_direct_shell;
                 // Display-face finalization follows the route cadence,
                 // even when scene rendering is faster.
                 if let Some(route) = display_route
@@ -597,6 +598,7 @@ impl ComposeContext<'_> {
                             dependency_key,
                             &display_target,
                             route,
+                            empty_direct_shell,
                         )
                 {
                     return Some((group_id, frame));
@@ -615,7 +617,12 @@ impl ComposeContext<'_> {
                     let retained = display_route.and_then(|route| {
                         self.compose
                             .render_group_runtime
-                            .reuse_latest_materialized_group_frame(group_id, &display_target, route)
+                            .reuse_latest_materialized_group_frame(
+                                group_id,
+                                &display_target,
+                                route,
+                                empty_direct_shell,
+                            )
                     })?;
                     #[cfg(feature = "wgpu")]
                     crate::render_thread::sparkleflinger::gpu::record_gpu_display_finalize_latch();
@@ -630,6 +637,7 @@ impl ComposeContext<'_> {
                             dependency_key,
                             &display_target,
                             route,
+                            empty_direct_shell,
                             &materialized,
                         );
                 }
@@ -657,6 +665,7 @@ impl ComposeContext<'_> {
         let PendingGroupCanvasFrame {
             frame,
             display_target,
+            ..
         } = group_canvas;
         if let Some(frame) = self.finalize_display_group_canvas(
             group_id,
@@ -1243,6 +1252,7 @@ mod tests {
                 blend_mode: DisplayFaceBlendMode::Replace,
                 opacity: 1.0,
             },
+            empty_direct_shell: false,
         };
         let blended = PendingGroupCanvasFrame {
             frame: ProducerFrame::Canvas(Canvas::new(4, 4)),
@@ -1251,6 +1261,7 @@ mod tests {
                 blend_mode: DisplayFaceBlendMode::Alpha,
                 opacity: 0.88,
             },
+            empty_direct_shell: false,
         };
 
         assert!(!display_group_requires_composed_scene(&[(

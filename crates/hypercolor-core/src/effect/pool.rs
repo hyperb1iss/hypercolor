@@ -107,6 +107,10 @@ impl EffectPool {
         self.slots.clear();
     }
 
+    pub fn remove_group(&mut self, group_id: ZoneId) {
+        self.slots.retain(|key, _| key.group_id != group_id);
+    }
+
     pub fn render_group_into(
         &mut self,
         group: &Zone,
@@ -852,6 +856,34 @@ mod tests {
 
         assert!(destroyed.load(Ordering::SeqCst));
         assert!(pool.slots.is_empty());
+    }
+
+    #[test]
+    fn remove_group_destroys_matching_slots_only() {
+        let removed = Arc::new(AtomicBool::new(false));
+        let kept = Arc::new(AtomicBool::new(false));
+        let removed_group_id = ZoneId::new();
+        let kept_group_id = ZoneId::new();
+        let kept_layer_id = SceneLayerId::new();
+        let mut pool = EffectPool::new();
+        pool.slots.insert(
+            EffectSlotKey::new(removed_group_id, SceneLayerId::new()),
+            spy_slot(EffectId::new(uuid::Uuid::now_v7()), Arc::clone(&removed)),
+        );
+        pool.slots.insert(
+            EffectSlotKey::new(kept_group_id, kept_layer_id),
+            spy_slot(EffectId::new(uuid::Uuid::now_v7()), Arc::clone(&kept)),
+        );
+
+        pool.remove_group(removed_group_id);
+
+        assert!(removed.load(Ordering::SeqCst));
+        assert!(!kept.load(Ordering::SeqCst));
+        assert_eq!(pool.slots.len(), 1);
+        assert!(
+            pool.slots
+                .contains_key(&EffectSlotKey::new(kept_group_id, kept_layer_id))
+        );
     }
 
     #[test]

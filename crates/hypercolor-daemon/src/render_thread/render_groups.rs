@@ -61,6 +61,7 @@ const DIRECT_SURFACE_POOL_MAX_SLOTS: usize = 32;
 pub(crate) struct PendingGroupCanvasFrame {
     pub frame: ProducerFrame,
     pub display_target: DisplayFaceTarget,
+    pub(crate) empty_direct_shell: bool,
 }
 
 #[cfg(test)]
@@ -131,6 +132,7 @@ struct RetainedMaterializedGroupFrame {
     dependency_key: SceneDependencyKey,
     display_target: DisplayFaceTarget,
     display_route: DisplayGroupOutputRoute,
+    empty_direct_shell: bool,
 }
 
 struct CachedGroupProjection {
@@ -946,6 +948,9 @@ impl ZoneRuntime {
 
         let target_fps = *display_group_target_fps.get(&group.id)?;
         let retained = self.retained_direct_group_frames.get(&group.id)?;
+        if retained.frame.empty_direct_shell != group_publishes_empty_direct_canvas(group) {
+            return None;
+        }
         if retained.dependency_key != dependency_key {
             return None;
         }
@@ -976,6 +981,9 @@ impl ZoneRuntime {
             return None;
         }
         let retained = self.retained_direct_group_frames.get(&group.id)?;
+        if retained.frame.empty_direct_shell != group_publishes_empty_direct_canvas(group) {
+            return None;
+        }
         let display_target = group.display_target.as_ref()?;
         if retained.frame.display_target != *display_target
             || retained.frame.frame.width() != group.layout.canvas_width
@@ -995,6 +1003,7 @@ impl ZoneRuntime {
         dependency_key: SceneDependencyKey,
         display_target: &DisplayFaceTarget,
         display_route: &DisplayGroupOutputRoute,
+        empty_direct_shell: bool,
     ) -> Option<GroupCanvasFrame> {
         let target_fps = target_fps?;
         if display_route.device_id != display_target.device_id {
@@ -1005,6 +1014,7 @@ impl ZoneRuntime {
         if retained.dependency_key != dependency_key
             || retained.display_target != *display_target
             || retained.display_route != *display_route
+            || retained.empty_direct_shell != empty_direct_shell
         {
             return None;
         }
@@ -1019,13 +1029,17 @@ impl ZoneRuntime {
         group_id: ZoneId,
         display_target: &DisplayFaceTarget,
         display_route: &DisplayGroupOutputRoute,
+        empty_direct_shell: bool,
     ) -> Option<GroupCanvasFrame> {
         if display_route.device_id != display_target.device_id {
             return None;
         }
 
         let retained = self.retained_materialized_group_frames.get(&group_id)?;
-        if retained.display_target != *display_target || retained.display_route != *display_route {
+        if retained.display_target != *display_target
+            || retained.display_route != *display_route
+            || retained.empty_direct_shell != empty_direct_shell
+        {
             return None;
         }
 
@@ -1039,6 +1053,7 @@ impl ZoneRuntime {
         dependency_key: SceneDependencyKey,
         display_target: &DisplayFaceTarget,
         display_route: &DisplayGroupOutputRoute,
+        empty_direct_shell: bool,
         frame: &GroupCanvasFrame,
     ) {
         if display_route.device_id != display_target.device_id || !frame.display_target.finalized {
@@ -1053,6 +1068,7 @@ impl ZoneRuntime {
                 dependency_key,
                 display_target: display_target.clone(),
                 display_route: display_route.clone(),
+                empty_direct_shell,
             },
         );
     }
@@ -1080,7 +1096,10 @@ impl ZoneRuntime {
             .clone()
             .expect("direct display group should carry a display target");
 
-        let frame = if enabled_layer_count(group) == 0 {
+        let empty_direct_shell = enabled_layer_count(group) == 0;
+        let frame = if empty_direct_shell {
+            self.effect_pool.remove_group(group.id);
+            self.retained_materialized_group_frames.remove(&group.id);
             transparent_black_frame(group.layout.canvas_width, group.layout.canvas_height)
         } else if passthrough_effect_layer(group).is_some() {
             let Some(frame) = self.render_passthrough_effect_layer_frame(
@@ -1124,6 +1143,7 @@ impl ZoneRuntime {
         Ok(Some(PendingGroupCanvasFrame {
             frame,
             display_target,
+            empty_direct_shell,
         }))
     }
 
@@ -3128,6 +3148,7 @@ mod tests {
             SceneDependencyKey::new(1, 1),
             &display_target,
             &display_route,
+            false,
             &group_canvas_frame,
         );
         runtime.reconciled_dependency_key = Some(SceneDependencyKey::new(1, 1));
@@ -3159,6 +3180,7 @@ mod tests {
             dependency_key,
             &display_target,
             &display_route,
+            false,
             &group_canvas_frame,
         );
 
@@ -3170,6 +3192,7 @@ mod tests {
                 dependency_key,
                 &display_target,
                 &display_route,
+                false,
             )
             .expect("retained materialized frame should be reused within cadence");
         assert_eq!(reused.display_target, group_canvas_frame.display_target);
@@ -3183,6 +3206,7 @@ mod tests {
                     SceneDependencyKey::new(2, 1),
                     &display_target,
                     &display_route,
+                    false,
                 )
                 .is_none()
         );
@@ -3195,6 +3219,7 @@ mod tests {
                     dependency_key,
                     &display_target,
                     &display_route,
+                    false,
                 )
                 .is_none()
         );
@@ -3210,6 +3235,7 @@ mod tests {
                     dependency_key,
                     &display_target,
                     &changed_route,
+                    false,
                 )
                 .is_none()
         );
@@ -3225,6 +3251,7 @@ mod tests {
                     dependency_key,
                     &changed_target,
                     &display_route,
+                    false,
                 )
                 .is_none()
         );
@@ -3237,6 +3264,7 @@ mod tests {
                     dependency_key,
                     &display_target,
                     &display_route,
+                    false,
                 )
                 .is_none()
         );
@@ -3255,6 +3283,7 @@ mod tests {
             dependency_key,
             &unfinalized_target,
             &unfinalized_route,
+            false,
             &unfinalized_frame,
         );
         assert!(
@@ -3266,6 +3295,7 @@ mod tests {
                     dependency_key,
                     &unfinalized_target,
                     &unfinalized_route,
+                    false,
                 )
                 .is_none()
         );
@@ -3283,6 +3313,7 @@ mod tests {
         let retained = PendingGroupCanvasFrame {
             frame: ProducerFrame::Canvas(Canvas::new(4, 4)),
             display_target: display_target.clone(),
+            empty_direct_shell: false,
         };
 
         runtime.retain_direct_group_frame(group.id, 100, SceneDependencyKey::new(1, 1), &retained);
@@ -3332,6 +3363,7 @@ mod tests {
             dependency_key,
             &display_target,
             &display_route,
+            false,
             &group_canvas_frame,
         );
 
@@ -3344,12 +3376,13 @@ mod tests {
                     dependency_key,
                     &display_target,
                     &display_route,
+                    false,
                 )
                 .is_none()
         );
 
         let reused = runtime
-            .reuse_latest_materialized_group_frame(group.id, &display_target, &display_route)
+            .reuse_latest_materialized_group_frame(group.id, &display_target, &display_route, false)
             .expect("latest materialized frame should latch when a fresh frame misses");
         assert_eq!(reused.display_target, group_canvas_frame.display_target);
 
@@ -3357,7 +3390,12 @@ mod tests {
         changed_route.width += 1;
         assert!(
             runtime
-                .reuse_latest_materialized_group_frame(group.id, &display_target, &changed_route)
+                .reuse_latest_materialized_group_frame(
+                    group.id,
+                    &display_target,
+                    &changed_route,
+                    false,
+                )
                 .is_none()
         );
 
@@ -3365,7 +3403,12 @@ mod tests {
         changed_target.opacity = 0.5;
         assert!(
             runtime
-                .reuse_latest_materialized_group_frame(group.id, &changed_target, &display_route)
+                .reuse_latest_materialized_group_frame(
+                    group.id,
+                    &changed_target,
+                    &display_route,
+                    false,
+                )
                 .is_none()
         );
     }
@@ -4716,6 +4759,63 @@ mod tests {
                 || second_frame.surface_for_test().generation()
                     != first_frame.surface_for_test().generation(),
             "the retained direct surface should not be reused across group revisions"
+        );
+    }
+
+    #[test]
+    fn empty_display_group_does_not_reuse_previous_face_surface() {
+        let mut runtime = ZoneRuntime::new(4, 4);
+        let registry = builtin_registry();
+        let solid_id = builtin_effect_id(&registry, "solid_color");
+        let mut group = sample_display_group(4, 4);
+        group.effect_id = Some(solid_id);
+        group.controls =
+            HashMap::from([("color".into(), ControlValue::Color([0.0, 1.0, 0.0, 1.0]))]);
+        let display_group_target_fps = HashMap::from([(group.id, 30)]);
+        let mut zones = Vec::new();
+
+        let first = render_scene_for_test(
+            &mut runtime,
+            std::slice::from_ref(&group),
+            1,
+            0,
+            &display_group_target_fps,
+            &registry,
+            &mut zones,
+        )
+        .expect("display group should render the assigned face");
+        let [(_, first_frame)] = &first.group_canvases[..] else {
+            panic!("display group should publish a direct surface");
+        };
+        assert_eq!(
+            first_frame.surface_for_test().get_pixel(0, 0),
+            Rgba::new(0, 255, 0, 255)
+        );
+
+        group.effect_id = None;
+        group.controls.clear();
+        group.control_bindings.clear();
+        group.preset_id = None;
+        group.layers.clear();
+
+        let cleared = render_scene_for_test(
+            &mut runtime,
+            std::slice::from_ref(&group),
+            1,
+            10,
+            &display_group_target_fps,
+            &registry,
+            &mut zones,
+        )
+        .expect("empty display group should render a transparent shell");
+        let [(_, cleared_frame)] = &cleared.group_canvases[..] else {
+            panic!("empty display group should still publish a direct surface");
+        };
+
+        assert!(cleared_frame.empty_direct_shell);
+        assert_eq!(
+            cleared_frame.surface_for_test().get_pixel(0, 0),
+            Rgba::TRANSPARENT
         );
     }
 

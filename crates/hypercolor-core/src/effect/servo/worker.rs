@@ -1521,6 +1521,16 @@ impl ServoWorkerRuntime {
             .ok_or_else(|| anyhow!("Servo session {session_id:?} is not initialized"))
     }
 
+    fn make_session_rendering_context_current(&self, session_id: ServoSessionId) -> Result<()> {
+        let session = self.session(session_id)?;
+        session
+            .rendering_context
+            .make_current()
+            .map_err(|error| anyhow!("failed to make Servo GL context current: {error:?}"))?;
+        session.rendering_context.prepare_for_rendering();
+        Ok(())
+    }
+
     fn active_webview(&self, session_id: ServoSessionId) -> Result<&WebView> {
         self.session(session_id)?
             .webview
@@ -1680,6 +1690,7 @@ impl ServoWorkerRuntime {
             let frame_start = Instant::now();
             let mut timings = ServoRenderStageTimings::default();
             self.resize_if_needed(session_id, width, height)?;
+            self.make_session_rendering_context_current(session_id)?;
             let renders_since_load = self
                 .session(session_id)?
                 .renders_since_load
@@ -2426,6 +2437,13 @@ impl ServoWorkerRuntime {
 #[cfg(feature = "servo-gpu-import")]
 fn present_after_gpu_import_skip(runtime: &ServoWorkerRuntime, session_id: ServoSessionId) {
     if let Ok(session) = runtime.session(session_id) {
+        if let Err(error) = session.rendering_context.make_current() {
+            debug!(
+                ?error,
+                "Servo present skipped because context could not be made current"
+            );
+            return;
+        }
         session.rendering_context.present();
     }
 }
@@ -2440,6 +2458,7 @@ fn render_servo_framebuffer(
     let _ = mode;
 
     let paint_start = Instant::now();
+    runtime.make_session_rendering_context_current(session_id)?;
     runtime.active_webview(session_id)?.paint();
     timings.paint_us = elapsed_micros(paint_start);
 
