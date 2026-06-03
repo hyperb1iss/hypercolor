@@ -6,17 +6,19 @@ use anyhow::Result;
 use tokio::sync::RwLock;
 
 use hypercolor_core::asset::AssetLibrary;
-use hypercolor_core::bus::{DisplayGroupFrame, DisplayGroupOutputRoute, DisplayGroupTarget};
+use hypercolor_core::bus::DisplayGroupOutputRoute;
+#[cfg(test)]
+use hypercolor_core::bus::{DisplayGroupFrame, DisplayGroupTarget};
 #[cfg(feature = "servo-gpu-import")]
 use hypercolor_core::effect::EffectRenderOutput;
 use hypercolor_core::effect::media::MediaProducer;
 use hypercolor_core::effect::{EffectPool, EffectRegistry};
-use hypercolor_core::input::{InteractionData, ScreenData};
+#[cfg(test)]
+use hypercolor_core::input::ScreenData;
 use hypercolor_core::spatial::SpatialEngine;
 #[cfg(test)]
 use hypercolor_core::spatial::sample_led;
 use hypercolor_types::asset::AssetId;
-use hypercolor_types::audio::AudioData;
 #[cfg(test)]
 use hypercolor_types::canvas::PublishedSurface;
 use hypercolor_types::canvas::{Canvas, RenderSurfacePool, SurfaceDescriptor};
@@ -25,13 +27,14 @@ use hypercolor_types::event::{HypercolorEvent, LayerHealth, ZoneColors};
 use hypercolor_types::layer::{LayerAdjust, LayerBlendMode, LayerTransform};
 use hypercolor_types::layer::{LayerSource, SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{DisplayFaceTarget, SceneId, Zone, ZoneId};
+#[cfg(test)]
 use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::spatial::SpatialLayout;
 #[cfg(test)]
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode};
 
 use super::binding_eval::evaluate_layer_runtime;
-use super::frame_sampling::{LedSamplingStrategy, RetainedLedSamplingStrategy};
+use super::frame_sampling::LedSamplingStrategy;
 use super::layer_runtime::LayerRuntimeRegistry;
 use super::micros_u32;
 use super::producer_queue::{ProducerFrame, record_producer_frame};
@@ -52,6 +55,15 @@ use group_state::{
     combine_led_group_layouts, combined_led_state, desired_media_asset_ids, empty_group_layout,
     enabled_layer_count, group_contributes_to_scene_canvas, group_is_active,
     group_publishes_direct_canvas, group_publishes_empty_direct_canvas, scene_logical_layer_count,
+};
+use model::{
+    CachedMediaProducer, GroupFrameContext, GroupFrameRequirements, MediaLayerFrame,
+    RenderedGroupSet, RetainedDirectGroupFrame, RetainedMaterializedGroupFrame,
+    RetainedRenderGroupFrame,
+};
+pub(crate) use model::{
+    GroupCanvasFrame, PendingGroupCanvasFrame, RenderSceneContext, ZoneEffectError,
+    ZoneFrameInputs, ZoneResult,
 };
 use projection::{
     CachedGroupProjection, build_group_projection, compose_authoritative_scene_canvas,
@@ -76,166 +88,6 @@ const SCENE_SURFACE_POOL_MAX_SLOTS: usize = 64;
 /// needs room for watch channel + in-flight display encode.
 const DIRECT_SURFACE_POOL_INITIAL_SLOTS: usize = 6;
 const DIRECT_SURFACE_POOL_MAX_SLOTS: usize = 32;
-
-#[derive(Clone)]
-pub(crate) struct PendingGroupCanvasFrame {
-    pub frame: ProducerFrame,
-    pub display_target: DisplayFaceTarget,
-    pub(crate) empty_direct_shell: bool,
-}
-
-#[cfg(test)]
-impl PendingGroupCanvasFrame {
-    fn surface_for_test(&self) -> &PublishedSurface {
-        match &self.frame {
-            ProducerFrame::Surface(surface) => surface,
-            ProducerFrame::Canvas(_) => panic!("direct group test expected a published surface"),
-            #[cfg(feature = "servo-gpu-import")]
-            ProducerFrame::Gpu(_) => panic!("direct group test expected a CPU surface"),
-            #[cfg(feature = "wgpu")]
-            ProducerFrame::GpuTexture(_) => panic!("direct group test expected a CPU surface"),
-        }
-    }
-}
-
-#[derive(Clone)]
-pub(crate) struct GroupCanvasFrame {
-    pub frame: DisplayGroupFrame,
-    pub display_target: DisplayGroupTarget,
-}
-
-pub(crate) struct ZoneResult {
-    pub scene_frame: ProducerFrame,
-    pub group_canvases: Vec<(ZoneId, PendingGroupCanvasFrame)>,
-    pub zone_canvases: Vec<(ZoneId, ProducerFrame)>,
-    pub active_group_canvas_ids: Vec<ZoneId>,
-    pub led_sampling_strategy: LedSamplingStrategy,
-    pub producer_full_frame_copy: FullFrameCopyMetrics,
-    pub render_us: u32,
-    pub sample_us: u32,
-    pub scene_compose_us: u32,
-    pub logical_layer_count: u32,
-}
-
-#[derive(Clone, Copy)]
-pub(crate) struct ZoneFrameInputs<'a> {
-    pub(crate) delta_secs: f32,
-    pub(crate) audio: &'a AudioData,
-    pub(crate) interaction: &'a InteractionData,
-    pub(crate) screen: Option<&'a ScreenData>,
-    pub(crate) sensors: &'a SystemSnapshot,
-}
-
-#[derive(Clone, Copy)]
-pub(crate) struct RenderSceneContext<'a> {
-    pub(crate) groups: &'a [Zone],
-    pub(crate) active_scene_id: Option<SceneId>,
-    pub(crate) dependency_key: SceneDependencyKey,
-    pub(crate) elapsed_ms: u32,
-    pub(crate) display_group_target_fps: &'a HashMap<ZoneId, u32>,
-    pub(crate) registry: &'a EffectRegistry,
-    pub(crate) inputs: ZoneFrameInputs<'a>,
-}
-
-#[derive(Clone, Copy)]
-struct GroupFrameContext<'a> {
-    active_scene_id: Option<SceneId>,
-    elapsed_ms: u32,
-    registry: &'a EffectRegistry,
-    inputs: ZoneFrameInputs<'a>,
-}
-
-impl<'a> RenderSceneContext<'a> {
-    fn group_context(&self) -> GroupFrameContext<'a> {
-        GroupFrameContext {
-            active_scene_id: self.active_scene_id,
-            elapsed_ms: self.elapsed_ms,
-            registry: self.registry,
-            inputs: self.inputs,
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-struct GroupFrameRequirements {
-    requires_cpu_sampling_canvas: bool,
-    requires_published_surface: bool,
-}
-
-#[derive(Default)]
-struct RenderedGroupSet {
-    group_canvases: Vec<(ZoneId, PendingGroupCanvasFrame)>,
-    zone_canvases: Vec<(ZoneId, ProducerFrame)>,
-    active_group_canvas_ids: Vec<ZoneId>,
-}
-
-impl RenderedGroupSet {
-    fn mark_direct_group_active(&mut self, group_id: ZoneId) {
-        self.active_group_canvas_ids.push(group_id);
-    }
-
-    fn push_direct_group_frame(&mut self, group_id: ZoneId, frame: PendingGroupCanvasFrame) {
-        self.zone_canvases.push((group_id, frame.frame.clone()));
-        self.group_canvases.push((group_id, frame));
-    }
-
-    fn push_scene_group_frame(&mut self, group_id: ZoneId, frame: ProducerFrame) {
-        self.zone_canvases.push((group_id, frame));
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("zone '{group_name}' effect '{effect_name}' ({effect_id}) failed: {error}")]
-pub(crate) struct ZoneEffectError {
-    pub(crate) effect_id: String,
-    pub(crate) effect_name: String,
-    pub(crate) group_id: ZoneId,
-    pub(crate) group_name: String,
-    pub(crate) error: String,
-}
-
-#[derive(Clone)]
-struct RetainedRenderGroupFrame {
-    dependency_key: SceneDependencyKey,
-    scene_frame: ProducerFrame,
-    group_canvases: Vec<(ZoneId, PendingGroupCanvasFrame)>,
-    active_group_canvas_ids: Vec<ZoneId>,
-    zone_canvases: Vec<(ZoneId, ProducerFrame)>,
-    led_sampling_strategy: RetainedLedSamplingStrategy,
-    logical_layer_count: u32,
-}
-
-#[derive(Clone)]
-struct RetainedDirectGroupFrame {
-    frame: PendingGroupCanvasFrame,
-    rendered_at_ms: u32,
-    dependency_key: SceneDependencyKey,
-}
-
-#[derive(Clone)]
-struct RetainedMaterializedGroupFrame {
-    frame: GroupCanvasFrame,
-    rendered_at_ms: u32,
-    dependency_key: SceneDependencyKey,
-    display_target: DisplayFaceTarget,
-    display_route: DisplayGroupOutputRoute,
-    empty_direct_shell: bool,
-}
-
-struct CachedMediaProducer {
-    hash_sha256: String,
-    producer: MediaProducer,
-}
-
-enum MediaLayerFrame {
-    Ready {
-        frame: ProducerFrame,
-        health: LayerHealth,
-    },
-    Loading,
-    Missing,
-    Failed(String),
-}
 
 pub(crate) struct ZoneRuntime {
     asset_library: Option<Arc<RwLock<AssetLibrary>>>,
@@ -1707,6 +1559,7 @@ fn blit_scaled_tile(target: &mut Canvas, source: &Canvas, x0: u32, y0: u32, x1: 
 
 mod frame_helpers;
 mod group_state;
+mod model;
 mod projection;
 #[cfg(test)]
 mod tests;
