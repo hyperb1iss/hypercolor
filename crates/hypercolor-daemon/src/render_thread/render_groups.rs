@@ -6,9 +6,8 @@ use anyhow::Result;
 use tokio::sync::RwLock;
 
 use hypercolor_core::asset::AssetLibrary;
-use hypercolor_core::bus::DisplayGroupOutputRoute;
 #[cfg(test)]
-use hypercolor_core::bus::{DisplayGroupFrame, DisplayGroupTarget};
+use hypercolor_core::bus::{DisplayGroupFrame, DisplayGroupOutputRoute, DisplayGroupTarget};
 #[cfg(feature = "servo-gpu-import")]
 use hypercolor_core::effect::EffectRenderOutput;
 use hypercolor_core::effect::media::MediaProducer;
@@ -26,7 +25,9 @@ use hypercolor_types::event::{HypercolorEvent, LayerHealth, ZoneColors};
 #[cfg(test)]
 use hypercolor_types::layer::{LayerAdjust, LayerBlendMode, LayerTransform};
 use hypercolor_types::layer::{LayerSource, SceneLayer, SceneLayerId};
-use hypercolor_types::scene::{DisplayFaceTarget, SceneId, Zone, ZoneId};
+#[cfg(test)]
+use hypercolor_types::scene::DisplayFaceTarget;
+use hypercolor_types::scene::{SceneId, Zone, ZoneId};
 #[cfg(test)]
 use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::spatial::SpatialLayout;
@@ -53,7 +54,7 @@ use frame_helpers::{
 use group_state::{
     combine_led_group_layouts, combined_led_state, desired_media_asset_ids, empty_group_layout,
     enabled_layer_count, group_contributes_to_scene_canvas, group_publishes_direct_canvas,
-    group_publishes_empty_direct_canvas, scene_logical_layer_count,
+    scene_logical_layer_count,
 };
 use model::{
     CachedMediaProducer, GroupFrameContext, GroupFrameRequirements, MediaLayerFrame,
@@ -581,144 +582,6 @@ impl ZoneRuntime {
             let start = zones.len();
             spatial_engine.sample_append_into_at(target, zones, start);
         }
-    }
-
-    fn reuse_retained_direct_group_frame(
-        &self,
-        group: &Zone,
-        elapsed_ms: u32,
-        display_group_target_fps: &HashMap<ZoneId, u32>,
-        dependency_key: SceneDependencyKey,
-    ) -> Option<PendingGroupCanvasFrame> {
-        if !group_publishes_direct_canvas(group) || !group.layout.zones.is_empty() {
-            return None;
-        }
-
-        let target_fps = *display_group_target_fps.get(&group.id)?;
-        let retained = self.retained_direct_group_frames.get(&group.id)?;
-        if retained.frame.empty_direct_shell != group_publishes_empty_direct_canvas(group) {
-            return None;
-        }
-        if retained.dependency_key != dependency_key {
-            return None;
-        }
-        let frame_interval_ms = 1000_u32.div_ceil(target_fps.max(1));
-        (elapsed_ms.saturating_sub(retained.rendered_at_ms) < frame_interval_ms)
-            .then(|| retained.frame.clone())
-    }
-
-    fn retain_direct_group_frame(
-        &mut self,
-        group_id: ZoneId,
-        elapsed_ms: u32,
-        dependency_key: SceneDependencyKey,
-        frame: &PendingGroupCanvasFrame,
-    ) {
-        self.retained_direct_group_frames.insert(
-            group_id,
-            RetainedDirectGroupFrame {
-                frame: frame.clone(),
-                rendered_at_ms: elapsed_ms,
-                dependency_key,
-            },
-        );
-    }
-
-    fn reuse_latest_direct_group_frame(&self, group: &Zone) -> Option<PendingGroupCanvasFrame> {
-        if !group_publishes_direct_canvas(group) {
-            return None;
-        }
-        let retained = self.retained_direct_group_frames.get(&group.id)?;
-        if retained.frame.empty_direct_shell != group_publishes_empty_direct_canvas(group) {
-            return None;
-        }
-        let display_target = group.display_target.as_ref()?;
-        if retained.frame.display_target != *display_target
-            || retained.frame.frame.width() != group.layout.canvas_width
-            || retained.frame.frame.height() != group.layout.canvas_height
-        {
-            return None;
-        }
-
-        Some(retained.frame.clone())
-    }
-
-    pub(crate) fn reuse_retained_materialized_group_frame(
-        &self,
-        group_id: ZoneId,
-        elapsed_ms: u32,
-        target_fps: Option<u32>,
-        dependency_key: SceneDependencyKey,
-        display_target: &DisplayFaceTarget,
-        display_route: &DisplayGroupOutputRoute,
-        empty_direct_shell: bool,
-    ) -> Option<GroupCanvasFrame> {
-        let target_fps = target_fps?;
-        if display_route.device_id != display_target.device_id {
-            return None;
-        }
-
-        let retained = self.retained_materialized_group_frames.get(&group_id)?;
-        if retained.dependency_key != dependency_key
-            || retained.display_target != *display_target
-            || retained.display_route != *display_route
-            || retained.empty_direct_shell != empty_direct_shell
-        {
-            return None;
-        }
-
-        let frame_interval_ms = 1000_u32.div_ceil(target_fps.max(1));
-        (elapsed_ms.saturating_sub(retained.rendered_at_ms) < frame_interval_ms)
-            .then(|| retained.frame.clone())
-    }
-
-    pub(crate) fn reuse_latest_materialized_group_frame(
-        &self,
-        group_id: ZoneId,
-        display_target: &DisplayFaceTarget,
-        display_route: &DisplayGroupOutputRoute,
-        empty_direct_shell: bool,
-    ) -> Option<GroupCanvasFrame> {
-        if display_route.device_id != display_target.device_id {
-            return None;
-        }
-
-        let retained = self.retained_materialized_group_frames.get(&group_id)?;
-        if retained.display_target != *display_target
-            || retained.display_route != *display_route
-            || retained.empty_direct_shell != empty_direct_shell
-        {
-            return None;
-        }
-
-        Some(retained.frame.clone())
-    }
-
-    pub(crate) fn retain_materialized_group_frame(
-        &mut self,
-        group_id: ZoneId,
-        elapsed_ms: u32,
-        dependency_key: SceneDependencyKey,
-        display_target: &DisplayFaceTarget,
-        display_route: &DisplayGroupOutputRoute,
-        empty_direct_shell: bool,
-        frame: &GroupCanvasFrame,
-    ) {
-        if display_route.device_id != display_target.device_id || !frame.display_target.finalized {
-            return;
-        }
-
-        self.retained_materialized_group_frames.insert(
-            group_id,
-            RetainedMaterializedGroupFrame {
-                frame: frame.clone(),
-                rendered_at_ms: elapsed_ms,
-                dependency_key,
-                display_target: display_target.clone(),
-                display_route: display_route.clone(),
-                empty_direct_shell,
-            },
-        );
     }
 
     fn render_direct_group_frame(
@@ -1355,6 +1218,7 @@ fn blit_scaled_tile(target: &mut Canvas, source: &Canvas, x0: u32, y0: u32, x1: 
     }
 }
 
+mod display_retention;
 mod frame_helpers;
 mod group_state;
 mod model;
