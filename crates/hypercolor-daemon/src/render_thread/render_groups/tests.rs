@@ -15,11 +15,11 @@ use hypercolor_types::canvas::Rgba;
 use hypercolor_types::device::DisplayFrameFormat;
 use hypercolor_types::effect::{ControlValue, EffectId};
 use hypercolor_types::layer::MediaPlayback;
-use hypercolor_types::scene::ZoneRole;
+use hypercolor_types::scene::{SceneId, ZoneRole};
 use hypercolor_types::spatial::{Corner, LedTopology, NormalizedPosition, Output, StripDirection};
 use uuid::Uuid;
 
-use super::projection::compose_authoritative_scene_canvas;
+use super::projection::{build_group_projection, compose_authoritative_scene_canvas};
 use crate::render_thread::sparkleflinger::CompositionLayer;
 
 use super::*;
