@@ -19,6 +19,9 @@ use hypercolor_types::scene::ZoneRole;
 use hypercolor_types::spatial::{Corner, LedTopology, NormalizedPosition, Output, StripDirection};
 use uuid::Uuid;
 
+use super::projection::compose_authoritative_scene_canvas;
+use crate::render_thread::sparkleflinger::CompositionLayer;
+
 use super::*;
 
 #[cfg(feature = "wgpu")]
