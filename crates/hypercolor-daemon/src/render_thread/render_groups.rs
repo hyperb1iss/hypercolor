@@ -45,10 +45,12 @@ use crate::performance::FullFrameCopyMetrics;
 use effect_errors::render_layer_effect_error;
 #[cfg(all(test, feature = "wgpu"))]
 use frame_helpers::media_mime_prefers_gpu_texture;
+#[cfg(test)]
+use frame_helpers::surface_backed_frame;
 use frame_helpers::{
     color_fill_frame, composed_frame_to_producer_frame, composition_layer_for_scene_layer,
     media_layer_producer_frame, passthrough_effect_layer, producer_frame_is_gpu,
-    screen_region_layer_frame, surface_backed_frame, transparent_black_frame,
+    screen_region_layer_frame, transparent_black_frame,
 };
 use group_state::{
     combined_led_state, empty_group_layout, enabled_layer_count, group_contributes_to_scene_canvas,
@@ -728,24 +730,6 @@ impl ZoneRuntime {
                 })?;
             Ok(Some(ProducerFrame::Canvas(canvas)))
         }
-    }
-
-    fn surface_backed_scene_frame(
-        &mut self,
-        frame: ProducerFrame,
-        full_frame_copy: &mut FullFrameCopyMetrics,
-    ) -> Option<ProducerFrame> {
-        surface_backed_frame(&mut self.scene_surface_pool, frame, full_frame_copy)
-    }
-
-    fn surface_backed_direct_frame(
-        &mut self,
-        group_id: ZoneId,
-        frame: ProducerFrame,
-        full_frame_copy: &mut FullFrameCopyMetrics,
-    ) -> Option<ProducerFrame> {
-        let surface_pool = self.direct_surface_pools.get_mut(&group_id)?;
-        surface_backed_frame(surface_pool, frame, full_frame_copy)
     }
 }
 

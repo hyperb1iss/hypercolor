@@ -1,8 +1,30 @@
 use hypercolor_types::canvas::RenderSurfacePool;
+use hypercolor_types::scene::ZoneId;
 
 use super::ZoneRuntime;
+use super::frame_helpers::surface_backed_frame;
+use crate::performance::FullFrameCopyMetrics;
+use crate::render_thread::producer_queue::ProducerFrame;
 
 impl ZoneRuntime {
+    pub(super) fn surface_backed_scene_frame(
+        &mut self,
+        frame: ProducerFrame,
+        full_frame_copy: &mut FullFrameCopyMetrics,
+    ) -> Option<ProducerFrame> {
+        surface_backed_frame(&mut self.scene_surface_pool, frame, full_frame_copy)
+    }
+
+    pub(super) fn surface_backed_direct_frame(
+        &mut self,
+        group_id: ZoneId,
+        frame: ProducerFrame,
+        full_frame_copy: &mut FullFrameCopyMetrics,
+    ) -> Option<ProducerFrame> {
+        let surface_pool = self.direct_surface_pools.get_mut(&group_id)?;
+        surface_backed_frame(surface_pool, frame, full_frame_copy)
+    }
+
     /// Total count of times the backing scene-surface pool had to reuse a
     /// still-shared Published slot (and therefore allocate a fresh canvas).
     /// Monotonically increasing; non-zero growth means the pool is
