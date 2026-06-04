@@ -153,28 +153,6 @@ impl ZoneRuntime {
         self.asset_library.clone()
     }
 
-    pub(crate) fn reuse_scene(&self, dependency_key: SceneDependencyKey) -> Option<ZoneResult> {
-        let retained = self.retained_frame.as_ref()?;
-        if retained.dependency_key != dependency_key {
-            return None;
-        }
-
-        Some(ZoneResult {
-            scene_frame: retained.scene_frame.clone(),
-            group_canvases: retained.group_canvases.clone(),
-            zone_canvases: retained.zone_canvases.clone(),
-            active_group_canvas_ids: retained.active_group_canvas_ids.clone(),
-            led_sampling_strategy: LedSamplingStrategy::from_retained(
-                &retained.led_sampling_strategy,
-            ),
-            producer_full_frame_copy: FullFrameCopyMetrics::default(),
-            render_us: 0,
-            sample_us: 0,
-            scene_compose_us: 0,
-            logical_layer_count: retained.logical_layer_count,
-        })
-    }
-
     pub(crate) fn render_scene(
         &mut self,
         context: RenderSceneContext<'_>,
@@ -341,23 +319,6 @@ impl ZoneRuntime {
             return None;
         }
         Some(group)
-    }
-
-    fn retain_frame(
-        &mut self,
-        dependency_key: SceneDependencyKey,
-        result: &ZoneResult,
-        zones: &[ZoneColors],
-    ) {
-        self.retained_frame = Some(RetainedRenderGroupFrame {
-            dependency_key,
-            scene_frame: result.scene_frame.clone(),
-            group_canvases: result.group_canvases.clone(),
-            active_group_canvas_ids: result.active_group_canvas_ids.clone(),
-            zone_canvases: result.zone_canvases.clone(),
-            led_sampling_strategy: result.led_sampling_strategy.retain(zones),
-            logical_layer_count: result.logical_layer_count,
-        });
     }
 
     fn render_direct_group_frame(
@@ -797,6 +758,7 @@ mod projection;
 mod reconcile;
 mod render_pass;
 mod scene_output;
+mod scene_retention;
 mod surface_pools;
 #[cfg(test)]
 mod tests;
