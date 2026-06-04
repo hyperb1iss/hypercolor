@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+#[cfg(test)]
 use anyhow::Result;
 use tokio::sync::RwLock;
 
@@ -26,9 +27,9 @@ use hypercolor_types::event::ZoneColors;
 use hypercolor_types::layer::{
     LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, SceneLayer,
 };
+use hypercolor_types::scene::ZoneId;
 #[cfg(test)]
-use hypercolor_types::scene::DisplayFaceTarget;
-use hypercolor_types::scene::{Zone, ZoneId};
+use hypercolor_types::scene::{DisplayFaceTarget, Zone};
 #[cfg(test)]
 use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::spatial::SpatialLayout;
@@ -40,21 +41,23 @@ use super::frame_sampling::LedSamplingStrategy;
 use super::layer_runtime::LayerRuntimeRegistry;
 #[cfg(test)]
 use super::producer_queue::ProducerFrame;
-use super::producer_queue::record_producer_frame;
 use super::scene_dependency::SceneDependencyKey;
+#[cfg(test)]
 use super::sparkleflinger::SparkleFlinger;
 #[cfg(test)]
 use super::sparkleflinger::{CompositionPlan, PreviewSurfaceRequest};
+#[cfg(test)]
 use crate::performance::FullFrameCopyMetrics;
 #[cfg(all(test, feature = "wgpu"))]
 use frame_helpers::media_mime_prefers_gpu_texture;
 #[cfg(test)]
+use frame_helpers::passthrough_effect_layer;
+#[cfg(test)]
 use frame_helpers::surface_backed_frame;
-use frame_helpers::{passthrough_effect_layer, transparent_black_frame};
-use group_state::{combined_led_state, empty_group_layout, enabled_layer_count};
+use group_state::{combined_led_state, empty_group_layout};
 use model::{
-    CachedMediaProducer, GroupFrameContext, GroupFrameRequirements, RetainedDirectGroupFrame,
-    RetainedMaterializedGroupFrame, RetainedRenderGroupFrame,
+    CachedMediaProducer, RetainedDirectGroupFrame, RetainedMaterializedGroupFrame,
+    RetainedRenderGroupFrame,
 };
 pub(crate) use model::{
     GroupCanvasFrame, PendingGroupCanvasFrame, RenderSceneContext, ZoneEffectError,
@@ -152,54 +155,6 @@ impl ZoneRuntime {
 
     pub(crate) fn drain_layer_runtime_events(&mut self) -> Vec<HypercolorEvent> {
         self.layer_runtime.drain_events()
-    }
-
-    fn render_direct_group_frame(
-        &mut self,
-        group: &Zone,
-        context: GroupFrameContext<'_>,
-        sparkleflinger: &mut SparkleFlinger,
-        full_frame_copy: &mut FullFrameCopyMetrics,
-    ) -> Result<Option<PendingGroupCanvasFrame>> {
-        let display_target = group
-            .display_target
-            .clone()
-            .expect("direct display group should carry a display target");
-
-        let empty_direct_shell = enabled_layer_count(group) == 0;
-        let frame = if empty_direct_shell {
-            self.effect_pool.remove_group(group.id);
-            self.retained_materialized_group_frames.remove(&group.id);
-            transparent_black_frame(group.layout.canvas_width, group.layout.canvas_height)
-        } else if passthrough_effect_layer(group).is_some() {
-            let Some(frame) = self.render_passthrough_effect_layer_frame(group, context)? else {
-                return Ok(None);
-            };
-            frame
-        } else {
-            let Some(frame) = self.render_group_frame(
-                group,
-                context,
-                sparkleflinger,
-                GroupFrameRequirements {
-                    requires_cpu_sampling_canvas: true,
-                    requires_published_surface: true,
-                },
-            )?
-            else {
-                return Ok(None);
-            };
-            frame
-        };
-        let Some(frame) = self.surface_backed_direct_frame(group.id, frame, full_frame_copy) else {
-            return Ok(None);
-        };
-        record_producer_frame(&frame);
-        Ok(Some(PendingGroupCanvasFrame {
-            frame,
-            display_target,
-            empty_direct_shell,
-        }))
     }
 }
 

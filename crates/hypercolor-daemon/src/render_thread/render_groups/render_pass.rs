@@ -1,15 +1,20 @@
 use std::time::Instant;
 
 use anyhow::Result;
-use hypercolor_types::scene::ZoneId;
+use hypercolor_types::scene::{Zone, ZoneId};
 
 use super::super::micros_u32;
-use super::super::producer_queue::ProducerFrame;
+use super::super::producer_queue::{ProducerFrame, record_producer_frame};
 use super::super::sparkleflinger::{CompositionLayer, SparkleFlinger};
 use super::ZoneRuntime;
-use super::frame_helpers::copy_producer_frame_to_canvas;
-use super::group_state::{group_is_active, group_publishes_direct_canvas};
-use super::model::{GroupFrameRequirements, RenderSceneContext, RenderedGroupSet};
+use super::frame_helpers::{
+    copy_producer_frame_to_canvas, passthrough_effect_layer, transparent_black_frame,
+};
+use super::group_state::{enabled_layer_count, group_is_active, group_publishes_direct_canvas};
+use super::model::{
+    GroupFrameContext, GroupFrameRequirements, PendingGroupCanvasFrame, RenderSceneContext,
+    RenderedGroupSet,
+};
 use super::projection::projection_composition_layers_for_group;
 use crate::performance::FullFrameCopyMetrics;
 
@@ -29,6 +34,54 @@ impl RenderedGroupPassOutput {
 }
 
 impl ZoneRuntime {
+    fn render_direct_group_frame(
+        &mut self,
+        group: &Zone,
+        context: GroupFrameContext<'_>,
+        sparkleflinger: &mut SparkleFlinger,
+        full_frame_copy: &mut FullFrameCopyMetrics,
+    ) -> Result<Option<PendingGroupCanvasFrame>> {
+        let display_target = group
+            .display_target
+            .clone()
+            .expect("direct display group should carry a display target");
+
+        let empty_direct_shell = enabled_layer_count(group) == 0;
+        let frame = if empty_direct_shell {
+            self.effect_pool.remove_group(group.id);
+            self.retained_materialized_group_frames.remove(&group.id);
+            transparent_black_frame(group.layout.canvas_width, group.layout.canvas_height)
+        } else if passthrough_effect_layer(group).is_some() {
+            let Some(frame) = self.render_passthrough_effect_layer_frame(group, context)? else {
+                return Ok(None);
+            };
+            frame
+        } else {
+            let Some(frame) = self.render_group_frame(
+                group,
+                context,
+                sparkleflinger,
+                GroupFrameRequirements {
+                    requires_cpu_sampling_canvas: true,
+                    requires_published_surface: true,
+                },
+            )?
+            else {
+                return Ok(None);
+            };
+            frame
+        };
+        let Some(frame) = self.surface_backed_direct_frame(group.id, frame, full_frame_copy) else {
+            return Ok(None);
+        };
+        record_producer_frame(&frame);
+        Ok(Some(PendingGroupCanvasFrame {
+            frame,
+            display_target,
+            empty_direct_shell,
+        }))
+    }
+
     pub(super) fn render_scene_contributor_frames(
         &mut self,
         context: RenderSceneContext<'_>,
