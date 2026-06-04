@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use tokio::sync::Mutex;
 use tracing::debug;
 
@@ -339,19 +339,10 @@ impl BackendManager {
         device_id: DeviceId,
         brightness: u8,
     ) -> Result<()> {
-        let Some(backend) = self.backends.get(backend_id).cloned() else {
+        let Some(io) = self.backend_io(backend_id) else {
             bail!("backend '{backend_id}' is not registered");
         };
-
-        let mut backend = backend.lock().await;
-        backend
-            .set_brightness(&device_id, brightness)
-            .await
-            .with_context(|| {
-                format!(
-                    "failed to set brightness {brightness} on device {device_id} using backend '{backend_id}'"
-                )
-            })
+        io.set_brightness(device_id, brightness).await
     }
 
     /// Cache a backend-provided output FPS for a physical device.

@@ -255,6 +255,24 @@ impl BackendIo {
             })
     }
 
+    /// Set hardware brightness directly on the backend.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the backend brightness write fails.
+    pub async fn set_brightness(&self, device_id: DeviceId, brightness: u8) -> Result<()> {
+        let mut backend = self.backend.lock().await;
+        backend
+            .set_brightness(&device_id, brightness)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to set brightness {brightness} on device {device_id} using backend '{}'",
+                    self.backend_id
+                )
+            })
+    }
+
     /// Write immediate display bytes directly to the backend.
     ///
     /// # Errors

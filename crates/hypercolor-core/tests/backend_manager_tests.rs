@@ -1969,6 +1969,35 @@ async fn backend_io_write_colors_targets_backend_directly() {
 }
 
 #[tokio::test]
+async fn backend_io_set_brightness_targets_backend_directly() {
+    let device_id = DeviceId::new();
+    let writes = Arc::new(Mutex::new(Vec::new()));
+    let brightness_writes = Arc::new(Mutex::new(Vec::new()));
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(DirectControlRecordingBackend::new(
+        device_id,
+        Arc::clone(&writes),
+        Arc::clone(&brightness_writes),
+    )));
+
+    let io = manager
+        .backend_io("recording")
+        .expect("backend io handle should exist");
+    io.connect_with_refresh(device_id)
+        .await
+        .expect("connect should succeed");
+    io.set_brightness(device_id, 64)
+        .await
+        .expect("brightness write should succeed");
+
+    assert!(
+        writes.lock().await.is_empty(),
+        "brightness should not write colors"
+    );
+    assert_eq!(*brightness_writes.lock().await, vec![64]);
+}
+
+#[tokio::test]
 async fn backend_io_disconnect_stops_future_direct_writes() {
     let device_id = DeviceId::new();
     let writes = Arc::new(Mutex::new(Vec::new()));
