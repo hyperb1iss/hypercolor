@@ -8,10 +8,10 @@ use tokio::sync::RwLock;
 use hypercolor_core::asset::AssetLibrary;
 #[cfg(test)]
 use hypercolor_core::bus::{DisplayGroupFrame, DisplayGroupOutputRoute, DisplayGroupTarget};
+use hypercolor_core::effect::EffectPool;
 #[cfg(feature = "servo-gpu-import")]
 use hypercolor_core::effect::EffectRenderOutput;
 use hypercolor_core::effect::media::MediaProducer;
-use hypercolor_core::effect::{EffectPool, EffectRegistry};
 #[cfg(test)]
 use hypercolor_core::input::ScreenData;
 use hypercolor_core::spatial::SpatialEngine;
@@ -42,6 +42,7 @@ use super::producer_queue::{ProducerFrame, record_producer_frame};
 use super::scene_dependency::SceneDependencyKey;
 use super::sparkleflinger::{CompositionPlan, PreviewSurfaceRequest, SparkleFlinger};
 use crate::performance::FullFrameCopyMetrics;
+use effect_errors::render_layer_effect_error;
 #[cfg(all(test, feature = "wgpu"))]
 use frame_helpers::media_mime_prefers_gpu_texture;
 use frame_helpers::{
@@ -320,26 +321,6 @@ impl ZoneRuntime {
             scene_compose_us: 0,
             logical_layer_count: enabled_layer_count(scene_group),
         }))
-    }
-
-    pub(crate) fn note_effect_error(&mut self, error: &ZoneEffectError) -> Option<ZoneEffectError> {
-        self.recovered_effect_error = None;
-        if self.last_effect_error.as_ref() == Some(error) {
-            return None;
-        }
-
-        self.last_effect_error = Some(error.clone());
-        Some(error.clone())
-    }
-
-    fn clear_effect_error(&mut self) {
-        if let Some(error) = self.last_effect_error.take() {
-            self.recovered_effect_error = Some(error);
-        }
-    }
-
-    pub(crate) fn take_recovered_effect_error(&mut self) -> Option<ZoneEffectError> {
-        self.recovered_effect_error.take()
     }
 
     pub(crate) fn drain_layer_runtime_events(&mut self) -> Vec<HypercolorEvent> {
@@ -807,42 +788,8 @@ impl ZoneRuntime {
     }
 }
 
-fn render_layer_effect_error(
-    group: &Zone,
-    layer: &SceneLayer,
-    registry: &EffectRegistry,
-    error: anyhow::Error,
-) -> ZoneEffectError {
-    let effect_id = match &layer.source {
-        LayerSource::Effect { effect_id, .. } => effect_id.to_string(),
-        LayerSource::WebViewport { url, .. } => format!("web_viewport:{url}"),
-        _ => "unknown".to_owned(),
-    };
-    let effect_name = group
-        .effective_layers()
-        .into_iter()
-        .find(|candidate| candidate.id == layer.id)
-        .and_then(|layer| match layer.source {
-            LayerSource::Effect { effect_id, .. } => Some(effect_id),
-            _ => None,
-        })
-        .and_then(|effect_id| {
-            registry
-                .get(&effect_id)
-                .map(|entry| entry.metadata.name.clone())
-        })
-        .unwrap_or_else(|| effect_id.clone());
-
-    ZoneEffectError {
-        effect_id,
-        effect_name,
-        group_id: group.id,
-        group_name: group.name.clone(),
-        error: error.to_string(),
-    }
-}
-
 mod display_retention;
+mod effect_errors;
 mod frame_helpers;
 mod group_state;
 mod model;
