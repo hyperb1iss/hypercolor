@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::time::Instant;
 
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::event::ZoneColors;
@@ -50,8 +49,8 @@ impl BackendManager {
     ) -> FrameWriteStats {
         self.output.begin_staging_frame();
         let plan = self.routing_plan(layout);
-        self.warned_unmapped_layout_devices
-            .retain(|layout_device_id| plan.active_layout_device_ids.contains(layout_device_id));
+        self.warnings
+            .retain_active_layout_devices(&plan.active_layout_device_ids);
 
         let mut stats = FrameWriteStats::default();
 
@@ -192,15 +191,10 @@ impl BackendManager {
             let PlannedZoneRoute::Unmapped { layout_device_id } = route else {
                 unreachable!("only mapped or unmapped zone routes are compiled");
             };
-            if !self.unmapped_layout_warnings_enabled {
-                return;
-            }
             if self
-                .warned_unmapped_layout_devices
-                .insert(layout_device_id.clone())
+                .warnings
+                .mark_unmapped_layout_device(layout_device_id.clone())
             {
-                self.unmapped_layout_warning_count =
-                    self.unmapped_layout_warning_count.saturating_add(1);
                 warn!(
                     zone_id = %zone_id,
                     layout_device_id = %layout_device_id,
@@ -210,8 +204,8 @@ impl BackendManager {
             return;
         };
 
-        self.warned_unmapped_layout_devices
-            .remove(route.layout_device_id.as_str());
+        self.warnings
+            .clear_unmapped_layout_device(route.layout_device_id.as_str());
 
         let segment = attachment_segment_for_zone(
             zone_id,
@@ -271,12 +265,10 @@ impl BackendManager {
 
         if let Some((segment_start, expected, received)) = mismatch {
             let warn_key = format!("{}:{zone_id}", route.layout_device_id);
-            let should_warn = self
-                .last_segment_mismatch_warn_at
-                .get(&warn_key)
-                .is_none_or(|last_warn_at| last_warn_at.elapsed() >= UNMAPPED_LAYOUT_WARN_INTERVAL);
-
-            if should_warn {
+            if self
+                .warnings
+                .should_warn_segment_mismatch(warn_key, UNMAPPED_LAYOUT_WARN_INTERVAL)
+            {
                 warn!(
                     zone_id = %zone_id,
                     layout_device_id = %route.layout_device_id,
@@ -285,8 +277,6 @@ impl BackendManager {
                     received,
                     "zone color count does not match mapped segment length"
                 );
-                self.last_segment_mismatch_warn_at
-                    .insert(warn_key, Instant::now());
             }
         }
     }

@@ -6,9 +6,9 @@
 //! it groups zone colors by target device and queues a single payload per
 //! device for asynchronous transmission.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{Result, bail};
 use tokio::sync::Mutex;
@@ -27,11 +27,13 @@ mod output_frame;
 mod output_lanes;
 mod output_telemetry;
 mod routing;
+mod warnings;
 
 pub use backend_io::BackendIo;
 use brightness::DeviceOutputBrightness;
 use output_coordinator::DeviceOutputCoordinator;
 use routing::{DeviceMapping, RoutingPlan, device_output_len, zone_segments_from_device_info};
+use warnings::DeviceOutputWarnings;
 
 type BackendHandle = Arc<Mutex<Box<dyn DeviceBackend>>>;
 type DeviceFrameSinkHandle = Arc<dyn DeviceFrameSink>;
@@ -92,17 +94,8 @@ pub struct BackendManager {
     /// User-configured per-device software output brightness state.
     output_brightness: DeviceOutputBrightness,
 
-    /// Layout device IDs already warned as unmapped in the current layout state.
-    warned_unmapped_layout_devices: HashSet<String>,
-
-    /// Whether unmapped layout targets should warn instead of being skipped quietly.
-    unmapped_layout_warnings_enabled: bool,
-
-    /// Number of unmapped-layout warnings emitted since process start.
-    unmapped_layout_warning_count: u64,
-
-    /// Last warning time for zone-to-segment color length mismatches.
-    last_segment_mismatch_warn_at: HashMap<String, Instant>,
+    /// Frame-output warning dedupe and throttling state.
+    warnings: DeviceOutputWarnings,
 
     /// Incremented whenever routing-relevant device mappings change.
     routing_mapping_generation: u64,
@@ -200,7 +193,7 @@ impl BackendManager {
             segment_length = segment.map(|s| s.length),
             "mapped device"
         );
-        self.warned_unmapped_layout_devices.remove(&layout_id);
+        self.warnings.clear_unmapped_layout_device(&layout_id);
         self.device_map.insert(
             layout_id,
             DeviceMapping {
@@ -426,17 +419,6 @@ impl BackendManager {
     #[must_use]
     pub const fn routing_plan_rebuild_count(&self) -> u64 {
         self.routing_plan_rebuild_count
-    }
-
-    #[doc(hidden)]
-    #[must_use]
-    pub const fn unmapped_layout_warning_count(&self) -> u64 {
-        self.unmapped_layout_warning_count
-    }
-
-    /// Enable warnings for layout targets that still lack a connected device mapping.
-    pub fn enable_unmapped_layout_warnings(&mut self) {
-        self.unmapped_layout_warnings_enabled = true;
     }
 
     /// List registered backend IDs.
