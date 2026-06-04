@@ -93,6 +93,12 @@ impl BackendManager {
         self.routing_mapping_generation
     }
 
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn routing_plan_rebuild_count(&self) -> u64 {
+        self.routing_plan_rebuild_count
+    }
+
     /// Physical devices that are connected and mapped, but not referenced by the active layout.
     ///
     /// This is a diagnostic view over the current routing table. Devices in this list

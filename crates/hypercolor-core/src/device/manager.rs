@@ -130,27 +130,4 @@ impl BackendManager {
     pub fn new() -> Self {
         Self::default()
     }
-
-    /// Cache a backend-provided output FPS for a physical device.
-    pub fn set_cached_target_fps(
-        &mut self,
-        backend_id: &str,
-        device_id: DeviceId,
-        target_fps: u32,
-    ) {
-        self.output
-            .set_target_fps(backend_id, device_id, target_fps);
-    }
-
-    #[doc(hidden)]
-    #[must_use]
-    pub const fn routing_plan_rebuild_count(&self) -> u64 {
-        self.routing_plan_rebuild_count
-    }
-
-    /// Return the cached target FPS for a connected physical device, if present.
-    #[must_use]
-    pub fn cached_target_fps(&self, backend_id: &str, device_id: DeviceId) -> Option<u32> {
-        self.output.target_fps(backend_id, device_id)
-    }
 }

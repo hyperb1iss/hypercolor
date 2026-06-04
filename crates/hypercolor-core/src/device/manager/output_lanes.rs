@@ -14,6 +14,23 @@ impl BackendManager {
             .set_frame_sink(backend_id, device_id, frame_sink);
     }
 
+    /// Cache a backend-provided output FPS for a physical device.
+    pub fn set_cached_target_fps(
+        &mut self,
+        backend_id: &str,
+        device_id: DeviceId,
+        target_fps: u32,
+    ) {
+        self.output
+            .set_target_fps(backend_id, device_id, target_fps);
+    }
+
+    /// Return the cached target FPS for a connected physical device, if present.
+    #[must_use]
+    pub fn cached_target_fps(&self, backend_id: &str, device_id: DeviceId) -> Option<u32> {
+        self.output.target_fps(backend_id, device_id)
+    }
+
     /// Suppress queued frame writes for a specific physical device.
     ///
     /// Returns the active direct-control lock count after incrementing.
