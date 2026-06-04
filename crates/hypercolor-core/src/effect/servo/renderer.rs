@@ -19,20 +19,15 @@ use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use tracing::{debug, info, warn};
 
-#[cfg(feature = "servo-gpu-import")]
-use super::gpu_import_backend::ServoFrameUnavailable;
 use super::session::ServoRenderSubmission;
 use super::telemetry::{
-    record_servo_detached_destroy, record_servo_page_load, record_servo_pending_render_age,
-    record_servo_renderer_load, record_servo_session_create, record_servo_soft_stall,
+    record_servo_detached_destroy, record_servo_page_load, record_servo_renderer_load,
+    record_servo_session_create,
 };
-use super::worker::{
-    RENDER_RESPONSE_TIMEOUT, effect_is_audio_reactive, prepare_runtime_html_source,
-    servo_worker_is_fatal_error,
-};
+use super::worker::{effect_is_audio_reactive, prepare_runtime_html_source};
 use super::worker_client::{ServoFramePayload, ServoProducerRole};
 use super::{ServoSessionHandle, SessionConfig, note_servo_session_error};
 use crate::effect::lightscript::{LightScriptFrameUpdateOptions, LightscriptRuntime};
@@ -448,129 +443,6 @@ impl ServoRenderer {
         self.queued_frame = Some(QueuedFrameInput::from_input(input));
     }
 
-    fn poll_in_flight_render(&mut self) {
-        let pending_age = self
-            .session
-            .as_ref()
-            .and_then(ServoSessionHandle::pending_render_age);
-        if let Some(age) = pending_age {
-            record_servo_pending_render_age(age);
-        }
-        let soft_stall_timeout = self.soft_stall_timeout();
-        let Some(session) = self.session.as_mut() else {
-            return;
-        };
-
-        match session.poll_frame() {
-            Ok(Some(canvas)) => {
-                self.warned_stalled_frame = false;
-                self.last_canvas = Some(canvas);
-                self.warned_fallback_frame = false;
-            }
-            Ok(None) => {
-                if !self.warned_stalled_frame
-                    && pending_age.is_some_and(|age| age >= soft_stall_timeout)
-                {
-                    record_servo_soft_stall();
-                    warn!(
-                        fps_cap = self.active_fps_cap(),
-                        pending_age_ms = pending_age.map_or(0, |age| age.as_millis()),
-                        soft_timeout_ms = soft_stall_timeout.as_millis(),
-                        "Servo frame render is late; reusing previous frame"
-                    );
-                    self.warned_stalled_frame = true;
-                }
-            }
-            Err(error) => {
-                #[cfg(feature = "servo-gpu-import")]
-                {
-                    if let Some(unavailable) = error.downcast_ref::<ServoFrameUnavailable>() {
-                        debug!(
-                            reason = unavailable.reason(),
-                            detail = unavailable.detail(),
-                            retry_ms = unavailable.retry_ms(),
-                            "Servo frame unavailable; reusing previous completed frame"
-                        );
-                        return;
-                    }
-                }
-                note_servo_session_error("Servo frame render failed", &error);
-                if servo_worker_is_fatal_error(&error) {
-                    self.session = None;
-                }
-                warn!(%error, "Servo frame render failed");
-                if !self.warned_fallback_frame {
-                    warn!("Falling back to the previous completed frame for this effect");
-                    self.warned_fallback_frame = true;
-                }
-            }
-        }
-    }
-
-    #[cfg(feature = "servo-gpu-import")]
-    fn poll_in_flight_render_output(&mut self) {
-        let pending_age = self
-            .session
-            .as_ref()
-            .and_then(ServoSessionHandle::pending_render_age);
-        if let Some(age) = pending_age {
-            record_servo_pending_render_age(age);
-        }
-        let soft_stall_timeout = self.soft_stall_timeout();
-        let Some(session) = self.session.as_mut() else {
-            return;
-        };
-
-        match session.poll_output() {
-            Ok(Some(EffectRenderOutput::Cpu(canvas))) => {
-                self.warned_stalled_frame = false;
-                self.last_canvas = Some(canvas);
-                self.last_gpu_frame = None;
-                self.warned_fallback_frame = false;
-            }
-            Ok(Some(EffectRenderOutput::Gpu(frame))) => {
-                self.warned_stalled_frame = false;
-                self.last_gpu_frame = Some(frame);
-                self.warned_fallback_frame = false;
-            }
-            Ok(Some(EffectRenderOutput::Pending)) => {}
-            Ok(None) => {
-                if !self.warned_stalled_frame
-                    && pending_age.is_some_and(|age| age >= soft_stall_timeout)
-                {
-                    record_servo_soft_stall();
-                    warn!(
-                        fps_cap = self.active_fps_cap(),
-                        pending_age_ms = pending_age.map_or(0, |age| age.as_millis()),
-                        soft_timeout_ms = soft_stall_timeout.as_millis(),
-                        "Servo frame render is late; reusing previous frame"
-                    );
-                    self.warned_stalled_frame = true;
-                }
-            }
-            Err(error) => {
-                if let Some(unavailable) = error.downcast_ref::<ServoFrameUnavailable>() {
-                    debug!(
-                        reason = unavailable.reason(),
-                        detail = unavailable.detail(),
-                        retry_ms = unavailable.retry_ms(),
-                        "Servo frame unavailable; reusing previous completed frame"
-                    );
-                    return;
-                }
-                note_servo_session_error("Servo frame render failed", &error);
-                if servo_worker_is_fatal_error(&error) {
-                    self.session = None;
-                }
-                warn!(%error, "Servo frame render failed");
-                if !self.warned_fallback_frame {
-                    warn!("Falling back to the previous completed frame for this effect");
-                    self.warned_fallback_frame = true;
-                }
-            }
-        }
-    }
-
     fn try_submit_queued_frame(&mut self) {
         self.try_submit_queued_frame_with_gpu_preference(false);
     }
@@ -643,19 +515,6 @@ impl ServoRenderer {
                 }
             }
         }
-    }
-
-    fn active_fps_cap(&self) -> u32 {
-        self.last_animation_fps_cap
-            .unwrap_or(DEFAULT_EFFECT_FPS_CAP)
-    }
-
-    fn soft_stall_timeout(&self) -> Duration {
-        let tier = FpsTier::from_fps(self.active_fps_cap());
-        let soft_timeout = tier
-            .frame_interval()
-            .mul_f32(SOFT_STALL_FRAME_INTERVALS as f32);
-        soft_timeout.min(RENDER_RESPONSE_TIMEOUT)
     }
 }
 
@@ -1116,5 +975,6 @@ fn should_reuse_cached_gpu_frame_on_no_ready(metadata: &EffectMetadata) -> bool 
     metadata.category == EffectCategory::Display
 }
 
+mod frame_poll;
 #[cfg(test)]
 mod tests;
