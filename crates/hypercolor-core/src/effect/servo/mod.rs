@@ -45,6 +45,7 @@ pub use memory::{
     ServoProcessMemoryReport,
 };
 pub use renderer::ServoRenderer;
+pub(crate) use session::ServoRenderStatus;
 pub use session::{ServoSessionHandle, SessionConfig, note_servo_session_error};
 pub use telemetry::{ServoTelemetrySnapshot, servo_telemetry_snapshot};
 pub use worker::{servo_memory_report_snapshot, shutdown_servo_runtime};

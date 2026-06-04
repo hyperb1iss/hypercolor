@@ -13,7 +13,8 @@ use super::common::{
     builtin_effect_id, dropdown_control, rect_control, slider_control, text_control,
 };
 use crate::effect::servo::{
-    ServoProducerRole, ServoSessionHandle, SessionConfig, note_servo_session_error,
+    ServoProducerRole, ServoRenderStatus, ServoSessionHandle, SessionConfig,
+    note_servo_session_error,
 };
 use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
 use crate::spatial::sample_viewport;
@@ -196,7 +197,7 @@ impl EffectRenderer for WebViewportRenderer {
             self.loaded_url = Some(url);
             self.load_failed = false;
         }
-        session.request_render(Vec::new())?;
+        let _ = session.request_render_cpu(Vec::new())?;
         self.last_refresh_time_secs = Some(0.0);
         self.session = Some(session);
         Ok(())
@@ -252,21 +253,29 @@ impl EffectRenderer for WebViewportRenderer {
             );
         }
 
+        if self
+            .session
+            .as_ref()
+            .is_some_and(ServoSessionHandle::has_pending_render)
+        {
+            return Ok(());
+        }
+
         let scripts = self.pending_scripts_for_render();
         let scroll_in_scripts = (!scripts.is_empty()).then_some((self.scroll_x, self.scroll_y));
 
         if let Some(session) = self.session.as_mut() {
-            // `request_render` short-circuits (returns Ok without
-            // queuing) when a prior render is still pending. Check
-            // explicitly so we don't prematurely advance
-            // `last_applied_scroll` for scripts that were dropped.
-            let can_submit = !session.has_pending_render();
-            if let Err(error) = session.request_render(scripts) {
-                note_servo_session_error("web viewport render request failed", &error);
-                return Err(error);
-            }
-            if can_submit && let Some(scroll) = scroll_in_scripts {
-                self.last_applied_scroll = Some(scroll);
+            match session.request_render_cpu(scripts) {
+                Ok(ServoRenderStatus::Submitted) => {
+                    if let Some(scroll) = scroll_in_scripts {
+                        self.last_applied_scroll = Some(scroll);
+                    }
+                }
+                Ok(ServoRenderStatus::Pending) => {}
+                Err(error) => {
+                    note_servo_session_error("web viewport render request failed", &error);
+                    return Err(error);
+                }
             }
         }
 

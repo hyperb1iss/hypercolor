@@ -49,7 +49,8 @@ use super::telemetry::{
     record_servo_render_queue_wait,
 };
 use super::worker_client::{
-    ServoProducerRole, ServoRenderMode, ServoSessionId, WORKER_READY_TIMEOUT, WorkerCommand,
+    ServoFramePayload, ServoProducerRole, ServoRenderMode, ServoSessionId, WORKER_READY_TIMEOUT,
+    WorkerCommand,
 };
 use crate::effect::servo_bootstrap::{ServoRenderingContextHandle, bootstrap_rendering_context};
 use crate::effect::traits::EffectRenderOutput;
@@ -168,30 +169,44 @@ fn script_preview(script: &str) -> String {
     truncate_for_log(&single_line, 120)
 }
 
-fn batched_script_preview(scripts: &[String]) -> String {
-    if scripts.len() == 1 {
+fn render_update_preview(scripts: &[String], frame_payloads: &[ServoFramePayload]) -> String {
+    let update_count = scripts.len() + frame_payloads.len();
+    if scripts.len() == 1 && frame_payloads.is_empty() {
         return script_preview(&scripts[0]);
     }
+    if scripts.is_empty() && frame_payloads.len() == 1 {
+        return format!(
+            "frame payload: {}",
+            script_preview(frame_payloads[0].as_json())
+        );
+    }
 
-    let previews = scripts
+    let mut previews = scripts
         .iter()
         .take(3)
         .map(|script| script_preview(script))
-        .collect::<Vec<_>>()
-        .join(" | ");
-    format!("{} scripts: {previews}", scripts.len())
+        .collect::<Vec<_>>();
+    if previews.len() < 3 {
+        previews.extend(
+            frame_payloads
+                .iter()
+                .take(3 - previews.len())
+                .map(|payload| format!("frame payload: {}", script_preview(payload.as_json()))),
+        );
+    }
+    format!("{} updates: {}", update_count, previews.join(" | "))
 }
 
 fn can_reuse_cached_canvas(
     frame_ready: bool,
-    script_count: usize,
+    update_count: usize,
     consecutive_no_ready_frames: u32,
     cached: Option<&Canvas>,
     width: u32,
     height: u32,
 ) -> bool {
     !frame_ready
-        && script_count == 0
+        && update_count == 0
         && consecutive_no_ready_frames >= STATIC_CANVAS_REUSE_NO_READY_FRAMES
         && cached.is_some_and(|cached| cached.width() == width && cached.height() == height)
 }
@@ -235,8 +250,16 @@ fn canvas_is_fully_transparent(canvas: &Canvas) -> bool {
         .all(|pixel| pixel[3] == 0)
 }
 
-fn combined_script(buffer: &mut String, scripts: &[String]) {
-    let capacity = scripts.iter().map(String::len).sum::<usize>() + scripts.len();
+fn combined_script(buffer: &mut String, scripts: &[String], frame_payloads: &[ServoFramePayload]) {
+    let script_bytes = scripts.iter().map(String::len).sum::<usize>();
+    let payload_bytes = frame_payloads
+        .iter()
+        .map(ServoFramePayload::len)
+        .sum::<usize>();
+    let capacity = script_bytes
+        + payload_bytes
+        + scripts.len()
+        + frame_payloads.len() * "window.__hypercolorApplyFramePayload();\n".len();
     buffer.clear();
     if buffer.capacity() < capacity {
         buffer.reserve(capacity - buffer.capacity());
@@ -244,6 +267,13 @@ fn combined_script(buffer: &mut String, scripts: &[String]) {
     for script in scripts {
         buffer.push_str(script);
         buffer.push('\n');
+    }
+    for payload in frame_payloads {
+        let _ = writeln!(
+            buffer,
+            "window.__hypercolorApplyFramePayload({});",
+            payload.as_json()
+        );
     }
 }
 
@@ -255,8 +285,8 @@ fn log_servo_render_stage_timings(
     session_id: ServoSessionId,
     width: u32,
     height: u32,
-    script_count: usize,
-    script_bytes: usize,
+    update_count: usize,
+    update_bytes: usize,
     frame_ready: bool,
     emitted_cpu_frame: bool,
     reused_cached_canvas: bool,
@@ -283,8 +313,8 @@ fn log_servo_render_stage_timings(
         ?session_id,
         width,
         height,
-        script_count,
-        script_bytes,
+        update_count,
+        update_bytes,
         frame_ready,
         emitted_cpu_frame,
         reused_cached_canvas,
@@ -429,6 +459,7 @@ impl ServoWorkerRuntime {
                     session_id,
                     producer_role,
                     scripts,
+                    frame_payloads,
                     width,
                     height,
                     mode,
@@ -436,7 +467,14 @@ impl ServoWorkerRuntime {
                     response_tx,
                 }) => {
                     record_servo_render_queue_wait(producer_role, submitted_at.elapsed());
-                    let result = self.render_frame(session_id, &scripts, width, height, mode);
+                    let result = self.render_frame(
+                        session_id,
+                        &scripts,
+                        &frame_payloads,
+                        width,
+                        height,
+                        mode,
+                    );
                     let _ = response_tx.send(result);
                 }
                 ScheduledServoWork::Command(WorkerCommand::DestroySession {
@@ -733,12 +771,17 @@ impl ServoWorkerRuntime {
         &mut self,
         session_id: ServoSessionId,
         scripts: &[String],
+        frame_payloads: &[ServoFramePayload],
         width: u32,
         height: u32,
         mode: ServoRenderMode,
     ) -> Result<EffectRenderOutput> {
-        let script_count = scripts.len();
-        let script_bytes = scripts.iter().map(String::len).sum::<usize>();
+        let update_count = scripts.len() + frame_payloads.len();
+        let update_bytes = scripts.iter().map(String::len).sum::<usize>()
+            + frame_payloads
+                .iter()
+                .map(ServoFramePayload::len)
+                .sum::<usize>();
         {
             let frame_start = Instant::now();
             let mut timings = ServoRenderStageTimings::default();
@@ -750,9 +793,9 @@ impl ServoWorkerRuntime {
                 .saturating_add(1);
             self.session_mut(session_id)?.renders_since_load = renders_since_load;
 
-            if !scripts.is_empty() {
+            if update_count > 0 {
                 let evaluate_scripts_start = Instant::now();
-                self.evaluate_scripts(session_id, scripts)?;
+                self.evaluate_render_updates(session_id, scripts, frame_payloads)?;
                 timings.evaluate_scripts_us = elapsed_micros(evaluate_scripts_start);
             }
 
@@ -782,7 +825,7 @@ impl ServoWorkerRuntime {
             // otherwise look like every other frame is duplicated.
             if can_reuse_cached_canvas(
                 frame_ready,
-                script_count,
+                update_count,
                 consecutive_no_ready_frames,
                 self.session(session_id)?.last_canvas.as_ref(),
                 width,
@@ -798,8 +841,8 @@ impl ServoWorkerRuntime {
                     session_id,
                     width,
                     height,
-                    script_count,
-                    script_bytes,
+                    update_count,
+                    update_bytes,
                     frame_ready,
                     true,
                     true,
@@ -826,8 +869,8 @@ impl ServoWorkerRuntime {
                     session_id,
                     width,
                     height,
-                    script_count,
-                    script_bytes,
+                    update_count,
+                    update_bytes,
                     frame_ready,
                     false,
                     true,
@@ -861,8 +904,8 @@ impl ServoWorkerRuntime {
                             session_id,
                             width,
                             height,
-                            script_count,
-                            script_bytes,
+                            update_count,
+                            update_bytes,
                             frame_ready,
                             true,
                             true,
@@ -890,8 +933,8 @@ impl ServoWorkerRuntime {
                 session_id,
                 width,
                 height,
-                script_count,
-                script_bytes,
+                update_count,
+                update_bytes,
                 frame_ready,
                 emitted_cpu_frame,
                 false,
@@ -934,8 +977,13 @@ impl ServoWorkerRuntime {
         }
     }
 
-    fn evaluate_scripts(&mut self, session_id: ServoSessionId, scripts: &[String]) -> Result<()> {
-        if scripts.is_empty() {
+    fn evaluate_render_updates(
+        &mut self,
+        session_id: ServoSessionId,
+        scripts: &[String],
+        frame_payloads: &[ServoFramePayload],
+    ) -> Result<()> {
+        if scripts.is_empty() && frame_payloads.is_empty() {
             return Ok(());
         }
 
@@ -943,13 +991,13 @@ impl ServoWorkerRuntime {
             let session = self.session_mut(session_id)?;
             std::mem::take(&mut session.script_buffer)
         };
-        combined_script(&mut script_buffer, scripts);
+        combined_script(&mut script_buffer, scripts, frame_payloads);
         let result = self
             .evaluate_script(session_id, &script_buffer)
             .with_context(|| {
                 format!(
-                    "failed to evaluate script batch: {}",
-                    batched_script_preview(scripts)
+                    "failed to evaluate render updates: {}",
+                    render_update_preview(scripts, frame_payloads)
                 )
             });
         self.session_mut(session_id)?.script_buffer = script_buffer;

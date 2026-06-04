@@ -10,7 +10,9 @@ use hypercolor_types::canvas::Canvas;
 use crate::effect::traits::EffectRenderOutput;
 
 use super::super::memory::{ServoMemoryReportSnapshot, ServoMemoryReportTotals};
-use super::super::worker_client::{ServoWorkerClient, ServoWorkerClientSharedState, WorkerCommand};
+use super::super::worker_client::{
+    ServoFramePayload, ServoWorkerClient, ServoWorkerClientSharedState, WorkerCommand,
+};
 use super::ServoWorker;
 
 pub static SHARED_WORKER_STATE_TEST_LOCK: LazyLock<StdMutex<()>> =
@@ -18,6 +20,7 @@ pub static SHARED_WORKER_STATE_TEST_LOCK: LazyLock<StdMutex<()>> =
 
 pub struct RecordedRenderCommand {
     pub scripts: Vec<String>,
+    pub frame_payloads: Vec<ServoFramePayload>,
     pub width: u32,
     pub height: u32,
     #[cfg(feature = "servo-gpu-import")]
@@ -112,6 +115,7 @@ pub fn spawn_render_test_worker() -> (
                 }
                 WorkerCommand::Render {
                     scripts,
+                    frame_payloads,
                     width,
                     height,
                     mode,
@@ -126,6 +130,7 @@ pub fn spawn_render_test_worker() -> (
                     let _ = mode;
                     let _ = render_tx.send(RecordedRenderCommand {
                         scripts,
+                        frame_payloads,
                         width,
                         height,
                         #[cfg(feature = "servo-gpu-import")]

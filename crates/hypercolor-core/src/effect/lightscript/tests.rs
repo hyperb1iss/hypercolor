@@ -33,11 +33,7 @@ fn frame_input_with<'a>(
     }
 }
 
-fn payload_from_script(script: &str) -> serde_json::Value {
-    let payload = script
-        .strip_prefix("window.__hypercolorApplyFramePayload(")
-        .and_then(|script| script.strip_suffix(");"))
-        .expect("script should be one frame payload delivery call");
+fn payload_from_json(payload: &str) -> serde_json::Value {
     serde_json::from_str(payload).expect("payload should be valid JSON")
 }
 
@@ -75,28 +71,28 @@ fn normalized_level_to_db_clamps_edges() {
 }
 
 #[test]
-fn frame_delivery_script_wraps_only_serialized_payload() {
+fn frame_payload_json_serializes_typed_payload_only() {
     let mut runtime = LightscriptRuntime::new(320, 200);
     let audio = AudioData::silence();
     let interaction = InteractionData::default();
     let sensors = SystemSnapshot::empty();
-    let mut scripts = Vec::new();
 
-    runtime.push_frame_payload_script(
-        &mut scripts,
-        &quiet_frame(&audio, &interaction, &sensors),
-        &HashMap::new(),
-        default_options(),
-    );
+    let payload = runtime
+        .frame_payload_json(
+            &quiet_frame(&audio, &interaction, &sensors),
+            &HashMap::new(),
+            default_options(),
+        )
+        .expect("first quiet frame should emit payload JSON");
 
-    assert_eq!(scripts.len(), 1);
-    assert!(!scripts[0].contains("window.engine.audio.level ="));
+    assert!(!payload.contains("window.__hypercolorApplyFramePayload"));
+    assert!(!payload.contains("window.engine.audio.level ="));
     assert_eq!(
-        payload_from_script(&scripts[0])["timing"]["frameNumber"],
+        payload_from_json(&payload)["timing"]["frameNumber"],
         serde_json::json!(42)
     );
     assert_eq!(
-        payload_from_script(&scripts[0])["canvas"],
+        payload_from_json(&payload)["canvas"],
         serde_json::json!({ "width": 320, "height": 200 })
     );
 }

@@ -8,9 +8,22 @@ use hypercolor_types::canvas::Canvas;
 use crate::effect::traits::EffectRenderOutput;
 
 use super::worker::{acquire_servo_worker, poison_shared_servo_worker_if_fatal};
-#[cfg(feature = "servo-gpu-import")]
-use super::worker_client::ServoRenderMode;
-use super::worker_client::{PendingServoFrame, ServoProducerRole, ServoWorkerClient};
+use super::worker_client::{
+    PendingServoFrame, ServoFramePayload, ServoProducerRole, ServoRenderMode, ServoWorkerClient,
+};
+
+pub(crate) enum ServoRenderStatus {
+    Submitted,
+    Pending,
+}
+
+pub(super) enum ServoRenderSubmission {
+    Submitted,
+    Pending {
+        scripts: Vec<String>,
+        frame_payloads: Vec<ServoFramePayload>,
+    },
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct SessionConfig {
@@ -66,27 +79,53 @@ impl ServoSessionHandle {
             .load_effect(self.session_id, path, self.render_width, self.render_height)
     }
 
-    pub fn request_render(&mut self, scripts: Vec<String>) -> Result<()> {
+    pub(crate) fn request_render_cpu(&mut self, scripts: Vec<String>) -> Result<ServoRenderStatus> {
         if self.pending_render.is_some() {
-            return Ok(());
+            return Ok(ServoRenderStatus::Pending);
         }
-        self.pending_render = Some(self.worker.submit_render(
+        self.pending_render = Some(self.worker.submit_render_with_payloads_and_mode(
             self.session_id,
             scripts,
+            Vec::new(),
             self.render_width,
             self.render_height,
+            ServoRenderMode::Cpu,
         )?);
-        Ok(())
+        Ok(ServoRenderStatus::Submitted)
+    }
+
+    pub(super) fn request_render_cpu_with_frame_payloads(
+        &mut self,
+        scripts: Vec<String>,
+        frame_payloads: Vec<ServoFramePayload>,
+    ) -> Result<ServoRenderSubmission> {
+        if self.pending_render.is_some() {
+            return Ok(ServoRenderSubmission::Pending {
+                scripts,
+                frame_payloads,
+            });
+        }
+        self.pending_render = Some(self.worker.submit_render_with_payloads_and_mode(
+            self.session_id,
+            scripts,
+            frame_payloads,
+            self.render_width,
+            self.render_height,
+            ServoRenderMode::Cpu,
+        )?);
+        Ok(ServoRenderSubmission::Submitted)
     }
 
     #[cfg(feature = "servo-gpu-import")]
-    pub fn request_render_gpu(
+    pub(super) fn request_render_gpu(
         &mut self,
         scripts: Vec<String>,
+        frame_payloads: Vec<ServoFramePayload>,
         reuse_cached_on_no_ready: bool,
-    ) -> Result<()> {
+    ) -> Result<ServoRenderSubmission> {
         self.request_render_with_mode(
             scripts,
+            frame_payloads,
             ServoRenderMode::GpuPreferred {
                 reuse_cached_on_no_ready,
             },
@@ -97,19 +136,24 @@ impl ServoSessionHandle {
     fn request_render_with_mode(
         &mut self,
         scripts: Vec<String>,
+        frame_payloads: Vec<ServoFramePayload>,
         mode: ServoRenderMode,
-    ) -> Result<()> {
+    ) -> Result<ServoRenderSubmission> {
         if self.pending_render.is_some() {
-            return Ok(());
+            return Ok(ServoRenderSubmission::Pending {
+                scripts,
+                frame_payloads,
+            });
         }
-        self.pending_render = Some(self.worker.submit_render_with_mode(
+        self.pending_render = Some(self.worker.submit_render_with_payloads_and_mode(
             self.session_id,
             scripts,
+            frame_payloads,
             self.render_width,
             self.render_height,
             mode,
         )?);
-        Ok(())
+        Ok(ServoRenderSubmission::Submitted)
     }
 
     pub fn poll_frame(&mut self) -> Result<Option<Canvas>> {

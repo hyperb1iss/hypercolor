@@ -55,6 +55,34 @@ impl ServoProducerRole {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct ServoFramePayload {
+    json: String,
+}
+
+impl ServoFramePayload {
+    pub(super) fn from_json(json: String) -> Result<Self> {
+        let value = serde_json::from_str::<serde_json::Value>(&json)
+            .context("Servo frame payload should be valid JSON")?;
+        if !value.is_object() {
+            bail!("Servo frame payload should be a JSON object");
+        }
+        let json = serde_json::to_string(&value)
+            .context("Servo frame payload should canonicalize as JSON")?
+            .replace('\u{2028}', "\\u2028")
+            .replace('\u{2029}', "\\u2029");
+        Ok(Self { json })
+    }
+
+    pub(super) fn as_json(&self) -> &str {
+        &self.json
+    }
+
+    pub(super) fn len(&self) -> usize {
+        self.json.len()
+    }
+}
+
 /// Lifecycle state a `ServoWorkerClient` tracks from the caller side.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum WorkerClientState {
@@ -115,6 +143,7 @@ pub(super) enum WorkerCommand {
         session_id: ServoSessionId,
         producer_role: ServoProducerRole,
         scripts: Vec<String>,
+        frame_payloads: Vec<ServoFramePayload>,
         width: u32,
         height: u32,
         mode: ServoRenderMode,
@@ -377,20 +406,11 @@ impl ServoWorkerClient {
         }
     }
 
-    pub(super) fn submit_render(
+    pub(super) fn submit_render_with_payloads_and_mode(
         &self,
         session_id: ServoSessionId,
         scripts: Vec<String>,
-        width: u32,
-        height: u32,
-    ) -> Result<PendingServoFrame> {
-        self.submit_render_with_mode(session_id, scripts, width, height, ServoRenderMode::Cpu)
-    }
-
-    pub(super) fn submit_render_with_mode(
-        &self,
-        session_id: ServoSessionId,
-        scripts: Vec<String>,
+        frame_payloads: Vec<ServoFramePayload>,
         width: u32,
         height: u32,
         mode: ServoRenderMode,
@@ -408,6 +428,7 @@ impl ServoWorkerClient {
                 session_id,
                 producer_role,
                 scripts,
+                frame_payloads,
                 width,
                 height,
                 mode,

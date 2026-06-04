@@ -6,7 +6,7 @@ use anyhow::{Result, anyhow};
 
 use super::super::telemetry::{record_servo_render_queue_depth, record_servo_render_superseded};
 use super::super::worker_client::{
-    ServoProducerRole, ServoRenderMode, ServoSessionId, WorkerCommand,
+    ServoFramePayload, ServoProducerRole, ServoRenderMode, ServoSessionId, WorkerCommand,
 };
 use crate::effect::traits::EffectRenderOutput;
 
@@ -14,6 +14,7 @@ pub(super) struct PendingRenderCommand {
     pub(super) session_id: ServoSessionId,
     pub(super) producer_role: ServoProducerRole,
     pub(super) scripts: Vec<String>,
+    pub(super) frame_payloads: Vec<ServoFramePayload>,
     pub(super) width: u32,
     pub(super) height: u32,
     pub(super) mode: ServoRenderMode,
@@ -63,6 +64,7 @@ impl ServoWorkerScheduler {
                 session_id,
                 producer_role,
                 scripts,
+                frame_payloads,
                 width,
                 height,
                 mode,
@@ -73,6 +75,7 @@ impl ServoWorkerScheduler {
                     session_id,
                     producer_role,
                     scripts,
+                    frame_payloads,
                     width,
                     height,
                     mode,

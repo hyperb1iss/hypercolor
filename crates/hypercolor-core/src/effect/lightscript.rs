@@ -433,16 +433,14 @@ impl LightscriptRuntime {
         script
     }
 
-    pub fn push_frame_payload_script(
+    pub fn frame_payload_json(
         &mut self,
-        scripts: &mut Vec<String>,
         input: &FrameInput<'_>,
         controls: &HashMap<String, ControlValue>,
         options: LightScriptFrameUpdateOptions<'_>,
-    ) {
-        if let Some(payload) = self.frame_payload(input, controls, options) {
-            scripts.push(payload.delivery_script());
-        }
+    ) -> Option<String> {
+        self.frame_payload(input, controls, options)
+            .map(|payload| payload.to_json_string())
     }
 
     fn frame_payload(

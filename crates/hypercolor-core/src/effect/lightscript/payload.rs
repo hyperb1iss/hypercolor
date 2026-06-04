@@ -31,9 +31,8 @@ pub(super) struct LightScriptFramePayload {
 }
 
 impl LightScriptFramePayload {
-    pub(super) fn delivery_script(&self) -> String {
-        let payload = serde_json::to_string(self).unwrap_or_else(|_| "{}".to_owned());
-        format!("window.__hypercolorApplyFramePayload({payload});")
+    pub(super) fn to_json_string(&self) -> String {
+        serde_json::to_string(self).unwrap_or_else(|_| "{}".to_owned())
     }
 }
 

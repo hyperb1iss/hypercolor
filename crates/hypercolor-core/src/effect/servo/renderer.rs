@@ -24,6 +24,7 @@ use tracing::{debug, info, warn};
 
 #[cfg(feature = "servo-gpu-import")]
 use super::gpu_import_backend::ServoFrameUnavailable;
+use super::session::ServoRenderSubmission;
 use super::telemetry::{
     record_servo_detached_destroy, record_servo_page_load, record_servo_pending_render_age,
     record_servo_renderer_load, record_servo_session_create, record_servo_soft_stall,
@@ -32,7 +33,7 @@ use super::worker::{
     RENDER_RESPONSE_TIMEOUT, effect_is_audio_reactive, prepare_runtime_html_source,
     servo_worker_is_fatal_error,
 };
-use super::worker_client::ServoProducerRole;
+use super::worker_client::{ServoFramePayload, ServoProducerRole};
 use super::{ServoSessionHandle, SessionConfig, note_servo_session_error};
 use crate::effect::lightscript::{LightScriptFrameUpdateOptions, LightscriptRuntime};
 use crate::effect::paths::resolve_html_source_path;
@@ -125,6 +126,7 @@ pub struct ServoRenderer {
     runtime: LightscriptRuntime,
     initialized: bool,
     pending_scripts: Vec<String>,
+    pending_frame_payloads: Vec<ServoFramePayload>,
     session: Option<ServoSessionHandle>,
     load_task: Option<ServoLoadTask>,
     load_failed: Option<String>,
@@ -170,6 +172,7 @@ impl ServoRenderer {
             runtime: LightscriptRuntime::new(DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT),
             initialized: false,
             pending_scripts: Vec::new(),
+            pending_frame_payloads: Vec::new(),
             session: None,
             load_task: None,
             load_failed: None,
@@ -203,11 +206,10 @@ impl ServoRenderer {
         self.last_animation_fps_cap = Some(DEFAULT_EFFECT_FPS_CAP);
     }
 
-    fn enqueue_frame_scripts(&mut self, input: &FrameInput) {
+    fn enqueue_frame_payloads(&mut self, input: &FrameInput) {
         let fps_cap = self.animation_cadence.fps_cap(input.delta_secs);
         self.last_animation_fps_cap = Some(fps_cap);
-        self.runtime.push_frame_payload_script(
-            &mut self.pending_scripts,
+        if let Some(payload) = self.runtime.frame_payload_json(
             input,
             &self.controls,
             LightScriptFrameUpdateOptions {
@@ -222,7 +224,12 @@ impl ServoRenderer {
                 )
                 .as_deref(),
             },
-        );
+        ) {
+            self.pending_frame_payloads.push(
+                ServoFramePayload::from_json(payload)
+                    .expect("LightScript frame payload should serialize as a JSON object"),
+            );
+        }
     }
 
     fn render_placeholder_into(target: &mut Canvas, input: &FrameInput) {
@@ -244,6 +251,25 @@ impl ServoRenderer {
     fn take_pending_scripts(&mut self) -> Vec<String> {
         let capacity = self.pending_scripts.capacity();
         std::mem::replace(&mut self.pending_scripts, Vec::with_capacity(capacity))
+    }
+
+    fn take_pending_frame_payloads(&mut self) -> Vec<ServoFramePayload> {
+        let capacity = self.pending_frame_payloads.capacity();
+        std::mem::replace(
+            &mut self.pending_frame_payloads,
+            Vec::with_capacity(capacity),
+        )
+    }
+
+    fn restore_pending_updates(
+        &mut self,
+        mut scripts: Vec<String>,
+        mut frame_payloads: Vec<ServoFramePayload>,
+    ) {
+        scripts.append(&mut self.pending_scripts);
+        frame_payloads.append(&mut self.pending_frame_payloads);
+        self.pending_scripts = scripts;
+        self.pending_frame_payloads = frame_payloads;
     }
 
     fn cleanup_runtime_html(&mut self) {
@@ -284,6 +310,7 @@ impl ServoRenderer {
         self.controls.clear();
         self.runtime = LightscriptRuntime::new(canvas_width, canvas_height);
         self.pending_scripts.clear();
+        self.pending_frame_payloads.clear();
         self.warned_fallback_frame = false;
         self.warned_stalled_frame = false;
         self.include_audio_updates = effect_is_audio_reactive(metadata);
@@ -567,11 +594,12 @@ impl ServoRenderer {
         }
 
         let frame_input = frame.as_frame_input();
-        self.enqueue_frame_scripts(&frame_input);
+        self.enqueue_frame_payloads(&frame_input);
         if let Some(session) = self.session.as_mut() {
             session.resize(frame.canvas_width, frame.canvas_height);
         }
         let scripts = self.take_pending_scripts();
+        let frame_payloads = self.take_pending_frame_payloads();
         let request_result = {
             #[cfg(feature = "servo-gpu-import")]
             let reuse_cached_on_no_ready = self.reuse_cached_gpu_frame_on_no_ready;
@@ -582,21 +610,28 @@ impl ServoRenderer {
             if prefer_gpu {
                 #[cfg(feature = "servo-gpu-import")]
                 {
-                    session.request_render_gpu(scripts, reuse_cached_on_no_ready)
+                    session.request_render_gpu(scripts, frame_payloads, reuse_cached_on_no_ready)
                 }
                 #[cfg(not(feature = "servo-gpu-import"))]
                 {
-                    session.request_render(scripts)
+                    session.request_render_cpu_with_frame_payloads(scripts, frame_payloads)
                 }
             } else {
-                session.request_render(scripts)
+                session.request_render_cpu_with_frame_payloads(scripts, frame_payloads)
             }
         };
 
         match request_result {
-            Ok(()) => {
+            Ok(ServoRenderSubmission::Submitted) => {
                 self.warned_stalled_frame = false;
                 self.last_submit_time_secs = Some(frame.time_secs);
+            }
+            Ok(ServoRenderSubmission::Pending {
+                scripts,
+                frame_payloads,
+            }) => {
+                self.restore_pending_updates(scripts, frame_payloads);
+                self.queued_frame = Some(frame);
             }
             Err(error) => {
                 note_servo_session_error("Failed to queue Servo frame render", &error);
@@ -874,6 +909,7 @@ impl EffectRenderer for ServoRenderer {
             recycle_servo_session(session, "Servo effect session");
         }
         self.pending_scripts.clear();
+        self.pending_frame_payloads.clear();
         self.queued_frame = None;
         self.last_canvas = None;
         #[cfg(feature = "servo-gpu-import")]
@@ -1127,16 +1163,11 @@ mod tests {
         }
     }
 
-    fn frame_payload_script_value(scripts: &[String]) -> serde_json::Value {
-        let payload = scripts
-            .iter()
-            .find_map(|script| {
-                script
-                    .strip_prefix("window.__hypercolorApplyFramePayload(")
-                    .and_then(|script| script.strip_suffix(");"))
-            })
-            .expect("render should include a frame payload delivery script");
-        serde_json::from_str(payload).expect("frame payload should be valid JSON")
+    fn frame_payload_value(frame_payloads: &[ServoFramePayload]) -> serde_json::Value {
+        let payload = frame_payloads
+            .first()
+            .expect("render should include a frame payload");
+        serde_json::from_str(payload.as_json()).expect("frame payload should be valid JSON")
     }
 
     fn custom_interaction(
@@ -1249,6 +1280,9 @@ mod tests {
         renderer.initialized = true;
         renderer.pending_scripts.push("tick()".to_owned());
         renderer
+            .pending_frame_payloads
+            .push(ServoFramePayload::from_json("{\"frame\":1}".to_owned()).expect("valid JSON"));
+        renderer
             .controls
             .insert("speed".to_owned(), ControlValue::Float(1.0));
         renderer.html_source = Some(PathBuf::from("source.html"));
@@ -1263,7 +1297,7 @@ mod tests {
             .session
             .as_mut()
             .expect("attached test session")
-            .request_render(Vec::new())
+            .request_render_cpu(Vec::new())
             .expect("test render should queue");
         renderer.last_canvas = Some(solid_canvas(
             DEFAULT_CANVAS_WIDTH,
@@ -1278,6 +1312,7 @@ mod tests {
         assert!(!stopped.load(Ordering::SeqCst));
         assert!(renderer.session.is_none());
         assert!(renderer.pending_scripts.is_empty());
+        assert!(renderer.pending_frame_payloads.is_empty());
         assert!(renderer.queued_frame.is_none());
         assert!(renderer.last_canvas.is_none());
         assert!(renderer.controls.is_empty());
@@ -1291,6 +1326,54 @@ mod tests {
         assert!(!renderer.include_sensor_updates);
         assert!(!renderer.host_driven_animation);
 
+        drop(worker);
+        assert!(stopped.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn frame_payload_render_preserves_in_flight_submission() {
+        let (worker, render_rx, result_tx, delivered_rx, _unload_rx, stopped) =
+            spawn_render_test_worker();
+        let mut renderer = ServoRenderer::new();
+        attach_renderer_session(&mut renderer, &worker);
+
+        let session = renderer.session.as_mut().expect("attached test session");
+        session
+            .request_render_cpu(Vec::new())
+            .expect("first render should queue");
+        render_rx
+            .recv_timeout(Duration::from_millis(100))
+            .expect("first render command");
+
+        let payload =
+            ServoFramePayload::from_json("{\"frame\":2}".to_owned()).expect("valid frame payload");
+        let submission = session
+            .request_render_cpu_with_frame_payloads(Vec::new(), vec![payload])
+            .expect("pending payload render should return preserved queues");
+        let ServoRenderSubmission::Pending {
+            scripts,
+            frame_payloads,
+        } = submission
+        else {
+            panic!("payload render should not submit over an in-flight render");
+        };
+        assert!(scripts.is_empty());
+        assert_eq!(frame_payloads.len(), 1);
+
+        result_tx
+            .send(Ok(solid_canvas(
+                DEFAULT_CANVAS_WIDTH,
+                DEFAULT_CANVAS_HEIGHT,
+                1,
+                2,
+                3,
+            )))
+            .expect("first result should be delivered");
+        delivered_rx
+            .recv_timeout(Duration::from_millis(100))
+            .expect("first result delivery ack");
+
+        renderer.destroy();
         drop(worker);
         assert!(stopped.load(Ordering::SeqCst));
     }
@@ -1734,38 +1817,31 @@ mod tests {
     }
 
     #[test]
-    fn frame_scripts_track_animation_cap_without_js_throttle() {
+    fn frame_payloads_track_animation_cap_without_js_throttle() {
         let mut renderer = ServoRenderer::new();
         renderer.enqueue_bootstrap_scripts();
         renderer.pending_scripts.clear();
 
-        renderer.enqueue_frame_scripts(&frame_input(1.0 / 30.0));
+        renderer.enqueue_frame_payloads(&frame_input(1.0 / 30.0));
         assert_eq!(renderer.last_animation_fps_cap, Some(30));
-        assert!(
-            renderer
-                .pending_scripts
-                .iter()
-                .all(|script| !script.contains("__hypercolorFpsCap"))
-        );
+        assert!(renderer.pending_scripts.is_empty());
+        assert_eq!(renderer.pending_frame_payloads.len(), 1);
 
         renderer.pending_scripts.clear();
-        renderer.enqueue_frame_scripts(&frame_input(1.0 / 15.0));
+        renderer.pending_frame_payloads.clear();
+        renderer.enqueue_frame_payloads(&frame_input(1.0 / 15.0));
         assert_eq!(renderer.last_animation_fps_cap, Some(20));
-        assert!(
-            renderer
-                .pending_scripts
-                .iter()
-                .all(|script| !script.contains("__hypercolorFpsCap"))
-        );
+        assert!(renderer.pending_scripts.is_empty());
+        assert!(renderer.pending_frame_payloads.is_empty());
     }
 
     #[test]
-    fn frame_scripts_let_sdk_raf_drive_animation() {
+    fn frame_payloads_let_sdk_raf_drive_animation() {
         let mut renderer = ServoRenderer::new();
         let mut input = frame_input(1.0 / 30.0);
         input.time_secs = 2.5;
 
-        renderer.enqueue_frame_scripts(&input);
+        renderer.enqueue_frame_payloads(&input);
 
         assert!(
             renderer
@@ -1779,27 +1855,23 @@ mod tests {
                 .iter()
                 .all(|script| !script.contains("instance.render("))
         );
+        assert!(frame_payload_value(&renderer.pending_frame_payloads)["renderHostFrame"].is_null());
     }
 
     #[test]
-    fn display_frame_scripts_keep_fixed_animation_cap() {
+    fn display_frame_payloads_keep_fixed_animation_cap() {
         let mut renderer = ServoRenderer::new();
         renderer.animation_cadence = AnimationCadence::Fixed(30);
         renderer.host_driven_animation = true;
         renderer.enqueue_bootstrap_scripts();
         renderer.pending_scripts.clear();
 
-        renderer.enqueue_frame_scripts(&frame_input(1.0 / 60.0));
+        renderer.enqueue_frame_payloads(&frame_input(1.0 / 60.0));
 
         assert_eq!(renderer.last_animation_fps_cap, Some(30));
-        assert!(
-            renderer
-                .pending_scripts
-                .iter()
-                .all(|script| !script.contains("__hypercolorFpsCap"))
-        );
+        assert!(renderer.pending_scripts.is_empty());
         assert_eq!(
-            frame_payload_script_value(&renderer.pending_scripts)["renderHostFrame"],
+            frame_payload_value(&renderer.pending_frame_payloads)["renderHostFrame"],
             serde_json::json!(true)
         );
     }
@@ -1863,7 +1935,7 @@ mod tests {
             .session
             .as_mut()
             .expect("attached test session")
-            .request_render(Vec::new())
+            .request_render_cpu(Vec::new())
             .expect("test render should queue");
         let _ = render_rx
             .recv_timeout(Duration::from_millis(100))
@@ -1922,7 +1994,7 @@ mod tests {
             .session
             .as_mut()
             .expect("attached test session")
-            .request_render(Vec::new())
+            .request_render_cpu(Vec::new())
             .expect("test render should queue");
         let _ = render_rx
             .recv_timeout(Duration::from_millis(100))
@@ -1962,43 +2034,38 @@ mod tests {
     }
 
     #[test]
-    fn frame_scripts_skip_near_tier_jitter_updates() {
+    fn frame_payloads_skip_near_tier_jitter_updates() {
         let mut renderer = ServoRenderer::new();
         renderer.enqueue_bootstrap_scripts();
         renderer.pending_scripts.clear();
 
-        renderer.enqueue_frame_scripts(&frame_input(1.0 / 60.0));
+        renderer.enqueue_frame_payloads(&frame_input(1.0 / 60.0));
         assert_eq!(renderer.last_animation_fps_cap, Some(60));
-        assert!(
-            renderer
-                .pending_scripts
-                .iter()
-                .all(|script| !script.contains("__hypercolorFpsCap"))
-        );
+        assert!(renderer.pending_scripts.is_empty());
+        assert_eq!(renderer.pending_frame_payloads.len(), 1);
 
         renderer.pending_scripts.clear();
-        renderer.enqueue_frame_scripts(&frame_input(1.0 / 58.0));
+        renderer.pending_frame_payloads.clear();
+        renderer.enqueue_frame_payloads(&frame_input(1.0 / 58.0));
         assert_eq!(renderer.last_animation_fps_cap, Some(60));
-        assert!(
-            renderer
-                .pending_scripts
-                .iter()
-                .all(|script| !script.contains("__hypercolorFpsCap"))
-        );
+        assert!(renderer.pending_scripts.is_empty());
+        assert!(renderer.pending_frame_payloads.is_empty());
     }
 
     #[test]
-    fn frame_scripts_skip_unchanged_input_updates() {
+    fn frame_payloads_skip_unchanged_input_updates() {
         let mut renderer = ServoRenderer::new();
         renderer.include_interaction_updates = true;
 
-        renderer.enqueue_frame_scripts(&frame_input(1.0 / 30.0));
-        let first_payload = frame_payload_script_value(&renderer.pending_scripts);
+        renderer.enqueue_frame_payloads(&frame_input(1.0 / 30.0));
+        let first_payload = frame_payload_value(&renderer.pending_frame_payloads);
         assert!(first_payload["interaction"].is_object());
 
         renderer.pending_scripts.clear();
-        renderer.enqueue_frame_scripts(&frame_input(1.0 / 30.0));
+        renderer.pending_frame_payloads.clear();
+        renderer.enqueue_frame_payloads(&frame_input(1.0 / 30.0));
         assert!(renderer.pending_scripts.is_empty());
+        assert!(renderer.pending_frame_payloads.is_empty());
     }
 
     #[test]
@@ -2088,7 +2155,17 @@ mod tests {
             .expect("first render command");
         assert_eq!(first_render.width, 320);
         assert_eq!(first_render.height, 200);
-        let first_payload = frame_payload_script_value(&first_render.scripts);
+        let bootstrap = first_render
+            .scripts
+            .first()
+            .expect("first render should include bootstrap script");
+        assert!(bootstrap.contains("window.__hypercolorApplyFramePayload = function(payload)"));
+        assert!(first_render.scripts.iter().all(|script| {
+            !script
+                .trim_start()
+                .starts_with("window.__hypercolorApplyFramePayload(")
+        }));
+        let first_payload = frame_payload_value(&first_render.frame_payloads);
         assert_eq!(first_payload["controls"]["speed"], serde_json::json!(0.25));
 
         renderer.set_control("speed", &ControlValue::Float(0.75));
@@ -2126,7 +2203,7 @@ mod tests {
                 .iter()
                 .all(|script| !script.contains("__hypercolorFpsCap"))
         );
-        let second_payload = frame_payload_script_value(&second_render.scripts);
+        let second_payload = frame_payload_value(&second_render.frame_payloads);
         assert_eq!(second_payload["canvas"]["width"], serde_json::json!(640));
         assert_eq!(second_payload["controls"]["speed"], serde_json::json!(0.75));
         let recent_keys = second_payload["interaction"]["keyboard"]["recent"]

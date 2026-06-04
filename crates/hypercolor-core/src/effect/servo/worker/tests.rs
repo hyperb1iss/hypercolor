@@ -21,6 +21,7 @@ fn queued_render_command_with_role(
             session_id,
             producer_role,
             scripts: vec![script.to_owned()],
+            frame_payloads: Vec::new(),
             width: 320,
             height: 200,
             mode: ServoRenderMode::Cpu,
@@ -29,6 +30,48 @@ fn queued_render_command_with_role(
         },
         response_rx,
     )
+}
+
+#[test]
+fn combined_script_appends_frame_payloads_through_stable_adapter() {
+    let scripts = vec!["window.__hypercolorApplyFramePayload = function(payload) {};".to_owned()];
+    let frame_payloads = vec![
+        ServoFramePayload::from_json("{\"canvas\":{\"width\":320}}".to_owned())
+            .expect("valid JSON object"),
+    ];
+    let mut buffer = String::new();
+
+    combined_script(&mut buffer, &scripts, &frame_payloads);
+
+    assert_eq!(
+        buffer,
+        concat!(
+            "window.__hypercolorApplyFramePayload = function(payload) {};\n",
+            "window.__hypercolorApplyFramePayload({\"canvas\":{\"width\":320}});\n"
+        )
+    );
+    let adapter_index = buffer
+        .find("window.__hypercolorApplyFramePayload = function")
+        .expect("adapter assignment should be present");
+    let delivery_index = buffer
+        .find("window.__hypercolorApplyFramePayload({")
+        .expect("payload delivery should be present");
+    assert!(adapter_index < delivery_index);
+}
+
+#[test]
+fn frame_payload_requires_json_object() {
+    assert!(ServoFramePayload::from_json("not json".to_owned()).is_err());
+    assert!(ServoFramePayload::from_json("[]".to_owned()).is_err());
+    assert!(ServoFramePayload::from_json("{\"ok\":true}".to_owned()).is_ok());
+}
+
+#[test]
+fn frame_payload_canonicalizes_json_for_script_embedding() {
+    let payload = ServoFramePayload::from_json("{\"text\":\"line\u{2028}break\"}".to_owned())
+        .expect("valid JSON object");
+
+    assert_eq!(payload.as_json(), "{\"text\":\"line\\u2028break\"}");
 }
 
 #[test]
