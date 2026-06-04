@@ -15,8 +15,8 @@ use hypercolor_types::effect::{
     ControlDefinition, ControlType, EffectCategory, EffectId, EffectSource,
 };
 use hypercolor_types::sensor::SystemSnapshot;
-use std::sync::LazyLock;
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, LazyLock, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
