@@ -2270,6 +2270,37 @@ async fn write_frame_scales_device_output_brightness() {
     );
 }
 
+#[test]
+fn device_output_brightness_tracks_effective_changes() {
+    let mut manager = BackendManager::new();
+    let device_id = DeviceId::new();
+
+    assert_eq!(manager.device_output_brightness(device_id), 1.0);
+    assert_eq!(manager.output_brightness_generation(), 0);
+
+    manager.set_device_output_brightness(device_id, 0.5);
+    assert_eq!(manager.device_output_brightness(device_id), 0.5);
+    assert_eq!(manager.output_brightness_generation(), 1);
+
+    manager.set_device_output_brightness(device_id, 0.5);
+    assert_eq!(manager.output_brightness_generation(), 1);
+
+    manager.set_device_output_brightness(device_id, -1.0);
+    assert_eq!(manager.device_output_brightness(device_id), 0.0);
+    assert_eq!(manager.output_brightness_generation(), 2);
+
+    manager.set_device_output_brightness(device_id, 0.998);
+    assert_eq!(manager.device_output_brightness(device_id), 0.998);
+    assert_eq!(manager.output_brightness_generation(), 3);
+
+    manager.set_device_output_brightness(device_id, 0.999);
+    assert_eq!(manager.device_output_brightness(device_id), 1.0);
+    assert_eq!(manager.output_brightness_generation(), 4);
+
+    manager.set_device_output_brightness(device_id, 1.2);
+    assert_eq!(manager.output_brightness_generation(), 4);
+}
+
 #[tokio::test]
 async fn write_frame_decodes_screen_referred_srgb_before_hardware_output() {
     let device_id = DeviceId::new();

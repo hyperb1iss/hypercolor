@@ -19,6 +19,7 @@ use hypercolor_types::device::{DeviceId, DeviceInfo};
 use super::traits::{DeviceBackend, DeviceFrameSink};
 
 mod backend_io;
+mod brightness;
 mod display_output;
 mod output_color;
 mod output_coordinator;
@@ -28,6 +29,7 @@ mod output_telemetry;
 mod routing;
 
 pub use backend_io::BackendIo;
+use brightness::DeviceOutputBrightness;
 use output_coordinator::DeviceOutputCoordinator;
 use routing::{DeviceMapping, RoutingPlan, device_output_len, zone_segments_from_device_info};
 
@@ -87,11 +89,8 @@ pub struct BackendManager {
     /// Per-target output queue, frame-sink, staging, FPS, and direct-control state.
     output: DeviceOutputCoordinator,
 
-    /// User-configured per-device output brightness scalar.
-    device_brightness: HashMap<DeviceId, f32>,
-
-    /// Incremented whenever software output brightness state changes.
-    device_brightness_generation: u64,
+    /// User-configured per-device software output brightness state.
+    output_brightness: DeviceOutputBrightness,
 
     /// Layout device IDs already warned as unmapped in the current layout state.
     warned_unmapped_layout_devices: HashSet<String>,
@@ -353,36 +352,6 @@ impl BackendManager {
                     "failed to set brightness {brightness} on device {device_id} using backend '{backend_id}'"
                 )
             })
-    }
-
-    /// Configure software output brightness for a physical device.
-    pub fn set_device_output_brightness(&mut self, device_id: DeviceId, brightness: f32) {
-        let normalized = brightness.clamp(0.0, 1.0);
-        let changed = if normalized >= 0.999 {
-            self.device_brightness.remove(&device_id).is_some()
-        } else {
-            self.device_brightness
-                .insert(device_id, normalized)
-                .is_none_or(|previous| previous.to_bits() != normalized.to_bits())
-        };
-        if changed {
-            self.device_brightness_generation = self.device_brightness_generation.saturating_add(1);
-        }
-    }
-
-    /// Read the configured software output brightness for a physical device.
-    #[must_use]
-    pub fn device_output_brightness(&self, device_id: DeviceId) -> f32 {
-        self.device_brightness
-            .get(&device_id)
-            .copied()
-            .unwrap_or(1.0)
-    }
-
-    /// Monotonic generation for software output-brightness state changes.
-    #[must_use]
-    pub fn output_brightness_generation(&self) -> u64 {
-        self.device_brightness_generation
     }
 
     /// Cache a backend-provided output FPS for a physical device.
