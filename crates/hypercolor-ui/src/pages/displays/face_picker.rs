@@ -200,7 +200,6 @@ fn render_face_gallery_card(
             disabled=move || assigning.get()
             on:click=move |_| on_select.run(effect_id_for_click.clone())
         >
-            // Thumbnail slab (4:3 aspect)
             <div
                 class="relative aspect-[4/3] overflow-hidden"
                 style=move || {
@@ -219,7 +218,6 @@ fn render_face_gallery_card(
                     </span>
                 </Show>
             </div>
-            // Metadata footer
             <div class="flex min-h-0 flex-col gap-1 border-t border-edge-subtle/50 px-3 py-2.5">
                 <div class="truncate text-sm font-medium text-fg-primary">{name}</div>
                 <div class="truncate text-[10px] uppercase tracking-wider text-fg-tertiary">

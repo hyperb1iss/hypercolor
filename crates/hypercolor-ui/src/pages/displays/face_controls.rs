@@ -33,7 +33,6 @@ pub(super) fn FaceControlsSection(
     // once per face assignment. A naive "already checked" set would skip
     // the restore after switching away and back to the same face ID.
     let last_restored_face_id: StoredValue<Option<String>> = StoredValue::new(None);
-    // Derived view of the face's control definitions for ControlPanel.
     let face_controls = Signal::derive(move || match display_face.get() {
         Some(Ok(Some(face))) => face.effect.controls,
         _ => Vec::new(),

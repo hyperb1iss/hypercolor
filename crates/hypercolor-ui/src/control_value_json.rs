@@ -151,7 +151,7 @@ pub fn hex_to_rgba(hex: &str) -> Option<[f32; 4]> {
     ])
 }
 
-/// Convert a hex color string into an RGBA JSON array payload.
+/// Convert a hex color string into a linear-RGB RGBA JSON array payload.
 #[must_use]
 pub fn hex_to_rgba_json(hex: &str) -> Option<serde_json::Value> {
     let [r, g, b, a] = hex_to_rgba(hex)?;
