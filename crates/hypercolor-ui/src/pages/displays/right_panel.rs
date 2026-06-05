@@ -8,6 +8,12 @@ use crate::icons::*;
 use super::face_composition::FaceCompositionSection;
 use super::face_controls::FaceControlsSection;
 
+/// Right-side control column.
+///
+/// Stacks three sections vertically: a compact face-assignment card, the
+/// face composition controls, and a live `ControlPanel` bound to the
+/// assigned face's controls. The whole column is scrollable so long
+/// control panels can exceed the viewport.
 #[component]
 pub(super) fn DisplayRightPanel(
     selected_display: Memo<Option<api::DisplaySummary>>,
@@ -43,6 +49,9 @@ pub(super) fn DisplayRightPanel(
     }
 }
 
+/// Compact card showing the currently assigned face and the primary
+/// actions: choose a face, clear the assignment, open the full-screen
+/// preview in a new tab.
 #[component]
 fn FaceAssignmentCard(
     selected_display: Memo<Option<api::DisplaySummary>>,

@@ -153,6 +153,10 @@ pub(super) fn DisplayFacePickerModal(
     }
 }
 
+/// Visual card used inside the face gallery. Shows a thumbnail captured
+/// from the `ThumbnailStore` when the face has rendered before, plus a
+/// gradient fallback, name/author, and an "Assigned" pill for the
+/// currently-active face.
 fn render_face_gallery_card(
     effect: api::EffectSummary,
     current_face_id: Signal<Option<String>>,
@@ -168,12 +172,16 @@ fn render_face_gallery_card(
         current_face_id.get().as_deref() == Some(effect_id_for_current.as_str())
     });
 
+    // Thumbnail lookup is reactive on the ThumbnailStore inner signal, so
+    // newly captured thumbnails appear without closing the picker.
     let thumbnail = Signal::derive({
         let effect_id = effect_id.clone();
         let effect_version = effect_version.clone();
         move || thumbnails.and_then(|store| store.get(&effect_id, &effect_version))
     });
 
+    // Deterministic gradient fallback derived from the effect name so
+    // each face still has a distinct visual even without a thumbnail.
     let gradient_fallback = face_gradient_fallback(&effect.name);
 
     let name = effect.name;
@@ -192,6 +200,7 @@ fn render_face_gallery_card(
             disabled=move || assigning.get()
             on:click=move |_| on_select.run(effect_id_for_click.clone())
         >
+            // Thumbnail slab (4:3 aspect)
             <div
                 class="relative aspect-[4/3] overflow-hidden"
                 style=move || {
@@ -210,6 +219,7 @@ fn render_face_gallery_card(
                     </span>
                 </Show>
             </div>
+            // Metadata footer
             <div class="flex min-h-0 flex-col gap-1 border-t border-edge-subtle/50 px-3 py-2.5">
                 <div class="truncate text-sm font-medium text-fg-primary">{name}</div>
                 <div class="truncate text-[10px] uppercase tracking-wider text-fg-tertiary">
@@ -220,6 +230,7 @@ fn render_face_gallery_card(
     }
 }
 
+/// Skeleton card shown while the face catalog is loading.
 #[component]
 fn FaceGallerySkeleton() -> impl IntoView {
     view! {
@@ -233,7 +244,12 @@ fn FaceGallerySkeleton() -> impl IntoView {
     }
 }
 
+/// Deterministic CSS background for face cards without a thumbnail. The
+/// hue is derived from the effect name so each face keeps a distinct
+/// identity in the picker before its first render.
 fn face_gradient_fallback(name: &str) -> String {
+    // Small FNV-1a-ish hash so the hue is stable per name but evenly
+    // distributed across the 360deg wheel.
     let mut hash: u32 = 2_166_136_261;
     for byte in name.bytes() {
         hash ^= u32::from(byte);

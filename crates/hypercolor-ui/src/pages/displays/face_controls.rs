@@ -13,6 +13,13 @@ use crate::toasts;
 
 use super::snapshot_scene_lock_message;
 
+/// Live face controls panel.
+///
+/// Renders the assigned face's `ControlPanel` with an optimistic-update
+/// model: local control values tick immediately on input change, and
+/// PATCH requests are debounced before hitting the daemon. The server
+/// response reconciles the optimistic state so normalized or rejected
+/// values surface in the UI.
 #[component]
 pub(super) fn FaceControlsSection(
     selected_display: Memo<Option<api::DisplaySummary>>,
@@ -22,24 +29,37 @@ pub(super) fn FaceControlsSection(
 ) -> impl IntoView {
     let effects_ctx = use_context::<EffectsContext>();
     let prefs_store = use_context::<PreferencesStore>();
+    // Track the last seen face ID so preferences are re-checked exactly
+    // once per face assignment. A naive "already checked" set would skip
+    // the restore after switching away and back to the same face ID.
     let last_restored_face_id: StoredValue<Option<String>> = StoredValue::new(None);
+    // Derived view of the face's control definitions for ControlPanel.
     let face_controls = Signal::derive(move || match display_face.get() {
         Some(Ok(Some(face))) => face.effect.controls,
         _ => Vec::new(),
     });
     let has_controls = Signal::derive(move || !face_controls.get().is_empty());
     let control_count = Signal::derive(move || face_controls.get().len());
+    // Bundled presets shipped by the face author. User-saved presets are
+    // a future enhancement; the Face SDK currently exposes bundled only.
     let face_presets = Signal::derive(move || match display_face.get() {
         Some(Ok(Some(face))) => face.effect.presets,
         _ => Vec::new(),
     });
     let has_presets = Signal::derive(move || !face_presets.get().is_empty());
 
+    // Local optimistic copy of control values. ControlPanel needs a
+    // `HashMap<String, ControlValue>` signal; feeding it directly from
+    // the face response would rebuild the whole map on every PATCH
+    // round-trip instead of ticking immediately on local input.
     let (face_control_values, set_face_control_values) = signal(std::collections::HashMap::<
         String,
         hypercolor_types::effect::ControlValue,
     >::new());
 
+    // Keep the local signal in sync when the face changes. Compare before
+    // setting so our own PATCH response does not re-fire downstream
+    // effects when the daemon returns identical values.
     Effect::new(move |_| {
         let next = match display_face.get() {
             Some(Ok(Some(face))) => face.group.controls,
@@ -52,6 +72,15 @@ pub(super) fn FaceControlsSection(
         });
     });
 
+    // Per-face preferences: on first load of a given face ID, compare the
+    // server-loaded controls against any stored preferences. If they
+    // differ, PATCH the stored values back onto the daemon. On later
+    // snapshots for the same face, save the daemon state so switching
+    // away and back lands on the same tweaks.
+    //
+    // `last_restored_face_id` tracks the most recently-restored face so
+    // switching A -> B -> A gets a fresh restore opportunity instead of
+    // clobbering the stored A preferences with the daemon's fresh state.
     Effect::new(move |_| {
         let Some(Ok(Some(face))) = display_face.get() else {
             last_restored_face_id.set_value(None);
@@ -91,6 +120,9 @@ pub(super) fn FaceControlsSection(
                 return;
             }
         }
+        // Only persist once the daemon has overrides to save. Saving an
+        // empty map right after a swap would clobber real preferences
+        // stored from earlier sessions on the same face.
         if !daemon_controls.is_empty() {
             store.save(
                 face_id,
@@ -102,6 +134,9 @@ pub(super) fn FaceControlsSection(
         }
     });
 
+    // Pending updates are keyed by control name. Each input overwrites
+    // the prior pending value for that control, so a slider drag only
+    // sends the final position when the debounce fires.
     let control_session = OptimisticControlSession::new();
     let show_locked_toast = use_debounce_fn_with_arg(
         move |message: String| {
