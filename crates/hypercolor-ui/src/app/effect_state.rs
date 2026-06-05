@@ -193,18 +193,12 @@ pub(super) fn apply_active_effect_snapshot(
 }
 
 /// Re-applies a remembered preset + control snapshot on top of the
-/// daemon's defaults. Runs fully asynchronously — apply_preset first (if
-/// any), then update_controls, then a final refresh so the signals
-/// reflect the restored state. Bails at every step if the user has
-/// switched effects in the meantime, since a late-landing restore from
-/// effect A would trample a freshly-activated effect B.
-/// Re-applies a remembered preset + control snapshot on top of the
-/// daemon's defaults. Fully async — apply_preset first (if any), then
-/// update_controls using the same hex-colour-encoding serializer the
+/// daemon's defaults. Fully async: apply_preset first (if any), then
+/// update_controls using the same hex-color-encoding serializer the
 /// preset picker uses (the daemon silently ignores `ControlValue`'s
 /// default tagged JSON), then a final refresh so the UI mirrors the
 /// restored daemon state. Bails at every step if the user has switched
-/// effects in the meantime — a late-landing restore from effect A would
+/// effects in the meantime; a late-landing restore from effect A would
 /// otherwise trample a freshly-activated effect B.
 fn restore_effect_preferences(ctx: EffectsContext, effect_id: String, prefs: EffectPreferences) {
     leptos::task::spawn_local(async move {
