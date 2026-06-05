@@ -1,7 +1,9 @@
 //! Razer protocol driver family.
 
+mod activation;
 pub mod crc;
 pub mod devices;
+mod packet;
 pub mod protocol;
 pub mod seiren_v3;
 pub mod types;

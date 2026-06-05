@@ -12,46 +12,18 @@ use tracing::warn;
 
 use crate::protocol::{
     CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive, ProtocolResponse,
-    ProtocolZone, ResponseStatus, TransferType,
+    ProtocolZone,
 };
 
-use zerocopy::{FromBytes, FromZeros, IntoBytes};
-
-use super::crc::{RAZER_REPORT_LEN, RazerReport, razer_crc};
+use super::activation::CustomEffectActivationStyle;
+use super::packet::{self, CommandSpec, CommandTiming, REPORT_ARGS_LEN};
 use super::types::{
     COMMAND_CLASS_DEVICE, COMMAND_SET_SCROLL_ACCELERATION, COMMAND_SET_SCROLL_MODE,
-    COMMAND_SET_SCROLL_SMART_REEL, EFFECT_CUSTOM_FRAME, LED_ID_BACKLIGHT, LED_ID_LOGO,
-    LED_ID_SCROLL_WHEEL, LED_ID_ZERO, NOSTORE, RazerLightingCommandSet, RazerMatrixType,
-    RazerProtocolVersion, VARSTORE,
+    COMMAND_SET_SCROLL_SMART_REEL, LED_ID_BACKLIGHT, LED_ID_LOGO, LED_ID_SCROLL_WHEEL, LED_ID_ZERO,
+    NOSTORE, RazerLightingCommandSet, RazerMatrixType, RazerProtocolVersion, VARSTORE,
 };
 
-/// Maximum argument payload size within a [`RazerReport`].
-const ARGS_LEN: usize = 80;
-const RAZER_RESPONSE_HEADER_LEN: usize = 8;
-const RAZER_RESPONSE_DATA_SIZE_OFFSET: usize = 5;
-const RAZER_RESPONSE_ARGS_OFFSET: usize = 8;
 const STANDARD_MATRIX_FRAME_DATA_SIZE: u8 = 0x46;
-// Modern custom-effect activation declares a 6-byte payload even though the
-// meaningful arguments only consume 5 bytes.
-const EXTENDED_CUSTOM_EFFECT_DATA_SIZE: u8 = 0x06;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CustomEffectActivationStyle {
-    MatchCommandSet,
-    LegacyStandard {
-        storage: u8,
-    },
-    StandardLedEffect {
-        storage: u8,
-        led_id: u8,
-        effect: u8,
-    },
-    ExtendedMatrix {
-        declared_data_size: u8,
-        args: [u8; 5],
-        args_len: u8,
-    },
-}
 
 /// Pure packet encoder/decoder for Razer HID reports.
 #[expect(
@@ -434,68 +406,18 @@ impl RazerProtocol {
         expects_response: bool,
         post_delay: Duration,
     ) -> Option<ProtocolCommand> {
-        let report = Self::report_with_options(
+        packet::build_command(CommandSpec {
             transaction_id,
             command_class,
             command_id,
             args,
             declared_data_size,
-        )?;
-
-        Some(ProtocolCommand {
-            data: report.as_bytes().to_vec(),
-            expects_response,
-            response_delay: if expects_response {
-                self.response_delay
-            } else {
-                Duration::ZERO
-            },
-            post_delay,
-            transfer_type: TransferType::Primary,
+            timing: self.command_timing(expects_response, post_delay),
         })
     }
 
-    fn report_with_options(
-        transaction_id: u8,
-        command_class: u8,
-        command_id: u8,
-        args: &[u8],
-        declared_data_size: Option<u8>,
-    ) -> Option<RazerReport> {
-        if args.len() > ARGS_LEN {
-            warn!(
-                args_len = args.len(),
-                "razer command payload exceeds argument field, dropping packet"
-            );
-            return None;
-        }
-
-        let data_size = declared_data_size.unwrap_or_else(|| u8::try_from(args.len()).unwrap_or(0));
-        if usize::from(data_size) > ARGS_LEN {
-            warn!(
-                data_size,
-                "razer command declared data size exceeds argument field, dropping packet"
-            );
-            return None;
-        }
-
-        if args.len() > usize::from(data_size) {
-            warn!(
-                args_len = args.len(),
-                data_size, "razer command arguments exceed declared data size, dropping packet"
-            );
-            return None;
-        }
-
-        let mut report = RazerReport::new_zeroed();
-        report.transaction_id = transaction_id;
-        report.data_size = data_size;
-        report.command_class = command_class;
-        report.command_id = command_id;
-        report.args[..args.len()].copy_from_slice(args);
-        report.crc = razer_crc(&report);
-
-        Some(report)
+    fn command_timing(&self, expects_response: bool, post_delay: Duration) -> CommandTiming {
+        CommandTiming::new(expects_response, self.response_delay, post_delay)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -510,26 +432,16 @@ impl RazerProtocol {
         expects_response: bool,
         post_delay: Duration,
     ) {
-        let Some(report) = Self::report_with_options(
-            transaction_id,
-            command_class,
-            command_id,
-            args,
-            declared_data_size,
-        ) else {
-            return;
-        };
-
-        encoder.push_struct(
-            &report,
-            expects_response,
-            if expects_response {
-                self.response_delay
-            } else {
-                Duration::ZERO
+        packet::push_command(
+            encoder,
+            CommandSpec {
+                transaction_id,
+                command_class,
+                command_id,
+                args,
+                declared_data_size,
+                timing: self.command_timing(expects_response, post_delay),
             },
-            post_delay,
-            TransferType::Primary,
         );
     }
 
@@ -542,60 +454,12 @@ impl RazerProtocol {
     }
 
     fn activation_command(&self) -> Option<ProtocolCommand> {
-        match self.activation_style {
-            CustomEffectActivationStyle::LegacyStandard { storage } => self.build_packet(
-                0x03,
-                0x0A,
-                &[0x05, storage],
-                self.activation_expects_response,
-                self.activation_post_delay,
-            ),
-            CustomEffectActivationStyle::StandardLedEffect {
-                storage,
-                led_id,
-                effect,
-            } => self.build_packet(
-                0x03,
-                0x02,
-                &[storage, led_id, effect],
-                self.activation_expects_response,
-                self.activation_post_delay,
-            ),
-            CustomEffectActivationStyle::ExtendedMatrix {
-                declared_data_size,
-                args,
-                args_len,
-            } => {
-                let args_len = min(usize::from(args_len), args.len());
-                self.build_packet_with_declared_size(
-                    0x0F,
-                    0x02,
-                    &args[..args_len],
-                    declared_data_size,
-                    self.activation_expects_response,
-                    self.activation_post_delay,
-                )
-            }
-            CustomEffectActivationStyle::MatchCommandSet
-                if matches!(self.command_set, RazerLightingCommandSet::Standard) =>
-            {
-                self.build_packet(
-                    0x03,
-                    0x0A,
-                    &[0x05, self.standard_storage],
-                    self.activation_expects_response,
-                    self.activation_post_delay,
-                )
-            }
-            CustomEffectActivationStyle::MatchCommandSet => self.build_packet_with_declared_size(
-                0x0F,
-                0x02,
-                &[NOSTORE, LED_ID_ZERO, EFFECT_CUSTOM_FRAME, 0x00, 0x01],
-                EXTENDED_CUSTOM_EFFECT_DATA_SIZE,
-                self.activation_expects_response,
-                self.activation_post_delay,
-            ),
-        }
+        self.activation_style.command(
+            self.version,
+            self.command_set,
+            self.standard_storage,
+            self.command_timing(self.activation_expects_response, self.activation_post_delay),
+        )
     }
 
     fn should_append_frame_activation(&self) -> bool {
@@ -736,7 +600,7 @@ impl RazerProtocol {
                     continue;
                 }
 
-                let mut args = [0_u8; ARGS_LEN];
+                let mut args = [0_u8; REPORT_ARGS_LEN];
                 let row_u8 = u8::try_from(row).unwrap_or(0);
                 let start_col = u8::try_from(chunk_start).unwrap_or(0);
                 let stop_col = u8::try_from(chunk_end - 1).unwrap_or(0);
@@ -779,124 +643,13 @@ impl RazerProtocol {
     }
 
     fn push_activation_command(&self, encoder: &mut CommandBuffer<'_>) {
-        match self.activation_style {
-            CustomEffectActivationStyle::LegacyStandard { storage } => self
-                .push_packet_with_options(
-                    encoder,
-                    self.version.transaction_id(),
-                    0x03,
-                    0x0A,
-                    &[0x05, storage],
-                    None,
-                    self.activation_expects_response,
-                    self.activation_post_delay,
-                ),
-            CustomEffectActivationStyle::StandardLedEffect {
-                storage,
-                led_id,
-                effect,
-            } => self.push_packet_with_options(
-                encoder,
-                self.version.transaction_id(),
-                0x03,
-                0x02,
-                &[storage, led_id, effect],
-                None,
-                self.activation_expects_response,
-                self.activation_post_delay,
-            ),
-            CustomEffectActivationStyle::ExtendedMatrix {
-                declared_data_size,
-                args,
-                args_len,
-            } => {
-                let args_len = min(usize::from(args_len), args.len());
-                self.push_packet_with_options(
-                    encoder,
-                    self.version.transaction_id(),
-                    0x0F,
-                    0x02,
-                    &args[..args_len],
-                    Some(declared_data_size),
-                    self.activation_expects_response,
-                    self.activation_post_delay,
-                );
-            }
-            CustomEffectActivationStyle::MatchCommandSet
-                if matches!(self.command_set, RazerLightingCommandSet::Standard) =>
-            {
-                self.push_packet_with_options(
-                    encoder,
-                    self.version.transaction_id(),
-                    0x03,
-                    0x0A,
-                    &[0x05, self.standard_storage],
-                    None,
-                    self.activation_expects_response,
-                    self.activation_post_delay,
-                );
-            }
-            CustomEffectActivationStyle::MatchCommandSet => self.push_packet_with_options(
-                encoder,
-                self.version.transaction_id(),
-                0x0F,
-                0x02,
-                &[NOSTORE, LED_ID_ZERO, EFFECT_CUSTOM_FRAME, 0x00, 0x01],
-                Some(EXTENDED_CUSTOM_EFFECT_DATA_SIZE),
-                self.activation_expects_response,
-                self.activation_post_delay,
-            ),
-        }
-    }
-
-    fn map_status(byte: u8) -> ResponseStatus {
-        match byte {
-            0x01 => ResponseStatus::Busy,
-            0x02 => ResponseStatus::Ok,
-            0x04 => ResponseStatus::Timeout,
-            0x05 => ResponseStatus::Unsupported,
-            _ => ResponseStatus::Failed,
-        }
-    }
-
-    fn parse_short_response(data: &[u8]) -> Result<ProtocolResponse, ProtocolError> {
-        if data.len() < RAZER_RESPONSE_HEADER_LEN {
-            return Err(ProtocolError::MalformedResponse {
-                detail: format!(
-                    "expected at least {} bytes, got {}",
-                    RAZER_RESPONSE_HEADER_LEN,
-                    data.len()
-                ),
-            });
-        }
-
-        let status = Self::map_status(data[0]);
-        if status == ResponseStatus::Failed {
-            return Err(ProtocolError::DeviceError { status });
-        }
-
-        let data_size = usize::from(data[RAZER_RESPONSE_DATA_SIZE_OFFSET]);
-        if data_size > ARGS_LEN {
-            return Err(ProtocolError::MalformedResponse {
-                detail: format!("data size exceeds arguments field: {data_size}"),
-            });
-        }
-
-        let payload_end = RAZER_RESPONSE_ARGS_OFFSET
-            .checked_add(data_size)
-            .ok_or_else(|| ProtocolError::MalformedResponse {
-                detail: format!("data size exceeds arguments field: {data_size}"),
-            })?;
-        if data.len() < payload_end {
-            return Err(ProtocolError::MalformedResponse {
-                detail: format!("expected at least {payload_end} bytes, got {}", data.len()),
-            });
-        }
-
-        Ok(ProtocolResponse {
-            status,
-            data: data[RAZER_RESPONSE_ARGS_OFFSET..payload_end].to_vec(),
-        })
+        self.activation_style.push(
+            encoder,
+            self.version,
+            self.command_set,
+            self.standard_storage,
+            self.command_timing(self.activation_expects_response, self.activation_post_delay),
+        );
     }
 }
 
@@ -1013,40 +766,7 @@ impl Protocol for RazerProtocol {
     }
 
     fn parse_response(&self, data: &[u8]) -> Result<ProtocolResponse, ProtocolError> {
-        if data.len() < RAZER_REPORT_LEN {
-            return Self::parse_short_response(data);
-        }
-
-        // Use read_from_prefix — NOT read_from_bytes — because HID transport
-        // can return >90 byte buffers (report ID still attached from decode
-        // fallback in hidapi/hidraw).
-        let (report, _remainder) =
-            RazerReport::read_from_prefix(data).map_err(|_| ProtocolError::MalformedResponse {
-                detail: format!(
-                    "expected at least {} bytes, got {}",
-                    RAZER_REPORT_LEN,
-                    data.len()
-                ),
-            })?;
-
-        let status = Self::map_status(report.status);
-        if status == ResponseStatus::Failed {
-            return Err(ProtocolError::DeviceError { status });
-        }
-
-        let data_size = usize::from(report.data_size);
-        if data_size > ARGS_LEN {
-            return Err(ProtocolError::MalformedResponse {
-                detail: format!("data size exceeds arguments field: {data_size}"),
-            });
-        }
-
-        let payload = report.args[..data_size].to_vec();
-
-        Ok(ProtocolResponse {
-            status,
-            data: payload,
-        })
+        packet::parse_response(data)
     }
 
     fn zones(&self) -> Vec<ProtocolZone> {
