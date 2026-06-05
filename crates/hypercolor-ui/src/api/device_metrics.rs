@@ -20,6 +20,8 @@ pub struct DeviceMetrics {
     pub fps_actual: f32,
     /// Configured frame-rate cap for the queue.
     pub fps_target: u32,
+    /// Configured minimum output interval in milliseconds.
+    pub target_interval_ms: Option<u64>,
     /// Payload bytes per second. Excludes transport framing.
     pub payload_bps_estimate: u64,
     /// Rolling average write-path latency from enqueue to completion.
@@ -27,6 +29,7 @@ pub struct DeviceMetrics {
     /// Total frames accepted by the output queue.
     pub frames_received: u64,
     pub frames_sent: u64,
+    pub frames_suppressed: u64,
     pub frames_dropped: u64,
     /// Cumulative async write failures observed by this queue.
     pub errors_total: u64,

@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use hypercolor_core::device::mock::{MockDeviceBackend, MockDeviceConfig};
 use hypercolor_core::device::{
-    BackendInfo, BackendManager, DeviceBackend, DeviceFrameSink, SegmentRange,
+    BackendInfo, BackendManager, DeviceBackend, DeviceFrameSink, DeviceWriteOutcome, SegmentRange,
 };
 use hypercolor_types::canvas::{linear_to_output_u8, srgb_to_linear};
 use hypercolor_types::device::{
@@ -366,10 +366,30 @@ impl DeviceFrameSink for FastFrameSink {
     }
 }
 
+struct SuppressingFrameSink {
+    attempts: Arc<AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl DeviceFrameSink for SuppressingFrameSink {
+    async fn write_colors_shared(&self, colors: Arc<Vec<[u8; 3]>>) -> Result<()> {
+        self.write_colors_shared_outcome(colors).await.map(|_| ())
+    }
+
+    async fn write_colors_shared_outcome(
+        &self,
+        _colors: Arc<Vec<[u8; 3]>>,
+    ) -> Result<DeviceWriteOutcome> {
+        self.attempts.fetch_add(1, Ordering::Relaxed);
+        Ok(DeviceWriteOutcome::SuppressedCadence)
+    }
+}
+
 struct FastFrameSinkBackend {
     expected_device_id: DeviceId,
     writes: Arc<AtomicUsize>,
     target_fps: u32,
+    suppress_writes: bool,
 }
 
 impl FastFrameSinkBackend {
@@ -378,6 +398,16 @@ impl FastFrameSinkBackend {
             expected_device_id,
             writes,
             target_fps,
+            suppress_writes: false,
+        }
+    }
+
+    fn suppressing(expected_device_id: DeviceId, attempts: Arc<AtomicUsize>) -> Self {
+        Self {
+            expected_device_id,
+            writes: attempts,
+            target_fps: 60,
+            suppress_writes: true,
         }
     }
 }
@@ -432,11 +462,18 @@ impl DeviceBackend for FastFrameSinkBackend {
     }
 
     fn frame_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {
-        (*id == self.expected_device_id).then(|| {
-            Arc::new(FastFrameSink {
-                writes: Arc::clone(&self.writes),
-            }) as Arc<dyn DeviceFrameSink>
-        })
+        if *id != self.expected_device_id {
+            return None;
+        }
+        if self.suppress_writes {
+            return Some(Arc::new(SuppressingFrameSink {
+                attempts: Arc::clone(&self.writes),
+            }) as Arc<dyn DeviceFrameSink>);
+        }
+
+        Some(Arc::new(FastFrameSink {
+            writes: Arc::clone(&self.writes),
+        }) as Arc<dyn DeviceFrameSink>)
     }
 
     fn target_fps(&self, id: &DeviceId) -> Option<u32> {
@@ -1778,15 +1815,15 @@ async fn backend_io_connect_with_refresh_retries_and_caches_target_fps() {
     let io = manager
         .backend_io("retry")
         .expect("backend io handle should exist");
-    let target_fps = io
+    let output_cadence = io
         .connect_with_refresh(device_id)
         .await
         .expect("connect with refresh should succeed");
 
-    manager.set_cached_target_fps("retry", device_id, target_fps);
+    manager.set_cached_output_cadence("retry", device_id, output_cadence);
     manager.map_device("retry:device", "retry", device_id);
 
-    assert_eq!(target_fps, 48);
+    assert_eq!(output_cadence.target_fps(), 48);
     assert_eq!(manager.cached_target_fps("retry", device_id), Some(48));
 }
 
@@ -1808,12 +1845,12 @@ async fn backend_io_connect_with_refresh_cleans_up_stale_session_before_retry() 
     let io = manager
         .backend_io("cleanup_retry")
         .expect("backend io handle should exist");
-    let target_fps = io
+    let output_cadence = io
         .connect_with_refresh(device_id)
         .await
         .expect("connect with refresh should recover after cleanup");
 
-    assert_eq!(target_fps, 36);
+    assert_eq!(output_cadence.target_fps(), 36);
     assert_eq!(connect_attempts.load(Ordering::Relaxed), 2);
     assert_eq!(disconnect_attempts.load(Ordering::Relaxed), 1);
     assert_eq!(discover_attempts.load(Ordering::Relaxed), 1);
@@ -1851,13 +1888,13 @@ async fn backend_io_connect_timeout_does_not_include_backend_lock_wait() {
     };
     tokio::time::sleep(Duration::from_millis(10)).await;
 
-    let target_fps = io
+    let output_cadence = io
         .connect_with_refresh_timeout(device_id, Duration::from_millis(20))
         .await
         .expect("timeout should start after the backend lock is acquired");
 
     write_task.await.expect("write task should not panic");
-    assert_eq!(target_fps, 60);
+    assert_eq!(output_cadence.target_fps(), 60);
     assert_eq!(write_count.load(Ordering::Relaxed), 1);
 }
 
@@ -4465,6 +4502,40 @@ async fn paced_output_queue_sends_fast_frame_sink_while_updates_keep_arriving() 
         queue.frames_received > queue.frames_sent,
         "continuous updates should refresh pending frames between paced writes"
     );
+}
+
+#[tokio::test]
+async fn output_queue_does_not_count_suppressed_lane_outcomes_as_sent() {
+    let device_id = DeviceId::new();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let backend = FastFrameSinkBackend::suppressing(device_id, Arc::clone(&attempts));
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(backend));
+    manager
+        .connect_device("fast_sink", device_id, "fast_sink:suppressed")
+        .await
+        .expect("connect should succeed");
+
+    let layout = make_layout(vec![make_zone("zone_0", "fast_sink:suppressed", 4)]);
+    let frame = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[128, 64, 32]; 4],
+    }];
+
+    manager.write_frame(&frame, &layout).await;
+    tokio::time::sleep(Duration::from_millis(40)).await;
+
+    assert_eq!(attempts.load(Ordering::Relaxed), 1);
+
+    let snapshot = manager.debug_snapshot();
+    let queue = snapshot
+        .queues
+        .first()
+        .expect("expected one queue snapshot");
+    assert_eq!(queue.frames_received, 1);
+    assert_eq!(queue.frames_sent, 0);
+    assert_eq!(queue.frames_suppressed, 1);
 }
 
 #[tokio::test]

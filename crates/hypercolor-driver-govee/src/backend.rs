@@ -6,7 +6,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use hypercolor_driver_api::{
-    BackendInfo, CredentialStore, DeviceBackend, DeviceFrameSink, HealthStatus, TransportScanner,
+    BackendInfo, CredentialStore, DeviceBackend, DeviceFrameSink, DeviceWriteOutcome, HealthStatus,
+    OutputCadence, TransportScanner,
 };
 use hypercolor_types::config::GoveeConfig;
 use hypercolor_types::device::{DeviceId, DeviceInfo};
@@ -274,9 +275,9 @@ impl GoveeBackend {
         credential_store: Option<&Arc<CredentialStore>>,
         cloud_client: Option<&CloudClient>,
         cloud_base_url: Option<&str>,
-    ) -> Result<()> {
+    ) -> Result<DeviceWriteOutcome> {
         if colors.is_empty() {
-            return Ok(());
+            return Ok(DeviceWriteOutcome::SuppressedDuplicate);
         }
 
         let mut device = device.lock().await;
@@ -300,12 +301,12 @@ impl GoveeBackend {
         };
 
         if device.last_sent.as_deref() == Some(sent_frame.as_slice()) {
-            return Ok(());
+            return Ok(DeviceWriteOutcome::SuppressedDuplicate);
         }
         if device.last_write_at.is_some_and(|last_write| {
             last_write.elapsed() < Self::frame_interval_for(config, &device)
         }) {
-            return Ok(());
+            return Ok(DeviceWriteOutcome::SuppressedCadence);
         }
 
         match command {
@@ -349,7 +350,7 @@ impl GoveeBackend {
 
         device.last_sent = Some(sent_frame);
         device.last_write_at = Some(Instant::now());
-        Ok(())
+        Ok(DeviceWriteOutcome::Sent)
     }
 }
 
@@ -366,6 +367,13 @@ struct GoveeFrameSink {
 #[async_trait]
 impl DeviceFrameSink for GoveeFrameSink {
     async fn write_colors_shared(&self, colors: Arc<Vec<[u8; 3]>>) -> Result<()> {
+        self.write_colors_shared_outcome(colors).await.map(|_| ())
+    }
+
+    async fn write_colors_shared_outcome(
+        &self,
+        colors: Arc<Vec<[u8; 3]>>,
+    ) -> Result<DeviceWriteOutcome> {
         GoveeBackend::write_device_colors(
             &self.device_id,
             &self.device,
@@ -538,6 +546,28 @@ impl DeviceBackend for GoveeBackend {
             self.cloud_base_url.as_deref(),
         )
         .await
+        .map(|_| ())
+    }
+
+    async fn write_colors_shared_outcome(
+        &mut self,
+        id: &DeviceId,
+        colors: Arc<Vec<[u8; 3]>>,
+    ) -> Result<DeviceWriteOutcome> {
+        let Some(device) = self.devices.get(id) else {
+            bail!("Govee device {id} is not connected");
+        };
+        Self::write_device_colors(
+            id,
+            device,
+            colors.as_slice(),
+            &self.config,
+            &self.shared_socket,
+            self.credential_store.as_ref(),
+            self.cloud_client.as_ref(),
+            self.cloud_base_url.as_deref(),
+        )
+        .await
     }
 
     async fn set_brightness(&mut self, id: &DeviceId, brightness: u8) -> Result<()> {
@@ -560,23 +590,22 @@ impl DeviceBackend for GoveeBackend {
         .await
     }
 
-    fn target_fps(&self, id: &DeviceId) -> Option<u32> {
+    fn output_cadence(&self, id: &DeviceId) -> Option<OutputCadence> {
         self.devices.get(id).and_then(|device| {
             let device = device.try_lock().ok()?;
             if device.address.is_none() {
-                return Some(1);
+                return Some(OutputCadence::from_min_interval(Duration::from_secs(6), 0));
             }
-            Some(
-                if device
-                    .profile
-                    .capabilities
-                    .contains(GoveeCapabilities::RAZER_STREAMING)
-                {
-                    self.config.razer_fps
-                } else {
-                    self.config.lan_state_fps
-                },
-            )
+            let target_fps = if device
+                .profile
+                .capabilities
+                .contains(GoveeCapabilities::RAZER_STREAMING)
+            {
+                self.config.razer_fps
+            } else {
+                self.config.lan_state_fps
+            };
+            Some(OutputCadence::from_fps(target_fps))
         })
     }
 

@@ -2,7 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use hypercolor_types::device::DeviceId;
 
-use crate::device::output_queue::{DeviceStagingBuffer, OutputQueue};
+use crate::device::output_queue::{DeviceStagingBuffer, OutputLane, OutputQueue};
+use crate::device::traits::OutputCadence;
 
 use super::{BackendDeviceKey, BackendHandle, DeviceFrameSinkHandle};
 
@@ -14,7 +15,7 @@ pub(super) struct DeviceOutputCoordinator {
     active_staging_keys: Vec<BackendDeviceKey>,
     active_staging_len: usize,
     staging_generation: u64,
-    target_fps: HashMap<BackendDeviceKey, u32>,
+    output_cadence: HashMap<BackendDeviceKey, OutputCadence>,
     direct_control_locks: HashMap<BackendDeviceKey, usize>,
     warned_inactive_layout_devices: HashSet<BackendDeviceKey>,
 }
@@ -27,7 +28,7 @@ impl DeviceOutputCoordinator {
             .retain(|(sink_backend_id, _), _| sink_backend_id != backend_id);
         self.staging
             .retain(|(staged_backend_id, _), _| staged_backend_id != backend_id);
-        self.target_fps
+        self.output_cadence
             .retain(|(cached_backend_id, _), _| cached_backend_id != backend_id);
         self.direct_control_locks
             .retain(|(locked_backend_id, _), _| locked_backend_id != backend_id);
@@ -39,7 +40,7 @@ impl DeviceOutputCoordinator {
         self.queues.remove(key);
         self.frame_sinks.remove(key);
         self.staging.remove(key);
-        self.target_fps.remove(key);
+        self.output_cadence.remove(key);
         self.direct_control_locks.remove(key);
         self.warned_inactive_layout_devices.remove(key);
     }
@@ -93,12 +94,31 @@ impl DeviceOutputCoordinator {
         device_id: DeviceId,
         target_fps: u32,
     ) {
-        self.target_fps
-            .insert((backend_id.to_owned(), device_id), target_fps);
+        self.set_output_cadence(backend_id, device_id, OutputCadence::from_fps(target_fps));
+    }
+
+    pub(super) fn set_output_cadence(
+        &mut self,
+        backend_id: &str,
+        device_id: DeviceId,
+        output_cadence: OutputCadence,
+    ) {
+        self.output_cadence
+            .insert((backend_id.to_owned(), device_id), output_cadence);
     }
 
     pub(super) fn target_fps(&self, backend_id: &str, device_id: DeviceId) -> Option<u32> {
-        self.target_fps
+        self.output_cadence
+            .get(&(backend_id.to_owned(), device_id))
+            .map(|cadence| cadence.target_fps())
+    }
+
+    pub(super) fn output_cadence(
+        &self,
+        backend_id: &str,
+        device_id: DeviceId,
+    ) -> Option<OutputCadence> {
+        self.output_cadence
             .get(&(backend_id.to_owned(), device_id))
             .copied()
     }
@@ -208,8 +228,12 @@ impl DeviceOutputCoordinator {
 
         if !self.queues.contains_key(key) {
             let backend = backend?;
-            let target_fps = self.target_fps.get(key).copied().unwrap_or(60);
-            let queue = OutputQueue::spawn(key.0.clone(), key.1, backend, frame_sink, target_fps);
+            let cadence = self.output_cadence.get(key).copied().unwrap_or_default();
+            let lane = frame_sink.map_or_else(
+                || OutputLane::backend(backend, key.1),
+                OutputLane::frame_sink,
+            );
+            let queue = OutputQueue::spawn(key.0.clone(), key.1, lane, cadence);
             self.queues.insert(key.clone(), queue);
         }
 

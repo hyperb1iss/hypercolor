@@ -1,4 +1,6 @@
-use hypercolor_driver_api::DeviceBackend;
+use std::sync::Arc;
+
+use hypercolor_driver_api::{DeviceBackend, DeviceWriteOutcome};
 use hypercolor_driver_govee::backend::GoveeBackend;
 use hypercolor_driver_govee::cloud::{CloudClient, V1Device};
 use hypercolor_driver_govee::{GoveeLanDevice, build_cloud_discovered_device, build_device_info};
@@ -156,6 +158,46 @@ async fn cloud_only_device_uses_v1_control_for_connect_and_color() {
         color["cmd"]["value"],
         serde_json::json!({ "r": 127, "g": 0, "b": 127 })
     );
+}
+
+#[tokio::test]
+async fn cloud_only_write_reports_duplicate_suppression_without_counting_a_send() {
+    let cloud_device = test_cloud_device();
+    let device_id = build_cloud_discovered_device(cloud_device.clone()).info.id;
+    let (base_url, requests) =
+        serve_http_requests(1, r#"{"code":200,"message":"Success","data":{}}"#).await;
+    let client = CloudClient::with_base_url("test-key", base_url).expect("base URL should parse");
+    let mut backend = GoveeBackend::new(GoveeConfig::default()).with_cloud_client(client);
+    backend.remember_cloud_device(cloud_device);
+
+    let colors = Arc::new(vec![[255, 0, 0], [0, 0, 255]]);
+    let first = backend
+        .write_colors_shared_outcome(&device_id, Arc::clone(&colors))
+        .await
+        .expect("first cloud frame should send");
+    let duplicate = backend
+        .write_colors_shared_outcome(&device_id, colors)
+        .await
+        .expect("duplicate cloud frame should be accepted but suppressed");
+
+    assert_eq!(first, DeviceWriteOutcome::Sent);
+    assert_eq!(duplicate, DeviceWriteOutcome::SuppressedDuplicate);
+    assert_eq!(requests.await.expect("server task should join").len(), 1);
+}
+
+#[test]
+fn cloud_only_output_cadence_preserves_sub_hz_interval() {
+    let cloud_device = test_cloud_device();
+    let device_id = build_cloud_discovered_device(cloud_device.clone()).info.id;
+    let mut backend = GoveeBackend::new(GoveeConfig::default());
+    backend.remember_cloud_device(cloud_device);
+
+    let cadence = backend
+        .output_cadence(&device_id)
+        .expect("remembered cloud device should expose cadence");
+
+    assert_eq!(cadence.target_fps(), 0);
+    assert_eq!(cadence.interval_ms(), Some(6_000));
 }
 
 #[tokio::test]

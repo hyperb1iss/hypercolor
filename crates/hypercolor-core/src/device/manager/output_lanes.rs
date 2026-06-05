@@ -1,5 +1,7 @@
 use hypercolor_types::device::DeviceId;
 
+use crate::device::traits::OutputCadence;
+
 use super::{BackendDeviceKey, BackendManager, DeviceFrameSinkHandle};
 
 impl BackendManager {
@@ -25,10 +27,31 @@ impl BackendManager {
             .set_target_fps(backend_id, device_id, target_fps);
     }
 
+    /// Cache a backend-provided output cadence for a physical device.
+    pub fn set_cached_output_cadence(
+        &mut self,
+        backend_id: &str,
+        device_id: DeviceId,
+        output_cadence: OutputCadence,
+    ) {
+        self.output
+            .set_output_cadence(backend_id, device_id, output_cadence);
+    }
+
     /// Return the cached target FPS for a connected physical device, if present.
     #[must_use]
     pub fn cached_target_fps(&self, backend_id: &str, device_id: DeviceId) -> Option<u32> {
         self.output.target_fps(backend_id, device_id)
+    }
+
+    /// Return the cached output cadence for a connected physical device, if present.
+    #[must_use]
+    pub fn cached_output_cadence(
+        &self,
+        backend_id: &str,
+        device_id: DeviceId,
+    ) -> Option<OutputCadence> {
+        self.output.output_cadence(backend_id, device_id)
     }
 
     /// Suppress queued frame writes for a specific physical device.

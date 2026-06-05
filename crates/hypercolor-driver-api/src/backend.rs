@@ -1,6 +1,7 @@
 //! Native device backend boundary shared by core and built-in drivers.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::discovery::DiscoveredDevice;
 use anyhow::{Result, bail};
@@ -20,6 +21,86 @@ pub struct BackendInfo {
     pub description: String,
 }
 
+/// Result of accepting a color frame into a device output lane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceWriteOutcome {
+    /// The frame was sent to the transport or handed to an async transport worker.
+    Sent,
+    /// The lane intentionally skipped an identical frame.
+    SuppressedDuplicate,
+    /// The lane intentionally skipped a frame inside its cadence window.
+    SuppressedCadence,
+}
+
+impl DeviceWriteOutcome {
+    /// Whether this outcome represents bytes accepted for transport output.
+    #[must_use]
+    pub const fn is_sent(self) -> bool {
+        matches!(self, Self::Sent)
+    }
+}
+
+/// Preferred output cadence for a connected device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OutputCadence {
+    min_interval: Option<Duration>,
+    target_fps: u32,
+}
+
+impl OutputCadence {
+    /// Build cadence from an integer FPS cap. `0` means unpaced.
+    #[must_use]
+    pub fn from_fps(target_fps: u32) -> Self {
+        if target_fps == 0 {
+            return Self {
+                min_interval: None,
+                target_fps,
+            };
+        }
+
+        Self {
+            min_interval: Some(Duration::from_secs_f64(1.0 / f64::from(target_fps))),
+            target_fps,
+        }
+    }
+
+    /// Build cadence from a concrete minimum interval.
+    #[must_use]
+    pub const fn from_min_interval(min_interval: Duration, target_fps: u32) -> Self {
+        Self {
+            min_interval: Some(min_interval),
+            target_fps,
+        }
+    }
+
+    /// Minimum interval between output attempts, or `None` for unpaced output.
+    #[must_use]
+    pub const fn min_interval(self) -> Option<Duration> {
+        self.min_interval
+    }
+
+    /// Legacy integer target FPS for displays that cannot represent sub-Hz rates.
+    #[must_use]
+    pub const fn target_fps(self) -> u32 {
+        self.target_fps
+    }
+
+    /// Concrete cadence interval in milliseconds for telemetry.
+    #[must_use]
+    pub fn interval_ms(self) -> Option<u64> {
+        self.min_interval.map(|interval| {
+            let millis = interval.as_millis();
+            u64::try_from(millis).unwrap_or(u64::MAX)
+        })
+    }
+}
+
+impl Default for OutputCadence {
+    fn default() -> Self {
+        Self::from_fps(60)
+    }
+}
+
 /// Cloneable hot-path output lane for one connected device.
 #[async_trait::async_trait]
 pub trait DeviceFrameSink: Send + Sync {
@@ -30,6 +111,21 @@ pub trait DeviceFrameSink: Send + Sync {
     /// Returns an error if the device output lane is no longer available or
     /// the driver has observed an asynchronous transport failure.
     async fn write_colors_shared(&self, colors: Arc<Vec<[u8; 3]>>) -> Result<()>;
+
+    /// Push shared LED color data and report whether the lane actually sent it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the device output lane is no longer available or
+    /// the driver has observed an asynchronous transport failure.
+    async fn write_colors_shared_outcome(
+        &self,
+        colors: Arc<Vec<[u8; 3]>>,
+    ) -> Result<DeviceWriteOutcome> {
+        self.write_colors_shared(colors)
+            .await
+            .map(|()| DeviceWriteOutcome::Sent)
+    }
 }
 
 /// Cloneable hot-path display output lane for one connected, display-capable device.
@@ -115,6 +211,21 @@ pub trait DeviceBackend: Send + Sync {
         colors: Arc<Vec<[u8; 3]>>,
     ) -> Result<()> {
         self.write_colors(id, colors.as_slice()).await
+    }
+
+    /// Push shared LED color data and report whether the backend actually sent it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the device is disconnected or the write fails.
+    async fn write_colors_shared_outcome(
+        &mut self,
+        id: &DeviceId,
+        colors: Arc<Vec<[u8; 3]>>,
+    ) -> Result<DeviceWriteOutcome> {
+        self.write_colors_shared(id, colors)
+            .await
+            .map(|()| DeviceWriteOutcome::Sent)
     }
 
     /// Return a cloneable hot-path frame sink for a connected device.
@@ -214,6 +325,12 @@ pub trait DeviceBackend: Send + Sync {
     fn target_fps(&self, id: &DeviceId) -> Option<u32> {
         let _ = id;
         None
+    }
+
+    /// Preferred output cadence for a connected device.
+    #[must_use]
+    fn output_cadence(&self, id: &DeviceId) -> Option<OutputCadence> {
+        self.target_fps(id).map(OutputCadence::from_fps)
     }
 
     /// Non-destructive health probe for a connected device.

@@ -9,7 +9,7 @@ use hypercolor_driver_api::DiscoveredDevice;
 use hypercolor_types::device::{DeviceId, DeviceInfo, OwnedDisplayFramePayload};
 use tracing::debug;
 
-use crate::device::traits::{DeviceDisplaySink, DeviceFrameSink};
+use crate::device::traits::{DeviceDisplaySink, DeviceFrameSink, OutputCadence};
 
 use super::BackendHandle;
 
@@ -34,20 +34,20 @@ impl BackendIo {
 
     /// Connect a device, retrying once after cleanup and backend discovery refresh.
     ///
-    /// Returns the backend's preferred output FPS for the connected device.
+    /// Returns the backend's preferred output cadence for the connected device.
     ///
     /// # Errors
     ///
     /// Returns an error if the backend connect call fails both before and
     /// after discovery refresh.
-    pub async fn connect_with_refresh(&self, device_id: DeviceId) -> Result<u32> {
+    pub async fn connect_with_refresh(&self, device_id: DeviceId) -> Result<OutputCadence> {
         self.connect_with_refresh_inner(device_id, None).await
     }
 
     /// Connect a device, applying timeout only to backend operations after
     /// this handle acquires the backend lock.
     ///
-    /// Returns the backend's preferred output FPS for the connected device.
+    /// Returns the backend's preferred output cadence for the connected device.
     ///
     /// # Errors
     ///
@@ -56,7 +56,7 @@ impl BackendIo {
         &self,
         device_id: DeviceId,
         timeout: Duration,
-    ) -> Result<u32> {
+    ) -> Result<OutputCadence> {
         self.connect_with_refresh_inner(device_id, Some(timeout))
             .await
     }
@@ -65,7 +65,7 @@ impl BackendIo {
         &self,
         device_id: DeviceId,
         timeout: Option<Duration>,
-    ) -> Result<u32> {
+    ) -> Result<OutputCadence> {
         let mut backend = self.backend.lock().await;
 
         if let Err(initial_error) = run_backend_operation(
@@ -170,7 +170,7 @@ impl BackendIo {
             );
         }
 
-        Ok(backend.target_fps(&device_id).unwrap_or(60))
+        Ok(backend.output_cadence(&device_id).unwrap_or_default())
     }
 
     /// Prime the backend's discovery cache from a scanner result.

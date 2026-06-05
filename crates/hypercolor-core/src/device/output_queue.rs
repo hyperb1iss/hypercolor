@@ -11,11 +11,50 @@ use tokio::sync::{Mutex, watch};
 use tokio::task::JoinHandle;
 use tracing::{trace, warn};
 
-use super::traits::{DeviceBackend, DeviceFrameSink};
+use super::traits::{DeviceBackend, DeviceFrameSink, DeviceWriteOutcome, OutputCadence};
 
 type BackendHandle = Arc<Mutex<Box<dyn DeviceBackend>>>;
 type DeviceFrameSinkHandle = Arc<dyn DeviceFrameSink>;
 const OUTPUT_WRITE_FAILURE_REPEAT_LOG_INTERVAL: u64 = 60;
+
+pub(super) type OutputLaneHandle = Arc<OutputLane>;
+
+pub(super) enum OutputLane {
+    Backend {
+        backend: BackendHandle,
+        device_id: DeviceId,
+    },
+    FrameSink {
+        frame_sink: DeviceFrameSinkHandle,
+    },
+}
+
+impl OutputLane {
+    pub(super) fn backend(backend: BackendHandle, device_id: DeviceId) -> OutputLaneHandle {
+        Arc::new(Self::Backend { backend, device_id })
+    }
+
+    pub(super) fn frame_sink(frame_sink: DeviceFrameSinkHandle) -> OutputLaneHandle {
+        Arc::new(Self::FrameSink { frame_sink })
+    }
+
+    pub(super) const fn uses_frame_sink(&self) -> bool {
+        matches!(self, Self::FrameSink { .. })
+    }
+
+    async fn write_colors_shared_outcome(
+        &self,
+        colors: Arc<Vec<[u8; 3]>>,
+    ) -> anyhow::Result<DeviceWriteOutcome> {
+        match self {
+            Self::Backend { backend, device_id } => {
+                let mut backend = backend.lock().await;
+                backend.write_colors_shared_outcome(device_id, colors).await
+            }
+            Self::FrameSink { frame_sink } => frame_sink.write_colors_shared_outcome(colors).await,
+        }
+    }
+}
 
 /// Snapshot of backend dispatch internals for reverse-engineering and tuning.
 #[derive(Debug, Clone, Serialize)]
@@ -93,6 +132,9 @@ pub struct OutputQueueDebugSnapshot {
     /// Configured target frame rate for this queue.
     pub target_fps: u32,
 
+    /// Configured minimum output interval in milliseconds.
+    pub target_interval_ms: Option<u64>,
+
     /// Whether this queue writes through a per-device hot-path frame sink.
     pub uses_frame_sink: bool,
 
@@ -104,6 +146,9 @@ pub struct OutputQueueDebugSnapshot {
 
     /// Total frames successfully written by the worker.
     pub frames_sent: u64,
+
+    /// Total frames intentionally suppressed by the output lane.
+    pub frames_suppressed: u64,
 
     /// Payload bytes successfully written by the worker.
     pub bytes_sent: u64,
@@ -151,6 +196,9 @@ pub struct DeviceOutputStatistics {
     /// Configured target frame rate for this queue.
     pub target_fps: u32,
 
+    /// Configured minimum output interval in milliseconds.
+    pub target_interval_ms: Option<u64>,
+
     /// Whether this queue writes through a per-device hot-path frame sink.
     pub uses_frame_sink: bool,
 
@@ -162,6 +210,9 @@ pub struct DeviceOutputStatistics {
 
     /// Total frames successfully written by the worker.
     pub frames_sent: u64,
+
+    /// Total frames intentionally suppressed by the output lane.
+    pub frames_suppressed: u64,
 
     /// Payload bytes successfully written by the worker.
     pub bytes_sent: u64,
@@ -201,10 +252,12 @@ impl DeviceOutputStatistics {
             device_id: self.device_id.to_string(),
             mapped_layout_ids: self.mapped_layout_ids,
             target_fps: self.target_fps,
+            target_interval_ms: self.target_interval_ms,
             uses_frame_sink: self.uses_frame_sink,
             worker_finished: self.worker_finished,
             frames_received: self.frames_received,
             frames_sent: self.frames_sent,
+            frames_suppressed: self.frames_suppressed,
             bytes_sent: self.bytes_sent,
             frames_dropped: self.frames_dropped,
             avg_latency_ms: self.avg_latency_ms,
@@ -235,6 +288,7 @@ struct OutputQueueMetrics {
     started_at: Instant,
     frames_received: AtomicU64,
     frames_sent: AtomicU64,
+    frames_suppressed: AtomicU64,
     bytes_sent: AtomicU64,
     frames_dropped: AtomicU64,
     total_latency_us: AtomicU64,
@@ -255,6 +309,7 @@ impl OutputQueueMetrics {
             started_at,
             frames_received: AtomicU64::new(0),
             frames_sent: AtomicU64::new(0),
+            frames_suppressed: AtomicU64::new(0),
             bytes_sent: AtomicU64::new(0),
             frames_dropped: AtomicU64::new(0),
             total_latency_us: AtomicU64::new(0),
@@ -307,6 +362,16 @@ impl OutputQueueMetrics {
             .store(sequence, Ordering::Relaxed);
     }
 
+    fn record_write_suppressed(&self, sequence: u64, sent_at: Instant) {
+        self.frames_suppressed.fetch_add(1, Ordering::Relaxed);
+        self.last_sent_offset_us.store(
+            duration_micros(sent_at.saturating_duration_since(self.started_at)),
+            Ordering::Relaxed,
+        );
+        self.last_success_sequence
+            .store(sequence, Ordering::Relaxed);
+    }
+
     fn record_write_error(&self, sequence: u64, sent_at: Instant, error: String) {
         self.last_sent_offset_us.store(
             duration_micros(sent_at.saturating_duration_since(self.started_at)),
@@ -329,12 +394,13 @@ impl OutputQueueMetrics {
         backend_id: &str,
         device_id: DeviceId,
         mapped_layout_ids: Vec<String>,
-        target_fps: u32,
+        cadence: OutputCadence,
         uses_frame_sink: bool,
         worker_finished: bool,
     ) -> DeviceOutputStatistics {
         let frames_received = self.frames_received.load(Ordering::Relaxed);
         let frames_sent = self.frames_sent.load(Ordering::Relaxed);
+        let frames_suppressed = self.frames_suppressed.load(Ordering::Relaxed);
         let bytes_sent = self.bytes_sent.load(Ordering::Relaxed);
         let frames_dropped = self.frames_dropped.load(Ordering::Relaxed);
         let avg_latency_ms =
@@ -367,11 +433,13 @@ impl OutputQueueMetrics {
             backend_id: backend_id.to_owned(),
             device_id,
             mapped_layout_ids,
-            target_fps,
+            target_fps: cadence.target_fps(),
+            target_interval_ms: cadence.interval_ms(),
             uses_frame_sink,
             worker_finished,
             frames_received,
             frames_sent,
+            frames_suppressed,
             bytes_sent,
             frames_dropped,
             avg_latency_ms,
@@ -465,7 +533,7 @@ impl DeviceStagingBuffer {
 pub(super) struct OutputQueue {
     tx: watch::Sender<Option<Arc<FramePayload>>>,
     io_task: JoinHandle<()>,
-    target_fps: u32,
+    cadence: OutputCadence,
     uses_frame_sink: bool,
     metrics: Arc<OutputQueueMetrics>,
     next_sequence: u64,
@@ -476,17 +544,16 @@ impl OutputQueue {
     pub(super) fn spawn(
         backend_id: String,
         device_id: DeviceId,
-        backend: BackendHandle,
-        frame_sink: Option<DeviceFrameSinkHandle>,
-        target_fps: u32,
+        lane: OutputLaneHandle,
+        cadence: OutputCadence,
     ) -> Self {
         let (tx, mut rx) = watch::channel(None::<Arc<FramePayload>>);
         let metrics = Arc::new(OutputQueueMetrics::new(Instant::now()));
         let metrics_for_task = Arc::clone(&metrics);
-        let uses_frame_sink = frame_sink.is_some();
+        let uses_frame_sink = lane.uses_frame_sink();
 
         let io_task = tokio::spawn(async move {
-            let send_interval = target_interval_for_fps(target_fps);
+            let send_interval = cadence.min_interval();
             let mut next_send_at = Instant::now();
             let mut last_sent_sequence = 0_u64;
             let mut pending = None::<Arc<FramePayload>>;
@@ -541,30 +608,28 @@ impl OutputQueue {
                     );
                 }
 
-                let result = if let Some(frame_sink) = frame_sink.as_ref() {
-                    frame_sink
-                        .write_colors_shared(Arc::clone(&frame.colors))
-                        .await
-                } else {
-                    let mut backend = backend.lock().await;
-                    backend
-                        .write_colors_shared(&device_id, Arc::clone(&frame.colors))
-                        .await
-                };
+                let result = lane
+                    .write_colors_shared_outcome(Arc::clone(&frame.colors))
+                    .await;
                 let send_completed = Instant::now();
                 let write_time = send_completed.saturating_duration_since(write_started);
                 let payload_bytes = frame.colors.len().saturating_mul(3);
 
                 match result {
-                    Ok(()) => {
-                        metrics_for_task.record_write_success(
-                            frame.sequence,
-                            queue_wait,
-                            write_time,
-                            send_completed.saturating_duration_since(frame.produced_at),
-                            send_completed,
-                            payload_bytes,
-                        );
+                    Ok(outcome) => {
+                        if outcome.is_sent() {
+                            metrics_for_task.record_write_success(
+                                frame.sequence,
+                                queue_wait,
+                                write_time,
+                                send_completed.saturating_duration_since(frame.produced_at),
+                                send_completed,
+                                payload_bytes,
+                            );
+                        } else {
+                            metrics_for_task
+                                .record_write_suppressed(frame.sequence, send_completed);
+                        }
                         last_logged_write_error = None;
                         repeated_write_failures_since_log = 0;
                     }
@@ -619,7 +684,7 @@ impl OutputQueue {
         Self {
             tx,
             io_task,
-            target_fps,
+            cadence,
             uses_frame_sink,
             metrics,
             next_sequence: 0,
@@ -738,7 +803,7 @@ impl OutputQueue {
             backend_id,
             device_id,
             mapped_layout_ids,
-            self.target_fps,
+            self.cadence,
             self.uses_frame_sink,
             self.io_task.is_finished(),
         )
@@ -753,14 +818,6 @@ impl Drop for OutputQueue {
     fn drop(&mut self) {
         self.io_task.abort();
     }
-}
-
-fn target_interval_for_fps(target_fps: u32) -> Option<Duration> {
-    if target_fps == 0 {
-        return None;
-    }
-
-    Some(Duration::from_secs_f64(1.0 / f64::from(target_fps)))
 }
 
 fn average_micros_ms(total_micros: u64, sample_count: u64) -> u64 {

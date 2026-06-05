@@ -39,7 +39,8 @@ pub use state_machine::{
     StateTransitionRecord,
 };
 pub use traits::{
-    BackendInfo, DeviceBackend, DeviceDisplaySink, DeviceFrameSink, DevicePlugin, HealthStatus,
+    BackendInfo, DeviceBackend, DeviceDisplaySink, DeviceFrameSink, DevicePlugin,
+    DeviceWriteOutcome, HealthStatus, OutputCadence,
 };
 pub use usb_backend::{
     UsbActorMetricsSnapshot, UsbBackend, UsbProtocolConfigStore, usb_actor_metrics_snapshot,

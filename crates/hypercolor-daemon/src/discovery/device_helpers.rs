@@ -153,14 +153,14 @@ async fn connect_backend_device_inner(
     let io = backend_io(runtime, backend_id).await?;
     remember_discovered_device(runtime, device_id, &io).await;
     sync_host_attachment_profile_config(runtime, device_id, &io).await;
-    let target_fps = match timeout {
+    let output_cadence = match timeout {
         Some(timeout) => io.connect_with_refresh_timeout(device_id, timeout).await?,
         None => io.connect_with_refresh(device_id).await?,
     };
     let frame_sink = io.frame_sink(device_id).await;
 
     let mut manager = runtime.backend_manager.lock().await;
-    manager.set_cached_target_fps(backend_id, device_id, target_fps);
+    manager.set_cached_output_cadence(backend_id, device_id, output_cadence);
     manager.set_device_frame_sink(backend_id, device_id, frame_sink);
     manager.map_device(
         layout_device_id.to_owned(),
