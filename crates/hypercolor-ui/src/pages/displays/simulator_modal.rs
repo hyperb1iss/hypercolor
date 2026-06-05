@@ -11,13 +11,6 @@ use hypercolor_leptos_ext::events::Input;
 use super::DisplaysModalBackdrop;
 
 #[component]
-pub(super) fn PickerPlaceholder(#[prop(into)] message: String) -> impl IntoView {
-    view! {
-        <div class="px-3 py-6 text-xs leading-relaxed text-fg-tertiary">{message}</div>
-    }
-}
-
-#[component]
 pub(super) fn CreateSimulatorModal(
     #[prop(into)] on_created: Callback<api::SimulatedDisplaySummary>,
     #[prop(into)] on_close: Callback<()>,
