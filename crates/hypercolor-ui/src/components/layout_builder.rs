@@ -294,6 +294,44 @@ pub(crate) struct LayoutZoneDisplayContext {
         LocalResource<std::collections::HashMap<String, api::DeviceComponentsResponse>>,
 }
 
+fn attachment_profiles_resource(
+    layout: ReadSignal<Option<SpatialLayout>>,
+    devices_resource: LocalResource<Result<Vec<api::DeviceSummary>, String>>,
+) -> LocalResource<std::collections::HashMap<String, api::DeviceComponentsResponse>> {
+    LocalResource::new(move || {
+        let current_layout = layout.get();
+        let devices = devices_resource
+            .get()
+            .and_then(Result::ok)
+            .unwrap_or_default();
+
+        async move {
+            let mut device_ids = std::collections::HashMap::<String, String>::new();
+            if let Some(current_layout) = current_layout {
+                for zone in current_layout.zones {
+                    if zone.attachment.is_none() {
+                        continue;
+                    }
+                    if let Some(device) = devices
+                        .iter()
+                        .find(|device| device.layout_device_id == zone.device_id)
+                    {
+                        device_ids.insert(zone.device_id, device.id.clone());
+                    }
+                }
+            }
+
+            let mut profiles = std::collections::HashMap::new();
+            for (layout_device_id, device_id) in device_ids {
+                if let Ok(profile) = api::fetch_device_attachments(&device_id).await {
+                    profiles.insert(layout_device_id, profile);
+                }
+            }
+            profiles
+        }
+    })
+}
+
 /// The layout-library controls and editor actions, lifted out of the
 /// `LayoutBuilder` shell so a separately-composed header (the Studio
 /// Stage) can drive the same editor. Provided via context by
@@ -433,39 +471,7 @@ pub(crate) fn LayoutEditorProvider(children: Children) -> impl IntoView {
         can_redo,
     });
 
-    let attachment_profiles = LocalResource::new(move || {
-        let current_layout = layout.get();
-        let devices = ctx
-            .devices_resource
-            .get()
-            .and_then(Result::ok)
-            .unwrap_or_default();
-
-        async move {
-            let mut device_ids = std::collections::HashMap::<String, String>::new();
-            if let Some(current_layout) = current_layout {
-                for zone in current_layout.zones {
-                    if zone.attachment.is_none() {
-                        continue;
-                    }
-                    if let Some(device) = devices
-                        .iter()
-                        .find(|device| device.layout_device_id == zone.device_id)
-                    {
-                        device_ids.insert(zone.device_id, device.id.clone());
-                    }
-                }
-            }
-
-            let mut profiles = std::collections::HashMap::new();
-            for (layout_device_id, device_id) in device_ids {
-                if let Ok(profile) = api::fetch_device_attachments(&device_id).await {
-                    profiles.insert(layout_device_id, profile);
-                }
-            }
-            profiles
-        }
-    });
+    let attachment_profiles = attachment_profiles_resource(layout, ctx.devices_resource);
     provide_context(LayoutZoneDisplayContext {
         attachment_profiles,
     });
@@ -1610,39 +1616,7 @@ pub(crate) fn ZoneLayoutProvider(
         can_redo,
     });
 
-    let attachment_profiles = LocalResource::new(move || {
-        let current_layout = layout.get();
-        let devices = devices_ctx
-            .devices_resource
-            .get()
-            .and_then(Result::ok)
-            .unwrap_or_default();
-
-        async move {
-            let mut device_ids = std::collections::HashMap::<String, String>::new();
-            if let Some(current_layout) = current_layout {
-                for zone in current_layout.zones {
-                    if zone.attachment.is_none() {
-                        continue;
-                    }
-                    if let Some(device) = devices
-                        .iter()
-                        .find(|device| device.layout_device_id == zone.device_id)
-                    {
-                        device_ids.insert(zone.device_id, device.id.clone());
-                    }
-                }
-            }
-
-            let mut profiles = std::collections::HashMap::new();
-            for (layout_device_id, device_id) in device_ids {
-                if let Ok(profile) = api::fetch_device_attachments(&device_id).await {
-                    profiles.insert(layout_device_id, profile);
-                }
-            }
-            profiles
-        }
-    });
+    let attachment_profiles = attachment_profiles_resource(layout, devices_ctx.devices_resource);
     provide_context(LayoutZoneDisplayContext {
         attachment_profiles,
     });
