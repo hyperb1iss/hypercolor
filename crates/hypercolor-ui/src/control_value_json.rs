@@ -7,6 +7,9 @@
 //! dropdown `Enum` or free `Text`, a hex string is a `Color`. Effects,
 //! display faces, and the Studio layer inspector funnel control edits
 //! through here so the conversion stays in one place.
+//!
+//! The reverse path also lives here: typed control values become the
+//! daemon API payloads used by presets, app state, and live patches.
 
 use std::collections::HashMap;
 
