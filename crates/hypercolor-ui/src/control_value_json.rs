@@ -3,9 +3,9 @@
 //!
 //! `ControlPanel`'s `on_change` callback hands back a bare `serde_json`
 //! scalar (a number, bool, string, or 4-element array). The effect-control
-//! schema disambiguates the few cases a bare value cannot — a string is a
-//! dropdown `Enum` or free `Text`, a hex string is a `Color`. Both the
-//! Effects page and the Studio layer inspector funnel control edits
+//! schema disambiguates the few cases a bare value cannot: a string is a
+//! dropdown `Enum` or free `Text`, a hex string is a `Color`. Effects,
+//! display faces, and the Studio layer inspector funnel control edits
 //! through here so the conversion stays in one place.
 
 use std::collections::HashMap;
@@ -44,7 +44,7 @@ pub fn json_to_control_value(
         if is_dropdown {
             return Some(ControlValue::Enum(text.to_owned()));
         }
-        if is_color_picker && let Some(color) = hex_to_color_value(text) {
+        if is_color_picker && let Some(color) = hex_to_control_value(text) {
             return Some(color);
         }
         return Some(ControlValue::Text(text.to_owned()));
@@ -87,27 +87,39 @@ pub fn parse_f32(value: f64) -> Option<f32> {
     Some(value as f32)
 }
 
-/// Parse a `#rrggbb` (or `rrggbb`) hex string into 8-bit RGB components.
+/// Parse `#rrggbb` or `#rrggbbaa` into normalized RGBA components.
 #[must_use]
-pub fn parse_hex_rgb(hex: &str) -> Option<(u8, u8, u8)> {
+pub fn hex_to_rgba(hex: &str) -> Option<[f32; 4]> {
     let hex = hex.strip_prefix('#').unwrap_or(hex);
-    if hex.len() != 6 {
+    if hex.len() != 6 && hex.len() != 8 {
         return None;
     }
-    let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
-    let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
-    let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
-    Some((r, g, b))
-}
-
-/// Convert a hex color string into a linear-RGBA [`ControlValue::Color`].
-#[must_use]
-pub fn hex_to_color_value(hex: &str) -> Option<ControlValue> {
-    let (r, g, b) = parse_hex_rgb(hex)?;
-    Some(ControlValue::Color([
+    let parse_byte = |slice: &str| u8::from_str_radix(slice, 16).ok();
+    let r = parse_byte(&hex[0..2])?;
+    let g = parse_byte(&hex[2..4])?;
+    let b = parse_byte(&hex[4..6])?;
+    let a = if hex.len() == 8 {
+        parse_byte(&hex[6..8])?
+    } else {
+        255
+    };
+    Some([
         f32::from(r) / 255.0,
         f32::from(g) / 255.0,
         f32::from(b) / 255.0,
-        1.0,
-    ]))
+        f32::from(a) / 255.0,
+    ])
+}
+
+/// Convert a hex color string into an RGBA JSON array payload.
+#[must_use]
+pub fn hex_to_rgba_json(hex: &str) -> Option<serde_json::Value> {
+    let [r, g, b, a] = hex_to_rgba(hex)?;
+    Some(serde_json::json!([r, g, b, a]))
+}
+
+/// Convert a hex color string into a [`ControlValue::Color`].
+#[must_use]
+pub fn hex_to_control_value(hex: &str) -> Option<ControlValue> {
+    Some(ControlValue::Color(hex_to_rgba(hex)?))
 }

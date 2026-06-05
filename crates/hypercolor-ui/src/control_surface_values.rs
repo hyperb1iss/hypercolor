@@ -60,14 +60,14 @@ pub fn parse_json_control_value(
     raw: &str,
 ) -> Result<DynamicControlValue, String> {
     let json = serde_json::from_str::<JsonValue>(raw).map_err(|error| format!("JSON: {error}"))?;
-    let value = json_to_control_value(value_type, json)?;
+    let value = json_to_surface_control_value(value_type, json)?;
     value_type
         .validate_value(&value)
         .map_err(|error| format!("Invalid value: {error}"))?;
     Ok(value)
 }
 
-fn json_to_control_value(
+fn json_to_surface_control_value(
     value_type: &ControlValueType,
     value: JsonValue,
 ) -> Result<DynamicControlValue, String> {
@@ -129,7 +129,7 @@ fn json_to_control_value(
             .ok_or_else(|| "Expected list array".to_string())?
             .iter()
             .cloned()
-            .map(|item| json_to_control_value(item_type, item))
+            .map(|item| json_to_surface_control_value(item_type, item))
             .collect::<Result<Vec<_>, _>>()
             .map(DynamicControlValue::List),
         ControlValueType::Object { fields } => json_to_object(fields, value),
@@ -154,7 +154,7 @@ fn json_to_object(
         if let Some(value) = object.get(&field.id) {
             values.insert(
                 field.id.clone(),
-                json_to_control_value(&field.value_type, value.clone())?,
+                json_to_surface_control_value(&field.value_type, value.clone())?,
             );
         } else if let Some(default_value) = &field.default_value {
             values.insert(field.id.clone(), default_value.clone());

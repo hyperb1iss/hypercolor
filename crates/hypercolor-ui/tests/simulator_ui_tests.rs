@@ -2,6 +2,8 @@
 
 #[path = "../src/api/mod.rs"]
 mod api;
+#[path = "../src/control_value_json.rs"]
+mod control_value_json;
 #[path = "../src/display_utils.rs"]
 mod display_utils;
 #[path = "../src/style_utils.rs"]
@@ -11,10 +13,8 @@ use api::{
     ComponentBindingRequest, DisplaySummary, PairDeviceRequest, SetDisplayFaceRequest,
     UpdateSimulatedDisplayRequest,
 };
-use display_utils::{
-    display_preview_shell_url, hex_to_rgba, is_simulator_display, json_to_face_control_value,
-    parse_simulator_dimension,
-};
+use control_value_json::{hex_to_rgba, json_to_control_value};
+use display_utils::{display_preview_shell_url, is_simulator_display, parse_simulator_dimension};
 use hypercolor_types::effect::{ControlDefinition, ControlKind, ControlType, ControlValue};
 use style_utils::category_style;
 
@@ -257,18 +257,18 @@ fn display_category_uses_coral_accent() {
 }
 
 #[test]
-fn json_to_face_control_value_maps_primitive_types() {
+fn json_to_control_value_maps_primitive_types() {
     let controls: Vec<ControlDefinition> = Vec::new();
     assert_eq!(
-        json_to_face_control_value(&controls, "flag", &serde_json::json!(true)),
+        json_to_control_value("flag", &controls, &serde_json::json!(true)),
         Some(ControlValue::Boolean(true))
     );
     assert_eq!(
-        json_to_face_control_value(&controls, "count", &serde_json::json!(7)),
+        json_to_control_value("count", &controls, &serde_json::json!(7)),
         Some(ControlValue::Integer(7))
     );
     let Some(ControlValue::Float(v)) =
-        json_to_face_control_value(&controls, "alpha", &serde_json::json!(0.25))
+        json_to_control_value("alpha", &controls, &serde_json::json!(0.25))
     else {
         panic!("float conversion should succeed");
     };
@@ -276,17 +276,16 @@ fn json_to_face_control_value_maps_primitive_types() {
 }
 
 #[test]
-fn json_to_face_control_value_uses_control_type_for_strings() {
+fn json_to_control_value_uses_control_type_for_strings() {
     let controls = vec![dropdown_control("mode"), color_control("accent")];
 
     assert_eq!(
-        json_to_face_control_value(&controls, "mode", &serde_json::json!("high")),
+        json_to_control_value("mode", &controls, &serde_json::json!("high")),
         Some(ControlValue::Enum("high".to_owned()))
     );
 
-    // Hex string on a color control becomes a normalized RGBA.
     let Some(ControlValue::Color(color)) =
-        json_to_face_control_value(&controls, "accent", &serde_json::json!("#ff80c0"))
+        json_to_control_value("accent", &controls, &serde_json::json!("#ff80c0"))
     else {
         panic!("hex string should convert to Color for color-picker control");
     };
@@ -297,17 +296,17 @@ fn json_to_face_control_value_uses_control_type_for_strings() {
 
     // Unknown control id falls back to Text.
     assert_eq!(
-        json_to_face_control_value(&controls, "label", &serde_json::json!("hi")),
+        json_to_control_value("label", &controls, &serde_json::json!("hi")),
         Some(ControlValue::Text("hi".to_owned()))
     );
 }
 
 #[test]
-fn json_to_face_control_value_accepts_rgba_arrays() {
+fn json_to_control_value_accepts_rgba_arrays() {
     let controls: Vec<ControlDefinition> = Vec::new();
-    let Some(ControlValue::Color(color)) = json_to_face_control_value(
-        &controls,
+    let Some(ControlValue::Color(color)) = json_to_control_value(
         "accent",
+        &controls,
         &serde_json::json!([1.0, 0.5, 0.25, 1.0]),
     ) else {
         panic!("four-element array should convert to Color");
@@ -319,14 +318,12 @@ fn json_to_face_control_value_accepts_rgba_arrays() {
 }
 
 #[test]
-fn json_to_face_control_value_rejects_malformed_input() {
+fn json_to_control_value_rejects_malformed_input() {
     let controls: Vec<ControlDefinition> = Vec::new();
-    assert!(json_to_face_control_value(&controls, "x", &serde_json::json!(null)).is_none());
-    assert!(json_to_face_control_value(&controls, "x", &serde_json::json!([1, 2])).is_none());
-    assert!(
-        json_to_face_control_value(&controls, "x", &serde_json::json!(f64::INFINITY)).is_none()
-    );
-    assert!(json_to_face_control_value(&controls, "x", &serde_json::json!(f64::NAN)).is_none());
+    assert!(json_to_control_value("x", &controls, &serde_json::json!(null)).is_none());
+    assert!(json_to_control_value("x", &controls, &serde_json::json!([1, 2])).is_none());
+    assert!(json_to_control_value("x", &controls, &serde_json::json!(f64::INFINITY)).is_none());
+    assert!(json_to_control_value("x", &controls, &serde_json::json!(f64::NAN)).is_none());
 }
 
 #[test]

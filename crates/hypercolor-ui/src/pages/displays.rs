@@ -832,9 +832,9 @@ fn render_picker_row(
     }
 }
 
+use crate::control_value_json::json_to_control_value;
 use crate::display_utils::{
-    display_preview_shell_url, is_simulator_display, json_to_face_control_value,
-    parse_simulator_dimension,
+    display_preview_shell_url, is_simulator_display, parse_simulator_dimension,
 };
 
 #[component]
@@ -2056,7 +2056,7 @@ fn FaceControlsSection(
         // so sliders/toggles/color pickers feel immediate even before the
         // daemon acknowledges.
         let controls_snapshot = face_controls.get();
-        if let Some(control_value) = json_to_face_control_value(&controls_snapshot, &name, &value) {
+        if let Some(control_value) = json_to_control_value(&name, &controls_snapshot, &value) {
             set_face_control_values.update(|map| {
                 map.insert(name.clone(), control_value);
             });
