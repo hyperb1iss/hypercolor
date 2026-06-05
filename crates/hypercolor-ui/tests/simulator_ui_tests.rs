@@ -15,8 +15,9 @@ use api::{
     ComponentBindingRequest, DisplaySummary, PairDeviceRequest, SetDisplayFaceRequest,
     UpdateSimulatedDisplayRequest,
 };
-use control_value_json::{hex_to_rgba, json_to_control_value};
+use control_value_json::{controls_to_json, hex_to_rgba, json_to_control_value};
 use display_utils::{display_preview_shell_url, is_simulator_display, parse_simulator_dimension};
+use hypercolor_types::canvas::srgb_to_linear;
 use hypercolor_types::effect::{ControlDefinition, ControlKind, ControlType, ControlValue};
 use optimistic_controls::{
     apply_raw_control_updates, merge_control_values, raw_control_updates_payload,
@@ -329,6 +330,33 @@ fn json_to_control_value_rejects_malformed_input() {
     assert!(json_to_control_value("x", &controls, &serde_json::json!([1, 2])).is_none());
     assert!(json_to_control_value("x", &controls, &serde_json::json!(f64::INFINITY)).is_none());
     assert!(json_to_control_value("x", &controls, &serde_json::json!(f64::NAN)).is_none());
+}
+
+#[test]
+fn controls_to_json_serializes_typed_values_for_api_payloads() {
+    let values = std::collections::HashMap::from([
+        ("speed".to_owned(), ControlValue::Float(0.75)),
+        ("count".to_owned(), ControlValue::Integer(7)),
+        ("enabled".to_owned(), ControlValue::Boolean(true)),
+        ("mode".to_owned(), ControlValue::Enum("high".to_owned())),
+        (
+            "accent".to_owned(),
+            ControlValue::Color([
+                srgb_to_linear(128.0 / 255.0),
+                srgb_to_linear(255.0 / 255.0),
+                srgb_to_linear(234.0 / 255.0),
+                1.0,
+            ]),
+        ),
+    ]);
+
+    let json = controls_to_json(&values);
+
+    assert_eq!(json.get("speed"), Some(&serde_json::json!(0.75)));
+    assert_eq!(json.get("count"), Some(&serde_json::json!(7)));
+    assert_eq!(json.get("enabled"), Some(&serde_json::json!(true)));
+    assert_eq!(json.get("mode"), Some(&serde_json::json!("high")));
+    assert_eq!(json.get("accent"), Some(&serde_json::json!("#80ffea")));
 }
 
 #[test]

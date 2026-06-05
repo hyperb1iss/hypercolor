@@ -1,5 +1,5 @@
-//! Conversion between the raw JSON a `ControlPanel` emits and the typed
-//! [`ControlValue`] the daemon stores.
+//! Conversion between raw JSON control payloads and the typed
+//! [`ControlValue`] shape the UI keeps in state.
 //!
 //! `ControlPanel`'s `on_change` callback hands back a bare `serde_json`
 //! scalar (a number, bool, string, or 4-element array). The effect-control
@@ -10,6 +10,7 @@
 
 use std::collections::HashMap;
 
+use hypercolor_types::canvas::linear_to_srgb;
 use hypercolor_types::effect::{ControlDefinition, ControlType, ControlValue};
 
 /// Convert a raw control-panel JSON value into a typed [`ControlValue`],
@@ -76,6 +77,42 @@ pub fn apply_control_edit(
     values
 }
 
+/// Convert typed control values into the JSON payload shape the daemon API
+/// expects for live control patches and saved presets.
+#[must_use]
+pub fn controls_to_json(
+    values: &HashMap<String, ControlValue>,
+) -> serde_json::Map<String, serde_json::Value> {
+    values
+        .iter()
+        .map(|(key, value)| (key.clone(), control_value_to_json(value)))
+        .collect()
+}
+
+/// Convert a typed control value into its API JSON representation.
+#[must_use]
+pub fn control_value_to_json(value: &ControlValue) -> serde_json::Value {
+    match value {
+        ControlValue::Float(number) => serde_json::json!(number),
+        ControlValue::Integer(number) => serde_json::json!(number),
+        ControlValue::Boolean(boolean) => serde_json::json!(boolean),
+        ControlValue::Text(text) | ControlValue::Enum(text) => serde_json::json!(text),
+        ControlValue::Color(rgba) => serde_json::json!(format!(
+            "#{:02x}{:02x}{:02x}",
+            color_channel_to_byte(rgba[0]),
+            color_channel_to_byte(rgba[1]),
+            color_channel_to_byte(rgba[2]),
+        )),
+        ControlValue::Gradient(stops) => serde_json::json!(stops),
+        ControlValue::Rect(rect) => serde_json::json!({
+            "x": rect.x,
+            "y": rect.y,
+            "width": rect.width,
+            "height": rect.height,
+        }),
+    }
+}
+
 /// Narrow an `f64` to a finite `f32`, rejecting non-finite or out-of-range
 /// inputs.
 #[must_use]
@@ -122,4 +159,13 @@ pub fn hex_to_rgba_json(hex: &str) -> Option<serde_json::Value> {
 #[must_use]
 pub fn hex_to_control_value(hex: &str) -> Option<ControlValue> {
     Some(ControlValue::Color(hex_to_rgba(hex)?))
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::as_conversions
+)]
+fn color_channel_to_byte(channel: f32) -> u8 {
+    (linear_to_srgb(channel.clamp(0.0, 1.0)) * 255.0).round() as u8
 }

@@ -1,3 +1,7 @@
+#![allow(dead_code)]
+
+#[path = "../src/control_value_json.rs"]
+mod control_value_json;
 #[path = "../src/components/preset_matching.rs"]
 mod preset_matching;
 

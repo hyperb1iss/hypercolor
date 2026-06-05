@@ -9,10 +9,10 @@ use hypercolor_leptos_ext::events::{document as browser_document, target_closest
 use hypercolor_types::effect::{ControlValue, PresetTemplate};
 
 use super::preset_matching::{
-    bundled_preset_matches_controls, bundled_preset_to_json, controls_to_json,
-    user_preset_matches_controls,
+    bundled_preset_matches_controls, bundled_preset_to_json, user_preset_matches_controls,
 };
 use crate::api;
+use crate::control_value_json::controls_to_json;
 use crate::toasts;
 
 mod actions;

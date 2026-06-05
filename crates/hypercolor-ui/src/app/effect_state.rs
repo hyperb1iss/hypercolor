@@ -6,7 +6,7 @@ use hypercolor_types::scene::ZoneRole;
 use leptos::prelude::*;
 
 use crate::api;
-use crate::components::preset_matching::controls_to_json;
+use crate::control_value_json::controls_to_json;
 use crate::preferences::EffectPreferences;
 use crate::toasts;
 use crate::ws::EffectErrorHint;
