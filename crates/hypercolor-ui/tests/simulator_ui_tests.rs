@@ -15,7 +15,7 @@ use api::{
     ComponentBindingRequest, DisplaySummary, PairDeviceRequest, SetDisplayFaceRequest,
     UpdateSimulatedDisplayRequest,
 };
-use control_value_json::{controls_to_json, hex_to_rgba, json_to_control_value};
+use control_value_json::{controls_to_json, hex_to_rgba, hex_to_rgba_json, json_to_control_value};
 use display_utils::{display_preview_shell_url, is_simulator_display, parse_simulator_dimension};
 use hypercolor_types::canvas::srgb_to_linear;
 use hypercolor_types::effect::{ControlDefinition, ControlKind, ControlType, ControlValue};
@@ -296,8 +296,8 @@ fn json_to_control_value_uses_control_type_for_strings() {
         panic!("hex string should convert to Color for color-picker control");
     };
     assert!((color[0] - 1.0).abs() < 1e-6);
-    assert!((color[1] - 128.0 / 255.0).abs() < 1e-6);
-    assert!((color[2] - 192.0 / 255.0).abs() < 1e-6);
+    assert!((color[1] - srgb_to_linear(128.0 / 255.0)).abs() < 1e-6);
+    assert!((color[2] - srgb_to_linear(192.0 / 255.0)).abs() < 1e-6);
     assert!((color[3] - 1.0).abs() < 1e-6);
 
     // Unknown control id falls back to Text.
@@ -377,7 +377,7 @@ fn optimistic_control_updates_apply_raw_values() {
     let Some(ControlValue::Color(color)) = values.get("accent") else {
         panic!("accent should be converted to a color");
     };
-    assert!((color[1] - 128.0 / 255.0).abs() < 1e-6);
+    assert!((color[1] - srgb_to_linear(128.0 / 255.0)).abs() < 1e-6);
 }
 
 #[test]
@@ -410,7 +410,7 @@ fn hex_to_rgba_parses_with_and_without_leading_hash() {
     let Some(b) = hex_to_rgba("80ffea") else {
         panic!("valid hex without leading # should parse");
     };
-    assert!((a[0] - 128.0 / 255.0).abs() < 1e-6);
+    assert!((a[0] - srgb_to_linear(128.0 / 255.0)).abs() < 1e-6);
     assert_eq!(a, b);
 
     // Alpha channel.
@@ -418,6 +418,28 @@ fn hex_to_rgba_parses_with_and_without_leading_hash() {
         panic!("8-char hex should parse with alpha");
     };
     assert!((rgba[3] - 128.0 / 255.0).abs() < 1e-6);
+}
+
+#[test]
+fn hex_to_rgba_json_preserves_alpha_and_linearizes_rgb() {
+    let Some(value) = hex_to_rgba_json("#80ffea80") else {
+        panic!("8-char hex should convert to a JSON RGBA payload");
+    };
+    let Some(values) = value.as_array() else {
+        panic!("RGBA payload should be an array");
+    };
+
+    assert_eq!(values.len(), 4);
+    assert!(
+        (values[0].as_f64().expect("red channel should be numeric")
+            - f64::from(srgb_to_linear(128.0 / 255.0)))
+        .abs()
+            < 1e-6
+    );
+    assert!(
+        (values[3].as_f64().expect("alpha channel should be numeric") - (128.0 / 255.0)).abs()
+            < 1e-6
+    );
 }
 
 #[test]

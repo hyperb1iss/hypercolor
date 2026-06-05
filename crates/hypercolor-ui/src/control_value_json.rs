@@ -13,7 +13,7 @@
 
 use std::collections::HashMap;
 
-use hypercolor_types::canvas::linear_to_srgb;
+use hypercolor_types::canvas::{linear_to_srgb, srgb_to_linear};
 use hypercolor_types::effect::{ControlDefinition, ControlType, ControlValue};
 
 /// Convert a raw control-panel JSON value into a typed [`ControlValue`],
@@ -127,7 +127,7 @@ pub fn parse_f32(value: f64) -> Option<f32> {
     Some(value as f32)
 }
 
-/// Parse `#rrggbb` or `#rrggbbaa` into normalized RGBA components.
+/// Parse `#rrggbb` or `#rrggbbaa` into linear RGB plus normalized alpha.
 #[must_use]
 pub fn hex_to_rgba(hex: &str) -> Option<[f32; 4]> {
     let hex = hex.strip_prefix('#').unwrap_or(hex);
@@ -144,9 +144,9 @@ pub fn hex_to_rgba(hex: &str) -> Option<[f32; 4]> {
         255
     };
     Some([
-        f32::from(r) / 255.0,
-        f32::from(g) / 255.0,
-        f32::from(b) / 255.0,
+        srgb_to_linear(f32::from(r) / 255.0),
+        srgb_to_linear(f32::from(g) / 255.0),
+        srgb_to_linear(f32::from(b) / 255.0),
         f32::from(a) / 255.0,
     ])
 }
