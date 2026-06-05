@@ -5,7 +5,8 @@ use crate::api;
 use crate::display_utils::display_preview_shell_url;
 use crate::icons::*;
 
-use super::{FaceCompositionSection, FaceControlsSection};
+use super::FaceControlsSection;
+use super::face_composition::FaceCompositionSection;
 
 #[component]
 pub(super) fn DisplayRightPanel(
