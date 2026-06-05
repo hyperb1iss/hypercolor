@@ -114,13 +114,20 @@ canvas(
         let beatPrev = 0
         let spawnAcc = 0
 
-        const buildSprites = (source: CanvasImageSource, w: number, h: number) => {
+        const buildSprites = (source: CanvasImageSource, srcW: number, srcH: number) => {
+            // Cap the cached mark resolution — it's only ever drawn at ~half the
+            // 640x480 canvas, so a smaller sprite means a cheaper per-frame
+            // downscale on Servo's software canvas with no visible quality loss.
+            const scale = Math.min(1, 576 / srcH)
+            const w = Math.max(1, Math.round(srcW * scale))
+            const h = Math.max(1, Math.round(srcH * scale))
             logoSprite = document.createElement('canvas')
             logoSprite.width = w
             logoSprite.height = h
             const lc = logoSprite.getContext('2d')
             if (lc) {
                 lc.imageSmoothingEnabled = true
+                lc.imageSmoothingQuality = 'high'
                 lc.drawImage(source, 0, 0, w, h)
             }
 
@@ -172,10 +179,10 @@ canvas(
             const dt = Math.min(0.05, Math.max(0.001, time - lastTime || 0.016))
             lastTime = time
 
-            // Servo's software canvas can default to nearest-neighbor scaling —
-            // force smoothing so the upscaled mark never goes blocky.
+            // Servo's software canvas can default to nearest-neighbor scaling.
+            // Keep smoothing on, but pick quality per layer below: cheap 'low' for
+            // the big blurry glow/ray upscales, 'high' only for the crisp mark.
             ctx.imageSmoothingEnabled = true
-            ctx.imageSmoothingQuality = 'high'
 
             const speedN = (c.speed as number) / 4
             const idle = (c.idleMotion as number) / 100
@@ -262,6 +269,7 @@ canvas(
                 ctx.translate(cx, cy)
                 ctx.rotate(-time * 0.06 * speedN - rot * 0.2)
                 ctx.globalCompositeOperation = 'lighter'
+                ctx.imageSmoothingQuality = 'low'
                 ctx.globalAlpha = Math.min(0.7, rayE)
                 const rs = baseH * 1.95
                 ctx.drawImage(raySprite, -rs / 2, -rs / 2, rs, rs)
@@ -272,21 +280,24 @@ canvas(
             ctx.translate(cx, cy)
             ctx.rotate(rot)
 
-            // ── Bloom halo (additive) ───────────────────────────────────────────
+            // ── Bloom halo (additive) — one cheap pass always; a wider halo only
+            // when there's real energy, so idle frames stay light on Servo. ──────
             ctx.globalCompositeOperation = 'lighter'
-            const wideAmt = glowE * 0.5 + bloomE * 0.6
-            if (wideAmt > 0.01) {
-                ctx.globalAlpha = Math.min(0.85, 0.5 * wideAmt)
-                const w2 = baseW * 1.85
-                const h2 = baseH * 1.85
-                ctx.drawImage(glowSprite, -w2 / 2, -h2 / 2, w2, h2)
+            ctx.imageSmoothingQuality = 'low'
+            const coreAmt = glowE * 0.6 + bloomE * 0.5
+            if (coreAmt > 0.01) {
+                ctx.globalAlpha = Math.min(0.9, coreAmt)
+                const gs = 1.28 + 0.5 * bloomE
+                const gw = baseW * gs
+                const gh = baseH * gs
+                ctx.drawImage(glowSprite, -gw / 2, -gh / 2, gw, gh)
             }
-            const tightAmt = glowE * 0.7 + bloomE * 0.5
-            if (tightAmt > 0.01) {
-                ctx.globalAlpha = Math.min(0.9, 0.5 * tightAmt)
-                const w3 = baseW * 1.16
-                const h3 = baseH * 1.16
-                ctx.drawImage(glowSprite, -w3 / 2, -h3 / 2, w3, h3)
+            const haloAmt = glowE * 0.35 + bloomE * 0.7 - 0.4
+            if (haloAmt > 0.01) {
+                ctx.globalAlpha = Math.min(0.6, haloAmt)
+                const w2 = baseW * 1.95
+                const h2 = baseH * 1.95
+                ctx.drawImage(glowSprite, -w2 / 2, -h2 / 2, w2, h2)
             }
 
             // ── Chromatic split (transient only; skipped at idle) ───────────────
@@ -298,8 +309,9 @@ canvas(
                 ctx.drawImage(logoSprite, -baseW / 2 - ab, -baseH / 2 + ab * 0.4, baseW, baseH)
             }
 
-            // ── The mark itself ─────────────────────────────────────────────────
+            // ── The mark itself (the one layer that needs crisp resampling) ─────
             ctx.globalCompositeOperation = 'source-over'
+            ctx.imageSmoothingQuality = 'high'
             ctx.globalAlpha = Math.min(1, bright * (0.94 + 0.1 * level))
             ctx.drawImage(logoSprite, -baseW / 2, -baseH / 2, baseW, baseH)
 
