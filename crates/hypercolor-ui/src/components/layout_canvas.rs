@@ -15,7 +15,6 @@ use std::rc::Rc;
 use leptos::ev;
 use leptos::prelude::*;
 use leptos::reactive::owner::LocalStorage;
-use wasm_bindgen::JsCast;
 
 use hypercolor_leptos_ext::raf::Scheduler;
 
@@ -26,7 +25,18 @@ use crate::compound_selection::{self, CompoundDepth};
 use crate::layout_geometry::{self, ResizeHandle};
 use crate::layout_utils;
 use crate::style_utils::device_accent_colors;
-use hypercolor_types::spatial::{NormalizedPosition, Output, SpatialLayout, ZoneShape};
+use hypercolor_types::spatial::{NormalizedPosition, Output, ZoneShape};
+
+mod interaction;
+mod overlays;
+mod render;
+
+use interaction::{
+    DragRuntime, InteractionKind, collect_zone_elements, pointer_to_normalized,
+    update_canvas_slot_size,
+};
+use overlays::{CanvasDepthBreadcrumb, CompoundBoundingBoxOutline};
+use render::{ZoneRenderData, ring_inner_style, rotated_cursor, zone_shape_style};
 
 /// Throttle the in-drag preview push to the daemon. Matches the existing
 /// debounce we use outside drags so the spatial engine isn't recomputed at
@@ -923,127 +933,16 @@ pub fn LayoutCanvas() -> impl IntoView {
                         }).collect::<Vec<_>>()
                     }}
 
-                    // Compound bounding box outline + navigation hint
-                    {move || {
-                        let ids = selected_zone_ids.get();
-                        if ids.len() <= 1 {
-                            return None;
-                        }
-                        layout.with(|l| {
-                            let layout = l.as_ref()?;
-                            let bounds = layout_geometry::compound_bounding_box(layout, &ids)?;
-                            let depth = compound_depth.get();
-                            let entered = !matches!(depth, CompoundDepth::Root);
+                    <CompoundBoundingBoxOutline
+                        layout=layout
+                        selected_zone_ids=selected_zone_ids
+                        compound_depth=compound_depth
+                    />
 
-                            let x_pct = (bounds.center.x - bounds.size.x * 0.5) * 100.0;
-                            let y_pct = (bounds.center.y - bounds.size.y * 0.5) * 100.0;
-                            let w_pct = bounds.size.x * 100.0;
-                            let h_pct = bounds.size.y * 100.0;
-
-                            let opacity = if entered { "0.2" } else { "1" };
-                            let style = format!(
-                                "left: {x_pct:.2}%; top: {y_pct:.2}%; width: {w_pct:.2}%; height: {h_pct:.2}%; \
-                                 opacity: {opacity}; \
-                                 border: 1.5px dashed rgba(128, 255, 234, 0.4); \
-                                 border-radius: 8px; \
-                                 box-shadow: 0 0 16px rgba(128, 255, 234, 0.08); \
-                                 pointer-events: none; \
-                                 transition: opacity 0.15s ease"
-                            );
-
-                            // At Root, show a hint that double-click enters the compound
-                            let hint = matches!(depth, CompoundDepth::Root).then(|| view! {
-                                <div class="absolute -bottom-4 left-1/2 -translate-x-1/2 whitespace-nowrap
-                                            text-[9px] text-fg-tertiary/40 pointer-events-none select-none
-                                            animate-[fadeIn_0.3s_ease]">
-                                    "Double-click to select individually"
-                                </div>
-                            });
-
-                            Some(view! {
-                                <div class="absolute" style=style>
-                                    {hint}
-                                </div>
-                            })
-                        })
-                    }}
-
-                    // Compound depth breadcrumb — shows the current navigation level
-                    // and how to exit (Esc). Hidden when nothing is selected or at Root.
-                    {move || {
-                        let depth = compound_depth.get();
-                        match depth {
-                            CompoundDepth::Root => None,
-                            CompoundDepth::Device { ref device_id } => {
-                                let name = devices_ctx
-                                    .devices_resource
-                                    .get()
-                                    .and_then(Result::ok)
-                                    .and_then(|devices| {
-                                        layout_utils::effective_device_name(device_id, &devices)
-                                    })
-                                    .unwrap_or_else(|| "Device".to_string());
-                                Some(view! {
-                                    <div class="absolute bottom-2 left-1/2 -translate-x-1/2 z-50
-                                                flex items-center gap-2 px-3 py-1.5 rounded-lg
-                                                bg-black/60 backdrop-blur-sm border border-edge-subtle/30
-                                                pointer-events-none select-none">
-                                        <span class="text-[10px] font-medium" style="color: rgba(128, 255, 234, 0.7)">
-                                            {name}
-                                        </span>
-                                        <span class="text-[9px] text-fg-tertiary/40">
-                                            "\u{203a} Slots"
-                                        </span>
-                                        <span class="text-[9px] text-fg-tertiary/25 ml-1">
-                                            "Esc to exit"
-                                        </span>
-                                    </div>
-                                }.into_any())
-                            }
-                            CompoundDepth::Slot { ref device_id, ref slot_id } => {
-                                let (dev_name, slot_name) = devices_ctx
-                                    .devices_resource
-                                    .get()
-                                    .and_then(Result::ok)
-                                    .map(|devices| {
-                                        let dev_name = layout_utils::effective_device_name(
-                                            device_id,
-                                            &devices,
-                                        )
-                                        .unwrap_or_else(|| "Device".to_string());
-                                        let slot_name = layout_utils::effective_slot_name(
-                                            device_id,
-                                            slot_id,
-                                            &devices,
-                                        )
-                                        .unwrap_or_else(|| slot_id.replace('-', " "));
-                                        (dev_name, slot_name)
-                                    })
-                                    .unwrap_or_else(|| {
-                                        ("Device".to_string(), slot_id.replace('-', " "))
-                                    });
-                                Some(view! {
-                                    <div class="absolute bottom-2 left-1/2 -translate-x-1/2 z-50
-                                                flex items-center gap-2 px-3 py-1.5 rounded-lg
-                                                bg-black/60 backdrop-blur-sm border border-edge-subtle/30
-                                                pointer-events-none select-none">
-                                        <span class="text-[10px] font-medium" style="color: rgba(128, 255, 234, 0.7)">
-                                            {dev_name}
-                                        </span>
-                                        <span class="text-[9px] text-fg-tertiary/40">
-                                            "\u{203a} "
-                                        </span>
-                                        <span class="text-[10px] font-medium capitalize" style="color: rgba(128, 255, 234, 0.5)">
-                                            {slot_name}
-                                        </span>
-                                        <span class="text-[9px] text-fg-tertiary/25 ml-1">
-                                            "Esc to go back"
-                                        </span>
-                                    </div>
-                                }.into_any())
-                            }
-                        }
-                    }}
+                    <CanvasDepthBreadcrumb
+                        compound_depth=compound_depth
+                        devices_resource=devices_ctx.devices_resource
+                    />
 
                     // Empty canvas hint — shown over the live effect when no zones are placed
                     <Show when=move || !has_zones.get()>
@@ -1057,306 +956,5 @@ pub fn LayoutCanvas() -> impl IntoView {
                 </div>
             </div>
         </div>
-    }
-}
-
-/// Per-zone render data extracted from layout signal.
-#[derive(Clone, Debug, PartialEq)]
-struct ZoneRenderData {
-    position_style: String,
-    primary_rgb: String,
-    secondary_rgb: String,
-    name: String,
-    led_count: u32,
-    shape: Option<ZoneShape>,
-}
-
-/// Drag/resize runtime — non-reactive state machine for an in-flight pointer
-/// interaction. Owns cached DOM refs, the immutable base snapshot, and a
-/// running mutable copy of the dragged zones. The RAF scheduler reads from
-/// `pending_mouse`, computes the new geometry, and writes results directly
-/// to the cached `HtmlElement`s without going through the layout signal.
-struct DragRuntime {
-    kind: InteractionKind,
-    current_zones: Vec<Output>,
-    /// `data-zone-id` → element. Captured at interaction start so the RAF
-    /// loop never has to query the DOM.
-    elements: HashMap<String, web_sys::HtmlElement>,
-    /// Latest pointer position (normalized to the viewport rect) waiting to
-    /// be processed by the next RAF tick.
-    pending_mouse: Cell<Option<NormalizedPosition>>,
-    /// Have any frames been processed yet for this interaction?
-    /// Tracks whether we've actually mutated zones so mouseup can decide
-    /// between a no-op release and a real commit.
-    moved: Cell<bool>,
-    /// Last preview push timestamp (browser monotonic ms) for throttling.
-    last_preview_push_ms: Cell<f64>,
-}
-
-enum InteractionKind {
-    Drag {
-        primary_zone_id: String,
-        offset_x: f32,
-        offset_y: f32,
-        initial_positions: Vec<(String, NormalizedPosition)>,
-    },
-    Resize {
-        zone_id: String,
-        handle: ResizeHandle,
-        start_mouse: NormalizedPosition,
-        start_center: NormalizedPosition,
-        start_size: NormalizedPosition,
-        rotation: f32,
-        keep_aspect_ratio: bool,
-    },
-}
-
-impl DragRuntime {
-    /// Apply the latest pending pointer position to the in-flight zone copy
-    /// and paint the affected elements directly. Returns true if any zone
-    /// position/size actually changed this frame.
-    fn step(&mut self) -> bool {
-        let Some(mouse) = self.pending_mouse.take() else {
-            return false;
-        };
-        // Run the geometry math against an owned `SpatialLayout` borrowed
-        // out of `current_zones`, then move the (possibly mutated) zones
-        // back. We never clone the zone vec on the hot path.
-        let mut working = SpatialLayoutShim {
-            zones: std::mem::take(&mut self.current_zones),
-        }
-        .into_layout();
-        let changed = match &self.kind {
-            InteractionKind::Drag {
-                primary_zone_id,
-                offset_x,
-                offset_y,
-                initial_positions,
-            } => {
-                if initial_positions.len() > 1 {
-                    let primary_initial = initial_positions
-                        .iter()
-                        .find(|(id, _)| id == primary_zone_id)
-                        .map(|(_, pos)| *pos)
-                        .unwrap_or(NormalizedPosition::new(0.5, 0.5));
-                    let desired_primary = NormalizedPosition::new(
-                        (mouse.x - offset_x).clamp(0.0, 1.0),
-                        (mouse.y - offset_y).clamp(0.0, 1.0),
-                    );
-                    let delta = NormalizedPosition::new(
-                        desired_primary.x - primary_initial.x,
-                        desired_primary.y - primary_initial.y,
-                    );
-                    layout_geometry::translate_zones(&mut working, initial_positions, delta)
-                } else {
-                    let norm_x = (mouse.x - offset_x).clamp(0.0, 1.0);
-                    let norm_y = (mouse.y - offset_y).clamp(0.0, 1.0);
-                    layout_geometry::drag_zone_to_position(
-                        &mut working,
-                        primary_zone_id,
-                        NormalizedPosition::new(norm_x, norm_y),
-                    )
-                }
-            }
-            InteractionKind::Resize {
-                zone_id,
-                handle,
-                start_mouse,
-                start_center,
-                start_size,
-                rotation,
-                keep_aspect_ratio,
-            } => {
-                let Some(zone) = working.zones.iter_mut().find(|z| z.id == *zone_id) else {
-                    self.current_zones = working.zones;
-                    return false;
-                };
-                let force_locked = matches!(
-                    zone.shape,
-                    Some(ZoneShape::Ring) | Some(ZoneShape::Arc { .. })
-                );
-                let (position, size) = layout_geometry::resize_zone_from_handle(
-                    *start_center,
-                    *start_size,
-                    *start_mouse,
-                    *handle,
-                    mouse,
-                    *keep_aspect_ratio || force_locked,
-                    *rotation,
-                );
-                let changed = zone.position != position || zone.size != size;
-                if changed {
-                    zone.position = position;
-                    zone.size = size;
-                }
-                changed
-            }
-        };
-        self.current_zones = working.zones;
-
-        if changed {
-            self.moved.set(true);
-            self.paint_affected();
-        }
-        changed
-    }
-
-    /// Recompute the inline `style` attribute on every cached element to
-    /// reflect the current zone geometry. This is the only DOM write per
-    /// frame — it sets the same string Leptos would have produced, so the
-    /// reactive flush at mouseup is a clean handoff (matching strings,
-    /// no extra paint).
-    fn paint_affected(&self) {
-        for zone in &self.current_zones {
-            let Some(element) = self.elements.get(&zone.id) else {
-                continue;
-            };
-            let style = element.style();
-            let x_pct = zone.position.x * 100.0;
-            let y_pct = zone.position.y * 100.0;
-            let w_pct = zone.size.x * 100.0;
-            let h_pct = zone.size.y * 100.0;
-            let rotation = zone.rotation.to_degrees();
-            let scale = zone.scale;
-            let _ = style.set_property("left", &format!("{x_pct:.2}%"));
-            let _ = style.set_property("top", &format!("{y_pct:.2}%"));
-            let _ = style.set_property("width", &format!("{w_pct:.2}%"));
-            let is_circular = matches!(
-                zone.shape,
-                Some(ZoneShape::Ring) | Some(ZoneShape::Arc { .. })
-            );
-            if is_circular {
-                let _ = style.set_property("aspect-ratio", "1");
-                // Browsers ignore stale `height` in the presence of
-                // aspect-ratio, but clear it explicitly so the layout signal
-                // can re-take ownership cleanly on commit.
-                let _ = style.remove_property("height");
-            } else {
-                let _ = style.set_property("height", &format!("{h_pct:.2}%"));
-                let _ = style.remove_property("aspect-ratio");
-            }
-            let _ = style.set_property(
-                "transform",
-                &format!("translate(-50%, -50%) rotate({rotation:.1}deg) scale({scale:.3})"),
-            );
-        }
-    }
-}
-
-/// Tiny helper so the geometry helpers (which expect `&mut SpatialLayout`)
-/// can run against just the zone vec we own during an interaction. Keeps
-/// the rest of the layout immutable and out of our hot loop.
-struct SpatialLayoutShim {
-    zones: Vec<Output>,
-}
-
-impl SpatialLayoutShim {
-    fn into_layout(self) -> SpatialLayout {
-        SpatialLayout {
-            id: String::new(),
-            name: String::new(),
-            description: None,
-            canvas_width: 1,
-            canvas_height: 1,
-            zones: self.zones,
-            default_sampling_mode: hypercolor_types::spatial::SamplingMode::Bilinear,
-            default_edge_behavior: hypercolor_types::spatial::EdgeBehavior::Clamp,
-            spaces: None,
-            version: 1,
-        }
-    }
-}
-
-fn collect_zone_elements(
-    viewport: &web_sys::HtmlElement,
-    zone_ids: impl IntoIterator<Item = String>,
-) -> HashMap<String, web_sys::HtmlElement> {
-    let mut out = HashMap::new();
-    for id in zone_ids {
-        let selector = format!("[data-zone-id=\"{id}\"]");
-        let Ok(Some(node)) = viewport.query_selector(&selector) else {
-            continue;
-        };
-        if let Ok(element) = node.dyn_into::<web_sys::HtmlElement>() {
-            out.insert(id, element);
-        }
-    }
-    out
-}
-
-fn pointer_to_normalized(
-    viewport: &web_sys::HtmlElement,
-    client_x: i32,
-    client_y: i32,
-) -> Option<NormalizedPosition> {
-    let rect = viewport.get_bounding_client_rect();
-    let cw = rect.width();
-    let ch = rect.height();
-    if cw <= 0.0 || ch <= 0.0 {
-        return None;
-    }
-    #[allow(clippy::cast_possible_truncation)]
-    Some(NormalizedPosition::new(
-        ((f64::from(client_x) - rect.left()) / cw) as f32,
-        ((f64::from(client_y) - rect.top()) / ch) as f32,
-    ))
-}
-
-fn update_canvas_slot_size(
-    canvas_slot_ref: NodeRef<leptos::html::Div>,
-    set_canvas_slot_size: WriteSignal<(f64, f64)>,
-) {
-    if let Some(slot) = canvas_slot_ref.try_get_untracked().flatten() {
-        let rect = slot.get_bounding_client_rect();
-        set_canvas_slot_size.set((rect.width(), rect.height()));
-    }
-}
-
-fn zone_shape_style(shape: &Option<ZoneShape>) -> String {
-    match shape {
-        Some(ZoneShape::Ring) | Some(ZoneShape::Arc { .. }) => "border-radius: 999px".to_owned(),
-        _ => String::new(),
-    }
-}
-
-fn ring_inner_style(
-    shape: &Option<ZoneShape>,
-    primary_rgb: &str,
-    secondary_rgb: &str,
-) -> Option<String> {
-    match shape {
-        Some(ZoneShape::Ring) => Some(format!(
-            "border: 1px solid rgba({primary_rgb}, 0.16); \
-             background: radial-gradient(circle, rgba(0, 0, 0, 0.5), rgba({secondary_rgb}, 0.04)); \
-             box-shadow: inset 0 0 18px rgba(0, 0, 0, 0.45)"
-        )),
-        _ => None,
-    }
-}
-
-/// Compute the CSS cursor for a resize handle, accounting for zone rotation.
-///
-/// Each handle has a base angle (NW=315°, NE=45°, SE=135°, SW=225°). We add
-/// the zone rotation, then snap to the nearest 45° cursor direction.
-fn rotated_cursor(handle: ResizeHandle, rotation_deg: f32) -> &'static str {
-    let base = match handle {
-        ResizeHandle::NorthWest => 315.0,
-        ResizeHandle::NorthEast => 45.0,
-        ResizeHandle::SouthEast => 135.0,
-        ResizeHandle::SouthWest => 225.0,
-    };
-    let effective = (base + rotation_deg).rem_euclid(360.0);
-    // Snap to nearest 45° sector
-    let sector = ((effective + 22.5) / 45.0) as u32 % 8;
-    match sector {
-        0 => "n-resize",
-        1 => "ne-resize",
-        2 => "e-resize",
-        3 => "se-resize",
-        4 => "s-resize",
-        5 => "sw-resize",
-        6 => "w-resize",
-        7 => "nw-resize",
-        _ => "nw-resize",
     }
 }
