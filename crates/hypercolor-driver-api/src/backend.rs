@@ -21,6 +21,100 @@ pub struct BackendInfo {
     pub description: String,
 }
 
+/// How the daemon should execute a backend connect action.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ConnectExecution {
+    /// Run the connect action inline with the current lifecycle pass.
+    #[default]
+    Inline,
+    /// Detach the connect action so discovery can keep reporting progress.
+    Background,
+}
+
+impl ConnectExecution {
+    /// Whether this policy asks the lifecycle executor to detach connect work.
+    #[must_use]
+    pub const fn is_background(self) -> bool {
+        matches!(self, Self::Background)
+    }
+}
+
+/// Daemon lifecycle policy advertised by a backend for one discovered device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeviceLifecyclePolicy {
+    connect_timeout: Duration,
+    connect_execution: ConnectExecution,
+    retry_on_connect_timeout: bool,
+}
+
+impl DeviceLifecyclePolicy {
+    /// Default timeout for ordinary backend connect calls.
+    pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+    /// Create a policy with explicit fields.
+    #[must_use]
+    pub const fn new(
+        connect_timeout: Duration,
+        connect_execution: ConnectExecution,
+        retry_on_connect_timeout: bool,
+    ) -> Self {
+        Self {
+            connect_timeout,
+            connect_execution,
+            retry_on_connect_timeout,
+        }
+    }
+
+    /// Timeout applied to backend connect calls after the backend lock is acquired.
+    #[must_use]
+    pub const fn connect_timeout(self) -> Duration {
+        self.connect_timeout
+    }
+
+    /// Execution mode for lifecycle connect actions.
+    #[must_use]
+    pub const fn connect_execution(self) -> ConnectExecution {
+        self.connect_execution
+    }
+
+    /// Whether timeout failures should feed the lifecycle retry path.
+    #[must_use]
+    pub const fn retry_on_connect_timeout(self) -> bool {
+        self.retry_on_connect_timeout
+    }
+
+    /// Return a copy with a different connect timeout.
+    #[must_use]
+    pub const fn with_connect_timeout(mut self, timeout: Duration) -> Self {
+        self.connect_timeout = timeout;
+        self
+    }
+
+    /// Return a copy with a different connect execution mode.
+    #[must_use]
+    pub const fn with_connect_execution(mut self, execution: ConnectExecution) -> Self {
+        self.connect_execution = execution;
+        self
+    }
+
+    /// Return a copy that abandons lifecycle retry after connect timeouts.
+    #[must_use]
+    pub const fn without_connect_timeout_retry(mut self) -> Self {
+        self.retry_on_connect_timeout = false;
+        self
+    }
+}
+
+impl Default for DeviceLifecyclePolicy {
+    fn default() -> Self {
+        Self {
+            connect_timeout: Self::DEFAULT_CONNECT_TIMEOUT,
+            connect_execution: ConnectExecution::Inline,
+            retry_on_connect_timeout: true,
+        }
+    }
+}
+
 /// Result of accepting a color frame into a device output lane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeviceWriteOutcome {
@@ -256,6 +350,13 @@ pub trait DeviceBackend: Send + Sync {
     fn supports_host_attachment_profiles(&self, info: &DeviceInfo) -> bool {
         let _ = info;
         false
+    }
+
+    /// Lifecycle policy for a discovered device before connect.
+    #[must_use]
+    fn lifecycle_policy(&self, info: &DeviceInfo) -> DeviceLifecyclePolicy {
+        let _ = info;
+        DeviceLifecyclePolicy::default()
     }
 
     /// Push a JPEG-compressed display frame to a connected device, if supported.

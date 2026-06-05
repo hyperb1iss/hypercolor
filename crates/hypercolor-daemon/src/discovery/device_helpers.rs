@@ -1,6 +1,7 @@
 use anyhow::Context;
 use hypercolor_core::device::{
-    BackendIo, BackendManager, DeviceLifecycleManager, DiscoveredDevice, SegmentRange,
+    BackendIo, BackendManager, DeviceLifecycleManager, DeviceLifecyclePolicy, DiscoveredDevice,
+    SegmentRange,
 };
 use hypercolor_types::device::{
     DeviceFingerprint, DeviceId, DeviceInfo, DeviceTopologyHint, DeviceUserSettings,
@@ -83,6 +84,30 @@ pub(super) async fn backend_io(
     manager
         .backend_io(backend_id)
         .with_context(|| format!("backend '{backend_id}' is not registered"))
+}
+
+pub(super) async fn lifecycle_policy_for_device_info(
+    runtime: &DiscoveryRuntime,
+    backend_id: &str,
+    info: &DeviceInfo,
+) -> DeviceLifecyclePolicy {
+    let Ok(io) = backend_io(runtime, backend_id).await else {
+        return DeviceLifecyclePolicy::default();
+    };
+
+    io.lifecycle_policy(info).await
+}
+
+pub(super) async fn lifecycle_policy_for_device(
+    runtime: &DiscoveryRuntime,
+    backend_id: &str,
+    device_id: DeviceId,
+) -> DeviceLifecyclePolicy {
+    let Some(tracked) = runtime.device_registry.get(&device_id).await else {
+        return DeviceLifecyclePolicy::default();
+    };
+
+    lifecycle_policy_for_device_info(runtime, backend_id, &tracked.info).await
 }
 
 pub(super) async fn sync_host_attachment_profile_config(

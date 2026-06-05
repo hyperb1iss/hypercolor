@@ -9,7 +9,9 @@ use hypercolor_driver_api::DiscoveredDevice;
 use hypercolor_types::device::{DeviceId, DeviceInfo, OwnedDisplayFramePayload};
 use tracing::debug;
 
-use crate::device::traits::{DeviceDisplaySink, DeviceFrameSink, OutputCadence};
+use crate::device::traits::{
+    DeviceDisplaySink, DeviceFrameSink, DeviceLifecyclePolicy, OutputCadence,
+};
 
 use super::BackendHandle;
 
@@ -177,6 +179,12 @@ impl BackendIo {
     pub async fn remember_discovered_device(&self, discovered: &DiscoveredDevice) {
         let mut backend = self.backend.lock().await;
         backend.remember_discovered_device(discovered);
+    }
+
+    /// Return backend lifecycle policy for a discovered device.
+    pub async fn lifecycle_policy(&self, info: &DeviceInfo) -> DeviceLifecyclePolicy {
+        let backend = self.backend.lock().await;
+        backend.lifecycle_policy(info)
     }
 
     /// Fetch refreshed metadata for a connected device.

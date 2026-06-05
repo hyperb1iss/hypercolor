@@ -59,6 +59,26 @@ fn usb_backend_supports_temporary_direct_control_for_led_devices() {
     assert!(!backend.supports_temporary_direct_control(&info));
 }
 
+#[test]
+fn usb_midi_lifecycle_policy_runs_connect_in_background_without_timeout_retry() {
+    let policy = lifecycle_policy_for_transport(TransportType::UsbMidi {
+        midi_interface: 2,
+        display_interface: 0,
+        display_endpoint: 0x01,
+    });
+
+    assert!(policy.connect_execution().is_background());
+    assert_eq!(policy.connect_timeout(), Duration::from_secs(30));
+    assert!(!policy.retry_on_connect_timeout());
+}
+
+#[test]
+fn usb_non_midi_lifecycle_policy_uses_default_connect_behavior() {
+    let policy = lifecycle_policy_for_transport(TransportType::UsbHid { interface: 0 });
+
+    assert_eq!(policy, DeviceLifecyclePolicy::default());
+}
+
 #[tokio::test]
 async fn display_branch_services_pending_led_frame_before_display_frame() {
     let _metrics_guard = USB_ACTOR_METRICS_TEST_LOCK.lock().await;

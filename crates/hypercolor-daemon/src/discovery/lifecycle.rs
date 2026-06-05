@@ -4,7 +4,7 @@ use std::time::Duration;
 use hypercolor_core::device::{
     AsyncWriteFailure, DeviceLifecycleManager, DiscoveryConnectBehavior, LifecycleAction,
 };
-use hypercolor_types::device::{ConnectionType, DeviceError, DeviceId, DeviceInfo, DeviceState};
+use hypercolor_types::device::{ConnectionType, DeviceError, DeviceId, DeviceState};
 use hypercolor_types::event::{DisconnectReason, HypercolorEvent};
 use tracing::{debug, warn};
 
@@ -14,13 +14,10 @@ use super::device_helpers::{
     active_layout_targets_enabled_device,
     connect_backend_device_with_timeout as connect_backend_device_with_backend_timeout,
     desired_connect_behavior, device_log_label, disconnect_backend_device,
-    ensure_default_logical_for_device, format_error_chain, publish_device_connected,
-    refresh_connected_device_info, sync_logical_mappings_for_device, sync_registry_state,
+    ensure_default_logical_for_device, format_error_chain, lifecycle_policy_for_device,
+    publish_device_connected, refresh_connected_device_info, sync_logical_mappings_for_device,
+    sync_registry_state,
 };
-
-const DEVICE_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-const PUSH2_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
-const PUSH2_PROTOCOL_ID: &str = "push2/push-2";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UserEnabledStateResult {
@@ -391,7 +388,8 @@ pub(crate) async fn execute_lifecycle_actions(
                     }
                     Err(error) => {
                         let will_retry =
-                            should_retry_connect_failure(&runtime, device_id, &error).await;
+                            should_retry_connect_failure(&runtime, &backend_id, device_id, &error)
+                                .await;
                         let device_label = device_log_label(&runtime, device_id).await;
                         warn!(
                             device = %device_label,
@@ -646,7 +644,8 @@ fn spawn_reconnect_task(runtime: &DiscoveryRuntime, device_id: DeviceId, delay: 
 
         let follow_up = if let Err(error) = connect_result {
             let will_retry =
-                should_retry_connect_failure(&runtime_for_task, device_id, &error).await;
+                should_retry_connect_failure(&runtime_for_task, &backend_id, device_id, &error)
+                    .await;
             let device_label = device_log_label(&runtime_for_task, device_id).await;
             warn!(
                 device = %device_label,
@@ -730,7 +729,9 @@ async fn connect_backend_device_with_timeout(
     device_id: DeviceId,
     layout_device_id: &str,
 ) -> anyhow::Result<()> {
-    let timeout = device_connect_timeout(runtime, device_id).await;
+    let timeout = lifecycle_policy_for_device(runtime, backend_id, device_id)
+        .await
+        .connect_timeout();
     connect_backend_device_with_backend_timeout(
         runtime,
         backend_id,
@@ -741,43 +742,15 @@ async fn connect_backend_device_with_timeout(
     .await
 }
 
-async fn device_connect_timeout(runtime: &DiscoveryRuntime, device_id: DeviceId) -> Duration {
-    let info = runtime
-        .device_registry
-        .get(&device_id)
-        .await
-        .map(|tracked| tracked.info);
-    connect_timeout_for_device_info(info.as_ref())
-}
-
-fn connect_timeout_for_device_info(info: Option<&DeviceInfo>) -> Duration {
-    if info.is_some_and(is_push2_device) {
-        return PUSH2_CONNECT_TIMEOUT;
-    }
-
-    DEVICE_CONNECT_TIMEOUT
-}
-
 async fn should_retry_connect_failure(
     runtime: &DiscoveryRuntime,
+    backend_id: &str,
     device_id: DeviceId,
     error: &anyhow::Error,
 ) -> bool {
-    let is_push2 = runtime
-        .device_registry
-        .get(&device_id)
-        .await
-        .is_some_and(|tracked| is_push2_device(&tracked.info));
+    let policy = lifecycle_policy_for_device(runtime, backend_id, device_id).await;
 
-    !(is_push2 && error_chain_contains_timeout(error))
-}
-
-fn is_push2_device(info: &DeviceInfo) -> bool {
-    info.origin
-        .protocol_id
-        .as_deref()
-        .is_some_and(|protocol_id| protocol_id == PUSH2_PROTOCOL_ID)
-        || info.driver_id() == "push2"
+    policy.retry_on_connect_timeout() || !error_chain_contains_timeout(error)
 }
 
 fn error_chain_contains_timeout(error: &anyhow::Error) -> bool {

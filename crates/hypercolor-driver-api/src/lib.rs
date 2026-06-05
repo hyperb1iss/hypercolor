@@ -30,8 +30,8 @@ pub mod net;
 pub mod validation;
 
 pub use backend::{
-    BackendInfo, DeviceBackend, DeviceDisplaySink, DeviceFrameSink, DeviceWriteOutcome,
-    HealthStatus, OutputCadence,
+    BackendInfo, ConnectExecution, DeviceBackend, DeviceDisplaySink, DeviceFrameSink,
+    DeviceLifecyclePolicy, DeviceWriteOutcome, HealthStatus, OutputCadence,
 };
 pub use discovery::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
 pub use net::{CredentialStore, MdnsBrowser, MdnsService};

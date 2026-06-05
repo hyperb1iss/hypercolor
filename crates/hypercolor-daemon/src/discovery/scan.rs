@@ -20,7 +20,7 @@ use tracing::{debug, info, warn};
 use super::auto_layout::sync_active_layout_for_renderable_devices;
 use super::device_helpers::{
     apply_persisted_device_settings, desired_connect_behavior, device_log_label,
-    device_ref_for_tracked, sync_registry_state,
+    device_ref_for_tracked, lifecycle_policy_for_device_info, sync_registry_state,
 };
 use super::lifecycle::execute_lifecycle_actions;
 use super::{DiscoveryRuntime, DiscoveryScannerResult, DiscoveryTarget, DiscoveryTargetScanner};
@@ -578,7 +578,7 @@ async fn process_discovered_device(
         }
     }
     let had_actions = !actions.is_empty();
-    if should_run_lifecycle_actions_in_background(&tracked_before.info, &actions) {
+    if should_run_lifecycle_actions_in_background(runtime, &tracked_before.info, &actions).await {
         debug!(
             device = %tracked_before.info.name,
             device_id = %device_id,
@@ -630,17 +630,23 @@ async fn process_discovered_device(
     ))
 }
 
-fn should_run_lifecycle_actions_in_background(
+async fn should_run_lifecycle_actions_in_background(
+    runtime: &DiscoveryRuntime,
     device_info: &DeviceInfo,
     actions: &[LifecycleAction],
 ) -> bool {
-    actions.iter().any(|action| {
-        matches!(
-            action,
-            LifecycleAction::Connect { backend_id, .. }
-                if backend_id == "smbus" || device_info.driver_id() == "push2"
-        )
-    })
+    for action in actions {
+        let LifecycleAction::Connect { backend_id, .. } = action else {
+            continue;
+        };
+
+        let policy = lifecycle_policy_for_device_info(runtime, backend_id, device_info).await;
+        if policy.connect_execution().is_background() {
+            return true;
+        }
+    }
+
+    false
 }
 
 fn spawn_lifecycle_actions_in_background(

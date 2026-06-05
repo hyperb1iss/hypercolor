@@ -15,7 +15,7 @@ use hypercolor_types::device::{DeviceId, DeviceInfo, SMBUS_OUTPUT_BACKEND_ID, Zo
 use tracing::{debug, trace, warn};
 
 use super::smbus_scanner::SmBusScanner;
-use super::traits::{BackendInfo, DeviceBackend};
+use super::traits::{BackendInfo, ConnectExecution, DeviceBackend, DeviceLifecyclePolicy};
 use super::{DiscoveredDevice, TransportScanner};
 
 const RETRY_BACKOFF: Duration = Duration::from_millis(100);
@@ -100,6 +100,10 @@ impl DeviceBackend for SmBusBackend {
             name: "SMBus (HAL)".to_owned(),
             description: "Native SMBus/I2C devices via HAL protocol + transport".to_owned(),
         }
+    }
+
+    fn lifecycle_policy(&self, _info: &DeviceInfo) -> DeviceLifecyclePolicy {
+        DeviceLifecyclePolicy::default().with_connect_execution(ConnectExecution::Background)
     }
 
     async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {

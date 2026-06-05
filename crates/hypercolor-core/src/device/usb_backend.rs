@@ -34,13 +34,17 @@ use tracing::{debug, info, trace};
 #[cfg(target_os = "linux")]
 use hypercolor_hal::transport::hidraw::UsbHidRawTransport;
 
-use super::traits::{BackendInfo, DeviceBackend, DeviceDisplaySink, DeviceFrameSink};
+use super::traits::{
+    BackendInfo, ConnectExecution, DeviceBackend, DeviceDisplaySink, DeviceFrameSink,
+    DeviceLifecyclePolicy,
+};
 use super::usb_scanner::UsbScanner;
 use super::{DiscoveredDevice, TransportScanner};
 use crate::attachment::ComponentRegistry;
 
 const RETRY_BACKOFF: Duration = Duration::from_millis(100);
 const MAX_RETRIES: u8 = 3;
+const USB_MIDI_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct UsbActorMetricsSnapshot {
@@ -733,6 +737,17 @@ fn format_error_chain(error: &anyhow::Error) -> String {
         .join(" | caused_by: ")
 }
 
+fn lifecycle_policy_for_transport(transport: TransportType) -> DeviceLifecyclePolicy {
+    if matches!(transport, TransportType::UsbMidi { .. }) {
+        return DeviceLifecyclePolicy::default()
+            .with_connect_timeout(USB_MIDI_CONNECT_TIMEOUT)
+            .with_connect_execution(ConnectExecution::Background)
+            .without_connect_timeout_retry();
+    }
+
+    DeviceLifecyclePolicy::default()
+}
+
 #[async_trait::async_trait]
 impl DeviceBackend for UsbBackend {
     fn info(&self) -> BackendInfo {
@@ -749,6 +764,14 @@ impl DeviceBackend for UsbBackend {
 
     fn supports_temporary_direct_control(&self, info: &DeviceInfo) -> bool {
         info.capabilities.supports_direct && info.total_led_count() > 0
+    }
+
+    fn lifecycle_policy(&self, info: &DeviceInfo) -> DeviceLifecyclePolicy {
+        self.pending
+            .get(&info.id)
+            .map_or_else(DeviceLifecyclePolicy::default, |pending| {
+                lifecycle_policy_for_transport(pending.descriptor.transport)
+            })
     }
 
     async fn discover(&mut self) -> Result<Vec<hypercolor_types::device::DeviceInfo>> {

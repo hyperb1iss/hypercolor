@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use anyhow::{Result, bail};
 use hypercolor_core::device::{
-    DeviceBackend, DiscoveredDevice, DiscoveryConnectBehavior, SmBusBackend, SmBusScanner,
-    TransportScanner,
+    DeviceBackend, DeviceLifecyclePolicy, DiscoveredDevice, DiscoveryConnectBehavior, SmBusBackend,
+    SmBusScanner, TransportScanner,
 };
 use hypercolor_hal::transport::{Transport, TransportError};
 use hypercolor_types::device::{
@@ -153,6 +153,20 @@ fn smbus_backend_info_reports_hal_transport() {
 
     assert_eq!(info.id, "smbus");
     assert_eq!(info.name, "SMBus (HAL)");
+}
+
+#[test]
+fn smbus_backend_lifecycle_policy_runs_connect_in_background() {
+    let backend = SmBusBackend::new();
+    let info = discovered_smbus_device(DeviceId::new()).info;
+    let policy = backend.lifecycle_policy(&info);
+
+    assert!(policy.connect_execution().is_background());
+    assert_eq!(
+        policy.connect_timeout(),
+        DeviceLifecyclePolicy::DEFAULT_CONNECT_TIMEOUT
+    );
+    assert!(policy.retry_on_connect_timeout());
 }
 
 #[tokio::test]
