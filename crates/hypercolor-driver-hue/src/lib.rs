@@ -18,6 +18,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use hypercolor_driver_api::CredentialStore;
+use hypercolor_driver_api::control_surface;
 use hypercolor_driver_api::support::{
     activate_if_requested, disconnect_after_unpair, metadata_value, network_port_from_metadata,
     push_lookup_key,
@@ -34,11 +35,9 @@ use hypercolor_driver_api::{
 use hypercolor_driver_api::{DeviceBackend, TransportScanner};
 use hypercolor_types::config::DriverConfigEntry;
 use hypercolor_types::controls::{
-    AppliedControlChange, ApplyControlChangesResponse, ApplyImpact, ControlAccess,
-    ControlAvailability, ControlAvailabilityExpr, ControlAvailabilityState, ControlChange,
-    ControlFieldDescriptor, ControlGroupDescriptor, ControlGroupKind, ControlOwner,
-    ControlPersistence, ControlSurfaceDocument, ControlSurfaceScope, ControlValue, ControlValueMap,
-    ControlValueType, ControlVisibility,
+    AppliedControlChange, ApplyControlChangesResponse, ApplyImpact, ControlChange,
+    ControlFieldDescriptor, ControlGroupKind, ControlSurfaceDocument, ControlValue,
+    ControlValueMap, ControlValueType,
 };
 use hypercolor_types::device::{DeviceClassHint, DriverPresentation, DriverTransportKind};
 
@@ -248,11 +247,11 @@ impl DriverControlProvider for HueDriverModule {
             .control_host()
             .ok_or_else(|| anyhow!("driver control host services are unavailable"))?;
         let mut values = hue_config_values(&config.parse_settings::<HueConfig>()?);
-        let previous_revision = hue_control_revision(&values);
+        let previous_revision = control_surface::value_map_revision(&values);
         for change in &changes.changes {
             values.insert(change.field_id.clone(), change.value.clone());
         }
-        let revision = hue_control_revision(&values);
+        let revision = control_surface::value_map_revision(&values);
         control_host
             .driver_config_store()
             .save_driver_values(DESCRIPTOR.id, values.clone())
@@ -270,63 +269,34 @@ impl DriverControlProvider for HueDriverModule {
 
 #[must_use]
 pub fn hue_driver_control_surface(config: &HueConfig) -> ControlSurfaceDocument {
-    let mut document = ControlSurfaceDocument::empty(
-        format!("driver:{}", DESCRIPTOR.id),
-        ControlSurfaceScope::Driver {
-            driver_id: DESCRIPTOR.id.to_owned(),
-        },
-    );
-    document.groups.push(ControlGroupDescriptor {
-        id: "connection".to_owned(),
-        label: "Connection".to_owned(),
-        description: None,
-        kind: ControlGroupKind::Connection,
-        ordering: 0,
-    });
-    document.groups.push(ControlGroupDescriptor {
-        id: "output".to_owned(),
-        label: "Output".to_owned(),
-        description: None,
-        kind: ControlGroupKind::Output,
-        ordering: 10,
-    });
+    let mut document = control_surface::driver_surface(DESCRIPTOR.id);
+    document.groups.extend([
+        control_surface::group("connection", "Connection", ControlGroupKind::Connection, 0),
+        control_surface::group("output", "Output", ControlGroupKind::Output, 10),
+    ]);
     document.fields = hue_driver_control_fields();
     document.values = hue_config_values(config);
-    document.revision = hue_control_revision(&document.values);
+    document.revision = control_surface::value_map_revision(&document.values);
     document
 }
 
 #[must_use]
 pub fn hue_device_control_surface(device: &TrackedDeviceCtx<'_>) -> ControlSurfaceDocument {
-    let mut document = ControlSurfaceDocument::empty(
-        format!("driver:{}:device:{}", DESCRIPTOR.id, device.device_id),
-        ControlSurfaceScope::Device {
-            device_id: device.device_id,
-            driver_id: DESCRIPTOR.id.to_owned(),
-        },
-    );
+    let mut document = control_surface::device_surface(DESCRIPTOR.id, device.device_id);
     document.groups.extend([
-        ControlGroupDescriptor {
-            id: "connection".to_owned(),
-            label: "Connection".to_owned(),
-            description: None,
-            kind: ControlGroupKind::Connection,
-            ordering: 0,
-        },
-        ControlGroupDescriptor {
-            id: "entertainment".to_owned(),
-            label: "Entertainment".to_owned(),
-            description: None,
-            kind: ControlGroupKind::Output,
-            ordering: 10,
-        },
-        ControlGroupDescriptor {
-            id: "diagnostics".to_owned(),
-            label: "Diagnostics".to_owned(),
-            description: None,
-            kind: ControlGroupKind::Diagnostics,
-            ordering: 20,
-        },
+        control_surface::group("connection", "Connection", ControlGroupKind::Connection, 0),
+        control_surface::group(
+            "entertainment",
+            "Entertainment",
+            ControlGroupKind::Output,
+            10,
+        ),
+        control_surface::group(
+            "diagnostics",
+            "Diagnostics",
+            ControlGroupKind::Diagnostics,
+            20,
+        ),
     ]);
 
     if let Some(metadata) = device.metadata {
@@ -344,12 +314,13 @@ pub fn hue_device_control_surface(device: &TrackedDeviceCtx<'_>) -> ControlSurfa
             .get(DEVICE_FIELD_API_PORT)
             .and_then(|raw| raw.parse::<i64>().ok())
         {
-            push_hue_readonly_field(
+            control_surface::push_readonly_value(
                 &mut document,
+                DESCRIPTOR.id,
                 DEVICE_FIELD_API_PORT,
                 "API Port",
                 "connection",
-                integer_value_type(0, Some(i64::from(u16::MAX))),
+                control_surface::integer_value_type(0, Some(i64::from(u16::MAX))),
                 ControlValue::Integer(api_port),
                 10,
             );
@@ -360,7 +331,7 @@ pub fn hue_device_control_surface(device: &TrackedDeviceCtx<'_>) -> ControlSurfa
             DEVICE_FIELD_BRIDGE_ID,
             "Bridge ID",
             "connection",
-            string_value_type(255),
+            control_surface::string_value_type(Some(255)),
             ControlValue::String,
             20,
         );
@@ -370,7 +341,7 @@ pub fn hue_device_control_surface(device: &TrackedDeviceCtx<'_>) -> ControlSurfa
             DEVICE_FIELD_BRIDGE_NAME,
             "Bridge Name",
             "connection",
-            string_value_type(255),
+            control_surface::string_value_type(Some(255)),
             ControlValue::String,
             30,
         );
@@ -380,7 +351,7 @@ pub fn hue_device_control_surface(device: &TrackedDeviceCtx<'_>) -> ControlSurfa
             DEVICE_FIELD_ENTERTAINMENT_CONFIG_ID,
             "Entertainment Config ID",
             "entertainment",
-            string_value_type(255),
+            control_surface::string_value_type(Some(255)),
             ControlValue::String,
             0,
         );
@@ -390,76 +361,69 @@ pub fn hue_device_control_surface(device: &TrackedDeviceCtx<'_>) -> ControlSurfa
             DEVICE_FIELD_ENTERTAINMENT_CONFIG_NAME,
             "Entertainment Config",
             "entertainment",
-            string_value_type(255),
+            control_surface::string_value_type(Some(255)),
             ControlValue::String,
             10,
         );
     }
 
     if let Some(model) = &device.info.model {
-        push_hue_readonly_field(
+        control_surface::push_readonly_value(
             &mut document,
+            DESCRIPTOR.id,
             DEVICE_FIELD_MODEL,
             "Model",
             "diagnostics",
-            string_value_type(80),
+            control_surface::string_value_type(Some(80)),
             ControlValue::String(model.clone()),
             0,
         );
     }
     if let Some(firmware_version) = &device.info.firmware_version {
-        push_hue_readonly_field(
+        control_surface::push_readonly_value(
             &mut document,
+            DESCRIPTOR.id,
             DEVICE_FIELD_FIRMWARE_VERSION,
             "Firmware",
             "diagnostics",
-            string_value_type(80),
+            control_surface::string_value_type(Some(80)),
             ControlValue::String(firmware_version.clone()),
             10,
         );
     }
-    push_hue_readonly_field(
+    control_surface::push_readonly_value(
         &mut document,
+        DESCRIPTOR.id,
         DEVICE_FIELD_LED_COUNT,
         "LED Count",
         "diagnostics",
-        integer_value_type(0, None),
+        control_surface::integer_value_type(0, None),
         ControlValue::Integer(i64::from(device.info.total_led_count())),
         20,
     );
-    push_hue_readonly_field(
+    control_surface::push_readonly_value(
         &mut document,
+        DESCRIPTOR.id,
         DEVICE_FIELD_MAX_FPS,
         "Max FPS",
         "diagnostics",
-        integer_value_type(0, None),
+        control_surface::integer_value_type(0, None),
         ControlValue::Integer(i64::from(device.info.capabilities.max_fps)),
         30,
     );
-    push_hue_readonly_field(
+    control_surface::push_readonly_value(
         &mut document,
+        DESCRIPTOR.id,
         DEVICE_FIELD_STATE,
         "State",
         "diagnostics",
-        string_value_type(32),
+        control_surface::string_value_type(Some(32)),
         ControlValue::String(device.current_state.to_string()),
         40,
     );
 
-    document.availability = document
-        .fields
-        .iter()
-        .map(|field| {
-            (
-                field.id.clone(),
-                ControlAvailability {
-                    state: ControlAvailabilityState::Available,
-                    reason: None,
-                },
-            )
-        })
-        .collect();
-    document.revision = hue_control_revision(&document.values);
+    control_surface::mark_fields_available(&mut document);
+    document.revision = control_surface::value_map_revision(&document.values);
     document
 }
 
@@ -493,7 +457,7 @@ fn validate_hue_driver_changes(
             .validate_value(&change.value)
             .with_context(|| format!("invalid Hue control field: {}", change.field_id))?;
         if change.field_id == FIELD_BRIDGE_IPS {
-            validate_control_ip_list("Hue bridge IP", &change.value)?;
+            control_surface::validate_control_ip_list("Hue bridge IP", &change.value)?;
         }
         push_unique_impact(&mut impacts, field.apply_impact.clone());
     }
@@ -504,71 +468,29 @@ fn validate_hue_driver_changes(
     })
 }
 
-fn validate_control_ip_list(label: &str, value: &ControlValue) -> Result<()> {
-    let ControlValue::List(values) = value else {
-        return Ok(());
-    };
-    for value in values {
-        if let ControlValue::IpAddress(raw) = value {
-            let ip = raw
-                .parse::<IpAddr>()
-                .with_context(|| format!("invalid {label}: {raw}"))?;
-            validate_ip(ip).with_context(|| format!("invalid {label}: {ip}"))?;
-        }
-    }
-    Ok(())
-}
-
 fn hue_driver_control_fields() -> Vec<ControlFieldDescriptor> {
     vec![
-        hue_driver_field(
+        control_surface::driver_field(
+            DESCRIPTOR.id,
             FIELD_BRIDGE_IPS,
             "Bridge IPs",
+            None,
             Some("connection"),
-            ControlValueType::List {
-                item_type: Box::new(ControlValueType::IpAddress),
-                min_items: None,
-                max_items: Some(32),
-            },
+            control_surface::ip_list_value_type(32),
             ApplyImpact::DiscoveryRescan,
             0,
         ),
-        hue_driver_field(
+        control_surface::driver_field(
+            DESCRIPTOR.id,
             FIELD_USE_CIE_XY,
             "CIE xy Streaming",
+            None,
             Some("output"),
             ControlValueType::Bool,
             ApplyImpact::BackendRebind,
             10,
         ),
     ]
-}
-
-fn hue_driver_field(
-    id: &str,
-    label: &str,
-    group_id: Option<&str>,
-    value_type: ControlValueType,
-    apply_impact: ApplyImpact,
-    ordering: i32,
-) -> ControlFieldDescriptor {
-    ControlFieldDescriptor {
-        id: id.to_owned(),
-        owner: ControlOwner::Driver {
-            driver_id: DESCRIPTOR.id.to_owned(),
-        },
-        group_id: group_id.map(str::to_owned),
-        label: label.to_owned(),
-        description: None,
-        value_type,
-        default_value: None,
-        access: ControlAccess::ReadWrite,
-        persistence: ControlPersistence::DriverConfig,
-        apply_impact,
-        visibility: ControlVisibility::Standard,
-        availability: ControlAvailabilityExpr::Always,
-        ordering,
-    }
 }
 
 fn push_hue_metadata_field(
@@ -581,63 +503,17 @@ fn push_hue_metadata_field(
     value: impl FnOnce(String) -> ControlValue,
     ordering: i32,
 ) {
-    let Some(raw) = metadata.get(id).filter(|value| !value.is_empty()).cloned() else {
-        return;
-    };
-    push_hue_readonly_field(
+    control_surface::push_metadata_value(
         document,
+        DESCRIPTOR.id,
+        metadata,
         id,
         label,
         group_id,
         value_type,
-        value(raw),
+        value,
         ordering,
     );
-}
-
-fn push_hue_readonly_field(
-    document: &mut ControlSurfaceDocument,
-    id: &str,
-    label: &str,
-    group_id: &str,
-    value_type: ControlValueType,
-    value: ControlValue,
-    ordering: i32,
-) {
-    document.fields.push(ControlFieldDescriptor {
-        id: id.to_owned(),
-        owner: ControlOwner::Driver {
-            driver_id: DESCRIPTOR.id.to_owned(),
-        },
-        group_id: Some(group_id.to_owned()),
-        label: label.to_owned(),
-        description: None,
-        value_type,
-        default_value: None,
-        access: ControlAccess::ReadOnly,
-        persistence: ControlPersistence::RuntimeOnly,
-        apply_impact: ApplyImpact::None,
-        visibility: ControlVisibility::Diagnostics,
-        availability: ControlAvailabilityExpr::Always,
-        ordering,
-    });
-    document.values.insert(id.to_owned(), value);
-}
-
-const fn integer_value_type(min: i64, max: Option<i64>) -> ControlValueType {
-    ControlValueType::Integer {
-        min: Some(min),
-        max,
-        step: Some(1),
-    }
-}
-
-const fn string_value_type(max_len: u16) -> ControlValueType {
-    ControlValueType::String {
-        min_len: None,
-        max_len: Some(max_len),
-        pattern: None,
-    }
 }
 
 fn hue_config_values(config: &HueConfig) -> ControlValueMap {
@@ -682,15 +558,6 @@ fn hue_apply_response(
         impacts: changes.impacts,
         values,
     }
-}
-
-fn hue_control_revision(values: &ControlValueMap) -> u64 {
-    values
-        .iter()
-        .flat_map(|(key, value)| [key.as_bytes(), format!("{value:?}").as_bytes()].concat())
-        .fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
-            (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
-        })
 }
 
 fn push_unique_impact(impacts: &mut Vec<ApplyImpact>, impact: ApplyImpact) {

@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
+use hypercolor_driver_api::control_surface;
 use hypercolor_driver_api::support::{activate_if_requested, disconnect_after_unpair};
 use hypercolor_driver_api::validation::validate_ip;
 use hypercolor_driver_api::{
@@ -25,11 +26,9 @@ use hypercolor_driver_api::{
 };
 use hypercolor_types::config::{DriverConfigEntry, GoveeConfig};
 use hypercolor_types::controls::{
-    AppliedControlChange, ApplyControlChangesResponse, ApplyImpact, ControlAccess,
-    ControlAvailability, ControlAvailabilityExpr, ControlAvailabilityState, ControlChange,
-    ControlFieldDescriptor, ControlGroupDescriptor, ControlGroupKind, ControlOwner,
-    ControlPersistence, ControlSurfaceDocument, ControlSurfaceScope, ControlValue, ControlValueMap,
-    ControlValueType, ControlVisibility,
+    AppliedControlChange, ApplyControlChangesResponse, ApplyImpact, ControlChange,
+    ControlFieldDescriptor, ControlGroupKind, ControlSurfaceDocument, ControlValue,
+    ControlValueMap, ControlValueType,
 };
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceClassHint, DeviceColorFormat, DeviceFamily,
@@ -269,11 +268,11 @@ impl DriverControlProvider for GoveeDriverModule {
         }
 
         let mut values = govee_control_values(&config.parse_settings::<GoveeConfig>()?);
-        let previous_revision = govee_control_revision(&values);
+        let previous_revision = control_surface::value_map_revision(&values);
         for change in &changes.changes {
             values.insert(change.field_id.clone(), change.value.clone());
         }
-        let revision = govee_control_revision(&values);
+        let revision = control_surface::value_map_revision(&values);
 
         let control_host = host
             .control_host()
@@ -679,76 +678,30 @@ fn merge_cloud_metadata(
 
 #[must_use]
 pub fn govee_driver_control_surface(config: &GoveeConfig) -> ControlSurfaceDocument {
-    let mut document = ControlSurfaceDocument::empty(
-        format!("driver:{}", DESCRIPTOR.id),
-        ControlSurfaceScope::Driver {
-            driver_id: DESCRIPTOR.id.to_owned(),
-        },
-    );
-    document.groups.push(ControlGroupDescriptor {
-        id: "connection".to_owned(),
-        label: "Connection".to_owned(),
-        description: None,
-        kind: ControlGroupKind::Connection,
-        ordering: 0,
-    });
-    document.groups.push(ControlGroupDescriptor {
-        id: "output".to_owned(),
-        label: "Output".to_owned(),
-        description: None,
-        kind: ControlGroupKind::Output,
-        ordering: 10,
-    });
+    let mut document = control_surface::driver_surface(DESCRIPTOR.id);
+    document.groups.extend([
+        control_surface::group("connection", "Connection", ControlGroupKind::Connection, 0),
+        control_surface::group("output", "Output", ControlGroupKind::Output, 10),
+    ]);
     document.fields = govee_driver_control_fields();
     document.values = govee_control_values(config);
-    document.revision = govee_control_revision(&document.values);
-    document.availability = document
-        .fields
-        .iter()
-        .map(|field| {
-            (
-                field.id.clone(),
-                ControlAvailability {
-                    state: ControlAvailabilityState::Available,
-                    reason: None,
-                },
-            )
-        })
-        .collect();
+    document.revision = control_surface::value_map_revision(&document.values);
+    control_surface::mark_fields_available(&mut document);
     document
 }
 
 #[must_use]
 pub fn govee_device_control_surface(device: &TrackedDeviceCtx<'_>) -> ControlSurfaceDocument {
-    let mut document = ControlSurfaceDocument::empty(
-        format!("driver:{}:device:{}", DESCRIPTOR.id, device.device_id),
-        ControlSurfaceScope::Device {
-            device_id: device.device_id,
-            driver_id: DESCRIPTOR.id.to_owned(),
-        },
-    );
+    let mut document = control_surface::device_surface(DESCRIPTOR.id, device.device_id);
     document.groups.extend([
-        ControlGroupDescriptor {
-            id: "connection".to_owned(),
-            label: "Connection".to_owned(),
-            description: None,
-            kind: ControlGroupKind::Connection,
-            ordering: 0,
-        },
-        ControlGroupDescriptor {
-            id: "cloud".to_owned(),
-            label: "Cloud".to_owned(),
-            description: None,
-            kind: ControlGroupKind::Advanced,
-            ordering: 10,
-        },
-        ControlGroupDescriptor {
-            id: "diagnostics".to_owned(),
-            label: "Diagnostics".to_owned(),
-            description: None,
-            kind: ControlGroupKind::Diagnostics,
-            ordering: 20,
-        },
+        control_surface::group("connection", "Connection", ControlGroupKind::Connection, 0),
+        control_surface::group("cloud", "Cloud", ControlGroupKind::Advanced, 10),
+        control_surface::group(
+            "diagnostics",
+            "Diagnostics",
+            ControlGroupKind::Diagnostics,
+            20,
+        ),
     ]);
 
     push_govee_metadata_field(
@@ -767,7 +720,7 @@ pub fn govee_device_control_surface(device: &TrackedDeviceCtx<'_>) -> ControlSur
         DEVICE_FIELD_SKU,
         "SKU",
         "connection",
-        string_value_type(),
+        control_surface::string_value_type(None),
         ControlValue::String,
         10,
     );
@@ -787,7 +740,7 @@ pub fn govee_device_control_surface(device: &TrackedDeviceCtx<'_>) -> ControlSur
         DEVICE_FIELD_CLOUD_DEVICE_ID,
         "Cloud Device ID",
         "cloud",
-        string_value_type(),
+        control_surface::string_value_type(None),
         ControlValue::String,
         0,
     );
@@ -810,31 +763,34 @@ pub fn govee_device_control_surface(device: &TrackedDeviceCtx<'_>) -> ControlSur
     push_govee_support_cmds_field(&mut document, device);
 
     if let Some(version) = &device.info.firmware_version {
-        push_govee_readonly_field(
+        control_surface::push_readonly_value(
             &mut document,
+            DESCRIPTOR.id,
             DEVICE_FIELD_FIRMWARE_VERSION,
             "Firmware",
             "diagnostics",
-            string_value_type(),
+            control_surface::string_value_type(None),
             ControlValue::String(version.clone()),
             0,
         );
     }
-    push_govee_readonly_field(
+    control_surface::push_readonly_value(
         &mut document,
+        DESCRIPTOR.id,
         DEVICE_FIELD_LED_COUNT,
         "LED Count",
         "diagnostics",
-        integer_value_type(0, None),
+        control_surface::integer_value_type(0, None),
         ControlValue::Integer(i64::from(device.info.total_led_count())),
         10,
     );
-    push_govee_readonly_field(
+    control_surface::push_readonly_value(
         &mut document,
+        DESCRIPTOR.id,
         DEVICE_FIELD_MAX_FPS,
         "Max FPS",
         "diagnostics",
-        integer_value_type(0, None),
+        control_surface::integer_value_type(0, None),
         ControlValue::Integer(i64::from(device.info.capabilities.max_fps)),
         20,
     );
@@ -844,8 +800,9 @@ pub fn govee_device_control_surface(device: &TrackedDeviceCtx<'_>) -> ControlSur
         .or(device.info.model.as_ref())
         .map(String::as_str);
     if let Some(profile) = sku.and_then(profile_for_sku) {
-        push_govee_readonly_field(
+        control_surface::push_readonly_value(
             &mut document,
+            DESCRIPTOR.id,
             DEVICE_FIELD_RAZER_STREAMING,
             "Razer Streaming",
             "diagnostics",
@@ -859,20 +816,8 @@ pub fn govee_device_control_surface(device: &TrackedDeviceCtx<'_>) -> ControlSur
         );
     }
 
-    document.availability = document
-        .fields
-        .iter()
-        .map(|field| {
-            (
-                field.id.clone(),
-                ControlAvailability {
-                    state: ControlAvailabilityState::Available,
-                    reason: None,
-                },
-            )
-        })
-        .collect();
-    document.revision = govee_control_revision(&document.values);
+    control_surface::mark_fields_available(&mut document);
+    document.revision = control_surface::value_map_revision(&document.values);
     document
 }
 
@@ -906,7 +851,7 @@ fn validate_govee_driver_changes(
             .validate_value(&change.value)
             .with_context(|| format!("invalid Govee control field: {}", change.field_id))?;
         if change.field_id == FIELD_KNOWN_IPS {
-            validate_control_ip_list("Govee known IP", &change.value)?;
+            control_surface::validate_control_ip_list("Govee known IP", &change.value)?;
         }
         push_unique_impact(&mut impacts, field.apply_impact.clone());
     }
@@ -915,21 +860,6 @@ fn validate_govee_driver_changes(
         changes: changes.to_vec(),
         impacts,
     })
-}
-
-fn validate_control_ip_list(label: &str, value: &ControlValue) -> Result<()> {
-    let ControlValue::List(values) = value else {
-        return Ok(());
-    };
-    for value in values {
-        if let ControlValue::IpAddress(raw) = value {
-            let ip = raw
-                .parse::<IpAddr>()
-                .with_context(|| format!("invalid {label}: {raw}"))?;
-            validate_ip(ip).with_context(|| format!("invalid {label}: {ip}"))?;
-        }
-    }
-    Ok(())
 }
 
 fn validate_govee_config(config: &GoveeConfig) -> Result<()> {
@@ -947,78 +877,47 @@ fn validate_govee_config(config: &GoveeConfig) -> Result<()> {
 
 fn govee_driver_control_fields() -> Vec<ControlFieldDescriptor> {
     vec![
-        govee_driver_field(
+        control_surface::driver_field(
+            DESCRIPTOR.id,
             FIELD_KNOWN_IPS,
             "Known IPs",
+            None,
             Some("connection"),
-            ControlValueType::List {
-                item_type: Box::new(ControlValueType::IpAddress),
-                min_items: None,
-                max_items: Some(64),
-            },
+            control_surface::ip_list_value_type(64),
             ApplyImpact::DiscoveryRescan,
             0,
         ),
-        govee_driver_field(
+        control_surface::driver_field(
+            DESCRIPTOR.id,
             FIELD_POWER_OFF_ON_DISCONNECT,
             "Power Off On Disconnect",
+            None,
             Some("output"),
             ControlValueType::Bool,
             ApplyImpact::BackendRebind,
             10,
         ),
-        govee_driver_field(
+        control_surface::driver_field(
+            DESCRIPTOR.id,
             FIELD_LAN_STATE_FPS,
             "LAN State FPS",
+            None,
             Some("output"),
-            ControlValueType::Integer {
-                min: Some(1),
-                max: Some(60),
-                step: Some(1),
-            },
+            control_surface::integer_value_type(1, Some(60)),
             ApplyImpact::BackendRebind,
             20,
         ),
-        govee_driver_field(
+        control_surface::driver_field(
+            DESCRIPTOR.id,
             FIELD_RAZER_FPS,
             "Razer FPS",
+            None,
             Some("output"),
-            ControlValueType::Integer {
-                min: Some(1),
-                max: Some(60),
-                step: Some(1),
-            },
+            control_surface::integer_value_type(1, Some(60)),
             ApplyImpact::BackendRebind,
             30,
         ),
     ]
-}
-
-fn govee_driver_field(
-    id: &str,
-    label: &str,
-    group_id: Option<&str>,
-    value_type: ControlValueType,
-    apply_impact: ApplyImpact,
-    ordering: i32,
-) -> ControlFieldDescriptor {
-    ControlFieldDescriptor {
-        id: id.to_owned(),
-        owner: ControlOwner::Driver {
-            driver_id: DESCRIPTOR.id.to_owned(),
-        },
-        group_id: group_id.map(str::to_owned),
-        label: label.to_owned(),
-        description: None,
-        value_type,
-        default_value: None,
-        access: ControlAccess::ReadWrite,
-        persistence: ControlPersistence::DriverConfig,
-        apply_impact,
-        visibility: ControlVisibility::Standard,
-        availability: ControlAvailabilityExpr::Always,
-        ordering,
-    }
 }
 
 fn push_govee_metadata_field(
@@ -1031,21 +930,18 @@ fn push_govee_metadata_field(
     value: impl FnOnce(String) -> ControlValue,
     ordering: i32,
 ) {
-    let Some(raw) = device
-        .metadata
-        .and_then(|metadata| metadata.get(id))
-        .filter(|value| !value.is_empty())
-        .cloned()
-    else {
+    let Some(metadata) = device.metadata else {
         return;
     };
-    push_govee_readonly_field(
+    control_surface::push_metadata_value(
         document,
+        DESCRIPTOR.id,
+        metadata,
         id,
         label,
         group_id,
         value_type,
-        value(raw),
+        value,
         ordering,
     );
 }
@@ -1066,8 +962,9 @@ fn push_govee_metadata_bool_field(
         return;
     };
     let value = raw.parse::<bool>().unwrap_or_default();
-    push_govee_readonly_field(
+    control_surface::push_readonly_value(
         document,
+        DESCRIPTOR.id,
         id,
         label,
         group_id,
@@ -1094,64 +991,20 @@ fn push_govee_support_cmds_field(
         .filter(|command| !command.is_empty())
         .map(|command| ControlValue::String(command.to_owned()))
         .collect::<Vec<_>>();
-    push_govee_readonly_field(
+    control_surface::push_readonly_value(
         document,
+        DESCRIPTOR.id,
         DEVICE_FIELD_CLOUD_SUPPORT_CMDS,
         "Cloud Commands",
         "cloud",
         ControlValueType::List {
-            item_type: Box::new(string_value_type()),
+            item_type: Box::new(control_surface::string_value_type(None)),
             min_items: None,
             max_items: Some(64),
         },
         ControlValue::List(commands),
         30,
     );
-}
-
-fn push_govee_readonly_field(
-    document: &mut ControlSurfaceDocument,
-    id: &str,
-    label: &str,
-    group_id: &str,
-    value_type: ControlValueType,
-    value: ControlValue,
-    ordering: i32,
-) {
-    document.fields.push(ControlFieldDescriptor {
-        id: id.to_owned(),
-        owner: ControlOwner::Driver {
-            driver_id: DESCRIPTOR.id.to_owned(),
-        },
-        group_id: Some(group_id.to_owned()),
-        label: label.to_owned(),
-        description: None,
-        value_type,
-        default_value: None,
-        access: ControlAccess::ReadOnly,
-        persistence: ControlPersistence::RuntimeOnly,
-        apply_impact: ApplyImpact::None,
-        visibility: ControlVisibility::Diagnostics,
-        availability: ControlAvailabilityExpr::Always,
-        ordering,
-    });
-    document.values.insert(id.to_owned(), value);
-}
-
-const fn integer_value_type(min: i64, max: Option<i64>) -> ControlValueType {
-    ControlValueType::Integer {
-        min: Some(min),
-        max,
-        step: Some(1),
-    }
-}
-
-fn string_value_type() -> ControlValueType {
-    ControlValueType::String {
-        min_len: None,
-        max_len: None,
-        pattern: None,
-    }
 }
 
 fn govee_apply_response(
@@ -1225,15 +1078,6 @@ fn govee_control_values(config: &GoveeConfig) -> ControlValueMap {
             ControlValue::Integer(i64::from(config.razer_fps)),
         ),
     ])
-}
-
-fn govee_control_revision(values: &ControlValueMap) -> u64 {
-    values
-        .iter()
-        .flat_map(|(key, value)| [key.as_bytes(), format!("{value:?}").as_bytes()].concat())
-        .fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
-            (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
-        })
 }
 
 fn push_unique_impact(impacts: &mut Vec<ApplyImpact>, impact: ApplyImpact) {
