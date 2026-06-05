@@ -14,9 +14,7 @@ use hypercolor_types::spatial::{
     StripDirection,
 };
 
-use device_grouping::{
-    DeviceMeta, device_rows_for_zone, sort_device_rows, unassigned_device_rows,
-};
+use device_grouping::{DeviceMeta, device_rows_for_zone, sort_device_rows, unassigned_device_rows};
 
 /// One `Output` output: a device id, an optional channel, an LED count.
 fn output(device_id: &str, zone_name: Option<&str>, leds: u32) -> Output {

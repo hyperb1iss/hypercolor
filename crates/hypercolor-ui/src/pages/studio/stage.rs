@@ -34,9 +34,9 @@ use crate::ws::CanvasFrame;
 use crate::ws::messages::group_has_degraded_layer;
 
 use super::surface::{Surface, SurfaceKind, UNASSIGNED_SURFACE_ID, surfaces_from_groups};
-use super::{StudioContext, hidden_outputs_storage_key};
 use super::zone_assignment::ZoneAssignment;
 use super::zone_controls::unassigned_behavior_label;
+use super::{StudioContext, hidden_outputs_storage_key};
 
 /// Preview FPS ceiling for a Light Stage — the canvas is always live, so
 /// it reserves the same headroom the retired `/layout` page did.
@@ -77,10 +77,14 @@ fn SurfaceStage() -> impl IntoView {
     // the matching boxes; the eye toggle dims them (it used to write a
     // `hidden_outputs` signal nothing consumed — a no-op control).
     Effect::new(move |_| {
-        editor.set_selected_zone_ids.set(studio.selected_output_ids.get());
+        editor
+            .set_selected_zone_ids
+            .set(studio.selected_output_ids.get());
     });
     Effect::new(move |_| {
-        editor.set_hovered_zone_ids.set(studio.hovered_output_ids.get());
+        editor
+            .set_hovered_zone_ids
+            .set(studio.hovered_output_ids.get());
     });
     Effect::new(move |_| {
         let hidden = match (studio.active_scene.get(), studio.selected_surface_id.get()) {

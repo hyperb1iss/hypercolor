@@ -63,7 +63,11 @@ fn AssetCard(
     let label = kind_label(kind);
     let has_thumb = kind_has_thumbnail(kind);
     let thumbnail_url = format!("/api/v1/assets/{}/thumbnail", asset.id);
-    let meta_line = format!("{} · {}", format_bytes(asset.byte_len), card_meta_detail(&asset, kind));
+    let meta_line = format!(
+        "{} · {}",
+        format_bytes(asset.byte_len),
+        card_meta_detail(&asset, kind)
+    );
     let name = asset.name.clone();
 
     view! {

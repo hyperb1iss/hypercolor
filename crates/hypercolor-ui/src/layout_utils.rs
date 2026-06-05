@@ -125,13 +125,10 @@ pub fn remove_device_zone(
 ) {
     set_layout.update(|l| {
         if let Some(layout) = l
-            && let Some(pos) = layout
-                .zones
-                .iter()
-                .position(|z| {
-                    z.device_id == device_id
-                        && zone_name_matches_slot_alias(z.zone_name.as_deref(), zone_name)
-                })
+            && let Some(pos) = layout.zones.iter().position(|z| {
+                z.device_id == device_id
+                    && zone_name_matches_slot_alias(z.zone_name.as_deref(), zone_name)
+            })
         {
             let removed = layout.zones.remove(pos);
             let key = (removed.device_id.clone(), removed.zone_name.clone());

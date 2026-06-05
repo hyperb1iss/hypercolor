@@ -267,7 +267,9 @@ pub fn StudioDeviceCard(
     });
     let card_outline_style = move || {
         if is_card_selected.get() {
-            format!("{card_style}; outline: 1.5px solid rgba(225, 53, 255, 0.55); outline-offset: -1px")
+            format!(
+                "{card_style}; outline: 1.5px solid rgba(225, 53, 255, 0.55); outline-offset: -1px"
+            )
         } else {
             card_style.clone()
         }
