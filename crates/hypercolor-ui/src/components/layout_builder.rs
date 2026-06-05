@@ -332,6 +332,107 @@ fn attachment_profiles_resource(
     })
 }
 
+#[derive(Clone, Copy)]
+struct LayoutEditorSession {
+    layout: ReadSignal<Option<SpatialLayout>>,
+    saved_layout: ReadSignal<Option<SpatialLayout>>,
+    set_saved_layout: WriteSignal<Option<SpatialLayout>>,
+    selected_zone_ids: ReadSignal<std::collections::HashSet<String>>,
+    set_selected_zone_ids: WriteSignal<std::collections::HashSet<String>>,
+    compound_depth: ReadSignal<crate::compound_selection::CompoundDepth>,
+    set_compound_depth: WriteSignal<crate::compound_selection::CompoundDepth>,
+    keep_aspect_ratio: ReadSignal<bool>,
+    set_keep_aspect_ratio: WriteSignal<bool>,
+    hidden_zones: ReadSignal<std::collections::HashSet<String>>,
+    set_hidden_zones: WriteSignal<std::collections::HashSet<String>>,
+    hovered_zone_ids: ReadSignal<std::collections::HashSet<String>>,
+    set_hovered_zone_ids: WriteSignal<std::collections::HashSet<String>>,
+    removed_zone_cache: ReadSignal<crate::layout_utils::ZoneCache>,
+    set_removed_zone_cache: WriteSignal<crate::layout_utils::ZoneCache>,
+    write: LayoutWriteHandle,
+    layout_signal: Signal<Option<SpatialLayout>>,
+    can_undo: Signal<bool>,
+    can_redo: Signal<bool>,
+    is_dirty: Signal<bool>,
+}
+
+impl LayoutEditorSession {
+    fn new(keep_aspect_ratio_initial: bool) -> Self {
+        let (layout, set_layout_signal) = signal(None::<SpatialLayout>);
+        let (saved_layout, set_saved_layout) = signal(None::<SpatialLayout>);
+        let (selected_zone_ids, set_selected_zone_ids) =
+            signal(std::collections::HashSet::<String>::new());
+        let (compound_depth, set_compound_depth) =
+            signal(crate::compound_selection::CompoundDepth::Root);
+        let (keep_aspect_ratio, set_keep_aspect_ratio) = signal(keep_aspect_ratio_initial);
+        let (hidden_zones, set_hidden_zones) = signal(std::collections::HashSet::<String>::new());
+        let (hovered_zone_ids, set_hovered_zone_ids) =
+            signal(std::collections::HashSet::<String>::new());
+        let (removed_zone_cache, set_removed_zone_cache) =
+            signal(crate::layout_utils::ZoneCache::new());
+        let (dirty, set_is_dirty) = signal(false);
+        let history = RwSignal::new(LayoutHistoryState::default());
+        let write = LayoutWriteHandle {
+            layout,
+            set_layout: set_layout_signal,
+            selected_zone_ids,
+            set_selected_zone_ids,
+            compound_depth,
+            set_compound_depth,
+            removed_zone_cache,
+            set_removed_zone_cache,
+            history,
+            set_dirty: set_is_dirty,
+        };
+
+        Self {
+            layout,
+            saved_layout,
+            set_saved_layout,
+            selected_zone_ids,
+            set_selected_zone_ids,
+            compound_depth,
+            set_compound_depth,
+            keep_aspect_ratio,
+            set_keep_aspect_ratio,
+            hidden_zones,
+            set_hidden_zones,
+            hovered_zone_ids,
+            set_hovered_zone_ids,
+            removed_zone_cache,
+            set_removed_zone_cache,
+            write,
+            layout_signal: Signal::derive(move || layout.get()),
+            can_undo: Signal::derive(move || history.get().can_undo()),
+            can_redo: Signal::derive(move || history.get().can_redo()),
+            is_dirty: Signal::derive(move || dirty.get()),
+        }
+    }
+
+    fn provide_editor_context(self, push_preview: Callback<SpatialLayout>) {
+        provide_context(LayoutEditorContext {
+            layout: self.layout_signal,
+            selected_zone_ids: Signal::derive(move || self.selected_zone_ids.get()),
+            hidden_zones: Signal::derive(move || self.hidden_zones.get()),
+            hovered_zone_ids: Signal::derive(move || self.hovered_zone_ids.get()),
+            keep_aspect_ratio: Signal::derive(move || self.keep_aspect_ratio.get()),
+            set_layout: self.write,
+            set_selected_zone_ids: self.set_selected_zone_ids,
+            set_hovered_zone_ids: self.set_hovered_zone_ids,
+            set_is_dirty: self.write.set_dirty,
+            set_hidden_zones: self.set_hidden_zones,
+            set_keep_aspect_ratio: self.set_keep_aspect_ratio,
+            compound_depth: Signal::derive(move || self.compound_depth.get()),
+            set_compound_depth: self.set_compound_depth,
+            removed_zone_cache: Signal::derive(move || self.removed_zone_cache.get()),
+            set_removed_zone_cache: self.set_removed_zone_cache,
+            push_preview,
+            can_undo: self.can_undo,
+            can_redo: self.can_redo,
+        });
+    }
+}
+
 /// The layout-library controls and editor actions, lifted out of the
 /// `LayoutBuilder` shell so a separately-composed header (the Studio
 /// Stage) can drive the same editor. Provided via context by
@@ -389,51 +490,28 @@ pub(crate) fn LayoutEditorProvider(children: Children) -> impl IntoView {
     let per_layout_map = StoredValue::new(initial_state.per_layout);
 
     let (selected_layout_id, set_selected_layout_id) = signal(None::<String>);
-    let (layout, set_layout_signal) = signal(None::<SpatialLayout>);
-    let (saved_layout, set_saved_layout) = signal(None::<SpatialLayout>);
-    let (selected_zone_ids, set_selected_zone_ids) =
-        signal(std::collections::HashSet::<String>::new());
-    let (compound_depth, set_compound_depth) =
-        signal(crate::compound_selection::CompoundDepth::Root);
+    let session = LayoutEditorSession::new(initial_state.keep_aspect_ratio);
+    let layout = session.layout;
+    let saved_layout = session.saved_layout;
+    let set_saved_layout = session.set_saved_layout;
+    let selected_zone_ids = session.selected_zone_ids;
+    let set_selected_zone_ids = session.set_selected_zone_ids;
+    let compound_depth = session.compound_depth;
+    let set_compound_depth = session.set_compound_depth;
+    let keep_aspect_ratio = session.keep_aspect_ratio;
+    let hidden_zones = session.hidden_zones;
+    let set_hidden_zones = session.set_hidden_zones;
+    let set_layout = session.write;
+    let layout_signal = session.layout_signal;
+    let can_undo = session.can_undo;
+    let can_redo = session.can_redo;
+    let is_dirty = session.is_dirty;
     let (creating, set_creating) = signal(false);
     let (new_layout_name, set_new_layout_name) = signal(String::new());
     let (renaming, set_renaming) = signal(false);
     let (layout_menu_open, set_layout_menu_open) = signal(false);
     let (rename_value, set_rename_value) = signal(String::new());
     let (initialized, set_initialized) = signal(false);
-    let (keep_aspect_ratio, set_keep_aspect_ratio) = signal(initial_state.keep_aspect_ratio);
-    let (hidden_zones, set_hidden_zones) = signal(std::collections::HashSet::<String>::new());
-    let (hovered_zone_ids, set_hovered_zone_ids) =
-        signal(std::collections::HashSet::<String>::new());
-
-    let (removed_zone_cache, set_removed_zone_cache) =
-        signal(crate::layout_utils::ZoneCache::new());
-
-    // Tracked dirty flag — set true on commit, cleared on save/revert/load.
-    // Replaces the old vec-equality derive that ran on every drag tick.
-    let (dirty, set_is_dirty) = signal(false);
-    let history = RwSignal::new(LayoutHistoryState::default());
-    let set_layout = LayoutWriteHandle {
-        layout,
-        set_layout: set_layout_signal,
-        selected_zone_ids,
-        set_selected_zone_ids,
-        compound_depth,
-        set_compound_depth,
-        removed_zone_cache,
-        set_removed_zone_cache,
-        history,
-        set_dirty: set_is_dirty,
-    };
-
-    let layout_signal = Signal::derive(move || layout.get());
-    let zone_ids_signal = Signal::derive(move || selected_zone_ids.get());
-    let compound_depth_signal = Signal::derive(move || compound_depth.get());
-    let keep_aspect_ratio_signal = Signal::derive(move || keep_aspect_ratio.get());
-    let hidden_zones_signal = Signal::derive(move || hidden_zones.get());
-    let hovered_zone_ids_signal = Signal::derive(move || hovered_zone_ids.get());
-    let can_undo = Signal::derive(move || history.get().can_undo());
-    let can_redo = Signal::derive(move || history.get().can_redo());
 
     let preview_layout = use_debounce_fn_with_arg(
         |layout: SpatialLayout| {
@@ -450,26 +528,7 @@ pub(crate) fn LayoutEditorProvider(children: Children) -> impl IntoView {
         }
     });
 
-    provide_context(LayoutEditorContext {
-        layout: layout_signal,
-        selected_zone_ids: zone_ids_signal,
-        hidden_zones: hidden_zones_signal,
-        hovered_zone_ids: hovered_zone_ids_signal,
-        keep_aspect_ratio: keep_aspect_ratio_signal,
-        set_layout,
-        set_selected_zone_ids,
-        set_hovered_zone_ids,
-        set_is_dirty,
-        set_hidden_zones,
-        set_keep_aspect_ratio,
-        compound_depth: compound_depth_signal,
-        set_compound_depth,
-        removed_zone_cache: removed_zone_cache.into(),
-        set_removed_zone_cache,
-        push_preview,
-        can_undo,
-        can_redo,
-    });
+    session.provide_editor_context(push_preview);
 
     let attachment_profiles = attachment_profiles_resource(layout, ctx.devices_resource);
     provide_context(LayoutZoneDisplayContext {
@@ -486,10 +545,6 @@ pub(crate) fn LayoutEditorProvider(children: Children) -> impl IntoView {
             .get()
             .is_some_and(|entry| entry.is_active)
     });
-    // Tracked dirty flag — flipped explicitly on commits; saved/revert clear it.
-    // Subscribers (Save/Revert buttons) only re-fire on toggle, never on drag ticks.
-    let is_dirty = Signal::derive(move || dirty.get());
-
     // Options + current value for the layout SilkSelect. Empty value doubles
     // as "unselect current layout" — the first option is the sentinel.
     let layout_options = Signal::derive(move || {
@@ -1527,38 +1582,15 @@ pub(crate) fn ZoneLayoutProvider(
     let devices_ctx = expect_context::<DevicesContext>();
     let ws_ctx = expect_context::<WsContext>();
 
-    let (layout, set_layout_signal) = signal(None::<SpatialLayout>);
-    let (saved_layout, set_saved_layout) = signal(None::<SpatialLayout>);
-    let (selected_zone_ids, set_selected_zone_ids) =
-        signal(std::collections::HashSet::<String>::new());
-    let (compound_depth, set_compound_depth) =
-        signal(crate::compound_selection::CompoundDepth::Root);
-    let (keep_aspect_ratio, set_keep_aspect_ratio) = signal(false);
-    let (hidden_zones, set_hidden_zones) = signal(std::collections::HashSet::<String>::new());
-    let (hovered_zone_ids, set_hovered_zone_ids) =
-        signal(std::collections::HashSet::<String>::new());
-    let (removed_zone_cache, set_removed_zone_cache) =
-        signal(crate::layout_utils::ZoneCache::new());
-    let (dirty, set_is_dirty) = signal(false);
-    let history = RwSignal::new(LayoutHistoryState::default());
-
-    let set_layout = LayoutWriteHandle {
-        layout,
-        set_layout: set_layout_signal,
-        selected_zone_ids,
-        set_selected_zone_ids,
-        compound_depth,
-        set_compound_depth,
-        removed_zone_cache,
-        set_removed_zone_cache,
-        history,
-        set_dirty: set_is_dirty,
-    };
-
-    let layout_signal = Signal::derive(move || layout.get());
-    let can_undo = Signal::derive(move || history.get().can_undo());
-    let can_redo = Signal::derive(move || history.get().can_redo());
-    let is_dirty = Signal::derive(move || dirty.get());
+    let session = LayoutEditorSession::new(false);
+    let layout = session.layout;
+    let saved_layout = session.saved_layout;
+    let set_saved_layout = session.set_saved_layout;
+    let set_selected_zone_ids = session.set_selected_zone_ids;
+    let set_hidden_zones = session.set_hidden_zones;
+    let set_compound_depth = session.set_compound_depth;
+    let set_layout = session.write;
+    let is_dirty = session.is_dirty;
 
     let active_preview_key = StoredValue::new(None::<(String, String)>);
     let push_preview = Callback::new(move |snapshot: SpatialLayout| {
@@ -1595,26 +1627,7 @@ pub(crate) fn ZoneLayoutProvider(
         }
     });
 
-    provide_context(LayoutEditorContext {
-        layout: layout_signal,
-        selected_zone_ids: Signal::derive(move || selected_zone_ids.get()),
-        hidden_zones: Signal::derive(move || hidden_zones.get()),
-        hovered_zone_ids: Signal::derive(move || hovered_zone_ids.get()),
-        keep_aspect_ratio: Signal::derive(move || keep_aspect_ratio.get()),
-        set_layout,
-        set_selected_zone_ids,
-        set_hovered_zone_ids,
-        set_is_dirty,
-        set_hidden_zones,
-        set_keep_aspect_ratio,
-        compound_depth: Signal::derive(move || compound_depth.get()),
-        set_compound_depth,
-        removed_zone_cache: removed_zone_cache.into(),
-        set_removed_zone_cache,
-        push_preview,
-        can_undo,
-        can_redo,
-    });
+    session.provide_editor_context(push_preview);
 
     let attachment_profiles = attachment_profiles_resource(layout, devices_ctx.devices_resource);
     provide_context(LayoutZoneDisplayContext {
