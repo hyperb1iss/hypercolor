@@ -21,6 +21,7 @@ use crate::ddp::{DDP_DTYPE_RGB8, DDP_DTYPE_RGBW8, DdpSequence, build_ddp_frame};
 use crate::e131::{
     E131_CHANNELS_PER_UNIVERSE, E131_PORT, E131_PRIORITY, E131Packet, E131SequenceTracker,
 };
+use hypercolor_driver_api::DeviceWriteOutcome;
 use hypercolor_types::device::DeviceId;
 
 /// Interval between mandatory keepalive frames. Frames closer together
@@ -152,6 +153,15 @@ impl WledDevice {
     ///
     /// Returns an error if the UDP send fails.
     pub async fn send_frame(&mut self, pixel_data: &[u8]) -> Result<()> {
+        self.send_frame_outcome(pixel_data).await.map(|_| ())
+    }
+
+    /// Send a frame of raw pixel bytes and report whether it reached UDP.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the UDP send fails.
+    pub async fn send_frame_outcome(&mut self, pixel_data: &[u8]) -> Result<DeviceWriteOutcome> {
         let force_send = self
             .last_frame_at
             .is_none_or(|last_frame_at| last_frame_at.elapsed() >= KEEPALIVE_INTERVAL);
@@ -162,10 +172,12 @@ impl WledDevice {
                     && pixels_match_with_threshold(last, pixel_data, self.dedup_threshold)
             })
         {
-            return Ok(());
+            return Ok(DeviceWriteOutcome::SuppressedDuplicate);
         }
 
-        self.send_frame_forced(pixel_data).await
+        self.send_frame_forced(pixel_data)
+            .await
+            .map(|()| DeviceWriteOutcome::Sent)
     }
 
     /// Send a frame immediately, bypassing deduplication.

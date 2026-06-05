@@ -27,7 +27,9 @@ use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
-use hypercolor_driver_api::{BackendInfo, DeviceBackend, DeviceFrameSink, TransportScanner};
+use hypercolor_driver_api::{
+    BackendInfo, DeviceBackend, DeviceFrameSink, DeviceWriteOutcome, TransportScanner,
+};
 use hypercolor_types::device::{DeviceId, DeviceInfo};
 
 use cache::{build_device_info, wled_fingerprint};
@@ -231,7 +233,7 @@ impl WledBackend {
         device: &Arc<Mutex<WledDevice>>,
         colors: &[[u8; 3]],
         realtime_http_enabled: bool,
-    ) -> Result<()> {
+    ) -> Result<DeviceWriteOutcome> {
         let mut device = device.lock().await;
         Self::ensure_device_ready_for_output(id, &mut device, realtime_http_enabled).await?;
         let expected_led_count = usize::from(device.led_count);
@@ -258,7 +260,7 @@ impl WledBackend {
         };
         let pixel_data = encode_colors(colors, wire_format, expected_led_count);
 
-        device.send_frame(&pixel_data).await
+        device.send_frame_outcome(&pixel_data).await
     }
 
     fn allocate_e131_start_universe(
@@ -308,6 +310,13 @@ struct WledFrameSink {
 #[async_trait::async_trait]
 impl DeviceFrameSink for WledFrameSink {
     async fn write_colors_shared(&self, colors: Arc<Vec<[u8; 3]>>) -> Result<()> {
+        self.write_colors_shared_outcome(colors).await.map(|_| ())
+    }
+
+    async fn write_colors_shared_outcome(
+        &self,
+        colors: Arc<Vec<[u8; 3]>>,
+    ) -> Result<DeviceWriteOutcome> {
         WledBackend::write_device_colors(
             &self.device_id,
             &self.device,
@@ -515,7 +524,31 @@ impl DeviceBackend for WledBackend {
             .devices
             .get(id)
             .with_context(|| format!("WLED device {id} is not connected"))?;
-        Self::write_device_colors(id, device, colors, self.realtime_http_enabled).await
+        Self::write_device_colors(id, device, colors, self.realtime_http_enabled)
+            .await
+            .map(|_| ())
+    }
+
+    async fn write_colors_shared(
+        &mut self,
+        id: &DeviceId,
+        colors: Arc<Vec<[u8; 3]>>,
+    ) -> Result<()> {
+        self.write_colors_shared_outcome(id, colors)
+            .await
+            .map(|_| ())
+    }
+
+    async fn write_colors_shared_outcome(
+        &mut self,
+        id: &DeviceId,
+        colors: Arc<Vec<[u8; 3]>>,
+    ) -> Result<DeviceWriteOutcome> {
+        let device = self
+            .devices
+            .get(id)
+            .with_context(|| format!("WLED device {id} is not connected"))?;
+        Self::write_device_colors(id, device, colors.as_slice(), self.realtime_http_enabled).await
     }
 
     fn target_fps(&self, id: &DeviceId) -> Option<u32> {

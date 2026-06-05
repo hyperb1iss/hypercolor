@@ -6,11 +6,12 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, Once, OnceLock};
+use std::sync::{Arc, Mutex, Once, OnceLock};
 use std::time::{Duration, Instant};
 
-use hypercolor_driver_api::DiscoveryConnectBehavior;
-use hypercolor_driver_api::{DeviceBackend, TransportScanner};
+use hypercolor_driver_api::{
+    DeviceBackend, DeviceWriteOutcome, DiscoveryConnectBehavior, TransportScanner,
+};
 use hypercolor_driver_wled::{
     DdpPacket, DdpSequence, E131Packet, E131SequenceTracker, WledBackend, WledColorFormat,
     WledDeviceInfo, WledLiveReceiverConfig, WledProtocol, WledScanner, WledSegmentInfo,
@@ -1158,11 +1159,12 @@ async fn backend_write_colors_pads_dedups_and_keeps_alive() {
         .await
         .expect("connect should succeed");
 
-    let colors = [[1, 2, 3], [4, 5, 6]];
-    backend
-        .write_colors(&device_id, &colors)
+    let colors = Arc::new(vec![[1, 2, 3], [4, 5, 6]]);
+    let first_outcome = backend
+        .write_colors_shared_outcome(&device_id, Arc::clone(&colors))
         .await
         .expect("first write should succeed");
+    assert_eq!(first_outcome, DeviceWriteOutcome::Sent);
 
     let mut packet = [0_u8; 64];
     let (len, _) = timeout(Duration::from_millis(200), receiver.recv_from(&mut packet))
@@ -1172,10 +1174,11 @@ async fn backend_write_colors_pads_dedups_and_keeps_alive() {
     assert_eq!(len, DDP_HEADER_SIZE + 12);
     assert_eq!(&packet[10..22], &[1, 2, 3, 4, 5, 6, 0, 0, 0, 0, 0, 0]);
 
-    backend
-        .write_colors(&device_id, &colors)
+    let duplicate_outcome = backend
+        .write_colors_shared_outcome(&device_id, Arc::clone(&colors))
         .await
         .expect("duplicate write should succeed");
+    assert_eq!(duplicate_outcome, DeviceWriteOutcome::SuppressedDuplicate);
     let mut dedup_packet = [0_u8; 64];
     assert!(
         timeout(
@@ -1188,15 +1191,66 @@ async fn backend_write_colors_pads_dedups_and_keeps_alive() {
     );
 
     tokio::time::sleep(Duration::from_millis(2_100)).await;
-    backend
-        .write_colors(&device_id, &colors)
+    let keepalive_outcome = backend
+        .write_colors_shared_outcome(&device_id, colors)
         .await
         .expect("keepalive write should succeed");
+    assert_eq!(keepalive_outcome, DeviceWriteOutcome::Sent);
     let (len, _) = timeout(Duration::from_millis(200), receiver.recv_from(&mut packet))
         .await
         .expect("expected keepalive DDP frame")
         .expect("recv keepalive DDP frame");
     assert_eq!(len, DDP_HEADER_SIZE + 12);
+}
+
+#[tokio::test]
+async fn frame_sink_reports_wled_dedup_as_suppressed() {
+    let _guard = ddp_test_port_guard().await;
+    let receiver = UdpSocket::bind("127.0.0.1:4048")
+        .await
+        .expect("bind loopback DDP receiver");
+    let mut backend = WledBackend::new(vec![]);
+    backend.set_realtime_http_enabled(false);
+
+    let device_id = DeviceId::new();
+    backend.remember_device(
+        device_id,
+        "127.0.0.1".parse().expect("valid loopback IP"),
+        test_wled_info(2, false, 30, true),
+    );
+    backend
+        .connect(&device_id)
+        .await
+        .expect("connect should succeed");
+
+    let sink = backend
+        .frame_sink(&device_id)
+        .expect("connected WLED device should expose a frame sink");
+    let colors = Arc::new(vec![[7, 8, 9], [1, 2, 3]]);
+    let first_outcome = sink
+        .write_colors_shared_outcome(Arc::clone(&colors))
+        .await
+        .expect("first sink write should succeed");
+    assert_eq!(first_outcome, DeviceWriteOutcome::Sent);
+
+    let mut packet = [0_u8; 64];
+    timeout(Duration::from_millis(200), receiver.recv_from(&mut packet))
+        .await
+        .expect("expected first DDP frame")
+        .expect("recv first DDP frame");
+
+    let duplicate_outcome = sink
+        .write_colors_shared_outcome(colors)
+        .await
+        .expect("duplicate sink write should be accepted but suppressed");
+    assert_eq!(duplicate_outcome, DeviceWriteOutcome::SuppressedDuplicate);
+
+    assert!(
+        timeout(Duration::from_millis(150), receiver.recv_from(&mut packet))
+            .await
+            .is_err(),
+        "deduplicated sink frame should not send another UDP packet"
+    );
 }
 
 #[tokio::test]
