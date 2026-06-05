@@ -21,6 +21,7 @@ mod layout_geometry;
 mod layout_history;
 mod layout_page_state;
 mod layout_utils;
+mod optimistic_controls;
 mod pages;
 mod preferences;
 mod preview_telemetry;

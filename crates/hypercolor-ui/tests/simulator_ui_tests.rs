@@ -6,6 +6,8 @@ mod api;
 mod control_value_json;
 #[path = "../src/display_utils.rs"]
 mod display_utils;
+#[path = "../src/optimistic_controls.rs"]
+mod optimistic_controls;
 #[path = "../src/style_utils.rs"]
 mod style_utils;
 
@@ -16,6 +18,9 @@ use api::{
 use control_value_json::{hex_to_rgba, json_to_control_value};
 use display_utils::{display_preview_shell_url, is_simulator_display, parse_simulator_dimension};
 use hypercolor_types::effect::{ControlDefinition, ControlKind, ControlType, ControlValue};
+use optimistic_controls::{
+    apply_raw_control_updates, merge_control_values, raw_control_updates_payload,
+};
 use style_utils::category_style;
 
 fn display_preview_target_from_search(search: &str) -> Option<String> {
@@ -324,6 +329,49 @@ fn json_to_control_value_rejects_malformed_input() {
     assert!(json_to_control_value("x", &controls, &serde_json::json!([1, 2])).is_none());
     assert!(json_to_control_value("x", &controls, &serde_json::json!(f64::INFINITY)).is_none());
     assert!(json_to_control_value("x", &controls, &serde_json::json!(f64::NAN)).is_none());
+}
+
+#[test]
+fn optimistic_control_updates_apply_raw_values() {
+    let controls = vec![dropdown_control("mode"), color_control("accent")];
+    let updates = vec![
+        ("mode".to_owned(), serde_json::json!("high")),
+        ("accent".to_owned(), serde_json::json!("#ff80c0")),
+    ];
+    let mut values = std::collections::HashMap::new();
+
+    apply_raw_control_updates(&mut values, &controls, &updates);
+
+    assert_eq!(
+        values.get("mode"),
+        Some(&ControlValue::Enum("high".to_owned()))
+    );
+    let Some(ControlValue::Color(color)) = values.get("accent") else {
+        panic!("accent should be converted to a color");
+    };
+    assert!((color[1] - 128.0 / 255.0).abs() < 1e-6);
+}
+
+#[test]
+fn optimistic_control_helpers_merge_and_payload_pending_updates() {
+    let mut values = std::collections::HashMap::from([(
+        "mode".to_owned(),
+        ControlValue::Enum("low".to_owned()),
+    )]);
+    let next = std::collections::HashMap::from([(
+        "mode".to_owned(),
+        ControlValue::Enum("high".to_owned()),
+    )]);
+
+    merge_control_values(&mut values, &next);
+
+    assert_eq!(values, next);
+
+    let payload = raw_control_updates_payload(std::collections::HashMap::from([(
+        "mode".to_owned(),
+        serde_json::json!("high"),
+    )]));
+    assert_eq!(payload, serde_json::json!({ "mode": "high" }));
 }
 
 #[test]

@@ -17,8 +17,9 @@ use crate::components::preview_cabinet::PreviewCabinet;
 use crate::components::resize_handle::ResizeHandle;
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::components::silk_select::SilkSelect;
-use crate::control_value_json::{hex_to_rgba_json, json_to_control_value};
+use crate::control_value_json::hex_to_rgba_json;
 use crate::icons::*;
+use crate::optimistic_controls::{OptimisticControlSession, raw_control_updates_payload};
 use crate::toasts;
 use hypercolor_leptos_ext::events::document as browser_document;
 use hypercolor_types::effect::{ControlDefinition, ControlValue};
@@ -162,21 +163,17 @@ pub fn EffectsPage() -> impl IntoView {
         MIN_CONTROLS_WIDTH,
         MAX_CONTROLS_WIDTH,
     ));
-    let pending_control_updates =
-        StoredValue::new(std::collections::HashMap::<String, serde_json::Value>::new());
+    let control_session = OptimisticControlSession::new();
     let control_request_epoch = StoredValue::new(0_u64);
     let preferences_store = use_context::<crate::preferences::PreferencesStore>();
     let flush_control_updates = use_debounce_fn(
         move || {
-            let updates = pending_control_updates
-                .try_update_value(std::mem::take)
-                .unwrap_or_default();
+            let updates = control_session.take_pending();
             if updates.is_empty() {
                 return;
             }
 
-            let controls_json =
-                serde_json::Value::Object(updates.into_iter().collect::<serde_json::Map<_, _>>());
+            let controls_json = raw_control_updates_payload(updates);
             let request_epoch = control_request_epoch
                 .try_update_value(|epoch| {
                     *epoch = epoch.wrapping_add(1);
@@ -188,8 +185,7 @@ pub fn EffectsPage() -> impl IntoView {
                 match api::update_controls(&controls_json).await {
                     Ok(()) => {
                         let is_latest_request = control_request_epoch.get_value() == request_epoch;
-                        let has_pending_updates =
-                            pending_control_updates.with_value(|pending| !pending.is_empty());
+                        let has_pending_updates = control_session.has_pending();
                         let same_effect = fx.active_effect_id.get_untracked() == active_effect_id;
                         if is_latest_request
                             && !has_pending_updates
@@ -208,8 +204,7 @@ pub fn EffectsPage() -> impl IntoView {
                     }
                     Err(error) => {
                         let is_latest_request = control_request_epoch.get_value() == request_epoch;
-                        let has_pending_updates =
-                            pending_control_updates.with_value(|pending| !pending.is_empty());
+                        let has_pending_updates = control_session.has_pending();
                         let same_effect = fx.active_effect_id.get_untracked() == active_effect_id;
                         if is_latest_request && !has_pending_updates && same_effect {
                             fx.refresh_active_effect();
@@ -435,25 +430,12 @@ pub fn EffectsPage() -> impl IntoView {
             &value,
         );
 
-        fx.set_active_control_values.update({
-            let controls_snapshot = controls_snapshot.clone();
-            let updates = updates.clone();
-            move |values| {
-                for (control_name, raw_value) in &updates {
-                    if let Some(control_value) =
-                        json_to_control_value(control_name, &controls_snapshot, raw_value)
-                    {
-                        values.insert(control_name.clone(), control_value);
-                    }
-                }
-            }
-        });
-
-        pending_control_updates.update_value(|pending| {
-            for (control_name, raw_value) in &updates {
-                pending.insert(control_name.clone(), raw_value.clone());
-            }
-        });
+        control_session.apply_raw_updates_to(
+            fx.set_active_control_values,
+            &controls_snapshot,
+            &updates,
+        );
+        control_session.queue_raw_updates(&updates);
 
         flush_control_updates();
     });

@@ -17,6 +17,7 @@ use crate::components::page_header::{PageAccent, PageHeader};
 use crate::components::resize_handle::ResizeHandle;
 use crate::display_preview_state::{use_display_face_resource, use_display_preview_subscription};
 use crate::icons::*;
+use crate::optimistic_controls::{OptimisticControlSession, raw_control_updates_payload};
 use crate::preferences::{EffectPreferences, PreferencesStore};
 use crate::toasts;
 use hypercolor_leptos_ext::events::{Input, document as browser_document};
@@ -832,7 +833,6 @@ fn render_picker_row(
     }
 }
 
-use crate::control_value_json::json_to_control_value;
 use crate::display_utils::{
     display_preview_shell_url, is_simulator_display, parse_simulator_dimension,
 };
@@ -1997,8 +1997,7 @@ fn FaceControlsSection(
     // Pending-updates buffer keyed by control name. Each user input
     // overwrites the prior pending value for that control, so a slider
     // drag only sends the final position when the debounce fires.
-    let pending_updates: StoredValue<std::collections::HashMap<String, serde_json::Value>> =
-        StoredValue::new(std::collections::HashMap::new());
+    let control_session = OptimisticControlSession::new();
     let show_locked_toast = use_debounce_fn_with_arg(
         move |message: String| {
             toasts::toast_error(&message);
@@ -2015,20 +2014,18 @@ fn FaceControlsSection(
                     Some(Ok(Some(face))) => face.group.controls,
                     _ => std::collections::HashMap::new(),
                 });
-                let _ = pending_updates.try_update_value(std::mem::take);
+                control_session.clear_pending();
                 toasts::toast_error(&message);
                 return;
             }
             let Some(display) = selected_display.get_untracked() else {
                 return;
             };
-            let updates = pending_updates
-                .try_update_value(std::mem::take)
-                .unwrap_or_default();
+            let updates = control_session.take_pending();
             if updates.is_empty() {
                 return;
             }
-            let controls_json = serde_json::Value::Object(updates.into_iter().collect());
+            let controls_json = raw_control_updates_payload(updates);
             let display_id = display.id;
             spawn_local(async move {
                 match api::update_display_face_controls(&display_id, &controls_json).await {
@@ -2056,14 +2053,13 @@ fn FaceControlsSection(
         // so sliders/toggles/color pickers feel immediate even before the
         // daemon acknowledges.
         let controls_snapshot = face_controls.get();
-        if let Some(control_value) = json_to_control_value(&name, &controls_snapshot, &value) {
-            set_face_control_values.update(|map| {
-                map.insert(name.clone(), control_value);
-            });
-        }
-        pending_updates.update_value(|pending| {
-            pending.insert(name, value);
-        });
+        control_session.apply_raw_update_to(
+            set_face_control_values,
+            &controls_snapshot,
+            &name,
+            &value,
+        );
+        control_session.queue_raw_update(name, value);
         flush_updates();
     });
 
@@ -2086,7 +2082,7 @@ fn FaceControlsSection(
             }
             // Drop any queued per-key PATCH so it doesn't overwrite the
             // preset values we're about to send.
-            let _ = pending_updates.try_update_value(std::mem::take);
+            control_session.clear_pending();
 
             // Snapshot the pre-apply values so we can roll back if the
             // server rejects the PATCH. Without this, a failed apply
@@ -2096,11 +2092,7 @@ fn FaceControlsSection(
 
             // Optimistic local update so preset pills highlight
             // immediately without waiting for the round-trip.
-            set_face_control_values.update(|map| {
-                for (key, value) in &preset_controls {
-                    map.insert(key.clone(), value.clone());
-                }
-            });
+            control_session.apply_values_to(set_face_control_values, &preset_controls);
 
             let controls_json =
                 crate::components::preset_matching::bundled_preset_to_json(&preset_controls);
