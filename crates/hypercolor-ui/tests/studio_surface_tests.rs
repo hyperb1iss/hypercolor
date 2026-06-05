@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 //! Contract tests for the Studio §8 surface model.
 //!
 //! `surface.rs` is leptos-free and `crate::`-free so it can be pulled in
