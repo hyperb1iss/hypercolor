@@ -119,7 +119,16 @@ pub fn StudioDeviceCard(
                         {leds}
                     </span>
                 </button>
-                {card_actions(studio, mode, select, row_device_id, None, Vec::new(), None, None)}
+                {card_actions(CardActionsArgs {
+                    studio,
+                    mode,
+                    select,
+                    device_id: row_device_id,
+                    physical_id: None,
+                    output_ids: Vec::new(),
+                    scene_key: None,
+                    add_device: None,
+                })}
             </div>
         }
         .into_any();
@@ -346,16 +355,16 @@ pub fn StudioDeviceCard(
                         </div>
                     </div>
                 </button>
-                {card_actions(
+                {card_actions(CardActionsArgs {
                     studio,
                     mode,
                     select,
-                    row_device_id,
-                    Some(physical_id),
-                    device_output_ids,
-                    scene_key.clone(),
+                    device_id: row_device_id,
+                    physical_id: Some(physical_id),
+                    output_ids: device_output_ids,
+                    scene_key: scene_key.clone(),
                     add_device,
-                )}
+                })}
             </div>
             {show_components
                 .then(move || {
@@ -382,12 +391,7 @@ pub fn StudioDeviceCard(
     .into_any()
 }
 
-/// The trailing-edge action cluster. Hide-all toggles every output of a
-/// placed device in unison; identify flashes the hardware whenever it is
-/// online (`physical_id` is `Some`). The final action depends on `mode`:
-/// a placed device offers remove, an available device offers a one-tap
-/// add into the zone, and an Unassigned-bucket row offers neither.
-fn card_actions(
+struct CardActionsArgs {
     studio: StudioContext,
     mode: CardMode,
     select: String,
@@ -396,7 +400,24 @@ fn card_actions(
     output_ids: Vec<String>,
     scene_key: Option<String>,
     add_device: Option<DeviceSummary>,
-) -> impl IntoView {
+}
+
+/// The trailing-edge action cluster. Hide-all toggles every output of a
+/// placed device in unison; identify flashes the hardware whenever it is
+/// online (`physical_id` is `Some`). The final action depends on `mode`:
+/// a placed device offers remove, an available device offers a one-tap
+/// add into the zone, and an Unassigned-bucket row offers neither.
+fn card_actions(args: CardActionsArgs) -> impl IntoView {
+    let CardActionsArgs {
+        studio,
+        mode,
+        select,
+        device_id,
+        physical_id,
+        output_ids,
+        scene_key,
+        add_device,
+    } = args;
     let (identifying, set_identifying) = signal(false);
     // Hide-all is only meaningful when the card sits in a real zone
     // (so it has a scene_key) and the device actually owns outputs

@@ -107,7 +107,7 @@ pub fn AssetsPage() -> impl IntoView {
                     .any(|tag| tag.to_lowercase().contains(&query));
             kind_matches && search_matches
         });
-        assets.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        assets.sort_by_key(|asset| asset.name.to_lowercase());
         assets
     });
 

@@ -1,16 +1,11 @@
 pub const ALL_ZONES_VALUE: &str = "__all_zones__";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum ApplyTarget {
+    #[default]
     Primary,
     Zone(String),
     AllZones,
-}
-
-impl Default for ApplyTarget {
-    fn default() -> Self {
-        Self::Primary
-    }
 }
 
 impl ApplyTarget {

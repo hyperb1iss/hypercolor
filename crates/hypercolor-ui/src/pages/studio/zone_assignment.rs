@@ -218,7 +218,7 @@ fn ZoneAssignmentToolbar(
                         </span>
                         <span class="text-[11px] text-fg-tertiary/60">"Assign to"</span>
                         <SilkSelect
-                            value=Signal::derive(|| String::new())
+                            value=Signal::derive(String::new)
                             options=zone_options
                             on_change=assign_to
                             placeholder="Pick a zone…".to_string()

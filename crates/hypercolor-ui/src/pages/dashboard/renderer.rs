@@ -475,7 +475,7 @@ fn compositor_badge(
             "gpu" => badge("gpu", DiagnosticTone::Good),
             "gpu_fallback" => badge("fallback", DiagnosticTone::Warn),
             "cpu" => badge("cpu", DiagnosticTone::Warn),
-            other if other.is_empty() => badge("warming", DiagnosticTone::Neutral),
+            "" => badge("warming", DiagnosticTone::Neutral),
             other => badge(other, DiagnosticTone::Neutral),
         };
     }
