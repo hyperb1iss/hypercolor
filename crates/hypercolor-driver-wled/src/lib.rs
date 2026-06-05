@@ -10,13 +10,14 @@ mod ddp;
 mod e131;
 mod scanner;
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::net::IpAddr;
 use std::sync::LazyLock;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
+use hypercolor_driver_api::control_apply;
 use hypercolor_driver_api::control_surface;
 use hypercolor_driver_api::validation::validate_ip;
 use hypercolor_driver_api::{
@@ -28,9 +29,9 @@ use hypercolor_driver_api::{
 use hypercolor_driver_api::{DeviceBackend, TransportScanner};
 use hypercolor_types::config::DriverConfigEntry;
 use hypercolor_types::controls::{
-    AppliedControlChange, ApplyControlChangesResponse, ApplyImpact, ControlChange,
-    ControlEnumOption, ControlFieldDescriptor, ControlGroupKind, ControlSurfaceDocument,
-    ControlValue, ControlValueMap, ControlValueType,
+    ApplyControlChangesResponse, ApplyImpact, ControlChange, ControlEnumOption,
+    ControlFieldDescriptor, ControlGroupKind, ControlSurfaceDocument, ControlValue,
+    ControlValueMap, ControlValueType,
 };
 use hypercolor_types::device::{
     DeviceClassHint, DeviceId, DriverPresentation, DriverTransportKind,
@@ -343,27 +344,9 @@ impl DriverControlProvider for WledDriverModule {
                     bail!("WLED controls cannot apply to driver '{driver_id}'");
                 }
 
-                let control_host = host
-                    .control_host()
-                    .ok_or_else(|| anyhow!("driver control host services are unavailable"))?;
-                let mut values = wled_config_values(&config.parse_settings::<WledConfig>()?);
-                let previous_revision = control_surface::value_map_revision(&values);
-                for change in &changes.changes {
-                    values.insert(change.field_id.clone(), change.value.clone());
-                }
-                let revision = control_surface::value_map_revision(&values);
-                control_host
-                    .driver_config_store()
-                    .save_driver_values(DESCRIPTOR.id, values.clone())
-                    .await?;
-
-                Ok(wled_apply_response(
-                    format!("driver:{}", DESCRIPTOR.id),
-                    previous_revision,
-                    revision,
-                    changes,
-                    values,
-                ))
+                let values = wled_config_values(&config.parse_settings::<WledConfig>()?);
+                control_apply::apply_driver_value_changes(host, DESCRIPTOR.id, values, changes)
+                    .await
             }
             ControlApplyTarget::Device { device } => {
                 if device.info.driver_id() != DESCRIPTOR.id {
@@ -385,24 +368,25 @@ impl DriverControlProvider for WledDriverModule {
                     .device_config_store()
                     .load_device_values(device.device_id)
                     .await?;
-                let mut values =
-                    wled_effective_device_values(&driver_values, &existing_device_values);
-                let previous_revision = wled_device_control_revision(device, &values);
-                for change in &changes.changes {
-                    let value = if change.field_id == DEVICE_FIELD_PROTOCOL {
-                        wled_protocol_control_value(Some(&change.value))
-                    } else {
-                        change.value.clone()
-                    };
-                    values.insert(change.field_id.clone(), value);
-                }
-                let revision = wled_device_control_revision(device, &values);
+                let values = wled_effective_device_values(&driver_values, &existing_device_values);
+                let (values, previous_revision, revision) = control_apply::apply_value_changes(
+                    values,
+                    &changes.changes,
+                    |values| wled_device_control_revision(device, values),
+                    |change| {
+                        if change.field_id == DEVICE_FIELD_PROTOCOL {
+                            wled_protocol_control_value(Some(&change.value))
+                        } else {
+                            change.value.clone()
+                        }
+                    },
+                );
                 control_host
                     .device_config_store()
                     .save_device_values(device.device_id, values.clone())
                     .await?;
 
-                Ok(wled_apply_response(
+                Ok(control_apply::apply_response(
                     format!("driver:{}:device:{}", DESCRIPTOR.id, device.device_id),
                     previous_revision,
                     revision,
@@ -552,33 +536,11 @@ fn validate_wled_driver_changes(
         }
     };
 
-    let fields = fields
-        .into_iter()
-        .map(|field| (field.id.clone(), field))
-        .collect::<BTreeMap<_, _>>();
-    let mut seen = BTreeSet::new();
-    let mut impacts = Vec::new();
-
-    for change in changes {
-        if !seen.insert(change.field_id.as_str()) {
-            bail!("duplicate WLED control field: {}", change.field_id);
-        }
-        let field = fields
-            .get(&change.field_id)
-            .ok_or_else(|| anyhow!("unknown WLED control field: {}", change.field_id))?;
-        field
-            .value_type
-            .validate_value(&change.value)
-            .with_context(|| format!("invalid WLED control field: {}", change.field_id))?;
+    control_apply::validate_control_changes("WLED", fields, changes, |change| {
         if change.field_id == FIELD_KNOWN_IPS {
             control_surface::validate_control_ip_list("WLED known IP", &change.value)?;
         }
-        push_unique_impact(&mut impacts, field.apply_impact.clone());
-    }
-
-    Ok(ValidatedControlChanges {
-        changes: changes.to_vec(),
-        impacts,
+        Ok(())
     })
 }
 
@@ -697,31 +659,6 @@ fn wled_protocol_control_value(value: Option<&ControlValue>) -> ControlValue {
     }
 }
 
-fn wled_apply_response(
-    surface_id: String,
-    previous_revision: u64,
-    revision: u64,
-    changes: ValidatedControlChanges,
-    values: ControlValueMap,
-) -> ApplyControlChangesResponse {
-    ApplyControlChangesResponse {
-        surface_id,
-        previous_revision,
-        revision,
-        accepted: changes
-            .changes
-            .into_iter()
-            .map(|change| AppliedControlChange {
-                field_id: change.field_id,
-                value: change.value,
-            })
-            .collect(),
-        rejected: Vec::new(),
-        impacts: changes.impacts,
-        values,
-    }
-}
-
 fn wled_config_values(config: &WledConfig) -> ControlValueMap {
     ControlValueMap::from([
         (
@@ -753,12 +690,6 @@ fn wled_config_values(config: &WledConfig) -> ControlValueMap {
             ControlValue::Integer(i64::from(config.dedup_threshold)),
         ),
     ])
-}
-
-fn push_unique_impact(impacts: &mut Vec<ApplyImpact>, impact: ApplyImpact) {
-    if !impacts.contains(&impact) {
-        impacts.push(impact);
-    }
 }
 
 #[async_trait]

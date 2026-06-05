@@ -7,6 +7,7 @@
 
 pub mod backend;
 pub mod config;
+pub mod control_apply;
 pub mod control_surface;
 pub mod controls;
 pub mod descriptor;

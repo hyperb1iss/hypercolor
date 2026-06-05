@@ -11,13 +11,14 @@ mod scanner;
 mod streaming;
 mod types;
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 use std::net::IpAddr;
 use std::sync::Arc;
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use hypercolor_driver_api::CredentialStore;
+use hypercolor_driver_api::control_apply;
 use hypercolor_driver_api::control_surface;
 use hypercolor_driver_api::support::{
     activate_if_requested, disconnect_after_unpair, metadata_value, network_port_from_metadata,
@@ -35,9 +36,8 @@ use hypercolor_driver_api::{
 use hypercolor_driver_api::{DeviceBackend, TransportScanner};
 use hypercolor_types::config::DriverConfigEntry;
 use hypercolor_types::controls::{
-    AppliedControlChange, ApplyControlChangesResponse, ApplyImpact, ControlChange,
-    ControlFieldDescriptor, ControlGroupKind, ControlSurfaceDocument, ControlValue,
-    ControlValueMap, ControlValueType,
+    ApplyControlChangesResponse, ApplyImpact, ControlChange, ControlFieldDescriptor,
+    ControlGroupKind, ControlSurfaceDocument, ControlValue, ControlValueMap, ControlValueType,
 };
 use hypercolor_types::device::{DeviceClassHint, DriverPresentation, DriverTransportKind};
 
@@ -243,27 +243,8 @@ impl DriverControlProvider for HueDriverModule {
             bail!("Hue controls cannot apply to driver '{driver_id}'");
         }
 
-        let control_host = host
-            .control_host()
-            .ok_or_else(|| anyhow!("driver control host services are unavailable"))?;
-        let mut values = hue_config_values(&config.parse_settings::<HueConfig>()?);
-        let previous_revision = control_surface::value_map_revision(&values);
-        for change in &changes.changes {
-            values.insert(change.field_id.clone(), change.value.clone());
-        }
-        let revision = control_surface::value_map_revision(&values);
-        control_host
-            .driver_config_store()
-            .save_driver_values(DESCRIPTOR.id, values.clone())
-            .await?;
-
-        Ok(hue_apply_response(
-            format!("driver:{}", DESCRIPTOR.id),
-            previous_revision,
-            revision,
-            changes,
-            values,
-        ))
+        let values = hue_config_values(&config.parse_settings::<HueConfig>()?);
+        control_apply::apply_driver_value_changes(host, DESCRIPTOR.id, values, changes).await
     }
 }
 
@@ -438,33 +419,11 @@ fn validate_hue_driver_changes(
         bail!("Hue controls cannot validate driver '{driver_id}'");
     }
 
-    let fields = hue_driver_control_fields()
-        .into_iter()
-        .map(|field| (field.id.clone(), field))
-        .collect::<BTreeMap<_, _>>();
-    let mut seen = BTreeSet::new();
-    let mut impacts = Vec::new();
-
-    for change in changes {
-        if !seen.insert(change.field_id.as_str()) {
-            bail!("duplicate Hue control field: {}", change.field_id);
-        }
-        let field = fields
-            .get(&change.field_id)
-            .ok_or_else(|| anyhow!("unknown Hue control field: {}", change.field_id))?;
-        field
-            .value_type
-            .validate_value(&change.value)
-            .with_context(|| format!("invalid Hue control field: {}", change.field_id))?;
+    control_apply::validate_control_changes("Hue", hue_driver_control_fields(), changes, |change| {
         if change.field_id == FIELD_BRIDGE_IPS {
             control_surface::validate_control_ip_list("Hue bridge IP", &change.value)?;
         }
-        push_unique_impact(&mut impacts, field.apply_impact.clone());
-    }
-
-    Ok(ValidatedControlChanges {
-        changes: changes.to_vec(),
-        impacts,
+        Ok(())
     })
 }
 
@@ -533,37 +492,6 @@ fn hue_config_values(config: &HueConfig) -> ControlValueMap {
             ControlValue::Bool(config.use_cie_xy),
         ),
     ])
-}
-
-fn hue_apply_response(
-    surface_id: String,
-    previous_revision: u64,
-    revision: u64,
-    changes: ValidatedControlChanges,
-    values: ControlValueMap,
-) -> ApplyControlChangesResponse {
-    ApplyControlChangesResponse {
-        surface_id,
-        previous_revision,
-        revision,
-        accepted: changes
-            .changes
-            .into_iter()
-            .map(|change| AppliedControlChange {
-                field_id: change.field_id,
-                value: change.value,
-            })
-            .collect(),
-        rejected: Vec::new(),
-        impacts: changes.impacts,
-        values,
-    }
-}
-
-fn push_unique_impact(impacts: &mut Vec<ApplyImpact>, impact: ApplyImpact) {
-    if !impacts.contains(&impact) {
-        impacts.push(impact);
-    }
 }
 
 #[async_trait]
