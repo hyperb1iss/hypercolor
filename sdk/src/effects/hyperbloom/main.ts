@@ -84,6 +84,36 @@ function knee(x: number, k = 0.7): number {
     return x / (1 + k * x)
 }
 
+// Pre-blurred glow sprite: minify hard, then magnify back with smoothing so
+// the halo has no hard edges. An edge-free source upscales smoothly even with
+// cheap bilinear filtering, so the bloom never shows blocky stair-steps on
+// Servo's software canvas.
+function makeGlow(source: CanvasImageSource, srcW: number, srcH: number): HTMLCanvasElement {
+    const lw = Math.max(1, Math.round(srcW / 10))
+    const lh = Math.max(1, Math.round(srcH / 10))
+    const low = document.createElement('canvas')
+    low.width = lw
+    low.height = lh
+    const lc = low.getContext('2d')
+    if (lc) {
+        lc.imageSmoothingEnabled = true
+        lc.imageSmoothingQuality = 'high'
+        lc.drawImage(source, 0, 0, lw, lh)
+    }
+    const w = Math.max(1, Math.round(srcW / 3))
+    const h = Math.max(1, Math.round(srcH / 3))
+    const glow = document.createElement('canvas')
+    glow.width = w
+    glow.height = h
+    const gc = glow.getContext('2d')
+    if (gc) {
+        gc.imageSmoothingEnabled = true
+        gc.imageSmoothingQuality = 'high'
+        gc.drawImage(low, 0, 0, w, h)
+    }
+    return glow
+}
+
 canvas(
     'Hyperbloom',
     {
@@ -131,17 +161,9 @@ canvas(
                 lc.drawImage(source, 0, 0, w, h)
             }
 
-            // Downscaled glow source — bilinear upscale at draw time is the blur.
-            const gw = Math.max(1, Math.round(w / 8))
-            const gh = Math.max(1, Math.round(h / 8))
-            glowSprite = document.createElement('canvas')
-            glowSprite.width = gw
-            glowSprite.height = gh
-            const gc = glowSprite.getContext('2d')
-            if (gc) {
-                gc.imageSmoothingEnabled = true
-                gc.drawImage(source, 0, 0, gw, gh)
-            }
+            // Pre-blurred glow sprite so the additive halo stays smooth when
+            // upscaled at draw time instead of going blocky.
+            glowSprite = makeGlow(source, w, h)
 
             raySprite = makeRays('rgba(225,170,255,0.9)')
             for (const hex of TRIAD) dots.push(makeDot(hex))
@@ -336,7 +358,7 @@ canvas(
                 for (let i = 0; i < toSpawn; i++) {
                     if (particles.length >= 160) break
                     const ang = Math.random() * Math.PI * 2
-                    const spd = (0.1 + Math.random() * 0.42) * ch * (0.55 + beatPulse + 0.3 * ambient)
+                    const spd = (0.22 + Math.random() * 0.7) * ch * (0.6 + beatPulse + 0.3 * ambient)
                     const up = Math.cos(ang)
                     const idx = up < -0.34 ? 0 : Math.sin(ang) > 0 ? 2 : 1
                     particles.push({
@@ -345,7 +367,7 @@ canvas(
                         vx: Math.sin(ang) * spd,
                         vy: -Math.cos(ang) * spd,
                         life: 0,
-                        max: 0.8 + Math.random() * 1.3,
+                        max: 1.3 + Math.random() * 1.9,
                         size: (0.016 + Math.random() * 0.02) * ch,
                         sprite: dots[idx],
                     })
@@ -364,10 +386,11 @@ canvas(
                     const t = p.life / p.max
                     p.x += p.vx * dt
                     p.y += p.vy * dt
-                    // Frame-rate-independent drag so 30fps and 60fps decay alike.
-                    const drag = Math.exp(-2.1 * dt)
+                    // Light, frame-rate-independent drag — embers keep momentum
+                    // and travel well out from the trinity before fading.
+                    const drag = Math.exp(-0.9 * dt)
                     p.vx *= drag
-                    p.vy = p.vy * drag + 14 * dt
+                    p.vy = p.vy * drag + 10 * dt
                     const fade = (1 - t) * (0.55 + 0.45 * treble)
                     const sz = p.size * (1.25 - 0.75 * t)
                     ctx.globalAlpha = Math.min(1, fade)
