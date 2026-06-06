@@ -117,17 +117,17 @@ function makeGlow(source: CanvasImageSource, srcW: number, srcH: number): HTMLCa
 canvas(
     'Hyperbloom',
     {
-        aberration: num('Aberration', [0, 100], 42, { group: 'Audio' }),
-        backgroundGlow: num('Background Glow', [0, 100], 26, { group: 'Scene' }),
-        bloom: num('Bloom', [0, 100], 60, { group: 'Audio' }),
+        aberration: num('Aberration', [0, 100], 38, { group: 'Effects' }),
+        backgroundGlow: num('Background Glow', [0, 100], 30, { group: 'Scene' }),
+        bloom: num('Bloom', [0, 100], 58, { group: 'Glow' }),
         brightness: num('Brightness', [50, 150], 100, { group: 'Scene' }),
-        glow: num('Glow', [0, 100], 55, { group: 'Bloom' }),
+        glow: num('Glow', [0, 100], 56, { group: 'Glow' }),
         idleMotion: num('Idle Motion', [0, 100], 36, { group: 'Motion' }),
-        liveliness: num('Audio Reactivity', [0, 100], 60, { group: 'Audio' }),
-        rays: num('Light Rays', [0, 100], 38, { group: 'Bloom' }),
+        liveliness: num('Liveliness', [0, 100], 60, { group: 'Glow' }),
+        rays: num('Light Rays', [0, 100], 40, { group: 'Glow' }),
         size: num('Mark Size', [40, 100], 60, { group: 'Scene' }),
-        sparks: num('Sparks', [0, 100], 50, { group: 'Audio' }),
-        speed: num('Speed', [1, 10], 4, { group: 'Motion' }),
+        sparks: num('Sparks', [0, 100], 50, { group: 'Effects' }),
+        speed: num('Speed', [1, 10], 4, { group: 'Motion', normalize: 'none' }),
         spin: num('Spin', [-100, 100], 12, { group: 'Motion' }),
     },
     () => {
@@ -165,7 +165,7 @@ canvas(
             // upscaled at draw time instead of going blocky.
             glowSprite = makeGlow(source, w, h)
 
-            raySprite = makeRays('rgba(225,170,255,0.9)')
+            raySprite = makeRays('rgba(200,60,255,0.85)')
             for (const hex of TRIAD) dots.push(makeDot(hex))
             ready = true
         }
@@ -198,7 +198,10 @@ canvas(
             const ch = ctx.canvas.height
             const cx = cw / 2
             const cy = ch / 2
-            const dt = Math.min(0.05, Math.max(0.001, time - lastTime || 0.016))
+            // Cap generously (covers the 10fps tier's 100ms frame) so particle
+            // physics keep real-time pace at low FPS, while still guarding against
+            // multi-second stalls teleporting everything.
+            const dt = Math.min(0.12, Math.max(0.001, time - lastTime || 0.016))
             lastTime = time
 
             // Servo's software canvas can default to nearest-neighbor scaling.
@@ -219,10 +222,11 @@ canvas(
             const spin = (c.spin as number) / 100
             const bright = (c.brightness as number) / 100
 
-            // ── Autonomous heartbeat — keeps the mark alive in silence and lets
-            // the audio controls demonstrate themselves without music. ──────────
+            // ── Autonomous heartbeat — Liveliness sets how strongly the mark
+            // pulses, blooms, and sheds embers on its own (and how hard it reacts
+            // to audio), so every glow/effect control responds even in silence. ──
             const heart = 0.5 + 0.5 * Math.sin(time * 0.85 * speedN)
-            const ambient = 0.25 + (0.35 + 0.4 * heart) * Math.max(idle, 0.35)
+            const ambient = (0.28 + 0.5 * heart) * (0.3 + 0.7 * liveCtl)
 
             // ── Audio (scaled by reactivity) ────────────────────────────────────
             const a = audio()
@@ -239,9 +243,10 @@ canvas(
             const glowE = knee(glowCtl * (0.4 + 0.34 * heart) + 0.7 * level + 0.9 * beatPulse)
             const bloomE = knee(bloomCtl * (0.16 + 0.5 * ambient + 0.95 * beatPulse + 0.4 * level))
             const rayE = knee(rayCtl * (0.14 + 0.45 * ambient + 0.9 * beatPulse + 0.5 * level + 0.45 * onsetPulse))
-            // Aberration is a pure transient split — exactly zero at idle, so it
-            // never pays for extra full-logo draws in silence at any canvas size.
-            const abE = abCtl * (0.85 * beatPulse + 0.5 * onsetPulse)
+            // Aberration: a constant split at idle so the control reads at default,
+            // bursting on transients. The second offset draw is gated to real
+            // energy, so idle never pays for two full-logo draws.
+            const abE = abCtl * (0.14 + 0.85 * beatPulse + 0.5 * onsetPulse)
 
             // ── Background ──────────────────────────────────────────────────────
             ctx.globalCompositeOperation = 'source-over'
@@ -292,7 +297,7 @@ canvas(
                 ctx.rotate(-time * 0.06 * speedN - rot * 0.2)
                 ctx.globalCompositeOperation = 'lighter'
                 ctx.imageSmoothingQuality = 'low'
-                ctx.globalAlpha = Math.min(0.7, rayE)
+                ctx.globalAlpha = Math.min(0.75, rayE * bright)
                 const rs = baseH * 1.95
                 ctx.drawImage(raySprite, -rs / 2, -rs / 2, rs, rs)
                 ctx.restore()
@@ -302,33 +307,38 @@ canvas(
             ctx.translate(cx, cy)
             ctx.rotate(rot)
 
-            // ── Bloom halo (additive) — one cheap pass always; a wider halo only
-            // when there's real energy, so idle frames stay light on Servo. ──────
+            // ── Bloom halo (additive). Glow drives the tight core halo; Bloom
+            // drives the wide outer halo's size and presence. Both read at idle,
+            // and the pre-blurred sprite keeps each 'low'-quality pass cheap. ────
             ctx.globalCompositeOperation = 'lighter'
             ctx.imageSmoothingQuality = 'low'
-            const coreAmt = glowE * 0.6 + bloomE * 0.5
+            const coreAmt = glowE * 0.85 + bloomE * 0.15
             if (coreAmt > 0.01) {
-                ctx.globalAlpha = Math.min(0.9, coreAmt)
-                const gs = 1.28 + 0.5 * bloomE
+                ctx.globalAlpha = Math.min(0.9, coreAmt * bright)
+                const gs = 1.26 + 0.32 * bloomE
                 const gw = baseW * gs
                 const gh = baseH * gs
                 ctx.drawImage(glowSprite, -gw / 2, -gh / 2, gw, gh)
             }
-            const haloAmt = glowE * 0.35 + bloomE * 0.7 - 0.4
-            if (haloAmt > 0.01) {
-                ctx.globalAlpha = Math.min(0.6, haloAmt)
-                const w2 = baseW * 1.95
-                const h2 = baseH * 1.95
+            const haloAmt = bloomE * 0.85 + glowE * 0.12
+            if (haloAmt > 0.02) {
+                ctx.globalAlpha = Math.min(0.6, haloAmt * bright)
+                const hs = 1.7 + 0.7 * bloomE
+                const w2 = baseW * hs
+                const h2 = baseH * hs
                 ctx.drawImage(glowSprite, -w2 / 2, -h2 / 2, w2, h2)
             }
 
-            // ── Chromatic split (transient only; skipped at idle) ───────────────
-            const ab = abE * baseW * 0.04
-            if (ab > 0.8) {
+            // ── Chromatic split — one faint offset at idle, full split on energy ─
+            const ab = abE * baseW * 0.1
+            if (ab > 0.4) {
                 ctx.globalCompositeOperation = 'lighter'
-                ctx.globalAlpha = Math.min(0.5, 0.15 + abE * 0.5)
+                ctx.imageSmoothingQuality = 'low'
+                ctx.globalAlpha = Math.min(0.5, 0.12 + abE * 0.5)
                 ctx.drawImage(logoSprite, -baseW / 2 + ab, -baseH / 2, baseW, baseH)
-                ctx.drawImage(logoSprite, -baseW / 2 - ab, -baseH / 2 + ab * 0.4, baseW, baseH)
+                if (abE > 0.2) {
+                    ctx.drawImage(logoSprite, -baseW / 2 - ab, -baseH / 2 + ab * 0.4, baseW, baseH)
+                }
             }
 
             // ── The mark itself (the one layer that needs crisp resampling) ─────
@@ -337,13 +347,16 @@ canvas(
             ctx.globalAlpha = Math.min(1, bright * (0.94 + 0.1 * level))
             ctx.drawImage(logoSprite, -baseW / 2, -baseH / 2, baseW, baseH)
 
-            // Additive self-bloom brightens the chrome on energy — audio-only so
-            // the mark never sits washed-out at idle.
-            const selfBloom = bloomCtl * (0.22 * level + 0.7 * beatPulse) + treble * 0.18
+            // Additive self-bloom on energy — blooms the colored aura, not the
+            // crisp logo: redrawing the white chrome additively would clamp those
+            // pixels to flat white. Audio-driven so the mark never washes at idle.
+            const selfBloom = bloomCtl * (0.25 * level + 0.8 * beatPulse) + treble * 0.2
             if (selfBloom > 0.01) {
                 ctx.globalCompositeOperation = 'lighter'
-                ctx.globalAlpha = Math.min(0.8, selfBloom)
-                ctx.drawImage(logoSprite, -baseW / 2, -baseH / 2, baseW, baseH)
+                ctx.imageSmoothingQuality = 'low'
+                ctx.globalAlpha = Math.min(0.7, selfBloom) * bright
+                const bs = 1.08
+                ctx.drawImage(glowSprite, (-baseW * bs) / 2, (-baseH * bs) / 2, baseW * bs, baseH * bs)
             }
             ctx.restore()
 
@@ -353,7 +366,7 @@ canvas(
                 let toSpawn = Math.floor(spawnAcc)
                 spawnAcc -= toSpawn
                 const rising = beat > 0.5 && beatPrev <= 0.5
-                if (rising) toSpawn += Math.round(sparkCtl * 16 * (0.6 + beatPulse))
+                if (rising) toSpawn += Math.round(sparkCtl * 16 * (0.6 + beatPulse) * liveCtl)
                 if (onsetPulse > 0.3) toSpawn += Math.round(sparkCtl * 2)
                 for (let i = 0; i < toSpawn; i++) {
                     if (particles.length >= 160) break
@@ -386,6 +399,12 @@ canvas(
                     const t = p.life / p.max
                     p.x += p.vx * dt
                     p.y += p.vy * dt
+                    // Cull embers that have flown off-canvas — also rescues any
+                    // left in stale coordinates after a canvas resize.
+                    if (p.x < -40 || p.x > cw + 40 || p.y < -40 || p.y > ch + 40) {
+                        particles.splice(i, 1)
+                        continue
+                    }
                     // Light, frame-rate-independent drag — embers keep momentum
                     // and travel well out from the trinity before fading.
                     const drag = Math.exp(-0.9 * dt)
@@ -393,7 +412,7 @@ canvas(
                     p.vy = p.vy * drag + 10 * dt
                     const fade = (1 - t) * (0.55 + 0.45 * treble)
                     const sz = p.size * (1.25 - 0.75 * t)
-                    ctx.globalAlpha = Math.min(1, fade)
+                    ctx.globalAlpha = Math.min(1, fade * bright)
                     ctx.drawImage(p.sprite, p.x - sz, p.y - sz, sz * 2, sz * 2)
                 }
             }
@@ -413,117 +432,117 @@ canvas(
         presets: [
             {
                 controls: {
-                    aberration: 42,
-                    backgroundGlow: 26,
-                    bloom: 60,
+                    aberration: 38,
+                    backgroundGlow: 30,
+                    bloom: 58,
                     brightness: 100,
-                    glow: 55,
+                    glow: 56,
                     idleMotion: 36,
                     liveliness: 60,
-                    rays: 38,
+                    rays: 40,
                     size: 60,
                     sparks: 50,
                     speed: 4,
                     spin: 12,
                 },
                 description:
-                    'The signature resting state. The mark turns and breathes inside a soft bloom, embers drifting up, ready to flare the moment music plays.',
-                name: 'Signature Bloom',
+                    'The balanced brand statement — the mark turning in a soft bloom with embers drifting up, lively the moment sound arrives.',
+                name: 'Signature',
             },
             {
                 controls: {
-                    aberration: 16,
-                    backgroundGlow: 18,
-                    bloom: 40,
-                    brightness: 96,
-                    glow: 46,
-                    idleMotion: 18,
-                    liveliness: 30,
-                    rays: 16,
-                    size: 56,
-                    sparks: 14,
+                    aberration: 8,
+                    backgroundGlow: 16,
+                    bloom: 30,
+                    brightness: 92,
+                    glow: 38,
+                    idleMotion: 12,
+                    liveliness: 22,
+                    rays: 10,
+                    size: 52,
+                    sparks: 10,
                     speed: 2,
-                    spin: 6,
+                    spin: 4,
                 },
                 description:
-                    'Near-still ambient wallpaper. The mark glows quietly in the dark, turning slowly, calm enough to live behind everything.',
-                name: 'Resting Heart',
+                    'Barely moving. A small, quiet mark glowing in the dark — calm enough to live behind everything.',
+                name: 'Still',
             },
             {
                 controls: {
-                    aberration: 30,
-                    backgroundGlow: 42,
-                    bloom: 50,
-                    brightness: 102,
-                    glow: 66,
-                    idleMotion: 70,
-                    liveliness: 42,
-                    rays: 34,
-                    size: 62,
-                    sparks: 30,
+                    aberration: 20,
+                    backgroundGlow: 78,
+                    bloom: 64,
+                    brightness: 104,
+                    glow: 80,
+                    idleMotion: 56,
+                    liveliness: 46,
+                    rays: 64,
+                    size: 70,
+                    sparks: 24,
                     speed: 3,
-                    spin: 26,
+                    spin: 18,
                 },
                 description:
-                    'Always in motion. The mark turns inside a wide aurora glow, embers swirling, alive even in silence.',
-                name: 'Aurora Drift',
+                    'Vast and dreamy. The mark floats large in a wide aurora haze, god-rays drifting behind it — slow and atmospheric.',
+                name: 'Nebula',
             },
             {
                 controls: {
-                    aberration: 50,
+                    aberration: 46,
                     backgroundGlow: 24,
-                    bloom: 70,
+                    bloom: 68,
                     brightness: 102,
-                    glow: 58,
+                    glow: 54,
                     idleMotion: 30,
-                    liveliness: 82,
-                    rays: 50,
+                    liveliness: 88,
+                    rays: 46,
                     size: 60,
                     sparks: 66,
                     speed: 5,
                     spin: 10,
                 },
                 description:
-                    'Tuned to move with music. Bass swells the bloom, beats split the mark, embers scatter on every hit.',
-                name: 'Live Pulse',
+                    'Tuned for music. Lively at rest and explosive with sound — bass swells the bloom, beats split the mark, embers scatter.',
+                name: 'Pulse',
             },
             {
                 controls: {
-                    aberration: 72,
-                    backgroundGlow: 20,
-                    bloom: 92,
-                    brightness: 108,
-                    glow: 64,
-                    idleMotion: 44,
+                    aberration: 82,
+                    backgroundGlow: 18,
+                    bloom: 94,
+                    brightness: 110,
+                    glow: 70,
+                    idleMotion: 50,
                     liveliness: 100,
-                    rays: 84,
-                    size: 62,
-                    sparks: 96,
-                    speed: 7,
-                    spin: 16,
+                    rays: 90,
+                    size: 64,
+                    sparks: 100,
+                    speed: 8,
+                    spin: 30,
                 },
                 description:
-                    'Full send. The mark blooms hard, god-rays blast on every beat, embers fly. Built for a room with the bass up.',
-                name: 'Hyperdrive',
+                    'Maxed out. Fast spin, hard bloom, god-rays blasting, embers everywhere. For a room with the bass up.',
+                name: 'Rave',
             },
             {
                 controls: {
-                    aberration: 36,
-                    backgroundGlow: 16,
-                    bloom: 64,
-                    brightness: 100,
-                    glow: 92,
-                    idleMotion: 26,
-                    liveliness: 50,
-                    rays: 24,
+                    aberration: 28,
+                    backgroundGlow: 14,
+                    bloom: 56,
+                    brightness: 98,
+                    glow: 96,
+                    idleMotion: 22,
+                    liveliness: 44,
+                    rays: 18,
                     size: 58,
-                    sparks: 34,
+                    sparks: 20,
                     speed: 3,
-                    spin: 8,
+                    spin: 7,
                 },
                 description:
-                    "All chrome. A heavy, steady halo that leans into the mark's liquid-metal rim — molten and elegant.",
-                name: 'Chrome Halo',
+                    "Pure chrome. A heavy, steady halo wrapping the mark's liquid-metal rim — molten, minimal, elegant.",
+                name: 'Halo',
             },
         ],
     },
