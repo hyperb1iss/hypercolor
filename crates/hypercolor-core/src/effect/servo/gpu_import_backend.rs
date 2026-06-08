@@ -202,10 +202,11 @@ impl ServoGpuImportBackend {
             .refresh_surface()
             .map_err(|error| anyhow!("failed to refresh Linux Servo surface: {error:?}"))?;
         rendering_context.prepare_for_rendering();
+        self.clear_platform_importer(rendering_context);
+        self.reset_retry_state();
+        rendering_context.prepare_for_rendering();
         let after_surface = linux_context.surface_snapshot();
         let size = rendering_context.size();
-        self.retry_after = None;
-        self.transient_failures = 0;
         debug!(
             ?destroyed_session_id,
             ?session_id,
