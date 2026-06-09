@@ -355,6 +355,36 @@ impl PreviewFrameView {
         &self.payload
     }
 
+    /// Copy the whole frame into a tightly-packed RGBA byte vector.
+    ///
+    /// One `copy_to` boundary crossing instead of a `get_index` call per
+    /// component — use this for full-frame reads (encoding, palette work).
+    /// Returns `None` for non-raw payloads (JPEG).
+    #[must_use]
+    pub fn to_rgba_vec(&self) -> Option<Vec<u8>> {
+        let len = self.payload.length() as usize;
+        match self.format {
+            PreviewPixelFormat::Rgba => {
+                let mut rgba = vec![0_u8; len];
+                self.payload.copy_to(&mut rgba);
+                Some(rgba)
+            }
+            PreviewPixelFormat::Rgb => {
+                let mut rgb = vec![0_u8; len];
+                self.payload.copy_to(&mut rgb);
+                let mut rgba = vec![0_u8; (len / 3).saturating_mul(4)];
+                for (src, dst) in rgb.chunks_exact(3).zip(rgba.chunks_exact_mut(4)) {
+                    dst[0] = src[0];
+                    dst[1] = src[1];
+                    dst[2] = src[2];
+                    dst[3] = 255;
+                }
+                Some(rgba)
+            }
+            PreviewPixelFormat::Jpeg => None,
+        }
+    }
+
     #[must_use]
     pub const fn pixel_format(&self) -> PreviewPixelFormat {
         self.format

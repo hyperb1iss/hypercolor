@@ -233,7 +233,8 @@ pub async fn update_effect_controls(
     let url = format!("/api/v1/effects/{effect_id}/controls");
     let body_str = serde_json::to_string(&serde_json::json!({ "controls": controls }))
         .map_err(|e| e.to_string())?;
-    let mut req = client::with_auth(Request::patch(&url)).header("Content-Type", "application/json");
+    let mut req =
+        client::with_auth(Request::patch(&url)).header("Content-Type", "application/json");
     if let Some(version) = expected_version {
         req = req.header("If-Match", &version.to_string());
     }

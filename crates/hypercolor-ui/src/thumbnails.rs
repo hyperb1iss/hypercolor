@@ -26,6 +26,11 @@ const LOCAL_STORAGE_KEY: &str = "hypercolor:thumbnails";
 const WEBP_QUALITY: f64 = 0.88;
 /// How long an effect must play uninterrupted before we capture a thumbnail.
 pub const CAPTURE_STABLE_MS: f64 = 2500.0;
+/// Cadence for the capture-eligibility scan. The effect itself wakes on
+/// every canvas frame (it must, to keep its subscription alive), but the
+/// lookup/probe work only needs to run about once a second — at frame rate
+/// it allocates megabytes per second for nothing.
+const CAPTURE_SCAN_INTERVAL_MS: f64 = 1000.0;
 /// Probe result cache for curated screenshots. Skips opportunistic capture
 /// when the daemon already serves authored artwork for this slug, so we don't
 /// burn localStorage quota on thumbnails that will be painted over anyway.
@@ -96,6 +101,16 @@ impl ThumbnailStore {
         self.store.with(|map| {
             map.get(effect_id)
                 .and_then(|thumb| (thumb.version == version).then(|| thumb.clone()))
+        })
+    }
+
+    /// Non-reactive existence check that never clones the (potentially
+    /// multi-KB) thumbnail payload. Used by the capture loop, which is
+    /// driven by the frame stream rather than store updates.
+    fn has_fresh(&self, effect_id: &str, version: &str) -> bool {
+        self.store.with_untracked(|map| {
+            map.get(effect_id)
+                .is_some_and(|thumb| thumb.version == version)
         })
     }
 
@@ -170,24 +185,13 @@ fn encode_frame_to_webp(frame: &CanvasFrame) -> Result<String, JsValue> {
 
     let ctx = context_2d(&canvas).ok_or_else(|| JsValue::from_str("no 2d context"))?;
 
-    let rgba = frame_to_rgba_vec(frame);
+    let rgba = frame
+        .to_rgba_vec()
+        .ok_or_else(|| JsValue::from_str("non-raw frame payload"))?;
     let image_data = image_data_rgba(&rgba, frame.width, frame.height)?;
     ctx.put_image_data(&image_data, 0.0, 0.0)?;
 
     canvas.to_data_url_with_type_and_encoder_options("image/webp", &JsValue::from_f64(WEBP_QUALITY))
-}
-
-fn frame_to_rgba_vec(frame: &CanvasFrame) -> Vec<u8> {
-    let pixel_count = frame.pixel_count();
-    let mut rgba = Vec::with_capacity(pixel_count.saturating_mul(4));
-    for i in 0..pixel_count {
-        if let Some([r, g, b, a]) = frame.rgba_at(i) {
-            rgba.extend_from_slice(&[r, g, b, a]);
-        } else {
-            rgba.extend_from_slice(&[0, 0, 0, 255]);
-        }
-    }
-    rgba
 }
 
 /// Kebab-case slug for an effect name. Mirrors the capture tool's slugify so
@@ -261,6 +265,7 @@ pub fn install_auto_capture<F>(
     // Track when the current effect became active, so we can wait for the
     // stability window before capturing. Stored as (id, since_ms).
     let active_since: StoredValue<Option<(String, f64)>> = StoredValue::new(None);
+    let last_scan: StoredValue<f64> = StoredValue::new(0.0);
     let pending_captures: StoredValue<HashSet<(String, String)>> = StoredValue::new(HashSet::new());
     let curated_probes: StoredValue<HashMap<String, CuratedProbe>> =
         StoredValue::new(HashMap::new());
@@ -277,9 +282,16 @@ pub fn install_auto_capture<F>(
         });
 
         // Reactively watch canvas frames — the actual capture happens here.
+        // The `.get()` must run unconditionally so the subscription
+        // re-registers every run; everything below it is throttled.
         let Some(frame) = canvas_frame.get() else {
             return;
         };
+        if last_scan.with_value(|t| now - t < CAPTURE_SCAN_INTERVAL_MS) {
+            return;
+        }
+        last_scan.set_value(now);
+
         let Some((effect_id, started_at)) = active_since.get_value() else {
             return;
         };
@@ -291,7 +303,7 @@ pub fn install_auto_capture<F>(
         let Some((name, version)) = effect_lookup(&effect_id) else {
             return;
         };
-        if store.get(&effect_id, &version).is_some() {
+        if store.has_fresh(&effect_id, &version) {
             return;
         }
         if pending_captures
