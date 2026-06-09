@@ -16,6 +16,7 @@ use axum::extract::ws::Utf8Bytes;
 use hypercolor_core::device::usb_actor_metrics_snapshot;
 use hypercolor_core::engine::RenderLoopState;
 use hypercolor_types::canvas::PublishedSurfaceStorageIdentity;
+use hypercolor_types::sensor::SystemSnapshot;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{broadcast, watch};
 use tracing::{debug, warn};
@@ -1099,6 +1100,67 @@ pub(super) async fn relay_device_metrics(
     }
 }
 
+/// Relay latest-value system sensor snapshots to the WebSocket client.
+pub(super) async fn relay_sensors(
+    state: Arc<AppState>,
+    json_tx: tokio::sync::mpsc::Sender<Utf8Bytes>,
+    mut subscriptions: watch::Receiver<SubscriptionState>,
+) {
+    let mut sensor_rx = sensor_snapshot_receiver(&state).await;
+    let mut sent_current_snapshot = false;
+
+    loop {
+        if !subscriptions.borrow().channels.contains(WsChannel::Sensors) {
+            sent_current_snapshot = false;
+            if subscriptions.changed().await.is_err() {
+                break;
+            }
+            let _ = subscriptions.borrow_and_update();
+            continue;
+        }
+
+        let Some(rx) = sensor_rx.as_mut() else {
+            enqueue_sensor_snapshot(&json_tx, &SystemSnapshot::empty());
+            sent_current_snapshot = true;
+
+            if subscriptions.changed().await.is_err() {
+                break;
+            }
+            let _ = subscriptions.borrow_and_update();
+            sensor_rx = sensor_snapshot_receiver(&state).await;
+            continue;
+        };
+
+        if !sent_current_snapshot {
+            let snapshot = Arc::clone(&rx.borrow_and_update());
+            enqueue_sensor_snapshot(&json_tx, snapshot.as_ref());
+            sent_current_snapshot = true;
+        }
+
+        tokio::select! {
+            changed = subscriptions.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+                let _ = subscriptions.borrow_and_update();
+                continue;
+            }
+            changed = rx.changed() => {
+                if changed.is_err() {
+                    sensor_rx = sensor_snapshot_receiver(&state).await;
+                    sent_current_snapshot = false;
+                    continue;
+                }
+
+                if subscriptions.borrow().channels.contains(WsChannel::Sensors) {
+                    let snapshot = Arc::clone(&rx.borrow_and_update());
+                    enqueue_sensor_snapshot(&json_tx, snapshot.as_ref());
+                }
+            }
+        }
+    }
+}
+
 pub(super) fn try_enqueue_json<T>(
     json_tx: &tokio::sync::mpsc::Sender<Utf8Bytes>,
     text: T,
@@ -1624,6 +1686,26 @@ pub(super) fn build_device_metrics_message(state: &AppState) -> ServerMessage {
     ServerMessage::DeviceMetrics {
         timestamp: format_iso8601_now(),
         data: snapshot.as_ref().clone(),
+    }
+}
+
+async fn sensor_snapshot_receiver(
+    state: &AppState,
+) -> Option<watch::Receiver<Arc<SystemSnapshot>>> {
+    let input_manager = state.input_manager.lock().await;
+    input_manager.sensor_snapshot_receiver()
+}
+
+fn enqueue_sensor_snapshot(
+    json_tx: &tokio::sync::mpsc::Sender<Utf8Bytes>,
+    snapshot: &SystemSnapshot,
+) {
+    let message = ServerMessage::Sensors {
+        timestamp: format_iso8601_now(),
+        data: snapshot.clone(),
+    };
+    if let Ok(text) = serde_json::to_string(&message) {
+        let _ = try_enqueue_json(json_tx, text, "sensors");
     }
 }
 

@@ -64,6 +64,11 @@
       "description": "Per-device output telemetry."
     },
     {
+      "name": "sensors",
+      "kind": "json",
+      "description": "Latest host CPU, GPU, memory, and component sensor snapshot."
+    },
+    {
       "name": "display_preview",
       "kind": "binary",
       "default_fps": 15,
@@ -81,6 +86,7 @@
     "zone_preview",
     "metrics",
     "device_metrics",
+    "sensors",
     "display_preview",
     "commands",
     "canvas_format_jpeg"
@@ -100,6 +106,7 @@
       "event",
       "metrics",
       "device_metrics",
+      "sensors",
       "backpressure",
       "error",
       "response"

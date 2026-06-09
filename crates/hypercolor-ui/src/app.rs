@@ -11,6 +11,7 @@ use hypercolor_leptos_ext::prelude::now_ms;
 use hypercolor_types::effect::{ControlDefinition, ControlValue};
 use hypercolor_types::event::LayerHealth;
 use hypercolor_types::scene::{SceneKind, SceneMutationMode};
+use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::spatial::SpatialLayout;
 
 use crate::api;
@@ -74,6 +75,7 @@ pub struct WsContext {
     pub set_screen_preview_consumers: WriteSignal<u32>,
     pub set_web_viewport_preview_consumers: WriteSignal<u32>,
     pub metrics: ReadSignal<Option<PerformanceMetrics>>,
+    pub sensors: ReadSignal<Option<SystemSnapshot>>,
     /// Latest per-device output telemetry snapshot. Populated only while a
     /// view has bumped `set_device_metrics_consumers`.
     pub device_metrics: ReadSignal<Option<api::DeviceMetricsSnapshot>>,
@@ -461,6 +463,7 @@ pub fn App() -> impl IntoView {
         set_screen_preview_consumers: ws.set_screen_preview_consumers,
         set_web_viewport_preview_consumers: ws.set_web_viewport_preview_consumers,
         metrics: ws.metrics,
+        sensors: ws.sensors,
         device_metrics: ws.device_metrics,
         set_device_metrics_consumers: ws.set_device_metrics_consumers,
         backpressure_notice: ws.backpressure_notice,

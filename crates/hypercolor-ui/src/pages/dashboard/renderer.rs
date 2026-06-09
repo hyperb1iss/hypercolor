@@ -1,8 +1,5 @@
 //! Renderer and hardware diagnostics panel for the dashboard.
 
-use std::time::Duration;
-
-use hypercolor_leptos_ext::prelude::set_interval;
 use hypercolor_types::sensor::SystemSnapshot;
 use leptos::prelude::*;
 use leptos_icons::Icon;
@@ -15,11 +12,6 @@ use crate::ws::PerformanceMetrics;
 
 /// `localStorage` key holding whether the deep-diagnostics grid is expanded.
 const DIAGNOSTICS_OPEN_KEY: &str = "hc-dash-renderer-diagnostics-open";
-
-/// How often the host-sensor snapshot is re-fetched to keep the vitals
-/// strip live. Sensors ride REST, not the metrics watch, so the panel
-/// polls them itself.
-const SENSOR_POLL: Duration = Duration::from_millis(2000);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DiagnosticTone {
@@ -89,21 +81,10 @@ struct ServoImportBadgeSnapshot {
 #[component]
 pub(super) fn RendererHardwarePanel(
     #[prop(into)] metrics: Signal<Option<PerformanceMetrics>>,
+    #[prop(into)] sensors: Signal<Option<SystemSnapshot>>,
 ) -> impl IntoView {
     let status_resource = LocalResource::new(api::fetch_status);
-    let sensors_resource = LocalResource::new(api::fetch_system_sensors);
     let status = Signal::derive(move || status_resource.get().and_then(Result::ok));
-    let sensors = Signal::derive(move || sensors_resource.get().and_then(Result::ok));
-
-    // Host sensors arrive over REST, not the metrics watch, so poll them on
-    // a gentle cadence to keep the vitals strip live. The IntervalHandle
-    // wraps a wasm-bindgen closure (`!Send`), so it is parked in the
-    // reactive owner via LocalStorage rather than `on_cleanup` (which wants
-    // a thread-safe closure); disposing the panel drops it and clears the
-    // interval.
-    let _sensor_poll = StoredValue::new_local(set_interval(SENSOR_POLL, move || {
-        sensors_resource.refetch();
-    }));
 
     let compositor_badge = Memo::new(move |_| {
         let metric_snapshot = metrics.get();
@@ -756,7 +737,8 @@ fn VitalTile(
     #[prop(into)] sub: Signal<String>,
     #[prop(into)] accent: Signal<&'static str>,
     /// Bar fill in `0.0..=1.0`.
-    #[prop(into)] fill: Signal<f64>,
+    #[prop(into)]
+    fill: Signal<f64>,
 ) -> impl IntoView {
     view! {
         <div class="flex min-w-0 flex-col gap-1.5 bg-surface-overlay/55 px-3 py-2.5">
@@ -818,7 +800,8 @@ fn DetailRow(
     #[prop(optional, into)]
     tone: Option<Signal<DiagnosticTone>>,
 ) -> impl IntoView {
-    let value_color = move || tone.map_or("var(--color-fg-secondary)", |tone| tone.get().value_color());
+    let value_color =
+        move || tone.map_or("var(--color-fg-secondary)", |tone| tone.get().value_color());
     view! {
         <div class="grid min-w-0 grid-cols-1 items-start gap-0.5 sm:grid-cols-[minmax(0,0.92fr)_minmax(0,1.28fr)] sm:gap-3">
             <span class="min-w-0 break-words text-[10px] font-mono uppercase tracking-normal text-fg-tertiary/65 sm:tracking-[0.11em]">

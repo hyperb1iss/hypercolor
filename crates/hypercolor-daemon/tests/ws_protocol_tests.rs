@@ -24,6 +24,7 @@ use axum::Router;
 use hypercolor_daemon::api::{self, AppState};
 use hypercolor_daemon::device_metrics::{DeviceMetrics, DeviceMetricsSnapshot};
 use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
+use hypercolor_types::sensor::SystemSnapshot;
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -311,6 +312,7 @@ async fn hello_handshake_returns_expected_capability_set() {
         "zone_preview",
         "metrics",
         "device_metrics",
+        "sensors",
         "commands",
     ] {
         assert!(
@@ -428,6 +430,52 @@ async fn device_metrics_subscription_streams_seeded_snapshot() {
     assert_eq!(message["data"]["taken_at_ms"], 5_678);
     assert_eq!(message["data"]["items"][0]["id"], device_id.to_string());
     assert_eq!(message["data"]["items"][0]["payload_bps_estimate"], 2_048);
+}
+
+#[tokio::test]
+async fn sensors_subscription_streams_seeded_snapshot() {
+    let state = test_app_state();
+    let mut snapshot = SystemSnapshot::empty();
+    snapshot.cpu_load_percent = 37.5;
+    snapshot.ram_used_percent = 64.0;
+    snapshot.polled_at_ms = 8_901;
+    let (_sensor_tx, sensor_rx) = tokio::sync::watch::channel(Arc::new(snapshot));
+    state
+        .input_manager
+        .lock()
+        .await
+        .set_sensor_snapshot_receiver(sensor_rx);
+
+    let addr = spawn_test_daemon_with_state(state).await;
+    let mut stream = ws_connect(addr)
+        .await
+        .expect("ws handshake should complete");
+    let _ = recv_until_type(&mut stream, "hello").await.expect("hello");
+
+    ws_send_text(
+        &mut stream,
+        &json!({
+            "type": "subscribe",
+            "channels": ["sensors"]
+        })
+        .to_string(),
+    )
+    .await
+    .expect("send sensors subscribe");
+
+    let ack = recv_until_type(&mut stream, "subscribed")
+        .await
+        .expect("sensors subscribed ack");
+    let channels = ack["channels"].as_array().expect("ack.channels is array");
+    assert_eq!(channels.len(), 1);
+    assert_eq!(channels[0], "sensors");
+
+    let message = recv_until_type(&mut stream, "sensors")
+        .await
+        .expect("sensors message should arrive");
+    assert_eq!(message["data"]["cpu_load_percent"], 37.5);
+    assert_eq!(message["data"]["ram_used_percent"], 64.0);
+    assert_eq!(message["data"]["polled_at_ms"], 8_901);
 }
 
 // ── Scenario 1: Subscribe → Unsubscribe → Subscribe cycle ────────────────

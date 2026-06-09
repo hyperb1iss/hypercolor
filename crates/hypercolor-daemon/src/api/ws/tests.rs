@@ -14,6 +14,7 @@ use hypercolor_types::controls::{ControlSurfaceEvent, ControlValue, ControlValue
 use hypercolor_types::device::{ConnectionType, DeviceId, DeviceOrigin};
 use hypercolor_types::event::{FrameData, FrameTiming, HypercolorEvent, SpectrumData, ZoneColors};
 use hypercolor_types::scene::{SceneId, ZoneId, ZoneRole};
+use hypercolor_types::sensor::SystemSnapshot;
 
 use super::cache::{
     FrameRelayMessage, WS_CANVAS_BINARY_CACHE, WS_CANVAS_HEADER, WS_CANVAS_JPEG_BODY_BUILD_COUNT,
@@ -47,7 +48,8 @@ use super::protocol::{
 use super::relays::{
     build_device_metrics_message, build_metrics_message, publish_subscriptions, relay_canvas,
     relay_device_metrics, relay_display_preview, relay_frames, relay_metrics, relay_screen_canvas,
-    relay_spectrum, relay_web_viewport_canvas, sync_preview_receiver, try_enqueue_json,
+    relay_sensors, relay_spectrum, relay_web_viewport_canvas, sync_preview_receiver,
+    try_enqueue_json,
 };
 use crate::api::AppState;
 use crate::api::security::{RequestAuthContext, SecurityState};
@@ -1024,6 +1026,57 @@ async fn relay_device_metrics_wakes_when_subscription_changes() {
 }
 
 #[tokio::test]
+async fn relay_sensors_streams_latest_snapshot_from_watch() {
+    let state = Arc::new(AppState::new());
+    let mut initial = SystemSnapshot::empty();
+    initial.cpu_load_percent = 42.0;
+    initial.polled_at_ms = 1_000;
+    let (sensor_tx, sensor_rx) = watch::channel(Arc::new(initial));
+    state
+        .input_manager
+        .lock()
+        .await
+        .set_sensor_snapshot_receiver(sensor_rx);
+
+    let initial_subscriptions = SubscriptionState::default();
+    let (subscriptions_tx, subscriptions_rx) = watch::channel(initial_subscriptions.clone());
+    let (json_tx, mut json_rx) = tokio::sync::mpsc::channel::<Utf8Bytes>(2);
+
+    let relay_handle = tokio::spawn(relay_sensors(Arc::clone(&state), json_tx, subscriptions_rx));
+
+    let mut subscriptions = initial_subscriptions;
+    subscriptions.channels.insert(WsChannel::Sensors);
+    publish_subscriptions(&subscriptions_tx, &subscriptions);
+
+    let message = tokio::time::timeout(std::time::Duration::from_millis(250), json_rx.recv())
+        .await
+        .expect("sensors relay should wake without idle polling")
+        .expect("sensors relay should emit current snapshot");
+    let payload: serde_json::Value =
+        serde_json::from_str(message.as_str()).expect("sensors payload should parse");
+    assert_eq!(payload["type"], "sensors");
+    assert_eq!(payload["data"]["cpu_load_percent"], 42.0);
+    assert_eq!(payload["data"]["polled_at_ms"], 1_000);
+
+    let mut next = SystemSnapshot::empty();
+    next.cpu_load_percent = 55.0;
+    next.polled_at_ms = 2_000;
+    sensor_tx.send_replace(Arc::new(next));
+
+    let message = tokio::time::timeout(std::time::Duration::from_millis(250), json_rx.recv())
+        .await
+        .expect("sensors relay should follow watch changes")
+        .expect("sensors relay should emit updated snapshot");
+    let payload: serde_json::Value =
+        serde_json::from_str(message.as_str()).expect("sensors payload should parse");
+    assert_eq!(payload["type"], "sensors");
+    assert_eq!(payload["data"]["cpu_load_percent"], 55.0);
+    assert_eq!(payload["data"]["polled_at_ms"], 2_000);
+
+    relay_handle.abort();
+}
+
+#[tokio::test]
 async fn relay_frames_wakes_when_subscription_changes() {
     let initial_subscriptions = SubscriptionState::default();
     let (subscriptions_tx, subscriptions_rx) = watch::channel(initial_subscriptions.clone());
@@ -1810,6 +1863,7 @@ fn ws_capabilities_include_commands() {
     assert!(capabilities.contains(&"zone_preview".to_owned()));
     assert!(capabilities.contains(&"metrics".to_owned()));
     assert!(capabilities.contains(&"device_metrics".to_owned()));
+    assert!(capabilities.contains(&"sensors".to_owned()));
     assert!(capabilities.contains(&"display_preview".to_owned()));
     assert!(capabilities.contains(&"commands".to_owned()));
     assert!(capabilities.contains(&"canvas_format_jpeg".to_owned()));

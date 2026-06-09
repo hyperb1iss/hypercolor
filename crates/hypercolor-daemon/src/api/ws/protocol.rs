@@ -10,6 +10,7 @@ use std::hash::{Hash, Hasher};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::server::ServerIdentity;
 use hypercolor_types::spatial::SpatialLayout;
 
@@ -29,11 +30,12 @@ pub(super) enum WsChannel {
     ZonePreview,
     Metrics,
     DeviceMetrics,
+    Sensors,
     DisplayPreview,
 }
 
 impl WsChannel {
-    pub(super) const SUPPORTED: [Self; 11] = [
+    pub(super) const SUPPORTED: [Self; 12] = [
         Self::Frames,
         Self::Spectrum,
         Self::Events,
@@ -44,6 +46,7 @@ impl WsChannel {
         Self::ZonePreview,
         Self::Metrics,
         Self::DeviceMetrics,
+        Self::Sensors,
         Self::DisplayPreview,
     ];
 
@@ -59,6 +62,7 @@ impl WsChannel {
             Self::ZonePreview => "zone_preview",
             Self::Metrics => "metrics",
             Self::DeviceMetrics => "device_metrics",
+            Self::Sensors => "sensors",
             Self::DisplayPreview => "display_preview",
         }
     }
@@ -75,6 +79,7 @@ impl WsChannel {
             "zone_preview" => Some(Self::ZonePreview),
             "metrics" => Some(Self::Metrics),
             "device_metrics" => Some(Self::DeviceMetrics),
+            "sensors" => Some(Self::Sensors),
             "display_preview" => Some(Self::DisplayPreview),
             _ => None,
         }
@@ -96,7 +101,8 @@ impl WsChannel {
             Self::ZonePreview => 1 << 7,
             Self::Metrics => 1 << 8,
             Self::DeviceMetrics => 1 << 9,
-            Self::DisplayPreview => 1 << 10,
+            Self::Sensors => 1 << 10,
+            Self::DisplayPreview => 1 << 11,
         }
     }
 }
@@ -382,7 +388,7 @@ impl ChannelConfig {
                 WsChannel::Metrics => serde_json::to_value(&self.metrics),
                 WsChannel::DeviceMetrics => serde_json::to_value(&self.device_metrics),
                 WsChannel::DisplayPreview => serde_json::to_value(&self.display_preview),
-                WsChannel::Events | WsChannel::FrameEvents => continue,
+                WsChannel::Events | WsChannel::FrameEvents | WsChannel::Sensors => continue,
             };
 
             if let Ok(json_value) = value {
@@ -710,6 +716,11 @@ pub(super) enum ServerMessage {
     DeviceMetrics {
         timestamp: String,
         data: DeviceMetricsSnapshot,
+    },
+    /// Latest host sensor snapshot.
+    Sensors {
+        timestamp: String,
+        data: SystemSnapshot,
     },
     /// Backpressure warning for dropped binary channel payloads.
     Backpressure {

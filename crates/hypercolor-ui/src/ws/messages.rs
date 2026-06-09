@@ -9,6 +9,7 @@ pub use hypercolor_leptos_ext::ws::{
 };
 use hypercolor_types::event::{LayerHealth, ZoneChangeKind};
 use hypercolor_types::scene::{SceneKind, SceneMutationMode, ZoneRole};
+use hypercolor_types::sensor::SystemSnapshot;
 use leptos::prelude::*;
 use serde::Deserialize;
 
@@ -417,6 +418,11 @@ struct DeviceMetricsMessage {
 }
 
 #[derive(Debug, Deserialize)]
+struct SensorsMessage {
+    data: SystemSnapshot,
+}
+
+#[derive(Debug, Deserialize)]
 struct BackpressureMessage {
     dropped_frames: u32,
     channel: String,
@@ -455,6 +461,7 @@ pub(super) fn handle_json_message(
     metrics: ReadSignal<Option<PerformanceMetrics>>,
     set_metrics: &WriteSignal<Option<PerformanceMetrics>>,
     set_device_metrics: &WriteSignal<Option<DeviceMetricsSnapshot>>,
+    set_sensors: &WriteSignal<Option<SystemSnapshot>>,
     backpressure_notice: ReadSignal<Option<BackpressureNotice>>,
     set_backpressure_notice: &WriteSignal<Option<BackpressureNotice>>,
     set_last_device_event: &WriteSignal<Option<DeviceEventHint>>,
@@ -518,6 +525,11 @@ pub(super) fn handle_json_message(
         "device_metrics" => {
             if let Ok(message) = serde_json::from_value::<DeviceMetricsMessage>(msg.clone()) {
                 set_device_metrics.set(Some(message.data));
+            }
+        }
+        "sensors" => {
+            if let Ok(message) = serde_json::from_value::<SensorsMessage>(msg.clone()) {
+                set_sensors.set(Some(message.data));
             }
         }
         "subscribed" => {

@@ -5,6 +5,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use hypercolor_types::event::LayerHealth;
+use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::spatial::SpatialLayout;
 
 use hypercolor_leptos_ext::events::{
@@ -65,6 +66,7 @@ pub struct WsManager {
     pub display_preview_frame: ReadSignal<Option<CanvasFrame>>,
     pub preview_fps: ReadSignal<f32>,
     pub metrics: ReadSignal<Option<PerformanceMetrics>>,
+    pub sensors: ReadSignal<Option<SystemSnapshot>>,
     /// Latest per-device output telemetry snapshot. `None` until the devices
     /// page (or any other consumer) subscribes via
     /// `set_device_metrics_consumers`.
@@ -106,6 +108,7 @@ impl WsManager {
         let (connection_state, set_connection_state) = signal(ConnectionState::Disconnected);
         let (preview_fps, set_preview_fps) = signal(0.0_f32);
         let (metrics, set_metrics) = signal(None::<PerformanceMetrics>);
+        let (sensors, set_sensors) = signal(None::<SystemSnapshot>);
         let (device_metrics, set_device_metrics) = signal(None::<DeviceMetricsSnapshot>);
         let (device_metrics_consumers, set_device_metrics_consumers) = signal(0_u32);
         let device_metrics_requested: StoredValue<bool> = StoredValue::new(false);
@@ -185,6 +188,7 @@ impl WsManager {
             requested_screen_preview.set_value(None);
             requested_web_viewport_preview.set_value(None);
             set_preview_fps.set(0.0);
+            set_sensors.set(None);
 
             let url = ws_url.get_value();
             let ws = match arraybuffer_websocket(&url, HYPERCOLOR_WS_PROTOCOL) {
@@ -197,7 +201,7 @@ impl WsManager {
             };
             ws_handle.set_value(Some(ws.clone()));
 
-            // onopen — subscribe to events + metrics
+            // onopen — subscribe to events, metrics, and host sensors
             let ws_clone = ws.clone();
             let on_open = move |_| {
                 set_connection_state.set(ConnectionState::Connected);
@@ -206,7 +210,7 @@ impl WsManager {
 
                 let subscribe_msg = serde_json::json!({
                     "type": "subscribe",
-                    "channels": ["events", "metrics"],
+                    "channels": ["events", "metrics", "sensors"],
                     "config": {
                         "metrics": { "interval_ms": 500 }
                     }
@@ -233,6 +237,7 @@ impl WsManager {
                     &set_web_viewport_canvas_frame,
                 );
                 set_display_preview_frame.set(None);
+                set_sensors.set(None);
                 schedule_reconnect(reconnect_attempts, reconnect_timeout, connect);
             };
 
@@ -314,6 +319,7 @@ impl WsManager {
                         metrics,
                         &set_metrics,
                         &set_device_metrics,
+                        &set_sensors,
                         backpressure_notice,
                         &set_backpressure_notice,
                         &set_last_device_event,
@@ -580,6 +586,7 @@ impl WsManager {
             display_preview_frame,
             preview_fps,
             metrics,
+            sensors,
             device_metrics,
             set_device_metrics_consumers,
             backpressure_notice,

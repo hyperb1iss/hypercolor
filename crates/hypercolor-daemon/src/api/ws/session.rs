@@ -31,8 +31,8 @@ use super::protocol::{
 };
 use super::relays::{
     publish_subscriptions, relay_canvas, relay_device_metrics, relay_display_preview, relay_events,
-    relay_frames, relay_metrics, relay_screen_canvas, relay_spectrum, relay_web_viewport_canvas,
-    relay_zone_preview,
+    relay_frames, relay_metrics, relay_screen_canvas, relay_sensors, relay_spectrum,
+    relay_web_viewport_canvas, relay_zone_preview,
 };
 use crate::api::AppState;
 use crate::api::effects::active_effect_metadata;
@@ -211,6 +211,11 @@ async fn handle_socket(
         json_tx.clone(),
         subscriptions_rx.clone(),
     ));
+    let sensors_relay_handle = tokio::spawn(relay_sensors(
+        Arc::clone(&state),
+        json_tx.clone(),
+        subscriptions_rx.clone(),
+    ));
 
     let mut ping_interval = tokio::time::interval(WS_PING_INTERVAL);
     ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -312,6 +317,7 @@ async fn handle_socket(
     zone_preview_relay_handle.abort();
     metrics_relay_handle.abort();
     device_metrics_relay_handle.abort();
+    sensors_relay_handle.abort();
     state
         .zone_layout_previews
         .clear_many(zone_layout_preview_keys)

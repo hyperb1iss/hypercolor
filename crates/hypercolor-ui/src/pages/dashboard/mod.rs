@@ -540,7 +540,10 @@ pub fn DashboardPage() -> impl IntoView {
                                                 <PipelinePanel metrics=ws.metrics />
                                             }.into_any(),
                                             PanelId::RendererHardware => view! {
-                                                <RendererHardwarePanel metrics=ws.metrics />
+                                                <RendererHardwarePanel
+                                                    metrics=ws.metrics
+                                                    sensors=ws.sensors
+                                                />
                                             }.into_any(),
                                             PanelId::FrameTimeline => view! {
                                                 <FrameTimelinePanel
