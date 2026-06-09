@@ -145,7 +145,10 @@ async fn get_effects_enriches_summaries_with_detail_controls() {
     assert_eq!(effects[0].controls.len(), 1);
     assert_eq!(effects[0].controls[0].id, "speed");
     assert_eq!(effects[0].controls[0].control_type, "slider");
-    assert_eq!(effects[0].controls[0].default_value.as_f32(), Some(0.75));
+    // True defaults are preserved — live values are per-zone and must NOT
+    // be merged over `default_value` (the daemon's active_control_values
+    // reflect only the primary zone).
+    assert_eq!(effects[0].controls[0].default_value.as_f32(), Some(0.25));
     assert_eq!(effects[0].presets.len(), 1);
 }
 
@@ -651,4 +654,287 @@ async fn toggle_favorite_uses_effect_field_and_checks_errors() {
 
     let error = failing_client.toggle_favorite("rainbow", false).await;
     assert!(error.is_err());
+}
+
+// ── Scenes & zones ──────────────────────────────────────────────────
+
+const ZONE_A: &str = "11111111-1111-1111-1111-111111111111";
+const ZONE_B: &str = "22222222-2222-2222-2222-222222222222";
+// Zone.effect_id is an EffectId (UUID) on the wire — the same UUID string
+// the REST effect list exposes as `EffectSummary.id`.
+const EFFECT_RAINBOW: &str = "33333333-3333-3333-3333-333333333333";
+
+fn zone_json(id: &str, name: &str, role: &str, effect: Option<&str>, enabled: bool) -> Value {
+    json!({
+        "id": id,
+        "name": name,
+        "description": null,
+        "effect_id": effect,
+        "controls": { "speed": { "float": 0.6 } },
+        "layout": {
+            "id": "layout",
+            "name": "layout",
+            "description": null,
+            "canvas_width": 320,
+            "canvas_height": 200,
+            "zones": [],
+            "spaces": null,
+            "version": 1
+        },
+        "color": null,
+        "role": role,
+        "enabled": enabled,
+        "brightness": 0.8,
+        "controls_version": 3,
+        "layers_version": 7
+    })
+}
+
+#[tokio::test]
+async fn get_active_scene_maps_zones_and_lock_state() {
+    let router = Router::new().route(
+        "/api/v1/scenes/active",
+        get(|| async {
+            Json(json!({
+                "data": {
+                    "id": "scene-1",
+                    "name": "Desk",
+                    "description": null,
+                    "enabled": true,
+                    "priority": 0,
+                    "kind": "named",
+                    "mutation_mode": "snapshot",
+                    "groups": [
+                        zone_json(ZONE_A, "Primary", "primary", Some(EFFECT_RAINBOW), true),
+                        zone_json(ZONE_B, "Shelf", "custom", None, false),
+                    ],
+                    "groups_revision": 42,
+                    "unassigned_behavior": "render"
+                }
+            }))
+        }),
+    );
+
+    let client = client_for(spawn_server(router).await);
+    let scene = client
+        .get_active_scene()
+        .await
+        .expect("fetch active scene")
+        .expect("scene should be present");
+
+    assert_eq!(scene.id, "scene-1");
+    assert_eq!(scene.name, "Desk");
+    assert!(scene.snapshot_locked);
+    assert_eq!(scene.groups_revision, 42);
+    assert!(scene.multi_zone());
+    assert_eq!(scene.zones.len(), 2);
+
+    let primary = scene.primary().expect("primary zone");
+    assert_eq!(primary.id, ZONE_A);
+    assert!(primary.is_primary);
+    assert_eq!(primary.effect_id.as_deref(), Some(EFFECT_RAINBOW));
+    assert!(primary.enabled);
+    assert_eq!(primary.controls_version, 3);
+    assert_eq!(primary.layers_version, 7);
+    assert!((primary.brightness - 0.8).abs() < f32::EPSILON);
+    assert_eq!(
+        primary
+            .controls
+            .get("speed")
+            .and_then(hypercolor_tui::state::ControlValue::as_f32),
+        Some(0.6)
+    );
+
+    let shelf = scene.zone(ZONE_B).expect("shelf zone");
+    assert!(!shelf.is_primary);
+    assert!(!shelf.enabled);
+    assert_eq!(shelf.effect_id, None);
+}
+
+#[tokio::test]
+async fn get_active_scene_returns_none_without_active_scene() {
+    let router = Router::new().route(
+        "/api/v1/scenes/active",
+        get(|| async {
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": "No active scene" })),
+            )
+        }),
+    );
+
+    let client = client_for(spawn_server(router).await);
+    let scene = client.get_active_scene().await.expect("fetch active scene");
+    assert!(scene.is_none());
+}
+
+#[tokio::test]
+async fn get_scenes_maps_summaries() {
+    let router = Router::new().route(
+        "/api/v1/scenes",
+        get(|| async {
+            Json(json!({
+                "data": {
+                    "items": [
+                        {
+                            "id": "scene-1",
+                            "name": "Desk",
+                            "description": "two zones",
+                            "enabled": true,
+                            "priority": 0,
+                            "mutation_mode": "live"
+                        },
+                        {
+                            "id": "scene-2",
+                            "name": "Party",
+                            "description": null,
+                            "enabled": true,
+                            "priority": 1,
+                            "mutation_mode": "snapshot"
+                        }
+                    ],
+                    "pagination": { "offset": 0, "limit": 50, "total": 2, "has_more": false }
+                }
+            }))
+        }),
+    );
+
+    let client = client_for(spawn_server(router).await);
+    let scenes = client.get_scenes().await.expect("fetch scenes");
+
+    assert_eq!(scenes.len(), 2);
+    assert_eq!(scenes[0].id, "scene-1");
+    assert_eq!(scenes[1].name, "Party");
+    assert_eq!(
+        scenes[1].mutation_mode,
+        hypercolor_types::scene::SceneMutationMode::Snapshot
+    );
+}
+
+#[tokio::test]
+async fn apply_effect_sends_render_group_and_controls() {
+    let captured: Arc<Mutex<Option<Value>>> = Arc::new(Mutex::new(None));
+    let router = Router::new()
+        .route(
+            "/api/v1/effects/{id}/apply",
+            post(
+                |State(captured): State<Arc<Mutex<Option<Value>>>>,
+                 Path(id): Path<String>,
+                 Json(body): Json<Value>| async move {
+                    assert_eq!(id, "rainbow");
+                    *captured.lock().await = Some(body);
+                    Json(json!({ "data": {} }))
+                },
+            ),
+        )
+        .with_state(Arc::clone(&captured));
+
+    let client = client_for(spawn_server(router).await);
+    client
+        .apply_effect("rainbow", Some(&json!({ "speed": 0.5 })), Some(ZONE_B))
+        .await
+        .expect("apply effect");
+
+    let body = captured.lock().await.clone().expect("captured apply body");
+    assert_eq!(body["render_group"], json!(ZONE_B));
+    assert_eq!(body["controls"], json!({ "speed": 0.5 }));
+}
+
+#[tokio::test]
+async fn apply_effect_omits_render_group_for_primary() {
+    let captured: Arc<Mutex<Option<Value>>> = Arc::new(Mutex::new(None));
+    let router = Router::new()
+        .route(
+            "/api/v1/effects/{id}/apply",
+            post(
+                |State(captured): State<Arc<Mutex<Option<Value>>>>,
+                 Json(body): Json<Value>| async move {
+                    *captured.lock().await = Some(body);
+                    Json(json!({ "data": {} }))
+                },
+            ),
+        )
+        .with_state(Arc::clone(&captured));
+
+    let client = client_for(spawn_server(router).await);
+    client
+        .apply_effect("rainbow", None, None)
+        .await
+        .expect("apply effect");
+
+    let body = captured.lock().await.clone().expect("captured apply body");
+    assert_eq!(body, json!({}));
+}
+
+#[tokio::test]
+async fn update_zone_sends_if_match_revision() {
+    let router = Router::new().route(
+        "/api/v1/scenes/{id}/zones/{zone_id}",
+        patch(
+            |Path((scene_id, zone_id)): Path<(String, String)>,
+             headers: HeaderMap,
+             Json(body): Json<Value>| async move {
+                assert_eq!(scene_id, "scene-1");
+                assert_eq!(zone_id, ZONE_B);
+                assert_eq!(
+                    headers.get(header::IF_MATCH).and_then(|v| v.to_str().ok()),
+                    Some("42")
+                );
+                assert_eq!(body, json!({ "enabled": false }));
+                Json(json!({ "data": {} }))
+            },
+        ),
+    );
+
+    let client = client_for(spawn_server(router).await);
+    client
+        .update_zone("scene-1", ZONE_B, 42, Some(false), None)
+        .await
+        .expect("update zone");
+}
+
+#[tokio::test]
+async fn patch_zone_controls_targets_legacy_layer_without_if_match() {
+    let router = Router::new().route(
+        "/api/v1/scenes/{id}/groups/{group_id}/layers/{layer_id}/controls",
+        patch(
+            |Path((scene_id, group_id, layer_id)): Path<(String, String, String)>,
+             headers: HeaderMap,
+             Json(body): Json<Value>| async move {
+                assert_eq!(scene_id, "scene-1");
+                // Legacy layer id == zone id
+                assert_eq!(group_id, ZONE_B);
+                assert_eq!(layer_id, ZONE_B);
+                assert!(headers.get(header::IF_MATCH).is_none());
+                assert_eq!(body, json!({ "controls": { "speed": 0.9 } }));
+                Json(json!({ "data": {} }))
+            },
+        ),
+    );
+
+    let client = client_for(spawn_server(router).await);
+    client
+        .patch_zone_controls("scene-1", ZONE_B, &json!({ "speed": 0.9 }))
+        .await
+        .expect("patch zone controls");
+}
+
+#[tokio::test]
+async fn activate_and_deactivate_scene_hit_expected_routes() {
+    let router = Router::new()
+        .route(
+            "/api/v1/scenes/{id}/activate",
+            post(|Path(id): Path<String>| async move {
+                assert_eq!(id, "scene-2");
+                Json(json!({ "data": {} }))
+            }),
+        )
+        .route(
+            "/api/v1/scenes/deactivate",
+            post(|| async { Json(json!({ "data": {} })) }),
+        );
+
+    let client = client_for(spawn_server(router).await);
+    client.activate_scene("scene-2").await.expect("activate");
+    client.deactivate_scene().await.expect("deactivate");
 }

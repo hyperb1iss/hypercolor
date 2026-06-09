@@ -1,6 +1,7 @@
 //! Dashboard view — single-glance overview of the lighting system.
 
 use std::cell::Cell as StdCell;
+use std::sync::Arc;
 
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
@@ -14,7 +15,8 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::action::Action;
 use crate::component::Component;
 use crate::state::{
-    CanvasPreviewState, ConnectionStatus, DaemonState, DeviceSummary, EffectSummary,
+    ActiveScene, CanvasPreviewState, ConnectionStatus, DaemonState, DeviceSummary, EffectSummary,
+    ZoneSummary,
 };
 use crate::widgets::{ParamSlider, Split, SplitDirection};
 
@@ -48,6 +50,8 @@ pub struct DashboardView {
     devices: Vec<DeviceSummary>,
     effects: Vec<EffectSummary>,
     favorites: Vec<String>,
+    active_scene: Option<Arc<ActiveScene>>,
+    focused_zone: Option<String>,
     canvas_frame: Option<CanvasPreviewState>,
     selected_device: usize,
     connection_status: ConnectionStatus,
@@ -79,6 +83,8 @@ impl DashboardView {
             devices: Vec::new(),
             effects: Vec::new(),
             favorites: Vec::new(),
+            active_scene: None,
+            focused_zone: None,
             canvas_frame: None,
             selected_device: 0,
             connection_status: ConnectionStatus::default(),
@@ -97,10 +103,39 @@ impl DashboardView {
             .map_or(id, |e| &e.name)
     }
 
-    /// Get the currently active effect, if any.
+    /// The zone that apply/control actions currently target.
+    fn target_zone(&self) -> Option<&ZoneSummary> {
+        let scene = self.active_scene.as_deref()?;
+        self.focused_zone
+            .as_deref()
+            .and_then(|id| scene.zone(id))
+            .or_else(|| scene.primary())
+    }
+
+    /// Whether the active scene runs more than one zone.
+    fn multi_zone(&self) -> bool {
+        self.active_scene
+            .as_deref()
+            .is_some_and(ActiveScene::multi_zone)
+    }
+
+    /// Get the currently active effect, if any. In a multi-zone scene this
+    /// is the targeted zone's effect; otherwise the daemon's singular one.
     fn active_effect(&self) -> Option<&EffectSummary> {
-        let id = self.daemon_state.as_ref()?.effect_id.as_deref()?;
+        let id = if self.multi_zone() {
+            self.target_zone()?.effect_id.as_deref()?
+        } else {
+            self.daemon_state.as_ref()?.effect_id.as_deref()?
+        };
         self.effects.iter().find(|e| e.id == id)
+    }
+
+    /// Resolve an effect id to its display name.
+    fn effect_name<'a>(&'a self, id: &'a str) -> &'a str {
+        self.effects
+            .iter()
+            .find(|e| e.id == id)
+            .map_or(id, |e| &e.name)
     }
 
     // ── Panel renderers ─────────────────────────────────────────────
@@ -143,6 +178,11 @@ impl DashboardView {
         let content_w = inner.width.saturating_sub(pad_x * 2);
         let x = inner.x + pad_x;
         let max_y = inner.y + inner.height;
+
+        if self.multi_zone() {
+            self.render_multi_zone_panel(frame, x, inner.y + 1, max_y, content_w);
+            return;
+        }
 
         let Some(effect) = self.active_effect() else {
             self.render_idle_state(
@@ -337,6 +377,82 @@ impl DashboardView {
             Rect::new(x, y, w, max_h),
         );
         y + max_h
+    }
+
+    /// Multi-zone "Now Playing": targeted effect header, one row per zone,
+    /// then the daemon gauges.
+    fn render_multi_zone_panel(&self, frame: &mut Frame, x: u16, y: u16, max_y: u16, w: u16) {
+        let Some(scene) = self.active_scene.as_deref() else {
+            return;
+        };
+        let mut y = y;
+
+        if let Some(effect) = self.active_effect() {
+            y = Self::render_effect_header(frame, effect, x, y, max_y, w);
+        } else if y < max_y {
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    "\u{25B6} No effect on targeted zone",
+                    Style::default().fg(DIM_GRAY),
+                ))),
+                Rect::new(x, y, w, 1),
+            );
+            y += 1;
+        }
+        y = Self::render_separator(frame, x, y, max_y, w);
+
+        let target_id = self.target_zone().map(|zone| zone.id.clone());
+        for zone in &scene.zones {
+            if y >= max_y {
+                return;
+            }
+            let focused = target_id.as_deref() == Some(zone.id.as_str());
+            let pointer = if focused { "\u{25B8} " } else { "  " };
+            let (dot, dot_color) = if zone.enabled {
+                ("\u{25C9} ", SUCCESS_GREEN)
+            } else {
+                ("\u{25CB} ", DIM_GRAY)
+            };
+            let name_style = if focused {
+                Style::default().fg(NEON_CYAN).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(BASE_WHITE)
+            };
+            let effect_label = zone
+                .effect_id
+                .as_deref()
+                .map_or("empty", |id| self.effect_name(id));
+
+            let mut spans = vec![
+                Span::styled(pointer, name_style),
+                Span::styled(dot, Style::default().fg(dot_color)),
+                Span::styled(zone.name.clone(), name_style),
+                Span::styled(
+                    format!(" \u{2014} {effect_label}"),
+                    Style::default().fg(if zone.enabled { CORAL } else { DIM_GRAY }),
+                ),
+            ];
+            if !zone.enabled {
+                spans.push(Span::styled(" [off]", Style::default().fg(ELECTRIC_YELLOW)));
+            }
+            frame.render_widget(Paragraph::new(Line::from(spans)), Rect::new(x, y, w, 1));
+            y += 1;
+        }
+
+        y = Self::render_separator(frame, x, y, max_y, w);
+
+        if y < max_y {
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    "[/] cycle target \u{00B7} x pause zone",
+                    Style::default().fg(DIM_GRAY),
+                ))),
+                Rect::new(x, y, w, 1),
+            );
+            y += 1;
+        }
+
+        self.render_daemon_gauges(frame, x, y, max_y, w);
     }
 
     /// Render brightness gauge and FPS indicator.
@@ -660,6 +776,18 @@ impl Component for DashboardView {
             KeyCode::Enter => Ok(Some(Action::SwitchScreen(
                 crate::screen::ScreenId::DeviceManager,
             ))),
+            // Pause/resume the targeted zone (multi-zone scenes only)
+            KeyCode::Char('x') => {
+                if self.multi_zone()
+                    && let Some(zone) = self.target_zone()
+                {
+                    return Ok(Some(Action::SetZoneEnabled {
+                        zone_id: zone.id.clone(),
+                        enabled: !zone.enabled,
+                    }));
+                }
+                Ok(None)
+            }
             _ => Ok(None),
         }
     }
@@ -735,6 +863,12 @@ impl Component for DashboardView {
             }
             Action::FavoritesUpdated(favs) => {
                 self.favorites.clone_from(favs);
+            }
+            Action::ActiveSceneUpdated(scene) => {
+                self.active_scene.clone_from(scene);
+            }
+            Action::ZoneFocusChanged(zone) => {
+                self.focused_zone.clone_from(zone);
             }
             Action::CanvasFrameReceived(frame) => {
                 self.canvas_frame = Some(CanvasPreviewState::from(frame.as_ref()));

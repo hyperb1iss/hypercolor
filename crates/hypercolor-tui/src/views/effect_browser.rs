@@ -2,6 +2,7 @@
 
 use std::cell::Cell;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
@@ -16,8 +17,8 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::action::Action;
 use crate::component::Component;
 use crate::state::{
-    CanvasPreviewState, ControlDefinition, ControlValue, EffectSummary, PreviewSource,
-    SimulatedDisplaySummary,
+    ActiveScene, CanvasPreviewState, ControlDefinition, ControlValue, EffectSummary, PreviewSource,
+    SimulatedDisplaySummary, ZoneSummary,
 };
 use crate::widgets::{
     ColorPickerPopup, ParamSlider, Split, SplitDirection, hsl_to_rgb, rgb_to_hsl,
@@ -63,6 +64,8 @@ pub struct EffectBrowserView {
     all_effects: Vec<EffectSummary>,
     effects: Vec<EffectSummary>,
     favorites: Vec<String>,
+    active_scene: Option<Arc<ActiveScene>>,
+    focused_zone: Option<String>,
     selected_index: usize,
     scroll_offset: Cell<usize>,
     selected_preset: usize,
@@ -121,6 +124,8 @@ impl EffectBrowserView {
             all_effects: Vec::new(),
             effects: Vec::new(),
             favorites: Vec::new(),
+            active_scene: None,
+            focused_zone: None,
             selected_index: 0,
             scroll_offset: Cell::new(0),
             selected_preset: 0,
@@ -256,7 +261,29 @@ impl EffectBrowserView {
         self.preview_source = source;
     }
 
-    /// Load control defaults for the selected effect.
+    /// The zone that apply/control actions currently target.
+    fn target_zone(&self) -> Option<&ZoneSummary> {
+        let scene = self.active_scene.as_deref()?;
+        self.focused_zone
+            .as_deref()
+            .and_then(|id| scene.zone(id))
+            .or_else(|| scene.primary())
+    }
+
+    /// Label for the apply target, shown only in multi-zone scenes.
+    fn target_label(&self) -> Option<String> {
+        if !self
+            .active_scene
+            .as_deref()
+            .is_some_and(ActiveScene::multi_zone)
+        {
+            return None;
+        }
+        self.target_zone().map(|zone| zone.name.clone())
+    }
+
+    /// Load control defaults for the selected effect, then overlay the
+    /// targeted zone's live values when it is running this effect.
     fn sync_controls_to_selection(&mut self) {
         self.control_values.clear();
         self.selected_control = 0;
@@ -270,6 +297,34 @@ impl EffectBrowserView {
             for (id, val) in defaults {
                 self.control_values.insert(id, val);
             }
+        }
+        self.overlay_zone_controls();
+    }
+
+    /// Overlay the targeted zone's live control values onto the seeded
+    /// defaults, when the zone runs the selected effect. Leaves selection
+    /// and picker state untouched so it is safe mid-interaction.
+    fn overlay_zone_controls(&mut self) {
+        let Some(effect_id) = self
+            .effects
+            .get(self.selected_index)
+            .map(|effect| effect.id.clone())
+        else {
+            return;
+        };
+        let Some(zone) = self.target_zone() else {
+            return;
+        };
+        if zone.effect_id.as_deref() != Some(effect_id.as_str()) {
+            return;
+        }
+        let live: Vec<_> = zone
+            .controls
+            .iter()
+            .map(|(id, value)| (id.clone(), value.clone()))
+            .collect();
+        for (id, value) in live {
+            self.control_values.insert(id, value);
         }
     }
 
@@ -783,13 +838,20 @@ impl EffectBrowserView {
         let is_focused = self.focus_pane == FocusPane::List;
         let border_color = if is_focused { NEON_CYAN } else { BORDER_DIM };
 
+        let mut title_spans = vec![Span::styled(
+            " Effects ",
+            Style::default()
+                .fg(ELECTRIC_PURPLE)
+                .add_modifier(Modifier::BOLD),
+        )];
+        if let Some(target) = self.target_label() {
+            title_spans.push(Span::styled(
+                format!("\u{25B8} {target} "),
+                Style::default().fg(ELECTRIC_YELLOW),
+            ));
+        }
         let block = Block::default()
-            .title(Span::styled(
-                " Effects ",
-                Style::default()
-                    .fg(ELECTRIC_PURPLE)
-                    .add_modifier(Modifier::BOLD),
-            ))
+            .title(Line::from(title_spans))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(border_color));
         let inner = block.inner(area);
@@ -1112,17 +1174,24 @@ impl EffectBrowserView {
 
         let effect_name = self.selected_effect().map_or("Controls", |e| &e.name);
 
+        let mut title_spans = vec![
+            Span::styled(" ", Style::default().fg(ELECTRIC_PURPLE)),
+            Span::styled(
+                effect_name,
+                Style::default()
+                    .fg(ELECTRIC_PURPLE)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" \u{2500} Controls ", Style::default().fg(BORDER_DIM)),
+        ];
+        if let Some(target) = self.target_label() {
+            title_spans.push(Span::styled(
+                format!("\u{25B8} {target} "),
+                Style::default().fg(ELECTRIC_YELLOW),
+            ));
+        }
         let block = Block::default()
-            .title(Line::from(vec![
-                Span::styled(" ", Style::default().fg(ELECTRIC_PURPLE)),
-                Span::styled(
-                    effect_name,
-                    Style::default()
-                        .fg(ELECTRIC_PURPLE)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(" \u{2500} Controls ", Style::default().fg(BORDER_DIM)),
-            ]))
+            .title(Line::from(title_spans))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(border_color));
         let inner = block.inner(area);
@@ -1585,6 +1654,14 @@ impl Component for EffectBrowserView {
             }
             Action::FavoritesUpdated(favs) => {
                 self.favorites.clone_from(favs);
+            }
+            Action::ActiveSceneUpdated(scene) => {
+                self.active_scene.clone_from(scene);
+                self.overlay_zone_controls();
+            }
+            Action::ZoneFocusChanged(zone) => {
+                self.focused_zone.clone_from(zone);
+                self.overlay_zone_controls();
             }
             Action::CanvasFrameReceived(cf) => {
                 self.canvas_frame = Some(CanvasPreviewState::from(cf.as_ref()));

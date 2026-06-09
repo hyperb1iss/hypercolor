@@ -1,8 +1,10 @@
 //! TUI-side state types — lightweight projections of daemon data.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use bytes::Bytes;
+use hypercolor_types::scene::{SceneKind, SceneMutationMode};
 use serde::{Deserialize, Serialize};
 
 use crate::screen::ScreenId;
@@ -29,10 +31,99 @@ pub struct AppState {
     pub effects: Vec<EffectSummary>,
     pub devices: Vec<DeviceSummary>,
     pub favorites: Vec<String>,
+    pub scenes: Vec<SceneSummary>,
+    pub active_scene: Option<Arc<ActiveScene>>,
+    /// Zone targeted by apply/control edits. `None` = the primary zone.
+    pub focused_zone: Option<String>,
     pub spectrum: Option<Arc<SpectrumSnapshot>>,
     pub active_screen: ScreenId,
     pub connection_status: ConnectionStatus,
     pub disconnect_reason: Option<String>,
+}
+
+impl AppState {
+    /// The zone that apply/control edits currently target.
+    ///
+    /// Falls back to the primary zone when no explicit focus is set or the
+    /// focused zone no longer exists in the active scene.
+    #[must_use]
+    pub fn target_zone(&self) -> Option<&ZoneSummary> {
+        let scene = self.active_scene.as_deref()?;
+        self.focused_zone
+            .as_deref()
+            .and_then(|id| scene.zone(id))
+            .or_else(|| scene.primary())
+    }
+}
+
+// ── Scenes & Zones ──────────────────────────────────────────────────
+
+/// One saved scene, as listed by `GET /scenes`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SceneSummary {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub mutation_mode: SceneMutationMode,
+}
+
+/// The active scene with its render groups (zones).
+#[derive(Debug, Clone)]
+pub struct ActiveScene {
+    pub id: String,
+    pub name: String,
+    pub kind: SceneKind,
+    pub mutation_mode: SceneMutationMode,
+    pub snapshot_locked: bool,
+    pub groups_revision: u64,
+    pub zones: Vec<ZoneSummary>,
+}
+
+impl ActiveScene {
+    /// Whether the scene runs more than one zone.
+    #[must_use]
+    pub fn multi_zone(&self) -> bool {
+        self.zones.len() > 1
+    }
+
+    /// Look up a zone by id.
+    #[must_use]
+    pub fn zone(&self, id: &str) -> Option<&ZoneSummary> {
+        self.zones.iter().find(|zone| zone.id == id)
+    }
+
+    /// The scene's primary zone, if any.
+    #[must_use]
+    pub fn primary(&self) -> Option<&ZoneSummary> {
+        self.zones
+            .iter()
+            .find(|zone| zone.is_primary)
+            .or_else(|| self.zones.first())
+    }
+}
+
+/// A render group (zone) within the active scene.
+///
+/// Projection of `hypercolor_types::scene::Zone` carrying only what the
+/// TUI renders and mutates. The zone's id doubles as its legacy layer id
+/// for the layer-scoped controls PATCH (`Zone::legacy_layer_id()` wraps
+/// the same UUID).
+#[derive(Debug, Clone)]
+pub struct ZoneSummary {
+    pub id: String,
+    pub name: String,
+    pub effect_id: Option<String>,
+    pub brightness: f32,
+    pub enabled: bool,
+    pub is_primary: bool,
+    pub color: Option<String>,
+    pub controls: HashMap<String, ControlValue>,
+    pub controls_version: u64,
+    pub layers_version: u64,
 }
 
 // ── Daemon State ────────────────────────────────────────────────────

@@ -1,7 +1,5 @@
 //! REST client for the Hypercolor daemon HTTP API.
 
-use std::collections::HashMap;
-
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use futures_util::stream::{self, StreamExt};
@@ -14,13 +12,14 @@ use hypercolor_types::effect::{
     ControlDefinition as ApiControlDefinition, ControlType as ApiControlType,
     ControlValue as ApiControlValue, PresetTemplate as ApiPresetTemplate,
 };
+use hypercolor_types::scene::{SceneKind, SceneMutationMode, Zone, ZoneRole};
 use reqwest::StatusCode;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
 use crate::state::{
-    CanvasFrame, ControlDefinition, ControlValue, DaemonState, DeviceSummary, EffectSummary,
-    PresetTemplate, SimulatedDisplaySummary,
+    ActiveScene, CanvasFrame, ControlDefinition, ControlValue, DaemonState, DeviceSummary,
+    EffectSummary, PresetTemplate, SceneSummary, SimulatedDisplaySummary, ZoneSummary,
 };
 
 /// HTTP client for the daemon REST API.
@@ -230,23 +229,144 @@ impl DaemonClient {
             .collect())
     }
 
-    /// Apply an effect by ID.
+    /// Apply an effect by ID, optionally with control overrides and a
+    /// target zone (`render_group`). No target = the scene's primary zone.
     pub async fn apply_effect(
         &self,
         effect_id: &str,
         controls: Option<&serde_json::Value>,
+        render_group: Option<&str>,
     ) -> Result<()> {
-        let url = format!("{}/api/v1/effects/{effect_id}/apply", self.base_url);
-        let mut req = self.auth_request(self.http.post(&url));
-        if let Some(body) = controls {
-            req = req.json(body);
-        } else {
-            req = req.json(&serde_json::json!({}));
+        let url = format!(
+            "{}/api/v1/effects/{}/apply",
+            self.base_url,
+            path_segment(effect_id)
+        );
+        let mut body = serde_json::Map::new();
+        if let Some(controls) = controls {
+            body.insert("controls".to_string(), controls.clone());
         }
-        let response = req.send().await.with_context(|| {
-            format!("Failed to apply effect {effect_id}. Is the daemon running?")
-        })?;
+        if let Some(zone_id) = render_group {
+            body.insert(
+                "render_group".to_string(),
+                serde_json::Value::String(zone_id.to_string()),
+            );
+        }
+        let response = self
+            .auth_request(self.http.post(&url))
+            .json(&serde_json::Value::Object(body))
+            .send()
+            .await
+            .with_context(|| {
+                format!("Failed to apply effect {effect_id}. Is the daemon running?")
+            })?;
         ensure_success(response, &format!("Apply effect failed for {effect_id}")).await
+    }
+
+    // ── Scenes & zones ──────────────────────────────────────
+
+    /// Fetch all saved scenes.
+    pub async fn get_scenes(&self) -> Result<Vec<SceneSummary>> {
+        let response: SceneListResponse = self.get_data("/scenes").await?;
+        Ok(response.items)
+    }
+
+    /// Fetch the active scene with its zones, or `None` when no scene is active.
+    pub async fn get_active_scene(&self) -> Result<Option<ActiveScene>> {
+        let response: Option<ApiActiveSceneResponse> =
+            self.get_optional_data("/scenes/active").await?;
+        Ok(response.map(map_active_scene))
+    }
+
+    /// Activate a saved scene by ID.
+    pub async fn activate_scene(&self, scene_id: &str) -> Result<()> {
+        let url = format!(
+            "{}/api/v1/scenes/{}/activate",
+            self.base_url,
+            path_segment(scene_id)
+        );
+        let response = self
+            .auth_request(self.http.post(&url))
+            .send()
+            .await
+            .with_context(|| format!("Failed to activate scene {scene_id}"))?;
+        ensure_success(response, &format!("Activate scene failed for {scene_id}")).await
+    }
+
+    /// Deactivate the active scene, returning to the ephemeral default.
+    pub async fn deactivate_scene(&self) -> Result<()> {
+        let url = format!("{}/api/v1/scenes/deactivate", self.base_url);
+        let response = self
+            .auth_request(self.http.post(&url))
+            .send()
+            .await
+            .context("Failed to deactivate scene")?;
+        ensure_success(response, "Deactivate scene failed").await
+    }
+
+    /// Update zone metadata (enabled, brightness). Guarded by the scene's
+    /// `groups_revision` via `If-Match`; the daemon answers 412 when stale.
+    pub async fn update_zone(
+        &self,
+        scene_id: &str,
+        zone_id: &str,
+        groups_revision: u64,
+        enabled: Option<bool>,
+        brightness: Option<f32>,
+    ) -> Result<()> {
+        let url = format!(
+            "{}/api/v1/scenes/{}/zones/{}",
+            self.base_url,
+            path_segment(scene_id),
+            path_segment(zone_id)
+        );
+        let mut body = serde_json::Map::new();
+        if let Some(enabled) = enabled {
+            body.insert("enabled".to_string(), serde_json::Value::Bool(enabled));
+        }
+        if let Some(brightness) = brightness {
+            body.insert("brightness".to_string(), serde_json::json!(brightness));
+        }
+        let response = self
+            .auth_request(self.http.patch(&url))
+            .header(reqwest::header::IF_MATCH, groups_revision.to_string())
+            .json(&serde_json::Value::Object(body))
+            .send()
+            .await
+            .with_context(|| format!("Failed to update zone {zone_id}"))?;
+        ensure_success(response, &format!("Zone update failed for {zone_id}")).await
+    }
+
+    /// Patch effect controls on a zone through its legacy layer — the
+    /// zone-scoped equivalent of `PATCH /effects/current/controls`. The
+    /// layer id is the zone id (see `Zone::legacy_layer_id`).
+    ///
+    /// Deliberately sends no `If-Match`: live control edits are
+    /// last-write-wins (each successful patch bumps `layers_version`, so a
+    /// guarded slider drag would 412 on every tick after the first).
+    pub async fn patch_zone_controls(
+        &self,
+        scene_id: &str,
+        zone_id: &str,
+        controls: &serde_json::Value,
+    ) -> Result<()> {
+        let zone = path_segment(zone_id);
+        let url = format!(
+            "{}/api/v1/scenes/{}/groups/{zone}/layers/{zone}/controls",
+            self.base_url,
+            path_segment(scene_id),
+        );
+        let response = self
+            .auth_request(self.http.patch(&url))
+            .json(&serde_json::json!({ "controls": controls }))
+            .send()
+            .await
+            .with_context(|| format!("Failed to update controls for zone {zone_id}"))?;
+        ensure_success(
+            response,
+            &format!("Zone control update failed for {zone_id}"),
+        )
+        .await
     }
 
     /// Toggle favorite for an effect.
@@ -431,8 +551,6 @@ struct EffectDetailResponse {
     controls: Vec<ApiControlDefinition>,
     #[serde(default)]
     presets: Vec<ApiPresetTemplate>,
-    #[serde(default)]
-    active_control_values: Option<HashMap<String, ApiControlValue>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -460,6 +578,25 @@ struct FavoriteSummaryResponse {
 }
 
 #[derive(Debug, Deserialize)]
+struct SceneListResponse {
+    items: Vec<SceneSummary>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiActiveSceneResponse {
+    id: String,
+    name: String,
+    #[serde(default)]
+    kind: SceneKind,
+    #[serde(default)]
+    mutation_mode: SceneMutationMode,
+    #[serde(default)]
+    groups: Vec<Zone>,
+    #[serde(default)]
+    groups_revision: u64,
+}
+
+#[derive(Debug, Deserialize)]
 struct SystemStatusResponse {
     running: bool,
     global_brightness: u8,
@@ -481,7 +618,6 @@ fn map_effect_summary(
     detail: Option<EffectDetailResponse>,
 ) -> EffectSummary {
     if let Some(detail) = detail {
-        let overrides = detail.active_control_values.as_ref();
         return EffectSummary {
             id: detail.id,
             name: detail.name,
@@ -491,11 +627,7 @@ fn map_effect_summary(
             source: detail.source,
             audio_reactive: detail.audio_reactive,
             tags: detail.tags,
-            controls: detail
-                .controls
-                .iter()
-                .map(|control| map_control_definition(control, overrides))
-                .collect(),
+            controls: detail.controls.iter().map(map_control_definition).collect(),
             presets: detail.presets.iter().map(map_preset_template).collect(),
         };
     }
@@ -514,17 +646,14 @@ fn map_effect_summary(
     }
 }
 
-fn map_control_definition(
-    control: &ApiControlDefinition,
-    overrides: Option<&HashMap<String, ApiControlValue>>,
-) -> ControlDefinition {
+/// Map a control definition, preserving the effect's TRUE defaults.
+///
+/// Live values are deliberately NOT merged in here — they are per-zone
+/// (`ZoneSummary::controls`) and overlaying the primary zone's values onto
+/// "defaults" made reset-to-default and zone-scoped editing impossible.
+fn map_control_definition(control: &ApiControlDefinition) -> ControlDefinition {
     let control_id = control.control_id().to_owned();
-    let default_value = overrides
-        .and_then(|values| values.get(&control_id))
-        .map_or_else(
-            || map_control_value(&control.default_value),
-            map_control_value,
-        );
+    let default_value = map_control_value(&control.default_value);
 
     ControlDefinition {
         id: control_id,
@@ -580,6 +709,38 @@ fn map_preset_template(template: &ApiPresetTemplate) -> PresetTemplate {
             .iter()
             .map(|(name, value)| (name.clone(), map_control_value(value)))
             .collect(),
+    }
+}
+
+fn map_active_scene(response: ApiActiveSceneResponse) -> ActiveScene {
+    ActiveScene {
+        snapshot_locked: response.kind == SceneKind::Named
+            && response.mutation_mode == SceneMutationMode::Snapshot,
+        id: response.id,
+        name: response.name,
+        kind: response.kind,
+        mutation_mode: response.mutation_mode,
+        groups_revision: response.groups_revision,
+        zones: response.groups.iter().map(map_zone_summary).collect(),
+    }
+}
+
+fn map_zone_summary(zone: &Zone) -> ZoneSummary {
+    ZoneSummary {
+        id: zone.id.to_string(),
+        name: zone.name.clone(),
+        effect_id: zone.effect_id.as_ref().map(ToString::to_string),
+        brightness: zone.brightness,
+        enabled: zone.enabled,
+        is_primary: zone.role == ZoneRole::Primary,
+        color: zone.color.clone(),
+        controls: zone
+            .controls
+            .iter()
+            .map(|(name, value)| (name.clone(), map_control_value(value)))
+            .collect(),
+        controls_version: zone.controls_version,
+        layers_version: zone.layers_version,
     }
 }
 

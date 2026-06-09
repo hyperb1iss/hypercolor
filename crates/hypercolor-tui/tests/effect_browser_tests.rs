@@ -124,3 +124,29 @@ fn mouse_click_on_toggle_control_updates_value() {
         other => panic!("expected toggle control update, got {other:?}"),
     }
 }
+
+// ── Input capture (text-entry safety) ────────────────────────────
+
+#[test]
+fn search_mode_captures_raw_input() {
+    let mut view = EffectBrowserView::new();
+    assert!(!view.captures_input());
+
+    // '/' opens search — globals must now be bypassed by App
+    view.handle_key_event(key(KeyCode::Char('/')))
+        .expect("open search");
+    assert!(view.captures_input());
+
+    // Typing screen-switch/quit letters stays local to the search box
+    for c in ['q', 's', 'd', 'e'] {
+        let action = view
+            .handle_key_event(key(KeyCode::Char(c)))
+            .expect("type into search");
+        assert!(action.is_none(), "search input must consume '{c}'");
+    }
+
+    // Esc leaves search mode and releases the capture
+    view.handle_key_event(key(KeyCode::Esc))
+        .expect("close search");
+    assert!(!view.captures_input());
+}

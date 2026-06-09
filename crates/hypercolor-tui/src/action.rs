@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use crate::screen::ScreenId;
 use crate::state::{
-    CanvasFrame, ControlValue, DaemonState, DeviceSummary, EffectSummary, Notification,
-    PreviewSource, SimulatedDisplaySummary, SpectrumSnapshot,
+    ActiveScene, CanvasFrame, ControlValue, DaemonState, DeviceSummary, EffectSummary,
+    Notification, PreviewSource, SceneSummary, SimulatedDisplaySummary, SpectrumSnapshot,
 };
 use hypercolor_types::controls::{
     ApplyControlChangesResponse, ControlActionResult, ControlSurfaceDocument,
@@ -69,6 +69,24 @@ pub enum Action {
     SimulatorFrameCleared(String),
     /// New spectrum snapshot received (binary WS).
     SpectrumUpdated(Arc<SpectrumSnapshot>),
+    /// Saved-scene list refreshed.
+    ScenesUpdated(Arc<Vec<SceneSummary>>),
+    /// Active scene (with zones) refreshed. `None` = no active scene.
+    ActiveSceneUpdated(Option<Arc<ActiveScene>>),
+
+    // ── Scenes & Zones ──────────────────────────────────────
+    /// Activate a saved scene by ID.
+    ActivateScene(String),
+    /// Return to the ephemeral default scene.
+    DeactivateScene,
+    /// Toggle the scene picker modal.
+    ToggleScenePicker,
+    /// Move the zone focus (apply/edit target) forward or backward.
+    CycleZoneFocus { forward: bool },
+    /// Zone focus changed (broadcast so views can retarget). `None` = primary.
+    ZoneFocusChanged(Option<String>),
+    /// Enable or disable a zone in the active scene.
+    SetZoneEnabled { zone_id: String, enabled: bool },
 
     // ── Effect Browser ──────────────────────────────────────
     /// Apply an effect by ID.

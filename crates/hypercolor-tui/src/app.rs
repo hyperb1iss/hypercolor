@@ -22,6 +22,7 @@ use crate::component::Component;
 use crate::event::{Event, EventReader};
 use crate::motion::{MotionSensitivity, MotionSystem};
 use crate::preview::PreviewManager;
+use crate::scene_picker::{ScenePicker, ScenePickerAction};
 use crate::screen::ScreenId;
 use crate::state::{
     AppState, CanvasFrame, ConnectionStatus, ControlValue, Notification, NotificationLevel,
@@ -58,6 +59,8 @@ pub struct App {
     latest_canvas_frame: Option<Arc<CanvasFrame>>,
     /// Active live theme picker, when modal is open.
     theme_picker: Option<ThemePicker>,
+    /// Active scene picker, when modal is open.
+    scene_picker: Option<ScenePicker>,
     /// Motion effects engine (tachyonfx-backed).
     motion: MotionSystem,
     /// Live preview transport manager.
@@ -153,6 +156,7 @@ impl App {
             simulator_preview: SimulatorPreviewState::default(),
             latest_canvas_frame: None,
             theme_picker: None,
+            scene_picker: None,
             motion: MotionSystem::new(MotionSensitivity::resolve(MotionSensitivity::Full)),
             preview: PreviewManager::new(picker),
             last_frame_area: Rect::new(0, 0, 80, 24),
@@ -395,6 +399,12 @@ impl App {
             }
         }
 
+        // Scene picker captures all keys when open
+        if let Some(picker) = self.scene_picker.as_mut() {
+            let result = picker.handle_key(key);
+            return self.resolve_scene_picker(result);
+        }
+
         if self.view.fullscreen_preview {
             return match key.code {
                 KeyCode::Esc | KeyCode::Char('z' | 'Z') => Some(Action::ToggleFullscreenPreview),
@@ -432,6 +442,9 @@ impl App {
             KeyCode::Char('T' | 't') => return Some(Action::ToggleThemePicker),
             KeyCode::Char('M' | 'm') => return Some(Action::CycleMotionSensitivity),
             KeyCode::Char('Z' | 'z') => return Some(Action::ToggleFullscreenPreview),
+            KeyCode::Char('C' | 'c') => return Some(Action::ToggleScenePicker),
+            KeyCode::Char('[') => return Some(Action::CycleZoneFocus { forward: false }),
+            KeyCode::Char(']') => return Some(Action::CycleZoneFocus { forward: true }),
             KeyCode::Char(c) if c.is_ascii_alphabetic() => {
                 if let Some(screen) = ScreenId::from_key(c)
                     && self.screens.contains_key(&screen)
@@ -476,6 +489,11 @@ impl App {
             };
         }
 
+        if let Some(picker) = self.scene_picker.as_mut() {
+            let result = picker.handle_mouse(mouse);
+            return self.resolve_scene_picker(result);
+        }
+
         if self.view.help_visible {
             return match mouse.kind {
                 MouseEventKind::Down(MouseButton::Left | MouseButton::Right) => {
@@ -512,6 +530,26 @@ impl App {
             crate::chrome::StatusBarHit::Screen(screen) => Some(Action::SwitchScreen(screen)),
             crate::chrome::StatusBarHit::Sponsor => Some(Action::OpenDonate),
             crate::chrome::StatusBarHit::Help => Some(Action::ToggleHelp),
+        }
+    }
+
+    /// Translate a scene-picker result into an app action, closing the
+    /// picker on anything other than internal navigation.
+    fn resolve_scene_picker(&mut self, result: ScenePickerAction) -> Option<Action> {
+        match result {
+            ScenePickerAction::None => None,
+            ScenePickerAction::Close => {
+                self.scene_picker = None;
+                None
+            }
+            ScenePickerAction::Activate(scene_id) => {
+                self.scene_picker = None;
+                Some(Action::ActivateScene(scene_id))
+            }
+            ScenePickerAction::Deactivate => {
+                self.scene_picker = None;
+                Some(Action::DeactivateScene)
+            }
         }
     }
 
@@ -717,6 +755,29 @@ impl App {
             Action::FavoritesUpdated(favorites) => {
                 self.state.favorites.clone_from(favorites.as_ref());
             }
+            Action::ScenesUpdated(scenes) => {
+                self.state.scenes.clone_from(scenes.as_ref());
+                if let Some(picker) = self.scene_picker.as_mut() {
+                    picker.sync(&self.state);
+                }
+            }
+            Action::ActiveSceneUpdated(scene) => {
+                self.state.active_scene.clone_from(scene);
+                // Drop the zone focus when its zone left the scene.
+                let focus_stale = self.state.focused_zone.as_deref().is_some_and(|id| {
+                    self.state
+                        .active_scene
+                        .as_deref()
+                        .is_none_or(|scene| scene.zone(id).is_none())
+                });
+                if focus_stale {
+                    self.state.focused_zone = None;
+                    let _ = self.action_tx.send(Action::ZoneFocusChanged(None));
+                }
+                if let Some(picker) = self.scene_picker.as_mut() {
+                    picker.sync(&self.state);
+                }
+            }
             Action::CanvasFrameReceived(frame) => {
                 self.latest_canvas_frame = Some(frame.clone());
                 // Sample border pixels for the canvas bleed reactive layer
@@ -783,20 +844,29 @@ impl App {
             | Action::LoadDeviceControls(_)
             | Action::ApplyDeviceControlChange { .. }
             | Action::InvokeDeviceControlAction { .. }
+            | Action::ActivateScene(_)
+            | Action::DeactivateScene
+            | Action::SetZoneEnabled { .. }
                 if !self.is_connected() =>
             {
                 self.notify_not_connected();
             }
 
             Action::ApplyEffect(effect_id) => {
+                let target = self.non_primary_target();
                 self.spawn_actions({
                     let client = self.client.clone();
                     let id = effect_id.clone();
                     async move {
-                        client.apply_effect(&id, None).await?;
-                        let mut actions = refresh_effects_and_status(client).await?;
+                        let render_group = target.as_ref().map(|(zone_id, _)| zone_id.as_str());
+                        client.apply_effect(&id, None, render_group).await?;
+                        let mut actions = refresh_status_and_scene(client).await?;
+                        let message = match &target {
+                            Some((_, zone_name)) => format!("Applied {id} \u{2192} {zone_name}"),
+                            None => format!("Applied effect: {id}"),
+                        };
                         actions.push(Action::Notify(Notification {
-                            message: format!("Applied effect: {id}"),
+                            message,
                             level: NotificationLevel::Success,
                         }));
                         Ok(actions)
@@ -804,17 +874,24 @@ impl App {
                 });
             }
             Action::ApplyEffectPreset(effect_id, controls) => {
+                let target = self.non_primary_target();
                 self.spawn_actions({
                     let client = self.client.clone();
                     let id = effect_id.clone();
                     let ctrl = controls.clone();
                     async move {
                         let body = serde_json::to_value(&ctrl)?;
-                        let payload = serde_json::json!({ "controls": body });
-                        client.apply_effect(&id, Some(&payload)).await?;
-                        let mut actions = refresh_effects_and_status(client).await?;
+                        let render_group = target.as_ref().map(|(zone_id, _)| zone_id.as_str());
+                        client.apply_effect(&id, Some(&body), render_group).await?;
+                        let mut actions = refresh_status_and_scene(client).await?;
+                        let message = match &target {
+                            Some((_, zone_name)) => {
+                                format!("Applied preset for {id} \u{2192} {zone_name}")
+                            }
+                            None => format!("Applied preset for: {id}"),
+                        };
                         actions.push(Action::Notify(Notification {
-                            message: format!("Applied preset for: {id}"),
+                            message,
                             level: NotificationLevel::Success,
                         }));
                         Ok(actions)
@@ -842,26 +919,156 @@ impl App {
                 });
             }
             Action::UpdateControl(control_id, value) => {
-                self.spawn_command({
+                let json_value = control_value_to_json(value);
+                if let Some((scene_id, zone_id)) = self.zone_patch_target() {
+                    // Optimistic local update so re-renders show the new
+                    // value immediately; render_group_changed confirms.
+                    self.update_local_zone_control(&zone_id, control_id, value.clone());
+                    self.spawn_actions({
+                        let client = self.client.clone();
+                        let id = control_id.clone();
+                        async move {
+                            let mut controls = serde_json::Map::new();
+                            controls.insert(id, json_value);
+                            let body = serde_json::Value::Object(controls);
+                            match client.patch_zone_controls(&scene_id, &zone_id, &body).await {
+                                Ok(()) => Ok(Vec::new()), // silent success
+                                Err(error) => {
+                                    let scene = client.get_active_scene().await.ok().flatten();
+                                    Ok(vec![
+                                        Action::ActiveSceneUpdated(scene.map(Arc::new)),
+                                        Action::Notify(Notification {
+                                            message: format!("Zone control update failed: {error}"),
+                                            level: NotificationLevel::Error,
+                                        }),
+                                    ])
+                                }
+                            }
+                        }
+                    });
+                } else {
+                    self.spawn_command({
+                        let client = self.client.clone();
+                        let id = control_id.clone();
+                        async move {
+                            client.update_control(&id, &json_value).await?;
+                            Ok(Action::Tick) // silent success, no notification
+                        }
+                    });
+                }
+            }
+            Action::ResetControls => {
+                if let Some((scene_id, zone_id)) = self.zone_patch_target() {
+                    let Some(defaults) = self.zone_effect_defaults(&zone_id) else {
+                        self.notify("No effect on the targeted zone", NotificationLevel::Warning);
+                        return;
+                    };
+                    self.spawn_actions({
+                        let client = self.client.clone();
+                        async move {
+                            client
+                                .patch_zone_controls(&scene_id, &zone_id, &defaults)
+                                .await?;
+                            Ok(vec![Action::Notify(Notification {
+                                message: "Zone controls reset to defaults".to_string(),
+                                level: NotificationLevel::Info,
+                            })])
+                        }
+                    });
+                } else {
+                    self.spawn_actions({
+                        let client = self.client.clone();
+                        async move {
+                            client.reset_controls().await?;
+                            let mut actions = refresh_status_and_scene(client).await?;
+                            actions.push(Action::Notify(Notification {
+                                message: "Controls reset to defaults".to_string(),
+                                level: NotificationLevel::Info,
+                            }));
+                            Ok(actions)
+                        }
+                    });
+                }
+            }
+            Action::ActivateScene(scene_id) => {
+                let name = self
+                    .state
+                    .scenes
+                    .iter()
+                    .find(|scene| scene.id == *scene_id)
+                    .map_or_else(|| scene_id.clone(), |scene| scene.name.clone());
+                self.spawn_actions({
                     let client = self.client.clone();
-                    let id = control_id.clone();
-                    let json_value = control_value_to_json(value);
+                    let id = scene_id.clone();
                     async move {
-                        client.update_control(&id, &json_value).await?;
-                        Ok(Action::Tick) // silent success, no notification
+                        client.activate_scene(&id).await?;
+                        let mut actions = refresh_status_and_scene(client).await?;
+                        actions.push(Action::Notify(Notification {
+                            message: format!("Scene: {name}"),
+                            level: NotificationLevel::Success,
+                        }));
+                        Ok(actions)
                     }
                 });
             }
-            Action::ResetControls => {
+            Action::DeactivateScene => {
                 self.spawn_actions({
                     let client = self.client.clone();
                     async move {
-                        client.reset_controls().await?;
-                        let mut actions = refresh_effects(client).await?;
+                        client.deactivate_scene().await?;
+                        let mut actions = refresh_status_and_scene(client).await?;
                         actions.push(Action::Notify(Notification {
-                            message: "Controls reset to defaults".to_string(),
-                            level: NotificationLevel::Info,
+                            message: "Returned to Default scene".to_string(),
+                            level: NotificationLevel::Success,
                         }));
+                        Ok(actions)
+                    }
+                });
+            }
+            Action::ToggleScenePicker => {
+                self.scene_picker = if self.scene_picker.is_some() {
+                    None
+                } else {
+                    Some(ScenePicker::open(&self.state))
+                };
+            }
+            Action::CycleZoneFocus { forward } => {
+                if let Some(follow_up) = self.cycle_zone_focus(*forward) {
+                    let _ = self.action_tx.send(follow_up);
+                }
+            }
+            Action::SetZoneEnabled { zone_id, enabled } => {
+                let Some(scene) = self.state.active_scene.as_deref() else {
+                    return;
+                };
+                let scene_id = scene.id.clone();
+                let revision = scene.groups_revision;
+                let enabled = *enabled;
+                self.spawn_actions({
+                    let client = self.client.clone();
+                    let zone_id = zone_id.clone();
+                    async move {
+                        let result = client
+                            .update_zone(&scene_id, &zone_id, revision, Some(enabled), None)
+                            .await;
+                        // Refetch either way: success confirms, failure
+                        // (e.g. 412 stale revision) resyncs.
+                        let scene = client.get_active_scene().await.ok().flatten();
+                        let mut actions = vec![Action::ActiveSceneUpdated(scene.map(Arc::new))];
+                        match result {
+                            Ok(()) => actions.push(Action::Notify(Notification {
+                                message: if enabled {
+                                    "Zone enabled".to_string()
+                                } else {
+                                    "Zone paused".to_string()
+                                },
+                                level: NotificationLevel::Info,
+                            })),
+                            Err(error) => actions.push(Action::Notify(Notification {
+                                message: format!("Zone update failed: {error}"),
+                                level: NotificationLevel::Error,
+                            })),
+                        }
                         Ok(actions)
                     }
                 });
@@ -1026,6 +1233,9 @@ impl App {
                 | Action::DeviceControlActionFailed { .. }
                 | Action::SimulatedDisplaysUpdated(_)
                 | Action::FavoritesUpdated(_)
+                | Action::ScenesUpdated(_)
+                | Action::ActiveSceneUpdated(_)
+                | Action::ZoneFocusChanged(_)
                 | Action::CanvasFrameReceived(_)
                 | Action::SimulatorFrameUpdated { .. }
                 | Action::SimulatorFrameCleared(_)
@@ -1067,6 +1277,88 @@ impl App {
     /// Whether the daemon connection is active.
     fn is_connected(&self) -> bool {
         self.state.connection_status == ConnectionStatus::Connected
+    }
+
+    /// Show a transient notification.
+    fn notify(&mut self, message: impl Into<String>, level: NotificationLevel) {
+        self.notification = Some((
+            Notification {
+                message: message.into(),
+                level,
+            },
+            Instant::now(),
+        ));
+    }
+
+    /// The currently targeted zone as `(id, name)` when it is NOT the
+    /// primary zone. Primary targeting uses the legacy endpoints.
+    fn non_primary_target(&self) -> Option<(String, String)> {
+        let zone = self.state.target_zone()?;
+        (!zone.is_primary).then(|| (zone.id.clone(), zone.name.clone()))
+    }
+
+    /// Scene + zone ids for zone-scoped control mutations, when the target
+    /// is a non-primary zone.
+    fn zone_patch_target(&self) -> Option<(String, String)> {
+        let scene = self.state.active_scene.as_deref()?;
+        let zone = self.state.target_zone()?;
+        (!zone.is_primary).then(|| (scene.id.clone(), zone.id.clone()))
+    }
+
+    /// Optimistically write a control value into the local copy of a zone.
+    fn update_local_zone_control(&mut self, zone_id: &str, control_id: &str, value: ControlValue) {
+        if let Some(scene) = self.state.active_scene.as_mut() {
+            let scene = Arc::make_mut(scene);
+            if let Some(zone) = scene.zones.iter_mut().find(|zone| zone.id == zone_id) {
+                zone.controls.insert(control_id.to_string(), value);
+            }
+        }
+    }
+
+    /// Build the default-control payload for a zone's effect, used to
+    /// reset zone controls (the layer PATCH is merge-only).
+    fn zone_effect_defaults(&self, zone_id: &str) -> Option<serde_json::Value> {
+        let scene = self.state.active_scene.as_deref()?;
+        let effect_id = scene.zone(zone_id)?.effect_id.as_deref()?;
+        let effect = self.state.effects.iter().find(|e| e.id == effect_id)?;
+        if effect.controls.is_empty() {
+            return None;
+        }
+        let mut map = serde_json::Map::new();
+        for control in &effect.controls {
+            map.insert(
+                control.id.clone(),
+                control_value_to_json(&control.default_value),
+            );
+        }
+        Some(serde_json::Value::Object(map))
+    }
+
+    /// Move the zone focus to the next/previous zone of the active scene.
+    /// Returns the broadcast action announcing the new focus.
+    fn cycle_zone_focus(&mut self, forward: bool) -> Option<Action> {
+        let (zone_id, zone_name) = {
+            let scene = self.state.active_scene.as_deref()?;
+            if scene.zones.len() < 2 {
+                return None;
+            }
+            let current = self
+                .state
+                .target_zone()
+                .and_then(|target| scene.zones.iter().position(|zone| zone.id == target.id))
+                .unwrap_or(0);
+            let count = scene.zones.len();
+            let next = if forward {
+                (current + 1) % count
+            } else {
+                (current + count - 1) % count
+            };
+            let zone = &scene.zones[next];
+            (zone.id.clone(), zone.name.clone())
+        };
+        self.state.focused_zone = Some(zone_id);
+        self.notify(format!("Zone target: {zone_name}"), NotificationLevel::Info);
+        Some(Action::ZoneFocusChanged(self.state.focused_zone.clone()))
     }
 
     fn active_effect_browser_simulator_id(&self) -> Option<&str> {
@@ -1286,6 +1578,11 @@ impl App {
             self.render_help(frame, area);
         }
 
+        // Scene picker (modal)
+        if let Some(picker) = self.scene_picker.as_mut() {
+            picker.render(frame, area);
+        }
+
         // Theme picker (modal — top of z-order)
         if let Some(picker) = self.theme_picker.as_mut() {
             picker.render(frame, area);
@@ -1310,6 +1607,8 @@ impl App {
             ("M".to_string(), "Motion sensitivity".to_string()),
             ("Tab".to_string(), "Switch pane / control".to_string()),
             ("Z".to_string(), "Fullscreen preview".to_string()),
+            ("C".to_string(), "Scene picker".to_string()),
+            ("[/]".to_string(), "Cycle zone target".to_string()),
             ("Esc".to_string(), "Go back".to_string()),
         ];
         if self.state.show_donate {
@@ -1330,6 +1629,7 @@ impl App {
             ("\u{2190}/\u{2192}".to_string(), "Adjust value".to_string()),
             ("Enter".to_string(), "Apply / confirm".to_string()),
             ("f".to_string(), "Toggle favorite".to_string()),
+            ("r".to_string(), "Reset controls".to_string()),
             ("/".to_string(), "Search".to_string()),
             ("g/G".to_string(), "Jump to top/bottom".to_string()),
         ]);
@@ -1420,13 +1720,23 @@ impl App {
             frame.render_widget(text, Rect::new(msg_x, msg_y, msg_width, 1));
         }
 
-        // Info bar: effect name + hint to exit
+        // Info bar: effect name + hint to exit. A multi-zone canvas is a
+        // composite, so label it with the zone count rather than
+        // attributing it to the primary zone's effect.
+        let multi_zone_label = self
+            .state
+            .active_scene
+            .as_deref()
+            .filter(|scene| scene.multi_zone())
+            .map(|scene| format!("{} \u{00B7} {} zones", scene.name, scene.zones.len()));
         let effect_name = if let Some(simulator_id) = self.active_effect_browser_simulator_id() {
             self.simulator_preview
                 .simulators
                 .iter()
                 .find(|simulator| simulator.id == simulator_id)
                 .map_or("Simulator", |simulator| simulator.name.as_str())
+        } else if let Some(label) = multi_zone_label.as_deref() {
+            label
         } else {
             self.state
                 .daemon
@@ -1482,11 +1792,6 @@ fn control_value_to_json(value: &ControlValue) -> serde_json::Value {
     }
 }
 
-async fn refresh_effects(client: DaemonClient) -> anyhow::Result<Vec<Action>> {
-    let effects = client.get_effects().await?;
-    Ok(vec![Action::EffectsUpdated(std::sync::Arc::new(effects))])
-}
-
 async fn refresh_favorites(client: DaemonClient) -> anyhow::Result<Vec<Action>> {
     let favorites = client.get_favorites().await?;
     Ok(vec![Action::FavoritesUpdated(std::sync::Arc::new(
@@ -1494,11 +1799,15 @@ async fn refresh_favorites(client: DaemonClient) -> anyhow::Result<Vec<Action>> 
     ))])
 }
 
-async fn refresh_effects_and_status(client: DaemonClient) -> anyhow::Result<Vec<Action>> {
-    let status = client.get_status().await?;
-    let effects = client.get_effects().await?;
-    Ok(vec![
-        Action::DaemonStateUpdated(Box::new(status)),
-        Action::EffectsUpdated(std::sync::Arc::new(effects)),
-    ])
+/// Refresh daemon status + the active scene (zones included) after a
+/// mutation. Deliberately does NOT refetch the effect list — that is a
+/// per-effect N+1 (`get_effects` pulls `/effects/{id}` for every effect)
+/// and nothing about the library changes on apply/reset.
+async fn refresh_status_and_scene(client: DaemonClient) -> anyhow::Result<Vec<Action>> {
+    let (status, scene) = tokio::join!(client.get_status(), client.get_active_scene());
+    let mut actions = vec![Action::DaemonStateUpdated(Box::new(status?))];
+    if let Ok(scene) = scene {
+        actions.push(Action::ActiveSceneUpdated(scene.map(std::sync::Arc::new)));
+    }
+    Ok(actions)
 }

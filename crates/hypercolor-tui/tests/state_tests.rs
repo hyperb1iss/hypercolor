@@ -253,3 +253,79 @@ fn canvas_preview_state_captures_frame_metadata_without_pixels() {
         }
     );
 }
+
+// ── Scene & zone state tests ─────────────────────────────────────
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use hypercolor_tui::state::{ActiveScene, AppState, ZoneSummary};
+use hypercolor_types::scene::{SceneKind, SceneMutationMode};
+
+fn zone(id: &str, name: &str, is_primary: bool) -> ZoneSummary {
+    ZoneSummary {
+        id: id.to_string(),
+        name: name.to_string(),
+        effect_id: None,
+        brightness: 1.0,
+        enabled: true,
+        is_primary,
+        color: None,
+        controls: HashMap::new(),
+        controls_version: 0,
+        layers_version: 0,
+    }
+}
+
+fn scene_with(zones: Vec<ZoneSummary>) -> ActiveScene {
+    ActiveScene {
+        id: "scene-1".to_string(),
+        name: "Desk".to_string(),
+        kind: SceneKind::Named,
+        mutation_mode: SceneMutationMode::Live,
+        snapshot_locked: false,
+        groups_revision: 1,
+        zones,
+    }
+}
+
+#[test]
+fn active_scene_multi_zone_requires_two_zones() {
+    assert!(!scene_with(vec![zone("a", "A", true)]).multi_zone());
+    assert!(scene_with(vec![zone("a", "A", true), zone("b", "B", false)]).multi_zone());
+}
+
+#[test]
+fn active_scene_primary_prefers_primary_role_then_first() {
+    let scene = scene_with(vec![zone("a", "A", false), zone("b", "B", true)]);
+    assert_eq!(scene.primary().map(|z| z.id.as_str()), Some("b"));
+
+    let no_primary = scene_with(vec![zone("a", "A", false), zone("b", "B", false)]);
+    assert_eq!(no_primary.primary().map(|z| z.id.as_str()), Some("a"));
+}
+
+#[test]
+fn target_zone_uses_focus_with_primary_fallback() {
+    let mut state = AppState {
+        active_scene: Some(Arc::new(scene_with(vec![
+            zone("a", "A", true),
+            zone("b", "B", false),
+        ]))),
+        ..AppState::default()
+    };
+
+    // No focus → primary
+    assert_eq!(state.target_zone().map(|z| z.id.as_str()), Some("a"));
+
+    // Focused zone wins
+    state.focused_zone = Some("b".to_string());
+    assert_eq!(state.target_zone().map(|z| z.id.as_str()), Some("b"));
+
+    // Stale focus falls back to primary
+    state.focused_zone = Some("gone".to_string());
+    assert_eq!(state.target_zone().map(|z| z.id.as_str()), Some("a"));
+
+    // No scene → no target
+    state.active_scene = None;
+    assert!(state.target_zone().is_none());
+}

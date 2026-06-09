@@ -82,12 +82,24 @@ pub async fn spawn_data_bridge(
                 }
             });
 
-            // Forward WebSocket messages as Actions
+            // Forward WebSocket messages as Actions. High-frequency zone
+            // mutations (control patches publish one event per tick of a
+            // slider drag) coalesce into a single active-scene refetch.
+            let mut scene_refetch_deadline: Option<tokio::time::Instant> = None;
             loop {
                 tokio::select! {
                     () = cancel.cancelled() => {
                         ws_handle.abort();
                         return;
+                    }
+                    () = async {
+                        match scene_refetch_deadline {
+                            Some(deadline) => tokio::time::sleep_until(deadline).await,
+                            None => std::future::pending().await,
+                        }
+                    } => {
+                        scene_refetch_deadline = None;
+                        refresh_active_scene(&client, &action_tx).await;
                     }
                     msg = ws_rx.recv() => {
                         match msg {
@@ -104,7 +116,13 @@ pub async fn spawn_data_bridge(
                                 let _ = action_tx.send(Action::SpectrumUpdated(Arc::new(snapshot)));
                             }
                             Some(WsMessage::Event(event)) => {
-                                if let Err(error) = refresh_for_event(&client, &action_tx, &event, &mut latest_daemon_state).await {
+                                if let Err(error) = refresh_for_event(
+                                    &client,
+                                    &action_tx,
+                                    &event,
+                                    &mut latest_daemon_state,
+                                    &mut scene_refetch_deadline,
+                                ).await {
                                     tracing::debug!(%error, "Failed to refresh TUI state after daemon event");
                                 }
                             }
@@ -154,24 +172,46 @@ async fn bootstrap_rest(
     refresh_effects(client, action_tx).await;
     refresh_devices(client, action_tx).await;
     refresh_favorites(client, action_tx).await;
+    refresh_scenes(client, action_tx).await;
+    refresh_active_scene(client, action_tx).await;
 
     Ok(status)
 }
+
+/// How long to coalesce zone-mutation events before refetching the
+/// active scene. Control patches publish one event per slider tick;
+/// a single refetch after the burst settles is enough.
+const SCENE_REFETCH_COALESCE: Duration = Duration::from_millis(150);
 
 async fn refresh_for_event(
     client: &DaemonClient,
     action_tx: &mpsc::UnboundedSender<Action>,
     event: &serde_json::Value,
     latest_daemon_state: &mut Option<DaemonState>,
+    scene_refetch_deadline: &mut Option<tokio::time::Instant>,
 ) -> anyhow::Result<()> {
     match event_name(event).unwrap_or_default() {
         name if name.starts_with("device_") => {
             *latest_daemon_state = Some(refresh_status(client, action_tx).await?);
             refresh_devices(client, action_tx).await;
         }
-        name if name.starts_with("effect_") => {
+        // Apply/stop only changes zone state — refresh status + the active
+        // scene. Refetching the effect list here would be an N+1 (one
+        // detail request per effect) for data that did not change.
+        "effect_started" | "effect_stopped" => {
             *latest_daemon_state = Some(refresh_status(client, action_tx).await?);
+            refresh_active_scene(client, action_tx).await;
+        }
+        // The library itself changed (rescan/install) — full list refresh.
+        "effect_registry_updated" => {
             refresh_effects(client, action_tx).await;
+        }
+        // High-frequency zone mutations: coalesce into one scene refetch.
+        "effect_control_changed"
+        | "effect_layer_added"
+        | "effect_layer_removed"
+        | "render_group_changed" => {
+            *scene_refetch_deadline = Some(tokio::time::Instant::now() + SCENE_REFETCH_COALESCE);
         }
         "active_scene_changed" => {
             if let Some(next_state) =
@@ -182,6 +222,14 @@ async fn refresh_for_event(
             } else {
                 *latest_daemon_state = Some(refresh_status(client, action_tx).await?);
             }
+            // The event carries no groups; pull the zone list and refresh
+            // the saved-scene list (covers create/rename ripple effects).
+            refresh_active_scene(client, action_tx).await;
+            refresh_scenes(client, action_tx).await;
+        }
+        name if name.starts_with("scene_") => {
+            refresh_scenes(client, action_tx).await;
+            refresh_active_scene(client, action_tx).await;
         }
         name if name.starts_with("profile_") || name == "session_changed" => {
             *latest_daemon_state = Some(refresh_status(client, action_tx).await?);
@@ -233,6 +281,28 @@ async fn refresh_favorites(client: &DaemonClient, action_tx: &mpsc::UnboundedSen
         }
         Err(error) => {
             tracing::debug!(%error, "Failed to refresh favorites");
+        }
+    }
+}
+
+async fn refresh_scenes(client: &DaemonClient, action_tx: &mpsc::UnboundedSender<Action>) {
+    match client.get_scenes().await {
+        Ok(scenes) => {
+            let _ = action_tx.send(Action::ScenesUpdated(Arc::new(scenes)));
+        }
+        Err(error) => {
+            tracing::debug!(%error, "Failed to refresh scene list");
+        }
+    }
+}
+
+async fn refresh_active_scene(client: &DaemonClient, action_tx: &mpsc::UnboundedSender<Action>) {
+    match client.get_active_scene().await {
+        Ok(scene) => {
+            let _ = action_tx.send(Action::ActiveSceneUpdated(scene.map(Arc::new)));
+        }
+        Err(error) => {
+            tracing::debug!(%error, "Failed to refresh active scene");
         }
     }
 }

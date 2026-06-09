@@ -107,14 +107,51 @@ fn build_left(state: &AppState) -> Vec<Span<'static>> {
 
     spans.push(Span::raw(" "));
 
-    // Current effect name — gradient brand style.
-    let effect_name = state
-        .daemon
-        .as_ref()
-        .and_then(|d| d.effect_name.clone())
-        .unwrap_or_else(|| "No effect".to_string());
+    let multi_zone = state
+        .active_scene
+        .as_deref()
+        .is_some_and(crate::state::ActiveScene::multi_zone);
+    let target = state.target_zone();
+
+    // Current effect name — gradient brand style. In a multi-zone scene
+    // the daemon's singular "active effect" is just the primary zone, so
+    // show the targeted zone's effect instead.
+    let effect_name = if multi_zone {
+        target
+            .and_then(|zone| zone.effect_id.as_deref())
+            .map(|effect_id| {
+                state
+                    .effects
+                    .iter()
+                    .find(|effect| effect.id == effect_id)
+                    .map_or_else(|| effect_id.to_string(), |effect| effect.name.clone())
+            })
+            .unwrap_or_else(|| "No effect".to_string())
+    } else {
+        state
+            .daemon
+            .as_ref()
+            .and_then(|d| d.effect_name.clone())
+            .unwrap_or_else(|| "No effect".to_string())
+    };
 
     gradient_text(&mut spans, &effect_name);
+
+    if multi_zone && let Some(zone) = target {
+        spans.push(Span::styled(" \u{25B8} ", Style::default().fg(muted)));
+        spans.push(Span::styled(
+            zone.name.clone(),
+            Style::default()
+                .fg(theme::accent_secondary())
+                .add_modifier(Modifier::BOLD),
+        ));
+        if !zone.enabled {
+            spans.push(Span::styled(
+                " [off]",
+                Style::default().fg(theme::warning()),
+            ));
+        }
+    }
 
     // Separator + device count.
     if let Some(ref daemon) = state.daemon {
@@ -124,6 +161,12 @@ fn build_left(state: &AppState) -> Vec<Span<'static>> {
                 scene_name.clone(),
                 Style::default().fg(theme::accent_secondary()),
             ));
+            if let Some(scene) = state.active_scene.as_deref().filter(|s| s.multi_zone()) {
+                spans.push(Span::styled(
+                    format!(" \u{00B7} {} zones", scene.zones.len()),
+                    Style::default().fg(muted),
+                ));
+            }
             if daemon.scene_snapshot_locked {
                 spans.push(Span::styled(" ", Style::default().fg(muted)));
                 spans.push(Span::styled(

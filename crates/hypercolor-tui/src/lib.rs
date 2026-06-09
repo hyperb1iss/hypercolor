@@ -9,6 +9,7 @@ pub mod component;
 pub mod event;
 pub mod motion;
 mod preview;
+pub mod scene_picker;
 pub mod screen;
 pub mod state;
 pub mod theme;
