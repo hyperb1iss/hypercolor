@@ -35,13 +35,17 @@ impl ZoneRuntime {
         result: &ZoneResult,
         zones: &[ZoneColors],
     ) {
+        let recycled = self
+            .retained_frame
+            .take()
+            .map(|frame| frame.led_sampling_strategy);
         self.retained_frame = Some(RetainedRenderGroupFrame {
             dependency_key,
             scene_frame: result.scene_frame.clone(),
             group_canvases: result.group_canvases.clone(),
             active_group_canvas_ids: result.active_group_canvas_ids.clone(),
             zone_canvases: result.zone_canvases.clone(),
-            led_sampling_strategy: result.led_sampling_strategy.retain(zones),
+            led_sampling_strategy: result.led_sampling_strategy.retain(zones, recycled),
             logical_layer_count: result.logical_layer_count,
         });
     }

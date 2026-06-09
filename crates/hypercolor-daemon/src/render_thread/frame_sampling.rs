@@ -63,11 +63,15 @@ impl LedSamplingStrategy {
         }
     }
 
-    pub(super) fn retain(&self, zones: &[ZoneColors]) -> RetainedLedSamplingStrategy {
+    pub(super) fn retain(
+        &self,
+        zones: &[ZoneColors],
+        recycled: Option<RetainedLedSamplingStrategy>,
+    ) -> RetainedLedSamplingStrategy {
         match self {
             Self::PreSampled(layout) => RetainedLedSamplingStrategy::PreSampled {
                 layout: Arc::clone(layout),
-                zones: zones.to_vec().into(),
+                zones: recycle_retained_zones(recycled, zones),
             },
             Self::SparkleFlinger(spatial_engine) => {
                 RetainedLedSamplingStrategy::SparkleFlinger(spatial_engine.clone())
@@ -82,6 +86,30 @@ impl LedSamplingStrategy {
             },
         }
     }
+}
+
+/// Reuses the previous retained zone allocation when it is uniquely owned and
+/// shape-compatible; `clone_from` keeps the per-zone String and color Vec
+/// capacities, so steady-state retention of an animating scene allocates
+/// nothing.
+fn recycle_retained_zones(
+    recycled: Option<RetainedLedSamplingStrategy>,
+    zones: &[ZoneColors],
+) -> Arc<[ZoneColors]> {
+    if let Some(RetainedLedSamplingStrategy::PreSampled {
+        zones: mut previous,
+        ..
+    }) = recycled
+        && previous.len() == zones.len()
+        && let Some(slots) = Arc::get_mut(&mut previous)
+    {
+        for (slot, zone) in slots.iter_mut().zip(zones) {
+            slot.zone_id.clone_from(&zone.zone_id);
+            slot.colors.clone_from(&zone.colors);
+        }
+        return previous;
+    }
+    zones.to_vec().into()
 }
 
 #[derive(Clone)]
