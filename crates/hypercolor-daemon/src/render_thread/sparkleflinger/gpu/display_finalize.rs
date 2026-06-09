@@ -42,7 +42,7 @@ pub(super) struct GpuDisplayFinalizeSurfaceSet {
     pub(super) readback_surfaces: RenderSurfacePool,
     pub(super) scene_source: Option<GpuDisplaySourceTexture>,
     pub(super) face_source: Option<GpuDisplaySourceTexture>,
-    pub(super) pending_upload_buffers: Vec<wgpu::Buffer>,
+    pub(super) pending_upload_buffers: super::PendingUploadBuffers,
     #[cfg(test)]
     pub(super) scene_upload_count: usize,
     #[cfg(test)]
@@ -232,7 +232,7 @@ impl GpuDisplayFinalizeSurfaceSet {
             ),
             scene_source: None,
             face_source: None,
-            pending_upload_buffers: Vec::new(),
+            pending_upload_buffers: super::PendingUploadBuffers::default(),
             #[cfg(test)]
             scene_upload_count: 0,
             #[cfg(test)]
@@ -363,7 +363,7 @@ impl GpuSparkleFlinger {
         self.ensure_display_finalize_surfaces(params.cache_key);
         let device = &self.device;
         let queue = &self.queue;
-        let pipeline = &self.pipeline;
+        let pipeline = &mut self.pipeline;
         let surfaces = self
             .display_finalize_surfaces
             .get_mut(&params.cache_key)
@@ -438,11 +438,16 @@ impl GpuSparkleFlinger {
             &surfaces.output.view,
             &surfaces.yuv_output,
         );
-        queue.write_buffer(
-            &pipeline.display_finalize_params_buffer,
-            0,
-            &encode_display_finalize_params(&params, scene, face),
-        );
+        let params_offset = pipeline
+            .display_finalize_params
+            .write(
+                device,
+                queue,
+                &mut encoder,
+                &mut surfaces.pending_upload_buffers,
+                &encode_display_finalize_params(&params, scene, face),
+            )
+            .offset;
 
         let (used_bytes, mapped_bytes) = match format {
             GpuDisplayFinalizeFormat::Rgba => {
@@ -452,7 +457,7 @@ impl GpuSparkleFlinger {
                         timestamp_writes: None,
                     });
                     pass.set_pipeline(&pipeline.display_finalize_pipeline);
-                    pass.set_bind_group(0, &bind_group, &[]);
+                    pass.set_bind_group(0, &bind_group, &[params_offset]);
                     pass.dispatch_workgroups(
                         params.width.div_ceil(COMPOSE_WORKGROUP_WIDTH),
                         params.height.div_ceil(COMPOSE_WORKGROUP_HEIGHT),
@@ -491,7 +496,7 @@ impl GpuSparkleFlinger {
                         timestamp_writes: None,
                     });
                     pass.set_pipeline(&pipeline.display_finalize_yuv_pipeline);
-                    pass.set_bind_group(0, &bind_group, &[]);
+                    pass.set_bind_group(0, &bind_group, &[params_offset]);
                     pass.dispatch_workgroups(
                         params.width.div_ceil(COMPOSE_WORKGROUP_WIDTH),
                         params.height.div_ceil(COMPOSE_WORKGROUP_HEIGHT),
@@ -531,6 +536,7 @@ impl GpuSparkleFlinger {
             readback_buffer,
             readback_slot,
         ));
+        self.release_retired_uniform_slots();
         Ok(GpuDisplayFinalizeDispatch::Pending(pending))
     }
 
@@ -845,7 +851,7 @@ pub(super) fn create_display_finalize_bind_group(
             },
             wgpu::BindGroupEntry {
                 binding: 3,
-                resource: pipeline.display_finalize_params_buffer.as_entire_binding(),
+                resource: pipeline.display_finalize_params.binding(),
             },
             wgpu::BindGroupEntry {
                 binding: 4,

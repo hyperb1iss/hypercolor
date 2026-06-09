@@ -1,5 +1,4 @@
 use anyhow::{Context, Result};
-use wgpu::util::DeviceExt;
 
 use super::super::{
     ComposedFrameSet, CompositionLayer, CompositionMode, CompositionPlan, PreviewSurfaceRequest,
@@ -139,6 +138,10 @@ impl GpuSparkleFlinger {
         } else {
             self.discard_superseded_preview_work();
         }
+        // The stashed encoder (if any) was just submitted or dropped and no
+        // local encoder exists yet, so retired uniform ring slots are safe to
+        // reuse from here on.
+        self.release_retired_uniform_slots();
 
         let surfaces = self
             .surfaces
@@ -161,7 +164,7 @@ impl GpuSparkleFlinger {
             copy_frame_into_output_texture(
                 &self.device,
                 &self.queue,
-                &self.pipeline,
+                &mut self.pipeline,
                 &surfaces.front,
                 &mut surfaces.front_contents,
                 &mut surfaces.pending_upload_buffers,
@@ -171,12 +174,19 @@ impl GpuSparkleFlinger {
                 &mut surfaces.front_upload_count,
             );
         } else {
-            let full_range = wgpu::ImageSubresourceRange::default();
-            encoder.clear_texture(&surfaces.front.texture, &full_range);
-            surfaces.front_contents = None;
+            // The first layer only blends against FRONT when it cannot take
+            // the direct-copy path inside `compose_layer_into_gpu`; skip the
+            // clear (and keep `front_contents` accurate) when FRONT is never
+            // read.
+            if !first_layer.replaces_output_directly(plan.width, plan.height) {
+                let full_range = wgpu::ImageSubresourceRange::default();
+                encoder.clear_texture(&surfaces.front.texture, &full_range);
+                surfaces.front_contents = None;
+            }
             compose_layer_into_gpu(
                 &self.device,
-                &self.pipeline,
+                &self.queue,
+                &mut self.pipeline,
                 surfaces,
                 &mut encoder,
                 first_layer,
@@ -188,7 +198,8 @@ impl GpuSparkleFlinger {
         for layer in layers {
             compose_layer_into_gpu(
                 &self.device,
-                &self.pipeline,
+                &self.queue,
+                &mut self.pipeline,
                 surfaces,
                 &mut encoder,
                 layer,
@@ -219,6 +230,7 @@ impl GpuSparkleFlinger {
             let cached_surface = cached.surface.clone();
             self.queue.submit(Some(encoder.finish()));
             self.clear_pending_upload_buffers();
+            self.release_retired_uniform_slots();
             return Ok(gpu_composed_from_surface(
                 cached_surface,
                 requires_cpu_sampling_canvas,
@@ -446,7 +458,8 @@ impl GpuSparkleFlinger {
 
 fn compose_layer_into_gpu(
     device: &wgpu::Device,
-    pipeline: &GpuCompositorPipeline,
+    queue: &wgpu::Queue,
+    pipeline: &mut GpuCompositorPipeline,
     surfaces: &mut GpuCompositorSurfaceSet,
     encoder: &mut wgpu::CommandEncoder,
     layer: &CompositionLayer,
@@ -486,6 +499,7 @@ fn compose_layer_into_gpu(
         };
         copy_gpu_source_frame_into_texture(
             device,
+            queue,
             pipeline,
             encoder,
             &mut surfaces.pending_upload_buffers,
@@ -505,6 +519,7 @@ fn compose_layer_into_gpu(
         let source = &surfaces.source;
         copy_gpu_source_frame_into_texture(
             device,
+            queue,
             pipeline,
             encoder,
             &mut surfaces.pending_upload_buffers,
@@ -543,7 +558,8 @@ fn compose_layer_into_gpu(
     }
 
     let params = encode_compose_params(surfaces.width, surfaces.height, shader_mode, layer);
-    encode_compose_params_upload(device, pipeline, surfaces, encoder, &params);
+    let params_offset =
+        encode_compose_params_upload(device, queue, pipeline, surfaces, encoder, &params);
     #[cfg(test)]
     {
         surfaces.compose_dispatch_count = surfaces.compose_dispatch_count.saturating_add(1);
@@ -574,6 +590,7 @@ fn compose_layer_into_gpu(
             encoder,
             pipeline,
             &bind_group,
+            params_offset,
             surfaces.width,
             surfaces.height,
         );
@@ -590,6 +607,7 @@ fn compose_layer_into_gpu(
         encoder,
         pipeline,
         bind_group,
+        params_offset,
         surfaces.width,
         surfaces.height,
     );
@@ -600,6 +618,7 @@ fn dispatch_compose_pass(
     encoder: &mut wgpu::CommandEncoder,
     pipeline: &GpuCompositorPipeline,
     bind_group: &wgpu::BindGroup,
+    params_offset: u32,
     width: u32,
     height: u32,
 ) {
@@ -608,7 +627,7 @@ fn dispatch_compose_pass(
         timestamp_writes: None,
     });
     pass.set_pipeline(&pipeline.compose_pipeline);
-    pass.set_bind_group(0, bind_group, &[]);
+    pass.set_bind_group(0, bind_group, &[params_offset]);
     pass.dispatch_workgroups(
         width.div_ceil(COMPOSE_WORKGROUP_WIDTH),
         height.div_ceil(COMPOSE_WORKGROUP_HEIGHT),
@@ -653,40 +672,43 @@ pub(super) fn create_compose_bind_group(
             },
             wgpu::BindGroupEntry {
                 binding: 3,
-                resource: pipeline.params_buffer.as_entire_binding(),
+                resource: pipeline.compose_params.binding(),
             },
         ],
     })
 }
 
+/// Uploads compose params into the uniform ring and returns the dynamic
+/// offset the dispatch must bind. Byte-identical params re-bind the previous
+/// slot without writing, as long as that slot came from a ring write.
 fn encode_compose_params_upload(
     device: &wgpu::Device,
-    pipeline: &GpuCompositorPipeline,
+    queue: &wgpu::Queue,
+    pipeline: &mut GpuCompositorPipeline,
     surfaces: &mut GpuCompositorSurfaceSet,
     encoder: &mut wgpu::CommandEncoder,
     params: &[u8; COMPOSE_PARAM_BYTES],
-) {
-    if surfaces.cached_compose_params.as_ref() == Some(params) {
-        return;
+) -> u32 {
+    if surfaces.cached_compose_params.as_ref() == Some(params)
+        && let Some(offset) = surfaces.cached_compose_params_offset
+    {
+        pipeline.compose_params.pin_last_slot();
+        return offset;
     }
-    let upload = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("SparkleFlinger GPU compose params upload"),
-        contents: params,
-        usage: wgpu::BufferUsages::COPY_SRC,
-    });
-    encoder.copy_buffer_to_buffer(
-        &upload,
-        0,
-        &pipeline.params_buffer,
-        0,
-        COMPOSE_PARAM_BYTES as u64,
+    let write = pipeline.compose_params.write(
+        device,
+        queue,
+        encoder,
+        &mut surfaces.pending_upload_buffers,
+        params,
     );
-    surfaces.pending_upload_buffers.push(upload);
     surfaces.cached_compose_params = Some(*params);
+    surfaces.cached_compose_params_offset = write.reusable.then_some(write.offset);
     #[cfg(test)]
     {
         surfaces.compose_param_write_count = surfaces.compose_param_write_count.saturating_add(1);
     }
+    write.offset
 }
 
 fn encode_compose_params(

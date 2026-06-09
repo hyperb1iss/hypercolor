@@ -696,6 +696,105 @@ fn gpu_compositor_skips_cpu_readback_when_canvas_is_not_required() {
 }
 
 #[test]
+fn gpu_steady_state_animated_compose_keeps_params_in_uniform_ring() {
+    let mut compositor = match GpuSparkleFlinger::new() {
+        Ok(compositor) => compositor,
+        Err(_) => return,
+    };
+    let base = compositor
+        .upload_media_canvas_frame(MediaTextureSourceKey::for_test(0), &patterned_canvas(9))
+        .expect("base media upload should succeed");
+    let overlay = compositor
+        .upload_media_canvas_frame(MediaTextureSourceKey::for_test(1), &patterned_canvas(63))
+        .expect("overlay media upload should succeed");
+
+    let frames = 8_u32;
+    for frame in 0..frames {
+        let opacity = 0.2 + frame as f32 * 0.05;
+        let plan = CompositionPlan::with_layers(
+            4,
+            4,
+            vec![
+                CompositionLayer::replace(ProducerFrame::GpuTexture(base.clone())),
+                CompositionLayer::alpha(ProducerFrame::GpuTexture(overlay.clone()), opacity),
+            ],
+        );
+        compositor
+            .compose(&plan, false, None)
+            .expect("animated GPU composition should succeed");
+        assert!(
+            compositor
+                .current_output_frame()
+                .expect("current output frame lookup should succeed")
+                .is_some()
+        );
+    }
+
+    let surfaces = compositor
+        .surfaces
+        .as_ref()
+        .expect("surface allocation should exist after composition");
+    assert_eq!(surfaces.pending_upload_buffers.creation_count, 0);
+    assert_eq!(surfaces.compose_param_write_count, frames as usize);
+    assert_eq!(
+        compositor.pipeline.compose_params.ring_write_count,
+        frames as usize
+    );
+    assert_eq!(compositor.pipeline.compose_params.fallback_write_count, 0);
+}
+
+#[test]
+fn gpu_compose_params_ring_wrap_falls_back_to_staging_uploads() {
+    let mut compositor = match GpuSparkleFlinger::new() {
+        Ok(compositor) => compositor,
+        Err(_) => return,
+    };
+    compositor
+        .pipeline
+        .compose_params
+        .set_slot_count_for_test(1);
+
+    let plan = CompositionPlan::with_layers(
+        4,
+        4,
+        vec![
+            CompositionLayer::replace(ProducerFrame::Canvas(solid_canvas(Rgba::new(
+                220, 28, 16, 255,
+            )))),
+            CompositionLayer::alpha(
+                ProducerFrame::Canvas(solid_canvas(Rgba::new(24, 180, 64, 255))),
+                0.45,
+            ),
+            CompositionLayer::add(
+                ProducerFrame::Canvas(solid_canvas(Rgba::new(32, 48, 240, 255))),
+                0.3,
+            ),
+        ],
+    );
+    assert_gpu_samples_match_cpu(&mut compositor, &plan, 1);
+    assert_eq!(compositor.pipeline.compose_params.ring_write_count, 1);
+    assert_eq!(compositor.pipeline.compose_params.fallback_write_count, 1);
+
+    // Once the wrapped writes are submitted and retired, the ring resumes.
+    let second_plan = CompositionPlan::with_layers(
+        4,
+        4,
+        vec![
+            CompositionLayer::replace(ProducerFrame::Canvas(solid_canvas(Rgba::new(
+                10, 20, 30, 255,
+            )))),
+            CompositionLayer::alpha(
+                ProducerFrame::Canvas(solid_canvas(Rgba::new(200, 100, 50, 255))),
+                0.6,
+            ),
+        ],
+    );
+    assert_gpu_samples_match_cpu(&mut compositor, &second_plan, 1);
+    assert_eq!(compositor.pipeline.compose_params.ring_write_count, 2);
+    assert_eq!(compositor.pipeline.compose_params.fallback_write_count, 1);
+}
+
+#[test]
 fn gpu_compositor_scales_preview_surface_to_requested_size() {
     let mut compositor = match GpuSparkleFlinger::new() {
         Ok(compositor) => compositor,

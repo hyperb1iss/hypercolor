@@ -34,6 +34,7 @@ pub(super) struct GpuPreviewSurfaceSet {
     pub(super) readback_surfaces: RenderSurfacePool,
     cached_readback_surfaces: Vec<CachedPreviewReadbackSurfaces>,
     pub(super) cached_scale_params: Option<[u8; PREVIEW_SCALE_PARAM_BYTES]>,
+    cached_scale_params_offset: Option<u32>,
     #[cfg(test)]
     pub(super) scale_param_write_count: usize,
     #[cfg(test)]
@@ -174,6 +175,7 @@ impl GpuSparkleFlinger {
         };
         let submission_index = self.queue.submit(Some(encoder.finish()));
         self.clear_pending_upload_buffers();
+        self.release_retired_uniform_slots();
         if self.pending_preview_map.is_some() {
             self.pending_preview_submission = Some(submission_index);
             return Ok(());
@@ -451,32 +453,50 @@ impl GpuSparkleFlinger {
                 texture_extent(request.width, request.height),
             );
         } else {
-            let bind_group = match current_output {
-                GpuCompositorOutputSurface::Front => &preview_surfaces.bind_groups.front_to_preview,
-                GpuCompositorOutputSurface::Back => &preview_surfaces.bind_groups.back_to_preview,
-            };
             let params = encode_preview_scale_params(
                 source_width,
                 source_height,
                 request.width,
                 request.height,
             );
-            if preview_surfaces.cached_scale_params != Some(params) {
-                self.queue
-                    .write_buffer(&self.pipeline.preview_scale_params_buffer, 0, &params);
+            let params_offset = if preview_surfaces.cached_scale_params == Some(params)
+                && let Some(offset) = preview_surfaces.cached_scale_params_offset
+            {
+                self.pipeline.preview_scale_params.pin_last_slot();
+                offset
+            } else {
+                let pending_upload_buffers = &mut self
+                    .surfaces
+                    .as_mut()
+                    .expect("compositor surfaces should exist before preview staging")
+                    .pending_upload_buffers;
+                let write = self.pipeline.preview_scale_params.write(
+                    &self.device,
+                    &self.queue,
+                    &mut encoder,
+                    pending_upload_buffers,
+                    &params,
+                );
                 preview_surfaces.cached_scale_params = Some(params);
+                preview_surfaces.cached_scale_params_offset =
+                    write.reusable.then_some(write.offset);
                 #[cfg(test)]
                 {
                     preview_surfaces.scale_param_write_count =
                         preview_surfaces.scale_param_write_count.saturating_add(1);
                 }
-            }
+                write.offset
+            };
+            let bind_group = match current_output {
+                GpuCompositorOutputSurface::Front => &preview_surfaces.bind_groups.front_to_preview,
+                GpuCompositorOutputSurface::Back => &preview_surfaces.bind_groups.back_to_preview,
+            };
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("SparkleFlinger GPU preview scale pass"),
                 timestamp_writes: None,
             });
             pass.set_pipeline(&self.pipeline.preview_scale_pipeline);
-            pass.set_bind_group(0, bind_group, &[]);
+            pass.set_bind_group(0, bind_group, &[params_offset]);
             pass.dispatch_workgroups(
                 request.width.div_ceil(COMPOSE_WORKGROUP_WIDTH),
                 request.height.div_ceil(COMPOSE_WORKGROUP_HEIGHT),
@@ -599,6 +619,7 @@ impl GpuPreviewSurfaceSet {
             readback_surfaces: RenderSurfacePool::new(SurfaceDescriptor::rgba8888(width, height)),
             cached_readback_surfaces: Vec::with_capacity(MAX_CACHED_PREVIEW_READBACK_POOLS),
             cached_scale_params: None,
+            cached_scale_params_offset: None,
             #[cfg(test)]
             scale_param_write_count: 0,
             #[cfg(test)]
@@ -755,7 +776,7 @@ fn create_preview_scale_bind_group(
             },
             wgpu::BindGroupEntry {
                 binding: 2,
-                resource: pipeline.preview_scale_params_buffer.as_entire_binding(),
+                resource: pipeline.preview_scale_params.binding(),
             },
         ],
     })

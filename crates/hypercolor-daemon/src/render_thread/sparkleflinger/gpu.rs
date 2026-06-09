@@ -103,7 +103,8 @@ struct GpuCompositorSurfaceSet {
     source: GpuCompositorTexture,
     bind_groups: GpuCompositorBindGroups,
     cached_compose_params: Option<[u8; COMPOSE_PARAM_BYTES]>,
-    pending_upload_buffers: Vec<wgpu::Buffer>,
+    cached_compose_params_offset: Option<u32>,
+    pending_upload_buffers: PendingUploadBuffers,
     front_contents: Option<CachedSourceUpload>,
     back_contents: Option<CachedSourceUpload>,
     cached_source_upload: Option<CachedSourceUpload>,
@@ -115,6 +116,29 @@ struct GpuCompositorSurfaceSet {
     compose_dispatch_count: usize,
     #[cfg(test)]
     compose_param_write_count: usize,
+}
+
+/// One-shot staging buffers that must stay alive until the encoder that
+/// references them is submitted.
+#[derive(Default)]
+struct PendingUploadBuffers {
+    buffers: Vec<wgpu::Buffer>,
+    #[cfg(test)]
+    creation_count: usize,
+}
+
+impl PendingUploadBuffers {
+    fn push(&mut self, buffer: wgpu::Buffer) {
+        #[cfg(test)]
+        {
+            self.creation_count = self.creation_count.saturating_add(1);
+        }
+        self.buffers.push(buffer);
+    }
+
+    fn clear(&mut self) {
+        self.buffers.clear();
+    }
 }
 
 struct GpuCompositorTexture {
@@ -326,6 +350,7 @@ impl GpuSparkleFlinger {
         if let Some(encoder) = self.pending_output_submission.take() {
             self.queue.submit(Some(encoder.finish()));
             self.clear_pending_upload_buffers();
+            self.release_retired_uniform_slots();
         }
         Ok(())
     }
@@ -333,6 +358,17 @@ impl GpuSparkleFlinger {
     pub(super) fn clear_pending_upload_buffers(&mut self) {
         if let Some(surfaces) = self.surfaces.as_mut() {
             surfaces.pending_upload_buffers.clear();
+        }
+    }
+
+    /// Advances the uniform ring watermarks so retired slots can be reused.
+    ///
+    /// Invariant: a ring slot must never be rewritten while a not-yet-
+    /// submitted encoder references it. Call sites guarantee no local encoder
+    /// is being built; the guard covers the stashed compositor encoder.
+    pub(super) fn release_retired_uniform_slots(&mut self) {
+        if self.pending_output_submission.is_none() {
+            self.pipeline.release_retired_uniform_slots();
         }
     }
 
@@ -375,7 +411,8 @@ impl GpuCompositorSurfaceSet {
             back,
             source,
             cached_compose_params: None,
-            pending_upload_buffers: Vec::new(),
+            cached_compose_params_offset: None,
+            pending_upload_buffers: PendingUploadBuffers::default(),
             front_contents: None,
             back_contents: None,
             cached_source_upload: None,

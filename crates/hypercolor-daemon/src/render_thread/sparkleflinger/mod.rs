@@ -9,8 +9,10 @@ mod transform;
 use anyhow::{Result, bail};
 use hypercolor_core::bus::DisplayYuv420Frame;
 use hypercolor_core::spatial::PreparedZonePlan;
+#[cfg(feature = "wgpu")]
+use hypercolor_core::types::canvas::Rgba;
 use hypercolor_core::types::canvas::{
-    Canvas, PublishedSurface, RenderSurfacePool, SurfaceDescriptor,
+    Canvas, PublishedSurface, RenderSurfacePool, SurfaceDescriptor, SurfaceLease,
 };
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::device::{DeviceId, DisplayFrameFormat};
@@ -281,6 +283,16 @@ impl CompositionLayer {
 
     fn needs_processing_for_size(&self, width: u32, height: u32) -> bool {
         self.transform.is_some() || self.adjust.is_some() || !self.frame_matches_size(width, height)
+    }
+
+    /// Mirrors the direct-copy fast path in `compose_layer_into_gpu`: a fully
+    /// opaque replace layer with no processing copies straight into the output
+    /// texture without reading the current surface.
+    #[cfg(feature = "wgpu")]
+    fn replaces_output_directly(&self, width: u32, height: u32) -> bool {
+        self.mode == CompositionMode::Replace
+            && self.opacity >= 1.0
+            && !self.needs_processing_for_size(width, height)
     }
 }
 
@@ -993,20 +1005,9 @@ fn gpu_frame_without_cpu_fallback(
     preview_surface_request: Option<PreviewSurfaceRequest>,
     preview_surface_pool: &mut RenderSurfacePool,
 ) -> ComposedFrameSet {
-    let preview_canvas = preview_surface_request
-        .filter(|request| request.width < width || request.height < height)
-        .map(|_| Canvas::new(width, height));
     let preview_surface = preview_surface_request
-        .zip(preview_canvas.as_ref())
-        .and_then(|request| {
-            scaled_preview_surface_from_rgba(
-                request.1.as_rgba_bytes(),
-                width,
-                height,
-                request.0,
-                preview_surface_pool,
-            )
-        });
+        .filter(|request| request.width < width || request.height < height)
+        .and_then(|request| black_preview_surface(request, preview_surface_pool));
     ComposedFrameSet {
         sampling_canvas: None,
         sampling_surface: None,
@@ -1159,42 +1160,68 @@ pub(super) fn scaled_preview_surface_from_rgba(
         return None;
     }
 
-    let descriptor = SurfaceDescriptor::rgba8888(request.width, request.height);
-    if preview_surface_pool.descriptor() != descriptor {
-        *preview_surface_pool = RenderSurfacePool::with_slot_count(descriptor, 2);
-    }
-
-    let mut lease = preview_surface_pool.dequeue()?;
+    let mut lease = dequeue_preview_lease(request, preview_surface_pool)?;
     let preview_bytes = lease.canvas_mut().as_rgba_bytes_mut();
     let source_width_usize = usize::try_from(source_width).ok()?;
     let source_height_usize = usize::try_from(source_height).ok()?;
     let target_width_usize = usize::try_from(request.width).ok()?;
     let target_height_usize = usize::try_from(request.height).ok()?;
 
-    for y in 0..target_height_usize {
+    // Nearest-neighbor scale: precompute the source byte offset per target
+    // column once instead of redoing the divide for every pixel.
+    let mut source_x_offsets = Vec::with_capacity(target_width_usize);
+    for x in 0..target_width_usize {
+        let source_x = x
+            .saturating_mul(source_width_usize)
+            .checked_div(target_width_usize.max(1))?
+            .min(source_width_usize.saturating_sub(1));
+        source_x_offsets.push(source_x.checked_mul(4)?);
+    }
+
+    let target_row_bytes = target_width_usize.checked_mul(4)?;
+    for (y, target_row) in preview_bytes
+        .chunks_exact_mut(target_row_bytes.max(1))
+        .take(target_height_usize)
+        .enumerate()
+    {
         let source_y = y
             .saturating_mul(source_height_usize)
             .checked_div(target_height_usize.max(1))?
             .min(source_height_usize.saturating_sub(1));
-        for x in 0..target_width_usize {
-            let source_x = x
-                .saturating_mul(source_width_usize)
-                .checked_div(target_width_usize.max(1))?
-                .min(source_width_usize.saturating_sub(1));
-            let source_offset = source_y
-                .checked_mul(source_width_usize)?
-                .checked_add(source_x)?
-                .checked_mul(4)?;
-            let target_offset = y
-                .checked_mul(target_width_usize)?
-                .checked_add(x)?
-                .checked_mul(4)?;
-            preview_bytes[target_offset..target_offset + 4]
+        let source_row_offset = source_y.checked_mul(source_width_usize)?.checked_mul(4)?;
+        for (x, source_x_offset) in source_x_offsets.iter().enumerate() {
+            let source_offset = source_row_offset.checked_add(*source_x_offset)?;
+            let target_offset = x * 4;
+            target_row[target_offset..target_offset + 4]
                 .copy_from_slice(&rgba[source_offset..source_offset + 4]);
         }
     }
 
     Some(lease.submit(0, 0))
+}
+
+#[cfg(feature = "wgpu")]
+fn black_preview_surface(
+    request: PreviewSurfaceRequest,
+    preview_surface_pool: &mut RenderSurfacePool,
+) -> Option<PublishedSurface> {
+    if request.width == 0 || request.height == 0 {
+        return None;
+    }
+    let mut lease = dequeue_preview_lease(request, preview_surface_pool)?;
+    lease.canvas_mut().fill(Rgba::new(0, 0, 0, 255));
+    Some(lease.submit(0, 0))
+}
+
+fn dequeue_preview_lease(
+    request: PreviewSurfaceRequest,
+    preview_surface_pool: &mut RenderSurfacePool,
+) -> Option<SurfaceLease<'_>> {
+    let descriptor = SurfaceDescriptor::rgba8888(request.width, request.height);
+    if preview_surface_pool.descriptor() != descriptor {
+        *preview_surface_pool = RenderSurfacePool::with_slot_count(descriptor, 2);
+    }
+    preview_surface_pool.dequeue()
 }
 
 #[cfg(test)]
