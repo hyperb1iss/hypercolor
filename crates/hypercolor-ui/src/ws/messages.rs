@@ -511,7 +511,7 @@ pub(super) fn handle_json_message(
             }
         }
         "metrics" => {
-            if let Ok(message) = serde_json::from_value::<MetricsMessage>(msg.clone()) {
+            if let Ok(message) = MetricsMessage::deserialize(msg) {
                 set_backpressure_probe_epoch.update(|epoch| *epoch = epoch.saturating_add(1));
                 if message.data.fps.target > 0 {
                     set_engine_preview_target.set(message.data.fps.target.min(60));
@@ -523,12 +523,12 @@ pub(super) fn handle_json_message(
             }
         }
         "device_metrics" => {
-            if let Ok(message) = serde_json::from_value::<DeviceMetricsMessage>(msg.clone()) {
+            if let Ok(message) = DeviceMetricsMessage::deserialize(msg) {
                 set_device_metrics.set(Some(message.data));
             }
         }
         "sensors" => {
-            if let Ok(message) = serde_json::from_value::<SensorsMessage>(msg.clone()) {
+            if let Ok(message) = SensorsMessage::deserialize(msg) {
                 set_sensors.set(Some(message.data));
             }
         }
@@ -545,7 +545,7 @@ pub(super) fn handle_json_message(
             }
         }
         "backpressure" => {
-            if let Ok(message) = serde_json::from_value::<BackpressureMessage>(msg.clone()) {
+            if let Ok(message) = BackpressureMessage::deserialize(msg) {
                 if message.channel == "canvas"
                     && message.recommendation == "reduce_fps"
                     && message.suggested_fps > 0
@@ -689,7 +689,7 @@ pub(crate) fn extract_layer_health(data: &serde_json::Value) -> Option<(String, 
     let scene_id = data.get("scene_id")?.as_str()?;
     let group_id = data.get("group_id")?.as_str()?;
     let layer_id = data.get("layer_id")?.as_str()?;
-    let health = serde_json::from_value::<LayerHealth>(data.get("health")?.clone()).ok()?;
+    let health = LayerHealth::deserialize(data.get("health")?).ok()?;
     Some((layer_health_key(scene_id, group_id, layer_id), health))
 }
 

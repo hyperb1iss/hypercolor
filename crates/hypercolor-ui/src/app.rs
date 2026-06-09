@@ -829,7 +829,7 @@ fn ApiKeyPrompt(on_unlock: Callback<String>) -> impl IntoView {
                 />
                 <button
                     type="button"
-                    class="mt-4 w-full rounded-lg bg-accent px-3 py-2 text-sm font-medium text-white transition hover:bg-accent-bright"
+                    class="mt-4 w-full rounded-lg bg-accent px-3 py-2 text-sm font-medium text-white transition hover:bg-accent-hover"
                     on:click=move |_| submit_click.run(())
                 >
                     "Connect"
