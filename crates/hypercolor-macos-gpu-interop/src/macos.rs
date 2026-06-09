@@ -87,6 +87,31 @@ pub enum MacosGpuInteropError {
         message: String,
     },
 
+    /// OpenGL failed to create a temporary object.
+    #[error("OpenGL failed to create {resource}: {message}")]
+    GlCreateResource {
+        /// GL resource kind.
+        resource: &'static str,
+        /// Driver error message.
+        message: String,
+    },
+
+    /// OpenGL reported an error code after an interop operation.
+    #[error("OpenGL {operation} failed with error 0x{code:04x}")]
+    GlOperation {
+        /// GL operation name.
+        operation: &'static str,
+        /// GL or CGL error code.
+        code: u32,
+    },
+
+    /// The IOSurface-backed GL framebuffer was incomplete.
+    #[error("IOSurface-backed framebuffer is incomplete: 0x{status:04x}")]
+    GlFramebufferIncomplete {
+        /// GL framebuffer status.
+        status: u32,
+    },
+
     /// The macOS Servo hardware context has no bound Surfman surface.
     #[error("macOS Servo hardware context has no bound Surfman surface")]
     MissingServoSurface,
@@ -315,7 +340,7 @@ pub fn write_bgra_pixels(
     lock.unlock()
 }
 
-fn create_iosurface(
+pub(crate) fn create_iosurface(
     descriptor: MacosIosurfaceImportDescriptor,
 ) -> Result<objc2_core_foundation::CFRetained<IOSurfaceRef>> {
     let bytes_per_row = descriptor.width * BYTES_PER_PIXEL;

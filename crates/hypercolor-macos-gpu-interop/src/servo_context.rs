@@ -2,10 +2,10 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 
+use cgl::{CGLGetCurrentContext, CGLTexImageIOSurface2D, kCGLNoError};
 use dpi::PhysicalSize;
 use euclid::default::Size2D;
 use gleam::gl::{self, Gl};
-use glow::NativeFramebuffer;
 use image::RgbaImage;
 use objc2_core_foundation::CFRetained;
 use objc2_io_surface::IOSurfaceRef;
@@ -16,9 +16,12 @@ use surfman::{
 };
 use webrender_api::units::DeviceIntRect;
 
-use crate::{ImportedFrameFormat, MacosGpuInteropError, Result};
+use crate::{ImportedFrameFormat, MacosGpuInteropError, MacosIosurfaceImportDescriptor, Result};
 
-const IOSURFACE_PIXEL_FORMAT_BGRA: u32 = u32::from_be_bytes(*b"BGRA");
+const GL_TEXTURE_RECTANGLE_ARB: gl::GLenum = 0x84F5;
+const GL_READ_FRAMEBUFFER: gl::GLenum = 0x8CA8;
+const GL_DRAW_FRAMEBUFFER: gl::GLenum = 0x8CA9;
+const GL_UNSIGNED_INT_8_8_8_8_REV: gl::GLenum = 0x8367;
 
 /// Origin convention for a native macOS Servo frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,7 +31,7 @@ pub enum MacosServoFrameOrigin {
     BottomLeft,
 }
 
-/// Native IOSurface-backed frame exposed by the macOS Servo hardware context.
+/// Native FBO-backed frame exposed by the macOS Servo hardware context.
 #[derive(Debug, Clone)]
 pub struct MacosServoNativeFrame {
     /// Frame width in pixels.
@@ -39,23 +42,24 @@ pub struct MacosServoNativeFrame {
     pub format: ImportedFrameFormat,
     /// Native framebuffer origin.
     pub origin: MacosServoFrameOrigin,
-    /// Surfman surface identity for diagnostics and cache comparisons.
+    /// IOSurface identity for diagnostics and cache comparisons.
     pub surface_id: usize,
-    /// Retained IOSurface backing the Servo render target.
+    /// Retained IOSurface attached to the Servo render target FBO.
     pub iosurface: CFRetained<IOSurfaceRef>,
 }
 
-/// macOS hardware Servo rendering context backed by a Surfman generic surface.
+/// macOS hardware Servo rendering context backed by an IOSurface FBO.
 pub struct MacosHardwareRenderingContext {
     size: Cell<PhysicalSize<u32>>,
     gleam_gl: Rc<dyn Gl>,
     glow_gl: Arc<glow::Context>,
+    framebuffer: RefCell<Option<MacosServoFramebuffer>>,
     device: RefCell<Device>,
     context: RefCell<Context>,
 }
 
 impl MacosHardwareRenderingContext {
-    /// Creates a hardware OpenGL context with an IOSurface-backed render target.
+    /// Creates a hardware OpenGL context with an IOSurface-backed FBO render target.
     pub fn new(width: u32, height: u32) -> Result<Self> {
         let size = validate_size(width, height)?;
         let connection = Connection::new().map_err(context_error("create connection"))?;
@@ -76,91 +80,43 @@ impl MacosHardwareRenderingContext {
                     size: Size2D::new(width as i32, height as i32),
                 },
             )
-            .map_err(context_error("create IOSurface-backed surface"))?;
+            .map_err(context_error("create context surface"))?;
         bind_surface(&device, &mut context, surface)?;
         device
             .make_context_current(&context)
             .map_err(context_error("make context current"))?;
+        let framebuffer = MacosServoFramebuffer::new(Rc::clone(&gleam_gl), size)?;
 
         Ok(Self {
             size: Cell::new(size),
             gleam_gl,
             glow_gl: Arc::new(glow_gl),
+            framebuffer: RefCell::new(Some(framebuffer)),
             device: RefCell::new(device),
             context: RefCell::new(context),
         })
     }
 
-    /// Returns the retained native IOSurface for the currently bound surface.
+    /// Returns the retained native IOSurface attached to the current render FBO.
     pub fn native_frame(&self) -> Result<MacosServoNativeFrame> {
-        let device = self.device.borrow();
-        let mut context = self.context.borrow_mut();
-        let surface = device
-            .unbind_surface_from_context(&mut context)
-            .map_err(context_error("unbind surface for native frame"))?
+        self.make_current()
+            .map_err(context_error("make context current for native frame"))?;
+        let framebuffer = self.framebuffer.borrow();
+        let framebuffer = framebuffer
+            .as_ref()
             .ok_or(MacosGpuInteropError::MissingServoSurface)?;
-        let info = device.surface_info(&surface);
-        let native_surface = device.native_surface(&surface);
-        let actual_format = native_surface.0.pixel_format();
-        let frame = if actual_format == IOSURFACE_PIXEL_FORMAT_BGRA {
-            Ok(MacosServoNativeFrame {
-                width: info.size.width as u32,
-                height: info.size.height as u32,
-                format: ImportedFrameFormat::Bgra8Unorm,
-                origin: MacosServoFrameOrigin::BottomLeft,
-                surface_id: info.id.0,
-                iosurface: native_surface.0,
-            })
-        } else {
-            Err(MacosGpuInteropError::IosurfacePixelFormatMismatch {
-                expected: IOSURFACE_PIXEL_FORMAT_BGRA,
-                actual: actual_format,
-            })
-        };
-        bind_surface(&device, &mut context, surface)?;
-        frame
+        framebuffer.copy_to_iosurface()?;
+        // Metal samples this IOSurface immediately after handoff; wait for
+        // Servo's GL writes so we don't import an in-flight render target.
+        self.gleam_gl.finish();
+        Ok(framebuffer.native_frame())
     }
 
-    fn framebuffer(&self) -> Option<NativeFramebuffer> {
-        let device = self.device.borrow();
-        let context = self.context.borrow();
-        device
-            .context_surface_info(&context)
-            .unwrap_or(None)
-            .and_then(|info| info.framebuffer_object)
-    }
-
-    fn resize_surface(&self, size: PhysicalSize<u32>) -> Result<()> {
-        let device = self.device.borrow();
-        let mut context = self.context.borrow_mut();
-        let old_surface = device
-            .unbind_surface_from_context(&mut context)
-            .map_err(context_error("unbind surface for resize"))?
-            .ok_or(MacosGpuInteropError::MissingServoSurface)?;
-        let new_surface = match device.create_surface(
-            &context,
-            SurfaceAccess::GPUOnly,
-            SurfaceType::Generic {
-                size: Size2D::new(size.width as i32, size.height as i32),
-            },
-        ) {
-            Ok(surface) => surface,
-            Err(error) => {
-                let error = context_error("create resized IOSurface-backed surface")(error);
-                bind_surface(&device, &mut context, old_surface)?;
-                return Err(error);
-            }
-        };
-
-        if let Err((error, new_surface)) = device.bind_surface_to_context(&mut context, new_surface)
-        {
-            destroy_surface_or_forget(&device, &mut context, new_surface);
-            bind_surface(&device, &mut context, old_surface)?;
-            return Err(context_error("bind resized IOSurface-backed surface")(
-                error,
-            ));
-        }
-        destroy_surface_or_forget(&device, &mut context, old_surface);
+    fn resize_framebuffer(&self, size: PhysicalSize<u32>) -> Result<()> {
+        self.make_current()
+            .map_err(context_error("make context current for resize"))?;
+        let framebuffer = MacosServoFramebuffer::new(Rc::clone(&self.gleam_gl), size)?;
+        *self.framebuffer.borrow_mut() = Some(framebuffer);
         Ok(())
     }
 }
@@ -169,6 +125,8 @@ impl Drop for MacosHardwareRenderingContext {
     fn drop(&mut self) {
         let device = self.device.get_mut();
         let context = self.context.get_mut();
+        let _ = device.make_context_current(context);
+        drop(self.framebuffer.get_mut().take());
         if let Ok(Some(surface)) = device.unbind_surface_from_context(context) {
             destroy_surface_or_forget(device, context, surface);
         }
@@ -178,11 +136,11 @@ impl Drop for MacosHardwareRenderingContext {
 
 impl RenderingContext for MacosHardwareRenderingContext {
     fn prepare_for_rendering(&self) {
-        let framebuffer_id = self
-            .framebuffer()
-            .map_or(0, |framebuffer| framebuffer.0.into());
-        self.gleam_gl
-            .bind_framebuffer(gl::FRAMEBUFFER, framebuffer_id);
+        if let Some(framebuffer) = self.framebuffer.borrow().as_ref() {
+            framebuffer.bind();
+        } else {
+            self.gleam_gl.bind_framebuffer(gl::FRAMEBUFFER, 0);
+        }
     }
 
     fn read_to_image(&self, source_rectangle: DeviceIntRect) -> Option<RgbaImage> {
@@ -220,7 +178,7 @@ impl RenderingContext for MacosHardwareRenderingContext {
         if self.size.get() == size {
             return;
         }
-        match self.resize_surface(size) {
+        match self.resize_framebuffer(size) {
             Ok(()) => self.size.set(size),
             Err(error) => tracing::warn!(%error, "failed to resize macOS Servo hardware context"),
         }
@@ -274,6 +232,304 @@ impl RenderingContext for MacosHardwareRenderingContext {
 
     fn connection(&self) -> Option<Connection> {
         Some(self.device.borrow().connection())
+    }
+}
+
+struct MacosServoFramebuffer {
+    gl: Rc<dyn Gl>,
+    size: PhysicalSize<u32>,
+    render_framebuffer_id: u32,
+    render_texture_id: u32,
+    depth_stencil_renderbuffer_id: u32,
+    iosurface_framebuffer_id: u32,
+    iosurface_texture_id: u32,
+    iosurface: CFRetained<IOSurfaceRef>,
+}
+
+impl MacosServoFramebuffer {
+    fn new(gl: Rc<dyn Gl>, size: PhysicalSize<u32>) -> Result<Self> {
+        let descriptor = MacosIosurfaceImportDescriptor::new(
+            size.width,
+            size.height,
+            ImportedFrameFormat::Bgra8Unorm,
+        )?;
+        let iosurface = crate::macos::create_iosurface(descriptor)?;
+
+        let mut render_framebuffer_id = 0;
+        let mut render_texture_id = 0;
+        let mut depth_stencil_renderbuffer_id = 0;
+        let mut iosurface_framebuffer_id = 0;
+        let mut iosurface_texture_id = 0;
+        let result = (|| {
+            render_framebuffer_id = single_gl_id(gl.gen_framebuffers(1), "framebuffer")?;
+            gl.bind_framebuffer(gl::FRAMEBUFFER, render_framebuffer_id);
+
+            render_texture_id = single_gl_id(gl.gen_textures(1), "texture")?;
+            gl.bind_texture(gl::TEXTURE_2D, render_texture_id);
+            gl.tex_image_2d(
+                gl::TEXTURE_2D,
+                0,
+                gl::RGBA as gl::GLint,
+                size.width as gl::GLsizei,
+                size.height as gl::GLsizei,
+                0,
+                gl::RGBA,
+                gl::UNSIGNED_BYTE,
+                None,
+            );
+            gl.tex_parameter_i(
+                gl::TEXTURE_2D,
+                gl::TEXTURE_MAG_FILTER,
+                gl::NEAREST as gl::GLint,
+            );
+            gl.tex_parameter_i(
+                gl::TEXTURE_2D,
+                gl::TEXTURE_MIN_FILTER,
+                gl::NEAREST as gl::GLint,
+            );
+            gl.tex_parameter_i(
+                gl::TEXTURE_2D,
+                gl::TEXTURE_WRAP_S,
+                gl::CLAMP_TO_EDGE as gl::GLint,
+            );
+            gl.tex_parameter_i(
+                gl::TEXTURE_2D,
+                gl::TEXTURE_WRAP_T,
+                gl::CLAMP_TO_EDGE as gl::GLint,
+            );
+            check_gl_error(gl.as_ref(), "glTexImage2D")?;
+            gl.framebuffer_texture_2d(
+                gl::FRAMEBUFFER,
+                gl::COLOR_ATTACHMENT0,
+                gl::TEXTURE_2D,
+                render_texture_id,
+                0,
+            );
+
+            depth_stencil_renderbuffer_id = single_gl_id(gl.gen_renderbuffers(1), "renderbuffer")?;
+            gl.bind_renderbuffer(gl::RENDERBUFFER, depth_stencil_renderbuffer_id);
+            gl.renderbuffer_storage(
+                gl::RENDERBUFFER,
+                gl::DEPTH24_STENCIL8,
+                size.width as gl::GLsizei,
+                size.height as gl::GLsizei,
+            );
+            gl.framebuffer_renderbuffer(
+                gl::FRAMEBUFFER,
+                gl::DEPTH_STENCIL_ATTACHMENT,
+                gl::RENDERBUFFER,
+                depth_stencil_renderbuffer_id,
+            );
+            gl.bind_renderbuffer(gl::RENDERBUFFER, 0);
+            check_gl_error(gl.as_ref(), "glFramebufferRenderbuffer")?;
+
+            let status = gl.check_frame_buffer_status(gl::FRAMEBUFFER);
+            if status != gl::FRAMEBUFFER_COMPLETE {
+                return Err(MacosGpuInteropError::GlFramebufferIncomplete { status });
+            }
+
+            iosurface_framebuffer_id = single_gl_id(gl.gen_framebuffers(1), "framebuffer")?;
+            gl.bind_framebuffer(gl::FRAMEBUFFER, iosurface_framebuffer_id);
+
+            iosurface_texture_id = single_gl_id(gl.gen_textures(1), "texture")?;
+            gl.bind_texture(GL_TEXTURE_RECTANGLE_ARB, iosurface_texture_id);
+            bind_iosurface_to_rectangle_texture(&iosurface, size)?;
+            gl.tex_parameter_i(
+                GL_TEXTURE_RECTANGLE_ARB,
+                gl::TEXTURE_MAG_FILTER,
+                gl::NEAREST as gl::GLint,
+            );
+            gl.tex_parameter_i(
+                GL_TEXTURE_RECTANGLE_ARB,
+                gl::TEXTURE_MIN_FILTER,
+                gl::NEAREST as gl::GLint,
+            );
+            gl.tex_parameter_i(
+                GL_TEXTURE_RECTANGLE_ARB,
+                gl::TEXTURE_WRAP_S,
+                gl::CLAMP_TO_EDGE as gl::GLint,
+            );
+            gl.tex_parameter_i(
+                GL_TEXTURE_RECTANGLE_ARB,
+                gl::TEXTURE_WRAP_T,
+                gl::CLAMP_TO_EDGE as gl::GLint,
+            );
+            check_gl_error(gl.as_ref(), "CGLTexImageIOSurface2D")?;
+            gl.framebuffer_texture_2d(
+                gl::FRAMEBUFFER,
+                gl::COLOR_ATTACHMENT0,
+                GL_TEXTURE_RECTANGLE_ARB,
+                iosurface_texture_id,
+                0,
+            );
+
+            let status = gl.check_frame_buffer_status(gl::FRAMEBUFFER);
+            if status != gl::FRAMEBUFFER_COMPLETE {
+                return Err(MacosGpuInteropError::GlFramebufferIncomplete { status });
+            }
+
+            gl.bind_texture(gl::TEXTURE_2D, 0);
+            gl.bind_texture(GL_TEXTURE_RECTANGLE_ARB, 0);
+            gl.bind_framebuffer(gl::FRAMEBUFFER, render_framebuffer_id);
+            Ok(())
+        })();
+
+        if let Err(error) = result {
+            cleanup_framebuffer_resources(
+                gl.as_ref(),
+                render_framebuffer_id,
+                render_texture_id,
+                depth_stencil_renderbuffer_id,
+                iosurface_framebuffer_id,
+                iosurface_texture_id,
+            );
+            return Err(error);
+        }
+
+        Ok(Self {
+            gl,
+            size,
+            render_framebuffer_id,
+            render_texture_id,
+            depth_stencil_renderbuffer_id,
+            iosurface_framebuffer_id,
+            iosurface_texture_id,
+            iosurface,
+        })
+    }
+
+    fn bind(&self) {
+        self.gl
+            .bind_framebuffer(gl::FRAMEBUFFER, self.render_framebuffer_id);
+    }
+
+    fn copy_to_iosurface(&self) -> Result<()> {
+        self.gl
+            .bind_framebuffer(GL_READ_FRAMEBUFFER, self.render_framebuffer_id);
+        self.gl
+            .bind_framebuffer(GL_DRAW_FRAMEBUFFER, self.iosurface_framebuffer_id);
+        self.gl.read_buffer(gl::COLOR_ATTACHMENT0);
+        self.gl.draw_buffers(&[gl::COLOR_ATTACHMENT0]);
+        self.gl.blit_framebuffer(
+            0,
+            0,
+            self.size.width as gl::GLint,
+            self.size.height as gl::GLint,
+            0,
+            0,
+            self.size.width as gl::GLint,
+            self.size.height as gl::GLint,
+            gl::COLOR_BUFFER_BIT,
+            gl::NEAREST,
+        );
+        let result = check_gl_error(self.gl.as_ref(), "glBlitFramebuffer");
+        self.bind();
+        result
+    }
+
+    fn native_frame(&self) -> MacosServoNativeFrame {
+        MacosServoNativeFrame {
+            width: self.size.width,
+            height: self.size.height,
+            format: ImportedFrameFormat::Bgra8Unorm,
+            origin: MacosServoFrameOrigin::BottomLeft,
+            surface_id: usize::try_from(self.iosurface.id()).unwrap_or(usize::MAX),
+            iosurface: self.iosurface.clone(),
+        }
+    }
+}
+
+impl Drop for MacosServoFramebuffer {
+    fn drop(&mut self) {
+        cleanup_framebuffer_resources(
+            self.gl.as_ref(),
+            self.render_framebuffer_id,
+            self.render_texture_id,
+            self.depth_stencil_renderbuffer_id,
+            self.iosurface_framebuffer_id,
+            self.iosurface_texture_id,
+        );
+    }
+}
+
+fn single_gl_id(ids: Vec<u32>, resource: &'static str) -> Result<u32> {
+    ids.into_iter()
+        .find(|id| *id != 0)
+        .ok_or_else(|| MacosGpuInteropError::GlCreateResource {
+            resource,
+            message: "driver returned no object name".to_owned(),
+        })
+}
+
+fn bind_iosurface_to_rectangle_texture(
+    iosurface: &IOSurfaceRef,
+    size: PhysicalSize<u32>,
+) -> Result<()> {
+    // SAFETY: Surfman made the CGL context current before FBO creation, and
+    // CGLTexImageIOSurface2D only binds storage to the texture currently bound
+    // on that context.
+    let code = unsafe {
+        let context = CGLGetCurrentContext();
+        if context.is_null() {
+            return Err(MacosGpuInteropError::ServoContext {
+                operation: "get current CGL context",
+                message: "CGLGetCurrentContext returned null".to_owned(),
+            });
+        }
+        CGLTexImageIOSurface2D(
+            context,
+            GL_TEXTURE_RECTANGLE_ARB,
+            gl::RGBA,
+            size.width as gl::GLsizei,
+            size.height as gl::GLsizei,
+            gl::BGRA,
+            GL_UNSIGNED_INT_8_8_8_8_REV,
+            iosurface as *const IOSurfaceRef as cgl::IOSurfaceRef,
+            0,
+        )
+    };
+    if code == kCGLNoError {
+        Ok(())
+    } else {
+        Err(MacosGpuInteropError::GlOperation {
+            operation: "CGLTexImageIOSurface2D",
+            code: code as u32,
+        })
+    }
+}
+
+fn cleanup_framebuffer_resources(
+    gl: &dyn Gl,
+    render_framebuffer_id: u32,
+    render_texture_id: u32,
+    depth_stencil_renderbuffer_id: u32,
+    iosurface_framebuffer_id: u32,
+    iosurface_texture_id: u32,
+) {
+    gl.bind_framebuffer(gl::FRAMEBUFFER, 0);
+    if render_texture_id != 0 {
+        gl.delete_textures(&[render_texture_id]);
+    }
+    if iosurface_texture_id != 0 {
+        gl.delete_textures(&[iosurface_texture_id]);
+    }
+    if depth_stencil_renderbuffer_id != 0 {
+        gl.delete_renderbuffers(&[depth_stencil_renderbuffer_id]);
+    }
+    if render_framebuffer_id != 0 {
+        gl.delete_framebuffers(&[render_framebuffer_id]);
+    }
+    if iosurface_framebuffer_id != 0 {
+        gl.delete_framebuffers(&[iosurface_framebuffer_id]);
+    }
+}
+
+fn check_gl_error(gl: &dyn Gl, operation: &'static str) -> Result<()> {
+    let code = gl.get_error();
+    if code == gl::NO_ERROR {
+        Ok(())
+    } else {
+        Err(MacosGpuInteropError::GlOperation { operation, code })
     }
 }
 

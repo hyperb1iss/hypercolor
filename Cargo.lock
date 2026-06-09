@@ -5115,6 +5115,7 @@ dependencies = [
 name = "hypercolor-macos-gpu-interop"
 version = "0.1.0"
 dependencies = [
+ "cgl",
  "dpi",
  "euclid",
  "gleam",

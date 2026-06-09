@@ -16,6 +16,7 @@ thiserror = { workspace = true }
 wgpu = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+cgl = "0.3.2"
 dpi = { workspace = true }
 euclid = "0.22"
 gleam = "0.15"

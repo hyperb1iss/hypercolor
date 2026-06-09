@@ -178,7 +178,7 @@ impl ServoGpuImportBackend {
                     surface_id = frame.surface_id,
                     format = ?frame.format,
                     origin = ?frame.origin,
-                    "macOS Servo hardware context exposes IOSurface"
+                    "macOS Servo hardware context exposes IOSurface FBO"
                 );
             }
             Err(error) => {
@@ -607,7 +607,20 @@ pub(super) fn failure_detail(error: &Error) -> String {
         if let Some(error) =
             cause.downcast_ref::<hypercolor_macos_gpu_interop::MacosGpuInteropError>()
         {
-            return error.to_string();
+            return match error {
+                hypercolor_macos_gpu_interop::MacosGpuInteropError::GlCreateResource {
+                    resource,
+                    message,
+                } => format!("gl_resource={resource} message={message}"),
+                hypercolor_macos_gpu_interop::MacosGpuInteropError::GlOperation {
+                    operation,
+                    code,
+                } => format!("gl_operation={operation} gl_error=0x{code:04x}"),
+                hypercolor_macos_gpu_interop::MacosGpuInteropError::GlFramebufferIncomplete {
+                    status,
+                } => format!("gl_framebuffer_status=0x{status:04x}"),
+                _ => error.to_string(),
+            };
         }
 
         #[cfg(target_os = "windows")]
@@ -642,6 +655,15 @@ pub(super) fn classify_failure(error: &Error) -> ServoGpuImportFallbackReason {
                 | hypercolor_macos_gpu_interop::MacosGpuInteropError::MissingServoSurface => {
                     ServoGpuImportFallbackReason::MissingMacosServoSurface
                 }
+                hypercolor_macos_gpu_interop::MacosGpuInteropError::GlCreateResource {
+                    ..
+                } => ServoGpuImportFallbackReason::GlResource,
+                hypercolor_macos_gpu_interop::MacosGpuInteropError::GlOperation { .. } => {
+                    ServoGpuImportFallbackReason::GlOperation
+                }
+                hypercolor_macos_gpu_interop::MacosGpuInteropError::GlFramebufferIncomplete {
+                    ..
+                } => ServoGpuImportFallbackReason::GlFramebufferIncomplete,
                 hypercolor_macos_gpu_interop::MacosGpuInteropError::IosurfacePixelFormatMismatch {
                     ..
                 } => ServoGpuImportFallbackReason::IosurfacePixelFormatMismatch,
