@@ -32,7 +32,7 @@ use crate::preview_telemetry::PreviewTelemetryContext;
 use crate::ws::PerformanceMetrics;
 
 mod charts;
-mod fps_display;
+pub mod fps_display;
 mod gauges;
 mod header;
 mod layout;

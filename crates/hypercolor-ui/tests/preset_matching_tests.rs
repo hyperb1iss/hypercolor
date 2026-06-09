@@ -1,15 +1,8 @@
-#![allow(dead_code)]
-
-#[path = "../src/control_value_json.rs"]
-mod control_value_json;
-#[path = "../src/components/preset_matching.rs"]
-mod preset_matching;
-
 use std::collections::HashMap;
 
 use hypercolor_types::canvas::srgb_to_linear;
 use hypercolor_types::effect::ControlValue;
-use preset_matching::{
+use hypercolor_ui::components::preset_matching::{
     bundled_preset_matches_controls, bundled_preset_to_json, user_preset_matches_controls,
 };
 

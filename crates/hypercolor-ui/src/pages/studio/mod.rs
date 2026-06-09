@@ -7,10 +7,10 @@
 
 mod composition_panel;
 mod device_card;
-mod device_grouping;
+pub mod device_grouping;
 mod scene_selector;
 mod stage;
-mod surface;
+pub mod surface;
 mod zone_add_device;
 mod zone_assignment;
 mod zone_controls;

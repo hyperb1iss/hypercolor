@@ -1,10 +1,5 @@
-#[path = "../src/api/mod.rs"]
-mod api;
-#[path = "../src/effect_search.rs"]
-mod effect_search;
-
-use api::EffectSummary;
-use effect_search::IndexedEffect;
+use hypercolor_ui::api::EffectSummary;
+use hypercolor_ui::effect_search::IndexedEffect;
 
 fn effect(name: &str) -> EffectSummary {
     EffectSummary {

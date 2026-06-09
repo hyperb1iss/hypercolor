@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 /// Current depth within the compound hierarchy.
 #[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub(crate) enum CompoundDepth {
+pub enum CompoundDepth {
     /// Top level — clicking a zone selects all zones from its device.
     #[default]
     Root,
@@ -23,7 +23,7 @@ pub(crate) enum CompoundDepth {
 }
 
 /// All zone IDs belonging to a device compound.
-pub(crate) fn device_compound_ids(layout: &SpatialLayout, device_id: &str) -> HashSet<String> {
+pub fn device_compound_ids(layout: &SpatialLayout, device_id: &str) -> HashSet<String> {
     layout
         .zones
         .iter()
@@ -33,7 +33,7 @@ pub(crate) fn device_compound_ids(layout: &SpatialLayout, device_id: &str) -> Ha
 }
 
 /// All zone IDs belonging to a slot compound within a device.
-pub(crate) fn slot_compound_ids(
+pub fn slot_compound_ids(
     layout: &SpatialLayout,
     device_id: &str,
     slot_id: &str,
@@ -50,7 +50,7 @@ pub(crate) fn slot_compound_ids(
 
 /// Resolve which zone IDs should be selected when a zone is clicked at the
 /// given compound depth.
-pub(crate) fn resolve_click(
+pub fn resolve_click(
     layout: &SpatialLayout,
     zone_id: &str,
     depth: &CompoundDepth,

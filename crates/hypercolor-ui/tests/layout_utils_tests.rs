@@ -1,57 +1,8 @@
-#![allow(dead_code)]
-
-#[path = "../src/api/mod.rs"]
-mod api;
-#[path = "../src/layout_geometry.rs"]
-mod layout_geometry;
-
-mod channel_names {
-    pub fn load_channel_name(device_id: &str, slot_id: &str) -> Option<String> {
-        match (device_id, slot_id) {
-            ("physical:prism8", "channel-1") => Some("Radiator".to_owned()),
-            _ => None,
-        }
-    }
-
-    pub fn effective_channel_name(device_id: &str, slot_id: &str, default_name: &str) -> String {
-        load_channel_name(device_id, slot_id).unwrap_or_else(|| default_name.to_owned())
-    }
-}
-
-mod style_utils {
-    pub fn uuid_v4_hex() -> String {
-        "test-uuid".to_owned()
-    }
-}
-
-mod toasts {
-    pub fn toast_success(_msg: &str) {}
-    pub fn toast_error(_msg: &str) {}
-    pub fn toast_info(_msg: &str) {}
-}
-
-mod components {
-    pub mod layout_builder {
-        #[derive(Clone, Copy)]
-        pub struct LayoutWriteHandle;
-
-        impl LayoutWriteHandle {
-            pub fn update(
-                self,
-                _f: impl FnOnce(&mut Option<hypercolor_types::spatial::SpatialLayout>),
-            ) {
-            }
-        }
-    }
-}
-
-#[path = "../src/layout_utils.rs"]
-mod layout_utils;
-
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, OutputComponent, SamplingMode,
     SpatialLayout, ZoneShape,
 };
+use hypercolor_ui::{api, channel_names, layout_geometry, layout_utils};
 use std::collections::HashMap;
 
 fn ring_zone(
@@ -395,6 +346,8 @@ fn effective_zone_display_uses_physical_device_channel_override() {
         "Prism 8",
         vec![sample_zone_summary("channel-1", "Channel 1", 20)],
     )];
+    // Persist a channel display-name override the same way the settings UI does.
+    channel_names::save_channel_name("physical:prism8", "channel-1", "Channel 1", "Radiator");
 
     let display = layout_utils::effective_zone_display(&zone, &devices, &HashMap::new());
 

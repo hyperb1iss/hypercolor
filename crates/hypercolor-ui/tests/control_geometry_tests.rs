@@ -1,9 +1,4 @@
-#![allow(dead_code)]
-
-#[path = "../src/control_geometry.rs"]
-mod control_geometry;
-
-use control_geometry::{
+use hypercolor_ui::control_geometry::{
     FrameHandle, FrameRect, clamp_frame_rect, drag_frame_rect, resize_frame_rect,
 };
 

@@ -1,28 +1,19 @@
-#![allow(dead_code, unused_imports)]
-
-#[path = "../src/api/mod.rs"]
-mod api;
-#[path = "../src/control_value_json.rs"]
-mod control_value_json;
-#[path = "../src/display_utils.rs"]
-mod display_utils;
-#[path = "../src/optimistic_controls.rs"]
-mod optimistic_controls;
-#[path = "../src/style_utils.rs"]
-mod style_utils;
-
-use api::{
+use hypercolor_types::canvas::srgb_to_linear;
+use hypercolor_types::effect::{ControlDefinition, ControlKind, ControlType, ControlValue};
+use hypercolor_ui::api::{
     ComponentBindingRequest, DisplaySummary, PairDeviceRequest, SetDisplayFaceRequest,
     UpdateSimulatedDisplayRequest,
 };
-use control_value_json::{controls_to_json, hex_to_rgba, hex_to_rgba_json, json_to_control_value};
-use display_utils::{display_preview_shell_url, is_simulator_display, parse_simulator_dimension};
-use hypercolor_types::canvas::srgb_to_linear;
-use hypercolor_types::effect::{ControlDefinition, ControlKind, ControlType, ControlValue};
-use optimistic_controls::{
+use hypercolor_ui::control_value_json::{
+    controls_to_json, hex_to_rgba, hex_to_rgba_json, json_to_control_value,
+};
+use hypercolor_ui::display_utils::{
+    display_preview_shell_url, is_simulator_display, parse_simulator_dimension,
+};
+use hypercolor_ui::optimistic_controls::{
     apply_raw_control_updates, merge_control_values, raw_control_updates_payload,
 };
-use style_utils::category_style;
+use hypercolor_ui::style_utils::category_style;
 
 fn display_preview_target_from_search(search: &str) -> Option<String> {
     let query = search.strip_prefix('?').unwrap_or(search);

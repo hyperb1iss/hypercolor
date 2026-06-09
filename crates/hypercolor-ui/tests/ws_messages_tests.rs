@@ -1,16 +1,8 @@
-#![allow(dead_code, unused_imports)]
-
-#[path = "../src/api/mod.rs"]
-mod api;
-
-#[path = "../src/ws/messages.rs"]
-mod messages;
-
 use std::collections::HashMap;
 
 use hypercolor_types::event::{LayerHealth, ZoneChangeKind};
 use hypercolor_types::scene::{SceneKind, SceneMutationMode, ZoneRole};
-use messages::{
+use hypercolor_ui::ws::messages::{
     PerformanceMetrics, extract_effect_error_hint, extract_layer_health, extract_scene_event_hint,
     group_has_degraded_layer, layer_health_key, scene_event_affects_active_effect,
 };

@@ -28,7 +28,7 @@
 mod controls;
 mod picker;
 mod row;
-mod source;
+pub mod source;
 
 use std::collections::HashMap;
 

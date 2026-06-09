@@ -6,10 +6,10 @@ use crate::compound_selection::CompoundDepth;
 
 const MAX_HISTORY_DEPTH: usize = 100;
 
-pub(crate) type RemovedZoneCache = HashMap<(String, Option<String>), Output>;
+pub type RemovedZoneCache = HashMap<(String, Option<String>), Output>;
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct LayoutEditorSnapshot {
+pub struct LayoutEditorSnapshot {
     pub zones: Vec<Output>,
     pub selected_zone_ids: HashSet<String>,
     pub compound_depth: CompoundDepth,
@@ -17,7 +17,7 @@ pub(crate) struct LayoutEditorSnapshot {
 }
 
 #[derive(Clone, Debug, Default)]
-pub(crate) struct LayoutHistoryState {
+pub struct LayoutHistoryState {
     past: Vec<LayoutEditorSnapshot>,
     future: Vec<LayoutEditorSnapshot>,
     interaction_start: Option<LayoutEditorSnapshot>,

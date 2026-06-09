@@ -1,19 +1,12 @@
-#![allow(dead_code, unused_imports)]
-
-#[path = "../src/api/mod.rs"]
-mod api;
-#[path = "../src/driver_settings.rs"]
-mod driver_settings;
-#[path = "../src/label_utils.rs"]
-mod label_utils;
-
 use hypercolor_types::device::{
     DRIVER_MODULE_API_SCHEMA_VERSION, DriverCapabilitySet, DriverModuleDescriptor,
     DriverModuleKind, DriverPresentation, DriverTransportKind,
 };
 
-use api::{DriverConfigResponse, DriverListResponse, DriverSummary, driver_config_url};
-use driver_settings::{DiscoveryDriverSetting, discovery_driver_settings};
+use hypercolor_ui::api::{
+    DriverConfigResponse, DriverListResponse, DriverSummary, driver_config_url,
+};
+use hypercolor_ui::driver_settings::{DiscoveryDriverSetting, discovery_driver_settings};
 
 fn driver(
     id: &str,

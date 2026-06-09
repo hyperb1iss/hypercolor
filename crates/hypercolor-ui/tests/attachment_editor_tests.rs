@@ -1,11 +1,8 @@
-#[path = "../src/api/mod.rs"]
-mod api;
-#[path = "../src/components/attachment_editor.rs"]
-mod attachment_editor;
-
-use api::{ComponentBindingSummary, TemplateSummary};
-use attachment_editor::{DraftRow, expand_bindings_to_drafts, summarize_channel};
 use hypercolor_types::attachment::{ComponentCategory, ComponentSlot};
+use hypercolor_ui::api::{ComponentBindingSummary, TemplateSummary};
+use hypercolor_ui::components::attachment_editor::{
+    DraftRow, expand_bindings_to_drafts, summarize_channel,
+};
 
 fn slot() -> ComponentSlot {
     ComponentSlot {

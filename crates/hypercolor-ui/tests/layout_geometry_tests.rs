@@ -1,11 +1,3 @@
-#![allow(dead_code)]
-
-#[path = "../src/api/mod.rs"]
-mod api;
-#[path = "../src/layout_geometry.rs"]
-mod layout_geometry;
-
-use api::{ZoneSummary, ZoneTopologySummary};
 use hypercolor_types::attachment::{
     ComponentCanvasSize, ComponentCategory, ComponentSuggestedZone,
 };
@@ -13,7 +5,8 @@ use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
 };
 use hypercolor_types::spatial::{StripDirection, ZoneShape};
-use layout_geometry::{ResizeHandle, SizeAxis};
+use hypercolor_ui::api::{ZoneSummary, ZoneTopologySummary};
+use hypercolor_ui::layout_geometry::{self, ResizeHandle, SizeAxis};
 
 fn zone_summary(name: &str, led_count: usize, topology_hint: ZoneTopologySummary) -> ZoneSummary {
     ZoneSummary {

@@ -5,8 +5,8 @@ use leptos::prelude::*;
 
 use crate::control_value_json::json_to_control_value;
 
-pub(crate) type ControlValueMap = HashMap<String, ControlValue>;
-pub(crate) type RawControlUpdates = HashMap<String, serde_json::Value>;
+pub type ControlValueMap = HashMap<String, ControlValue>;
+pub type RawControlUpdates = HashMap<String, serde_json::Value>;
 
 #[derive(Clone, Copy)]
 pub(crate) struct OptimisticControlSession {
@@ -99,7 +99,7 @@ pub(crate) fn apply_raw_control_update(
     }
 }
 
-pub(crate) fn apply_raw_control_updates(
+pub fn apply_raw_control_updates(
     values: &mut ControlValueMap,
     controls: &[ControlDefinition],
     updates: &[(String, serde_json::Value)],
@@ -109,12 +109,12 @@ pub(crate) fn apply_raw_control_updates(
     }
 }
 
-pub(crate) fn merge_control_values(values: &mut ControlValueMap, next_values: &ControlValueMap) {
+pub fn merge_control_values(values: &mut ControlValueMap, next_values: &ControlValueMap) {
     for (name, value) in next_values {
         values.insert(name.clone(), value.clone());
     }
 }
 
-pub(crate) fn raw_control_updates_payload(updates: RawControlUpdates) -> serde_json::Value {
+pub fn raw_control_updates_payload(updates: RawControlUpdates) -> serde_json::Value {
     serde_json::Value::Object(updates.into_iter().collect::<serde_json::Map<_, _>>())
 }

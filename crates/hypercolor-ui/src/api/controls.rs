@@ -1,13 +1,13 @@
 //! Dynamic driver and device control-surface endpoints.
 #![allow(dead_code)]
 
+pub use crate::control_surface_api::ControlSurfaceListQuery;
+use crate::control_surface_api::{
+    control_surface_action_url, control_surface_list_url, control_surface_values_url, path_segment,
+};
 use hypercolor_types::controls::{
     ApplyControlChangesRequest, ApplyControlChangesResponse, ControlActionResult,
     ControlSurfaceDocument, ControlSurfaceId, ControlSurfaceRevision, ControlValueMap,
-};
-pub use hypercolor_ui::control_surface_api::ControlSurfaceListQuery;
-use hypercolor_ui::control_surface_api::{
-    control_surface_action_url, control_surface_list_url, control_surface_values_url, path_segment,
 };
 use serde::{Deserialize, Serialize};
 

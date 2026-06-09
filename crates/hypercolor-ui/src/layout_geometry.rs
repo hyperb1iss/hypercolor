@@ -11,22 +11,15 @@ use hypercolor_types::spatial::{LedTopology, NormalizedPosition, SpatialLayout, 
 #[path = "layout_geometry/groups.rs"]
 mod groups;
 
-#[allow(
-    unused_imports,
-    reason = "The split integration tests exercise these re-exports independently."
-)]
-pub(crate) use groups::{
-    AlignAnchor, AlignAxis, align_group, compound_bounding_box, distribute_group, group_centroid,
-    mirror_group, pack_group, rotate_group, scale_group, translate_group, translate_zones,
+pub use groups::{
+    AlignAnchor, AlignAxis, CompoundBounds, align_group, compound_bounding_box, distribute_group,
+    group_centroid, mirror_group, pack_group, rotate_group, scale_group, translate_group,
+    translate_zones,
 };
 #[path = "layout_geometry/defaults.rs"]
 mod defaults;
 
-#[allow(
-    unused_imports,
-    reason = "Integration test targets exercise these re-exports independently."
-)]
-pub(crate) use defaults::{
+pub use defaults::{
     SeededAttachmentLayout, SeededDeviceLayout, ZoneVisualDefaults, attachment_zone_shape,
     attachment_zone_size, default_zone_visuals, seeded_attachment_layout, seeded_device_layout,
 };
@@ -39,13 +32,13 @@ const GRID_EPSILON: f32 = 0.001;
 const EDITOR_STRIP_MAX_ASPECT: f32 = 8.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum SizeAxis {
+pub enum SizeAxis {
     Width,
     Height,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ResizeHandle {
+pub enum ResizeHandle {
     NorthWest,
     NorthEast,
     SouthWest,
@@ -59,7 +52,7 @@ pub(crate) fn normalize_layout_for_editor(mut layout: SpatialLayout) -> SpatialL
     layout
 }
 
-pub(crate) fn normalize_zone_size_for_editor(
+pub fn normalize_zone_size_for_editor(
     position: NormalizedPosition,
     size: NormalizedPosition,
     topology: &LedTopology,
@@ -127,7 +120,7 @@ pub(crate) fn zone_transform_anchor(
         .map(|zone| zone.position)
 }
 
-pub(crate) fn set_zone_rotation(layout: &mut SpatialLayout, zone_id: &str, rotation: f32) -> bool {
+pub fn set_zone_rotation(layout: &mut SpatialLayout, zone_id: &str, rotation: f32) -> bool {
     let Some(zone_index) = layout.zones.iter().position(|zone| zone.id == zone_id) else {
         return false;
     };
@@ -142,7 +135,7 @@ pub(crate) fn set_zone_rotation(layout: &mut SpatialLayout, zone_id: &str, rotat
     true
 }
 
-pub(crate) fn resize_zone_from_handle(
+pub fn resize_zone_from_handle(
     start_center: NormalizedPosition,
     start_size: NormalizedPosition,
     start_mouse: NormalizedPosition,
@@ -189,7 +182,7 @@ fn rotate_mouse_to_local(
     (rotate(start_mouse), rotate(current_mouse))
 }
 
-pub(crate) fn update_zone_size(
+pub fn update_zone_size(
     current_size: NormalizedPosition,
     axis: SizeAxis,
     raw_value: f32,

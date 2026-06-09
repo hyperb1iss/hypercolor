@@ -1,7 +1,7 @@
 //! Shared geometry helpers for interactive effect controls.
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct FrameRect {
+pub struct FrameRect {
     pub x: f32,
     pub y: f32,
     pub width: f32,
@@ -9,7 +9,7 @@ pub(crate) struct FrameRect {
 }
 
 impl FrameRect {
-    pub(crate) const fn new(x: f32, y: f32, width: f32, height: f32) -> Self {
+    pub const fn new(x: f32, y: f32, width: f32, height: f32) -> Self {
         Self {
             x,
             y,
@@ -28,7 +28,7 @@ impl FrameRect {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum FrameHandle {
+pub enum FrameHandle {
     Move,
     NorthWest,
     NorthEast,
@@ -36,7 +36,7 @@ pub(crate) enum FrameHandle {
     SouthEast,
 }
 
-pub(crate) fn clamp_frame_rect(rect: FrameRect, min_width: f32, min_height: f32) -> FrameRect {
+pub fn clamp_frame_rect(rect: FrameRect, min_width: f32, min_height: f32) -> FrameRect {
     let min_width = min_width.clamp(0.0, 1.0);
     let min_height = min_height.clamp(0.0, 1.0);
     let width = rect.width.clamp(min_width, 1.0);
@@ -47,7 +47,7 @@ pub(crate) fn clamp_frame_rect(rect: FrameRect, min_width: f32, min_height: f32)
     FrameRect::new(x, y, width, height)
 }
 
-pub(crate) fn drag_frame_rect(
+pub fn drag_frame_rect(
     start: FrameRect,
     delta_x: f32,
     delta_y: f32,
@@ -66,7 +66,7 @@ pub(crate) fn drag_frame_rect(
     )
 }
 
-pub(crate) fn resize_frame_rect(
+pub fn resize_frame_rect(
     start: FrameRect,
     handle: FrameHandle,
     delta_x: f32,

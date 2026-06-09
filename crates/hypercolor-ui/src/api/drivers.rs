@@ -2,11 +2,11 @@
 
 use serde::Deserialize;
 
+use crate::control_surface_api::path_segment;
 use hypercolor_types::config::DriverConfigEntry;
 use hypercolor_types::device::{
     DriverModuleDescriptor, DriverPresentation, DriverProtocolDescriptor,
 };
-use hypercolor_ui::control_surface_api::path_segment;
 
 use super::client;
 

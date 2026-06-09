@@ -1,9 +1,4 @@
-#![allow(dead_code)]
-
-#[path = "../src/api/mod.rs"]
-mod api;
-
-use api::SystemStatus;
+use hypercolor_ui::api::SystemStatus;
 
 #[test]
 fn system_status_deserializes_renderer_acceleration() {

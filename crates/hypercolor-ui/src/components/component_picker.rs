@@ -112,7 +112,7 @@ fn dropdown_panel_style(trigger: Option<web_sys::HtmlButtonElement>) -> String {
         .unwrap_or_default()
 }
 
-pub(crate) fn filter_components(
+pub fn filter_components(
     components: &[api::TemplateSummary],
     term: &str,
 ) -> Vec<api::TemplateSummary> {
@@ -147,7 +147,7 @@ pub(crate) fn filter_components(
     results
 }
 
-pub(crate) fn selected_result_index(
+pub fn selected_result_index(
     results: &[api::TemplateSummary],
     selected_template_id: Option<&str>,
 ) -> Option<usize> {

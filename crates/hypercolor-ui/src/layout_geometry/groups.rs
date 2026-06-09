@@ -8,13 +8,13 @@ use super::{GRID_EPSILON, clamp_zone_center, normalize_rotation};
 
 /// Axis-aligned bounding box enclosing a set of zones.
 #[derive(Debug, Clone)]
-pub(crate) struct CompoundBounds {
+pub struct CompoundBounds {
     pub center: NormalizedPosition,
     pub size: NormalizedPosition,
 }
 
 /// Compute the axis-aligned bounding box of all zones in `zone_ids`.
-pub(crate) fn compound_bounding_box(
+pub fn compound_bounding_box(
     layout: &SpatialLayout,
     zone_ids: &std::collections::HashSet<String>,
 ) -> Option<CompoundBounds> {
@@ -48,7 +48,7 @@ pub(crate) fn compound_bounding_box(
 }
 
 /// Translate all zones by a delta from their initial positions, clamping each to canvas bounds.
-pub(crate) fn translate_zones(
+pub fn translate_zones(
     layout: &mut SpatialLayout,
     initial_positions: &[(String, NormalizedPosition)],
     delta: NormalizedPosition,
@@ -73,7 +73,7 @@ pub(crate) fn translate_zones(
 // ── Group transforms ─────────────────────────────────────────────────────
 
 /// Centroid (average position) of all zones in `zone_ids`.
-pub(crate) fn group_centroid(
+pub fn group_centroid(
     layout: &SpatialLayout,
     zone_ids: &std::collections::HashSet<String>,
 ) -> Option<NormalizedPosition> {
@@ -88,7 +88,7 @@ pub(crate) fn group_centroid(
 }
 
 /// Translate a group so its centroid lands at `target`, preserving relative positions.
-pub(crate) fn translate_group(
+pub fn translate_group(
     layout: &mut SpatialLayout,
     zone_ids: &std::collections::HashSet<String>,
     target: NormalizedPosition,
@@ -122,7 +122,7 @@ pub(crate) fn translate_group(
 ///
 /// Each zone's position orbits the centroid and its individual rotation is offset
 /// by the same delta — so fans on a ring stay oriented correctly.
-pub(crate) fn rotate_group(
+pub fn rotate_group(
     layout: &mut SpatialLayout,
     zone_ids: &std::collections::HashSet<String>,
     delta_radians: f32,
@@ -167,7 +167,7 @@ pub(crate) fn rotate_group(
 ///
 /// Each zone's distance from the centroid is multiplied by `scale_ratio`, and
 /// the zone's individual `scale` field is multiplied by the same factor.
-pub(crate) fn scale_group(
+pub fn scale_group(
     layout: &mut SpatialLayout,
     zone_ids: &std::collections::HashSet<String>,
     scale_ratio: f32,
@@ -210,14 +210,14 @@ pub(crate) fn scale_group(
 /// Which axis a group operation acts on. `X` is horizontal (left/right),
 /// `Y` is vertical (top/bottom).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum AlignAxis {
+pub enum AlignAxis {
     X,
     Y,
 }
 
 /// Which edge or center to align selected zones against.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum AlignAnchor {
+pub enum AlignAnchor {
     /// Left edge (X axis) or top edge (Y axis).
     Min,
     /// Bbox center on the chosen axis.
@@ -228,7 +228,7 @@ pub(crate) enum AlignAnchor {
 
 /// Align each zone in `zone_ids` to a common edge or center of the group's
 /// bounding box on `axis`. Zones on the other axis are left untouched.
-pub(crate) fn align_group(
+pub fn align_group(
     layout: &mut SpatialLayout,
     zone_ids: &std::collections::HashSet<String>,
     axis: AlignAxis,
@@ -281,7 +281,7 @@ pub(crate) fn align_group(
 /// positions; the middle zones are repositioned.
 ///
 /// No-op for fewer than three zones.
-pub(crate) fn distribute_group(
+pub fn distribute_group(
     layout: &mut SpatialLayout,
     zone_ids: &std::collections::HashSet<String>,
     axis: AlignAxis,
@@ -339,7 +339,7 @@ pub(crate) fn distribute_group(
 /// Pack zones edge-to-edge along `axis`, removing all gaps. Zones are
 /// ordered by their current position on `axis` and the first zone anchors
 /// the sequence.
-pub(crate) fn pack_group(
+pub fn pack_group(
     layout: &mut SpatialLayout,
     zone_ids: &std::collections::HashSet<String>,
     axis: AlignAxis,
@@ -396,7 +396,7 @@ pub(crate) fn pack_group(
 ///   centroid, mapping rotation θ to −θ.
 ///
 /// No-op for fewer than two zones.
-pub(crate) fn mirror_group(
+pub fn mirror_group(
     layout: &mut SpatialLayout,
     zone_ids: &std::collections::HashSet<String>,
     axis: AlignAxis,

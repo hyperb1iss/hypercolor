@@ -1,10 +1,4 @@
 //! Contract tests for the Studio device-grouping logic.
-//!
-//! `device_grouping.rs` is leptos-free and `crate::`-free so it can be
-//! pulled in directly; the test crate supplies `hypercolor_types`.
-
-#[path = "../src/pages/studio/device_grouping.rs"]
-mod device_grouping;
 
 use std::collections::HashMap;
 
@@ -14,7 +8,9 @@ use hypercolor_types::spatial::{
     StripDirection,
 };
 
-use device_grouping::{DeviceMeta, device_rows_for_zone, sort_device_rows, unassigned_device_rows};
+use hypercolor_ui::pages::studio::device_grouping::{
+    DeviceMeta, device_rows_for_zone, sort_device_rows, unassigned_device_rows,
+};
 
 /// One `Output` output: a device id, an optional channel, an LED count.
 fn output(device_id: &str, zone_name: Option<&str>, leds: u32) -> Output {

@@ -1,17 +1,10 @@
-#![allow(dead_code)]
-
-#[path = "../src/compound_selection.rs"]
-mod compound_selection;
-#[path = "../src/layout_history.rs"]
-mod layout_history;
-
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection,
 };
 
-use compound_selection::CompoundDepth;
-use layout_history::{LayoutEditorSnapshot, LayoutHistoryState, RemovedZoneCache};
+use hypercolor_ui::compound_selection::CompoundDepth;
+use hypercolor_ui::layout_history::{LayoutEditorSnapshot, LayoutHistoryState, RemovedZoneCache};
 
 fn zone(id: &str, x: f32) -> Output {
     Output {

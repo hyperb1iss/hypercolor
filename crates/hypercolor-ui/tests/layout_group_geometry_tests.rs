@@ -1,14 +1,8 @@
-#![allow(dead_code)]
-
-#[path = "../src/api/mod.rs"]
-mod api;
-#[path = "../src/layout_geometry.rs"]
-mod layout_geometry;
-
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection,
 };
+use hypercolor_ui::layout_geometry;
 
 // ── Compound bounding box ────────────────────────────────────────────────
 

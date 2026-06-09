@@ -613,7 +613,7 @@ pub(super) fn handle_json_message(
     }
 }
 
-pub(crate) fn extract_control_surface_event_hint(
+pub fn extract_control_surface_event_hint(
     event_type: &str,
     data: &serde_json::Value,
 ) -> Option<ControlSurfaceEventHint> {
@@ -647,7 +647,7 @@ pub(crate) fn extract_control_surface_event_hint(
     })
 }
 
-pub(crate) fn extract_effect_error_hint(
+pub fn extract_effect_error_hint(
     event_type: &str,
     effect_data: &serde_json::Value,
 ) -> Option<EffectErrorHint> {
@@ -678,14 +678,14 @@ pub(crate) fn extract_effect_error_hint(
 /// within its zone — two groups can carry the same layer id — and
 /// the daemon keys health by group as well, so scene and group ride along
 /// or one group's health would clobber another group's row.
-pub(crate) fn layer_health_key(scene_id: &str, group_id: &str, layer_id: &str) -> String {
+pub fn layer_health_key(scene_id: &str, group_id: &str, layer_id: &str) -> String {
     format!("{scene_id}/{group_id}/{layer_id}")
 }
 
 /// Decode a `layer_health_changed` event into its `(health-map key, health)`.
 /// All three identity fields are required: the daemon always sends them, and
 /// without scene + group the key would collide across zones.
-pub(crate) fn extract_layer_health(data: &serde_json::Value) -> Option<(String, LayerHealth)> {
+pub fn extract_layer_health(data: &serde_json::Value) -> Option<(String, LayerHealth)> {
     let scene_id = data.get("scene_id")?.as_str()?;
     let group_id = data.get("group_id")?.as_str()?;
     let layer_id = data.get("layer_id")?.as_str()?;
@@ -703,7 +703,7 @@ pub(crate) fn extract_layer_health(data: &serde_json::Value) -> Option<(String, 
 /// layer leaves a stale entry behind. `current_layer_ids` is the group's
 /// live layer set; an entry for a layer no longer in it is ignored, so a
 /// deleted failed layer cannot keep the surface flagged.
-pub(crate) fn group_has_degraded_layer(
+pub fn group_has_degraded_layer(
     layer_health: &HashMap<String, LayerHealth>,
     scene_id: &str,
     group_id: &str,
@@ -726,7 +726,7 @@ pub(crate) fn group_has_degraded_layer(
     })
 }
 
-pub(crate) fn extract_scene_event_hint(
+pub fn extract_scene_event_hint(
     event_type: &str,
     scene_data: &serde_json::Value,
 ) -> SceneEventHint {
@@ -769,7 +769,7 @@ pub(crate) fn extract_scene_event_hint(
     }
 }
 
-pub(crate) fn scene_event_affects_active_effect(hint: &SceneEventHint) -> bool {
+pub fn scene_event_affects_active_effect(hint: &SceneEventHint) -> bool {
     hint.event_type != "render_group_changed" || hint.render_group_role != Some(ZoneRole::Display)
 }
 

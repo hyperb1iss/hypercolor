@@ -9,7 +9,7 @@ use hypercolor_types::controls::{
 use leptos::prelude::*;
 use leptos_icons::Icon;
 
-use hypercolor_ui::control_surface_view::{
+use crate::control_surface_view::{
     action_is_hidden, actionable_control_surfaces, control_value_summary,
     driver_owned_device_control_surfaces, field_is_hidden,
 };

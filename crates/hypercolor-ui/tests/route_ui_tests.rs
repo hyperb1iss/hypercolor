@@ -1,7 +1,4 @@
-#[path = "../src/route_ui.rs"]
-mod route_ui;
-
-use route_ui::{NowPlayingCanvasMode, now_playing_canvas_mode};
+use hypercolor_ui::route_ui::{NowPlayingCanvasMode, now_playing_canvas_mode};
 
 #[test]
 fn home_and_effect_routes_use_live_palette_mode() {

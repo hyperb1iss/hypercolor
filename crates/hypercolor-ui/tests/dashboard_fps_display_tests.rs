@@ -1,7 +1,6 @@
-#[path = "../src/pages/dashboard/fps_display.rs"]
-mod fps_display;
-
-use fps_display::{stabilize_fps_for_display, stabilize_fps_for_display_f32};
+use hypercolor_ui::pages::dashboard::fps_display::{
+    stabilize_fps_for_display, stabilize_fps_for_display_f32,
+};
 
 #[test]
 fn stabilize_fps_locks_near_target_noise() {

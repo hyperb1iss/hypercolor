@@ -1,15 +1,4 @@
-#![allow(dead_code, unused_imports)]
-
-#[path = "../src/api/mod.rs"]
-mod api;
-
-#[path = "../src/ws/mod.rs"]
-mod ws;
-
-#[path = "../src/color.rs"]
-mod color;
-
-use color::{analyze_rgba_samples, extract_canvas_palette};
+use hypercolor_ui::color::analyze_rgba_samples;
 
 #[test]
 fn analyze_rgba_samples_extracts_palette_and_dominant_hue_in_one_pass() {

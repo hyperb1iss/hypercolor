@@ -59,7 +59,7 @@ fn keyboard_target_is_text_input(target: Option<web_sys::EventTarget>) -> bool {
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct LayoutWriteHandle {
+pub struct LayoutWriteHandle {
     layout: ReadSignal<Option<SpatialLayout>>,
     set_layout: WriteSignal<Option<SpatialLayout>>,
     selected_zone_ids: ReadSignal<std::collections::HashSet<String>>,

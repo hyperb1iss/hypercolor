@@ -5,7 +5,7 @@ use crate::ws::{CanvasFrame, CanvasPixelFormat};
 
 use super::PreviewRenderOutcome;
 
-pub(crate) fn expand_rgb_to_rgba_bytes(source: &[u8], destination: &mut Vec<u8>) {
+pub fn expand_rgb_to_rgba_bytes(source: &[u8], destination: &mut Vec<u8>) {
     let pixel_count = source.len() / 3;
     destination.resize(pixel_count.saturating_mul(4), 0);
 

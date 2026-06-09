@@ -55,7 +55,7 @@ const BASILISK_V3_PRO_POINTS: &[(u32, u32)] = &[
 ];
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct ZoneVisualDefaults {
+pub struct ZoneVisualDefaults {
     pub topology: LedTopology,
     pub size: NormalizedPosition,
     pub orientation: Option<Orientation>,
@@ -64,12 +64,12 @@ pub(crate) struct ZoneVisualDefaults {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct SeededDeviceLayout {
+pub struct SeededDeviceLayout {
     pub zones: Vec<Output>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct SeededAttachmentLayout {
+pub struct SeededAttachmentLayout {
     pub zones: Vec<Output>,
 }
 
@@ -89,7 +89,7 @@ impl VisualUnits {
     }
 }
 
-pub(crate) fn default_zone_visuals(
+pub fn default_zone_visuals(
     device_name: &str,
     zone: Option<&ZoneSummary>,
     total_leds: usize,
@@ -164,7 +164,7 @@ pub(crate) fn default_zone_visuals(
     }
 }
 
-pub(crate) fn seeded_device_layout(
+pub fn seeded_device_layout(
     device_id: &str,
     device_name: &str,
     zones: &[ZoneSummary],
@@ -252,7 +252,7 @@ pub(crate) fn seeded_device_layout(
     })
 }
 
-pub(crate) fn attachment_zone_size(
+pub fn attachment_zone_size(
     suggested: &ComponentSuggestedZone,
     max_size: NormalizedPosition,
 ) -> NormalizedPosition {
@@ -260,7 +260,7 @@ pub(crate) fn attachment_zone_size(
     fit_visual_units(units, ATTACHMENT_MIN_SIZE, max_size)
 }
 
-pub(crate) fn attachment_zone_shape(category: &ComponentCategory) -> Option<ZoneShape> {
+pub fn attachment_zone_shape(category: &ComponentCategory) -> Option<ZoneShape> {
     match category {
         ComponentCategory::Fan
         | ComponentCategory::Aio
@@ -276,7 +276,7 @@ pub(crate) fn attachment_zone_shape(category: &ComponentCategory) -> Option<Zone
 }
 
 #[allow(clippy::cast_precision_loss)]
-pub(crate) fn seeded_attachment_layout(
+pub fn seeded_attachment_layout(
     device_id: &str,
     _device_name: &str,
     suggested_zones: &[ComponentSuggestedZone],

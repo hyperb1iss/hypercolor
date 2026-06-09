@@ -28,7 +28,7 @@ pub mod perf_charts;
 pub mod preset_matching;
 pub mod preset_panel;
 pub mod preview_cabinet;
-mod preview_runtime;
+pub mod preview_runtime;
 pub mod resize_handle;
 pub mod section_label;
 pub mod settings_controls;

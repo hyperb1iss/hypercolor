@@ -2,7 +2,6 @@
 //!
 //! Organized by domain: effects, devices, layouts, library (presets/favorites),
 //! config, and system status.
-#![cfg_attr(test, allow(dead_code, unused_imports))]
 
 use serde::Deserialize;
 
@@ -36,7 +35,6 @@ pub struct ApiEnvelope<T> {
 
 pub use assets::*;
 pub use config::*;
-#[allow(unused_imports)]
 pub use controls::*;
 pub use device_metrics::*;
 pub use devices::*;

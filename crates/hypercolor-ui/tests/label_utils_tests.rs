@@ -1,7 +1,4 @@
-#[path = "../src/label_utils.rs"]
-mod label_utils;
-
-use label_utils::humanize_identifier_label;
+use hypercolor_ui::label_utils::humanize_identifier_label;
 
 #[test]
 fn humanizes_identifier_labels_without_shouting_short_words() {

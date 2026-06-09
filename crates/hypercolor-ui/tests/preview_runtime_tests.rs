@@ -1,21 +1,4 @@
-#![allow(dead_code, unused_imports)]
-
-#[path = "../src/api/mod.rs"]
-mod api;
-
-#[path = "../src/ws/mod.rs"]
-mod ws;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PreviewRenderOutcome {
-    Presented,
-    Reinitialize,
-}
-
-#[path = "../src/components/preview_runtime/canvas2d.rs"]
-mod canvas2d;
-
-use canvas2d::expand_rgb_to_rgba_bytes;
+use hypercolor_ui::components::preview_runtime::canvas2d::expand_rgb_to_rgba_bytes;
 
 #[test]
 fn expand_rgb_to_rgba_bytes_adds_opaque_alpha() {

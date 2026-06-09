@@ -186,7 +186,7 @@ pub fn analyze_canvas_frame(frame: &CanvasFrame) -> Option<CanvasFrameAnalysis> 
     )
 }
 
-pub(crate) fn analyze_rgba_samples<I>(pixels: I) -> Option<CanvasFrameAnalysis>
+pub fn analyze_rgba_samples<I>(pixels: I) -> Option<CanvasFrameAnalysis>
 where
     I: IntoIterator<Item = [u8; 4]>,
 {

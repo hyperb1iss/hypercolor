@@ -3,7 +3,7 @@ use web_sys::HtmlCanvasElement;
 
 use crate::ws::{CanvasFrame, CanvasPixelFormat};
 
-mod canvas2d;
+pub mod canvas2d;
 mod webgl;
 mod worker;
 

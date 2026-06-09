@@ -1,9 +1,4 @@
-#![allow(dead_code)]
-
-#[path = "../src/device_event_logic.rs"]
-mod device_event_logic;
-
-use device_event_logic::should_refetch_devices_for_event;
+use hypercolor_ui::device_event_logic::should_refetch_devices_for_event;
 
 #[test]
 fn connected_device_refetches_only_when_unknown() {

@@ -4,7 +4,6 @@
 //! - **Strip**: inline definition with editable LED count (no template needed until save)
 //! - **Matrix**: inline definition with editable rows × cols
 //! - **Component**: reference to a known component definition from the library (TOML)
-#![cfg_attr(test, allow(dead_code))]
 
 use hypercolor_types::attachment::ComponentSlot;
 
@@ -12,7 +11,7 @@ use crate::api::{ComponentBindingSummary, TemplateSummary};
 
 /// A single component in the draft editor.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ComponentDraft {
+pub enum ComponentDraft {
     /// Custom strip — LED count is user-editable, template created at save time.
     Strip { led_count: u32 },
     /// Custom matrix — dimensions are user-editable, template created at save time.
@@ -23,7 +22,7 @@ pub(crate) enum ComponentDraft {
 
 /// A row in the channel component editor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct PersistedAttachmentTarget {
+pub struct PersistedAttachmentTarget {
     pub binding_index: usize,
     pub instance: u32,
 }
@@ -45,7 +44,7 @@ pub(crate) fn next_row_id() -> u64 {
 /// content compare equal regardless of DOM identity, which is what the dirty
 /// check wants. Only content changes should count as dirty.
 #[derive(Debug, Clone)]
-pub(crate) struct DraftRow {
+pub struct DraftRow {
     pub row_id: u64,
     pub kind: ComponentDraft,
     pub name: String,
@@ -81,7 +80,7 @@ impl DraftRow {
         }
     }
 
-    pub(crate) fn from_component(template_id: String, name: String) -> Self {
+    pub fn from_component(template_id: String, name: String) -> Self {
         Self {
             row_id: next_row_id(),
             kind: ComponentDraft::Component { template_id },
@@ -91,7 +90,7 @@ impl DraftRow {
     }
 
     /// Total LED count for this component.
-    pub(crate) fn led_count(&self, templates: &[TemplateSummary]) -> Option<u32> {
+    pub fn led_count(&self, templates: &[TemplateSummary]) -> Option<u32> {
         match &self.kind {
             ComponentDraft::Strip { led_count } => Some(*led_count),
             ComponentDraft::Matrix { cols, rows } => Some(cols * rows),
@@ -124,7 +123,7 @@ impl DraftRow {
 
 /// Summary of a channel's draft state.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ChannelDraftSummary {
+pub struct ChannelDraftSummary {
     pub total_leds: u32,
     pub available_leds: u32,
     pub overflow_leds: u32,
@@ -133,14 +132,14 @@ pub(crate) struct ChannelDraftSummary {
 
 impl ChannelDraftSummary {
     #[must_use]
-    pub(crate) fn is_valid(&self) -> bool {
+    pub fn is_valid(&self) -> bool {
         !self.has_incomplete_rows && self.overflow_leds == 0
     }
 }
 
 /// Expand saved bindings into draft rows.
 #[must_use]
-pub(crate) fn expand_bindings_to_drafts(
+pub fn expand_bindings_to_drafts(
     slot_id: &str,
     bindings: &[ComponentBindingSummary],
     templates: &[TemplateSummary],
@@ -231,7 +230,7 @@ pub(crate) fn expand_bindings_to_drafts(
 
 /// Summarize channel draft state for validation.
 #[must_use]
-pub(crate) fn summarize_channel(
+pub fn summarize_channel(
     slot: &ComponentSlot,
     rows: &[DraftRow],
     templates: &[TemplateSummary],

@@ -1,12 +1,4 @@
-#![allow(dead_code)]
-
 //! Contract tests for the Studio §8 surface model.
-//!
-//! `surface.rs` is leptos-free and `crate::`-free so it can be pulled in
-//! directly; the test crate supplies `hypercolor_types`.
-
-#[path = "../src/pages/studio/surface.rs"]
-mod surface;
 
 use std::collections::HashMap;
 
@@ -17,7 +9,7 @@ use hypercolor_types::scene::{DisplayFaceTarget, Zone, ZoneId, ZoneRole};
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use uuid::Uuid;
 
-use surface::{SurfaceKind, led_zone_count, surfaces_from_groups};
+use hypercolor_ui::pages::studio::surface::{SurfaceKind, led_zone_count, surfaces_from_groups};
 
 fn sample_layout() -> SpatialLayout {
     SpatialLayout {

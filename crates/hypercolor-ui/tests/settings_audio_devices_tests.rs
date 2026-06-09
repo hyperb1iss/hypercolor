@@ -1,7 +1,4 @@
-#[path = "../src/settings_audio_devices.rs"]
-mod settings_audio_devices;
-
-use settings_audio_devices::{
+use hypercolor_ui::settings_audio_devices::{
     AudioDeviceChoice, AudioDeviceDropdownState, AudioDeviceLoadState,
     resolve_audio_device_dropdown,
 };

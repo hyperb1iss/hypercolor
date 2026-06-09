@@ -1,7 +1,4 @@
-#![allow(dead_code)]
-
-#[path = "../src/render_presets.rs"]
-mod render_presets;
+use hypercolor_ui::render_presets;
 
 #[test]
 fn canvas_preset_key_matches_added_high_res_presets() {

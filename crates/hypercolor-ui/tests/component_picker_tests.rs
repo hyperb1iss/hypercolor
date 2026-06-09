@@ -1,15 +1,6 @@
-#![allow(dead_code, unused_imports)]
-
-#[path = "../src/api/mod.rs"]
-mod api;
-#[path = "../src/components/component_picker.rs"]
-mod component_picker;
-#[path = "../src/icons.rs"]
-mod icons;
-
-use api::TemplateSummary;
-use component_picker::{filter_components, selected_result_index};
 use hypercolor_types::attachment::ComponentCategory;
+use hypercolor_ui::api::TemplateSummary;
+use hypercolor_ui::components::component_picker::{filter_components, selected_result_index};
 
 fn template(id: &str, name: &str, vendor: &str, category: ComponentCategory) -> TemplateSummary {
     TemplateSummary {

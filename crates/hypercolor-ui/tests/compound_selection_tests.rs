@@ -1,13 +1,10 @@
-#![allow(dead_code)]
-
-#[path = "../src/compound_selection.rs"]
-mod compound_selection;
-
 use std::collections::HashSet;
 
-use compound_selection::{CompoundDepth, device_compound_ids, resolve_click, slot_compound_ids};
 use hypercolor_types::spatial::{
     LedTopology, NormalizedPosition, Output, OutputComponent, SpatialLayout, StripDirection,
+};
+use hypercolor_ui::compound_selection::{
+    CompoundDepth, device_compound_ids, resolve_click, slot_compound_ids,
 };
 
 // ── Fixtures ─────────────────────────────────────────────────────────────

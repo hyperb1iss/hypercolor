@@ -4,11 +4,6 @@
 //! source labels, and picker targeting — so the prop/event surface Studio
 //! mounts cannot drift unnoticed.
 
-#![allow(dead_code, unused_imports)]
-
-#[path = "../src/components/layer_panel/source.rs"]
-mod source;
-
 use std::collections::HashMap;
 
 use hypercolor_types::layer::WebViewportRender;
@@ -17,7 +12,7 @@ use hypercolor_types::scene::{Zone, ZoneId, ZoneRole};
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use hypercolor_types::viewport::{FitMode, ViewportRect};
 
-use source::{
+use hypercolor_ui::components::layer_panel::source::{
     AddLayerScope, EffectPickerMode, LayerSourceKind, available_add_layer_scopes, blend_options,
     blend_value, default_blend_for_added_layer, effect_category_label, effect_layer_source,
     effect_picker_matches_query, effect_picker_mode, fit_options, fit_value, layer_source_label,

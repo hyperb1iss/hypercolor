@@ -1,16 +1,6 @@
 //! Contract tests for the leptos-free media-kind vocabulary.
-//!
-//! `media_kind.rs` is leptos- and `crate::`-free (icondata + std only) so it
-//! can be pulled in directly, mirroring `pages/studio/device_grouping.rs`.
 
-// The path-included module carries view-only helpers (`kind_icon`) the
-// formatting/classification tests don't exercise.
-#![allow(dead_code)]
-
-#[path = "../src/components/media_kind.rs"]
-mod media_kind;
-
-use media_kind::{
+use hypercolor_ui::components::media_kind::{
     format_bytes, format_duration, format_timecode, kind_accent, kind_from_mime,
     kind_has_thumbnail, kind_label,
 };

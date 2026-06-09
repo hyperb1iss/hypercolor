@@ -97,6 +97,12 @@ pub struct WsManager {
     pub clear_zone_layout_preview: Callback<(String, String)>,
 }
 
+impl Default for WsManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WsManager {
     pub fn new() -> Self {
         let (canvas_frame, set_canvas_frame) = signal(None::<CanvasFrame>);
