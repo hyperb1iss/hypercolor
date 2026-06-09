@@ -165,16 +165,19 @@ pub(crate) fn publish_frame_updates(
     );
     let frame_data_us = micros_u32(frame_data_start.elapsed());
     let group_canvas_start = Instant::now();
+    // Scenes carry at most a handful of display groups, so a linear scan over
+    // the collected Vec beats building a fresh HashMap every frame.
     let group_canvas_senders = state
         .event_bus
-        .retain_group_canvases_and_collect_senders(active_group_canvas_ids)
-        .into_iter()
-        .collect::<std::collections::HashMap<_, _>>();
+        .retain_group_canvases_and_collect_senders(active_group_canvas_ids);
     for (group_id, group_canvas) in group_canvases {
         state
             .event_bus
             .upsert_display_group_target(*group_id, group_canvas.display_target.clone());
-        let Some(sender) = group_canvas_senders.get(group_id) else {
+        let Some(sender) = group_canvas_senders
+            .iter()
+            .find_map(|(id, sender)| (id == group_id).then_some(sender))
+        else {
             continue;
         };
         let frame = group_canvas

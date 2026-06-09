@@ -293,6 +293,9 @@ struct ServoSession {
     /// nothing beyond the flag check.
     last_canvas: Option<Canvas>,
     consecutive_no_ready_frames: u32,
+    /// Mirror of the webview's throttle state so render ticks only pay the
+    /// embedder `set_throttled` call when the state actually changes.
+    throttled: bool,
 }
 
 #[derive(Default)]
@@ -512,6 +515,8 @@ impl ServoWorkerRuntime {
                 renders_since_load: 0,
                 last_canvas: None,
                 consecutive_no_ready_frames: 0,
+                // `build_webview` constructs the webview throttled.
+                throttled: true,
             },
         );
 
@@ -644,6 +649,22 @@ impl ServoWorkerRuntime {
             .webview
             .as_ref()
             .ok_or_else(|| anyhow!("Servo webview is not initialized"))
+    }
+
+    /// Apply a webview throttle state, skipping the embedder call when the
+    /// session is already in that state.
+    fn set_webview_throttled(&mut self, session_id: ServoSessionId, throttled: bool) -> Result<()> {
+        let session = self.session_mut(session_id)?;
+        if session.throttled == throttled {
+            return Ok(());
+        }
+        session
+            .webview
+            .as_ref()
+            .ok_or_else(|| anyhow!("Servo webview is not initialized"))?
+            .set_throttled(throttled);
+        session.throttled = throttled;
+        Ok(())
     }
 
     fn navigate_webview(
@@ -818,7 +839,7 @@ impl ServoWorkerRuntime {
 
             // Let timers/RAF advance after this tick's control/audio injection.
             let event_loop_start = Instant::now();
-            self.active_webview(session_id)?.set_throttled(false);
+            self.set_webview_throttled(session_id, false)?;
             self.servo.spin_event_loop();
             timings.event_loop_us = elapsed_micros(event_loop_start);
             let frame_ready = self.session(session_id)?.delegate.take_frame_ready();

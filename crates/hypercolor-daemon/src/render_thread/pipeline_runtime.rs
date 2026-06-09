@@ -1084,7 +1084,6 @@ pub(crate) struct SceneTransitionKey {
     pub(crate) to_scene: SceneId,
 }
 
-#[derive(Clone)]
 pub(crate) struct RetainedZoneFrame {
     pub(crate) layout: Arc<SpatialLayout>,
     pub(crate) zones: Vec<ZoneColors>,
@@ -1094,7 +1093,12 @@ pub(crate) struct RetainedZoneFrame {
 pub(crate) struct ZoneTransitionPlanner {
     pub(crate) active_transition: Option<SceneTransitionKey>,
     pub(crate) transition_base: Option<RetainedZoneFrame>,
-    pub(crate) last_stable: Option<RetainedZoneFrame>,
+    /// Layout of the most recent stable (non-transition) frame. Zone colors
+    /// are deliberately not retained here: every stable frame's zones end up
+    /// in (or already are) the published frame, so the transition base
+    /// captures them lazily from the published frame when a transition starts
+    /// — one zone deep copy per transition instead of one per stable frame.
+    pub(crate) last_stable_layout: Option<Arc<SpatialLayout>>,
 }
 
 impl ZoneTransitionPlanner {
@@ -1103,12 +1107,9 @@ impl ZoneTransitionPlanner {
         self.transition_base = None;
     }
 
-    pub(crate) fn record_stable(&mut self, layout: Arc<SpatialLayout>, zones: &[ZoneColors]) {
+    pub(crate) fn record_stable(&mut self, layout: Arc<SpatialLayout>) {
         self.clear();
-        self.last_stable = Some(RetainedZoneFrame {
-            layout,
-            zones: zones.to_vec(),
-        });
+        self.last_stable_layout = Some(layout);
     }
 }
 
