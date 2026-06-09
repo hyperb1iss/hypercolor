@@ -91,7 +91,9 @@ pub struct ImportedEffectFrame {
     pub height: u32,
     /// Frame pixel format.
     pub format: ImportedFrameFormat,
-    /// Monotonic storage identity for cache comparisons.
+    /// Monotonically increasing content version; contents changed iff this
+    /// changed. Does NOT imply distinct GPU storage — the same IOSurface (and
+    /// cached wgpu texture) can carry many successive versions.
     pub storage_id: u64,
     /// Imported wgpu texture.
     pub texture: Arc<wgpu::Texture>,

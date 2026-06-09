@@ -176,6 +176,7 @@ impl ServoGpuImportBackend {
                     width = frame.width,
                     height = frame.height,
                     surface_id = frame.surface_id,
+                    content_generation = frame.content_generation,
                     format = ?frame.format,
                     origin = ?frame.origin,
                     "macOS Servo hardware context exposes IOSurface FBO"
@@ -302,15 +303,11 @@ impl ServoGpuImportBackend {
             .importer
             .as_mut()
             .ok_or_else(|| anyhow!("Servo GPU importer was not initialized"))?;
-        let importer_before = importer.state_snapshot();
-        record_linux_gpu_importer_state(importer_before);
-        let blit_before = importer.framebuffer_state_for_blit(gl.as_ref(), source_framebuffer);
         let import_result = importer.import_framebuffer_pipelined(gl.as_ref(), source_framebuffer);
-        record_linux_gpu_importer_state(importer.state_snapshot());
+        let importer_state = importer.state_snapshot();
+        record_linux_gpu_importer_state(importer_state);
         if let Err(error) = import_result.as_ref() {
-            let importer_after = importer.state_snapshot();
-            record_linux_gpu_importer_state(importer_after);
-            let blit_after = importer.framebuffer_state_for_blit(gl.as_ref(), source_framebuffer);
+            let blit_state = importer.framebuffer_state_for_blit(gl.as_ref(), source_framebuffer);
             let loaded_html_path = context
                 .loaded_html_path
                 .map_or_else(String::new, |path| path.display().to_string());
@@ -328,10 +325,8 @@ impl ServoGpuImportBackend {
                 renders_since_load = context.renders_since_load,
                 ?source_framebuffer,
                 ?linux_target,
-                ?importer_before,
-                ?importer_after,
-                ?blit_before,
-                ?blit_after,
+                ?importer_state,
+                ?blit_state,
                 "Servo GPU import GL diagnostics"
             );
         }
@@ -388,7 +383,11 @@ impl ServoGpuImportBackend {
             .importer
             .as_mut()
             .ok_or_else(|| anyhow!("Servo GPU importer was not initialized"))?;
-        Ok(importer.import_iosurface(device, &native_frame.iosurface)?)
+        Ok(importer.import_iosurface(
+            device,
+            &native_frame.iosurface,
+            native_frame.content_generation,
+        )?)
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
@@ -652,7 +651,8 @@ pub(super) fn classify_failure(error: &Error) -> ServoGpuImportFallbackReason {
                     ..
                 } => ServoGpuImportFallbackReason::InvalidDimensions,
                 hypercolor_macos_gpu_interop::MacosGpuInteropError::ServoContext { .. }
-                | hypercolor_macos_gpu_interop::MacosGpuInteropError::MissingServoSurface => {
+                | hypercolor_macos_gpu_interop::MacosGpuInteropError::MissingServoSurface
+                | hypercolor_macos_gpu_interop::MacosGpuInteropError::IosurfaceFenceTimeout => {
                     ServoGpuImportFallbackReason::MissingMacosServoSurface
                 }
                 hypercolor_macos_gpu_interop::MacosGpuInteropError::GlCreateResource {

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -19,6 +20,11 @@ use thiserror::Error;
 
 const BYTES_PER_PIXEL: u32 = 4;
 const PIXEL_FORMAT_BGRA: i32 = u32::from_be_bytes(*b"BGRA") as i32;
+/// Maximum cached wgpu wraps before the importer cache resets. The Servo
+/// publish ring uses 3 IOSurfaces, so steady state stays well under this.
+const MAX_CACHED_WRAPS: usize = 8;
+/// Fallback content versions for fixture imports that have no producer
+/// generation (see [`MacosIosurfaceImporter::import_iosurface_for_test`]).
 static NEXT_STORAGE_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Result type for macOS GPU interop operations.
@@ -116,6 +122,13 @@ pub enum MacosGpuInteropError {
     #[error("macOS Servo hardware context has no bound Surfman surface")]
     MissingServoSurface,
 
+    /// Waiting for an IOSurface ring slot blit fence timed out.
+    ///
+    /// Transient: the GPU has not finished the publish blit yet; retry on a
+    /// later frame.
+    #[error("timed out waiting for an IOSurface blit fence")]
+    IosurfaceFenceTimeout,
+
     /// The IOSurface pixel format does not match the expected import format.
     #[error("IOSurface pixel format mismatch: expected 0x{expected:08x}, got 0x{actual:08x}")]
     IosurfacePixelFormatMismatch {
@@ -193,7 +206,9 @@ pub struct ImportedEffectFrame {
     pub height: u32,
     /// Frame pixel format.
     pub format: ImportedFrameFormat,
-    /// Monotonic storage identity for cache comparisons.
+    /// Monotonically increasing content version; contents changed iff this
+    /// changed. Does NOT imply distinct GPU storage — the same IOSurface (and
+    /// cached wgpu texture) can carry many successive versions.
     pub storage_id: u64,
     /// Imported wgpu texture.
     pub texture: Arc<wgpu::Texture>,
@@ -212,9 +227,20 @@ pub struct ImportedFrameTimings {
     pub total_us: u64,
 }
 
+/// Cached wgpu texture/view pair wrapping one IOSurface identity.
+struct CachedIosurfaceWrap {
+    texture: Arc<wgpu::Texture>,
+    view: Arc<wgpu::TextureView>,
+}
+
 /// Reusable importer for wrapping IOSurfaces as wgpu textures.
+///
+/// Wraps are cached per IOSurface identity, so re-importing a ring slot on
+/// the frame hot path reuses the existing Metal/wgpu texture instead of
+/// recreating it.
 pub struct MacosIosurfaceImporter {
     descriptor: MacosIosurfaceImportDescriptor,
+    wraps: HashMap<u32, CachedIosurfaceWrap>,
 }
 
 impl MacosIosurfaceImporter {
@@ -226,7 +252,10 @@ impl MacosIosurfaceImporter {
             descriptor.format,
         )?;
         require_metal_device(device)?;
-        Ok(Self { descriptor })
+        Ok(Self {
+            descriptor,
+            wraps: HashMap::new(),
+        })
     }
 
     /// Returns the descriptor this importer was built for.
@@ -235,15 +264,42 @@ impl MacosIosurfaceImporter {
         self.descriptor
     }
 
+    /// Number of IOSurface wraps currently cached.
+    #[must_use]
+    pub fn cached_wrap_count(&self) -> usize {
+        self.wraps.len()
+    }
+
     /// Imports an IOSurface into the supplied wgpu device.
+    ///
+    /// `content_generation` is the producer's monotonic content version for
+    /// the surface contents and becomes the frame's `storage_id`. Repeated
+    /// imports of the same IOSurface reuse the cached wgpu texture.
     pub fn import_iosurface(
         &mut self,
         device: &wgpu::Device,
         iosurface: &IOSurfaceRef,
+        content_generation: u64,
     ) -> Result<ImportedEffectFrame> {
         validate_iosurface_shape(self.descriptor, iosurface)?;
 
         let total_start = Instant::now();
+        let surface_id = iosurface.id();
+        if let Some(cached) = self.wraps.get(&surface_id) {
+            return Ok(ImportedEffectFrame {
+                width: self.descriptor.width,
+                height: self.descriptor.height,
+                format: self.descriptor.format,
+                storage_id: content_generation,
+                texture: Arc::clone(&cached.texture),
+                view: Arc::clone(&cached.view),
+                timings: ImportedFrameTimings {
+                    wrap_us: 0,
+                    total_us: elapsed_micros(total_start),
+                },
+            });
+        }
+
         let wrap_start = Instant::now();
         let metal_texture = {
             let hal_device = require_metal_device(device)?;
@@ -281,18 +337,45 @@ impl MacosIosurfaceImporter {
         };
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
+        let texture = Arc::new(texture);
+        let view = Arc::new(view);
+        if self.wraps.len() >= MAX_CACHED_WRAPS {
+            self.wraps.clear();
+        }
+        self.wraps.insert(
+            surface_id,
+            CachedIosurfaceWrap {
+                texture: Arc::clone(&texture),
+                view: Arc::clone(&view),
+            },
+        );
+
         Ok(ImportedEffectFrame {
             width: self.descriptor.width,
             height: self.descriptor.height,
             format: self.descriptor.format,
-            storage_id: NEXT_STORAGE_ID.fetch_add(1, Ordering::Relaxed),
-            texture: Arc::new(texture),
-            view: Arc::new(view),
+            storage_id: content_generation,
+            texture,
+            view,
             timings: ImportedFrameTimings {
                 wrap_us,
                 total_us: elapsed_micros(total_start),
             },
         })
+    }
+
+    /// Imports an IOSurface fixture that has no producer content generation.
+    ///
+    /// Allocates a fresh content version from a process-global counter, so
+    /// every call reports changed contents. Intended for tests and
+    /// compatibility probes built around [`create_bgra_iosurface`].
+    pub fn import_iosurface_for_test(
+        &mut self,
+        device: &wgpu::Device,
+        iosurface: &IOSurfaceRef,
+    ) -> Result<ImportedEffectFrame> {
+        let content_generation = NEXT_STORAGE_ID.fetch_add(1, Ordering::Relaxed);
+        self.import_iosurface(device, iosurface, content_generation)
     }
 }
 

@@ -32,12 +32,17 @@ fn hardware_context_reads_back_and_exposes_iosurface() -> Result<(), String> {
     assert_eq!(native_frame.format, ImportedFrameFormat::Bgra8Unorm);
     assert_eq!(native_frame.origin, MacosServoFrameOrigin::BottomLeft);
     assert_ne!(native_frame.surface_id, 0);
+    assert_ne!(native_frame.content_generation, 0);
     assert_eq!(native_frame.iosurface.width(), WIDTH as usize);
     assert_eq!(native_frame.iosurface.height(), HEIGHT as usize);
     assert_iosurface_uniform_bgra(&native_frame.iosurface, WIDTH, HEIGHT, [191, 128, 64, 255])?;
 
     let same_surface = context.native_frame().map_err(|error| error.to_string())?;
     assert_eq!(same_surface.surface_id, native_frame.surface_id);
+    assert_eq!(
+        same_surface.content_generation,
+        native_frame.content_generation
+    );
     assert_eq!(
         same_surface.iosurface.pixel_format(),
         native_frame.iosurface.pixel_format()
@@ -58,6 +63,71 @@ fn hardware_context_reads_back_and_exposes_iosurface() -> Result<(), String> {
     assert_eq!(resized_frame.width, WIDTH + 1);
     assert_eq!(resized_frame.height, HEIGHT + 1);
     assert_ne!(resized_frame.surface_id, native_frame.surface_id);
+    assert!(
+        resized_frame.content_generation > same_surface.content_generation,
+        "content generation must continue monotonically across a ring rebuild"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn iosurface_ring_rotates_with_monotonic_generations() -> Result<(), String> {
+    let context =
+        MacosHardwareRenderingContext::new(WIDTH, HEIGHT).map_err(|error| error.to_string())?;
+    context
+        .make_current()
+        .map_err(|error| format!("make current failed: {error:?}"))?;
+    let gl = context.gleam_gl_api();
+
+    let mut surface_ids = Vec::new();
+    let mut generations = Vec::new();
+    for cycle in 0..3u32 {
+        context.prepare_for_rendering();
+        gl.viewport(0, 0, WIDTH as i32, HEIGHT as i32);
+        let level = (cycle + 1) as f32 / 4.0;
+        gl.clear_color(level, level, level, 1.0);
+        gl.clear(gl::COLOR_BUFFER_BIT);
+        context.present();
+        // Test-only sync so the freshest publish fence is signaled before
+        // native_frame polls the ring.
+        gl.finish();
+        let frame = context.native_frame().map_err(|error| error.to_string())?;
+        surface_ids.push(frame.surface_id);
+        generations.push(frame.content_generation);
+    }
+
+    let distinct_surfaces: std::collections::HashSet<usize> = surface_ids.iter().copied().collect();
+    assert!(
+        distinct_surfaces.len() >= 2,
+        "ring must rotate across publishes, got surface ids {surface_ids:?}"
+    );
+    assert!(
+        generations.windows(2).all(|pair| pair[1] > pair[0]),
+        "content generations must strictly increase, got {generations:?}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn native_frame_without_new_publish_returns_same_generation() -> Result<(), String> {
+    let context =
+        MacosHardwareRenderingContext::new(WIDTH, HEIGHT).map_err(|error| error.to_string())?;
+    context
+        .make_current()
+        .map_err(|error| format!("make current failed: {error:?}"))?;
+    context.prepare_for_rendering();
+    let gl = context.gleam_gl_api();
+    gl.viewport(0, 0, WIDTH as i32, HEIGHT as i32);
+    gl.clear_color(0.5, 0.25, 0.125, 1.0);
+    gl.clear(gl::COLOR_BUFFER_BIT);
+    context.present();
+
+    let first = context.native_frame().map_err(|error| error.to_string())?;
+    let second = context.native_frame().map_err(|error| error.to_string())?;
+    assert_eq!(second.surface_id, first.surface_id);
+    assert_eq!(second.content_generation, first.content_generation);
 
     Ok(())
 }

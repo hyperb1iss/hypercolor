@@ -1,6 +1,6 @@
 #![cfg(target_os = "macos")]
 
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 
 use hypercolor_macos_gpu_interop::{
     ImportedFrameFormat, MacosGpuInteropError, MacosIosurfaceImportDescriptor,
@@ -24,14 +24,65 @@ fn imports_synthetic_iosurface_into_wgpu_texture() -> Result<(), String> {
     let mut importer =
         MacosIosurfaceImporter::new(&wgpu.device, descriptor).map_err(|error| error.to_string())?;
     let frame = importer
-        .import_iosurface(&wgpu.device, &iosurface)
+        .import_iosurface_for_test(&wgpu.device, &iosurface)
         .map_err(|error| error.to_string())?;
     let pixels = read_texture_pixels(&wgpu.device, &wgpu.queue, &frame.texture, WIDTH, HEIGHT)?;
 
     assert_eq!(frame.width, WIDTH);
     assert_eq!(frame.height, HEIGHT);
     assert_eq!(frame.format, ImportedFrameFormat::Bgra8Unorm);
+    assert_ne!(frame.storage_id, 0);
     assert_eq!(pixels, expected_pixels);
+
+    Ok(())
+}
+
+#[test]
+fn reuses_cached_wrap_for_repeated_iosurface_imports() -> Result<(), String> {
+    let wgpu = WgpuFixture::new()?;
+    let descriptor =
+        MacosIosurfaceImportDescriptor::new(WIDTH, HEIGHT, ImportedFrameFormat::Bgra8Unorm)
+            .map_err(|error| error.to_string())?;
+    let iosurface = create_bgra_iosurface(WIDTH, HEIGHT).map_err(|error| error.to_string())?;
+    write_bgra_pixels(&iosurface, WIDTH, HEIGHT, &fixture_pixels())
+        .map_err(|error| error.to_string())?;
+
+    let mut importer =
+        MacosIosurfaceImporter::new(&wgpu.device, descriptor).map_err(|error| error.to_string())?;
+    assert_eq!(importer.cached_wrap_count(), 0);
+
+    let first = importer
+        .import_iosurface(&wgpu.device, &iosurface, 7)
+        .map_err(|error| error.to_string())?;
+    assert_eq!(first.storage_id, 7);
+    assert_eq!(importer.cached_wrap_count(), 1);
+
+    let second = importer
+        .import_iosurface(&wgpu.device, &iosurface, 8)
+        .map_err(|error| error.to_string())?;
+    assert_eq!(second.storage_id, 8);
+    assert_eq!(importer.cached_wrap_count(), 1);
+    assert!(
+        Arc::ptr_eq(&first.texture, &second.texture),
+        "re-importing the same IOSurface must reuse the cached wgpu texture"
+    );
+    assert!(
+        Arc::ptr_eq(&first.view, &second.view),
+        "re-importing the same IOSurface must reuse the cached wgpu view"
+    );
+    assert_eq!(second.timings.wrap_us, 0);
+
+    let other_iosurface =
+        create_bgra_iosurface(WIDTH, HEIGHT).map_err(|error| error.to_string())?;
+    let third = importer
+        .import_iosurface(&wgpu.device, &other_iosurface, 9)
+        .map_err(|error| error.to_string())?;
+    assert_eq!(third.storage_id, 9);
+    assert_eq!(importer.cached_wrap_count(), 2);
+    assert!(
+        !Arc::ptr_eq(&first.texture, &third.texture),
+        "a different IOSurface must get its own wgpu texture"
+    );
 
     Ok(())
 }
