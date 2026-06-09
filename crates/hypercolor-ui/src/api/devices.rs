@@ -2,7 +2,6 @@
 
 use std::collections::HashMap;
 
-use gloo_net::http::Request;
 use hypercolor_types::device::{DeviceOrigin, DriverPresentation};
 use serde::{Deserialize, Serialize};
 
@@ -322,26 +321,12 @@ pub async fn identify_attachment(
 }
 
 /// Create a user-authored attachment template (custom strip, matrix, etc.).
-/// Uses raw request because the daemon returns detailed error text on failure.
 pub async fn create_attachment_template(
     template: &hypercolor_types::attachment::ComponentTemplate,
 ) -> Result<TemplateSummary, String> {
-    let body = serde_json::to_string(template).map_err(|e| format!("Serialize error: {e}"))?;
-    let resp = Request::post("/api/v1/attachments/templates")
-        .header("Content-Type", "application/json")
-        .body(body)
-        .map_err(|e| format!("Request error: {e}"))?
-        .send()
+    client::post_json("/api/v1/attachments/templates", template)
         .await
-        .map_err(|e| format!("Network error: {e}"))?;
-    if !(200..300).contains(&resp.status()) {
-        let text = resp.text().await.unwrap_or_default();
-        return Err(format!("HTTP {}: {text}", resp.status()));
-    }
-    resp.json::<super::ApiEnvelope<TemplateSummary>>()
-        .await
-        .map(|e| e.data)
-        .map_err(|e| format!("Parse error: {e}"))
+        .map_err(Into::into)
 }
 
 /// Fetch attachment bindings and import-ready zones for a physical device.
@@ -384,43 +369,17 @@ pub async fn set_global_brightness(brightness: u8) -> Result<u8, String> {
 // ── Pairing Functions ───────────────────────────────────────────────────────
 
 /// Pair a device using the generic pairing surface.
-/// Uses raw request because the daemon returns detailed error text on failure.
 pub async fn pair_device(id: &str, req: &PairDeviceRequest) -> Result<PairDeviceResponse, String> {
-    let url = format!("/api/v1/devices/{id}/pair");
-    let body = serde_json::to_string(req).map_err(|e| format!("Serialize error: {e}"))?;
-    let resp = Request::post(&url)
-        .header("Content-Type", "application/json")
-        .body(body)
-        .map_err(|e| format!("Request error: {e}"))?
-        .send()
+    client::post_json(&format!("/api/v1/devices/{id}/pair"), req)
         .await
-        .map_err(|e| format!("Network error: {e}"))?;
-    if resp.status() != 200 {
-        let text = resp.text().await.unwrap_or_default();
-        return Err(format!("HTTP {}: {text}", resp.status()));
-    }
-    resp.json::<super::ApiEnvelope<PairDeviceResponse>>()
-        .await
-        .map(|e| e.data)
-        .map_err(|e| format!("Parse error: {e}"))
+        .map_err(Into::into)
 }
 
 /// Remove stored credentials for a device.
-/// Uses raw request because the daemon returns detailed error text on failure.
 pub async fn unpair_device(id: &str) -> Result<DeletePairingResponse, String> {
-    let url = format!("/api/v1/devices/{id}/pair");
-    let resp = Request::delete(&url)
-        .send()
+    client::delete_json(&format!("/api/v1/devices/{id}/pair"))
         .await
-        .map_err(|e| format!("Network error: {e}"))?;
-    if resp.status() != 200 {
-        let text = resp.text().await.unwrap_or_default();
-        return Err(format!("HTTP {}: {text}", resp.status()));
-    }
-    resp.json::<super::ApiEnvelope<DeletePairingResponse>>()
-        .await
-        .map(|e| e.data)
-        .map_err(|e| format!("Parse error: {e}"))
+        .map_err(Into::into)
 }
 
 /// Fetch the current global brightness.

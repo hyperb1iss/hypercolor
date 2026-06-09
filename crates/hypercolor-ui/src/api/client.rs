@@ -328,6 +328,24 @@ where
     Ok(())
 }
 
+/// DELETE `url`, parse envelope, return inner data. Used for deletes that
+/// echo a confirmation payload (e.g., `unpair_device`).
+pub async fn delete_json<Res>(url: &str) -> Result<Res, ApiError>
+where
+    Res: DeserializeOwned,
+{
+    let resp = with_auth(Request::delete(url))
+        .send()
+        .await
+        .map_err(|e| ApiError::Network(e.to_string()))?;
+    let resp = ensure_success(resp).await?;
+    let envelope: ApiEnvelope<Res> = resp
+        .json()
+        .await
+        .map_err(|e| ApiError::Parse(e.to_string()))?;
+    Ok(envelope.data)
+}
+
 /// DELETE `url`, discard the response body.
 pub async fn delete_empty(url: &str) -> Result<(), ApiError> {
     let resp = with_auth(Request::delete(url))

@@ -1,6 +1,5 @@
 //! Layout-related API types and fetch functions.
 
-use gloo_net::http::Request;
 use serde::{Deserialize, Serialize};
 
 use super::client;
@@ -107,23 +106,9 @@ pub async fn preview_layout(
         .map_err(Into::into)
 }
 
-/// Delete a layout. Uses raw request because the daemon returns a
-/// structured error body with a user-facing message on failure.
+/// Delete a layout.
 pub async fn delete_layout(id: &str) -> Result<(), String> {
-    let url = format!("/api/v1/layouts/{id}");
-    let resp = Request::delete(&url)
-        .send()
+    client::delete_empty(&format!("/api/v1/layouts/{id}"))
         .await
-        .map_err(|e| format!("Network error: {e}"))?;
-
-    if resp.status() != 200 {
-        let msg = resp
-            .json::<serde_json::Value>()
-            .await
-            .ok()
-            .and_then(|v| v["error"]["message"].as_str().map(String::from))
-            .unwrap_or_else(|| format!("HTTP {}", resp.status()));
-        return Err(msg);
-    }
-    Ok(())
+        .map_err(Into::into)
 }
