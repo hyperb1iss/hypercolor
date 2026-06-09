@@ -103,6 +103,7 @@ struct GpuCompositorSurfaceSet {
     source: GpuCompositorTexture,
     bind_groups: GpuCompositorBindGroups,
     cached_compose_params: Option<[u8; COMPOSE_PARAM_BYTES]>,
+    pending_upload_buffers: Vec<wgpu::Buffer>,
     front_contents: Option<CachedSourceUpload>,
     back_contents: Option<CachedSourceUpload>,
     cached_source_upload: Option<CachedSourceUpload>,
@@ -324,8 +325,15 @@ impl GpuSparkleFlinger {
         }
         if let Some(encoder) = self.pending_output_submission.take() {
             self.queue.submit(Some(encoder.finish()));
+            self.clear_pending_upload_buffers();
         }
         Ok(())
+    }
+
+    pub(super) fn clear_pending_upload_buffers(&mut self) {
+        if let Some(surfaces) = self.surfaces.as_mut() {
+            surfaces.pending_upload_buffers.clear();
+        }
     }
 
     pub(crate) fn surface_snapshot(&self) -> Option<GpuCompositorSurfaceSnapshot> {
@@ -367,6 +375,7 @@ impl GpuCompositorSurfaceSet {
             back,
             source,
             cached_compose_params: None,
+            pending_upload_buffers: Vec::new(),
             front_contents: None,
             back_contents: None,
             cached_source_upload: None,

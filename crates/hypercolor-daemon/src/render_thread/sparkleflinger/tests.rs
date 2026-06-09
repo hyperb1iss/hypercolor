@@ -702,6 +702,35 @@ fn sparkleflinger_screen_layers_use_screen_blend() {
 }
 
 #[test]
+fn sparkleflinger_uses_first_layer_as_base_even_when_blend_is_not_replace() {
+    let base = Rgba::new(96, 128, 192, 255);
+    let overlay = Rgba::TRANSPARENT;
+    let mut sparkleflinger = SparkleFlinger::cpu();
+    let composed = sparkleflinger.compose(CompositionPlan::with_layers(
+        2,
+        2,
+        vec![
+            CompositionLayer::from_parts(
+                ProducerFrame::Canvas(solid_canvas(base)),
+                CompositionMode::Multiply,
+                1.0,
+                true,
+            ),
+            CompositionLayer::screen(ProducerFrame::Canvas(solid_canvas(overlay)), 1.0),
+        ],
+    ));
+
+    assert_eq!(
+        composed
+            .sampling_canvas
+            .as_ref()
+            .expect("CPU compose should materialize a canvas")
+            .get_pixel(0, 0),
+        base
+    );
+}
+
+#[test]
 fn sparkleflinger_extended_blend_modes_use_linear_blend_math() {
     let base = Rgba::new(96, 128, 192, 255);
     let overlay = Rgba::new(128, 96, 64, 255);

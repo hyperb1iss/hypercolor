@@ -227,6 +227,19 @@ pub fn media_layer_source(asset_id: &str) -> Result<LayerSource, String> {
     })
 }
 
+/// Initial blend mode for a layer added through the picker.
+#[must_use]
+pub fn default_blend_for_added_layer(
+    source: &LayerSource,
+    existing_layer_count: usize,
+) -> LayerBlendMode {
+    if existing_layer_count > 0 && matches!(source, LayerSource::Effect { .. }) {
+        LayerBlendMode::Screen
+    } else {
+        LayerBlendMode::Alpha
+    }
+}
+
 /// Human-readable description of a layer's content source. `media_names`
 /// resolves asset ids to filenames and `effect_names` resolves effect ids
 /// to their registry display name; an id with no match falls back to the

@@ -19,9 +19,9 @@ use hypercolor_types::viewport::{FitMode, ViewportRect};
 
 use source::{
     AddLayerScope, EffectPickerMode, LayerSourceKind, available_add_layer_scopes, blend_options,
-    blend_value, effect_category_label, effect_layer_source, effect_picker_matches_query,
-    effect_picker_mode, fit_options, fit_value, layer_source_label, media_layer_source,
-    parse_blend, parse_fit, resolve_add_layer_targets,
+    blend_value, default_blend_for_added_layer, effect_category_label, effect_layer_source,
+    effect_picker_matches_query, effect_picker_mode, fit_options, fit_value, layer_source_label,
+    media_layer_source, parse_blend, parse_fit, resolve_add_layer_targets,
 };
 
 /// A valid UUID string for effect/media id parsing.
@@ -207,6 +207,25 @@ fn media_source_requires_a_uuid() {
 
     assert!(media_layer_source("paimon.gif").is_err());
     assert!(media_layer_source("").is_err());
+}
+
+#[test]
+fn added_effect_layers_screen_over_existing_content_by_default() {
+    let effect = effect_layer_source(SAMPLE_ID).expect("valid uuid is accepted");
+    let media = media_layer_source(SAMPLE_ID).expect("valid uuid is accepted");
+
+    assert_eq!(
+        default_blend_for_added_layer(&effect, 0),
+        LayerBlendMode::Alpha
+    );
+    assert_eq!(
+        default_blend_for_added_layer(&effect, 1),
+        LayerBlendMode::Screen
+    );
+    assert_eq!(
+        default_blend_for_added_layer(&media, 1),
+        LayerBlendMode::Alpha
+    );
 }
 
 #[test]

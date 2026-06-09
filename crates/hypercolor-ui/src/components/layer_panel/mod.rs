@@ -32,7 +32,7 @@ mod source;
 
 use std::collections::HashMap;
 
-use hypercolor_types::layer::{LayerAdjust, LayerBlendMode, LayerTransform, SceneLayer};
+use hypercolor_types::layer::{LayerAdjust, LayerTransform, SceneLayer};
 use leptos::prelude::*;
 use leptos_icons::Icon;
 
@@ -45,7 +45,10 @@ use crate::ws::messages::layer_health_key;
 
 use picker::{AddLayerPicker, NewLayerDraft};
 use row::LayerRow;
-use source::{AddLayerScope, available_add_layer_scopes, resolve_add_layer_targets};
+use source::{
+    AddLayerScope, available_add_layer_scopes, default_blend_for_added_layer,
+    resolve_add_layer_targets,
+};
 
 /// Layer-stack editor for one zone. See the module docs for the
 /// mount contract.
@@ -155,10 +158,15 @@ pub fn LayerPanel(
             return;
         }
         let expected_version = layers_version.get_untracked();
+        let existing_layer_count = layers_resource
+            .get_untracked()
+            .and_then(Result::ok)
+            .map_or(0, |stack| stack.items.len());
+        let blend = default_blend_for_added_layer(&draft.source, existing_layer_count);
         let request = api::CreateLayerRequest {
             name: draft.name,
             source: draft.source,
-            blend: LayerBlendMode::Alpha,
+            blend,
             opacity: 1.0,
             transform: LayerTransform::default(),
             adjust: LayerAdjust::default(),

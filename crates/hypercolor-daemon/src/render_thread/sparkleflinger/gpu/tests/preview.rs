@@ -449,6 +449,7 @@ fn gpu_discard_superseded_preview_work_clears_preview_state() {
             cache_as_full_size: false,
             slot: 1,
         },
+        submission_index: None,
         used_bytes: 16,
         receiver,
     });

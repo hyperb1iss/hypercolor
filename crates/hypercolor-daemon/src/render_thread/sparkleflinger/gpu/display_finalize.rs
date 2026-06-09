@@ -42,6 +42,7 @@ pub(super) struct GpuDisplayFinalizeSurfaceSet {
     pub(super) readback_surfaces: RenderSurfacePool,
     pub(super) scene_source: Option<GpuDisplaySourceTexture>,
     pub(super) face_source: Option<GpuDisplaySourceTexture>,
+    pub(super) pending_upload_buffers: Vec<wgpu::Buffer>,
     #[cfg(test)]
     pub(super) scene_upload_count: usize,
     #[cfg(test)]
@@ -231,6 +232,7 @@ impl GpuDisplayFinalizeSurfaceSet {
             ),
             scene_source: None,
             face_source: None,
+            pending_upload_buffers: Vec::new(),
             #[cfg(test)]
             scene_upload_count: 0,
             #[cfg(test)]
@@ -382,6 +384,7 @@ impl GpuSparkleFlinger {
             pipeline,
             &mut encoder,
             &mut surfaces.scene_source,
+            &mut surfaces.pending_upload_buffers,
             scene,
             scene_gpu.as_ref(),
             "SparkleFlinger Display Scene Source",
@@ -395,6 +398,7 @@ impl GpuSparkleFlinger {
             pipeline,
             &mut encoder,
             &mut surfaces.face_source,
+            &mut surfaces.pending_upload_buffers,
             face,
             face_gpu.as_ref(),
             "SparkleFlinger Display Face Source",
@@ -512,6 +516,7 @@ impl GpuSparkleFlinger {
             }
         };
         let submission_index = queue.submit(Some(encoder.finish()));
+        surfaces.pending_upload_buffers.clear();
         let pending = begin_display_finalize_readback(PendingGpuDisplayFinalize::new(
             params.cache_key,
             surface_generation,

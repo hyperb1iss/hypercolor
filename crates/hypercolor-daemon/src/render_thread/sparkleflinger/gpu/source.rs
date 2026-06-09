@@ -1,4 +1,5 @@
 use hypercolor_core::types::canvas::{BYTES_PER_PIXEL, PublishedSurfaceStorageIdentity};
+use wgpu::util::DeviceExt;
 
 use super::super::{CompositionAdjust, CompositionPlan, CompositionTransform};
 use super::readback::{
@@ -33,6 +34,7 @@ pub(super) fn prepare_display_source_texture(
     pipeline: &GpuCompositorPipeline,
     encoder: &mut wgpu::CommandEncoder,
     source: &mut Option<GpuDisplaySourceTexture>,
+    pending_upload_buffers: &mut Vec<wgpu::Buffer>,
     frame: &ProducerFrame,
     gpu_frame: Option<&GpuSourceFrame<'_>>,
     label: &'static str,
@@ -70,9 +72,9 @@ pub(super) fn prepare_display_source_texture(
     record_gpu_source_upload_skipped();
     copy_gpu_source_frame_into_texture(
         device,
-        queue,
         pipeline,
         encoder,
+        pending_upload_buffers,
         gpu_frame,
         &source.texture,
     );
@@ -97,13 +99,16 @@ fn ensure_display_source_texture(
 }
 
 pub(super) fn upload_frame_into_source_texture(
-    queue: &wgpu::Queue,
+    device: &wgpu::Device,
+    encoder: &mut wgpu::CommandEncoder,
     surfaces: &mut GpuCompositorSurfaceSet,
     frame: &ProducerFrame,
 ) {
-    upload_frame_into_cached_texture(
-        queue,
+    upload_frame_into_cached_texture_with_encoder(
+        device,
+        encoder,
         &surfaces.source.texture,
+        &mut surfaces.pending_upload_buffers,
         &mut surfaces.cached_source_upload,
         frame,
         #[cfg(test)]
@@ -214,13 +219,21 @@ pub(super) fn copy_frame_into_output_texture(
     pipeline: &GpuCompositorPipeline,
     output: &GpuCompositorTexture,
     cached_upload: &mut Option<CachedSourceUpload>,
+    pending_upload_buffers: &mut Vec<wgpu::Buffer>,
     encoder: &mut wgpu::CommandEncoder,
     frame: &ProducerFrame,
     #[cfg(test)] upload_count: &mut usize,
 ) {
     if let Some(frame) = gpu_source_frame(frame) {
         record_gpu_source_upload_skipped();
-        copy_gpu_source_frame_into_texture(device, queue, pipeline, encoder, &frame, output);
+        copy_gpu_source_frame_into_texture(
+            device,
+            pipeline,
+            encoder,
+            pending_upload_buffers,
+            &frame,
+            output,
+        );
         *cached_upload = None;
         return;
     }
@@ -237,16 +250,18 @@ pub(super) fn copy_frame_into_output_texture(
 
 pub(super) fn copy_gpu_source_frame_into_texture(
     device: &wgpu::Device,
-    queue: &wgpu::Queue,
     pipeline: &GpuCompositorPipeline,
     encoder: &mut wgpu::CommandEncoder,
+    pending_upload_buffers: &mut Vec<wgpu::Buffer>,
     frame: &GpuSourceFrame<'_>,
     output: &GpuCompositorTexture,
 ) {
     if frame.needs_shader_copy() {
-        queue.write_buffer(
-            &pipeline.source_copy_params_buffer,
-            0,
+        encode_source_copy_params_upload(
+            device,
+            pipeline,
+            encoder,
+            pending_upload_buffers,
             &encode_source_copy_params(
                 frame.width(),
                 frame.height(),
@@ -332,6 +347,81 @@ pub(super) fn upload_frame_into_cached_texture(
     {
         *upload_count = upload_count.saturating_add(1);
     }
+}
+
+fn upload_frame_into_cached_texture_with_encoder(
+    device: &wgpu::Device,
+    encoder: &mut wgpu::CommandEncoder,
+    texture: &wgpu::Texture,
+    pending_upload_buffers: &mut Vec<wgpu::Buffer>,
+    cached_upload: &mut Option<CachedSourceUpload>,
+    frame: &ProducerFrame,
+    #[cfg(test)] upload_count: &mut usize,
+) {
+    let next_upload = cached_source_upload(frame);
+    if next_upload.is_some() && *cached_upload == next_upload {
+        return;
+    }
+
+    upload_frame_into_texture_with_encoder(device, encoder, texture, pending_upload_buffers, frame);
+    *cached_upload = next_upload;
+    #[cfg(test)]
+    {
+        *upload_count = upload_count.saturating_add(1);
+    }
+}
+
+fn upload_frame_into_texture_with_encoder(
+    device: &wgpu::Device,
+    encoder: &mut wgpu::CommandEncoder,
+    texture: &wgpu::Texture,
+    pending_upload_buffers: &mut Vec<wgpu::Buffer>,
+    frame: &ProducerFrame,
+) {
+    let Some(rgba_bytes) = frame.cpu_rgba_bytes() else {
+        return;
+    };
+    let width = frame.width();
+    let height = frame.height();
+    let bytes_per_row = width * BYTES_PER_PIXEL as u32;
+    let padded_bytes_per_row = bytes_per_row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+        * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+    let contents = if padded_bytes_per_row == bytes_per_row {
+        rgba_bytes.to_vec()
+    } else {
+        let mut padded = vec![0_u8; padded_bytes_per_row as usize * height as usize];
+        for row in 0..height as usize {
+            let source_offset = row * bytes_per_row as usize;
+            let target_offset = row * padded_bytes_per_row as usize;
+            padded[target_offset..target_offset + bytes_per_row as usize].copy_from_slice(
+                &rgba_bytes[source_offset..source_offset + bytes_per_row as usize],
+            );
+        }
+        padded
+    };
+    let upload = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("SparkleFlinger GPU source texture upload"),
+        contents: &contents,
+        usage: wgpu::BufferUsages::COPY_SRC,
+    });
+    encoder.copy_buffer_to_texture(
+        wgpu::TexelCopyBufferInfo {
+            buffer: &upload,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(padded_bytes_per_row),
+                rows_per_image: Some(height),
+            },
+        },
+        wgpu::TexelCopyTextureInfo {
+            texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        texture_extent(width, height),
+    );
+    pending_upload_buffers.push(upload);
 }
 
 pub(super) fn cached_source_upload(frame: &ProducerFrame) -> Option<CachedSourceUpload> {
@@ -439,6 +529,28 @@ fn create_source_copy_bind_group(
             },
         ],
     })
+}
+
+fn encode_source_copy_params_upload(
+    device: &wgpu::Device,
+    pipeline: &GpuCompositorPipeline,
+    encoder: &mut wgpu::CommandEncoder,
+    pending_upload_buffers: &mut Vec<wgpu::Buffer>,
+    params: &[u8; SOURCE_COPY_PARAM_BYTES],
+) {
+    let upload = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("SparkleFlinger GPU source copy params upload"),
+        contents: params,
+        usage: wgpu::BufferUsages::COPY_SRC,
+    });
+    encoder.copy_buffer_to_buffer(
+        &upload,
+        0,
+        &pipeline.source_copy_params_buffer,
+        0,
+        SOURCE_COPY_PARAM_BYTES as u64,
+    );
+    pending_upload_buffers.push(upload);
 }
 
 fn encode_source_copy_params(

@@ -214,6 +214,11 @@ impl CompositionLayer {
         self
     }
 
+    fn into_base_layer(mut self) -> Self {
+        self.mode = CompositionMode::Replace;
+        self
+    }
+
     #[allow(
         dead_code,
         reason = "used by tests and the optional wgpu compositor lane"
@@ -292,12 +297,16 @@ impl CompositionPlan {
         Self {
             width,
             height,
-            layers: vec![layer],
+            layers: vec![layer.into_base_layer()],
             cpu_replay_cacheable: true,
         }
     }
 
     pub fn with_layers(width: u32, height: u32, layers: Vec<CompositionLayer>) -> Self {
+        let mut layers = layers;
+        if let Some(layer) = layers.first_mut() {
+            layer.mode = CompositionMode::Replace;
+        }
         Self {
             width,
             height,

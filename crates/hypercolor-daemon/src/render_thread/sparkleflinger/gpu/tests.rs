@@ -586,6 +586,34 @@ fn gpu_compositor_matches_cpu_screen_composition() {
 }
 
 #[test]
+fn gpu_compositor_matches_cpu_for_distinct_multi_pass_params() {
+    let mut compositor = match GpuSparkleFlinger::new() {
+        Ok(compositor) => compositor,
+        Err(_) => return,
+    };
+
+    let plan = CompositionPlan::with_layers(
+        4,
+        4,
+        vec![
+            CompositionLayer::alpha(
+                ProducerFrame::Canvas(solid_canvas(Rgba::new(220, 28, 16, 255))),
+                0.45,
+            ),
+            CompositionLayer::add(
+                ProducerFrame::Canvas(solid_canvas(Rgba::new(24, 180, 64, 255))),
+                0.3,
+            ),
+            CompositionLayer::screen(
+                ProducerFrame::Canvas(solid_canvas(Rgba::new(32, 48, 240, 255))),
+                0.55,
+            ),
+        ],
+    );
+    assert_gpu_samples_match_cpu(&mut compositor, &plan, 1);
+}
+
+#[test]
 fn gpu_compositor_bypasses_single_replace_surfaces() {
     let mut compositor = match GpuSparkleFlinger::new() {
         Ok(compositor) => compositor,

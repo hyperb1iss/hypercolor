@@ -98,12 +98,17 @@ impl GpuSparkleFlinger {
             pending_output_submission,
         )?;
         if let Some(pending_preview_readback) = pending_preview_readback {
-            if sampling_dispatch.submission_index.is_some() {
+            if let Some(submission_index) = sampling_dispatch.submission_index.clone() {
                 if self.pending_preview_map.is_some() {
-                    self.discard_pending_preview_map();
+                    self.pending_preview_readback = Some(pending_preview_readback);
+                    self.pending_preview_submission = Some(submission_index);
+                } else {
+                    self.begin_pending_preview_map(
+                        pending_preview_readback,
+                        Some(submission_index),
+                    )?;
+                    self.pending_preview_submission = None;
                 }
-                self.begin_pending_preview_map(pending_preview_readback)?;
-                self.pending_preview_submission = None;
             } else {
                 self.pending_preview_readback = Some(pending_preview_readback);
             }

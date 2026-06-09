@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use wgpu::util::DeviceExt;
 
 use super::super::{
     ComposedFrameSet, CompositionLayer, CompositionMode, CompositionPlan, PreviewSurfaceRequest,
@@ -163,6 +164,7 @@ impl GpuSparkleFlinger {
                 &self.pipeline,
                 &surfaces.front,
                 &mut surfaces.front_contents,
+                &mut surfaces.pending_upload_buffers,
                 &mut encoder,
                 &first_layer.frame,
                 #[cfg(test)]
@@ -174,7 +176,6 @@ impl GpuSparkleFlinger {
             surfaces.front_contents = None;
             compose_layer_into_gpu(
                 &self.device,
-                &self.queue,
                 &self.pipeline,
                 surfaces,
                 &mut encoder,
@@ -187,7 +188,6 @@ impl GpuSparkleFlinger {
         for layer in layers {
             compose_layer_into_gpu(
                 &self.device,
-                &self.queue,
                 &self.pipeline,
                 surfaces,
                 &mut encoder,
@@ -216,9 +216,11 @@ impl GpuSparkleFlinger {
             && cached.key.as_ref() == Some(key)
             && preview_request_matches_plan(preview_surface_request, plan.width, plan.height)
         {
+            let cached_surface = cached.surface.clone();
             self.queue.submit(Some(encoder.finish()));
+            self.clear_pending_upload_buffers();
             return Ok(gpu_composed_from_surface(
-                cached.surface.clone(),
+                cached_surface,
                 requires_cpu_sampling_canvas,
             ));
         }
@@ -444,7 +446,6 @@ impl GpuSparkleFlinger {
 
 fn compose_layer_into_gpu(
     device: &wgpu::Device,
-    queue: &wgpu::Queue,
     pipeline: &GpuCompositorPipeline,
     surfaces: &mut GpuCompositorSurfaceSet,
     encoder: &mut wgpu::CommandEncoder,
@@ -483,7 +484,14 @@ fn compose_layer_into_gpu(
         } else {
             &surfaces.front
         };
-        copy_gpu_source_frame_into_texture(device, queue, pipeline, encoder, &frame, output);
+        copy_gpu_source_frame_into_texture(
+            device,
+            pipeline,
+            encoder,
+            &mut surfaces.pending_upload_buffers,
+            &frame,
+            output,
+        );
         set_texture_contents(surfaces, output_surface, None);
         return;
     }
@@ -494,17 +502,18 @@ fn compose_layer_into_gpu(
         && frame.needs_shader_copy()
     {
         record_gpu_source_upload_skipped();
+        let source = &surfaces.source;
         copy_gpu_source_frame_into_texture(
             device,
-            queue,
             pipeline,
             encoder,
+            &mut surfaces.pending_upload_buffers,
             frame,
-            &surfaces.source,
+            source,
         );
         surfaces.cached_source_upload = None;
     } else if gpu_frame.is_none() {
-        upload_frame_into_source_texture(queue, surfaces, &layer.frame);
+        upload_frame_into_source_texture(device, encoder, surfaces, &layer.frame);
         if shader_mode == ComposeShaderMode::Replace
             && !layer.needs_processing_for_size(surfaces.width, surfaces.height)
         {
@@ -534,15 +543,7 @@ fn compose_layer_into_gpu(
     }
 
     let params = encode_compose_params(surfaces.width, surfaces.height, shader_mode, layer);
-    if surfaces.cached_compose_params != Some(params) {
-        queue.write_buffer(&pipeline.params_buffer, 0, &params);
-        surfaces.cached_compose_params = Some(params);
-        #[cfg(test)]
-        {
-            surfaces.compose_param_write_count =
-                surfaces.compose_param_write_count.saturating_add(1);
-        }
-    }
+    encode_compose_params_upload(device, pipeline, surfaces, encoder, &params);
     #[cfg(test)]
     {
         surfaces.compose_dispatch_count = surfaces.compose_dispatch_count.saturating_add(1);
@@ -656,6 +657,36 @@ pub(super) fn create_compose_bind_group(
             },
         ],
     })
+}
+
+fn encode_compose_params_upload(
+    device: &wgpu::Device,
+    pipeline: &GpuCompositorPipeline,
+    surfaces: &mut GpuCompositorSurfaceSet,
+    encoder: &mut wgpu::CommandEncoder,
+    params: &[u8; COMPOSE_PARAM_BYTES],
+) {
+    if surfaces.cached_compose_params.as_ref() == Some(params) {
+        return;
+    }
+    let upload = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("SparkleFlinger GPU compose params upload"),
+        contents: params,
+        usage: wgpu::BufferUsages::COPY_SRC,
+    });
+    encoder.copy_buffer_to_buffer(
+        &upload,
+        0,
+        &pipeline.params_buffer,
+        0,
+        COMPOSE_PARAM_BYTES as u64,
+    );
+    surfaces.pending_upload_buffers.push(upload);
+    surfaces.cached_compose_params = Some(*params);
+    #[cfg(test)]
+    {
+        surfaces.compose_param_write_count = surfaces.compose_param_write_count.saturating_add(1);
+    }
 }
 
 fn encode_compose_params(

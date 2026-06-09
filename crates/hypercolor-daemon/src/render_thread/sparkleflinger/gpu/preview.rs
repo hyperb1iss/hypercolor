@@ -72,6 +72,7 @@ pub(super) enum PendingPreviewReadback {
 
 pub(super) struct PendingPreviewMap {
     pub(super) readback: PendingPreviewReadback,
+    pub(super) submission_index: Option<wgpu::SubmissionIndex>,
     pub(super) used_bytes: u64,
     pub(super) receiver: std::sync::mpsc::Receiver<std::result::Result<(), wgpu::BufferAsyncError>>,
 }
@@ -154,7 +155,7 @@ impl GpuSparkleFlinger {
             if self.pending_preview_map.is_some() {
                 self.discard_pending_preview_map();
             }
-            self.begin_pending_preview_map(pending_preview_readback)?;
+            self.begin_pending_preview_map(pending_preview_readback, Some(submission_index))?;
             return self.try_finish_pending_preview_map();
         }
 
@@ -172,6 +173,7 @@ impl GpuSparkleFlinger {
             return Ok(());
         };
         let submission_index = self.queue.submit(Some(encoder.finish()));
+        self.clear_pending_upload_buffers();
         if self.pending_preview_map.is_some() {
             self.pending_preview_submission = Some(submission_index);
             return Ok(());
@@ -180,7 +182,7 @@ impl GpuSparkleFlinger {
             .pending_preview_readback
             .take()
             .expect("pending preview readback should exist before GPU preview submit");
-        self.begin_pending_preview_map(pending_preview_readback)?;
+        self.begin_pending_preview_map(pending_preview_readback, Some(submission_index))?;
         self.pending_preview_submission = None;
         Ok(())
     }
@@ -197,6 +199,7 @@ impl GpuSparkleFlinger {
         self.pending_preview_readback = None;
         self.pending_preview_submission = None;
         self.ready_preview_surface = None;
+        self.clear_pending_upload_buffers();
     }
 
     pub(super) fn discard_superseded_preview_work(&mut self) {
@@ -235,6 +238,7 @@ impl GpuSparkleFlinger {
     pub(super) fn begin_pending_preview_map(
         &mut self,
         pending_preview_readback: PendingPreviewReadback,
+        submission_index: Option<wgpu::SubmissionIndex>,
     ) -> Result<()> {
         let PendingPreviewReadback::PreviewBuffer { request, slot, .. } = &pending_preview_readback;
         let preview_surfaces = self
@@ -250,6 +254,7 @@ impl GpuSparkleFlinger {
         });
         self.pending_preview_map = Some(PendingPreviewMap {
             readback: pending_preview_readback,
+            submission_index,
             used_bytes,
             receiver,
         });
@@ -261,9 +266,19 @@ impl GpuSparkleFlinger {
             return Ok(None);
         };
 
-        self.device
-            .poll(wgpu::PollType::Poll)
-            .context("GPU preview map poll failed")?;
+        let poll_result =
+            if let Some(submission_index) = pending_preview_map.submission_index.clone() {
+                self.device.poll(wgpu::PollType::Wait {
+                    submission_index: Some(submission_index),
+                    timeout: Some(Duration::from_millis(1)),
+                })
+            } else {
+                self.device.poll(wgpu::PollType::Poll)
+            };
+        match poll_result {
+            Ok(_) | Err(wgpu::PollError::Timeout) => {}
+            Err(error) => return Err(error).context("GPU preview map poll failed"),
+        }
 
         #[cfg(test)]
         if std::mem::take(&mut self.defer_preview_map_resolve_once) {

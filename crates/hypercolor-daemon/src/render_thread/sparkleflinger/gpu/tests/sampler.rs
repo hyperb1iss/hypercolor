@@ -48,6 +48,89 @@ fn gpu_sampler_arms_preview_map_after_sampling_completion() {
 }
 
 #[test]
+fn gpu_sampler_preserves_mapped_preview_when_new_sample_submits() {
+    let mut compositor = match GpuSparkleFlinger::new() {
+        Ok(compositor) => compositor,
+        Err(_) => return,
+    };
+    let engine = SpatialEngine::new(sampling_layout(SamplingMode::Bilinear));
+    let first_plan = CompositionPlan::with_layers(
+        4,
+        4,
+        vec![
+            CompositionLayer::replace(ProducerFrame::Canvas(solid_canvas(Rgba::new(
+                255, 32, 0, 255,
+            )))),
+            CompositionLayer::alpha(
+                ProducerFrame::Canvas(solid_canvas(Rgba::new(0, 0, 0, 0))),
+                0.0,
+            ),
+        ],
+    );
+    let second_plan = CompositionPlan::with_layers(
+        4,
+        4,
+        vec![
+            CompositionLayer::replace(ProducerFrame::Canvas(solid_canvas(Rgba::new(
+                32, 64, 255, 255,
+            )))),
+            CompositionLayer::alpha(
+                ProducerFrame::Canvas(solid_canvas(Rgba::new(0, 0, 0, 0))),
+                0.0,
+            ),
+        ],
+    );
+    let request = PreviewSurfaceRequest {
+        width: 2,
+        height: 2,
+    };
+
+    compositor
+        .compose(&first_plan, false, Some(request))
+        .expect("first compose should stage a preview surface");
+    compositor
+        .submit_pending_preview_work()
+        .expect("first preview submit should succeed");
+    defer_pending_preview_map(&mut compositor);
+
+    let first_slot = match compositor.pending_preview_map.as_ref() {
+        Some(PendingPreviewMap {
+            readback: PendingPreviewReadback::PreviewBuffer { slot, .. },
+            ..
+        }) => *slot,
+        _ => panic!("first preview should be waiting on a preview-buffer map"),
+    };
+
+    compositor
+        .compose(&second_plan, false, Some(request))
+        .expect("second compose should stage a newer preview surface");
+
+    let mut sampled = Vec::new();
+    assert!(
+        compositor
+            .sample_zone_plan_into(engine.sampling_plan().as_ref(), &mut sampled)
+            .expect("GPU zone sampling should submit the newer preview work")
+    );
+
+    let mapped_slot = match compositor.pending_preview_map.as_ref() {
+        Some(PendingPreviewMap {
+            readback: PendingPreviewReadback::PreviewBuffer { slot, .. },
+            ..
+        }) => *slot,
+        _ => panic!("first preview map should still be pending"),
+    };
+    assert_eq!(mapped_slot, first_slot);
+    assert!(compositor.pending_preview_readback.is_some());
+    assert!(compositor.pending_preview_submission.is_some());
+
+    let first_preview = resolve_preview_surface_blocking(&mut compositor);
+    assert_eq!(&first_preview.rgba_bytes()[0..4], &[255, 32, 0, 255]);
+
+    let second_preview = resolve_preview_surface_blocking(&mut compositor);
+    assert_eq!(&second_preview.rgba_bytes()[0..4], &[32, 64, 255, 255]);
+}
+
+#[test]
 fn gpu_zero_sample_plan_keeps_pending_preview_work() {
     let mut compositor = match GpuSparkleFlinger::new() {
         Ok(compositor) => compositor,

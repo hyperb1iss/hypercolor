@@ -114,13 +114,15 @@ impl ZoneRuntime {
         {
             frame
         } else {
+            let can_keep_group_gpu_resident = sparkleflinger.supports_gpu_output_frames()
+                && sparkleflinger.can_sample_zone_plan(spatial_engine.sampling_plan().as_ref());
             let Some(frame) = self.render_group_frame(
                 scene_group,
                 context.group_context(),
                 sparkleflinger,
                 GroupFrameRequirements {
-                    requires_cpu_sampling_canvas: true,
-                    requires_published_surface: true,
+                    requires_cpu_sampling_canvas: !can_keep_group_gpu_resident,
+                    requires_published_surface: !can_keep_group_gpu_resident,
                 },
             )?
             else {
