@@ -574,13 +574,10 @@ impl App {
 
             Action::SwitchScreen(screen_id) => {
                 if !self.screens.contains_key(screen_id) {
-                    self.notification = Some((
-                        Notification {
-                            message: format!("{screen_id} is not available in the TUI yet"),
-                            level: NotificationLevel::Warning,
-                        },
-                        Instant::now(),
-                    ));
+                    self.notify(
+                        format!("{screen_id} is not available in the TUI yet"),
+                        NotificationLevel::Warning,
+                    );
                     return;
                 }
 
@@ -624,13 +621,7 @@ impl App {
             Action::CycleMotionSensitivity => {
                 self.motion.cycle_sensitivity();
                 let label = self.motion.sensitivity().label();
-                self.notification = Some((
-                    Notification {
-                        message: format!("Motion: {label}"),
-                        level: NotificationLevel::Info,
-                    },
-                    Instant::now(),
-                ));
+                self.notify(format!("Motion: {label}"), NotificationLevel::Info);
             }
             Action::ToggleFullscreenPreview => {
                 self.view.fullscreen_preview = !self.view.fullscreen_preview;
@@ -647,13 +638,7 @@ impl App {
                 self.state.disconnect_reason = None;
                 self.sync_daemon_device_summary();
                 if was_disconnected {
-                    self.notification = Some((
-                        Notification {
-                            message: "Connected to daemon".to_string(),
-                            level: NotificationLevel::Success,
-                        },
-                        Instant::now(),
-                    ));
+                    self.notify("Connected to daemon", NotificationLevel::Success);
                     // Cancel any persistent connection_lost effect, then green flash
                     self.motion.cancel(crate::motion::MotionKey::ConnectionLost);
                     self.motion.trigger(
@@ -677,13 +662,10 @@ impl App {
                 self.motion.canvas_color_channel().clear();
                 self.preview.clear();
                 if was_connected {
-                    self.notification = Some((
-                        Notification {
-                            message: format!("Connection lost: {reason}"),
-                            level: NotificationLevel::Warning,
-                        },
-                        Instant::now(),
-                    ));
+                    self.notify(
+                        format!("Connection lost: {reason}"),
+                        NotificationLevel::Warning,
+                    );
                     // Persistent red border tint until reconnect
                     self.motion.trigger(
                         crate::motion::MotionKey::ConnectionLost,
@@ -716,24 +698,18 @@ impl App {
             | Action::DeviceControlChangeFailed { .. }
             | Action::DeviceControlSurfaceRefreshed { .. } => {}
             Action::DeviceControlActionInvoked { result, .. } => {
-                self.notification = Some((
-                    Notification {
-                        message: format!("Action completed: {}", result.action_id),
-                        level: NotificationLevel::Success,
-                    },
-                    Instant::now(),
-                ));
+                self.notify(
+                    format!("Action completed: {}", result.action_id),
+                    NotificationLevel::Success,
+                );
             }
             Action::DeviceControlActionFailed {
                 action_id, error, ..
             } => {
-                self.notification = Some((
-                    Notification {
-                        message: format!("Action failed: {action_id}: {error}"),
-                        level: NotificationLevel::Error,
-                    },
-                    Instant::now(),
-                ));
+                self.notify(
+                    format!("Action failed: {action_id}: {error}"),
+                    NotificationLevel::Error,
+                );
             }
             Action::SimulatedDisplaysUpdated(simulators) => {
                 self.simulator_preview
@@ -1468,13 +1444,7 @@ impl App {
     /// Show a "not connected" notification (debounced — won't replace an existing one).
     fn notify_not_connected(&mut self) {
         if self.notification.is_none() {
-            self.notification = Some((
-                Notification {
-                    message: "Not connected to daemon".to_string(),
-                    level: NotificationLevel::Warning,
-                },
-                Instant::now(),
-            ));
+            self.notify("Not connected to daemon", NotificationLevel::Warning);
         }
     }
 

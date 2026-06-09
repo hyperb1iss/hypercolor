@@ -50,8 +50,12 @@ impl DaemonClient {
 
     /// Fetch the daemon's current state.
     pub async fn get_status(&self) -> Result<DaemonState> {
-        let status: SystemStatusResponse = self.get_data("/status").await?;
-        let active_effect = self.get_active_effect().await.ok();
+        let (status, active_effect) = tokio::join!(
+            self.get_data::<SystemStatusResponse>("/status"),
+            self.get_active_effect()
+        );
+        let status = status?;
+        let active_effect = active_effect.ok();
 
         #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
         let device_count = status.device_count as u32;
