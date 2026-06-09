@@ -302,15 +302,15 @@ pub(super) fn MemoryAndDevicesPanel(
     // a generous reference point so the ring is a visual gauge rather than a
     // "percent of limit" reading.
     let daemon_rss = Memo::new(move |_| metrics.get().map_or(0.0, |m| m.memory.daemon_rss_mb));
-    let servo_rss = Memo::new(move |_| metrics.get().map_or(0.0, |m| m.memory.servo_rss_mb));
     let canvas_kb = Memo::new(move |_| metrics.get().map_or(0, |m| m.memory.canvas_buffer_kb));
 
     let daemon_detail = Memo::new(move |_| format!("{:.1} MB", daemon_rss.get()));
-    let servo_detail = Memo::new(move |_| format!("{:.1} MB", servo_rss.get()));
     let canvas_detail = Memo::new(move |_| format!("{} KB", canvas_kb.get()));
 
-    let daemon_max = Signal::derive(|| 512.0_f64);
-    let servo_max = Signal::derive(|| 1024.0_f64);
+    // Soft reference ceilings — the daemon process (which includes the
+    // in-process Servo runtime) has no hard cap, so the ring reads as a
+    // rough gauge, not a percent-of-limit.
+    let daemon_max = Signal::derive(|| 1024.0_f64);
     let canvas_max = Signal::derive(|| 1024.0_f64);
 
     let device_count = Memo::new(move |_| metrics.get().map_or(0, |m| m.devices.connected));
@@ -342,16 +342,9 @@ pub(super) fn MemoryAndDevicesPanel(
                     <ProgressRing
                         value=Signal::derive(move || daemon_rss.get())
                         max=daemon_max
-                        label=Signal::derive(|| "Daemon RSS".to_string())
+                        label=Signal::derive(|| "App memory".to_string())
                         detail=Signal::derive(move || daemon_detail.get())
                         color="var(--color-electric-purple)"
-                    />
-                    <ProgressRing
-                        value=Signal::derive(move || servo_rss.get())
-                        max=servo_max
-                        label=Signal::derive(|| "Servo RSS".to_string())
-                        detail=Signal::derive(move || servo_detail.get())
-                        color="var(--color-neon-cyan)"
                     />
                     <ProgressRing
                         value=Signal::derive(move || f64::from(canvas_kb.get()))
