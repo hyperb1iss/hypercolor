@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use hypercolor_types::event::{LayerHealth, ZoneChangeKind};
+use hypercolor_types::event::{LayerHealth, SceneLibraryChangeKind, ZoneChangeKind};
 use hypercolor_types::scene::{SceneKind, SceneMutationMode, ZoneRole};
 use hypercolor_ui::ws::messages::{
     PerformanceMetrics, extract_effect_error_hint, extract_layer_health, extract_scene_event_hint,
@@ -29,6 +29,51 @@ fn extract_scene_event_hint_parses_active_scene_payload() {
     assert_eq!(hint.render_group_role, None);
     assert_eq!(hint.render_group_change_kind, None);
     assert!(scene_event_affects_active_effect(&hint));
+}
+
+#[test]
+fn extract_scene_event_hint_parses_render_group_zone_identity() {
+    let hint = extract_scene_event_hint(
+        "render_group_changed",
+        &serde_json::json!({
+            "scene_id": "scene-1",
+            "group_id": "zone-2",
+            "role": "custom",
+            "kind": "updated",
+        }),
+    );
+
+    assert_eq!(hint.scene_id.as_deref(), Some("scene-1"));
+    assert_eq!(hint.group_id.as_deref(), Some("zone-2"));
+    assert_eq!(hint.render_group_role, Some(ZoneRole::Custom));
+    assert_eq!(hint.render_group_change_kind, Some(ZoneChangeKind::Updated));
+    // The overloaded `kind` field must not leak into the scene-kind slot.
+    assert_eq!(hint.scene_kind, None);
+    assert!(scene_event_affects_active_effect(&hint));
+}
+
+#[test]
+fn extract_scene_event_hint_parses_scene_library_change() {
+    let hint = extract_scene_event_hint(
+        "scene_library_changed",
+        &serde_json::json!({
+            "scene_id": "scene-9",
+            "kind": "created",
+            "name": "Movie Night",
+        }),
+    );
+
+    assert_eq!(hint.scene_id.as_deref(), Some("scene-9"));
+    assert_eq!(hint.scene_name.as_deref(), Some("Movie Night"));
+    assert_eq!(
+        hint.library_change_kind,
+        Some(SceneLibraryChangeKind::Created)
+    );
+    assert_eq!(hint.scene_kind, None);
+    assert!(
+        !scene_event_affects_active_effect(&hint),
+        "library CRUD must not trigger an active-effect refetch"
+    );
 }
 
 #[test]

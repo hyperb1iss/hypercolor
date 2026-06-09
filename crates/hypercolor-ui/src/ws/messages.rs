@@ -7,7 +7,7 @@ pub(super) use hypercolor_leptos_ext::ws::PreviewFrameChannel;
 pub use hypercolor_leptos_ext::ws::{
     PreviewFrameView as CanvasFrame, PreviewPixelFormat as CanvasPixelFormat,
 };
-use hypercolor_types::event::{LayerHealth, ZoneChangeKind};
+use hypercolor_types::event::{LayerHealth, SceneLibraryChangeKind, ZoneChangeKind};
 use hypercolor_types::scene::{SceneKind, SceneMutationMode, ZoneRole};
 use hypercolor_types::sensor::SystemSnapshot;
 use leptos::prelude::*;
@@ -40,7 +40,12 @@ pub const EFFECT_STARTED_EVENTS: &[&str] =
     &["effect_started", "effect_activated", "effect_changed"];
 pub const EFFECT_STOPPED_EVENTS: &[&str] = &["effect_stopped", "effect_deactivated"];
 pub const EFFECT_ERROR_EVENTS: &[&str] = &["effect_error"];
-pub const SCENE_EVENTS: &[&str] = &["active_scene_changed", "render_group_changed"];
+pub const SCENE_EVENTS: &[&str] = &[
+    "active_scene_changed",
+    "render_group_changed",
+    "scene_library_changed",
+    "scene_settings_changed",
+];
 pub const CONTROL_SURFACE_EVENTS: &[&str] = &["control_surface_changed"];
 pub const DEVICE_LIFECYCLE_EVENTS: &[&str] = &[
     "device_connected",
@@ -380,12 +385,17 @@ pub struct DeviceEventHint {
 pub struct SceneEventHint {
     pub event_type: String,
     pub scene_id: Option<String>,
+    /// Zone (render group) the event names, for zone-tagged events like
+    /// `render_group_changed` and `layer_stack_changed`.
+    pub group_id: Option<String>,
     pub scene_name: Option<String>,
     pub scene_kind: Option<SceneKind>,
     pub scene_mutation_mode: Option<SceneMutationMode>,
     pub scene_snapshot_locked: Option<bool>,
     pub render_group_role: Option<ZoneRole>,
     pub render_group_change_kind: Option<ZoneChangeKind>,
+    /// How the saved-scene library changed, for `scene_library_changed`.
+    pub library_change_kind: Option<SceneLibraryChangeKind>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -730,12 +740,26 @@ pub fn extract_scene_event_hint(
     event_type: &str,
     scene_data: &serde_json::Value,
 ) -> SceneEventHint {
+    // `kind` is overloaded across the scene event family: a ZoneChangeKind
+    // on render_group_changed, a SceneLibraryChangeKind on
+    // scene_library_changed, and a SceneKind elsewhere. Scope each parse
+    // to its event so the fields can't shadow one another.
+    let is_render_group_changed = event_type == "render_group_changed";
+    let is_library_changed = event_type == "scene_library_changed";
+    let generic_kind = (!is_render_group_changed && !is_library_changed)
+        .then(|| scene_data.get("kind"))
+        .flatten();
+
     SceneEventHint {
         event_type: event_type.to_owned(),
         scene_id: scene_data
             .get("current")
             .or_else(|| scene_data.get("scene_id"))
             .or_else(|| scene_data.get("id"))
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned),
+        group_id: scene_data
+            .get("group_id")
             .and_then(serde_json::Value::as_str)
             .map(ToOwned::to_owned),
         scene_name: scene_data
@@ -746,7 +770,7 @@ pub fn extract_scene_event_hint(
             .map(ToOwned::to_owned),
         scene_kind: scene_data
             .get("current_kind")
-            .or_else(|| scene_data.get("kind"))
+            .or(generic_kind)
             .cloned()
             .and_then(|value| serde_json::from_value(value).ok()),
         scene_mutation_mode: scene_data
@@ -762,15 +786,27 @@ pub fn extract_scene_event_hint(
             .get("role")
             .cloned()
             .and_then(|value| serde_json::from_value(value).ok()),
-        render_group_change_kind: scene_data
-            .get("kind")
+        render_group_change_kind: is_render_group_changed
+            .then(|| scene_data.get("kind"))
+            .flatten()
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok()),
+        library_change_kind: is_library_changed
+            .then(|| scene_data.get("kind"))
+            .flatten()
             .cloned()
             .and_then(|value| serde_json::from_value(value).ok()),
     }
 }
 
 pub fn scene_event_affects_active_effect(hint: &SceneEventHint) -> bool {
-    hint.event_type != "render_group_changed" || hint.render_group_role != Some(ZoneRole::Display)
+    match hint.event_type.as_str() {
+        // Library CRUD and scene-settings tweaks never change what's
+        // rendering right now.
+        "scene_library_changed" | "scene_settings_changed" => false,
+        "render_group_changed" => hint.render_group_role != Some(ZoneRole::Display),
+        _ => true,
+    }
 }
 
 fn extract_active_effect_name(state: &serde_json::Value) -> Option<String> {
