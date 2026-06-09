@@ -342,6 +342,7 @@ impl EffectsContext {
                 ctx.refresh_active_effect();
             } else {
                 restore_active_effect_state(&ctx, previous);
+                toasts::toast_error("Couldn't apply the effect");
             }
         });
     }
@@ -361,6 +362,7 @@ impl EffectsContext {
                     set_favorites.update(|ids| {
                         ids.insert(revert_id);
                     });
+                    toasts::toast_error("Couldn't remove the favorite");
                 }
             });
         } else {
@@ -376,6 +378,7 @@ impl EffectsContext {
                     set_favorites.update(|ids| {
                         ids.remove(&revert_id);
                     });
+                    toasts::toast_error("Couldn't save the favorite");
                 }
             });
         }
@@ -389,6 +392,7 @@ impl EffectsContext {
         leptos::task::spawn_local(async move {
             if api::stop_effect().await.is_err() {
                 ctx.refresh_active_effect();
+                toasts::toast_error("Couldn't pause the effect");
             }
         });
     }
