@@ -65,7 +65,7 @@ pub fn AddLayerPicker(
             on:click=move |_| on_cancel.run(())
         >
             <div
-                class="flex max-h-[82vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-edge-subtle bg-surface-panel"
+                class="flex max-h-[82vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-edge-subtle bg-surface-overlay"
                 style="box-shadow: 0 0 48px rgba(225, 53, 255, 0.13)"
                 on:click=|event| event.stop_propagation()
             >

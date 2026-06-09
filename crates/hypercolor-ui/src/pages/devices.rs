@@ -404,7 +404,7 @@ pub fn DevicesPage() -> impl IntoView {
                                         {filter_chips(STATUS_CHIPS, status_filter, set_status_filter)}
                                     </div>
                                 </div>
-                                <div class="h-px bg-border-subtle/30 mx-2 my-1" />
+                                <div class="h-px bg-edge-subtle/30 mx-2 my-1" />
                                 <div class="px-3 pt-1 pb-1.5">
                                     <div class=format!("{} mb-1.5", label_class(LabelSize::Small, LabelTone::Subtle))>"Driver"</div>
                                     <div class="flex gap-1 flex-wrap">
@@ -438,7 +438,7 @@ pub fn DevicesPage() -> impl IntoView {
                                     </div>
                                 </div>
                                 {move || (active_filter_count.get() > 0).then(|| view! {
-                                    <div class="h-px bg-border-subtle/30 mx-2 my-1" />
+                                    <div class="h-px bg-edge-subtle/30 mx-2 my-1" />
                                     <button
                                         class="w-full text-left px-5 py-1.5 text-[11px] text-fg-tertiary hover:text-fg-secondary hover:bg-surface-hover/40 transition-colors"
                                         on:click=move |_| {

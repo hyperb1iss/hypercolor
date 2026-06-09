@@ -57,6 +57,12 @@ kbd, code, .font-mono {
     font-feature-settings: 'liga' 0;
 }
 
+/* Tailwind v4 preflight leaves buttons with the default arrow cursor */
+button:not(:disabled),
+[role="button"]:not(:disabled) {
+    cursor: pointer;
+}
+
 /* ── Scrollbars ─────────────────────────────────────────────────────────── */
 
 * {

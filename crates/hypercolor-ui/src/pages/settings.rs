@@ -334,7 +334,7 @@ pub fn SettingsPage() -> impl IntoView {
                         <div class="px-6 pb-6 pt-4 max-w-4xl mx-auto space-y-3">
                             <div
                                 class="settings-card"
-                                style="animation: fade-in 0.4s ease-out 0.05s both"
+                                style="animation: enter-fade 0.4s ease-out 0.05s both"
                             >
                                 <AudioSection
                                     config=config
@@ -354,31 +354,31 @@ pub fn SettingsPage() -> impl IntoView {
                             </div>
                             <div
                                 class="settings-card"
-                                style="animation: fade-in 0.4s ease-out 0.1s both"
+                                style="animation: enter-fade 0.4s ease-out 0.1s both"
                             >
                                 <CaptureSection config=config on_change=on_change on_reset=on_reset />
                             </div>
                             <div
                                 class="settings-card"
-                                style="animation: fade-in 0.4s ease-out 0.125s both"
+                                style="animation: enter-fade 0.4s ease-out 0.125s both"
                             >
                                 <RenderingSection config=config on_change=on_change on_reset=on_reset />
                             </div>
                             <div
                                 class="settings-card"
-                                style="animation: fade-in 0.4s ease-out 0.15s both"
+                                style="animation: enter-fade 0.4s ease-out 0.15s both"
                             >
                                 <NetworkSection config=config on_change=on_change on_reset=on_reset />
                             </div>
                             <div
                                 class="settings-card"
-                                style="animation: fade-in 0.4s ease-out 0.2s both"
+                                style="animation: enter-fade 0.4s ease-out 0.2s both"
                             >
                                 <SessionSection config=config on_change=on_change on_reset=on_reset />
                             </div>
                             <div
                                 class="settings-card"
-                                style="animation: fade-in 0.4s ease-out 0.25s both"
+                                style="animation: enter-fade 0.4s ease-out 0.25s both"
                             >
                                 <DiscoverySection
                                     config=config
@@ -389,13 +389,13 @@ pub fn SettingsPage() -> impl IntoView {
                             </div>
                             <div
                                 class="settings-card"
-                                style="animation: fade-in 0.4s ease-out 0.3s both"
+                                style="animation: enter-fade 0.4s ease-out 0.3s both"
                             >
                                 <DeveloperSection config=config on_change=on_change on_reset=on_reset />
                             </div>
                             <div
                                 class="settings-card"
-                                style="animation: fade-in 0.4s ease-out 0.35s both"
+                                style="animation: enter-fade 0.4s ease-out 0.35s both"
                             >
                                 <AboutSection />
                             </div>

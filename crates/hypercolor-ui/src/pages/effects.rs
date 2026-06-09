@@ -563,7 +563,7 @@ pub fn EffectsPage() -> impl IntoView {
                                         </div>
                                     </div>
 
-                                    <div class="h-px bg-border-subtle/30 mx-2 my-1" />
+                                    <div class="h-px bg-edge-subtle/30 mx-2 my-1" />
 
                                     // ── Toggles section ──
                                     <div class="px-3 py-1">
@@ -624,7 +624,7 @@ pub fn EffectsPage() -> impl IntoView {
                                     {(author_list.len() > 1).then(|| {
                                         let list = author_list.clone();
                                         view! {
-                                            <div class="h-px bg-border-subtle/30 mx-2 my-1" />
+                                            <div class="h-px bg-edge-subtle/30 mx-2 my-1" />
                                             <div class="px-3 pt-1 pb-1">
                                                 <div class=format!("{} mb-1", label_class(LabelSize::Small, LabelTone::Subtle))>"Author"</div>
                                                 // Clear all
@@ -677,7 +677,7 @@ pub fn EffectsPage() -> impl IntoView {
 
                                     // ── Clear all filters ──
                                     {move || (active_filter_count.get() > 0).then(|| view! {
-                                        <div class="h-px bg-border-subtle/30 mx-2 my-1" />
+                                        <div class="h-px bg-edge-subtle/30 mx-2 my-1" />
                                         <button
                                             class="w-full text-left px-5 py-1.5 text-[11px] text-fg-tertiary hover:text-fg-secondary hover:bg-surface-hover/40 transition-colors"
                                             on:click=move |_| {

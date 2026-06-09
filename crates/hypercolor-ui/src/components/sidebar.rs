@@ -290,7 +290,7 @@ pub fn Sidebar() -> impl IntoView {
 
                     if item.divider_before {
                         view! {
-                            <div class="h-px bg-border-subtle/30 my-2 mx-1" />
+                            <div class="h-px bg-edge-subtle/30 my-2 mx-1" />
                             {link}
                         }.into_any()
                     } else {
