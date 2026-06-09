@@ -110,6 +110,7 @@ pub fn PresetToolbar(
     let (selected_id, set_selected_id) = signal(Option::<String>::None);
     let (mode, set_mode) = signal(ToolbarMode::Idle);
     let fetch_generation = StoredValue::new(0_u64);
+    let zones_ctx = expect_context::<crate::zones::ZonesContext>();
 
     // Fetch user presets + bundled presets whenever effect_id *actually* changes.
     //
@@ -265,9 +266,18 @@ pub fn PresetToolbar(
         set_selected_id.set(Some(val.clone()));
         set_mode.set(ToolbarMode::Idle);
         let on_applied = on_preset_applied;
+        // A focused zone routes the preset to that zone (the daemon maps
+        // a focused primary back to the legacy path); the shared scene
+        // refresh then propagates the zone's new state everywhere.
+        let target_zone = zones_ctx.focused_zone_id_untracked();
         leptos::task::spawn_local(async move {
-            match api::apply_preset(&val).await {
-                Ok(()) => on_applied.run(()),
+            match api::apply_preset(&val, target_zone.as_deref()).await {
+                Ok(()) => {
+                    if target_zone.is_some() {
+                        zones_ctx.refresh.run(());
+                    }
+                    on_applied.run(());
+                }
                 Err(error) => {
                     set_selected_id.set(previous_selection);
                     toasts::toast_error(&format!("Failed to apply preset: {error}"));

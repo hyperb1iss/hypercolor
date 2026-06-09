@@ -216,7 +216,7 @@ fn restore_effect_preferences(ctx: EffectsContext, effect_id: String, prefs: Eff
         }
 
         if let Some(preset_id) = prefs.preset_id.as_ref() {
-            if let Err(error) = api::apply_preset(preset_id).await {
+            if let Err(error) = api::apply_preset(preset_id, None).await {
                 crate::toasts::toast_error(&format!("Couldn't restore saved preset: {error}"));
             }
             if ctx.active_effect_id.get_untracked().as_deref() != Some(effect_id.as_str()) {
