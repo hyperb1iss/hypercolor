@@ -187,39 +187,6 @@ impl ServoGpuImportBackend {
     }
 
     #[cfg(target_os = "linux")]
-    pub(super) fn refresh_linux_surface_after_peer_destroy(
-        &mut self,
-        destroyed_session_id: ServoSessionId,
-        session_id: ServoSessionId,
-        rendering_context: &Rc<dyn RenderingContext>,
-    ) -> Result<()> {
-        let Some(linux_context) = self.linux_context.clone() else {
-            return Ok(());
-        };
-        let before_surface = linux_context.surface_snapshot();
-
-        linux_context
-            .refresh_surface()
-            .map_err(|error| anyhow!("failed to refresh Linux Servo surface: {error:?}"))?;
-        rendering_context.prepare_for_rendering();
-        self.clear_platform_importer(rendering_context);
-        self.reset_retry_state();
-        rendering_context.prepare_for_rendering();
-        let after_surface = linux_context.surface_snapshot();
-        let size = rendering_context.size();
-        debug!(
-            ?destroyed_session_id,
-            ?session_id,
-            width = size.width,
-            height = size.height,
-            ?before_surface,
-            ?after_surface,
-            "Refreshed surviving Servo Linux surface after peer session teardown"
-        );
-        Ok(())
-    }
-
-    #[cfg(target_os = "linux")]
     fn warm_platform_importer(
         &mut self,
         rendering_context: &Rc<dyn RenderingContext>,
@@ -306,11 +273,9 @@ impl ServoGpuImportBackend {
             .linux_context
             .as_ref()
             .ok_or_else(|| anyhow!("Linux Servo GPU import context is unavailable"))?;
-        let linux_surface = linux_context.surface_snapshot();
+        let linux_target = linux_context.target_snapshot();
         let framebuffer = linux_context.framebuffer().ok_or_else(|| {
-            anyhow!(
-                "Linux Servo GPU import surface did not expose a framebuffer: {linux_surface:?}"
-            )
+            anyhow!("Linux Servo GPU import target did not expose a framebuffer: {linux_target:?}")
         })?;
         let source_framebuffer = GlFramebufferSource::Framebuffer(Some(framebuffer));
         let gl = context.rendering_context.glow_gl_api();
@@ -361,7 +326,7 @@ impl ServoGpuImportBackend {
                     .map(|loaded_at| duration_millis_u64(loaded_at.elapsed())),
                 renders_since_load = context.renders_since_load,
                 ?source_framebuffer,
-                ?linux_surface,
+                ?linux_target,
                 ?importer_before,
                 ?importer_after,
                 ?blit_before,

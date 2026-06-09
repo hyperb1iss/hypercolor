@@ -12,7 +12,7 @@ use dpi::PhysicalSize;
 use servo::{RenderingContext, SoftwareRenderingContext};
 
 #[cfg(all(target_os = "linux", feature = "servo-gpu-import"))]
-use hypercolor_linux_gpu_interop::LinuxServoRenderingContext;
+use hypercolor_linux_gpu_interop::{LinuxServoRenderDevice, LinuxServoRenderingContext};
 #[cfg(all(target_os = "macos", feature = "servo-gpu-import"))]
 use hypercolor_macos_gpu_interop::MacosHardwareRenderingContext;
 #[cfg(all(target_os = "windows", feature = "servo-gpu-import"))]
@@ -31,7 +31,6 @@ use tao::platform::windows::EventLoopBuilderExtWindows;
 use tao::window::{Window, WindowBuilder};
 #[cfg(any(
     all(target_os = "macos", feature = "servo-gpu-import"),
-    all(target_os = "linux", feature = "servo-gpu-import"),
     all(target_os = "windows", feature = "servo-gpu-import")
 ))]
 use tracing::warn;
@@ -108,6 +107,18 @@ impl ServoRenderingContextHandle {
     }
 }
 
+#[cfg(all(target_os = "linux", feature = "servo-gpu-import"))]
+pub(crate) fn bootstrap_linux_shared_rendering_context(
+    parent: Rc<LinuxServoRenderDevice>,
+    width: u32,
+    height: u32,
+) -> Result<ServoRenderingContextHandle> {
+    let context = Rc::new(parent.create_rendering_context(width, height).map_err(|error| {
+        anyhow!("failed to create Linux Servo offscreen render target ({width}x{height}): {error:?}")
+    })?);
+    Ok(ServoRenderingContextHandle::linux_software(context))
+}
+
 /// Create a headless Servo software rendering context.
 ///
 /// This is the first integration seam for HTML effect rendering. Later phases
@@ -123,6 +134,15 @@ pub fn bootstrap_software_rendering_context(
     SoftwareRenderingContext::new(PhysicalSize::new(width, height)).map_err(|error| {
         anyhow!("failed to create Servo SoftwareRenderingContext ({width}x{height}): {error:?}")
     })
+}
+
+pub(crate) fn bootstrap_software_rendering_context_handle(
+    width: u32,
+    height: u32,
+) -> Result<ServoRenderingContextHandle> {
+    Ok(ServoRenderingContextHandle::new(Rc::new(
+        bootstrap_software_rendering_context(width, height)?,
+    )))
 }
 
 /// Create the rendering context used by Hypercolor's Servo worker.
@@ -211,42 +231,6 @@ fn bootstrap_windows_window_rendering_context(
     });
 
     Ok(ServoRenderingContextHandle::new(Rc::new(context)))
-}
-
-#[cfg(all(target_os = "linux", feature = "servo-gpu-import"))]
-pub(crate) fn bootstrap_rendering_context(
-    width: u32,
-    height: u32,
-) -> Result<ServoRenderingContextHandle> {
-    if crate::effect::servo_gpu_import_should_attempt() {
-        match LinuxServoRenderingContext::new_software(width, height) {
-            Ok(context) => {
-                return Ok(ServoRenderingContextHandle::linux_software(Rc::new(
-                    context,
-                )));
-            }
-            Err(error)
-                if matches!(
-                    crate::effect::servo_gpu_import_mode(),
-                    hypercolor_types::config::ServoGpuImportMode::On
-                ) =>
-            {
-                return Err(anyhow!(
-                    "failed to create required Linux Servo GPU import context: {error:?}"
-                ));
-            }
-            Err(error) => {
-                warn!(
-                    ?error,
-                    "Linux Servo GPU import context unavailable; using software context"
-                );
-            }
-        }
-    }
-
-    Ok(ServoRenderingContextHandle::new(Rc::new(
-        bootstrap_software_rendering_context(width, height)?,
-    )))
 }
 
 #[cfg(all(target_os = "macos", feature = "servo-gpu-import"))]

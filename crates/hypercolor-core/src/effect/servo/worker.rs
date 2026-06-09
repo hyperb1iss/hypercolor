@@ -52,10 +52,18 @@ use super::worker_client::{
     ServoFramePayload, ServoProducerRole, ServoRenderMode, ServoSessionId, WORKER_READY_TIMEOUT,
     WorkerCommand,
 };
-use crate::effect::servo_bootstrap::{ServoRenderingContextHandle, bootstrap_rendering_context};
+use crate::effect::servo_bootstrap::ServoRenderingContextHandle;
+#[cfg(not(all(feature = "servo-gpu-import", target_os = "linux")))]
+use crate::effect::servo_bootstrap::bootstrap_rendering_context;
+#[cfg(all(feature = "servo-gpu-import", target_os = "linux"))]
+use crate::effect::servo_bootstrap::{
+    bootstrap_linux_shared_rendering_context, bootstrap_software_rendering_context_handle,
+};
 use crate::effect::traits::EffectRenderOutput;
 #[cfg(feature = "servo-gpu-import")]
 use crate::effect::traits::ImportedEffectFrame;
+#[cfg(all(feature = "servo-gpu-import", target_os = "linux"))]
+use hypercolor_linux_gpu_interop::LinuxServoRenderDevice;
 
 mod console;
 mod frame_updates;
@@ -324,6 +332,8 @@ impl ServoReadbackBuffers {
 struct ServoWorkerRuntime {
     sessions: HashMap<ServoSessionId, ServoSession>,
     servo: Servo,
+    #[cfg(all(feature = "servo-gpu-import", target_os = "linux"))]
+    linux_render_device: Option<Rc<LinuxServoRenderDevice>>,
 }
 
 impl ServoWorkerRuntime {
@@ -340,6 +350,8 @@ impl ServoWorkerRuntime {
         Ok(Self {
             sessions: HashMap::new(),
             servo,
+            #[cfg(all(feature = "servo-gpu-import", target_os = "linux"))]
+            linux_render_device: None,
         })
     }
 
@@ -441,7 +453,9 @@ impl ServoWorkerRuntime {
             }
         }
 
-        let Self { sessions, servo } = self;
+        let Self {
+            sessions, servo, ..
+        } = self;
         drop(sessions);
         drop(servo);
     }
@@ -465,9 +479,9 @@ impl ServoWorkerRuntime {
         }
 
         #[cfg(feature = "servo-gpu-import")]
-        let mut rendering_context_handle = Self::create_rendering_context(width, height)?;
+        let mut rendering_context_handle = self.create_rendering_context(width, height)?;
         #[cfg(not(feature = "servo-gpu-import"))]
-        let rendering_context_handle = Self::create_rendering_context(width, height)?;
+        let rendering_context_handle = self.create_rendering_context(width, height)?;
         let rendering_context = rendering_context_handle.rendering_context.clone();
         #[cfg(feature = "servo-gpu-import")]
         let gpu_import = ServoGpuImportBackend::new(&mut rendering_context_handle);
@@ -513,8 +527,72 @@ impl ServoWorkerRuntime {
         Ok(())
     }
 
-    fn create_rendering_context(width: u32, height: u32) -> Result<ServoRenderingContextHandle> {
+    #[cfg(not(all(feature = "servo-gpu-import", target_os = "linux")))]
+    fn create_rendering_context(
+        &mut self,
+        width: u32,
+        height: u32,
+    ) -> Result<ServoRenderingContextHandle> {
         bootstrap_rendering_context(width, height)
+    }
+
+    #[cfg(all(feature = "servo-gpu-import", target_os = "linux"))]
+    fn create_rendering_context(
+        &mut self,
+        width: u32,
+        height: u32,
+    ) -> Result<ServoRenderingContextHandle> {
+        if !super::servo_gpu_import_should_attempt() {
+            return bootstrap_software_rendering_context_handle(width, height);
+        }
+
+        let parent = if let Some(parent) = self.linux_render_device.as_ref() {
+            Rc::clone(parent)
+        } else {
+            match LinuxServoRenderDevice::new_software(width, height) {
+                Ok(parent) => {
+                    let parent = Rc::new(parent);
+                    self.linux_render_device = Some(Rc::clone(&parent));
+                    parent
+                }
+                Err(error)
+                    if matches!(
+                        super::servo_gpu_import_mode(),
+                        hypercolor_types::config::ServoGpuImportMode::On
+                    ) =>
+                {
+                    return Err(anyhow!(
+                        "failed to create required Linux Servo GPU import context: {error:?}"
+                    ));
+                }
+                Err(error) => {
+                    warn!(
+                        ?error,
+                        "Linux Servo shared GPU import context unavailable; using CPU context"
+                    );
+                    return bootstrap_software_rendering_context_handle(width, height);
+                }
+            }
+        };
+
+        match bootstrap_linux_shared_rendering_context(parent, width, height) {
+            Ok(handle) => Ok(handle),
+            Err(error)
+                if matches!(
+                    super::servo_gpu_import_mode(),
+                    hypercolor_types::config::ServoGpuImportMode::On
+                ) =>
+            {
+                Err(error)
+            }
+            Err(error) => {
+                warn!(
+                    %error,
+                    "Linux Servo GPU import render target unavailable; using CPU context"
+                );
+                bootstrap_software_rendering_context_handle(width, height)
+            }
+        }
     }
 
     #[cfg(all(feature = "servo-gpu-import", target_os = "macos"))]
@@ -703,8 +781,6 @@ impl ServoWorkerRuntime {
         }
 
         drop(session);
-        #[cfg(all(feature = "servo-gpu-import", target_os = "linux"))]
-        self.refresh_linux_surfaces_after_peer_destroy(session_id);
         Ok(())
     }
 
@@ -1100,43 +1176,6 @@ impl ServoWorkerRuntime {
         if let Ok(session) = self.session_mut(session_id) {
             session.gpu_import.clear_importer(&rendering_context);
         }
-    }
-}
-
-#[cfg(all(feature = "servo-gpu-import", target_os = "linux"))]
-impl ServoWorkerRuntime {
-    fn refresh_linux_surfaces_after_peer_destroy(&mut self, destroyed_session_id: ServoSessionId) {
-        let remaining_session_ids = self.sessions.keys().copied().collect::<Vec<_>>();
-        for session_id in remaining_session_ids {
-            if let Err(error) =
-                self.refresh_linux_surface_after_peer_destroy(destroyed_session_id, session_id)
-            {
-                debug!(
-                    %error,
-                    ?destroyed_session_id,
-                    ?session_id,
-                    "Servo Linux surface refresh skipped after peer session teardown"
-                );
-            }
-        }
-    }
-
-    fn refresh_linux_surface_after_peer_destroy(
-        &mut self,
-        destroyed_session_id: ServoSessionId,
-        session_id: ServoSessionId,
-    ) -> Result<()> {
-        let rendering_context = {
-            let session = self.session(session_id)?;
-            Rc::clone(&session.rendering_context)
-        };
-        self.session_mut(session_id)?
-            .gpu_import
-            .refresh_linux_surface_after_peer_destroy(
-                destroyed_session_id,
-                session_id,
-                &rendering_context,
-            )
     }
 }
 

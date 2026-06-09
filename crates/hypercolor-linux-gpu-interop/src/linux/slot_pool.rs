@@ -118,6 +118,7 @@ impl ImportedFrameSlotPool {
         descriptor: LinuxGlFramebufferImportDescriptor,
     ) -> Result<ImportedEffectFrame> {
         self.poll_pending_imports(gl)?;
+        let had_completed_frame_before_issue = self.latest_completed_storage_id().is_some();
 
         let issued_slot = if let Some(index) = self.next_pipelined_slot() {
             let total_start = Instant::now();
@@ -137,9 +138,11 @@ impl ImportedFrameSlotPool {
             None
         };
 
-        self.poll_pending_imports(gl)?;
-        if let Some(frame) = self.latest_completed_frame(descriptor) {
-            return Ok(frame);
+        if had_completed_frame_before_issue {
+            self.poll_pending_imports(gl)?;
+            if let Some(frame) = self.latest_completed_frame(descriptor) {
+                return Ok(frame);
+            }
         }
 
         if let Some(index) = issued_slot {

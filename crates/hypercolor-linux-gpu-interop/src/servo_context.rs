@@ -1,34 +1,29 @@
 use std::cell::{Cell, RefCell};
+use std::num::NonZeroU32;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use dpi::PhysicalSize;
 use gleam::gl::{self, Gl};
-use glow::HasContext;
 use servo::{DeviceIntRect, RenderingContext, RgbaImage};
-use surfman::chains::{PreserveBuffer, SwapChain};
+use surfman::chains::SwapChain;
 use surfman::{
     Connection, Context, ContextAttributeFlags, ContextAttributes, Device, Error, GLApi, Surface,
     SurfaceAccess, SurfaceInfo, SurfaceTexture, SurfaceType,
 };
 
-/// Linux Servo software context with access to the current surfman FBO.
-pub struct LinuxServoRenderingContext {
-    size: Cell<PhysicalSize<u32>>,
+/// Shared Linux Servo software GL context used by all offscreen render targets.
+pub struct LinuxServoRenderDevice {
     gleam_gl: Rc<dyn Gl>,
     glow_gl: Arc<glow::Context>,
     device: RefCell<Device>,
     context: RefCell<Context>,
-    swap_chain: SwapChain<Device>,
+    swap_chain: RefCell<SwapChain<Device>>,
 }
 
-impl LinuxServoRenderingContext {
-    /// Creates a Servo-compatible software rendering context.
-    ///
-    /// This mirrors Servo's software context, but keeps the surfman context
-    /// visible so the GPU import path can bind the actual surface FBO.
+impl LinuxServoRenderDevice {
+    /// Creates a Servo-compatible software GL context that can host many render targets.
     pub fn new_software(width: u32, height: u32) -> Result<Self, Error> {
-        let size = PhysicalSize::new(width, height);
         let connection = Connection::new()?;
         let adapter = connection.create_software_adapter()?;
         let device = connection.create_device(&adapter)?;
@@ -87,167 +82,35 @@ impl LinuxServoRenderingContext {
         let swap_chain = SwapChain::create_attached(&device, &mut context, SurfaceAccess::GPUOnly)?;
 
         Ok(Self {
-            size: Cell::new(size),
             gleam_gl,
             glow_gl,
             device: RefCell::new(device),
             context: RefCell::new(context),
-            swap_chain,
+            swap_chain: RefCell::new(swap_chain),
         })
     }
 
-    /// Returns the surfman framebuffer backing the current render surface.
-    #[must_use]
-    pub fn framebuffer(&self) -> Option<glow::NativeFramebuffer> {
-        self.surface_info().and_then(|info| info.framebuffer_object)
-    }
-
-    /// Returns the current surfman surface snapshot.
-    #[must_use]
-    pub fn surface_snapshot(&self) -> Option<LinuxServoSurfaceSnapshot> {
-        self.surface_info()
-            .map(LinuxServoSurfaceSnapshot::from_surface_info)
-    }
-
-    fn framebuffer_id(&self) -> u32 {
-        self.framebuffer()
-            .map_or(0, |framebuffer| framebuffer.0.into())
-    }
-
-    fn surface_info(&self) -> Option<SurfaceInfo> {
-        let device = self.device.borrow();
-        let context = self.context.borrow();
-        device.context_surface_info(&context).ok().flatten()
-    }
-
-    fn bind_framebuffer(&self) {
-        self.gleam_gl
-            .bind_framebuffer(gl::FRAMEBUFFER, self.framebuffer_id());
-    }
-
-    /// Replaces the attached surfman back buffer without changing dimensions.
-    pub fn refresh_surface(&self) -> Result<(), Error> {
+    /// Creates an offscreen Servo rendering context backed by an FBO in this GL context.
+    pub fn create_rendering_context(
+        self: &Rc<Self>,
+        width: u32,
+        height: u32,
+    ) -> Result<LinuxServoRenderingContext, Error> {
         self.make_current()?;
-        // SAFETY: the context is current and this is a lifecycle boundary used
-        // before replacing the attached surfman surface.
-        unsafe {
-            self.glow_gl.finish();
-        }
-        let size = self.size.get();
-        let surfman_size = euclid::default::Size2D::new(size.width as i32, size.height as i32);
-        let mut pending_surface = self.swap_chain.take_pending_surface();
-        {
-            let device = &mut self.device.borrow_mut();
-            let context = &mut self.context.borrow_mut();
-            if let Some(surface) = pending_surface.as_mut() {
-                device.destroy_surface(context, surface)?;
-            }
-            self.swap_chain.resize(device, context, surfman_size)?;
-        }
-        self.bind_framebuffer();
-        Ok(())
-    }
-
-    fn read_framebuffer_to_image(
-        &self,
-        framebuffer_id: u32,
-        source_rectangle: DeviceIntRect,
-    ) -> Option<RgbaImage> {
-        self.gleam_gl
-            .bind_framebuffer(gl::FRAMEBUFFER, framebuffer_id);
-        self.gleam_gl.bind_vertex_array(0);
-
-        let mut pixels = self.gleam_gl.read_pixels(
-            source_rectangle.min.x,
-            source_rectangle.min.y,
-            source_rectangle.width(),
-            source_rectangle.height(),
-            gl::RGBA,
-            gl::UNSIGNED_BYTE,
-        );
-        if self.gleam_gl.get_error() != gl::NO_ERROR {
-            return None;
-        }
-
-        let source_rectangle = source_rectangle.to_usize();
-        let stride = source_rectangle.width() * 4;
-        let original_pixels = pixels.clone();
-        for y in 0..source_rectangle.height() {
-            let dst_start = y * stride;
-            let src_start = (source_rectangle.height() - y - 1) * stride;
-            pixels[dst_start..dst_start + stride]
-                .copy_from_slice(&original_pixels[src_start..src_start + stride]);
-        }
-
-        RgbaImage::from_raw(
-            source_rectangle.width() as u32,
-            source_rectangle.height() as u32,
-            pixels,
-        )
-    }
-}
-
-impl Drop for LinuxServoRenderingContext {
-    fn drop(&mut self) {
-        let device = &mut self.device.borrow_mut();
-        let context = &mut self.context.borrow_mut();
-        let _ = self.swap_chain.destroy(device, context);
-        let _ = device.destroy_context(context);
-    }
-}
-
-impl RenderingContext for LinuxServoRenderingContext {
-    fn prepare_for_rendering(&self) {
-        self.bind_framebuffer();
-    }
-
-    fn read_to_image(&self, source_rectangle: DeviceIntRect) -> Option<RgbaImage> {
-        self.read_framebuffer_to_image(self.framebuffer_id(), source_rectangle)
-    }
-
-    fn size(&self) -> PhysicalSize<u32> {
-        self.size.get()
-    }
-
-    fn resize(&self, size: PhysicalSize<u32>) {
-        if self.size.get() == size {
-            return;
-        }
-
-        let surfman_size = euclid::default::Size2D::new(size.width as i32, size.height as i32);
-        let device = &mut self.device.borrow_mut();
-        let context = &mut self.context.borrow_mut();
-        if self
-            .swap_chain
-            .resize(device, context, surfman_size)
-            .is_ok()
-        {
-            self.size.set(size);
-        }
-    }
-
-    fn present(&self) {
-        let device = &mut self.device.borrow_mut();
-        let context = &mut self.context.borrow_mut();
-        let _ = self.swap_chain.swap_buffers(
-            device,
-            context,
-            PreserveBuffer::Yes(self.glow_gl.as_ref()),
-        );
+        Ok(LinuxServoRenderingContext {
+            parent: Rc::clone(self),
+            size: Cell::new(PhysicalSize::new(width, height)),
+            framebuffer: RefCell::new(LinuxServoFramebuffer::new(
+                Rc::clone(&self.gleam_gl),
+                PhysicalSize::new(width, height),
+            )),
+        })
     }
 
     fn make_current(&self) -> Result<(), Error> {
         let device = self.device.borrow();
         let context = self.context.borrow();
         device.make_context_current(&context)
-    }
-
-    fn gleam_gl_api(&self) -> Rc<dyn Gl> {
-        Rc::clone(&self.gleam_gl)
-    }
-
-    fn glow_gl_api(&self) -> Arc<glow::Context> {
-        Arc::clone(&self.glow_gl)
     }
 
     fn create_texture(
@@ -274,33 +137,251 @@ impl RenderingContext for LinuxServoRenderingContext {
             .ok()
     }
 
-    fn connection(&self) -> Option<Connection> {
-        Some(self.device.borrow().connection())
+    fn connection(&self) -> Connection {
+        self.device.borrow().connection()
     }
 }
 
-/// Snapshot of the current Linux Servo surfman surface.
-#[derive(Debug, Clone, Copy)]
-pub struct LinuxServoSurfaceSnapshot {
-    /// Surfman surface id.
-    pub surface_id: usize,
-    /// Width in physical pixels.
-    pub width: i32,
-    /// Height in physical pixels.
-    pub height: i32,
-    /// Current framebuffer object name, or zero for the default FBO.
-    pub framebuffer: u32,
+impl Drop for LinuxServoRenderDevice {
+    fn drop(&mut self) {
+        let device = &mut self.device.borrow_mut();
+        let context = &mut self.context.borrow_mut();
+        let _ = self.swap_chain.borrow_mut().destroy(device, context);
+        let _ = device.destroy_context(context);
+    }
 }
 
-impl LinuxServoSurfaceSnapshot {
-    fn from_surface_info(info: SurfaceInfo) -> Self {
+/// Linux Servo offscreen target with an importable framebuffer.
+pub struct LinuxServoRenderingContext {
+    parent: Rc<LinuxServoRenderDevice>,
+    size: Cell<PhysicalSize<u32>>,
+    framebuffer: RefCell<LinuxServoFramebuffer>,
+}
+
+impl LinuxServoRenderingContext {
+    /// Creates a standalone Servo-compatible software rendering context.
+    pub fn new_software(width: u32, height: u32) -> Result<Self, Error> {
+        let parent = Rc::new(LinuxServoRenderDevice::new_software(width, height)?);
+        parent.create_rendering_context(width, height)
+    }
+
+    /// Returns the framebuffer backing this render target.
+    #[must_use]
+    pub fn framebuffer(&self) -> Option<glow::NativeFramebuffer> {
+        self.framebuffer.borrow().native_framebuffer()
+    }
+
+    /// Returns the current render target snapshot.
+    #[must_use]
+    pub fn target_snapshot(&self) -> LinuxServoRenderTargetSnapshot {
+        LinuxServoRenderTargetSnapshot::from_framebuffer(&self.framebuffer.borrow(), self.size())
+    }
+
+    fn read_framebuffer_to_image(
+        &self,
+        framebuffer_id: u32,
+        source_rectangle: DeviceIntRect,
+    ) -> Option<RgbaImage> {
+        self.parent
+            .gleam_gl
+            .bind_framebuffer(gl::FRAMEBUFFER, framebuffer_id);
+        self.parent.gleam_gl.bind_vertex_array(0);
+
+        let mut pixels = self.parent.gleam_gl.read_pixels(
+            source_rectangle.min.x,
+            source_rectangle.min.y,
+            source_rectangle.width(),
+            source_rectangle.height(),
+            gl::RGBA,
+            gl::UNSIGNED_BYTE,
+        );
+        if self.parent.gleam_gl.get_error() != gl::NO_ERROR {
+            return None;
+        }
+
+        let source_rectangle = source_rectangle.to_usize();
+        let stride = source_rectangle.width() * 4;
+        let original_pixels = pixels.clone();
+        for y in 0..source_rectangle.height() {
+            let dst_start = y * stride;
+            let src_start = (source_rectangle.height() - y - 1) * stride;
+            pixels[dst_start..dst_start + stride]
+                .copy_from_slice(&original_pixels[src_start..src_start + stride]);
+        }
+
+        RgbaImage::from_raw(
+            source_rectangle.width() as u32,
+            source_rectangle.height() as u32,
+            pixels,
+        )
+    }
+}
+
+impl RenderingContext for LinuxServoRenderingContext {
+    fn prepare_for_rendering(&self) {
+        self.framebuffer.borrow().bind();
+    }
+
+    fn read_to_image(&self, source_rectangle: DeviceIntRect) -> Option<RgbaImage> {
+        self.read_framebuffer_to_image(self.framebuffer.borrow().framebuffer_id, source_rectangle)
+    }
+
+    fn size(&self) -> PhysicalSize<u32> {
+        self.size.get()
+    }
+
+    fn resize(&self, size: PhysicalSize<u32>) {
+        if self.size.get() == size {
+            return;
+        }
+
+        if self.make_current().is_ok() {
+            *self.framebuffer.borrow_mut() =
+                LinuxServoFramebuffer::new(Rc::clone(&self.parent.gleam_gl), size);
+            self.size.set(size);
+        }
+    }
+
+    fn present(&self) {}
+
+    fn make_current(&self) -> Result<(), Error> {
+        self.parent.make_current()
+    }
+
+    fn gleam_gl_api(&self) -> Rc<dyn Gl> {
+        Rc::clone(&self.parent.gleam_gl)
+    }
+
+    fn glow_gl_api(&self) -> Arc<glow::Context> {
+        Arc::clone(&self.parent.glow_gl)
+    }
+
+    fn create_texture(
+        &self,
+        surface: Surface,
+    ) -> Option<(SurfaceTexture, u32, euclid::default::Size2D<i32>)> {
+        self.parent.create_texture(surface)
+    }
+
+    fn destroy_texture(&self, surface_texture: SurfaceTexture) -> Option<Surface> {
+        self.parent.destroy_texture(surface_texture)
+    }
+
+    fn connection(&self) -> Option<Connection> {
+        Some(self.parent.connection())
+    }
+}
+
+struct LinuxServoFramebuffer {
+    gl: Rc<dyn Gl>,
+    framebuffer_id: u32,
+    renderbuffer_id: u32,
+    texture_id: u32,
+}
+
+impl LinuxServoFramebuffer {
+    fn new(gl: Rc<dyn Gl>, size: PhysicalSize<u32>) -> Self {
+        let framebuffer_ids = gl.gen_framebuffers(1);
+        gl.bind_framebuffer(gl::FRAMEBUFFER, framebuffer_ids[0]);
+
+        let texture_ids = gl.gen_textures(1);
+        gl.bind_texture(gl::TEXTURE_2D, texture_ids[0]);
+        gl.tex_image_2d(
+            gl::TEXTURE_2D,
+            0,
+            gl::RGBA as gl::GLint,
+            size.width as gl::GLsizei,
+            size.height as gl::GLsizei,
+            0,
+            gl::RGBA,
+            gl::UNSIGNED_BYTE,
+            None,
+        );
+        gl.tex_parameter_i(
+            gl::TEXTURE_2D,
+            gl::TEXTURE_MAG_FILTER,
+            gl::NEAREST as gl::GLint,
+        );
+        gl.tex_parameter_i(
+            gl::TEXTURE_2D,
+            gl::TEXTURE_MIN_FILTER,
+            gl::NEAREST as gl::GLint,
+        );
+        gl.framebuffer_texture_2d(
+            gl::FRAMEBUFFER,
+            gl::COLOR_ATTACHMENT0,
+            gl::TEXTURE_2D,
+            texture_ids[0],
+            0,
+        );
+        gl.bind_texture(gl::TEXTURE_2D, 0);
+
+        let renderbuffer_ids = gl.gen_renderbuffers(1);
+        let depth_rb = renderbuffer_ids[0];
+        gl.bind_renderbuffer(gl::RENDERBUFFER, depth_rb);
+        gl.renderbuffer_storage(
+            gl::RENDERBUFFER,
+            gl::DEPTH_COMPONENT24,
+            size.width as gl::GLsizei,
+            size.height as gl::GLsizei,
+        );
+        gl.framebuffer_renderbuffer(
+            gl::FRAMEBUFFER,
+            gl::DEPTH_ATTACHMENT,
+            gl::RENDERBUFFER,
+            depth_rb,
+        );
+
         Self {
-            surface_id: info.id.0,
-            width: info.size.width,
-            height: info.size.height,
-            framebuffer: info
-                .framebuffer_object
-                .map_or(0, |framebuffer| framebuffer.0.into()),
+            gl,
+            framebuffer_id: framebuffer_ids[0],
+            renderbuffer_id: renderbuffer_ids[0],
+            texture_id: texture_ids[0],
+        }
+    }
+
+    fn bind(&self) {
+        self.gl
+            .bind_framebuffer(gl::FRAMEBUFFER, self.framebuffer_id);
+    }
+
+    fn native_framebuffer(&self) -> Option<glow::NativeFramebuffer> {
+        NonZeroU32::new(self.framebuffer_id).map(glow::NativeFramebuffer)
+    }
+}
+
+impl Drop for LinuxServoFramebuffer {
+    fn drop(&mut self) {
+        self.gl.bind_framebuffer(gl::FRAMEBUFFER, 0);
+        self.gl.delete_textures(&[self.texture_id]);
+        self.gl.delete_renderbuffers(&[self.renderbuffer_id]);
+        self.gl.delete_framebuffers(&[self.framebuffer_id]);
+    }
+}
+
+/// Snapshot of the current Linux Servo offscreen render target.
+#[derive(Debug, Clone, Copy)]
+pub struct LinuxServoRenderTargetSnapshot {
+    /// Width in physical pixels.
+    pub width: u32,
+    /// Height in physical pixels.
+    pub height: u32,
+    /// Current framebuffer object name.
+    pub framebuffer: u32,
+    /// Color texture attached to the framebuffer.
+    pub texture: u32,
+    /// Depth renderbuffer attached to the framebuffer.
+    pub renderbuffer: u32,
+}
+
+impl LinuxServoRenderTargetSnapshot {
+    fn from_framebuffer(framebuffer: &LinuxServoFramebuffer, size: PhysicalSize<u32>) -> Self {
+        Self {
+            width: size.width,
+            height: size.height,
+            framebuffer: framebuffer.framebuffer_id,
+            texture: framebuffer.texture_id,
+            renderbuffer: framebuffer.renderbuffer_id,
         }
     }
 }
