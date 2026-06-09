@@ -12,6 +12,8 @@ const SAMPLE_WORKGROUP_SIZE: u32 = 64;
 const SAMPLE_PARAM_BYTES: usize = 16;
 const SAMPLE_POINT_BYTES: u64 = 16;
 const SAMPLE_READBACK_SLOT_COUNT: usize = 3;
+const SAMPLE_READBACK_WAIT_STEP: std::time::Duration = std::time::Duration::from_millis(50);
+const SAMPLE_READBACK_WAIT_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
@@ -825,17 +827,35 @@ fn wait_for_zone_color_readback(
     if pending_readback.map_ready {
         return Ok(());
     }
-    device
-        .poll(wgpu::PollType::Wait {
+    // A wedged GPU must not stall the render thread forever; callers fall
+    // back to CPU sampling when this errors.
+    let deadline = std::time::Instant::now() + SAMPLE_READBACK_WAIT_BUDGET;
+    loop {
+        match device.poll(wgpu::PollType::Wait {
             submission_index: Some(pending_readback.submission_index.clone()),
-            timeout: None,
-        })
-        .context("GPU sample poll failed")?;
+            timeout: Some(SAMPLE_READBACK_WAIT_STEP),
+        }) {
+            Ok(_) => break,
+            Err(wgpu::PollError::Timeout) => {
+                if std::time::Instant::now() >= deadline {
+                    pending_readback.unmap_after_failed_map();
+                    anyhow::bail!(
+                        "GPU sample readback exceeded {}ms wait budget",
+                        SAMPLE_READBACK_WAIT_BUDGET.as_millis()
+                    );
+                }
+            }
+            Err(error) => {
+                pending_readback.unmap_after_failed_map();
+                return Err(error).context("GPU sample poll failed");
+            }
+        }
+    }
     let Some(receiver) = pending_readback.receiver.take() else {
         pending_readback.unmap_after_failed_map();
         anyhow::bail!("GPU sample channel was unavailable before wait completion");
     };
-    match receiver.recv() {
+    match receiver.recv_timeout(SAMPLE_READBACK_WAIT_STEP) {
         Ok(Ok(())) => {}
         Ok(Err(error)) => {
             pending_readback.unmap_after_failed_map();
@@ -843,7 +863,7 @@ fn wait_for_zone_color_readback(
         }
         Err(error) => {
             pending_readback.unmap_after_failed_map();
-            return Err(error).context("GPU sample channel closed before map completion");
+            return Err(error).context("GPU sample map callback did not complete after wait");
         }
     }
     pending_readback.map_ready = true;

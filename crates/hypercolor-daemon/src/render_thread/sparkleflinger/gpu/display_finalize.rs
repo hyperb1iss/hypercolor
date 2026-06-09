@@ -69,6 +69,7 @@ pub(super) struct GpuDisplaySourceTexture {
     pub(super) texture: GpuCompositorTexture,
     pub(super) cached_upload: Option<super::CachedSourceUpload>,
     pub(super) cached_gpu_copy: Option<super::CachedGpuSourceCopy>,
+    pub(super) bind_group_cache: super::SourceCopyBindGroupCache,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -279,6 +280,7 @@ impl GpuDisplaySourceTexture {
             texture: GpuCompositorTexture::new(device, width, height, label),
             cached_upload: None,
             cached_gpu_copy: None,
+            bind_group_cache: super::SourceCopyBindGroupCache::default(),
         }
     }
 }

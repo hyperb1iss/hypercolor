@@ -197,7 +197,7 @@ impl GpuSparkleFlinger {
     }
 
     pub(super) fn clear_superseded_preview_outputs(&mut self) {
-        self.pending_output_submission = None;
+        self.discard_pending_output_submission("preview outputs superseded");
         self.pending_preview_readback = None;
         self.pending_preview_submission = None;
         self.ready_preview_surface = None;
@@ -395,7 +395,7 @@ impl GpuSparkleFlinger {
                 request,
             })
         {
-            self.pending_output_submission = None;
+            self.discard_pending_output_submission("cached preview served instead");
             return Ok(gpu_composed_with_preview_surface(cached));
         }
 

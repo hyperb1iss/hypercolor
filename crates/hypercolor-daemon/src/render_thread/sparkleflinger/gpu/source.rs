@@ -30,6 +30,56 @@ pub(super) struct CachedGpuSourceCopy {
     pub(super) height: u32,
 }
 
+/// Source-copy bind groups cached by view identity. wgpu views compare by
+/// resource identity, so a hit means the exact same textures; entries keep
+/// their views (and thus textures) alive, bounded by the cache cap.
+#[derive(Default)]
+pub(super) struct SourceCopyBindGroupCache {
+    entries: Vec<CachedSourceCopyBindGroup>,
+    #[cfg(test)]
+    pub(super) creation_count: usize,
+}
+
+struct CachedSourceCopyBindGroup {
+    source_view: wgpu::TextureView,
+    output_view: wgpu::TextureView,
+    bind_group: wgpu::BindGroup,
+}
+
+const SOURCE_COPY_BIND_GROUP_CACHE_CAP: usize = 8;
+
+impl SourceCopyBindGroupCache {
+    fn get_or_create(
+        &mut self,
+        device: &wgpu::Device,
+        pipeline: &GpuCompositorPipeline,
+        source_view: &wgpu::TextureView,
+        output_view: &wgpu::TextureView,
+    ) -> wgpu::BindGroup {
+        if let Some(cached) = self
+            .entries
+            .iter()
+            .find(|cached| cached.source_view == *source_view && cached.output_view == *output_view)
+        {
+            return cached.bind_group.clone();
+        }
+        let bind_group = create_source_copy_bind_group(device, pipeline, source_view, output_view);
+        #[cfg(test)]
+        {
+            self.creation_count = self.creation_count.saturating_add(1);
+        }
+        if self.entries.len() >= SOURCE_COPY_BIND_GROUP_CACHE_CAP {
+            self.entries.remove(0);
+        }
+        self.entries.push(CachedSourceCopyBindGroup {
+            source_view: source_view.clone(),
+            output_view: output_view.clone(),
+            bind_group: bind_group.clone(),
+        });
+        bind_group
+    }
+}
+
 pub(super) fn prepare_display_source_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -78,6 +128,7 @@ pub(super) fn prepare_display_source_texture(
         pipeline,
         encoder,
         pending_upload_buffers,
+        &mut source.bind_group_cache,
         gpu_frame,
         &source.texture,
     );
@@ -223,6 +274,7 @@ pub(super) fn copy_frame_into_output_texture(
     output: &GpuCompositorTexture,
     cached_upload: &mut Option<CachedSourceUpload>,
     pending_upload_buffers: &mut PendingUploadBuffers,
+    bind_group_cache: &mut SourceCopyBindGroupCache,
     encoder: &mut wgpu::CommandEncoder,
     frame: &ProducerFrame,
     #[cfg(test)] upload_count: &mut usize,
@@ -235,6 +287,7 @@ pub(super) fn copy_frame_into_output_texture(
             pipeline,
             encoder,
             pending_upload_buffers,
+            bind_group_cache,
             &frame,
             output,
         );
@@ -258,6 +311,7 @@ pub(super) fn copy_gpu_source_frame_into_texture(
     pipeline: &mut GpuCompositorPipeline,
     encoder: &mut wgpu::CommandEncoder,
     pending_upload_buffers: &mut PendingUploadBuffers,
+    bind_group_cache: &mut SourceCopyBindGroupCache,
     frame: &GpuSourceFrame<'_>,
     output: &GpuCompositorTexture,
 ) {
@@ -275,7 +329,7 @@ pub(super) fn copy_gpu_source_frame_into_texture(
             ),
         );
         let bind_group =
-            create_source_copy_bind_group(device, pipeline, frame.view(), &output.view);
+            bind_group_cache.get_or_create(device, pipeline, frame.view(), &output.view);
         dispatch_source_copy_pass(
             encoder,
             pipeline,

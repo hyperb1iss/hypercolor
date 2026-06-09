@@ -243,6 +243,7 @@ impl GpuSparkleFlinger {
                 &surfaces.front,
                 &mut surfaces.front_contents,
                 &mut surfaces.pending_upload_buffers,
+                &mut surfaces.source_copy_bind_groups,
                 &mut encoder,
                 &first_layer.frame,
                 #[cfg(test)]
@@ -347,7 +348,7 @@ impl GpuSparkleFlinger {
         self.cached_composition_key = None;
         self.cached_readback_surface = None;
         self.cached_preview_surfaces.clear();
-        self.pending_output_submission = None;
+        self.discard_pending_output_submission("compositor surfaces resized");
         self.pending_preview_readback = None;
         self.pending_preview_submission = None;
         self.pending_preview_map = None;
@@ -853,6 +854,7 @@ fn compose_layer_into_gpu(
             pipeline,
             encoder,
             &mut surfaces.pending_upload_buffers,
+            &mut surfaces.source_copy_bind_groups,
             &frame,
             output,
         );
@@ -873,6 +875,7 @@ fn compose_layer_into_gpu(
             pipeline,
             encoder,
             &mut surfaces.pending_upload_buffers,
+            &mut surfaces.source_copy_bind_groups,
             frame,
             source,
         );
@@ -916,34 +919,35 @@ fn compose_layer_into_gpu(
     }
     if let Some(frame) = gpu_frame {
         record_gpu_source_upload_skipped();
+        let (width, height) = (surfaces.width, surfaces.height);
         let bind_group = {
+            let GpuCompositorSurfaceSet {
+                front,
+                back,
+                source,
+                compose_source_bind_groups,
+                ..
+            } = surfaces;
             let (current_view, output_view) = if use_front_as_current {
-                (&surfaces.front.view, &surfaces.back.view)
+                (&front.view, &back.view)
             } else {
-                (&surfaces.back.view, &surfaces.front.view)
+                (&back.view, &front.view)
             };
             let source_view = if frame.needs_shader_copy() {
-                &surfaces.source.view
+                &source.view
             } else {
                 frame.view()
             };
-            create_compose_bind_group(
+            compose_source_bind_groups.get_or_create(
                 device,
                 pipeline,
-                current_view,
                 source_view,
+                use_front_as_current,
+                current_view,
                 output_view,
-                "SparkleFlinger GPU imported producer bind group",
             )
         };
-        dispatch_compose_pass(
-            encoder,
-            pipeline,
-            &bind_group,
-            params_offset,
-            surfaces.width,
-            surfaces.height,
-        );
+        dispatch_compose_pass(encoder, pipeline, &bind_group, params_offset, width, height);
         set_texture_contents(surfaces, output_surface, None);
         return;
     }
@@ -993,6 +997,65 @@ fn set_texture_contents(
     match output {
         GpuCompositorOutputSurface::Front => surfaces.front_contents = contents,
         GpuCompositorOutputSurface::Back => surfaces.back_contents = contents,
+    }
+}
+
+/// Compose bind groups for GPU producer layers, cached by source-view
+/// identity and ping-pong direction. The current/output views are the
+/// surface set's own front/back textures, so direction fully determines
+/// them; entries die with the surface set on resize. Cached views keep the
+/// producer textures alive, bounded by the cache cap.
+#[derive(Default)]
+pub(super) struct ComposeSourceBindGroupCache {
+    entries: Vec<CachedComposeSourceBindGroup>,
+    #[cfg(test)]
+    pub(super) creation_count: usize,
+}
+
+struct CachedComposeSourceBindGroup {
+    source_view: wgpu::TextureView,
+    front_as_current: bool,
+    bind_group: wgpu::BindGroup,
+}
+
+const COMPOSE_SOURCE_BIND_GROUP_CACHE_CAP: usize = 4;
+
+impl ComposeSourceBindGroupCache {
+    fn get_or_create(
+        &mut self,
+        device: &wgpu::Device,
+        pipeline: &GpuCompositorPipeline,
+        source_view: &wgpu::TextureView,
+        front_as_current: bool,
+        current_view: &wgpu::TextureView,
+        output_view: &wgpu::TextureView,
+    ) -> wgpu::BindGroup {
+        if let Some(cached) = self.entries.iter().find(|cached| {
+            cached.front_as_current == front_as_current && cached.source_view == *source_view
+        }) {
+            return cached.bind_group.clone();
+        }
+        let bind_group = create_compose_bind_group(
+            device,
+            pipeline,
+            current_view,
+            source_view,
+            output_view,
+            "SparkleFlinger GPU imported producer bind group",
+        );
+        #[cfg(test)]
+        {
+            self.creation_count = self.creation_count.saturating_add(1);
+        }
+        if self.entries.len() >= COMPOSE_SOURCE_BIND_GROUP_CACHE_CAP {
+            self.entries.remove(0);
+        }
+        self.entries.push(CachedComposeSourceBindGroup {
+            source_view: source_view.clone(),
+            front_as_current,
+            bind_group: bind_group.clone(),
+        });
+        bind_group
     }
 }
 

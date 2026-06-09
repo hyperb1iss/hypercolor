@@ -1159,6 +1159,45 @@ fn gpu_scaled_preview_reuses_readback_surface_pools_across_size_flips() {
     assert_eq!(preview_surfaces.readback_surface_pool_allocation_count, 2);
 }
 
+#[test]
+fn gpu_compositor_reuses_source_bind_groups_across_frames() {
+    let mut compositor = match GpuSparkleFlinger::new() {
+        Ok(compositor) => compositor,
+        Err(_) => return,
+    };
+
+    let producer_frame = compositor
+        .upload_canvas_frame(&patterned_canvas(7))
+        .expect("producer canvas upload should succeed");
+
+    let plan = |seed: u8| {
+        CompositionPlan::with_layers(
+            4,
+            4,
+            vec![
+                CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(seed))),
+                CompositionLayer::alpha(ProducerFrame::GpuTexture(producer_frame.clone()), 0.5),
+            ],
+        )
+    };
+
+    compositor
+        .compose(&plan(1), false, None)
+        .expect("first GPU-source compose should succeed");
+    compositor
+        .compose(&plan(2), false, None)
+        .expect("second GPU-source compose should succeed");
+
+    let surfaces = compositor
+        .surfaces
+        .as_ref()
+        .expect("compose should allocate surfaces");
+    assert_eq!(
+        surfaces.compose_source_bind_groups.creation_count, 1,
+        "the same GPU source texture should reuse its compose bind group"
+    );
+}
+
 mod display_finalize;
 mod media_upload;
 mod preview;

@@ -24,7 +24,7 @@ mod sampler;
 mod source;
 mod telemetry;
 
-use compositor::{SamplingReadbackLatch, create_compose_bind_group};
+use compositor::{ComposeSourceBindGroupCache, SamplingReadbackLatch, create_compose_bind_group};
 #[cfg(test)]
 use display_finalize::DISPLAY_FINALIZE_READBACK_SLOT_COUNT;
 pub(crate) use display_finalize::{
@@ -45,7 +45,10 @@ pub(crate) use probe::{GpuCompositorProbe, probe_render_device};
 use readback::{CachedReadbackKey, CachedReadbackSurface};
 use sampler::CachedSampleResult;
 pub(crate) use sampler::{GpuZoneSamplingDispatch, PendingGpuZoneSampling};
-use source::{CachedGpuSourceCopy, CachedSourceUpload, gpu_source_frame, write_rgba_texture};
+use source::{
+    CachedGpuSourceCopy, CachedSourceUpload, SourceCopyBindGroupCache, gpu_source_frame,
+    write_rgba_texture,
+};
 use telemetry::record_gpu_media_texture_upload;
 pub(crate) use telemetry::{GpuSparkleFlingerTelemetrySnapshot, record_gpu_display_finalize_latch};
 
@@ -89,6 +92,8 @@ pub(crate) struct GpuSparkleFlinger {
     producer_texture_generation: u64,
     cached_sample_result: Option<CachedSampleResult>,
     #[cfg(test)]
+    discarded_output_submission_count: usize,
+    #[cfg(test)]
     preview_surface_allocation_count: usize,
     #[cfg(test)]
     defer_preview_resolve_once: bool,
@@ -103,6 +108,8 @@ struct GpuCompositorSurfaceSet {
     back: GpuCompositorTexture,
     source: GpuCompositorTexture,
     bind_groups: GpuCompositorBindGroups,
+    compose_source_bind_groups: ComposeSourceBindGroupCache,
+    source_copy_bind_groups: SourceCopyBindGroupCache,
     cached_compose_params: Option<[u8; COMPOSE_PARAM_BYTES]>,
     cached_compose_params_offset: Option<u32>,
     pending_upload_buffers: PendingUploadBuffers,
@@ -235,6 +242,8 @@ impl GpuSparkleFlinger {
             producer_texture_generation: 0,
             cached_sample_result: None,
             #[cfg(test)]
+            discarded_output_submission_count: 0,
+            #[cfg(test)]
             preview_surface_allocation_count: 0,
             #[cfg(test)]
             defer_preview_resolve_once: false,
@@ -357,6 +366,22 @@ impl GpuSparkleFlinger {
         Ok(())
     }
 
+    /// Drops a deferred compose submission without executing it. Encoded
+    /// work referenced by `output_generation` consumers must never be
+    /// silently abandoned; every discard comes through here so the sites
+    /// stay greppable and observable.
+    pub(super) fn discard_pending_output_submission(&mut self, reason: &'static str) {
+        if self.pending_output_submission.take().is_some() {
+            tracing::debug!(reason, "discarding deferred GPU compose submission");
+            self.clear_pending_upload_buffers();
+            #[cfg(test)]
+            {
+                self.discarded_output_submission_count =
+                    self.discarded_output_submission_count.saturating_add(1);
+            }
+        }
+    }
+
     pub(super) fn clear_pending_upload_buffers(&mut self) {
         if let Some(surfaces) = self.surfaces.as_mut() {
             surfaces.pending_upload_buffers.clear();
@@ -409,6 +434,8 @@ impl GpuCompositorSurfaceSet {
             width,
             height,
             bind_groups: GpuCompositorBindGroups::new(device, pipeline, &front, &back, &source),
+            compose_source_bind_groups: ComposeSourceBindGroupCache::default(),
+            source_copy_bind_groups: SourceCopyBindGroupCache::default(),
             front,
             back,
             source,
