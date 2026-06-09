@@ -209,6 +209,10 @@ impl GpuSourceFrame<'_> {
         }
     }
 
+    /// Whether copying this frame into a compositor texture needs the
+    /// y-flipping source-copy shader instead of copy_texture_to_texture.
+    /// Blend-mode composition no longer consults this: it binds the frame's
+    /// view directly and flips in the compose shader via params.
     pub(super) const fn needs_shader_copy(&self) -> bool {
         match self {
             #[cfg(all(feature = "servo-gpu-import", target_os = "macos"))]
@@ -245,7 +249,7 @@ impl GpuSourceFrame<'_> {
         }
     }
 
-    const fn flip_y_on_shader_copy(&self) -> bool {
+    pub(super) const fn flip_y_on_shader_copy(&self) -> bool {
         match self {
             #[cfg(all(feature = "servo-gpu-import", target_os = "macos"))]
             Self::Imported(_) => true,

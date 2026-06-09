@@ -864,23 +864,7 @@ fn compose_layer_into_gpu(
 
     let gpu_frame = gpu_source_frame(&layer.frame);
 
-    if let Some(frame) = gpu_frame.as_ref()
-        && frame.needs_shader_copy()
-    {
-        record_gpu_source_upload_skipped();
-        let source = &surfaces.source;
-        copy_gpu_source_frame_into_texture(
-            device,
-            queue,
-            pipeline,
-            encoder,
-            &mut surfaces.pending_upload_buffers,
-            &mut surfaces.source_copy_bind_groups,
-            frame,
-            source,
-        );
-        surfaces.cached_source_upload = None;
-    } else if gpu_frame.is_none() {
+    if gpu_frame.is_none() {
         upload_frame_into_source_texture(device, encoder, surfaces, &layer.frame);
         if shader_mode == ComposeShaderMode::Replace
             && !layer.needs_processing_for_size(surfaces.width, surfaces.height)
@@ -910,7 +894,16 @@ fn compose_layer_into_gpu(
         }
     }
 
-    let params = encode_compose_params(surfaces.width, surfaces.height, shader_mode, layer);
+    let source_flip_y = gpu_frame
+        .as_ref()
+        .is_some_and(super::source::GpuSourceFrame::flip_y_on_shader_copy);
+    let params = encode_compose_params(
+        surfaces.width,
+        surfaces.height,
+        shader_mode,
+        layer,
+        source_flip_y,
+    );
     let params_offset =
         encode_compose_params_upload(device, queue, pipeline, surfaces, encoder, &params);
     #[cfg(test)]
@@ -933,11 +926,8 @@ fn compose_layer_into_gpu(
             } else {
                 (&back.view, &front.view)
             };
-            let source_view = if frame.needs_shader_copy() {
-                &source.view
-            } else {
-                frame.view()
-            };
+            let _ = source;
+            let source_view = frame.view();
             compose_source_bind_groups.get_or_create(
                 device,
                 pipeline,
@@ -1129,6 +1119,7 @@ fn encode_compose_params(
     height: u32,
     mode: ComposeShaderMode,
     layer: &CompositionLayer,
+    source_flip_y: bool,
 ) -> [u8; COMPOSE_PARAM_BYTES] {
     let mut bytes = [0u8; COMPOSE_PARAM_BYTES];
     let transform = layer.transform.unwrap_or_default();
@@ -1145,6 +1136,7 @@ fn encode_compose_params(
         0_u32
     };
     bytes[24..28].copy_from_slice(&processing.to_le_bytes());
+    bytes[28..32].copy_from_slice(&u32::from(source_flip_y).to_le_bytes());
     bytes[32..36].copy_from_slice(&layer.opacity.to_le_bytes());
     bytes[36..40].copy_from_slice(&transform.anchor.x.to_le_bytes());
     bytes[40..44].copy_from_slice(&transform.anchor.y.to_le_bytes());

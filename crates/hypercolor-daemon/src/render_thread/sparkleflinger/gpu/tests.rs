@@ -1198,6 +1198,131 @@ fn gpu_compositor_reuses_source_bind_groups_across_frames() {
     );
 }
 
+#[cfg(all(feature = "servo-gpu-import", target_os = "macos"))]
+#[test]
+fn gpu_blend_modes_flip_imported_frames_like_replace_path() {
+    let mut compositor = match GpuSparkleFlinger::new() {
+        Ok(compositor) => compositor,
+        Err(_) => return,
+    };
+    let width = 4;
+    let height = 4;
+    let imported_frame = |storage_id: u64| {
+        let texture = compositor.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("SparkleFlinger test flipped imported source"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Bgra8Unorm,
+            usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        // Bottom-up source: physical row 0 is white, every other row black.
+        let mut bgra = vec![0_u8; (width * height * 4) as usize];
+        for pixel in 0..width as usize {
+            bgra[pixel * 4..pixel * 4 + 4].copy_from_slice(&[255, 255, 255, 255]);
+        }
+        for row in 1..height as usize {
+            for pixel in 0..width as usize {
+                let offset = (row * width as usize + pixel) * 4;
+                bgra[offset + 3] = 255;
+            }
+        }
+        compositor.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &bgra,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 4),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        hypercolor_core::effect::ImportedEffectFrame {
+            width,
+            height,
+            format: hypercolor_core::effect::ImportedFrameFormat::Bgra8Unorm,
+            storage_id,
+            texture: Arc::new(texture),
+            view: Arc::new(view),
+            timings: hypercolor_core::effect::ImportedFrameTimings::default(),
+        }
+    };
+
+    let readback = |compositor: &mut GpuSparkleFlinger, plan: &CompositionPlan| {
+        compositor
+            .compose(plan, false, full_preview_request(plan))
+            .expect("imported frame compose should succeed");
+        resolve_preview_surface_blocking(compositor)
+    };
+
+    let replace_frame = imported_frame(1);
+    let blend_frame = imported_frame(2);
+
+    let replace_plan = CompositionPlan::single(
+        width,
+        height,
+        CompositionLayer::replace(ProducerFrame::Gpu(replace_frame)),
+    );
+    let replace_output = readback(&mut compositor, &replace_plan);
+
+    let blend_plan = CompositionPlan::with_layers(
+        width,
+        height,
+        vec![
+            CompositionLayer::replace(ProducerFrame::Canvas(solid_canvas_with_size(
+                width,
+                height,
+                Rgba::new(40, 40, 40, 255),
+            ))),
+            CompositionLayer::alpha(ProducerFrame::Gpu(blend_frame), 1.0),
+        ],
+    );
+    let blend_output = readback(&mut compositor, &blend_plan);
+
+    // The opaque source must land identically through the Replace direct-copy
+    // shader and the blend path's in-shader flip.
+    let replace_rgba = replace_output.rgba_bytes();
+    let blend_rgba = blend_output.rgba_bytes();
+    assert_eq!(replace_rgba.len(), blend_rgba.len());
+    for (index, (replace_byte, blend_byte)) in
+        replace_rgba.iter().zip(blend_rgba.iter()).enumerate()
+    {
+        assert!(
+            replace_byte.abs_diff(*blend_byte) <= 1,
+            "byte {index}: replace {replace_byte} vs blend {blend_byte}",
+        );
+    }
+
+    // Bottom-up physical row 0 (white) must surface as the bottom output row.
+    let bottom_row_offset = ((height - 1) * width * 4) as usize;
+    assert_eq!(
+        &blend_rgba[bottom_row_offset..bottom_row_offset + 4],
+        &[255, 255, 255, 255],
+        "flipped source bottom row should be white",
+    );
+    assert_eq!(
+        &blend_rgba[0..4],
+        &[0, 0, 0, 255],
+        "flipped source top row should be black",
+    );
+}
+
 mod display_finalize;
 mod media_upload;
 mod preview;

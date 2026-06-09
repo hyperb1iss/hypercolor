@@ -245,9 +245,20 @@ fn source_coord_for_destination(xy: vec2<u32>) -> vec3<f32> {
     return vec3<f32>(crop_origin + uv * crop_size - vec2<f32>(0.5), 1.0);
 }
 
+// Sources rendered bottom-up (imported Servo frames on macOS/Windows) set
+// source_and_flags.w; logical coordinates flip to physical rows here, at the
+// single texel load site, so every fit/tile/transform path stays upright.
+fn load_source_texel(xy: vec2<i32>) -> vec4<f32> {
+    var coord = xy;
+    if (params.source_and_flags.w != 0u) {
+        coord.y = i32(params.source_and_flags.y) - 1 - coord.y;
+    }
+    return textureLoad(source_texture, coord, 0);
+}
+
 fn load_source_rgba(xy: vec2<u32>) -> vec4<f32> {
     if (params.source_and_flags.z == 0u) {
-        return textureLoad(source_texture, vec2<i32>(i32(xy.x), i32(xy.y)), 0);
+        return load_source_texel(vec2<i32>(i32(xy.x), i32(xy.y)));
     }
 
     let coord = source_coord_for_destination(xy);
@@ -256,7 +267,7 @@ fn load_source_rgba(xy: vec2<u32>) -> vec4<f32> {
     }
     let max_coord = vec2<f32>(f32(params.source_and_flags.x - 1u), f32(params.source_and_flags.y - 1u));
     let source_xy = vec2<i32>(round(clamp(coord.xy, vec2<f32>(0.0), max_coord)));
-    return textureLoad(source_texture, source_xy, 0);
+    return load_source_texel(source_xy);
 }
 
 fn rgb_to_hsl(color: vec3<f32>) -> vec3<f32> {
