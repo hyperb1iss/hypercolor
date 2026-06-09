@@ -413,11 +413,14 @@ mod tests {
             vulkan_without_win32.servo_gpu_import_backend_compatible(),
             cfg!(target_os = "linux")
         );
+        // A Vulkan adapter is import-compatible only on Linux; every other
+        // platform reports a reason (macOS wants Metal, Windows wants the
+        // win32 external-memory extension).
         assert_eq!(
             vulkan_without_win32
                 .servo_gpu_import_backend_reason()
                 .is_some(),
-            cfg!(target_os = "windows")
+            !cfg!(target_os = "linux")
         );
     }
 
