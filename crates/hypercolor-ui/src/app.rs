@@ -911,7 +911,7 @@ fn AppRoutes() -> impl IntoView {
             when=move || preview_shell_active.get()
             fallback=move || view! {
                 <Shell>
-                    <Routes fallback=|| view! { <p class="text-fg-tertiary p-8">"Not found"</p> }>
+                    <Routes fallback=NotFoundPage>
                         <Route path=path!("/") view=DashboardPage />
                         <Route path=path!("/effects") view=EffectsPage />
                         <Route path=path!("/effects/:id") view=EffectsPage />
@@ -928,6 +928,24 @@ fn AppRoutes() -> impl IntoView {
         >
             <DisplayPreviewPage />
         </Show>
+    }
+}
+
+/// The 404 surface — kept on-brand instead of a bare paragraph so a
+/// mistyped URL still feels like part of the app.
+#[component]
+fn NotFoundPage() -> impl IntoView {
+    view! {
+        <div class="flex h-full flex-col items-center justify-center gap-4 p-8 animate-enter-fade">
+            <div class="text-5xl font-bold tracking-tight text-accent/60">"404"</div>
+            <div class="text-sm text-fg-secondary">"This page doesn't exist."</div>
+            <a
+                href="/"
+                class="mt-2 rounded-lg border border-edge-subtle bg-surface-raised px-4 py-2 text-sm font-medium text-fg-primary transition hover:border-accent/40 hover:bg-surface-hover btn-press"
+            >
+                "Back to the dashboard"
+            </a>
+        </div>
     }
 }
 

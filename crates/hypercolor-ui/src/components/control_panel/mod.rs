@@ -55,16 +55,6 @@ pub(super) const QUICK_COLOR_SWATCHES: [&str; 10] = [
     "#ff8c42", "#0a0910",
 ];
 
-/// Per-section accent colors from the SilkCircuit palette (RGB triplets for `rgba()`).
-const SECTION_COLORS: &[&str] = &[
-    "128, 255, 234", // neon cyan
-    "255, 106, 193", // coral
-    "130, 170, 255", // info blue
-    "80, 250, 123",  // success green
-    "241, 250, 140", // electric yellow
-    "225, 53, 255",  // electric purple
-];
-
 /// Map a control's semantic kind to a Lucide icon.
 fn control_icon(kind: &ControlKind, control_type: &ControlType) -> icondata::Icon {
     match kind {
@@ -140,16 +130,12 @@ pub fn ControlPanel(
             let group = def.group.clone().unwrap_or_else(|| "General".to_string());
             groups.entry(group).or_default().push(def);
         }
-        let count = groups.len();
+        // Every group carries the host effect's accent — one identity per
+        // panel, not a rainbow per section (Luminary §4 accent discipline).
         groups
             .into_iter()
-            .enumerate()
-            .map(|(i, (group, defs))| {
-                let rgb = if count <= 1 {
-                    fallback.clone()
-                } else {
-                    SECTION_COLORS[i % SECTION_COLORS.len()].to_string()
-                };
+            .map(|(group, defs)| {
+                let rgb = fallback.clone();
                 let items: Vec<(ControlDefinition, String)> =
                     defs.into_iter().map(|d| (d, rgb.clone())).collect();
                 (group, rgb, items)
