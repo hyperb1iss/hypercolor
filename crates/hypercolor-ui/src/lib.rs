@@ -48,6 +48,7 @@ pub mod thumbnails;
 pub mod toasts;
 pub mod vendors;
 pub mod ws;
+pub mod zones;
 
 use hypercolor_leptos_ext::prelude::console_log_styled;
 use leptos::prelude::mount_to_body;

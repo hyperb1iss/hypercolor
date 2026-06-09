@@ -186,6 +186,17 @@ pub struct EffectsContext {
     /// zone; every quick-apply surface reads it so applies land in the
     /// zone the user is composing (Wave B3).
     pub apply_target: RwSignal<ApplyTarget>,
+    /// Refresh hook for the shared active-scene resource (crate::zones).
+    /// Apply paths run it after zone-targeted writes; the snapshot
+    /// application happens in the app-root effect that watches the
+    /// shared scene memo, so there is exactly one fetch path.
+    pub scene_refresh: Callback<()>,
+    /// Per-zone active-effect state for every LED zone of the active
+    /// scene, in scene order. The multi-zone now-playing source of truth;
+    /// the singular `active_*` signals above mirror the primary zone only.
+    pub zone_effects: Memo<Vec<crate::zones::ZoneEffectState>>,
+    /// The focused zone's effect state (primary when nothing is focused).
+    pub focused_zone_effect: Memo<Option<crate::zones::ZoneEffectState>>,
 }
 
 /// Shared device + layout state — accessible from devices page and layout builder.
@@ -231,14 +242,7 @@ impl EffectsContext {
     }
 
     pub fn refresh_active_scene(&self) {
-        let ctx = *self;
-        leptos::task::spawn_local(async move {
-            match api::fetch_active_scene().await {
-                Ok(Some(active_scene)) => apply_active_scene_snapshot(&ctx, active_scene),
-                Ok(None) => clear_active_scene_state(&ctx),
-                Err(_) => {}
-            }
-        });
+        self.scene_refresh.run(());
     }
 
     /// Apply an effect by ID — sets local state + calls API.
@@ -479,6 +483,10 @@ pub fn App() -> impl IntoView {
     };
     provide_context(ws_ctx);
     provide_context(crate::device_metrics::install_device_metrics_store(ws_ctx));
+
+    // Shared zone + scene state — one active-scene resource for the whole
+    // app, kept fresh by WS scene events (see crate::zones).
+    let (zones_ctx, _scenes_ctx) = crate::zones::provide_scene_contexts(ws.last_scene_event);
     provide_context(PreviewTelemetryContext {
         presenter: preview_presenter,
         set_presenter: set_preview_presenter,
@@ -531,15 +539,59 @@ pub fn App() -> impl IntoView {
 
     // Global effects state — shared between sidebar player + effects page
     let effects_resource = LocalResource::new(api::fetch_effects);
-    let effects_index = Memo::new(move |_| {
+    let effects_index: Memo<Vec<IndexedEffect>> = Memo::new(move |_| {
         effects_resource
             .get()
             .and_then(Result::ok)
             .map(|effects| effects.into_iter().map(IndexedEffect::new).collect())
             .unwrap_or_default()
     });
+    // Per-zone effect state — what each LED zone is playing, derived
+    // from the shared scene (zip preserves surfaces_from_groups' 1:1
+    // scene ordering) plus the effects index for display names.
+    let zone_effects = Memo::new(move |_| {
+        let Some(scene) = zones_ctx.active_scene.get() else {
+            return Vec::new();
+        };
+        let surfaces = crate::zones::surface::surfaces_from_groups(&scene.groups);
+        effects_index.with(|effects| {
+            scene
+                .groups
+                .iter()
+                .zip(surfaces)
+                .filter(|(_, surface)| surface.kind == crate::zones::surface::SurfaceKind::Light)
+                .map(|(group, surface)| {
+                    let effect_id = group.effect_id.as_ref().map(ToString::to_string);
+                    let indexed = effect_id
+                        .as_ref()
+                        .and_then(|id| effects.iter().find(|entry| entry.effect.id == *id));
+                    crate::zones::ZoneEffectState {
+                        effect_name: indexed.map(|entry| entry.effect.name.clone()),
+                        effect_category: indexed.map(|entry| entry.effect.category.clone()),
+                        control_values: group.controls.clone(),
+                        preset_id: group.preset_id.as_ref().map(ToString::to_string),
+                        controls_version: group.controls_version,
+                        layers_version: group.layers_version,
+                        effect_id,
+                        zone: surface,
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+    });
+    let focused_zone_effect = Memo::new(move |_| {
+        let focused = zones_ctx.focused_zone.get();
+        zone_effects.with(|zones| match focused.as_deref() {
+            Some(id) => zones.iter().find(|state| state.zone.id == id).cloned(),
+            None => zones
+                .iter()
+                .find(|state| state.zone.role == hypercolor_types::scene::ZoneRole::Primary)
+                .or_else(|| zones.first())
+                .cloned(),
+        })
+    });
+
     let active_resource = LocalResource::new(api::fetch_active_effect);
-    let active_scene_resource = LocalResource::new(api::fetch_active_scene);
     let favorites_resource = LocalResource::new(api::fetch_favorites);
     let (active_effect_id, set_active_effect_id) = signal(None::<String>);
     let (active_effect_name, set_active_effect_name) = signal(None::<String>);
@@ -595,6 +647,9 @@ pub fn App() -> impl IntoView {
         preferences: preferences_store,
         restored_effects: StoredValue::new(HashSet::new()),
         apply_target: RwSignal::new(ApplyTarget::Primary),
+        scene_refresh: zones_ctx.refresh,
+        zone_effects,
+        focused_zone_effect,
     };
     provide_context(effects_ctx);
 
@@ -682,9 +737,9 @@ pub fn App() -> impl IntoView {
     });
 
     Effect::new(move |_| {
-        if let Some(Ok(Some(active_scene))) = active_scene_resource.get() {
+        if let Some(active_scene) = zones_ctx.active_scene.get() {
             apply_active_scene_snapshot(&effects_ctx, active_scene);
-        } else if let Some(Ok(None)) = active_scene_resource.get() {
+        } else {
             clear_active_scene_state(&effects_ctx);
         }
     });
@@ -744,22 +799,22 @@ pub fn App() -> impl IntoView {
                 return current_scene_event;
             }
 
+            // Fast-path the scene label so the banner flips instantly;
+            // the shared scene resource (crate::zones) is already
+            // refetching off this same event for the structural state.
             if let Some(scene_event) = current_scene_event.as_ref()
                 && scene_event.event_type == "active_scene_changed"
-            {
-                if let (Some(scene_name), Some(scene_kind), Some(scene_mutation_mode)) = (
+                && let (Some(scene_name), Some(scene_kind), Some(scene_mutation_mode)) = (
                     scene_event.scene_name.clone(),
                     scene_event.scene_kind,
                     scene_event.scene_mutation_mode,
-                ) {
-                    effects_ctx.set_active_scene_name.set(Some(scene_name));
-                    effects_ctx.set_active_scene_kind.set(Some(scene_kind));
-                    effects_ctx
-                        .set_active_scene_mutation_mode
-                        .set(Some(scene_mutation_mode));
-                } else {
-                    effects_ctx.refresh_active_scene();
-                }
+                )
+            {
+                effects_ctx.set_active_scene_name.set(Some(scene_name));
+                effects_ctx.set_active_scene_kind.set(Some(scene_kind));
+                effects_ctx
+                    .set_active_scene_mutation_mode
+                    .set(Some(scene_mutation_mode));
             }
             if current_scene_event
                 .as_ref()

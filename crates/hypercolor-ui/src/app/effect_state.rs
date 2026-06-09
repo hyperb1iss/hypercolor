@@ -24,7 +24,11 @@ pub(super) struct ActiveEffectSnapshot {
 }
 
 pub(super) async fn apply_effect_to_current_led_zones(ctx: &EffectsContext, effect_id: String) {
-    let Some(source) = effect_layer_source(&effect_id) else {
+    // Bake remembered preferences into the layer source, mirroring the
+    // primary-zone apply path — an all-zones apply should start every
+    // zone in the user's saved state, not at defaults.
+    let prefs = ctx.preferences.get(&effect_id);
+    let Some(source) = effect_layer_source(&effect_id, prefs.as_ref()) else {
         toasts::toast_error("That effect has an invalid identifier");
         return;
     };
@@ -106,13 +110,18 @@ async fn apply_effect_layer(
     }
 }
 
-fn effect_layer_source(effect_id: &str) -> Option<LayerSource> {
+fn effect_layer_source(effect_id: &str, prefs: Option<&EffectPreferences>) -> Option<LayerSource> {
     let uuid = uuid::Uuid::parse_str(effect_id.trim()).ok()?;
     Some(LayerSource::Effect {
         effect_id: EffectId::new(uuid),
-        controls: HashMap::new(),
+        controls: prefs
+            .map(|prefs| prefs.control_values.clone())
+            .unwrap_or_default(),
         control_bindings: HashMap::new(),
-        preset_id: None,
+        preset_id: prefs
+            .and_then(|prefs| prefs.preset_id.as_deref())
+            .and_then(|raw| uuid::Uuid::parse_str(raw.trim()).ok())
+            .map(hypercolor_types::library::PresetId),
     })
 }
 

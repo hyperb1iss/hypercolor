@@ -109,11 +109,12 @@ pub fn DevicesPage() -> impl IntoView {
 
     // Each device's scene-zone membership (plan 55 Wave B3): map every
     // layout device id to the zone whose layout claims it. A device's
-    // first-found zone wins when its outputs span more than one.
-    let devices_scene = LocalResource::new(crate::api::fetch_active_scene);
+    // first-found zone wins when its outputs span more than one. Reads
+    // the shared scene resource so badges track zone changes live.
+    let zones_ctx = expect_context::<crate::zones::ZonesContext>();
     let device_zones = Memo::new(move |_| {
         let mut map = std::collections::HashMap::<String, String>::new();
-        if let Some(Ok(Some(scene))) = devices_scene.get() {
+        if let Some(scene) = zones_ctx.active_scene.get() {
             for group in &scene.groups {
                 if group.role == ZoneRole::Display {
                     continue;

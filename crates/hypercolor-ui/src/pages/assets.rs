@@ -27,7 +27,6 @@ pub fn AssetsPage() -> impl IntoView {
     let (search, set_search) = signal(String::new());
     let (kind_filter, set_kind_filter) = signal("all".to_owned());
     let (asset_refresh_tick, set_asset_refresh_tick) = signal(0_u64);
-    let (scene_refresh_tick, set_scene_refresh_tick) = signal(0_u64);
     let (layers_refresh_tick, set_layers_refresh_tick) = signal(0_u64);
     let (selected_asset_id, set_selected_asset_id) = signal(None::<String>);
     let (selected_group_id, set_selected_group_id) = signal(None::<String>);
@@ -39,13 +38,10 @@ pub fn AssetsPage() -> impl IntoView {
         async move { api::list_assets().await }
     });
 
-    let active_scene_resource = LocalResource::new(move || {
-        let _ = scene_refresh_tick.get();
-        async move { api::fetch_active_scene().await }
-    });
-
-    let active_scene =
-        Signal::derive(move || active_scene_resource.get().and_then(Result::ok).flatten());
+    // The shared scene resource keeps the zone selector fresh across
+    // external scene/zone changes (crate::zones).
+    let zones_ctx = expect_context::<crate::zones::ZonesContext>();
+    let active_scene: Signal<Option<api::ActiveSceneResponse>> = zones_ctx.active_scene.into();
 
     Effect::new(move |_| {
         let Some(scene) = active_scene.get() else {
@@ -175,7 +171,7 @@ pub fn AssetsPage() -> impl IntoView {
 
     let on_layers_mutated = Callback::new(move |()| {
         set_layers_refresh_tick.update(|tick| *tick = tick.wrapping_add(1));
-        set_scene_refresh_tick.update(|tick| *tick = tick.wrapping_add(1));
+        zones_ctx.refresh.run(());
     });
 
     view! {

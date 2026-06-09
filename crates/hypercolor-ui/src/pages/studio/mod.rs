@@ -10,7 +10,7 @@ mod device_card;
 pub mod device_grouping;
 mod scene_selector;
 mod stage;
-pub mod surface;
+pub use crate::zones::surface;
 mod zone_add_device;
 mod zone_assignment;
 mod zone_controls;
@@ -32,10 +32,10 @@ use crate::components::resize_handle::ResizeHandle;
 use crate::icons::*;
 use crate::storage;
 
+use crate::zones::surface::{UNASSIGNED_SURFACE_ID, surfaces_from_groups};
 use composition_panel::CompositionPanel;
 use scene_selector::SceneSelector;
 use stage::Stage;
-use surface::{UNASSIGNED_SURFACE_ID, surfaces_from_groups};
 use zone_tree::ZoneTree;
 
 const TREE_WIDTH_KEY: &str = "hc-studio-tree-width";
@@ -108,14 +108,13 @@ pub struct StudioContext {
 
 #[component]
 pub fn StudioPage() -> impl IntoView {
-    let (scene_tick, set_scene_tick) = signal(0_u64);
     let (layers_tick, set_layers_tick) = signal(0_u64);
 
-    let scene_resource = LocalResource::new(move || {
-        let _ = scene_tick.get();
-        async move { api::fetch_active_scene().await }
-    });
-    let active_scene = Signal::derive(move || scene_resource.get().and_then(Result::ok).flatten());
+    // The active scene is the app-wide shared resource — WS scene events
+    // keep it fresh, so zone changes made from other pages, other
+    // clients, or the CLI land here without a Studio-local refetch.
+    let zones_ctx = expect_context::<crate::zones::ZonesContext>();
+    let active_scene: Signal<Option<api::ActiveSceneResponse>> = zones_ctx.active_scene.into();
 
     let selected_surface_id = RwSignal::new(None::<String>);
 
@@ -164,6 +163,7 @@ pub fn StudioPage() -> impl IntoView {
                     .any(|group| group.id.to_string() == *id && group.role != ZoneRole::Display)
         });
         if let Some(zone_id) = selected_led_zone {
+            zones_ctx.focused_zone.set(Some(zone_id.clone()));
             effects_ctx.apply_target.set(ApplyTarget::Zone(zone_id));
         } else if matches!(
             effects_ctx.apply_target.get_untracked(),
@@ -175,6 +175,7 @@ pub fn StudioPage() -> impl IntoView {
         ) {
             // A Screen / Unassigned selection holding a target left over
             // from a no-longer-active scene falls back to the default zone.
+            zones_ctx.focused_zone.set(None);
             effects_ctx.apply_target.set(ApplyTarget::Primary);
         }
     });
@@ -196,11 +197,9 @@ pub fn StudioPage() -> impl IntoView {
 
     let on_layers_mutated = Callback::new(move |()| {
         set_layers_tick.update(|tick| *tick = tick.wrapping_add(1));
-        set_scene_tick.update(|tick| *tick = tick.wrapping_add(1));
+        zones_ctx.refresh.run(());
     });
-    let refresh_scene = Callback::new(move |()| {
-        set_scene_tick.update(|tick| *tick = tick.wrapping_add(1));
-    });
+    let refresh_scene = zones_ctx.refresh;
 
     // The zone tree owns selection, so the layer panel shows the selected
     // surface's name in its header rather than a redundant group selector.

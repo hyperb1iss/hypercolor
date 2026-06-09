@@ -373,10 +373,11 @@ pub fn EffectsPage() -> impl IntoView {
     // Apply-target selector (§5.3). The active scene's LED zones drive an
     // explicit target picker that appears only once a scene has more than
     // one zone — a single-zone scene keeps the unchanged "apply effect"
-    // behavior with no extra control.
-    let effects_scene = LocalResource::new(api::fetch_active_scene);
-    let apply_target_scene =
-        Signal::derive(move || effects_scene.get().and_then(Result::ok).flatten());
+    // behavior with no extra control. The shared scene resource keeps the
+    // zone options fresh across external scene/zone changes.
+    let zones_ctx = expect_context::<crate::zones::ZonesContext>();
+    let apply_target_scene: Signal<Option<api::ActiveSceneResponse>> =
+        zones_ctx.active_scene.into();
     // Apply effect handler — delegates to shared context
     let on_apply = Callback::new(move |id: String| {
         let is_display_face = fx.effects_index.with(|effects| {

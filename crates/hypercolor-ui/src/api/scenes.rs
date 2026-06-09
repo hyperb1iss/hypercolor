@@ -43,6 +43,18 @@ pub struct SceneSummary {
     pub name: String,
     #[serde(default)]
     pub description: Option<String>,
+    /// Whether the scene participates in activation. Defaults true for
+    /// daemons that predate the field.
+    #[serde(default = "default_scene_enabled")]
+    pub enabled: bool,
+    /// Live vs snapshot-locked. Lets scene pickers mark locked scenes
+    /// without joining `/scenes/active`.
+    #[serde(default)]
+    pub mutation_mode: SceneMutationMode,
+}
+
+fn default_scene_enabled() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Deserialize)]
