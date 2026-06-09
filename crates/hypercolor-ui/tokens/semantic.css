@@ -122,9 +122,25 @@
     --ambient-border:    oklch(0.58 0.15 var(--ambient-hue) / 0.12);
     --ambient-tint:      oklch(0.58 0.15 var(--ambient-hue) / 0.03);
 
+    /* Status (darkened for contrast on light surfaces) */
+    --status-success:    oklch(0.55 0.18 155);
+    --status-error:      oklch(0.55 0.22 25);
+    --status-warning:    oklch(0.58 0.14 85);
+    --status-info:       oklch(0.50 0.12 260);
+
     /* Scrollbar */
     --scrollbar-thumb:   oklch(0 0 0 / 0.12);
     --scrollbar-hover:   oklch(0 0 0 / 0.24);
+
+    /* Interactive glows — purple focus in light mode (§12.4), and the
+       slider/accent glow family tracks the desaturated light accent. */
+    --glow-accent:       oklch(0.58 0.28 320);
+    --glow-accent-50:    oklch(0.58 0.28 320 / 0.5);
+    --glow-accent-80:    oklch(0.58 0.28 320 / 0.8);
+    --glow-accent-70:    oklch(0.58 0.28 320 / 0.7);
+    --glow-focus:        oklch(0.58 0.28 320 / 0.35);
+    --glow-focus-soft:   oklch(0.58 0.28 320 / 0.18);
+    --selection-bg:      oklch(0.58 0.28 320 / 0.22);
 
     /* Noise */
     --noise-opacity:     0.006;

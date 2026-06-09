@@ -29,6 +29,26 @@
     --leptoaster-warn-text-color: #f1fa8c;
 }
 
+/* Light theme — the neon toast text above is tuned for dark surfaces and
+   washes out on white; swap to darkened equivalents of the same hues. */
+[data-theme="light"] {
+    --leptoaster-success-background-color: rgba(15, 138, 77, 0.08);
+    --leptoaster-success-border-color: rgba(15, 138, 77, 0.30);
+    --leptoaster-success-text-color: #0f7a44;
+
+    --leptoaster-error-background-color: rgba(211, 58, 58, 0.08);
+    --leptoaster-error-border-color: rgba(211, 58, 58, 0.30);
+    --leptoaster-error-text-color: #c22f2f;
+
+    --leptoaster-info-background-color: rgba(59, 111, 212, 0.08);
+    --leptoaster-info-border-color: rgba(59, 111, 212, 0.30);
+    --leptoaster-info-text-color: #2f5cb8;
+
+    --leptoaster-warn-background-color: rgba(154, 125, 0, 0.08);
+    --leptoaster-warn-border-color: rgba(154, 125, 0, 0.30);
+    --leptoaster-warn-text-color: #7d6600;
+}
+
 /* ── Base Resets ─────────────────────────────────────────────────────────── */
 
 html {
@@ -191,7 +211,9 @@ input[type="color"]::-webkit-color-swatch {
 
 ::selection {
     background: var(--selection-bg);
-    color: white;
+    /* text-primary is near-white in dark and near-black in light, so
+       selected text stays readable over the translucent purple in both */
+    color: var(--text-primary);
 }
 
 /* ── Focus rings — glow, never outline ──────────────────────────────────── */
@@ -1130,6 +1152,12 @@ body.resizing * {
     .animate-effect-swap-3,
     .animate-canvas-ignite,
     .animate-cabinet-ignite,
+    .animate-eq-bar,
+    .animate-swap-in,
+    .animate-picker-in,
+    .logo-bg-mark,
+    .search-glow,
+    .fullscreen-preview,
     .dot-alive,
     .card-glow,
     .logo-gradient-text {
