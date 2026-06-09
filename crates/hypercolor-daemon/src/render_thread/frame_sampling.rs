@@ -2,6 +2,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use tracing::warn;
@@ -111,6 +112,21 @@ pub(crate) struct LedSamplingOutcome {
 enum CpuSamplingCanvasStatus {
     Ready,
     Unavailable,
+}
+
+const CPU_SAMPLING_CANVAS_WARN_INTERVAL: u64 = 300;
+
+/// Rate-limits the no-resident-canvas fallback warning. With the GPU
+/// compositor's one-frame sampling readback latch this state is expected at
+/// most once at stream start (the latch primes on the first composed frame),
+/// so steady-state repetition indicates a real regression without spamming a
+/// warn per frame.
+fn warn_cpu_sampling_canvas_unavailable(message: &str) {
+    static OCCURRENCES: AtomicU64 = AtomicU64::new(0);
+    let occurrence = OCCURRENCES.fetch_add(1, Ordering::Relaxed);
+    if occurrence.is_multiple_of(CPU_SAMPLING_CANVAS_WARN_INTERVAL) {
+        warn!(occurrence, "{message}");
+    }
 }
 
 #[cfg(test)]
@@ -705,16 +721,16 @@ pub(crate) fn resolve_led_sampling(
                 }
             }
             CpuSamplingCanvasStatus::Unavailable if can_hold_published_frame => {
-                warn!(
-                    "CPU spatial sampling fallback has no resident canvas; reusing published frame"
+                warn_cpu_sampling_canvas_unavailable(
+                    "CPU spatial sampling fallback has no resident canvas; reusing published frame",
                 );
                 render_stage.led_sampling_strategy =
                     LedSamplingStrategy::ReusePublished(Arc::clone(&layout));
                 refresh_reused_frame_metadata = true;
             }
             CpuSamplingCanvasStatus::Unavailable => {
-                warn!(
-                    "CPU spatial sampling fallback has no resident canvas; sampling a black fallback frame"
+                warn_cpu_sampling_canvas_unavailable(
+                    "CPU spatial sampling fallback has no resident canvas; sampling a black fallback frame",
                 );
                 let black_canvas =
                     Canvas::new(state.canvas_dims.width(), state.canvas_dims.height());

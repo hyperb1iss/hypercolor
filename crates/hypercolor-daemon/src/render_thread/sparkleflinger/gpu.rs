@@ -24,7 +24,7 @@ mod sampler;
 mod source;
 mod telemetry;
 
-use compositor::create_compose_bind_group;
+use compositor::{SamplingReadbackLatch, create_compose_bind_group};
 #[cfg(test)]
 use display_finalize::DISPLAY_FINALIZE_READBACK_SLOT_COUNT;
 pub(crate) use display_finalize::{
@@ -84,6 +84,7 @@ pub(crate) struct GpuSparkleFlinger {
     pending_preview_submission: Option<wgpu::SubmissionIndex>,
     pending_preview_map: Option<PendingPreviewMap>,
     ready_preview_surface: Option<PublishedSurface>,
+    sampling_latch: SamplingReadbackLatch,
     output_generation: u64,
     producer_texture_generation: u64,
     cached_sample_result: Option<CachedSampleResult>,
@@ -229,6 +230,7 @@ impl GpuSparkleFlinger {
             pending_preview_submission: None,
             pending_preview_map: None,
             ready_preview_surface: None,
+            sampling_latch: SamplingReadbackLatch::default(),
             output_generation: 0,
             producer_texture_generation: 0,
             cached_sample_result: None,

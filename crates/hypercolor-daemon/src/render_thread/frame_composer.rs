@@ -305,12 +305,11 @@ impl ComposeContext<'_> {
                     .led_sampling_strategy
                     .sparkleflinger_engine()
                     .is_some_and(|spatial_engine| {
-                        !self.compose.sparkleflinger.supports_gpu_output_frames()
-                            && requires_cpu_sampling_canvas(
-                                self.compose
-                                    .sparkleflinger
-                                    .can_sample_zone_plan(spatial_engine.sampling_plan().as_ref()),
-                            )
+                        requires_cpu_sampling_canvas(
+                            self.compose
+                                .sparkleflinger
+                                .can_sample_zone_plan(spatial_engine.sampling_plan().as_ref()),
+                        )
                     });
                 let composed = if requires_full_composition {
                     self.compose.sparkleflinger.compose_for_outputs(
@@ -490,12 +489,11 @@ impl ComposeContext<'_> {
     }
 
     fn requires_cpu_sampling_canvas(&self) -> bool {
-        !self.compose.sparkleflinger.supports_gpu_output_frames()
-            && requires_cpu_sampling_canvas(
-                self.compose.sparkleflinger.can_sample_zone_plan(
-                    self.scene_snapshot.spatial_engine.sampling_plan().as_ref(),
-                ),
-            )
+        requires_cpu_sampling_canvas(
+            self.compose
+                .sparkleflinger
+                .can_sample_zone_plan(self.scene_snapshot.spatial_engine.sampling_plan().as_ref()),
+        )
     }
 
     fn preview_surface_request(&self) -> Option<PreviewSurfaceRequest> {

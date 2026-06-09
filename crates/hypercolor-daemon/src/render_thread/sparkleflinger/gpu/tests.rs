@@ -795,6 +795,67 @@ fn gpu_compose_params_ring_wrap_falls_back_to_staging_uploads() {
 }
 
 #[test]
+fn gpu_compositor_latches_sampling_canvas_for_animated_gpu_plans() {
+    let mut compositor = match GpuSparkleFlinger::new() {
+        Ok(compositor) => compositor,
+        Err(_) => return,
+    };
+    let first_content = patterned_canvas(9);
+    let second_content = patterned_canvas(63);
+    let first_frame = compositor
+        .upload_media_canvas_frame(MediaTextureSourceKey::for_test(0), &first_content)
+        .expect("first media upload should succeed");
+    let second_frame = compositor
+        .upload_media_canvas_frame(MediaTextureSourceKey::for_test(1), &second_content)
+        .expect("second media upload should succeed");
+
+    // GPU producer frames keep `cached_readback_key` at None, so the keyed
+    // readback cache can never service CPU sampling for this plan shape.
+    let first_plan = CompositionPlan::single(
+        4,
+        4,
+        CompositionLayer::replace(ProducerFrame::GpuTexture(first_frame)),
+    );
+    let composed = compositor
+        .compose(&first_plan, true, None)
+        .expect("first animated GPU compose should succeed");
+    assert!(
+        composed.sampling_canvas.is_none(),
+        "the very first compose has no previous frame to latch",
+    );
+
+    // Let the staged readback finish so the next compose can resolve it.
+    compositor
+        .device
+        .poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        })
+        .expect("GPU wait for the staged sampling readback should succeed");
+
+    let second_plan = CompositionPlan::single(
+        4,
+        4,
+        CompositionLayer::replace(ProducerFrame::GpuTexture(second_frame)),
+    );
+    let composed = compositor
+        .compose(&second_plan, true, None)
+        .expect("second animated GPU compose should succeed");
+    let sampling_canvas = composed
+        .sampling_canvas
+        .expect("the second compose should latch the previous frame's output");
+    assert_eq!(
+        sampling_canvas.as_rgba_bytes(),
+        first_content.as_rgba_bytes(),
+        "latched sampling canvas should hold the previous frame's composed pixels",
+    );
+    assert!(
+        composed.sampling_surface.is_some(),
+        "the latched frame should also expose a published sampling surface",
+    );
+}
+
+#[test]
 fn gpu_compositor_scales_preview_surface_to_requested_size() {
     let mut compositor = match GpuSparkleFlinger::new() {
         Ok(compositor) => compositor,
