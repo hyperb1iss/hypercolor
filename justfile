@@ -580,6 +580,27 @@ dev *args='':
       exit "${status}"
     }
 
+    wait_for_first_exit() {
+      local status
+      while true; do
+        if ! jobs -pr | grep -qx "${daemon_pid}"; then
+          set +e
+          wait "${daemon_pid}"
+          status=$?
+          set -e
+          return "${status}"
+        fi
+        if ! jobs -pr | grep -qx "${trunk_pid}"; then
+          set +e
+          wait "${trunk_pid}"
+          status=$?
+          set -e
+          return "${status}"
+        fi
+        sleep 0.25
+      done
+    }
+
     trap cleanup EXIT INT TERM
     just prepare-dev-assets
     daemon_args=(--log-level debug)
@@ -601,7 +622,7 @@ dev *args='':
     sleep 2
     (cd crates/hypercolor-ui && env -u NO_COLOR trunk serve --dist .dist-dev) &
     trunk_pid=$!
-    wait -n "${daemon_pid}" "${trunk_pid}"
+    wait_for_first_exit
 
 [windows]
 dev *args='':

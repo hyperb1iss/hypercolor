@@ -261,9 +261,7 @@ pub(crate) fn bootstrap_rendering_context(
         }
     }
 
-    Ok(ServoRenderingContextHandle::new(Rc::new(
-        bootstrap_software_rendering_context(width, height)?,
-    )))
+    bootstrap_software_rendering_context_handle(width, height)
 }
 
 #[cfg(not(any(
@@ -275,7 +273,5 @@ pub(crate) fn bootstrap_rendering_context(
     width: u32,
     height: u32,
 ) -> Result<ServoRenderingContextHandle> {
-    Ok(ServoRenderingContextHandle::new(Rc::new(
-        bootstrap_software_rendering_context(width, height)?,
-    )))
+    bootstrap_software_rendering_context_handle(width, height)
 }
