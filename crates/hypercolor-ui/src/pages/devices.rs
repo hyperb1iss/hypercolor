@@ -274,6 +274,7 @@ pub fn DevicesPage() -> impl IntoView {
     // Pairing modal state — holds the device to show the pairing/forget modal for
     let (pairing_device, set_pairing_device) = signal(Option::<DeviceSummary>::None);
     let (forget_device, set_forget_device) = signal(Option::<DeviceSummary>::None);
+    let (scanning, set_scanning) = signal(false);
 
     let on_pair_device = Callback::new(move |device_id: String| {
         if let Some(Ok(devices)) = ctx.devices_resource.get()
@@ -342,19 +343,32 @@ pub fn DevicesPage() -> impl IntoView {
                         }}
                     </span>
                     <button
-                        class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-all btn-press shrink-0"
+                        class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-all btn-press shrink-0 disabled:opacity-60"
                         style="background: rgba(128, 255, 234, 0.06); border: 1px solid rgba(128, 255, 234, 0.1); color: rgba(128, 255, 234, 0.8)"
+                        prop:disabled=move || scanning.get()
                         on:click=move |_| {
+                            if scanning.get_untracked() {
+                                return;
+                            }
+                            set_scanning.set(true);
+                            toasts::toast_info("Scanning for devices...");
                             let devices_resource = ctx.devices_resource;
                             leptos::task::spawn_local(async move {
-                                let _ = crate::api::discover_devices().await;
-                                toasts::toast_info("Scanning...");
-                                devices_resource.refetch();
+                                if let Err(error) = crate::api::discover_devices().await {
+                                    toasts::toast_error(&format!("Device scan failed: {error}"));
+                                } else {
+                                    devices_resource.refetch();
+                                }
+                                set_scanning.set(false);
                             });
                         }
                     >
-                        <Icon icon=LuRefreshCw width="12px" height="12px" />
-                        "Scan"
+                        <span class=move || {
+                            if scanning.get() { "inline-flex animate-spin" } else { "inline-flex" }
+                        }>
+                            <Icon icon=LuRefreshCw width="12px" height="12px" />
+                        </span>
+                        {move || if scanning.get() { "Scanning" } else { "Scan" }}
                     </button>
                 </HeaderTrailing>
                 <HeaderToolbar slot>

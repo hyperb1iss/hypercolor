@@ -110,12 +110,16 @@ pub fn DeviceDetail(
                 enabled: Some(!currently_active),
                 brightness: None,
             };
-            let _ = api::update_device(&id, &req).await;
-            devices_resource.refetch();
-            if currently_active {
-                toasts::toast_info("Device disabled");
-            } else {
-                toasts::toast_success("Device enabled");
+            match api::update_device(&id, &req).await {
+                Ok(_) => {
+                    devices_resource.refetch();
+                    if currently_active {
+                        toasts::toast_info("Device disabled");
+                    } else {
+                        toasts::toast_success("Device enabled");
+                    }
+                }
+                Err(error) => toasts::toast_error(&format!("Device update failed: {error}")),
             }
         });
     };

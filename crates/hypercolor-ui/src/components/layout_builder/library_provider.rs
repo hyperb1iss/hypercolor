@@ -135,7 +135,11 @@ pub(crate) fn LayoutEditorProvider(children: Children) -> impl IntoView {
     let preview_layout = use_debounce_fn_with_arg(
         |layout: SpatialLayout| {
             leptos::task::spawn_local(async move {
-                let _ = api::preview_layout(&layout).await;
+                // Debounced drag stream — a toast per failure would spam, but
+                // a dead preview should still leave a trail in the console.
+                if let Err(error) = api::preview_layout(&layout).await {
+                    log::warn!("layout preview push failed: {error}");
+                }
             });
         },
         75.0,

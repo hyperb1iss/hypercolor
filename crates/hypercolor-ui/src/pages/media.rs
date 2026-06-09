@@ -156,11 +156,16 @@ pub fn MediaPage() -> impl IntoView {
                     </span>
                     <button
                         type="button"
-                        class="flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[11px] font-medium transition-all btn-press"
+                        class="flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[11px] font-medium transition-all btn-press disabled:opacity-60"
                         style="background: rgba(255, 106, 193, 0.08); border: 1px solid rgba(255, 106, 193, 0.16); color: rgb(255, 106, 193)"
+                        prop:disabled=move || uploading.get()
                         on:click=move |_| open_file_picker.run(())
                     >
-                        <Icon icon=LuPlus width="12px" height="12px" />
+                        <span class=move || {
+                            if uploading.get() { "inline-flex animate-pulse" } else { "inline-flex" }
+                        }>
+                            <Icon icon=LuPlus width="12px" height="12px" />
+                        </span>
                         {move || if uploading.get() { "Uploading" } else { "Upload" }}
                     </button>
                 </HeaderTrailing>
