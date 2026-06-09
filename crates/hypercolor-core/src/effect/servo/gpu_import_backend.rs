@@ -6,9 +6,9 @@ use anyhow::{Error, Result, anyhow};
 use servo::RenderingContext;
 use tracing::debug;
 
-use super::telemetry::{
-    ServoGpuImportFallbackReason, record_servo_gpu_import_frame, record_servo_gpu_import_slot_state,
-};
+#[cfg(target_os = "linux")]
+use super::telemetry::record_servo_gpu_import_slot_state;
+use super::telemetry::{ServoGpuImportFallbackReason, record_servo_gpu_import_frame};
 use super::worker_client::ServoSessionId;
 use crate::effect::servo_bootstrap::ServoRenderingContextHandle;
 use crate::effect::traits::ImportedEffectFrame;
@@ -65,6 +65,7 @@ pub(super) struct ServoGpuImportBackend {
     last_frame: Option<ImportedEffectFrame>,
 }
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(super) struct ServoGpuImportSessionContext<'a> {
     pub(super) session_id: ServoSessionId,
     pub(super) rendering_context: &'a Rc<dyn RenderingContext>,

@@ -330,6 +330,7 @@ pub(super) fn record_servo_gpu_import_failure(
 }
 
 #[cfg(feature = "servo-gpu-import")]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(super) fn record_servo_gpu_import_slot_state(
     slot_count: usize,
     pending_slots: usize,
