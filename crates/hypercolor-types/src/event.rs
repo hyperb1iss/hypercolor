@@ -127,6 +127,15 @@ pub enum SceneSettingsChangeKind {
     UnassignedBehavior,
 }
 
+/// How the saved-scene library changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SceneLibraryChangeKind {
+    Created,
+    Updated,
+    Deleted,
+}
+
 /// How an asset library record changed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -504,16 +513,28 @@ pub enum HypercolorEvent {
         effect: EffectRef,
         /// What caused the start: user selection, profile load, scene trigger, etc.
         trigger: ChangeTrigger,
-        /// If this replaced a previous effect, reference it here.
+        /// The effect previously running *in the same zone*, if any.
         previous: Option<EffectRef>,
         /// Transition type applied (if any).
         transition: Option<TransitionRef>,
+        /// Zone (render group) the effect started in. `None` only for
+        /// publishers without zone context (e.g. session restore).
+        #[serde(default)]
+        group_id: Option<ZoneId>,
+        #[serde(default)]
+        group_name: Option<String>,
     },
 
-    /// The active effect has been stopped.
+    /// An effect was stopped in one zone.
     EffectStopped {
         effect: EffectRef,
         reason: EffectStopReason,
+        /// Zone (render group) the effect was cleared from. `None` only
+        /// for publishers without zone context.
+        #[serde(default)]
+        group_id: Option<ZoneId>,
+        #[serde(default)]
+        group_name: Option<String>,
     },
 
     /// A control value on the active effect was updated.
@@ -621,6 +642,15 @@ pub enum HypercolorEvent {
         scene_id: SceneId,
         groups_revision: u64,
         kind: SceneSettingsChangeKind,
+    },
+
+    /// The saved-scene library changed (scene created, renamed, or
+    /// deleted) without necessarily changing which scene is active.
+    SceneLibraryChanged {
+        scene_id: SceneId,
+        kind: SceneLibraryChangeKind,
+        /// Scene name at change time (`None` after deletion).
+        name: Option<String>,
     },
 
     /// The active scene changed.
@@ -903,6 +933,7 @@ impl HypercolorEvent {
             | Self::LayerStackChanged { .. }
             | Self::LayerHealthChanged { .. }
             | Self::SceneSettingsChanged { .. }
+            | Self::SceneLibraryChanged { .. }
             | Self::ActiveSceneChanged { .. } => EventCategory::Scene,
 
             Self::AudioSourceChanged { .. }

@@ -821,11 +821,13 @@ async fn clear_active_scene_effect_groups(
         return Ok(None);
     }
 
-    state.event_bus.publish(HypercolorEvent::EffectStopped {
-        effect: effect.clone(),
-        reason: EffectStopReason::Error,
-    });
     for group in &cleared_groups {
+        state.event_bus.publish(HypercolorEvent::EffectStopped {
+            effect: effect.clone(),
+            reason: EffectStopReason::Error,
+            group_id: Some(group.id),
+            group_name: Some(group.name.clone()),
+        });
         publish_render_group_changed(state.as_ref(), scene_id, group, ZoneChangeKind::Updated);
     }
     persist_runtime_session(state).await;

@@ -8,8 +8,10 @@ use axum::extract::{Path, State};
 use axum::response::Response;
 use serde::{Deserialize, Serialize};
 
-use hypercolor_types::effect::ControlValue;
+use hypercolor_types::effect::{ControlValue, EffectMetadata};
+use hypercolor_types::event::{ChangeTrigger, HypercolorEvent, ZoneChangeKind};
 use hypercolor_types::library::{EffectPreset, PresetId};
+use hypercolor_types::scene::ZoneId;
 
 use crate::api::AppState;
 use crate::api::control_values::json_to_control_value;
@@ -36,6 +38,13 @@ pub struct SavePresetRequest {
     pub effect: String,
     pub controls: Option<serde_json::Value>,
     pub tags: Option<Vec<String>>,
+}
+
+/// Optional body for `apply_preset` — scopes the apply to one zone.
+#[derive(Debug, Default, Deserialize)]
+pub struct ApplyPresetRequest {
+    /// Target zone (render-group id). Omitted targets the primary zone.
+    pub render_group: Option<String>,
 }
 
 // ── Handlers ────────────────────────────────────────────────────────────
@@ -190,7 +199,11 @@ pub async fn delete_preset(State(state): State<Arc<AppState>>, Path(id): Path<St
 /// are updated in-place (reset to defaults, then apply preset values) without
 /// tearing down and re-creating the renderer. This avoids animation restarts
 /// and visual glitches.
-pub async fn apply_preset(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
+pub async fn apply_preset(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    body: Option<Json<ApplyPresetRequest>>,
+) -> Response {
     let Some(preset_id) = resolve_preset_id(&state, &id).await else {
         return ApiError::not_found(format!("Preset not found: {id}"));
     };
@@ -208,6 +221,29 @@ pub async fn apply_preset(State(state): State<Arc<AppState>>, Path(id): Path<Str
         };
         entry.metadata.clone()
     };
+
+    // A render_group naming a non-Primary zone takes the zone-scoped
+    // path; naming the Primary (or omitting it) keeps legacy semantics.
+    let target_group = match crate::api::effects::parse_render_group(
+        body.as_ref().and_then(|body| body.render_group.as_deref()),
+    ) {
+        Ok(target) => target,
+        Err(response) => return *response,
+    };
+    let named_target = match target_group {
+        None => None,
+        Some(group_id) => {
+            let scene_manager = state.scene_manager.read().await;
+            let primary_id = scene_manager
+                .active_scene()
+                .and_then(|scene| scene.primary_group())
+                .map(|group| group.id);
+            (Some(group_id) != primary_id).then_some(group_id)
+        }
+    };
+    if let Some(group_id) = named_target {
+        return apply_preset_to_zone(&state, group_id, &preset, &metadata).await;
+    }
 
     // Check if the same effect is already running — if so, skip full re-activation
     let same_effect = crate::api::effects::active_primary_effect(state.as_ref())
@@ -287,6 +323,105 @@ pub async fn apply_preset(State(state): State<Arc<AppState>>, Path(id): Path<Str
         "applied_controls": activation.applied,
         "rejected_controls": activation.rejected,
         "warnings": activation.warnings,
+    }))
+}
+
+/// Apply a preset to a named non-Primary zone. When the zone already runs
+/// the preset's effect, controls hot-swap in place (defaults, then preset
+/// values) exactly like the legacy primary path; otherwise the preset's
+/// effect is set on the zone with the preset controls baked in.
+async fn apply_preset_to_zone(
+    state: &Arc<AppState>,
+    group_id: ZoneId,
+    preset: &EffectPreset,
+    metadata: &EffectMetadata,
+) -> Response {
+    let (applied, rejected) =
+        crate::api::effects::normalize_control_values(metadata, &preset.controls);
+
+    let (scene_id, group, previous_effect_id) = {
+        let mut scene_manager = state.scene_manager.write().await;
+        let scene_id = match crate::api::active_scene_id_for_runtime_mutation(&scene_manager) {
+            Ok(scene_id) => scene_id,
+            Err(error) => return ApiError::conflict(error.message("applying a preset")),
+        };
+        let previous_effect_id = scene_manager
+            .active_scene()
+            .and_then(|scene| scene.groups.iter().find(|group| group.id == group_id))
+            .and_then(|group| group.effect_id);
+
+        if previous_effect_id == Some(metadata.id) {
+            if scene_manager
+                .reset_group_controls(
+                    group_id,
+                    crate::api::effects::default_control_values(metadata),
+                )
+                .is_none()
+                || scene_manager
+                    .patch_group_controls(group_id, applied.clone())
+                    .is_none()
+            {
+                return ApiError::not_found("Zone not found in active scene");
+            }
+            let _ = scene_manager.set_group_preset_id(group_id, Some(preset.id));
+        } else if let Err(error) = scene_manager.apply_effect_to_group(
+            group_id,
+            metadata,
+            applied.clone(),
+            Some(preset.id),
+        ) {
+            return ApiError::validation(format!("Failed to apply preset to zone: {error}"));
+        }
+
+        let Some(group) = scene_manager
+            .active_scene()
+            .and_then(|scene| scene.groups.iter().find(|group| group.id == group_id))
+            .cloned()
+        else {
+            return ApiError::not_found("Zone not found in active scene");
+        };
+        (scene_id, group, previous_effect_id)
+    };
+
+    if previous_effect_id != Some(metadata.id) {
+        let previous = match previous_effect_id {
+            Some(effect_id) => {
+                let registry = state.effect_registry.read().await;
+                registry
+                    .get(&effect_id)
+                    .map(|entry| crate::api::effects::effect_ref(&entry.metadata))
+            }
+            None => None,
+        };
+        state.event_bus.publish(HypercolorEvent::EffectStarted {
+            effect: crate::api::effects::effect_ref(metadata),
+            trigger: ChangeTrigger::Api,
+            previous,
+            transition: None,
+            group_id: Some(group.id),
+            group_name: Some(group.name.clone()),
+        });
+    }
+    crate::api::publish_render_group_changed(
+        state.as_ref(),
+        scene_id,
+        &group,
+        ZoneChangeKind::Updated,
+    );
+    crate::api::persist_runtime_session(state).await;
+
+    ApiResponse::ok(serde_json::json!({
+        "preset": {
+            "id": preset.id.to_string(),
+            "name": preset.name,
+        },
+        "effect": {
+            "id": metadata.id.to_string(),
+            "name": metadata.name,
+        },
+        "applied_controls": applied,
+        "rejected_controls": rejected,
+        "warnings": Vec::<String>::new(),
     }))
 }
 

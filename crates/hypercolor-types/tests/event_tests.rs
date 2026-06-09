@@ -91,10 +91,14 @@ fn effect_events_have_effect_category() {
             trigger: ChangeTrigger::User,
             previous: None,
             transition: None,
+            group_id: None,
+            group_name: None,
         },
         HypercolorEvent::EffectStopped {
             effect: effect_ref,
             reason: EffectStopReason::Replaced,
+            group_id: None,
+            group_name: None,
         },
         HypercolorEvent::EffectControlChanged {
             effect_id: "rainbow".into(),
@@ -606,6 +610,8 @@ fn normal_priority_is_default() {
             trigger: ChangeTrigger::User,
             previous: None,
             transition: None,
+            group_id: None,
+            group_name: None,
         },
         HypercolorEvent::SceneActivated {
             scene_id: "s1".into(),
@@ -733,6 +739,7 @@ fn serialize_device_discovered_roundtrip() {
 
 #[test]
 fn serialize_effect_started_with_transition() {
+    let zone_id = ZoneId::new();
     let event = HypercolorEvent::EffectStarted {
         effect: EffectRef {
             id: "rainbow_wave".into(),
@@ -749,6 +756,8 @@ fn serialize_effect_started_with_transition() {
             transition_type: "crossfade".into(),
             duration_ms: 1000,
         }),
+        group_id: Some(zone_id),
+        group_name: Some("Desk".into()),
     };
 
     let json = serde_json::to_string(&event).expect("serialize");
@@ -759,6 +768,8 @@ fn serialize_effect_started_with_transition() {
         trigger,
         previous,
         transition,
+        group_id,
+        group_name,
     } = deserialized
     {
         assert_eq!(effect.id, "rainbow_wave");
@@ -768,6 +779,35 @@ fn serialize_effect_started_with_transition() {
         let t = transition.expect("transition present");
         assert_eq!(t.transition_type, "crossfade");
         assert_eq!(t.duration_ms, 1000);
+        assert_eq!(group_id, Some(zone_id));
+        assert_eq!(group_name.as_deref(), Some("Desk"));
+    } else {
+        panic!("Expected EffectStarted variant");
+    }
+}
+
+#[test]
+fn effect_started_without_zone_fields_still_parses() {
+    // Pre-multi-zone payloads omit group_id/group_name entirely; the
+    // serde(default) keeps old recorded events and clients parseable.
+    let json = r#"{
+        "type": "EffectStarted",
+        "data": {
+            "effect": { "id": "e", "name": "E", "engine": "wgpu" },
+            "trigger": "user",
+            "previous": null,
+            "transition": null
+        }
+    }"#;
+    let deserialized: HypercolorEvent = serde_json::from_str(json).expect("deserialize");
+    if let HypercolorEvent::EffectStarted {
+        group_id,
+        group_name,
+        ..
+    } = deserialized
+    {
+        assert_eq!(group_id, None);
+        assert_eq!(group_name, None);
     } else {
         panic!("Expected EffectStarted variant");
     }

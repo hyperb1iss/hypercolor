@@ -41,6 +41,8 @@ fn effect_started(name: &str) -> HypercolorEvent {
         trigger: ChangeTrigger::User,
         previous: None,
         transition: None,
+        group_id: None,
+        group_name: None,
     }
 }
 

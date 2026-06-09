@@ -1042,6 +1042,7 @@ async fn stateful_set_effect_and_stop_effect_sync_scene_runtime_and_events() {
             HypercolorEvent::EffectStopped {
                 effect: stopped,
                 reason,
+                ..
             } => {
                 assert_eq!(stopped.id, effect.id.to_string());
                 assert_eq!(reason, EffectStopReason::Stopped);

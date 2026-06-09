@@ -12,6 +12,7 @@ use tracing::warn;
 use hypercolor_core::scene::{SceneManager, default_primary_group};
 use hypercolor_types::asset::AssetId;
 use hypercolor_types::config::MediaConfig;
+use hypercolor_types::event::{HypercolorEvent, SceneLibraryChangeKind};
 use hypercolor_types::layer::{LayerSource, SceneLayer};
 use hypercolor_types::scene::{
     ColorInterpolation, EasingFunction, Scene, SceneId, SceneKind, SceneMutationMode,
@@ -75,6 +76,23 @@ pub struct ActiveSceneResponse {
     pub groups: Vec<Zone>,
     pub groups_revision: u64,
     pub unassigned_behavior: UnassignedBehavior,
+}
+
+/// Tell subscribers the saved-scene library changed so scene pickers can
+/// refresh their lists without polling.
+fn publish_scene_library_changed(
+    state: &AppState,
+    scene_id: SceneId,
+    kind: SceneLibraryChangeKind,
+    name: Option<String>,
+) {
+    state
+        .event_bus
+        .publish(HypercolorEvent::SceneLibraryChanged {
+            scene_id,
+            kind,
+            name,
+        });
 }
 
 // ── Handlers ─────────────────────────────────────────────────────────────
@@ -194,6 +212,7 @@ pub async fn create_scene(
         mutation_mode: scene.mutation_mode,
     };
 
+    let scene_id = scene.id;
     {
         let mut manager = state.scene_manager.write().await;
         if let Err(e) = manager.create(scene) {
@@ -204,6 +223,13 @@ pub async fn create_scene(
     if let Err(error) = save_scene_store_snapshot(state.as_ref()).await {
         return ApiError::internal(format!("Failed to persist scenes: {error}"));
     }
+
+    publish_scene_library_changed(
+        state.as_ref(),
+        scene_id,
+        SceneLibraryChangeKind::Created,
+        Some(summary.name.clone()),
+    );
 
     ApiResponse::created(summary)
 }
@@ -258,6 +284,13 @@ pub async fn update_scene(
         return ApiError::internal(format!("Failed to persist scenes: {error}"));
     }
 
+    publish_scene_library_changed(
+        state.as_ref(),
+        scene_id,
+        SceneLibraryChangeKind::Updated,
+        Some(summary.name.clone()),
+    );
+
     ApiResponse::ok(summary)
 }
 
@@ -292,6 +325,12 @@ pub async fn delete_scene(State(state): State<Arc<AppState>>, Path(id): Path<Str
             hypercolor_types::event::SceneChangeReason::UserDeactivate,
         );
     }
+    publish_scene_library_changed(
+        state.as_ref(),
+        scene_id,
+        SceneLibraryChangeKind::Deleted,
+        None,
+    );
 
     ApiResponse::ok(serde_json::json!({
         "id": id,

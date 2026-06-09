@@ -2440,7 +2440,7 @@ async fn effect_error_fallback_worker_clears_active_groups_when_configured() {
         while !(saw_stopped && saw_fallback_event && saw_group_update) {
             let event = rx.recv().await.expect("effect-error fallback event");
             match event.event {
-                HypercolorEvent::EffectStopped { effect, reason }
+                HypercolorEvent::EffectStopped { effect, reason, .. }
                     if effect.id == expected_effect_id && reason == EffectStopReason::Error =>
                 {
                     saw_stopped = true;

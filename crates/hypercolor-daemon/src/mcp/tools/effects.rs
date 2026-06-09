@@ -358,6 +358,8 @@ pub(super) async fn handle_set_effect_with_state(
         trigger: ChangeTrigger::Mcp,
         previous: previous_effect,
         transition: None,
+        group_id: Some(group.id),
+        group_name: Some(group.name.clone()),
     });
     publish_render_group_changed(state, scene_id, &group, change_kind);
     let applied_layout = apply_associated_layout(state, &best_match.effect.id.to_string()).await;
@@ -604,6 +606,8 @@ pub(super) async fn handle_set_color_with_state(
         trigger: ChangeTrigger::Mcp,
         previous: previous_effect,
         transition: None,
+        group_id: Some(group.id),
+        group_name: Some(group.name.clone()),
     });
     publish_render_group_changed(state, scene_id, &group, change_kind);
     let applied_layout = apply_associated_layout(state, &solid_effect.id.to_string()).await;

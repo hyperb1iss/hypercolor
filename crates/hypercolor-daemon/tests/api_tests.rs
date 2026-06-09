@@ -4377,6 +4377,72 @@ async fn apply_effect_targets_a_named_zone_via_render_group() {
 }
 
 #[tokio::test]
+async fn effect_started_event_for_named_zone_carries_zone_identity() {
+    let state = Arc::new(isolated_state());
+    insert_test_effect(&state, "solid_color").await;
+
+    let custom_id = {
+        let mut manager = state.scene_manager.write().await;
+        manager
+            .create_render_group(&SceneId::DEFAULT, "Ambient".to_owned(), None, (320, 200))
+            .expect("custom zone should be created")
+    };
+
+    let mut events = state.event_bus.subscribe_all();
+    let app = test_app_with_state(Arc::clone(&state));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/solid_color/apply")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&serde_json::json!({
+                        "render_group": custom_id.to_string(),
+                    }))
+                    .expect("request body should serialize"),
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let started = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            match events.recv().await {
+                Ok(timestamped) => {
+                    if let HypercolorEvent::EffectStarted {
+                        previous,
+                        group_id,
+                        group_name,
+                        ..
+                    } = timestamped.event
+                    {
+                        break (previous, group_id, group_name);
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(error) => panic!("event stream closed early: {error}"),
+            }
+        }
+    })
+    .await
+    .expect("an EffectStarted event should be published");
+
+    assert_eq!(
+        started.1,
+        Some(custom_id),
+        "EffectStarted must name the zone the effect landed in"
+    );
+    assert_eq!(started.2.as_deref(), Some("Ambient"));
+    assert!(
+        started.0.is_none(),
+        "previous must be the target zone's prior effect (idle), not the Primary's"
+    );
+}
+
+#[tokio::test]
 async fn get_active_effect_returns_primary_group_info() {
     let state = Arc::new(isolated_state());
     insert_test_effect(&state, "solid_color").await;
@@ -5397,6 +5463,7 @@ async fn rest_effect_lifecycle_publishes_started_and_stopped_events() {
                         trigger,
                         previous,
                         transition,
+                        ..
                     } = timestamped.event
                     {
                         break (effect, trigger, previous, transition);
@@ -5439,7 +5506,8 @@ async fn rest_effect_lifecycle_publishes_started_and_stopped_events() {
         loop {
             match events.recv().await {
                 Ok(timestamped) => {
-                    if let HypercolorEvent::EffectStopped { effect, reason } = timestamped.event {
+                    if let HypercolorEvent::EffectStopped { effect, reason, .. } = timestamped.event
+                    {
                         break (effect, reason);
                     }
                 }
@@ -5840,6 +5908,168 @@ async fn library_preset_apply_activates_effect_with_controls() {
     let active_json = body_json(active_response).await;
     assert_eq!(active_json["data"]["name"], "solid_color");
     assert_eq!(active_json["data"]["control_values"]["speed"]["float"], 7.5);
+}
+
+#[tokio::test]
+async fn library_preset_apply_targets_a_named_zone_via_render_group() {
+    let state = Arc::new(isolated_state());
+    insert_test_effect(&state, "solid_color").await;
+
+    let (custom_id, primary_effect_before) = {
+        let mut manager = state.scene_manager.write().await;
+        let custom_id = manager
+            .create_render_group(&SceneId::DEFAULT, "Ambient".to_owned(), None, (320, 200))
+            .expect("custom zone should be created");
+        let primary_effect = manager
+            .active_scene()
+            .and_then(Scene::primary_group)
+            .and_then(|group| group.effect_id);
+        (custom_id, primary_effect)
+    };
+
+    let app = test_app_with_state(Arc::clone(&state));
+    let create_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/library/presets")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "name":"Zone Preset",
+                        "effect":"solid_color",
+                        "controls":{"speed":7.25}
+                    }"#,
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(create_response.status(), StatusCode::CREATED);
+    let create_json = body_json(create_response).await;
+    let preset_id = create_json["data"]["id"]
+        .as_str()
+        .expect("preset id should be string")
+        .to_owned();
+
+    let apply_response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/library/presets/{preset_id}/apply"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&serde_json::json!({
+                        "render_group": custom_id.to_string(),
+                    }))
+                    .expect("request body should serialize"),
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(apply_response.status(), StatusCode::OK);
+    let apply_json = body_json(apply_response).await;
+    assert_eq!(apply_json["data"]["preset"]["id"], preset_id);
+
+    let manager = state.scene_manager.read().await;
+    let scene = manager.active_scene().expect("a scene should be active");
+    let custom = scene
+        .groups
+        .iter()
+        .find(|group| group.id == custom_id)
+        .expect("the targeted zone should still exist");
+    assert!(
+        custom.effect_id.is_some(),
+        "the preset's effect should land in the targeted zone"
+    );
+    assert_eq!(
+        custom.preset_id.map(|id| id.to_string()),
+        Some(preset_id),
+        "the targeted zone should record the preset id"
+    );
+    assert_eq!(
+        custom
+            .controls
+            .get("speed")
+            .and_then(hypercolor_types::effect::ControlValue::as_f32),
+        Some(7.5),
+        "the preset's controls (clamped to the control range) should land in the zone"
+    );
+    assert_eq!(
+        scene.primary_group().and_then(|group| group.effect_id),
+        primary_effect_before,
+        "a named-zone preset apply must leave the Primary zone untouched",
+    );
+}
+
+#[tokio::test]
+async fn reset_controls_targets_a_named_zone_via_render_group() {
+    let state = Arc::new(isolated_state());
+    insert_test_effect(&state, "solid_color").await;
+
+    let custom_id = {
+        let mut manager = state.scene_manager.write().await;
+        manager
+            .create_render_group(&SceneId::DEFAULT, "Ambient".to_owned(), None, (320, 200))
+            .expect("custom zone should be created")
+    };
+
+    let app = test_app_with_state(Arc::clone(&state));
+    let apply_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/solid_color/apply")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&serde_json::json!({
+                        "render_group": custom_id.to_string(),
+                        "controls": { "speed": 7.25 },
+                    }))
+                    .expect("request body should serialize"),
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(apply_response.status(), StatusCode::OK);
+
+    let reset_response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/current/reset")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&serde_json::json!({
+                        "render_group": custom_id.to_string(),
+                    }))
+                    .expect("request body should serialize"),
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(reset_response.status(), StatusCode::OK);
+
+    let manager = state.scene_manager.read().await;
+    let scene = manager.active_scene().expect("a scene should be active");
+    let custom = scene
+        .groups
+        .iter()
+        .find(|group| group.id == custom_id)
+        .expect("the targeted zone should still exist");
+    assert_ne!(
+        custom
+            .controls
+            .get("speed")
+            .and_then(hypercolor_types::effect::ControlValue::as_f32),
+        Some(7.5),
+        "the zone's tweaked control should be back at its default"
+    );
 }
 
 #[tokio::test]
@@ -6321,6 +6551,92 @@ async fn library_delete_active_playlist_stops_runtime() {
 }
 
 // ── Scenes ───────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn scene_crud_publishes_scene_library_changed_events() {
+    let state = Arc::new(isolated_state());
+    let mut events = state.event_bus.subscribe_all();
+
+    let app = test_app_with_state(Arc::clone(&state));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/scenes")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"name": "Library Watch"}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let scene_id = body_json(response).await["data"]["id"]
+        .as_str()
+        .expect("id should be a string")
+        .to_owned();
+
+    let created = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            match events.recv().await {
+                Ok(timestamped) => {
+                    if let HypercolorEvent::SceneLibraryChanged {
+                        scene_id,
+                        kind,
+                        name,
+                        ..
+                    } = timestamped.event
+                    {
+                        break (scene_id, kind, name);
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(error) => panic!("event stream closed early: {error}"),
+            }
+        }
+    })
+    .await
+    .expect("a SceneLibraryChanged event should be published on create");
+
+    assert_eq!(created.0.to_string(), scene_id);
+    assert_eq!(
+        created.1,
+        hypercolor_types::event::SceneLibraryChangeKind::Created
+    );
+    assert_eq!(created.2.as_deref(), Some("Library Watch"));
+
+    let app = test_app_with_state(Arc::clone(&state));
+    let delete_response = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/scenes/{scene_id}"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(delete_response.status(), StatusCode::OK);
+
+    let deleted = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            match events.recv().await {
+                Ok(timestamped) => {
+                    if let HypercolorEvent::SceneLibraryChanged { kind, .. } = timestamped.event {
+                        break kind;
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(error) => panic!("event stream closed early: {error}"),
+            }
+        }
+    })
+    .await
+    .expect("a SceneLibraryChanged event should be published on delete");
+    assert_eq!(
+        deleted,
+        hypercolor_types::event::SceneLibraryChangeKind::Deleted
+    );
+}
 
 #[tokio::test]
 #[expect(

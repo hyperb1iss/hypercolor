@@ -293,6 +293,8 @@ pub(crate) async fn stop_active_effect_and_quiesce_output(
     state.event_bus.publish(HypercolorEvent::EffectStopped {
         effect: effect.clone(),
         reason: EffectStopReason::Stopped,
+        group_id: Some(cleared_group.id),
+        group_name: Some(cleared_group.name.clone()),
     });
     publish_render_group_changed(state, scene_id, &cleared_group, ZoneChangeKind::Updated);
 
@@ -802,22 +804,17 @@ pub async fn apply_effect(
         (raw_controls, normalized, dropped)
     };
 
-    let previous_effect = active_primary_effect(state.as_ref())
-        .await
-        .map(|(_, effect)| effect_ref(&effect));
     let layout = resolve_full_scope_layout(state.as_ref()).await;
 
-    // Resolve the optional target zone. An unparseable id is a client
-    // error; a parsed id is matched against the active scene below.
-    let target_group = match body.as_ref().and_then(|body| body.render_group.as_deref()) {
-        None => None,
-        Some(raw) => match raw.parse::<uuid::Uuid>() {
-            Ok(uuid) => Some(ZoneId(uuid)),
-            Err(_) => return ApiError::bad_request(format!("Invalid render_group id: {raw}")),
-        },
-    };
+    // Resolve the optional target zone; a parsed id is matched against
+    // the active scene below.
+    let target_group =
+        match parse_render_group(body.as_ref().and_then(|body| body.render_group.as_deref())) {
+            Ok(target) => target,
+            Err(response) => return *response,
+        };
 
-    let (scene_id, group, change_kind, named_target) = {
+    let (scene_id, group, change_kind, named_target, previous_effect_id) = {
         let mut scene_manager = state.scene_manager.write().await;
         let scene_id = match active_scene_id_for_runtime_mutation(&scene_manager) {
             Ok(scene_id) => scene_id,
@@ -833,6 +830,18 @@ pub async fn apply_effect(
             .map(|group| group.id);
         let named_target = target_group.filter(|id| Some(*id) != primary_id);
 
+        // "Previous" is whatever ran in the *target* zone before this
+        // apply — events that claimed the primary's effect was replaced
+        // when zone 2 changed hands were lying to subscribers.
+        let previous_effect_id = scene_manager.active_scene().and_then(|scene| {
+            let target = named_target.or(primary_id)?;
+            scene
+                .groups
+                .iter()
+                .find(|group| group.id == target)
+                .and_then(|group| group.effect_id)
+        });
+
         if let Some(group_id) = named_target {
             let group = match scene_manager.apply_effect_to_group(
                 group_id,
@@ -847,7 +856,13 @@ pub async fn apply_effect(
                     ));
                 }
             };
-            (scene_id, group, ZoneChangeKind::Updated, named_target)
+            (
+                scene_id,
+                group,
+                ZoneChangeKind::Updated,
+                named_target,
+                previous_effect_id,
+            )
         } else {
             let change_kind = if primary_id.is_some() {
                 ZoneChangeKind::Updated
@@ -867,8 +882,23 @@ pub async fn apply_effect(
                     ));
                 }
             };
-            (scene_id, group, change_kind, named_target)
+            (
+                scene_id,
+                group,
+                change_kind,
+                named_target,
+                previous_effect_id,
+            )
         }
+    };
+    let previous_effect = match previous_effect_id {
+        Some(effect_id) => {
+            let registry = state.effect_registry.read().await;
+            registry
+                .get(&effect_id)
+                .map(|entry| effect_ref(&entry.metadata))
+        }
+        None => None,
     };
     log_effect_apply_completion(
         previous_effect.as_ref().map(|effect| effect.name.as_str()),
@@ -881,6 +911,8 @@ pub async fn apply_effect(
         trigger: ChangeTrigger::Api,
         previous: previous_effect,
         transition: None,
+        group_id: Some(group.id),
+        group_name: Some(group.name.clone()),
     });
     publish_render_group_changed(state.as_ref(), scene_id, &group, change_kind);
     // A named zone keeps its own layout; only a Primary apply adopts the
@@ -1319,11 +1351,32 @@ pub async fn set_current_control_binding(
     }))
 }
 
+/// Optional body for `reset_controls` — scopes the reset to one zone.
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct ResetControlsRequest {
+    /// Target zone (render-group id). Omitted resets the primary zone.
+    pub render_group: Option<String>,
+}
+
 /// `POST /api/v1/effects/current/reset` — Reset all controls on the active
-/// effect back to their metadata-defined defaults.
-pub async fn reset_controls(State(state): State<Arc<AppState>>) -> Response {
-    let Some((group, meta)) = active_primary_effect(state.as_ref()).await else {
-        return ApiError::not_found("No effect is currently active");
+/// effect back to their metadata-defined defaults. Accepts an optional
+/// `render_group` body field to reset a specific zone's effect instead of
+/// the primary.
+pub async fn reset_controls(
+    State(state): State<Arc<AppState>>,
+    body: Option<Json<ResetControlsRequest>>,
+) -> Response {
+    let target_group =
+        match parse_render_group(body.as_ref().and_then(|body| body.render_group.as_deref())) {
+            Ok(target) => target,
+            Err(response) => return *response,
+        };
+    let resolved = match target_group {
+        Some(group_id) => active_group_effect(state.as_ref(), group_id).await,
+        None => active_primary_effect(state.as_ref()).await,
+    };
+    let Some((group, meta)) = resolved else {
+        return ApiError::not_found("No effect is active in the target zone");
     };
     let previous_values = resolved_control_values(&meta, &group);
     let (scene_id, updated_group) = {
@@ -1598,6 +1651,45 @@ pub(crate) async fn active_primary_effect(state: &AppState) -> Option<(Zone, Eff
     let registry = state.effect_registry.read().await;
     let metadata = registry.get(&effect_id)?.metadata.clone();
     Some((group, metadata))
+}
+
+/// Zone-scoped sibling of [`active_primary_effect`]: the named zone's
+/// current effect, or `None` when the zone is missing or idle.
+pub(crate) async fn active_group_effect(
+    state: &AppState,
+    group_id: ZoneId,
+) -> Option<(Zone, EffectMetadata)> {
+    let group = {
+        let scene_manager = state.scene_manager.read().await;
+        scene_manager
+            .active_scene()?
+            .groups
+            .iter()
+            .find(|group| group.id == group_id)
+            .cloned()?
+    };
+    let effect_id = group.effect_id?;
+    let registry = state.effect_registry.read().await;
+    let metadata = registry.get(&effect_id)?.metadata.clone();
+    Some((group, metadata))
+}
+
+/// Parse an optional `render_group` request field into a [`ZoneId`].
+/// An unparseable id is a client error, surfaced as the boxed `Err`
+/// response (boxed so the happy path isn't penalized by axum's large
+/// `Response` type).
+pub(crate) fn parse_render_group(raw: Option<&str>) -> Result<Option<ZoneId>, Box<Response>> {
+    match raw {
+        None => Ok(None),
+        Some(raw) => raw
+            .parse::<uuid::Uuid>()
+            .map(|uuid| Some(ZoneId(uuid)))
+            .map_err(|_| {
+                Box::new(ApiError::bad_request(format!(
+                    "Invalid render_group id: {raw}"
+                )))
+            }),
+    }
 }
 
 pub(crate) async fn active_effect_metadata(state: &AppState) -> Option<EffectMetadata> {
