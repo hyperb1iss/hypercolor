@@ -410,6 +410,20 @@ impl App {
             };
         }
 
+        // Text-entry mode: the active screen is consuming raw characters
+        // (search, color picker). Global keybindings would eat letters —
+        // 'q' would quit mid-word — so delegate everything to the screen.
+        if self
+            .screens
+            .get(&self.active_screen)
+            .is_some_and(|screen| screen.captures_input())
+        {
+            return self
+                .screens
+                .get_mut(&self.active_screen)
+                .and_then(|screen| screen.handle_key_event(key).ok().flatten());
+        }
+
         // Global keybindings (always active)
         match key.code {
             KeyCode::Char('q') => return Some(Action::Quit),

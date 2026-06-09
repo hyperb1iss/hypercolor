@@ -31,10 +31,6 @@ pub enum Action {
     SwitchScreen(ScreenId),
     /// Return to the previous screen.
     GoBack,
-    /// Cycle focus to the next panel.
-    FocusNext,
-    /// Cycle focus to the previous panel.
-    FocusPrev,
 
     // ── Daemon Connection ───────────────────────────────────
     /// Daemon connected, initial state received.
@@ -75,24 +71,14 @@ pub enum Action {
     SpectrumUpdated(Arc<SpectrumSnapshot>),
 
     // ── Effect Browser ──────────────────────────────────────
-    /// Select an effect in the browser list.
-    SelectEffect(usize),
     /// Apply an effect by ID.
     ApplyEffect(String),
     /// Toggle favorite status for an effect.
     ToggleFavorite(String),
-    /// Open the search filter.
-    OpenSearch,
-    /// Close the search filter.
-    CloseSearch,
-    /// Update the search query text.
-    SearchInput(String),
 
     // ── Effect Control ──────────────────────────────────────
     /// Update a control value on the active effect.
     UpdateControl(String, ControlValue),
-    /// Apply a preset by name.
-    ApplyPreset(String),
     /// Apply an effect with a bundled preset's control overrides.
     ApplyEffectPreset(String, HashMap<String, ControlValue>),
     /// Reset all controls to defaults.
@@ -160,18 +146,4 @@ pub enum Action {
     DismissNotification,
     /// Open the GitHub Sponsors page in the user's browser.
     OpenDonate,
-
-    // ── Scroll ──────────────────────────────────────────────
-    /// Scroll up in the focused list.
-    ScrollUp,
-    /// Scroll down in the focused list.
-    ScrollDown,
-    /// Page up in the focused list.
-    PageUp,
-    /// Page down in the focused list.
-    PageDown,
-    /// Jump to top.
-    ScrollToTop,
-    /// Jump to bottom.
-    ScrollToBottom,
 }

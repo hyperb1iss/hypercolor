@@ -47,6 +47,14 @@ pub trait Component: Send {
         None
     }
 
+    /// Whether this component is currently consuming raw text input
+    /// (search box, rename field, color picker). While true, App skips
+    /// its global keybindings so typed characters reach the component
+    /// instead of quitting the app or switching screens.
+    fn captures_input(&self) -> bool {
+        false
+    }
+
     /// Whether this component currently holds keyboard focus.
     fn focused(&self) -> bool {
         false

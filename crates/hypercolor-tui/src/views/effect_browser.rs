@@ -772,6 +772,7 @@ impl EffectBrowserView {
                 self.selected_control = ctrl_count.saturating_sub(1);
                 None
             }
+            KeyCode::Char('r') => Some(Action::ResetControls),
             _ => None,
         }
     }
@@ -1663,6 +1664,10 @@ impl Component for EffectBrowserView {
         if self.color_picker.is_some() {
             self.render_color_picker(frame, area);
         }
+    }
+
+    fn captures_input(&self) -> bool {
+        self.search_active || self.color_picker.is_some()
     }
 
     fn focused(&self) -> bool {
