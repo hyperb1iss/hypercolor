@@ -13,13 +13,14 @@
 //! |----------------------|---------|---------|
 //! | flex-row             | yes     | yes     |
 //! | flex-column          | yes     | yes     |
+//! | flex-gap             | yes     | yes     |
 //! | grid                 | NO      | NO      |
 //! | clip-path-circle     | yes     | yes     |
 //! | aspect-media-query   | NO      | NO      |
 //! | transform-translate  | yes     | yes     |
 //!
-//! Consequences for the SDK: flexbox, transforms, and `clip-path:
-//! circle()` (the face circular mask) are safe; CSS grid layout and
+//! Consequences for the SDK: flexbox (including gap), transforms, and
+//! `clip-path: circle()` (the face circular mask) are safe; CSS grid layout and
 //! aspect-ratio media queries are NOT rendered by Servo — grid and
 //! shape-adaptive layout must stay JS over the display descriptor.
 //!
@@ -62,6 +63,8 @@ clip-path-circle 480x480 pass
 clip-path-circle 960x160 pass
 flex-column 480x480 pass
 flex-column 960x160 pass
+flex-gap 480x480 pass
+flex-gap 960x160 pass
 flex-row 480x480 pass
 flex-row 960x160 pass
 grid 480x480 fail
@@ -94,6 +97,13 @@ const fn check(x_frac: f32, y_frac: f32, expected: [u8; 3]) -> Check {
 fn probe_checks(probe: &str, width: u32, height: u32) -> Vec<Check> {
     match probe {
         "flex-row" => vec![check(0.25, 0.5, RED), check(0.75, 0.5, GREEN)],
+        // Gap working pushes the green child past the halfway point and
+        // leaves background in the gap; ignored gap puts green at 0.375.
+        "flex-gap" => vec![
+            check(0.125, 0.5, RED),
+            check(0.375, 0.5, BLACK),
+            check(0.625, 0.5, GREEN),
+        ],
         "flex-column" => vec![check(0.5, 0.25, RED), check(0.5, 0.75, GREEN)],
         "grid" => vec![
             check(0.25, 0.25, RED),
@@ -120,10 +130,11 @@ fn probe_checks(probe: &str, width: u32, height: u32) -> Vec<Check> {
     }
 }
 
-const PROBES: [&str; 6] = [
+const PROBES: [&str; 7] = [
     "aspect-media",
     "clip-path-circle",
     "flex-column",
+    "flex-gap",
     "flex-row",
     "grid",
     "transform-translate",

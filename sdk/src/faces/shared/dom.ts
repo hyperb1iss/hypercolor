@@ -35,11 +35,14 @@ export function createFaceRoot(ctx: FaceContext, className: string): HTMLDivElem
     root.style.inset = '0'
     root.style.zIndex = '3'
     root.style.pointerEvents = 'none'
-    root.style.display = 'grid'
+    // Flex, not grid: Servo renders flexbox but silently ignores grid
+    // (see the css-probe matrix in hypercolor-core).
+    root.style.display = 'flex'
+    root.style.alignItems = 'center'
+    root.style.justifyContent = 'center'
     root.style.width = '100%'
     root.style.height = '100%'
     root.style.background = 'transparent'
-    root.style.placeItems = 'center'
     ctx.container.appendChild(root)
     return root
 }

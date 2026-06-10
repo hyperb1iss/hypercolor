@@ -36,11 +36,11 @@ const STYLES = `
     top: 50%;
     left: 50%;
     transform: translate(-50%, -58%);
-    display: inline-grid;
-    grid-auto-flow: column;
-    align-items: end;
+    display: inline-flex;
+    flex-direction: row;
+    align-items: flex-end;
     justify-content: center;
-    column-gap: 10px;
+    gap: 10px;
     font-family: var(--headline-font);
     font-size: calc(var(--time-size) * 1px);
     font-weight: 600;
@@ -56,10 +56,9 @@ const STYLES = `
 }
 
 .hc-neon-clock__slot {
-    display: inline-grid;
-    grid-auto-flow: column;
+    display: inline-flex;
+    flex-direction: row;
     justify-content: center;
-    grid-template-columns: repeat(2, 0.68ch);
 }
 
 .hc-neon-clock__digit {

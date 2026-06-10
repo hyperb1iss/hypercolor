@@ -48,8 +48,6 @@ const STYLES = `
     inset: 0;
     overflow: hidden;
     color: var(--hero-ink);
-    display: grid;
-    place-items: center;
 }
 
 .hc-sensor-grid__frame {
@@ -64,10 +62,9 @@ const STYLES = `
 
 .hc-sensor-grid__card {
     position: absolute;
-    display: grid;
-    grid-template-rows: 1fr;
-    place-items: center;
-    justify-items: center;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     text-align: center;
     padding: 8px;
     box-sizing: border-box;
@@ -84,9 +81,9 @@ const STYLES = `
 }
 
 .hc-sensor-grid__card-inner {
-    display: grid;
+    display: flex;
+    flex-direction: column;
     gap: 8px;
-    justify-items: center;
     align-items: center;
     text-align: center;
     width: 100%;

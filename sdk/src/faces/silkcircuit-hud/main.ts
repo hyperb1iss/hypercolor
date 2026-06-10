@@ -57,23 +57,24 @@ const STYLES = `
     inset: 0;
     overflow: hidden;
     color: var(--hero-ink);
-    display: grid;
-    place-items: center;
+    display: flex;
+    align-items: center;
+    justify-content: center;
 }
 
 .hc-silk-hud__stack {
-    display: grid;
+    display: flex;
+    flex-direction: column;
     gap: 18px;
-    justify-items: center;
     align-items: center;
     text-align: center;
     width: min(78%, 420px);
 }
 
 .hc-silk-hud__clock {
-    display: grid;
+    display: flex;
+    flex-direction: column;
     gap: 10px;
-    justify-items: center;
     align-items: center;
 }
 
@@ -96,10 +97,9 @@ const STYLES = `
 }
 
 .hc-silk-hud__slot {
-    display: inline-grid;
-    grid-auto-flow: column;
+    display: inline-flex;
+    flex-direction: row;
     justify-content: center;
-    grid-template-columns: repeat(2, 0.66ch);
 }
 
 .hc-silk-hud__digit {
@@ -127,18 +127,20 @@ const STYLES = `
 }
 
 .hc-silk-hud__metrics {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    display: flex;
+    flex-direction: row;
     gap: 20px;
     width: 100%;
-    justify-items: center;
+    justify-content: center;
     align-items: center;
 }
 
 .hc-silk-hud__metric {
-    display: grid;
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 0;
+    min-width: 0;
     gap: 6px;
-    justify-items: center;
     align-items: center;
     text-align: center;
     background: transparent;
@@ -167,13 +169,15 @@ const STYLES = `
 }
 
 .hc-silk-hud__bars {
-    display: grid;
+    display: flex;
+    flex-direction: column;
     gap: 10px;
     width: 100%;
 }
 
 .hc-silk-hud__bar {
-    display: grid;
+    display: flex;
+    flex-direction: column;
     gap: 6px;
     padding: 0;
     background: transparent;
