@@ -33,7 +33,7 @@ import { deriveLabel } from '../controls/names'
 import { isControlSpec } from '../controls/specs'
 import type { DesignBasis } from '../math/scale'
 import type { FaceContext, FaceUpdateFn } from './context'
-import { buildSensorAccessor } from './context'
+import { buildAudioAccessor, buildSensorAccessor } from './context'
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -45,6 +45,9 @@ export interface FaceOptions {
     designBasis?: DesignBasis
     /** Whether this face is designed for circular displays. */
     circular?: boolean
+    /** Opt into live audio analysis (`engine.audio`). Marks the built
+     *  face audio-reactive so the renderer injects per-frame data. */
+    audio?: boolean
     /** Named presets with control overrides. */
     presets?: FacePresetDef[]
 }
@@ -130,6 +133,7 @@ interface FaceDef {
     author?: string
     designBasis?: DesignBasis
     circular?: boolean
+    audio?: boolean
     presets?: FacePresetDef[]
 }
 
@@ -255,12 +259,13 @@ function startFaceLoop(
 ): void {
     const updateFn = setupFn(ctx)
     const sensorAccessor = buildSensorAccessor()
+    const audioAccessor = buildAudioAccessor()
 
     const renderAt = (time: number): void => {
         ctx.ctx.clearRect(0, 0, ctx.width, ctx.height)
         const controls = resolveControlValues(resolvedControls)
         void loadFaceFonts(fontControls, controls)
-        updateFn(time, controls, sensorAccessor)
+        updateFn(time, controls, sensorAccessor, audioAccessor)
     }
 
     const host = window as Window & { __hypercolorRenderHostFrame?: () => void }
@@ -307,6 +312,7 @@ export function face(name: string, controls: ControlMap, options: FaceOptions, s
     // Build-time metadata extraction — bail before any DOM access
     if (typeof globalThis !== 'undefined' && (globalThis as Record<string, unknown>).__HYPERCOLOR_METADATA_ONLY__) {
         storeFaceMetadata({
+            audio: options.audio ?? false,
             author: options.author,
             circular,
             controls,

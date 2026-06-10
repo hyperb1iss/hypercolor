@@ -128,7 +128,7 @@ export {
 
 // ── Faces ───────────────────────────────────────────────────────────────
 
-export type { FaceContext, FaceOptions, FaceUpdateFn, SensorAccessor, SensorReading } from './faces'
+export type { AudioAccessor, FaceContext, FaceOptions, FaceUpdateFn, SensorAccessor, SensorReading } from './faces'
 export { face } from './faces'
 export {
     colorByValue,

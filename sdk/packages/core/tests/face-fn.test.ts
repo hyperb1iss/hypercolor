@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 
 import { combo, font } from '../src/controls/specs'
 import type { FaceContext } from '../src/faces/context'
-import { __testing } from '../src/faces/face-fn'
+import { __testing, face } from '../src/faces/face-fn'
 
 describe('face font loading', () => {
     test('loads only the active font selections', () => {
@@ -157,4 +157,85 @@ describe('face render loop', () => {
             restoreGlobal('window', originalWindow)
         }
     })
+})
+
+describe('face audio opt-in', () => {
+    function withMetadataOnly(run: () => void): unknown[] {
+        Reflect.set(globalThis, '__HYPERCOLOR_METADATA_ONLY__', true)
+        Reflect.deleteProperty(globalThis, '__hypercolorEffectDefs__')
+        try {
+            run()
+            return (Reflect.get(globalThis, '__hypercolorEffectDefs__') as unknown[]) ?? []
+        } finally {
+            Reflect.deleteProperty(globalThis, '__HYPERCOLOR_METADATA_ONLY__')
+            Reflect.deleteProperty(globalThis, '__hypercolorEffectDefs__')
+        }
+    }
+
+    test('audio: true is carried into registered metadata', () => {
+        const defs = withMetadataOnly(() => {
+            face('Audio Probe', {}, { audio: true }, () => () => {})
+        })
+
+        expect(defs).toHaveLength(1)
+        expect((defs[0] as { audio?: boolean }).audio).toBe(true)
+    })
+
+    test('audio defaults to false when not requested', () => {
+        const defs = withMetadataOnly(() => {
+            face('Quiet Probe', {}, {}, () => () => {})
+        })
+
+        expect(defs).toHaveLength(1)
+        expect((defs[0] as { audio?: boolean }).audio).toBe(false)
+    })
+
+    test('update functions receive a silent-safe audio accessor', () => {
+        const calls: string[] = []
+        const originalCaptureMode = Reflect.get(globalThis, '__hypercolorCaptureMode')
+        const originalHostDriven = Reflect.get(globalThis, '__hypercolorHostDrivenAnimation')
+        const originalWindow = Reflect.get(globalThis, 'window')
+        const host = { performance: { now: () => 1000 } }
+
+        Reflect.set(globalThis, '__hypercolorCaptureMode', true)
+        Reflect.set(globalThis, '__hypercolorHostDrivenAnimation', true)
+        Reflect.set(globalThis, 'window', host)
+
+        try {
+            __testing.startFaceLoop(
+                testAudioContext(calls),
+                () => (_time, _controls, _sensors, audio) => {
+                    calls.push(`available:${audio.available()}`)
+                    calls.push(`level:${audio.data().level}`)
+                    calls.push(`mel:${audio.data().melBands.length}`)
+                },
+                [],
+                [],
+            )
+
+            expect(calls).toEqual(['clear', 'available:false', 'level:0', 'mel:24'])
+        } finally {
+            if (originalCaptureMode === undefined) Reflect.deleteProperty(globalThis, '__hypercolorCaptureMode')
+            else Reflect.set(globalThis, '__hypercolorCaptureMode', originalCaptureMode)
+            if (originalHostDriven === undefined) Reflect.deleteProperty(globalThis, '__hypercolorHostDrivenAnimation')
+            else Reflect.set(globalThis, '__hypercolorHostDrivenAnimation', originalHostDriven)
+            if (originalWindow === undefined) Reflect.deleteProperty(globalThis, 'window')
+            else Reflect.set(globalThis, 'window', originalWindow)
+        }
+    })
+
+    function testAudioContext(calls: string[]): FaceContext {
+        return {
+            canvas: {} as HTMLCanvasElement,
+            circular: false,
+            container: {} as HTMLDivElement,
+            ctx: {
+                clearRect: () => calls.push('clear'),
+            } as unknown as CanvasRenderingContext2D,
+            dpr: 1,
+            height: 10,
+            scale: 1,
+            width: 10,
+        }
+    }
 })

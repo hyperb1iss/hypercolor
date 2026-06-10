@@ -2,6 +2,9 @@
  * Face runtime context — what the setup and update functions receive.
  */
 
+import { getAudioData } from '../audio'
+import type { AudioData } from '../audio/types'
+
 /** A single sensor reading from the Hypercolor sensor pipeline. */
 export interface SensorReading {
     value: number
@@ -58,8 +61,22 @@ export interface FaceContext {
     dpr: number
 }
 
+/** Convenience wrapper around engine.audio for face update functions. */
+export interface AudioAccessor {
+    /** Current frame's audio analysis. Silent data when audio is absent. */
+    data(): AudioData
+
+    /** Whether live audio data is being injected by the host. */
+    available(): boolean
+}
+
 /** Signature of the update function returned by a face's setup function. */
-export type FaceUpdateFn = (time: number, controls: Record<string, unknown>, sensors: SensorAccessor) => void
+export type FaceUpdateFn = (
+    time: number,
+    controls: Record<string, unknown>,
+    sensors: SensorAccessor,
+    audio: AudioAccessor,
+) => void
 
 // ── SensorAccessor implementation ──────────────────────────────────────
 
@@ -83,6 +100,18 @@ function formatSensorValue(reading: SensorReading): string {
     }
     // Fallback
     return `${value.toFixed(1)} ${unit}`
+}
+
+/** Build an AudioAccessor over the current engine.audio state. */
+export function buildAudioAccessor(): AudioAccessor {
+    return {
+        available(): boolean {
+            return typeof engine !== 'undefined' && Boolean(engine?.audio)
+        },
+        data(): AudioData {
+            return getAudioData()
+        },
+    }
 }
 
 /** Build a SensorAccessor from the current engine.sensors state. */
