@@ -6,8 +6,6 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
 
 use hypercolor_core::scene::{SceneManager, ZoneMetaPatch, ZoneMutationError};
 use hypercolor_types::event::{HypercolorEvent, SceneSettingsChangeKind, ZoneChangeKind};
@@ -21,75 +19,14 @@ use crate::api::{
 };
 use crate::layout_auto_exclusions;
 
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct CreateZoneRequest {
-    pub name: String,
-    pub color: Option<String>,
-}
-
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct UpdateZoneRequest {
-    pub name: Option<String>,
-    pub description: Option<Option<String>>,
-    pub color: Option<Option<String>>,
-    pub brightness: Option<f32>,
-    pub enabled: Option<bool>,
-    pub make_primary: Option<bool>,
-}
-
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct AssignDevicesRequest {
-    #[schema(value_type = Vec<Object>)]
-    pub device_zones: Vec<OutputAssignment>,
-}
-
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct UpdateUnassignedBehaviorRequest {
-    #[schema(value_type = String)]
-    pub unassigned_behavior: UnassignedBehavior,
-}
-
-/// Untagged: serde tries variants in declaration order and the first
-/// match wins. `Existing { id }` ignores unknown fields by default, so
-/// it would silently swallow any object that has an `id`, including a
-/// full `Output`. `New(Output)` is declared FIRST so a brand-new
-/// output (which has every required `Output` field) matches it;
-/// a bare `{ "id": "..." }` lacks those fields, `New` fails, and the
-/// parser falls through to `Existing`. Do not reorder.
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-pub enum OutputAssignment {
-    New(Output),
-    Existing { id: String },
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct ZoneListResponse {
-    #[schema(value_type = Vec<Object>)]
-    pub items: Vec<Zone>,
-    pub groups_revision: u64,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct ZoneResponse {
-    #[schema(value_type = Object)]
-    pub zone: Zone,
-    pub groups_revision: u64,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct ZoneMutationResponse {
-    #[schema(value_type = Vec<Object>)]
-    pub items: Vec<Zone>,
-    pub groups_revision: u64,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct UnassignedBehaviorResponse {
-    #[schema(value_type = String)]
-    pub unassigned_behavior: UnassignedBehavior,
-    pub groups_revision: u64,
-}
+// Wire contracts live in hypercolor-types::api::zones — shared with the
+// web UI and the TUI. OutputAssignment's untagged variant ORDER is part
+// of the wire contract; see the shared definition.
+pub use hypercolor_types::api::zones::{
+    AssignDevicesRequest, CreateZoneRequest, OutputAssignment, UnassignedBehaviorResponse,
+    UpdateUnassignedBehaviorRequest, UpdateZoneRequest, ZoneListResponse, ZoneMutationResponse,
+    ZoneResponse,
+};
 
 pub async fn list_zones(
     State(state): State<Arc<AppState>>,
@@ -189,7 +126,7 @@ pub async fn update_zone(
         Err(message) => return ApiError::bad_request(message),
     };
     let structural = body.make_primary == Some(true);
-    let patch = body.into_patch();
+    let patch = zone_update_patch(body);
 
     let (scene_id, zone, groups_revision) = {
         let mut manager = state.scene_manager.write().await;
@@ -487,16 +424,14 @@ pub async fn update_unassigned_behavior(
     unassigned_behavior_response(behavior, groups_revision)
 }
 
-impl UpdateZoneRequest {
-    fn into_patch(self) -> ZoneMetaPatch {
-        ZoneMetaPatch {
-            name: self.name,
-            description: self.description,
-            color: self.color,
-            brightness: self.brightness,
-            enabled: self.enabled,
-            make_primary: self.make_primary,
-        }
+fn zone_update_patch(request: UpdateZoneRequest) -> ZoneMetaPatch {
+    ZoneMetaPatch {
+        name: request.name,
+        description: request.description,
+        color: request.color,
+        brightness: request.brightness,
+        enabled: request.enabled,
+        make_primary: request.make_primary,
     }
 }
 
@@ -618,7 +553,7 @@ fn resolve_device_zone_assignments(
                 .find(|zone| zone.id == id)
                 .cloned()
                 .ok_or(id),
-            OutputAssignment::New(device_zone) => Ok(device_zone),
+            OutputAssignment::New(device_zone) => Ok(*device_zone),
         })
         .collect()
 }

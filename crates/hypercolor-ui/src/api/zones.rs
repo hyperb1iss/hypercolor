@@ -14,10 +14,9 @@
 #![allow(dead_code)]
 
 use gloo_net::http::Method;
-use serde::{Deserialize, Serialize};
 
 use hypercolor_types::scene::{UnassignedBehavior, Zone};
-use hypercolor_types::spatial::{Output, SpatialLayout};
+use hypercolor_types::spatial::SpatialLayout;
 
 use super::client;
 use super::client::MutationOutcome;
@@ -27,75 +26,14 @@ use super::client::MutationOutcome;
 /// to rebase on before retrying.
 pub type ZoneOutcome<T> = MutationOutcome<T>;
 
-/// Response shape of the zone list / bulk-mutation routes. Studio reads
-/// the zone set from the active scene, so this is exercised only by the
-/// device-assignment routes (Wave 10).
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-pub struct ZoneListResponse {
-    pub items: Vec<Zone>,
-    pub groups_revision: u64,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-pub struct ZoneResponse {
-    pub zone: Zone,
-    pub groups_revision: u64,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-pub struct UnassignedBehaviorResponse {
-    pub unassigned_behavior: UnassignedBehavior,
-    pub groups_revision: u64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct CreateZoneRequest {
-    name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    color: Option<String>,
-}
-
-/// Partial zone-metadata patch. Every field is optional; only the supplied
-/// ones change. `description` and `color` are doubly-optional so the UI can
-/// distinguish "leave unchanged" (`None`) from "clear it" (`Some(None)`).
-#[derive(Debug, Clone, Default, Serialize)]
-pub struct UpdateZoneRequest {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<Option<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub color: Option<Option<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub brightness: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub enabled: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub make_primary: Option<bool>,
-}
-
-/// One device-output assignment in an [`assign_devices`] request.
-/// Mirrors the daemon's untagged enum: `Existing { id }` references an
-/// output already in the scene (the daemon moves it); `New(Output)`
-/// carries a brand-new output the daemon will place for the first time.
-/// Untagged + struct variant makes wire order matter, so `New` is
-/// declared first; the daemon expects the same order on its decoder.
-#[derive(Debug, Clone, Serialize)]
-#[serde(untagged)]
-pub enum OutputAssignment {
-    New(Box<Output>),
-    Existing { id: String },
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct AssignDevicesRequest {
-    device_zones: Vec<OutputAssignment>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct UpdateUnassignedBehaviorRequest {
-    unassigned_behavior: UnassignedBehavior,
-}
+// Wire contracts are shared with the daemon (hypercolor-types::api::zones);
+// OutputAssignment's untagged variant order is part of the contract — see
+// the shared definition.
+pub use hypercolor_types::api::zones::{
+    AssignDevicesRequest, CreateZoneRequest, OutputAssignment, UnassignedBehaviorResponse,
+    UpdateUnassignedBehaviorRequest, UpdateZoneRequest, ZoneListResponse, ZoneMutationResponse,
+    ZoneResponse,
+};
 
 pub async fn list_zones(scene_id: &str) -> Result<ZoneListResponse, String> {
     client::fetch_json(&format!("/api/v1/scenes/{scene_id}/zones"))

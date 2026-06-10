@@ -6,6 +6,10 @@ use futures_util::stream::{self, StreamExt};
 use hypercolor_types::api::devices::{
     DeviceListResponse as ApiDeviceListResponse, DeviceSummary as ApiDeviceSummary,
 };
+use hypercolor_types::api::scenes::{
+    ActiveSceneResponse as ApiActiveSceneResponse, SceneListResponse as ApiSceneListResponse,
+};
+use hypercolor_types::api::zones::UpdateZoneRequest;
 use hypercolor_types::controls::{
     ApplyControlChangesRequest, ApplyControlChangesResponse, ControlActionResult,
     ControlSurfaceDocument, ControlValueMap,
@@ -273,7 +277,7 @@ impl DaemonClient {
 
     /// Fetch all saved scenes.
     pub async fn get_scenes(&self) -> Result<Vec<SceneSummary>> {
-        let response: SceneListResponse = self.get_data("/scenes").await?;
+        let response: ApiSceneListResponse = self.get_data("/scenes").await?;
         Ok(response.items)
     }
 
@@ -326,17 +330,15 @@ impl DaemonClient {
             path_segment(scene_id),
             path_segment(zone_id)
         );
-        let mut body = serde_json::Map::new();
-        if let Some(enabled) = enabled {
-            body.insert("enabled".to_string(), serde_json::Value::Bool(enabled));
-        }
-        if let Some(brightness) = brightness {
-            body.insert("brightness".to_string(), serde_json::json!(brightness));
-        }
+        let body = UpdateZoneRequest {
+            enabled,
+            brightness,
+            ..UpdateZoneRequest::default()
+        };
         let response = self
             .auth_request(self.http.patch(&url))
             .header(reqwest::header::IF_MATCH, groups_revision.to_string())
-            .json(&serde_json::Value::Object(body))
+            .json(&body)
             .send()
             .await
             .with_context(|| format!("Failed to update zone {zone_id}"))?;
@@ -577,25 +579,6 @@ struct FavoriteListResponse {
 #[derive(Debug, Deserialize)]
 struct FavoriteSummaryResponse {
     effect_id: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct SceneListResponse {
-    items: Vec<SceneSummary>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ApiActiveSceneResponse {
-    id: String,
-    name: String,
-    #[serde(default)]
-    kind: SceneKind,
-    #[serde(default)]
-    mutation_mode: SceneMutationMode,
-    #[serde(default)]
-    groups: Vec<Zone>,
-    #[serde(default)]
-    groups_revision: u64,
 }
 
 #[derive(Debug, Deserialize)]

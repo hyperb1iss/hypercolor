@@ -58,18 +58,8 @@ impl AppState {
 
 // ── Scenes & Zones ──────────────────────────────────────────────────
 
-/// One saved scene, as listed by `GET /scenes`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SceneSummary {
-    pub id: String,
-    pub name: String,
-    #[serde(default)]
-    pub description: Option<String>,
-    #[serde(default)]
-    pub enabled: bool,
-    #[serde(default)]
-    pub mutation_mode: SceneMutationMode,
-}
+/// One saved scene, as listed by `GET /scenes` (shared wire contract).
+pub use hypercolor_types::api::scenes::SceneSummary;
 
 /// The active scene with its render groups (zones).
 #[derive(Debug, Clone)]

@@ -709,7 +709,7 @@ async fn get_active_scene_maps_zones_and_lock_state() {
                         zone_json(ZONE_B, "Shelf", "custom", None, false),
                     ],
                     "groups_revision": 42,
-                    "unassigned_behavior": "render"
+                    "unassigned_behavior": "off"
                 }
             }))
         }),

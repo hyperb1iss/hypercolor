@@ -15,5 +15,7 @@
 
 pub mod common;
 pub mod devices;
+pub mod scenes;
+pub mod zones;
 
 pub use common::Pagination;

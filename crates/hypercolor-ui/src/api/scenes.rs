@@ -1,27 +1,11 @@
 //! Scene API client — `/api/v1/scenes/*` routes.
 
-use serde::{Deserialize, Serialize};
-
-use hypercolor_types::scene::{SceneKind, SceneMutationMode, UnassignedBehavior, Zone};
-
 use super::client;
 
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-pub struct ActiveSceneResponse {
-    pub id: String,
-    pub name: String,
-    pub kind: SceneKind,
-    pub mutation_mode: SceneMutationMode,
-    #[serde(default)]
-    pub groups: Vec<Zone>,
-    /// Monotonic render-group structure counter. Carried as the
-    /// `If-Match` precondition for every zone mutation (Spec 64).
-    #[serde(default)]
-    pub groups_revision: u64,
-    /// Scene-level policy for device outputs claimed by no zone (§9.4).
-    #[serde(default)]
-    pub unassigned_behavior: UnassignedBehavior,
-}
+// Wire contracts are shared with the daemon (hypercolor-types::api::scenes).
+pub use hypercolor_types::api::scenes::{
+    ActiveSceneResponse, CreateSceneRequest, SceneListResponse, SceneSummary, UpdateSceneRequest,
+};
 
 pub async fn fetch_active_scene() -> Result<Option<ActiveSceneResponse>, String> {
     client::fetch_json_optional("/api/v1/scenes/active")
@@ -35,33 +19,6 @@ pub async fn deactivate_scene() -> Result<(), String> {
         .map_err(Into::into)
 }
 
-/// One scene as the scene selector lists it. `description` is held so a
-/// rename can echo it back: the daemon's PUT replaces the field wholesale.
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-pub struct SceneSummary {
-    pub id: String,
-    pub name: String,
-    #[serde(default)]
-    pub description: Option<String>,
-    /// Whether the scene participates in activation. Defaults true for
-    /// daemons that predate the field.
-    #[serde(default = "default_scene_enabled")]
-    pub enabled: bool,
-    /// Live vs snapshot-locked. Lets scene pickers mark locked scenes
-    /// without joining `/scenes/active`.
-    #[serde(default)]
-    pub mutation_mode: SceneMutationMode,
-}
-
-fn default_scene_enabled() -> bool {
-    true
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct SceneListResponse {
-    items: Vec<SceneSummary>,
-}
-
 /// List every user-facing scene (the daemon omits the ephemeral default).
 pub async fn list_scenes() -> Result<Vec<SceneSummary>, String> {
     client::fetch_json::<SceneListResponse>("/api/v1/scenes")
@@ -70,23 +27,15 @@ pub async fn list_scenes() -> Result<Vec<SceneSummary>, String> {
         .map_err(Into::into)
 }
 
-#[derive(Debug, Clone, Serialize)]
-struct CreateSceneRequest<'a> {
-    name: &'a str,
-}
-
 /// Create a scene. The daemon seeds it with a Default zone (§5.2).
 pub async fn create_scene(name: &str) -> Result<SceneSummary, String> {
-    client::post_json("/api/v1/scenes", &CreateSceneRequest { name })
+    let request = CreateSceneRequest {
+        name: name.to_owned(),
+        ..CreateSceneRequest::default()
+    };
+    client::post_json("/api/v1/scenes", &request)
         .await
         .map_err(Into::into)
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct UpdateSceneRequest<'a> {
-    name: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    description: Option<&'a str>,
 }
 
 /// Rename a scene. `description` is sent back verbatim because the
@@ -96,13 +45,15 @@ pub async fn rename_scene(
     name: &str,
     description: Option<&str>,
 ) -> Result<(), String> {
-    client::put_json::<_, serde_json::Value>(
-        &format!("/api/v1/scenes/{scene_id}"),
-        &UpdateSceneRequest { name, description },
-    )
-    .await
-    .map(|_| ())
-    .map_err(Into::into)
+    let request = UpdateSceneRequest {
+        name: name.to_owned(),
+        description: description.map(ToOwned::to_owned),
+        ..UpdateSceneRequest::default()
+    };
+    client::put_json::<_, serde_json::Value>(&format!("/api/v1/scenes/{scene_id}"), &request)
+        .await
+        .map(|_| ())
+        .map_err(Into::into)
 }
 
 /// Delete a scene.

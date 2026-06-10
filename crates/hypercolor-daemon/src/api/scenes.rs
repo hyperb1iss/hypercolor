@@ -6,7 +6,6 @@ use std::sync::Arc;
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::response::Response;
-use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 use hypercolor_core::scene::{SceneManager, default_primary_group};
@@ -32,54 +31,12 @@ const LIVESTREAM_PRODUCER_COST_US: u64 = 25_000;
 
 // ── Request / Response Types ─────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
-pub struct CreateSceneRequest {
-    pub name: String,
-    pub description: Option<String>,
-    pub enabled: Option<bool>,
-    pub mutation_mode: Option<SceneMutationMode>,
-}
+// Wire contracts live in hypercolor-types::api::scenes — shared with the
+// web UI and the TUI.
+pub use hypercolor_types::api::scenes::{
+    ActiveSceneResponse, CreateSceneRequest, SceneListResponse, SceneSummary, UpdateSceneRequest,
+};
 
-#[derive(Debug, Deserialize)]
-pub struct UpdateSceneRequest {
-    pub name: String,
-    pub description: Option<String>,
-    pub enabled: Option<bool>,
-    pub mutation_mode: Option<SceneMutationMode>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct SceneListResponse {
-    pub items: Vec<SceneSummary>,
-    pub pagination: super::devices::Pagination,
-}
-
-#[derive(Debug, Serialize)]
-pub struct SceneSummary {
-    pub id: String,
-    pub name: String,
-    pub description: Option<String>,
-    pub enabled: bool,
-    pub priority: u8,
-    pub mutation_mode: SceneMutationMode,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ActiveSceneResponse {
-    pub id: String,
-    pub name: String,
-    pub description: Option<String>,
-    pub enabled: bool,
-    pub priority: u8,
-    pub kind: SceneKind,
-    pub mutation_mode: SceneMutationMode,
-    pub groups: Vec<Zone>,
-    pub groups_revision: u64,
-    pub unassigned_behavior: UnassignedBehavior,
-}
-
-/// Tell subscribers the saved-scene library changed so scene pickers can
-/// refresh their lists without polling.
 fn publish_scene_library_changed(
     state: &AppState,
     scene_id: SceneId,
