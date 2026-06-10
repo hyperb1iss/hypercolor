@@ -101,3 +101,47 @@ fn preview_frame_rejects_short_raw_payload() {
         })
     );
 }
+
+#[test]
+fn preview_frame_decode_bytes_matches_decode_and_shares_buffer() {
+    let frame = PreviewFrame {
+        channel: PreviewFrameChannel::Canvas,
+        frame_number: 9,
+        timestamp_ms: 100,
+        width: 2,
+        height: 2,
+        format: PreviewPixelFormat::Rgb,
+        payload: Bytes::from_static(&[0; 12]),
+    };
+    let encoded = frame.encode();
+
+    let owned = PreviewFrame::decode(&encoded).expect("slice decode");
+    let shared = PreviewFrame::decode_bytes(&encoded).expect("bytes decode");
+
+    assert_eq!(owned, shared);
+    // Zero-copy: the payload points into the encoded buffer.
+    assert_eq!(
+        shared.payload.as_ptr() as usize,
+        encoded.as_ptr() as usize + PREVIEW_FRAME_HEADER_LEN,
+    );
+}
+
+#[test]
+fn zone_preview_frame_decode_bytes_matches_decode() {
+    let frame = ZonePreviewFrame {
+        scene_id: [0x0A; 16],
+        zone_id: [0x0B; 16],
+        frame_number: 3,
+        timestamp_ms: 30,
+        width: 1,
+        height: 1,
+        format: PreviewPixelFormat::Rgba,
+        payload: Bytes::from_static(&[9, 8, 7, 6]),
+    };
+    let encoded = frame.encode();
+
+    assert_eq!(
+        ZonePreviewFrame::decode(&encoded).expect("slice decode"),
+        ZonePreviewFrame::decode_bytes(&encoded).expect("bytes decode"),
+    );
+}

@@ -128,6 +128,24 @@ impl PreviewFrame {
             payload: Bytes::copy_from_slice(&input[PREVIEW_FRAME_HEADER_LEN..end]),
         })
     }
+
+    /// Zero-copy decode for native clients that already hold the message
+    /// as `Bytes` — the payload is a refcounted slice of the input, not a
+    /// copy. Decode behavior is otherwise identical to [`Self::decode`].
+    pub fn decode_bytes(input: &Bytes) -> Result<Self, PreviewFrameDecodeError> {
+        let header = PreviewFrameHeader::decode(input)?;
+        let end = header.end_offset(input.len())?;
+
+        Ok(Self {
+            channel: header.channel,
+            frame_number: header.frame_number,
+            timestamp_ms: header.timestamp_ms,
+            width: header.width,
+            height: header.height,
+            format: header.format,
+            payload: input.slice(PREVIEW_FRAME_HEADER_LEN..end),
+        })
+    }
 }
 
 impl ZonePreviewFrame {
@@ -164,6 +182,24 @@ impl ZonePreviewFrame {
             height: header.height,
             format: header.format,
             payload: Bytes::copy_from_slice(&input[ZONE_PREVIEW_FRAME_HEADER_LEN..end]),
+        })
+    }
+
+    /// Zero-copy decode for native clients that already hold the message
+    /// as `Bytes` — see [`PreviewFrame::decode_bytes`].
+    pub fn decode_bytes(input: &Bytes) -> Result<Self, PreviewFrameDecodeError> {
+        let header = ZonePreviewFrameHeader::decode(input)?;
+        let end = header.end_offset(input.len())?;
+
+        Ok(Self {
+            scene_id: header.scene_id,
+            zone_id: header.zone_id,
+            frame_number: header.frame_number,
+            timestamp_ms: header.timestamp_ms,
+            width: header.width,
+            height: header.height,
+            format: header.format,
+            payload: input.slice(ZONE_PREVIEW_FRAME_HEADER_LEN..end),
         })
     }
 }

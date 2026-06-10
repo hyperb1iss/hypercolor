@@ -5,6 +5,7 @@ mod reconnect;
 mod replay;
 mod rpc;
 mod schema;
+mod spectrum;
 pub mod transport;
 
 pub const HYPERCOLOR_WS_PROTOCOL: &str = "hypercolor-v1";
@@ -39,6 +40,9 @@ pub use rpc::{
     RpcServer, RpcServerError, RpcStatus,
 };
 pub use schema::{SchemaRange, negotiate_highest_common_schema};
+pub use spectrum::{
+    SPECTRUM_FRAME_HEADER_LEN, SPECTRUM_FRAME_TAG, SpectrumFrame, SpectrumFrameDecodeError,
+};
 
 pub trait BinaryFrameSchema {
     const TAG: u8;
