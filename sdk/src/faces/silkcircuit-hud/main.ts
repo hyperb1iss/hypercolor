@@ -1,6 +1,20 @@
-import { color, combo, face, font, lerpColor, num, palette, sensor, toggle } from '@hypercolor/sdk'
-
+import type { FaceContext } from '@hypercolor/sdk'
 import {
+    color,
+    combo,
+    easeOutCubic,
+    face,
+    font,
+    lerpColor,
+    num,
+    palette,
+    Smoothed,
+    sensor,
+    toggle,
+    withAlpha,
+} from '@hypercolor/sdk'
+import {
+    clamp01,
     createFaceRoot,
     DISPLAY_FONT_FAMILIES,
     ensureFaceStyles,
@@ -197,6 +211,52 @@ const STYLES = `
     background: linear-gradient(90deg, var(--accent), var(--secondary));
 }
 
+.hc-silk-hud__bg {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+}
+
+.hc-silk-hud__stack {
+    position: relative;
+    z-index: 1;
+}
+
+.hc-silk-hud__metric-value,
+.hc-silk-hud__load-value,
+.hc-silk-hud__ram-value {
+    will-change: transform, opacity;
+}
+
+/* ── Wide strip layout ── */
+
+.hc-silk-hud--wide .hc-silk-hud__stack {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    width: 94%;
+    gap: 4%;
+}
+
+.hc-silk-hud--wide .hc-silk-hud__clock {
+    flex: 0 0 auto;
+    gap: 4px;
+}
+
+.hc-silk-hud--wide .hc-silk-hud__metrics {
+    width: auto;
+    flex: 0 0 auto;
+    gap: 18px;
+}
+
+.hc-silk-hud--wide .hc-silk-hud__bars {
+    flex: 1 1 auto;
+    min-width: 0;
+    gap: 8px;
+}
+
 .hc-silk-hud__hidden {
     display: none !important;
 }
@@ -319,10 +379,88 @@ export default face(
                 name: 'Metrics Only',
             },
         ],
+        variants: {
+            wide: (ctx: FaceContext) => buildHud(ctx, true),
+        },
     },
-    (ctx) => {
+    (ctx) => buildHud(ctx, false),
+)
+
+// ── Shared implementation ───────────────────────────────────────────────
+
+/** Eases a text element on change: brief rise + fade-in per new value. */
+function createValueMorph(element: HTMLElement) {
+    let last = ''
+    let changedAt = Number.NEGATIVE_INFINITY
+    return (text: string, time: number) => {
+        if (text !== last) {
+            last = text
+            changedAt = time
+            element.textContent = text
+        }
+        const progress = clamp01((time - changedAt) / 0.4)
+        const eased = easeOutCubic(progress)
+        if (progress >= 1) {
+            element.style.opacity = '1'
+            element.style.transform = 'translateY(0)'
+        } else {
+            element.style.opacity = `${0.45 + 0.55 * eased}`
+            element.style.transform = `translateY(${(1 - eased) * 4}px)`
+        }
+    }
+}
+
+/** Layered ambient background: faint grid plus two drifting glows. */
+function drawHudBackground(
+    c: CanvasRenderingContext2D,
+    W: number,
+    H: number,
+    time: number,
+    accent: string,
+    secondary: string,
+): void {
+    c.clearRect(0, 0, W, H)
+
+    const spacing = Math.max(24, Math.min(W, H) / 12)
+    c.strokeStyle = withAlpha(accent, 0.045)
+    c.lineWidth = 1
+    c.beginPath()
+    for (let x = spacing; x < W; x += spacing) {
+        c.moveTo(x, 0)
+        c.lineTo(x, H)
+    }
+    for (let y = spacing; y < H; y += spacing) {
+        c.moveTo(0, y)
+        c.lineTo(W, y)
+    }
+    c.stroke()
+
+    // Two slow glows drifting on incommensurate orbits.
+    const glows = [
+        { color: accent, phase: 0, radius: Math.min(W, H) * 0.55 },
+        { color: secondary, phase: 2.4, radius: Math.min(W, H) * 0.45 },
+    ]
+    for (const glowSpec of glows) {
+        const gx = W * (0.5 + 0.34 * Math.sin(time * 0.07 + glowSpec.phase))
+        const gy = H * (0.5 + 0.3 * Math.cos(time * 0.05 + glowSpec.phase * 0.7))
+        const gradient = c.createRadialGradient(gx, gy, 0, gx, gy, glowSpec.radius)
+        gradient.addColorStop(0, withAlpha(glowSpec.color, 0.07))
+        gradient.addColorStop(1, withAlpha(glowSpec.color, 0))
+        c.fillStyle = gradient
+        c.fillRect(0, 0, W, H)
+    }
+}
+
+function buildHud(ctx: FaceContext, wide: boolean) {
+    {
         ensureFaceStyles(STYLE_ID, STYLES)
         const root = createFaceRoot(ctx, 'hc-silk-hud')
+        root.classList.toggle('hc-silk-hud--wide', wide)
+        const background = document.createElement('canvas')
+        background.className = 'hc-silk-hud__bg'
+        background.width = ctx.width
+        background.height = ctx.height
+        const backgroundCtx = background.getContext('2d')
         root.innerHTML = `
             <div class="hc-silk-hud__stack">
                 <div class="hc-silk-hud__clock">
@@ -361,6 +499,7 @@ export default face(
                 </div>
             </div>
         `
+        root.appendChild(background)
 
         const clockEl = requireElement<HTMLDivElement>(root, '.hc-silk-hud__clock')
         const hoursTensEl = requireElement<HTMLSpanElement>(root, '.hc-silk-hud__hours-tens')
@@ -383,7 +522,17 @@ export default face(
         const loadHeadEl = requireParentElement(loadLabelEl, '.hc-silk-hud__load-label')
         const ramHeadEl = requireParentElement(ramLabelEl, '.hc-silk-hud__ram-label')
 
-        return (_time, controls, sensors) => {
+        const loadFill = new Smoothed(0, 0.25)
+        const ramFill = new Smoothed(0, 0.25)
+        const morphCpu = createValueMorph(cpuValueEl)
+        const morphGpu = createValueMorph(gpuValueEl)
+        const morphLoad = createValueMorph(loadValueEl)
+        const morphRam = createValueMorph(ramValueEl)
+        let lastTime = Number.NaN
+
+        return (time: number, controls: Record<string, unknown>, sensors: import('@hypercolor/sdk').SensorAccessor) => {
+            const dt = Number.isNaN(lastTime) ? 1 / 30 : Math.max(time - lastTime, 0)
+            lastTime = time
             const accent = lerpColor(controls.accent as string, palette.fg.primary, 0.05)
             const secondary = mixFaceAccent(controls.secondaryAccent as string, accent, 0.14)
             const ink = resolveFaceInk(accent)
@@ -395,9 +544,14 @@ export default face(
             root.style.setProperty('--dim-ink', ink.dim)
             root.style.setProperty('--hero-font', `"${controls.heroFont as string}", sans-serif`)
             root.style.setProperty('--ui-font', `"${controls.uiFont as string}", sans-serif`)
-            root.style.setProperty('--clock-size', `${controls.clockSize as number}`)
-            root.style.setProperty('--metric-size', `${controls.metricSize as number}`)
-            root.style.setProperty('--detail-size', `${controls.detailSize as number}`)
+            // Wide strips size off the panel height so the row stays put.
+            const sizeScale = wide ? (ctx.height / 480) * 1.55 : 1
+            root.style.setProperty('--clock-size', `${(controls.clockSize as number) * sizeScale}`)
+            root.style.setProperty('--metric-size', `${(controls.metricSize as number) * sizeScale}`)
+            root.style.setProperty(
+                '--detail-size',
+                `${Math.max(9, (controls.detailSize as number) * (wide ? 0.9 : 1))}`,
+            )
 
             const now = new Date()
             let hours = now.getHours()
@@ -413,14 +567,14 @@ export default face(
                 .toLocaleDateString('en-US', { day: 'numeric', month: 'short', weekday: 'short' })
                 .toUpperCase()
 
-            const cpuLoad = sensors.normalized(controls.cpuLoadSensor as string)
-            const ram = sensors.normalized(controls.ramSensor as string)
-            cpuValueEl.textContent = sensors.formatted(controls.cpuTempSensor as string)
-            gpuValueEl.textContent = sensors.formatted(controls.gpuTempSensor as string)
-            loadValueEl.textContent = sensors.formatted(controls.cpuLoadSensor as string)
-            ramValueEl.textContent = sensors.formatted(controls.ramSensor as string)
-            loadFillEl.style.setProperty('--fill', Math.max(0, Math.min(1, cpuLoad)).toFixed(4))
-            ramFillEl.style.setProperty('--fill', Math.max(0, Math.min(1, ram)).toFixed(4))
+            const cpuLoad = loadFill.update(clamp01(sensors.normalized(controls.cpuLoadSensor as string)), dt)
+            const ram = ramFill.update(clamp01(sensors.normalized(controls.ramSensor as string)), dt)
+            morphCpu(sensors.formatted(controls.cpuTempSensor as string), time)
+            morphGpu(sensors.formatted(controls.gpuTempSensor as string), time)
+            morphLoad(sensors.formatted(controls.cpuLoadSensor as string), time)
+            morphRam(sensors.formatted(controls.ramSensor as string), time)
+            loadFillEl.style.setProperty('--fill', cpuLoad.toFixed(4))
+            ramFillEl.style.setProperty('--fill', ram.toFixed(4))
 
             const showClock = controls.showClock as boolean
             const showDate = controls.showDate as boolean
@@ -440,6 +594,10 @@ export default face(
 
             const c = ctx.ctx
             c.clearRect(0, 0, ctx.width, ctx.height)
+
+            if (backgroundCtx) {
+                drawHudBackground(backgroundCtx, ctx.width, ctx.height, time, accent, secondary)
+            }
         }
-    },
-)
+    }
+}
