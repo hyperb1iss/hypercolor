@@ -194,7 +194,7 @@ pub fn DeviceDetail(
                 };
                 let enabled = dev.status != "disabled";
                 let pairing_required = needs_pairing(&dev.auth);
-                let auth_state = dev.auth.as_ref().map(|a| a.state.clone());
+                let auth_state = dev.auth.as_ref().map(|a| a.state);
                 let can_pair = dev.auth.as_ref().map(|a| a.can_pair).unwrap_or(false);
                 let dev_id_for_pair = dev.id.clone();
                 let dev_id_for_forget = dev.id.clone();

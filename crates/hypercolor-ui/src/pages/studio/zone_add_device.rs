@@ -208,7 +208,7 @@ fn mint_device_zones(device: &api::DeviceSummary) -> Vec<OutputAssignment> {
     let layout_id = device.layout_device_id.as_str();
     let physical_id = device.id.as_str();
     let name = device.name.as_str();
-    let total_leds = device.total_leds;
+    let total_leds = device.total_leds as usize;
     if device.zones.is_empty() {
         return vec![OutputAssignment::New(Box::new(
             layout_utils::create_default_zone(

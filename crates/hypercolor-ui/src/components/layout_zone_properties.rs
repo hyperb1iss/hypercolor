@@ -539,7 +539,7 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                             .devices_resource
                                             .get_untracked()
                                             .and_then(|r| r.ok())
-                                            .and_then(|devices| devices.iter().find(|d| d.layout_device_id == did).map(|d| d.total_leds))
+                                            .and_then(|devices| devices.iter().find(|d| d.layout_device_id == did).map(|d| d.total_leds as usize))
                                             .unwrap_or(1);
                                         let (canvas_width, canvas_height) = layout.with_untracked(|current| {
                                             current.as_ref()

@@ -8,7 +8,7 @@ use hypercolor_types::spatial::{StripDirection, ZoneShape};
 use hypercolor_ui::api::{ZoneSummary, ZoneTopologySummary};
 use hypercolor_ui::layout_geometry::{self, ResizeHandle, SizeAxis};
 
-fn zone_summary(name: &str, led_count: usize, topology_hint: ZoneTopologySummary) -> ZoneSummary {
+fn zone_summary(name: &str, led_count: u32, topology_hint: ZoneTopologySummary) -> ZoneSummary {
     ZoneSummary {
         id: format!("zone-{name}"),
         name: name.to_owned(),

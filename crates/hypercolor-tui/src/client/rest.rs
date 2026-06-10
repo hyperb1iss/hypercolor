@@ -3,11 +3,13 @@
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use futures_util::stream::{self, StreamExt};
+use hypercolor_types::api::devices::{
+    DeviceListResponse as ApiDeviceListResponse, DeviceSummary as ApiDeviceSummary,
+};
 use hypercolor_types::controls::{
     ApplyControlChangesRequest, ApplyControlChangesResponse, ControlActionResult,
     ControlSurfaceDocument, ControlValueMap,
 };
-use hypercolor_types::device::DeviceOrigin;
 use hypercolor_types::effect::{
     ControlDefinition as ApiControlDefinition, ControlType as ApiControlType,
     ControlValue as ApiControlValue, PresetTemplate as ApiPresetTemplate,
@@ -117,7 +119,7 @@ impl DaemonClient {
 
     /// Fetch all connected devices.
     pub async fn get_devices(&self) -> Result<Vec<DeviceSummary>> {
-        let response: DeviceListResponse = self.get_data("/devices").await?;
+        let response: ApiDeviceListResponse = self.get_data("/devices").await?;
         Ok(response.items.into_iter().map(map_device_summary).collect())
     }
 
@@ -565,20 +567,6 @@ struct EffectDetailResponse {
     controls: Vec<ApiControlDefinition>,
     #[serde(default)]
     presets: Vec<ApiPresetTemplate>,
-}
-
-#[derive(Debug, Deserialize)]
-struct DeviceListResponse {
-    items: Vec<ApiDeviceSummary>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ApiDeviceSummary {
-    id: String,
-    name: String,
-    origin: DeviceOrigin,
-    status: String,
-    total_leds: u32,
 }
 
 #[derive(Debug, Deserialize)]

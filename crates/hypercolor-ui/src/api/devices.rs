@@ -1,122 +1,22 @@
 //! Device-related API types and fetch functions.
 
-use std::collections::HashMap;
-
-use hypercolor_types::device::{DeviceOrigin, DriverPresentation};
 use serde::{Deserialize, Serialize};
 
 use super::client;
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
-/// Device zone summary.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ZoneSummary {
-    pub id: String,
-    pub name: String,
-    pub led_count: usize,
-    pub topology: String,
-    #[serde(default)]
-    pub topology_hint: Option<ZoneTopologySummary>,
-}
-
-/// Structured topology hint from `GET /api/v1/devices`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ZoneTopologySummary {
-    Strip,
-    Matrix {
-        rows: u32,
-        cols: u32,
-    },
-    Ring {
-        count: u32,
-    },
-    Point,
-    Display {
-        width: u32,
-        height: u32,
-        circular: bool,
-    },
-    Custom,
-}
-
-// ── Pairing / Auth Types ────────────────────────────────────────────────────
-
-/// Device authentication state from the daemon.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum DeviceAuthState {
-    /// Device does not require credentials.
-    Open,
-    /// Device requires credentials and none are stored.
-    Required,
-    /// Credentials are stored and can be used for connect attempts.
-    Configured,
-    /// Credentials are stored but known to be invalid or stale.
-    Error,
-}
-
-/// The kind of pairing flow to present.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum PairingFlowKind {
-    /// User must perform a physical action, then press the action button.
-    PhysicalAction,
-    /// UI must render input fields and submit entered credentials.
-    CredentialsForm,
-}
-
-/// Describes a single input field for credential-based pairing flows.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct PairingFieldDescriptor {
-    pub key: String,
-    pub label: String,
-    pub secret: bool,
-    pub optional: bool,
-    #[serde(default)]
-    pub placeholder: Option<String>,
-}
-
-/// Backend-provided descriptor that tells the UI exactly how to render a pairing flow.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct PairingDescriptor {
-    pub kind: PairingFlowKind,
-    pub title: String,
-    pub instructions: Vec<String>,
-    pub action_label: String,
-    #[serde(default)]
-    pub fields: Vec<PairingFieldDescriptor>,
-}
-
-/// Auth/pairing summary attached to each device.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct DeviceAuthSummary {
-    pub state: DeviceAuthState,
-    pub can_pair: bool,
-    #[serde(default)]
-    pub descriptor: Option<PairingDescriptor>,
-    #[serde(default)]
-    pub last_error: Option<String>,
-}
-
-/// Generic pair request sent to `POST /api/v1/devices/:id/pair`.
-#[derive(Debug, Serialize)]
-pub struct PairDeviceRequest {
-    #[serde(skip_serializing_if = "HashMap::is_empty")]
-    pub values: HashMap<String, String>,
-    pub activate_after_pair: bool,
-}
-
-/// Status returned by the generic pair endpoint.
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum PairDeviceStatus {
-    Paired,
-    ActionRequired,
-    AlreadyPaired,
-    InvalidInput,
-}
+// Wire contracts are shared with the daemon (single definition in
+// hypercolor-types) — drift is now a compile error, not a runtime parse
+// failure. Pairing vocabulary likewise comes from hypercolor-types.
+pub use hypercolor_types::api::devices::{
+    DeviceConnectionSummary, DeviceListResponse, DeviceSummary, UpdateDeviceRequest, ZoneSummary,
+    ZoneTopologySummary,
+};
+pub use hypercolor_types::pairing::{
+    DeviceAuthState, DeviceAuthSummary, PairDeviceRequest, PairDeviceStatus, PairingDescriptor,
+    PairingFieldDescriptor, PairingFlowKind,
+};
 
 /// Response from `POST /api/v1/devices/:id/pair`.
 #[derive(Debug, Clone, Deserialize)]
@@ -129,58 +29,6 @@ pub struct PairDeviceResponse {
 #[derive(Debug, Clone, Deserialize)]
 pub struct DeletePairingResponse {
     pub message: String,
-}
-
-/// Device summary from `GET /api/v1/devices`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct DeviceSummary {
-    pub id: String,
-    pub layout_device_id: String,
-    pub name: String,
-    pub origin: DeviceOrigin,
-    pub presentation: DriverPresentation,
-    pub status: String,
-    pub brightness: u8,
-    #[serde(default)]
-    pub firmware_version: Option<String>,
-    #[serde(default)]
-    pub connection: DeviceConnectionSummary,
-    pub total_leds: usize,
-    #[serde(default)]
-    pub auth: Option<DeviceAuthSummary>,
-    #[serde(default)]
-    pub zones: Vec<ZoneSummary>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-pub struct DeviceConnectionSummary {
-    #[serde(default)]
-    pub transport: String,
-    #[serde(default)]
-    pub label: Option<String>,
-    #[serde(default)]
-    pub endpoint: Option<String>,
-    #[serde(default)]
-    pub ip: Option<String>,
-    #[serde(default)]
-    pub hostname: Option<String>,
-}
-
-/// Paginated device list response.
-#[derive(Debug, Deserialize)]
-pub struct DeviceListResponse {
-    pub items: Vec<DeviceSummary>,
-}
-
-/// Request body for updating a device.
-#[derive(Debug, Serialize)]
-pub struct UpdateDeviceRequest {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub enabled: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub brightness: Option<u8>,
 }
 
 /// Global brightness payload from `/api/v1/settings/brightness`.

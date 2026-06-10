@@ -348,7 +348,7 @@ pub fn DeviceCard(
         .map(|(i, z)| {
             (
                 topology_shape_svg(&z.topology),
-                z.led_count,
+                z.led_count as usize,
                 zone_palette[i % zone_palette.len()],
             )
         })

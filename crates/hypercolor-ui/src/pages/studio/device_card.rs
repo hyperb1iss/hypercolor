@@ -222,7 +222,7 @@ pub fn StudioDeviceCard(
             ComponentRow {
                 name: display_name.clone(),
                 shape_svg: topology_shape_svg(&channel.topology),
-                led_count: channel.led_count,
+                led_count: channel.led_count as usize,
                 output_id,
                 slot_id: channel.id.clone(),
                 zone_name: Some(channel.name.clone()),

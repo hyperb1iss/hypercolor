@@ -94,7 +94,7 @@ pub fn ZoneTree() -> impl IntoView {
             .map(|device| DeviceMeta {
                 layout_device_id: device.layout_device_id,
                 name: device.name,
-                total_leds: u32::try_from(device.total_leds).unwrap_or(u32::MAX),
+                total_leds: device.total_leds,
             })
             .collect::<Vec<_>>()
     });

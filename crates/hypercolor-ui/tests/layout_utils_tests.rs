@@ -40,7 +40,7 @@ fn ring_zone(
     }
 }
 
-fn sample_zone_summary(id: &str, name: &str, led_count: usize) -> api::ZoneSummary {
+fn sample_zone_summary(id: &str, name: &str, led_count: u32) -> api::ZoneSummary {
     api::ZoneSummary {
         id: id.to_owned(),
         name: name.to_owned(),

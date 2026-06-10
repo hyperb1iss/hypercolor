@@ -140,7 +140,10 @@ fn update_simulated_display_request_serializes_only_present_fields() {
 }
 
 #[test]
-fn pair_device_request_skips_empty_values() {
+fn pair_device_request_serializes_canonical_shape() {
+    // The shared canonical type (hypercolor-types::pairing) always emits
+    // `values`; the daemon deserializes it with #[serde(default)], so an
+    // empty map and a missing key are equivalent on the wire.
     let payload = serde_json::to_value(PairDeviceRequest {
         values: std::collections::HashMap::new(),
         activate_after_pair: true,
@@ -150,6 +153,7 @@ fn pair_device_request_skips_empty_values() {
     assert_eq!(
         payload,
         serde_json::json!({
+            "values": {},
             "activate_after_pair": true
         })
     );

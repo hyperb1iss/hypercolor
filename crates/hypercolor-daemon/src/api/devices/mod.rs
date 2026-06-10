@@ -16,16 +16,13 @@ use std::time::{Duration, Instant};
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::response::Response;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tracing::{debug, warn};
-use utoipa::ToSchema;
 
 use hypercolor_core::device::{BackendIo, BackendManager, DeviceLifecycleManager};
-use hypercolor_driver_api::DeviceAuthSummary;
 use hypercolor_types::attachment::{ComponentBinding, ComponentSlot};
 use hypercolor_types::device::{
-    DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint, DeviceUserSettings,
-    DriverPresentation, DriverTransportKind,
+    DeviceId, DeviceInfo, DeviceState, DeviceTopologyHint, DeviceUserSettings, DriverTransportKind,
 };
 use hypercolor_types::event::HypercolorEvent;
 
@@ -51,18 +48,14 @@ pub use pairing::{
 
 // ── Request / Response Types ─────────────────────────────────────────────
 
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct UpdateDeviceRequest {
-    pub name: Option<String>,
-    pub enabled: Option<bool>,
-    pub brightness: Option<u8>,
-}
-
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct IdentifyRequest {
-    pub duration_ms: Option<u64>,
-    pub color: Option<String>,
-}
+// Wire contracts live in hypercolor-types::api::devices — shared with the
+// web UI and the TUI so request/response drift is a compile error. Local
+// re-exports keep daemon-internal paths (`api::devices::Pagination`) stable.
+pub use hypercolor_types::api::common::Pagination;
+pub use hypercolor_types::api::devices::{
+    DeviceConnectionSummary, DeviceListResponse, DeviceSummary, IdentifyRequest,
+    UpdateDeviceRequest, ZoneSummary, ZoneTopologySummary,
+};
 
 #[derive(Debug, Deserialize)]
 pub struct IdentifyAttachmentRequest {
@@ -70,75 +63,6 @@ pub struct IdentifyAttachmentRequest {
     pub base: IdentifyRequest,
     pub binding_index: Option<usize>,
     pub instance: Option<u32>,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct DeviceListResponse {
-    pub items: Vec<DeviceSummary>,
-    pub pagination: Pagination,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct DeviceSummary {
-    pub id: String,
-    pub layout_device_id: String,
-    pub name: String,
-    pub origin: DeviceOrigin,
-    pub presentation: DriverPresentation,
-    pub status: String,
-    pub brightness: u8,
-    pub firmware_version: Option<String>,
-    pub connection: DeviceConnectionSummary,
-    pub total_leds: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub auth: Option<DeviceAuthSummary>,
-    pub zones: Vec<ZoneSummary>,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct DeviceConnectionSummary {
-    pub transport: String,
-    pub label: Option<String>,
-    pub endpoint: Option<String>,
-    pub ip: Option<String>,
-    pub hostname: Option<String>,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct ZoneSummary {
-    pub id: String,
-    pub name: String,
-    pub led_count: u32,
-    pub topology: String,
-    pub topology_hint: ZoneTopologySummary,
-}
-
-#[derive(Debug, Clone, Serialize, ToSchema)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ZoneTopologySummary {
-    Strip,
-    Matrix {
-        rows: u32,
-        cols: u32,
-    },
-    Ring {
-        count: u32,
-    },
-    Point,
-    Display {
-        width: u32,
-        height: u32,
-        circular: bool,
-    },
-    Custom,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct Pagination {
-    pub offset: usize,
-    pub limit: usize,
-    pub total: usize,
-    pub has_more: bool,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -937,7 +861,7 @@ pub(super) async fn summarize_device_for_response(
                 name: z.name.clone(),
                 led_count: z.led_count,
                 topology: format!("{:?}", z.topology).to_lowercase(),
-                topology_hint: summarize_zone_topology(&z.topology),
+                topology_hint: Some(summarize_zone_topology(&z.topology)),
             })
             .collect(),
     }

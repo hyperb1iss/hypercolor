@@ -71,7 +71,7 @@ fn render_device_card(state: PaletteState, idx: usize, dev: api::DeviceSummary) 
         };
         driver_identifier_label(identifier).unwrap_or_else(|| identifier.to_string())
     });
-    let fallback_leds = dev.total_leds;
+    let fallback_leds = dev.total_leds as usize;
     let has_multi_zones = dev.zones.len() > 1;
     let zone_count = dev.zones.len();
 
@@ -174,7 +174,7 @@ fn render_device_card(state: PaletteState, idx: usize, dev: api::DeviceSummary) 
             .iter()
             .cloned()
             .map(|zone| {
-                let leds = zone.led_count;
+                let leds = zone.led_count as usize;
                 let display_name = channel_names::effective_channel_name(
                     &channel_override_device_id,
                     &zone.id,

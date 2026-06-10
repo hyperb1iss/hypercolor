@@ -101,7 +101,6 @@ pub fn default_zone_visuals(
     #[allow(clippy::cast_possible_truncation)]
     let led_count = zone
         .map(|summary| summary.led_count)
-        .map(|count| count as u32)
         .unwrap_or(total_leds as u32)
         .max(1);
 
@@ -469,7 +468,7 @@ fn push2_zone_topology(zone: &ZoneSummary) -> LedTopology {
         },
         _ => match zone.topology_hint.as_ref() {
             Some(ZoneTopologySummary::Strip) => LedTopology::Strip {
-                count: u32::try_from(zone.led_count.max(1)).unwrap_or(u32::MAX),
+                count: zone.led_count.max(1),
                 direction: StripDirection::LeftToRight,
             },
             Some(ZoneTopologySummary::Matrix { rows, cols }) => LedTopology::Matrix {
