@@ -938,3 +938,37 @@ async fn activate_and_deactivate_scene_hit_expected_routes() {
     client.activate_scene("scene-2").await.expect("activate");
     client.deactivate_scene().await.expect("deactivate");
 }
+
+#[tokio::test]
+async fn reset_controls_scopes_to_render_group() {
+    let captured: Arc<Mutex<Option<Value>>> = Arc::new(Mutex::new(None));
+    let router = Router::new()
+        .route(
+            "/api/v1/effects/current/reset",
+            post(
+                |State(captured): State<Arc<Mutex<Option<Value>>>>,
+                 Json(body): Json<Value>| async move {
+                    *captured.lock().await = Some(body);
+                    Json(json!({ "data": {} }))
+                },
+            ),
+        )
+        .with_state(Arc::clone(&captured));
+
+    let client = client_for(spawn_server(router).await);
+
+    client
+        .reset_controls(Some(ZONE_B))
+        .await
+        .expect("zone-scoped reset");
+    assert_eq!(
+        captured.lock().await.clone().expect("captured body"),
+        json!({ "render_group": ZONE_B })
+    );
+
+    client.reset_controls(None).await.expect("primary reset");
+    assert_eq!(
+        captured.lock().await.clone().expect("captured body"),
+        json!({})
+    );
+}

@@ -403,11 +403,21 @@ impl DaemonClient {
         ensure_success(response, &format!("Failed to update control {control_id}")).await
     }
 
-    /// Reset all controls on the active effect to their defaults.
-    pub async fn reset_controls(&self) -> Result<()> {
+    /// Reset the active effect's controls to their defaults. A
+    /// `render_group` scopes the reset to that zone's effect; `None`
+    /// resets the primary zone (legacy behavior).
+    pub async fn reset_controls(&self, render_group: Option<&str>) -> Result<()> {
         let url = format!("{}/api/v1/effects/current/reset", self.base_url);
+        let mut body = serde_json::Map::new();
+        if let Some(zone_id) = render_group {
+            body.insert(
+                "render_group".to_string(),
+                serde_json::Value::String(zone_id.to_string()),
+            );
+        }
         let response = self
             .auth_request(self.http.post(&url))
+            .json(&serde_json::Value::Object(body))
             .send()
             .await
             .context("Failed to reset controls")?;

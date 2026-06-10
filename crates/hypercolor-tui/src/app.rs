@@ -934,37 +934,26 @@ impl App {
                 }
             }
             Action::ResetControls => {
-                if let Some((scene_id, zone_id)) = self.zone_patch_target() {
-                    let Some(defaults) = self.zone_effect_defaults(&zone_id) else {
-                        self.notify("No effect on the targeted zone", NotificationLevel::Warning);
-                        return;
-                    };
-                    self.spawn_actions({
-                        let client = self.client.clone();
-                        async move {
-                            client
-                                .patch_zone_controls(&scene_id, &zone_id, &defaults)
-                                .await?;
-                            Ok(vec![Action::Notify(Notification {
-                                message: "Zone controls reset to defaults".to_string(),
-                                level: NotificationLevel::Info,
-                            })])
-                        }
-                    });
-                } else {
-                    self.spawn_actions({
-                        let client = self.client.clone();
-                        async move {
-                            client.reset_controls().await?;
-                            let mut actions = refresh_status_and_scene(client).await?;
-                            actions.push(Action::Notify(Notification {
-                                message: "Controls reset to defaults".to_string(),
-                                level: NotificationLevel::Info,
-                            }));
-                            Ok(actions)
-                        }
-                    });
-                }
+                // The daemon's reset is zone-scoped via render_group;
+                // None resets the primary zone.
+                let target = self.non_primary_target();
+                self.spawn_actions({
+                    let client = self.client.clone();
+                    async move {
+                        let render_group = target.as_ref().map(|(zone_id, _)| zone_id.as_str());
+                        client.reset_controls(render_group).await?;
+                        let mut actions = refresh_status_and_scene(client).await?;
+                        let message = match &target {
+                            Some((_, zone_name)) => format!("Controls reset \u{2192} {zone_name}"),
+                            None => "Controls reset to defaults".to_string(),
+                        };
+                        actions.push(Action::Notify(Notification {
+                            message,
+                            level: NotificationLevel::Info,
+                        }));
+                        Ok(actions)
+                    }
+                });
             }
             Action::ActivateScene(scene_id) => {
                 let name = self
@@ -1289,25 +1278,6 @@ impl App {
                 zone.controls.insert(control_id.to_string(), value);
             }
         }
-    }
-
-    /// Build the default-control payload for a zone's effect, used to
-    /// reset zone controls (the layer PATCH is merge-only).
-    fn zone_effect_defaults(&self, zone_id: &str) -> Option<serde_json::Value> {
-        let scene = self.state.active_scene.as_deref()?;
-        let effect_id = scene.zone(zone_id)?.effect_id.as_deref()?;
-        let effect = self.state.effects.iter().find(|e| e.id == effect_id)?;
-        if effect.controls.is_empty() {
-            return None;
-        }
-        let mut map = serde_json::Map::new();
-        for control in &effect.controls {
-            map.insert(
-                control.id.clone(),
-                control_value_to_json(&control.default_value),
-            );
-        }
-        Some(serde_json::Value::Object(map))
     }
 
     /// Move the zone focus to the next/previous zone of the active scene.
