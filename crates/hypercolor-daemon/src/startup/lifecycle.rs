@@ -100,6 +100,7 @@ impl DaemonState {
             #[cfg(feature = "wgpu")]
             render_gpu_device: self.render_acceleration.gpu_render_device.clone(),
             configured_max_fps_tier: self.configured_max_fps_tier.clone(),
+            face_fps_cap: config.display.effective_face_fps_cap(),
         };
         self.render_thread = Some(
             RenderThread::try_spawn(rt_state)
@@ -115,6 +116,7 @@ impl DaemonState {
             power_state: self.power_state.subscribe(),
             static_hold_refresh_interval: DEFAULT_STATIC_HOLD_REFRESH_INTERVAL,
             display_frames: Arc::clone(&self.display_frames),
+            face_fps_cap: config.display.effective_face_fps_cap(),
         }));
         self.device_metrics_collector_task = Some(spawn_device_metrics_collector(
             Arc::clone(&self.device_metrics),

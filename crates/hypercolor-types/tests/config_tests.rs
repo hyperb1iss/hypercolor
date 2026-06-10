@@ -2,10 +2,10 @@
 
 use hypercolor_types::config::{
     AudioConfig, CaptureConfig, CloudConfig, DaemonConfig, DbusConfig, DiscoveryConfig,
-    EffectEngineConfig, EffectErrorFallbackPolicy, FeatureFlags, GoveeConfig, HypercolorConfig,
-    LogLevel, McpConfig, MediaConfig, NetworkAccessMode, NetworkClientScope, NetworkConfig,
-    RenderAccelerationMode, RenderingConfig, ServoGpuImportConfig, ServoGpuImportMode,
-    ShutdownBehavior, TuiConfig, WebConfig, default_driver_configs,
+    DisplayConfig, EffectEngineConfig, EffectErrorFallbackPolicy, FeatureFlags, GoveeConfig,
+    HypercolorConfig, LogLevel, McpConfig, MediaConfig, NetworkAccessMode, NetworkClientScope,
+    NetworkConfig, RenderAccelerationMode, RenderingConfig, ServoGpuImportConfig,
+    ServoGpuImportMode, ShutdownBehavior, TuiConfig, WebConfig, default_driver_configs,
 };
 use hypercolor_types::session::{OffOutputBehavior, SessionConfig};
 
@@ -209,6 +209,19 @@ fn audio_config_toml_roundtrip() {
 }
 
 #[test]
+fn display_config_defaults_and_clamps_face_fps_cap() {
+    let config = DisplayConfig::default();
+    assert_eq!(config.face_fps_cap, 30);
+    assert_eq!(config.effective_face_fps_cap(), 30);
+
+    let low = DisplayConfig { face_fps_cap: 5 };
+    assert_eq!(low.effective_face_fps_cap(), 15);
+
+    let high = DisplayConfig { face_fps_cap: 240 };
+    assert_eq!(high.effective_face_fps_cap(), 60);
+}
+
+#[test]
 fn full_config_toml_roundtrip() {
     let original = HypercolorConfig {
         schema_version: 4,
@@ -221,6 +234,7 @@ fn full_config_toml_roundtrip() {
         media: MediaConfig::default(),
         audio: AudioConfig::default(),
         capture: CaptureConfig::default(),
+        display: DisplayConfig::default(),
         discovery: DiscoveryConfig::default(),
         network: NetworkConfig::default(),
         cloud: CloudConfig::default(),

@@ -973,6 +973,7 @@ fn make_render_state(
         #[cfg(feature = "wgpu")]
         render_gpu_device: None,
         configured_max_fps_tier: FpsTier::Full.into(),
+        face_fps_cap: 30,
     }
 }
 
@@ -2545,6 +2546,7 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
         #[cfg(feature = "wgpu")]
         render_gpu_device: None,
         configured_max_fps_tier: FpsTier::Full.into(),
+        face_fps_cap: 30,
     };
 
     {
@@ -4131,6 +4133,7 @@ async fn release_sleep_clears_published_frame_and_canvas_once() {
         #[cfg(feature = "wgpu")]
         render_gpu_device: None,
         configured_max_fps_tier: FpsTier::Full.into(),
+        face_fps_cap: 30,
     };
 
     let mut frame_rx = state.event_bus.frame_receiver();

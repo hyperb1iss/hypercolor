@@ -872,6 +872,7 @@ async fn scene_display_write_cadence_for_format(color_format: DeviceColorFormat)
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
@@ -1043,6 +1044,7 @@ async fn automatic_display_output_mirrors_canvas_to_layout_mapped_display_device
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
@@ -1131,6 +1133,7 @@ async fn automatic_display_output_uses_device_display_sinks_without_cross_device
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
@@ -1237,6 +1240,7 @@ async fn automatic_display_output_aborts_stale_blocked_worker_without_stalling_o
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
@@ -1336,6 +1340,7 @@ async fn automatic_display_output_promotes_backend_writer_to_display_sink_after_
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
@@ -1466,6 +1471,7 @@ async fn automatic_display_output_reacquires_display_sink_after_sink_error() {
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
@@ -1564,6 +1570,7 @@ async fn automatic_display_output_sends_raw_rgb_for_rgb_display_zones() {
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        face_fps_cap: 30,
         display_frames: Arc::clone(&display_frames),
     });
 
@@ -1638,6 +1645,7 @@ async fn rgb_display_preview_subscriber_stays_attached_without_worker_restart() 
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        face_fps_cap: 30,
         display_frames: Arc::clone(&display_frames),
     });
 
@@ -1734,6 +1742,7 @@ async fn automatic_display_output_subscribes_to_authoritative_scene_canvas_not_p
         preview_runtime: Arc::clone(&preview_runtime),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
@@ -1813,6 +1822,7 @@ async fn automatic_display_output_skips_simulators_without_display_preview_subsc
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        face_fps_cap: 30,
         display_frames: Arc::clone(&display_frames),
     });
 
@@ -1885,6 +1895,7 @@ async fn automatic_display_output_reacts_when_simulator_preview_subscriber_appea
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        face_fps_cap: 30,
         display_frames: Arc::clone(&display_frames),
     });
 
@@ -1950,6 +1961,7 @@ async fn automatic_display_output_skips_devices_without_display_capabilities() {
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
@@ -2003,6 +2015,7 @@ async fn automatic_display_output_skips_display_devices_that_are_not_in_layout()
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
@@ -2066,6 +2079,7 @@ async fn automatic_display_output_uses_layout_zone_viewport() {
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
@@ -2157,6 +2171,7 @@ async fn automatic_display_output_uses_logical_device_viewport_alias() {
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
@@ -2231,6 +2246,7 @@ async fn automatic_display_output_defaults_mixed_devices_to_full_canvas_without_
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
@@ -2298,6 +2314,7 @@ async fn display_group_canvas_routes_to_device_worker() {
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
@@ -2374,6 +2391,7 @@ async fn automatic_display_output_updates_direct_faces_without_scene_canvas_tick
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
@@ -2455,6 +2473,7 @@ async fn display_preview_survives_display_face_worker_config_restart() {
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        face_fps_cap: 30,
         display_frames: Arc::clone(&display_frames),
     });
 
@@ -2559,6 +2578,7 @@ async fn display_group_alpha_blends_face_with_effect_canvas() {
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
@@ -2647,6 +2667,7 @@ async fn display_group_alpha_composes_against_black_before_effect_frame() {
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
@@ -2732,6 +2753,7 @@ async fn display_output_uses_render_published_face_route_metadata() {
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
@@ -2820,6 +2842,7 @@ async fn display_group_replace_keeps_transparent_face_pixels_from_bleeding_effec
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
@@ -2905,6 +2928,7 @@ async fn alpha_display_faces_keep_default_30_fps_cadence_on_60_fps_devices() {
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
@@ -3010,6 +3034,7 @@ async fn display_group_screen_blends_face_color_with_effect_canvas() {
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
@@ -3098,6 +3123,7 @@ async fn display_group_tint_turns_face_into_effect_tinted_material() {
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
@@ -3186,6 +3212,7 @@ async fn display_group_luma_reveal_lets_bright_face_regions_adopt_effect_color()
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
@@ -3273,6 +3300,7 @@ async fn automatic_display_output_drops_stale_frames_for_slow_displays() {
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
@@ -3371,6 +3399,7 @@ async fn automatic_display_output_uses_latest_pending_frame_for_paced_writes() {
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
@@ -3467,6 +3496,7 @@ async fn automatic_display_output_keeps_paced_writes_moving_while_scene_keeps_ch
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
@@ -3546,6 +3576,7 @@ async fn automatic_display_output_keeps_preview_frame_when_backend_write_fails()
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        face_fps_cap: 30,
         display_frames: Arc::clone(&display_frames),
     });
 
@@ -3623,6 +3654,7 @@ async fn automatic_display_output_retries_unchanged_frame_after_transient_write_
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        face_fps_cap: 30,
         display_frames: Arc::clone(&display_frames),
     });
 
@@ -3716,6 +3748,7 @@ async fn static_hold_failure_retries_unchanged_payload_after_frame_refresh() {
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state,
         static_hold_refresh_interval: Duration::from_millis(20),
+        face_fps_cap: 30,
         display_frames: Arc::clone(&display_frames),
     });
 
@@ -3800,6 +3833,7 @@ async fn automatic_display_output_skips_unchanged_frames() {
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
@@ -3889,6 +3923,7 @@ async fn automatic_display_output_skips_metadata_only_owned_surface_updates() {
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
@@ -3966,6 +4001,7 @@ async fn automatic_display_output_applies_device_brightness_before_encoding() {
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
@@ -4061,6 +4097,7 @@ async fn automatic_display_output_skips_repeated_zero_brightness_frames() {
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
@@ -4138,6 +4175,7 @@ async fn automatic_display_output_refreshes_cached_targets_when_layout_changes()
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
@@ -4226,6 +4264,7 @@ async fn automatic_display_output_refreshes_cached_targets_when_display_face_rou
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
@@ -4312,6 +4351,7 @@ async fn automatic_display_output_refreshes_static_hold_frames_while_sleeping() 
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state,
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        face_fps_cap: 30,
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 

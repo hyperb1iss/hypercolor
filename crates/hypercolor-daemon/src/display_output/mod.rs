@@ -74,6 +74,8 @@ pub struct DisplayOutputState {
     pub static_hold_refresh_interval: Duration,
     /// Latest composited JPEG frames published per device for preview surfaces.
     pub display_frames: Arc<RwLock<DisplayFrameRuntime>>,
+    /// Effective `display.face_fps_cap` for group-direct HTML faces.
+    pub face_fps_cap: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -381,6 +383,7 @@ async fn run_display_output(state: DisplayOutputState, mut shutdown_rx: oneshot:
         &state.event_bus,
         &state.display_frames,
         &mut targets_cache,
+        state.face_fps_cap,
     )
     .await;
     let mut scene_canvas_rx = display_requires_scene_canvas(initial_targets.targets.as_ref())
@@ -427,6 +430,7 @@ async fn run_display_output(state: DisplayOutputState, mut shutdown_rx: oneshot:
             &state.event_bus,
             &state.display_frames,
             &mut targets_cache,
+            state.face_fps_cap,
         )
         .await;
         if last_reconciled_target_version != Some(targets.version) {
@@ -678,6 +682,7 @@ async fn display_targets(
     event_bus: &Arc<HypercolorBus>,
     display_frames: &Arc<RwLock<DisplayFrameRuntime>>,
     cache: &mut DisplayTargetCache,
+    face_fps_cap: u32,
 ) -> DisplayTargetsSnapshot {
     let layout = {
         let spatial = spatial_engine.read().await;
@@ -794,6 +799,7 @@ async fn display_targets(
                 tracked.info.capabilities.max_fps,
                 &canvas_source,
                 frame_format,
+                face_fps_cap,
             ),
             brightness: tracked.user_settings.brightness,
             geometry,
@@ -1006,16 +1012,19 @@ fn capped_display_target_fps(
     device_max_fps: u32,
     canvas_source: &DisplayCanvasSource,
     frame_format: DisplayFrameFormat,
+    face_fps_cap: u32,
 ) -> u32 {
-    let (default_fps, max_fps) = if canvas_source.is_group_direct() {
-        (DISPLAY_FACE_DEFAULT_FPS, DISPLAY_FACE_DEFAULT_FPS)
-    } else if frame_format == DisplayFrameFormat::Rgb {
-        (RAW_DISPLAY_OUTPUT_MAX_FPS, RAW_DISPLAY_OUTPUT_MAX_FPS)
+    if canvas_source.is_group_direct() {
+        return capped_group_direct_display_target_fps(device_max_fps, face_fps_cap);
+    }
+
+    let max_fps = if frame_format == DisplayFrameFormat::Rgb {
+        RAW_DISPLAY_OUTPUT_MAX_FPS
     } else {
-        (DISPLAY_OUTPUT_MAX_FPS, DISPLAY_OUTPUT_MAX_FPS)
+        DISPLAY_OUTPUT_MAX_FPS
     };
     let device_limit = if device_max_fps == 0 {
-        default_fps
+        max_fps
     } else {
         device_max_fps
     };
@@ -1023,17 +1032,20 @@ fn capped_display_target_fps(
     device_limit.clamp(1, max_fps)
 }
 
-pub(crate) fn capped_group_direct_display_target_fps(device_max_fps: u32) -> u32 {
+pub(crate) fn capped_group_direct_display_target_fps(
+    device_max_fps: u32,
+    face_fps_cap: u32,
+) -> u32 {
     let device_limit = if device_max_fps == 0 {
         DISPLAY_FACE_DEFAULT_FPS
     } else {
         device_max_fps
     };
 
-    // Keep HTML faces on the conservative default until we have budget-aware
-    // upshift logic; blindly inheriting a 60 fps panel limit reintroduces the
-    // exact render/composite/JPEG churn this path is supposed to avoid.
-    device_limit.clamp(1, DISPLAY_FACE_DEFAULT_FPS)
+    // The cap defaults to the conservative 30 fps face baseline; faster
+    // panels only upshift when the user raises display.face_fps_cap, so the
+    // render/composite/JPEG churn of a blind 60 fps inherit stays opt-in.
+    device_limit.clamp(1, face_fps_cap)
 }
 
 fn logical_device_store_signature(store: &HashMap<String, LogicalDevice>) -> u64 {
@@ -1138,6 +1150,62 @@ mod tests {
             opacity: 1.0,
             finalized,
         }
+    }
+
+    #[test]
+    fn face_fps_cap_default_keeps_group_direct_at_thirty() {
+        // Default cap, fast panel: today's 30 fps baseline is unchanged.
+        assert_eq!(capped_group_direct_display_target_fps(60, 30), 30);
+        // Default cap, device with no declared limit.
+        assert_eq!(capped_group_direct_display_target_fps(0, 30), 30);
+        // Default cap, slow panel: device limit still wins below the cap.
+        assert_eq!(capped_group_direct_display_target_fps(15, 30), 15);
+    }
+
+    #[test]
+    fn face_fps_cap_raised_to_sixty_is_honored_when_device_allows() {
+        assert_eq!(capped_group_direct_display_target_fps(60, 60), 60);
+        // Device that never declared a limit stays on the 30 fps default.
+        assert_eq!(capped_group_direct_display_target_fps(0, 60), 30);
+        // Device limit below the cap still wins.
+        assert_eq!(capped_group_direct_display_target_fps(24, 60), 24);
+    }
+
+    #[test]
+    fn capped_display_target_fps_group_direct_consults_face_cap() {
+        let group_direct = DisplayCanvasSource::GroupDirect {
+            group_id: fixed_zone_id(1),
+        };
+
+        assert_eq!(
+            capped_display_target_fps(60, &group_direct, DisplayFrameFormat::Jpeg, 30),
+            30
+        );
+        assert_eq!(
+            capped_display_target_fps(60, &group_direct, DisplayFrameFormat::Jpeg, 60),
+            60
+        );
+    }
+
+    #[test]
+    fn capped_display_target_fps_scene_paths_ignore_face_cap() {
+        assert_eq!(
+            capped_display_target_fps(
+                60,
+                &DisplayCanvasSource::Scene,
+                DisplayFrameFormat::Jpeg,
+                60
+            ),
+            DISPLAY_OUTPUT_MAX_FPS
+        );
+        assert_eq!(
+            capped_display_target_fps(60, &DisplayCanvasSource::Scene, DisplayFrameFormat::Rgb, 60),
+            RAW_DISPLAY_OUTPUT_MAX_FPS
+        );
+        assert_eq!(
+            capped_display_target_fps(0, &DisplayCanvasSource::Scene, DisplayFrameFormat::Rgb, 60),
+            RAW_DISPLAY_OUTPUT_MAX_FPS
+        );
     }
 
     #[test]

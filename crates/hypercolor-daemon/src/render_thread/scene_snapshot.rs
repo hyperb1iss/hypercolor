@@ -283,6 +283,7 @@ async fn snapshot_scene_runtime(
             scene_snapshot_cache,
             active_render_groups_revision,
             active_render_groups.as_ref(),
+            state.face_fps_cap,
         )
         .await;
     let active_render_group_count = u32::try_from(
@@ -372,6 +373,7 @@ async fn snapshot_display_group_target_metadata(
     scene_snapshot_cache: &mut SceneSnapshotCache,
     groups_revision: u64,
     groups: &[Zone],
+    face_fps_cap: u32,
 ) -> (
     HashMap<ZoneId, u32>,
     HashMap<ZoneId, DisplayGroupOutputRoute>,
@@ -411,7 +413,7 @@ async fn snapshot_display_group_target_metadata(
                 .unwrap_or(0);
             Some((
                 group.id,
-                capped_group_direct_display_target_fps(device_max_fps),
+                capped_group_direct_display_target_fps(device_max_fps, face_fps_cap),
             ))
         })
         .collect();
@@ -812,6 +814,7 @@ mod tests {
             #[cfg(feature = "wgpu")]
             render_gpu_device: None,
             configured_max_fps_tier: FpsTier::Full.into(),
+            face_fps_cap: 30,
         }
     }
 
@@ -869,6 +872,7 @@ mod tests {
             &mut scene_snapshot_cache,
             11,
             &[group],
+            30,
         )
         .await;
 

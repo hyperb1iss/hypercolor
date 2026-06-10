@@ -834,6 +834,7 @@ mod tests {
             #[cfg(feature = "wgpu")]
             render_gpu_device: None,
             configured_max_fps_tier: FpsTier::Full.into(),
+            face_fps_cap: 30,
         }
     }
 

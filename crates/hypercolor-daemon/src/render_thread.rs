@@ -246,6 +246,9 @@ pub struct RenderThreadState {
 
     /// Ceiling derived from user configuration before runtime admission.
     pub configured_max_fps_tier: ConfiguredFpsTier,
+
+    /// Effective `display.face_fps_cap` for group-direct HTML faces.
+    pub face_fps_cap: u32,
 }
 
 impl RenderThreadState {
