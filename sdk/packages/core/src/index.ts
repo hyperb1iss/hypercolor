@@ -126,6 +126,25 @@ export {
     step,
 } from './math'
 
+// ── Motion ──────────────────────────────────────────────────────────────
+
+export type { EasingFn, SpringOptions } from './motion'
+export {
+    easeOutBack,
+    easeOutElastic,
+    linear,
+    Smoothed,
+    Spring,
+    smoothed,
+    spring,
+    Timeline,
+    Transition,
+    Tween,
+    timeline,
+    transitionOnChange,
+    tween,
+} from './motion'
+
 // ── Faces ───────────────────────────────────────────────────────────────
 
 export type { AudioAccessor, FaceContext, FaceOptions, FaceUpdateFn, SensorAccessor, SensorReading } from './faces'
