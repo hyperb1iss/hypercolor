@@ -787,7 +787,11 @@ async fn api_shutdown_timeout_forces_stuck_connections_to_close() {
         let _ = reqwest::get(format!("http://{addr}/stuck")).await;
     });
 
-    tokio::time::timeout(Duration::from_secs(1), entered.notified())
+    // Upper bound only — notified() returns the moment the handler is
+    // entered. Generous because connection setup + dispatch can exceed a
+    // second when the host is saturated (e.g. parallel workspace builds
+    // during `just verify`).
+    tokio::time::timeout(Duration::from_secs(10), entered.notified())
         .await
         .expect("stuck request should enter handler");
     shutdown_tx
