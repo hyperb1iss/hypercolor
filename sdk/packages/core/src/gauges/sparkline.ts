@@ -88,7 +88,10 @@ export function sparkline(ctx: CanvasRenderingContext2D, opts: SparklineOptions)
         })
     }
 
-    // Fill gradient under the line
+    // Fill under the line. Hex colors get the vertical alpha-fade
+    // gradient; any other CSS color (rgba(), color-mix()) cannot take a
+    // hex alpha suffix — addColorStop would throw — so those fall back
+    // to a uniform translucent fill via globalAlpha.
     if (fill) {
         ctx.beginPath()
         ctx.moveTo(points[0].px, y + height)
@@ -96,16 +99,24 @@ export function sparkline(ctx: CanvasRenderingContext2D, opts: SparklineOptions)
         ctx.lineTo(points[points.length - 1].px, y + height)
         ctx.closePath()
 
-        const grad = ctx.createLinearGradient(x, y, x, y + height)
-        grad.addColorStop(
-            0,
-            `${color}${Math.round(fillOpacity * 255)
-                .toString(16)
-                .padStart(2, '0')}`,
-        )
-        grad.addColorStop(1, `${color}00`)
-        ctx.fillStyle = grad
-        ctx.fill()
+        if (/^#[0-9a-f]{6}$/i.test(color)) {
+            const grad = ctx.createLinearGradient(x, y, x, y + height)
+            grad.addColorStop(
+                0,
+                `${color}${Math.round(fillOpacity * 255)
+                    .toString(16)
+                    .padStart(2, '0')}`,
+            )
+            grad.addColorStop(1, `${color}00`)
+            ctx.fillStyle = grad
+            ctx.fill()
+        } else {
+            const previousAlpha = ctx.globalAlpha
+            ctx.globalAlpha = previousAlpha * fillOpacity
+            ctx.fillStyle = color
+            ctx.fill()
+            ctx.globalAlpha = previousAlpha
+        }
     }
 
     // Line

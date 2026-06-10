@@ -15,7 +15,16 @@ function recordingContext() {
         arc: record('arc'),
         beginPath: record('beginPath'),
         closePath: record('closePath'),
-        createLinearGradient: () => ({ addColorStop: () => {} }),
+        createLinearGradient: () => ({
+            addColorStop: (_offset: number, stopColor: string) => {
+                if (!/^#[0-9a-f]{6,8}$/i.test(stopColor) && !stopColor.startsWith('rgba(')) {
+                    throw new SyntaxError('The string did not match the expected pattern.')
+                }
+                if (/^rgba\(.*\)[0-9a-f]{2}$/i.test(stopColor)) {
+                    throw new SyntaxError('The string did not match the expected pattern.')
+                }
+            },
+        }),
         fill: record('fill'),
         fillStyle: '' as unknown,
         lineCap: 'round',
@@ -178,5 +187,31 @@ describe('sparkline draw-in', () => {
         sparkline(implicit, options)
 
         expect(full.ops).toEqual(implicit.ops)
+    })
+})
+
+describe('sparkline fill color handling', () => {
+    const base = {
+        color: '#80ffea',
+        height: 100,
+        range: [0, 100] as [number, number],
+        values: [10, 50, 90],
+        width: 300,
+        x: 0,
+        y: 0,
+    }
+
+    test('hex colors keep the gradient fade', () => {
+        const ctx = recordingContext()
+        sparkline(ctx, { ...base, fill: true })
+        expect(ctx.ops.some((op) => op.op === 'fill')).toBe(true)
+    })
+
+    test('rgba colors fill without throwing', () => {
+        const ctx = recordingContext()
+        // Regression: addColorStop('rgba(...)cc') threw SyntaxError in
+        // Servo and killed face rendering every frame.
+        expect(() => sparkline(ctx, { ...base, color: 'rgba(128, 255, 234, 0.8)', fill: true })).not.toThrow()
+        expect(ctx.ops.some((op) => op.op === 'fill')).toBe(true)
     })
 })
