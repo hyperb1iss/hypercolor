@@ -34,6 +34,7 @@ pub struct ApiEnvelope<T> {
 // Flat re-exports so existing `crate::api::FooBar` imports keep working.
 
 pub use assets::*;
+pub use client::MutationOutcome;
 pub use config::*;
 pub use controls::*;
 pub use device_metrics::*;

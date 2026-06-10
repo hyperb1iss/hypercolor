@@ -13,23 +13,19 @@
 //! by call.
 #![allow(dead_code)]
 
-use gloo_net::http::{Request, RequestBuilder};
+use gloo_net::http::Method;
 use serde::{Deserialize, Serialize};
 
 use hypercolor_types::scene::{UnassignedBehavior, Zone};
 use hypercolor_types::spatial::{Output, SpatialLayout};
 
-use super::{ApiEnvelope, client};
+use super::client;
+use super::client::MutationOutcome;
 
 /// Outcome of a zone mutation guarded by a `groups_revision` precondition.
-#[derive(Debug, Clone, PartialEq)]
-pub enum ZoneOutcome<T> {
-    /// The mutation applied; carries whatever the route returned.
-    Applied(T),
-    /// The `If-Match` precondition failed. `current` is the daemon's
-    /// authoritative `groups_revision` to rebase on before retrying.
-    Stale { current: u64 },
-}
+/// `Stale { current }` carries the daemon's authoritative `groups_revision`
+/// to rebase on before retrying.
+pub type ZoneOutcome<T> = MutationOutcome<T>;
 
 /// Response shape of the zone list / bulk-mutation routes. Studio reads
 /// the zone set from the active scene, so this is exercised only by the
@@ -113,18 +109,19 @@ pub async fn create_zone(
     color: Option<&str>,
     expected_revision: Option<u64>,
 ) -> Result<ZoneOutcome<Zone>, String> {
-    let body = serde_json::to_string(&CreateZoneRequest {
+    let request = CreateZoneRequest {
         name: name.to_owned(),
         color: color.map(str::to_owned),
-    })
-    .map_err(|error| error.to_string())?;
-    send_zone_mutation(
-        Request::post(&format!("/api/v1/scenes/{scene_id}/zones")),
-        Some(body),
+    };
+    client::send_json_versioned::<_, ZoneResponse>(
+        Method::POST,
+        &format!("/api/v1/scenes/{scene_id}/zones"),
+        Some(&request),
         expected_revision,
     )
     .await
-    .map(|outcome| outcome.map(|value: ZoneResponse| value.zone))
+    .map(|outcome| outcome.map(|value| value.zone))
+    .map_err(Into::into)
 }
 
 pub async fn update_zone(
@@ -133,14 +130,15 @@ pub async fn update_zone(
     request: &UpdateZoneRequest,
     expected_revision: Option<u64>,
 ) -> Result<ZoneOutcome<Zone>, String> {
-    let body = serde_json::to_string(request).map_err(|error| error.to_string())?;
-    send_zone_mutation(
-        Request::patch(&format!("/api/v1/scenes/{scene_id}/zones/{zone_id}")),
-        Some(body),
+    client::send_json_versioned::<_, ZoneResponse>(
+        Method::PATCH,
+        &format!("/api/v1/scenes/{scene_id}/zones/{zone_id}"),
+        Some(request),
         expected_revision,
     )
     .await
-    .map(|outcome| outcome.map(|value: ZoneResponse| value.zone))
+    .map(|outcome| outcome.map(|value| value.zone))
+    .map_err(Into::into)
 }
 
 /// Apply a placement-only update to a zone's spatial layout (§5.1). The
@@ -152,14 +150,15 @@ pub async fn update_zone_layout(
     layout: &SpatialLayout,
     expected_revision: Option<u64>,
 ) -> Result<ZoneOutcome<Zone>, String> {
-    let body = serde_json::to_string(layout).map_err(|error| error.to_string())?;
-    send_zone_mutation(
-        Request::put(&format!("/api/v1/scenes/{scene_id}/zones/{zone_id}/layout")),
-        Some(body),
+    client::send_json_versioned::<_, ZoneResponse>(
+        Method::PUT,
+        &format!("/api/v1/scenes/{scene_id}/zones/{zone_id}/layout"),
+        Some(layout),
         expected_revision,
     )
     .await
-    .map(|outcome| outcome.map(|value: ZoneResponse| value.zone))
+    .map(|outcome| outcome.map(|value| value.zone))
+    .map_err(Into::into)
 }
 
 pub async fn delete_zone(
@@ -167,13 +166,15 @@ pub async fn delete_zone(
     zone_id: &str,
     expected_revision: Option<u64>,
 ) -> Result<ZoneOutcome<()>, String> {
-    send_zone_mutation(
-        Request::delete(&format!("/api/v1/scenes/{scene_id}/zones/{zone_id}")),
+    client::send_json_versioned::<(), serde_json::Value>(
+        Method::DELETE,
+        &format!("/api/v1/scenes/{scene_id}/zones/{zone_id}"),
         None,
         expected_revision,
     )
     .await
-    .map(|outcome| outcome.map(|_: serde_json::Value| ()))
+    .map(|outcome| outcome.map(|_| ()))
+    .map_err(Into::into)
 }
 
 /// Reassign device outputs into `zone_id`. Existing outputs are
@@ -187,19 +188,18 @@ pub async fn assign_devices(
     assignments: Vec<OutputAssignment>,
     expected_revision: Option<u64>,
 ) -> Result<ZoneOutcome<u64>, String> {
-    let body = serde_json::to_string(&AssignDevicesRequest {
+    let request = AssignDevicesRequest {
         device_zones: assignments,
-    })
-    .map_err(|error| error.to_string())?;
-    send_zone_mutation(
-        Request::post(&format!(
-            "/api/v1/scenes/{scene_id}/zones/{zone_id}/devices"
-        )),
-        Some(body),
+    };
+    client::send_json_versioned::<_, ZoneListResponse>(
+        Method::POST,
+        &format!("/api/v1/scenes/{scene_id}/zones/{zone_id}/devices"),
+        Some(&request),
         expected_revision,
     )
     .await
-    .map(|outcome| outcome.map(|response: ZoneListResponse| response.groups_revision))
+    .map(|outcome| outcome.map(|response| response.groups_revision))
+    .map_err(Into::into)
 }
 
 /// Remove one device output from `zone_id`. Returns the new
@@ -210,15 +210,15 @@ pub async fn unassign_device(
     device_zone_id: &str,
     expected_revision: Option<u64>,
 ) -> Result<ZoneOutcome<u64>, String> {
-    send_zone_mutation(
-        Request::delete(&format!(
-            "/api/v1/scenes/{scene_id}/zones/{zone_id}/devices/{device_zone_id}"
-        )),
+    client::send_json_versioned::<(), ZoneListResponse>(
+        Method::DELETE,
+        &format!("/api/v1/scenes/{scene_id}/zones/{zone_id}/devices/{device_zone_id}"),
         None,
         expected_revision,
     )
     .await
-    .map(|outcome| outcome.map(|response: ZoneListResponse| response.groups_revision))
+    .map(|outcome| outcome.map(|response| response.groups_revision))
+    .map_err(Into::into)
 }
 
 pub async fn update_unassigned_behavior(
@@ -226,71 +226,16 @@ pub async fn update_unassigned_behavior(
     behavior: &UnassignedBehavior,
     expected_revision: Option<u64>,
 ) -> Result<ZoneOutcome<UnassignedBehavior>, String> {
-    let body = serde_json::to_string(&UpdateUnassignedBehaviorRequest {
+    let request = UpdateUnassignedBehaviorRequest {
         unassigned_behavior: behavior.clone(),
-    })
-    .map_err(|error| error.to_string())?;
-    send_zone_mutation(
-        Request::patch(&format!("/api/v1/scenes/{scene_id}/unassigned-behavior")),
-        Some(body),
+    };
+    client::send_json_versioned::<_, UnassignedBehaviorResponse>(
+        Method::PATCH,
+        &format!("/api/v1/scenes/{scene_id}/unassigned-behavior"),
+        Some(&request),
         expected_revision,
     )
     .await
-    .map(|outcome| outcome.map(|value: UnassignedBehaviorResponse| value.unassigned_behavior))
-}
-
-impl<T> ZoneOutcome<T> {
-    fn map<U>(self, transform: impl FnOnce(T) -> U) -> ZoneOutcome<U> {
-        match self {
-            ZoneOutcome::Applied(value) => ZoneOutcome::Applied(transform(value)),
-            ZoneOutcome::Stale { current } => ZoneOutcome::Stale { current },
-        }
-    }
-}
-
-/// Issue one zone mutation, attaching the `If-Match` precondition when a
-/// revision is supplied and classifying a `412` reply as
-/// [`ZoneOutcome::Stale`]. Hand-rolls the request because the shared
-/// `client` helpers expose no header hook; `client::with_auth` is still
-/// applied so the daemon's network API-key requirement is honored.
-async fn send_zone_mutation<T>(
-    builder: RequestBuilder,
-    body: Option<String>,
-    expected_revision: Option<u64>,
-) -> Result<ZoneOutcome<T>, String>
-where
-    T: for<'de> Deserialize<'de>,
-{
-    let mut builder = client::with_auth(builder);
-    if let Some(revision) = expected_revision {
-        builder = builder.header("If-Match", &revision.to_string());
-    }
-
-    let response = match body {
-        Some(body) => builder
-            .header("Content-Type", "application/json")
-            .body(body)
-            .map_err(|error| error.to_string())?
-            .send()
-            .await
-            .map_err(|error| error.to_string())?,
-        None => builder.send().await.map_err(|error| error.to_string())?,
-    };
-
-    match response.status() {
-        200..=299 => {
-            let envelope: ApiEnvelope<T> =
-                response.json().await.map_err(|error| error.to_string())?;
-            Ok(ZoneOutcome::Applied(envelope.data))
-        }
-        412 => {
-            let body: serde_json::Value =
-                response.json().await.map_err(|error| error.to_string())?;
-            let current = body["current"]
-                .as_u64()
-                .ok_or_else(|| "412 response missing `current` groups_revision".to_owned())?;
-            Ok(ZoneOutcome::Stale { current })
-        }
-        _ => Err(client::response_error_string(response).await),
-    }
+    .map(|outcome| outcome.map(|value| value.unassigned_behavior))
+    .map_err(Into::into)
 }

@@ -11,7 +11,7 @@
 
 use std::fmt;
 
-use gloo_net::http::{Request, RequestBuilder, Response};
+use gloo_net::http::{Method, Request, RequestBuilder, Response};
 use serde::{Serialize, de::DeserializeOwned};
 
 use super::ApiEnvelope;
@@ -64,6 +64,35 @@ impl std::error::Error for ApiError {}
 impl From<ApiError> for String {
     fn from(err: ApiError) -> Self {
         err.to_string()
+    }
+}
+
+// ── Versioned-mutation outcome ──────────────────────────────────────────────
+
+/// Outcome of a mutation guarded by an `If-Match` version precondition.
+///
+/// The daemon honors `If-Match: "<version>"` on its optimistic-concurrency
+/// routes (zone, layer, and effect-control mutations): it applies the
+/// mutation only when the version still matches, otherwise replies `412`
+/// with the authoritative `current` version. Modeled as a real type — not
+/// an HTTP string match — so callers can drive a clean rebase/refetch path
+/// off `Stale`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MutationOutcome<T> {
+    /// The mutation applied; carries whatever the route returned.
+    Applied(T),
+    /// The `If-Match` precondition failed. `current` is the daemon's
+    /// authoritative version token to rebase on before retrying.
+    Stale { current: u64 },
+}
+
+impl<T> MutationOutcome<T> {
+    /// Transform the `Applied` payload, passing `Stale` through unchanged.
+    pub fn map<U>(self, transform: impl FnOnce(T) -> U) -> MutationOutcome<U> {
+        match self {
+            Self::Applied(value) => MutationOutcome::Applied(transform(value)),
+            Self::Stale { current } => MutationOutcome::Stale { current },
+        }
     }
 }
 
@@ -152,6 +181,124 @@ fn save_api_key_impl(api_key: &str) {
 #[cfg(not(target_arch = "wasm32"))]
 fn save_api_key_impl(_api_key: &str) {}
 
+// ── Request core ────────────────────────────────────────────────────────────
+// Every JSON helper below is a thin wrapper over this single sender, so the
+// auth header, optional `If-Match` precondition, serialization, and error
+// mapping live in exactly one place.
+
+/// Build and send one JSON request. Attaches the stored API key, an
+/// optional `If-Match` version precondition, and — when a body is supplied —
+/// serializes it with a `Content-Type: application/json` header. Performs
+/// no status-code handling; callers classify the response.
+async fn send_request<Req>(
+    method: Method,
+    url: &str,
+    body: Option<&Req>,
+    if_match: Option<u64>,
+) -> Result<Response, ApiError>
+where
+    Req: Serialize + ?Sized,
+{
+    let mut builder = with_auth(RequestBuilder::new(url).method(method));
+    if let Some(version) = if_match {
+        builder = builder.header("If-Match", &version.to_string());
+    }
+    match body {
+        Some(body) => {
+            let body_str =
+                serde_json::to_string(body).map_err(|e| ApiError::Serialize(e.to_string()))?;
+            builder
+                .header("Content-Type", "application/json")
+                .body(body_str)
+                .map_err(|e| ApiError::Network(e.to_string()))?
+                .send()
+                .await
+                .map_err(|e| ApiError::Network(e.to_string()))
+        }
+        None => builder
+            .send()
+            .await
+            .map_err(|e| ApiError::Network(e.to_string())),
+    }
+}
+
+/// Unwrap the [`ApiEnvelope`] from a successful response.
+async fn parse_envelope<Res>(resp: Response) -> Result<Res, ApiError>
+where
+    Res: DeserializeOwned,
+{
+    let envelope: ApiEnvelope<Res> = resp
+        .json()
+        .await
+        .map_err(|e| ApiError::Parse(e.to_string()))?;
+    Ok(envelope.data)
+}
+
+/// Send a JSON request, require success, parse the envelope.
+async fn send_json<Req, Res>(method: Method, url: &str, body: Option<&Req>) -> Result<Res, ApiError>
+where
+    Req: Serialize + ?Sized,
+    Res: DeserializeOwned,
+{
+    let resp = send_request(method, url, body, None).await?;
+    let resp = ensure_success(resp).await?;
+    parse_envelope(resp).await
+}
+
+/// Send a JSON request, require success, discard the response body.
+async fn send_json_discard<Req>(
+    method: Method,
+    url: &str,
+    body: Option<&Req>,
+) -> Result<(), ApiError>
+where
+    Req: Serialize + ?Sized,
+{
+    let resp = send_request(method, url, body, None).await?;
+    ensure_success(resp).await?;
+    Ok(())
+}
+
+/// Send a JSON mutation guarded by an optional `If-Match` version
+/// precondition, classifying a `412` reply as [`MutationOutcome::Stale`].
+///
+/// On success the envelope's inner data is returned as
+/// [`MutationOutcome::Applied`]. On `412` the daemon's authoritative
+/// `current` version is parsed from the response body. Pass `None` for
+/// `if_match` to apply unconditionally (the daemon then skips the
+/// precondition check); a `412` is still classified if one arrives.
+pub async fn send_json_versioned<Req, Res>(
+    method: Method,
+    url: &str,
+    body: Option<&Req>,
+    if_match: Option<u64>,
+) -> Result<MutationOutcome<Res>, ApiError>
+where
+    Req: Serialize + ?Sized,
+    Res: DeserializeOwned,
+{
+    let resp = send_request(method, url, body, if_match).await?;
+    match resp.status() {
+        200..=299 => Ok(MutationOutcome::Applied(parse_envelope(resp).await?)),
+        412 => {
+            let body: serde_json::Value = resp
+                .json()
+                .await
+                .map_err(|e| ApiError::Parse(e.to_string()))?;
+            let current = stale_current_version(&body).ok_or_else(|| {
+                ApiError::Parse("412 response missing `current` version token".to_owned())
+            })?;
+            Ok(MutationOutcome::Stale { current })
+        }
+        _ => Err(http_error(resp).await),
+    }
+}
+
+/// Extract the authoritative version token from a `412` response body.
+fn stale_current_version(body: &serde_json::Value) -> Option<u64> {
+    body.get("current").and_then(serde_json::Value::as_u64)
+}
+
 // ── GET helpers ─────────────────────────────────────────────────────────────
 
 /// GET `url`, unwrap the [`ApiEnvelope`], return the inner data.
@@ -159,16 +306,7 @@ pub async fn fetch_json<T>(url: &str) -> Result<T, ApiError>
 where
     T: DeserializeOwned,
 {
-    let resp = with_auth(Request::get(url))
-        .send()
-        .await
-        .map_err(|e| ApiError::Network(e.to_string()))?;
-    let resp = ensure_success(resp).await?;
-    let envelope: ApiEnvelope<T> = resp
-        .json()
-        .await
-        .map_err(|e| ApiError::Parse(e.to_string()))?;
-    Ok(envelope.data)
+    send_json::<(), T>(Method::GET, url, None).await
 }
 
 /// GET `url`, returning `Ok(None)` on HTTP 404 and `Ok(Some(data))` on success.
@@ -201,20 +339,7 @@ where
     Req: Serialize + ?Sized,
     Res: DeserializeOwned,
 {
-    let body_str = serde_json::to_string(body).map_err(|e| ApiError::Serialize(e.to_string()))?;
-    let resp = with_auth(Request::post(url))
-        .header("Content-Type", "application/json")
-        .body(body_str)
-        .map_err(|e| ApiError::Network(e.to_string()))?
-        .send()
-        .await
-        .map_err(|e| ApiError::Network(e.to_string()))?;
-    let resp = ensure_success(resp).await?;
-    let envelope: ApiEnvelope<Res> = resp
-        .json()
-        .await
-        .map_err(|e| ApiError::Parse(e.to_string()))?;
-    Ok(envelope.data)
+    send_json(Method::POST, url, Some(body)).await
 }
 
 /// PATCH JSON body, parse envelope, return inner data.
@@ -223,20 +348,7 @@ where
     Req: Serialize + ?Sized,
     Res: DeserializeOwned,
 {
-    let body_str = serde_json::to_string(body).map_err(|e| ApiError::Serialize(e.to_string()))?;
-    let resp = with_auth(Request::patch(url))
-        .header("Content-Type", "application/json")
-        .body(body_str)
-        .map_err(|e| ApiError::Network(e.to_string()))?
-        .send()
-        .await
-        .map_err(|e| ApiError::Network(e.to_string()))?;
-    let resp = ensure_success(resp).await?;
-    let envelope: ApiEnvelope<Res> = resp
-        .json()
-        .await
-        .map_err(|e| ApiError::Parse(e.to_string()))?;
-    Ok(envelope.data)
+    send_json(Method::PATCH, url, Some(body)).await
 }
 
 /// PUT JSON body, parse envelope, return inner data.
@@ -245,20 +357,7 @@ where
     Req: Serialize + ?Sized,
     Res: DeserializeOwned,
 {
-    let body_str = serde_json::to_string(body).map_err(|e| ApiError::Serialize(e.to_string()))?;
-    let resp = with_auth(Request::put(url))
-        .header("Content-Type", "application/json")
-        .body(body_str)
-        .map_err(|e| ApiError::Network(e.to_string()))?
-        .send()
-        .await
-        .map_err(|e| ApiError::Network(e.to_string()))?;
-    let resp = ensure_success(resp).await?;
-    let envelope: ApiEnvelope<Res> = resp
-        .json()
-        .await
-        .map_err(|e| ApiError::Parse(e.to_string()))?;
-    Ok(envelope.data)
+    send_json(Method::PUT, url, Some(body)).await
 }
 
 // ── Write helpers that discard the response body ────────────────────────────
@@ -266,12 +365,7 @@ where
 /// POST with no request body, discard the response. Used for trigger actions
 /// like `apply_effect` or `discover_devices`.
 pub async fn post_empty(url: &str) -> Result<(), ApiError> {
-    let resp = with_auth(Request::post(url))
-        .send()
-        .await
-        .map_err(|e| ApiError::Network(e.to_string()))?;
-    ensure_success(resp).await?;
-    Ok(())
+    send_json_discard::<()>(Method::POST, url, None).await
 }
 
 /// POST JSON body, discard the response. Used for actions that send a payload
@@ -280,16 +374,7 @@ pub async fn post_json_discard<Req>(url: &str, body: &Req) -> Result<(), ApiErro
 where
     Req: Serialize + ?Sized,
 {
-    let body_str = serde_json::to_string(body).map_err(|e| ApiError::Serialize(e.to_string()))?;
-    let resp = with_auth(Request::post(url))
-        .header("Content-Type", "application/json")
-        .body(body_str)
-        .map_err(|e| ApiError::Network(e.to_string()))?
-        .send()
-        .await
-        .map_err(|e| ApiError::Network(e.to_string()))?;
-    ensure_success(resp).await?;
-    Ok(())
+    send_json_discard(Method::POST, url, Some(body)).await
 }
 
 /// PUT JSON body, discard the response. Used for idempotent actions that
@@ -298,16 +383,7 @@ pub async fn put_json_discard<Req>(url: &str, body: &Req) -> Result<(), ApiError
 where
     Req: Serialize + ?Sized,
 {
-    let body_str = serde_json::to_string(body).map_err(|e| ApiError::Serialize(e.to_string()))?;
-    let resp = with_auth(Request::put(url))
-        .header("Content-Type", "application/json")
-        .body(body_str)
-        .map_err(|e| ApiError::Network(e.to_string()))?
-        .send()
-        .await
-        .map_err(|e| ApiError::Network(e.to_string()))?;
-    ensure_success(resp).await?;
-    Ok(())
+    send_json_discard(Method::PUT, url, Some(body)).await
 }
 
 /// PATCH JSON body, discard the response. Used for partial updates that
@@ -316,16 +392,7 @@ pub async fn patch_json_discard<Req>(url: &str, body: &Req) -> Result<(), ApiErr
 where
     Req: Serialize + ?Sized,
 {
-    let body_str = serde_json::to_string(body).map_err(|e| ApiError::Serialize(e.to_string()))?;
-    let resp = with_auth(Request::patch(url))
-        .header("Content-Type", "application/json")
-        .body(body_str)
-        .map_err(|e| ApiError::Network(e.to_string()))?
-        .send()
-        .await
-        .map_err(|e| ApiError::Network(e.to_string()))?;
-    ensure_success(resp).await?;
-    Ok(())
+    send_json_discard(Method::PATCH, url, Some(body)).await
 }
 
 /// DELETE `url`, parse envelope, return inner data. Used for deletes that
@@ -334,31 +401,44 @@ pub async fn delete_json<Res>(url: &str) -> Result<Res, ApiError>
 where
     Res: DeserializeOwned,
 {
-    let resp = with_auth(Request::delete(url))
-        .send()
-        .await
-        .map_err(|e| ApiError::Network(e.to_string()))?;
-    let resp = ensure_success(resp).await?;
-    let envelope: ApiEnvelope<Res> = resp
-        .json()
-        .await
-        .map_err(|e| ApiError::Parse(e.to_string()))?;
-    Ok(envelope.data)
+    send_json::<(), Res>(Method::DELETE, url, None).await
 }
 
 /// DELETE `url`, discard the response body.
 pub async fn delete_empty(url: &str) -> Result<(), ApiError> {
-    let resp = with_auth(Request::delete(url))
-        .send()
-        .await
-        .map_err(|e| ApiError::Network(e.to_string()))?;
-    ensure_success(resp).await?;
-    Ok(())
+    send_json_discard::<()>(Method::DELETE, url, None).await
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ApiError, extract_error_message};
+    use super::{ApiError, MutationOutcome, extract_error_message, stale_current_version};
+
+    #[test]
+    fn stale_current_version_parses_daemon_412_body() {
+        let body = serde_json::json!({ "current": 17 });
+        assert_eq!(stale_current_version(&body), Some(17));
+    }
+
+    #[test]
+    fn stale_current_version_rejects_missing_or_nonnumeric_token() {
+        assert_eq!(stale_current_version(&serde_json::json!({})), None);
+        assert_eq!(
+            stale_current_version(&serde_json::json!({ "current": "7" })),
+            None
+        );
+    }
+
+    #[test]
+    fn mutation_outcome_map_transforms_applied_payload() {
+        let outcome = MutationOutcome::Applied(21_u64).map(|value| value * 2);
+        assert_eq!(outcome, MutationOutcome::Applied(42));
+    }
+
+    #[test]
+    fn mutation_outcome_map_passes_stale_through() {
+        let outcome = MutationOutcome::<u64>::Stale { current: 9 }.map(|value| value * 2);
+        assert_eq!(outcome, MutationOutcome::Stale { current: 9 });
+    }
 
     #[test]
     fn extracts_daemon_error_message_from_envelope() {

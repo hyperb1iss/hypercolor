@@ -208,7 +208,9 @@ pub async fn update_controls(controls: &serde_json::Value) -> Result<(), String>
 ///
 /// The `Stale` variant is surfaced separately from generic errors so
 /// the Viewport Designer modal can drive its reconciliation dialog off
-/// a real type rather than HTTP-status string-matching.
+/// a real type rather than HTTP-status string-matching. Kept as a named
+/// enum (rather than a bare [`client::MutationOutcome`]) because the
+/// applied payload here is the version token itself, not a resource.
 pub enum UpdateControlsOutcome {
     /// Applied; the `new_version` is what the caller should echo as the
     /// next `If-Match` header on a subsequent PATCH.
@@ -216,6 +218,14 @@ pub enum UpdateControlsOutcome {
     /// Server's current version no longer matches the `If-Match` we
     /// sent. `current` is the fresh version token to rebase against.
     Stale { current: u64 },
+}
+
+/// Successful control-PATCH payload — the envelope data carries the new
+/// `controls_version` (also present in the `ETag` header; the body is
+/// simpler to extract with `gloo_net`).
+#[derive(Debug, Deserialize)]
+struct ControlsVersionResponse {
+    controls_version: u64,
 }
 
 /// Scoped control PATCH against a specific effect id with optional
@@ -228,45 +238,23 @@ pub async fn update_effect_controls(
     controls: &serde_json::Value,
     expected_version: Option<u64>,
 ) -> Result<UpdateControlsOutcome, String> {
-    use gloo_net::http::Request;
+    use gloo_net::http::Method;
 
     let url = format!("/api/v1/effects/{effect_id}/controls");
-    let body_str = serde_json::to_string(&serde_json::json!({ "controls": controls }))
-        .map_err(|e| e.to_string())?;
-    let mut req =
-        client::with_auth(Request::patch(&url)).header("Content-Type", "application/json");
-    if let Some(version) = expected_version {
-        req = req.header("If-Match", &version.to_string());
-    }
-    let resp = req
-        .body(body_str)
-        .map_err(|e| e.to_string())?
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-
-    match resp.status() {
-        200..=299 => {
-            // Successful response carries the new `controls_version`
-            // both in the body (nested under the envelope's `data`)
-            // and in the `ETag` header. Prefer the body because the
-            // `gloo_net` Response type makes header parsing marginally
-            // clunkier than JSON extraction.
-            let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-            let new_version = body["data"]["controls_version"]
-                .as_u64()
-                .ok_or_else(|| "response missing controls_version".to_owned())?;
-            Ok(UpdateControlsOutcome::Applied { new_version })
-        }
-        412 => {
-            let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-            let current = body["current"]
-                .as_u64()
-                .ok_or_else(|| "412 body missing `current`".to_owned())?;
-            Ok(UpdateControlsOutcome::Stale { current })
-        }
-        _ => Err(client::response_error_string(resp).await),
-    }
+    let body = serde_json::json!({ "controls": controls });
+    let outcome = client::send_json_versioned::<_, ControlsVersionResponse>(
+        Method::PATCH,
+        &url,
+        Some(&body),
+        expected_version,
+    )
+    .await?;
+    Ok(match outcome {
+        client::MutationOutcome::Applied(data) => UpdateControlsOutcome::Applied {
+            new_version: data.controls_version,
+        },
+        client::MutationOutcome::Stale { current } => UpdateControlsOutcome::Stale { current },
+    })
 }
 
 /// Reset all controls on the active effect to their defaults.

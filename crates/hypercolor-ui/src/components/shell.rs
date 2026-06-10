@@ -6,9 +6,13 @@ use leptos_icons::Icon;
 use leptos_router::hooks::use_location;
 use leptos_router::hooks::use_navigate;
 
+use hypercolor_types::scene::SceneMutationMode;
+
 use crate::app::{EffectsContext, FrameAnalysisContext};
+use crate::components::scene_switcher::active_saved_scene_id;
 use crate::components::sidebar::Sidebar;
 use crate::icons::*;
+use crate::zones::{ScenesContext, ZonesContext};
 
 /// Top-level layout shell. Sidebar left, header + content right.
 #[component]
@@ -96,10 +100,26 @@ pub fn Shell(children: Children) -> impl IntoView {
     }
 }
 
-/// Command palette — fuzzy search over effects with one-click apply.
+/// One command palette result row: an effect (Enter applies it) or a
+/// saved scene (Enter activates it; a no-op when already active).
+#[derive(Clone, PartialEq)]
+enum PaletteEntry {
+    Effect(crate::api::EffectSummary),
+    Scene {
+        id: String,
+        name: String,
+        locked: bool,
+        active: bool,
+    },
+}
+
+/// Command palette — fuzzy search over effects and scenes with one-click
+/// apply/activate.
 #[component]
 fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
     let fx = expect_context::<EffectsContext>();
+    let scenes_ctx = expect_context::<ScenesContext>();
+    let zones_ctx = expect_context::<ZonesContext>();
     let (query, set_query) = signal(String::new());
     let (selected_idx, set_selected_idx) = signal(0_usize);
     let input_ref = NodeRef::<leptos::html::Input>::new();
@@ -125,20 +145,56 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
                 .map(|entry| entry.effect)
                 .filter(|effect| effect.runnable)
                 .take(10)
+                .map(PaletteEntry::Effect)
                 .collect();
         }
 
-        effects
+        let mut entries = effects
             .into_iter()
             .filter(|entry| {
                 entry.effect.runnable
                     && (entry.matches_search(&q)
                         || entry.effect.category.to_lowercase().contains(&q))
             })
-            .map(|entry| entry.effect)
+            .map(|entry| PaletteEntry::Effect(entry.effect))
             .take(10)
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>();
+
+        // Scenes match by name and append after the effects; the active
+        // scene is marked so Enter on it is an honest no-op.
+        let active_id = scenes_ctx
+            .active
+            .with(|active| active_saved_scene_id(active.as_ref()).map(str::to_owned));
+        entries.extend(
+            scenes_ctx
+                .scenes
+                .get()
+                .into_iter()
+                .filter(|scene| scene.name.to_lowercase().contains(&q))
+                .take(4)
+                .map(|scene| PaletteEntry::Scene {
+                    active: active_id.as_deref() == Some(scene.id.as_str()),
+                    locked: scene.mutation_mode == SceneMutationMode::Snapshot,
+                    id: scene.id,
+                    name: scene.name,
+                }),
+        );
+        entries
     });
+
+    // Run one palette entry: apply the effect or activate the scene.
+    let run_entry = move |entry: &PaletteEntry| match entry {
+        PaletteEntry::Effect(effect) => {
+            fx.apply_effect(effect.id.clone());
+            on_close.run(());
+        }
+        PaletteEntry::Scene { id, active, .. } => {
+            if !active {
+                scenes_ctx.activate.run(id.clone());
+                on_close.run(());
+            }
+        }
+    };
 
     let on_close_bg = on_close;
     let on_close_apply = on_close;
@@ -199,15 +255,43 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
                                 "Enter" => {
                                     let items = filtered.get();
                                     let idx = selected_idx.get();
-                                    if let Some(effect) = items.get(idx) {
-                                        fx.apply_effect(effect.id.clone());
-                                        on_close.run(());
+                                    if let Some(entry) = items.get(idx) {
+                                        run_entry(entry);
                                     }
                                 }
                                 _ => {}
                             }
                         }
                     />
+                    // Target hint — multi-zone scenes name the zone an
+                    // apply lands in, so the palette never fires blind.
+                    {move || {
+                        zones_ctx
+                            .multi_zone
+                            .get()
+                            .then(|| zones_ctx.target_zone())
+                            .flatten()
+                            .map(|zone| {
+                                let dot = zone
+                                    .color
+                                    .clone()
+                                    .unwrap_or_else(|| "var(--color-electric-purple)".to_owned());
+                                view! {
+                                    <span
+                                        class="inline-flex items-center gap-1.5 shrink-0 text-[9px] \
+                                               font-mono px-2 py-0.5 rounded-full border \
+                                               border-edge-subtle bg-surface-overlay/40 text-fg-tertiary"
+                                        title="Effects apply to this zone"
+                                    >
+                                        <span
+                                            class="w-1.5 h-1.5 rounded-full shrink-0"
+                                            style:background=dot
+                                        />
+                                        {format!("applies to: {}", zone.name)}
+                                    </span>
+                                }
+                            })
+                    }}
                     <kbd class="text-[9px] font-mono text-fg-tertiary bg-surface-overlay/40 px-1.5 py-0.5 rounded border border-edge-subtle">"ESC"</kbd>
                 </div>
 
@@ -218,44 +302,94 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
                         if items.is_empty() {
                             view! {
                                 <div class="px-4 py-10 text-center text-xs text-fg-tertiary">
-                                    "No matching effects"
+                                    "No matching effects or scenes"
                                 </div>
                             }.into_any()
                         } else {
                             let close_cb = on_close_apply;
                             view! {
                                 <div>
-                                    {items.into_iter().enumerate().map(|(i, effect)| {
-                                        let id = effect.id.clone();
-                                        let name = effect.name.clone();
-                                        let desc = effect.description.clone();
-                                        let category = effect.category.clone();
+                                    {items.into_iter().enumerate().map(|(i, entry)| {
                                         let on_close = close_cb;
                                         let is_selected = move || selected_idx.get() == i;
+                                        let row_style = move || if is_selected() {
+                                            format!("animation-delay: {delay_ms}ms; background: rgba(225, 53, 255, 0.10)", delay_ms = i * 30)
+                                        } else {
+                                            format!("animation-delay: {}ms", i * 30)
+                                        };
 
-                                        view! {
-                                            <button
-                                                class="w-full flex items-center gap-3 px-4 py-2.5 text-left
-                                                       hover:bg-electric-purple/[0.05] btn-press group animate-enter-up"
-                                                style=move || if is_selected() {
-                                                    format!("animation-delay: {delay_ms}ms; background: rgba(225, 53, 255, 0.10)", delay_ms = i * 30)
-                                                } else {
-                                                    format!("animation-delay: {}ms", i * 30)
-                                                }
-                                                role="option"
-                                                aria-selected=move || is_selected().to_string()
-                                                on:mouseenter=move |_| set_selected_idx.set(i)
-                                                on:click=move |_| {
-                                                    fx.apply_effect(id.clone());
-                                                    on_close.run(());
-                                                }
-                                            >
-                                                <div class="flex-1 min-w-0">
-                                                    <div class="text-sm text-fg-secondary group-hover:text-fg-primary truncate transition-colors duration-150">{name}</div>
-                                                    <div class="text-[10px] text-fg-tertiary truncate">{desc}</div>
-                                                </div>
-                                                <span class="text-[10px] text-fg-tertiary capitalize shrink-0 px-2 py-0.5 rounded-full bg-surface-overlay/30">{category}</span>
-                                            </button>
+                                        match entry {
+                                            PaletteEntry::Effect(effect) => {
+                                                let id = effect.id.clone();
+                                                let name = effect.name.clone();
+                                                let desc = effect.description.clone();
+                                                let category = effect.category.clone();
+
+                                                view! {
+                                                    <button
+                                                        class="w-full flex items-center gap-3 px-4 py-2.5 text-left
+                                                               hover:bg-electric-purple/[0.05] btn-press group animate-enter-up"
+                                                        style=row_style
+                                                        role="option"
+                                                        aria-selected=move || is_selected().to_string()
+                                                        on:mouseenter=move |_| set_selected_idx.set(i)
+                                                        on:click=move |_| {
+                                                            fx.apply_effect(id.clone());
+                                                            on_close.run(());
+                                                        }
+                                                    >
+                                                        <div class="flex-1 min-w-0">
+                                                            <div class="text-sm text-fg-secondary group-hover:text-fg-primary truncate transition-colors duration-150">{name}</div>
+                                                            <div class="text-[10px] text-fg-tertiary truncate">{desc}</div>
+                                                        </div>
+                                                        <span class="text-[10px] text-fg-tertiary capitalize shrink-0 px-2 py-0.5 rounded-full bg-surface-overlay/30">{category}</span>
+                                                    </button>
+                                                }.into_any()
+                                            }
+                                            PaletteEntry::Scene { id, name, locked, active } => {
+                                                view! {
+                                                    <button
+                                                        class="w-full flex items-center gap-3 px-4 py-2.5 text-left
+                                                               hover:bg-electric-purple/[0.05] btn-press group animate-enter-up"
+                                                        style=row_style
+                                                        role="option"
+                                                        aria-selected=move || is_selected().to_string()
+                                                        on:mouseenter=move |_| set_selected_idx.set(i)
+                                                        on:click=move |_| {
+                                                            if active {
+                                                                return;
+                                                            }
+                                                            scenes_ctx.activate.run(id.clone());
+                                                            on_close.run(());
+                                                        }
+                                                    >
+                                                        <div class="flex-1 min-w-0 flex items-center gap-2">
+                                                            {active.then(|| view! {
+                                                                <span class="flex shrink-0 text-accent">
+                                                                    <Icon icon=LuCheck width="13px" height="13px" />
+                                                                </span>
+                                                            })}
+                                                            <span class="text-sm text-fg-secondary group-hover:text-fg-primary truncate transition-colors duration-150">
+                                                                {name}
+                                                            </span>
+                                                            {locked.then(|| view! {
+                                                                <span
+                                                                    class="flex shrink-0 text-electric-yellow/70"
+                                                                    title="Snapshot-locked scene"
+                                                                >
+                                                                    <Icon icon=LuLock width="11px" height="11px" />
+                                                                </span>
+                                                            })}
+                                                        </div>
+                                                        <span
+                                                            class="text-[10px] shrink-0 px-2 py-0.5 rounded-full"
+                                                            style="background: rgba(225, 53, 255, 0.10); color: var(--color-electric-purple)"
+                                                        >
+                                                            "Scene"
+                                                        </span>
+                                                    </button>
+                                                }.into_any()
+                                            }
                                         }
                                     }).collect_view()}
                                 </div>

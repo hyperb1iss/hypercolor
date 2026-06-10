@@ -14,6 +14,10 @@ use crate::app::{EffectsContext, FrameAnalysisContext, StudioFlag, WsContext};
 use crate::async_helpers::spawn_api_call;
 use crate::color::{self, CanvasPalette};
 use crate::components::canvas_preview::CanvasPreview;
+use crate::components::scene_switcher::{
+    SceneSwitcherMenu, active_scene_label, active_scene_locked,
+};
+use crate::components::zone_now_playing::{SidebarZoneRows, set_zone_enabled};
 use crate::config_state::ConfigContext;
 use crate::icons::*;
 use crate::route_ui::{NowPlayingCanvasMode, now_playing_canvas_mode};
@@ -34,8 +38,20 @@ pub fn Sidebar() -> impl IntoView {
     let location = use_location();
     let fx = expect_context::<EffectsContext>();
     let studio_flag = expect_context::<StudioFlag>();
+    let zones_ctx = expect_context::<crate::zones::ZonesContext>();
 
-    let has_active = Memo::new(move |_| fx.active_effect_id.get().is_some());
+    // Multi-zone scenes keep the panel alive whenever any zone is
+    // showing something, even while the primary zone sits idle — the
+    // per-zone rows are the content then, not the singular effect.
+    let has_active = Memo::new(move |_| {
+        fx.active_effect_id.get().is_some()
+            || (zones_ctx.multi_zone.get()
+                && fx.zone_effects.with(|zones| {
+                    zones
+                        .iter()
+                        .any(|state| state.effect_id.is_some() || state.zone.top_layer.is_some())
+                }))
+    });
     let canvas_mode = Signal::derive(move || now_playing_canvas_mode(&location.pathname.get()));
 
     // ── Live canvas + palette from WebSocket frames ────────────────────
@@ -376,34 +392,42 @@ pub fn Sidebar() -> impl IntoView {
                             })
                         }}
 
-                        // Effect name + category + audio toggle
-                        <div class="px-4 flex items-center gap-2.5 min-w-0">
-                            <div
-                                class=move || if fx.is_playing.get() {
-                                    "w-2 h-2 rounded-full dot-alive shrink-0"
-                                } else {
-                                    "w-2 h-2 rounded-full shrink-0 opacity-50"
-                                }
-                                style:background="rgb(var(--np-primary))"
-                                style:box-shadow=move || if fx.is_playing.get() {
-                                    "0 0 8px rgba(var(--np-primary), 0.7)".to_string()
-                                } else {
-                                    String::new()
-                                }
-                            />
-                            <div class="min-w-0 flex-1">
-                                <div class="text-[11px] font-medium text-fg-primary truncate leading-tight">
-                                    {move || fx.active_effect_name.get().unwrap_or_default()}
+                        // Effect name + category + audio toggle. Multi-zone
+                        // scenes swap the singular metadata for one honest
+                        // row per zone (capped, overflow links to Studio).
+                        {move || if zones_ctx.multi_zone.get() {
+                            view! { <SidebarZoneRows /> }.into_any()
+                        } else {
+                            view! {
+                                <div class="px-4 flex items-center gap-2.5 min-w-0">
+                                    <div
+                                        class=move || if fx.is_playing.get() {
+                                            "w-2 h-2 rounded-full dot-alive shrink-0"
+                                        } else {
+                                            "w-2 h-2 rounded-full shrink-0 opacity-50"
+                                        }
+                                        style:background="rgb(var(--np-primary))"
+                                        style:box-shadow=move || if fx.is_playing.get() {
+                                            "0 0 8px rgba(var(--np-primary), 0.7)".to_string()
+                                        } else {
+                                            String::new()
+                                        }
+                                    />
+                                    <div class="min-w-0 flex-1">
+                                        <div class="text-[11px] font-medium text-fg-primary truncate leading-tight">
+                                            {move || fx.active_effect_name.get().unwrap_or_default()}
+                                        </div>
+                                        <div
+                                            class="text-[10px] capitalize mt-0.5"
+                                            style:color="rgba(var(--np-secondary), 0.85)"
+                                        >
+                                            {move || fx.active_effect_category.get()}
+                                        </div>
+                                    </div>
+                                    <SidebarAudioToggle />
                                 </div>
-                                <div
-                                    class="text-[10px] capitalize mt-0.5"
-                                    style:color="rgba(var(--np-secondary), 0.85)"
-                                >
-                                    {move || fx.active_effect_category.get()}
-                                </div>
-                            </div>
-                            <SidebarAudioToggle />
-                        </div>
+                            }.into_any()
+                        }}
 
                         // Palette strip — shows extracted colors as a smooth gradient
                         <div class="px-4">
@@ -428,7 +452,46 @@ pub fn Sidebar() -> impl IntoView {
                             >
                                 <Icon icon=LuSkipBack width="16px" height="16px" />
                             </button>
-                            {move || if fx.is_playing.get() {
+                            // In a multi-zone scene the pause toggle acts on
+                            // the focused zone (primary when none is focused)
+                            // and says so — it never silently stops only the
+                            // primary while other zones keep rendering.
+                            {move || if zones_ctx.multi_zone.get() {
+                                let Some(state) = fx.focused_zone_effect.get() else {
+                                    return ().into_any();
+                                };
+                                let zone_id = state.zone.id.clone();
+                                let zone_name = state.zone.name.clone();
+                                let enabled = state.zone.enabled;
+                                let label = if enabled {
+                                    format!("Pause {zone_name}")
+                                } else {
+                                    format!("Resume {zone_name}")
+                                };
+                                let icon_class = if enabled {
+                                    "p-2 rounded-lg text-neon-cyan hover:text-neon-cyan hover:bg-neon-cyan/[0.08] player-btn"
+                                } else {
+                                    "p-2 rounded-lg text-neon-cyan/40 hover:text-neon-cyan hover:bg-neon-cyan/[0.06] player-btn"
+                                };
+                                view! {
+                                    <button
+                                        class=icon_class
+                                        title=label.clone()
+                                        aria-label=label
+                                        on:click=move |_| set_zone_enabled(
+                                            zones_ctx,
+                                            zone_id.clone(),
+                                            !enabled,
+                                        )
+                                    >
+                                        {if enabled {
+                                            view! { <Icon icon=LuPause width="16px" height="16px" /> }.into_any()
+                                        } else {
+                                            view! { <Icon icon=LuPlay width="16px" height="16px" /> }.into_any()
+                                        }}
+                                    </button>
+                                }.into_any()
+                            } else if fx.is_playing.get() {
                                 view! {
                                     <button
                                         class="p-2 rounded-lg text-neon-cyan hover:text-neon-cyan hover:bg-neon-cyan/[0.08] player-btn"
@@ -493,6 +556,11 @@ pub fn Sidebar() -> impl IntoView {
                     </div>
                 })
             }}
+
+            // Scene chip — names the active scene and opens the switcher.
+            // Rendered only when there is somewhere to switch to, and only
+            // expanded (a 56px rail has no room for a scene name).
+            {move || (!collapsed.get()).then(|| view! { <SidebarSceneChip /> })}
 
             // Bottom bar — collapse toggle only
             <div class="shrink-0 border-t border-edge-subtle px-2 py-2">
@@ -595,6 +663,74 @@ fn nav_items(studio_ui: bool) -> Vec<NavItem> {
             },
             settings,
         ]
+    }
+}
+
+// ── Sidebar Scene Chip ─────────────────────────────────────────────────────
+
+/// Compact scene indicator above the sidebar footer: active scene name
+/// (or "Default"), a lock glyph for snapshot-locked scenes, and a
+/// popover scene switcher on click. Rendered only when the user has
+/// more than one scene to switch between. No optimistic flip — the
+/// label changes when the shared scene resource confirms the switch.
+#[component]
+fn SidebarSceneChip() -> impl IntoView {
+    let scenes_ctx = expect_context::<crate::zones::ScenesContext>();
+    let (open, set_open) = signal(false);
+
+    let show = Memo::new(move |_| scenes_ctx.has_multiple());
+    let label = Memo::new(move |_| {
+        scenes_ctx
+            .active
+            .with(|active| active_scene_label(active.as_ref()))
+    });
+    let locked = Memo::new(move |_| {
+        scenes_ctx
+            .active
+            .with(|active| active_scene_locked(active.as_ref()))
+    });
+
+    view! {
+        <Show when=move || show.get()>
+            <div class="shrink-0 border-t border-edge-subtle px-2 pt-2 relative sidebar-scene-chip">
+                <button
+                    type="button"
+                    class="flex w-full items-center gap-2 rounded-lg border border-edge-subtle/60 \
+                           bg-surface-overlay/40 px-2.5 py-1.5 text-left transition-colors \
+                           hover:border-accent-muted hover:bg-surface-overlay/70 \
+                           focus-visible:outline-none focus-visible:ring-1 \
+                           focus-visible:ring-accent/50 btn-press"
+                    title="Switch scene"
+                    aria-haspopup="menu"
+                    aria-expanded=move || open.get().to_string()
+                    on:click=move |_| set_open.update(|value| *value = !*value)
+                >
+                    <span class="text-[9px] font-mono uppercase tracking-[0.15em] text-fg-tertiary shrink-0">
+                        "Scene"
+                    </span>
+                    <span class="flex-1 min-w-0 truncate text-[11px] font-medium text-fg-primary">
+                        {move || label.get()}
+                    </span>
+                    {move || locked.get().then(|| view! {
+                        <span
+                            class="flex shrink-0 text-electric-yellow/70"
+                            title="Snapshot-locked scene"
+                        >
+                            <Icon icon=LuLock width="11px" height="11px" />
+                        </span>
+                    })}
+                    <span class="flex shrink-0 text-fg-tertiary">
+                        <Icon icon=LuChevronUp width="12px" height="12px" />
+                    </span>
+                </button>
+                <SceneSwitcherMenu
+                    anchor_class="sidebar-scene-chip"
+                    is_open=open
+                    set_open=set_open
+                    placement="left-2 right-2 bottom-full mb-1"
+                />
+            </div>
+        </Show>
     }
 }
 

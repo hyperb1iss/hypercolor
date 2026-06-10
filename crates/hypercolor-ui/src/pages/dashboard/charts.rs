@@ -234,8 +234,20 @@ fn format_bytes_per_sec(bytes_per_sec: f64) -> String {
 #[component]
 pub(super) fn FavoritesPanel() -> impl IntoView {
     let fx = expect_context::<EffectsContext>();
+    let zones_ctx = expect_context::<crate::zones::ZonesContext>();
 
     let favorites_count = Memo::new(move |_| fx.favorite_ids.get().len());
+
+    // Where a click on a favorite lands. Multi-zone scenes name the
+    // target zone so the otherwise-invisible apply target is visible;
+    // single-zone scenes show nothing (there is only one place to go).
+    let target_zone_name = Memo::new(move |_| {
+        zones_ctx
+            .multi_zone
+            .get()
+            .then(|| zones_ctx.target_zone().map(|zone| zone.name))
+            .flatten()
+    });
 
     let favorite_effects = Memo::new(move |_| {
         let fav_ids = fx.favorite_ids.get();
@@ -301,6 +313,17 @@ pub(super) fn FavoritesPanel() -> impl IntoView {
                     >
                         "Favorites"
                     </h2>
+                    {move || target_zone_name.get().map(|name| view! {
+                        <span
+                            class="text-[10px] font-mono rounded-full px-2 py-[3px] truncate max-w-[120px]"
+                            style="color: var(--color-electric-purple); \
+                                   background: rgba(225, 53, 255, 0.08); \
+                                   border: 1px solid rgba(225, 53, 255, 0.22)"
+                            title="Effects apply to this zone"
+                        >
+                            {format!("→ {name}")}
+                        </span>
+                    })}
                 </div>
                 <div
                     class="text-[10px] font-mono rounded-full px-2 py-[3px] tabular-nums"
@@ -415,8 +438,21 @@ fn FavoriteCinemaCard(effect: EffectSummary, index: usize) -> impl IntoView {
     let title_tint = Memo::new(move |_| color::accent_text_tint(&accent_rgb.get(), 0.90, 0.55));
     let meta_tint = Memo::new(move |_| color::accent_text_tint(&accent_rgb.get(), 0.74, 0.55));
 
+    // Active in ANY zone of the scene, not just the primary — a favorite
+    // running in zone two lights up too. The singular signal still
+    // covers the optimistic window before the scene refetch lands.
+    let zone_check_id = effect.id.clone();
+    let active_zone_count = Memo::new(move |_| {
+        fx.zone_effects.with(|zones| {
+            zones
+                .iter()
+                .filter(|state| state.effect_id.as_deref() == Some(zone_check_id.as_str()))
+                .count()
+        })
+    });
     let is_active = Signal::derive(move || {
         fx.active_effect_id.get().as_deref() == Some(active_check_id.as_str())
+            || active_zone_count.get() > 0
     });
     let is_playing = fx.is_playing;
     let is_live = Signal::derive(move || is_active.get() && is_playing.get());
@@ -439,6 +475,10 @@ fn FavoriteCinemaCard(effect: EffectSummary, index: usize) -> impl IntoView {
                     } else {
                         format!("{base} border-edge-subtle/40")
                     }
+                }
+                title=move || {
+                    let count = active_zone_count.get();
+                    (count >= 2).then(|| format!("Running in {count} zones"))
                 }
             >
                 // ── Background: thumbnail when captured, category gradient otherwise.

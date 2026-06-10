@@ -36,6 +36,7 @@ use crate::app::{EffectsContext, WsContext};
 use crate::color;
 use crate::components::canvas_preview::CanvasPreview;
 use crate::components::preset_panel::PresetToolbar;
+use crate::components::zone_now_playing::ZoneEffectChips;
 use crate::icons::*;
 use crate::style_utils::category_accent_rgb;
 use crate::thumbnails::ThumbnailStore;
@@ -67,6 +68,7 @@ pub fn PreviewCabinet(
 ) -> impl IntoView {
     let ws = expect_context::<WsContext>();
     let fx = expect_context::<EffectsContext>();
+    let zones_ctx = expect_context::<crate::zones::ZonesContext>();
     let thumb_store = use_context::<ThumbnailStore>();
 
     // Palette-aware accent — prefer the thumbnail's extracted primary so
@@ -256,9 +258,20 @@ pub fn PreviewCabinet(
                     )
                 />
 
-                // Info overlay — title + author, description, category + source/audio badges
+                // Info overlay — title + author, description, category + source/audio badges.
+                // A multi-zone scene swaps the singular metadata for per-zone
+                // chips: the canvas composes several effects at once, and
+                // naming only the primary's would misattribute the picture.
                 <div class="absolute left-0 right-0 bottom-0 px-4 pb-3 pt-10 pointer-events-none">
+                    <Show when=move || zones_ctx.multi_zone.get()>
+                        <div class="mb-1">
+                            <ZoneEffectChips />
+                        </div>
+                    </Show>
                     {move || {
+                        if zones_ctx.multi_zone.get() {
+                            return None;
+                        }
                         let name = fx.active_effect_name.get();
                         let meta = effect_meta.get();
                         name.map(|effect_name| {
