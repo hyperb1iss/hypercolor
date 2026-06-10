@@ -89,6 +89,11 @@ describe('Smoothed', () => {
         expect(slow.value).toBeCloseTo(fast.value, 6)
     })
 
+    test('infinite halflife never moves', () => {
+        const value = new Smoothed(5, Number.POSITIVE_INFINITY)
+        expect(value.update(100, 10)).toBe(5)
+    })
+
     test('zero halflife tracks the target exactly', () => {
         const value = new Smoothed(0, 0)
         expect(value.update(42, 1 / 60)).toBe(42)

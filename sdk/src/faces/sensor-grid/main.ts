@@ -285,7 +285,6 @@ function buildSensorGrid(ctx: FaceContext, mode: GridLayoutMode) {
                     { length: 4 },
                     () => `
                     <div class="hc-sensor-grid__card">
-                        <canvas class="hc-sensor-grid__spark-host" style="display:none"></canvas>
                         <div class="hc-sensor-grid__card-inner">
                             <div class="hc-sensor-grid__label">UNASSIGNED</div>
                             <div class="hc-sensor-grid__value">--</div>

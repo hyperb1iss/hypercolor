@@ -24,8 +24,11 @@ export class Smoothed {
 
     /** Advance toward `target` by `dt` seconds and return the new value. */
     update(target: number, dt: number): number {
-        if (this.halflife === 0 || !Number.isFinite(this.halflife)) {
+        if (this.halflife === 0) {
             this.value = target
+            return this.value
+        }
+        if (!Number.isFinite(this.halflife)) {
             return this.value
         }
         const factor = 1 - 0.5 ** (Math.max(dt, 0) / this.halflife)

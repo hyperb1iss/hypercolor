@@ -455,6 +455,12 @@ mod linux {
                 .build()
                 .ok()?;
             let response = client.get(url).send().await.ok()?;
+            if response
+                .content_length()
+                .is_some_and(|length| length > MAX_ART_SOURCE_BYTES as u64)
+            {
+                return None;
+            }
             let bytes = response.bytes().await.ok()?;
             bytes.to_vec()
         } else {
