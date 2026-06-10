@@ -84,28 +84,33 @@ pub(super) fn RendererHardwarePanel(
     #[prop(into)] sensors: Signal<Option<SystemSnapshot>>,
 ) -> impl IntoView {
     let status_resource = LocalResource::new(api::fetch_status);
-    let status = Signal::derive(move || status_resource.get().and_then(Result::ok));
+    let status = Memo::new(move |_| status_resource.get().and_then(Result::ok));
 
     let compositor_badge = Memo::new(move |_| {
-        let metric_snapshot = metrics.get();
-        let status_snapshot = status.get();
-        compositor_badge(metric_snapshot.as_ref(), status_snapshot.as_ref())
+        metrics.with(|metric_snapshot| {
+            status.with(|status_snapshot| {
+                compositor_badge(metric_snapshot.as_ref(), status_snapshot.as_ref())
+            })
+        })
     });
     let import_badge = Memo::new(move |_| {
-        let metric_snapshot = metrics.get();
-        let status_snapshot = status.get();
-        servo_import_badge(metric_snapshot.as_ref(), status_snapshot.as_ref())
+        metrics.with(|metric_snapshot| {
+            status.with(|status_snapshot| {
+                servo_import_badge(metric_snapshot.as_ref(), status_snapshot.as_ref())
+            })
+        })
     });
     let readback_badge = Memo::new(move |_| {
-        let metric_snapshot = metrics.get();
-        readback_badge(metric_snapshot.as_ref())
+        metrics.with(|metric_snapshot| readback_badge(metric_snapshot.as_ref()))
     });
-    let has_windows_import_metrics = Signal::derive(move || {
-        metrics.get().is_some_and(|metrics| {
-            metrics
-                .effect_health
-                .servo_gpu_import_windows_sync_mode
-                .is_some()
+    let has_windows_import_metrics = Memo::new(move |_| {
+        metrics.with(|metrics| {
+            metrics.as_ref().is_some_and(|metrics| {
+                metrics
+                    .effect_health
+                    .servo_gpu_import_windows_sync_mode
+                    .is_some()
+            })
         })
     });
 
@@ -132,15 +137,15 @@ pub(super) fn RendererHardwarePanel(
                 <div class="flex flex-wrap items-center gap-2">
                     <HealthPill
                         label="Compositor"
-                        badge=Signal::derive(move || compositor_badge.get())
+                        badge=compositor_badge
                     />
                     <HealthPill
                         label="Servo Import"
-                        badge=Signal::derive(move || import_badge.get())
+                        badge=import_badge
                     />
                     <HealthPill
                         label="Readback"
-                        badge=Signal::derive(move || readback_badge.get())
+                        badge=readback_badge
                     />
                 </div>
             </div>
@@ -154,61 +159,61 @@ pub(super) fn RendererHardwarePanel(
                     <div class="grid grid-cols-2 gap-px bg-edge-subtle/40 sm:grid-cols-4">
                         <VitalTile
                             label="CPU"
-                            value=Signal::derive(move || {
-                                sensors.get().map_or_else(|| "—".to_owned(), |s| fmt_percent_f32(s.cpu_load_percent))
+                            value=Memo::new(move |_| {
+                                sensors.with(|s| s.as_ref().map_or_else(|| "—".to_owned(), |s| fmt_percent_f32(s.cpu_load_percent)))
                             })
-                            sub=Signal::derive(move || {
-                                sensors.get().map_or_else(|| "temp n/a".to_owned(), |s| fmt_temp_compact(s.cpu_temp_celsius))
+                            sub=Memo::new(move |_| {
+                                sensors.with(|s| s.as_ref().map_or_else(|| "temp n/a".to_owned(), |s| fmt_temp_compact(s.cpu_temp_celsius)))
                             })
-                            accent=Signal::derive(move || {
-                                temp_tone(sensors.get().and_then(|s| s.cpu_temp_celsius)).data_color()
+                            accent=Memo::new(move |_| {
+                                temp_tone(sensors.with(|s| s.as_ref().and_then(|s| s.cpu_temp_celsius))).data_color()
                             })
-                            fill=Signal::derive(move || {
-                                sensors.get().map_or(0.0, |s| f64::from(s.cpu_load_percent) / 100.0)
+                            fill=Memo::new(move |_| {
+                                sensors.with(|s| s.as_ref().map_or(0.0, |s| f64::from(s.cpu_load_percent) / 100.0))
                             })
                         />
                         <VitalTile
                             label="GPU"
-                            value=Signal::derive(move || {
-                                sensors.get().and_then(|s| s.gpu_load_percent).map_or_else(|| "—".to_owned(), fmt_percent_f32)
+                            value=Memo::new(move |_| {
+                                sensors.with(|s| s.as_ref().and_then(|s| s.gpu_load_percent).map_or_else(|| "—".to_owned(), fmt_percent_f32))
                             })
-                            sub=Signal::derive(move || {
-                                sensors.get().map_or_else(|| "temp n/a".to_owned(), |s| fmt_temp_compact(s.gpu_temp_celsius))
+                            sub=Memo::new(move |_| {
+                                sensors.with(|s| s.as_ref().map_or_else(|| "temp n/a".to_owned(), |s| fmt_temp_compact(s.gpu_temp_celsius)))
                             })
-                            accent=Signal::derive(move || {
-                                temp_tone(sensors.get().and_then(|s| s.gpu_temp_celsius)).data_color()
+                            accent=Memo::new(move |_| {
+                                temp_tone(sensors.with(|s| s.as_ref().and_then(|s| s.gpu_temp_celsius))).data_color()
                             })
-                            fill=Signal::derive(move || {
-                                sensors.get().and_then(|s| s.gpu_load_percent).map_or(0.0, |v| f64::from(v) / 100.0)
+                            fill=Memo::new(move |_| {
+                                sensors.with(|s| s.as_ref().and_then(|s| s.gpu_load_percent).map_or(0.0, |v| f64::from(v) / 100.0))
                             })
                         />
                         <VitalTile
                             label="VRAM"
-                            value=Signal::derive(move || {
-                                sensors.get().and_then(|s| s.gpu_vram_used_mb).map_or_else(|| "—".to_owned(), |mb| fmt_mem_gb(f64::from(mb)))
+                            value=Memo::new(move |_| {
+                                sensors.with(|s| s.as_ref().and_then(|s| s.gpu_vram_used_mb).map_or_else(|| "—".to_owned(), |mb| fmt_mem_gb(f64::from(mb))))
                             })
                             sub=Signal::derive(|| "graphics card".to_owned())
                             accent=Signal::derive(|| "var(--color-neon-cyan)")
-                            fill=Signal::derive(move || {
-                                sensors.get().and_then(|s| s.gpu_vram_used_mb).map_or(0.0, |mb| f64::from(mb) / 8192.0)
+                            fill=Memo::new(move |_| {
+                                sensors.with(|s| s.as_ref().and_then(|s| s.gpu_vram_used_mb).map_or(0.0, |mb| f64::from(mb) / 8192.0))
                             })
                         />
                         <VitalTile
                             label="RAM"
-                            value=Signal::derive(move || {
-                                sensors.get().map_or_else(|| "—".to_owned(), |s| fmt_percent_f32(s.ram_used_percent))
+                            value=Memo::new(move |_| {
+                                sensors.with(|s| s.as_ref().map_or_else(|| "—".to_owned(), |s| fmt_percent_f32(s.ram_used_percent)))
                             })
-                            sub=Signal::derive(move || {
-                                sensors.get().map_or_else(
+                            sub=Memo::new(move |_| {
+                                sensors.with(|s| s.as_ref().map_or_else(
                                     || "system memory".to_owned(),
                                     |s| format!("{:.1}/{:.1} GB", s.ram_used_mb / 1024.0, s.ram_total_mb / 1024.0),
-                                )
+                                ))
                             })
-                            accent=Signal::derive(move || {
-                                sensors.get().map_or(DiagnosticTone::Neutral, |s| ram_tone(s.ram_used_percent)).data_color()
+                            accent=Memo::new(move |_| {
+                                sensors.with(|s| s.as_ref().map_or(DiagnosticTone::Neutral, |s| ram_tone(s.ram_used_percent))).data_color()
                             })
-                            fill=Signal::derive(move || {
-                                sensors.get().map_or(0.0, |s| f64::from(s.ram_used_percent) / 100.0)
+                            fill=Memo::new(move |_| {
+                                sensors.with(|s| s.as_ref().map_or(0.0, |s| f64::from(s.ram_used_percent) / 100.0))
                             })
                         />
                     </div>
@@ -218,71 +223,71 @@ pub(super) fn RendererHardwarePanel(
                     <div class="grid grid-cols-2 gap-px bg-edge-subtle/40 sm:grid-cols-3">
                         <VitalTile
                             label="Render path"
-                            value=Signal::derive(move || {
-                                metrics.get().map_or_else(
+                            value=Memo::new(move |_| {
+                                metrics.with(|m| m.as_ref().map_or_else(
                                     || "—".to_owned(),
                                     |m| render_path_label(
                                         m.effect_health.servo_render_gpu_frames_total,
                                         m.effect_health.servo_render_cpu_frames_total,
                                     ).to_owned(),
-                                )
+                                ))
                             })
-                            sub=Signal::derive(move || {
-                                metrics.get().map_or_else(
+                            sub=Memo::new(move |_| {
+                                metrics.with(|m| m.as_ref().map_or_else(
                                     || "waiting".to_owned(),
                                     |m| format!(
                                         "{} gpu · {} cpu",
                                         m.effect_health.servo_render_gpu_frames_total,
                                         m.effect_health.servo_render_cpu_frames_total,
                                     ),
-                                )
+                                ))
                             })
-                            accent=Signal::derive(move || {
-                                metrics.get().map_or(DiagnosticTone::Neutral, |m| render_path_tone(
+                            accent=Memo::new(move |_| {
+                                metrics.with(|m| m.as_ref().map_or(DiagnosticTone::Neutral, |m| render_path_tone(
                                     m.effect_health.servo_render_gpu_frames_total,
                                     m.effect_health.servo_render_cpu_frames_total,
-                                )).data_color()
+                                ))).data_color()
                             })
-                            fill=Signal::derive(move || {
-                                metrics.get().map_or(0.0, |m| {
+                            fill=Memo::new(move |_| {
+                                metrics.with(|m| m.as_ref().map_or(0.0, |m| {
                                     let gpu = m.effect_health.servo_render_gpu_frames_total as f64;
                                     let cpu = m.effect_health.servo_render_cpu_frames_total as f64;
                                     let total = gpu + cpu;
                                     if total > 0.0 { gpu / total } else { 0.0 }
-                                })
+                                }))
                             })
                         />
                         <VitalTile
                             label="Memory"
-                            value=Signal::derive(move || {
-                                metrics.get().map_or_else(|| "—".to_owned(), |m| fmt_mem_gb(m.memory.daemon_rss_mb))
+                            value=Memo::new(move |_| {
+                                metrics.with(|m| m.as_ref().map_or_else(|| "—".to_owned(), |m| fmt_mem_gb(m.memory.daemon_rss_mb)))
                             })
                             sub=Signal::derive(|| "in use".to_owned())
                             accent=Signal::derive(|| "var(--color-neon-cyan)")
-                            fill=Signal::derive(move || {
-                                metrics.get().map_or(0.0, |m| m.memory.daemon_rss_mb / 1024.0)
+                            fill=Memo::new(move |_| {
+                                metrics.with(|m| m.as_ref().map_or(0.0, |m| m.memory.daemon_rss_mb / 1024.0))
                             })
                         />
                         <VitalTile
                             label="Output"
-                            value=Signal::derive(move || {
-                                metrics.get().map_or_else(
+                            value=Memo::new(move |_| {
+                                metrics.with(|m| m.as_ref().map_or_else(
                                     || "—".to_owned(),
-                                    |m| format!("{} err", output_error_count(&m)),
-                                )
+                                    |m| format!("{} err", output_error_count(m)),
+                                ))
                             })
-                            sub=Signal::derive(move || {
-                                metrics.get().map_or_else(
+                            sub=Memo::new(move |_| {
+                                metrics.with(|m| m.as_ref().map_or_else(
                                     || "devices".to_owned(),
                                     |m| format!("{} dev · {} led", m.devices.connected, m.devices.total_leds),
-                                )
+                                ))
                             })
-                            accent=Signal::derive(move || {
-                                metrics.get().map_or(DiagnosticTone::Neutral, |m| error_count_tone(output_error_count(&m))).data_color()
+                            accent=Memo::new(move |_| {
+                                metrics.with(|m| m.as_ref().map_or(DiagnosticTone::Neutral, |m| error_count_tone(output_error_count(m)))).data_color()
                             })
                             // A clean output reads as a full, calm bar; pressure shrinks it.
-                            fill=Signal::derive(move || {
-                                metrics.get().map_or(0.0, |m| if output_error_count(&m) == 0 { 1.0 } else { 0.15 })
+                            fill=Memo::new(move |_| {
+                                metrics.with(|m| m.as_ref().map_or(0.0, |m| if output_error_count(m) == 0 { 1.0 } else { 0.15 }))
                             })
                         />
                     </div>
@@ -314,26 +319,26 @@ pub(super) fn RendererHardwarePanel(
                 <Show when=move || diagnostics_open.get() fallback=|| ()>
                     <div class="grid grid-cols-1 divide-y divide-edge-subtle/45 border-t border-edge-subtle/45 lg:grid-cols-4 lg:divide-x lg:divide-y-0">
                         <DiagnosticSection title="Compositor" icon=LuGauge>
-                            <DetailRow label="Requested" value=Signal::derive(move || {
-                                status_text(status.get(), |s| mode_label(&s.compositor_acceleration.requested_mode))
+                            <DetailRow label="Requested" value=Memo::new(move |_| {
+                                status_text(status, |s| mode_label(&s.compositor_acceleration.requested_mode))
                             }) />
-                            <DetailRow label="Effective" value=Signal::derive(move || {
-                                status_text(status.get(), |s| mode_label(&s.compositor_acceleration.effective_mode))
+                            <DetailRow label="Effective" value=Memo::new(move |_| {
+                                status_text(status, |s| mode_label(&s.compositor_acceleration.effective_mode))
                             }) />
-                            <DetailRow label="Frame backend" value=Signal::derive(move || {
-                                metrics_text(metrics.get(), |m| mode_label(&m.timeline.compositor_backend))
+                            <DetailRow label="Frame backend" value=Memo::new(move |_| {
+                                metrics_text(metrics, |m| mode_label(&m.timeline.compositor_backend))
                             }) />
-                            <DetailRow label="Adapter" value=Signal::derive(move || {
-                                probe_text(status.get(), |probe| non_empty(&probe.adapter_name))
+                            <DetailRow label="Adapter" value=Memo::new(move |_| {
+                                probe_text(status, |probe| non_empty(&probe.adapter_name))
                             }) />
-                            <DetailRow label="WGPU backend" value=Signal::derive(move || {
-                                probe_text(status.get(), |probe| non_empty(&probe.backend))
+                            <DetailRow label="WGPU backend" value=Memo::new(move |_| {
+                                probe_text(status, |probe| non_empty(&probe.backend))
                             }) />
-                            <DetailRow label="Texture" value=Signal::derive(move || {
-                                probe_text(status.get(), |probe| non_empty(&probe.texture_format))
+                            <DetailRow label="Texture" value=Memo::new(move |_| {
+                                probe_text(status, |probe| non_empty(&probe.texture_format))
                             }) />
-                            <DetailRow label="Max 2D texture" value=Signal::derive(move || {
-                                probe_text(status.get(), |probe| {
+                            <DetailRow label="Max 2D texture" value=Memo::new(move |_| {
+                                probe_text(status, |probe| {
                                     if probe.max_texture_dimension_2d == 0 {
                                         "n/a".to_owned()
                                     } else {
@@ -341,8 +346,8 @@ pub(super) fn RendererHardwarePanel(
                                     }
                                 })
                             }) />
-                            <DetailRow label="Storage textures" value=Signal::derive(move || {
-                                probe_text(status.get(), |probe| {
+                            <DetailRow label="Storage textures" value=Memo::new(move |_| {
+                                probe_text(status, |probe| {
                                     if probe.max_storage_textures_per_shader_stage == 0 {
                                         "n/a".to_owned()
                                     } else {
@@ -350,11 +355,11 @@ pub(super) fn RendererHardwarePanel(
                                     }
                                 })
                             }) />
-                            <DetailRow label="Import policy" value=Signal::derive(move || {
-                                status_text(status.get(), |s| mode_label(&s.compositor_acceleration.servo_gpu_import_mode))
+                            <DetailRow label="Import policy" value=Memo::new(move |_| {
+                                status_text(status, |s| mode_label(&s.compositor_acceleration.servo_gpu_import_mode))
                             }) />
-                            <DetailRow label="Servo import backend" value=Signal::derive(move || {
-                                probe_text(status.get(), |probe| {
+                            <DetailRow label="Servo import backend" value=Memo::new(move |_| {
+                                probe_text(status, |probe| {
                                     let compatible = probe.servo_gpu_import_backend_compatible
                                         || probe.linux_servo_gpu_import_backend_compatible;
                                     if compatible {
@@ -375,8 +380,8 @@ pub(super) fn RendererHardwarePanel(
                         </DiagnosticSection>
 
                         <DiagnosticSection title="GPU Import" icon=LuZap>
-                            <DetailRow label="Servo frames" value=Signal::derive(move || {
-                                metrics_text(metrics.get(), |m| {
+                            <DetailRow label="Servo frames" value=Memo::new(move |_| {
+                                metrics_text(metrics, |m| {
                                     format!(
                                         "{} GPU / {} CPU / {} cached",
                                         m.effect_health.servo_render_gpu_frames_total,
@@ -385,8 +390,8 @@ pub(super) fn RendererHardwarePanel(
                                     )
                                 })
                             }) />
-                            <DetailRow label="Producer frames" value=Signal::derive(move || {
-                                metrics_text(metrics.get(), |m| {
+                            <DetailRow label="Producer frames" value=Memo::new(move |_| {
+                                metrics_text(metrics, |m| {
                                     format!(
                                         "{} GPU / {} CPU",
                                         m.effect_health.producer_gpu_frames_total,
@@ -396,8 +401,8 @@ pub(super) fn RendererHardwarePanel(
                             }) />
                             <DetailRow
                                 label="Import failures"
-                                value=Signal::derive(move || {
-                                    metrics_text(metrics.get(), |m| {
+                                value=Memo::new(move |_| {
+                                    metrics_text(metrics, |m| {
                                         format!(
                                             "{} fail / {} fallback",
                                             m.effect_health.servo_gpu_import_failures_total,
@@ -405,40 +410,40 @@ pub(super) fn RendererHardwarePanel(
                                         )
                                     })
                                 })
-                                tone=Signal::derive(move || {
-                                    metrics.get().map_or(DiagnosticTone::Neutral, |m| error_count_tone(
+                                tone=Memo::new(move |_| {
+                                    metrics.with(|m| m.as_ref().map_or(DiagnosticTone::Neutral, |m| error_count_tone(
                                         m.effect_health.servo_gpu_import_failures_total
                                             + m.effect_health.servo_gpu_import_fallbacks_total,
-                                    ))
+                                    )))
                                 })
                             />
                             <DetailRow
                                 label="Fallback reason"
-                                value=Signal::derive(move || {
-                                    metrics_text(metrics.get(), |m| {
+                                value=Memo::new(move |_| {
+                                    metrics_text(metrics, |m| {
                                         m.effect_health
                                             .servo_gpu_import_fallback_reason
                                             .clone()
                                             .unwrap_or_else(|| "none".to_owned())
                                     })
                                 })
-                                tone=Signal::derive(move || {
-                                    flag_tone(metrics.get().and_then(|m| {
-                                        m.effect_health.servo_gpu_import_fallback_reason.clone()
-                                    }).is_some())
+                                tone=Memo::new(move |_| {
+                                    flag_tone(metrics.with(|m| m.as_ref().is_some_and(|m| {
+                                        m.effect_health.servo_gpu_import_fallback_reason.is_some()
+                                    })))
                                 })
                             />
                             <Show when=move || has_windows_import_metrics.get() fallback=|| ()>
-                                <DetailRow label="Sync mode" value=Signal::derive(move || {
-                                    metrics_text(metrics.get(), |m| {
+                                <DetailRow label="Sync mode" value=Memo::new(move |_| {
+                                    metrics_text(metrics, |m| {
                                         m.effect_health
                                             .servo_gpu_import_windows_sync_mode
                                             .clone()
                                             .unwrap_or_else(|| "n/a".to_owned())
                                     })
                                 }) />
-                                <DetailRow label="Stale / adapter" value=Signal::derive(move || {
-                                    metrics_text(metrics.get(), |m| {
+                                <DetailRow label="Stale / adapter" value=Memo::new(move |_| {
+                                    metrics_text(metrics, |m| {
                                         format!(
                                             "{} / {}",
                                             m.effect_health.servo_gpu_import_stale_frame_total,
@@ -447,11 +452,11 @@ pub(super) fn RendererHardwarePanel(
                                     })
                                 }) />
                             </Show>
-                            <DetailRow label="Import max" value=Signal::derive(move || {
-                                metrics_text(metrics.get(), |m| fmt_ms(m.effect_health.servo_gpu_import_max_ms))
+                            <DetailRow label="Import max" value=Memo::new(move |_| {
+                                metrics_text(metrics, |m| fmt_ms(m.effect_health.servo_gpu_import_max_ms))
                             }) />
-                            <DetailRow label="Blit / sync max" value=Signal::derive(move || {
-                                metrics_text(metrics.get(), |m| {
+                            <DetailRow label="Blit / sync max" value=Memo::new(move |_| {
+                                metrics_text(metrics, |m| {
                                     format!(
                                         "{} / {}",
                                         fmt_ms(m.effect_health.servo_gpu_import_blit_max_ms),
@@ -459,48 +464,48 @@ pub(super) fn RendererHardwarePanel(
                                     )
                                 })
                             }) />
-                            <DetailRow label="Readback max" value=Signal::derive(move || {
-                                metrics_text(metrics.get(), |m| fmt_ms(m.effect_health.servo_render_readback_max_ms))
+                            <DetailRow label="Readback max" value=Memo::new(move |_| {
+                                metrics_text(metrics, |m| fmt_ms(m.effect_health.servo_render_readback_max_ms))
                             }) />
-                            <DetailRow label="GPU sample window" value=Signal::derive(move || {
-                                metrics_text(metrics.get(), |m| format_window_count(m.pacing.gpu_zone_sampling))
+                            <DetailRow label="GPU sample window" value=Memo::new(move |_| {
+                                metrics_text(metrics, |m| format_window_count(m.pacing.gpu_zone_sampling))
                             }) />
-                            <DetailRow label="CPU fallback window" value=Signal::derive(move || {
-                                metrics_text(metrics.get(), |m| format_window_count(m.pacing.gpu_sample_cpu_fallback))
+                            <DetailRow label="CPU fallback window" value=Memo::new(move |_| {
+                                metrics_text(metrics, |m| format_window_count(m.pacing.gpu_sample_cpu_fallback))
                             }) />
                             <DetailRow
                                 label="Readback fail window"
-                                value=Signal::derive(move || {
-                                    metrics_text(metrics.get(), |m| format_window_count(m.pacing.gpu_readback_failed_frames))
+                                value=Memo::new(move |_| {
+                                    metrics_text(metrics, |m| format_window_count(m.pacing.gpu_readback_failed_frames))
                                 })
-                                tone=Signal::derive(move || {
-                                    flag_tone(metrics.get().is_some_and(|m| m.pacing.gpu_readback_failed_frames > 0))
+                                tone=Memo::new(move |_| {
+                                    flag_tone(metrics.with(|m| m.as_ref().is_some_and(|m| m.pacing.gpu_readback_failed_frames > 0)))
                                 })
                             />
                         </DiagnosticSection>
 
                         <DiagnosticSection title="Composition" icon=LuLayers>
-                            <DetailRow label="Frame avg / p95" value=Signal::derive(move || {
-                                metrics_text(metrics.get(), |m| {
+                            <DetailRow label="Frame avg / p95" value=Memo::new(move |_| {
+                                metrics_text(metrics, |m| {
                                     format!("{} / {}", fmt_ms(m.frame_time.avg_ms), fmt_ms(m.frame_time.p95_ms))
                                 })
                             }) />
-                            <DetailRow label="Budget / max" value=Signal::derive(move || {
-                                metrics_text(metrics.get(), |m| {
+                            <DetailRow label="Budget / max" value=Memo::new(move |_| {
+                                metrics_text(metrics, |m| {
                                     format!("{} / {}", fmt_ms(m.timeline.budget_ms), fmt_ms(m.frame_time.max_ms))
                                 })
                             }) />
-                            <DetailRow label="Composition" value=Signal::derive(move || {
-                                metrics_text(metrics.get(), |m| fmt_ms(m.stages.composition_ms))
+                            <DetailRow label="Composition" value=Memo::new(move |_| {
+                                metrics_text(metrics, |m| fmt_ms(m.stages.composition_ms))
                             }) />
-                            <DetailRow label="Scene compose" value=Signal::derive(move || {
-                                metrics_text(metrics.get(), |m| fmt_ms(m.stages.producer_scene_compose_ms))
+                            <DetailRow label="Scene compose" value=Memo::new(move |_| {
+                                metrics_text(metrics, |m| fmt_ms(m.stages.producer_scene_compose_ms))
                             }) />
-                            <DetailRow label="Producer render" value=Signal::derive(move || {
-                                metrics_text(metrics.get(), |m| fmt_ms(m.stages.producer_effect_rendering_ms))
+                            <DetailRow label="Producer render" value=Memo::new(move |_| {
+                                metrics_text(metrics, |m| fmt_ms(m.stages.producer_effect_rendering_ms))
                             }) />
-                            <DetailRow label="Sample / output" value=Signal::derive(move || {
-                                metrics_text(metrics.get(), |m| {
+                            <DetailRow label="Sample / output" value=Memo::new(move |_| {
+                                metrics_text(metrics, |m| {
                                     format!(
                                         "{} / {}",
                                         fmt_ms(m.stages.spatial_sampling_ms),
@@ -508,8 +513,8 @@ pub(super) fn RendererHardwarePanel(
                                     )
                                 })
                             }) />
-                            <DetailRow label="Publish split" value=Signal::derive(move || {
-                                metrics_text(metrics.get(), |m| {
+                            <DetailRow label="Publish split" value=Memo::new(move |_| {
+                                metrics_text(metrics, |m| {
                                     format!(
                                         "{} fd / {} canvas / {} preview / {} evt",
                                         fmt_ms(m.stages.publish_frame_data_ms),
@@ -519,8 +524,8 @@ pub(super) fn RendererHardwarePanel(
                                     )
                                 })
                             }) />
-                            <DetailRow label="Bypass / forced window" value=Signal::derive(move || {
-                                metrics_text(metrics.get(), |m| {
+                            <DetailRow label="Bypass / forced window" value=Memo::new(move |_| {
+                                metrics_text(metrics, |m| {
                                     format!(
                                         "{} / {}",
                                         format_window_count(m.pacing.composition_bypassed),
@@ -528,8 +533,8 @@ pub(super) fn RendererHardwarePanel(
                                     )
                                 })
                             }) />
-                            <DetailRow label="Full-frame copies" value=Signal::derive(move || {
-                                metrics_text(metrics.get(), |m| {
+                            <DetailRow label="Full-frame copies" value=Memo::new(move |_| {
+                                metrics_text(metrics, |m| {
                                     format!(
                                         "{} · {}",
                                         m.copies.full_frame_count,
@@ -537,8 +542,8 @@ pub(super) fn RendererHardwarePanel(
                                     )
                                 })
                             }) />
-                            <DetailRow label="Surface pool" value=Signal::derive(move || {
-                                metrics_text(metrics.get(), |m| {
+                            <DetailRow label="Surface pool" value=Memo::new(move |_| {
+                                metrics_text(metrics, |m| {
                                     format!(
                                         "{} slots / {} free / {} shared",
                                         m.render_surfaces.scene_pool_slot_count,
@@ -549,8 +554,8 @@ pub(super) fn RendererHardwarePanel(
                             }) />
                             <DetailRow
                                 label="Pool saturation"
-                                value=Signal::derive(move || {
-                                    metrics_text(metrics.get(), |m| {
+                                value=Memo::new(move |_| {
+                                    metrics_text(metrics, |m| {
                                         format!(
                                             "{} scene / {} direct",
                                             m.render_surfaces.scene_pool_saturation_reallocs,
@@ -558,12 +563,12 @@ pub(super) fn RendererHardwarePanel(
                                         )
                                     })
                                 })
-                                tone=Signal::derive(move || {
-                                    flag_tone(metrics.get().is_some_and(|m| {
+                                tone=Memo::new(move |_| {
+                                    flag_tone(metrics.with(|m| m.as_ref().is_some_and(|m| {
                                         m.render_surfaces.scene_pool_saturation_reallocs
                                             + m.render_surfaces.direct_pool_saturation_reallocs
                                             > 0
-                                    }))
+                                    })))
                                 })
                             />
                         </DiagnosticSection>
@@ -571,8 +576,8 @@ pub(super) fn RendererHardwarePanel(
                         <DiagnosticSection title="Host & Output" icon=LuMonitor>
                             <DetailRow
                                 label="CPU load / temp"
-                                value=Signal::derive(move || {
-                                    sensors_text(sensors.get(), |snapshot| {
+                                value=Memo::new(move |_| {
+                                    sensors_text(sensors, |snapshot| {
                                         format!(
                                             "{} / {}",
                                             fmt_percent_f32(snapshot.cpu_load_percent),
@@ -580,14 +585,14 @@ pub(super) fn RendererHardwarePanel(
                                         )
                                     })
                                 })
-                                tone=Signal::derive(move || {
-                                    temp_tone(sensors.get().and_then(|s| s.cpu_temp_celsius))
+                                tone=Memo::new(move |_| {
+                                    temp_tone(sensors.with(|s| s.as_ref().and_then(|s| s.cpu_temp_celsius)))
                                 })
                             />
                             <DetailRow
                                 label="GPU load / temp"
-                                value=Signal::derive(move || {
-                                    sensors_text(sensors.get(), |snapshot| {
+                                value=Memo::new(move |_| {
+                                    sensors_text(sensors, |snapshot| {
                                         format!(
                                             "{} / {}",
                                             fmt_optional_percent(snapshot.gpu_load_percent),
@@ -595,12 +600,12 @@ pub(super) fn RendererHardwarePanel(
                                         )
                                     })
                                 })
-                                tone=Signal::derive(move || {
-                                    temp_tone(sensors.get().and_then(|s| s.gpu_temp_celsius))
+                                tone=Memo::new(move |_| {
+                                    temp_tone(sensors.with(|s| s.as_ref().and_then(|s| s.gpu_temp_celsius)))
                                 })
                             />
-                            <DetailRow label="GPU VRAM" value=Signal::derive(move || {
-                                sensors_text(sensors.get(), |snapshot| {
+                            <DetailRow label="GPU VRAM" value=Memo::new(move |_| {
+                                sensors_text(sensors, |snapshot| {
                                     snapshot
                                         .gpu_vram_used_mb
                                         .map_or_else(|| "n/a".to_owned(), |value| format!("{value:.0} MB"))
@@ -608,8 +613,8 @@ pub(super) fn RendererHardwarePanel(
                             }) />
                             <DetailRow
                                 label="RAM used"
-                                value=Signal::derive(move || {
-                                    sensors_text(sensors.get(), |snapshot| {
+                                value=Memo::new(move |_| {
+                                    sensors_text(sensors, |snapshot| {
                                         format!(
                                             "{} · {:.0}/{:.0} MB",
                                             fmt_percent_f32(snapshot.ram_used_percent),
@@ -618,19 +623,19 @@ pub(super) fn RendererHardwarePanel(
                                         )
                                     })
                                 })
-                                tone=Signal::derive(move || {
-                                    sensors.get().map_or(DiagnosticTone::Neutral, |s| ram_tone(s.ram_used_percent))
+                                tone=Memo::new(move |_| {
+                                    sensors.with(|s| s.as_ref().map_or(DiagnosticTone::Neutral, |s| ram_tone(s.ram_used_percent)))
                                 })
                             />
-                            <DetailRow label="Devices / LEDs" value=Signal::derive(move || {
-                                metrics_text(metrics.get(), |m| {
+                            <DetailRow label="Devices / LEDs" value=Memo::new(move |_| {
+                                metrics_text(metrics, |m| {
                                     format!("{} / {}", m.devices.connected, m.devices.total_leds)
                                 })
                             }) />
                             <DetailRow
                                 label="Output errors"
-                                value=Signal::derive(move || {
-                                    metrics_text(metrics.get(), |m| {
+                                value=Memo::new(move |_| {
+                                    metrics_text(metrics, |m| {
                                         format!(
                                             "{} frame / {} write",
                                             m.devices.output_errors,
@@ -638,14 +643,14 @@ pub(super) fn RendererHardwarePanel(
                                         )
                                     })
                                 })
-                                tone=Signal::derive(move || {
-                                    metrics.get().map_or(DiagnosticTone::Neutral, |m| error_count_tone(output_error_count(&m)))
+                                tone=Memo::new(move |_| {
+                                    metrics.with(|m| m.as_ref().map_or(DiagnosticTone::Neutral, |m| error_count_tone(output_error_count(m))))
                                 })
                             />
                             <DetailRow
                                 label="Retries / attempts"
-                                value=Signal::derive(move || {
-                                    metrics_text(metrics.get(), |m| {
+                                value=Memo::new(move |_| {
+                                    metrics_text(metrics, |m| {
                                         format!(
                                             "{} / {}",
                                             m.display_output.retry_attempts_total,
@@ -653,14 +658,14 @@ pub(super) fn RendererHardwarePanel(
                                         )
                                     })
                                 })
-                                tone=Signal::derive(move || {
-                                    flag_tone(metrics.get().is_some_and(|m| m.display_output.retry_attempts_total > 0))
+                                tone=Memo::new(move |_| {
+                                    flag_tone(metrics.with(|m| m.as_ref().is_some_and(|m| m.display_output.retry_attempts_total > 0)))
                                 })
                             />
                             <DetailRow
                                 label="Display lane"
-                                value=Signal::derive(move || {
-                                    metrics_text(metrics.get(), |m| {
+                                value=Memo::new(move |_| {
+                                    metrics_text(metrics, |m| {
                                         format!(
                                             "{} delayed / {} total",
                                             m.display_output.display_lane.display_frames_delayed_for_led_total,
@@ -668,19 +673,19 @@ pub(super) fn RendererHardwarePanel(
                                         )
                                     })
                                 })
-                                tone=Signal::derive(move || {
-                                    flag_tone(metrics.get().is_some_and(|m| {
+                                tone=Memo::new(move |_| {
+                                    flag_tone(metrics.with(|m| m.as_ref().is_some_and(|m| {
                                         m.display_output.display_lane.display_frames_delayed_for_led_total > 0
-                                    }))
+                                    })))
                                 })
                             />
-                            <DetailRow label="LED priority wait" value=Signal::derive(move || {
-                                metrics_text(metrics.get(), |m| {
+                            <DetailRow label="LED priority wait" value=Memo::new(move |_| {
+                                metrics_text(metrics, |m| {
                                     fmt_ms(m.display_output.display_lane.display_led_priority_wait_max_ms)
                                 })
                             }) />
-                            <DetailRow label="Captured displays" value=Signal::derive(move || {
-                                metrics_text(metrics.get(), |m| {
+                            <DetailRow label="Captured displays" value=Memo::new(move |_| {
+                                metrics_text(metrics, |m| {
                                     format!(
                                         "{} devices / {} subscribers",
                                         m.display_output.captured_devices,
@@ -797,8 +802,9 @@ fn DetailRow(
     #[prop(into)] value: Signal<String>,
     /// Optional health tint for the value. Absent rows render at the
     /// neutral secondary foreground, so only meaningful rows carry color.
-    #[prop(optional, into)]
-    tone: Option<Signal<DiagnosticTone>>,
+    /// Memo-typed so each row's style only re-patches on tone changes.
+    #[prop(optional)]
+    tone: Option<Memo<DiagnosticTone>>,
 ) -> impl IntoView {
     let value_color =
         move || tone.map_or("var(--color-fg-secondary)", |tone| tone.get().value_color());
@@ -929,32 +935,41 @@ fn badge(label: impl Into<String>, tone: DiagnosticTone) -> DiagnosticBadge {
     }
 }
 
-fn status_text(status: Option<SystemStatus>, f: impl FnOnce(&SystemStatus) -> String) -> String {
-    status.as_ref().map_or_else(|| "loading".to_owned(), f)
+// The `*_text` helpers read their signal with `.with()` so the row memos
+// project straight off the shared snapshot — no per-read clone of the
+// ~250-field `PerformanceMetrics` (or `SystemStatus`/`SystemSnapshot`).
+
+fn status_text(
+    status: Memo<Option<SystemStatus>>,
+    f: impl FnOnce(&SystemStatus) -> String,
+) -> String {
+    status.with(|status| status.as_ref().map_or_else(|| "loading".to_owned(), f))
 }
 
 fn probe_text(
-    status: Option<SystemStatus>,
+    status: Memo<Option<SystemStatus>>,
     f: impl FnOnce(&api::GpuCompositorProbeStatus) -> String,
 ) -> String {
-    status
-        .as_ref()
-        .and_then(|status| status.compositor_acceleration.gpu_probe.as_ref())
-        .map_or_else(|| "n/a".to_owned(), f)
+    status.with(|status| {
+        status
+            .as_ref()
+            .and_then(|status| status.compositor_acceleration.gpu_probe.as_ref())
+            .map_or_else(|| "n/a".to_owned(), f)
+    })
 }
 
 fn sensors_text(
-    sensors: Option<SystemSnapshot>,
+    sensors: Signal<Option<SystemSnapshot>>,
     f: impl FnOnce(&SystemSnapshot) -> String,
 ) -> String {
-    sensors.as_ref().map_or_else(|| "loading".to_owned(), f)
+    sensors.with(|sensors| sensors.as_ref().map_or_else(|| "loading".to_owned(), f))
 }
 
 fn metrics_text(
-    metrics: Option<PerformanceMetrics>,
+    metrics: Signal<Option<PerformanceMetrics>>,
     f: impl FnOnce(&PerformanceMetrics) -> String,
 ) -> String {
-    metrics.as_ref().map_or_else(|| "waiting".to_owned(), f)
+    metrics.with(|metrics| metrics.as_ref().map_or_else(|| "waiting".to_owned(), f))
 }
 
 fn non_empty(value: &str) -> String {

@@ -502,14 +502,22 @@ pub fn CanvasPreview(
     );
 
     let canvas_style = format!("max-width: {max_width}; image-rendering: {image_rendering};");
+    // Staged: the dimension memo tracks the (up to 60 Hz) frame stream but
+    // dedupes to actual size changes, so the string memo below only
+    // re-formats when the canvas is genuinely resized.
+    let frame_dimensions = Memo::new(move |_| {
+        frame.with(|frame| {
+            frame
+                .as_ref()
+                .map(|frame| (frame.width.max(1), frame.height.max(1)))
+        })
+    });
     let resolved_aspect_ratio = Memo::new(move |_| {
         aspect_ratio.clone().unwrap_or_else(|| {
-            frame.with(|frame| {
-                frame
-                    .as_ref()
-                    .map(|frame| format!("{} / {}", frame.width.max(1), frame.height.max(1)))
-                    .unwrap_or_else(|| "320 / 200".to_string())
-            })
+            frame_dimensions
+                .get()
+                .map(|(width, height)| format!("{width} / {height}"))
+                .unwrap_or_else(|| "320 / 200".to_string())
         })
     });
     // `aspect-ratio` plus `width: 100%` lets the wrapper grow to fill the

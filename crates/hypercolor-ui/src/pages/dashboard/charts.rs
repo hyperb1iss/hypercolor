@@ -21,72 +21,75 @@ pub(super) fn PipelinePanel(
     #[prop(into)] metrics: Signal<Option<PerformanceMetrics>>,
 ) -> impl IntoView {
     let segments = Memo::new(move |_| {
-        let Some(m) = metrics.get() else {
-            return Vec::<StackSegment>::new();
-        };
-        let t = &m.timeline;
-        let diff = |later: f64, earlier: f64| (later - earlier).max(0.0);
-        let postprocess = m.stages.preview_postprocess_ms;
-        let publish_phase = diff(t.publish_done_ms, t.output_done_ms);
-        vec![
-            StackSegment {
-                label: "Input",
-                value: diff(t.input_done_ms, t.scene_snapshot_done_ms),
-                color: "#80ffea",
-            },
-            StackSegment {
-                label: "Producer",
-                value: diff(t.producer_done_ms, t.input_done_ms),
-                color: "#e135ff",
-            },
-            StackSegment {
-                label: "Compose",
-                value: diff(t.composition_done_ms, t.producer_done_ms),
-                color: "#ff6ac1",
-            },
-            StackSegment {
-                label: "Sample",
-                value: diff(t.sampling_done_ms, t.composition_done_ms),
-                color: "#ff99ff",
-            },
-            StackSegment {
-                label: "Output",
-                value: diff(t.output_done_ms, t.sampling_done_ms),
-                color: "#f1fa8c",
-            },
-            StackSegment {
-                label: "Post",
-                value: postprocess,
-                color: "#82aaff",
-            },
-            StackSegment {
-                label: "Publish",
-                value: (publish_phase - postprocess).max(0.0),
-                color: "#50fa7b",
-            },
-            StackSegment {
-                label: "Overhead",
-                value: diff(t.frame_done_ms, t.publish_done_ms),
-                color: "#808090",
-            },
-        ]
+        metrics.with(|m| {
+            let Some(m) = m.as_ref() else {
+                return Vec::<StackSegment>::new();
+            };
+            let t = &m.timeline;
+            let diff = |later: f64, earlier: f64| (later - earlier).max(0.0);
+            let postprocess = m.stages.preview_postprocess_ms;
+            let publish_phase = diff(t.publish_done_ms, t.output_done_ms);
+            vec![
+                StackSegment {
+                    label: "Input",
+                    value: diff(t.input_done_ms, t.scene_snapshot_done_ms),
+                    color: "#80ffea",
+                },
+                StackSegment {
+                    label: "Producer",
+                    value: diff(t.producer_done_ms, t.input_done_ms),
+                    color: "#e135ff",
+                },
+                StackSegment {
+                    label: "Compose",
+                    value: diff(t.composition_done_ms, t.producer_done_ms),
+                    color: "#ff6ac1",
+                },
+                StackSegment {
+                    label: "Sample",
+                    value: diff(t.sampling_done_ms, t.composition_done_ms),
+                    color: "#ff99ff",
+                },
+                StackSegment {
+                    label: "Output",
+                    value: diff(t.output_done_ms, t.sampling_done_ms),
+                    color: "#f1fa8c",
+                },
+                StackSegment {
+                    label: "Post",
+                    value: postprocess,
+                    color: "#82aaff",
+                },
+                StackSegment {
+                    label: "Publish",
+                    value: (publish_phase - postprocess).max(0.0),
+                    color: "#50fa7b",
+                },
+                StackSegment {
+                    label: "Overhead",
+                    value: diff(t.frame_done_ms, t.publish_done_ms),
+                    color: "#808090",
+                },
+            ]
+        })
     });
     let total_label = Memo::new(move |_| {
-        metrics
-            .get()
-            .map(|m| {
-                let t = &m.timeline;
-                let total = (t.frame_done_ms - t.scene_snapshot_done_ms).max(0.0);
-                format!(
-                    "Σ {total:.2} ms · budget {:.1} ms",
-                    if m.fps.target > 0 {
-                        1000.0 / f64::from(m.fps.target)
-                    } else {
-                        33.33
-                    }
-                )
-            })
-            .unwrap_or_else(|| "collecting".into())
+        metrics.with(|m| {
+            m.as_ref()
+                .map(|m| {
+                    let t = &m.timeline;
+                    let total = (t.frame_done_ms - t.scene_snapshot_done_ms).max(0.0);
+                    format!(
+                        "Σ {total:.2} ms · budget {:.1} ms",
+                        if m.fps.target > 0 {
+                            1000.0 / f64::from(m.fps.target)
+                        } else {
+                            33.33
+                        }
+                    )
+                })
+                .unwrap_or_else(|| "collecting".into())
+        })
     });
 
     view! {
@@ -105,7 +108,7 @@ pub(super) fn PipelinePanel(
             </div>
             <div class="p-4">
                 <StackedBar
-                    segments=Signal::derive(move || segments.get())
+                    segments=segments
                     total_override=None
                     height=34
                 />
@@ -120,17 +123,19 @@ pub(super) fn PipelinePanel(
 pub(super) fn DistributionPanel(
     #[prop(into)] metrics: Signal<Option<PerformanceMetrics>>,
 ) -> impl IntoView {
-    let avg = Memo::new(move |_| metrics.get().map_or(0.0, |m| m.frame_time.avg_ms));
-    let p95 = Memo::new(move |_| metrics.get().map_or(0.0, |m| m.frame_time.p95_ms));
-    let p99 = Memo::new(move |_| metrics.get().map_or(0.0, |m| m.frame_time.p99_ms));
-    let max = Memo::new(move |_| metrics.get().map_or(0.0, |m| m.frame_time.max_ms));
+    let avg = Memo::new(move |_| metrics.with(|m| m.as_ref().map_or(0.0, |m| m.frame_time.avg_ms)));
+    let p95 = Memo::new(move |_| metrics.with(|m| m.as_ref().map_or(0.0, |m| m.frame_time.p95_ms)));
+    let p99 = Memo::new(move |_| metrics.with(|m| m.as_ref().map_or(0.0, |m| m.frame_time.p99_ms)));
+    let max = Memo::new(move |_| metrics.with(|m| m.as_ref().map_or(0.0, |m| m.frame_time.max_ms)));
     let budget = Memo::new(move |_| {
-        metrics.get().map_or(33.33, |m| {
-            if m.fps.target > 0 {
-                1000.0 / f64::from(m.fps.target)
-            } else {
-                33.33
-            }
+        metrics.with(|m| {
+            m.as_ref().map_or(33.33, |m| {
+                if m.fps.target > 0 {
+                    1000.0 / f64::from(m.fps.target)
+                } else {
+                    33.33
+                }
+            })
         })
     });
 
@@ -158,26 +163,28 @@ pub(super) fn ThroughputPanel(
     #[prop(into)] ws_bytes_series: Signal<Vec<f64>>,
 ) -> impl IntoView {
     let ws_bytes = Memo::new(move |_| {
-        metrics
-            .get()
-            .map(|m| format_bytes_per_sec(m.websocket.bytes_sent_per_sec))
-            .unwrap_or_else(|| "—".into())
+        metrics.with(|m| {
+            m.as_ref()
+                .map(|m| format_bytes_per_sec(m.websocket.bytes_sent_per_sec))
+                .unwrap_or_else(|| "—".into())
+        })
     });
     let ws_clients = Memo::new(move |_| {
-        metrics
-            .get()
-            .map(|m| {
-                format!(
-                    "{} client{}",
-                    m.websocket.client_count,
-                    if m.websocket.client_count == 1 {
-                        ""
-                    } else {
-                        "s"
-                    }
-                )
-            })
-            .unwrap_or_else(|| "metrics channel".into())
+        metrics.with(|m| {
+            m.as_ref()
+                .map(|m| {
+                    format!(
+                        "{} client{}",
+                        m.websocket.client_count,
+                        if m.websocket.client_count == 1 {
+                            ""
+                        } else {
+                            "s"
+                        }
+                    )
+                })
+                .unwrap_or_else(|| "metrics channel".into())
+        })
     });
 
     view! {

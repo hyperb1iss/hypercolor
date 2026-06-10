@@ -24,6 +24,15 @@ use crate::ws::{CanvasFrame, CanvasPixelFormat};
 
 const LOCAL_STORAGE_KEY: &str = "hypercolor:thumbnails";
 const WEBP_QUALITY: f64 = 0.88;
+/// Hard cap on persisted thumbnails, evicting the oldest captures first.
+///
+/// Sizing math: each entry is a base64 WebP data URL of roughly 15–80 KB
+/// (typically ~30 KB at 320×200 / quality 0.88) plus a small palette and
+/// metadata. Browsers give the whole origin ~5 MB of localStorage, shared
+/// with every other `hc-*` key. 48 entries bound the cache at
+/// 48 × 80 KB ≈ 3.8 MB absolute worst case (~1.4 MB typical), leaving
+/// comfortable headroom under the quota for the rest of the app.
+const MAX_THUMBNAIL_ENTRIES: usize = 48;
 /// How long an effect must play uninterrupted before we capture a thumbnail.
 pub const CAPTURE_STABLE_MS: f64 = 2500.0;
 /// Cadence for the capture-eligibility scan. The effect itself wakes on
@@ -88,7 +97,10 @@ pub struct ThumbnailStore {
 
 impl ThumbnailStore {
     pub fn new() -> Self {
-        let initial = load_from_storage().unwrap_or_default();
+        let mut initial = load_from_storage().unwrap_or_default();
+        // Stores written before the cap existed may exceed it; trim on
+        // load so the next persist shrinks the blob.
+        evict_oldest(&mut initial.effects, MAX_THUMBNAIL_ENTRIES);
         Self {
             store: RwSignal::new(initial.effects),
         }
@@ -114,10 +126,13 @@ impl ThumbnailStore {
         })
     }
 
-    /// Insert or replace a thumbnail and persist the full store to localStorage.
+    /// Insert or replace a thumbnail and persist the full store to
+    /// localStorage, evicting the oldest captures beyond
+    /// [`MAX_THUMBNAIL_ENTRIES`].
     pub fn insert(&self, effect_id: String, thumbnail: Thumbnail) {
         self.store.update(|map| {
             map.insert(effect_id, thumbnail);
+            evict_oldest(map, MAX_THUMBNAIL_ENTRIES);
         });
         self.persist();
     }
@@ -155,6 +170,23 @@ impl Default for ThumbnailStore {
 fn load_from_storage() -> Option<ThumbnailCache> {
     let raw = storage::get(LOCAL_STORAGE_KEY)?;
     serde_json::from_str(&raw).ok()
+}
+
+/// Evict the oldest thumbnails (by `captured_at`) until at most `cap`
+/// entries remain. Pure helper so the eviction policy is unit-testable.
+pub fn evict_oldest(map: &mut HashMap<String, Thumbnail>, cap: usize) {
+    if map.len() <= cap {
+        return;
+    }
+    let excess = map.len() - cap;
+    let mut by_age: Vec<(f64, String)> = map
+        .iter()
+        .map(|(effect_id, thumbnail)| (thumbnail.captured_at, effect_id.clone()))
+        .collect();
+    by_age.sort_by(|a, b| a.0.total_cmp(&b.0));
+    for (_, effect_id) in by_age.into_iter().take(excess) {
+        map.remove(&effect_id);
+    }
 }
 
 /// Capture a thumbnail from a canvas frame synchronously.

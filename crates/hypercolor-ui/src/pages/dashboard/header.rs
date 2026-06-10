@@ -32,7 +32,8 @@ pub(super) fn StatusStrip(
     let active_scene = status.active_scene;
     let active_scene_snapshot_locked = status.active_scene_snapshot_locked;
 
-    let ws_clients = Memo::new(move |_| metrics.get().map_or(0, |m| m.websocket.client_count));
+    let ws_clients =
+        Memo::new(move |_| metrics.with(|m| m.as_ref().map_or(0, |m| m.websocket.client_count)));
 
     view! {
         <div class="flex items-center gap-4 shrink-0">
@@ -70,7 +71,7 @@ pub(super) fn StatusStrip(
             <div class="w-px h-5 bg-edge-subtle/30" />
             <StatusPillDynamic
                 label="WS Clients"
-                value=Signal::derive(move || ws_clients.get().to_string())
+                value=Memo::new(move |_| ws_clients.get().to_string())
                 color="var(--color-electric-yellow)"
             />
         </div>

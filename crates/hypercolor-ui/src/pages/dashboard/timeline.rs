@@ -16,39 +16,40 @@ pub(super) fn FrameTimelinePanel(
     #[prop(into)] phase_history: Signal<Vec<PhaseFrame>>,
 ) -> impl IntoView {
     let budget = Memo::new(move |_| {
-        metrics
-            .get()
-            .map_or(33.33, |m| m.timeline.budget_ms.max(0.1))
+        metrics.with(|m| m.as_ref().map_or(33.33, |m| m.timeline.budget_ms.max(0.1)))
     });
     let token_text = Memo::new(move |_| {
-        metrics
-            .get()
-            .map(|m| {
-                format!(
-                    "frame #{} · {} · {} layer{} · {} group{}",
-                    m.timeline.frame_token,
-                    m.timeline.compositor_backend.replace('_', " "),
-                    m.timeline.logical_layer_count,
-                    if m.timeline.logical_layer_count == 1 {
-                        ""
-                    } else {
-                        "s"
-                    },
-                    m.timeline.render_group_count,
-                    if m.timeline.render_group_count == 1 {
-                        ""
-                    } else {
-                        "s"
-                    },
-                )
-            })
-            .unwrap_or_else(|| "waiting for frame".into())
+        metrics.with(|m| {
+            m.as_ref()
+                .map(|m| {
+                    format!(
+                        "frame #{} · {} · {} layer{} · {} group{}",
+                        m.timeline.frame_token,
+                        m.timeline.compositor_backend.replace('_', " "),
+                        m.timeline.logical_layer_count,
+                        if m.timeline.logical_layer_count == 1 {
+                            ""
+                        } else {
+                            "s"
+                        },
+                        m.timeline.render_group_count,
+                        if m.timeline.render_group_count == 1 {
+                            ""
+                        } else {
+                            "s"
+                        },
+                    )
+                })
+                .unwrap_or_else(|| "waiting for frame".into())
+        })
     });
     let scene_badge = Memo::new(move |_| {
-        metrics.get().map(|m| {
-            let active = m.timeline.scene_active;
-            let xfade = m.timeline.scene_transition_active;
-            (active, xfade)
+        metrics.with(|m| {
+            m.as_ref().map(|m| {
+                let active = m.timeline.scene_active;
+                let xfade = m.timeline.scene_transition_active;
+                (active, xfade)
+            })
         })
     });
 
@@ -103,38 +104,42 @@ pub(super) fn PacingPanel(
     #[prop(into)] frame_p95_series: Signal<Vec<f64>>,
 ) -> impl IntoView {
     let jitter_label = Memo::new(move |_| {
-        metrics
-            .get()
-            .map(|m| {
-                format!(
-                    "p95 {:.2} ms · max {:.2} ms",
-                    m.pacing.jitter_p95_ms, m.pacing.jitter_max_ms
-                )
-            })
-            .unwrap_or_else(|| "—".into())
+        metrics.with(|m| {
+            m.as_ref()
+                .map(|m| {
+                    format!(
+                        "p95 {:.2} ms · max {:.2} ms",
+                        m.pacing.jitter_p95_ms, m.pacing.jitter_max_ms
+                    )
+                })
+                .unwrap_or_else(|| "—".into())
+        })
     });
     let wake_label = Memo::new(move |_| {
-        metrics
-            .get()
-            .map(|m| {
-                format!(
-                    "p95 {:.2} ms · max {:.2} ms",
-                    m.pacing.wake_delay_p95_ms, m.pacing.wake_delay_max_ms
-                )
-            })
-            .unwrap_or_else(|| "—".into())
+        metrics.with(|m| {
+            m.as_ref()
+                .map(|m| {
+                    format!(
+                        "p95 {:.2} ms · max {:.2} ms",
+                        m.pacing.wake_delay_p95_ms, m.pacing.wake_delay_max_ms
+                    )
+                })
+                .unwrap_or_else(|| "—".into())
+        })
     });
     let age_label = Memo::new(move |_| {
-        metrics
-            .get()
-            .map(|m| format!("{:.2} ms", m.pacing.frame_age_ms))
-            .unwrap_or_else(|| "—".into())
+        metrics.with(|m| {
+            m.as_ref()
+                .map(|m| format!("{:.2} ms", m.pacing.frame_age_ms))
+                .unwrap_or_else(|| "—".into())
+        })
     });
     let frame_p95_label = Memo::new(move |_| {
-        metrics
-            .get()
-            .map(|m| format!("{:.2} ms", m.frame_time.p95_ms))
-            .unwrap_or_else(|| "—".into())
+        metrics.with(|m| {
+            m.as_ref()
+                .map(|m| format!("{:.2} ms", m.frame_time.p95_ms))
+                .unwrap_or_else(|| "—".into())
+        })
     });
 
     view! {
@@ -146,25 +151,25 @@ pub(super) fn PacingPanel(
             <div class="space-y-4">
                 <PacingRow
                     label="Jitter"
-                    detail=Signal::derive(move || jitter_label.get())
+                    detail=jitter_label
                     values=jitter_series
                     color="var(--color-electric-purple)"
                 />
                 <PacingRow
                     label="Wake Delay"
-                    detail=Signal::derive(move || wake_label.get())
+                    detail=wake_label
                     values=wake_series
                     color="var(--color-electric-yellow)"
                 />
                 <PacingRow
                     label="Frame Age"
-                    detail=Signal::derive(move || age_label.get())
+                    detail=age_label
                     values=frame_age_series
                     color="var(--color-neon-cyan)"
                 />
                 <PacingRow
                     label="Frame Time p95"
-                    detail=Signal::derive(move || frame_p95_label.get())
+                    detail=frame_p95_label
                     values=frame_p95_series
                     color="var(--color-coral)"
                 />
@@ -202,8 +207,8 @@ pub(super) fn LatestFramePanel(
     #[prop(into)] metrics: Signal<Option<PerformanceMetrics>>,
 ) -> impl IntoView {
     let line = Memo::new(move |_| {
-        metrics
-            .get()
+        metrics.with(|m| {
+            m.as_ref()
             .and_then(|m| {
                 if m.timeline.frame_token == 0 {
                     return None;
@@ -224,6 +229,7 @@ pub(super) fn LatestFramePanel(
                 ))
             })
             .unwrap_or_else(|| "waiting for frame metadata".into())
+        })
     });
 
     view! {

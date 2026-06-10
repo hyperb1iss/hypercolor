@@ -776,24 +776,34 @@ fn SidebarAudioToggle() -> impl IntoView {
         });
     };
 
+    // Quantized glow tier for the audio-on state. The memo dedupes the
+    // ~10 Hz audio stream down to actual tier changes, so the static
+    // button DOM below only re-patches its style string when the tier
+    // flips — never per audio tick.
+    let audio_glow = Memo::new(move |_| {
+        let al = ws.audio_level.get();
+        if al.beat {
+            ("rgb(225, 53, 255)", "0 0 6px rgba(225, 53, 255, 0.5)")
+        } else if al.level > 0.01 {
+            ("rgba(255, 106, 193, 0.7)", "none")
+        } else {
+            ("rgba(255, 106, 193, 0.4)", "none")
+        }
+    });
+
     view! {
         {move || {
             let audio_on = config_ctx.audio_enabled.get();
             let is_reactive = active_is_audio_reactive.get();
 
             if audio_on {
-                let al = ws.audio_level.get();
-                let (color, shadow) = if al.beat {
-                    ("rgb(225, 53, 255)", "0 0 6px rgba(225, 53, 255, 0.5)")
-                } else if al.level > 0.01 {
-                    ("rgba(255, 106, 193, 0.7)", "none")
-                } else {
-                    ("rgba(255, 106, 193, 0.4)", "none")
-                };
                 Some(view! {
                     <button
                         class="shrink-0 p-1 rounded"
-                        style=format!("color: {color}; filter: drop-shadow({shadow})")
+                        style=move || {
+                            let (color, shadow) = audio_glow.get();
+                            format!("color: {color}; filter: drop-shadow({shadow})")
+                        }
                         title="Disable audio"
                         on:click=toggle_audio
                     >

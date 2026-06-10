@@ -516,14 +516,16 @@ pub fn App() -> impl IntoView {
     // fixed per daemon build — and exposed as a context so multi-zone
     // Studio affordances can gate on it without each re-querying status.
     let status_resource = LocalResource::new(api::fetch_status);
-    let capabilities = Signal::derive(move || {
+    let capabilities = Memo::new(move |_| {
         status_resource
             .get()
             .and_then(Result::ok)
             .map(|status| status.capabilities.into_iter().collect::<HashSet<_>>())
             .unwrap_or_default()
     });
-    provide_context(CapabilitiesContext { capabilities });
+    provide_context(CapabilitiesContext {
+        capabilities: capabilities.into(),
+    });
 
     Effect::new(move |_| {
         let Some(frame) = ws.canvas_frame.get() else {

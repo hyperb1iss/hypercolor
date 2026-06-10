@@ -257,6 +257,11 @@ pub struct StackSegment {
 
 /// A horizontal stacked bar — segments sized proportionally to their value.
 /// Includes a floating label row underneath showing values.
+///
+/// The DOM skeleton is stable: slots are keyed by index and only created
+/// or destroyed when the segment *count* changes (effectively never —
+/// callers feed a fixed phase list). Per-tick telemetry updates only
+/// re-patch each slot's style/title/value strings through indexed memos.
 #[component]
 pub fn StackedBar(
     #[prop(into)] segments: Signal<Vec<StackSegment>>,
@@ -267,22 +272,21 @@ pub fn StackedBar(
     #[prop(default = 28)]
     height: u32,
 ) -> impl IntoView {
-    let layout = Memo::new(move |_| {
+    let placed = Memo::new(move |_| {
         let segs = segments.get();
         let sum: f64 = segs.iter().map(|s| s.value.max(0.0)).sum();
         let total = total_override.filter(|t| *t > 0.0).unwrap_or(sum).max(1e-6);
         let mut cursor = 0.0_f64;
-        let placed: Vec<(StackSegment, f64, f64)> = segs
-            .into_iter()
+        segs.into_iter()
             .map(|seg| {
                 let w = (seg.value.max(0.0) / total) * 100.0;
                 let start = cursor;
                 cursor += w;
                 (seg, start, w)
             })
-            .collect();
-        (placed, total, sum)
+            .collect::<Vec<(StackSegment, f64, f64)>>()
     });
+    let slot_count = Memo::new(move |_| placed.with(Vec::len));
 
     view! {
         <div class="space-y-2" style="contain: layout paint">
@@ -290,19 +294,34 @@ pub fn StackedBar(
                 class="relative w-full rounded-md overflow-hidden bg-surface-overlay/40 border border-edge-subtle"
                 style=format!("height: {height}px")
             >
-                {move || {
-                    let (placed, _total, _sum) = layout.get();
-                    placed.into_iter().map(|(seg, start, width)| {
-                        let color = seg.color;
+                <For
+                    each=move || 0..slot_count.get()
+                    key=|index| *index
+                    children=move |index| {
+                        let slot_style = Memo::new(move |_| {
+                            placed.with(|slots| {
+                                slots.get(index).map_or_else(String::new, |(seg, start, width)| {
+                                    let color = seg.color;
+                                    format!(
+                                        "left: {start:.3}%; width: {width:.3}%; \
+                                         background: linear-gradient(180deg, {color}cc, {color}66); \
+                                         box-shadow: inset 0 -1px 0 rgba(0,0,0,0.25), 0 0 8px {color}22"
+                                    )
+                                })
+                            })
+                        });
+                        let slot_title = Memo::new(move |_| {
+                            placed.with(|slots| {
+                                slots.get(index).map_or_else(String::new, |(seg, _, _)| {
+                                    format!("{}: {:.2} ms", seg.label, seg.value)
+                                })
+                            })
+                        });
                         view! {
                             <div
                                 class="absolute top-0 bottom-0 group"
-                                style=format!(
-                                    "left: {start:.3}%; width: {width:.3}%; \
-                                     background: linear-gradient(180deg, {color}cc, {color}66); \
-                                     box-shadow: inset 0 -1px 0 rgba(0,0,0,0.25), 0 0 8px {color}22"
-                                )
-                                title=format!("{}: {:.2} ms", seg.label, seg.value)
+                                style=move || slot_style.get()
+                                title=move || slot_title.get()
                             >
                                 <div
                                     class="absolute inset-y-0 right-0 w-px"
@@ -310,34 +329,48 @@ pub fn StackedBar(
                                 />
                             </div>
                         }
-                    }).collect_view()
-                }}
+                    }
+                />
             </div>
             <div class="grid grid-cols-4 lg:grid-cols-8 gap-1.5">
-                {move || {
-                    let (placed, _total, _sum) = layout.get();
-                    placed.into_iter().map(|(seg, _start, _width)| {
-                        let label = seg.label;
-                        let color = seg.color;
-                        let val = seg.value;
+                <For
+                    each=move || 0..slot_count.get()
+                    key=|index| *index
+                    children=move |index| {
+                        // Label + color are fixed per slot; only the value
+                        // text changes per tick, so split the memos.
+                        let slot_meta = Memo::new(move |_| {
+                            placed.with(|slots| {
+                                slots.get(index).map(|(seg, _, _)| (seg.label, seg.color))
+                            })
+                        });
+                        let slot_value = Memo::new(move |_| {
+                            placed.with(|slots| {
+                                slots.get(index).map_or(0.0, |(seg, _, _)| seg.value)
+                            })
+                        });
                         view! {
                             <div class="flex items-center gap-1.5 min-w-0">
                                 <span
                                     class="w-2 h-2 rounded-sm shrink-0"
-                                    style=format!("background: {color}; box-shadow: 0 0 6px {color}55")
+                                    style=move || {
+                                        slot_meta.get().map_or_else(String::new, |(_, color)| {
+                                            format!("background: {color}; box-shadow: 0 0 6px {color}55")
+                                        })
+                                    }
                                 />
                                 <div class="min-w-0 flex-1">
                                     <div class="text-[9px] font-mono uppercase tracking-[0.1em] text-fg-tertiary truncate">
-                                        {label}
+                                        {move || slot_meta.get().map(|(label, _)| label)}
                                     </div>
                                     <div class="text-[10px] tabular-nums text-fg-secondary">
-                                        {format!("{val:.2} ms")}
+                                        {move || format!("{:.2} ms", slot_value.get())}
                                     </div>
                                 </div>
                             </div>
                         }
-                    }).collect_view()
-                }}
+                    }
+                />
             </div>
         </div>
     }
@@ -384,174 +417,295 @@ const PHASE_COLORS: [&str; 7] = [
     "#8b85a0", // overhead — muted lavender
 ];
 
+/// Shared per-tick geometry for the waterfall: vertical scale, budget
+/// line placement, and whether the budget line is in view.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct WaterfallScale {
+    scale: f32,
+    budget: f32,
+    budget_in_range: bool,
+    budget_y_pct: f32,
+}
+
+/// Compute the waterfall's vertical scale from the tallest column and the
+/// frame budget. Scale to data with a 0.2ms floor so sub-millisecond
+/// frames still read on screen; extend to include budget only when we're
+/// actually pushing it.
+fn waterfall_scale(max_total: f32, budget: f32) -> WaterfallScale {
+    let data_scale = (max_total * 1.25).max(0.2);
+    let scale = if max_total >= budget * 0.5 {
+        data_scale.max(budget * 1.05)
+    } else {
+        data_scale
+    };
+    let budget_in_range = budget <= scale * 1.02;
+    let budget_y_pct = if budget_in_range {
+        100.0 - (budget / scale * 100.0).clamp(0.0, 100.0)
+    } else {
+        0.0
+    };
+    WaterfallScale {
+        scale,
+        budget,
+        budget_in_range,
+        budget_y_pct,
+    }
+}
+
+/// Pre-formatted style strings for one waterfall column — the column
+/// container plus its seven phase segments (bottom→top, [`PHASE_COLORS`]
+/// order). Zero-duration phases keep an empty style string: a zero-height
+/// absolutely-positioned div paints nothing, exactly like the segment not
+/// being rendered at all.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct WaterfallColumnStyles {
+    container: String,
+    title: String,
+    segments: [String; 7],
+}
+
+fn waterfall_column_styles(
+    frame: PhaseFrame,
+    index: usize,
+    count: usize,
+    scale: f32,
+) -> WaterfallColumnStyles {
+    let total = frame.total().max(1e-6);
+    let col_h_pct = (frame.total() / scale * 100.0).clamp(0.0, 100.0);
+    let is_latest = index + 1 == count;
+    // Older frames fade subtly so the eye tracks newest data
+    let age_opacity = 0.45 + 0.55 * (index as f32 / count.max(1) as f32);
+    let glow = if is_latest {
+        "filter: drop-shadow(0 0 6px rgba(128, 255, 234, 0.55));"
+    } else {
+        ""
+    };
+
+    let segs: [f32; 7] = [
+        frame.input,
+        frame.producer,
+        frame.compose,
+        frame.sample,
+        frame.output,
+        frame.publish,
+        frame.overhead,
+    ];
+
+    let mut cursor = 0.0_f32;
+    let mut segments: [String; 7] = Default::default();
+    for (phase_idx, v) in segs.iter().enumerate() {
+        if *v <= 0.0 {
+            continue;
+        }
+        let seg_h_pct = (v / total * 100.0).clamp(0.0, 100.0);
+        let bottom_pct = cursor;
+        cursor += seg_h_pct;
+        let color = PHASE_COLORS[phase_idx];
+        segments[phase_idx] = format!(
+            "bottom: {bottom_pct:.2}%; \
+             height: {seg_h_pct:.2}%; \
+             background: linear-gradient(180deg, {color}ee, {color}cc); \
+             box-shadow: inset 0 -1px 0 rgba(0,0,0,0.25)"
+        );
+    }
+
+    WaterfallColumnStyles {
+        container: format!("height: {col_h_pct:.2}%; opacity: {age_opacity:.2}; {glow}"),
+        title: format!("frame {index}: {:.2} ms total", frame.total()),
+        segments,
+    }
+}
+
 /// Rolling stacked-column waterfall of frame phase timings. Newest sample
 /// sits on the right and the view scrolls left as frames arrive. Auto-
 /// scales to the tallest column in view, with a budget line that only
 /// renders when it's within range.
+///
+/// The DOM skeleton is stable: column slots (each with seven segment
+/// divs) are keyed by ring-buffer index and only created while the buffer
+/// fills; once full, every metrics tick re-patches per-slot style strings
+/// through indexed memos instead of rebuilding ~60×7 nodes.
 #[component]
 pub fn PhaseWaterfall(
     #[prop(into)] frames: Signal<Vec<PhaseFrame>>,
     #[prop(into)] budget_ms: Signal<f64>,
     #[prop(default = 128)] height: u32,
 ) -> impl IntoView {
+    let scale_info = Memo::new(move |_| {
+        let budget = budget_ms.get().max(0.1) as f32;
+        let max_total = frames.with(|fs| fs.iter().map(|f| f.total()).fold(0.0_f32, f32::max));
+        waterfall_scale(max_total, budget)
+    });
+    let column_count = Memo::new(move |_| frames.with(Vec::len));
+
     view! {
         <div class="space-y-2" style="contain: layout paint">
-            {move || {
-                let fs = frames.get();
-                let budget = budget_ms.get().max(0.1) as f32;
+            <div
+                class="relative w-full rounded-md bg-surface-overlay/30 border border-edge-subtle/40 overflow-hidden"
+                style=format!("height: {height}px")
+            >
+                // Subtle horizontal grid — 25 / 50 / 75% reference lines
+                <div class="absolute inset-x-0 top-1/4 h-px bg-edge-subtle/20 pointer-events-none" />
+                <div class="absolute inset-x-0 top-1/2 h-px bg-edge-subtle/20 pointer-events-none" />
+                <div class="absolute inset-x-0 top-3/4 h-px bg-edge-subtle/20 pointer-events-none" />
 
-                let max_total = fs.iter().map(|f| f.total()).fold(0.0_f32, f32::max);
-                // Scale to data with a 0.2ms floor so sub-millisecond frames
-                // still read on screen. Extend to include budget only when
-                // we're actually pushing it.
-                let data_scale = (max_total * 1.25).max(0.2);
-                let scale = if max_total >= budget * 0.5 {
-                    data_scale.max(budget * 1.05)
-                } else {
-                    data_scale
-                };
-                let budget_in_range = budget <= scale * 1.02;
-                let budget_y_pct = if budget_in_range {
-                    100.0 - (budget / scale * 100.0).clamp(0.0, 100.0)
-                } else {
-                    0.0
-                };
-
-                let n = fs.len();
-                let last_idx = n.saturating_sub(1);
-
-                view! {
+                // Budget reference line
+                <Show when=move || scale_info.with(|s| s.budget_in_range)>
                     <div
-                        class="relative w-full rounded-md bg-surface-overlay/30 border border-edge-subtle/40 overflow-hidden"
-                        style=format!("height: {height}px")
-                    >
-                        // Subtle horizontal grid — 25 / 50 / 75% reference lines
-                        <div class="absolute inset-x-0 top-1/4 h-px bg-edge-subtle/20 pointer-events-none" />
-                        <div class="absolute inset-x-0 top-1/2 h-px bg-edge-subtle/20 pointer-events-none" />
-                        <div class="absolute inset-x-0 top-3/4 h-px bg-edge-subtle/20 pointer-events-none" />
+                        class="absolute inset-x-0 h-px pointer-events-none"
+                        style=move || {
+                            let budget_y_pct = scale_info.with(|s| s.budget_y_pct);
+                            format!(
+                                "top: {budget_y_pct:.2}%; \
+                                 background: repeating-linear-gradient(to right, var(--color-electric-yellow) 0 4px, transparent 4px 8px); \
+                                 opacity: 0.55"
+                            )
+                        }
+                    />
+                </Show>
 
-                        // Budget reference line
-                        {budget_in_range.then(|| view! {
-                            <div
-                                class="absolute inset-x-0 h-px pointer-events-none"
-                                style=format!(
-                                    "top: {budget_y_pct:.2}%; \
-                                     background: repeating-linear-gradient(to right, var(--color-electric-yellow) 0 4px, transparent 4px 8px); \
-                                     opacity: 0.55"
-                                )
-                            />
-                        })}
-
-                        // Columns — flex so they share width evenly
-                        <div class="absolute inset-0 flex items-end gap-[1px] px-1 pb-0.5">
-                            {fs.into_iter().enumerate().map(|(i, f)| {
-                                let total = f.total().max(1e-6);
-                                let col_h_pct = (f.total() / scale * 100.0).clamp(0.0, 100.0);
-                                let is_latest = i == last_idx;
-                                // Older frames fade subtly so the eye tracks newest data
-                                let age_opacity = 0.45 + 0.55 * (i as f32 / n.max(1) as f32);
-                                let glow = if is_latest {
-                                    "filter: drop-shadow(0 0 6px rgba(128, 255, 234, 0.55));"
-                                } else {
-                                    ""
-                                };
-
-                                let segs: [f32; 7] = [
-                                    f.input,
-                                    f.producer,
-                                    f.compose,
-                                    f.sample,
-                                    f.output,
-                                    f.publish,
-                                    f.overhead,
-                                ];
-
-                                let mut cursor = 0.0_f32;
-                                let segments_view = segs.iter().enumerate()
-                                    .filter(|(_, v)| **v > 0.0)
-                                    .map(|(phase_idx, v)| {
-                                        let seg_h_pct = (v / total * 100.0).clamp(0.0, 100.0);
-                                        let bottom_pct = cursor;
-                                        cursor += seg_h_pct;
-                                        let color = PHASE_COLORS[phase_idx];
-                                        view! {
-                                            <div
-                                                class="absolute inset-x-0"
-                                                style=format!(
-                                                    "bottom: {bottom_pct:.2}%; \
-                                                     height: {seg_h_pct:.2}%; \
-                                                     background: linear-gradient(180deg, {color}ee, {color}cc); \
-                                                     box-shadow: inset 0 -1px 0 rgba(0,0,0,0.25)"
-                                                )
-                                            />
-                                        }
-                                    }).collect_view();
-
-                                view! {
-                                    <div
-                                        class="flex-1 relative min-w-0"
-                                        style=format!(
-                                            "height: {col_h_pct:.2}%; opacity: {age_opacity:.2}; {glow}"
-                                        )
-                                        title=format!("frame {}: {:.2} ms total", i, f.total())
-                                    >
-                                        {segments_view}
-                                    </div>
-                                }
-                            }).collect_view()}
-                        </div>
-
-                        // Scale label (top-left) + budget annotation (top-right)
-                        <div class="absolute top-1 left-2 right-2 flex items-center justify-between pointer-events-none text-[9px] font-mono tabular-nums">
-                            <span class="text-fg-tertiary/50">
-                                {format!("{scale:.2} ms")}
-                            </span>
-                            {if budget_in_range {
-                                view! {
-                                    <span class="text-electric-yellow/60">
-                                        {format!("budget {budget:.1}ms")}
-                                    </span>
-                                }.into_any()
-                            } else {
-                                view! {
-                                    <span class="text-electric-yellow/60">
-                                        {format!("budget {budget:.1}ms · headroom")}
-                                    </span>
-                                }.into_any()
-                            }}
-                        </div>
-                    </div>
-
-                    // Phase legend row — dots + labels
-                    <div class="flex items-center flex-wrap gap-x-3 gap-y-1 text-[9px] font-mono uppercase tracking-[0.08em] text-fg-tertiary">
-                        {["input", "producer", "compose", "sample", "output", "publish", "overhead"]
-                            .iter()
-                            .enumerate()
-                            .map(|(i, label)| {
-                                let color = PHASE_COLORS[i];
-                                view! {
-                                    <div class="flex items-center gap-1">
-                                        <span
-                                            class="w-1.5 h-1.5 rounded-sm"
-                                            style=format!("background: {color}; box-shadow: 0 0 4px {color}")
+                // Columns — flex so they share width evenly
+                <div class="absolute inset-0 flex items-end gap-[1px] px-1 pb-0.5">
+                    <For
+                        each=move || 0..column_count.get()
+                        key=|index| *index
+                        children=move |index| {
+                            let column = Memo::new(move |_| {
+                                let scale = scale_info.with(|s| s.scale);
+                                let count = column_count.get();
+                                frames.with(|fs| {
+                                    fs.get(index).copied().map_or_else(
+                                        WaterfallColumnStyles::default,
+                                        |frame| waterfall_column_styles(frame, index, count, scale),
+                                    )
+                                })
+                            });
+                            view! {
+                                <div
+                                    class="flex-1 relative min-w-0"
+                                    style=move || column.with(|c| c.container.clone())
+                                    title=move || column.with(|c| c.title.clone())
+                                >
+                                    {(0..PHASE_COLORS.len()).map(|phase_idx| view! {
+                                        <div
+                                            class="absolute inset-x-0"
+                                            style=move || column.with(|c| c.segments[phase_idx].clone())
                                         />
-                                        <span>{*label}</span>
-                                    </div>
-                                }
-                            }).collect_view()}
-                    </div>
-                }
-            }}
+                                    }).collect_view()}
+                                </div>
+                            }
+                        }
+                    />
+                </div>
+
+                // Scale label (top-left) + budget annotation (top-right)
+                <div class="absolute top-1 left-2 right-2 flex items-center justify-between pointer-events-none text-[9px] font-mono tabular-nums">
+                    <span class="text-fg-tertiary/50">
+                        {move || scale_info.with(|s| format!("{:.2} ms", s.scale))}
+                    </span>
+                    <span class="text-electric-yellow/60">
+                        {move || scale_info.with(|s| if s.budget_in_range {
+                            format!("budget {:.1}ms", s.budget)
+                        } else {
+                            format!("budget {:.1}ms · headroom", s.budget)
+                        })}
+                    </span>
+                </div>
+            </div>
+
+            // Phase legend row — dots + labels (fully static)
+            <div class="flex items-center flex-wrap gap-x-3 gap-y-1 text-[9px] font-mono uppercase tracking-[0.08em] text-fg-tertiary">
+                {["input", "producer", "compose", "sample", "output", "publish", "overhead"]
+                    .iter()
+                    .enumerate()
+                    .map(|(i, label)| {
+                        let color = PHASE_COLORS[i];
+                        view! {
+                            <div class="flex items-center gap-1">
+                                <span
+                                    class="w-1.5 h-1.5 rounded-sm"
+                                    style=format!("background: {color}; box-shadow: 0 0 4px {color}")
+                                />
+                                <span>{*label}</span>
+                            </div>
+                        }
+                    }).collect_view()}
+            </div>
         </div>
     }
 }
 
 // ── Distribution bar (percentile markers) ────────────────────────────
 
+/// Shared per-tick geometry for the distribution bars: horizontal scale
+/// and budget-line placement.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct DistributionScale {
+    scale: f64,
+    budget: f64,
+    budget_in_range: bool,
+    budget_pct: f64,
+}
+
+/// One percentile marker row — static skeleton with reactive fill / budget
+/// tick / value text, so per-tick updates only re-patch style strings.
+#[component]
+fn DistributionMarker(
+    label: &'static str,
+    #[prop(into)] value: Signal<f64>,
+    color: &'static str,
+    scale_info: Memo<DistributionScale>,
+) -> impl IntoView {
+    let fill_style = Memo::new(move |_| {
+        let p = scale_info.with(|s| (value.get() / s.scale * 100.0).clamp(0.0, 100.0));
+        format!(
+            "transform: scaleX({:.4}); \
+             background: linear-gradient(90deg, {color}44, {color}ff); \
+             box-shadow: 0 0 8px {color}66",
+            p / 100.0
+        )
+    });
+
+    view! {
+        <div class="relative h-5">
+            <div class="absolute inset-y-[7px] inset-x-0 rounded-full bg-surface-overlay/60 border border-edge-subtle/60" />
+            <div
+                class="absolute inset-y-[7px] left-0 w-full origin-left rounded-full transition-transform duration-300 will-change-transform"
+                style=move || fill_style.get()
+            />
+            <Show when=move || scale_info.with(|s| s.budget_in_range)>
+                <div
+                    class="absolute inset-y-0 w-px"
+                    style=move || {
+                        let budget_pct = scale_info.with(|s| s.budget_pct);
+                        format!(
+                            "left: {budget_pct:.2}%; \
+                             background: repeating-linear-gradient(to bottom, var(--color-electric-yellow) 0 2px, transparent 2px 5px); \
+                             opacity: 0.8"
+                        )
+                    }
+                />
+            </Show>
+            <div class="absolute inset-y-0 left-2 flex items-center text-[9px] font-mono uppercase tracking-[0.1em] text-fg-tertiary">
+                {label}
+            </div>
+            <div
+                class="absolute inset-y-0 right-2 flex items-center text-[10px] font-mono tabular-nums"
+                style=format!("color: {color}")
+            >
+                {move || format!("{:.2} ms", value.get())}
+            </div>
+        </div>
+    }
+}
+
 /// Horizontal percentile bars for avg / p95 / p99 / max. Auto-scales to
 /// the largest percentile so sub-millisecond data remains readable. The
 /// budget line is only drawn when it falls inside the zoomed range —
 /// otherwise it's shown as an off-chart annotation at the top.
+///
+/// The four marker rows are a fixed DOM skeleton; each metrics tick only
+/// updates the fill transform, budget tick position, and value text.
 #[component]
 pub fn DistributionBar(
     #[prop(into)] avg: Signal<f64>,
@@ -560,85 +714,55 @@ pub fn DistributionBar(
     #[prop(into)] max: Signal<f64>,
     #[prop(into)] budget: Signal<f64>,
 ) -> impl IntoView {
+    let scale_info = Memo::new(move |_| {
+        let a = avg.get();
+        let b95 = p95.get();
+        let b99 = p99.get();
+        let mx = max.get();
+        let bg = budget.get().max(0.1);
+
+        // Scale to the largest percentile with headroom. Floor at 0.2ms
+        // so sub-millisecond data doesn't hug the left edge.
+        let data_max = mx.max(b99).max(b95).max(a);
+        let data_scale = (data_max * 1.25).max(0.2);
+        // Only extend to include budget if we're actually pushing it.
+        let scale = if data_max >= bg * 0.5 {
+            data_scale.max(bg * 1.05)
+        } else {
+            data_scale
+        };
+        let budget_in_range = bg <= scale * 1.02;
+        let budget_pct = (bg / scale * 100.0).clamp(0.0, 100.0);
+        DistributionScale {
+            scale,
+            budget: bg,
+            budget_in_range,
+            budget_pct,
+        }
+    });
+
     view! {
         <div class="space-y-2">
-            {move || {
-                let a = avg.get();
-                let b95 = p95.get();
-                let b99 = p99.get();
-                let mx = max.get();
-                let bg = budget.get().max(0.1);
-
-                // Scale to the largest percentile with headroom. Floor at 0.2ms
-                // so sub-millisecond data doesn't hug the left edge.
-                let data_max = mx.max(b99).max(b95).max(a);
-                let data_scale = (data_max * 1.25).max(0.2);
-                // Only extend to include budget if we're actually pushing it.
-                let scale = if data_max >= bg * 0.5 {
-                    data_scale.max(bg * 1.05)
-                } else {
-                    data_scale
-                };
-                let budget_in_range = bg <= scale * 1.02;
-                let pct = move |v: f64| (v / scale * 100.0).clamp(0.0, 100.0);
-                let budget_pct = pct(bg);
-
-                let marker = move |label: &'static str, v: f64, color: &'static str| {
-                    let p = pct(v);
-                    view! {
-                        <div class="relative h-5">
-                            <div class="absolute inset-y-[7px] inset-x-0 rounded-full bg-surface-overlay/60 border border-edge-subtle/60" />
-                            <div
-                                class="absolute inset-y-[7px] left-0 w-full origin-left rounded-full transition-transform duration-300 will-change-transform"
-                                style=format!(
-                                    "transform: scaleX({:.4}); \
-                                     background: linear-gradient(90deg, {color}44, {color}ff); \
-                                     box-shadow: 0 0 8px {color}66",
-                                    p / 100.0
-                                )
-                            />
-                            {budget_in_range.then(|| view! {
-                                <div
-                                    class="absolute inset-y-0 w-px"
-                                    style=format!(
-                                        "left: {budget_pct:.2}%; \
-                                         background: repeating-linear-gradient(to bottom, var(--color-electric-yellow) 0 2px, transparent 2px 5px); \
-                                         opacity: 0.8"
-                                    )
-                                />
-                            })}
-                            <div class="absolute inset-y-0 left-2 flex items-center text-[9px] font-mono uppercase tracking-[0.1em] text-fg-tertiary">
-                                {label}
-                            </div>
-                            <div
-                                class="absolute inset-y-0 right-2 flex items-center text-[10px] font-mono tabular-nums"
-                                style=format!("color: {color}")
-                            >
-                                {format!("{v:.2} ms")}
-                            </div>
-                        </div>
-                    }
-                };
-
-                view! {
-                    {marker("avg", a, "var(--color-success-green)")}
-                    {marker("p95", b95, "var(--color-neon-cyan)")}
-                    {marker("p99", b99, "var(--color-electric-purple)")}
-                    {marker("max", mx, "var(--color-coral)")}
-                    <div class="flex items-center justify-between text-[9px] font-mono tabular-nums px-0.5 pt-0.5">
-                        <span class="text-fg-tertiary/60">"0 ms"</span>
-                        {if budget_in_range {
-                            view! { <span class="text-fg-tertiary/60">{format!("{scale:.2} ms")}</span> }.into_any()
-                        } else {
-                            view! {
-                                <span class="text-electric-yellow/70">
-                                    {format!("scale {scale:.2}ms · budget {bg:.1}ms (headroom)")}
-                                </span>
-                            }.into_any()
-                        }}
-                    </div>
-                }
-            }}
+            <DistributionMarker label="avg" value=avg color="var(--color-success-green)" scale_info=scale_info />
+            <DistributionMarker label="p95" value=p95 color="var(--color-neon-cyan)" scale_info=scale_info />
+            <DistributionMarker label="p99" value=p99 color="var(--color-electric-purple)" scale_info=scale_info />
+            <DistributionMarker label="max" value=max color="var(--color-coral)" scale_info=scale_info />
+            <div class="flex items-center justify-between text-[9px] font-mono tabular-nums px-0.5 pt-0.5">
+                <span class="text-fg-tertiary/60">"0 ms"</span>
+                <span class=move || {
+                    scale_info.with(|s| if s.budget_in_range {
+                        "text-fg-tertiary/60"
+                    } else {
+                        "text-electric-yellow/70"
+                    })
+                }>
+                    {move || scale_info.with(|s| if s.budget_in_range {
+                        format!("{:.2} ms", s.scale)
+                    } else {
+                        format!("scale {:.2}ms · budget {:.1}ms (headroom)", s.scale, s.budget)
+                    })}
+                </span>
+            </div>
         </div>
     }
 }
