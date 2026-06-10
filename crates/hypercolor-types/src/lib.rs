@@ -10,6 +10,7 @@ pub mod canvas;
 pub mod config;
 pub mod controls;
 pub mod device;
+pub mod display;
 pub mod effect;
 pub mod event;
 pub mod layer;
