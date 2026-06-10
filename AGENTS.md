@@ -116,6 +116,14 @@ single definition of the daemon's binary WebSocket wire format: the daemon's
 encoders conform to it (round-trip tested in `daemon/src/api/ws/tests.rs`), and
 both the web UI and the TUI decode with it. Never hand-roll those frame layouts.
 
+`hypercolor-types::api` is the single definition of the REST request/response
+contracts for the devices, scenes, zones, and effects domains (plus the shared
+`Pagination`); the daemon serializes these types and both UIs deserialize them.
+Diagnostic telemetry (system status internals, metrics) deliberately stays
+daemon-local — clients consume tolerant subsets. When adding or changing an
+endpoint in a shared domain, change the type in `hypercolor-types::api`, never
+a hand-mirrored copy.
+
 ## Architecture
 
 ### Render Pipeline

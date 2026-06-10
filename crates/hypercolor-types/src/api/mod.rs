@@ -12,6 +12,11 @@
 //!   change what the daemon serializes.
 //! - Everything derives `Clone + PartialEq` so reactive UIs can
 //!   equality-gate on whole responses.
+//!
+//! Scope: the state-bearing and mutating contracts live here. Diagnostic
+//! telemetry (system status internals, metrics payloads) deliberately
+//! does NOT — those shapes move fast with perf work, and clients consume
+//! tolerant subsets of them by design.
 
 pub mod common;
 pub mod devices;
