@@ -163,6 +163,60 @@ export default face('${slug}', {}, { ${options} }, (ctx) => {
         }
     })
 
+    test('faces emit the data-sources meta from media/net/lighting opt-ins', async () => {
+        const tempRoot = mkdtempSync(join(tmpdir(), 'hypercolor-face-sources-'))
+        const outDir = join(tempRoot, 'dist')
+        try {
+            const writeFace = (slug: string, options: string) => {
+                const entryDir = join(tempRoot, slug)
+                mkdirSync(entryDir, { recursive: true })
+                const entryPath = join(entryDir, 'main.ts')
+                writeFileSync(
+                    entryPath,
+                    `import { face } from ${JSON.stringify(SDK_ALIAS)}
+
+export default face('${slug}', {}, { ${options} }, (ctx) => {
+    return (_time, _controls, _sensors, _audio, data) => {
+        void data.media.available()
+        void ctx.width
+    }
+})
+`,
+                )
+                return entryPath
+            }
+
+            const [withSources] = await buildArtifacts({
+                entryPaths: [writeFace('sources-probe', 'media: true, net: true')],
+                outDir,
+                sdkAliasPath: SDK_ALIAS,
+            })
+            expect(withSources.metadata.dataSources).toEqual(['media', 'net'])
+            const sourcesHtml = readFileSync(withSources.outputPath, 'utf8')
+            expect(sourcesHtml).toContain('<meta data-sources="media,net" />')
+
+            const [lightingOnly] = await buildArtifacts({
+                entryPaths: [writeFace('lighting-probe', 'lighting: true')],
+                outDir,
+                sdkAliasPath: SDK_ALIAS,
+            })
+            expect(lightingOnly.metadata.dataSources).toEqual(['lighting'])
+            expect(readFileSync(lightingOnly.outputPath, 'utf8')).toContain(
+                '<meta data-sources="lighting" />',
+            )
+
+            const [bare] = await buildArtifacts({
+                entryPaths: [writeFace('bare-probe', "description: 'control'")],
+                outDir,
+                sdkAliasPath: SDK_ALIAS,
+            })
+            expect(bare.metadata.dataSources).toEqual([])
+            expect(readFileSync(bare.outputPath, 'utf8')).not.toContain('data-sources')
+        } finally {
+            rmSync(tempRoot, { force: true, recursive: true })
+        }
+    })
+
     test('emits asset control media kind metadata', async () => {
         const tempRoot = mkdtempSync(join(tmpdir(), 'hypercolor-asset-control-'))
         const entryDir = join(tempRoot, 'media-mask')

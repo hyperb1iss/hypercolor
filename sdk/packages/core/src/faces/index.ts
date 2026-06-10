@@ -1,11 +1,18 @@
 export type {
     AudioAccessor,
     FaceContext,
+    FaceDataSources,
     FaceDisplayClass,
     FaceDisplayInfo,
     FaceDisplayShape,
     FaceUpdateFn,
     InjectedDisplayDescriptor,
+    LightingAccessor,
+    LightingInfo,
+    MediaAccessor,
+    MediaInfo,
+    NetAccessor,
+    NetInfo,
     SensorAccessor,
     SensorReading,
 } from './context'

@@ -33,7 +33,12 @@ import { deriveLabel } from '../controls/names'
 import { isControlSpec } from '../controls/specs'
 import type { DesignBasis } from '../math/scale'
 import type { FaceContext, FaceUpdateFn } from './context'
-import { buildAudioAccessor, buildSensorAccessor, resolveDisplayInfo } from './context'
+import {
+    buildAudioAccessor,
+    buildFaceDataSources,
+    buildSensorAccessor,
+    resolveDisplayInfo,
+} from './context'
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -48,6 +53,13 @@ export interface FaceOptions {
     /** Opt into live audio analysis (`engine.audio`). Marks the built
      *  face audio-reactive so the renderer injects per-frame data. */
     audio?: boolean
+    /** Opt into now-playing data (`engine.media`) via the MPRIS source. */
+    media?: boolean
+    /** Opt into network throughput data (`engine.net`), refreshed at 1 Hz. */
+    net?: boolean
+    /** Opt into rig lighting state (`engine.lighting`): scene, effects,
+     *  dominant colors. */
+    lighting?: boolean
     /** Per-shape setup overrides. Resolution: exact shape variant, then
      *  the base setup function. */
     variants?: FaceVariants
@@ -145,6 +157,9 @@ interface FaceDef {
     designBasis?: DesignBasis
     circular?: boolean
     audio?: boolean
+    media?: boolean
+    net?: boolean
+    lighting?: boolean
     presets?: FacePresetDef[]
 }
 
@@ -284,12 +299,13 @@ function startFaceLoop(
     const updateFn = setupFn(ctx)
     const sensorAccessor = buildSensorAccessor()
     const audioAccessor = buildAudioAccessor()
+    const dataSources = buildFaceDataSources()
 
     const renderAt = (time: number): void => {
         ctx.ctx.clearRect(0, 0, ctx.width, ctx.height)
         const controls = resolveControlValues(resolvedControls)
         void loadFaceFonts(fontControls, controls)
-        updateFn(time, controls, sensorAccessor, audioAccessor)
+        updateFn(time, controls, sensorAccessor, audioAccessor, dataSources)
     }
 
     const host = window as Window & { __hypercolorRenderHostFrame?: () => void }
@@ -342,7 +358,10 @@ export function face(name: string, controls: ControlMap, options: FaceOptions, s
             controls,
             description: options.description,
             designBasis,
+            lighting: options.lighting ?? false,
+            media: options.media ?? false,
             name,
+            net: options.net ?? false,
             presets: options.presets,
             resolvedControls: resolved,
             type: 'face',

@@ -155,6 +155,7 @@ export {
 export type {
     AudioAccessor,
     FaceContext,
+    FaceDataSources,
     FaceDisplayClass,
     FaceDisplayInfo,
     FaceDisplayShape,
@@ -162,6 +163,12 @@ export type {
     FaceUpdateFn,
     FaceVariants,
     InjectedDisplayDescriptor,
+    LightingAccessor,
+    LightingInfo,
+    MediaAccessor,
+    MediaInfo,
+    NetAccessor,
+    NetInfo,
     SensorAccessor,
     SensorReading,
 } from './faces'

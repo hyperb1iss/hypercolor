@@ -1,7 +1,14 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 
 import type { InjectedDisplayDescriptor } from '../src/faces/context'
-import { injectedDisplayDescriptor, resolveDisplayInfo } from '../src/faces/context'
+import {
+    buildFaceDataSources,
+    buildLightingAccessor,
+    buildMediaAccessor,
+    buildNetAccessor,
+    injectedDisplayDescriptor,
+    resolveDisplayInfo,
+} from '../src/faces/context'
 import { __testing } from '../src/faces/face-fn'
 
 function descriptor(overrides: Partial<InjectedDisplayDescriptor> = {}): InjectedDisplayDescriptor {
@@ -119,5 +126,128 @@ describe('variant selection', () => {
         for (const shape of ['round', 'square', 'wide', 'tall'] as const) {
             expect(__testing.resolveVariantSetup(undefined, shape, base)).toBe(base)
         }
+    })
+})
+
+describe('typed data-source accessors', () => {
+    afterEach(() => {
+        Reflect.deleteProperty(globalThis, 'engine')
+    })
+
+    test('media accessor returns the unavailable default without engine.media', () => {
+        const media = buildMediaAccessor()
+        expect(media.available()).toBe(false)
+        expect(media.state()).toEqual({
+            album: '',
+            artDataUrl: null,
+            artist: '',
+            available: false,
+            durationMs: 0,
+            player: '',
+            playing: false,
+            positionMs: 0,
+            track: '',
+        })
+        expect(media.progress()).toBe(0)
+    })
+
+    test('media accessor mirrors engine.media and clamps progress', () => {
+        Reflect.set(globalThis, 'engine', {
+            media: {
+                album: 'SANCTUARY',
+                artDataUrl: 'data:image/jpeg;base64,QQ==',
+                artist: 'TIGEREYES',
+                available: true,
+                durationMs: 200_000,
+                player: 'org.mpris.MediaPlayer2.spotify',
+                playing: true,
+                positionMs: 50_000,
+                track: 'SANCTUARY',
+            },
+        })
+
+        const media = buildMediaAccessor()
+        expect(media.available()).toBe(true)
+        expect(media.state().artDataUrl).toBe('data:image/jpeg;base64,QQ==')
+        expect(media.progress()).toBeGreaterThanOrEqual(0.25)
+        expect(media.progress()).toBeLessThanOrEqual(1)
+    })
+
+    test('media position extrapolates while playing and holds while paused', async () => {
+        const engineMedia = {
+            album: '',
+            artDataUrl: null,
+            artist: '',
+            available: true,
+            durationMs: 200_000,
+            player: '',
+            playing: true,
+            positionMs: 10_000,
+            track: 'A',
+        }
+        Reflect.set(globalThis, 'engine', { media: engineMedia })
+
+        const media = buildMediaAccessor()
+        const first = media.positionMs()
+        await new Promise((resolve) => setTimeout(resolve, 25))
+        const second = media.positionMs()
+        expect(second).toBeGreaterThan(first)
+
+        engineMedia.playing = false
+        expect(media.positionMs()).toBe(10_000)
+    })
+
+    test('media position rebaselines on track change', async () => {
+        const engineMedia = {
+            available: true,
+            durationMs: 100_000,
+            playing: true,
+            positionMs: 90_000,
+            track: 'A',
+        }
+        Reflect.set(globalThis, 'engine', { media: engineMedia })
+
+        const media = buildMediaAccessor()
+        await new Promise((resolve) => setTimeout(resolve, 15))
+        expect(media.positionMs()).toBeGreaterThan(90_000)
+
+        engineMedia.track = 'B'
+        engineMedia.positionMs = 0
+        expect(media.positionMs()).toBeLessThan(50)
+    })
+
+    test('net accessor mirrors engine.net with zero defaults', () => {
+        const net = buildNetAccessor()
+        expect(net.state()).toEqual({ iface: '', rxBps: 0, txBps: 0 })
+
+        Reflect.set(globalThis, 'engine', {
+            net: { iface: 'enp5s0', rxBps: 1_250_000, txBps: 64_000 },
+        })
+        expect(net.state()).toEqual({ iface: 'enp5s0', rxBps: 1_250_000, txBps: 64_000 })
+    })
+
+    test('lighting accessor mirrors engine.lighting and filters junk', () => {
+        const lighting = buildLightingAccessor()
+        expect(lighting.state()).toEqual({ dominantColors: [], effectNames: [], sceneName: null })
+
+        Reflect.set(globalThis, 'engine', {
+            lighting: {
+                dominantColors: ['#e135ff', 42, '#80ffea'],
+                effectNames: ['Neon Clock'],
+                sceneName: 'Studio',
+            },
+        })
+        expect(lighting.state()).toEqual({
+            dominantColors: ['#e135ff', '#80ffea'],
+            effectNames: ['Neon Clock'],
+            sceneName: 'Studio',
+        })
+    })
+
+    test('buildFaceDataSources bundles all three accessors', () => {
+        const data = buildFaceDataSources()
+        expect(data.media.available()).toBe(false)
+        expect(data.net.state().rxBps).toBe(0)
+        expect(data.lighting.state().sceneName).toBeNull()
     })
 })

@@ -186,12 +186,83 @@ export interface AudioAccessor {
     available(): boolean
 }
 
+// ── Typed data sources (engine.media / engine.net / engine.lighting) ───
+
+/** Now-playing snapshot mirrored from `engine.media`. */
+export interface MediaInfo {
+    available: boolean
+    playing: boolean
+    track: string
+    artist: string
+    album: string
+    /** `data:image/jpeg;base64,...` album art, or null when the track has none. */
+    artDataUrl: string | null
+    positionMs: number
+    durationMs: number
+    /** Bus identity of the tracked player (e.g. `org.mpris.MediaPlayer2.spotify`). */
+    player: string
+}
+
+/** Typed reader over `engine.media`, safe when the source is absent. */
+export interface MediaAccessor {
+    /** Latest snapshot; the unavailable default when no source is injected. */
+    state(): MediaInfo
+
+    /** Whether a media player is currently reachable. */
+    available(): boolean
+
+    /**
+     * Playback position in milliseconds, extrapolated between the host's
+     * coarse position updates so progress bars glide instead of stepping.
+     */
+    positionMs(): number
+
+    /** Playback progress in [0, 1]; 0 when duration is unknown. */
+    progress(): number
+}
+
+/** Network throughput snapshot mirrored from `engine.net`. */
+export interface NetInfo {
+    /** Receive rate in bytes per second. */
+    rxBps: number
+    /** Transmit rate in bytes per second. */
+    txBps: number
+    /** Interface the rates were measured on. */
+    iface: string
+}
+
+/** Typed reader over `engine.net`, zeros when the source is absent. */
+export interface NetAccessor {
+    state(): NetInfo
+}
+
+/** Rig lighting snapshot mirrored from `engine.lighting`. */
+export interface LightingInfo {
+    sceneName: string | null
+    effectNames: string[]
+    /** Hex `#rrggbb` strings, ready for canvas fill styles. */
+    dominantColors: string[]
+}
+
+/** Typed reader over `engine.lighting`, empty when the source is absent. */
+export interface LightingAccessor {
+    state(): LightingInfo
+}
+
+/** All typed data sources handed to a face's update function. */
+export interface FaceDataSources {
+    media: MediaAccessor
+    net: NetAccessor
+    lighting: LightingAccessor
+}
+
 /** Signature of the update function returned by a face's setup function. */
 export type FaceUpdateFn = (
     time: number,
     controls: Record<string, unknown>,
     sensors: SensorAccessor,
     audio: AudioAccessor,
+    data: FaceDataSources,
 ) => void
 
 // ── SensorAccessor implementation ──────────────────────────────────────
@@ -227,6 +298,131 @@ export function buildAudioAccessor(): AudioAccessor {
         data(): AudioData {
             return getAudioData()
         },
+    }
+}
+
+function engineRecord(key: string): Record<string, unknown> | undefined {
+    if (typeof engine === 'undefined' || engine === null) return undefined
+    const value = (engine as unknown as Record<string, unknown>)[key]
+    return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : undefined
+}
+
+function asString(value: unknown, fallback = ''): string {
+    return typeof value === 'string' ? value : fallback
+}
+
+function asNumber(value: unknown): number {
+    return typeof value === 'number' && Number.isFinite(value) ? value : 0
+}
+
+function asStringArray(value: unknown): string[] {
+    if (!Array.isArray(value)) return []
+    return value.filter((item): item is string => typeof item === 'string')
+}
+
+const UNAVAILABLE_MEDIA: MediaInfo = {
+    album: '',
+    artDataUrl: null,
+    artist: '',
+    available: false,
+    durationMs: 0,
+    player: '',
+    playing: false,
+    positionMs: 0,
+    track: '',
+}
+
+function readMediaInfo(): MediaInfo {
+    const media = engineRecord('media')
+    if (!media) return UNAVAILABLE_MEDIA
+    return {
+        album: asString(media.album),
+        artDataUrl: typeof media.artDataUrl === 'string' ? media.artDataUrl : null,
+        artist: asString(media.artist),
+        available: media.available === true,
+        durationMs: asNumber(media.durationMs),
+        player: asString(media.player),
+        playing: media.playing === true,
+        positionMs: asNumber(media.positionMs),
+        track: asString(media.track),
+    }
+}
+
+function nowMs(): number {
+    return typeof performance !== 'undefined' && typeof performance.now === 'function'
+        ? performance.now()
+        : Date.now()
+}
+
+/** Build a MediaAccessor over the current engine.media state. */
+export function buildMediaAccessor(): MediaAccessor {
+    let lastRawPositionMs = -1
+    let lastRawTrack = ''
+    let baselineAtMs = 0
+
+    const extrapolatedPositionMs = (state: MediaInfo): number => {
+        if (state.positionMs !== lastRawPositionMs || state.track !== lastRawTrack) {
+            lastRawPositionMs = state.positionMs
+            lastRawTrack = state.track
+            baselineAtMs = nowMs()
+        }
+        if (!state.playing) return state.positionMs
+        const extrapolated = state.positionMs + (nowMs() - baselineAtMs)
+        return state.durationMs > 0 ? Math.min(extrapolated, state.durationMs) : extrapolated
+    }
+
+    return {
+        available(): boolean {
+            return readMediaInfo().available
+        },
+        positionMs(): number {
+            return extrapolatedPositionMs(readMediaInfo())
+        },
+        progress(): number {
+            const state = readMediaInfo()
+            if (state.durationMs <= 0) return 0
+            return Math.max(0, Math.min(1, extrapolatedPositionMs(state) / state.durationMs))
+        },
+        state(): MediaInfo {
+            return readMediaInfo()
+        },
+    }
+}
+
+/** Build a NetAccessor over the current engine.net state. */
+export function buildNetAccessor(): NetAccessor {
+    return {
+        state(): NetInfo {
+            const net = engineRecord('net')
+            return {
+                iface: asString(net?.iface),
+                rxBps: asNumber(net?.rxBps),
+                txBps: asNumber(net?.txBps),
+            }
+        },
+    }
+}
+
+/** Build a LightingAccessor over the current engine.lighting state. */
+export function buildLightingAccessor(): LightingAccessor {
+    return {
+        state(): LightingInfo {
+            const lighting = engineRecord('lighting')
+            return {
+                dominantColors: asStringArray(lighting?.dominantColors),
+                effectNames: asStringArray(lighting?.effectNames),
+                sceneName: typeof lighting?.sceneName === 'string' ? lighting.sceneName : null,
+            }
+        },
+    }
+}
+
+/** Build the full typed data-source bundle for a face update loop. */
+export function buildFaceDataSources(): FaceDataSources {
+    return {
+        lighting: buildLightingAccessor(),
+        media: buildMediaAccessor(),
+        net: buildNetAccessor(),
     }
 }
 

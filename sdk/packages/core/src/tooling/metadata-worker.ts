@@ -85,6 +85,14 @@ function kindFromType(type: RegisteredArtifactDef['type']): ArtifactKind {
     return type === 'face' ? 'face' : 'effect'
 }
 
+function dataSourcesFromDef(def: RegisteredArtifactDef): string[] {
+    const sources: string[] = []
+    if (def.media) sources.push('media')
+    if (def.net) sources.push('net')
+    if (def.lighting) sources.push('lighting')
+    return sources
+}
+
 async function loadMetadata(entryPath: string): Promise<ExtractedArtifactMetadata> {
     const entryUrl = Bun.pathToFileURL(resolve(entryPath)).href
     const g = runtimeGlobals()
@@ -127,6 +135,7 @@ async function loadMetadata(entryPath: string): Promise<ExtractedArtifactMetadat
             builtinId: def.builtinId,
             category: def.category,
             controls: toBuildControls(def),
+            dataSources: dataSourcesFromDef(def),
             description: def.description ?? '',
             kind: kindFromType(def.type),
             name: def.name,

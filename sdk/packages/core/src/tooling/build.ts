@@ -112,8 +112,13 @@ function faceHtml(args: {
     name: string
     presets: string[]
     audioReactive: boolean
+    dataSources: string[]
 }): string {
     const presetBlock = args.presets.length > 0 ? `\n${args.presets.join('\n')}` : ''
+    const dataSourcesTag =
+        args.dataSources.length > 0
+            ? `\n    <meta data-sources="${escapeAttr(args.dataSources.join(','))}" />`
+            : ''
 
     return `<!DOCTYPE html>
 <html lang="en" style="width:100%;height:100%;background:transparent;">
@@ -124,7 +129,7 @@ function faceHtml(args: {
     <title>${escapeAttr(args.name)}</title>
     <meta description="${escapeAttr(args.description)}" />
     <meta publisher="${escapeAttr(args.author)}" />
-    <meta audio-reactive="${args.audioReactive}" />
+    <meta audio-reactive="${args.audioReactive}" />${dataSourcesTag}
     <meta category="display" />
 ${args.controlMetas.join('\n')}${presetBlock}
   </head>
@@ -189,6 +194,7 @@ export async function buildArtifactDocument(options: {
                   audioReactive: metadata.audioReactive,
                   author: metadata.author,
                   controlMetas,
+                  dataSources: metadata.dataSources,
                   description: metadata.description,
                   jsBundle,
                   name: metadata.name,
