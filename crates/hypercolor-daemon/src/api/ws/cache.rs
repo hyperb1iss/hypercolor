@@ -16,6 +16,9 @@ use serde::Serialize;
 use serde::ser::SerializeSeq;
 use tracing::{trace, warn};
 
+use hypercolor_leptos_ext::ws::{
+    PreviewFrameChannel, SPECTRUM_FRAME_TAG, ZONE_PREVIEW_FRAME_HEADER_LEN, ZONE_PREVIEW_FRAME_TAG,
+};
 use hypercolor_types::canvas::PublishedSurfaceStorageIdentity;
 use hypercolor_types::scene::{SceneId, ZoneId};
 
@@ -29,15 +32,19 @@ use crate::display_frames::DisplayFrameSnapshot;
 /// Maximum number of events that can be buffered per WebSocket client.
 pub(super) const WS_BUFFER_SIZE: usize = 64;
 pub(super) const WS_CANVAS_BYTES_PER_PIXEL_RGBA: u64 = 4;
-pub(super) const WS_CANVAS_HEADER: u8 = 0x03;
-pub(super) const WS_SCREEN_CANVAS_HEADER: u8 = 0x05;
-pub(super) const WS_WEB_VIEWPORT_CANVAS_HEADER: u8 = 0x06;
+// Header tags are defined once, in the shared wire codec
+// (`hypercolor-leptos-ext::ws`) that the web UI and TUI decode with —
+// drift between encode and decode is a compile error here and a
+// round-trip test failure in `tests.rs`.
+pub(super) const WS_CANVAS_HEADER: u8 = PreviewFrameChannel::Canvas.tag();
+pub(super) const WS_SCREEN_CANVAS_HEADER: u8 = PreviewFrameChannel::ScreenCanvas.tag();
+pub(super) const WS_WEB_VIEWPORT_CANVAS_HEADER: u8 = PreviewFrameChannel::WebViewportCanvas.tag();
 /// Binary header byte for per-display preview JPEG frames streamed by
 /// the `display_preview` channel. Body layout matches the canvas frame:
 /// `[frame_number:u32LE][timestamp:u32LE][width:u16LE][height:u16LE][format:u8=2 (JPEG)][jpeg_payload]`.
-pub(super) const WS_DISPLAY_PREVIEW_HEADER: u8 = 0x07;
-pub(super) const WS_ZONE_PREVIEW_HEADER: u8 = 0x08;
-pub(super) const WS_ZONE_PREVIEW_HEADER_LEN: usize = 46;
+pub(super) const WS_DISPLAY_PREVIEW_HEADER: u8 = PreviewFrameChannel::DisplayPreview.tag();
+pub(super) const WS_ZONE_PREVIEW_HEADER: u8 = ZONE_PREVIEW_FRAME_TAG;
+pub(super) const WS_ZONE_PREVIEW_HEADER_LEN: usize = ZONE_PREVIEW_FRAME_HEADER_LEN;
 const WS_CANVAS_BINARY_CACHE_CAPACITY: usize = 32;
 const WS_DISPLAY_PREVIEW_PAYLOAD_CACHE_CAPACITY: usize = 64;
 /// Display-preview payloads larger than this skip the shared cache and are
@@ -495,7 +502,7 @@ pub(super) fn encode_spectrum_binary(
     let bin_count = usize::from(bin_count_u8);
 
     let mut out = vec![0; 27_usize.saturating_add(bin_count.saturating_mul(4))];
-    out[0] = 0x02;
+    out[0] = SPECTRUM_FRAME_TAG;
     out[1..5].copy_from_slice(&spectrum.timestamp_ms.to_le_bytes());
     out[5] = bin_count_u8;
     out[6..10].copy_from_slice(&sanitize_f32(spectrum.level).to_le_bytes());

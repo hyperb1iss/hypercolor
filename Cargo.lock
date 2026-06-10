@@ -5197,6 +5197,7 @@ dependencies = [
  "dirs 6.0.0",
  "flate2",
  "futures-util",
+ "hypercolor-leptos-ext",
  "hypercolor-types",
  "image",
  "opaline",

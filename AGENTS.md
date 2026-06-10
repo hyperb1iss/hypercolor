@@ -105,10 +105,16 @@ graph TD
     D --> CC & DL
     APP[hypercolor-app] --> D & TRAY
     T --> UI[hypercolor-ui<br><i>excluded from workspace</i>]
+    LE[hypercolor-leptos-ext] --> UI & D & TUI
 ```
 
 Do NOT create cross-crate circular dependencies. `hypercolor-hal` must NEVER depend
 on `core` (would be circular). Network drivers depend on `driver-api`, not on `core` directly.
+
+`hypercolor-leptos-ext::ws` (feature `ws-core`, pure — no leptos/wasm) is the
+single definition of the daemon's binary WebSocket wire format: the daemon's
+encoders conform to it (round-trip tested in `daemon/src/api/ws/tests.rs`), and
+both the web UI and the TUI decode with it. Never hand-roll those frame layouts.
 
 ## Architecture
 

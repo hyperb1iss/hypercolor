@@ -2992,3 +2992,135 @@ fn screen_canvas_binary_encoder_uses_distinct_header() {
     assert_eq!(encoded[0], WS_SCREEN_CANVAS_HEADER);
     assert_eq!(&encoded[14..17], &[90, 80, 70]);
 }
+
+// ── Shared wire-codec conformance ────────────────────────────────────
+//
+// The web UI and TUI decode binary payloads with the shared codec in
+// `hypercolor-leptos-ext::ws`. These round-trips pin the daemon's
+// hand-tuned encoders to that single wire definition — any drift fails
+// here instead of breaking clients at runtime.
+
+use hypercolor_leptos_ext::ws as shared_wire;
+
+#[test]
+fn canvas_payload_decodes_with_shared_codec() {
+    let mut canvas = Canvas::new(2, 1);
+    canvas.set_pixel(0, 0, Rgba::new(10, 20, 30, 255));
+    canvas.set_pixel(1, 0, Rgba::new(40, 50, 60, 200));
+    let frame = CanvasFrame::from_canvas(&canvas, 7, 99);
+
+    let encoded = encode_canvas_binary_with_header(&frame, CanvasFormat::Rgb, WS_CANVAS_HEADER);
+    let decoded = shared_wire::PreviewFrame::decode(&encoded)
+        .expect("shared codec must decode daemon canvas payloads");
+
+    assert_eq!(decoded.channel, shared_wire::PreviewFrameChannel::Canvas);
+    assert_eq!(decoded.frame_number, 7);
+    assert_eq!(decoded.timestamp_ms, 99);
+    assert_eq!(decoded.width, 2);
+    assert_eq!(decoded.height, 1);
+    assert_eq!(decoded.format, shared_wire::PreviewPixelFormat::Rgb);
+    assert_eq!(decoded.payload.as_ref(), &[10, 20, 30, 40, 50, 60]);
+}
+
+#[test]
+fn screen_and_web_viewport_payloads_decode_with_shared_codec() {
+    let mut canvas = Canvas::new(1, 1);
+    canvas.set_pixel(0, 0, Rgba::new(1, 2, 3, 255));
+    let frame = CanvasFrame::from_canvas(&canvas, 1, 2);
+
+    for (header, channel) in [
+        (
+            WS_SCREEN_CANVAS_HEADER,
+            shared_wire::PreviewFrameChannel::ScreenCanvas,
+        ),
+        (
+            WS_WEB_VIEWPORT_CANVAS_HEADER,
+            shared_wire::PreviewFrameChannel::WebViewportCanvas,
+        ),
+    ] {
+        let encoded = encode_canvas_binary_with_header(&frame, CanvasFormat::Rgba, header);
+        let decoded = shared_wire::PreviewFrame::decode(&encoded)
+            .expect("shared codec must decode daemon preview payloads");
+        assert_eq!(decoded.channel, channel);
+        assert_eq!(decoded.format, shared_wire::PreviewPixelFormat::Rgba);
+    }
+}
+
+#[test]
+fn zone_preview_payload_decodes_with_shared_codec() {
+    let mut canvas = Canvas::new(2, 1);
+    canvas.set_pixel(0, 0, Rgba::new(10, 20, 30, 255));
+    canvas.set_pixel(1, 0, Rgba::new(40, 50, 60, 200));
+    let scene_id = SceneId::new();
+    let zone_id = ZoneId::new();
+    let frame = ZonePreviewFrame {
+        scene_id,
+        zone_id,
+        frame: CanvasFrame::from_canvas(&canvas, 7, 99),
+    };
+
+    let encoded = try_encode_cached_zone_preview_binary_scaled(&frame, CanvasFormat::Rgb, 0, 0)
+        .expect("zone preview payload should encode");
+    let decoded = shared_wire::ZonePreviewFrame::decode(&encoded)
+        .expect("shared codec must decode daemon zone preview payloads");
+
+    assert_eq!(&decoded.scene_id, scene_id.0.as_bytes());
+    assert_eq!(&decoded.zone_id, zone_id.0.as_bytes());
+    assert_eq!(decoded.frame_number, 7);
+    assert_eq!(decoded.timestamp_ms, 99);
+    assert_eq!(decoded.width, 2);
+    assert_eq!(decoded.height, 1);
+    assert_eq!(decoded.format, shared_wire::PreviewPixelFormat::Rgb);
+    assert_eq!(decoded.payload.as_ref(), &[10, 20, 30, 40, 50, 60]);
+}
+
+#[test]
+fn display_preview_payload_decodes_with_shared_codec() {
+    let _guard = WS_CACHE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    reset_ws_payload_caches();
+
+    let snapshot = display_preview_snapshot(64, 5);
+    let payload = cached_display_preview_payload(&snapshot);
+    let decoded = shared_wire::PreviewFrame::decode(&payload)
+        .expect("shared codec must decode daemon display preview payloads");
+
+    assert_eq!(
+        decoded.channel,
+        shared_wire::PreviewFrameChannel::DisplayPreview
+    );
+    assert_eq!(decoded.format, shared_wire::PreviewPixelFormat::Jpeg);
+    assert_eq!(decoded.width, 256);
+    assert_eq!(decoded.height, 256);
+    assert_eq!(decoded.payload.len(), 64);
+}
+
+#[test]
+fn spectrum_payload_decodes_with_shared_codec() {
+    let spectrum = SpectrumData {
+        timestamp_ms: 77,
+        level: 0.5,
+        bass: 0.4,
+        mid: 0.3,
+        treble: 0.2,
+        beat: true,
+        beat_confidence: 0.9,
+        bpm: None,
+        bins: vec![0.25; 64],
+    };
+
+    let encoded = encode_spectrum_binary(&spectrum, 16);
+    let decoded = shared_wire::SpectrumFrame::decode(&encoded)
+        .expect("shared codec must decode daemon spectrum payloads");
+
+    assert_eq!(decoded.timestamp_ms, 77);
+    assert!((decoded.level - 0.5).abs() < f32::EPSILON);
+    assert!((decoded.bass - 0.4).abs() < f32::EPSILON);
+    assert!((decoded.mid - 0.3).abs() < f32::EPSILON);
+    assert!((decoded.treble - 0.2).abs() < f32::EPSILON);
+    assert!(decoded.beat);
+    assert!((decoded.beat_confidence - 0.9).abs() < f32::EPSILON);
+    assert_eq!(decoded.bins.len(), 16);
+    assert!(decoded.bins.iter().all(|bin| (bin - 0.25).abs() < 1e-6));
+}

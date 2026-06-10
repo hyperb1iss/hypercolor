@@ -14,6 +14,9 @@ workspace = true
 
 [dependencies]
 hypercolor-types = { workspace = true }
+# Shared daemon WebSocket wire codec (same decoder the web UI uses) —
+# ws-core is pure (bytes + thiserror), no leptos/wasm.
+hypercolor-leptos-ext = { path = "../hypercolor-leptos-ext", default-features = false, features = ["ws-core"] }
 
 # TUI
 ratatui = { workspace = true }

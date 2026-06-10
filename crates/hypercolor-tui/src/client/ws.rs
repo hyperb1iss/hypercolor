@@ -1,11 +1,17 @@
 //! WebSocket client for the Hypercolor daemon.
 //!
 //! Subscribes to canvas frames, spectrum data, and events over a persistent
-//! WebSocket connection. Binary frames are decoded inline.
+//! WebSocket connection. Binary frames are decoded inline through the shared
+//! wire codec in `hypercolor-leptos-ext` — the same one the web UI uses, so
+//! the format has exactly one definition.
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
+use hypercolor_leptos_ext::ws::{
+    PreviewFrame, PreviewFrameChannel, PreviewPixelFormat, SPECTRUM_FRAME_TAG, SpectrumFrame,
+    ZONE_PREVIEW_FRAME_TAG,
+};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 
@@ -70,7 +76,7 @@ pub async fn connect(
         };
 
         let decoded = match msg {
-            Message::Binary(data) => decode_binary_owned(data),
+            Message::Binary(data) => decode_binary(&data),
             Message::Text(text) => decode_json(&text),
             Message::Close(_) => Some(WsMessage::Closed),
             Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => None,
@@ -108,94 +114,50 @@ fn percent_encode(input: &str) -> String {
     encoded
 }
 
-/// Decode a binary WebSocket message by its type header byte.
-pub fn decode_binary(data: &[u8]) -> Option<WsMessage> {
-    if data.is_empty() {
-        return None;
-    }
-
-    match data[0] {
-        0x03 => decode_canvas(data),
-        0x02 => decode_spectrum(data),
-        _ => {
-            tracing::trace!("Unknown binary message type: 0x{:02x}", data[0]);
-            None
-        }
-    }
-}
-
-fn decode_binary_owned(data: Bytes) -> Option<WsMessage> {
-    if data.is_empty() {
-        return None;
-    }
-
-    match data[0] {
-        0x03 => decode_canvas_owned(data),
-        0x02 => decode_spectrum(&data),
-        _ => {
-            tracing::trace!("Unknown binary message type: 0x{:02x}", data[0]);
-            None
-        }
-    }
-}
-
-/// Decode a canvas frame (type 0x03).
+/// Decode a binary WebSocket message via the shared wire codec.
 ///
-/// Layout:
-///   - 0:     header (0x03)
-///   - 1-4:   `frame_number` (u32 LE)
-///   - 5-8:   `timestamp_ms` (u32 LE)
-///   - 9-10:  width (u16 LE)
-///   - 11-12: height (u16 LE)
-///   - 13:    format (0=RGB, 1=RGBA)
-///   - 14+:   pixel data
-pub fn decode_canvas(data: &[u8]) -> Option<WsMessage> {
-    decode_canvas_impl(data, None)
+/// Canvas frames are decoded zero-copy (the pixel payload is a refcounted
+/// slice of the message). Preview channels the TUI doesn't render yet
+/// (screen/web-viewport/display/zone previews) are recognized and dropped.
+pub fn decode_binary(data: &Bytes) -> Option<WsMessage> {
+    match *data.first()? {
+        SPECTRUM_FRAME_TAG => decode_spectrum(data),
+        ZONE_PREVIEW_FRAME_TAG => {
+            tracing::trace!("Ignoring zone preview frame (not consumed yet)");
+            None
+        }
+        _ => decode_preview(data),
+    }
 }
 
-fn decode_canvas_owned(data: Bytes) -> Option<WsMessage> {
-    decode_canvas_impl(data.as_ref(), Some(data.clone()))
-}
+fn decode_preview(data: &Bytes) -> Option<WsMessage> {
+    let frame = match PreviewFrame::decode_bytes(data) {
+        Ok(frame) => frame,
+        Err(error) => {
+            tracing::trace!(%error, "Failed to decode binary preview frame");
+            return None;
+        }
+    };
 
-fn decode_canvas_impl(data: &[u8], owned: Option<Bytes>) -> Option<WsMessage> {
-    if data.len() < 14 {
+    if frame.channel != PreviewFrameChannel::Canvas {
+        tracing::trace!(channel = ?frame.channel, "Ignoring non-canvas preview frame");
         return None;
     }
 
-    let frame_number = u32::from_le_bytes([data[1], data[2], data[3], data[4]]);
-    let timestamp_ms = u32::from_le_bytes([data[5], data[6], data[7], data[8]]);
-    let width = u16::from_le_bytes([data[9], data[10]]);
-    let height = u16::from_le_bytes([data[11], data[12]]);
-    let format = data[13];
-
-    let bpp: usize = if format == 0 { 3 } else { 4 };
-    let expected_len = 14 + usize::from(width) * usize::from(height) * bpp;
-
-    if data.len() < expected_len {
-        tracing::trace!(
-            "Canvas frame too short: got {} bytes, expected {expected_len}",
-            data.len()
-        );
-        return None;
-    }
-
-    let pixel_data = &data[14..expected_len];
-
-    // If RGBA, strip alpha to get RGB
-    let pixels = if format == 0 {
-        owned.map_or_else(
-            || Bytes::copy_from_slice(pixel_data),
-            |data| data.slice(14..expected_len),
-        )
-    } else {
-        Bytes::from(rgba_to_rgb(pixel_data))
+    let pixels = match frame.format {
+        PreviewPixelFormat::Rgb => frame.payload,
+        PreviewPixelFormat::Rgba => Bytes::from(rgba_to_rgb(&frame.payload)),
+        PreviewPixelFormat::Jpeg => {
+            tracing::trace!("Ignoring JPEG canvas frame (TUI subscribes raw)");
+            return None;
+        }
     };
 
     Some(WsMessage::Canvas(CanvasFrame {
-        frame_number,
-        timestamp_ms,
-        width,
-        height,
+        frame_number: frame.frame_number,
+        timestamp_ms: frame.timestamp_ms,
+        width: frame.width,
+        height: frame.height,
         pixels,
     }))
 }
@@ -208,54 +170,25 @@ fn rgba_to_rgb(pixel_data: &[u8]) -> Vec<u8> {
     rgb
 }
 
-/// Decode a spectrum snapshot (type 0x02).
-///
-/// Layout:
-///   - 0:     header (0x02)
-///   - 1-4:   `timestamp_ms` (u32 LE)
-///   - 5:     `bin_count` (u8)
-///   - 6-9:   level (f32 LE)
-///   - 10-13: bass (f32 LE)
-///   - 14-17: mid (f32 LE)
-///   - 18-21: treble (f32 LE)
-///   - 22:    beat (u8, 0 or 1)
-///   - 23-26: `beat_confidence` (f32 LE)
-///   - 27+:   bins (`bin_count` * f32 LE)
-pub fn decode_spectrum(data: &[u8]) -> Option<WsMessage> {
-    if data.len() < 27 {
-        return None;
-    }
-
-    let timestamp_ms = u32::from_le_bytes([data[1], data[2], data[3], data[4]]);
-    let bin_count = usize::from(data[5]);
-    let level = f32::from_le_bytes([data[6], data[7], data[8], data[9]]);
-    let bass = f32::from_le_bytes([data[10], data[11], data[12], data[13]]);
-    let mid = f32::from_le_bytes([data[14], data[15], data[16], data[17]]);
-    let treble = f32::from_le_bytes([data[18], data[19], data[20], data[21]]);
-    let beat = data[22] != 0;
-    let beat_confidence = f32::from_le_bytes([data[23], data[24], data[25], data[26]]);
-
-    let bins_start = 27;
-    let bins_end = bins_start + bin_count * 4;
-    let bins = if data.len() >= bins_end {
-        data[bins_start..bins_end]
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-            .collect()
-    } else {
-        Vec::new()
+fn decode_spectrum(data: &Bytes) -> Option<WsMessage> {
+    let frame = match SpectrumFrame::decode(data) {
+        Ok(frame) => frame,
+        Err(error) => {
+            tracing::trace!(%error, "Failed to decode binary spectrum frame");
+            return None;
+        }
     };
 
     Some(WsMessage::Spectrum(SpectrumSnapshot {
-        timestamp_ms,
-        level,
-        bass,
-        mid,
-        treble,
-        beat,
-        beat_confidence,
+        timestamp_ms: frame.timestamp_ms,
+        level: frame.level,
+        bass: frame.bass,
+        mid: frame.mid,
+        treble: frame.treble,
+        beat: frame.beat,
+        beat_confidence: frame.beat_confidence,
         bpm: None, // BPM not in the binary spectrum format
-        bins,
+        bins: frame.bins,
     }))
 }
 
