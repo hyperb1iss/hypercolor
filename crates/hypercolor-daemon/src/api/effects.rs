@@ -11,7 +11,6 @@ use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 use tokio::fs;
 use tracing::{debug, info, warn};
-use utoipa::ToSchema;
 
 use hypercolor_core::bus::CanvasFrame;
 use hypercolor_core::effect::{
@@ -23,7 +22,7 @@ use hypercolor_types::canvas::Canvas;
 use hypercolor_types::device::{DriverModuleKind, DriverTransportKind};
 use hypercolor_types::effect::{
     ControlBinding, ControlDefinition, ControlValue, EffectCategory, EffectId, EffectMetadata,
-    EffectSource, PresetTemplate,
+    EffectSource,
 };
 use hypercolor_types::event::{
     ChangeTrigger, EffectRef, EffectStopReason, EventControlValue, FrameData, HypercolorEvent,
@@ -55,32 +54,14 @@ pub(crate) async fn invalidate_active_render_groups_after_effect_registry_update
     scene_manager.invalidate_active_render_groups();
 }
 
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct ApplyEffectRequest {
-    #[schema(value_type = Object)]
-    pub controls: Option<serde_json::Value>,
-    pub transition: Option<TransitionRequest>,
-    /// Optional preset ID to associate with the zone in the same
-    /// transaction as the effect start — lets the UI pass a remembered
-    /// preset selection without a follow-up round-trip. If `controls` is
-    /// also provided, the explicit controls win (they're presumed to
-    /// already carry the preset's values, possibly with user tweaks).
-    #[serde(default)]
-    pub preset_id: Option<String>,
-    /// Optional target zone (render-group id). Omitted applies the effect
-    /// to the scene's Primary zone — the legacy behavior. A non-Primary
-    /// zone id renders the effect into that zone instead, leaving its
-    /// layout and device assignment untouched.
-    #[serde(default)]
-    pub render_group: Option<String>,
-}
-
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct TransitionRequest {
-    #[serde(rename = "type")]
-    pub transition_type: Option<String>,
-    pub duration_ms: Option<u64>,
-}
+// Wire contracts live in hypercolor-types::api::effects — shared with the
+// web UI and the TUI.
+pub use hypercolor_types::api::effects::{
+    ActiveEffectResponse, ApplyEffectRequest, ApplyEffectResponse, ApplyTransitionResponse,
+    EffectDetailResponse, EffectLayoutApplyResult, EffectListResponse, EffectRefSummary,
+    EffectSummary, InstalledEffectResponse, LayoutLinkSummary, ResetControlsRequest,
+    TransitionRequest, UpdateCurrentControlsRequest,
+};
 
 #[derive(Debug, Clone, Copy)]
 struct AppliedTransition {
@@ -88,143 +69,9 @@ struct AppliedTransition {
     duration_ms: u64,
 }
 
-#[derive(Debug, Serialize, ToSchema)]
-pub struct EffectListResponse {
-    pub items: Vec<EffectSummary>,
-    pub pagination: super::devices::Pagination,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct EffectSummary {
-    pub id: String,
-    pub name: String,
-    pub description: String,
-    pub author: String,
-    pub category: String,
-    pub source: String,
-    pub runnable: bool,
-    pub tags: Vec<String>,
-    pub version: String,
-    pub audio_reactive: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cover_image_url: Option<String>,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct ActiveEffectResponse {
-    pub id: Option<String>,
-    pub name: Option<String>,
-    pub state: String,
-    pub controls: Vec<ControlDefinition>,
-    pub control_values: HashMap<String, ControlValue>,
-    pub active_preset_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub render_group_id: Option<String>,
-    /// Server-side version token for the group's controls. Clients
-    /// that want to use optimistic concurrency on the effect-id PATCH
-    /// endpoint echo this value back via `If-Match`. Idle responses
-    /// omit it (there's nothing to version).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub controls_version: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cover_image_url: Option<String>,
-}
-
-impl ActiveEffectResponse {
-    fn idle() -> Self {
-        Self {
-            id: None,
-            name: None,
-            state: "idle".to_owned(),
-            controls: Vec::new(),
-            control_values: HashMap::new(),
-            active_preset_id: None,
-            render_group_id: None,
-            controls_version: None,
-            cover_image_url: None,
-        }
-    }
-}
-
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct UpdateCurrentControlsRequest {
-    #[schema(value_type = Object)]
-    pub controls: Option<serde_json::Value>,
-}
-
 #[derive(Debug, Deserialize)]
 pub struct SetEffectLayoutRequest {
     pub layout_id: String,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct EffectDetailResponse {
-    pub id: String,
-    pub name: String,
-    pub description: String,
-    pub author: String,
-    pub category: String,
-    pub source: String,
-    pub runnable: bool,
-    pub tags: Vec<String>,
-    pub version: String,
-    pub audio_reactive: bool,
-    pub controls: Vec<ControlDefinition>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub presets: Vec<PresetTemplate>,
-    pub active_control_values: Option<HashMap<String, ControlValue>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cover_image_url: Option<String>,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct LayoutLinkSummary {
-    pub id: String,
-    pub name: String,
-    pub canvas_width: u32,
-    pub canvas_height: u32,
-    pub zone_count: usize,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct EffectLayoutApplyResult {
-    pub associated_layout_id: String,
-    pub resolved: bool,
-    pub applied: bool,
-    pub layout: Option<LayoutLinkSummary>,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct InstalledEffectResponse {
-    pub id: String,
-    pub name: String,
-    pub source: String,
-    pub path: String,
-    pub controls: usize,
-    pub presets: usize,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct EffectRefSummary {
-    pub id: String,
-    pub name: String,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct ApplyTransitionResponse {
-    #[serde(rename = "type")]
-    pub transition_type: String,
-    pub duration_ms: u64,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct ApplyEffectResponse {
-    pub effect: EffectRefSummary,
-    #[schema(value_type = Object)]
-    pub applied_controls: serde_json::Value,
-    pub layout: Option<EffectLayoutApplyResult>,
-    pub transition: ApplyTransitionResponse,
-    pub warnings: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -1349,13 +1196,6 @@ pub async fn set_current_control_binding(
         "control": control_id,
         "binding": normalized,
     }))
-}
-
-/// Optional body for `reset_controls` — scopes the reset to one zone.
-#[derive(Debug, Default, serde::Deserialize)]
-pub struct ResetControlsRequest {
-    /// Target zone (render-group id). Omitted resets the primary zone.
-    pub render_group: Option<String>,
 }
 
 /// `POST /api/v1/effects/current/reset` — Reset all controls on the active

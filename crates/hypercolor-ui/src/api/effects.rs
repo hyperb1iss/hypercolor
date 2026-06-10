@@ -1,6 +1,6 @@
 //! Effect-related API types and fetch functions.
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::collections::HashMap;
 
 use gloo_net::http::Request;
@@ -11,27 +11,14 @@ use super::client;
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
-/// Effect list item from `GET /api/v1/effects`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct EffectSummary {
-    pub id: String,
-    pub name: String,
-    pub description: String,
-    pub author: String,
-    pub category: String,
-    pub source: String,
-    pub runnable: bool,
-    pub tags: Vec<String>,
-    pub version: String,
-    #[serde(default)]
-    pub audio_reactive: bool,
-}
-
-/// Paginated effect list response.
-#[derive(Debug, Deserialize)]
-pub struct EffectListResponse {
-    pub items: Vec<EffectSummary>,
-}
+// Wire contracts are shared with the daemon (hypercolor-types::api::effects).
+// ActiveEffectResponse below stays UI-local: it is the non-optional
+// convenience shape derived from the shared wire response.
+use hypercolor_types::api::effects::ActiveEffectResponse as WireActiveEffectResponse;
+pub use hypercolor_types::api::effects::{
+    ApplyEffectRequest as ApplyEffectBody, EffectDetailResponse, EffectListResponse, EffectSummary,
+    InstalledEffectResponse,
+};
 
 /// Active effect response from `GET /api/v1/effects/active`.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -53,54 +40,6 @@ pub struct ActiveEffectResponse {
     /// `If-Match` on the effect-id PATCH endpoint.
     #[serde(default)]
     pub controls_version: Option<u64>,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-struct WireActiveEffectResponse {
-    pub id: Option<String>,
-    pub name: Option<String>,
-    pub state: String,
-    #[serde(default)]
-    pub controls: Vec<ControlDefinition>,
-    #[serde(default)]
-    pub control_values: HashMap<String, ControlValue>,
-    #[serde(default)]
-    pub active_preset_id: Option<String>,
-    #[serde(default)]
-    pub render_group_id: Option<String>,
-    #[serde(default)]
-    pub controls_version: Option<u64>,
-}
-
-/// Detailed effect payload from `GET /api/v1/effects/:id`.
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-pub struct EffectDetailResponse {
-    pub id: String,
-    pub name: String,
-    pub description: String,
-    pub author: String,
-    pub category: String,
-    pub source: String,
-    pub runnable: bool,
-    pub tags: Vec<String>,
-    pub version: String,
-    pub audio_reactive: bool,
-    #[serde(default)]
-    pub controls: Vec<ControlDefinition>,
-    #[serde(default)]
-    pub presets: Vec<PresetTemplate>,
-    #[serde(default)]
-    pub active_control_values: Option<HashMap<String, ControlValue>>,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-pub struct InstalledEffectResponse {
-    pub id: String,
-    pub name: String,
-    pub source: String,
-    pub path: String,
-    pub controls: usize,
-    pub presets: usize,
 }
 
 // ── Fetch Functions ─────────────────────────────────────────────────────────
@@ -160,21 +99,6 @@ pub async fn fetch_effect_detail(id: &str) -> Result<EffectDetailResponse, Strin
 pub async fn fetch_bundled_presets(id: &str) -> Result<Vec<PresetTemplate>, String> {
     let detail = fetch_effect_detail(id).await?;
     Ok(detail.presets)
-}
-
-/// Optional body for `apply_effect` — lets callers bake a remembered
-/// preset selection and control values into the initial apply request
-/// so the effect starts in its final state without a follow-up
-/// round-trip (which caused a brief defaults-flash).
-#[derive(Debug, Default, Serialize)]
-pub struct ApplyEffectBody {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub preset_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub controls: Option<serde_json::Value>,
-    /// Target zone (render-group id). Omitted applies to the default zone.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub render_group: Option<String>,
 }
 
 /// Apply an effect by ID or name. Pass `None` for a bare start; pass

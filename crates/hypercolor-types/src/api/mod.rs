@@ -15,6 +15,7 @@
 
 pub mod common;
 pub mod devices;
+pub mod effects;
 pub mod scenes;
 pub mod zones;
 

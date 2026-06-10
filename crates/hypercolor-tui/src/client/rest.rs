@@ -6,6 +6,11 @@ use futures_util::stream::{self, StreamExt};
 use hypercolor_types::api::devices::{
     DeviceListResponse as ApiDeviceListResponse, DeviceSummary as ApiDeviceSummary,
 };
+use hypercolor_types::api::effects::{
+    ActiveEffectResponse as ApiActiveEffectResponse, ApplyEffectRequest,
+    EffectDetailResponse as ApiEffectDetailResponse, EffectListResponse as ApiEffectListResponse,
+    EffectSummary as ApiEffectSummary, ResetControlsRequest,
+};
 use hypercolor_types::api::scenes::{
     ActiveSceneResponse as ApiActiveSceneResponse, SceneListResponse as ApiSceneListResponse,
 };
@@ -73,9 +78,9 @@ impl DaemonClient {
             fps_actual: 0.0,
             effect_name: active_effect
                 .as_ref()
-                .map(|effect| effect.name.clone())
+                .and_then(|effect| effect.name.clone())
                 .or(status.active_effect),
-            effect_id: active_effect.map(|effect| effect.id),
+            effect_id: active_effect.and_then(|effect| effect.id),
             scene_name: status.active_scene,
             scene_snapshot_locked: status.active_scene_snapshot_locked,
             profile_name: None,
@@ -86,7 +91,7 @@ impl DaemonClient {
 
     /// Fetch all available effects.
     pub async fn get_effects(&self) -> Result<Vec<EffectSummary>> {
-        let response: EffectListResponse = self.get_data("/effects").await?;
+        let response: ApiEffectListResponse = self.get_data("/effects").await?;
 
         let mut effects = stream::iter(response.items.into_iter().map(|summary| {
             let client = self.clone();
@@ -252,19 +257,14 @@ impl DaemonClient {
             self.base_url,
             path_segment(effect_id)
         );
-        let mut body = serde_json::Map::new();
-        if let Some(controls) = controls {
-            body.insert("controls".to_string(), controls.clone());
-        }
-        if let Some(zone_id) = render_group {
-            body.insert(
-                "render_group".to_string(),
-                serde_json::Value::String(zone_id.to_string()),
-            );
-        }
+        let body = ApplyEffectRequest {
+            controls: controls.cloned(),
+            render_group: render_group.map(ToOwned::to_owned),
+            ..ApplyEffectRequest::default()
+        };
         let response = self
             .auth_request(self.http.post(&url))
-            .json(&serde_json::Value::Object(body))
+            .json(&body)
             .send()
             .await
             .with_context(|| {
@@ -412,16 +412,12 @@ impl DaemonClient {
     /// resets the primary zone (legacy behavior).
     pub async fn reset_controls(&self, render_group: Option<&str>) -> Result<()> {
         let url = format!("{}/api/v1/effects/current/reset", self.base_url);
-        let mut body = serde_json::Map::new();
-        if let Some(zone_id) = render_group {
-            body.insert(
-                "render_group".to_string(),
-                serde_json::Value::String(zone_id.to_string()),
-            );
-        }
+        let body = ResetControlsRequest {
+            render_group: render_group.map(ToOwned::to_owned),
+        };
         let response = self
             .auth_request(self.http.post(&url))
-            .json(&serde_json::Value::Object(body))
+            .json(&body)
             .send()
             .await
             .context("Failed to reset controls")?;
@@ -499,11 +495,11 @@ impl DaemonClient {
         response_data(response).await
     }
 
-    async fn get_effect_detail(&self, effect_id: &str) -> Result<EffectDetailResponse> {
+    async fn get_effect_detail(&self, effect_id: &str) -> Result<ApiEffectDetailResponse> {
         self.get_data(&format!("/effects/{effect_id}")).await
     }
 
-    async fn get_active_effect(&self) -> Result<ActiveEffectResponse> {
+    async fn get_active_effect(&self) -> Result<ApiActiveEffectResponse> {
         self.get_data("/effects/active").await
     }
 
@@ -535,43 +531,6 @@ struct InvokeControlActionRequest {
 }
 
 #[derive(Debug, Deserialize)]
-struct EffectListResponse {
-    items: Vec<ApiEffectSummary>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ApiEffectSummary {
-    id: String,
-    name: String,
-    description: String,
-    author: String,
-    category: String,
-    source: String,
-    #[serde(default)]
-    audio_reactive: bool,
-    #[serde(default)]
-    tags: Vec<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct EffectDetailResponse {
-    id: String,
-    name: String,
-    description: String,
-    author: String,
-    category: String,
-    source: String,
-    #[serde(default)]
-    audio_reactive: bool,
-    #[serde(default)]
-    tags: Vec<String>,
-    #[serde(default)]
-    controls: Vec<ApiControlDefinition>,
-    #[serde(default)]
-    presets: Vec<ApiPresetTemplate>,
-}
-
-#[derive(Debug, Deserialize)]
 struct FavoriteListResponse {
     items: Vec<FavoriteSummaryResponse>,
 }
@@ -592,15 +551,9 @@ struct SystemStatusResponse {
     active_scene_snapshot_locked: bool,
 }
 
-#[derive(Debug, Deserialize)]
-struct ActiveEffectResponse {
-    id: String,
-    name: String,
-}
-
 fn map_effect_summary(
     summary: ApiEffectSummary,
-    detail: Option<EffectDetailResponse>,
+    detail: Option<ApiEffectDetailResponse>,
 ) -> EffectSummary {
     if let Some(detail) = detail {
         return EffectSummary {

@@ -13,6 +13,7 @@ fn effect(name: &str) -> EffectSummary {
         tags: vec!["cinematic".to_owned()],
         version: "1.0.0".to_owned(),
         audio_reactive: false,
+        cover_image_url: None,
     }
 }
 
