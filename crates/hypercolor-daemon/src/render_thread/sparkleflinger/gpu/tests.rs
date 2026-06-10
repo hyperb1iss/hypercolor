@@ -26,6 +26,7 @@ use super::{
     MEDIA_UPLOAD_TEXTURE_POOL_IDLE_FRAMES, MEDIA_UPLOAD_TEXTURE_RING_LEN, MediaTextureSourceKey,
     MediaUploadTextureKey, PendingPreviewMap, PendingPreviewReadback,
 };
+#[cfg(all(feature = "servo-gpu-import", target_os = "macos"))]
 use crate::performance::CompositorBackendKind;
 use crate::render_thread::producer_queue::{GpuTextureFrameOrigin, ProducerFrame};
 use crate::render_thread::sparkleflinger::gpu_sampling::GpuSamplingPlan;

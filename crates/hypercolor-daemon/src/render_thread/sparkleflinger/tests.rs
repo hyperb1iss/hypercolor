@@ -15,7 +15,6 @@ use super::{
 #[cfg(feature = "wgpu")]
 use super::{gpu_frame_without_cpu_fallback, new_preview_surface_pool};
 #[cfg(feature = "wgpu")]
-use crate::performance::CompositorBackendKind;
 use crate::render_thread::producer_queue::ProducerFrame;
 
 fn solid_canvas(color: Rgba) -> Canvas {

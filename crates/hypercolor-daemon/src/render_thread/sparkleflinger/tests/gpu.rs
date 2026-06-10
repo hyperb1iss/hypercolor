@@ -1,6 +1,9 @@
 use super::*;
 
 #[cfg(feature = "wgpu")]
+use crate::performance::CompositorBackendKind;
+
+#[cfg(feature = "wgpu")]
 #[test]
 fn sparkleflinger_uploads_canvas_as_gpu_texture_frame() {
     let Ok(mut sparkleflinger) = SparkleFlinger::new(RenderAccelerationMode::Gpu) else {

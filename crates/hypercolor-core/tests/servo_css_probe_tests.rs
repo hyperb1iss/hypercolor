@@ -205,11 +205,11 @@ fn run_probe(probe: &str, width: u32, height: u32) -> bool {
         let Ok(output) = renderer.render_output(&input) else {
             break;
         };
-        if let EffectRenderOutput::Cpu(canvas) = output {
-            if checks_pass(&canvas, &checks) {
-                passed = true;
-                break;
-            }
+        if let EffectRenderOutput::Cpu(canvas) = output
+            && checks_pass(&canvas, &checks)
+        {
+            passed = true;
+            break;
         }
         thread::sleep(Duration::from_millis(16));
     }
