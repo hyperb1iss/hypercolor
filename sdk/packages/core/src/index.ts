@@ -181,12 +181,26 @@ export {
 // ── Gauges ──────────────────────────────────────────────────────────────
 
 export type {
+    AnimatedArcGauge,
+    AnimatedBarGauge,
+    AnimatedRingGauge,
     ArcGaugeOptions,
     BarGaugeOptions,
+    GaugeAnimateOptions,
     RingGaugeOptions,
+    SparklineBand,
     SparklineOptions,
 } from './gauges'
-export { arcGauge, barGauge, ringGauge, sparkline, ValueHistory } from './gauges'
+export {
+    arcGauge,
+    barGauge,
+    createArcGauge,
+    createBarGauge,
+    createRingGauge,
+    ringGauge,
+    sparkline,
+    ValueHistory,
+} from './gauges'
 
 // ── Initialization ──────────────────────────────────────────────────────
 

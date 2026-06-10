@@ -5,6 +5,12 @@
  * Pair with `ValueHistory` for automatic rolling buffer management.
  */
 
+/** Color zone applied to line segments whose value reaches `min`. */
+export interface SparklineBand {
+    min: number
+    color: string
+}
+
 export interface SparklineOptions {
     /** Left edge. */
     x: number
@@ -26,21 +32,58 @@ export interface SparklineOptions {
     fill?: boolean
     /** Fill gradient opacity (default: 0.15). */
     fillOpacity?: number
+    /** Threshold color zones; segments take the color of the highest
+     *  band whose `min` their end value reaches. Overrides `color` for
+     *  the line, not the fill. */
+    bands?: SparklineBand[]
+    /** Fraction of the series revealed, 0–1 (default: 1). Drive with an
+     *  eased timeline progress for an animated draw-in. */
+    drawIn?: number
+}
+
+function bandColor(value: number, bands: SparklineBand[], fallback: string): string {
+    let chosen = fallback
+    let best = Number.NEGATIVE_INFINITY
+    for (const band of bands) {
+        if (value >= band.min && band.min >= best) {
+            best = band.min
+            chosen = band.color
+        }
+    }
+    return chosen
 }
 
 export function sparkline(ctx: CanvasRenderingContext2D, opts: SparklineOptions): void {
-    const { x, y, width, height, values, range, color, lineWidth = 1.5, fill = true, fillOpacity = 0.15 } = opts
+    const {
+        x,
+        y,
+        width,
+        height,
+        values: series,
+        range,
+        color,
+        lineWidth = 1.5,
+        fill = true,
+        fillOpacity = 0.15,
+        bands,
+        drawIn = 1,
+    } = opts
 
+    const revealed = Math.max(0, Math.min(1, drawIn))
+    const visibleCount = Math.max(Math.ceil(series.length * revealed), revealed > 0 ? 2 : 0)
+    const values = series.slice(0, visibleCount)
     if (values.length < 2) return
 
     const [rangeMin, rangeMax] = range
     const rangeSpan = rangeMax - rangeMin || 1
 
+    // Point spacing stays anchored to the full series so the draw-in
+    // sweeps left to right instead of stretching.
     const points: Array<{ px: number; py: number }> = []
     for (let i = 0; i < values.length; i++) {
         const normalized = Math.max(0, Math.min(1, (values[i] - rangeMin) / rangeSpan))
         points.push({
-            px: x + (i / (values.length - 1)) * width,
+            px: x + (i / Math.max(series.length - 1, 1)) * width,
             py: y + height - normalized * height,
         })
     }
@@ -66,16 +109,38 @@ export function sparkline(ctx: CanvasRenderingContext2D, opts: SparklineOptions)
     }
 
     // Line
-    ctx.beginPath()
-    ctx.moveTo(points[0].px, points[0].py)
-    for (let i = 1; i < points.length; i++) {
-        ctx.lineTo(points[i].px, points[i].py)
-    }
-    ctx.strokeStyle = color
     ctx.lineWidth = lineWidth
     ctx.lineJoin = 'round'
     ctx.lineCap = 'round'
-    ctx.stroke()
+
+    if (!bands || bands.length === 0) {
+        ctx.beginPath()
+        ctx.moveTo(points[0].px, points[0].py)
+        for (let i = 1; i < points.length; i++) {
+            ctx.lineTo(points[i].px, points[i].py)
+        }
+        ctx.strokeStyle = color
+        ctx.stroke()
+        return
+    }
+
+    // Threshold bands: stroke contiguous runs of same-colored segments,
+    // colored by each segment's end value.
+    let runStart = 0
+    let runColor = bandColor(values[1], bands, color)
+    for (let i = 2; i <= points.length; i++) {
+        const segmentColor = i < points.length ? bandColor(values[i], bands, color) : null
+        if (segmentColor === runColor) continue
+        ctx.beginPath()
+        ctx.moveTo(points[runStart].px, points[runStart].py)
+        for (let j = runStart + 1; j < i; j++) {
+            ctx.lineTo(points[j].px, points[j].py)
+        }
+        ctx.strokeStyle = runColor
+        ctx.stroke()
+        runStart = i - 1
+        runColor = segmentColor ?? runColor
+    }
 }
 
 /**
