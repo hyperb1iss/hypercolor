@@ -240,6 +240,7 @@ fn frame_input_construction() {
         interaction: &interaction,
         screen: None,
         sensors: &EMPTY_SENSORS,
+        sources: hypercolor_core::effect::FrameDataSources::default(),
         canvas_width: DEFAULT_CANVAS_WIDTH,
         canvas_height: DEFAULT_CANVAS_HEIGHT,
     };
@@ -263,6 +264,7 @@ fn frame_input_clone() {
         interaction: &interaction,
         screen: None,
         sensors: &EMPTY_SENSORS,
+        sources: hypercolor_core::effect::FrameDataSources::default(),
         canvas_width: 320,
         canvas_height: 200,
     };

@@ -179,6 +179,7 @@ pub fn parse_html_effect_metadata(html: &str) -> ParsedHtmlEffectMetadata {
 
     let audio_reactive = detect_audio_meta_tag(&sanitized).unwrap_or(false);
     let screen_reactive = detect_screen_meta_tag(&sanitized).unwrap_or(false);
+    let data_sources = detect_data_sources_meta_tag(&sanitized);
     let renderer_hint = detect_renderer_meta_tag(&sanitized);
     let builtin_id = detect_builtin_id_meta_tag(&sanitized);
     let uses_three_js = detect_three_js(&lower);
@@ -207,6 +208,7 @@ pub fn parse_html_effect_metadata(html: &str) -> ParsedHtmlEffectMetadata {
         uses_canvas2d,
         uses_webgl,
         uses_three_js,
+        &data_sources,
     );
 
     ParsedHtmlEffectMetadata {
@@ -493,6 +495,29 @@ fn detect_screen_meta_tag(html: &str) -> Option<bool> {
     detect_boolean_meta_tag(html, "screen-reactive")
 }
 
+const KNOWN_DATA_SOURCES: [&str; 3] = ["media", "net", "lighting"];
+
+/// Parse `<meta data-sources="media,net,lighting"/>` (emitted by the SDK
+/// build script) into the validated source names the effect opted into.
+fn detect_data_sources_meta_tag(html: &str) -> Vec<String> {
+    for meta_tag in extract_start_tags(html, "meta") {
+        let attrs = parse_tag_attributes(&meta_tag);
+        let Some(value) = attr_value(&attrs, "data-sources") else {
+            continue;
+        };
+        return value
+            .split(',')
+            .filter_map(|token| {
+                let token = token.trim().to_ascii_lowercase();
+                KNOWN_DATA_SOURCES
+                    .contains(&token.as_str())
+                    .then_some(token)
+            })
+            .collect();
+    }
+    Vec::new()
+}
+
 fn detect_boolean_meta_tag(html: &str, attribute: &str) -> Option<bool> {
     for meta_tag in extract_start_tags(html, "meta") {
         let attrs = parse_tag_attributes(&meta_tag);
@@ -677,6 +702,10 @@ fn contains_any(haystack: &str, needles: &[&str]) -> bool {
     clippy::fn_params_excessive_bools,
     reason = "tag generation depends on a fixed set of independent effect capability flags"
 )]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "tag derivation folds every independent capability signal"
+)]
 fn build_tags(
     controls: &[HtmlControlMetadata],
     category: EffectCategory,
@@ -685,10 +714,14 @@ fn build_tags(
     uses_canvas2d: bool,
     uses_webgl: bool,
     uses_three_js: bool,
+    data_sources: &[String],
 ) -> Vec<String> {
     let mut tags = BTreeSet::new();
     tags.insert("html".to_owned());
     tags.insert(format!("{category}"));
+    for source in data_sources {
+        tags.insert(source.clone());
+    }
 
     if uses_canvas2d {
         tags.insert("canvas2d".to_owned());

@@ -312,6 +312,7 @@ mod tests {
             2,
             &SceneRuntimeSnapshot {
                 active_scene_id: Some(hypercolor_types::scene::SceneId::new()),
+                active_scene_name: None,
                 active_transition: Some(SceneTransitionSnapshot {
                     from_scene: Some(hypercolor_types::scene::SceneId::new()),
                     to_scene: Some(hypercolor_types::scene::SceneId::new()),
@@ -383,6 +384,7 @@ mod tests {
 
         let transition_runtime = SceneRuntimeSnapshot {
             active_scene_id: Some(hypercolor_types::scene::SceneId::new()),
+            active_scene_name: None,
             active_transition: Some(SceneTransitionSnapshot {
                 from_scene: Some(hypercolor_types::scene::SceneId::new()),
                 to_scene: Some(hypercolor_types::scene::SceneId::new()),

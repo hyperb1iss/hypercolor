@@ -162,6 +162,15 @@ pub(crate) async fn execute_frame(
         .inputs
         .inputs_for_frame(state, skip_decision, delta_secs)
         .await;
+    inputs.lighting = {
+        let registry = state.effect_registry.read().await;
+        Some(frame_loop.lighting_feed.lighting_for_frame(
+            scene_snapshot.scene_runtime.active_scene_name.as_deref(),
+            scene_snapshot.scene_runtime.active_render_groups.as_ref(),
+            scene_snapshot.scene_runtime.active_render_groups_revision,
+            &registry,
+        ))
+    };
     let input_done_at = Instant::now();
     let input_us = micros_between(input_start, input_done_at);
     let input_done_us = micros_between(frame_start, input_done_at);
@@ -243,6 +252,9 @@ pub(crate) async fn execute_frame(
     let sample_done_at = Instant::now();
     let sample_done_us = micros_between(frame_start, sample_done_at);
     let sample_us = measured_sampling_us(&render_stage, input_done_us, sample_done_us);
+    frame_loop
+        .lighting_feed
+        .observe_zones(render.output_artifacts.zones(), scene_snapshot.elapsed_ms);
     let push_start = Instant::now();
     let global_brightness = output_power.effective_brightness();
     let global_brightness_bits = global_brightness.to_bits();

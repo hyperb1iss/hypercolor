@@ -43,6 +43,7 @@ fn render_media_player(asset_value: &str, library: Arc<RwLock<AssetLibrary>>) ->
         interaction: &interaction,
         screen: None,
         sensors: &sensors,
+        sources: hypercolor_core::effect::FrameDataSources::default(),
         canvas_width: W,
         canvas_height: H,
     };

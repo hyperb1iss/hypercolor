@@ -34,6 +34,7 @@ mod frame_throttle;
 #[doc(hidden)]
 pub mod gpu_device;
 mod layer_runtime;
+mod lighting_feed;
 mod pipeline_driver;
 mod pipeline_runtime;
 mod producer_queue;

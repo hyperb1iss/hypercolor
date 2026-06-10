@@ -63,6 +63,9 @@ pub struct ServoRenderer {
     include_sensor_updates: bool,
     scoped_sensor_control_ids: Vec<String>,
     include_interaction_updates: bool,
+    include_media_updates: bool,
+    include_net_updates: bool,
+    include_lighting_updates: bool,
     last_animation_fps_cap: Option<u32>,
     animation_cadence: AnimationCadence,
     host_driven_animation: bool,
@@ -110,6 +113,9 @@ impl ServoRenderer {
             include_sensor_updates: false,
             scoped_sensor_control_ids: Vec::new(),
             include_interaction_updates: false,
+            include_media_updates: false,
+            include_net_updates: false,
+            include_lighting_updates: false,
             last_animation_fps_cap: None,
             animation_cadence: AnimationCadence::MatchRenderLoop,
             host_driven_animation: false,
@@ -247,6 +253,9 @@ impl EffectRenderer for ServoRenderer {
         self.include_sensor_updates = false;
         self.scoped_sensor_control_ids.clear();
         self.include_interaction_updates = false;
+        self.include_media_updates = false;
+        self.include_net_updates = false;
+        self.include_lighting_updates = false;
         #[cfg(feature = "servo-gpu-import")]
         {
             self.reuse_cached_gpu_frame_on_no_ready = false;
@@ -301,6 +310,25 @@ fn effect_uses_interaction_data(metadata: &EffectMetadata) -> bool {
                 || tag.eq_ignore_ascii_case("mouse")
                 || tag.eq_ignore_ascii_case("keyboard")
         })
+}
+
+fn effect_uses_media_data(metadata: &EffectMetadata) -> bool {
+    effect_has_tag(metadata, "media")
+}
+
+fn effect_uses_net_data(metadata: &EffectMetadata) -> bool {
+    effect_has_tag(metadata, "net")
+}
+
+fn effect_uses_lighting_data(metadata: &EffectMetadata) -> bool {
+    effect_has_tag(metadata, "lighting")
+}
+
+fn effect_has_tag(metadata: &EffectMetadata, name: &str) -> bool {
+    metadata
+        .tags
+        .iter()
+        .any(|tag| tag.eq_ignore_ascii_case(name))
 }
 
 fn host_driven_animation(metadata: &EffectMetadata) -> bool {

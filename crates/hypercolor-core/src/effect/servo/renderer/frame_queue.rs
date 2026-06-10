@@ -64,6 +64,9 @@ impl ServoRenderer {
                 include_screen: self.include_screen_updates,
                 include_sensors: self.include_sensor_updates,
                 include_interaction: self.include_interaction_updates,
+                include_media: self.include_media_updates,
+                include_net: self.include_net_updates,
+                include_lighting: self.include_lighting_updates,
                 render_host_frame: self.host_driven_animation,
                 selected_sensor_labels: selected_sensor_labels(
                     &self.scoped_sensor_control_ids,
@@ -196,6 +199,9 @@ pub(super) struct QueuedFrameInput {
     interaction: crate::input::InteractionData,
     screen: Option<crate::input::ScreenData>,
     sensors: SystemSnapshot,
+    media: Option<hypercolor_types::media::MediaState>,
+    net: Option<hypercolor_types::net::NetStats>,
+    lighting: Option<hypercolor_types::lighting::LightingState>,
     canvas_width: u32,
     canvas_height: u32,
 }
@@ -210,6 +216,9 @@ impl QueuedFrameInput {
             interaction: input.interaction.clone(),
             screen: input.screen.cloned(),
             sensors: input.sensors.clone(),
+            media: input.sources.media.cloned(),
+            net: input.sources.net.cloned(),
+            lighting: input.sources.lighting.cloned(),
             canvas_width: input.canvas_width,
             canvas_height: input.canvas_height,
         }
@@ -228,6 +237,9 @@ impl QueuedFrameInput {
             (slot, None) => *slot = None,
         }
         self.sensors.clone_from(input.sensors);
+        clone_optional_from(&mut self.media, input.sources.media);
+        clone_optional_from(&mut self.net, input.sources.net);
+        clone_optional_from(&mut self.lighting, input.sources.lighting);
         merge_unique_strings(
             &mut self.interaction.keyboard.recent_keys,
             prior_recent_keys,
@@ -245,9 +257,22 @@ impl QueuedFrameInput {
             interaction: &self.interaction,
             screen: self.screen.as_ref(),
             sensors: &self.sensors,
+            sources: crate::effect::traits::FrameDataSources {
+                media: self.media.as_ref(),
+                net: self.net.as_ref(),
+                lighting: self.lighting.as_ref(),
+            },
             canvas_width: self.canvas_width,
             canvas_height: self.canvas_height,
         }
+    }
+}
+
+fn clone_optional_from<T: Clone>(slot: &mut Option<T>, next: Option<&T>) {
+    match (slot.as_mut(), next) {
+        (Some(current), Some(next)) => current.clone_from(next),
+        (None, Some(next)) => *slot = Some(next.clone()),
+        (_, None) => *slot = None,
     }
 }
 

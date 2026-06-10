@@ -125,6 +125,7 @@ fn effect_pool_reconciles_and_renders_group_controls() {
         &InteractionData::default(),
         None,
         &EMPTY_SENSORS,
+        hypercolor_core::effect::FrameDataSources::default(),
         &mut canvas,
     )
     .expect("group should render");
@@ -159,6 +160,7 @@ fn effect_pool_hot_swaps_effects_for_same_group() {
         &InteractionData::default(),
         None,
         &EMPTY_SENSORS,
+        hypercolor_core::effect::FrameDataSources::default(),
         &mut solid_canvas,
     )
     .expect("solid group should render");
@@ -178,6 +180,7 @@ fn effect_pool_hot_swaps_effects_for_same_group() {
         &InteractionData::default(),
         None,
         &EMPTY_SENSORS,
+        hypercolor_core::effect::FrameDataSources::default(),
         &mut rainbow_canvas,
     )
     .expect("rainbow group should render");
@@ -214,6 +217,7 @@ fn effect_pool_rebuilds_slot_when_registry_entry_changes_for_same_effect_id() {
         &InteractionData::default(),
         None,
         &EMPTY_SENSORS,
+        hypercolor_core::effect::FrameDataSources::default(),
         &mut before_reload,
     )
     .expect("solid effect should render");
@@ -233,6 +237,7 @@ fn effect_pool_rebuilds_slot_when_registry_entry_changes_for_same_effect_id() {
         &InteractionData::default(),
         None,
         &EMPTY_SENSORS,
+        hypercolor_core::effect::FrameDataSources::default(),
         &mut after_reload,
     )
     .expect("reloaded effect should render");
@@ -259,6 +264,7 @@ fn effect_pool_rebuilds_slot_when_registry_modified_changes_for_same_effect_id()
         &InteractionData::default(),
         None,
         &EMPTY_SENSORS,
+        hypercolor_core::effect::FrameDataSources::default(),
         &mut before_reload,
     )
     .expect("rainbow effect should render before reload");
@@ -281,6 +287,7 @@ fn effect_pool_rebuilds_slot_when_registry_modified_changes_for_same_effect_id()
         &InteractionData::default(),
         None,
         &EMPTY_SENSORS,
+        hypercolor_core::effect::FrameDataSources::default(),
         &mut after_reload,
     )
     .expect("rainbow effect should render after reload");
@@ -327,6 +334,7 @@ fn effect_pool_does_not_rebuild_slot_for_control_binding_state() {
         &InteractionData::default(),
         None,
         &EMPTY_SENSORS,
+        hypercolor_core::effect::FrameDataSources::default(),
         &mut first,
     )
     .expect("first rainbow frame should render");
@@ -342,6 +350,7 @@ fn effect_pool_does_not_rebuild_slot_for_control_binding_state() {
         &InteractionData::default(),
         None,
         &EMPTY_SENSORS,
+        hypercolor_core::effect::FrameDataSources::default(),
         &mut second,
     )
     .expect("second rainbow frame should render");
@@ -393,6 +402,7 @@ fn effect_pool_prunes_disabled_groups() {
         &InteractionData::default(),
         None,
         &EMPTY_SENSORS,
+        hypercolor_core::effect::FrameDataSources::default(),
         &mut canvas,
     )
     .expect("disabled group should clear");
@@ -424,6 +434,7 @@ fn effect_pool_reconciles_duplicate_effect_layers_as_separate_slots() {
         &InteractionData::default(),
         None,
         &EMPTY_SENSORS,
+        hypercolor_core::effect::FrameDataSources::default(),
         &mut red_canvas,
     )
     .expect("red layer should render");
@@ -437,6 +448,7 @@ fn effect_pool_reconciles_duplicate_effect_layers_as_separate_slots() {
         &InteractionData::default(),
         None,
         &EMPTY_SENSORS,
+        hypercolor_core::effect::FrameDataSources::default(),
         &mut blue_canvas,
     )
     .expect("blue layer should render");

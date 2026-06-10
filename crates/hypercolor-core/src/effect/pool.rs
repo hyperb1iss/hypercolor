@@ -20,7 +20,9 @@ use tokio::sync::RwLock;
 
 use super::factory::create_renderer_for_metadata;
 use super::registry::{EffectEntry, EffectRegistry};
-use super::traits::{EffectRenderOutput, EffectRenderer, FrameInput, prepare_target_canvas};
+use super::traits::{
+    EffectRenderOutput, EffectRenderer, FrameDataSources, FrameInput, prepare_target_canvas,
+};
 use crate::asset::AssetLibrary;
 use crate::input::{InteractionData, ScreenData};
 
@@ -126,6 +128,10 @@ impl EffectPool {
         self.slots.retain(|key, _| key.group_id != group_id);
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "rendering needs the full frame input plus a mutable target canvas"
+    )]
     pub fn render_group_into(
         &mut self,
         group: &Zone,
@@ -134,6 +140,7 @@ impl EffectPool {
         interaction: &InteractionData,
         screen: Option<&ScreenData>,
         sensors: &SystemSnapshot,
+        sources: FrameDataSources<'_>,
         target: &mut Canvas,
     ) -> Result<()> {
         let Some(layer) = single_enabled_effect_layer(group)? else {
@@ -148,6 +155,7 @@ impl EffectPool {
             interaction,
             screen,
             sensors,
+            sources,
             target,
         )
     }
@@ -165,6 +173,7 @@ impl EffectPool {
         interaction: &InteractionData,
         screen: Option<&ScreenData>,
         sensors: &SystemSnapshot,
+        sources: FrameDataSources<'_>,
         target: &mut Canvas,
     ) -> Result<()> {
         prepare_target_canvas(
@@ -192,12 +201,17 @@ impl EffectPool {
             interaction,
             screen,
             sensors,
+            sources,
             group.layout.canvas_width,
             group.layout.canvas_height,
             target,
         )
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "rendering needs the full frame input for output-capable renderers"
+    )]
     pub fn render_group_output(
         &mut self,
         group: &Zone,
@@ -206,6 +220,7 @@ impl EffectPool {
         interaction: &InteractionData,
         screen: Option<&ScreenData>,
         sensors: &SystemSnapshot,
+        sources: FrameDataSources<'_>,
     ) -> Result<EffectRenderOutput> {
         let Some(layer) = single_enabled_effect_layer(group)? else {
             return Ok(EffectRenderOutput::Cpu(Canvas::new(
@@ -221,6 +236,7 @@ impl EffectPool {
             interaction,
             screen,
             sensors,
+            sources,
         )
     }
 
@@ -237,6 +253,7 @@ impl EffectPool {
         interaction: &InteractionData,
         screen: Option<&ScreenData>,
         sensors: &SystemSnapshot,
+        sources: FrameDataSources<'_>,
     ) -> Result<EffectRenderOutput> {
         if !group.enabled || !layer.enabled || layer_effect_source(layer).is_none() {
             return Ok(EffectRenderOutput::Cpu(Canvas::new(
@@ -259,6 +276,7 @@ impl EffectPool {
             interaction,
             screen,
             sensors,
+            sources,
             group.layout.canvas_width,
             group.layout.canvas_height,
         )
@@ -385,6 +403,7 @@ impl EffectSlot {
         interaction: &InteractionData,
         screen: Option<&ScreenData>,
         sensors: &SystemSnapshot,
+        sources: FrameDataSources<'_>,
         canvas_width: u32,
         canvas_height: u32,
         target: &mut Canvas,
@@ -405,6 +424,7 @@ impl EffectSlot {
             interaction,
             screen,
             sensors,
+            sources,
             canvas_width,
             canvas_height,
         };
@@ -424,6 +444,7 @@ impl EffectSlot {
         interaction: &InteractionData,
         screen: Option<&ScreenData>,
         sensors: &SystemSnapshot,
+        sources: FrameDataSources<'_>,
         canvas_width: u32,
         canvas_height: u32,
     ) -> Result<EffectRenderOutput> {
@@ -443,6 +464,7 @@ impl EffectSlot {
             interaction,
             screen,
             sensors,
+            sources,
             canvas_width,
             canvas_height,
         };

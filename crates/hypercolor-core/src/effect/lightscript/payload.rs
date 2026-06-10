@@ -1,6 +1,9 @@
 use std::collections::BTreeMap;
 
 use hypercolor_types::effect::ControlValue;
+use hypercolor_types::lighting::LightingState;
+use hypercolor_types::media::MediaState;
+use hypercolor_types::net::NetStats;
 use hypercolor_types::sensor::{SensorReading, SensorUnit};
 use serde::Serialize;
 
@@ -22,6 +25,12 @@ pub(super) struct LightScriptFramePayload {
     pub(super) screen: Option<LightScriptScreenPayload>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) sensors: Option<LightScriptSensorPayload>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) media: Option<LightScriptMediaPayload>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) net: Option<LightScriptNetPayload>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) lighting: Option<LightScriptLightingPayload>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub(super) controls: BTreeMap<String, LightScriptControlValue>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -130,6 +139,113 @@ pub(super) struct LightScriptMousePayload {
     pub(super) y: i32,
     pub(super) down: bool,
     pub(super) buttons: Vec<String>,
+}
+
+/// Album-art delta for one media payload: omitted from the JSON entirely
+/// while the track is unchanged, `null` to clear stale art on a track
+/// change without artwork, a data URL otherwise.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum ArtUpdate {
+    Unchanged,
+    Cleared,
+    Set(String),
+}
+
+impl ArtUpdate {
+    pub(super) fn from_state(state: &MediaState, include_art: bool) -> Self {
+        if !include_art {
+            return Self::Unchanged;
+        }
+        match state.art_data_url.as_ref() {
+            Some(url) => Self::Set(url.clone()),
+            None => Self::Cleared,
+        }
+    }
+
+    fn is_unchanged(&self) -> bool {
+        matches!(self, Self::Unchanged)
+    }
+}
+
+impl Serialize for ArtUpdate {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Unchanged | Self::Cleared => serializer.serialize_none(),
+            Self::Set(url) => serializer.serialize_str(url),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct LightScriptMediaPayload {
+    pub(super) available: bool,
+    pub(super) playing: bool,
+    pub(super) track: String,
+    pub(super) artist: String,
+    pub(super) album: String,
+    #[serde(skip_serializing_if = "ArtUpdate::is_unchanged")]
+    pub(super) art_data_url: ArtUpdate,
+    pub(super) position_ms: u64,
+    pub(super) duration_ms: u64,
+    pub(super) player: String,
+}
+
+impl LightScriptMediaPayload {
+    pub(super) fn from_state(state: &MediaState, include_art: bool) -> Self {
+        Self {
+            available: state.available,
+            playing: state.playing,
+            track: state.track.clone(),
+            artist: state.artist.clone(),
+            album: state.album.clone(),
+            art_data_url: ArtUpdate::from_state(state, include_art),
+            position_ms: state.position_ms,
+            duration_ms: state.duration_ms,
+            player: state.player.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct LightScriptNetPayload {
+    pub(super) rx_bps: u64,
+    pub(super) tx_bps: u64,
+    pub(super) iface: String,
+}
+
+impl LightScriptNetPayload {
+    pub(super) fn from_stats(stats: &NetStats) -> Self {
+        Self {
+            rx_bps: stats.rx_bps,
+            tx_bps: stats.tx_bps,
+            iface: stats.iface.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct LightScriptLightingPayload {
+    pub(super) scene_name: Option<String>,
+    pub(super) effect_names: Vec<String>,
+    /// Hex `#rrggbb` strings, ready for canvas fill styles.
+    pub(super) dominant_colors: Vec<String>,
+}
+
+impl LightScriptLightingPayload {
+    pub(super) fn from_state(state: &LightingState) -> Self {
+        Self {
+            scene_name: state.scene_name.clone(),
+            effect_names: state.effect_names.clone(),
+            dominant_colors: state
+                .dominant_colors
+                .iter()
+                .map(|[r, g, b]| format!("#{r:02x}{g:02x}{b:02x}"))
+                .collect(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -402,6 +518,9 @@ mod tests {
                 replace_sensor_map: false,
                 sensor_list: Some(vec!["gpu".to_owned()]),
             }),
+            media: None,
+            net: None,
+            lighting: None,
             controls,
             interaction: Some(LightScriptInteractionPayload {
                 keyboard: LightScriptKeyboardPayload {

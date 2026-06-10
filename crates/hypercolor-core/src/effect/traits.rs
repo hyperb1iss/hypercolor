@@ -10,6 +10,9 @@ use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::Canvas;
 use hypercolor_types::display::DisplayDescriptor;
 use hypercolor_types::effect::{ControlValue, EffectMetadata};
+use hypercolor_types::lighting::LightingState;
+use hypercolor_types::media::MediaState;
+use hypercolor_types::net::NetStats;
 use hypercolor_types::sensor::SystemSnapshot;
 use tokio::sync::RwLock;
 
@@ -30,6 +33,23 @@ pub use hypercolor_windows_gpu_interop::{
 };
 
 // ── FrameInput ───────────────────────────────────────────────────────────────
+
+/// Typed, cadenced data sources injected alongside audio and sensors.
+///
+/// Each source is `None` until its producer delivers a snapshot (or on
+/// platforms without one). Renderers that gate injection per effect read
+/// these through [`FrameInput::sources`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FrameDataSources<'a> {
+    /// Now-playing media snapshot from the MPRIS source.
+    pub media: Option<&'a MediaState>,
+
+    /// Network throughput snapshot, refreshed at 1 Hz.
+    pub net: Option<&'a NetStats>,
+
+    /// What the rig is showing: scene, effects, dominant colors.
+    pub lighting: Option<&'a LightingState>,
+}
 
 /// Per-frame input data passed to the active renderer on every tick.
 ///
@@ -59,6 +79,9 @@ pub struct FrameInput<'a> {
 
     /// Latest system telemetry snapshot shared across all renderers.
     pub sensors: &'a SystemSnapshot,
+
+    /// Typed data sources (media, net, lighting) for display faces.
+    pub sources: FrameDataSources<'a>,
 
     /// Target canvas width in pixels.
     pub canvas_width: u32,

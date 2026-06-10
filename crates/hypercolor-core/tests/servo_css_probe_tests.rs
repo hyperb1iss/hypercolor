@@ -295,6 +295,7 @@ fn frame_input(frame_number: u64, canvas_width: u32, canvas_height: u32) -> Fram
         interaction: &INTERACTION,
         screen: None,
         sensors: &SENSORS,
+        sources: hypercolor_core::effect::FrameDataSources::default(),
         canvas_width,
         canvas_height,
     }

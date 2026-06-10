@@ -37,6 +37,7 @@ fn frame_input(delta_secs: f32) -> FrameInput<'static> {
         interaction: &DEFAULT_INTERACTION,
         screen: None,
         sensors: &EMPTY_SENSORS,
+        sources: crate::effect::traits::FrameDataSources::default(),
         canvas_width: DEFAULT_CANVAS_WIDTH,
         canvas_height: DEFAULT_CANVAS_HEIGHT,
     }
@@ -84,6 +85,7 @@ fn frame_input_with<'a>(
         interaction,
         screen: None,
         sensors: &EMPTY_SENSORS,
+        sources: crate::effect::traits::FrameDataSources::default(),
         canvas_width,
         canvas_height,
     }

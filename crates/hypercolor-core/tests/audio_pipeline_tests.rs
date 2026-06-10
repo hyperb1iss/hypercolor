@@ -732,7 +732,8 @@ fn audio_input_produces_audio_data_with_samples() {
         InputData::Screen(_)
         | InputData::Interaction(_)
         | InputData::Sensors(_)
-        | InputData::Media(_) => {
+        | InputData::Media(_)
+        | InputData::Net(_) => {
             panic!("expected Audio data")
         }
     }
@@ -794,7 +795,8 @@ fn audio_input_silence_produces_near_zero() {
         InputData::Screen(_)
         | InputData::Interaction(_)
         | InputData::Sensors(_)
-        | InputData::Media(_) => {
+        | InputData::Media(_)
+        | InputData::Net(_) => {
             panic!("unexpected variant")
         }
     }

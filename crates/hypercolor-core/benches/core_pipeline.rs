@@ -205,6 +205,7 @@ fn frame_input(time_secs: f32, frame_number: u64, audio: &AudioData) -> FrameInp
         interaction: &DEFAULT_INTERACTION,
         screen: None,
         sensors: &EMPTY_SENSORS,
+        sources: hypercolor_core::effect::FrameDataSources::default(),
         canvas_width: CANVAS_WIDTH,
         canvas_height: CANVAS_HEIGHT,
     }
@@ -672,6 +673,7 @@ fn bench_render_groups(c: &mut Criterion) {
                         black_box(&DEFAULT_INTERACTION),
                         None,
                         black_box(&EMPTY_SENSORS),
+                        hypercolor_core::effect::FrameDataSources::default(),
                         black_box(&mut canvases[index]),
                     )
                     .expect("zone should render");

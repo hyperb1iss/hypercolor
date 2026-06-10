@@ -45,6 +45,7 @@ impl Default for SceneTransitionSnapshot {
 )]
 pub(crate) struct SceneRuntimeSnapshot {
     pub active_scene_id: Option<SceneId>,
+    pub active_scene_name: Option<String>,
     pub active_transition: Option<SceneTransitionSnapshot>,
     pub active_render_groups: Arc<[Zone]>,
     pub active_render_groups_revision: u64,
@@ -274,6 +275,7 @@ async fn snapshot_scene_runtime(
     } else {
         state.zone_layout_previews.generation()
     };
+    let active_scene_name = manager.active_scene().map(|scene| scene.name.clone());
     let unassigned_behavior = manager
         .active_scene()
         .map(|scene| scene.unassigned_behavior.clone())
@@ -301,6 +303,7 @@ async fn snapshot_scene_runtime(
     .unwrap_or(u32::MAX);
     SceneRuntimeSnapshot {
         active_scene_id,
+        active_scene_name,
         active_transition: manager
             .active_transition()
             .map(|transition| SceneTransitionSnapshot {
@@ -1039,6 +1042,7 @@ mod tests {
         let state = minimal_render_thread_state(registry);
         let scene_runtime = SceneRuntimeSnapshot {
             active_scene_id: None,
+            active_scene_name: None,
             active_transition: None,
             active_render_groups: vec![sample_group(effect_id)].into(),
             active_render_groups_revision: 7,
@@ -1095,6 +1099,7 @@ mod tests {
         }];
         let scene_runtime = SceneRuntimeSnapshot {
             active_scene_id: None,
+            active_scene_name: None,
             active_transition: None,
             active_render_groups: vec![group].into(),
             active_render_groups_revision: 7,
@@ -1125,6 +1130,7 @@ mod tests {
         let state = minimal_render_thread_state(registry);
         let scene_runtime = SceneRuntimeSnapshot {
             active_scene_id: None,
+            active_scene_name: None,
             active_transition: None,
             active_render_groups: vec![sample_group(effect_id)].into(),
             active_render_groups_revision: 7,

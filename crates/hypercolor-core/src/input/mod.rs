@@ -9,6 +9,7 @@ pub mod audio;
 pub mod evdev;
 pub mod interaction;
 pub mod media;
+pub mod net;
 pub mod screen;
 pub mod sensor;
 mod traits;
@@ -17,6 +18,7 @@ mod traits;
 pub use evdev::EvdevKeyboardInput;
 pub use interaction::InteractionInput;
 pub use media::MediaSource;
+pub use net::NetSource;
 pub use sensor::SensorPoller;
 pub use traits::{InputData, InputSource, InteractionData, KeyboardData, MouseData, ScreenData};
 

@@ -282,6 +282,9 @@ fn render_scene_for_test_with_screen(
         interaction: &InteractionData::default(),
         screen,
         sensors: &SystemSnapshot::empty(),
+        media: None,
+        net: None,
+        lighting: None,
     };
     let context = RenderSceneContext {
         groups,

@@ -24,6 +24,8 @@ pub enum InputData {
     Interaction(InteractionData),
     /// Now-playing media snapshot from the MPRIS source.
     Media(Arc<hypercolor_types::media::MediaState>),
+    /// Network throughput snapshot from the net source, refreshed at 1 Hz.
+    Net(Arc<hypercolor_types::net::NetStats>),
     /// Screen capture zone colors — grabbed from display regions.
     Screen(ScreenData),
     /// System telemetry snapshot — CPU/GPU/memory/components.

@@ -497,6 +497,7 @@ fn effect_renderer_lifecycle_tracking() {
         interaction: &interaction,
         screen: None,
         sensors: &EMPTY_SENSORS,
+        sources: hypercolor_core::effect::FrameDataSources::default(),
         canvas_width: 10,
         canvas_height: 10,
     };

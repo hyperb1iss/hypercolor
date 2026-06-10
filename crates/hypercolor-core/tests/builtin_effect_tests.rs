@@ -65,6 +65,7 @@ fn frame(time_secs: f32, frame_number: u64) -> FrameInput<'static> {
         interaction: &DEFAULT_INTERACTION,
         screen: None,
         sensors: &EMPTY_SENSORS,
+        sources: hypercolor_core::effect::FrameDataSources::default(),
         canvas_width: W,
         canvas_height: H,
     }
@@ -84,6 +85,7 @@ fn frame_with_size(
         interaction: &DEFAULT_INTERACTION,
         screen: None,
         sensors: &EMPTY_SENSORS,
+        sources: hypercolor_core::effect::FrameDataSources::default(),
         canvas_width: width,
         canvas_height: height,
     }
@@ -98,6 +100,7 @@ fn frame_with_audio(time_secs: f32, audio: &AudioData) -> FrameInput<'_> {
         interaction: &DEFAULT_INTERACTION,
         screen: None,
         sensors: &EMPTY_SENSORS,
+        sources: hypercolor_core::effect::FrameDataSources::default(),
         canvas_width: W,
         canvas_height: H,
     }
@@ -112,6 +115,7 @@ fn frame_with_screen(time_secs: f32, screen: &ScreenData) -> FrameInput<'_> {
         interaction: &DEFAULT_INTERACTION,
         screen: Some(screen),
         sensors: &EMPTY_SENSORS,
+        sources: hypercolor_core::effect::FrameDataSources::default(),
         canvas_width: W,
         canvas_height: H,
     }
@@ -940,6 +944,7 @@ fn audio_pulse_full_lifecycle() {
             interaction: &DEFAULT_INTERACTION,
             screen: None,
             sensors: &EMPTY_SENSORS,
+            sources: hypercolor_core::effect::FrameDataSources::default(),
             canvas_width: W,
             canvas_height: H,
         };

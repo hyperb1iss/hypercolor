@@ -602,6 +602,7 @@ impl EffectEngine {
             interaction,
             screen,
             sensors,
+            sources: hypercolor_core::effect::FrameDataSources::default(),
             canvas_width: self.canvas_width,
             canvas_height: self.canvas_height,
         };

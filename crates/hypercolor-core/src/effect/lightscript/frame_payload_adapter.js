@@ -93,6 +93,43 @@
       Object.assign(engine.sensors, readings);
       if (Array.isArray(sensors.sensorList)) { engine.sensorList = sensors.sensorList.slice(); }
     };
+    const applyMedia = function(engine, media) {
+      if (typeof media !== 'object' || media === null) { return; }
+      if (typeof engine.media !== 'object' || engine.media === null) { engine.media = {}; }
+      engine.media.available = media.available === true;
+      engine.media.playing = media.playing === true;
+      engine.media.track = typeof media.track === 'string' ? media.track : '';
+      engine.media.artist = typeof media.artist === 'string' ? media.artist : '';
+      engine.media.album = typeof media.album === 'string' ? media.album : '';
+      if ('artDataUrl' in media) {
+        engine.media.artDataUrl = typeof media.artDataUrl === 'string' ? media.artDataUrl : null;
+      }
+      engine.media.positionMs = finiteNumber(media.positionMs, 0);
+      engine.media.durationMs = finiteNumber(media.durationMs, 0);
+      engine.media.player = typeof media.player === 'string' ? media.player : '';
+    };
+    const applyNet = function(engine, net) {
+      if (typeof net !== 'object' || net === null) { return; }
+      if (typeof engine.net !== 'object' || engine.net === null) { engine.net = {}; }
+      engine.net.rxBps = finiteNumber(net.rxBps, 0);
+      engine.net.txBps = finiteNumber(net.txBps, 0);
+      engine.net.iface = typeof net.iface === 'string' ? net.iface : '';
+    };
+    const stringArray = function(values) {
+      if (!Array.isArray(values)) { return []; }
+      const out = [];
+      for (let index = 0; index < values.length; index += 1) {
+        if (typeof values[index] === 'string') { out.push(values[index]); }
+      }
+      return out;
+    };
+    const applyLighting = function(engine, lighting) {
+      if (typeof lighting !== 'object' || lighting === null) { return; }
+      if (typeof engine.lighting !== 'object' || engine.lighting === null) { engine.lighting = {}; }
+      engine.lighting.sceneName = typeof lighting.sceneName === 'string' ? lighting.sceneName : null;
+      engine.lighting.effectNames = stringArray(lighting.effectNames);
+      engine.lighting.dominantColors = stringArray(lighting.dominantColors);
+    };
     const applyControls = function(controls) {
       if (typeof controls !== 'object' || controls === null) { return; }
       const names = Object.keys(controls);
@@ -134,6 +171,9 @@
       applyAudio(engine, payload.audio);
       applyScreen(engine, payload.screen);
       applySensors(engine, payload.sensors);
+      applyMedia(engine, payload.media);
+      applyNet(engine, payload.net);
+      applyLighting(engine, payload.lighting);
       applyControls(payload.controls);
       applyInteraction(engine, payload.interaction);
       if (typeof globalThis === 'object' && globalThis !== null) { globalThis.engine = engine; }

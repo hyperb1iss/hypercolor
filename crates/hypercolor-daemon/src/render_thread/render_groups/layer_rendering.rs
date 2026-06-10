@@ -346,6 +346,7 @@ impl ZoneRuntime {
                     context.inputs.interaction,
                     context.inputs.screen,
                     context.inputs.sensors,
+                    context.inputs.sources(),
                 )
                 .map_err(|error| {
                     anyhow::Error::new(render_layer_effect_error(
@@ -373,6 +374,7 @@ impl ZoneRuntime {
                     context.inputs.interaction,
                     context.inputs.screen,
                     context.inputs.sensors,
+                    context.inputs.sources(),
                     &mut canvas,
                 )
                 .map_err(|error| {

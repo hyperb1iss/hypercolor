@@ -51,6 +51,13 @@ pub(crate) struct FrameInputs {
     pub(crate) interaction: hypercolor_core::input::InteractionData,
     pub(crate) screen_data: Option<hypercolor_core::input::ScreenData>,
     pub(crate) sensors: Arc<SystemSnapshot>,
+    /// Latest media snapshot, carried across frames — the source only emits
+    /// on change.
+    pub(crate) media: Option<Arc<hypercolor_types::media::MediaState>>,
+    /// Latest net snapshot, carried across frames between 1 Hz refreshes.
+    pub(crate) net: Option<Arc<hypercolor_types::net::NetStats>>,
+    /// Lighting state assembled per frame by the executor before composing.
+    pub(crate) lighting: Option<Arc<hypercolor_types::lighting::LightingState>>,
     pub(crate) screen_surface: Option<PublishedSurface>,
     pub(crate) screen_sector_grid: Vec<[u8; 3]>,
     screen_surface_pool: Option<RenderSurfacePool>,
@@ -111,7 +118,15 @@ impl InputReuseState {
                 .screen_surface_pool
                 .take()
                 .unwrap_or_else(FrameInputs::new_screen_surface_pool);
+            let carried_media = self.cached_inputs.media.take();
+            let carried_net = self.cached_inputs.net.take();
             self.cached_inputs = FrameInputs::sample(state, delta_secs, screen_surface_pool).await;
+            if self.cached_inputs.media.is_none() {
+                self.cached_inputs.media = carried_media;
+            }
+            if self.cached_inputs.net.is_none() {
+                self.cached_inputs.net = carried_net;
+            }
         }
 
         &mut self.cached_inputs
@@ -142,13 +157,17 @@ impl FrameInputs {
         let mut interaction = InteractionData::default();
         let mut screen_data: Option<ScreenData> = None;
         let mut sensors = Arc::new(SystemSnapshot::empty());
+        let mut media = None;
+        let mut net = None;
         for sample in samples {
             match sample {
                 InputData::Audio(snapshot) => audio = snapshot,
                 InputData::Interaction(snapshot) => interaction = snapshot,
                 InputData::Screen(snapshot) => screen_data = Some(snapshot),
                 InputData::Sensors(snapshot) => sensors = snapshot,
-                InputData::Media(_) | InputData::None => {}
+                InputData::Media(snapshot) => media = Some(snapshot),
+                InputData::Net(snapshot) => net = Some(snapshot),
+                InputData::None => {}
             }
         }
 
@@ -157,6 +176,9 @@ impl FrameInputs {
             interaction,
             screen_data,
             sensors,
+            media,
+            net,
+            lighting: None,
             screen_surface: None,
             screen_sector_grid: Vec::new(),
             screen_surface_pool: Some(screen_surface_pool),
@@ -169,6 +191,9 @@ impl FrameInputs {
             interaction: InteractionData::default(),
             screen_data: None,
             sensors: Arc::new(SystemSnapshot::empty()),
+            media: None,
+            net: None,
+            lighting: None,
             screen_surface: None,
             screen_sector_grid: Vec::new(),
             screen_surface_pool: Some(Self::new_screen_surface_pool()),
@@ -752,6 +777,7 @@ pub(crate) struct FrameLoopState {
     pub(crate) publication_cadence: PublicationCadenceState,
     pub(crate) capture_demand: CaptureDemandState,
     pub(crate) output_reuse: OutputReuseState,
+    pub(crate) lighting_feed: super::lighting_feed::LightingFeedState,
 }
 
 pub(crate) struct RenderCaches {
@@ -902,6 +928,9 @@ impl ComposeRuntime<'_> {
                 interaction: &inputs.interaction,
                 screen: inputs.screen_data.as_ref(),
                 sensors: inputs.sensors.as_ref(),
+                media: inputs.media.as_deref(),
+                net: inputs.net.as_deref(),
+                lighting: inputs.lighting.as_deref(),
             },
         };
         (
@@ -1292,6 +1321,7 @@ impl PipelineRuntime {
                 publication_cadence: PublicationCadenceState::default(),
                 capture_demand: CaptureDemandState::default(),
                 output_reuse: OutputReuseState::default(),
+                lighting_feed: super::lighting_feed::LightingFeedState::default(),
             },
             render: RenderCaches {
                 screen_queue: ProducerQueue::new(),

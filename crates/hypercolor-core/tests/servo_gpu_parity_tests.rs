@@ -258,6 +258,7 @@ fn frame_input(frame_number: u64) -> FrameInput<'static> {
         interaction: &INTERACTION,
         screen: None,
         sensors: &SENSORS,
+        sources: hypercolor_core::effect::FrameDataSources::default(),
         canvas_width: WIDTH,
         canvas_height: HEIGHT,
     }

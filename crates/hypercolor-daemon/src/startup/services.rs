@@ -553,6 +553,7 @@ pub(crate) fn build_input_manager(config: &HypercolorConfig) -> InputManager {
     input_manager.set_sensor_poller(SensorPoller::new());
     input_manager.add_source(Box::new(InteractionInput::new()));
     input_manager.add_source(Box::new(hypercolor_core::input::MediaSource::new()));
+    input_manager.add_source(Box::new(hypercolor_core::input::NetSource::new()));
     #[cfg(target_os = "linux")]
     input_manager.add_source(Box::new(EvdevKeyboardInput::new()));
 

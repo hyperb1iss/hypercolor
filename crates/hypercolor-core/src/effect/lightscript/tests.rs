@@ -7,6 +7,9 @@ fn default_options() -> LightScriptFrameUpdateOptions<'static> {
         include_screen: false,
         include_sensors: false,
         include_interaction: false,
+        include_media: false,
+        include_net: false,
+        include_lighting: false,
         render_host_frame: false,
         selected_sensor_labels: None,
     }
@@ -28,6 +31,7 @@ fn frame_input_with<'a>(
         interaction,
         screen,
         sensors,
+        sources: crate::effect::traits::FrameDataSources::default(),
         canvas_width: width,
         canvas_height: height,
     }

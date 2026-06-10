@@ -1,14 +1,17 @@
 use std::collections::HashMap;
 
 use hypercolor_core::bus::{DisplayGroupFrame, DisplayGroupOutputRoute, DisplayGroupTarget};
-use hypercolor_core::effect::EffectRegistry;
 use hypercolor_core::effect::media::MediaProducer;
+use hypercolor_core::effect::{EffectRegistry, FrameDataSources};
 use hypercolor_core::input::{InteractionData, ScreenData};
 use hypercolor_types::audio::AudioData;
 #[cfg(test)]
 use hypercolor_types::canvas::PublishedSurface;
 use hypercolor_types::display::DisplayDescriptor;
 use hypercolor_types::event::LayerHealth;
+use hypercolor_types::lighting::LightingState;
+use hypercolor_types::media::MediaState;
+use hypercolor_types::net::NetStats;
 use hypercolor_types::scene::{DisplayFaceTarget, SceneId, Zone, ZoneId};
 use hypercolor_types::sensor::SystemSnapshot;
 
@@ -64,6 +67,19 @@ pub(crate) struct ZoneFrameInputs<'a> {
     pub(crate) interaction: &'a InteractionData,
     pub(crate) screen: Option<&'a ScreenData>,
     pub(crate) sensors: &'a SystemSnapshot,
+    pub(crate) media: Option<&'a MediaState>,
+    pub(crate) net: Option<&'a NetStats>,
+    pub(crate) lighting: Option<&'a LightingState>,
+}
+
+impl<'a> ZoneFrameInputs<'a> {
+    pub(crate) fn sources(&self) -> FrameDataSources<'a> {
+        FrameDataSources {
+            media: self.media,
+            net: self.net,
+            lighting: self.lighting,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]

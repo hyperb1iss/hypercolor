@@ -7,6 +7,9 @@ use std::collections::{BTreeMap, HashMap};
 
 use hypercolor_types::audio::{AudioData, CHROMA_BINS, MEL_BANDS, SPECTRUM_BINS};
 use hypercolor_types::effect::ControlValue;
+use hypercolor_types::lighting::LightingState;
+use hypercolor_types::media::MediaState;
+use hypercolor_types::net::NetStats;
 use hypercolor_types::sensor::{SensorReading, SystemSnapshot};
 
 use crate::input::InteractionData;
@@ -16,7 +19,8 @@ mod payload;
 use super::traits::FrameInput;
 use payload::{
     LightScriptAudioPayload, LightScriptCanvasPayload, LightScriptControlValue,
-    LightScriptFramePayload, LightScriptInteractionPayload, LightScriptScreenPayload,
+    LightScriptFramePayload, LightScriptInteractionPayload, LightScriptLightingPayload,
+    LightScriptMediaPayload, LightScriptNetPayload, LightScriptScreenPayload,
     LightScriptSensorPayload, LightScriptTimingPayload, sanitize_f32,
 };
 
@@ -71,6 +75,9 @@ pub struct LightScriptFrameUpdateOptions<'a> {
     pub include_screen: bool,
     pub include_sensors: bool,
     pub include_interaction: bool,
+    pub include_media: bool,
+    pub include_net: bool,
+    pub include_lighting: bool,
     pub render_host_frame: bool,
     pub selected_sensor_labels: Option<&'a [String]>,
 }
@@ -84,6 +91,10 @@ pub struct LightscriptRuntime {
     last_interaction: Option<InteractionData>,
     last_sensor_readings: Option<Vec<SensorReading>>,
     last_sensor_labels: Option<Vec<String>>,
+    last_media: Option<MediaState>,
+    last_media_track_key: Option<String>,
+    last_net: Option<NetStats>,
+    last_lighting: Option<LightingState>,
     audio_was_quiet: bool,
     mel_running_max: Vec<f32>,
     audio_state: DerivedAudioState,
@@ -100,6 +111,10 @@ impl LightscriptRuntime {
             last_interaction: None,
             last_sensor_readings: None,
             last_sensor_labels: None,
+            last_media: None,
+            last_media_track_key: None,
+            last_net: None,
+            last_lighting: None,
             audio_was_quiet: false,
             mel_running_max: vec![MEL_RUNNING_MAX_FLOOR; MEL_BANDS],
             audio_state: DerivedAudioState::default(),
@@ -234,6 +249,18 @@ impl LightscriptRuntime {
             "  window.engine.zone.height = {};\n",
             DEFAULT_ZONE_HEIGHT
         ));
+
+        // Typed data-source defaults (media, net, lighting) so faces can read
+        // them before the first gated payload arrives.
+        script.push_str(
+            "  if (typeof window.engine.media !== 'object' || window.engine.media === null) { window.engine.media = { available: false, playing: false, track: '', artist: '', album: '', artDataUrl: null, positionMs: 0, durationMs: 0, player: '' }; }\n",
+        );
+        script.push_str(
+            "  if (typeof window.engine.net !== 'object' || window.engine.net === null) { window.engine.net = { rxBps: 0, txBps: 0, iface: '' }; }\n",
+        );
+        script.push_str(
+            "  if (typeof window.engine.lighting !== 'object' || window.engine.lighting === null) { window.engine.lighting = { sceneName: null, effectNames: [], dominantColors: [] }; }\n",
+        );
 
         // Sensor API used by HTML effects.
         script.push_str(
@@ -459,6 +486,18 @@ impl LightscriptRuntime {
             .include_sensors
             .then(|| self.sensor_payload(input.sensors, options.selected_sensor_labels))
             .flatten();
+        let media = options
+            .include_media
+            .then(|| self.media_payload(input.sources.media))
+            .flatten();
+        let net = options
+            .include_net
+            .then(|| self.net_payload(input.sources.net))
+            .flatten();
+        let lighting = options
+            .include_lighting
+            .then(|| self.lighting_payload(input.sources.lighting))
+            .flatten();
         let controls = self.changed_control_payload(controls);
         let interaction = (options.include_interaction
             && self.last_interaction.as_ref() != Some(input.interaction))
@@ -471,6 +510,9 @@ impl LightscriptRuntime {
             || audio.is_some()
             || screen.is_some()
             || sensors.is_some()
+            || media.is_some()
+            || net.is_some()
+            || lighting.is_some()
             || !controls.is_empty()
             || interaction.is_some()
             || options.render_host_frame;
@@ -487,10 +529,51 @@ impl LightscriptRuntime {
             audio,
             screen,
             sensors,
+            media,
+            net,
+            lighting,
             controls,
             interaction,
             render_host_frame: options.render_host_frame,
         })
+    }
+
+    /// Emit a media payload when the state changed; album art rides along
+    /// only when the track changed so steady-state frames stay small.
+    fn media_payload(&mut self, media: Option<&MediaState>) -> Option<LightScriptMediaPayload> {
+        let media = media?;
+        if self.last_media.as_ref() == Some(media) {
+            return None;
+        }
+
+        let track_key = media.available.then(|| media.track_key());
+        let include_art = self.last_media.is_none() || track_key != self.last_media_track_key;
+        self.last_media = Some(media.clone());
+        self.last_media_track_key = track_key;
+        Some(LightScriptMediaPayload::from_state(media, include_art))
+    }
+
+    fn net_payload(&mut self, net: Option<&NetStats>) -> Option<LightScriptNetPayload> {
+        let net = net?;
+        if self.last_net.as_ref() == Some(net) {
+            return None;
+        }
+
+        self.last_net = Some(net.clone());
+        Some(LightScriptNetPayload::from_stats(net))
+    }
+
+    fn lighting_payload(
+        &mut self,
+        lighting: Option<&LightingState>,
+    ) -> Option<LightScriptLightingPayload> {
+        let lighting = lighting?;
+        if self.last_lighting.as_ref() == Some(lighting) {
+            return None;
+        }
+
+        self.last_lighting = Some(lighting.clone());
+        Some(LightScriptLightingPayload::from_state(lighting))
     }
 
     fn update_canvas_size(&mut self, width: u32, height: u32) -> bool {

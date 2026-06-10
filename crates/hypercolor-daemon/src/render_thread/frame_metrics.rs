@@ -430,6 +430,7 @@ mod tests {
             effect_dependency_key: SceneDependencyKey::new(3, 7),
             scene_runtime: SceneRuntimeSnapshot {
                 active_scene_id: None,
+                active_scene_name: None,
                 active_transition: Some(SceneTransitionSnapshot {
                     from_scene: None,
                     to_scene: None,
