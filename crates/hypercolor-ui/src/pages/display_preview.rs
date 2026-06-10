@@ -117,7 +117,10 @@ pub fn DisplayPreviewPage() -> impl IntoView {
                         let container_class = if display.circular {
                             "relative max-h-[calc(100vh-3rem)] max-w-[calc(100vw-3rem)] overflow-hidden rounded-full border border-white/10 bg-black shadow-[0_0_80px_rgba(0,0,0,0.65)]"
                         } else {
-                            "relative max-h-[calc(100vh-3rem)] max-w-[calc(100vw-3rem)] overflow-hidden rounded-[2rem] border border-white/10 bg-black shadow-[0_0_80px_rgba(0,0,0,0.65)]"
+                            // rounded-xl (not -lg): this is the large LCD
+                            // stage surface, where 8px corners read as a
+                            // hard rectangle at full-screen scale.
+                            "relative max-h-[calc(100vh-3rem)] max-w-[calc(100vw-3rem)] overflow-hidden rounded-xl border border-white/10 bg-black shadow-[0_0_80px_rgba(0,0,0,0.65)]"
                         };
                         let alt_text = format!("Full-screen preview of {}", display.name);
                         let fallback_src =
@@ -161,7 +164,7 @@ fn PreviewShellMessage(
     #[prop(into)] body: String,
 ) -> impl IntoView {
     view! {
-        <div class="flex flex-col items-center gap-3 rounded-[1.5rem] border border-white/10 bg-white/[0.04] px-8 py-7 text-center shadow-[0_0_80px_rgba(0,0,0,0.4)] backdrop-blur-md">
+        <div class="flex flex-col items-center gap-3 rounded-xl border border-white/10 bg-white/[0.04] px-8 py-7 text-center shadow-[0_0_80px_rgba(0,0,0,0.4)] backdrop-blur-md">
             <div class="flex h-12 w-12 items-center justify-center rounded-full border border-white/12 bg-white/[0.06] text-white/82">
                 <Icon icon=icon width="20" height="20" />
             </div>

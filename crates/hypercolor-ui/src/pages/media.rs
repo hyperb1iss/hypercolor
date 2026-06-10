@@ -12,7 +12,8 @@ use leptos::prelude::*;
 use leptos_icons::Icon;
 
 use crate::api;
-use crate::components::media_grid::{MediaGrid, MediaGridEmpty, asset_kind};
+use crate::components::empty_state::EmptyState;
+use crate::components::media_grid::{MediaGrid, asset_kind};
 use crate::components::media_kind::{
     format_bytes, format_duration, format_timecode, kind_accent, kind_icon, kind_label,
 };
@@ -154,10 +155,13 @@ pub fn MediaPage() -> impl IntoView {
                             }
                         }}
                     </span>
+                    // Standard purple-accent secondary treatment (§4: purple
+                    // is the only chrome accent) — matches the Effects
+                    // header's Install button.
                     <button
                         type="button"
-                        class="flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[11px] font-medium transition-all btn-press disabled:opacity-60"
-                        style="background: rgba(255, 106, 193, 0.08); border: 1px solid rgba(255, 106, 193, 0.16); color: rgb(255, 106, 193)"
+                        class="flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[11px] font-medium transition-all btn-press disabled:opacity-60
+                               text-fg-primary bg-surface-overlay/70 border border-edge-subtle hover:border-accent-muted hover:bg-surface-overlay glow-ring"
                         prop:disabled=move || uploading.get()
                         on:click=move |_| open_file_picker.run(())
                     >
@@ -192,14 +196,15 @@ pub fn MediaPage() -> impl IntoView {
                             {move || match media_resource.get() {
                                 None => view! { <MediaLoadingSkeleton /> }.into_any(),
                                 Some(Err(error)) => view! {
-                                    <MediaGridEmpty title="Media library unavailable" detail=error />
+                                    <EmptyState icon=LuFolder title="Media library unavailable" hint=error />
                                 }.into_any(),
                                 Some(Ok(_)) => {
                                     if filtered_media.get().is_empty() {
                                         view! {
-                                            <MediaGridEmpty
+                                            <EmptyState
+                                                icon=LuFolder
                                                 title="No matching media"
-                                                detail="Upload a file or adjust the current filter."
+                                                hint="Upload a file or adjust the current filter."
                                             />
                                         }.into_any()
                                     } else {

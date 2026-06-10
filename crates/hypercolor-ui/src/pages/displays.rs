@@ -6,12 +6,13 @@
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use leptos_icons::Icon;
 
 use crate::api;
 use crate::app::{DisplaysContext, EffectsContext, WsContext};
+use crate::components::modal::Modal;
 use crate::components::page_header::{PageAccent, PageHeader};
 use crate::components::resize_handle::ResizeHandle;
+use crate::components::status_banner::{StatusBanner, StatusBannerTone};
 use crate::display_preview_state::use_display_face_resource;
 use crate::icons::*;
 use crate::toasts;
@@ -321,58 +322,38 @@ pub fn DisplaysPage() -> impl IntoView {
             />
             {move || named_scene_warning.get().map(|(scene_name, snapshot_locked)| view! {
                 <div class="px-6 pt-3">
-                        <div class="rounded-xl border border-[rgba(241,250,140,0.24)] bg-[rgba(241,250,140,0.08)] px-4 py-3 shadow-[0_0_24px_rgba(241,250,140,0.08)]">
-                            <div class="flex items-start gap-3">
-                                <div class="mt-0.5 shrink-0 text-[rgba(241,250,140,0.9)]">
-                                    <Icon icon=LuTriangleAlert width="14px" height="14px" />
-                                </div>
-                                <div class="min-w-0 flex-1">
-                                    <div class="text-[11px] font-semibold uppercase tracking-[0.16em] text-[rgba(241,250,140,0.82)]">
-                                        {if snapshot_locked { "Snapshot Scene Locked" } else { "Named Scene Active" }}
-                                    </div>
-                                    <div class="mt-1 text-sm leading-5 text-fg-secondary">
-                                        <span class="text-fg-primary">{scene_name.clone()}</span>
-                                        {if snapshot_locked {
-                                            " is snapshot-locked. Return to Default before assigning, clearing, or tuning a display face."
-                                        } else {
-                                            " is active. Assigning, clearing, or tuning a face here rewrites that scene’s display group."
-                                        }}
-                                    </div>
-                                </div>
-                                <button
-                                    class="shrink-0 rounded-lg border border-[rgba(241,250,140,0.28)] px-3 py-1.5 text-[11px] font-medium text-[rgba(241,250,140,0.92)] transition-all duration-200 hover:bg-[rgba(241,250,140,0.08)] disabled:cursor-wait disabled:opacity-60"
-                                    disabled=move || returning_to_default.get()
-                                    on:click=move |_| on_return_to_default.run(())
-                                >
-                                    {move || if returning_to_default.get() {
-                                        "Returning..."
-                                    } else {
-                                        "Return to Default"
-                                    }}
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                })}
+                    <StatusBanner
+                        tone=StatusBannerTone::Warning
+                        title=if snapshot_locked { "Snapshot Scene Locked" } else { "Named Scene Active" }
+                        subject=scene_name
+                        detail=if snapshot_locked {
+                            " is snapshot-locked. Return to Default before assigning, clearing, or tuning a display face."
+                        } else {
+                            " is active. Assigning, clearing, or tuning a face here rewrites that scene’s display group."
+                        }
+                    >
+                        <button
+                            class="shrink-0 rounded-lg border border-status-warning/28 px-3 py-1.5 text-[11px] font-medium text-status-warning/92 transition-all duration-200 hover:bg-status-warning/8 disabled:cursor-wait disabled:opacity-60"
+                            disabled=move || returning_to_default.get()
+                            on:click=move |_| on_return_to_default.run(())
+                        >
+                            {move || if returning_to_default.get() {
+                                "Returning..."
+                            } else {
+                                "Return to Default"
+                            }}
+                        </button>
+                    </StatusBanner>
+                </div>
+            })}
             {move || degraded_face.get().map(|(effect_name, detail)| view! {
                 <div class="px-6 pt-3">
-                    <div class="rounded-xl border border-[rgba(255,99,99,0.28)] bg-[rgba(255,99,99,0.10)] px-4 py-3 shadow-[0_0_24px_rgba(255,99,99,0.10)]">
-                        <div class="flex items-start gap-3">
-                            <div class="mt-0.5 shrink-0 text-[rgba(255,99,99,0.94)]">
-                                <Icon icon=LuTriangleAlert width="14px" height="14px" />
-                            </div>
-                            <div class="min-w-0 flex-1">
-                                <div class="text-[11px] font-semibold uppercase tracking-[0.16em] text-[rgba(255,99,99,0.84)]">
-                                    "Degraded Face"
-                                </div>
-                                <div class="mt-1 text-sm leading-5 text-fg-secondary">
-                                    <span class="text-fg-primary">{effect_name}</span>
-                                    " is degraded. "
-                                    {detail}
-                                </div>
-                            </div>
-                        </div>
-                    </div>
+                    <StatusBanner
+                        tone=StatusBannerTone::Error
+                        title="Degraded Face"
+                        subject=effect_name
+                        detail=format!(" is degraded. {detail}")
+                    />
                 </div>
             })}
             <div class="relative flex min-h-0 flex-1 gap-3 p-3">
@@ -492,16 +473,16 @@ fn drag_callbacks(
 fn DisplaysModalBackdrop(
     #[prop(optional)] wide: bool,
     #[prop(into)] on_close: Callback<()>,
+    #[prop(into, optional)] label: MaybeProp<String>,
     children: Children,
 ) -> impl IntoView {
-    let close_backdrop = on_close;
-
     view! {
-        <div class="fixed inset-0 z-50 grid place-items-center p-4 animate-enter-fade">
-            <div
-                class="absolute inset-0 bg-black/65 backdrop-blur-sm"
-                on:click=move |_| close_backdrop.run(())
-            />
+        <Modal
+            on_close=on_close
+            label=label
+            container_class="fixed inset-0 z-50 grid place-items-center p-4 animate-enter-fade"
+            backdrop_class="absolute inset-0 bg-black/65 backdrop-blur-sm"
+        >
             <div
                 class="relative"
                 style=move || {
@@ -517,7 +498,7 @@ fn DisplaysModalBackdrop(
             >
                 {children()}
             </div>
-        </div>
+        </Modal>
     }
 }
 

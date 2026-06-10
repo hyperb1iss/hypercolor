@@ -538,6 +538,7 @@ pub fn Sidebar() -> impl IntoView {
                                 min="0"
                                 max="100"
                                 step="1"
+                                aria-label="Global brightness"
                                 class="min-w-0 flex-1 h-1 rounded-full appearance-none cursor-pointer"
                                 style:accent-color="rgb(var(--np-primary))"
                                 style:background="rgba(139, 133, 160, 0.15)"

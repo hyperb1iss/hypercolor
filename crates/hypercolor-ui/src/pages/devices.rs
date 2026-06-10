@@ -14,6 +14,7 @@ use crate::components::device_card::{
 };
 use crate::components::device_detail::DeviceDetail;
 use crate::components::device_pairing_modal::{DevicePairingModal, ForgetCredentialsModal};
+use crate::components::empty_state::EmptyState;
 use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, PageHeader};
 use crate::components::page_search_bar::PageSearchBar;
 use crate::components::resize_handle::ResizeHandle;
@@ -343,9 +344,12 @@ pub fn DevicesPage() -> impl IntoView {
                             }
                         }}
                     </span>
+                    // Standard purple-accent secondary treatment (§4: purple
+                    // is the only chrome accent) — matches the Effects
+                    // header's Install button.
                     <button
-                        class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-all btn-press shrink-0 disabled:opacity-60"
-                        style="background: rgba(128, 255, 234, 0.06); border: 1px solid rgba(128, 255, 234, 0.1); color: rgba(128, 255, 234, 0.8)"
+                        class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-all btn-press shrink-0 disabled:opacity-60
+                               text-fg-primary bg-surface-overlay/70 border border-edge-subtle hover:border-accent-muted hover:bg-surface-overlay glow-ring"
                         prop:disabled=move || scanning.get()
                         on:click=move |_| {
                             if scanning.get_untracked() {
@@ -428,22 +432,13 @@ pub fn DevicesPage() -> impl IntoView {
                                             let selected_id = option.id.clone();
                                             let next_id = option.id.clone();
                                             let rgb = option.rgb.clone();
-                                            let active_style = format!(
-                                                "background: rgba({rgb}, 0.15); color: rgb({rgb}); border-color: rgba({rgb}, 0.3); \
-                                                 box-shadow: 0 0 8px rgba({rgb}, 0.15)"
-                                            );
-                                            let inactive_style = format!(
-                                                "color: rgba({rgb}, 0.5); border-color: rgba({rgb}, 0.08); background: transparent"
-                                            );
                                             let is_active = Memo::new(move |_| driver_filter.get() == selected_id);
                                             view! {
                                                 <button
                                                     class="px-2 py-0.5 rounded-full text-[10px] font-medium border transition-all"
-                                                    style=move || if is_active.get() {
-                                                        active_style.clone()
-                                                    } else {
-                                                        inactive_style.clone()
-                                                    }
+                                                    class=("filter-chip-active", is_active)
+                                                    class=("filter-chip-inactive", move || !is_active.get())
+                                                    style=("--glow-rgb", rgb)
                                                     on:click=move |_| set_driver_filter.set(next_id.clone())
                                                 >
                                                     {chip_label}
@@ -479,11 +474,11 @@ pub fn DevicesPage() -> impl IntoView {
                                 let devices = filtered_devices.get();
                                 if devices.is_empty() {
                                     view! {
-                                        <div class="flex flex-col items-center justify-center py-20 space-y-3">
-                                            <Icon icon=LuCpu width="36px" height="36px"
-                                                  style="color: rgba(128, 255, 234, 0.25); filter: drop-shadow(0 0 12px rgba(128, 255, 234, 0.15))" />
-                                            <div class="text-fg-tertiary/50 text-xs font-mono tracking-wide">"No devices found"</div>
-                                        </div>
+                                        <EmptyState
+                                            icon=LuCpu
+                                            title="No devices found"
+                                            hint="Scan for hardware or adjust the current filters."
+                                        />
                                     }.into_any()
                                 } else {
                                     let has_selected = selected_device.get().is_some();

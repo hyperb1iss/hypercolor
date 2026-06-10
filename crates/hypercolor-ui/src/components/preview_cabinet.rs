@@ -163,11 +163,15 @@ pub fn PreviewCabinet(
     // `border-top-color` transition, so the dynamic `style:border-top-color`
     // below crossfades to the new accent instead of snap-changing. The
     // ignite pulse layers an animated box-shadow on top for extra drama.
+    // `preview-glow` layers the ambient-reactive halo (§9) on top of the
+    // neutral `edge-glow` hairline — the combined shadow lives in input.css
+    // so the ambient hue tints the cabinet without dropping the edge ring.
     let cabinet_class = if fill_height {
         "cabinet-accent-transition relative rounded-xl border border-edge-subtle bg-black edge-glow \
-         h-full flex flex-col"
+         preview-glow h-full flex flex-col"
     } else {
-        "cabinet-accent-transition relative rounded-xl border border-edge-subtle bg-black edge-glow flex flex-col"
+        "cabinet-accent-transition relative rounded-xl border border-edge-subtle bg-black edge-glow \
+         preview-glow flex flex-col"
     };
     // `flex items-center justify-center` letterboxes/pillarboxes the
     // aspect-correct CanvasPreview inside the cabinet's canvas region so
@@ -212,6 +216,11 @@ pub fn PreviewCabinet(
                                transition-colors duration-200"
                         title=move || if is_fullscreen.get().unwrap_or(false) {
                             "Exit fullscreen (Esc)"
+                        } else {
+                            "Fullscreen preview"
+                        }
+                        aria-label=move || if is_fullscreen.get().unwrap_or(false) {
+                            "Exit fullscreen"
                         } else {
                             "Fullscreen preview"
                         }

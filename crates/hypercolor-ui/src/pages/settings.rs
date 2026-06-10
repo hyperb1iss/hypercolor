@@ -270,31 +270,28 @@ pub fn SettingsPage() -> impl IntoView {
 
                             view! {
                                 {separator}
+                                // `accent-yellow` feeds the page accent into
+                                // `--glow-rgb` for the active icon/underline,
+                                // and the active text rides `text-fg-primary`
+                                // so the light theme stays legible.
                                 <button
-                                    class="flex items-center gap-1.5 px-3 h-full text-[13px] shrink-0 relative transition-colors duration-200 cursor-pointer"
-                                    style=move || if is_active.get() {
-                                        "color: rgb(230, 237, 243)"
-                                    } else {
-                                        "color: rgba(139, 133, 160, 0.6)"
-                                    }
+                                    class="accent-yellow flex items-center gap-1.5 px-3 h-full text-[13px] shrink-0 relative transition-colors duration-200 cursor-pointer"
+                                    class=("text-fg-primary", is_active)
+                                    class=("text-fg-tertiary/60", move || !is_active.get())
                                     on:click=move |_| scroll_to(id)
                                 >
                                     <span
                                         class="w-4 h-4 flex items-center justify-center shrink-0"
-                                        style=move || if is_active.get() {
-                                            "color: rgb(128, 255, 234)"
-                                        } else {
-                                            ""
-                                        }
+                                        class=("text-electric-yellow", is_active)
                                     >
                                         <Icon icon=tab.icon width="14px" height="14px" />
                                     </span>
                                     <span class="whitespace-nowrap">{tab.label}</span>
-                                    // Active underline — cyan glow
+                                    // Active underline — page-accent glow
                                     <div
                                         class="absolute bottom-0 left-2 right-2 h-[2px] rounded-full transition-all duration-300"
                                         style=move || if is_active.get() {
-                                            "background: rgb(128, 255, 234); box-shadow: 0 0 10px rgba(128, 255, 234, 0.4); opacity: 1"
+                                            "background: rgb(var(--glow-rgb)); box-shadow: 0 0 10px rgba(var(--glow-rgb), 0.4); opacity: 1"
                                         } else {
                                             "opacity: 0"
                                         }

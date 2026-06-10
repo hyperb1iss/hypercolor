@@ -357,7 +357,7 @@ pub(super) fn ViewportPicker(
     };
 
     view! {
-        <div class="mb-2 rounded-2xl border p-3 space-y-3" style=card_style>
+        <div class="mb-2 rounded-xl border p-3 space-y-3" style=card_style>
             <div class="flex items-start gap-2">
                 <div>
                     <div class="text-[9px] font-mono uppercase" style=label_style.clone()>{label.clone()}</div>
@@ -388,7 +388,7 @@ pub(super) fn ViewportPicker(
 
             {url_section}
 
-            <div class="rounded-[1.5rem] border border-white/[0.06] bg-[#09070f]/90 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+            <div class="rounded-lg border border-white/[0.06] bg-[#09070f]/90 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
                 <div class="flex items-center gap-2 text-[10px] text-fg-tertiary/55 font-mono uppercase tracking-[0.12em] mb-3">
                     <span class="inline-block h-1.5 w-1.5 rounded-full" style=move || format!("background: rgba({}, 0.85)", preview_dot_rgb) />
                     <span>
@@ -402,24 +402,24 @@ pub(super) fn ViewportPicker(
                 <div class=preview_shell_class>
                     <div
                         node_ref=viewport_ref
-                        class="relative overflow-hidden rounded-[1.25rem] border border-white/[0.08] shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] select-none"
+                        class="relative overflow-hidden rounded-lg border border-white/[0.08] shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] select-none"
                         style=viewport_style
                     >
                         <div class="absolute inset-0" style=preview_style.clone() />
                         <div class="absolute inset-0">
                             {preview_canvas}
                         </div>
-                        <div class="absolute inset-[7%] rounded-[1rem] border border-white/[0.05]" />
+                        <div class="absolute inset-[7%] rounded-md border border-white/[0.05]" />
                         <div class="absolute left-1/2 top-0 bottom-0 w-px bg-white/[0.05] -translate-x-1/2" />
                         <div class="absolute top-1/2 left-0 right-0 h-px bg-white/[0.05] -translate-y-1/2" />
 
                         <div
-                            class="absolute rounded-[1rem] border cursor-grab"
+                            class="absolute rounded-md border cursor-grab"
                             class:cursor-grabbing=move || interaction.get().is_some()
                             style=move || frame_style.get()
                             on:mousedown=move |ev| start_interaction.run((FrameHandle::Move, ev))
                         >
-                            <div class="absolute inset-0 rounded-[0.95rem] bg-white/[0.035] backdrop-blur-[1px]" />
+                            <div class="absolute inset-0 rounded-md bg-white/[0.035] backdrop-blur-[1px]" />
                             <div class="absolute left-2 top-2 rounded-full bg-black/45 px-2 py-1 text-[9px] font-semibold uppercase tracking-[0.14em] text-white/80">
                                 {label.clone()}
                             </div>

@@ -68,7 +68,7 @@ pub(super) fn CreateSimulatorModal(
     let close_button = on_close;
 
     view! {
-        <DisplaysModalBackdrop on_close=on_close>
+        <DisplaysModalBackdrop on_close=on_close label="Create simulator">
             <div
                 class="w-full max-w-md rounded-xl border border-edge-subtle bg-surface-raised p-4 shadow-2xl"
                 on:click=|event| event.stop_propagation()
@@ -84,6 +84,7 @@ pub(super) fn CreateSimulatorModal(
                         type="button"
                         class="rounded-sm p-1 text-fg-tertiary transition hover:text-accent-primary"
                         title="Close"
+                        aria-label="Close"
                         on:click=move |_| close_button.run(())
                     >
                         <Icon icon=LuX width="14" height="14" />
@@ -294,7 +295,7 @@ pub(super) fn EditSimulatorModal(
     let close_button = on_close;
 
     view! {
-        <DisplaysModalBackdrop on_close=on_close>
+        <DisplaysModalBackdrop on_close=on_close label="Simulator settings">
             <div
                 class="w-full max-w-md rounded-xl border border-edge-subtle bg-surface-raised p-4 shadow-2xl"
                 on:click=|event| event.stop_propagation()
@@ -310,6 +311,7 @@ pub(super) fn EditSimulatorModal(
                         type="button"
                         class="rounded-sm p-1 text-fg-tertiary transition hover:text-accent-primary"
                         title="Close"
+                        aria-label="Close"
                         on:click=move |_| close_button.run(())
                     >
                         <Icon icon=LuX width="14" height="14" />

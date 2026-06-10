@@ -18,7 +18,6 @@ use crate::api;
 use crate::components::media_kind::{
     format_bytes, kind_accent, kind_from_mime, kind_has_thumbnail, kind_icon, kind_label,
 };
-use crate::icons::*;
 
 /// Responsive grid of media cards. `selected_id` drives the highlight;
 /// pass an always-`None` signal where selection is not meaningful (the
@@ -158,19 +157,6 @@ fn AssetCard(
                 </div>
             </div>
         </button>
-    }
-}
-
-/// Empty-state placeholder for the media grid — shown by callers when the
-/// filtered asset list is empty.
-#[component]
-pub fn MediaGridEmpty(#[prop(into)] title: String, #[prop(into)] detail: String) -> impl IntoView {
-    view! {
-        <div class="flex flex-col items-center justify-center py-20 text-center">
-            <Icon icon=LuFolder width="36px" height="36px" style="color: rgba(139, 133, 160, 0.35)" />
-            <div class="mt-3 text-sm font-semibold text-fg-secondary">{title}</div>
-            <div class="mt-1 max-w-xs text-xs text-fg-tertiary/70">{detail}</div>
-        </div>
     }
 }
 

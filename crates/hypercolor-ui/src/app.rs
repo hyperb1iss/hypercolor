@@ -17,6 +17,7 @@ use hypercolor_types::spatial::SpatialLayout;
 use crate::api;
 use crate::apply_target::ApplyTarget;
 use crate::color::CanvasFrameAnalysis;
+use crate::components::modal::Modal;
 use crate::components::shell::Shell;
 use crate::components::welcome_overlay::WelcomeOverlay;
 use crate::config_state::ConfigContext;
@@ -864,14 +865,30 @@ fn ApiKeyPrompt(on_unlock: Callback<String>) -> impl IntoView {
     let submit_key = submit;
     let submit_click = submit;
 
+    let input_ref = NodeRef::<leptos::html::Input>::new();
+    Effect::new(move |_| {
+        if let Some(input) = input_ref.get() {
+            let _ = input.focus();
+        }
+    });
+
     view! {
-        <div class="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm px-4">
-            <div class="w-full max-w-sm rounded-lg border border-edge-subtle bg-surface-overlay p-5 modal-glow">
+        // Not dismissible — there is nothing behind this prompt until a key
+        // is provided, so Escape/backdrop have nowhere to go.
+        <Modal
+            on_close=Callback::new(|()| {})
+            label="Network API key"
+            dismissible=false
+            container_class="fixed inset-0 z-[100] flex items-center justify-center px-4"
+            backdrop_class="absolute inset-0 bg-black/70 backdrop-blur-sm"
+        >
+            <div class="relative w-full max-w-sm rounded-lg border border-edge-subtle bg-surface-overlay p-5 modal-glow">
                 <div class="text-sm font-semibold text-fg-primary">"Network API Key"</div>
                 <div class="mt-1 text-xs text-fg-tertiary/75">
                     "This daemon requires a key for network access."
                 </div>
                 <input
+                    node_ref=input_ref
                     type="password"
                     class="mt-4 w-full rounded-lg border border-edge-subtle bg-surface-overlay/60 px-3 py-2 text-sm text-fg-primary placeholder-fg-tertiary focus:border-accent-muted focus:outline-none"
                     placeholder="hc_..."
@@ -896,7 +913,7 @@ fn ApiKeyPrompt(on_unlock: Callback<String>) -> impl IntoView {
                     "Connect"
                 </button>
             </div>
-        </div>
+        </Modal>
     }
 }
 

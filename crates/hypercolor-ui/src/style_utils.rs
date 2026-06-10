@@ -94,10 +94,12 @@ fn hsl_to_rgb_string(h: f32, s: f32, l: f32) -> String {
 
 // ── Shared UI primitives ────────────────────────────────────────────────────
 
-/// Render a row of filter chips with active/inactive states.
+/// Render a row of filter chips with active/inactive/hover states.
 ///
 /// Each chip is a `(label, rgb)` pair. The `current` signal holds the active
-/// label; clicking a chip updates it via `set_current`.
+/// label; clicking a chip updates it via `set_current`. The RGB triplet rides
+/// `--glow-rgb` into the `.filter-chip-*` classes (input.css), which also own
+/// the inactive hover treatment.
 pub fn filter_chips(
     chips: &'static [(&'static str, &'static str)],
     current: ReadSignal<String>,
@@ -107,17 +109,12 @@ pub fn filter_chips(
         .iter()
         .map(|&(label, rgb)| {
             let is_active = Memo::new(move |_| current.get() == label);
-            let active_style = format!(
-                "background: rgba({rgb}, 0.15); color: rgb({rgb}); border-color: rgba({rgb}, 0.3); \
-                 box-shadow: 0 0 8px rgba({rgb}, 0.15)"
-            );
-            let inactive_style = format!(
-                "color: rgba({rgb}, 0.5); border-color: rgba({rgb}, 0.08); background: transparent"
-            );
             view! {
                 <button
                     class="px-2 py-0.5 rounded-full text-[10px] font-medium capitalize border transition-all"
-                    style=move || if is_active.get() { active_style.clone() } else { inactive_style.clone() }
+                    class=("filter-chip-active", is_active)
+                    class=("filter-chip-inactive", move || !is_active.get())
+                    style=("--glow-rgb", rgb)
                     on:click=move |_| set_current.set(label.to_string())
                 >
                     {label}

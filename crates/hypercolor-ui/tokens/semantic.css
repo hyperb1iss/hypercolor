@@ -54,9 +54,11 @@
     --status-warning:    oklch(0.93 0.15 105);
     --status-info:       oklch(0.72 0.12 260);
 
-    /* Scrollbar */
-    --scrollbar-thumb:   oklch(0.65 0.30 320 / 0.15);
-    --scrollbar-hover:   oklch(0.65 0.30 320 / 0.30);
+    /* Scrollbar — ambient-tinted (§9: --ambient-border tier). Low chroma so
+       the thumb reads as chrome, not content; falls back to purple via the
+       static --ambient-hue: 320 above before the first frame lands. */
+    --scrollbar-thumb:   oklch(0.65 0.10 var(--ambient-hue) / 0.18);
+    --scrollbar-hover:   oklch(0.65 0.12 var(--ambient-hue) / 0.32);
 
     /* Interactive glows (referenced in input.css for sliders, focus, etc.) */
     --glow-accent:       oklch(0.65 0.30 320);

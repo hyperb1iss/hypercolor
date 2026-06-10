@@ -15,6 +15,7 @@ use leptos_icons::Icon;
 use leptos_router::NavigateOptions;
 use leptos_router::hooks::use_navigate;
 
+use crate::components::modal::Modal;
 use crate::icons::*;
 use crate::tauri_bridge::{self, PawnIoSupportStatus, smbus_support_ready};
 
@@ -88,9 +89,19 @@ pub fn WelcomeOverlay() -> impl IntoView {
 
     view! {
         <Show when=move || show.get()>
-            <div class="fixed inset-0 z-[200] flex items-center justify-center bg-black/75 backdrop-blur-sm px-4">
+            // Escape dismisses (same path as "Let's go") unless a dismissal
+            // is already in flight; the backdrop stays inert so the
+            // first-run choice is always an explicit click or key.
+            <Modal
+                on_close=dismiss
+                label="Welcome to Hypercolor"
+                dismissible=Signal::derive(move || !dismissing.get())
+                close_on_backdrop=false
+                container_class="fixed inset-0 z-[200] flex items-center justify-center px-4"
+                backdrop_class="absolute inset-0 bg-black/75 backdrop-blur-sm"
+            >
                 <div
-                    class="w-full max-w-md rounded-xl border border-edge-subtle bg-surface-overlay p-6 modal-glow animate-enter-fade"
+                    class="relative w-full max-w-md rounded-xl border border-edge-subtle bg-surface-overlay p-6 modal-glow animate-enter-fade"
                     style="box-shadow: 0 0 60px rgba(225, 53, 255, 0.18), 0 0 24px rgba(128, 255, 234, 0.08)"
                 >
                     <div class="flex items-center gap-2.5">
@@ -163,7 +174,7 @@ pub fn WelcomeOverlay() -> impl IntoView {
                         {move || if dismissing.get() { "Saving..." } else { "Let's go" }}
                     </button>
                 </div>
-            </div>
+            </Modal>
         </Show>
     }
 }

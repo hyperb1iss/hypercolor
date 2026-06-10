@@ -16,6 +16,7 @@ use crate::components::preview_cabinet::PreviewCabinet;
 use crate::components::resize_handle::ResizeHandle;
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::components::silk_select::SilkSelect;
+use crate::components::status_banner::{StatusBanner, StatusBannerTone};
 use crate::icons::*;
 use crate::optimistic_controls::{OptimisticControlSession, raw_control_updates_payload};
 use crate::toasts;
@@ -741,58 +742,38 @@ pub fn EffectsPage() -> impl IntoView {
 
             {move || named_scene_warning.get().map(|(scene_name, snapshot_locked)| view! {
                 <div class="px-6 pt-4">
-                        <div class="rounded-xl border border-[rgba(241,250,140,0.24)] bg-[rgba(241,250,140,0.08)] px-4 py-3 shadow-[0_0_24px_rgba(241,250,140,0.08)]">
-                            <div class="flex items-start gap-3">
-                                <div class="mt-0.5 shrink-0 text-[rgba(241,250,140,0.9)]">
-                                    <Icon icon=LuTriangleAlert width="14px" height="14px" />
-                                </div>
-                                <div class="min-w-0 flex-1">
-                                    <div class="text-[11px] font-semibold uppercase tracking-[0.16em] text-[rgba(241,250,140,0.82)]">
-                                        {if snapshot_locked { "Snapshot Scene Locked" } else { "Named Scene Active" }}
-                                    </div>
-                                    <div class="mt-1 text-sm leading-5 text-fg-secondary">
-                                        <span class="text-fg-primary">{scene_name.clone()}</span>
-                                        {if snapshot_locked {
-                                            " is snapshot-locked. Return to Default before applying an effect or changing its controls."
-                                        } else {
-                                            " is active. Applying an effect here rewrites that scene’s default-zone effect."
-                                        }}
-                                    </div>
-                                </div>
-                                <button
-                                    class="shrink-0 rounded-lg border border-[rgba(241,250,140,0.28)] px-3 py-1.5 text-[11px] font-medium text-[rgba(241,250,140,0.92)] transition-all duration-200 hover:bg-[rgba(241,250,140,0.08)] disabled:cursor-wait disabled:opacity-60"
-                                    disabled=move || returning_to_default.get()
-                                    on:click=move |_| on_return_to_default.run(())
-                                >
-                                    {move || if returning_to_default.get() {
-                                        "Returning..."
-                                    } else {
-                                        "Return to Default"
-                                    }}
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                })}
+                    <StatusBanner
+                        tone=StatusBannerTone::Warning
+                        title=if snapshot_locked { "Snapshot Scene Locked" } else { "Named Scene Active" }
+                        subject=scene_name
+                        detail=if snapshot_locked {
+                            " is snapshot-locked. Return to Default before applying an effect or changing its controls."
+                        } else {
+                            " is active. Applying an effect here rewrites that scene’s default-zone effect."
+                        }
+                    >
+                        <button
+                            class="shrink-0 rounded-lg border border-status-warning/28 px-3 py-1.5 text-[11px] font-medium text-status-warning/92 transition-all duration-200 hover:bg-status-warning/8 disabled:cursor-wait disabled:opacity-60"
+                            disabled=move || returning_to_default.get()
+                            on:click=move |_| on_return_to_default.run(())
+                        >
+                            {move || if returning_to_default.get() {
+                                "Returning..."
+                            } else {
+                                "Return to Default"
+                            }}
+                        </button>
+                    </StatusBanner>
+                </div>
+            })}
             {move || degraded_effect.get().map(|(effect_name, detail)| view! {
                 <div class="px-6 pt-3">
-                    <div class="rounded-xl border border-[rgba(255,99,99,0.28)] bg-[rgba(255,99,99,0.10)] px-4 py-3 shadow-[0_0_24px_rgba(255,99,99,0.10)]">
-                        <div class="flex items-start gap-3">
-                            <div class="mt-0.5 shrink-0 text-[rgba(255,99,99,0.94)]">
-                                <Icon icon=LuTriangleAlert width="14px" height="14px" />
-                            </div>
-                            <div class="min-w-0 flex-1">
-                                <div class="text-[11px] font-semibold uppercase tracking-[0.16em] text-[rgba(255,99,99,0.84)]">
-                                    "Degraded Effect"
-                                </div>
-                                <div class="mt-1 text-sm leading-5 text-fg-secondary">
-                                    <span class="text-fg-primary">{effect_name}</span>
-                                    " is degraded. "
-                                    {detail}
-                                </div>
-                            </div>
-                        </div>
-                    </div>
+                    <StatusBanner
+                        tone=StatusBannerTone::Error
+                        title="Degraded Effect"
+                        subject=effect_name
+                        detail=format!(" is degraded. {detail}")
+                    />
                 </div>
             })}
 
@@ -821,9 +802,12 @@ pub fn EffectsPage() -> impl IntoView {
                                 view! {
                                     <div class=grid_class>
                                         <For
-                                            each=move || filtered_effects.get()
-                                            key=|effect| effect.id.clone()
-                                            children=move |effect| {
+                                            // Enumerated so each card gets its grid index for
+                                            // the entrance stagger (EffectCard caps the delay
+                                            // tier internally).
+                                            each=move || filtered_effects.get().into_iter().enumerate()
+                                            key=|(_, effect)| effect.id.clone()
+                                            children=move |(index, effect)| {
                                                 let effect_id = effect.id.clone();
                                                 let fav_effect_id = effect.id.clone();
                                                 let badge_effect_id = effect.id.clone();
@@ -858,6 +842,7 @@ pub fn EffectsPage() -> impl IntoView {
                                                         active_zone_names=active_zone_names
                                                         on_apply=on_apply
                                                         on_toggle_favorite=on_toggle_favorite
+                                                        index=index
                                                     />
                                                 }
                                             }
@@ -937,6 +922,7 @@ pub fn EffectsPage() -> impl IntoView {
                                                         <button
                                                             class="p-1 rounded-md hover:bg-surface-hover/40 text-fg-tertiary/50 hover:text-fg-secondary transition-all duration-150"
                                                             title="Float controls into separate panel"
+                                                            aria-label="Float controls into separate panel"
                                                             on:click=move |_| {
                                                                 set_controls_detached.set(true);
                                                                 persist_to_storage("hc-fx-controls-detached", "true");
@@ -1008,6 +994,7 @@ pub fn EffectsPage() -> impl IntoView {
                                                             <button
                                                                 class="p-1 rounded-md hover:bg-surface-hover/40 text-fg-tertiary/50 hover:text-fg-secondary transition-all duration-150"
                                                                 title="Dock controls back"
+                                                                aria-label="Dock controls back"
                                                                 on:click=move |_| {
                                                                     set_controls_detached.set(false);
                                                                     persist_to_storage("hc-fx-controls-detached", "false");

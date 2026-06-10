@@ -13,6 +13,7 @@ use super::source::{
 };
 use crate::api;
 use crate::components::media_grid::MediaGrid;
+use crate::components::modal::Modal;
 use crate::icons::*;
 use crate::toasts;
 
@@ -60,12 +61,14 @@ pub fn AddLayerPicker(
     let effects = LocalResource::new(api::fetch_effects);
 
     view! {
-        <div
-            class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4 backdrop-blur-sm animate-enter-fade"
-            on:click=move |_| on_cancel.run(())
+        <Modal
+            on_close=on_cancel
+            label="Add layer"
+            container_class="fixed inset-0 z-50 flex items-center justify-center px-4 animate-enter-fade"
+            backdrop_class="absolute inset-0 bg-black/70 backdrop-blur-sm"
         >
             <div
-                class="flex max-h-[82vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-edge-subtle bg-surface-overlay"
+                class="relative flex max-h-[82vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-edge-subtle bg-surface-overlay"
                 style="box-shadow: 0 0 48px rgba(225, 53, 255, 0.13)"
                 on:click=|event| event.stop_propagation()
             >
@@ -80,6 +83,7 @@ pub fn AddLayerPicker(
                     <button
                         type="button"
                         class="rounded-md border border-edge-subtle p-1.5 text-fg-tertiary transition-colors hover:text-fg-primary btn-press"
+                        aria-label="Close"
                         on:click=move |_| on_cancel.run(())
                     >
                         <Icon icon=LuX width="15px" height="15px" />
@@ -156,7 +160,7 @@ pub fn AddLayerPicker(
                     </div>
                 </div>
             </div>
-        </div>
+        </Modal>
     }
 }
 

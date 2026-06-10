@@ -16,6 +16,7 @@ use crate::api::{
 };
 use crate::app::DevicesContext;
 use crate::components::device_card::{brand_colors, classify_brand};
+use crate::components::modal::Modal;
 use crate::icons::*;
 use crate::toasts;
 
@@ -116,7 +117,7 @@ pub fn DevicePairingModal(
     // If there's no descriptor, show a generic "pairing not available" state
     let Some(desc) = descriptor else {
         return view! {
-            <ModalBackdrop on_close=on_close>
+            <ModalBackdrop on_close=on_close label="Device pairing">
                 <div class="text-center py-8">
                     <Icon icon=LuTriangleAlert width="32px" height="32px" style="color: rgba(255, 183, 77, 0.6)" />
                     <p class="text-sm text-fg-secondary mt-3">"Pairing is not available for this device."</p>
@@ -138,7 +139,7 @@ pub fn DevicePairingModal(
     let fields = desc.fields.clone();
 
     view! {
-        <ModalBackdrop on_close=on_close>
+        <ModalBackdrop on_close=on_close label="Device pairing">
             // Header
             <div class="flex items-center gap-3 mb-4">
                 <div
@@ -153,6 +154,7 @@ pub fn DevicePairingModal(
                 </div>
                 <button
                     class="w-7 h-7 rounded-lg flex items-center justify-center text-fg-tertiary hover:text-fg-secondary hover:bg-surface-hover/40 transition-colors"
+                    aria-label="Close"
                     on:click=move |_| on_close.run(())
                 >
                     <Icon icon=LuX width="16px" height="16px" />
@@ -355,7 +357,7 @@ pub fn ForgetCredentialsModal(
     };
 
     view! {
-        <ModalBackdrop on_close=on_close>
+        <ModalBackdrop on_close=on_close label="Forget credentials">
             <div class="text-center">
                 <div class="w-12 h-12 rounded-xl flex items-center justify-center mx-auto mb-3"
                      style="background: rgba(255, 99, 99, 0.08); border: 1px solid rgba(255, 99, 99, 0.12)">
@@ -412,20 +414,24 @@ pub fn needs_pairing(auth: &Option<DeviceAuthSummary>) -> bool {
 // ── Shared modal backdrop ──────────────────────────────────────────────────
 
 #[component]
-fn ModalBackdrop(#[prop(into)] on_close: Callback<()>, children: Children) -> impl IntoView {
+fn ModalBackdrop(
+    #[prop(into)] on_close: Callback<()>,
+    #[prop(into, optional)] label: MaybeProp<String>,
+    children: Children,
+) -> impl IntoView {
     view! {
-        <div class="fixed inset-0 z-50 grid place-items-center p-4 animate-enter-fade">
-            // Backdrop
-            <div
-                class="absolute inset-0 bg-black/60 backdrop-blur-sm"
-                on:click=move |_| on_close.run(())
-            />
+        <Modal
+            on_close=on_close
+            label=label
+            container_class="fixed inset-0 z-50 grid place-items-center p-4 animate-enter-fade"
+            backdrop_class="absolute inset-0 bg-black/60 backdrop-blur-sm"
+        >
             // Modal panel — explicit width avoids flex/grid sizing quirks
             <div class="relative rounded-xl border border-edge-subtle bg-surface-raised
                         animate-enter-scale p-5"
                  style="width: min(28rem, calc(100vw - 2rem)); box-shadow: 0 0 60px rgba(0,0,0,0.3), 0 0 30px rgba(225, 53, 255, 0.05)">
                 {children()}
             </div>
-        </div>
+        </Modal>
     }
 }

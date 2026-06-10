@@ -2,8 +2,8 @@
 //!
 //! Effects and Devices shipped identical markup with only the placeholder and
 //! signal pair differing. Consolidating it here keeps the search row
-//! pixel-perfect across pages and leaves one place to evolve the focus-hint
-//! key binding if we ever wire "/" up globally.
+//! pixel-perfect across pages, and the shared element id lets the shell's
+//! global "/" shortcut focus whichever page's search bar is mounted.
 
 use leptos::ev;
 use leptos::prelude::*;
@@ -11,6 +11,10 @@ use leptos_icons::Icon;
 
 use crate::icons::LuSearch;
 use hypercolor_leptos_ext::events::Input;
+
+/// Element id of the mounted page search input. Each page renders at most
+/// one `PageSearchBar`, so the shell's `/` shortcut can target it by id.
+pub const PAGE_SEARCH_INPUT_ID: &str = "page-search-input";
 
 #[component]
 pub fn PageSearchBar(
@@ -24,6 +28,7 @@ pub fn PageSearchBar(
                 <Icon icon=LuSearch width="14px" height="14px" />
             </span>
             <input
+                id=PAGE_SEARCH_INPUT_ID
                 type="text"
                 placeholder=placeholder
                 class="w-full bg-surface-overlay/60 border border-edge-subtle rounded-lg pl-9 pr-10 py-1.5 \

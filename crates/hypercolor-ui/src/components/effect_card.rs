@@ -244,6 +244,12 @@ pub fn EffectCard(
                 class="absolute top-2.5 right-2.5 z-20 p-1.5 rounded-full \
                        bg-black/30 backdrop-blur-sm transition-all duration-200 \
                        hover:bg-black/50 hover:scale-110 active:scale-95"
+                aria-label=move || if is_favorite.get() {
+                    "Remove from favorites"
+                } else {
+                    "Add to favorites"
+                }
+                aria-pressed=move || is_favorite.get().to_string()
                 on:click={
                     let fav_id = fav_id.clone();
                     move |ev: web_sys::MouseEvent| {

@@ -1,18 +1,72 @@
 //! App shell — sidebar + header + content area + command palette.
 
 use hypercolor_leptos_ext::events::Input;
+use hypercolor_leptos_ext::events::document as browser_document;
 use leptos::prelude::*;
 use leptos_icons::Icon;
 use leptos_router::hooks::use_location;
 use leptos_router::hooks::use_navigate;
+use wasm_bindgen::JsCast;
 
 use hypercolor_types::scene::SceneMutationMode;
 
-use crate::app::{EffectsContext, FrameAnalysisContext};
+use crate::app::{EffectsContext, FrameAnalysisContext, StudioFlag};
+use crate::components::page_search_bar::PAGE_SEARCH_INPUT_ID;
 use crate::components::scene_switcher::active_saved_scene_id;
 use crate::components::sidebar::Sidebar;
 use crate::icons::*;
 use crate::zones::{ScenesContext, ZonesContext};
+
+/// Path for a `Ctrl/Cmd+<digit>` nav shortcut, mirroring the sidebar's nav
+/// order for the active nav set (Spec 65 §5.1 swaps Studio/Media in for
+/// Assets/Layout/Displays when the beta flag is on).
+#[must_use]
+pub fn nav_shortcut_path(studio_ui: bool, key: &str) -> Option<&'static str> {
+    const BASE: [&str; 7] = [
+        "/",
+        "/effects",
+        "/assets",
+        "/layout",
+        "/devices",
+        "/displays",
+        "/settings",
+    ];
+    const STUDIO: [&str; 6] = [
+        "/",
+        "/effects",
+        "/studio",
+        "/media",
+        "/devices",
+        "/settings",
+    ];
+
+    let paths: &[&str] = if studio_ui { &STUDIO } else { &BASE };
+    let digit = key.parse::<usize>().ok()?;
+    (1..=paths.len()).contains(&digit).then(|| paths[digit - 1])
+}
+
+/// Whether the event originated from a text-entry surface, where global
+/// single-key shortcuts (like `/`) must stay inert.
+fn targets_editable(ev: &leptos::ev::KeyboardEvent) -> bool {
+    let Some(target) = ev.target() else {
+        return false;
+    };
+    let Some(el) = target.dyn_ref::<web_sys::HtmlElement>() else {
+        return false;
+    };
+    let tag = el.tag_name().to_ascii_lowercase();
+    tag == "input" || tag == "textarea" || tag == "select" || el.is_content_editable()
+}
+
+/// Focus the current page's search bar (the `/` kbd hint in `PageSearchBar`).
+fn focus_page_search() {
+    if let Some(doc) = browser_document()
+        && let Some(el) = doc.get_element_by_id(PAGE_SEARCH_INPUT_ID)
+        && let Some(input) = el.dyn_ref::<web_sys::HtmlElement>()
+    {
+        let _ = input.focus();
+    }
+}
 
 /// Top-level layout shell. Sidebar left, header + content right.
 #[component]
@@ -21,8 +75,12 @@ pub fn Shell(children: Children) -> impl IntoView {
     let location = use_location();
     let is_layout_route = Memo::new(move |_| location.pathname.get() == "/layout");
 
-    // Ambient hue extraction — driven by the shared frame-analysis pass in app context.
-    let shell_ref = NodeRef::<leptos::html::Div>::new();
+    // Ambient hue extraction — driven by the shared frame-analysis pass in
+    // app context. The hue is written to `:root` (not the shell div):
+    // custom-property `var()` substitution happens where a property is
+    // *declared*, and every `--ambient-*` token plus the scrollbar tints are
+    // declared in `:root` blocks of tokens/semantic.css, so a hue set any
+    // lower in the tree would never reach them.
     let frame_analysis = use_context::<FrameAnalysisContext>();
     let last_ambient_hue = StoredValue::new(None::<i16>);
 
@@ -36,10 +94,13 @@ pub fn Shell(children: Children) -> impl IntoView {
                 return;
             }
 
-            if let Some(el) = shell_ref.get_untracked() {
-                let html_el: &web_sys::HtmlElement = &el;
-                let style = html_el.style();
-                let _ = style.set_property("--ambient-hue", &hue.to_string());
+            if let Some(doc) = browser_document()
+                && let Some(root) = doc.document_element()
+                && let Some(html_el) = root.dyn_ref::<web_sys::HtmlElement>()
+            {
+                let _ = html_el
+                    .style()
+                    .set_property("--ambient-hue", &hue.to_string());
                 last_ambient_hue.set_value(Some(hue));
             }
         });
@@ -47,6 +108,7 @@ pub fn Shell(children: Children) -> impl IntoView {
 
     // Global keyboard shortcuts
     let navigate = use_navigate();
+    let studio_flag = expect_context::<StudioFlag>();
     let keydown_handler = move |ev: leptos::ev::KeyboardEvent| {
         let key = ev.key();
         let ctrl_or_meta = ev.ctrl_key() || ev.meta_key();
@@ -62,21 +124,25 @@ pub fn Shell(children: Children) -> impl IntoView {
             return;
         }
 
-        if ctrl_or_meta && key == "1" {
+        // Ctrl/Cmd+1..7 jump straight to a nav page in sidebar order.
+        if ctrl_or_meta
+            && let Some(path) = nav_shortcut_path(studio_flag.enabled.get_untracked(), &key)
+        {
             ev.prevent_default();
-            navigate("/", Default::default());
+            navigate(path, Default::default());
             return;
         }
 
-        if ctrl_or_meta && key == "2" {
+        // `/` focuses the current page's search bar, unless the user is
+        // already typing somewhere.
+        if key == "/" && !ctrl_or_meta && !ev.alt_key() && !targets_editable(&ev) {
             ev.prevent_default();
-            navigate("/effects", Default::default());
+            focus_page_search();
         }
     };
 
     view! {
         <div
-            node_ref=shell_ref
             class="fixed inset-0 flex min-h-0 bg-surface-base text-fg-primary overflow-hidden noise-overlay"
             on:keydown=keydown_handler
             tabindex="-1"
@@ -134,6 +200,18 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
     Effect::new(move |_| {
         query.track();
         set_selected_idx.set(0);
+    });
+
+    // Keep the keyboard-selected row visible while arrowing through a list
+    // longer than the panel. Nearest-edge alignment, so mouse-driven
+    // selection (already on-screen) never causes a scroll jump.
+    Effect::new(move |_| {
+        let idx = selected_idx.get();
+        if let Some(doc) = browser_document()
+            && let Some(el) = doc.get_element_by_id(&format!("palette-opt-{idx}"))
+        {
+            el.scroll_into_view_with_bool(false);
+        }
     });
 
     let filtered = Memo::new(move |_| {
@@ -330,9 +408,17 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
                                                         class="w-full flex items-center gap-3 px-4 py-2.5 text-left
                                                                hover:bg-electric-purple/[0.05] btn-press group animate-enter-up"
                                                         style=row_style
+                                                        id=format!("palette-opt-{i}")
                                                         role="option"
                                                         aria-selected=move || is_selected().to_string()
-                                                        on:mouseenter=move |_| set_selected_idx.set(i)
+                                                        // `mousemove`, not `mouseenter`: arrow-key scrolling
+                                                        // slides rows under a stationary cursor, and the
+                                                        // resulting enter events would fight the keyboard.
+                                                        on:mousemove=move |_| {
+                                                            if selected_idx.get_untracked() != i {
+                                                                set_selected_idx.set(i);
+                                                            }
+                                                        }
                                                         on:click=move |_| {
                                                             fx.apply_effect(id.clone());
                                                             on_close.run(());
@@ -352,9 +438,14 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
                                                         class="w-full flex items-center gap-3 px-4 py-2.5 text-left
                                                                hover:bg-electric-purple/[0.05] btn-press group animate-enter-up"
                                                         style=row_style
+                                                        id=format!("palette-opt-{i}")
                                                         role="option"
                                                         aria-selected=move || is_selected().to_string()
-                                                        on:mouseenter=move |_| set_selected_idx.set(i)
+                                                        on:mousemove=move |_| {
+                                                            if selected_idx.get_untracked() != i {
+                                                                set_selected_idx.set(i);
+                                                            }
+                                                        }
                                                         on:click=move |_| {
                                                             if active {
                                                                 return;

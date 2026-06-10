@@ -7,6 +7,7 @@ use leptos::prelude::*;
 use leptos_icons::Icon;
 
 use crate::api;
+use crate::components::empty_state::EmptyState;
 use crate::components::layer_panel::LayerPanel;
 use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, PageHeader};
 use crate::components::page_search_bar::PageSearchBar;
@@ -231,13 +232,13 @@ pub fn AssetsPage() -> impl IntoView {
                             {move || match assets_resource.get() {
                                 None => view! { <AssetsLoadingSkeleton /> }.into_any(),
                                 Some(Err(error)) => view! {
-                                    <EmptyState icon=LuTriangleAlert title="Asset library unavailable" detail=error />
+                                    <EmptyState icon=LuTriangleAlert title="Asset library unavailable" hint=error />
                                 }.into_any(),
                                 Some(Ok(_)) => {
                                     let assets = filtered_assets.get();
                                     if assets.is_empty() {
                                         view! {
-                                            <EmptyState icon=LuFolder title="No matching assets" detail="Upload media or adjust the current filter." />
+                                            <EmptyState icon=LuFolder title="No matching assets" hint="Upload media or adjust the current filter." />
                                         }.into_any()
                                     } else {
                                         view! {
@@ -472,22 +473,6 @@ fn AssetFact(label: &'static str, value: String) -> impl IntoView {
         <div class="rounded-lg border border-edge-subtle/55 bg-surface-sunken/45 px-2.5 py-2">
             <div class="font-mono text-[9px] uppercase tracking-wide text-fg-tertiary/55">{label}</div>
             <div class="mt-1 truncate text-xs font-medium text-fg-secondary">{value}</div>
-        </div>
-    }
-}
-
-#[component]
-fn EmptyState(
-    icon: icondata_core::Icon,
-    title: &'static str,
-    detail: impl Into<String>,
-) -> impl IntoView {
-    let detail = detail.into();
-    view! {
-        <div class="flex flex-col items-center justify-center py-20 text-center">
-            <Icon icon=icon width="36px" height="36px" style="color: rgba(139, 133, 160, 0.35)" />
-            <div class="mt-3 text-sm font-semibold text-fg-secondary">{title}</div>
-            <div class="mt-1 max-w-xs text-xs text-fg-tertiary/70">{detail}</div>
         </div>
     }
 }
