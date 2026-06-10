@@ -69,6 +69,12 @@ pub fn EffectCard(
     effect: EffectSummary,
     #[prop(into)] is_active: Signal<bool>,
     #[prop(into)] is_favorite: Signal<bool>,
+    /// Names of the LED zones this effect is currently running in. When
+    /// non-empty, a one-line badge renders under the title ("Running in
+    /// Desk, Wall"). Leave unset (or empty) for today's zone-less card —
+    /// single-zone scenes pass nothing here.
+    #[prop(optional, into)]
+    active_zone_names: Signal<Vec<String>>,
     #[prop(into)] on_apply: Callback<String>,
     #[prop(into)] on_toggle_favorite: Callback<String>,
     /// Index for stagger animation (clamped to 12).
@@ -282,6 +288,27 @@ pub fn EffectCard(
                 >
                     {name}
                 </h3>
+
+                // Zone badge — which zones this effect is lighting right
+                // now. One quiet line; the full list survives truncation
+                // via the title attribute.
+                {move || {
+                    let names = active_zone_names.get();
+                    (!names.is_empty()).then(|| {
+                        let label = format!("Running in {}", names.join(", "));
+                        let title = label.clone();
+                        view! {
+                            <div
+                                class="mb-1 flex min-w-0 items-center gap-1.5 text-[10px] \
+                                       text-electric-purple/90 drop-shadow-[0_1px_3px_rgba(0,0,0,0.85)]"
+                                title=title
+                            >
+                                <span class="h-1 w-1 shrink-0 rounded-full bg-electric-purple/80" />
+                                <span class="truncate">{label}</span>
+                            </div>
+                        }
+                    })
+                }}
 
                 // Description — softer tint so the title stays dominant
                 <p

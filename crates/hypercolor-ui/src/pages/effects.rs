@@ -8,7 +8,6 @@ use crate::api;
 use crate::app::{EffectsContext, WsContext};
 use crate::apply_target::ApplyTarget;
 use crate::components::calibration_guide::CalibrationGuide;
-use crate::components::control_panel::ControlPanel;
 use crate::components::effect_card::EffectCard;
 use crate::components::install_effect_panel::InstallEffectPanel;
 use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, PageHeader};
@@ -20,12 +19,15 @@ use crate::components::silk_select::SilkSelect;
 use crate::icons::*;
 use crate::optimistic_controls::{OptimisticControlSession, raw_control_updates_payload};
 use crate::toasts;
+use crate::zones::{ZoneEffectState, ZonesContext};
 use hypercolor_types::effect::{ControlDefinition, ControlValue};
 use hypercolor_types::scene::{SceneKind, SceneMutationMode, ZoneRole};
 
 mod support;
+mod zone_controls;
 
 use support::{LoadingSkeleton, drag_callbacks, expand_control_updates, persist_to_storage};
+use zone_controls::{ZoneControlSchemaCache, ZoneScopedControls};
 
 use crate::style_utils::{category_accent_rgb, filter_chips};
 
@@ -61,6 +63,7 @@ fn ApplyTargetSelect(
     #[prop(into)] scene: Signal<Option<api::ActiveSceneResponse>>,
 ) -> impl IntoView {
     let fx = expect_context::<EffectsContext>();
+    let zones_ctx = expect_context::<ZonesContext>();
 
     let options = Signal::derive(move || {
         let mut opts = vec![(String::new(), "Default zone".to_owned())];
@@ -98,7 +101,14 @@ fn ApplyTargetSelect(
     });
     let value = Signal::derive(move || fx.apply_target.get().select_value());
     let on_change = Callback::new(move |val: String| {
-        fx.apply_target.set(ApplyTarget::from_select_value(val));
+        let target = ApplyTarget::from_select_value(val);
+        // Mirror the picked zone into the shared focused zone so the
+        // preset panel, sidebar player, and the controls panel below all
+        // follow the same visible choice (Primary/All zones = primary).
+        zones_ctx
+            .focused_zone
+            .set(target.zone_id().map(ToOwned::to_owned));
+        fx.apply_target.set(target);
     });
 
     view! {
@@ -121,6 +131,7 @@ fn ApplyTargetSelect(
 pub fn EffectsPage() -> impl IntoView {
     let ws = expect_context::<WsContext>();
     let fx = expect_context::<EffectsContext>();
+    let zones_ctx = expect_context::<ZonesContext>();
 
     Effect::new(move |_| {
         ws.set_preview_cap.set(EFFECTS_PREVIEW_FPS_CAP);
@@ -259,6 +270,10 @@ pub fn EffectsPage() -> impl IntoView {
     let controls: Signal<Vec<ControlDefinition>> = fx.active_controls.into();
     let control_values: Signal<std::collections::HashMap<String, ControlValue>> =
         fx.active_control_values.into();
+    // Control schemas for non-primary zone tabs, cached per effect id.
+    // Page-owned so docking/undocking the controls column keeps it warm.
+    let zone_schema_cache: ZoneControlSchemaCache =
+        StoredValue::new(std::collections::HashMap::new());
     let accent_rgb =
         Signal::derive(move || category_accent_rgb(&fx.active_effect_category.get()).to_string());
     let active_effect_id_signal = Signal::derive(move || fx.active_effect_id.get());
@@ -282,7 +297,34 @@ pub fn EffectsPage() -> impl IntoView {
         })
     });
 
-    let has_active = Memo::new(move |_| fx.active_effect_id.get().is_some());
+    // Per-zone active state: a card lights up when its effect runs in ANY
+    // LED zone of the active scene. The singular `active_effect_id`
+    // (the primary-zone mirror) stays in the set so single-zone scenes —
+    // including the ephemeral default before the scene resource resolves —
+    // keep exactly their old behavior.
+    let active_effect_ids = Memo::new(move |_| {
+        let mut ids = fx.zone_effects.with(|zones| {
+            zones
+                .iter()
+                .filter_map(|state| state.effect_id.clone())
+                .collect::<std::collections::HashSet<_>>()
+        });
+        if let Some(primary) = fx.active_effect_id.get() {
+            ids.insert(primary);
+        }
+        ids
+    });
+
+    // The detail/preview pane serves whichever zones are rendering: in a
+    // multi-zone scene it opens when ANY zone is active, not just the
+    // primary (a zone-2-only scene used to hide the pane entirely).
+    let has_active = Memo::new(move |_| {
+        fx.active_effect_id.get().is_some()
+            || (zones_ctx.multi_zone.get()
+                && fx
+                    .zone_effects
+                    .with(|zones| zones.iter().any(ZoneEffectState::is_active)))
+    });
     let named_scene_warning = Memo::new(move |_| {
         (fx.active_scene_kind.get() == Some(SceneKind::Named)).then(|| {
             (
@@ -375,7 +417,6 @@ pub fn EffectsPage() -> impl IntoView {
     // one zone — a single-zone scene keeps the unchanged "apply effect"
     // behavior with no extra control. The shared scene resource keeps the
     // zone options fresh across external scene/zone changes.
-    let zones_ctx = expect_context::<crate::zones::ZonesContext>();
     let apply_target_scene: Signal<Option<api::ActiveSceneResponse>> =
         zones_ctx.active_scene.into();
     // Apply effect handler — delegates to shared context
@@ -785,17 +826,36 @@ pub fn EffectsPage() -> impl IntoView {
                                             children=move |effect| {
                                                 let effect_id = effect.id.clone();
                                                 let fav_effect_id = effect.id.clone();
+                                                let badge_effect_id = effect.id.clone();
                                                 let is_active = Signal::derive(move || {
-                                                    fx.active_effect_id.get().as_deref() == Some(effect_id.as_str())
+                                                    active_effect_ids.with(|ids| ids.contains(effect_id.as_str()))
                                                 });
                                                 let is_favorite = Signal::derive(move || {
                                                     fx.favorite_ids.get().contains(&fav_effect_id)
+                                                });
+                                                // Zone badge data only in multi-zone scenes;
+                                                // single-zone cards render exactly as before.
+                                                let active_zone_names = Signal::derive(move || {
+                                                    if !zones_ctx.multi_zone.get() {
+                                                        return Vec::new();
+                                                    }
+                                                    fx.zone_effects.with(|zones| {
+                                                        zones
+                                                            .iter()
+                                                            .filter(|state| {
+                                                                state.effect_id.as_deref()
+                                                                    == Some(badge_effect_id.as_str())
+                                                            })
+                                                            .map(|state| state.zone.name.clone())
+                                                            .collect()
+                                                    })
                                                 });
                                                 view! {
                                                     <EffectCard
                                                         effect=effect
                                                         is_active=is_active
                                                         is_favorite=is_favorite
+                                                        active_zone_names=active_zone_names
                                                         on_apply=on_apply
                                                         on_toggle_favorite=on_toggle_favorite
                                                     />
@@ -885,11 +945,12 @@ pub fn EffectsPage() -> impl IntoView {
                                                             <Icon icon=LuUnlink width="11px" height="11px" />
                                                         </button>
                                                     </div>
-                                                    <ControlPanel
+                                                    <ZoneScopedControls
                                                         controls=controls
                                                         control_values=control_values
                                                         accent_rgb=accent_rgb
-                                                        on_change=on_control_change
+                                                        on_control_change=on_control_change
+                                                        schema_cache=zone_schema_cache
                                                     />
                                                 </div>
                                             </div>
@@ -955,11 +1016,12 @@ pub fn EffectsPage() -> impl IntoView {
                                                                 <Icon icon=LuLink width="11px" height="11px" />
                                                             </button>
                                                         </div>
-                                                        <ControlPanel
+                                                        <ZoneScopedControls
                                                             controls=controls
                                                             control_values=control_values
                                                             accent_rgb=accent_rgb
-                                                            on_change=on_control_change
+                                                            on_control_change=on_control_change
+                                                            schema_cache=zone_schema_cache
                                                         />
                                                     </div>
                                                 </div>

@@ -1,17 +1,27 @@
+use std::sync::Arc;
+
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_icons::Icon;
-use leptos_use::{use_debounce_fn, use_debounce_fn_with_arg};
+use leptos_use::use_debounce_fn_with_arg;
 
 use crate::api;
+use crate::api::client::MutationOutcome;
 use crate::app::EffectsContext;
 use crate::components::control_panel::ControlPanel;
+use crate::control_session::{
+    ControlPatchConfig, ControlPatchFn, ControlPatchFuture, use_control_patch_session,
+};
 use crate::icons::*;
-use crate::optimistic_controls::{OptimisticControlSession, raw_control_updates_payload};
+use crate::optimistic_controls::merge_control_values;
 use crate::preferences::{EffectPreferences, PreferencesStore};
 use crate::toasts;
 
 use super::snapshot_scene_lock_message;
+
+/// Flush debounce for face control edits — the displays page's
+/// product-contract cadence.
+const FACE_CONTROLS_DEBOUNCE_MS: f64 = 75.0;
 
 /// Live face controls panel.
 ///
@@ -133,10 +143,6 @@ pub(super) fn FaceControlsSection(
         }
     });
 
-    // Pending updates are keyed by control name. Each input overwrites
-    // the prior pending value for that control, so a slider drag only
-    // sends the final position when the debounce fires.
-    let control_session = OptimisticControlSession::new();
     let show_locked_toast = use_debounce_fn_with_arg(
         move |message: String| {
             toasts::toast_error(&message);
@@ -144,42 +150,51 @@ pub(super) fn FaceControlsSection(
         150.0,
     );
 
-    let flush_updates = use_debounce_fn(
-        move || {
-            if let Some(message) =
-                snapshot_scene_lock_message(effects_ctx, "changing display face controls")
-            {
-                set_face_control_values.set(match display_face.get_untracked() {
-                    Some(Ok(Some(face))) => face.group.controls,
-                    _ => std::collections::HashMap::new(),
-                });
-                control_session.clear_pending();
-                toasts::toast_error(&message);
-                return;
-            }
-            let Some(display) = selected_display.get_untracked() else {
-                return;
-            };
-            let updates = control_session.take_pending();
-            if updates.is_empty() {
-                return;
-            }
-            let controls_json = raw_control_updates_payload(updates);
-            let display_id = display.id;
-            spawn_local(async move {
-                match api::update_display_face_controls(&display_id, &controls_json).await {
-                    Ok(face) => {
-                        set_display_face.set(Some(Ok(Some(face))));
-                        set_face_refresh_tick.update(|value| *value = value.wrapping_add(1));
-                    }
-                    Err(error) => {
-                        toasts::toast_error(&format!("Face control update failed: {error}"));
-                    }
-                }
-            });
+    // The PATCH leg of the shared control session. The display-face
+    // route is unversioned (no `If-Match`): success returns the fresh
+    // face response, adopted here so normalized or rejected values
+    // reconcile the UI.
+    let patch: ControlPatchFn = Arc::new(
+        move |payload: serde_json::Value, _version: Option<u64>| -> ControlPatchFuture {
+            Box::pin(async move {
+                let Some(display) = selected_display.get_untracked() else {
+                    // No display selected — nowhere to send the batch.
+                    return Ok(MutationOutcome::Applied(None));
+                };
+                let face = api::update_display_face_controls(&display.id, &payload).await?;
+                set_display_face.set(Some(Ok(Some(face))));
+                set_face_refresh_tick.update(|value| *value = value.wrapping_add(1));
+                Ok(MutationOutcome::Applied(None))
+            })
         },
-        75.0,
     );
+    // Snapshot-locked scenes reject face edits daemon-side; the guard
+    // reverts the optimistic values to the daemon state and drops the
+    // pending batch before the flush ever leaves the client.
+    let flush_guard = Callback::new(move |()| {
+        let Some(message) =
+            snapshot_scene_lock_message(effects_ctx, "changing display face controls")
+        else {
+            return true;
+        };
+        set_face_control_values.set(match display_face.get_untracked() {
+            Some(Ok(Some(face))) => face.group.controls,
+            _ => std::collections::HashMap::new(),
+        });
+        toasts::toast_error(&message);
+        false
+    });
+    let session = use_control_patch_session(ControlPatchConfig {
+        defs: face_controls,
+        set_values: set_face_control_values,
+        initial_version: None,
+        debounce_ms: FACE_CONTROLS_DEBOUNCE_MS,
+        patch,
+        on_error: Callback::new(|error: String| {
+            toasts::toast_error(&format!("Face control update failed: {error}"));
+        }),
+        flush_guard: Some(flush_guard),
+    });
 
     let on_control_change = Callback::new(move |(name, value): (String, serde_json::Value)| {
         if let Some(message) =
@@ -188,15 +203,7 @@ pub(super) fn FaceControlsSection(
             show_locked_toast(message);
             return;
         }
-        let controls_snapshot = face_controls.get();
-        control_session.apply_raw_update_to(
-            set_face_control_values,
-            &controls_snapshot,
-            &name,
-            &value,
-        );
-        control_session.queue_raw_update(name, value);
-        flush_updates();
+        session.on_change.run((name, value));
     });
 
     let apply_preset = Callback::new(
@@ -213,11 +220,13 @@ pub(super) fn FaceControlsSection(
                 toasts::toast_error(&message);
                 return;
             }
-            control_session.clear_pending();
+            session.clear_pending.run(());
 
             let previous_values = face_control_values.get_untracked();
 
-            control_session.apply_values_to(set_face_control_values, &preset_controls);
+            set_face_control_values.update(|values| {
+                merge_control_values(values, &preset_controls);
+            });
 
             let controls_json =
                 crate::components::preset_matching::bundled_preset_to_json(&preset_controls);

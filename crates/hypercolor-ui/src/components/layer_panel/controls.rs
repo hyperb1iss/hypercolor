@@ -7,21 +7,28 @@
 //! debounced patch that never restructures the stack — so dragging a
 //! slider does not tear the row down between frames.
 
+use std::sync::Arc;
+
 use hypercolor_leptos_ext::events::Change;
 use hypercolor_types::layer::{LayerSource, LoopMode, SceneLayer};
 use leptos::prelude::*;
-use leptos_use::use_debounce_fn;
 
 use crate::api;
 use crate::components::control_panel::ControlPanel;
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
-use crate::control_value_json::apply_control_edit;
+use crate::control_session::{
+    ControlPatchConfig, ControlPatchFn, ControlPatchFuture, use_control_patch_session,
+};
 use crate::toasts;
 
 use super::update_layer;
 
 /// Accent RGB for an effect layer's control groups — the app accent.
 const LAYER_ACCENT_RGB: &str = "225, 53, 255";
+
+/// Flush debounce for layer control edits — the Studio inspector's
+/// product-contract cadence.
+const LAYER_CONTROLS_DEBOUNCE_MS: f64 = 120.0;
 
 /// The effect-parameter controls for an Effect-source layer. Fetches the
 /// effect's control schema and renders the shared [`ControlPanel`]; edits
@@ -58,64 +65,40 @@ pub fn EffectControlsSection(
             .unwrap_or_default()
     });
 
-    // Optimistic local control values, and the live layers_version that
-    // each patch carries and refreshes — so consecutive edits never go
-    // stale against the daemon.
-    let values = RwSignal::new(controls);
-    let version = RwSignal::new(layers_version);
-    let pending = StoredValue::new(serde_json::Map::new());
+    // Optimistic local control values; the shared patch session owns the
+    // debounce, pending batch, and the live layers_version each patch
+    // carries and refreshes — so consecutive edits never go stale
+    // against the daemon.
+    let (values, set_values) = signal(controls);
     let layer_id = layer.id.to_string();
 
-    let flush = {
+    let patch: ControlPatchFn = Arc::new({
         let scene_id = scene_id.clone();
         let group_id = group_id.clone();
-        let layer_id = layer_id.clone();
-        use_debounce_fn(
-            move || {
-                let batch = pending.try_update_value(std::mem::take).unwrap_or_default();
-                if batch.is_empty() {
-                    return;
-                }
-                let payload = serde_json::Value::Object(batch);
-                let scene_id = scene_id.clone();
-                let group_id = group_id.clone();
-                let layer_id = layer_id.clone();
-                leptos::task::spawn_local(async move {
-                    match api::patch_layer_controls(
-                        &scene_id,
-                        &group_id,
-                        &layer_id,
-                        &payload,
-                        Some(version.get_untracked()),
-                    )
-                    .await
-                    {
-                        Ok(api::LayerStackOutcome::Applied(stack)) => {
-                            version.set(stack.layers_version);
-                        }
-                        Ok(api::LayerStackOutcome::Stale { current }) => {
-                            version.set(current);
-                        }
-                        Err(error) => {
-                            toasts::toast_error(&format!("Effect controls failed: {error}"));
-                        }
-                    }
-                });
-            },
-            120.0,
-        )
-    };
-
-    let on_change = Callback::new(move |(name, raw): (String, serde_json::Value)| {
-        values.update(|current| {
-            *current =
-                apply_control_edit(std::mem::take(current), &name, &defs.get_untracked(), &raw);
-        });
-        pending.update_value(|batch| {
-            batch.insert(name, raw);
-        });
-        flush();
+        move |payload: serde_json::Value, version: Option<u64>| -> ControlPatchFuture {
+            let scene_id = scene_id.clone();
+            let group_id = group_id.clone();
+            let layer_id = layer_id.clone();
+            Box::pin(async move {
+                let outcome =
+                    api::patch_layer_controls(&scene_id, &group_id, &layer_id, &payload, version)
+                        .await?;
+                Ok(outcome.map(|stack| Some(stack.layers_version)))
+            })
+        }
     });
+    let session = use_control_patch_session(ControlPatchConfig {
+        defs,
+        set_values,
+        initial_version: Some(layers_version),
+        debounce_ms: LAYER_CONTROLS_DEBOUNCE_MS,
+        patch,
+        on_error: Callback::new(|error: String| {
+            toasts::toast_error(&format!("Effect controls failed: {error}"));
+        }),
+        flush_guard: None,
+    });
+    let on_change = session.on_change;
 
     view! {
         <div class="space-y-2">
@@ -132,7 +115,7 @@ pub fn EffectControlsSection(
                     view! {
                         <ControlPanel
                             controls=defs
-                            control_values=Signal::derive(move || values.get())
+                            control_values=values
                             accent_rgb=Signal::derive(|| LAYER_ACCENT_RGB.to_owned())
                             on_change=on_change
                         />

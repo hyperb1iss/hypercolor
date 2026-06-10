@@ -43,16 +43,6 @@ impl OptimisticControlSession {
         });
     }
 
-    pub(crate) fn apply_values_to(
-        self,
-        set_values: WriteSignal<ControlValueMap>,
-        next_values: &ControlValueMap,
-    ) {
-        set_values.update(|values| {
-            merge_control_values(values, next_values);
-        });
-    }
-
     pub(crate) fn queue_raw_update(self, name: String, value: serde_json::Value) {
         self.pending.update_value(|pending| {
             pending.insert(name, value);
