@@ -33,7 +33,7 @@ import { deriveLabel } from '../controls/names'
 import { isControlSpec } from '../controls/specs'
 import type { DesignBasis } from '../math/scale'
 import type { FaceContext, FaceUpdateFn } from './context'
-import { buildAudioAccessor, buildSensorAccessor } from './context'
+import { buildAudioAccessor, buildSensorAccessor, resolveDisplayInfo } from './context'
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -48,6 +48,9 @@ export interface FaceOptions {
     /** Opt into live audio analysis (`engine.audio`). Marks the built
      *  face audio-reactive so the renderer injects per-frame data. */
     audio?: boolean
+    /** Per-shape setup overrides. Resolution: exact shape variant, then
+     *  the base setup function. */
+    variants?: FaceVariants
     /** Named presets with control overrides. */
     presets?: FacePresetDef[]
 }
@@ -60,6 +63,14 @@ export interface FacePresetDef {
 
 /** Face setup function — receives context, returns update function. */
 type FaceSetupFn = (ctx: FaceContext) => FaceUpdateFn
+
+/** Per-shape setup overrides, chosen by the resolved display shape. */
+export interface FaceVariants {
+    round?: FaceSetupFn
+    square?: FaceSetupFn
+    wide?: FaceSetupFn
+    tall?: FaceSetupFn
+}
 
 // ── Resolved control ────────────────────────────────────────────────────
 
@@ -148,6 +159,15 @@ function storeFaceMetadata(def: FaceDef): void {
 
 // ── Runtime ─────────────────────────────────────────────────────────────
 
+/** Pick the setup for a shape: exact variant first, then the base. */
+function resolveVariantSetup(
+    variants: FaceVariants | undefined,
+    shape: import('./context').FaceDisplayShape,
+    base: FaceSetupFn,
+): FaceSetupFn {
+    return variants?.[shape] ?? base
+}
+
 function createFaceContext(
     container: HTMLDivElement,
     canvas: HTMLCanvasElement,
@@ -157,7 +177,10 @@ function createFaceContext(
     const width = container.clientWidth || designBasis.width
     const height = container.clientHeight || designBasis.height
     const dpr = typeof devicePixelRatio !== 'undefined' ? devicePixelRatio : 1
-    const scale = Math.min(width / designBasis.width, height / designBasis.height)
+    const display = resolveDisplayInfo(width, height, circular)
+    // min(width, height) basis: a 960x160 strip scales type to the strip
+    // height instead of shrinking the whole face to a postage stamp.
+    const scale = Math.min(width, height) / Math.min(designBasis.width, designBasis.height)
 
     container.style.position = 'relative'
     container.style.background = 'transparent'
@@ -181,9 +204,10 @@ function createFaceContext(
 
     return {
         canvas,
-        circular,
+        circular: display.circular,
         container,
         ctx: ctx2d,
+        display,
         dpr,
         height,
         scale,
@@ -339,17 +363,17 @@ export function face(name: string, controls: ControlMap, options: FaceOptions, s
         document.documentElement.style.background = 'transparent'
         document.body.style.background = 'transparent'
 
-        // Apply circular mask if needed
-        if (circular) {
-            container.style.clipPath = 'circle(50%)'
-        }
-
         // Load fonts before first render so text doesn't flash fallbacks
         const initialControls = resolveControlValues(resolved)
         await loadFaceFonts(fontControls, initialControls)
 
         const ctx = createFaceContext(container, canvas, designBasis, circular)
-        startFaceLoop(ctx, setupFn, resolved, fontControls)
+        // Mask follows device truth, so any face lands clean on a round LCD.
+        if (ctx.display.circular) {
+            container.style.clipPath = 'circle(50%)'
+        }
+        const setup = resolveVariantSetup(options.variants, ctx.display.shape, setupFn)
+        startFaceLoop(ctx, setup, resolved, fontControls)
     }
 
     let started = false
@@ -378,6 +402,7 @@ export const __testing = {
     resolveFaceControls,
     resolveFaceFontControls,
     resolveFaceFontFamilies,
+    resolveVariantSetup,
     shouldLoadRemoteFaceFonts,
     shouldUseHostDrivenFaceLoop,
     startFaceLoop,

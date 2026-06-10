@@ -71,6 +71,13 @@ describe('face render loop', () => {
             ctx: {
                 clearRect: () => calls.push('clear'),
             } as unknown as CanvasRenderingContext2D,
+            display: {
+                aspect: 1,
+                circular: true,
+                class: 'pump-lcd',
+                safeArea: { height: 7, width: 7, x: 1, y: 1 },
+                shape: 'round',
+            },
             dpr: 1,
             height: 10,
             scale: 1,
@@ -232,6 +239,13 @@ describe('face audio opt-in', () => {
             ctx: {
                 clearRect: () => calls.push('clear'),
             } as unknown as CanvasRenderingContext2D,
+            display: {
+                aspect: 1,
+                circular: false,
+                class: 'panel',
+                safeArea: { height: 10, width: 10, x: 0, y: 0 },
+                shape: 'square',
+            },
             dpr: 1,
             height: 10,
             scale: 1,

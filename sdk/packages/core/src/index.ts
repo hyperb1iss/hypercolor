@@ -126,6 +126,11 @@ export {
     step,
 } from './math'
 
+// ── Layout ──────────────────────────────────────────────────────────────
+
+export type { AnchorPosition, AnchorSize, FitTextOptions, Point, Rect, RingOptions } from './layout'
+export { anchor, center, fitText, grid, inset, polar, rail, ring } from './layout'
+
 // ── Motion ──────────────────────────────────────────────────────────────
 
 export type { EasingFn, SpringOptions } from './motion'
@@ -147,7 +152,19 @@ export {
 
 // ── Faces ───────────────────────────────────────────────────────────────
 
-export type { AudioAccessor, FaceContext, FaceOptions, FaceUpdateFn, SensorAccessor, SensorReading } from './faces'
+export type {
+    AudioAccessor,
+    FaceContext,
+    FaceDisplayClass,
+    FaceDisplayInfo,
+    FaceDisplayShape,
+    FaceOptions,
+    FaceUpdateFn,
+    FaceVariants,
+    InjectedDisplayDescriptor,
+    SensorAccessor,
+    SensorReading,
+} from './faces'
 export { face } from './faces'
 export {
     colorByValue,
