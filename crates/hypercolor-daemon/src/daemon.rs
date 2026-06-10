@@ -143,6 +143,7 @@ pub async fn run(options: DaemonRunOptions, shutdown_rx: watch::Receiver<bool>) 
 
     let ui_dir = resolve_ui_dir(options.ui_dir);
     let app_state = Arc::new(AppState::from_daemon_state(&daemon_state));
+    api::displays::sync_display_preference_overlays(&app_state).await;
     let router = api::build_router(app_state, ui_dir.as_deref());
 
     let mdns_publisher = MdnsPublisher::new(

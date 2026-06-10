@@ -14,7 +14,7 @@ pub(super) fn build_set_display_face() -> ToolDefinition {
     ToolDefinition {
         name: "set_display_face".into(),
         title: "Assign Display Face".into(),
-        description: "Assign or clear an HTML display-face effect on a display device by updating the active scene's display-target zone.".into(),
+        description: "Assign or clear an HTML display-face effect on a display device. Scope 'default' (the default) persists across scenes; scope 'scene' writes the active scene's display zone, which always wins over the default while that scene is active.".into(),
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -28,7 +28,12 @@ pub(super) fn build_set_display_face() -> ToolDefinition {
                 },
                 "clear": {
                     "type": "boolean",
-                    "description": "When true, removes the active scene's face assignment for the display."
+                    "description": "When true, removes the face assignment on the chosen scope."
+                },
+                "scope": {
+                    "type": "string",
+                    "enum": ["default", "scene"],
+                    "description": "Assignment layer: 'default' persists across scenes (the default); 'scene' targets only the active scene."
                 },
                 "controls": {
                     "type": "object",
@@ -70,8 +75,23 @@ pub(super) async fn handle_set_display_face_with_state(
         .get("clear")
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    let scope = match params.get("scope").and_then(Value::as_str) {
+        None | Some("default") => crate::api::displays::DisplayFaceScope::Default,
+        Some("scene") => crate::api::displays::DisplayFaceScope::Scene,
+        Some(other) => {
+            return Err(ToolError::InvalidParam {
+                param: "scope".into(),
+                reason: format!("must be 'default' or 'scene', got '{other}'"),
+            });
+        }
+    };
     let (device_id, info, surface) = resolve_display_device(state, raw_device).await?;
     let controls = parse_controls_map(params.get("controls"))?;
+
+    if scope == crate::api::displays::DisplayFaceScope::Default {
+        return handle_default_scope(state, params, device_id, &info, surface, clear, controls)
+            .await;
+    }
 
     if clear {
         let (active_scene_id, previous_group, cleared_group) = {
@@ -99,10 +119,13 @@ pub(super) async fn handle_set_display_face_with_state(
         };
         publish_render_group_changed(state, active_scene_id, &cleared_group, change_kind);
         save_runtime_session_snapshot(state).await;
+        let live_scope = live_scope_payload(state, device_id).await;
         return Ok(json!({
             "device": display_device_payload(&info, surface),
             "scene_id": active_scene_id.to_string(),
             "group": cleared_group,
+            "scope": "scene",
+            "live_scope": live_scope,
             "cleared": true,
         }));
     }
@@ -170,6 +193,117 @@ pub(super) async fn handle_set_display_face_with_state(
         "scene_id": active_scene_id.to_string(),
         "effect": effect,
         "group": group,
+        "scope": "scene",
+        "live_scope": "scene",
+        "cleared": false,
+    }))
+}
+
+/// Which layer currently drives the display, mirroring the REST contract.
+async fn live_scope_payload(state: &AppState, device_id: DeviceId) -> Value {
+    let scene_assigned = {
+        let scene_manager = state.scene_manager.read().await;
+        scene_manager
+            .active_scene()
+            .and_then(|scene| scene.display_group_for(device_id))
+            .is_some_and(|zone| zone.effect_id.is_some())
+    };
+    if scene_assigned {
+        return json!("scene");
+    }
+    let default_assigned = {
+        let store = state.display_preferences.read().await;
+        store.get(device_id).is_some()
+    };
+    if default_assigned {
+        json!("default")
+    } else {
+        Value::Null
+    }
+}
+
+async fn handle_default_scope(
+    state: &AppState,
+    params: &Value,
+    device_id: DeviceId,
+    info: &DeviceInfo,
+    surface: DisplaySurfaceInfo,
+    clear: bool,
+    controls: std::collections::HashMap<String, ControlValue>,
+) -> Result<Value, ToolError> {
+    if clear {
+        let removed = {
+            let mut store = state.display_preferences.write().await;
+            let removed = store.remove(device_id).is_some();
+            if removed && let Err(error) = store.save() {
+                tracing::warn!(%error, "Failed to persist display preferences");
+            }
+            removed
+        };
+        {
+            let mut scene_manager = state.scene_manager.write().await;
+            scene_manager.remove_default_display_group(device_id);
+        }
+        let live_scope = live_scope_payload(state, device_id).await;
+        return Ok(json!({
+            "device": display_device_payload(info, surface),
+            "scope": "default",
+            "live_scope": live_scope,
+            "cleared": removed,
+        }));
+    }
+
+    let effect_lookup = params
+        .get("effect_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ToolError::MissingParam("effect_id".into()))?;
+    let effect = {
+        let registry = state.effect_registry.read().await;
+        let Some(effect) = resolve_effect_metadata(&registry, effect_lookup) else {
+            return Err(ToolError::InvalidParam {
+                param: "effect_id".into(),
+                reason: format!("effect not found: {effect_lookup}"),
+            });
+        };
+        if effect.category != EffectCategory::Display {
+            return Err(ToolError::InvalidParam {
+                param: "effect_id".into(),
+                reason: format!("effect '{}' is not a display face", effect.name),
+            });
+        }
+        effect
+    };
+
+    {
+        let mut store = state.display_preferences.write().await;
+        store.set(
+            device_id,
+            crate::display_preferences::DisplayPreference {
+                blend_mode: hypercolor_types::scene::DisplayFaceBlendMode::Replace,
+                controls,
+                effect_id: effect.id,
+                opacity: 1.0,
+            },
+        );
+        if let Err(error) = store.save() {
+            tracing::warn!(%error, "Failed to persist display preferences");
+        }
+    }
+    let Some(group) =
+        crate::api::displays::apply_display_preference_overlay(state, device_id).await
+    else {
+        return Err(ToolError::Internal(
+            "failed to install the default face overlay".into(),
+        ));
+    };
+    let live_scope = live_scope_payload(state, device_id).await;
+
+    Ok(json!({
+        "device": display_device_payload(info, surface),
+        "effect": effect,
+        "group": group,
+        "scope": "default",
+        "live_scope": live_scope,
         "cleared": false,
     }))
 }

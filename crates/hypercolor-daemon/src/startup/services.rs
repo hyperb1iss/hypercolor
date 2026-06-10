@@ -317,6 +317,23 @@ impl DaemonState {
         let attachment_profiles = Arc::new(RwLock::new(attachment_profiles_inner));
         info!("Attachment profile store ready");
 
+        // ── Display Preferences Store ─────────────────────────────
+        let display_preferences_path = ConfigManager::data_dir().join("display-preferences.json");
+        let display_preferences_inner =
+            crate::display_preferences::DisplayPreferencesStore::load(&display_preferences_path)
+                .unwrap_or_else(|error| {
+                    warn!(
+                        path = %display_preferences_path.display(),
+                        %error,
+                        "Failed to load display preferences; starting with empty store"
+                    );
+                    crate::display_preferences::DisplayPreferencesStore::new(
+                        display_preferences_path,
+                    )
+                });
+        let display_preferences = Arc::new(RwLock::new(display_preferences_inner));
+        info!("Display preferences store ready");
+
         // ── Output Settings Store ───────────────────────────────────
         let device_settings_path = ConfigManager::data_dir().join("device-settings.json");
         let device_settings_inner = DeviceSettingsStore::load(&device_settings_path)
@@ -513,6 +530,7 @@ impl DaemonState {
             logical_devices_path,
             attachment_registry,
             attachment_profiles,
+            display_preferences,
             device_settings,
             simulated_displays,
             simulated_display_runtime,
@@ -533,6 +551,7 @@ impl DaemonState {
             display_output_thread: None,
             effect_watcher_task: None,
             effect_error_fallback_task: None,
+            display_preference_sync_task: None,
             discovery_task: None,
             device_metrics_collector_task: None,
             session_controller: None,

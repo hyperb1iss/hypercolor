@@ -44,6 +44,7 @@ use crate::device_metrics::DeviceMetricsSnapshotStore;
 use crate::device_settings::DeviceSettingsStore;
 use crate::discovery;
 use crate::display_output::DisplayOutputThread;
+use crate::display_preferences::DisplayPreferencesStore;
 use crate::layout_auto_exclusions;
 use crate::logical_devices::LogicalDevice;
 use crate::network::DaemonDriverHost;
@@ -165,6 +166,9 @@ pub struct DaemonState {
     /// Persistent per-device attachment profiles.
     pub attachment_profiles: Arc<RwLock<ComponentProfileStore>>,
 
+    /// Per-display default face preferences (spec 69 §3.6).
+    pub display_preferences: Arc<RwLock<DisplayPreferencesStore>>,
+
     /// Persisted global and per-device output settings.
     pub device_settings: Arc<RwLock<DeviceSettingsStore>>,
 
@@ -218,6 +222,7 @@ pub struct DaemonState {
 
     /// Effect-error fallback worker driven by the event bus.
     pub(super) effect_error_fallback_task: Option<tokio::task::JoinHandle<()>>,
+    pub(super) display_preference_sync_task: Option<tokio::task::JoinHandle<()>>,
 
     /// Periodic discovery worker task.
     pub(super) discovery_task: Option<tokio::task::JoinHandle<()>>,

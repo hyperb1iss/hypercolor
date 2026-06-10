@@ -87,6 +87,7 @@ use crate::cloud_socket::CloudSocketRuntime;
 use crate::device_metrics::{DeviceMetricsSnapshot, DeviceMetricsSnapshotStore};
 use crate::device_settings::DeviceSettingsStore;
 use crate::display_frames::DisplayFrameRuntime;
+use crate::display_preferences::DisplayPreferencesStore;
 use crate::layout_auto_exclusions;
 use crate::library::{InMemoryLibraryStore, JsonLibraryStore, LibraryStore};
 use crate::logical_devices::LogicalDevice;
@@ -189,6 +190,9 @@ pub struct AppState {
 
     /// Persistent per-device attachment profile store.
     pub attachment_profiles: Arc<RwLock<ComponentProfileStore>>,
+
+    /// Per-display default face preferences (spec 69 §3.6).
+    pub display_preferences: Arc<RwLock<DisplayPreferencesStore>>,
 
     /// Persistent per-device user settings store.
     pub device_settings: Arc<RwLock<DeviceSettingsStore>>,
@@ -460,6 +464,11 @@ impl AppState {
         let discovery_in_progress = Arc::new(AtomicBool::new(false));
         let attachment_registry = Arc::new(RwLock::new(attachment_registry));
         let attachment_profiles = Arc::new(RwLock::new(attachment_profiles));
+        let display_preferences_path = data_dir.join("display-preferences.json");
+        let display_preferences = Arc::new(RwLock::new(
+            DisplayPreferencesStore::load(&display_preferences_path)
+                .unwrap_or_else(|_| DisplayPreferencesStore::new(display_preferences_path)),
+        ));
         let device_settings = Arc::new(RwLock::new(device_settings));
         let simulated_displays = Arc::new(RwLock::new(simulated_displays));
         let simulated_display_runtime = Arc::new(RwLock::new(SimulatedDisplayRuntime::new()));
@@ -538,6 +547,7 @@ impl AppState {
             profiles: Arc::new(RwLock::new(profiles)),
             attachment_registry,
             attachment_profiles,
+            display_preferences,
             device_settings,
             simulated_displays,
             simulated_display_runtime,
@@ -634,6 +644,7 @@ impl AppState {
             profiles: Arc::new(RwLock::new(profiles)),
             attachment_registry: Arc::clone(&daemon.attachment_registry),
             attachment_profiles: Arc::clone(&daemon.attachment_profiles),
+            display_preferences: Arc::clone(&daemon.display_preferences),
             device_settings: Arc::clone(&daemon.device_settings),
             simulated_displays: Arc::clone(&daemon.simulated_displays),
             simulated_display_runtime: Arc::clone(&daemon.simulated_display_runtime),

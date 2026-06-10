@@ -150,6 +150,11 @@ pub struct SceneManager {
 
     /// Monotonic revision for the active render-group cache.
     active_render_groups_revision: u64,
+
+    /// Runtime-only default face zones, keyed by display device. Merged
+    /// into the active render groups whenever the active scene has no
+    /// assigned display zone for that device; never written into scenes.
+    default_display_groups: Vec<Zone>,
 }
 
 impl SceneManager {
@@ -163,6 +168,7 @@ impl SceneManager {
             activation_history: Vec::new(),
             active_render_groups: Arc::default(),
             active_render_groups_revision: 0,
+            default_display_groups: Vec::new(),
         }
     }
 
@@ -1834,15 +1840,81 @@ impl SceneManager {
     }
 
     fn refresh_active_render_groups(&mut self) {
-        let next_groups = self
+        let mut next_groups: Vec<Zone> = self
             .active_scene()
-            .map(|scene| Arc::<[Zone]>::from(scene.groups.clone()))
+            .map(|scene| scene.groups.clone())
             .unwrap_or_default();
+        for default_group in &self.default_display_groups {
+            let Some(target) = default_group.display_target.as_ref() else {
+                continue;
+            };
+            let covered = self
+                .active_scene()
+                .and_then(|scene| scene.display_group_for(target.device_id))
+                .is_some_and(|zone| zone.effect_id.is_some());
+            if !covered {
+                next_groups.push(default_group.clone());
+            }
+        }
+        let next_groups = Arc::<[Zone]>::from(next_groups);
         if self.active_render_groups.as_ref() != next_groups.as_ref() {
             self.active_render_groups_revision =
                 self.active_render_groups_revision.saturating_add(1);
         }
         self.active_render_groups = next_groups;
+    }
+
+    // ── Default display faces (spec 69 §3.6) ───────────────────────
+
+    /// Install or update the runtime default face zone for a display.
+    ///
+    /// The zone's identity is keyed by its display target's device; updates
+    /// keep the existing [`ZoneId`] so effect slots stay stable. The zone
+    /// only reaches the active render groups while the active scene has no
+    /// assigned display zone for the same device.
+    pub fn set_default_display_group(&mut self, mut zone: Zone) {
+        let Some(device_id) = zone.display_target.as_ref().map(|target| target.device_id) else {
+            return;
+        };
+        if let Some(existing) = self.default_display_groups.iter_mut().find(|group| {
+            group
+                .display_target
+                .as_ref()
+                .is_some_and(|target| target.device_id == device_id)
+        }) {
+            zone.id = existing.id;
+            *existing = zone;
+        } else {
+            self.default_display_groups.push(zone);
+        }
+        self.refresh_active_render_groups();
+    }
+
+    /// Remove the runtime default face zone for a display, if present.
+    pub fn remove_default_display_group(&mut self, device_id: DeviceId) -> bool {
+        let before = self.default_display_groups.len();
+        self.default_display_groups.retain(|group| {
+            group
+                .display_target
+                .as_ref()
+                .is_none_or(|target| target.device_id != device_id)
+        });
+        let removed = self.default_display_groups.len() != before;
+        if removed {
+            self.refresh_active_render_groups();
+        }
+        removed
+    }
+
+    /// The runtime default face zone registered for a display, if any.
+    #[must_use]
+    pub fn default_display_group_for(&self, device_id: DeviceId) -> Option<&Zone> {
+        self.default_display_groups.iter().find(|group| {
+            group
+                .display_target
+                .as_ref()
+                .is_some_and(|target| target.device_id == device_id)
+        })
     }
 }
 

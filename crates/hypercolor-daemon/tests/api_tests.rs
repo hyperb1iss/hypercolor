@@ -7060,7 +7060,10 @@ async fn profile_crud_lifecycle() {
                 .method("PUT")
                 .uri(format!("/api/v1/displays/{display_id}/face"))
                 .header("content-type", "application/json")
-                .body(Body::from(format!(r#"{{"effect_id":"{}"}}"#, face.id)))
+                .body(Body::from(format!(
+                    r#"{{"effect_id":"{}","scope":"scene"}}"#,
+                    face.id
+                )))
                 .expect("failed to build request"),
         )
         .await
@@ -7185,7 +7188,7 @@ async fn profile_crud_lifecycle() {
         .oneshot(
             Request::builder()
                 .method("DELETE")
-                .uri(format!("/api/v1/displays/{display_id}/face"))
+                .uri(format!("/api/v1/displays/{display_id}/face?scope=scene"))
                 .body(Body::empty())
                 .expect("failed to build request"),
         )
@@ -9725,7 +9728,7 @@ async fn delete_face_idempotent_when_no_group_present() {
             .oneshot(
                 Request::builder()
                     .method("DELETE")
-                    .uri(format!("/api/v1/displays/{display_id}/face"))
+                    .uri(format!("/api/v1/displays/{display_id}/face?scope=scene"))
                     .body(Body::empty())
                     .expect("failed to build request"),
             )
@@ -9798,7 +9801,10 @@ async fn patch_face_controls_updates_display_group() {
                 .method("PUT")
                 .uri(format!("/api/v1/displays/{display_id}/face"))
                 .header("content-type", "application/json")
-                .body(Body::from(format!(r#"{{"effect_id":"{}"}}"#, face.id)))
+                .body(Body::from(format!(
+                    r#"{{"effect_id":"{}","scope":"scene"}}"#,
+                    face.id
+                )))
                 .expect("failed to build request"),
         )
         .await
@@ -9849,7 +9855,10 @@ async fn put_face_conflicts_when_snapshot_scene_is_active() {
                 .method("PUT")
                 .uri(format!("/api/v1/displays/{display_id}/face"))
                 .header("content-type", "application/json")
-                .body(Body::from(format!(r#"{{"effect_id":"{}"}}"#, face.id)))
+                .body(Body::from(format!(
+                    r#"{{"effect_id":"{}","scope":"scene"}}"#,
+                    face.id
+                )))
                 .expect("failed to build request"),
         )
         .await
@@ -9890,7 +9899,10 @@ async fn display_face_endpoints_assign_get_and_delete_face() {
                 .method("PUT")
                 .uri(format!("/api/v1/displays/{display_id}/face"))
                 .header("content-type", "application/json")
-                .body(Body::from(format!(r#"{{"effect_id":"{}"}}"#, face.id)))
+                .body(Body::from(format!(
+                    r#"{{"effect_id":"{}","scope":"scene"}}"#,
+                    face.id
+                )))
                 .expect("failed to build request"),
         )
         .await
@@ -9971,7 +9983,7 @@ async fn display_face_endpoints_assign_get_and_delete_face() {
         .oneshot(
             Request::builder()
                 .method("DELETE")
-                .uri(format!("/api/v1/displays/{display_id}/face"))
+                .uri(format!("/api/v1/displays/{display_id}/face?scope=scene"))
                 .body(Body::empty())
                 .expect("failed to build request"),
         )
@@ -10023,7 +10035,10 @@ async fn patch_face_composition_updates_material_blend_mode_and_normalizes_repla
                 .method("PUT")
                 .uri(format!("/api/v1/displays/{display_id}/face"))
                 .header("content-type", "application/json")
-                .body(Body::from(format!(r#"{{"effect_id":"{}"}}"#, face.id)))
+                .body(Body::from(format!(
+                    r#"{{"effect_id":"{}","scope":"scene"}}"#,
+                    face.id
+                )))
                 .expect("failed to build request"),
         )
         .await
@@ -10106,7 +10121,10 @@ async fn reassigning_display_face_resets_composition_to_replace() {
                 .method("PUT")
                 .uri(format!("/api/v1/displays/{display_id}/face"))
                 .header("content-type", "application/json")
-                .body(Body::from(format!(r#"{{"effect_id":"{}"}}"#, face_a.id)))
+                .body(Body::from(format!(
+                    r#"{{"effect_id":"{}","scope":"scene"}}"#,
+                    face_a.id
+                )))
                 .expect("failed to build request"),
         )
         .await
@@ -10134,7 +10152,10 @@ async fn reassigning_display_face_resets_composition_to_replace() {
                 .method("PUT")
                 .uri(format!("/api/v1/displays/{display_id}/face"))
                 .header("content-type", "application/json")
-                .body(Body::from(format!(r#"{{"effect_id":"{}"}}"#, face_b.id)))
+                .body(Body::from(format!(
+                    r#"{{"effect_id":"{}","scope":"scene"}}"#,
+                    face_b.id
+                )))
                 .expect("failed to build request"),
         )
         .await
@@ -10181,7 +10202,10 @@ async fn face_survives_effect_swap() {
                 .method("PUT")
                 .uri(format!("/api/v1/displays/{display_id}/face"))
                 .header("content-type", "application/json")
-                .body(Body::from(format!(r#"{{"effect_id":"{}"}}"#, face.id)))
+                .body(Body::from(format!(
+                    r#"{{"effect_id":"{}","scope":"scene"}}"#,
+                    face.id
+                )))
                 .expect("failed to build request"),
         )
         .await
@@ -10267,7 +10291,10 @@ async fn put_face_from_cold_start_succeeds_no_409() {
                 .method("PUT")
                 .uri(format!("/api/v1/displays/{display_id}/face"))
                 .header("content-type", "application/json")
-                .body(Body::from(format!(r#"{{"effect_id":"{}"}}"#, face.id)))
+                .body(Body::from(format!(
+                    r#"{{"effect_id":"{}","scope":"scene"}}"#,
+                    face.id
+                )))
                 .expect("failed to build request"),
         )
         .await

@@ -143,6 +143,7 @@ impl DaemonState {
         }
 
         self.spawn_effect_error_fallback_worker();
+        self.spawn_display_preference_sync_worker();
         self.spawn_discovery_worker(Arc::clone(&config));
 
         info!("Daemon is running");
@@ -206,6 +207,9 @@ impl DaemonState {
         }
 
         if let Some(handle) = self.effect_watcher_task.take() {
+            handle.abort();
+        }
+        if let Some(handle) = self.display_preference_sync_task.take() {
             handle.abort();
         }
         if let Some(handle) = self.effect_error_fallback_task.take() {
@@ -495,6 +499,26 @@ impl DaemonState {
             }
 
             debug!("Effect watcher channel closed; task exiting");
+        }));
+    }
+
+    /// Re-apply default-face overlays whenever a display device connects,
+    /// so a stored default resolves on reconnect (spec 69 §3.6).
+    fn spawn_display_preference_sync_worker(&mut self) {
+        let state = Arc::new(AppState::from_daemon_state(self));
+        let mut event_rx = state.event_bus.subscribe_all();
+
+        self.display_preference_sync_task = Some(tokio::spawn(async move {
+            loop {
+                let event = match event_rx.recv().await {
+                    Ok(event) => event,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                };
+                if matches!(event.event, HypercolorEvent::DeviceConnected { .. }) {
+                    crate::api::displays::sync_display_preference_overlays(&state).await;
+                }
+            }
         }));
     }
 

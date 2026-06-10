@@ -739,6 +739,7 @@ async fn stateful_display_face_tool_assigns_and_clears_face_groups() {
         &json!({
             "device": display_id.to_string(),
             "effect_id": face.id.to_string(),
+            "scope": "scene",
             "controls": {
                 "title": "CPU"
             }
@@ -787,6 +788,7 @@ async fn stateful_display_face_tool_assigns_and_clears_face_groups() {
         "set_display_face",
         &json!({
             "device": display_id.to_string(),
+            "scope": "scene",
             "clear": true
         }),
         state.as_ref(),
@@ -1336,4 +1338,71 @@ fn prompt_definitions_and_messages_are_valid() {
     let messages = get_prompt_messages("mood_lighting", &json!({ "mood": "cozy evening" }))
         .expect("prompt should build messages");
     assert!(messages["messages"].is_array());
+}
+
+#[tokio::test]
+async fn stateful_display_face_tool_defaults_to_the_persistent_scope() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    let display_id = insert_test_display_device(&state, "Pump LCD").await;
+    let face = insert_test_display_face_effect(&state, "System Monitor").await;
+
+    let assign_result = execute_tool_with_state(
+        "set_display_face",
+        &json!({
+            "device": display_id.to_string(),
+            "effect_id": face.id.to_string(),
+        }),
+        state.as_ref(),
+    )
+    .await
+    .expect("default-scope face assignment should succeed");
+    assert_eq!(assign_result["scope"], "default");
+    assert_eq!(assign_result["live_scope"], "default");
+    assert_eq!(assign_result["effect"]["id"], face.id.to_string());
+    assert_eq!(
+        assign_result["group"]["display_target"]["device_id"],
+        display_id.to_string()
+    );
+
+    // The preference persists and the overlay reaches the render groups.
+    assert!(
+        state
+            .display_preferences
+            .read()
+            .await
+            .get(display_id)
+            .is_some()
+    );
+    assert!(
+        state
+            .scene_manager
+            .read()
+            .await
+            .active_render_groups()
+            .iter()
+            .any(|zone| zone.effect_id == Some(face.id))
+    );
+
+    let clear_result = execute_tool_with_state(
+        "set_display_face",
+        &json!({
+            "device": display_id.to_string(),
+            "clear": true
+        }),
+        state.as_ref(),
+    )
+    .await
+    .expect("default-scope face clear should succeed");
+    assert_eq!(clear_result["scope"], "default");
+    assert_eq!(clear_result["cleared"], true);
+    assert!(clear_result["live_scope"].is_null());
+    assert!(
+        state
+            .display_preferences
+            .read()
+            .await
+            .get(display_id)
+            .is_none()
+    );
 }
