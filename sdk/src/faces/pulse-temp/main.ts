@@ -1,13 +1,20 @@
+import type { FaceContext, SensorAccessor, SparklineBand } from '@hypercolor/sdk'
 import {
     arcGauge,
+    clamp,
     color,
     colorByValue,
     combo,
+    easeOutCubic,
     face,
     font,
+    lerpColor,
     num,
     palette,
+    Smoothed,
     sensor,
+    sparkline,
+    Transition,
     toggle,
     ValueHistory,
     withAlpha,
@@ -158,6 +165,196 @@ function drawDetailLine(
     }
 }
 
+// ── Shared per-frame state ──────────────────────────────────────────────
+
+const PULSE_THRESHOLD = 0.78
+const PULSE_SECONDS = 0.9
+const DRAW_IN_SECONDS = 1.2
+
+interface PulseFrame {
+    accent: string
+    secondary: string
+    ink: ReturnType<typeof resolveFaceInk>
+    glow: number
+    glowColor: string
+    arcValue: number
+    smooth: number
+    numberText: string
+    unitText: string
+    labelText: string
+    trendText: string
+    peakText: string
+    history: number[]
+    historyCapacity: number
+    bands: SparklineBand[]
+    pulse: number
+    drawIn: number
+}
+
+function schemeBands(accent: string, ink: ReturnType<typeof resolveFaceInk>): SparklineBand[] {
+    return [
+        { color: withAlpha(lerpColor(accent, ink.ui, 0.35), 0.85), min: 0 },
+        { color: withAlpha(palette.electricYellow, 0.9), min: 0.65 },
+        { color: withAlpha(palette.errorRed, 0.95), min: 0.85 },
+    ]
+}
+
+function createPulseEngine() {
+    const smooth = new Smoothed(0, 0.35)
+    const arc = new Transition(0.8)
+    let arcPrimed = false
+    let lastTime = Number.NaN
+    let lastHistoryPush = 0
+    let peakReading = Number.NEGATIVE_INFINITY
+    let peakDisplay = '--'
+    let activeSensor = ''
+    let history = new ValueHistory(48)
+    let pulseAt = Number.NEGATIVE_INFINITY
+    let wasAboveThreshold = false
+    let appearedAt = Number.NaN
+
+    return (time: number, controls: Record<string, unknown>, sensors: SensorAccessor): PulseFrame => {
+        const dt = Number.isNaN(lastTime) ? 1 / 30 : Math.max(time - lastTime, 0)
+        lastTime = time
+        if (Number.isNaN(appearedAt)) appearedAt = time
+
+        const sensorLabel = controls.targetSensor as string
+        const reading = sensors.read(sensorLabel)
+        const normalized = sensors.normalized(sensorLabel)
+
+        if (activeSensor !== sensorLabel) {
+            activeSensor = sensorLabel
+            peakReading = Number.NEGATIVE_INFINITY
+            peakDisplay = '--'
+            history = new ValueHistory(48)
+            wasAboveThreshold = normalized >= PULSE_THRESHOLD
+        }
+
+        const value = smooth.update(normalized, dt)
+        if (!arcPrimed) {
+            arcPrimed = true
+            arc.update(0, time)
+        }
+        const arcValue = arc.update(Math.round(value * 200) / 200, time)
+
+        // Pulse once per upward threshold crossing.
+        const above = value >= PULSE_THRESHOLD
+        if (above && !wasAboveThreshold) pulseAt = time
+        wasAboveThreshold = above
+        const pulse = 1 - clamp((time - pulseAt) / PULSE_SECONDS, 0, 1)
+
+        const scheme = controls.colorScheme as string
+        let baseAccent =
+            scheme === 'Temperature'
+                ? colorByValue(value, FACE_SCHEMES.temperature)
+                : scheme === 'Load'
+                  ? colorByValue(value, FACE_SCHEMES.load)
+                  : scheme === 'Memory'
+                    ? colorByValue(value, FACE_SCHEMES.memory)
+                    : (controls.customColor as string)
+
+        const formatted = sensors.formatted(sensorLabel)
+        const match = formatted.match(/^([\d.]+)\s*(.*)$/)
+        const numberText = match?.[1] ?? formatted
+        const unitText = match?.[2] || (reading?.unit ?? '')
+        const labelText = humanizeSensorLabel(sensorLabel)
+
+        if (time - lastHistoryPush > 0.12) {
+            history.push(normalized)
+            lastHistoryPush = time
+        }
+        if (reading?.value != null && reading.value >= peakReading) {
+            peakReading = reading.value
+            peakDisplay = formatted
+        }
+        const values = history.values()
+        const sampleBack = values[Math.max(0, values.length - 8)] ?? value
+        const trendDelta = values.length > 8 ? value - sampleBack : 0
+        const trendText = trendDelta > 0.018 ? 'RISING' : trendDelta < -0.018 ? 'COOLING' : 'STEADY'
+
+        // Trend nudges the accent: rising leans hot, cooling leans cool.
+        if (trendText === 'RISING') baseAccent = lerpColor(baseAccent, palette.coral, 0.16)
+        if (trendText === 'COOLING') baseAccent = lerpColor(baseAccent, palette.neonCyan, 0.14)
+
+        const secondary =
+            scheme === 'Temperature'
+                ? mixFaceAccent(baseAccent, palette.coral, 0.34)
+                : scheme === 'Memory'
+                  ? mixFaceAccent(baseAccent, palette.electricPurple, 0.48)
+                  : mixFaceAccent(baseAccent)
+        const ink = resolveFaceInk(baseAccent)
+        const glow = clamp01((controls.glowIntensity as number) / 100)
+
+        return {
+            accent: baseAccent,
+            arcValue,
+            bands: schemeBands(baseAccent, ink),
+            drawIn: easeOutCubic(clamp((time - appearedAt) / DRAW_IN_SECONDS, 0, 1)),
+            glow,
+            glowColor: withAlpha(baseAccent, 0.22 + glow * 0.22),
+            history: values,
+            historyCapacity: 48,
+            ink,
+            labelText,
+            numberText,
+            peakText: `PEAK ${peakDisplay}`,
+            pulse,
+            secondary,
+            smooth: value,
+            trendText,
+            unitText,
+        }
+    }
+}
+
+function drawThresholdSparkline(
+    ctx: CanvasRenderingContext2D,
+    frame: PulseFrame,
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+): void {
+    if (frame.history.length < 2) return
+    // Right-align the rolling window so fresh samples enter from the right.
+    const pad = frame.historyCapacity - frame.history.length
+    const slotWidth = width / Math.max(frame.historyCapacity - 1, 1)
+    sparkline(ctx, {
+        bands: frame.bands,
+        color: withAlpha(frame.ink.ui, 0.8),
+        drawIn: frame.drawIn,
+        fill: true,
+        fillOpacity: 0.1,
+        height,
+        lineWidth: 2,
+        range: [0, 1],
+        values: frame.history,
+        width: width - pad * slotWidth,
+        x: x + pad * slotWidth,
+        y,
+    })
+}
+
+function drawThresholdPulse(
+    ctx: CanvasRenderingContext2D,
+    frame: PulseFrame,
+    cx: number,
+    cy: number,
+    baseRadius: number,
+): void {
+    if (frame.pulse <= 0) return
+    const expansion = easeOutCubic(1 - frame.pulse)
+    ctx.save()
+    ctx.lineWidth = 3 * frame.pulse
+    ctx.strokeStyle = withAlpha(frame.accent, 0.5 * frame.pulse)
+    ctx.shadowColor = withAlpha(frame.accent, 0.4 * frame.pulse)
+    ctx.shadowBlur = 24 * frame.pulse
+    ctx.beginPath()
+    ctx.arc(cx, cy, baseRadius + expansion * 36, 0, Math.PI * 2)
+    ctx.stroke()
+    ctx.restore()
+}
+
 export default face(
     'Pulse Temp',
     {
@@ -284,73 +481,101 @@ export default face(
                 name: 'Naked Digit',
             },
         ],
+        variants: {
+            wide: (ctx: FaceContext) => {
+                const advance = createPulseEngine()
+                const { width: W, height: H } = ctx
+
+                return (time, controls, sensors) => {
+                    const frame = advance(time, controls, sensors)
+                    const uiFont = controls.uiFont as string
+                    const heroFont = controls.heroFont as string
+                    const detailSize = Math.max(9, Math.min(14, H * 0.08))
+                    const showNumber = controls.showNumber as boolean
+                    const showUnit = controls.showUnit as boolean
+                    const showLabel = controls.showLabel as boolean
+                    const showTrend = controls.showTrend as boolean
+                    const showPeak = controls.showPeak as boolean
+
+                    const c = ctx.ctx
+                    c.clearRect(0, 0, W, H)
+
+                    // Left third: hero readout stacked over its label.
+                    const readoutCx = W * 0.16
+                    const heroSize = H * 0.46
+                    drawReadout(
+                        c,
+                        readoutCx,
+                        H * 0.42,
+                        W * 0.28,
+                        showNumber ? frame.numberText : '',
+                        showUnit ? frame.unitText.toUpperCase() : '',
+                        heroFont,
+                        uiFont,
+                        heroSize,
+                        Math.max(14, heroSize * 0.28),
+                        frame.ink.hero,
+                        frame.ink.ui,
+                        frame.glowColor,
+                        frame.accent,
+                        frame.glow,
+                    )
+                    if (showLabel) {
+                        fillGlowingText(
+                            c,
+                            frame.labelText.toUpperCase(),
+                            readoutCx,
+                            H * 0.78,
+                            canvasFont(detailSize, 600, uiFont),
+                            frame.ink.ui,
+                            frame.glowColor,
+                            4 + frame.glow * 4,
+                        )
+                    }
+
+                    // Remaining width: the full-height banded history rail.
+                    const railX = W * 0.34
+                    const railWidth = W * 0.62
+                    const railY = H * 0.18
+                    const railHeight = H * 0.58
+                    c.save()
+                    c.strokeStyle = withAlpha(frame.ink.ui, 0.12)
+                    c.lineWidth = 1
+                    c.beginPath()
+                    c.moveTo(railX, railY + railHeight)
+                    c.lineTo(railX + railWidth, railY + railHeight)
+                    c.stroke()
+                    c.restore()
+                    drawThresholdSparkline(c, frame, railX, railY, railWidth, railHeight)
+                    drawDetailLine(
+                        c,
+                        railX + railWidth / 2,
+                        H * 0.88,
+                        showTrend ? frame.trendText : '',
+                        showPeak ? frame.peakText : '',
+                        canvasFont(detailSize, 600, uiFont),
+                        frame.ink.ui,
+                        frame.ink.dim,
+                        frame.glowColor,
+                        frame.glow,
+                    )
+                }
+            },
+        },
     },
     (ctx) => {
-        let smoothValue = 0
-        let lastHistoryPush = 0
-        let peakReading = Number.NEGATIVE_INFINITY
-        let peakDisplay = '--'
-        let activeSensor = ''
-        let history = new ValueHistory(48)
-
+        const advance = createPulseEngine()
         const { width: W, height: H } = ctx
         const cx = W * 0.5
         const cy = H * 0.5
 
         return (time, controls, sensors) => {
-            const sensorLabel = controls.targetSensor as string
-            const reading = sensors.read(sensorLabel)
-            const normalized = sensors.normalized(sensorLabel)
-            smoothValue += (normalized - smoothValue) * 0.08
-
-            if (activeSensor !== sensorLabel) {
-                activeSensor = sensorLabel
-                peakReading = Number.NEGATIVE_INFINITY
-                peakDisplay = '--'
-                history = new ValueHistory(48)
-            }
-
-            const scheme = controls.colorScheme as string
-            const baseAccent =
-                scheme === 'Temperature'
-                    ? colorByValue(smoothValue, FACE_SCHEMES.temperature)
-                    : scheme === 'Load'
-                      ? colorByValue(smoothValue, FACE_SCHEMES.load)
-                      : scheme === 'Memory'
-                        ? colorByValue(smoothValue, FACE_SCHEMES.memory)
-                        : (controls.customColor as string)
-            const secondary =
-                scheme === 'Temperature'
-                    ? mixFaceAccent(baseAccent, palette.coral, 0.34)
-                    : scheme === 'Memory'
-                      ? mixFaceAccent(baseAccent, palette.electricPurple, 0.48)
-                      : mixFaceAccent(baseAccent)
-            const ink = resolveFaceInk(baseAccent)
-            const glow = clamp01((controls.glowIntensity as number) / 100)
+            const frame = advance(time, controls, sensors)
             const meterStyle = (controls.meterStyle as string).toLowerCase()
             const heroFont = controls.heroFont as string
             const uiFont = controls.uiFont as string
             const heroSize = controls.heroSize as number
             const detailSize = controls.detailSize as number
-
-            const formatted = sensors.formatted(sensorLabel)
-            const match = formatted.match(/^([\d.]+)\s*(.*)$/)
-            const numberText = match?.[1] ?? formatted
-            const unitText = match?.[2] || (reading?.unit ?? '')
-            const labelText = humanizeSensorLabel(sensorLabel)
-
-            if (time - lastHistoryPush > 0.12) {
-                history.push(normalized)
-                lastHistoryPush = time
-            }
-            if (reading?.value != null && reading.value >= peakReading) {
-                peakReading = reading.value
-                peakDisplay = formatted
-            }
-            const peakText = `PEAK ${peakDisplay}`
-            const values = history.values()
-            const trendDelta = values.length > 8 ? smoothValue - values[Math.max(0, values.length - 8)] : 0
-            const trendText = trendDelta > 0.018 ? 'RISING' : trendDelta < -0.018 ? 'COOLING' : 'STEADY'
 
             const showNumber = controls.showNumber as boolean
             const showUnit = controls.showUnit as boolean
@@ -359,14 +584,7 @@ export default face(
             const showPeak = controls.showPeak as boolean
             const showArc = controls.showArc as boolean
 
-            const glowColor = withAlpha(baseAccent, 0.22 + glow * 0.22)
             const unitSize = Math.max(20, Math.min(36, heroSize * 0.22))
-
-            const numberVisible = showNumber && numberText.length > 0
-            const unitVisible = showUnit && unitText.length > 0
-            const trendVisible = showTrend && trendText.length > 0
-            const peakVisible = showPeak && peakText.length > 0
-
             const c = ctx.ctx
             c.clearRect(0, 0, W, H)
 
@@ -378,41 +596,44 @@ export default face(
                     arcGauge(c, {
                         cx,
                         cy,
-                        fillColor: [baseAccent, secondary],
-                        glow: 0.18 + glow * 0.24,
+                        fillColor: [frame.accent, frame.secondary],
+                        glow: 0.18 + frame.glow * 0.24,
                         radius: 134,
                         startAngle: Math.PI * 0.98,
                         sweep: Math.PI * 0.86,
                         thickness: 10,
-                        trackColor: withAlpha(ink.ui, 0.1),
-                        value: smoothValue,
+                        trackColor: withAlpha(frame.ink.ui, 0.1),
+                        value: frame.arcValue,
                     })
+                    drawThresholdPulse(c, frame, cx, cy, 134)
                 } else if (meterStyle === 'scope') {
                     arcGauge(c, {
                         cx,
                         cy,
-                        fillColor: [baseAccent, secondary],
-                        glow: 0.2 + glow * 0.28,
+                        fillColor: [frame.accent, frame.secondary],
+                        glow: 0.2 + frame.glow * 0.28,
                         radius: 146,
                         startAngle: Math.PI * 0.74,
                         sweep: Math.PI * 1.12,
                         thickness: 12,
-                        trackColor: withAlpha(ink.ui, 0.1),
-                        value: smoothValue,
+                        trackColor: withAlpha(frame.ink.ui, 0.1),
+                        value: frame.arcValue,
                     })
+                    drawThresholdPulse(c, frame, cx, cy, 146)
                 } else {
                     arcGauge(c, {
                         cx,
                         cy,
-                        fillColor: [baseAccent, secondary],
-                        glow: 0.24 + glow * 0.32,
+                        fillColor: [frame.accent, frame.secondary],
+                        glow: 0.24 + frame.glow * 0.32,
                         radius: 156,
                         startAngle: Math.PI * 0.72,
                         sweep: Math.PI * 1.42,
                         thickness: 16,
-                        trackColor: withAlpha(ink.ui, 0.12),
-                        value: smoothValue,
+                        trackColor: withAlpha(frame.ink.ui, 0.12),
+                        value: frame.arcValue,
                     })
+                    drawThresholdPulse(c, frame, cx, cy, 156)
                 }
                 c.globalAlpha = 1
             }
@@ -423,29 +644,29 @@ export default face(
                 cx,
                 cy,
                 W * 0.84,
-                numberVisible ? numberText : '',
-                unitVisible ? unitText.toUpperCase() : '',
+                showNumber ? frame.numberText : '',
+                showUnit ? frame.unitText.toUpperCase() : '',
                 heroFont,
                 uiFont,
                 heroSize,
                 unitSize,
-                ink.hero,
-                ink.ui,
-                glowColor,
-                baseAccent,
-                glow,
+                frame.ink.hero,
+                frame.ink.ui,
+                frame.glowColor,
+                frame.accent,
+                frame.glow,
             )
 
             if (showLabel) {
                 fillGlowingText(
                     c,
-                    labelText.toUpperCase(),
+                    frame.labelText.toUpperCase(),
                     cx,
                     cy + 74,
                     canvasFont(detailSize, 600, uiFont),
-                    ink.ui,
-                    glowColor,
-                    6 + glow * 5,
+                    frame.ink.ui,
+                    frame.glowColor,
+                    6 + frame.glow * 5,
                 )
             }
 
@@ -453,14 +674,19 @@ export default face(
                 c,
                 cx,
                 cy + 100,
-                trendVisible ? trendText : '',
-                peakVisible ? peakText : '',
+                showTrend ? frame.trendText : '',
+                showPeak ? frame.peakText : '',
                 canvasFont(Math.max(8, detailSize - 1), 600, uiFont),
-                ink.ui,
-                ink.dim,
-                glowColor,
-                glow,
+                frame.ink.ui,
+                frame.ink.dim,
+                frame.glowColor,
+                frame.glow,
             )
+
+            // The 48-sample history, finally on screen: a banded sparkline
+            // tucked into the lower safe area.
+            const sparkWidth = Math.min(W * 0.46, 240)
+            drawThresholdSparkline(c, frame, cx - sparkWidth / 2, cy + 122, sparkWidth, 36)
         }
     },
 )
