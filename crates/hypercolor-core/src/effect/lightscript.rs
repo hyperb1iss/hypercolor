@@ -547,7 +547,14 @@ impl LightscriptRuntime {
         }
 
         let track_key = media.available.then(|| media.track_key());
-        let include_art = self.last_media.is_none() || track_key != self.last_media_track_key;
+        // Art rides along on track change, but also when it changes within
+        // a track — some players publish artwork moments after the title.
+        let include_art = self.last_media.is_none()
+            || track_key != self.last_media_track_key
+            || self
+                .last_media
+                .as_ref()
+                .is_some_and(|previous| previous.art_data_url != media.art_data_url);
         self.last_media = Some(media.clone());
         self.last_media_track_key = track_key;
         Some(LightScriptMediaPayload::from_state(media, include_art))

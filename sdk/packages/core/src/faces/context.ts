@@ -358,12 +358,18 @@ function nowMs(): number {
 export function buildMediaAccessor(): MediaAccessor {
     let lastRawPositionMs = -1
     let lastRawTrack = ''
+    let wasPlaying = false
     let baselineAtMs = 0
 
     const extrapolatedPositionMs = (state: MediaInfo): number => {
-        if (state.positionMs !== lastRawPositionMs || state.track !== lastRawTrack) {
+        if (
+            state.positionMs !== lastRawPositionMs ||
+            state.track !== lastRawTrack ||
+            state.playing !== wasPlaying
+        ) {
             lastRawPositionMs = state.positionMs
             lastRawTrack = state.track
+            wasPlaying = state.playing
             baselineAtMs = nowMs()
         }
         if (!state.playing) return state.positionMs

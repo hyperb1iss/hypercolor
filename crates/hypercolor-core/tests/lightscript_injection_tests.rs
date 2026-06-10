@@ -288,3 +288,33 @@ fn data_sources_meta_tag_drops_unknown_tokens() {
     assert!(metadata.tags.iter().any(|tag| tag == "lighting"));
     assert!(!metadata.tags.iter().any(|tag| tag == "telemetry"));
 }
+
+#[test]
+fn late_art_within_a_track_is_delivered() {
+    let mut runtime = LightscriptRuntime::new(480, 480);
+    let fixture = Fixture::new();
+    let options = options_with(true, false, false);
+
+    // Title arrives before artwork (plasma-browser-integration does this).
+    let mut early = playing_state();
+    early.art_data_url = None;
+    let sources = FrameDataSources {
+        media: Some(&early),
+        ..FrameDataSources::default()
+    };
+    let payload =
+        payload_json(&mut runtime, &fixture, sources, options).expect("first state should emit");
+    assert!(payload["media"]["artDataUrl"].is_null());
+
+    let with_art = playing_state();
+    let sources = FrameDataSources {
+        media: Some(&with_art),
+        ..FrameDataSources::default()
+    };
+    let payload =
+        payload_json(&mut runtime, &fixture, sources, options).expect("late art should emit");
+    assert_eq!(
+        payload["media"]["artDataUrl"],
+        "data:image/jpeg;base64,QQ=="
+    );
+}

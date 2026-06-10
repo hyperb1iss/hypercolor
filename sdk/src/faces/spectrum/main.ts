@@ -46,6 +46,14 @@ function hsl(hue: number, saturation: number, lightness: number): string {
     return `hsl(${Math.round(hue)}, ${Math.round(saturation * 100)}%, ${Math.round(lightness * 100)}%)`
 }
 
+/** Alpha for both color families this face emits — withAlpha is hex-only. */
+function fade(color: string, alpha: number): string {
+    if (color.startsWith('hsl(')) {
+        return `hsla(${color.slice(4, -1)}, ${alpha})`
+    }
+    return withAlpha(color, alpha)
+}
+
 export default face(
     'Spectrum',
     {
@@ -187,7 +195,7 @@ function buildSpectrum(ctx: FaceContext, wide: boolean) {
                     c.shadowColor = fill
                     c.shadowBlur = 14 * glow * display
                 }
-                c.fillStyle = idle > 0.5 ? withAlpha(fill, 0.55) : fill
+                c.fillStyle = idle > 0.5 ? fade(fill, 0.55) : fill
                 c.fillRect(x, baseline - barHeight, barWidth, barHeight)
                 c.restore()
 
@@ -229,7 +237,7 @@ function buildSpectrum(ctx: FaceContext, wide: boolean) {
                 c.shadowColor = fill
                 c.shadowBlur = 12 * glow * display
             }
-            c.strokeStyle = idle > 0.5 ? withAlpha(fill, 0.55) : fill
+            c.strokeStyle = idle > 0.5 ? fade(fill, 0.55) : fill
             c.lineWidth = Math.max(2, ((Math.PI * 2 * innerRadius) / count) * 0.5)
             c.lineCap = 'round'
             c.beginPath()
@@ -254,7 +262,7 @@ function buildSpectrum(ctx: FaceContext, wide: boolean) {
         const ringStrength = level * (1 - idle) + (0.25 + 0.12 * Math.sin(time * 1.3)) * idle
         const ringColor = barColor(ringStrength, 0, 1, controls, audioData.chromagram)
         c.save()
-        c.strokeStyle = withAlpha(ringColor, 0.5 + 0.4 * ringStrength)
+        c.strokeStyle = fade(ringColor, 0.5 + 0.4 * ringStrength)
         c.lineWidth = 2 + ringStrength * 4
         if (glow > 0) {
             c.shadowColor = ringColor
