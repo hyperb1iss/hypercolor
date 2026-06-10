@@ -443,6 +443,7 @@ mod tests {
                 active_render_group_count: 2,
                 active_display_group_target_fps: HashMap::new(),
                 active_display_group_output_routes: HashMap::new(),
+                active_display_group_descriptors: HashMap::new(),
                 unassigned_behavior: UnassignedBehavior::default(),
                 device_registry_generation: 0,
             },

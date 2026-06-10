@@ -6,6 +6,7 @@ use std::thread;
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
+use hypercolor_types::display::DisplayDescriptor;
 use hypercolor_types::effect::{ControlValue, EffectMetadata, EffectSource};
 use tracing::{debug, info, warn};
 
@@ -152,6 +153,9 @@ impl ServoRenderer {
         self.html_resolved_path = None;
         self.runtime_html_path = None;
         self.initialized = true;
+        let display_descriptor = (self.producer_role == ServoProducerRole::DisplayFaceHtml)
+            .then(|| self.display_descriptor.clone())
+            .flatten();
         self.load_task = Some(start_servo_load_task(
             metadata.name.clone(),
             path.clone(),
@@ -160,6 +164,7 @@ impl ServoRenderer {
             canvas_height,
             self.producer_role,
             self.host_driven_animation,
+            display_descriptor,
         ));
 
         info!(
@@ -236,6 +241,7 @@ impl ServoRenderer {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn start_servo_load_task(
     effect_name: String,
     html_source: PathBuf,
@@ -244,6 +250,7 @@ fn start_servo_load_task(
     canvas_height: u32,
     producer_role: ServoProducerRole,
     host_driven_animation: bool,
+    display_descriptor: Option<DisplayDescriptor>,
 ) -> ServoLoadTask {
     let (response_tx, response_rx) = mpsc::sync_channel(1);
     let response_tx_for_thread = response_tx.clone();
@@ -260,6 +267,7 @@ fn start_servo_load_task(
                 canvas_height,
                 producer_role,
                 host_driven_animation,
+                display_descriptor.as_ref(),
             );
             match result {
                 Ok(loaded) => {
@@ -319,6 +327,7 @@ fn close_servo_session_detached(session: ServoSessionHandle, reason: &'static st
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn load_servo_session(
     effect_name: &str,
     html_source: PathBuf,
@@ -327,6 +336,7 @@ fn load_servo_session(
     canvas_height: u32,
     producer_role: ServoProducerRole,
     host_driven_animation: bool,
+    display_descriptor: Option<&DisplayDescriptor>,
 ) -> Result<LoadedServoSession> {
     let resolved = resolve_html_source_path(&html_source).with_context(|| {
         format!(
@@ -335,15 +345,18 @@ fn load_servo_session(
         )
     })?;
 
-    let (runtime_source, runtime_html_path) =
-        prepare_runtime_html_source(&resolved, controls, host_driven_animation).with_context(
-            || {
-                format!(
-                    "failed to prepare runtime HTML source for '{}'",
-                    resolved.display()
-                )
-            },
-        )?;
+    let (runtime_source, runtime_html_path) = prepare_runtime_html_source(
+        &resolved,
+        controls,
+        host_driven_animation,
+        display_descriptor,
+    )
+    .with_context(|| {
+        format!(
+            "failed to prepare runtime HTML source for '{}'",
+            resolved.display()
+        )
+    })?;
 
     let session_create_started = Instant::now();
     let mut session = match ServoSessionHandle::new_shared(SessionConfig {

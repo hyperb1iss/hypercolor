@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::Canvas;
+use hypercolor_types::display::DisplayDescriptor;
 use hypercolor_types::effect::{ControlValue, EffectMetadata};
 use hypercolor_types::sensor::SystemSnapshot;
 use tokio::sync::RwLock;
@@ -202,6 +203,14 @@ pub trait EffectRenderer: Send {
     /// effect) use this handle to look assets up against the library. The
     /// default no-op covers every renderer without asset-backed controls.
     fn bind_asset_library(&mut self, _library: Arc<RwLock<AssetLibrary>>) {}
+
+    /// Describe the physical display surface this renderer targets.
+    ///
+    /// Set before [`init_with_canvas_size`](Self::init_with_canvas_size) for
+    /// display-face renderers so the page can adapt to device truth (shape,
+    /// safe area, fps). The default no-op covers every renderer that does
+    /// not drive a device display.
+    fn set_display_descriptor(&mut self, _descriptor: Option<DisplayDescriptor>) {}
 
     /// Optional auxiliary preview canvas for control-panel tooling.
     ///

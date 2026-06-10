@@ -10,6 +10,7 @@
 
 use anyhow::{Result, bail};
 use hypercolor_types::canvas::{Canvas, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, Rgba};
+use hypercolor_types::display::DisplayDescriptor;
 use hypercolor_types::effect::{ControlKind, ControlValue, EffectCategory, EffectMetadata};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -67,6 +68,7 @@ pub struct ServoRenderer {
     host_driven_animation: bool,
     last_submit_time_secs: Option<f32>,
     producer_role: ServoProducerRole,
+    display_descriptor: Option<DisplayDescriptor>,
 }
 
 impl ServoRenderer {
@@ -113,6 +115,7 @@ impl ServoRenderer {
             host_driven_animation: false,
             last_submit_time_secs: None,
             producer_role,
+            display_descriptor: None,
         }
     }
 
@@ -212,6 +215,10 @@ impl EffectRenderer for ServoRenderer {
 
     fn set_control(&mut self, name: &str, value: &ControlValue) {
         self.controls.insert(name.to_owned(), value.clone());
+    }
+
+    fn set_display_descriptor(&mut self, descriptor: Option<DisplayDescriptor>) {
+        self.display_descriptor = descriptor;
     }
 
     fn destroy(&mut self) {

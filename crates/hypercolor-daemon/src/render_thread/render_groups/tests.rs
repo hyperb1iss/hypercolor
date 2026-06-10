@@ -289,6 +289,7 @@ fn render_scene_for_test_with_screen(
         dependency_key: SceneDependencyKey::new(groups_revision, registry.generation()),
         elapsed_ms,
         display_group_target_fps,
+        display_group_descriptors: &HashMap::new(),
         registry,
         inputs,
     };

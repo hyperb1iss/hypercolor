@@ -325,6 +325,7 @@ mod tests {
                 active_render_group_count: 1,
                 active_display_group_target_fps: std::collections::HashMap::new(),
                 active_display_group_output_routes: std::collections::HashMap::new(),
+                active_display_group_descriptors: std::collections::HashMap::new(),
                 unassigned_behavior: UnassignedBehavior::default(),
                 device_registry_generation: 0,
             },
@@ -395,6 +396,7 @@ mod tests {
             active_render_group_count: 0,
             active_display_group_target_fps: std::collections::HashMap::new(),
             active_display_group_output_routes: std::collections::HashMap::new(),
+            active_display_group_descriptors: std::collections::HashMap::new(),
             unassigned_behavior: UnassignedBehavior::default(),
             device_registry_generation: 0,
         };

@@ -8,7 +8,8 @@ use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceTopologyHint};
+use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceTopologyHint, DisplayFrameFormat};
+use hypercolor_types::display::{DisplayDescriptor, DisplayPixelFormat};
 use hypercolor_types::effect::{ControlValue, EffectCategory, EffectMetadata, EffectSource};
 use hypercolor_types::event::ZoneChangeKind;
 use hypercolor_types::scene::{DisplayFaceBlendMode, DisplayFaceTarget, Zone};
@@ -33,6 +34,9 @@ pub struct DisplaySummary {
     pub width: u32,
     pub height: u32,
     pub circular: bool,
+    /// Full surface description (shape, safe area, fps, pixel format) —
+    /// the same descriptor injected into face pages.
+    pub descriptor: DisplayDescriptor,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -95,8 +99,21 @@ pub async fn list_displays(State(state): State<Arc<AppState>>) -> Response {
     let tracked_devices = state.device_registry.list().await;
     let mut displays = Vec::new();
 
+    let face_fps_cap = state
+        .config_manager
+        .as_ref()
+        .map_or(crate::display_output::DISPLAY_FACE_DEFAULT_FPS, |manager| {
+            manager.get().display.effective_face_fps_cap()
+        });
     for tracked in tracked_devices {
         let Some(surface) = display_surface_info(&tracked.info) else {
+            continue;
+        };
+        let target_fps = crate::display_output::capped_group_direct_display_target_fps(
+            tracked.info.capabilities.max_fps,
+            face_fps_cap,
+        );
+        let Some(descriptor) = display_descriptor_for_device(&tracked.info, target_fps) else {
             continue;
         };
         displays.push(DisplaySummary {
@@ -107,6 +124,7 @@ pub async fn list_displays(State(state): State<Arc<AppState>>) -> Response {
             width: surface.width,
             height: surface.height,
             circular: surface.circular,
+            descriptor,
         });
     }
 
@@ -778,6 +796,37 @@ pub(crate) fn display_surface_info(info: &DeviceInfo) -> Option<DisplaySurfaceIn
             height,
             circular: false,
         })
+}
+
+/// Build the API-facing descriptor for a display device — the same shared
+/// derivation that feeds the face-page injection.
+pub(crate) fn display_descriptor_for_device(
+    info: &DeviceInfo,
+    target_fps: u32,
+) -> Option<DisplayDescriptor> {
+    let surface = display_surface_info(info)?;
+    let pixel_format = info
+        .zones
+        .iter()
+        .find_map(|zone| match zone.topology {
+            DeviceTopologyHint::Display { .. } => Some(
+                DisplayFrameFormat::from_device_color_format(zone.color_format),
+            ),
+            _ => None,
+        })
+        .map_or(DisplayPixelFormat::Yuv420, |format| match format {
+            DisplayFrameFormat::Rgb => DisplayPixelFormat::Rgb,
+            DisplayFrameFormat::Jpeg => DisplayPixelFormat::Yuv420,
+        });
+
+    Some(DisplayDescriptor::derive(
+        surface.width,
+        surface.height,
+        surface.circular,
+        None,
+        target_fps,
+        pixel_format,
+    ))
 }
 
 fn effect_source_is_html(source: &EffectSource) -> bool {

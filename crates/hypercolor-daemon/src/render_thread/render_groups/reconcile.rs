@@ -1,10 +1,11 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::Result;
 use hypercolor_core::effect::EffectRegistry;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::canvas::{Canvas, RenderSurfacePool, SurfaceDescriptor};
-use hypercolor_types::scene::{SceneId, Zone};
+use hypercolor_types::display::DisplayDescriptor;
+use hypercolor_types::scene::{SceneId, Zone, ZoneId};
 
 use super::ZoneRuntime;
 use super::group_state::{
@@ -63,12 +64,14 @@ impl ZoneRuntime {
         active_scene_id: Option<SceneId>,
         dependency_key: SceneDependencyKey,
         registry: &EffectRegistry,
+        display_descriptors: &HashMap<ZoneId, DisplayDescriptor>,
     ) -> Result<()> {
         if self.reconciled_dependency_key == Some(dependency_key) {
             return Ok(());
         }
 
-        self.effect_pool.reconcile(groups, registry)?;
+        self.effect_pool
+            .reconcile(groups, registry, display_descriptors)?;
         self.layer_runtime.reconcile(active_scene_id, groups);
 
         let desired_ids = groups.iter().map(|group| group.id).collect::<HashSet<_>>();

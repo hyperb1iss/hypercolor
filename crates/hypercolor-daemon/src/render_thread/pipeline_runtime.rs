@@ -892,6 +892,9 @@ impl ComposeRuntime<'_> {
             dependency_key,
             elapsed_ms: scene_snapshot.elapsed_ms,
             display_group_target_fps: &scene_snapshot.scene_runtime.active_display_group_target_fps,
+            display_group_descriptors: &scene_snapshot
+                .scene_runtime
+                .active_display_group_descriptors,
             registry,
             inputs: ZoneFrameInputs {
                 delta_secs,

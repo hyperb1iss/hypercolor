@@ -649,7 +649,7 @@ fn bench_render_groups(c: &mut Criterion) {
             .unwrap_or(u64::MAX)
             .saturating_mul(120);
         let mut pool = EffectPool::new();
-        pool.reconcile(&groups, &registry)
+        pool.reconcile(&groups, &registry, &std::collections::HashMap::new())
             .expect("group pool should reconcile");
         let mut canvases = groups
             .iter()

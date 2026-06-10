@@ -29,6 +29,7 @@ impl ZoneRuntime {
             context.active_scene_id,
             context.dependency_key,
             context.registry,
+            context.display_group_descriptors,
         )?;
         #[cfg(feature = "wgpu")]
         sparkleflinger.begin_media_upload_frame();

@@ -7,6 +7,7 @@ use anyhow::{Result, anyhow};
 
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::Canvas;
+use hypercolor_types::display::DisplayDescriptor;
 use hypercolor_types::effect::{
     ControlBinding, ControlDefinition, ControlKind, ControlValue, EffectId, EffectMetadata,
 };
@@ -67,7 +68,12 @@ impl EffectPool {
         self.asset_library = Some(asset_library);
     }
 
-    pub fn reconcile(&mut self, groups: &[Zone], registry: &EffectRegistry) -> Result<()> {
+    pub fn reconcile(
+        &mut self,
+        groups: &[Zone],
+        registry: &EffectRegistry,
+        display_descriptors: &HashMap<ZoneId, DisplayDescriptor>,
+    ) -> Result<()> {
         let desired_keys = desired_effect_layers(groups)
             .into_iter()
             .map(|(group, layer)| EffectSlotKey::new(group.id, layer.id))
@@ -85,12 +91,21 @@ impl EffectPool {
                 .resolve_id(&source.effect_id)
                 .unwrap_or(source.effect_id);
 
-            let needs_rebuild = self
-                .slots
-                .get(&key)
-                .is_none_or(|slot| slot.needs_rebuild(resolved_effect_id, entry));
+            let display_descriptor = group
+                .display_target
+                .as_ref()
+                .and_then(|_| display_descriptors.get(&group.id));
+            let needs_rebuild = self.slots.get(&key).is_none_or(|slot| {
+                slot.needs_rebuild(resolved_effect_id, entry, display_descriptor)
+            });
             if needs_rebuild {
-                let slot = EffectSlot::build(entry, group, &layer, self.asset_library.as_ref())?;
+                let slot = EffectSlot::build(
+                    entry,
+                    group,
+                    &layer,
+                    self.asset_library.as_ref(),
+                    display_descriptor.cloned(),
+                )?;
                 self.slots.insert(key, slot);
                 continue;
             }
@@ -262,6 +277,7 @@ struct EffectSlot {
     registry_source_path: PathBuf,
     registry_modified: SystemTime,
     metadata: EffectMetadata,
+    display_descriptor: Option<DisplayDescriptor>,
     renderer: Box<dyn EffectRenderer>,
     controls: HashMap<String, ControlValue>,
     binding_state: HashMap<String, ActiveBindingState>,
@@ -275,10 +291,14 @@ impl EffectSlot {
         group: &Zone,
         layer: &SceneLayer,
         asset_library: Option<&Arc<RwLock<AssetLibrary>>>,
+        display_descriptor: Option<DisplayDescriptor>,
     ) -> Result<Self> {
         let mut renderer = create_renderer_for_metadata(&entry.metadata)?;
         if let Some(asset_library) = asset_library {
             renderer.bind_asset_library(Arc::clone(asset_library));
+        }
+        if display_descriptor.is_some() {
+            renderer.set_display_descriptor(display_descriptor.clone());
         }
         renderer.init_with_canvas_size(
             &entry.metadata,
@@ -292,6 +312,7 @@ impl EffectSlot {
             registry_source_path: entry.source_path.clone(),
             registry_modified: entry.modified,
             metadata: entry.metadata.clone(),
+            display_descriptor,
             renderer,
             controls: HashMap::new(),
             binding_state: HashMap::new(),
@@ -302,11 +323,17 @@ impl EffectSlot {
         Ok(slot)
     }
 
-    fn needs_rebuild(&self, effect_id: EffectId, entry: &EffectEntry) -> bool {
+    fn needs_rebuild(
+        &self,
+        effect_id: EffectId,
+        entry: &EffectEntry,
+        display_descriptor: Option<&DisplayDescriptor>,
+    ) -> bool {
         self.effect_id != effect_id
             || self.registry_metadata != entry.metadata
             || self.registry_source_path != entry.source_path
             || self.registry_modified != entry.modified
+            || self.display_descriptor.as_ref() != display_descriptor
     }
 
     fn sync_layer_state(&mut self, layer: &SceneLayer) {
@@ -769,6 +796,7 @@ mod tests {
             registry_source_path: PathBuf::from("mock/destroy-spy.wgsl"),
             registry_modified: SystemTime::UNIX_EPOCH,
             metadata: registry_metadata,
+            display_descriptor: None,
             renderer: Box::new(DestroySpyRenderer::new(destroyed)),
             controls: HashMap::new(),
             binding_state: HashMap::new(),
@@ -834,7 +862,7 @@ mod tests {
             spy_slot(EffectId::new(uuid::Uuid::now_v7()), Arc::clone(&destroyed)),
         );
 
-        pool.reconcile(&[], &EffectRegistry::new(Vec::new()))
+        pool.reconcile(&[], &EffectRegistry::new(Vec::new()), &HashMap::new())
             .expect("prune should succeed");
 
         assert!(destroyed.load(Ordering::SeqCst));
@@ -901,7 +929,7 @@ mod tests {
         let solid_id = builtin_effect_id(&registry, "solid_color");
         let group = render_group(group_id, solid_id);
 
-        pool.reconcile(&[group], &registry)
+        pool.reconcile(&[group], &registry, &HashMap::new())
             .expect("replacement should succeed");
 
         assert!(destroyed.load(Ordering::SeqCst));

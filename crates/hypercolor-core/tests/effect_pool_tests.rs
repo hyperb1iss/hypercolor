@@ -114,7 +114,7 @@ fn effect_pool_reconciles_and_renders_group_controls() {
         .insert("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]));
 
     let mut pool = EffectPool::new();
-    pool.reconcile(&[group.clone()], &registry)
+    pool.reconcile(&[group.clone()], &registry, &HashMap::new())
         .expect("group should reconcile");
 
     let mut canvas = Canvas::new(1, 1);
@@ -145,8 +145,12 @@ fn effect_pool_hot_swaps_effects_for_same_group() {
         .insert("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]));
 
     let mut pool = EffectPool::new();
-    pool.reconcile(std::slice::from_ref(&solid_group), &registry)
-        .expect("solid group should reconcile");
+    pool.reconcile(
+        std::slice::from_ref(&solid_group),
+        &registry,
+        &HashMap::new(),
+    )
+    .expect("solid group should reconcile");
     let mut solid_canvas = Canvas::new(1, 1);
     pool.render_group_into(
         &solid_group,
@@ -160,8 +164,12 @@ fn effect_pool_hot_swaps_effects_for_same_group() {
     .expect("solid group should render");
 
     let rainbow_group = render_group(group_id, rainbow_id);
-    pool.reconcile(std::slice::from_ref(&rainbow_group), &registry)
-        .expect("rainbow group should reconcile");
+    pool.reconcile(
+        std::slice::from_ref(&rainbow_group),
+        &registry,
+        &HashMap::new(),
+    )
+    .expect("rainbow group should reconcile");
     let mut rainbow_canvas = Canvas::new(1, 1);
     pool.render_group_into(
         &rainbow_group,
@@ -195,7 +203,7 @@ fn effect_pool_rebuilds_slot_when_registry_entry_changes_for_same_effect_id() {
         .insert("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]));
 
     let mut pool = EffectPool::new();
-    pool.reconcile(std::slice::from_ref(&group), &registry)
+    pool.reconcile(std::slice::from_ref(&group), &registry, &HashMap::new())
         .expect("initial group should reconcile");
 
     let mut before_reload = Canvas::new(1, 1);
@@ -214,7 +222,7 @@ fn effect_pool_rebuilds_slot_when_registry_entry_changes_for_same_effect_id() {
     replacement.metadata.id = solid_id;
     registry.register(replacement);
 
-    pool.reconcile(std::slice::from_ref(&group), &registry)
+    pool.reconcile(std::slice::from_ref(&group), &registry, &HashMap::new())
         .expect("registry change should trigger rebuild");
 
     let mut after_reload = Canvas::new(1, 1);
@@ -240,7 +248,7 @@ fn effect_pool_rebuilds_slot_when_registry_modified_changes_for_same_effect_id()
     let group = render_group(ZoneId::new(), rainbow_id);
 
     let mut pool = EffectPool::new();
-    pool.reconcile(std::slice::from_ref(&group), &registry)
+    pool.reconcile(std::slice::from_ref(&group), &registry, &HashMap::new())
         .expect("initial group should reconcile");
 
     let mut before_reload = Canvas::new(1, 1);
@@ -262,7 +270,7 @@ fn effect_pool_rebuilds_slot_when_registry_modified_changes_for_same_effect_id()
     updated_entry.modified = SystemTime::UNIX_EPOCH + Duration::from_secs(1);
     registry.register(updated_entry);
 
-    pool.reconcile(std::slice::from_ref(&group), &registry)
+    pool.reconcile(std::slice::from_ref(&group), &registry, &HashMap::new())
         .expect("modified timestamp change should trigger rebuild");
 
     let mut after_reload = Canvas::new(1, 1);
@@ -308,7 +316,7 @@ fn effect_pool_does_not_rebuild_slot_for_control_binding_state() {
     );
 
     let mut pool = EffectPool::new();
-    pool.reconcile(std::slice::from_ref(&group), &registry)
+    pool.reconcile(std::slice::from_ref(&group), &registry, &HashMap::new())
         .expect("bound group should reconcile");
 
     let mut first = Canvas::new(1, 1);
@@ -323,7 +331,7 @@ fn effect_pool_does_not_rebuild_slot_for_control_binding_state() {
     )
     .expect("first rainbow frame should render");
 
-    pool.reconcile(std::slice::from_ref(&group), &registry)
+    pool.reconcile(std::slice::from_ref(&group), &registry, &HashMap::new())
         .expect("stable registry metadata should not force rebuild");
 
     let mut second = Canvas::new(1, 1);
@@ -352,11 +360,11 @@ fn effect_pool_prunes_removed_groups() {
     let group = render_group(ZoneId::new(), solid_id);
 
     let mut pool = EffectPool::new();
-    pool.reconcile(&[group], &registry)
+    pool.reconcile(&[group], &registry, &HashMap::new())
         .expect("group should reconcile");
     assert_eq!(pool.slot_count(), 1);
 
-    pool.reconcile(&[], &registry)
+    pool.reconcile(&[], &registry, &HashMap::new())
         .expect("empty group list should prune");
     assert_eq!(pool.slot_count(), 0);
 }
@@ -371,12 +379,12 @@ fn effect_pool_prunes_disabled_groups() {
     disabled_group.enabled = false;
 
     let mut pool = EffectPool::new();
-    pool.reconcile(&[enabled_group], &registry)
+    pool.reconcile(&[enabled_group], &registry, &HashMap::new())
         .expect("enabled group should reconcile");
 
     let mut canvas = Canvas::new(1, 1);
     canvas.fill(Rgba::new(255, 0, 0, 255));
-    pool.reconcile(&[disabled_group.clone()], &registry)
+    pool.reconcile(&[disabled_group.clone()], &registry, &HashMap::new())
         .expect("disabled group should still reconcile");
     pool.render_group_into(
         &disabled_group,
@@ -404,7 +412,7 @@ fn effect_pool_reconciles_duplicate_effect_layers_as_separate_slots() {
     group.layers = vec![red_layer.clone(), blue_layer.clone()];
 
     let mut pool = EffectPool::new();
-    pool.reconcile(std::slice::from_ref(&group), &registry)
+    pool.reconcile(std::slice::from_ref(&group), &registry, &HashMap::new())
         .expect("layered group should reconcile");
 
     let mut red_canvas = Canvas::new(1, 1);
@@ -448,7 +456,7 @@ fn effect_pool_skips_disabled_effect_layers() {
     group.layers = vec![effect_layer(solid_id, [1.0, 0.0, 0.0, 1.0]), disabled_layer];
 
     let mut pool = EffectPool::new();
-    pool.reconcile(std::slice::from_ref(&group), &registry)
+    pool.reconcile(std::slice::from_ref(&group), &registry, &HashMap::new())
         .expect("enabled layer should reconcile");
 
     assert_eq!(pool.slot_count(), 1);

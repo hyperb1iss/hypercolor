@@ -7,6 +7,7 @@ use hypercolor_core::input::{InteractionData, ScreenData};
 use hypercolor_types::audio::AudioData;
 #[cfg(test)]
 use hypercolor_types::canvas::PublishedSurface;
+use hypercolor_types::display::DisplayDescriptor;
 use hypercolor_types::event::LayerHealth;
 use hypercolor_types::scene::{DisplayFaceTarget, SceneId, Zone, ZoneId};
 use hypercolor_types::sensor::SystemSnapshot;
@@ -72,6 +73,7 @@ pub(crate) struct RenderSceneContext<'a> {
     pub(crate) dependency_key: SceneDependencyKey,
     pub(crate) elapsed_ms: u32,
     pub(crate) display_group_target_fps: &'a HashMap<ZoneId, u32>,
+    pub(crate) display_group_descriptors: &'a HashMap<ZoneId, DisplayDescriptor>,
     pub(crate) registry: &'a EffectRegistry,
     pub(crate) inputs: ZoneFrameInputs<'a>,
 }

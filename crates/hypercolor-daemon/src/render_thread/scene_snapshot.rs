@@ -5,6 +5,7 @@ use hypercolor_core::bus::{DisplayGroupOutputRoute, DisplayGroupViewport};
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceTopologyHint, DisplayFrameFormat};
+use hypercolor_types::display::{DisplayDescriptor, DisplayPixelFormat};
 use hypercolor_types::layer::LayerSource;
 use hypercolor_types::scene::{ColorInterpolation, SceneId, UnassignedBehavior, Zone, ZoneId};
 use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition, SpatialLayout};
@@ -14,7 +15,7 @@ use crate::session::OutputPowerState;
 use super::RenderThreadState;
 use super::scene_dependency::SceneDependencyKey;
 use super::scene_state::RenderSceneState;
-use crate::display_output::capped_group_direct_display_target_fps;
+use crate::display_output::{DISPLAY_FACE_DEFAULT_FPS, capped_group_direct_display_target_fps};
 
 #[derive(Debug, Clone)]
 pub(crate) struct SceneTransitionSnapshot {
@@ -51,6 +52,7 @@ pub(crate) struct SceneRuntimeSnapshot {
     pub active_render_group_count: u32,
     pub active_display_group_target_fps: HashMap<ZoneId, u32>,
     pub active_display_group_output_routes: HashMap<ZoneId, DisplayGroupOutputRoute>,
+    pub active_display_group_descriptors: HashMap<ZoneId, DisplayDescriptor>,
     pub unassigned_behavior: UnassignedBehavior,
     pub device_registry_generation: u64,
 }
@@ -286,6 +288,10 @@ async fn snapshot_scene_runtime(
             state.face_fps_cap,
         )
         .await;
+    let active_display_group_descriptors = display_descriptors_for_groups(
+        &active_display_group_target_fps,
+        &active_display_group_output_routes,
+    );
     let active_render_group_count = u32::try_from(
         active_render_groups
             .iter()
@@ -310,6 +316,7 @@ async fn snapshot_scene_runtime(
         active_render_group_count,
         active_display_group_target_fps,
         active_display_group_output_routes,
+        active_display_group_descriptors,
         unassigned_behavior,
         device_registry_generation,
     }
@@ -473,6 +480,40 @@ fn display_target_geometry_for_device(
     })
 }
 
+/// Build the per-group display descriptors handed to face renderers at
+/// load. Pixel format maps the transport: raw RGB stays `Rgb`; JPEG
+/// transports apply 4:2:0 chroma subsampling, surfaced as `Yuv420` so
+/// face authors can avoid one-pixel colored hairlines.
+fn display_descriptors_for_groups(
+    target_fps: &HashMap<ZoneId, u32>,
+    routes: &HashMap<ZoneId, DisplayGroupOutputRoute>,
+) -> HashMap<ZoneId, DisplayDescriptor> {
+    routes
+        .iter()
+        .map(|(zone_id, route)| {
+            let fps = target_fps
+                .get(zone_id)
+                .copied()
+                .unwrap_or(DISPLAY_FACE_DEFAULT_FPS);
+            let pixel_format = match route.frame_format {
+                DisplayFrameFormat::Rgb => DisplayPixelFormat::Rgb,
+                DisplayFrameFormat::Jpeg => DisplayPixelFormat::Yuv420,
+            };
+            (
+                *zone_id,
+                DisplayDescriptor::derive(
+                    route.width,
+                    route.height,
+                    route.circular,
+                    None,
+                    fps,
+                    pixel_format,
+                ),
+            )
+        })
+        .collect()
+}
+
 fn default_display_group_viewport() -> DisplayGroupViewport {
     DisplayGroupViewport {
         position: NormalizedPosition::new(0.5, 0.5),
@@ -576,7 +617,7 @@ mod tests {
     use uuid::Uuid;
 
     use hypercolor_core::asset::AssetLibrary;
-    use hypercolor_core::bus::HypercolorBus;
+    use hypercolor_core::bus::{DisplayGroupOutputRoute, HypercolorBus};
     use hypercolor_core::device::{BackendManager, DeviceRegistry};
     use hypercolor_core::effect::{EffectEntry, EffectRegistry};
     use hypercolor_core::engine::{FpsTier, RenderLoop};
@@ -599,12 +640,15 @@ mod tests {
     use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
     use hypercolor_types::viewport::ViewportRect;
 
+    use super::{default_display_group_viewport, display_descriptors_for_groups};
     use crate::device_settings::DeviceSettingsStore;
+    use crate::display_output::DISPLAY_FACE_DEFAULT_FPS;
     use crate::performance::PerformanceTracker;
     use crate::preview_runtime::PreviewRuntime;
     use crate::render_thread::{CanvasDims, RenderThreadState};
     use crate::scene_transactions::SceneTransactionQueue;
     use crate::session::OutputPowerState;
+    use hypercolor_types::display::DisplayPixelFormat;
 
     use super::{
         EffectDemand, FrameSceneSnapshot, SceneDependencyKey, SceneRuntimeSnapshot,
@@ -888,6 +932,66 @@ mod tests {
         assert!((route.brightness - 1.0).abs() < f32::EPSILON);
     }
 
+    #[test]
+    fn display_descriptors_map_routes_to_shared_derivation() {
+        let zone_id = ZoneId::new();
+        let route = DisplayGroupOutputRoute {
+            device_id: DeviceId::new(),
+            width: 960,
+            height: 160,
+            circular: false,
+            brightness: 1.0,
+            frame_format: DisplayFrameFormat::Rgb,
+            viewport: default_display_group_viewport(),
+        };
+        let mut routes = HashMap::new();
+        routes.insert(zone_id, route);
+        let mut fps = HashMap::new();
+        fps.insert(zone_id, 60);
+
+        let descriptors = display_descriptors_for_groups(&fps, &routes);
+        let descriptor = descriptors
+            .get(&zone_id)
+            .expect("display route should yield a descriptor");
+
+        assert_eq!(
+            descriptor.shape,
+            hypercolor_types::display::DisplayShape::Wide
+        );
+        assert_eq!(descriptor.target_fps, 60);
+        assert_eq!(descriptor.pixel_format, DisplayPixelFormat::Rgb);
+        assert_eq!(descriptor.safe_area.width, 960);
+    }
+
+    #[test]
+    fn display_descriptors_mark_jpeg_routes_as_chroma_subsampled() {
+        let zone_id = ZoneId::new();
+        let route = DisplayGroupOutputRoute {
+            device_id: DeviceId::new(),
+            width: 480,
+            height: 480,
+            circular: true,
+            brightness: 1.0,
+            frame_format: DisplayFrameFormat::Jpeg,
+            viewport: default_display_group_viewport(),
+        };
+        let mut routes = HashMap::new();
+        routes.insert(zone_id, route);
+
+        let descriptors = display_descriptors_for_groups(&HashMap::new(), &routes);
+        let descriptor = descriptors
+            .get(&zone_id)
+            .expect("display route should yield a descriptor");
+
+        assert_eq!(descriptor.pixel_format, DisplayPixelFormat::Yuv420);
+        assert_eq!(descriptor.target_fps, DISPLAY_FACE_DEFAULT_FPS);
+        assert_eq!(
+            descriptor.shape,
+            hypercolor_types::display::DisplayShape::Round
+        );
+        assert_eq!(descriptor.safe_area.width, 339);
+    }
+
     #[tokio::test]
     async fn scene_runtime_snapshot_applies_zone_layout_preview_overrides() {
         let effect_id = EffectId::from(Uuid::now_v7());
@@ -942,6 +1046,7 @@ mod tests {
             active_render_group_count: 1,
             active_display_group_target_fps: HashMap::new(),
             active_display_group_output_routes: HashMap::new(),
+            active_display_group_descriptors: HashMap::new(),
             unassigned_behavior: UnassignedBehavior::default(),
             device_registry_generation: 0,
         };
@@ -997,6 +1102,7 @@ mod tests {
             active_render_group_count: 1,
             active_display_group_target_fps: HashMap::new(),
             active_display_group_output_routes: HashMap::new(),
+            active_display_group_descriptors: HashMap::new(),
             unassigned_behavior: UnassignedBehavior::default(),
             device_registry_generation: 0,
         };
@@ -1026,6 +1132,7 @@ mod tests {
             active_render_group_count: 1,
             active_display_group_target_fps: HashMap::new(),
             active_display_group_output_routes: HashMap::new(),
+            active_display_group_descriptors: HashMap::new(),
             unassigned_behavior: UnassignedBehavior::default(),
             device_registry_generation: 0,
         };
