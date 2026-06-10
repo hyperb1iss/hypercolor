@@ -22,6 +22,8 @@ pub enum InputData {
     Audio(AudioData),
     /// Global keyboard and mouse state for interactive HTML effects.
     Interaction(InteractionData),
+    /// Now-playing media snapshot from the MPRIS source.
+    Media(Arc<hypercolor_types::media::MediaState>),
     /// Screen capture zone colors — grabbed from display regions.
     Screen(ScreenData),
     /// System telemetry snapshot — CPU/GPU/memory/components.

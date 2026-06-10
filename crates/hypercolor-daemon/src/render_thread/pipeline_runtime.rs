@@ -148,7 +148,7 @@ impl FrameInputs {
                 InputData::Interaction(snapshot) => interaction = snapshot,
                 InputData::Screen(snapshot) => screen_data = Some(snapshot),
                 InputData::Sensors(snapshot) => sensors = snapshot,
-                InputData::None => {}
+                InputData::Media(_) | InputData::None => {}
             }
         }
 

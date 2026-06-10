@@ -86,6 +86,7 @@ gleam = { version = "0.15", optional = true }
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+base64 = { workspace = true }
 libpulse-binding = { workspace = true }
 ashpd = { workspace = true }
 pipewire = { workspace = true }

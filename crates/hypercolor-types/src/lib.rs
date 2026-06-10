@@ -15,6 +15,7 @@ pub mod effect;
 pub mod event;
 pub mod layer;
 pub mod library;
+pub mod media;
 pub mod motherboard;
 pub mod pairing;
 pub mod palette;

@@ -729,7 +729,10 @@ fn audio_input_produces_audio_data_with_samples() {
             assert!(audio.rms_level > 0.0, "RMS should be nonzero for sine wave");
         }
         InputData::None => panic!("expected Audio data, got None"),
-        InputData::Screen(_) | InputData::Interaction(_) | InputData::Sensors(_) => {
+        InputData::Screen(_)
+        | InputData::Interaction(_)
+        | InputData::Sensors(_)
+        | InputData::Media(_) => {
             panic!("expected Audio data")
         }
     }
@@ -788,7 +791,10 @@ fn audio_input_silence_produces_near_zero() {
         InputData::None => {
             // Also acceptable — might not have enough data.
         }
-        InputData::Screen(_) | InputData::Interaction(_) | InputData::Sensors(_) => {
+        InputData::Screen(_)
+        | InputData::Interaction(_)
+        | InputData::Sensors(_)
+        | InputData::Media(_) => {
             panic!("unexpected variant")
         }
     }

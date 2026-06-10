@@ -8,6 +8,7 @@ pub mod audio;
 #[cfg(target_os = "linux")]
 pub mod evdev;
 pub mod interaction;
+pub mod media;
 pub mod screen;
 pub mod sensor;
 mod traits;
@@ -15,6 +16,7 @@ mod traits;
 #[cfg(target_os = "linux")]
 pub use evdev::EvdevKeyboardInput;
 pub use interaction::InteractionInput;
+pub use media::MediaSource;
 pub use sensor::SensorPoller;
 pub use traits::{InputData, InputSource, InteractionData, KeyboardData, MouseData, ScreenData};
 
