@@ -711,6 +711,10 @@ faces-build:
 face-build name:
     cd sdk && bun run build:effect src/faces/{{ name }}/main.ts
 
+# Face authoring loop: build+install+assign to simulator displays, rebuild on save
+face-dev name:
+    cd sdk && bun scripts/face-dev.ts {{ name }}
+
 # Capture screenshots for every effect via the running daemon (writes effects/screenshots/drafts/)
 capture-screenshots *FLAGS:
     cd sdk && bun run capture:screenshots {{ FLAGS }}
