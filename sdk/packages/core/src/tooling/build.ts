@@ -111,6 +111,7 @@ function faceHtml(args: {
     jsBundle: string
     name: string
     presets: string[]
+    audioReactive: boolean
 }): string {
     const presetBlock = args.presets.length > 0 ? `\n${args.presets.join('\n')}` : ''
 
@@ -123,6 +124,7 @@ function faceHtml(args: {
     <title>${escapeAttr(args.name)}</title>
     <meta description="${escapeAttr(args.description)}" />
     <meta publisher="${escapeAttr(args.author)}" />
+    <meta audio-reactive="${args.audioReactive}" />
     <meta category="display" />
 ${args.controlMetas.join('\n')}${presetBlock}
   </head>
@@ -184,6 +186,7 @@ export async function buildArtifactDocument(options: {
     const html =
         metadata.kind === 'face'
             ? faceHtml({
+                  audioReactive: metadata.audioReactive,
                   author: metadata.author,
                   controlMetas,
                   description: metadata.description,

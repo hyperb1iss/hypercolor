@@ -118,6 +118,51 @@ describe('tooling build', () => {
         }
     })
 
+    test('faces emit the audio-reactive meta from the audio opt-in', async () => {
+        const tempRoot = mkdtempSync(join(tmpdir(), 'hypercolor-face-audio-'))
+        const outDir = join(tempRoot, 'dist')
+        try {
+            const writeFace = (slug: string, options: string) => {
+                const entryDir = join(tempRoot, slug)
+                mkdirSync(entryDir, { recursive: true })
+                const entryPath = join(entryDir, 'main.ts')
+                writeFileSync(
+                    entryPath,
+                    `import { face } from ${JSON.stringify(SDK_ALIAS)}
+
+export default face('${slug}', {}, { ${options} }, (ctx) => {
+    return (_time, _controls, _sensors, audio) => {
+        void audio.data().level
+        void ctx.width
+    }
+})
+`,
+                )
+                return entryPath
+            }
+
+            const [withAudio] = await buildArtifacts({
+                entryPaths: [writeFace('audio-probe', 'audio: true')],
+                outDir,
+                sdkAliasPath: SDK_ALIAS,
+            })
+            expect(withAudio.metadata.audioReactive).toBeTrue()
+            const audioHtml = readFileSync(withAudio.outputPath, 'utf8')
+            expect(audioHtml).toContain('<meta audio-reactive="true" />')
+
+            const [silent] = await buildArtifacts({
+                entryPaths: [writeFace('silent-probe', "description: 'control'")],
+                outDir,
+                sdkAliasPath: SDK_ALIAS,
+            })
+            expect(silent.metadata.audioReactive).toBeFalse()
+            const silentHtml = readFileSync(silent.outputPath, 'utf8')
+            expect(silentHtml).toContain('<meta audio-reactive="false" />')
+        } finally {
+            rmSync(tempRoot, { force: true, recursive: true })
+        }
+    })
+
     test('emits asset control media kind metadata', async () => {
         const tempRoot = mkdtempSync(join(tmpdir(), 'hypercolor-asset-control-'))
         const entryDir = join(tempRoot, 'media-mask')
