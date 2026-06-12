@@ -157,7 +157,7 @@ impl WaylandScreenCaptureInput {
     fn portal_pending(&self) -> bool {
         self.worker
             .as_ref()
-            .is_some_and(|worker| worker.portal_pending.load(Ordering::Acquire))
+            .is_some_and(|worker| worker.portal_pending.load(Ordering::SeqCst))
     }
 
     fn restart_worker(&mut self) -> anyhow::Result<()> {
@@ -200,7 +200,10 @@ impl WaylandScreenCaptureInput {
         let settings = Arc::clone(&self.settings);
         let token_sink = self.token_sink.clone();
         let cancel = Arc::new(AtomicBool::new(false));
-        let portal_pending = Arc::new(AtomicBool::new(false));
+        // Born true: the worker is portal-bound from its first instruction,
+        // and a shutdown landing before the thread even stores the flag must
+        // detach rather than join into the picker freeze.
+        let portal_pending = Arc::new(AtomicBool::new(true));
         let worker_flags = WorkerFlags {
             cancel: Arc::clone(&cancel),
             portal_pending: Arc::clone(&portal_pending),
@@ -267,10 +270,10 @@ impl WaylandScreenCaptureInput {
             return;
         };
 
-        worker.cancel.store(true, Ordering::Release);
+        worker.cancel.store(true, Ordering::SeqCst);
         let _ = worker.command_tx.send(WorkerCommand::Stop);
 
-        if worker.portal_pending.load(Ordering::Acquire) {
+        if worker.portal_pending.load(Ordering::SeqCst) {
             debug!("Detaching Wayland capture worker stuck in the portal dialog");
             drop(worker.join_handle);
             return;
@@ -433,9 +436,13 @@ fn run_capture_worker(
     };
 
     let startup_config = settings.snapshot();
-    flags.portal_pending.store(true, Ordering::Release);
+    if flags.cancel.load(Ordering::SeqCst) {
+        flags.portal_pending.store(false, Ordering::SeqCst);
+        debug!("Wayland capture worker cancelled before portal phase");
+        return;
+    }
     let portal_result = runtime.block_on(open_portal_session(&startup_config));
-    flags.portal_pending.store(false, Ordering::Release);
+    flags.portal_pending.store(false, Ordering::SeqCst);
 
     let (portal, restore_token) = match portal_result {
         Ok(portal) => portal,
@@ -447,7 +454,7 @@ fn run_capture_worker(
 
     // A cancelled (detached) worker was replaced while the picker was open;
     // close the session quietly and leave all shared state to its successor.
-    if flags.cancel.load(Ordering::Acquire) {
+    if flags.cancel.load(Ordering::SeqCst) {
         debug!("Wayland capture worker cancelled during portal phase; closing session");
         if let Err(error) = runtime.block_on(portal.session.close()) {
             debug!(%error, "Cancelled capture session close reported an error");

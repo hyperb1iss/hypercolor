@@ -296,9 +296,12 @@ impl DriverControlStore for DaemonDriverHost {
         let Some(manager) = &self.config_manager else {
             bail!("config manager unavailable");
         };
-        let current = manager.get();
-        let mut config = (**current).clone();
-        let entry = config.drivers.entry(driver_id.to_owned()).or_default();
+        let mut entry = manager
+            .get()
+            .drivers
+            .get(driver_id)
+            .cloned()
+            .unwrap_or_default();
         for (key, value) in values {
             entry
                 .settings
@@ -307,9 +310,13 @@ impl DriverControlStore for DaemonDriverHost {
         if let Some(driver) = self.driver_registry.get(driver_id)
             && let Some(provider) = driver.config()
         {
-            provider.validate_config(entry)?;
+            provider.validate_config(&entry)?;
         }
-        manager.update(config);
+        // Targeted read-modify-write so a concurrent writer (e.g. the
+        // capture restore-token sink) is never clobbered wholesale.
+        manager.modify(|config| {
+            config.drivers.insert(driver_id.to_owned(), entry);
+        });
         manager.save()
     }
 }
