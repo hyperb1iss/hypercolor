@@ -21,7 +21,7 @@ gleam = { version = "0.15", optional = true }
 glow = { workspace = true }
 libc = { workspace = true }
 servo = { version = "0.2.0", default-features = false, features = ["baked-in-resources", "js_jit"], optional = true }
-surfman = { version = "=0.12.2", features = ["sm-x11"], optional = true }
+surfman = { version = "=0.12.4", features = ["sm-x11"], optional = true }
 thiserror = { workspace = true }
 wgpu = { workspace = true }
 wgpu-hal = { workspace = true }

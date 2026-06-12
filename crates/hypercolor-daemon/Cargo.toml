@@ -72,7 +72,7 @@ wgpu = { workspace = true, optional = true }
 pollster = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-sd-notify = "0.4"
+sd-notify = "0.5"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 thread-priority = "3.0.0"
