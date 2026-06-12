@@ -211,4 +211,27 @@ pub trait InputSource: Send {
     fn set_screen_capture_active(&mut self, _active: bool) -> anyhow::Result<()> {
         Ok(())
     }
+
+    /// Reconfigure a running screen source without rebuilding the input manager.
+    ///
+    /// Non-screen sources can ignore this by keeping the default implementation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the source cannot apply the new capture settings.
+    fn reconfigure_screen_capture(
+        &mut self,
+        _config: &crate::input::screen::CaptureConfig,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Discard any persisted source selection and prompt the user to pick again.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the source cannot restart its capture session.
+    fn reselect_screen_source(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
 }

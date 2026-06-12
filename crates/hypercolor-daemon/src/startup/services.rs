@@ -253,7 +253,7 @@ impl DaemonState {
         info!("Device lifecycle manager created");
 
         // ── Input Manager ───────────────────────────────────────────────
-        let input_manager = Arc::new(Mutex::new(build_input_manager(config)));
+        let input_manager = Arc::new(Mutex::new(build_input_manager(config, &config_manager)));
         info!(
             audio_enabled = config.audio.enabled,
             capture_enabled = config.capture.enabled,
@@ -567,7 +567,12 @@ impl DaemonState {
     }
 }
 
-pub(crate) fn build_input_manager(config: &HypercolorConfig) -> InputManager {
+pub(crate) fn build_input_manager(
+    config: &HypercolorConfig,
+    config_manager: &Arc<ConfigManager>,
+) -> InputManager {
+    #[cfg(not(target_os = "linux"))]
+    let _ = config_manager;
     let mut input_manager = InputManager::new();
     input_manager.set_sensor_poller(SensorPoller::new());
     input_manager.add_source(Box::new(InteractionInput::new()));
@@ -592,11 +597,36 @@ pub(crate) fn build_input_manager(config: &HypercolorConfig) -> InputManager {
 
     #[cfg(target_os = "linux")]
     if config.capture.enabled {
-        let capture_config = screen_capture_config_from(&config.capture);
-        input_manager.add_source(Box::new(WaylandScreenCaptureInput::new(capture_config)));
+        input_manager.add_source(build_screen_capture_source(
+            &config.capture,
+            Arc::clone(config_manager),
+        ));
     }
 
     input_manager
+}
+
+/// Build the Wayland screen capture source with a restore-token sink that
+/// persists the portal's source selection back into the daemon config.
+#[cfg(target_os = "linux")]
+pub(crate) fn build_screen_capture_source(
+    capture: &hypercolor_types::config::CaptureConfig,
+    config_manager: Arc<ConfigManager>,
+) -> Box<dyn hypercolor_core::input::InputSource> {
+    let capture_config = screen_capture_config_from(capture);
+    let sink = Arc::new(move |token: Option<String>| {
+        let mut updated = (**config_manager.get()).clone();
+        if updated.capture.restore_token == token {
+            return;
+        }
+        updated.capture.restore_token = token;
+        config_manager.update(updated);
+        if let Err(error) = config_manager.save() {
+            warn!(%error, "Failed to persist screen capture restore token");
+        }
+    });
+
+    Box::new(WaylandScreenCaptureInput::new(capture_config).with_restore_token_sink(sink))
 }
 
 #[cfg(target_os = "linux")]

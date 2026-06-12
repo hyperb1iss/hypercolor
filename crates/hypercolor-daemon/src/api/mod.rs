@@ -7,6 +7,7 @@
 pub mod access_log;
 pub mod assets;
 pub mod attachments;
+pub mod capture;
 #[cfg(feature = "cloud")]
 pub mod cloud;
 pub mod config;
@@ -1343,6 +1344,11 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         .route(
             "/settings/brightness",
             axum::routing::get(settings::get_brightness).put(settings::set_brightness),
+        )
+        // ── Screen Capture ───────────────────────────────────────────
+        .route(
+            "/capture/source/pick",
+            axum::routing::post(capture::pick_capture_source),
         )
         // ── Config ───────────────────────────────────────────────────
         .route("/config", axum::routing::get(config::show_config))

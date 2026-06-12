@@ -2,6 +2,7 @@
 
 #[cfg(target_os = "linux")]
 use hypercolor_core::input::SensorPoller;
+use hypercolor_core::input::screen::CaptureConfig as ScreenCaptureConfig;
 #[cfg(target_os = "linux")]
 use hypercolor_core::input::screen::{CaptureConfig, WaylandScreenCaptureInput};
 use hypercolor_core::input::{InputData, InputManager, InputSource, ScreenData};
@@ -9,8 +10,7 @@ use hypercolor_core::types::audio::{AudioData, AudioPipelineConfig, AudioSourceT
 use hypercolor_core::types::event::{InputButtonState, InputEvent, ZoneColors};
 #[cfg(target_os = "linux")]
 use std::fs;
-#[cfg(target_os = "linux")]
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 #[cfg(target_os = "linux")]
 use std::time::Duration;
 
@@ -872,4 +872,110 @@ fn wayland_screen_capture_input_stays_idle_without_capture_demand() {
 
     src.stop();
     assert!(!src.is_running());
+}
+
+// ── Screen Capture Live Reconfiguration ──────────────────────────────────
+
+#[derive(Default)]
+struct ScreenReconfigLog {
+    applied_configs: Vec<ScreenCaptureConfig>,
+    reselect_count: u32,
+}
+
+struct ReconfigurableScreenSource {
+    running: bool,
+    log: Arc<Mutex<ScreenReconfigLog>>,
+}
+
+impl ReconfigurableScreenSource {
+    fn new(log: Arc<Mutex<ScreenReconfigLog>>) -> Self {
+        Self {
+            running: false,
+            log,
+        }
+    }
+}
+
+impl InputSource for ReconfigurableScreenSource {
+    fn name(&self) -> &'static str {
+        "ReconfigurableScreen"
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        self.running = true;
+        Ok(())
+    }
+
+    fn stop(&mut self) {
+        self.running = false;
+    }
+
+    fn sample(&mut self) -> anyhow::Result<InputData> {
+        Ok(InputData::None)
+    }
+
+    fn is_running(&self) -> bool {
+        self.running
+    }
+
+    fn is_screen_source(&self) -> bool {
+        true
+    }
+
+    fn reconfigure_screen_capture(&mut self, config: &ScreenCaptureConfig) -> anyhow::Result<()> {
+        self.log
+            .lock()
+            .expect("reconfig log lock")
+            .applied_configs
+            .push(config.clone());
+        Ok(())
+    }
+
+    fn reselect_screen_source(&mut self) -> anyhow::Result<()> {
+        self.log.lock().expect("reconfig log lock").reselect_count += 1;
+        Ok(())
+    }
+}
+
+#[test]
+fn input_manager_routes_screen_capture_reconfiguration() {
+    let log = Arc::new(Mutex::new(ScreenReconfigLog::default()));
+    let mut manager = InputManager::new();
+    manager.add_source(Box::new(ReconfigurableScreenSource::new(Arc::clone(&log))));
+    manager.add_source(Box::new(MockAudioSource::new(0.5)));
+    assert!(manager.has_screen_source());
+
+    let config = ScreenCaptureConfig {
+        grid_cols: 16,
+        grid_rows: 9,
+        ..ScreenCaptureConfig::default()
+    };
+    manager
+        .reconfigure_screen_capture(&config)
+        .expect("reconfigure should route to screen sources");
+    manager
+        .reselect_screen_source()
+        .expect("reselect should route to screen sources");
+
+    let observed = log.lock().expect("reconfig log lock");
+    assert_eq!(observed.applied_configs.len(), 1);
+    assert_eq!(observed.applied_configs[0].grid_cols, 16);
+    assert_eq!(observed.applied_configs[0].grid_rows, 9);
+    assert_eq!(observed.reselect_count, 1);
+}
+
+#[test]
+fn input_manager_removes_screen_sources() {
+    let log = Arc::new(Mutex::new(ScreenReconfigLog::default()));
+    let mut manager = InputManager::new();
+    manager.add_source(Box::new(ReconfigurableScreenSource::new(log)));
+    manager.add_source(Box::new(MockAudioSource::new(0.5)));
+    assert!(manager.has_screen_source());
+
+    manager.remove_screen_sources();
+    assert!(!manager.has_screen_source());
+    assert!(
+        manager.source_names().contains(&"MockAudio".to_owned()),
+        "non-screen sources must survive removal"
+    );
 }

@@ -7,6 +7,7 @@
 
 use std::io::Cursor;
 use std::os::fd::OwnedFd;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -29,13 +30,38 @@ use crate::input::traits::{InputData, InputSource, ScreenData};
 const DEFAULT_CAPTURE_WIDTH: u32 = 1280;
 const DEFAULT_CAPTURE_HEIGHT: u32 = 720;
 
+/// Callback invoked when the portal hands back a new restore token (or the
+/// token is cleared before a re-pick). The daemon persists it to config so
+/// the picked source survives restarts without re-prompting.
+pub type RestoreTokenSink = Arc<dyn Fn(Option<String>) + Send + Sync>;
+
+/// Settings shared between the input source handle and the capture worker.
+///
+/// The config lives behind a mutex while the generation counter is atomic:
+/// the worker polls the counter once per frame and only takes the lock when
+/// a reconfiguration actually happened.
+struct SharedSettings {
+    config: Mutex<CaptureConfig>,
+    generation: AtomicU64,
+}
+
+impl SharedSettings {
+    fn snapshot(&self) -> CaptureConfig {
+        self.config
+            .lock()
+            .map(|config| config.clone())
+            .unwrap_or_default()
+    }
+}
+
 /// Wayland-only live screen capture input source.
 pub struct WaylandScreenCaptureInput {
-    config: CaptureConfig,
+    settings: Arc<SharedSettings>,
     running: bool,
     capture_active: bool,
     latest_snapshot: Arc<Mutex<Option<ScreenData>>>,
     worker: Option<WaylandCaptureWorker>,
+    token_sink: Option<RestoreTokenSink>,
 }
 
 impl WaylandScreenCaptureInput {
@@ -43,12 +69,80 @@ impl WaylandScreenCaptureInput {
     #[must_use]
     pub fn new(config: CaptureConfig) -> Self {
         Self {
-            config,
+            settings: Arc::new(SharedSettings {
+                config: Mutex::new(config),
+                generation: AtomicU64::new(0),
+            }),
             running: false,
             capture_active: false,
             latest_snapshot: Arc::new(Mutex::new(None)),
             worker: None,
+            token_sink: None,
         }
+    }
+
+    /// Attach a sink that persists portal restore tokens.
+    #[must_use]
+    pub fn with_restore_token_sink(mut self, sink: RestoreTokenSink) -> Self {
+        self.token_sink = Some(sink);
+        self
+    }
+
+    fn current_target_fps(&self) -> u32 {
+        self.settings
+            .config
+            .lock()
+            .map(|config| config.target_fps)
+            .unwrap_or(30)
+    }
+
+    /// Apply new capture settings to the running pipeline.
+    ///
+    /// Analysis settings (grid, smoothing, letterbox, tuning) reach the
+    /// worker without interruption. A target FPS change requires stream
+    /// re-negotiation, so the worker restarts; with a restore token in
+    /// place that restart is silent.
+    fn reconfigure(&mut self, config: CaptureConfig) -> anyhow::Result<()> {
+        let fps_changed = self.current_target_fps() != config.target_fps;
+
+        if let Ok(mut current) = self.settings.config.lock() {
+            *current = config;
+        }
+        self.settings.generation.fetch_add(1, Ordering::Release);
+
+        if fps_changed && self.worker.is_some() {
+            info!("Restarting Wayland capture worker for new target FPS");
+            self.restart_worker()?;
+        }
+
+        Ok(())
+    }
+
+    /// Drop the persisted portal token and re-open the source picker.
+    fn reselect_source(&mut self) -> anyhow::Result<()> {
+        if let Ok(mut current) = self.settings.config.lock() {
+            current.restore_token = None;
+        }
+        if let Some(sink) = &self.token_sink {
+            sink(None);
+        }
+
+        if !self.running {
+            return Ok(());
+        }
+
+        info!("Re-opening Wayland screencast source picker");
+        self.restart_worker()
+    }
+
+    fn restart_worker(&mut self) -> anyhow::Result<()> {
+        if let Some(worker) = &self.worker {
+            let _ = worker.command_tx.send(WorkerCommand::Stop);
+        }
+        self.join_dead_worker();
+        self.spawn_worker()?;
+        let active = self.capture_active;
+        self.send_worker_command(WorkerCommand::SetActive(active))
     }
 
     fn set_capture_active_state(&mut self, active: bool) -> anyhow::Result<()> {
@@ -81,12 +175,13 @@ impl WaylandScreenCaptureInput {
         }
 
         let latest_snapshot = Arc::clone(&self.latest_snapshot);
-        let config = self.config.clone();
+        let settings = Arc::clone(&self.settings);
+        let token_sink = self.token_sink.clone();
         let (command_tx, command_rx) = pw::channel::channel();
         let join_handle = thread::Builder::new()
             .name("hypercolor-screen-capture".to_owned())
             .spawn(move || {
-                run_capture_worker(config, latest_snapshot, command_rx);
+                run_capture_worker(settings, latest_snapshot, command_rx, token_sink);
             })
             .context("failed to spawn Wayland screen capture worker")?;
 
@@ -192,6 +287,14 @@ impl InputSource for WaylandScreenCaptureInput {
     fn set_screen_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
         self.set_capture_active_state(active)
     }
+
+    fn reconfigure_screen_capture(&mut self, config: &CaptureConfig) -> anyhow::Result<()> {
+        self.reconfigure(config.clone())
+    }
+
+    fn reselect_screen_source(&mut self) -> anyhow::Result<()> {
+        self.reselect_source()
+    }
 }
 
 struct WaylandCaptureWorker {
@@ -216,11 +319,14 @@ struct WaylandCaptureUserData {
     format: spa::param::video::VideoInfoRaw,
     latest_snapshot: Arc<Mutex<Option<ScreenData>>>,
     rgba_frame: Vec<u8>,
+    settings: Arc<SharedSettings>,
+    applied_generation: u64,
 }
 
 impl WaylandCaptureUserData {
-    fn new(config: CaptureConfig, latest_snapshot: Arc<Mutex<Option<ScreenData>>>) -> Self {
-        let mut analyzer = ScreenCaptureInput::new(config);
+    fn new(settings: Arc<SharedSettings>, latest_snapshot: Arc<Mutex<Option<ScreenData>>>) -> Self {
+        let applied_generation = settings.generation.load(Ordering::Acquire);
+        let mut analyzer = ScreenCaptureInput::new(settings.snapshot());
         let _ = analyzer.start();
 
         Self {
@@ -228,14 +334,27 @@ impl WaylandCaptureUserData {
             format: spa::param::video::VideoInfoRaw::default(),
             latest_snapshot,
             rgba_frame: Vec::new(),
+            settings,
+            applied_generation,
         }
+    }
+
+    fn sync_settings(&mut self) {
+        let generation = self.settings.generation.load(Ordering::Acquire);
+        if generation == self.applied_generation {
+            return;
+        }
+        self.applied_generation = generation;
+        self.analyzer.apply_settings(self.settings.snapshot());
+        debug!(generation, "Applied live screen capture settings");
     }
 }
 
 fn run_capture_worker(
-    config: CaptureConfig,
+    settings: Arc<SharedSettings>,
     latest_snapshot: Arc<Mutex<Option<ScreenData>>>,
     command_rx: pw::channel::Receiver<WorkerCommand>,
+    token_sink: Option<RestoreTokenSink>,
 ) {
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -248,7 +367,8 @@ fn run_capture_worker(
         }
     };
 
-    let portal = match runtime.block_on(open_portal_session(&config)) {
+    let startup_config = settings.snapshot();
+    let (portal, restore_token) = match runtime.block_on(open_portal_session(&startup_config)) {
         Ok(portal) => portal,
         Err(error) => {
             warn!(%error, "Failed to establish Wayland screencast session");
@@ -256,8 +376,22 @@ fn run_capture_worker(
         }
     };
 
-    let session = match run_pipewire_loop(&config, Arc::clone(&latest_snapshot), portal, command_rx)
-    {
+    if restore_token != startup_config.restore_token {
+        if let Ok(mut config) = settings.config.lock() {
+            config.restore_token.clone_from(&restore_token);
+        }
+        if let Some(sink) = &token_sink {
+            sink(restore_token);
+        }
+    }
+
+    let session = match run_pipewire_loop(
+        &startup_config,
+        settings,
+        Arc::clone(&latest_snapshot),
+        portal,
+        command_rx,
+    ) {
         Ok(session) => session,
         Err(error) => {
             warn!(%error, "Wayland screen capture loop exited with an error");
@@ -270,7 +404,9 @@ fn run_capture_worker(
     }
 }
 
-async fn open_portal_session(_config: &CaptureConfig) -> anyhow::Result<PortalCaptureSession> {
+async fn open_portal_session(
+    config: &CaptureConfig,
+) -> anyhow::Result<(PortalCaptureSession, Option<String>)> {
     let proxy = Screencast::new()
         .await
         .context("failed to connect to xdg-desktop-portal screencast interface")?;
@@ -279,6 +415,8 @@ async fn open_portal_session(_config: &CaptureConfig) -> anyhow::Result<PortalCa
         .await
         .context("failed to create screencast portal session")?;
 
+    // An invalid or revoked restore token is ignored by the portal, which
+    // falls back to showing the picker — no retry path needed.
     proxy
         .select_sources(
             &session,
@@ -286,7 +424,8 @@ async fn open_portal_session(_config: &CaptureConfig) -> anyhow::Result<PortalCa
                 .set_cursor_mode(CursorMode::Hidden)
                 .set_sources(Some(SourceType::Monitor.into()))
                 .set_multiple(false)
-                .set_persist_mode(PersistMode::DoNot),
+                .set_restore_token(config.restore_token.as_deref())
+                .set_persist_mode(PersistMode::ExplicitlyRevoked),
         )
         .await
         .context("failed to open screencast source picker")?;
@@ -297,6 +436,7 @@ async fn open_portal_session(_config: &CaptureConfig) -> anyhow::Result<PortalCa
         .context("failed to start screencast portal session")?
         .response()
         .context("screen capture request was denied or cancelled")?;
+    let restore_token = response.restore_token().map(ToOwned::to_owned);
     let stream = response
         .streams()
         .first()
@@ -310,18 +450,23 @@ async fn open_portal_session(_config: &CaptureConfig) -> anyhow::Result<PortalCa
     info!(
         pipewire_node = stream.pipe_wire_node_id(),
         stream = ?stream,
+        restored = config.restore_token.is_some(),
         "Wayland screencast session established"
     );
 
-    Ok(PortalCaptureSession {
-        session,
-        stream,
-        fd,
-    })
+    Ok((
+        PortalCaptureSession {
+            session,
+            stream,
+            fd,
+        },
+        restore_token,
+    ))
 }
 
 fn run_pipewire_loop(
     config: &CaptureConfig,
+    settings: Arc<SharedSettings>,
     latest_snapshot: Arc<Mutex<Option<ScreenData>>>,
     portal: PortalCaptureSession,
     command_rx: pw::channel::Receiver<WorkerCommand>,
@@ -348,10 +493,7 @@ fn run_pipewire_loop(
     .context("failed to create PipeWire capture stream")?;
 
     let _listener = stream
-        .add_local_listener_with_user_data(WaylandCaptureUserData::new(
-            config.clone(),
-            latest_snapshot,
-        ))
+        .add_local_listener_with_user_data(WaylandCaptureUserData::new(settings, latest_snapshot))
         .state_changed(|_, _, old, new| {
             debug!(?old, ?new, "Wayland screen capture stream state changed");
         })
@@ -397,6 +539,7 @@ fn run_pipewire_loop(
             }
         })
         .process(|stream, user_data| {
+            user_data.sync_settings();
             let Some(mut buffer) = stream.dequeue_buffer() else {
                 return;
             };

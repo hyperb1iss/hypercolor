@@ -296,6 +296,63 @@ impl InputManager {
         Ok(())
     }
 
+    /// Whether any registered source handles screen capture.
+    #[must_use]
+    pub fn has_screen_source(&self) -> bool {
+        self.sources.iter().any(|source| source.is_screen_source())
+    }
+
+    /// Stop and remove all registered screen sources.
+    pub fn remove_screen_sources(&mut self) {
+        self.sources.retain_mut(|source| {
+            if source.is_screen_source() {
+                source.stop();
+                info!(source = source.name(), "Removed screen capture source");
+                false
+            } else {
+                true
+            }
+        });
+    }
+
+    /// Apply new capture settings to any registered screen sources.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a screen source cannot apply the new settings.
+    pub fn reconfigure_screen_capture(
+        &mut self,
+        config: &screen::CaptureConfig,
+    ) -> anyhow::Result<()> {
+        for source in &mut self.sources {
+            if source.is_screen_source() {
+                source.reconfigure_screen_capture(config)?;
+                info!(
+                    source = source.name(),
+                    "Applied live screen capture settings"
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Ask screen sources to discard their persisted selection and re-prompt.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a screen source cannot restart its session.
+    pub fn reselect_screen_source(&mut self) -> anyhow::Result<()> {
+        for source in &mut self.sources {
+            if source.is_screen_source() {
+                source.reselect_screen_source()?;
+                info!(source = source.name(), "Re-opened screen source picker");
+            }
+        }
+
+        Ok(())
+    }
+
     /// Return the latest system sensor snapshot, if one is configured.
     #[must_use]
     pub fn latest_sensor_snapshot(&self) -> Option<Arc<SystemSnapshot>> {

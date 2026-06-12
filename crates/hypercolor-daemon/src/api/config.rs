@@ -16,6 +16,8 @@ use hypercolor_types::config::HypercolorConfig;
 
 use crate::api::AppState;
 use crate::api::envelope::{ApiError, ApiResponse};
+#[cfg(target_os = "linux")]
+use crate::scene_transactions::SceneTransaction;
 use crate::scene_transactions::apply_layout_update;
 
 #[derive(Debug, Deserialize)]
@@ -137,7 +139,8 @@ pub async fn set_config_value(
     let audio_live_applied =
         maybe_apply_audio_config_change(&state, Some(&key), body.live.unwrap_or(false)).await;
     let render_live_applied = maybe_apply_render_config_change(&state, Some(&key)).await;
-    let live_applied = audio_live_applied || render_live_applied;
+    let capture_live_applied = maybe_apply_capture_config_change(&state, Some(&key)).await;
+    let live_applied = audio_live_applied || render_live_applied || capture_live_applied;
 
     ApiResponse::ok(serde_json::json!({
         "key": key,
@@ -212,7 +215,9 @@ pub async fn reset_config_value(
     .await;
     let render_live_applied =
         maybe_apply_render_config_change(&state, normalized_key.as_deref()).await;
-    let live_applied = audio_live_applied || render_live_applied;
+    let capture_live_applied =
+        maybe_apply_capture_config_change(&state, normalized_key.as_deref()).await;
+    let live_applied = audio_live_applied || render_live_applied || capture_live_applied;
 
     ApiResponse::ok(serde_json::json!({
         "key": normalized_key,
@@ -444,6 +449,77 @@ fn audio_source_from_device(device: &str, enabled: bool) -> AudioSourceType {
 fn noise_gate_to_db(noise_gate: f32) -> f32 {
     let linear = noise_gate.clamp(0.000_001, 1.0);
     20.0 * linear.log10()
+}
+
+fn should_reconfigure_capture(key: Option<&str>) -> bool {
+    key.is_none_or(|value| value == "capture" || value.starts_with("capture."))
+}
+
+/// Apply screen capture config changes live.
+///
+/// Enable/disable adds or removes the capture source on the running input
+/// manager; analysis settings (grid, smoothing, letterbox, color tuning)
+/// reach the capture worker without interrupting the stream. A target FPS
+/// change restarts the worker, which is silent once a portal restore token
+/// has been persisted.
+async fn maybe_apply_capture_config_change(state: &Arc<AppState>, key: Option<&str>) -> bool {
+    if !should_reconfigure_capture(key) {
+        return false;
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = state;
+        false
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let Some(manager) = state.config_manager.as_ref() else {
+            return false;
+        };
+
+        let capture = manager.get().capture.clone();
+        let mut input_manager = state.input_manager.lock().await;
+        let had_source = input_manager.has_screen_source();
+        let mut applied = false;
+
+        if capture.enabled && !had_source {
+            let mut source = crate::startup::services::build_screen_capture_source(
+                &capture,
+                Arc::clone(manager),
+            );
+            if let Err(error) = source.start() {
+                warn!(%error, "Failed to start live screen capture source");
+                return false;
+            }
+            input_manager.add_source(source);
+            state
+                .scene_transactions
+                .push(SceneTransaction::SetScreenCaptureConfigured(true));
+            info!("Enabled screen capture live");
+            applied = true;
+        } else if !capture.enabled && had_source {
+            input_manager.remove_screen_sources();
+            state
+                .scene_transactions
+                .push(SceneTransaction::SetScreenCaptureConfigured(false));
+            info!("Disabled screen capture live");
+            applied = true;
+        }
+
+        if capture.enabled && input_manager.has_screen_source() {
+            let core_config = crate::startup::services::screen_capture_config_from(&capture);
+            match input_manager.reconfigure_screen_capture(&core_config) {
+                Ok(()) => applied = true,
+                Err(error) => {
+                    warn!(%error, "Failed to apply live screen capture settings");
+                }
+            }
+        }
+
+        applied
+    }
 }
 
 fn should_reconfigure_render(key: Option<&str>) -> bool {

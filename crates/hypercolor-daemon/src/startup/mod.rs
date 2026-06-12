@@ -63,7 +63,7 @@ mod config;
 mod discovery_worker;
 mod lifecycle;
 pub mod logging;
-mod services;
+pub(crate) mod services;
 mod signals;
 
 pub(crate) use acceleration::{
