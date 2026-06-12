@@ -81,8 +81,7 @@ impl LightingFeedState {
 
 fn effect_names_for_groups(groups: &[Zone], registry: &EffectRegistry) -> Vec<String> {
     let mut names = Vec::new();
-    let mut push_effect = |effect_id: &hypercolor_types::effect::EffectId,
-                           names: &mut Vec<String>| {
+    let push_effect = |effect_id: &hypercolor_types::effect::EffectId, names: &mut Vec<String>| {
         let Some(entry) = registry.get(effect_id) else {
             return;
         };
