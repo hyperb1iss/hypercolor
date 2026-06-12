@@ -32,7 +32,7 @@ export class Timeline {
      * Add a segment that starts when the most recently added segment
      * ends, offset by `gap` seconds. Chainable.
      */
-    then(name: string, duration: number, gap = 0, easing?: EasingFn): this {
+    after(name: string, duration: number, gap = 0, easing?: EasingFn): this {
         let end = 0
         for (const segment of this.segments.values()) {
             end = Math.max(end, segment.start + segment.duration)

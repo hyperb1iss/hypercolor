@@ -345,7 +345,7 @@ function buildNeonClock(ctx: FaceContext, wide: boolean) {
         root.style.setProperty('--time-size', `${timeSize}`)
         root.style.setProperty(
             '--meta-size',
-            `${Math.max(9, (controls.metaSize as number) * (wide ? ctx.height / 480 * 2.1 : ctx.width / 480))}`,
+            `${Math.max(9, (controls.metaSize as number) * (wide ? (ctx.height / 480) * 2.1 : ctx.width / 480))}`,
         )
 
         const now = new Date()

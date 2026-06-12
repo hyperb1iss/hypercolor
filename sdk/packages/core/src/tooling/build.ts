@@ -116,9 +116,7 @@ function faceHtml(args: {
 }): string {
     const presetBlock = args.presets.length > 0 ? `\n${args.presets.join('\n')}` : ''
     const dataSourcesTag =
-        args.dataSources.length > 0
-            ? `\n    <meta data-sources="${escapeAttr(args.dataSources.join(','))}" />`
-            : ''
+        args.dataSources.length > 0 ? `\n    <meta data-sources="${escapeAttr(args.dataSources.join(','))}" />` : ''
 
     return `<!DOCTYPE html>
 <html lang="en" style="width:100%;height:100%;background:transparent;">

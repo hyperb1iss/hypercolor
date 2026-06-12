@@ -33,12 +33,7 @@ import { deriveLabel } from '../controls/names'
 import { isControlSpec } from '../controls/specs'
 import type { DesignBasis } from '../math/scale'
 import type { FaceContext, FaceUpdateFn } from './context'
-import {
-    buildAudioAccessor,
-    buildFaceDataSources,
-    buildSensorAccessor,
-    resolveDisplayInfo,
-} from './context'
+import { buildAudioAccessor, buildFaceDataSources, buildSensorAccessor, resolveDisplayInfo } from './context'
 
 // ── Types ───────────────────────────────────────────────────────────────
 

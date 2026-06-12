@@ -1,16 +1,5 @@
 import type { FaceContext, FaceDataSources } from '@hypercolor/sdk'
-import {
-    color,
-    combo,
-    face,
-    font,
-    palette,
-    sensor,
-    sparkline,
-    toggle,
-    ValueHistory,
-    withAlpha,
-} from '@hypercolor/sdk'
+import { color, combo, face, font, palette, sensor, sparkline, toggle, ValueHistory, withAlpha } from '@hypercolor/sdk'
 import { drawNebulaField, drawRisingMotes, makeDrifters } from '../shared/atmosphere'
 import { createMetricCard, type MetricCard } from '../shared/components'
 import {
