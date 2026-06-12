@@ -75,6 +75,7 @@ from .exceptions import (
     HypercolorConflictError,
     HypercolorConnectionError,
     HypercolorNotFoundError,
+    HypercolorPreconditionError,
     HypercolorRateLimitError,
     HypercolorUnavailableError,
     HypercolorValidationError,
@@ -108,11 +109,45 @@ from .models.library import (
     PresetApplyResult,
 )
 from .models.profile import ApplyProfileResult, Profile, ProfileSummary
-from .models.scene import ActivateSceneResult, Scene
+from .models.scene import ActivateSceneResult, ActiveScene, DeactivateSceneResult, Scene
+from .models.spatial import SpatialLayout
 from .models.system import HealthStatus, SystemState
+from .models.zone import (
+    UnassignedBehaviorResult,
+    ZoneDeleteResult,
+    ZoneListResult,
+    ZoneResult,
+)
 from .websocket import HypercolorEventStream
 
 ModelT = TypeVar("ModelT")
+
+
+class _Unset:
+    """Marker type distinguishing "leave unchanged" from an explicit ``None``."""
+
+    __slots__ = ()
+
+
+_UNSET_SENTINEL = _Unset()
+
+
+def _if_match_headers(revision: int | None) -> dict[str, str] | None:
+    if revision is None:
+        return None
+    return {"If-Match": f'"{revision}"'}
+
+
+def _etag_revision(response: httpx.Response) -> int | None:
+    etag = response.headers.get("etag")
+    if etag is None:
+        return None
+    try:
+        return int(etag.strip().strip('"'))
+    except ValueError:
+        return None
+
+
 _DEVICE_FILTERS = {"offset", "limit", "status", "backend", "backend_id", "driver", "q"}
 _SCENE_FILTERS: set[str] = set()
 
@@ -180,6 +215,10 @@ class HypercolorClient:
         """Backward-compatible alias for :meth:`get_status`."""
 
         return await self.get_status()
+
+    async def get_brightness(self) -> BrightnessUpdate:
+        """Return the global daemon brightness."""
+        return await self._request_model("GET", "/settings/brightness", BrightnessUpdate)
 
     async def set_brightness(self, brightness: int) -> BrightnessUpdate:
         """Set the global daemon brightness."""
@@ -337,12 +376,20 @@ class HypercolorClient:
         *,
         controls: Mapping[str, Any] | None = None,
         transition: TransitionSpec | Mapping[str, Any] | None = None,
+        preset_id: str | None = None,
+        render_group: str | None = None,
     ) -> ApplyEffectResult:
-        """Apply an effect with optional control overrides."""
+        """Apply an effect with optional control overrides.
+
+        ``render_group`` targets a specific zone by id; omitted applies to
+        the scene's primary zone.
+        """
         body = _drop_none(
             {
                 "controls": dict(controls) if controls is not None else None,
                 "transition": _to_json_mapping(transition),
+                "preset_id": preset_id,
+                "render_group": render_group,
             }
         )
         kwargs = (
@@ -393,6 +440,33 @@ class HypercolorClient:
                 body=UpdateCurrentControlsRequest.from_dict({"controls": dict(controls)}),
             ),
             ControlUpdateResult,
+        )
+
+    async def update_effect_controls(
+        self,
+        effect_id: str,
+        controls: Mapping[str, Any],
+        *,
+        if_match: int | None = None,
+    ) -> ControlUpdateResult:
+        """Update controls on a specific effect.
+
+        ``if_match`` carries the zone's ``controls_version`` for optimistic
+        concurrency; a stale value raises :class:`HypercolorPreconditionError`.
+        """
+        return await self._request_model(
+            "PATCH",
+            f"/effects/{_quote_path(effect_id)}/controls",
+            ControlUpdateResult,
+            body={"controls": dict(controls)},
+            headers=_if_match_headers(if_match),
+        )
+
+    async def reset_controls(self, *, render_group: str | None = None) -> MutationResult:
+        """Reset effect controls to defaults, optionally scoped to one zone."""
+        body = _drop_none({"render_group": render_group})
+        return await self._request_model(
+            "POST", "/effects/current/reset", MutationResult, body=body or None
         )
 
     async def get_control_surfaces(
@@ -578,10 +652,10 @@ class HypercolorClient:
         """Fetch a single scene."""
         return await self._request_model("GET", f"/scenes/{_quote_path(scene_id)}", Scene)
 
-    async def get_active_scene(self) -> Scene | None:
-        """Return the active scene if one exists."""
+    async def get_active_scene(self) -> ActiveScene | None:
+        """Return the active scene with its full zone set."""
         try:
-            return await self._request_model("GET", "/scenes/active", Scene)
+            return await self._request_model("GET", "/scenes/active", ActiveScene)
         except HypercolorNotFoundError:
             return None
 
@@ -609,6 +683,219 @@ class HypercolorClient:
         return await self._generated_model(
             generated_activate_scene._get_kwargs(scene_id),
             ActivateSceneResult,
+        )
+
+    async def update_scene(
+        self,
+        scene_id: str,
+        name: str,
+        *,
+        description: str | None = None,
+        enabled: bool | None = None,
+        mutation_mode: str | None = None,
+    ) -> Scene:
+        """Update a scene.
+
+        The daemon replaces ``name`` and ``description`` wholesale — echo
+        the existing description back when renaming or it is cleared.
+        """
+        body = _drop_none(
+            {
+                "name": name,
+                "description": description,
+                "enabled": enabled,
+                "mutation_mode": mutation_mode,
+            }
+        )
+        return await self._request_model(
+            "PUT", f"/scenes/{_quote_path(scene_id)}", Scene, body=body
+        )
+
+    async def delete_scene(self, scene_id: str) -> MutationResult:
+        """Delete a scene."""
+        return await self._request_model(
+            "DELETE", f"/scenes/{_quote_path(scene_id)}", MutationResult
+        )
+
+    async def deactivate_scene(self) -> DeactivateSceneResult:
+        """Return to the synthesized default scene."""
+        return await self._request_model("POST", "/scenes/deactivate", DeactivateSceneResult)
+
+    # ── Zones (render groups) ────────────────────────────────────────────
+    #
+    # Every zone structure mutation is guarded by an
+    # ``If-Match: <groups_revision>`` precondition. A stale revision raises
+    # HypercolorPreconditionError carrying the authoritative revision —
+    # refetch, rebase, retry.
+
+    async def get_zones(self, scene_id: str) -> ZoneListResult:
+        """List the zones of a scene plus their structure revision."""
+        return await self._request_model(
+            "GET", f"/scenes/{_quote_path(scene_id)}/zones", ZoneListResult
+        )
+
+    async def get_zone(self, scene_id: str, zone_id: str) -> ZoneResult:
+        """Fetch a single zone."""
+        return await self._request_model(
+            "GET",
+            f"/scenes/{_quote_path(scene_id)}/zones/{_quote_path(zone_id)}",
+            ZoneResult,
+        )
+
+    async def create_zone(
+        self,
+        scene_id: str,
+        name: str,
+        *,
+        color: str | None = None,
+        if_match: int | None = None,
+    ) -> ZoneResult:
+        """Create a zone in a scene."""
+        body = _drop_none({"name": name, "color": color})
+        return await self._request_model(
+            "POST",
+            f"/scenes/{_quote_path(scene_id)}/zones",
+            ZoneResult,
+            body=body,
+            headers=_if_match_headers(if_match),
+        )
+
+    async def update_zone(
+        self,
+        scene_id: str,
+        zone_id: str,
+        *,
+        name: str | None = None,
+        description: str | None | _Unset = _UNSET_SENTINEL,
+        color: str | None | _Unset = _UNSET_SENTINEL,
+        brightness: float | None = None,
+        enabled: bool | None = None,
+        make_primary: bool | None = None,
+        if_match: int | None = None,
+    ) -> ZoneResult:
+        """Patch zone metadata; only supplied fields change.
+
+        ``description`` and ``color`` accept ``None`` to clear the value —
+        leaving them unset keeps the current value. The daemon enforces
+        the ``if_match`` revision only for structural changes
+        (``make_primary``); metadata-only patches always apply.
+        """
+        body: dict[str, Any] = _drop_none(
+            {
+                "name": name,
+                "brightness": brightness,
+                "enabled": enabled,
+                "make_primary": make_primary,
+            }
+        )
+        if not isinstance(description, _Unset):
+            body["description"] = description
+        if not isinstance(color, _Unset):
+            body["color"] = color
+        return await self._request_model(
+            "PATCH",
+            f"/scenes/{_quote_path(scene_id)}/zones/{_quote_path(zone_id)}",
+            ZoneResult,
+            body=body,
+            headers=_if_match_headers(if_match),
+        )
+
+    async def delete_zone(
+        self,
+        scene_id: str,
+        zone_id: str,
+        *,
+        if_match: int | None = None,
+    ) -> ZoneDeleteResult:
+        """Delete a zone."""
+        return await self._request_model(
+            "DELETE",
+            f"/scenes/{_quote_path(scene_id)}/zones/{_quote_path(zone_id)}",
+            ZoneDeleteResult,
+            headers=_if_match_headers(if_match),
+        )
+
+    async def assign_devices(
+        self,
+        scene_id: str,
+        zone_id: str,
+        device_zones: list[str | Mapping[str, Any]],
+        *,
+        if_match: int | None = None,
+    ) -> ZoneListResult:
+        """Assign device outputs to a zone; returns the full zone set.
+
+        Each entry is either an existing output id (``str``) or a full
+        output mapping for a brand-new assignment.
+        """
+        normalized = [
+            {"id": entry} if isinstance(entry, str) else dict(entry) for entry in device_zones
+        ]
+        return await self._request_model(
+            "POST",
+            f"/scenes/{_quote_path(scene_id)}/zones/{_quote_path(zone_id)}/devices",
+            ZoneListResult,
+            body={"device_zones": normalized},
+            headers=_if_match_headers(if_match),
+        )
+
+    async def unassign_device(
+        self,
+        scene_id: str,
+        zone_id: str,
+        device_zone_id: str,
+        *,
+        if_match: int | None = None,
+    ) -> ZoneListResult:
+        """Remove one device output from a zone; returns the full zone set."""
+        return await self._request_model(
+            "DELETE",
+            f"/scenes/{_quote_path(scene_id)}/zones/{_quote_path(zone_id)}"
+            f"/devices/{_quote_path(device_zone_id)}",
+            ZoneListResult,
+            headers=_if_match_headers(if_match),
+        )
+
+    async def set_zone_layout(
+        self,
+        scene_id: str,
+        zone_id: str,
+        layout: SpatialLayout | Mapping[str, Any],
+        *,
+        if_match: int | None = None,
+    ) -> ZoneResult:
+        """Replace a zone's spatial layout."""
+        body: dict[str, Any] = (
+            {str(key): value for key, value in layout.items()}
+            if isinstance(layout, Mapping)
+            else msgspec.to_builtins(layout)
+        )
+        return await self._request_model(
+            "PUT",
+            f"/scenes/{_quote_path(scene_id)}/zones/{_quote_path(zone_id)}/layout",
+            ZoneResult,
+            body=body,
+            headers=_if_match_headers(if_match),
+        )
+
+    async def set_unassigned_behavior(
+        self,
+        scene_id: str,
+        behavior: str | Mapping[str, Any],
+        *,
+        if_match: int | None = None,
+    ) -> UnassignedBehaviorResult:
+        """Set the scene policy for device outputs claimed by no zone.
+
+        ``behavior`` is ``"off"``, ``"hold"``, or ``{"fallback": "<zone_id>"}``.
+        """
+        payload = behavior if isinstance(behavior, str) else dict(behavior)
+        return await self._request_model(
+            "PATCH",
+            f"/scenes/{_quote_path(scene_id)}/unassigned-behavior",
+            UnassignedBehaviorResult,
+            body={"unassigned_behavior": payload},
+            headers=_if_match_headers(if_match),
         )
 
     async def get_favorites(self) -> list[Favorite]:
@@ -663,12 +950,19 @@ class HypercolorClient:
         )
         return await self._request_model("POST", "/library/presets", Preset, body=body)
 
-    async def apply_preset(self, preset_id: str) -> PresetApplyResult:
-        """Apply a saved preset."""
+    async def apply_preset(
+        self,
+        preset_id: str,
+        *,
+        render_group: str | None = None,
+    ) -> PresetApplyResult:
+        """Apply a saved preset, optionally scoped to one zone."""
+        body = _drop_none({"render_group": render_group})
         return await self._request_model(
             "POST",
             f"/library/presets/{_quote_path(preset_id)}/apply",
             PresetApplyResult,
+            body=body or None,
         )
 
     async def delete_preset(self, preset_id: str) -> dict[str, Any]:
@@ -866,8 +1160,11 @@ class HypercolorClient:
         *,
         body: Mapping[str, Any] | None = None,
         params: Mapping[str, Any] | None = None,
+        headers: Mapping[str, str] | None = None,
     ) -> ModelT:
-        payload = await self._request_payload(method, path, body=body, params=params)
+        payload = await self._request_payload(
+            method, path, body=body, params=params, headers=headers
+        )
         return self._convert(payload, model_type)
 
     async def _request_payload(
@@ -877,8 +1174,9 @@ class HypercolorClient:
         *,
         body: Mapping[str, Any] | None = None,
         params: Mapping[str, Any] | None = None,
+        headers: Mapping[str, str] | None = None,
     ) -> Any:
-        response = await self._raw_request(method, path, body=body, params=params)
+        response = await self._raw_request(method, path, body=body, params=params, headers=headers)
         return self._unwrap_data(response)
 
     async def _raw_request(
@@ -888,8 +1186,11 @@ class HypercolorClient:
         *,
         body: Mapping[str, Any] | None = None,
         params: Mapping[str, Any] | None = None,
+        headers: Mapping[str, str] | None = None,
     ) -> Any:
-        response = await self._response_request(method, path, body=body, params=params)
+        response = await self._response_request(
+            method, path, body=body, params=params, headers=headers
+        )
 
         try:
             return msgspec.json.decode(response.content)
@@ -903,15 +1204,19 @@ class HypercolorClient:
         *,
         body: Mapping[str, Any] | None = None,
         params: Mapping[str, Any] | None = None,
+        headers: Mapping[str, str] | None = None,
     ) -> httpx.Response:
         try:
             request_path = _request_path(path)
+            request_headers = self._auth_headers()
+            if headers:
+                request_headers.update(headers)
             response = await self._client.request(
                 method,
                 self._request_url(request_path),
                 json=body,
                 params=_drop_none(params or {}),
-                headers=self._auth_headers(),
+                headers=request_headers,
             )
             response.raise_for_status()
         except httpx.ConnectError as exc:
@@ -952,6 +1257,15 @@ class HypercolorClient:
     @staticmethod
     def _map_http_error(exc: httpx.HTTPStatusError) -> Exception:
         response = exc.response
+        if response.status_code == 412:
+            error = _decode_error_details(response.content)
+            message = error.message if error else "Hypercolor precondition failed"
+            return HypercolorPreconditionError(
+                message,
+                error=error,
+                status_code=response.status_code,
+                current_revision=_etag_revision(response),
+            )
         return HypercolorClient._map_response_error(response.status_code, response.content)
 
     @staticmethod
@@ -999,6 +1313,11 @@ def _decode_error_details(content: bytes) -> ApiErrorDetails | None:
     if not isinstance(payload, dict):
         return None
     error = payload.get("error")
+    # Some replies (notably 412 revision mismatches) carry a bare string
+    # reason plus context at the top level, not the usual error object.
+    if isinstance(error, str):
+        details = {key: value for key, value in payload.items() if key not in {"error", "meta"}}
+        return ApiErrorDetails(code="error", message=error, details=details or None)
     if not isinstance(error, dict):
         return None
     code = error.get("code")
