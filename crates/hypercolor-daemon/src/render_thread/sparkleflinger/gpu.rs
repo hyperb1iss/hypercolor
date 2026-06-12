@@ -372,7 +372,10 @@ impl GpuSparkleFlinger {
     /// stay greppable and observable.
     pub(super) fn discard_pending_output_submission(&mut self, reason: &'static str) {
         if self.pending_output_submission.take().is_some() {
-            tracing::debug!(reason, "discarding deferred GPU compose submission");
+            // Happy-path housekeeping that fires at frame cadence while no
+            // preview consumer resolves the deferred encoder; trace keeps
+            // debug-level daemon logs readable.
+            tracing::trace!(reason, "discarding deferred GPU compose submission");
             self.clear_pending_upload_buffers();
             #[cfg(test)]
             {
