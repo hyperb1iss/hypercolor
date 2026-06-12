@@ -372,6 +372,12 @@ pub(crate) async fn execute_frame(
             severity: Severity::Warning,
         });
     }
+    super::screen_canvas::publish_screen_zones(
+        state,
+        inputs.screen_data.as_ref(),
+        frame_num_u32,
+        scene_snapshot.elapsed_ms,
+    );
     let publish_stats = publish_frame_updates(
         state,
         &mut frame_loop.publication_cadence,

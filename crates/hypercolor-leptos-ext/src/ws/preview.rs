@@ -4,6 +4,8 @@ use thiserror::Error;
 pub const PREVIEW_FRAME_HEADER_LEN: usize = 14;
 pub const ZONE_PREVIEW_FRAME_HEADER_LEN: usize = 46;
 pub const ZONE_PREVIEW_FRAME_TAG: u8 = 0x08;
+pub const SCREEN_ZONES_FRAME_HEADER_LEN: usize = 19;
+pub const SCREEN_ZONES_FRAME_TAG: u8 = 0x09;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -201,6 +203,127 @@ impl ZonePreviewFrame {
             format: header.format,
             payload: input.slice(ZONE_PREVIEW_FRAME_HEADER_LEN..end),
         })
+    }
+}
+
+/// Ambilight zone grid frame — the smoothed, color-tuned per-sector colors
+/// extracted from screen capture, exactly as screen-reactive effects see
+/// them. Payload is row-major RGB, `grid_cols * grid_rows * 3` bytes.
+///
+/// Wire layout (little endian):
+/// tag u8 | frame u32 | timestamp u32 | source_w u16 | source_h u16 |
+/// cols u8 | rows u8 | letterbox top/bottom/left/right u8 each | RGB payload
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScreenZonesFrame {
+    pub frame_number: u32,
+    pub timestamp_ms: u32,
+    pub source_width: u16,
+    pub source_height: u16,
+    pub grid_cols: u8,
+    pub grid_rows: u8,
+    /// Letterbox bars in grid units: top, bottom, left, right.
+    pub letterbox: [u8; 4],
+    pub payload: Bytes,
+}
+
+impl ScreenZonesFrame {
+    #[must_use]
+    pub fn encoded_len(&self) -> usize {
+        SCREEN_ZONES_FRAME_HEADER_LEN.saturating_add(self.payload.len())
+    }
+
+    #[must_use]
+    pub fn encode(&self) -> Bytes {
+        let mut out = BytesMut::with_capacity(self.encoded_len());
+        out.put_u8(SCREEN_ZONES_FRAME_TAG);
+        out.put_u32_le(self.frame_number);
+        out.put_u32_le(self.timestamp_ms);
+        out.put_u16_le(self.source_width);
+        out.put_u16_le(self.source_height);
+        out.put_u8(self.grid_cols);
+        out.put_u8(self.grid_rows);
+        out.extend_from_slice(&self.letterbox);
+        out.extend_from_slice(&self.payload);
+        out.freeze()
+    }
+
+    pub fn decode(input: &[u8]) -> Result<Self, PreviewFrameDecodeError> {
+        let header = ScreenZonesFrameHeader::decode(input)?;
+        let end = header.end_offset(input.len())?;
+
+        Ok(Self {
+            frame_number: header.frame_number,
+            timestamp_ms: header.timestamp_ms,
+            source_width: header.source_width,
+            source_height: header.source_height,
+            grid_cols: header.grid_cols,
+            grid_rows: header.grid_rows,
+            letterbox: header.letterbox,
+            payload: Bytes::copy_from_slice(&input[SCREEN_ZONES_FRAME_HEADER_LEN..end]),
+        })
+    }
+
+    /// RGB color of the zone at `(row, col)`, if in range.
+    #[must_use]
+    pub fn zone_rgb(&self, row: u8, col: u8) -> Option<[u8; 3]> {
+        if row >= self.grid_rows || col >= self.grid_cols {
+            return None;
+        }
+        let offset = (usize::from(row) * usize::from(self.grid_cols) + usize::from(col)) * 3;
+        let bytes = self.payload.get(offset..offset + 3)?;
+        Some([bytes[0], bytes[1], bytes[2]])
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ScreenZonesFrameHeader {
+    frame_number: u32,
+    timestamp_ms: u32,
+    source_width: u16,
+    source_height: u16,
+    grid_cols: u8,
+    grid_rows: u8,
+    letterbox: [u8; 4],
+}
+
+impl ScreenZonesFrameHeader {
+    fn decode(input: &[u8]) -> Result<Self, PreviewFrameDecodeError> {
+        if input.len() < SCREEN_ZONES_FRAME_HEADER_LEN {
+            return Err(PreviewFrameDecodeError::TooShort {
+                expected: SCREEN_ZONES_FRAME_HEADER_LEN,
+                actual: input.len(),
+            });
+        }
+        if input[0] != SCREEN_ZONES_FRAME_TAG {
+            return Err(PreviewFrameDecodeError::UnknownChannel { actual: input[0] });
+        }
+
+        Ok(Self {
+            frame_number: u32::from_le_bytes(input[1..5].try_into().expect("slice has 4 bytes")),
+            timestamp_ms: u32::from_le_bytes(input[5..9].try_into().expect("slice has 4 bytes")),
+            source_width: u16::from_le_bytes(input[9..11].try_into().expect("slice has 2 bytes")),
+            source_height: u16::from_le_bytes(input[11..13].try_into().expect("slice has 2 bytes")),
+            grid_cols: input[13],
+            grid_rows: input[14],
+            letterbox: input[15..19].try_into().expect("slice has 4 bytes"),
+        })
+    }
+
+    fn end_offset(&self, input_len: usize) -> Result<usize, PreviewFrameDecodeError> {
+        let payload_len = usize::from(self.grid_cols)
+            .checked_mul(usize::from(self.grid_rows))
+            .and_then(|zones| zones.checked_mul(3))
+            .ok_or(PreviewFrameDecodeError::DimensionsOverflow)?;
+        let end = SCREEN_ZONES_FRAME_HEADER_LEN
+            .checked_add(payload_len)
+            .ok_or(PreviewFrameDecodeError::DimensionsOverflow)?;
+        if input_len < end {
+            return Err(PreviewFrameDecodeError::PayloadTooShort {
+                expected: payload_len,
+                actual: input_len.saturating_sub(SCREEN_ZONES_FRAME_HEADER_LEN),
+            });
+        }
+        Ok(end)
     }
 }
 
@@ -449,6 +572,16 @@ impl ZonePreviewFrameView {
             format: header.format,
             payload: data.subarray(ZONE_PREVIEW_FRAME_HEADER_LEN as u32, end as u32),
         })
+    }
+}
+
+#[cfg(feature = "ws-client-wasm")]
+impl ScreenZonesFrame {
+    pub fn decode_array_buffer(
+        buffer: &js_sys::ArrayBuffer,
+    ) -> Result<Self, PreviewFrameDecodeError> {
+        let data = js_sys::Uint8Array::new(buffer).to_vec();
+        Self::decode(&data)
     }
 }
 

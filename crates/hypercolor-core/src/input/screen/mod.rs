@@ -292,6 +292,12 @@ impl InputSource for ScreenCaptureInput {
             canvas_downscale: self.latest_canvas_downscale.clone(),
             source_width: self.frame_width,
             source_height: self.frame_height,
+            letterbox: [
+                self.letterbox.top,
+                self.letterbox.bottom,
+                self.letterbox.left,
+                self.letterbox.right,
+            ],
         }))
     }
 

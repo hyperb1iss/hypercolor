@@ -1927,6 +1927,10 @@ fn websocket_manifest_matches_protocol_constants() {
     assert_eq!(binary_tags["canvas"], WS_CANVAS_HEADER);
     assert_eq!(binary_tags["screen_canvas"], WS_SCREEN_CANVAS_HEADER);
     assert_eq!(
+        binary_tags["screen_zones"],
+        hypercolor_leptos_ext::ws::SCREEN_ZONES_FRAME_TAG
+    );
+    assert_eq!(
         binary_tags["web_viewport_canvas"],
         WS_WEB_VIEWPORT_CANVAS_HEADER
     );
@@ -3123,4 +3127,52 @@ fn spectrum_payload_decodes_with_shared_codec() {
     assert!((decoded.beat_confidence - 0.9).abs() < f32::EPSILON);
     assert_eq!(decoded.bins.len(), 16);
     assert!(decoded.bins.iter().all(|bin| (bin - 0.25).abs() < 1e-6));
+}
+
+// ── Screen Zones Wire Format ──────────────────────────────────────────────
+
+#[test]
+fn screen_zones_encoding_round_trips_through_shared_wire_format() {
+    let colors: Vec<[u8; 3]> = (0..12)
+        .map(|i| {
+            let base = u8::try_from(i * 20).unwrap_or(255);
+            [base, base.saturating_add(1), base.saturating_add(2)]
+        })
+        .collect();
+    let frame = hypercolor_core::bus::ScreenZonesFrame {
+        frame_number: 99,
+        timestamp_ms: 5_000,
+        source_width: 3840,
+        source_height: 2160,
+        grid_cols: 4,
+        grid_rows: 3,
+        letterbox: [1, 1, 0, 0],
+        colors: Arc::new(colors.clone()),
+    };
+
+    let encoded = super::relays::encode_screen_zones_frame(&frame);
+    let decoded = hypercolor_leptos_ext::ws::ScreenZonesFrame::decode(&encoded)
+        .expect("daemon encoding must decode with the shared wire format");
+
+    assert_eq!(decoded.frame_number, 99);
+    assert_eq!(decoded.timestamp_ms, 5_000);
+    assert_eq!(decoded.source_width, 3840);
+    assert_eq!(decoded.source_height, 2160);
+    assert_eq!(decoded.grid_cols, 4);
+    assert_eq!(decoded.grid_rows, 3);
+    assert_eq!(decoded.letterbox, [1, 1, 0, 0]);
+    assert_eq!(decoded.zone_rgb(0, 0), Some(colors[0]));
+    assert_eq!(decoded.zone_rgb(2, 3), Some(colors[11]));
+}
+
+#[test]
+fn screen_zones_empty_frame_encodes_as_no_signal() {
+    let frame = hypercolor_core::bus::ScreenZonesFrame::default();
+    let encoded = super::relays::encode_screen_zones_frame(&frame);
+    let decoded = hypercolor_leptos_ext::ws::ScreenZonesFrame::decode(&encoded)
+        .expect("empty zones frame must remain decodable");
+
+    assert_eq!(decoded.grid_cols, 0);
+    assert_eq!(decoded.grid_rows, 0);
+    assert!(decoded.payload.is_empty());
 }

@@ -534,6 +534,87 @@ pub(super) async fn relay_screen_canvas(
     }
 }
 
+/// Relay ambilight zone-grid frames to a subscribed client.
+///
+/// Zone frames are tiny (header + `cols * rows * 3` bytes), so there is no
+/// scaling or format configuration — the relay forwards every content change
+/// the render thread publishes, including the empty frame that signals
+/// capture going dark.
+pub(super) async fn relay_screen_zones(
+    preview_runtime: Arc<crate::preview_runtime::PreviewRuntime>,
+    mut subscriptions: watch::Receiver<SubscriptionState>,
+    binary_tx: tokio::sync::mpsc::Sender<Bytes>,
+) {
+    let mut zones_rx = None::<tokio::sync::watch::Receiver<hypercolor_core::bus::ScreenZonesFrame>>;
+
+    loop {
+        let subscribed = subscriptions
+            .borrow()
+            .channels
+            .contains(WsChannel::ScreenZones);
+        if subscribed && zones_rx.is_none() {
+            let mut receiver = preview_runtime.screen_zones_receiver();
+            receiver.mark_changed();
+            zones_rx = Some(receiver);
+        } else if !subscribed {
+            zones_rx = None;
+        }
+
+        if let Some(receiver) = zones_rx.as_mut() {
+            tokio::select! {
+                changed = receiver.changed() => {
+                    if changed.is_err() {
+                        break;
+                    }
+                    let frame = receiver.borrow_and_update().clone();
+                    let payload = encode_screen_zones_frame(&frame);
+                    if binary_tx.try_send(payload).is_err() {
+                        debug!("Dropped screen zones frame for slow client");
+                    }
+                }
+                changed = subscriptions.changed() => {
+                    if changed.is_err() {
+                        break;
+                    }
+                    let _ = subscriptions.borrow_and_update();
+                }
+            }
+        } else {
+            if subscriptions.changed().await.is_err() {
+                break;
+            }
+            let _ = subscriptions.borrow_and_update();
+        }
+    }
+}
+
+pub(super) fn encode_screen_zones_frame(frame: &hypercolor_core::bus::ScreenZonesFrame) -> Bytes {
+    let saturate_u16 = |value: u32| u16::try_from(value).unwrap_or(u16::MAX);
+    let saturate_u8 = |value: u32| u8::try_from(value).unwrap_or(u8::MAX);
+    let payload: Vec<u8> = frame
+        .colors
+        .iter()
+        .flat_map(|rgb| rgb.iter().copied())
+        .collect();
+
+    hypercolor_leptos_ext::ws::ScreenZonesFrame {
+        frame_number: frame.frame_number,
+        timestamp_ms: frame.timestamp_ms,
+        source_width: saturate_u16(frame.source_width),
+        source_height: saturate_u16(frame.source_height),
+        grid_cols: saturate_u8(frame.grid_cols),
+        grid_rows: saturate_u8(frame.grid_rows),
+        letterbox: [
+            saturate_u8(frame.letterbox[0]),
+            saturate_u8(frame.letterbox[1]),
+            saturate_u8(frame.letterbox[2]),
+            saturate_u8(frame.letterbox[3]),
+        ],
+        payload: Bytes::from(payload),
+    }
+    .encode()
+}
+
 pub(super) async fn relay_web_viewport_canvas(
     preview_runtime: Arc<crate::preview_runtime::PreviewRuntime>,
     json_tx: tokio::sync::mpsc::Sender<Utf8Bytes>,

@@ -31,8 +31,8 @@ use super::protocol::{
 };
 use super::relays::{
     publish_subscriptions, relay_canvas, relay_device_metrics, relay_display_preview, relay_events,
-    relay_frames, relay_metrics, relay_screen_canvas, relay_sensors, relay_spectrum,
-    relay_web_viewport_canvas, relay_zone_preview,
+    relay_frames, relay_metrics, relay_screen_canvas, relay_screen_zones, relay_sensors,
+    relay_spectrum, relay_web_viewport_canvas, relay_zone_preview,
 };
 use crate::api::AppState;
 use crate::api::effects::active_effect_metadata;
@@ -182,6 +182,11 @@ async fn handle_socket(
         binary_tx.clone(),
         subscriptions_rx.clone(),
     ));
+    let screen_zones_relay_handle = tokio::spawn(relay_screen_zones(
+        Arc::clone(&state.preview_runtime),
+        subscriptions_rx.clone(),
+        binary_tx.clone(),
+    ));
     let web_viewport_canvas_relay_handle = tokio::spawn(relay_web_viewport_canvas(
         Arc::clone(&state.preview_runtime),
         json_tx.clone(),
@@ -312,6 +317,7 @@ async fn handle_socket(
     spectrum_relay_handle.abort();
     canvas_relay_handle.abort();
     screen_canvas_relay_handle.abort();
+    screen_zones_relay_handle.abort();
     web_viewport_canvas_relay_handle.abort();
     display_preview_relay_handle.abort();
     zone_preview_relay_handle.abort();

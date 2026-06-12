@@ -398,6 +398,17 @@ impl PreviewRuntime {
         .unwrap_or(usize::MAX)
     }
 
+    /// Subscribe to ambilight screen-zone frames straight from the bus.
+    ///
+    /// Receiver-count bookkeeping happens on the bus watch itself; capture
+    /// demand reads `screen_zones_receiver_count` there.
+    #[must_use]
+    pub fn screen_zones_receiver(
+        &self,
+    ) -> tokio::sync::watch::Receiver<hypercolor_core::bus::ScreenZonesFrame> {
+        self.event_bus.screen_zones_receiver()
+    }
+
     pub fn note_web_viewport_canvas_frame(&self, frame_number: u32, timestamp_ms: u32) {
         self.telemetry
             .latest_web_viewport_canvas_frame_number

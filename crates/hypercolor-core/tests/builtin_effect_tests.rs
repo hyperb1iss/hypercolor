@@ -141,6 +141,7 @@ fn make_screen_data() -> ScreenData {
         canvas_downscale: Some(PublishedSurface::from_owned_canvas(canvas, 0, 0)),
         source_width: 4,
         source_height: 2,
+        letterbox: [0; 4],
     }
 }
 

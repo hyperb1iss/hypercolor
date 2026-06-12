@@ -382,6 +382,7 @@ impl InputSource for MockScreenSource {
             canvas_downscale: None,
             source_width: 0,
             source_height: 0,
+            letterbox: [0; 4],
         }))
     }
 
@@ -925,6 +926,7 @@ fn preview_screen_data(left: [u8; 3], right: [u8; 3], frame_number: u32) -> Scre
         )),
         source_width: 320,
         source_height: 200,
+        letterbox: [0; 4],
     }
 }
 
@@ -2000,6 +2002,7 @@ async fn render_thread_gates_screen_capture_to_screen_reactive_scene_groups() {
         canvas_downscale: Some(preview_surface),
         source_width: 2,
         source_height: 2,
+        letterbox: [0; 4],
     };
 
     {
@@ -2914,6 +2917,7 @@ async fn pipeline_reuses_screen_preview_surface_for_canvas_and_screen_watch() {
         canvas_downscale: Some(source_surface.clone()),
         source_width: 320,
         source_height: 200,
+        letterbox: [0; 4],
     };
 
     {
@@ -3016,6 +3020,7 @@ async fn pipeline_retains_screen_preview_surface_when_input_stalls() {
         canvas_downscale: Some(source_surface.clone()),
         source_width: 320,
         source_height: 200,
+        letterbox: [0; 4],
     };
 
     {
@@ -3161,6 +3166,7 @@ async fn pipeline_gpu_retained_screen_preview_advances_frame_watch_when_input_st
         canvas_downscale: Some(source_surface),
         source_width: 320,
         source_height: 200,
+        letterbox: [0; 4],
     };
 
     {
@@ -3289,6 +3295,7 @@ async fn pipeline_gpu_fresh_screen_preview_does_not_publish_stale_colors_while_s
         canvas_downscale: Some(source_surface),
         source_width: 320,
         source_height: 200,
+        letterbox: [0; 4],
     };
 
     {

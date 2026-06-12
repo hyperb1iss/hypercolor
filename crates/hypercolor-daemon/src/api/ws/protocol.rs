@@ -26,6 +26,7 @@ pub(super) enum WsChannel {
     FrameEvents,
     Canvas,
     ScreenCanvas,
+    ScreenZones,
     WebViewportCanvas,
     ZonePreview,
     Metrics,
@@ -35,13 +36,14 @@ pub(super) enum WsChannel {
 }
 
 impl WsChannel {
-    pub(super) const SUPPORTED: [Self; 12] = [
+    pub(super) const SUPPORTED: [Self; 13] = [
         Self::Frames,
         Self::Spectrum,
         Self::Events,
         Self::FrameEvents,
         Self::Canvas,
         Self::ScreenCanvas,
+        Self::ScreenZones,
         Self::WebViewportCanvas,
         Self::ZonePreview,
         Self::Metrics,
@@ -58,6 +60,7 @@ impl WsChannel {
             Self::FrameEvents => "frame_events",
             Self::Canvas => "canvas",
             Self::ScreenCanvas => "screen_canvas",
+            Self::ScreenZones => "screen_zones",
             Self::WebViewportCanvas => "web_viewport_canvas",
             Self::ZonePreview => "zone_preview",
             Self::Metrics => "metrics",
@@ -75,6 +78,7 @@ impl WsChannel {
             "frame_events" => Some(Self::FrameEvents),
             "canvas" => Some(Self::Canvas),
             "screen_canvas" => Some(Self::ScreenCanvas),
+            "screen_zones" => Some(Self::ScreenZones),
             "web_viewport_canvas" => Some(Self::WebViewportCanvas),
             "zone_preview" => Some(Self::ZonePreview),
             "metrics" => Some(Self::Metrics),
@@ -97,6 +101,7 @@ impl WsChannel {
             Self::FrameEvents => 1 << 3,
             Self::Canvas => 1 << 4,
             Self::ScreenCanvas => 1 << 5,
+            Self::ScreenZones => 1 << 12,
             Self::WebViewportCanvas => 1 << 6,
             Self::ZonePreview => 1 << 7,
             Self::Metrics => 1 << 8,
@@ -388,7 +393,10 @@ impl ChannelConfig {
                 WsChannel::Metrics => serde_json::to_value(&self.metrics),
                 WsChannel::DeviceMetrics => serde_json::to_value(&self.device_metrics),
                 WsChannel::DisplayPreview => serde_json::to_value(&self.display_preview),
-                WsChannel::Events | WsChannel::FrameEvents | WsChannel::Sensors => continue,
+                WsChannel::Events
+                | WsChannel::FrameEvents
+                | WsChannel::Sensors
+                | WsChannel::ScreenZones => continue,
             };
 
             if let Ok(json_value) = value {

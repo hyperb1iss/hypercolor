@@ -1,5 +1,10 @@
+use std::sync::Arc;
+
+use hypercolor_core::bus::ScreenZonesFrame;
 use hypercolor_core::input::ScreenData;
 use hypercolor_core::types::canvas::{PublishedSurface, RenderSurfacePool, SurfaceDescriptor};
+
+use super::RenderThreadState;
 
 pub(crate) fn screen_data_to_surface(
     screen_data: &ScreenData,
@@ -116,4 +121,84 @@ pub(crate) fn parse_sector_zone_id(zone_id: &str) -> Option<(u32, u32)> {
     let row = row_raw.parse().ok()?;
     let col = col_raw.parse().ok()?;
     Some((row, col))
+}
+
+/// Publish the latest ambilight zone grid to the bus when anyone is watching.
+///
+/// Redundant frames (identical zone content) are skipped so relays only wake
+/// when colors actually change.
+pub(crate) fn publish_screen_zones(
+    state: &RenderThreadState,
+    screen_data: Option<&ScreenData>,
+    frame_number: u32,
+    timestamp_ms: u32,
+) {
+    if state.event_bus.screen_zones_receiver_count() == 0 {
+        return;
+    }
+
+    let frame = screen_data
+        .and_then(|data| screen_zones_frame(data, frame_number, timestamp_ms))
+        .unwrap_or_default();
+
+    state
+        .event_bus
+        .screen_zones_sender()
+        .send_if_modified(|current| {
+            if current.same_content(&frame) {
+                false
+            } else {
+                *current = frame;
+                true
+            }
+        });
+}
+
+fn screen_zones_frame(
+    screen_data: &ScreenData,
+    frame_number: u32,
+    timestamp_ms: u32,
+) -> Option<ScreenZonesFrame> {
+    let mut max_row = 0_u32;
+    let mut max_col = 0_u32;
+    let mut saw_sector = false;
+    for zone in &screen_data.zone_colors {
+        let Some((row, col)) = parse_sector_zone_id(&zone.zone_id) else {
+            continue;
+        };
+        max_row = max_row.max(row);
+        max_col = max_col.max(col);
+        saw_sector = true;
+    }
+    if !saw_sector {
+        return None;
+    }
+
+    let rows = max_row.saturating_add(1);
+    let cols = max_col.saturating_add(1);
+    let cell_count = usize::try_from(rows)
+        .ok()
+        .and_then(|row_count| usize::try_from(cols).ok()?.checked_mul(row_count))?;
+
+    let mut colors = vec![[0_u8; 3]; cell_count];
+    for zone in &screen_data.zone_colors {
+        let Some((row, col)) = parse_sector_zone_id(&zone.zone_id) else {
+            continue;
+        };
+        let idx = usize::try_from(u64::from(row) * u64::from(cols) + u64::from(col)).ok()?;
+        if let Some(cell) = colors.get_mut(idx) {
+            *cell = zone.colors.first().copied().unwrap_or([0, 0, 0]);
+        }
+    }
+
+    Some(ScreenZonesFrame {
+        frame_number,
+        timestamp_ms,
+        source_width: screen_data.source_width,
+        source_height: screen_data.source_height,
+        grid_cols: cols,
+        grid_rows: rows,
+        letterbox: screen_data.letterbox,
+        colors: Arc::new(colors),
+    })
 }

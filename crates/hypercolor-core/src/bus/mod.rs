@@ -210,6 +210,51 @@ pub struct ZonePreviewFrame {
     pub frame: CanvasFrame,
 }
 
+/// Latest ambilight zone grid extracted from screen capture.
+///
+/// Carries the smoothed, color-tuned per-sector colors exactly as
+/// screen-reactive effects consume them — the truth signal for ambilight
+/// previews and external observers.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ScreenZonesFrame {
+    /// Monotonically increasing frame counter.
+    pub frame_number: u32,
+    /// Millis since daemon start.
+    pub timestamp_ms: u32,
+    /// Source capture width in pixels (pre-downscale).
+    pub source_width: u32,
+    /// Source capture height in pixels (pre-downscale).
+    pub source_height: u32,
+    /// Effective zone grid columns after letterbox cropping.
+    pub grid_cols: u32,
+    /// Effective zone grid rows after letterbox cropping.
+    pub grid_rows: u32,
+    /// Detected letterbox bars in grid units: top, bottom, left, right.
+    pub letterbox: [u32; 4],
+    /// Row-major RGB zone colors, `grid_cols * grid_rows` entries.
+    pub colors: Arc<Vec<[u8; 3]>>,
+}
+
+impl ScreenZonesFrame {
+    /// Whether this frame carries no zone data (capture idle or empty).
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.colors.is_empty()
+    }
+
+    /// Whether two frames carry identical zone content, ignoring frame
+    /// metadata — used to skip redundant watch publications.
+    #[must_use]
+    pub fn same_content(&self, other: &Self) -> bool {
+        self.grid_cols == other.grid_cols
+            && self.grid_rows == other.grid_rows
+            && self.source_width == other.source_width
+            && self.source_height == other.source_height
+            && self.letterbox == other.letterbox
+            && self.colors == other.colors
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct DisplayYuv420StorageIdentity {
     pub id: u64,
@@ -443,6 +488,7 @@ pub struct HypercolorBus {
 
     /// Latest screen-source canvas snapshot.
     screen_canvas: watch::Sender<CanvasFrame>,
+    screen_zones: watch::Sender<ScreenZonesFrame>,
 
     /// Latest high-resolution web viewport source canvas snapshot.
     web_viewport_canvas: watch::Sender<CanvasFrame>,
@@ -473,6 +519,7 @@ impl HypercolorBus {
         let (canvas, _) = watch::channel(CanvasFrame::empty());
         let (scene_canvas, _) = watch::channel(CanvasFrame::empty());
         let (screen_canvas, _) = watch::channel(CanvasFrame::empty());
+        let (screen_zones, _) = watch::channel(ScreenZonesFrame::default());
         let (web_viewport_canvas, _) = watch::channel(CanvasFrame::empty());
         let (zone_preview, _) = watch::channel(Vec::new());
 
@@ -483,6 +530,7 @@ impl HypercolorBus {
             canvas,
             scene_canvas,
             screen_canvas,
+            screen_zones,
             web_viewport_canvas,
             zone_preview,
             group_canvases: Arc::new(Mutex::new(HashMap::new())),
@@ -614,6 +662,24 @@ impl HypercolorBus {
     #[must_use]
     pub fn screen_canvas_receiver_count(&self) -> usize {
         self.screen_canvas.receiver_count()
+    }
+
+    /// Access the ambilight screen-zones watch sender.
+    #[must_use]
+    pub fn screen_zones_sender(&self) -> &watch::Sender<ScreenZonesFrame> {
+        &self.screen_zones
+    }
+
+    /// Subscribe to ambilight screen-zone updates (latest-value semantics).
+    #[must_use]
+    pub fn screen_zones_receiver(&self) -> watch::Receiver<ScreenZonesFrame> {
+        self.screen_zones.subscribe()
+    }
+
+    /// Number of active screen-zones watch receivers.
+    #[must_use]
+    pub fn screen_zones_receiver_count(&self) -> usize {
+        self.screen_zones.receiver_count()
     }
 
     /// Access the web-viewport preview watch sender.

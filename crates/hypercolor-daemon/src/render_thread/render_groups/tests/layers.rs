@@ -150,6 +150,7 @@ fn screen_region_layer_uses_latest_capture_canvas() {
         canvas_downscale: Some(PublishedSurface::from_canvas(&source, 7, 11)),
         source_width: 2,
         source_height: 1,
+        letterbox: [0; 4],
     };
     let mut zones = Vec::new();
 

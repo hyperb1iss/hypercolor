@@ -21,7 +21,8 @@ impl CaptureDemandState {
         // A live preview subscriber (e.g. the Capture page) keeps the screen
         // pipeline running even while no screen-reactive effect is active and
         // even when outputs sleep — tuning needs a picture to tune against.
-        let preview_active = state.event_bus.screen_canvas_receiver_count() > 0;
+        let preview_active = state.event_bus.screen_canvas_receiver_count() > 0
+            || state.event_bus.screen_zones_receiver_count() > 0;
         self.reconcile_screen(
             state,
             (!sleeping && effect_demand.screen_capture_active) || preview_active,

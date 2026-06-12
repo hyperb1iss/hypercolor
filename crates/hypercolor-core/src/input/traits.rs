@@ -87,6 +87,8 @@ pub struct ScreenData {
     pub source_width: u32,
     /// Source frame height in pixels.
     pub source_height: u32,
+    /// Detected letterbox bars in grid units: top, bottom, left, right.
+    pub letterbox: [u32; 4],
 }
 
 impl ScreenData {
@@ -100,6 +102,7 @@ impl ScreenData {
             canvas_downscale: None,
             source_width: 0,
             source_height: 0,
+            letterbox: [0; 4],
         }
     }
 }
