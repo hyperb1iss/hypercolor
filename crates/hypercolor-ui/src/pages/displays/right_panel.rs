@@ -76,6 +76,17 @@ fn FaceAssignmentCard(
         _ => "Choose a face to start rendering.".to_owned(),
     });
     let has_face = Signal::derive(move || matches!(display_face.get(), Some(Ok(Some(_)))));
+    // (live layer, other layer also assigned) for the scope badge.
+    let layer_state = Signal::derive(move || match display_face.get() {
+        Some(Ok(Some(face))) => Some((
+            face.live_scope,
+            match face.live_scope {
+                api::DisplayFaceScope::Default => face.scene_assigned,
+                api::DisplayFaceScope::Scene => face.default_assigned,
+            },
+        )),
+        _ => None,
+    });
 
     view! {
         <div class="rounded-xl border border-t-2 border-edge-subtle border-t-coral/25 bg-surface-raised/80 p-3 edge-glow">
@@ -116,6 +127,39 @@ fn FaceAssignmentCard(
                             </div>
                         })}
                     </div>
+                    {move || layer_state.get().map(|(live, other_assigned)| {
+                        let (label, title) = match live {
+                            api::DisplayFaceScope::Default => (
+                                "DEFAULT",
+                                "The display's own face — persists across scene switches",
+                            ),
+                            api::DisplayFaceScope::Scene => (
+                                "SCENE",
+                                "Assigned by the active scene — wins over the saved default",
+                            ),
+                        };
+                        view! {
+                            <div class="flex shrink-0 flex-col items-end gap-1">
+                                <span
+                                    class="rounded-full border border-coral/45 bg-coral/15 px-2 py-0.5 text-[9px] font-semibold tracking-wider text-coral"
+                                    title=title
+                                >
+                                    {label}
+                                </span>
+                                <Show when=move || other_assigned fallback=|| ()>
+                                    <span
+                                        class="text-[9px] tracking-wider text-fg-tertiary"
+                                        title="The other layer also has a face saved for this display"
+                                    >
+                                        {match live {
+                                            api::DisplayFaceScope::Default => "scene override saved",
+                                            api::DisplayFaceScope::Scene => "default saved",
+                                        }}
+                                    </span>
+                                </Show>
+                            </div>
+                        }
+                    })}
                 </div>
                 <p class="text-[11px] leading-relaxed text-fg-secondary">
                     {move || face_description.get()}

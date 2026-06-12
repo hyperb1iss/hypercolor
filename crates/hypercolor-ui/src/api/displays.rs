@@ -47,6 +47,27 @@ pub struct DisplayFaceGroup {
     pub display_target: Option<DisplayFaceTarget>,
 }
 
+/// Which assignment layer a face operation targets (spec 69 §3.6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DisplayFaceScope {
+    /// Persists across scenes — the display's own face.
+    #[default]
+    Default,
+    /// Lives in the active scene's display zone; wins while that scene is active.
+    Scene,
+}
+
+impl DisplayFaceScope {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Scene => "scene",
+        }
+    }
+}
+
 /// Response from `GET /api/v1/displays/{id}/face`.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct DisplayFaceResponse {
@@ -54,6 +75,15 @@ pub struct DisplayFaceResponse {
     pub scene_id: String,
     pub effect: DisplayFaceEffect,
     pub group: DisplayFaceGroup,
+    /// Which layer the returned assignment lives on.
+    #[serde(default)]
+    pub live_scope: DisplayFaceScope,
+    /// Whether the active scene carries its own assignment for this display.
+    #[serde(default)]
+    pub scene_assigned: bool,
+    /// Whether a persisted default face exists for this display.
+    #[serde(default)]
+    pub default_assigned: bool,
 }
 
 /// Request body for `PUT /api/v1/displays/{id}/face`.
@@ -66,6 +96,7 @@ pub struct SetDisplayFaceRequest {
     pub blend_mode: Option<DisplayFaceBlendMode>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub opacity: Option<f32>,
+    pub scope: DisplayFaceScope,
 }
 
 /// Request body for `PATCH /api/v1/displays/{id}/face/composition`.
@@ -92,10 +123,11 @@ pub async fn fetch_display_face(display_id: &str) -> Result<Option<DisplayFaceRe
         .map_err(|error| error.to_string())
 }
 
-/// `PUT /api/v1/displays/{id}/face` — assign a display face in the active scene.
+/// `PUT /api/v1/displays/{id}/face` — assign a display face on the chosen layer.
 pub async fn set_display_face(
     display_id: &str,
     effect_id: &str,
+    scope: DisplayFaceScope,
 ) -> Result<DisplayFaceResponse, String> {
     let url = format!("/api/v1/displays/{display_id}/face");
     let body = SetDisplayFaceRequest {
@@ -103,15 +135,22 @@ pub async fn set_display_face(
         controls: HashMap::new(),
         blend_mode: Some(DisplayFaceBlendMode::Replace),
         opacity: Some(1.0),
+        scope,
     };
     client::put_json::<SetDisplayFaceRequest, DisplayFaceResponse>(&url, &body)
         .await
         .map_err(Into::into)
 }
 
-/// `DELETE /api/v1/displays/{id}/face` — clear the face assignment.
-pub async fn delete_display_face(display_id: &str) -> Result<(), String> {
-    let url = format!("/api/v1/displays/{display_id}/face");
+/// `DELETE /api/v1/displays/{id}/face?scope=...` — clear one layer's assignment.
+pub async fn delete_display_face(
+    display_id: &str,
+    scope: DisplayFaceScope,
+) -> Result<(), String> {
+    let url = format!(
+        "/api/v1/displays/{display_id}/face?scope={}",
+        scope.as_str()
+    );
     client::delete_empty(&url).await.map_err(Into::into)
 }
 

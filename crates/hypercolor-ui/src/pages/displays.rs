@@ -189,9 +189,14 @@ pub fn DisplaysPage() -> impl IntoView {
         ))
     });
 
+    let (assign_scope, set_assign_scope) = signal(api::DisplayFaceScope::Default);
     let assign_face = Callback::new(move |effect_id: String| {
-        if let Some(message) =
-            snapshot_scene_lock_message(Some(fx), "assigning or changing display faces")
+        let scope = assign_scope.get_untracked();
+        // Default-layer writes never touch the scene, so the snapshot lock
+        // only gates scene-scoped assignment.
+        if scope == api::DisplayFaceScope::Scene
+            && let Some(message) =
+                snapshot_scene_lock_message(Some(fx), "assigning or changing display faces")
         {
             toasts::toast_error(&message);
             return;
@@ -204,14 +209,20 @@ pub fn DisplaysPage() -> impl IntoView {
         let display_name = display.name.clone();
         set_face_assignment_pending.set(true);
         spawn_local(async move {
-            match api::set_display_face(&display_id, &effect_id).await {
+            match api::set_display_face(&display_id, &effect_id, scope).await {
                 Ok(face) => {
                     let assigned_name = face.effect.name.clone();
                     set_display_face.set(Some(Ok(Some(face))));
                     set_face_refresh_tick.update(|value| *value = value.wrapping_add(1));
                     set_face_picker_open.set(false);
                     set_face_assignment_pending.set(false);
-                    toasts::toast_success(&format!("Assigned {assigned_name} to {display_name}"));
+                    let suffix = match scope {
+                        api::DisplayFaceScope::Default => "as its default face",
+                        api::DisplayFaceScope::Scene => "for this scene",
+                    };
+                    toasts::toast_success(&format!(
+                        "Assigned {assigned_name} to {display_name} {suffix}"
+                    ));
                 }
                 Err(error) => {
                     set_face_assignment_pending.set(false);
@@ -221,7 +232,11 @@ pub fn DisplaysPage() -> impl IntoView {
         });
     });
     let clear_face = Callback::new(move |_| {
-        if let Some(message) = snapshot_scene_lock_message(Some(fx), "clearing display faces") {
+        let scope = assign_scope.get_untracked();
+        if scope == api::DisplayFaceScope::Scene
+            && let Some(message) =
+                snapshot_scene_lock_message(Some(fx), "clearing display faces")
+        {
             toasts::toast_error(&message);
             return;
         }
@@ -233,12 +248,16 @@ pub fn DisplaysPage() -> impl IntoView {
         let display_name = display.name.clone();
         set_face_assignment_pending.set(true);
         spawn_local(async move {
-            match api::delete_display_face(&display_id).await {
+            match api::delete_display_face(&display_id, scope).await {
                 Ok(()) => {
-                    set_display_face.set(Some(Ok(None)));
+                    set_display_face.set(None);
                     set_face_refresh_tick.update(|value| *value = value.wrapping_add(1));
                     set_face_assignment_pending.set(false);
-                    toasts::toast_success(&format!("Cleared face from {display_name}"));
+                    let suffix = match scope {
+                        api::DisplayFaceScope::Default => "default face",
+                        api::DisplayFaceScope::Scene => "scene face",
+                    };
+                    toasts::toast_success(&format!("Cleared {suffix} from {display_name}"));
                 }
                 Err(error) => {
                     set_face_assignment_pending.set(false);
@@ -408,6 +427,8 @@ pub fn DisplaysPage() -> impl IntoView {
                                     faces=face_catalog
                                     current_face_id=current_face_id
                                     assigning=face_assignment_pending
+                                    scope=assign_scope
+                                    set_scope=set_assign_scope
                                     on_select=assign_face
                                     on_clear=clear_face
                                     on_close=close_face_picker

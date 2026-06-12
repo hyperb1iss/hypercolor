@@ -13,6 +13,8 @@ pub(super) fn DisplayFacePickerModal(
     faces: ReadSignal<Option<Result<Vec<api::EffectSummary>, String>>>,
     current_face_id: Signal<Option<String>>,
     assigning: ReadSignal<bool>,
+    scope: ReadSignal<api::DisplayFaceScope>,
+    set_scope: WriteSignal<api::DisplayFaceScope>,
     #[prop(into)] on_select: Callback<String>,
     #[prop(into)] on_clear: Callback<()>,
     #[prop(into)] on_close: Callback<()>,
@@ -62,6 +64,36 @@ pub(super) fn DisplayFacePickerModal(
                             <Icon icon=LuX width="14" height="14" />
                         </button>
                     </div>
+                </div>
+
+                <div class="flex items-center gap-2 border-b border-edge-subtle px-4 py-2.5">
+                    <span class="text-[10px] font-semibold uppercase tracking-wider text-fg-tertiary">
+                        "Apply"
+                    </span>
+                    <div class="flex overflow-hidden rounded-md border border-edge-subtle">
+                        <button
+                            type="button"
+                            class=move || scope_segment_class(scope.get() == api::DisplayFaceScope::Default)
+                            on:click=move |_| set_scope.set(api::DisplayFaceScope::Default)
+                            title="Persists across scene switches — this becomes the display's own face"
+                        >
+                            "Always"
+                        </button>
+                        <button
+                            type="button"
+                            class=move || scope_segment_class(scope.get() == api::DisplayFaceScope::Scene)
+                            on:click=move |_| set_scope.set(api::DisplayFaceScope::Scene)
+                            title="Lives in the active scene only — overrides the default while this scene is active"
+                        >
+                            "This scene"
+                        </button>
+                    </div>
+                    <span class="text-[10px] text-fg-tertiary">
+                        {move || match scope.get() {
+                            api::DisplayFaceScope::Default => "sticks across scene switches",
+                            api::DisplayFaceScope::Scene => "only while this scene is active",
+                        }}
+                    </span>
                 </div>
 
                 <div class="border-b border-edge-subtle px-4 py-3">
@@ -225,6 +257,15 @@ fn render_face_gallery_card(
                 </div>
             </div>
         </button>
+    }
+}
+
+/// Segmented-toggle styling for the assignment-scope switch.
+fn scope_segment_class(active: bool) -> &'static str {
+    if active {
+        "bg-accent-primary/20 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-accent-primary transition"
+    } else {
+        "px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-fg-tertiary transition hover:text-fg-secondary"
     }
 }
 

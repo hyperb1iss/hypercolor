@@ -18,6 +18,20 @@ fn jpeg_frame_blob_url(frame: &CanvasFrame) -> Option<String> {
     blob_url_from_bytes(frame.pixels_js(), "image/jpeg").ok()
 }
 
+/// Empty state shown while the display has not produced a preview frame yet.
+fn preview_pending_state() -> impl IntoView {
+    view! {
+        <div class="flex h-full w-full flex-col items-center justify-center gap-1.5 bg-black/40 text-center">
+            <span class="text-[11px] font-medium tracking-wide text-fg-tertiary">
+                "No preview yet"
+            </span>
+            <span class="px-4 text-[10px] leading-relaxed text-fg-tertiary/60">
+                "Assign a face to start rendering"
+            </span>
+        </div>
+    }
+}
+
 #[component]
 pub fn DisplayPreviewSurface(
     #[prop(into)] frame: Signal<Option<CanvasFrame>>,
@@ -34,6 +48,10 @@ pub fn DisplayPreviewSurface(
     let fallback_alt_for_canvas = fallback_alt.clone();
     let fallback_src_for_blob = fallback_src.clone();
     let (live_blob_url, set_live_blob_url) = signal(None::<String>);
+    // The demand-driven preview endpoint 404s until the display produces a
+    // frame; a failed <img> load swaps to a designed empty state instead of
+    // the browser's broken-image glyph.
+    let (fallback_failed, set_fallback_failed) = signal(false);
 
     Effect::new(move |previous: Option<Option<String>>| {
         if let Some(Some(old_url)) = previous.as_ref() {
@@ -70,15 +88,24 @@ pub fn DisplayPreviewSurface(
                         <Show
                             when=move || frame.get().is_some()
                             fallback=move || {
+                                let fallback_src = fallback_src.clone();
+                                let fallback_alt = fallback_alt.clone();
                                 view! {
-                                    <img
-                                        class="h-full w-full object-cover"
-                                        src=fallback_src.clone()
-                                        alt=fallback_alt.clone()
-                                        loading="eager"
-                                        decoding="async"
-                                        draggable="false"
-                                    />
+                                    <Show
+                                        when=move || !fallback_failed.get()
+                                        fallback=preview_pending_state
+                                    >
+                                        <img
+                                            class="h-full w-full object-cover"
+                                            src=fallback_src.clone()
+                                            alt=fallback_alt.clone()
+                                            loading="eager"
+                                            decoding="async"
+                                            draggable="false"
+                                            on:error=move |_| set_fallback_failed.set(true)
+                                            on:load=move |_| set_fallback_failed.set(false)
+                                        />
+                                    </Show>
                                 }
                             }
                         >
@@ -101,15 +128,23 @@ pub fn DisplayPreviewSurface(
                 let src = live_blob_url
                     .get()
                     .unwrap_or_else(|| fallback_src_for_blob.clone());
+                let fallback_alt = fallback_alt.clone();
                 view! {
-                    <img
-                        class="h-full w-full object-cover"
-                        src=src
-                        alt=fallback_alt.clone()
-                        loading="eager"
-                        decoding="async"
-                        draggable="false"
-                    />
+                    <Show
+                        when=move || !fallback_failed.get()
+                        fallback=preview_pending_state
+                    >
+                        <img
+                            class="h-full w-full object-cover"
+                            src=src.clone()
+                            alt=fallback_alt.clone()
+                            loading="eager"
+                            decoding="async"
+                            draggable="false"
+                            on:error=move |_| set_fallback_failed.set(true)
+                            on:load=move |_| set_fallback_failed.set(false)
+                        />
+                    </Show>
                 }
                 .into_any()
             }}

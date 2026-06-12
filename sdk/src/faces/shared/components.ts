@@ -64,6 +64,10 @@ export function createReadout(parent: HTMLElement, options: ReadoutOptions): Rea
 
     const label = el('div', root, 'hc-readout-label')
     label.style.fontSize = `${options.labelSize ?? 10}px`
+    // Faces publish their font controls as CSS vars on the root; without
+    // an explicit family the cards inherit the browser's serif default.
+    label.style.fontFamily = "var(--ui-font, 'Inter', sans-serif)"
+    label.style.fontWeight = '600'
     label.style.letterSpacing = '0.14em'
     label.style.textTransform = 'uppercase'
     label.style.color = withAlpha(accent, 0.7)
@@ -71,6 +75,7 @@ export function createReadout(parent: HTMLElement, options: ReadoutOptions): Rea
 
     const value = el('div', root, 'hc-readout-value')
     value.style.fontSize = `${options.valueSize ?? 28}px`
+    value.style.fontFamily = "var(--hero-font, 'Rajdhani', sans-serif)"
     value.style.fontWeight = '600'
     value.style.fontVariantNumeric = 'tabular-nums'
     value.style.color = palette.fg.primary

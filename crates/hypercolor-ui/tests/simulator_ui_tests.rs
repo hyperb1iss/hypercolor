@@ -212,6 +212,7 @@ fn set_display_face_request_skips_empty_controls() {
         controls: std::collections::HashMap::new(),
         blend_mode: Some(hypercolor_types::scene::DisplayFaceBlendMode::Replace),
         opacity: Some(1.0),
+        scope: hypercolor_ui::api::DisplayFaceScope::Default,
     })
     .expect("display-face request should serialize");
 
@@ -220,7 +221,8 @@ fn set_display_face_request_skips_empty_controls() {
         serde_json::json!({
             "effect_id": "face-1",
             "blend_mode": "replace",
-            "opacity": 1.0
+            "opacity": 1.0,
+            "scope": "default"
         })
     );
 }
@@ -235,6 +237,7 @@ fn set_display_face_request_serializes_present_controls() {
         )]),
         blend_mode: Some(hypercolor_types::scene::DisplayFaceBlendMode::Replace),
         opacity: Some(1.0),
+        scope: hypercolor_ui::api::DisplayFaceScope::Scene,
     })
     .expect("display-face request should serialize");
 
@@ -244,7 +247,8 @@ fn set_display_face_request_serializes_present_controls() {
             "effect_id": "face-2",
             "controls": { "accent": { "float": 0.75 } },
             "blend_mode": "replace",
-            "opacity": 1.0
+            "opacity": 1.0,
+            "scope": "scene"
         })
     );
 }
