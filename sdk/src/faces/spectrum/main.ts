@@ -3,27 +3,32 @@ import { color, combo, face, lerpColor, num, palette, Smoothed, withAlpha } from
 import { drawNebulaField } from '../shared/atmosphere'
 import { clamp01, createFaceRoot } from '../shared/dom'
 
-const PEAK_FALL_PER_SEC = 0.35
-const PEAK_HOLD_SECS = 0.45
-const BAR_DECAY_HALFLIFE = 0.16
+const FAST_DECAY_HALFLIFE = 0.14
+const GHOST_DECAY_HALFLIFE = 0.85
 const SILENCE_LEVEL = 0.015
 const SILENCE_AFTER_SECS = 2
+const CURVE_POINTS = 48
+const SPARK_BANDS = 12
 const PITCH_HUES = [330, 0, 30, 55, 80, 120, 160, 190, 215, 250, 275, 300]
 
-interface BandState {
-    value: number
-    peak: number
-    peakHeldAt: number
+interface SpectrumState {
+    /** Fast-attack, liquid-release silhouette. */
+    live: number[]
+    /** Slow ghost silhouette trailing behind the live one. */
+    ghost: number[]
 }
 
-function createBands(count: number): BandState[] {
-    return Array.from({ length: count }, () => ({ peak: 0, peakHeldAt: 0, value: 0 }))
+function createState(): SpectrumState {
+    return {
+        ghost: new Array<number>(CURVE_POINTS).fill(0),
+        live: new Array<number>(CURVE_POINTS).fill(0),
+    }
 }
 
-/** Resample the 24 mel bands onto `count` bars with linear interpolation. */
-function sampleMel(mel: Float32Array, count: number, index: number): number {
+/** Resample the 24 mel bands onto the curve with linear interpolation. */
+function sampleMel(mel: Float32Array, index: number): number {
     if (mel.length === 0) return 0
-    const position = (index / Math.max(count - 1, 1)) * (mel.length - 1)
+    const position = (index / Math.max(CURVE_POINTS - 1, 1)) * (mel.length - 1)
     const low = Math.floor(position)
     const high = Math.min(low + 1, mel.length - 1)
     const t = position - low
@@ -43,42 +48,35 @@ function chromaHue(chromagram: Float32Array): number {
     return PITCH_HUES[best % PITCH_HUES.length] ?? 280
 }
 
-function hsl(hue: number, saturation: number, lightness: number): string {
-    return `hsl(${Math.round(hue)}, ${Math.round(saturation * 100)}%, ${Math.round(lightness * 100)}%)`
-}
-
-/** Alpha for both color families this face emits — withAlpha is hex-only. */
-function fade(color: string, alpha: number): string {
-    if (color.startsWith('hsl(')) {
-        return `hsla(${color.slice(4, -1)}, ${alpha})`
-    }
-    return withAlpha(color, alpha)
+function hsl(hue: number, saturation: number, lightness: number, alpha = 1): string {
+    return `hsla(${Math.round(hue)}, ${Math.round(saturation * 100)}%, ${Math.round(lightness * 100)}%, ${alpha})`
 }
 
 export default face(
     'Spectrum',
     {
         accent: color('Low Color', palette.neonCyan, { group: 'Style' }),
-        barCount: num('Bars', [12, 48], 28, { group: 'Layout', step: 1 }),
+        barCount: num('Detail', [12, 48], 32, { group: 'Layout', step: 1 }),
         colorMode: combo('Color Mode', ['gradient', 'chromagram'], { group: 'Style' }),
-        glow: num('Glow', [0, 1], 0.55, { group: 'Style' }),
-        peakColor: color('Peak Color', palette.electricYellow, { group: 'Style' }),
+        glow: num('Glow', [0, 1], 0.6, { group: 'Style' }),
+        peakColor: color('Ridge Color', '#ffffff', { group: 'Style' }),
         secondaryAccent: color('High Color', palette.electricPurple, { group: 'Style' }),
     },
     {
         audio: true,
         author: 'Hypercolor',
-        description: 'Live mel-band spectrum with peak-hold caps. Breathes when the room goes quiet.',
+        description:
+            'The music as terrain: a liquid spectral silhouette with a glowing ridge, ghost afterimage, and beat-driven bloom.',
         designBasis: { height: 480, width: 480 },
         presets: [
             {
                 controls: {
                     accent: palette.neonCyan,
                     colorMode: 'gradient',
-                    peakColor: palette.electricYellow,
+                    peakColor: '#ffffff',
                     secondaryAccent: palette.electricPurple,
                 },
-                description: 'Cyan-to-purple intensity sweep with golden caps.',
+                description: 'Cyan-to-violet terrain with a white-hot ridge.',
                 name: 'SilkCircuit',
             },
             {
@@ -89,13 +87,24 @@ export default face(
                     peakColor: '#d8ffe9',
                     secondaryAccent: '#50fa7b',
                 },
-                description: 'VU-meter greens with hot white peaks.',
+                description: 'Emerald landscape with a pale mint ridge.',
                 name: 'Console',
             },
             {
-                controls: { colorMode: 'chromagram', glow: 0.7 },
-                description: 'Bars take the hue of the dominant pitch class.',
+                controls: { colorMode: 'chromagram', glow: 0.75 },
+                description: 'The whole terrain tints with the dominant pitch.',
                 name: 'Harmonics',
+            },
+            {
+                controls: {
+                    accent: '#ff5e7a',
+                    colorMode: 'gradient',
+                    glow: 0.9,
+                    peakColor: '#ffd9a8',
+                    secondaryAccent: '#ffb347',
+                },
+                description: 'Sunset ridge for warm sets.',
+                name: 'Ember Ridge',
             },
         ],
         variants: {
@@ -107,45 +116,61 @@ export default face(
 
 function buildSpectrum(ctx: FaceContext, wide: boolean) {
     createFaceRoot(ctx, 'hc-spectrum')
-    let bands: BandState[] = []
+    const state = createState()
     const levelGlide = new Smoothed(0, 0.25)
     const idleBlend = new Smoothed(0, 0.6)
+    const bloom = new Smoothed(0, 0.18)
     let lastTime = Number.NaN
     let loudAt = 0
 
-    const advanceBands = (mel: Float32Array, count: number, time: number, dt: number): BandState[] => {
-        if (bands.length !== count) bands = createBands(count)
-        const decay = 1 - 0.5 ** (dt / BAR_DECAY_HALFLIFE)
-        for (let index = 0; index < count; index += 1) {
-            const band = bands[index]
-            if (!band) continue
-            const target = sampleMel(mel, count, index)
-            // Rise instantly, fall on a half-life: transients land hard,
-            // release stays liquid at face frame rates.
-            band.value = target > band.value ? target : band.value + (target - band.value) * decay
-            if (band.value >= band.peak) {
-                band.peak = band.value
-                band.peakHeldAt = time
-            } else if (time - band.peakHeldAt > PEAK_HOLD_SECS) {
-                band.peak = Math.max(band.value, band.peak - PEAK_FALL_PER_SEC * dt)
-            }
+    const advance = (mel: Float32Array, dt: number): void => {
+        const fastDecay = 1 - 0.5 ** (dt / FAST_DECAY_HALFLIFE)
+        const ghostDecay = 1 - 0.5 ** (dt / GHOST_DECAY_HALFLIFE)
+        for (let index = 0; index < CURVE_POINTS; index += 1) {
+            const target = sampleMel(mel, index)
+            const live = state.live[index] ?? 0
+            // Instant attack, liquid release.
+            state.live[index] = target > live ? target : live + (target - live) * fastDecay
+            const ghost = state.ghost[index] ?? 0
+            const liveNow = state.live[index] ?? 0
+            state.ghost[index] =
+                liveNow > ghost ? ghost + (liveNow - ghost) * ghostDecay * 2 : ghost + (liveNow - ghost) * ghostDecay
         }
-        return bands
     }
 
-    const barColor = (
-        value: number,
-        index: number,
-        count: number,
-        controls: Record<string, unknown>,
-        chromagram: Float32Array,
-    ): string => {
-        if (controls.colorMode === 'chromagram') {
-            const hue = chromaHue(chromagram)
-            const spread = (index / Math.max(count - 1, 1) - 0.5) * 40
-            return hsl(hue + spread, 0.85, 0.5 + value * 0.22)
+    /** Smooth closed silhouette path through the value points. */
+    const traceSilhouette = (
+        c: CanvasRenderingContext2D,
+        values: number[],
+        points: number,
+        left: number,
+        right: number,
+        baseY: number,
+        amplitude: number,
+        idle: number,
+        time: number,
+    ): void => {
+        const span = right - left
+        const point = (index: number): [number, number] => {
+            const fraction = index / (points - 1)
+            const sample = Math.round(fraction * (CURVE_POINTS - 1))
+            const breath = 0.06 + 0.05 * (1 + Math.sin(time * 1.1 + fraction * Math.PI * 3)) * 0.5
+            const value = (values[sample] ?? 0) * (1 - idle) + breath * idle
+            return [left + fraction * span, baseY - value * amplitude]
         }
-        return lerpColor(controls.accent as string, controls.secondaryAccent as string, value)
+        c.moveTo(left, baseY)
+        let [prevX, prevY] = point(0)
+        c.lineTo(prevX, prevY)
+        for (let index = 1; index < points; index += 1) {
+            const [x, y] = point(index)
+            const midX = (prevX + x) / 2
+            const midY = (prevY + y) / 2
+            c.quadraticCurveTo(prevX, prevY, midX, midY)
+            prevX = x
+            prevY = y
+        }
+        c.lineTo(prevX, prevY)
+        c.lineTo(right, baseY)
     }
 
     return (
@@ -157,125 +182,100 @@ function buildSpectrum(ctx: FaceContext, wide: boolean) {
         const dt = Number.isNaN(lastTime) ? 1 / 30 : Math.max(time - lastTime, 0)
         lastTime = time
         const audioData = audio.data()
+        const detail = Math.max(12, Math.min(CURVE_POINTS, Math.round(controls.barCount as number)))
         const level = levelGlide.update(clamp01(audioData.level), dt)
         if (audioData.level > SILENCE_LEVEL) loudAt = time
         const idle = idleBlend.update(time - loudAt > SILENCE_AFTER_SECS ? 1 : 0, dt)
-        const count = Math.max(12, Math.round(controls.barCount as number))
-        const state = advanceBands(audioData.melBandsNormalized, count, time, dt)
+        const pulse = bloom.update(clamp01(audioData.beatPulse), dt)
+        advance(audioData.melBandsNormalized, dt)
+
         const glow = clamp01(controls.glow as number)
-        const peakColor = controls.peakColor as string
+        const chromaMode = controls.colorMode === 'chromagram'
+        const hue = chromaHue(audioData.chromagram)
+        const lowColor = chromaMode ? hsl(hue - 24, 0.8, 0.42) : (controls.accent as string)
+        const highColor = chromaMode ? hsl(hue + 24, 0.85, 0.6) : (controls.secondaryAccent as string)
+        const ridgeColor = controls.peakColor as string
 
         const c = ctx.ctx
-        c.clearRect(0, 0, ctx.width, ctx.height)
-        drawNebulaField(
-            c,
-            ctx.width,
-            ctx.height,
-            time,
-            controls.accent as string,
-            controls.secondaryAccent as string,
-            0.4 + level * 0.7,
-        )
+        const W = ctx.width
+        const H = ctx.height
+        c.clearRect(0, 0, W, H)
+        drawNebulaField(c, W, H, time, lowColor, highColor, 0.45 + level * 0.8 + pulse * 0.4)
 
-        // Idle breath: a slow wave rolls across the bars so silence still moves.
-        const idleValue = (index: number): number =>
-            0.08 + 0.07 * (1 + Math.sin(time * 1.1 + (index / count) * Math.PI * 3)) * 0.5
+        const safe = ctx.display.safeArea
+        const left = wide ? W * 0.025 : safe.x
+        const right = wide ? W * 0.975 : safe.x + safe.width
+        const baseY = wide ? H * 0.86 : H * 0.72
+        const amplitude = wide ? H * 0.72 : safe.height * 0.52
+        const alive = 1 - idle * 0.45
 
-        if (wide) {
-            const margin = ctx.width * 0.02
-            const baseline = ctx.height * 0.92
-            const maxBarHeight = ctx.height * 0.8
-            const slot = (ctx.width - margin * 2) / count
-            const barWidth = slot * 0.62
-
-            for (let index = 0; index < count; index += 1) {
-                const band = state[index]
-                if (!band) continue
-                const display = band.value * (1 - idle) + idleValue(index) * idle
-                const barHeight = Math.max(2, display * maxBarHeight)
-                const x = margin + index * slot + (slot - barWidth) / 2
-                const fill = barColor(display, index, count, controls, audioData.chromagram)
-                c.save()
-                if (glow > 0 && idle < 0.5) {
-                    c.shadowColor = fill
-                    c.shadowBlur = 14 * glow * display
-                }
-                c.fillStyle = idle > 0.5 ? fade(fill, 0.55) : fill
-                c.fillRect(x, baseline - barHeight, barWidth, barHeight)
-                c.restore()
-
-                const peakDisplay = band.peak * (1 - idle)
-                if (peakDisplay > 0.02) {
-                    const peakY = baseline - peakDisplay * maxBarHeight
-                    c.fillStyle = withAlpha(peakColor, 0.9)
-                    c.fillRect(x, peakY - 2, barWidth, 2)
-                }
-            }
-
-            // Beat-reactive baseline.
-            const pulse = clamp01(audioData.beatPulse) * (1 - idle)
-            c.fillStyle = withAlpha(peakColor, 0.25 + 0.55 * pulse)
-            c.fillRect(margin, baseline + 2, ctx.width - margin * 2, 2 + pulse * 2)
-            return
-        }
-
-        // Round: radial spectrum around a breathing center ring.
-        const cx = ctx.width / 2
-        const cy = ctx.height / 2
-        const innerRadius = Math.min(ctx.width, ctx.height) * (0.17 + 0.02 * Math.sin(time * 1.3) * idle)
-        const maxLength = Math.min(ctx.width, ctx.height) * 0.46 - innerRadius
-
-        for (let index = 0; index < count; index += 1) {
-            const band = state[index]
-            if (!band) continue
-            const display = band.value * (1 - idle) + idleValue(index) * idle
-            const angle = (index / count) * Math.PI * 2 - Math.PI / 2
-            const length = Math.max(2, display * maxLength)
-            const x0 = cx + Math.cos(angle) * innerRadius
-            const y0 = cy + Math.sin(angle) * innerRadius
-            const x1 = cx + Math.cos(angle) * (innerRadius + length)
-            const y1 = cy + Math.sin(angle) * (innerRadius + length)
-            const fill = barColor(display, index, count, controls, audioData.chromagram)
-
-            c.save()
-            if (glow > 0 && idle < 0.5) {
-                c.shadowColor = fill
-                c.shadowBlur = 12 * glow * display
-            }
-            c.strokeStyle = idle > 0.5 ? fade(fill, 0.55) : fill
-            c.lineWidth = Math.max(2, ((Math.PI * 2 * innerRadius) / count) * 0.5)
-            c.lineCap = 'round'
-            c.beginPath()
-            c.moveTo(x0, y0)
-            c.lineTo(x1, y1)
-            c.stroke()
-            c.restore()
-
-            const peakDisplay = band.peak * (1 - idle)
-            if (peakDisplay > 0.02) {
-                const peakRadius = innerRadius + peakDisplay * maxLength
-                const px = cx + Math.cos(angle) * peakRadius
-                const py = cy + Math.sin(angle) * peakRadius
-                c.fillStyle = withAlpha(peakColor, 0.85)
-                c.beginPath()
-                c.arc(px, py, 1.6, 0, Math.PI * 2)
-                c.fill()
-            }
-        }
-
-        // Center ring: level-driven when loud, slow breath when idle.
-        const ringStrength = level * (1 - idle) + (0.25 + 0.12 * Math.sin(time * 1.3)) * idle
-        const ringColor = barColor(ringStrength, 0, 1, controls, audioData.chromagram)
-        c.save()
-        c.strokeStyle = fade(ringColor, 0.5 + 0.4 * ringStrength)
-        c.lineWidth = 2 + ringStrength * 4
-        if (glow > 0) {
-            c.shadowColor = ringColor
-            c.shadowBlur = 18 * glow * ringStrength
-        }
+        // Ghost silhouette: the recent past as a faint afterimage.
         c.beginPath()
-        c.arc(cx, cy, innerRadius - 8, 0, Math.PI * 2)
+        traceSilhouette(c, state.ghost, detail, left, right, baseY, amplitude * 1.02, idle, time)
+        c.closePath()
+        c.fillStyle = withAlpha(highColor, 0.1 * alive)
+        c.fill()
+
+        // Live silhouette with a frequency-graded fill.
+        c.beginPath()
+        traceSilhouette(c, state.live, detail, left, right, baseY, amplitude, idle, time)
+        c.closePath()
+        const fill = c.createLinearGradient(0, baseY - amplitude, 0, baseY)
+        fill.addColorStop(0, withAlpha(highColor, (0.5 + pulse * 0.3) * alive))
+        fill.addColorStop(0.65, withAlpha(lowColor, 0.3 * alive))
+        fill.addColorStop(1, withAlpha(lowColor, 0.04))
+        c.fillStyle = fill
+        c.fill()
+
+        // Glowing ridge line along the live silhouette.
+        c.save()
+        c.beginPath()
+        traceSilhouette(c, state.live, detail, left, right, baseY, amplitude, idle, time)
+        if (glow > 0) {
+            c.shadowColor = ridgeColor
+            c.shadowBlur = (10 + pulse * 14) * glow
+        }
+        c.strokeStyle = withAlpha(ridgeColor, (0.55 + pulse * 0.35) * alive)
+        c.lineWidth = 1.6
         c.stroke()
         c.restore()
+
+        // Mirrored reflection below the baseline.
+        c.save()
+        c.translate(0, baseY * 2)
+        c.scale(1, -1)
+        c.beginPath()
+        traceSilhouette(c, state.live, detail, left, right, baseY, amplitude * 0.32, idle, time)
+        c.closePath()
+        const mirror = c.createLinearGradient(0, baseY - amplitude * 0.32, 0, baseY)
+        mirror.addColorStop(0, withAlpha(lowColor, 0.12 * alive))
+        mirror.addColorStop(1, withAlpha(lowColor, 0))
+        c.fillStyle = mirror
+        c.fill()
+        c.restore()
+
+        // Spectral sparks lifting off the strongest bands.
+        for (let index = 0; index < SPARK_BANDS; index += 1) {
+            const sampleIndex = Math.floor((index / SPARK_BANDS) * CURVE_POINTS)
+            const value = (state.live[sampleIndex] ?? 0) * (1 - idle)
+            if (value < 0.3) continue
+            const fraction = sampleIndex / (CURVE_POINTS - 1)
+            const sparkPhase = (time * (0.5 + value * 0.9) + index * 0.37) % 1
+            const x = left + fraction * (right - left)
+            const y = baseY - value * amplitude - sparkPhase * amplitude * 0.3
+            const fade = (1 - sparkPhase) * value
+            c.fillStyle = withAlpha(ridgeColor, fade * 0.5)
+            c.beginPath()
+            c.arc(x, y, 1.4, 0, Math.PI * 2)
+            c.fill()
+        }
+
+        // Baseline hairline that blooms on the beat.
+        c.strokeStyle = withAlpha(ridgeColor, (0.18 + pulse * 0.5) * alive)
+        c.lineWidth = 1 + pulse * 1.6
+        c.beginPath()
+        c.moveTo(left, baseY)
+        c.lineTo(right, baseY)
+        c.stroke()
     }
 }
