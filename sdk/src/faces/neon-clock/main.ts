@@ -1,361 +1,132 @@
 import type { FaceContext } from '@hypercolor/sdk'
-import { color, combo, easeOutCubic, face, font, lerpColor, num, palette, toggle, withAlpha } from '@hypercolor/sdk'
+import { color, combo, easeOutCubic, face, font, num, palette, toggle, withAlpha } from '@hypercolor/sdk'
 
+import {
+    drawCometRail,
+    drawCometRing,
+    drawNebulaField,
+    drawRisingMotes,
+    entrance,
+    makeDrifters,
+} from '../shared/atmosphere'
 import {
     clamp01,
     createFaceRoot,
     DISPLAY_FONT_FAMILIES,
     ensureFaceStyles,
-    mixFaceAccent,
     resolveFaceInk,
     UI_FONT_FAMILIES,
 } from '../shared/dom'
 
 const STYLE_ID = 'hc-face-neon-clock'
-const DIGIT_MORPH_SECONDS = 0.45
 
 const STYLES = `
 .hc-neon-clock {
     --accent: ${palette.neonCyan};
     --secondary: ${palette.electricPurple};
-    --headline-font: 'Rajdhani', sans-serif;
+    --hero-font: 'Rajdhani', sans-serif;
     --ui-font: 'Inter', sans-serif;
-    --time-size: 120;
-    --meta-size: 12;
     --hero-ink: ${palette.fg.primary};
     --ui-ink: ${palette.fg.secondary};
-    --dim-ink: ${palette.fg.tertiary};
+    --time-size: 150;
+    --meta-size: 12;
     position: absolute;
     inset: 0;
     overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     color: var(--hero-ink);
+}
+
+.hc-neon-clock__stack {
+    position: relative;
+    z-index: 2;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
 }
 
 .hc-neon-clock__time {
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -58%);
     display: inline-flex;
-    flex-direction: row;
-    align-items: flex-end;
+    align-items: baseline;
     justify-content: center;
-    gap: 10px;
-    font-family: var(--headline-font);
+    gap: 0.04em;
+    font-family: var(--hero-font);
     font-size: calc(var(--time-size) * 1px);
-    font-weight: 600;
-    line-height: 1;
-    letter-spacing: 0.015em;
+    font-weight: 500;
+    line-height: 0.84;
     color: var(--hero-ink);
     font-variant-numeric: tabular-nums lining-nums;
     font-feature-settings: 'tnum' 1, 'lnum' 1;
-    white-space: nowrap;
     text-shadow:
-        0 0 20px color-mix(in srgb, var(--accent) 12%, transparent),
-        0 10px 28px rgba(0, 0, 0, 0.28);
-}
-
-.hc-neon-clock__slot {
-    display: inline-flex;
-    flex-direction: row;
-    justify-content: center;
+        0 0 30px color-mix(in srgb, var(--accent) 38%, transparent),
+        0 0 90px color-mix(in srgb, var(--secondary) 20%, transparent);
 }
 
 .hc-neon-clock__digit {
-    position: relative;
     display: inline-flex;
-    width: 0.68ch;
-    height: 1em;
-    justify-content: center;
-    overflow: hidden;
-}
-
-.hc-neon-clock__digit-layer {
-    position: absolute;
-    inset: 0;
-    display: flex;
+    width: 0.6ch;
     justify-content: center;
     will-change: transform, opacity;
 }
 
-.hc-neon-clock__digit--blank {
-    opacity: 0;
-}
+.hc-neon-clock__digit--blank { opacity: 0; }
 
 .hc-neon-clock__separator {
-    color: var(--dim-ink);
-    transform: translateY(-3px);
+    color: color-mix(in srgb, var(--accent) 70%, transparent);
+    transform: translateY(-0.04em);
+    will-change: opacity;
 }
 
 .hc-neon-clock__meta {
-    position: absolute;
-    top: calc(50% + 22px);
-    left: 50%;
-    transform: translateX(-50%);
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    gap: 14px;
-    min-height: 1em;
-    font-family: var(--ui-font);
-    font-size: calc(var(--meta-size) * 1px);
-    font-weight: 600;
-    letter-spacing: 0.18em;
-    text-transform: uppercase;
-    color: var(--ui-ink);
-    font-variant-numeric: tabular-nums lining-nums;
-    font-feature-settings: 'tnum' 1, 'lnum' 1;
-    white-space: nowrap;
-}
-
-.hc-neon-clock__seconds,
-.hc-neon-clock__ampm {
-    color: var(--dim-ink);
-}
-
-.hc-neon-clock__hidden {
-    display: none !important;
-}
-
-.hc-neon-clock[data-style='split'] .hc-neon-clock__time {
-    transform: translate(-50%, -56%);
-}
-
-.hc-neon-clock[data-style='pulse'] .hc-neon-clock__meta {
-    top: calc(50% + 26px);
-}
-
-/* ── Wide strip layout ── */
-
-.hc-neon-clock--wide .hc-neon-clock__time {
-    position: static;
-    transform: none;
-}
-
-.hc-neon-clock--wide .hc-neon-clock__meta {
-    position: static;
-    transform: none;
-    flex-direction: column;
-    align-items: flex-end;
-    gap: 4px;
-}
-
-.hc-neon-clock--wide {
     display: flex;
     flex-direction: row;
     align-items: center;
-    justify-content: space-between;
-    padding: 0 6%;
-    box-sizing: border-box;
+    gap: 14px;
+    font-family: var(--ui-font);
+    font-size: calc(var(--meta-size) * 1px);
+    font-weight: 600;
+    letter-spacing: 0.3em;
+    text-transform: uppercase;
+    color: var(--ui-ink);
+    will-change: transform, opacity;
 }
+
+.hc-neon-clock__ampm {
+    padding: 3px 8px;
+    border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+    color: color-mix(in srgb, var(--hero-ink) 75%, var(--accent));
+    letter-spacing: 0.18em;
+}
+
+.hc-neon-clock__seconds {
+    color: color-mix(in srgb, var(--accent) 80%, transparent);
+    font-variant-numeric: tabular-nums;
+}
+
+/* ── Wide strip: digits left, meta right, sky in between ── */
+
+.hc-neon-clock--wide .hc-neon-clock__stack {
+    position: absolute;
+    left: 4%;
+    top: 50%;
+    transform: translateY(-50%);
+    flex-direction: row;
+    align-items: baseline;
+    gap: 26px;
+}
+
+.hc-neon-clock--wide .hc-neon-clock__meta {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+}
+
+.hc-neon-clock__hidden { display: none !important; }
 `
-
-// ── Digit morphing ──────────────────────────────────────────────────────
-
-interface DigitSlot {
-    root: HTMLSpanElement
-    current: HTMLSpanElement
-    outgoing: HTMLSpanElement
-    value: string | null
-    changedAt: number
-}
-
-function buildDigit(className: string): { html: string } {
-    return {
-        html: `<span class="hc-neon-clock__digit ${className}">
-            <span class="hc-neon-clock__digit-layer hc-neon-clock__digit-current">0</span>
-            <span class="hc-neon-clock__digit-layer hc-neon-clock__digit-outgoing" style="opacity:0">0</span>
-        </span>`,
-    }
-}
-
-function bindDigit(root: HTMLElement, className: string): DigitSlot {
-    const slot = root.querySelector<HTMLSpanElement>(`.${className}`)
-    if (!slot) throw new Error(`missing digit slot ${className}`)
-    return {
-        changedAt: Number.NEGATIVE_INFINITY,
-        current: slot.querySelector<HTMLSpanElement>('.hc-neon-clock__digit-current') as HTMLSpanElement,
-        outgoing: slot.querySelector<HTMLSpanElement>('.hc-neon-clock__digit-outgoing') as HTMLSpanElement,
-        root: slot,
-        value: null,
-    }
-}
-
-function setDigit(slot: DigitSlot, value: string | null, time: number): void {
-    if (slot.value === value) return
-    slot.outgoing.textContent = slot.value ?? value ?? '0'
-    slot.current.textContent = value ?? '0'
-    // Skip the morph on the very first paint so the clock doesn't cascade.
-    slot.changedAt = slot.value === null ? Number.NEGATIVE_INFINITY : time
-    slot.value = value
-    slot.root.classList.toggle('hc-neon-clock__digit--blank', value == null)
-}
-
-function animateDigit(slot: DigitSlot, time: number): void {
-    const progress = clamp01((time - slot.changedAt) / DIGIT_MORPH_SECONDS)
-    const eased = easeOutCubic(progress)
-    if (progress >= 1) {
-        slot.current.style.opacity = '1'
-        slot.current.style.transform = 'translateY(0)'
-        slot.outgoing.style.opacity = '0'
-        return
-    }
-    slot.current.style.opacity = `${eased}`
-    slot.current.style.transform = `translateY(${(1 - eased) * 0.32}em)`
-    slot.outgoing.style.opacity = `${1 - eased}`
-    slot.outgoing.style.transform = `translateY(${-eased * 0.32}em)`
-}
-
-interface ClockDom {
-    root: HTMLDivElement
-    timeEl: HTMLDivElement
-    separatorEl: HTMLSpanElement
-    hoursTens: DigitSlot
-    hoursOnes: DigitSlot
-    minutesTens: DigitSlot
-    minutesOnes: DigitSlot
-    secondsEl: HTMLSpanElement
-    dateEl: HTMLSpanElement
-    ampmEl: HTMLSpanElement
-    metaEl: HTMLDivElement
-}
-
-function buildClockDom(ctx: FaceContext, wide: boolean): ClockDom {
-    ensureFaceStyles(STYLE_ID, STYLES)
-    const root = createFaceRoot(ctx, 'hc-neon-clock')
-    root.classList.toggle('hc-neon-clock--wide', wide)
-    root.innerHTML = `
-        <div class="hc-neon-clock__time">
-            <span class="hc-neon-clock__slot hc-neon-clock__slot--hours">
-                ${buildDigit('hc-neon-clock__hours-tens').html}
-                ${buildDigit('hc-neon-clock__hours-ones').html}
-            </span>
-            <span class="hc-neon-clock__separator">:</span>
-            <span class="hc-neon-clock__slot hc-neon-clock__slot--minutes">
-                ${buildDigit('hc-neon-clock__minutes-tens').html}
-                ${buildDigit('hc-neon-clock__minutes-ones').html}
-            </span>
-        </div>
-        <div class="hc-neon-clock__meta">
-            <span class="hc-neon-clock__date"></span>
-            <span class="hc-neon-clock__seconds"></span>
-            <span class="hc-neon-clock__ampm"></span>
-        </div>
-    `
-
-    const query = <T extends HTMLElement>(selector: string): T => {
-        const found = root.querySelector<T>(selector)
-        if (!found) throw new Error(`missing clock element ${selector}`)
-        return found
-    }
-
-    return {
-        ampmEl: query('.hc-neon-clock__ampm'),
-        dateEl: query('.hc-neon-clock__date'),
-        hoursOnes: bindDigit(root, 'hc-neon-clock__hours-ones'),
-        hoursTens: bindDigit(root, 'hc-neon-clock__hours-tens'),
-        metaEl: query('.hc-neon-clock__meta'),
-        minutesOnes: bindDigit(root, 'hc-neon-clock__minutes-ones'),
-        minutesTens: bindDigit(root, 'hc-neon-clock__minutes-tens'),
-        root,
-        secondsEl: query('.hc-neon-clock__seconds'),
-        separatorEl: query('.hc-neon-clock__separator'),
-        timeEl: query('.hc-neon-clock__time'),
-    }
-}
-
-interface ClockFrame {
-    accent: string
-    ink: ReturnType<typeof resolveFaceInk>
-    glow: number
-    breath: number
-    secondsSweep: number
-    seconds: number
-    is12h: boolean
-    showSeconds: boolean
-    showDate: boolean
-    showAmPm: boolean
-    showTime: boolean
-    showSeparator: boolean
-    dialStyle: string
-}
-
-/** Shared per-frame DOM update; returns everything the dials need. */
-function updateClockDom(dom: ClockDom, time: number, controls: Record<string, unknown>): ClockFrame {
-    const accent = lerpColor(controls.accent as string, palette.fg.primary, 0.06)
-    const secondary = mixFaceAccent(controls.secondaryAccent as string, accent, 0.12)
-    const ink = resolveFaceInk(accent)
-    const glow = clamp01((controls.glowIntensity as number) / 100)
-    const showTime = controls.showTime as boolean
-    const showSeparator = controls.showSeparator as boolean
-    const showSeconds = controls.showSeconds as boolean
-    const showDate = controls.showDate as boolean
-    const showAmPm = controls.showAmPm as boolean
-    const is12h = controls.hourFormat === '12h'
-    const dialStyle = (controls.dialStyle as string).toLowerCase()
-    const { root } = dom
-
-    root.dataset.style = dialStyle
-    root.style.setProperty('--accent', accent)
-    root.style.setProperty('--secondary', secondary)
-    root.style.setProperty('--hero-ink', ink.hero)
-    root.style.setProperty('--ui-ink', ink.ui)
-    root.style.setProperty('--dim-ink', ink.dim)
-    root.style.setProperty('--headline-font', `"${controls.headlineFont as string}", sans-serif`)
-    root.style.setProperty('--ui-font', `"${controls.uiFont as string}", sans-serif`)
-    root.style.setProperty('--meta-size', `${controls.metaSize as number}`)
-
-    const now = new Date()
-    let hours = now.getHours()
-    const minutes = now.getMinutes()
-    const seconds = now.getSeconds()
-    const millis = now.getMilliseconds()
-    const ampm = hours >= 12 ? 'PM' : 'AM'
-    if (is12h) hours = hours % 12 || 12
-
-    const hoursText = hours.toString()
-    const minutesText = minutes.toString().padStart(2, '0')
-    setDigit(dom.hoursTens, hoursText.length > 1 ? (hoursText[0] ?? null) : null, time)
-    setDigit(dom.hoursOnes, hoursText[hoursText.length - 1] ?? '0', time)
-    setDigit(dom.minutesTens, minutesText[0] ?? '0', time)
-    setDigit(dom.minutesOnes, minutesText[1] ?? '0', time)
-    for (const slot of [dom.hoursTens, dom.hoursOnes, dom.minutesTens, dom.minutesOnes]) {
-        animateDigit(slot, time)
-    }
-
-    dom.secondsEl.textContent = `SEC ${seconds.toString().padStart(2, '0')}`
-    dom.ampmEl.textContent = is12h ? ampm : ''
-    dom.dateEl.textContent = now
-        .toLocaleDateString('en-US', { day: 'numeric', month: 'short', weekday: 'short' })
-        .toUpperCase()
-
-    dom.timeEl.classList.toggle('hc-neon-clock__hidden', !showTime)
-    dom.separatorEl.classList.toggle('hc-neon-clock__hidden', !showSeparator)
-    dom.dateEl.classList.toggle('hc-neon-clock__hidden', !showDate)
-    dom.secondsEl.classList.toggle('hc-neon-clock__hidden', !showSeconds)
-    dom.ampmEl.classList.toggle('hc-neon-clock__hidden', !is12h || !showAmPm)
-    dom.metaEl.classList.toggle('hc-neon-clock__hidden', !showDate && !showSeconds && !(is12h && showAmPm))
-
-    // Subtle breathing on the glow — slow enough to stay graceful at 15fps.
-    const breath = 0.5 + 0.5 * Math.sin(time * 0.9)
-    return {
-        accent,
-        breath,
-        dialStyle,
-        glow,
-        ink,
-        is12h,
-        seconds,
-        secondsSweep: (seconds + millis / 1000) / 60,
-        showAmPm,
-        showDate,
-        showSeconds,
-        showSeparator,
-        showTime,
-    }
-}
-
-// ── Controls + presets (unchanged contract) ─────────────────────────────
 
 const CONTROLS = {
     accent: color('Accent', palette.neonCyan, { group: 'Style' }),
@@ -371,7 +142,7 @@ const CONTROLS = {
     showSeconds: toggle('Show Seconds', false, { group: 'Elements' }),
     showSeparator: toggle('Show Separator', true, { group: 'Elements' }),
     showTime: toggle('Show Time', true, { group: 'Elements' }),
-    timeSize: num('Time Size', [72, 164], 120, { group: 'Typography' }),
+    timeSize: num('Time Size', [72, 164], 150, { group: 'Typography' }),
     uiFont: font('UI Font', 'Inter', { families: [...UI_FONT_FAMILIES], group: 'Typography' }),
 }
 
@@ -380,7 +151,8 @@ export default face(
     CONTROLS,
     {
         author: 'Hypercolor',
-        description: 'A centered digital clock. Every element is independently toggleable.',
+        description:
+            'Time as the whole picture: monumental digits over a drifting nebula, with an orbiting second comet.',
         designBasis: { height: 480, width: 480 },
         presets: [
             {
@@ -483,141 +255,182 @@ export default face(
             },
         ],
         variants: {
-            wide: (ctx) => {
-                const dom = buildClockDom(ctx, true)
-                const { width: W, height: H } = ctx
-
-                return (time, controls) => {
-                    const frame = updateClockDom(dom, time, controls)
-                    // Strip sizing keys off the panel height, scaled by the
-                    // author's time-size preference around its 120 default.
-                    const timeScale = (controls.timeSize as number) / 120
-                    dom.root.style.setProperty('--time-size', `${H * 0.56 * timeScale}`)
-
-                    const c = ctx.ctx
-                    c.clearRect(0, 0, W, H)
-                    if (!(controls.showDial as boolean)) return
-
-                    // Eased seconds underline in place of the dial: a thin
-                    // accent rail under the digits that fills each minute.
-                    const margin = W * 0.06
-                    const railY = H * 0.86
-                    const railWidth = W - margin * 2
-                    c.save()
-                    c.lineCap = 'round'
-                    c.lineWidth = 3
-                    c.strokeStyle = withAlpha(frame.accent, 0.1)
-                    c.beginPath()
-                    c.moveTo(margin, railY)
-                    c.lineTo(margin + railWidth, railY)
-                    c.stroke()
-
-                    const sweep = easeOutCubic(frame.secondsSweep)
-                    c.strokeStyle = withAlpha(frame.accent, 0.45 + frame.glow * 0.3 + frame.breath * 0.1)
-                    c.shadowColor = withAlpha(frame.accent, 0.3 + frame.glow * 0.3)
-                    c.shadowBlur = 8 + frame.glow * 10
-                    c.beginPath()
-                    c.moveTo(margin, railY)
-                    c.lineTo(margin + railWidth * sweep, railY)
-                    c.stroke()
-                    c.restore()
-                }
-            },
+            wide: (ctx: FaceContext) => buildNeonClock(ctx, true),
         },
     },
-    (ctx) => {
-        const dom = buildClockDom(ctx, false)
-        const { width: W, height: H } = ctx
-        const cx = W * 0.5
-        const cy = H * 0.5
-
-        return (time, controls) => {
-            const frame = updateClockDom(dom, time, controls)
-            dom.root.style.setProperty('--time-size', `${controls.timeSize as number}`)
-
-            const c = ctx.ctx
-            c.clearRect(0, 0, W, H)
-            if (!(controls.showDial as boolean)) return
-
-            const breathGlow = frame.glow * (0.85 + frame.breath * 0.3)
-            c.save()
-            c.strokeStyle = withAlpha(frame.accent, 0.16 + breathGlow * 0.14)
-            c.shadowColor = withAlpha(frame.accent, 0.16 + breathGlow * 0.12)
-            c.shadowBlur = 20 + breathGlow * 24
-
-            if (frame.dialStyle === 'split') {
-                c.lineWidth = 3
-                c.lineCap = 'round'
-                c.beginPath()
-                c.moveTo(cx - 112, cy + 78)
-                c.lineTo(cx - 36, cy + 78)
-                c.moveTo(cx + 36, cy + 78)
-                c.lineTo(cx + 112, cy + 78)
-                c.stroke()
-
-                // Seconds tick gliding along the split rails.
-                const sweep = easeOutCubic(frame.secondsSweep)
-                const tickX = sweep < 0.5 ? cx - 112 + (76 * sweep) / 0.5 : cx + 36 + (76 * (sweep - 0.5)) / 0.5
-                c.fillStyle = withAlpha(frame.accent, 0.7 + frame.breath * 0.2)
-                c.beginPath()
-                c.arc(tickX, cy + 78, 4, 0, Math.PI * 2)
-                c.fill()
-            } else if (frame.dialStyle === 'pulse') {
-                c.lineWidth = 4
-                c.lineCap = 'round'
-                c.beginPath()
-                c.moveTo(cx - 92, cy + 74)
-                c.quadraticCurveTo(cx, cy + 94, cx + 92, cy + 74)
-                c.stroke()
-
-                // Seconds dot tracing the pulse curve.
-                const t = frame.secondsSweep
-                const mt = 1 - t
-                const dotX = mt * mt * (cx - 92) + 2 * mt * t * cx + t * t * (cx + 92)
-                const dotY = mt * mt * (cy + 74) + 2 * mt * t * (cy + 94) + t * t * (cy + 74)
-                c.fillStyle = withAlpha(frame.accent, 0.7 + frame.breath * 0.2)
-                c.beginPath()
-                c.arc(dotX, dotY, 4.5, 0, Math.PI * 2)
-                c.fill()
-            } else {
-                // Orbit: decorative arc + a full sweep-second ring.
-                c.lineWidth = 5
-                c.lineCap = 'round'
-                c.beginPath()
-                c.arc(cx, cy + 8, 122, Math.PI * 0.78, Math.PI * 1.28)
-                c.stroke()
-
-                const ringRadius = 122
-                c.lineWidth = 1.5
-                c.strokeStyle = withAlpha(frame.accent, 0.07)
-                c.shadowBlur = 0
-                c.beginPath()
-                c.arc(cx, cy + 8, ringRadius, 0, Math.PI * 2)
-                c.stroke()
-
-                const angle = -Math.PI / 2 + frame.secondsSweep * Math.PI * 2
-                // Trailing comet: three fading arc segments behind the dot.
-                for (let trail = 0; trail < 3; trail++) {
-                    const span = 0.05 * Math.PI * 2
-                    const end = angle - trail * span
-                    c.lineWidth = 3 - trail * 0.8
-                    c.strokeStyle = withAlpha(frame.accent, (0.4 - trail * 0.12) * (0.7 + frame.breath * 0.3))
-                    c.beginPath()
-                    c.arc(cx, cy + 8, ringRadius, end - span, end)
-                    c.stroke()
-                }
-
-                const dotX = cx + Math.cos(angle) * ringRadius
-                const dotY = cy + 8 + Math.sin(angle) * ringRadius
-                c.fillStyle = withAlpha(frame.accent, 0.85)
-                c.shadowColor = withAlpha(frame.accent, 0.5 + frame.glow * 0.3)
-                c.shadowBlur = 10 + breathGlow * 12
-                c.beginPath()
-                c.arc(dotX, dotY, 4.5, 0, Math.PI * 2)
-                c.fill()
-            }
-
-            c.restore()
-        }
-    },
+    (ctx) => buildNeonClock(ctx, false),
 )
+
+/** Eases a digit swap: the new glyph rises in as the old value leaves. */
+function createDigitMorph(element: HTMLElement) {
+    let last = ''
+    let changedAt = Number.NEGATIVE_INFINITY
+    return (text: string, blank: boolean, time: number) => {
+        if (text !== last) {
+            last = text
+            changedAt = time
+            element.textContent = text
+        }
+        element.classList.toggle('hc-neon-clock__digit--blank', blank)
+        if (blank) return
+        const progress = clamp01((time - changedAt) / 0.5)
+        const eased = easeOutCubic(progress)
+        element.style.opacity = `${0.25 + 0.75 * eased}`
+        element.style.transform = `translateY(${(1 - eased) * 0.12 * -1 * -36}px) scale(${0.96 + eased * 0.04})`
+        if (progress >= 1) {
+            element.style.opacity = '1'
+            element.style.transform = 'translateY(0) scale(1)'
+        }
+    }
+}
+
+function buildNeonClock(ctx: FaceContext, wide: boolean) {
+    ensureFaceStyles(STYLE_ID, STYLES)
+    const root = createFaceRoot(ctx, 'hc-neon-clock')
+    root.classList.toggle('hc-neon-clock--wide', wide)
+    root.innerHTML = `
+        <div class="hc-neon-clock__stack">
+            <div class="hc-neon-clock__time">
+                <span class="hc-neon-clock__digit hc-neon-clock__h0">0</span>
+                <span class="hc-neon-clock__digit hc-neon-clock__h1">0</span>
+                <span class="hc-neon-clock__separator">:</span>
+                <span class="hc-neon-clock__digit hc-neon-clock__m0">0</span>
+                <span class="hc-neon-clock__digit hc-neon-clock__m1">0</span>
+            </div>
+            <div class="hc-neon-clock__meta">
+                <span class="hc-neon-clock__date">MON JAN 1</span>
+                <span class="hc-neon-clock__seconds">00</span>
+                <span class="hc-neon-clock__ampm">AM</span>
+            </div>
+        </div>`
+
+    const query = (selector: string) => {
+        const element = root.querySelector<HTMLElement>(selector)
+        if (!element) throw new Error(`Neon Clock missing ${selector}`)
+        return element
+    }
+    const timeEl = query('.hc-neon-clock__time')
+    const separatorEl = query('.hc-neon-clock__separator')
+    const metaEl = query('.hc-neon-clock__meta')
+    const dateEl = query('.hc-neon-clock__date')
+    const secondsEl = query('.hc-neon-clock__seconds')
+    const ampmEl = query('.hc-neon-clock__ampm')
+    const digits = [
+        createDigitMorph(query('.hc-neon-clock__h0')),
+        createDigitMorph(query('.hc-neon-clock__h1')),
+        createDigitMorph(query('.hc-neon-clock__m0')),
+        createDigitMorph(query('.hc-neon-clock__m1')),
+    ]
+
+    const drifters = makeDrifters(wide ? 36 : 22)
+    let bootAt = Number.NaN
+
+    return (time: number, controls: Record<string, unknown>) => {
+        if (Number.isNaN(bootAt)) bootAt = time
+        const boot = time - bootAt
+        const accent = controls.accent as string
+        const secondary = controls.secondaryAccent as string
+        const ink = resolveFaceInk(accent)
+        const glow = clamp01((controls.glowIntensity as number) / 100)
+
+        root.style.setProperty('--accent', accent)
+        root.style.setProperty('--secondary', secondary)
+        root.style.setProperty('--hero-ink', ink.hero)
+        root.style.setProperty('--ui-ink', ink.ui)
+        root.style.setProperty('--hero-font', `"${controls.headlineFont as string}", sans-serif`)
+        root.style.setProperty('--ui-font', `"${controls.uiFont as string}", sans-serif`)
+        // Monumental scale: the digits own the frame.
+        const timeScale = (controls.timeSize as number) / 150
+        const timeSize = wide ? ctx.height * 0.62 * timeScale : ctx.width * 0.31 * timeScale
+        root.style.setProperty('--time-size', `${timeSize}`)
+        root.style.setProperty(
+            '--meta-size',
+            `${Math.max(9, (controls.metaSize as number) * (wide ? ctx.height / 480 * 2.1 : ctx.width / 480))}`,
+        )
+
+        const now = new Date()
+        const is12h = controls.hourFormat === '12h'
+        let hours = now.getHours()
+        const ampm = hours >= 12 ? 'PM' : 'AM'
+        if (is12h) hours = hours % 12 || 12
+        const hourText = is12h ? hours.toString() : hours.toString().padStart(2, '0')
+        const minuteText = now.getMinutes().toString().padStart(2, '0')
+        const secondsExact = now.getSeconds() + now.getMilliseconds() / 1000
+
+        digits[0]?.(hourText.length > 1 ? (hourText[0] ?? '0') : '0', hourText.length < 2, time)
+        digits[1]?.(hourText[hourText.length - 1] ?? '0', false, time)
+        digits[2]?.(minuteText[0] ?? '0', false, time)
+        digits[3]?.(minuteText[1] ?? '0', false, time)
+        // The separator breathes once a second instead of hard-blinking.
+        separatorEl.style.opacity = `${0.35 + 0.65 * (0.5 + 0.5 * Math.cos(secondsExact * Math.PI * 2))}`
+        dateEl.textContent = now
+            .toLocaleDateString('en-US', { day: 'numeric', month: 'short', weekday: 'short' })
+            .toUpperCase()
+        secondsEl.textContent = now.getSeconds().toString().padStart(2, '0')
+        ampmEl.textContent = ampm
+
+        const showTime = controls.showTime === true
+        timeEl.classList.toggle('hc-neon-clock__hidden', !showTime)
+        separatorEl.classList.toggle('hc-neon-clock__hidden', controls.showSeparator !== true)
+        dateEl.classList.toggle('hc-neon-clock__hidden', controls.showDate !== true)
+        secondsEl.classList.toggle('hc-neon-clock__hidden', controls.showSeconds !== true)
+        ampmEl.classList.toggle('hc-neon-clock__hidden', !is12h || controls.showAmPm !== true)
+        const metaVisible =
+            controls.showDate === true || controls.showSeconds === true || (is12h && controls.showAmPm === true)
+        metaEl.classList.toggle('hc-neon-clock__hidden', !metaVisible)
+
+        // Entrance choreography: digits land first, meta follows.
+        const timeIn = entrance(boot, 0.1, 1.0)
+        const metaIn = entrance(boot, 0.45, 0.9)
+        timeEl.style.opacity = `${timeIn}`
+        timeEl.style.transform = `translateY(${(1 - timeIn) * 18}px)`
+        metaEl.style.opacity = `${metaIn}`
+        metaEl.style.transform = `translateY(${(1 - metaIn) * 12}px)`
+
+        // ── Atmosphere ──
+        const c = ctx.ctx
+        const W = ctx.width
+        const H = ctx.height
+        c.clearRect(0, 0, W, H)
+        drawNebulaField(c, W, H, time, accent, secondary, 0.5 + glow * 0.9)
+        drawRisingMotes(c, W, H, time, drifters, accent, glow, 0.45)
+
+        if (controls.showDial !== true) return
+        const dialStyle = (controls.dialStyle as string) ?? 'Orbit'
+        const secondAngle = (secondsExact / 60) * Math.PI * 2 - Math.PI / 2
+        const dialIn = entrance(boot, 0.7, 1.1)
+        if (dialIn <= 0.01) return
+
+        if (wide) {
+            drawCometRail(c, W * 0.04, W * 0.96, H * 0.88, secondsExact / 60, accent, glow * dialIn)
+            return
+        }
+
+        const cx = W / 2
+        const cy = H / 2
+        const radius = Math.min(W, H) * 0.44 * (0.92 + dialIn * 0.08)
+        if (dialStyle === 'Pulse') {
+            const breath = 0.5 + 0.5 * Math.sin(time * 0.9)
+            c.strokeStyle = withAlpha(accent, (0.18 + 0.2 * breath) * glow * dialIn)
+            c.lineWidth = 1.5 + breath * 1.5
+            c.beginPath()
+            c.arc(cx, cy, radius, 0, Math.PI * 2)
+            c.stroke()
+            return
+        }
+        if (dialStyle === 'Split') {
+            const minuteProgress = (now.getMinutes() + secondsExact / 60) / 60
+            c.strokeStyle = withAlpha(secondary, 0.4 * glow * dialIn)
+            c.lineWidth = 2
+            c.beginPath()
+            c.arc(cx, cy, radius - 8, -Math.PI / 2, -Math.PI / 2 + minuteProgress * Math.PI * 2)
+            c.stroke()
+        }
+        c.strokeStyle = withAlpha(accent, 0.1 * dialIn)
+        c.lineWidth = 1
+        c.beginPath()
+        c.arc(cx, cy, radius, 0, Math.PI * 2)
+        c.stroke()
+        drawCometRing(c, cx, cy, radius, secondAngle, accent, glow * dialIn)
+    }
+}
