@@ -13,6 +13,7 @@ import {
     toggle,
     withAlpha,
 } from '@hypercolor/sdk'
+import { drawNebulaField, drawRisingMotes, entrance, makeDrifters } from '../shared/atmosphere'
 import {
     clamp01,
     createFaceRoot,
@@ -240,8 +241,8 @@ const STYLES = `
     flex-direction: row;
     align-items: center;
     justify-content: space-between;
-    width: 94%;
-    gap: 4%;
+    width: 95%;
+    gap: 3.2%;
 }
 
 .hc-silk-hud--wide .hc-silk-hud__clock {
@@ -414,7 +415,9 @@ function createValueMorph(element: HTMLElement) {
     }
 }
 
-/** Layered ambient background: faint grid plus two drifting glows. */
+const HUD_DRIFTERS = makeDrifters(24)
+
+/** Layered ambient background: nebula field, motes, and a fine grid. */
 function drawHudBackground(
     c: CanvasRenderingContext2D,
     W: number,
@@ -424,9 +427,11 @@ function drawHudBackground(
     secondary: string,
 ): void {
     c.clearRect(0, 0, W, H)
+    drawNebulaField(c, W, H, time, accent, secondary, 1.15)
+    drawRisingMotes(c, W, H, time, HUD_DRIFTERS, accent, 0.7, 0.4)
 
     const spacing = Math.max(24, Math.min(W, H) / 12)
-    c.strokeStyle = withAlpha(accent, 0.045)
+    c.strokeStyle = withAlpha(accent, 0.05)
     c.lineWidth = 1
     c.beginPath()
     for (let x = spacing; x < W; x += spacing) {
@@ -438,21 +443,6 @@ function drawHudBackground(
         c.lineTo(W, y)
     }
     c.stroke()
-
-    // Two slow glows drifting on incommensurate orbits.
-    const glows = [
-        { color: accent, phase: 0, radius: Math.min(W, H) * 0.55 },
-        { color: secondary, phase: 2.4, radius: Math.min(W, H) * 0.45 },
-    ]
-    for (const glowSpec of glows) {
-        const gx = W * (0.5 + 0.34 * Math.sin(time * 0.07 + glowSpec.phase))
-        const gy = H * (0.5 + 0.3 * Math.cos(time * 0.05 + glowSpec.phase * 0.7))
-        const gradient = c.createRadialGradient(gx, gy, 0, gx, gy, glowSpec.radius)
-        gradient.addColorStop(0, withAlpha(glowSpec.color, 0.07))
-        gradient.addColorStop(1, withAlpha(glowSpec.color, 0))
-        c.fillStyle = gradient
-        c.fillRect(0, 0, W, H)
-    }
 }
 
 function buildHud(ctx: FaceContext, wide: boolean) {
@@ -528,6 +518,7 @@ function buildHud(ctx: FaceContext, wide: boolean) {
 
         const loadFill = new Smoothed(0, 0.25)
         const ramFill = new Smoothed(0, 0.25)
+        let bootAt = Number.NaN
         const morphCpu = createValueMorph(cpuValueEl)
         const morphGpu = createValueMorph(gpuValueEl)
         const morphLoad = createValueMorph(loadValueEl)
@@ -537,6 +528,17 @@ function buildHud(ctx: FaceContext, wide: boolean) {
         return (time: number, controls: Record<string, unknown>, sensors: import('@hypercolor/sdk').SensorAccessor) => {
             const dt = Number.isNaN(lastTime) ? 1 / 30 : Math.max(time - lastTime, 0)
             lastTime = time
+            if (Number.isNaN(bootAt)) bootAt = time
+            const boot = time - bootAt
+            const clockIn = entrance(boot, 0.1, 0.9)
+            const metricsIn = entrance(boot, 0.32, 0.9)
+            const barsIn = entrance(boot, 0.54, 0.9)
+            clockEl.style.opacity = `${clockIn}`
+            clockEl.style.transform = `translateY(${(1 - clockIn) * 14}px)`
+            metricsEl.style.opacity = `${metricsIn}`
+            metricsEl.style.transform = `translateY(${(1 - metricsIn) * 12}px)`
+            barsEl.style.opacity = `${barsIn}`
+            barsEl.style.transform = `translateY(${(1 - barsIn) * 10}px)`
             const accent = lerpColor(controls.accent as string, palette.fg.primary, 0.05)
             const secondary = mixFaceAccent(controls.secondaryAccent as string, accent, 0.14)
             const ink = resolveFaceInk(accent)
