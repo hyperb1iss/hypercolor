@@ -16,10 +16,11 @@ T = TypeVar("T", bound="ApiResponseDeviceListResponseData")
 
 @_attrs_define
 class ApiResponseDeviceListResponseData:
-    """
+    """Response for `GET /api/v1/devices`.
+
     Attributes:
         items (list[DeviceSummary]):
-        pagination (Pagination):
+        pagination (Pagination): Pagination envelope attached to every list response.
     """
 
     items: list[DeviceSummary]

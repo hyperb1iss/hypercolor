@@ -17,7 +17,8 @@ T = TypeVar("T", bound="EffectLayoutApplyResult")
 
 @_attrs_define
 class EffectLayoutApplyResult:
-    """
+    """Result of resolving an effect's associated layout during apply.
+
     Attributes:
         applied (bool):
         associated_layout_id (str):

@@ -13,9 +13,9 @@ T = TypeVar("T", bound="EffectSummary")
 
 @_attrs_define
 class EffectSummary:
-    """
+    """One effect in the list response.
+
     Attributes:
-        audio_reactive (bool):
         author (str):
         category (str):
         description (str):
@@ -25,10 +25,10 @@ class EffectSummary:
         source (str):
         tags (list[str]):
         version (str):
+        audio_reactive (bool | Unset):
         cover_image_url (None | str | Unset):
     """
 
-    audio_reactive: bool
     author: str
     category: str
     description: str
@@ -38,12 +38,11 @@ class EffectSummary:
     source: str
     tags: list[str]
     version: str
+    audio_reactive: bool | Unset = UNSET
     cover_image_url: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        audio_reactive = self.audio_reactive
-
         author = self.author
 
         category = self.category
@@ -62,6 +61,8 @@ class EffectSummary:
 
         version = self.version
 
+        audio_reactive = self.audio_reactive
+
         cover_image_url: None | str | Unset
         if isinstance(self.cover_image_url, Unset):
             cover_image_url = UNSET
@@ -72,7 +73,6 @@ class EffectSummary:
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "audio_reactive": audio_reactive,
                 "author": author,
                 "category": category,
                 "description": description,
@@ -84,6 +84,8 @@ class EffectSummary:
                 "version": version,
             }
         )
+        if audio_reactive is not UNSET:
+            field_dict["audio_reactive"] = audio_reactive
         if cover_image_url is not UNSET:
             field_dict["cover_image_url"] = cover_image_url
 
@@ -92,8 +94,6 @@ class EffectSummary:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        audio_reactive = d.pop("audio_reactive")
-
         author = d.pop("author")
 
         category = d.pop("category")
@@ -112,6 +112,8 @@ class EffectSummary:
 
         version = d.pop("version")
 
+        audio_reactive = d.pop("audio_reactive", UNSET)
+
         def _parse_cover_image_url(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -122,7 +124,6 @@ class EffectSummary:
         cover_image_url = _parse_cover_image_url(d.pop("cover_image_url", UNSET))
 
         effect_summary = cls(
-            audio_reactive=audio_reactive,
             author=author,
             category=category,
             description=description,
@@ -132,6 +133,7 @@ class EffectSummary:
             source=source,
             tags=tags,
             version=version,
+            audio_reactive=audio_reactive,
             cover_image_url=cover_image_url,
         )
 

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+
+from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
     from ..models.zone_topology_summary_type_0 import ZoneTopologySummaryType0
@@ -20,13 +22,14 @@ T = TypeVar("T", bound="ZoneSummary")
 
 @_attrs_define
 class ZoneSummary:
-    """
+    """One LED zone of a device (hardware topology, not scene render groups).
+
     Attributes:
         id (str):
         led_count (int):
         name (str):
         topology (str):
-        topology_hint (ZoneTopologySummaryType0 | ZoneTopologySummaryType1 | ZoneTopologySummaryType2 |
+        topology_hint (None | Unset | ZoneTopologySummaryType0 | ZoneTopologySummaryType1 | ZoneTopologySummaryType2 |
             ZoneTopologySummaryType3 | ZoneTopologySummaryType4 | ZoneTopologySummaryType5):
     """
 
@@ -35,13 +38,15 @@ class ZoneSummary:
     name: str
     topology: str
     topology_hint: (
-        ZoneTopologySummaryType0
+        None
+        | Unset
+        | ZoneTopologySummaryType0
         | ZoneTopologySummaryType1
         | ZoneTopologySummaryType2
         | ZoneTopologySummaryType3
         | ZoneTopologySummaryType4
         | ZoneTopologySummaryType5
-    )
+    ) = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -50,6 +55,7 @@ class ZoneSummary:
         from ..models.zone_topology_summary_type_2 import ZoneTopologySummaryType2
         from ..models.zone_topology_summary_type_3 import ZoneTopologySummaryType3
         from ..models.zone_topology_summary_type_4 import ZoneTopologySummaryType4
+        from ..models.zone_topology_summary_type_5 import ZoneTopologySummaryType5
 
         id = self.id
 
@@ -59,8 +65,10 @@ class ZoneSummary:
 
         topology = self.topology
 
-        topology_hint: dict[str, Any]
-        if isinstance(self.topology_hint, ZoneTopologySummaryType0):
+        topology_hint: dict[str, Any] | None | Unset
+        if isinstance(self.topology_hint, Unset):
+            topology_hint = UNSET
+        elif isinstance(self.topology_hint, ZoneTopologySummaryType0):
             topology_hint = self.topology_hint.to_dict()
         elif isinstance(self.topology_hint, ZoneTopologySummaryType1):
             topology_hint = self.topology_hint.to_dict()
@@ -70,8 +78,10 @@ class ZoneSummary:
             topology_hint = self.topology_hint.to_dict()
         elif isinstance(self.topology_hint, ZoneTopologySummaryType4):
             topology_hint = self.topology_hint.to_dict()
-        else:
+        elif isinstance(self.topology_hint, ZoneTopologySummaryType5):
             topology_hint = self.topology_hint.to_dict()
+        else:
+            topology_hint = self.topology_hint
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -81,9 +91,10 @@ class ZoneSummary:
                 "led_count": led_count,
                 "name": name,
                 "topology": topology,
-                "topology_hint": topology_hint,
             }
         )
+        if topology_hint is not UNSET:
+            field_dict["topology_hint"] = topology_hint
 
         return field_dict
 
@@ -108,13 +119,19 @@ class ZoneSummary:
         def _parse_topology_hint(
             data: object,
         ) -> (
-            ZoneTopologySummaryType0
+            None
+            | Unset
+            | ZoneTopologySummaryType0
             | ZoneTopologySummaryType1
             | ZoneTopologySummaryType2
             | ZoneTopologySummaryType3
             | ZoneTopologySummaryType4
             | ZoneTopologySummaryType5
         ):
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
@@ -165,15 +182,29 @@ class ZoneSummary:
                 return componentsschemas_zone_topology_summary_type_4
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
-            if not isinstance(data, dict):
-                raise TypeError()
-            componentsschemas_zone_topology_summary_type_5 = (
-                ZoneTopologySummaryType5.from_dict(data)
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                componentsschemas_zone_topology_summary_type_5 = (
+                    ZoneTopologySummaryType5.from_dict(data)
+                )
+
+                return componentsschemas_zone_topology_summary_type_5
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(
+                None
+                | Unset
+                | ZoneTopologySummaryType0
+                | ZoneTopologySummaryType1
+                | ZoneTopologySummaryType2
+                | ZoneTopologySummaryType3
+                | ZoneTopologySummaryType4
+                | ZoneTopologySummaryType5,
+                data,
             )
 
-            return componentsschemas_zone_topology_summary_type_5
-
-        topology_hint = _parse_topology_hint(d.pop("topology_hint"))
+        topology_hint = _parse_topology_hint(d.pop("topology_hint", UNSET))
 
         zone_summary = cls(
             id=id,

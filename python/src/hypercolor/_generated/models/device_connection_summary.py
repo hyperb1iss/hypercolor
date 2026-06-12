@@ -13,25 +13,24 @@ T = TypeVar("T", bound="DeviceConnectionSummary")
 
 @_attrs_define
 class DeviceConnectionSummary:
-    """
+    """Transport details for one device.
+
     Attributes:
-        transport (str):
         endpoint (None | str | Unset):
         hostname (None | str | Unset):
         ip (None | str | Unset):
         label (None | str | Unset):
+        transport (str | Unset):
     """
 
-    transport: str
     endpoint: None | str | Unset = UNSET
     hostname: None | str | Unset = UNSET
     ip: None | str | Unset = UNSET
     label: None | str | Unset = UNSET
+    transport: str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        transport = self.transport
-
         endpoint: None | str | Unset
         if isinstance(self.endpoint, Unset):
             endpoint = UNSET
@@ -56,13 +55,11 @@ class DeviceConnectionSummary:
         else:
             label = self.label
 
+        transport = self.transport
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update(
-            {
-                "transport": transport,
-            }
-        )
+        field_dict.update({})
         if endpoint is not UNSET:
             field_dict["endpoint"] = endpoint
         if hostname is not UNSET:
@@ -71,13 +68,14 @@ class DeviceConnectionSummary:
             field_dict["ip"] = ip
         if label is not UNSET:
             field_dict["label"] = label
+        if transport is not UNSET:
+            field_dict["transport"] = transport
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        transport = d.pop("transport")
 
         def _parse_endpoint(data: object) -> None | str | Unset:
             if data is None:
@@ -115,12 +113,14 @@ class DeviceConnectionSummary:
 
         label = _parse_label(d.pop("label", UNSET))
 
+        transport = d.pop("transport", UNSET)
+
         device_connection_summary = cls(
-            transport=transport,
             endpoint=endpoint,
             hostname=hostname,
             ip=ip,
             label=label,
+            transport=transport,
         )
 
         device_connection_summary.additional_properties = d

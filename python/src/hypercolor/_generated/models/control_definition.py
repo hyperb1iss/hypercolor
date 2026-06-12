@@ -59,6 +59,7 @@ class ControlDefinition:
                 | `GradientEditor` | `Gradient(Vec<GradientStop>)` |
                 | `Dropdown`       | `Enum(String)`             |
                 | `TextInput`      | `Text(String)`             |
+                | `Asset`          | `Text(String)`             |
                 | `Rect`           | `Rect(ViewportRect)`       |
             name (str): Human-readable label shown in the control panel.
             aspect_lock (float | None | Unset): Optional fixed aspect ratio (`width / height`) for rect controls.

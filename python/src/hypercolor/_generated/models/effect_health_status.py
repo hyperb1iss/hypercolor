@@ -18,15 +18,26 @@ class EffectHealthStatus:
         errors_total (int):
         fallbacks_applied_total (int):
         producer_cpu_frames_total (int):
+        producer_gpu_cpu_materialization_blocked_total (int):
         producer_gpu_frames_total (int):
+        producer_gpu_readback_failures_total (int):
         servo_breaker_opens_total (int):
         servo_detached_destroy_failures_total (int):
         servo_detached_destroys_total (int):
+        servo_gpu_import_adapter_mismatch_total (int):
+        servo_gpu_import_available_slots (int):
+        servo_gpu_import_available_slots_min (int):
         servo_gpu_import_blit_max_ms (float):
         servo_gpu_import_blit_total_ms (float):
+        servo_gpu_import_completed_slots (int):
         servo_gpu_import_failures_total (int):
         servo_gpu_import_fallbacks_total (int):
         servo_gpu_import_max_ms (float):
+        servo_gpu_import_oldest_pending_age_max_ms (float):
+        servo_gpu_import_pending_slots (int):
+        servo_gpu_import_pending_slots_max (int):
+        servo_gpu_import_slot_count (int):
+        servo_gpu_import_stale_frame_total (int):
         servo_gpu_import_sync_max_ms (float):
         servo_gpu_import_sync_total_ms (float):
         servo_gpu_import_total_ms (float):
@@ -36,6 +47,9 @@ class EffectHealthStatus:
         servo_page_loads_total (int):
         servo_render_cached_frames_total (int):
         servo_render_cpu_frames_total (int):
+        servo_render_display_queue_wait_max_ms (float):
+        servo_render_display_queue_wait_total_ms (float):
+        servo_render_display_requests_total (int):
         servo_render_evaluate_scripts_max_ms (float):
         servo_render_evaluate_scripts_total_ms (float):
         servo_render_event_loop_max_ms (float):
@@ -50,27 +64,52 @@ class EffectHealthStatus:
         servo_render_readback_max_ms (float):
         servo_render_readback_total_ms (float):
         servo_render_requests_total (int):
+        servo_render_scene_queue_wait_max_ms (float):
+        servo_render_scene_queue_wait_total_ms (float):
+        servo_render_scene_requests_total (int):
         servo_session_create_failures_total (int):
         servo_session_create_wait_max_ms (float):
         servo_session_create_wait_total_ms (float):
         servo_session_creates_total (int):
         servo_soft_stalls_total (int):
+        sparkleflinger_display_finalize_blocking_wait_max_ms (float):
+        sparkleflinger_display_finalize_blocking_wait_total_ms (float):
+        sparkleflinger_display_finalize_latches_total (int):
+        sparkleflinger_display_finalize_misses_total (int):
+        sparkleflinger_display_finalize_rgba_attempts_total (int):
+        sparkleflinger_display_finalize_successes_total (int):
+        sparkleflinger_display_finalize_surface_reallocs_total (int):
+        sparkleflinger_display_finalize_yuv_attempts_total (int):
         sparkleflinger_gpu_source_upload_skipped_total (int):
+        sparkleflinger_media_texture_allocations_total (int):
+        sparkleflinger_media_texture_upload_bytes_total (int):
         servo_gpu_import_fallback_reason (None | str | Unset):
+        servo_gpu_import_windows_sync_mode (None | str | Unset):
     """
 
     errors_total: int
     fallbacks_applied_total: int
     producer_cpu_frames_total: int
+    producer_gpu_cpu_materialization_blocked_total: int
     producer_gpu_frames_total: int
+    producer_gpu_readback_failures_total: int
     servo_breaker_opens_total: int
     servo_detached_destroy_failures_total: int
     servo_detached_destroys_total: int
+    servo_gpu_import_adapter_mismatch_total: int
+    servo_gpu_import_available_slots: int
+    servo_gpu_import_available_slots_min: int
     servo_gpu_import_blit_max_ms: float
     servo_gpu_import_blit_total_ms: float
+    servo_gpu_import_completed_slots: int
     servo_gpu_import_failures_total: int
     servo_gpu_import_fallbacks_total: int
     servo_gpu_import_max_ms: float
+    servo_gpu_import_oldest_pending_age_max_ms: float
+    servo_gpu_import_pending_slots: int
+    servo_gpu_import_pending_slots_max: int
+    servo_gpu_import_slot_count: int
+    servo_gpu_import_stale_frame_total: int
     servo_gpu_import_sync_max_ms: float
     servo_gpu_import_sync_total_ms: float
     servo_gpu_import_total_ms: float
@@ -80,6 +119,9 @@ class EffectHealthStatus:
     servo_page_loads_total: int
     servo_render_cached_frames_total: int
     servo_render_cpu_frames_total: int
+    servo_render_display_queue_wait_max_ms: float
+    servo_render_display_queue_wait_total_ms: float
+    servo_render_display_requests_total: int
     servo_render_evaluate_scripts_max_ms: float
     servo_render_evaluate_scripts_total_ms: float
     servo_render_event_loop_max_ms: float
@@ -94,13 +136,27 @@ class EffectHealthStatus:
     servo_render_readback_max_ms: float
     servo_render_readback_total_ms: float
     servo_render_requests_total: int
+    servo_render_scene_queue_wait_max_ms: float
+    servo_render_scene_queue_wait_total_ms: float
+    servo_render_scene_requests_total: int
     servo_session_create_failures_total: int
     servo_session_create_wait_max_ms: float
     servo_session_create_wait_total_ms: float
     servo_session_creates_total: int
     servo_soft_stalls_total: int
+    sparkleflinger_display_finalize_blocking_wait_max_ms: float
+    sparkleflinger_display_finalize_blocking_wait_total_ms: float
+    sparkleflinger_display_finalize_latches_total: int
+    sparkleflinger_display_finalize_misses_total: int
+    sparkleflinger_display_finalize_rgba_attempts_total: int
+    sparkleflinger_display_finalize_successes_total: int
+    sparkleflinger_display_finalize_surface_reallocs_total: int
+    sparkleflinger_display_finalize_yuv_attempts_total: int
     sparkleflinger_gpu_source_upload_skipped_total: int
+    sparkleflinger_media_texture_allocations_total: int
+    sparkleflinger_media_texture_upload_bytes_total: int
     servo_gpu_import_fallback_reason: None | str | Unset = UNSET
+    servo_gpu_import_windows_sync_mode: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -110,7 +166,13 @@ class EffectHealthStatus:
 
         producer_cpu_frames_total = self.producer_cpu_frames_total
 
+        producer_gpu_cpu_materialization_blocked_total = (
+            self.producer_gpu_cpu_materialization_blocked_total
+        )
+
         producer_gpu_frames_total = self.producer_gpu_frames_total
+
+        producer_gpu_readback_failures_total = self.producer_gpu_readback_failures_total
 
         servo_breaker_opens_total = self.servo_breaker_opens_total
 
@@ -120,15 +182,37 @@ class EffectHealthStatus:
 
         servo_detached_destroys_total = self.servo_detached_destroys_total
 
+        servo_gpu_import_adapter_mismatch_total = (
+            self.servo_gpu_import_adapter_mismatch_total
+        )
+
+        servo_gpu_import_available_slots = self.servo_gpu_import_available_slots
+
+        servo_gpu_import_available_slots_min = self.servo_gpu_import_available_slots_min
+
         servo_gpu_import_blit_max_ms = self.servo_gpu_import_blit_max_ms
 
         servo_gpu_import_blit_total_ms = self.servo_gpu_import_blit_total_ms
+
+        servo_gpu_import_completed_slots = self.servo_gpu_import_completed_slots
 
         servo_gpu_import_failures_total = self.servo_gpu_import_failures_total
 
         servo_gpu_import_fallbacks_total = self.servo_gpu_import_fallbacks_total
 
         servo_gpu_import_max_ms = self.servo_gpu_import_max_ms
+
+        servo_gpu_import_oldest_pending_age_max_ms = (
+            self.servo_gpu_import_oldest_pending_age_max_ms
+        )
+
+        servo_gpu_import_pending_slots = self.servo_gpu_import_pending_slots
+
+        servo_gpu_import_pending_slots_max = self.servo_gpu_import_pending_slots_max
+
+        servo_gpu_import_slot_count = self.servo_gpu_import_slot_count
+
+        servo_gpu_import_stale_frame_total = self.servo_gpu_import_stale_frame_total
 
         servo_gpu_import_sync_max_ms = self.servo_gpu_import_sync_max_ms
 
@@ -147,6 +231,16 @@ class EffectHealthStatus:
         servo_render_cached_frames_total = self.servo_render_cached_frames_total
 
         servo_render_cpu_frames_total = self.servo_render_cpu_frames_total
+
+        servo_render_display_queue_wait_max_ms = (
+            self.servo_render_display_queue_wait_max_ms
+        )
+
+        servo_render_display_queue_wait_total_ms = (
+            self.servo_render_display_queue_wait_total_ms
+        )
+
+        servo_render_display_requests_total = self.servo_render_display_requests_total
 
         servo_render_evaluate_scripts_max_ms = self.servo_render_evaluate_scripts_max_ms
 
@@ -178,6 +272,14 @@ class EffectHealthStatus:
 
         servo_render_requests_total = self.servo_render_requests_total
 
+        servo_render_scene_queue_wait_max_ms = self.servo_render_scene_queue_wait_max_ms
+
+        servo_render_scene_queue_wait_total_ms = (
+            self.servo_render_scene_queue_wait_total_ms
+        )
+
+        servo_render_scene_requests_total = self.servo_render_scene_requests_total
+
         servo_session_create_failures_total = self.servo_session_create_failures_total
 
         servo_session_create_wait_max_ms = self.servo_session_create_wait_max_ms
@@ -188,8 +290,48 @@ class EffectHealthStatus:
 
         servo_soft_stalls_total = self.servo_soft_stalls_total
 
+        sparkleflinger_display_finalize_blocking_wait_max_ms = (
+            self.sparkleflinger_display_finalize_blocking_wait_max_ms
+        )
+
+        sparkleflinger_display_finalize_blocking_wait_total_ms = (
+            self.sparkleflinger_display_finalize_blocking_wait_total_ms
+        )
+
+        sparkleflinger_display_finalize_latches_total = (
+            self.sparkleflinger_display_finalize_latches_total
+        )
+
+        sparkleflinger_display_finalize_misses_total = (
+            self.sparkleflinger_display_finalize_misses_total
+        )
+
+        sparkleflinger_display_finalize_rgba_attempts_total = (
+            self.sparkleflinger_display_finalize_rgba_attempts_total
+        )
+
+        sparkleflinger_display_finalize_successes_total = (
+            self.sparkleflinger_display_finalize_successes_total
+        )
+
+        sparkleflinger_display_finalize_surface_reallocs_total = (
+            self.sparkleflinger_display_finalize_surface_reallocs_total
+        )
+
+        sparkleflinger_display_finalize_yuv_attempts_total = (
+            self.sparkleflinger_display_finalize_yuv_attempts_total
+        )
+
         sparkleflinger_gpu_source_upload_skipped_total = (
             self.sparkleflinger_gpu_source_upload_skipped_total
+        )
+
+        sparkleflinger_media_texture_allocations_total = (
+            self.sparkleflinger_media_texture_allocations_total
+        )
+
+        sparkleflinger_media_texture_upload_bytes_total = (
+            self.sparkleflinger_media_texture_upload_bytes_total
         )
 
         servo_gpu_import_fallback_reason: None | str | Unset
@@ -198,6 +340,12 @@ class EffectHealthStatus:
         else:
             servo_gpu_import_fallback_reason = self.servo_gpu_import_fallback_reason
 
+        servo_gpu_import_windows_sync_mode: None | str | Unset
+        if isinstance(self.servo_gpu_import_windows_sync_mode, Unset):
+            servo_gpu_import_windows_sync_mode = UNSET
+        else:
+            servo_gpu_import_windows_sync_mode = self.servo_gpu_import_windows_sync_mode
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -205,15 +353,26 @@ class EffectHealthStatus:
                 "errors_total": errors_total,
                 "fallbacks_applied_total": fallbacks_applied_total,
                 "producer_cpu_frames_total": producer_cpu_frames_total,
+                "producer_gpu_cpu_materialization_blocked_total": producer_gpu_cpu_materialization_blocked_total,
                 "producer_gpu_frames_total": producer_gpu_frames_total,
+                "producer_gpu_readback_failures_total": producer_gpu_readback_failures_total,
                 "servo_breaker_opens_total": servo_breaker_opens_total,
                 "servo_detached_destroy_failures_total": servo_detached_destroy_failures_total,
                 "servo_detached_destroys_total": servo_detached_destroys_total,
+                "servo_gpu_import_adapter_mismatch_total": servo_gpu_import_adapter_mismatch_total,
+                "servo_gpu_import_available_slots": servo_gpu_import_available_slots,
+                "servo_gpu_import_available_slots_min": servo_gpu_import_available_slots_min,
                 "servo_gpu_import_blit_max_ms": servo_gpu_import_blit_max_ms,
                 "servo_gpu_import_blit_total_ms": servo_gpu_import_blit_total_ms,
+                "servo_gpu_import_completed_slots": servo_gpu_import_completed_slots,
                 "servo_gpu_import_failures_total": servo_gpu_import_failures_total,
                 "servo_gpu_import_fallbacks_total": servo_gpu_import_fallbacks_total,
                 "servo_gpu_import_max_ms": servo_gpu_import_max_ms,
+                "servo_gpu_import_oldest_pending_age_max_ms": servo_gpu_import_oldest_pending_age_max_ms,
+                "servo_gpu_import_pending_slots": servo_gpu_import_pending_slots,
+                "servo_gpu_import_pending_slots_max": servo_gpu_import_pending_slots_max,
+                "servo_gpu_import_slot_count": servo_gpu_import_slot_count,
+                "servo_gpu_import_stale_frame_total": servo_gpu_import_stale_frame_total,
                 "servo_gpu_import_sync_max_ms": servo_gpu_import_sync_max_ms,
                 "servo_gpu_import_sync_total_ms": servo_gpu_import_sync_total_ms,
                 "servo_gpu_import_total_ms": servo_gpu_import_total_ms,
@@ -223,6 +382,9 @@ class EffectHealthStatus:
                 "servo_page_loads_total": servo_page_loads_total,
                 "servo_render_cached_frames_total": servo_render_cached_frames_total,
                 "servo_render_cpu_frames_total": servo_render_cpu_frames_total,
+                "servo_render_display_queue_wait_max_ms": servo_render_display_queue_wait_max_ms,
+                "servo_render_display_queue_wait_total_ms": servo_render_display_queue_wait_total_ms,
+                "servo_render_display_requests_total": servo_render_display_requests_total,
                 "servo_render_evaluate_scripts_max_ms": servo_render_evaluate_scripts_max_ms,
                 "servo_render_evaluate_scripts_total_ms": servo_render_evaluate_scripts_total_ms,
                 "servo_render_event_loop_max_ms": servo_render_event_loop_max_ms,
@@ -237,17 +399,34 @@ class EffectHealthStatus:
                 "servo_render_readback_max_ms": servo_render_readback_max_ms,
                 "servo_render_readback_total_ms": servo_render_readback_total_ms,
                 "servo_render_requests_total": servo_render_requests_total,
+                "servo_render_scene_queue_wait_max_ms": servo_render_scene_queue_wait_max_ms,
+                "servo_render_scene_queue_wait_total_ms": servo_render_scene_queue_wait_total_ms,
+                "servo_render_scene_requests_total": servo_render_scene_requests_total,
                 "servo_session_create_failures_total": servo_session_create_failures_total,
                 "servo_session_create_wait_max_ms": servo_session_create_wait_max_ms,
                 "servo_session_create_wait_total_ms": servo_session_create_wait_total_ms,
                 "servo_session_creates_total": servo_session_creates_total,
                 "servo_soft_stalls_total": servo_soft_stalls_total,
+                "sparkleflinger_display_finalize_blocking_wait_max_ms": sparkleflinger_display_finalize_blocking_wait_max_ms,
+                "sparkleflinger_display_finalize_blocking_wait_total_ms": sparkleflinger_display_finalize_blocking_wait_total_ms,
+                "sparkleflinger_display_finalize_latches_total": sparkleflinger_display_finalize_latches_total,
+                "sparkleflinger_display_finalize_misses_total": sparkleflinger_display_finalize_misses_total,
+                "sparkleflinger_display_finalize_rgba_attempts_total": sparkleflinger_display_finalize_rgba_attempts_total,
+                "sparkleflinger_display_finalize_successes_total": sparkleflinger_display_finalize_successes_total,
+                "sparkleflinger_display_finalize_surface_reallocs_total": sparkleflinger_display_finalize_surface_reallocs_total,
+                "sparkleflinger_display_finalize_yuv_attempts_total": sparkleflinger_display_finalize_yuv_attempts_total,
                 "sparkleflinger_gpu_source_upload_skipped_total": sparkleflinger_gpu_source_upload_skipped_total,
+                "sparkleflinger_media_texture_allocations_total": sparkleflinger_media_texture_allocations_total,
+                "sparkleflinger_media_texture_upload_bytes_total": sparkleflinger_media_texture_upload_bytes_total,
             }
         )
         if servo_gpu_import_fallback_reason is not UNSET:
             field_dict["servo_gpu_import_fallback_reason"] = (
                 servo_gpu_import_fallback_reason
+            )
+        if servo_gpu_import_windows_sync_mode is not UNSET:
+            field_dict["servo_gpu_import_windows_sync_mode"] = (
+                servo_gpu_import_windows_sync_mode
             )
 
         return field_dict
@@ -261,7 +440,15 @@ class EffectHealthStatus:
 
         producer_cpu_frames_total = d.pop("producer_cpu_frames_total")
 
+        producer_gpu_cpu_materialization_blocked_total = d.pop(
+            "producer_gpu_cpu_materialization_blocked_total"
+        )
+
         producer_gpu_frames_total = d.pop("producer_gpu_frames_total")
+
+        producer_gpu_readback_failures_total = d.pop(
+            "producer_gpu_readback_failures_total"
+        )
 
         servo_breaker_opens_total = d.pop("servo_breaker_opens_total")
 
@@ -271,15 +458,39 @@ class EffectHealthStatus:
 
         servo_detached_destroys_total = d.pop("servo_detached_destroys_total")
 
+        servo_gpu_import_adapter_mismatch_total = d.pop(
+            "servo_gpu_import_adapter_mismatch_total"
+        )
+
+        servo_gpu_import_available_slots = d.pop("servo_gpu_import_available_slots")
+
+        servo_gpu_import_available_slots_min = d.pop(
+            "servo_gpu_import_available_slots_min"
+        )
+
         servo_gpu_import_blit_max_ms = d.pop("servo_gpu_import_blit_max_ms")
 
         servo_gpu_import_blit_total_ms = d.pop("servo_gpu_import_blit_total_ms")
+
+        servo_gpu_import_completed_slots = d.pop("servo_gpu_import_completed_slots")
 
         servo_gpu_import_failures_total = d.pop("servo_gpu_import_failures_total")
 
         servo_gpu_import_fallbacks_total = d.pop("servo_gpu_import_fallbacks_total")
 
         servo_gpu_import_max_ms = d.pop("servo_gpu_import_max_ms")
+
+        servo_gpu_import_oldest_pending_age_max_ms = d.pop(
+            "servo_gpu_import_oldest_pending_age_max_ms"
+        )
+
+        servo_gpu_import_pending_slots = d.pop("servo_gpu_import_pending_slots")
+
+        servo_gpu_import_pending_slots_max = d.pop("servo_gpu_import_pending_slots_max")
+
+        servo_gpu_import_slot_count = d.pop("servo_gpu_import_slot_count")
+
+        servo_gpu_import_stale_frame_total = d.pop("servo_gpu_import_stale_frame_total")
 
         servo_gpu_import_sync_max_ms = d.pop("servo_gpu_import_sync_max_ms")
 
@@ -298,6 +509,18 @@ class EffectHealthStatus:
         servo_render_cached_frames_total = d.pop("servo_render_cached_frames_total")
 
         servo_render_cpu_frames_total = d.pop("servo_render_cpu_frames_total")
+
+        servo_render_display_queue_wait_max_ms = d.pop(
+            "servo_render_display_queue_wait_max_ms"
+        )
+
+        servo_render_display_queue_wait_total_ms = d.pop(
+            "servo_render_display_queue_wait_total_ms"
+        )
+
+        servo_render_display_requests_total = d.pop(
+            "servo_render_display_requests_total"
+        )
 
         servo_render_evaluate_scripts_max_ms = d.pop(
             "servo_render_evaluate_scripts_max_ms"
@@ -331,6 +554,16 @@ class EffectHealthStatus:
 
         servo_render_requests_total = d.pop("servo_render_requests_total")
 
+        servo_render_scene_queue_wait_max_ms = d.pop(
+            "servo_render_scene_queue_wait_max_ms"
+        )
+
+        servo_render_scene_queue_wait_total_ms = d.pop(
+            "servo_render_scene_queue_wait_total_ms"
+        )
+
+        servo_render_scene_requests_total = d.pop("servo_render_scene_requests_total")
+
         servo_session_create_failures_total = d.pop(
             "servo_session_create_failures_total"
         )
@@ -343,8 +576,48 @@ class EffectHealthStatus:
 
         servo_soft_stalls_total = d.pop("servo_soft_stalls_total")
 
+        sparkleflinger_display_finalize_blocking_wait_max_ms = d.pop(
+            "sparkleflinger_display_finalize_blocking_wait_max_ms"
+        )
+
+        sparkleflinger_display_finalize_blocking_wait_total_ms = d.pop(
+            "sparkleflinger_display_finalize_blocking_wait_total_ms"
+        )
+
+        sparkleflinger_display_finalize_latches_total = d.pop(
+            "sparkleflinger_display_finalize_latches_total"
+        )
+
+        sparkleflinger_display_finalize_misses_total = d.pop(
+            "sparkleflinger_display_finalize_misses_total"
+        )
+
+        sparkleflinger_display_finalize_rgba_attempts_total = d.pop(
+            "sparkleflinger_display_finalize_rgba_attempts_total"
+        )
+
+        sparkleflinger_display_finalize_successes_total = d.pop(
+            "sparkleflinger_display_finalize_successes_total"
+        )
+
+        sparkleflinger_display_finalize_surface_reallocs_total = d.pop(
+            "sparkleflinger_display_finalize_surface_reallocs_total"
+        )
+
+        sparkleflinger_display_finalize_yuv_attempts_total = d.pop(
+            "sparkleflinger_display_finalize_yuv_attempts_total"
+        )
+
         sparkleflinger_gpu_source_upload_skipped_total = d.pop(
             "sparkleflinger_gpu_source_upload_skipped_total"
+        )
+
+        sparkleflinger_media_texture_allocations_total = d.pop(
+            "sparkleflinger_media_texture_allocations_total"
+        )
+
+        sparkleflinger_media_texture_upload_bytes_total = d.pop(
+            "sparkleflinger_media_texture_upload_bytes_total"
         )
 
         def _parse_servo_gpu_import_fallback_reason(data: object) -> None | str | Unset:
@@ -358,19 +631,43 @@ class EffectHealthStatus:
             d.pop("servo_gpu_import_fallback_reason", UNSET)
         )
 
+        def _parse_servo_gpu_import_windows_sync_mode(
+            data: object,
+        ) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        servo_gpu_import_windows_sync_mode = _parse_servo_gpu_import_windows_sync_mode(
+            d.pop("servo_gpu_import_windows_sync_mode", UNSET)
+        )
+
         effect_health_status = cls(
             errors_total=errors_total,
             fallbacks_applied_total=fallbacks_applied_total,
             producer_cpu_frames_total=producer_cpu_frames_total,
+            producer_gpu_cpu_materialization_blocked_total=producer_gpu_cpu_materialization_blocked_total,
             producer_gpu_frames_total=producer_gpu_frames_total,
+            producer_gpu_readback_failures_total=producer_gpu_readback_failures_total,
             servo_breaker_opens_total=servo_breaker_opens_total,
             servo_detached_destroy_failures_total=servo_detached_destroy_failures_total,
             servo_detached_destroys_total=servo_detached_destroys_total,
+            servo_gpu_import_adapter_mismatch_total=servo_gpu_import_adapter_mismatch_total,
+            servo_gpu_import_available_slots=servo_gpu_import_available_slots,
+            servo_gpu_import_available_slots_min=servo_gpu_import_available_slots_min,
             servo_gpu_import_blit_max_ms=servo_gpu_import_blit_max_ms,
             servo_gpu_import_blit_total_ms=servo_gpu_import_blit_total_ms,
+            servo_gpu_import_completed_slots=servo_gpu_import_completed_slots,
             servo_gpu_import_failures_total=servo_gpu_import_failures_total,
             servo_gpu_import_fallbacks_total=servo_gpu_import_fallbacks_total,
             servo_gpu_import_max_ms=servo_gpu_import_max_ms,
+            servo_gpu_import_oldest_pending_age_max_ms=servo_gpu_import_oldest_pending_age_max_ms,
+            servo_gpu_import_pending_slots=servo_gpu_import_pending_slots,
+            servo_gpu_import_pending_slots_max=servo_gpu_import_pending_slots_max,
+            servo_gpu_import_slot_count=servo_gpu_import_slot_count,
+            servo_gpu_import_stale_frame_total=servo_gpu_import_stale_frame_total,
             servo_gpu_import_sync_max_ms=servo_gpu_import_sync_max_ms,
             servo_gpu_import_sync_total_ms=servo_gpu_import_sync_total_ms,
             servo_gpu_import_total_ms=servo_gpu_import_total_ms,
@@ -380,6 +677,9 @@ class EffectHealthStatus:
             servo_page_loads_total=servo_page_loads_total,
             servo_render_cached_frames_total=servo_render_cached_frames_total,
             servo_render_cpu_frames_total=servo_render_cpu_frames_total,
+            servo_render_display_queue_wait_max_ms=servo_render_display_queue_wait_max_ms,
+            servo_render_display_queue_wait_total_ms=servo_render_display_queue_wait_total_ms,
+            servo_render_display_requests_total=servo_render_display_requests_total,
             servo_render_evaluate_scripts_max_ms=servo_render_evaluate_scripts_max_ms,
             servo_render_evaluate_scripts_total_ms=servo_render_evaluate_scripts_total_ms,
             servo_render_event_loop_max_ms=servo_render_event_loop_max_ms,
@@ -394,13 +694,27 @@ class EffectHealthStatus:
             servo_render_readback_max_ms=servo_render_readback_max_ms,
             servo_render_readback_total_ms=servo_render_readback_total_ms,
             servo_render_requests_total=servo_render_requests_total,
+            servo_render_scene_queue_wait_max_ms=servo_render_scene_queue_wait_max_ms,
+            servo_render_scene_queue_wait_total_ms=servo_render_scene_queue_wait_total_ms,
+            servo_render_scene_requests_total=servo_render_scene_requests_total,
             servo_session_create_failures_total=servo_session_create_failures_total,
             servo_session_create_wait_max_ms=servo_session_create_wait_max_ms,
             servo_session_create_wait_total_ms=servo_session_create_wait_total_ms,
             servo_session_creates_total=servo_session_creates_total,
             servo_soft_stalls_total=servo_soft_stalls_total,
+            sparkleflinger_display_finalize_blocking_wait_max_ms=sparkleflinger_display_finalize_blocking_wait_max_ms,
+            sparkleflinger_display_finalize_blocking_wait_total_ms=sparkleflinger_display_finalize_blocking_wait_total_ms,
+            sparkleflinger_display_finalize_latches_total=sparkleflinger_display_finalize_latches_total,
+            sparkleflinger_display_finalize_misses_total=sparkleflinger_display_finalize_misses_total,
+            sparkleflinger_display_finalize_rgba_attempts_total=sparkleflinger_display_finalize_rgba_attempts_total,
+            sparkleflinger_display_finalize_successes_total=sparkleflinger_display_finalize_successes_total,
+            sparkleflinger_display_finalize_surface_reallocs_total=sparkleflinger_display_finalize_surface_reallocs_total,
+            sparkleflinger_display_finalize_yuv_attempts_total=sparkleflinger_display_finalize_yuv_attempts_total,
             sparkleflinger_gpu_source_upload_skipped_total=sparkleflinger_gpu_source_upload_skipped_total,
+            sparkleflinger_media_texture_allocations_total=sparkleflinger_media_texture_allocations_total,
+            sparkleflinger_media_texture_upload_bytes_total=sparkleflinger_media_texture_upload_bytes_total,
             servo_gpu_import_fallback_reason=servo_gpu_import_fallback_reason,
+            servo_gpu_import_windows_sync_mode=servo_gpu_import_windows_sync_mode,
         )
 
         effect_health_status.additional_properties = d

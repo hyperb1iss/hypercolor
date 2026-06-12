@@ -38,6 +38,9 @@ def _parse_response(
     if response.status_code == 409:
         return None
 
+    if response.status_code == 412:
+        return None
+
     if response.status_code == 422:
         return None
 

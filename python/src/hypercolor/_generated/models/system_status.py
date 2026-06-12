@@ -27,6 +27,7 @@ class SystemStatus:
         active_scene_snapshot_locked (bool):
         audio_available (bool):
         cache_dir (str):
+        capabilities (list[str]):
         capture_available (bool):
         compositor_acceleration (RenderAccelerationStatus):
         config_path (str):
@@ -51,6 +52,7 @@ class SystemStatus:
     active_scene_snapshot_locked: bool
     audio_available: bool
     cache_dir: str
+    capabilities: list[str]
     capture_available: bool
     compositor_acceleration: RenderAccelerationStatus
     config_path: str
@@ -80,6 +82,8 @@ class SystemStatus:
         audio_available = self.audio_available
 
         cache_dir = self.cache_dir
+
+        capabilities = self.capabilities
 
         capture_available = self.capture_available
 
@@ -140,6 +144,7 @@ class SystemStatus:
                 "active_scene_snapshot_locked": active_scene_snapshot_locked,
                 "audio_available": audio_available,
                 "cache_dir": cache_dir,
+                "capabilities": capabilities,
                 "capture_available": capture_available,
                 "compositor_acceleration": compositor_acceleration,
                 "config_path": config_path,
@@ -182,6 +187,8 @@ class SystemStatus:
         audio_available = d.pop("audio_available")
 
         cache_dir = d.pop("cache_dir")
+
+        capabilities = cast(list[str], d.pop("capabilities"))
 
         capture_available = d.pop("capture_available")
 
@@ -256,6 +263,7 @@ class SystemStatus:
             active_scene_snapshot_locked=active_scene_snapshot_locked,
             audio_available=audio_available,
             cache_dir=cache_dir,
+            capabilities=capabilities,
             capture_available=capture_available,
             compositor_acceleration=compositor_acceleration,
             config_path=config_path,

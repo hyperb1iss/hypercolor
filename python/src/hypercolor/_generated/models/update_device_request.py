@@ -13,7 +13,8 @@ T = TypeVar("T", bound="UpdateDeviceRequest")
 
 @_attrs_define
 class UpdateDeviceRequest:
-    """
+    """Request body for `PATCH /api/v1/devices/{id}`.
+
     Attributes:
         brightness (int | None | Unset):
         enabled (bool | None | Unset):

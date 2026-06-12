@@ -16,10 +16,11 @@ T = TypeVar("T", bound="EffectListResponse")
 
 @_attrs_define
 class EffectListResponse:
-    """
+    """Response for `GET /api/v1/effects`.
+
     Attributes:
         items (list[EffectSummary]):
-        pagination (Pagination):
+        pagination (Pagination): Pagination envelope attached to every list response.
     """
 
     items: list[EffectSummary]

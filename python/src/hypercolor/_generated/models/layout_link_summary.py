@@ -11,7 +11,8 @@ T = TypeVar("T", bound="LayoutLinkSummary")
 
 @_attrs_define
 class LayoutLinkSummary:
-    """
+    """Layout link summary in apply responses.
+
     Attributes:
         canvas_height (int):
         canvas_width (int):

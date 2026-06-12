@@ -11,7 +11,8 @@ T = TypeVar("T", bound="Pagination")
 
 @_attrs_define
 class Pagination:
-    """
+    """Pagination envelope attached to every list response.
+
     Attributes:
         has_more (bool):
         limit (int):

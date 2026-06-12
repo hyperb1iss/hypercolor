@@ -18,32 +18,46 @@ T = TypeVar("T", bound="ApplyEffectRequest")
 
 @_attrs_define
 class ApplyEffectRequest:
-    """
+    """Request body for `POST /api/v1/effects/{id}/apply`.
+
     Attributes:
-        controls (ApplyEffectRequestControls):
-        preset_id (None | str | Unset): Optional preset ID to associate with the render group in the same
+        controls (ApplyEffectRequestControls | Unset):
+        preset_id (None | str | Unset): Optional preset ID to associate with the zone in the same
             transaction as the effect start — lets the UI pass a remembered
             preset selection without a follow-up round-trip. If `controls` is
             also provided, the explicit controls win (they're presumed to
             already carry the preset's values, possibly with user tweaks).
+        render_group (None | str | Unset): Optional target zone (render-group id). Omitted applies the effect
+            to the scene's Primary zone — the legacy behavior. A non-Primary
+            zone id renders the effect into that zone instead, leaving its
+            layout and device assignment untouched.
         transition (None | TransitionRequest | Unset):
     """
 
-    controls: ApplyEffectRequestControls
+    controls: ApplyEffectRequestControls | Unset = UNSET
     preset_id: None | str | Unset = UNSET
+    render_group: None | str | Unset = UNSET
     transition: None | TransitionRequest | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.transition_request import TransitionRequest
 
-        controls = self.controls.to_dict()
+        controls: dict[str, Any] | Unset = UNSET
+        if not isinstance(self.controls, Unset):
+            controls = self.controls.to_dict()
 
         preset_id: None | str | Unset
         if isinstance(self.preset_id, Unset):
             preset_id = UNSET
         else:
             preset_id = self.preset_id
+
+        render_group: None | str | Unset
+        if isinstance(self.render_group, Unset):
+            render_group = UNSET
+        else:
+            render_group = self.render_group
 
         transition: dict[str, Any] | None | Unset
         if isinstance(self.transition, Unset):
@@ -55,13 +69,13 @@ class ApplyEffectRequest:
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update(
-            {
-                "controls": controls,
-            }
-        )
+        field_dict.update({})
+        if controls is not UNSET:
+            field_dict["controls"] = controls
         if preset_id is not UNSET:
             field_dict["preset_id"] = preset_id
+        if render_group is not UNSET:
+            field_dict["render_group"] = render_group
         if transition is not UNSET:
             field_dict["transition"] = transition
 
@@ -73,7 +87,12 @@ class ApplyEffectRequest:
         from ..models.transition_request import TransitionRequest
 
         d = dict(src_dict)
-        controls = ApplyEffectRequestControls.from_dict(d.pop("controls"))
+        _controls = d.pop("controls", UNSET)
+        controls: ApplyEffectRequestControls | Unset
+        if isinstance(_controls, Unset):
+            controls = UNSET
+        else:
+            controls = ApplyEffectRequestControls.from_dict(_controls)
 
         def _parse_preset_id(data: object) -> None | str | Unset:
             if data is None:
@@ -83,6 +102,15 @@ class ApplyEffectRequest:
             return cast(None | str | Unset, data)
 
         preset_id = _parse_preset_id(d.pop("preset_id", UNSET))
+
+        def _parse_render_group(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        render_group = _parse_render_group(d.pop("render_group", UNSET))
 
         def _parse_transition(data: object) -> None | TransitionRequest | Unset:
             if data is None:
@@ -104,6 +132,7 @@ class ApplyEffectRequest:
         apply_effect_request = cls(
             controls=controls,
             preset_id=preset_id,
+            render_group=render_group,
             transition=transition,
         )
 

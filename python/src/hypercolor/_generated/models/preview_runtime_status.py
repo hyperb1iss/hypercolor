@@ -21,20 +21,36 @@ class PreviewRuntimeStatus:
         canvas_frames_published (int):
         canvas_receivers (int):
         latest_canvas_frame_number (int):
+        latest_scene_canvas_frame_number (int):
         latest_screen_canvas_frame_number (int):
+        latest_zone_preview_frame_number (int):
+        scene_canvas_demand (PreviewDemandStatus):
+        scene_canvas_frames_published (int):
+        scene_canvas_receivers (int):
         screen_canvas_demand (PreviewDemandStatus):
         screen_canvas_frames_published (int):
         screen_canvas_receivers (int):
+        zone_preview_demand (PreviewDemandStatus):
+        zone_preview_frames_published (int):
+        zone_preview_receivers (int):
     """
 
     canvas_demand: PreviewDemandStatus
     canvas_frames_published: int
     canvas_receivers: int
     latest_canvas_frame_number: int
+    latest_scene_canvas_frame_number: int
     latest_screen_canvas_frame_number: int
+    latest_zone_preview_frame_number: int
+    scene_canvas_demand: PreviewDemandStatus
+    scene_canvas_frames_published: int
+    scene_canvas_receivers: int
     screen_canvas_demand: PreviewDemandStatus
     screen_canvas_frames_published: int
     screen_canvas_receivers: int
+    zone_preview_demand: PreviewDemandStatus
+    zone_preview_frames_published: int
+    zone_preview_receivers: int
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -46,13 +62,29 @@ class PreviewRuntimeStatus:
 
         latest_canvas_frame_number = self.latest_canvas_frame_number
 
+        latest_scene_canvas_frame_number = self.latest_scene_canvas_frame_number
+
         latest_screen_canvas_frame_number = self.latest_screen_canvas_frame_number
+
+        latest_zone_preview_frame_number = self.latest_zone_preview_frame_number
+
+        scene_canvas_demand = self.scene_canvas_demand.to_dict()
+
+        scene_canvas_frames_published = self.scene_canvas_frames_published
+
+        scene_canvas_receivers = self.scene_canvas_receivers
 
         screen_canvas_demand = self.screen_canvas_demand.to_dict()
 
         screen_canvas_frames_published = self.screen_canvas_frames_published
 
         screen_canvas_receivers = self.screen_canvas_receivers
+
+        zone_preview_demand = self.zone_preview_demand.to_dict()
+
+        zone_preview_frames_published = self.zone_preview_frames_published
+
+        zone_preview_receivers = self.zone_preview_receivers
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -62,10 +94,18 @@ class PreviewRuntimeStatus:
                 "canvas_frames_published": canvas_frames_published,
                 "canvas_receivers": canvas_receivers,
                 "latest_canvas_frame_number": latest_canvas_frame_number,
+                "latest_scene_canvas_frame_number": latest_scene_canvas_frame_number,
                 "latest_screen_canvas_frame_number": latest_screen_canvas_frame_number,
+                "latest_zone_preview_frame_number": latest_zone_preview_frame_number,
+                "scene_canvas_demand": scene_canvas_demand,
+                "scene_canvas_frames_published": scene_canvas_frames_published,
+                "scene_canvas_receivers": scene_canvas_receivers,
                 "screen_canvas_demand": screen_canvas_demand,
                 "screen_canvas_frames_published": screen_canvas_frames_published,
                 "screen_canvas_receivers": screen_canvas_receivers,
+                "zone_preview_demand": zone_preview_demand,
+                "zone_preview_frames_published": zone_preview_frames_published,
+                "zone_preview_receivers": zone_preview_receivers,
             }
         )
 
@@ -84,7 +124,19 @@ class PreviewRuntimeStatus:
 
         latest_canvas_frame_number = d.pop("latest_canvas_frame_number")
 
+        latest_scene_canvas_frame_number = d.pop("latest_scene_canvas_frame_number")
+
         latest_screen_canvas_frame_number = d.pop("latest_screen_canvas_frame_number")
+
+        latest_zone_preview_frame_number = d.pop("latest_zone_preview_frame_number")
+
+        scene_canvas_demand = PreviewDemandStatus.from_dict(
+            d.pop("scene_canvas_demand")
+        )
+
+        scene_canvas_frames_published = d.pop("scene_canvas_frames_published")
+
+        scene_canvas_receivers = d.pop("scene_canvas_receivers")
 
         screen_canvas_demand = PreviewDemandStatus.from_dict(
             d.pop("screen_canvas_demand")
@@ -94,15 +146,31 @@ class PreviewRuntimeStatus:
 
         screen_canvas_receivers = d.pop("screen_canvas_receivers")
 
+        zone_preview_demand = PreviewDemandStatus.from_dict(
+            d.pop("zone_preview_demand")
+        )
+
+        zone_preview_frames_published = d.pop("zone_preview_frames_published")
+
+        zone_preview_receivers = d.pop("zone_preview_receivers")
+
         preview_runtime_status = cls(
             canvas_demand=canvas_demand,
             canvas_frames_published=canvas_frames_published,
             canvas_receivers=canvas_receivers,
             latest_canvas_frame_number=latest_canvas_frame_number,
+            latest_scene_canvas_frame_number=latest_scene_canvas_frame_number,
             latest_screen_canvas_frame_number=latest_screen_canvas_frame_number,
+            latest_zone_preview_frame_number=latest_zone_preview_frame_number,
+            scene_canvas_demand=scene_canvas_demand,
+            scene_canvas_frames_published=scene_canvas_frames_published,
+            scene_canvas_receivers=scene_canvas_receivers,
             screen_canvas_demand=screen_canvas_demand,
             screen_canvas_frames_published=screen_canvas_frames_published,
             screen_canvas_receivers=screen_canvas_receivers,
+            zone_preview_demand=zone_preview_demand,
+            zone_preview_frames_published=zone_preview_frames_published,
+            zone_preview_receivers=zone_preview_receivers,
         )
 
         preview_runtime_status.additional_properties = d

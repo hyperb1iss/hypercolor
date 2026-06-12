@@ -21,7 +21,7 @@ class ApiResponseApplyEffectResponse:
     """Standard success response wrapper.
 
     Attributes:
-        data (ApiResponseApplyEffectResponseData):
+        data (ApiResponseApplyEffectResponseData): Response for `POST /api/v1/effects/{id}/apply`.
         meta (Meta): Response metadata included in every envelope.
     """
 

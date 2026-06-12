@@ -86,8 +86,28 @@ from .apply_impact_type_6 import ApplyImpactType6
 from .apply_impact_type_7 import ApplyImpactType7
 from .apply_profile_request import ApplyProfileRequest
 from .apply_transition_response import ApplyTransitionResponse
+from .assign_devices_request import AssignDevicesRequest
+from .assign_devices_request_device_zones_item import (
+    AssignDevicesRequestDeviceZonesItem,
+)
 from .b_tree_map import BTreeMap
 from .b_tree_map_additional_property import BTreeMapAdditionalProperty
+from .broadcast_media_layer_group_response import BroadcastMediaLayerGroupResponse
+from .broadcast_media_layer_group_response_items_item import (
+    BroadcastMediaLayerGroupResponseItemsItem,
+)
+from .broadcast_media_layer_request import BroadcastMediaLayerRequest
+from .broadcast_media_layer_request_bindings_item import (
+    BroadcastMediaLayerRequestBindingsItem,
+)
+from .broadcast_media_layer_request_playback import BroadcastMediaLayerRequestPlayback
+from .broadcast_media_layer_request_targets_item import (
+    BroadcastMediaLayerRequestTargetsItem,
+)
+from .broadcast_media_layer_response import BroadcastMediaLayerResponse
+from .broadcast_media_layer_target import BroadcastMediaLayerTarget
+from .broadcast_media_layer_target_adjust import BroadcastMediaLayerTargetAdjust
+from .broadcast_media_layer_target_transform import BroadcastMediaLayerTargetTransform
 from .control_access import ControlAccess
 from .control_action_descriptor import ControlActionDescriptor
 from .control_action_descriptor_availability import ControlActionDescriptorAvailability
@@ -146,6 +166,13 @@ from .control_value_type_5 import ControlValueType5
 from .control_value_type_6 import ControlValueType6
 from .control_value_type_7 import ControlValueType7
 from .control_visibility import ControlVisibility
+from .corner import Corner
+from .create_layer_request import CreateLayerRequest
+from .create_layer_request_adjust import CreateLayerRequestAdjust
+from .create_layer_request_bindings_item import CreateLayerRequestBindingsItem
+from .create_layer_request_source import CreateLayerRequestSource
+from .create_layer_request_transform import CreateLayerRequestTransform
+from .create_zone_request import CreateZoneRequest
 from .device_auth_state import DeviceAuthState
 from .device_auth_summary import DeviceAuthSummary
 from .device_class_hint import DeviceClassHint
@@ -171,6 +198,7 @@ from .driver_transport_kind_type_4 import DriverTransportKindType4
 from .driver_transport_kind_type_5 import DriverTransportKindType5
 from .driver_transport_kind_type_6 import DriverTransportKindType6
 from .driver_transport_kind_type_7 import DriverTransportKindType7
+from .edge_behavior import EdgeBehavior
 from .effect_detail_response import EffectDetailResponse
 from .effect_detail_response_active_control_values_type_0 import (
     EffectDetailResponseActiveControlValuesType0,
@@ -189,12 +217,36 @@ from .health_response import HealthResponse
 from .identify_request import IdentifyRequest
 from .invoke_control_action_request import InvokeControlActionRequest
 from .latest_frame_status import LatestFrameStatus
+from .layer_order_request import LayerOrderRequest
+from .layer_stack_response import LayerStackResponse
+from .layer_stack_response_items_item import LayerStackResponseItemsItem
 from .layout_link_summary import LayoutLinkSummary
+from .led_topology_type_0 import LedTopologyType0
+from .led_topology_type_0_type import LedTopologyType0Type
+from .led_topology_type_1 import LedTopologyType1
+from .led_topology_type_1_type import LedTopologyType1Type
+from .led_topology_type_2 import LedTopologyType2
+from .led_topology_type_2_type import LedTopologyType2Type
+from .led_topology_type_3 import LedTopologyType3
+from .led_topology_type_3_type import LedTopologyType3Type
+from .led_topology_type_4 import LedTopologyType4
+from .led_topology_type_4_type import LedTopologyType4Type
+from .led_topology_type_5 import LedTopologyType5
+from .led_topology_type_5_type import LedTopologyType5Type
+from .led_topology_type_6 import LedTopologyType6
+from .led_topology_type_6_type import LedTopologyType6Type
 from .meta import Meta
+from .normalized_position import NormalizedPosition
+from .normalized_rect import NormalizedRect
+from .orientation import Orientation
+from .output import Output
+from .output_component import OutputComponent
 from .pagination import Pagination
 from .pairing_descriptor import PairingDescriptor
 from .pairing_field_descriptor import PairingFieldDescriptor
 from .pairing_flow_kind import PairingFlowKind
+from .patch_layer_controls_request import PatchLayerControlsRequest
+from .patch_layer_controls_request_controls import PatchLayerControlsRequestControls
 from .preset_template import PresetTemplate
 from .preset_template_controls import PresetTemplateControls
 from .preview_demand_status import PreviewDemandStatus
@@ -205,18 +257,56 @@ from .rejected_control_change_attempted_value import RejectedControlChangeAttemp
 from .render_acceleration_status import RenderAccelerationStatus
 from .render_loop_status import RenderLoopStatus
 from .render_surface_status import RenderSurfaceStatus
+from .ring_def import RingDef
+from .room_adjacency import RoomAdjacency
+from .room_dimensions import RoomDimensions
+from .sampling_mode_type_0 import SamplingModeType0
+from .sampling_mode_type_0_type import SamplingModeType0Type
+from .sampling_mode_type_1 import SamplingModeType1
+from .sampling_mode_type_1_type import SamplingModeType1Type
+from .sampling_mode_type_2 import SamplingModeType2
+from .sampling_mode_type_2_type import SamplingModeType2Type
+from .sampling_mode_type_3 import SamplingModeType3
+from .sampling_mode_type_3_type import SamplingModeType3Type
 from .server_identity import ServerIdentity
 from .server_info import ServerInfo
 from .set_brightness_request import SetBrightnessRequest
 from .set_config_request import SetConfigRequest
+from .space_definition import SpaceDefinition
+from .spatial_layout import SpatialLayout
+from .strip_direction import StripDirection
 from .system_status import SystemStatus
 from .transition_request import TransitionRequest
+from .unassigned_behavior_response import UnassignedBehaviorResponse
 from .update_current_controls_request import UpdateCurrentControlsRequest
 from .update_current_controls_request_controls import (
     UpdateCurrentControlsRequestControls,
 )
 from .update_device_request import UpdateDeviceRequest
+from .update_layer_request import UpdateLayerRequest
+from .update_layer_request_adjust import UpdateLayerRequestAdjust
+from .update_layer_request_bindings_item import UpdateLayerRequestBindingsItem
+from .update_layer_request_source import UpdateLayerRequestSource
+from .update_layer_request_transform import UpdateLayerRequestTransform
+from .update_unassigned_behavior_request import UpdateUnassignedBehaviorRequest
+from .update_zone_request import UpdateZoneRequest
 from .viewport_rect import ViewportRect
+from .wall import Wall
+from .winding import Winding
+from .zone_list_response import ZoneListResponse
+from .zone_list_response_items_item import ZoneListResponseItemsItem
+from .zone_mutation_response import ZoneMutationResponse
+from .zone_mutation_response_items_item import ZoneMutationResponseItemsItem
+from .zone_response import ZoneResponse
+from .zone_response_zone import ZoneResponseZone
+from .zone_shape_type_0 import ZoneShapeType0
+from .zone_shape_type_0_shape_type import ZoneShapeType0ShapeType
+from .zone_shape_type_1 import ZoneShapeType1
+from .zone_shape_type_1_shape_type import ZoneShapeType1ShapeType
+from .zone_shape_type_2 import ZoneShapeType2
+from .zone_shape_type_2_shape_type import ZoneShapeType2ShapeType
+from .zone_shape_type_3 import ZoneShapeType3
+from .zone_shape_type_3_shape_type import ZoneShapeType3ShapeType
 from .zone_summary import ZoneSummary
 from .zone_topology_summary_type_0 import ZoneTopologySummaryType0
 from .zone_topology_summary_type_0_type import ZoneTopologySummaryType0Type
@@ -290,6 +380,18 @@ __all__ = (
     "ApplyImpactType7",
     "ApplyProfileRequest",
     "ApplyTransitionResponse",
+    "AssignDevicesRequest",
+    "AssignDevicesRequestDeviceZonesItem",
+    "BroadcastMediaLayerGroupResponse",
+    "BroadcastMediaLayerGroupResponseItemsItem",
+    "BroadcastMediaLayerRequest",
+    "BroadcastMediaLayerRequestBindingsItem",
+    "BroadcastMediaLayerRequestPlayback",
+    "BroadcastMediaLayerRequestTargetsItem",
+    "BroadcastMediaLayerResponse",
+    "BroadcastMediaLayerTarget",
+    "BroadcastMediaLayerTargetAdjust",
+    "BroadcastMediaLayerTargetTransform",
     "BTreeMap",
     "BTreeMapAdditionalProperty",
     "ControlAccess",
@@ -344,6 +446,13 @@ __all__ = (
     "ControlValueType6",
     "ControlValueType7",
     "ControlVisibility",
+    "Corner",
+    "CreateLayerRequest",
+    "CreateLayerRequestAdjust",
+    "CreateLayerRequestBindingsItem",
+    "CreateLayerRequestSource",
+    "CreateLayerRequestTransform",
+    "CreateZoneRequest",
     "DeviceAuthState",
     "DeviceAuthSummary",
     "DeviceClassHint",
@@ -369,6 +478,7 @@ __all__ = (
     "DriverTransportKindType5",
     "DriverTransportKindType6",
     "DriverTransportKindType7",
+    "EdgeBehavior",
     "EffectDetailResponse",
     "EffectDetailResponseActiveControlValuesType0",
     "EffectHealthStatus",
@@ -385,12 +495,36 @@ __all__ = (
     "IdentifyRequest",
     "InvokeControlActionRequest",
     "LatestFrameStatus",
+    "LayerOrderRequest",
+    "LayerStackResponse",
+    "LayerStackResponseItemsItem",
     "LayoutLinkSummary",
+    "LedTopologyType0",
+    "LedTopologyType0Type",
+    "LedTopologyType1",
+    "LedTopologyType1Type",
+    "LedTopologyType2",
+    "LedTopologyType2Type",
+    "LedTopologyType3",
+    "LedTopologyType3Type",
+    "LedTopologyType4",
+    "LedTopologyType4Type",
+    "LedTopologyType5",
+    "LedTopologyType5Type",
+    "LedTopologyType6",
+    "LedTopologyType6Type",
     "Meta",
+    "NormalizedPosition",
+    "NormalizedRect",
+    "Orientation",
+    "Output",
+    "OutputComponent",
     "Pagination",
     "PairingDescriptor",
     "PairingFieldDescriptor",
     "PairingFlowKind",
+    "PatchLayerControlsRequest",
+    "PatchLayerControlsRequestControls",
     "PresetTemplate",
     "PresetTemplateControls",
     "PreviewDemandStatus",
@@ -401,16 +535,54 @@ __all__ = (
     "RenderAccelerationStatus",
     "RenderLoopStatus",
     "RenderSurfaceStatus",
+    "RingDef",
+    "RoomAdjacency",
+    "RoomDimensions",
+    "SamplingModeType0",
+    "SamplingModeType0Type",
+    "SamplingModeType1",
+    "SamplingModeType1Type",
+    "SamplingModeType2",
+    "SamplingModeType2Type",
+    "SamplingModeType3",
+    "SamplingModeType3Type",
     "ServerIdentity",
     "ServerInfo",
     "SetBrightnessRequest",
     "SetConfigRequest",
+    "SpaceDefinition",
+    "SpatialLayout",
+    "StripDirection",
     "SystemStatus",
     "TransitionRequest",
+    "UnassignedBehaviorResponse",
     "UpdateCurrentControlsRequest",
     "UpdateCurrentControlsRequestControls",
     "UpdateDeviceRequest",
+    "UpdateLayerRequest",
+    "UpdateLayerRequestAdjust",
+    "UpdateLayerRequestBindingsItem",
+    "UpdateLayerRequestSource",
+    "UpdateLayerRequestTransform",
+    "UpdateUnassignedBehaviorRequest",
+    "UpdateZoneRequest",
     "ViewportRect",
+    "Wall",
+    "Winding",
+    "ZoneListResponse",
+    "ZoneListResponseItemsItem",
+    "ZoneMutationResponse",
+    "ZoneMutationResponseItemsItem",
+    "ZoneResponse",
+    "ZoneResponseZone",
+    "ZoneShapeType0",
+    "ZoneShapeType0ShapeType",
+    "ZoneShapeType1",
+    "ZoneShapeType1ShapeType",
+    "ZoneShapeType2",
+    "ZoneShapeType2ShapeType",
+    "ZoneShapeType3",
+    "ZoneShapeType3ShapeType",
     "ZoneSummary",
     "ZoneTopologySummaryType0",
     "ZoneTopologySummaryType0Type",
