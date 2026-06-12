@@ -91,6 +91,24 @@ mod defaults {
     pub fn capture_fps() -> u32 {
         30
     }
+    pub fn capture_grid_cols() -> u32 {
+        8
+    }
+    pub fn capture_grid_rows() -> u32 {
+        6
+    }
+    pub fn capture_smoothing() -> f32 {
+        0.3
+    }
+    pub fn capture_scene_cut_threshold() -> f32 {
+        100.0
+    }
+    pub fn capture_letterbox_threshold() -> f32 {
+        0.02
+    }
+    pub fn unit_scale() -> f32 {
+        1.0
+    }
 
     // Display
     pub fn face_fps_cap() -> u32 {
@@ -638,6 +656,9 @@ impl Default for AudioConfig {
 // ─── Screen Capture ──────────────────────────────────────────────────────────
 
 /// Screen capture settings for ambient lighting effects.
+///
+/// The capture source is chosen interactively through the desktop portal
+/// picker; `restore_token` persists that choice across daemon restarts.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaptureConfig {
     #[serde(default)]
@@ -649,8 +670,45 @@ pub struct CaptureConfig {
     #[serde(default = "defaults::capture_fps")]
     pub capture_fps: u32,
 
-    #[serde(default)]
-    pub monitor: u32,
+    /// Sector grid columns for ambilight zone sampling.
+    #[serde(default = "defaults::capture_grid_cols")]
+    pub grid_cols: u32,
+
+    /// Sector grid rows for ambilight zone sampling.
+    #[serde(default = "defaults::capture_grid_rows")]
+    pub grid_rows: u32,
+
+    /// Temporal smoothing factor (0.0 = frozen, 1.0 = raw).
+    #[serde(default = "defaults::capture_smoothing")]
+    pub smoothing: f32,
+
+    /// Frame-difference threshold that bypasses smoothing on scene cuts.
+    #[serde(default = "defaults::capture_scene_cut_threshold")]
+    pub scene_cut_threshold: f32,
+
+    /// Auto-detect and crop black letterbox/pillarbox bars.
+    #[serde(default = "defaults::bool_true")]
+    pub letterbox: bool,
+
+    /// Luminance threshold for letterbox detection (0.0 - 1.0).
+    #[serde(default = "defaults::capture_letterbox_threshold")]
+    pub letterbox_threshold: f32,
+
+    /// Saturation boost applied to zone colors (1.0 = neutral).
+    #[serde(default = "defaults::unit_scale")]
+    pub saturation: f32,
+
+    /// Brightness multiplier applied to zone colors (1.0 = neutral).
+    #[serde(default = "defaults::unit_scale")]
+    pub brightness: f32,
+
+    /// Gamma shaping applied to zone colors (1.0 = neutral, >1 darkens mids).
+    #[serde(default = "defaults::unit_scale")]
+    pub gamma: f32,
+
+    /// XDG portal restore token so the picked source survives restarts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restore_token: Option<String>,
 }
 
 impl Default for CaptureConfig {
@@ -659,7 +717,16 @@ impl Default for CaptureConfig {
             enabled: false,
             source: defaults::capture_source(),
             capture_fps: defaults::capture_fps(),
-            monitor: 0,
+            grid_cols: defaults::capture_grid_cols(),
+            grid_rows: defaults::capture_grid_rows(),
+            smoothing: defaults::capture_smoothing(),
+            scene_cut_threshold: defaults::capture_scene_cut_threshold(),
+            letterbox: defaults::bool_true(),
+            letterbox_threshold: defaults::capture_letterbox_threshold(),
+            saturation: defaults::unit_scale(),
+            brightness: defaults::unit_scale(),
+            gamma: defaults::unit_scale(),
+            restore_token: None,
         }
     }
 }

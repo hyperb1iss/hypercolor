@@ -27,9 +27,9 @@ use hypercolor_core::engine::{FpsTier, RenderLoop};
 use hypercolor_core::input::EvdevKeyboardInput;
 use hypercolor_core::input::audio::AudioInput;
 #[cfg(target_os = "linux")]
-use hypercolor_core::input::screen::WaylandScreenCaptureInput;
+use hypercolor_core::input::screen::CaptureConfig as ScreenCaptureConfig;
 #[cfg(target_os = "linux")]
-use hypercolor_core::input::screen::{CaptureConfig as ScreenCaptureConfig, MonitorSelect};
+use hypercolor_core::input::screen::WaylandScreenCaptureInput;
 use hypercolor_core::input::{InputManager, InteractionInput, SensorPoller};
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
@@ -592,16 +592,33 @@ pub(crate) fn build_input_manager(config: &HypercolorConfig) -> InputManager {
 
     #[cfg(target_os = "linux")]
     if config.capture.enabled {
-        let monitor = monitor_select_from_config(config.capture.monitor);
-        let capture_config = ScreenCaptureConfig {
-            monitor,
-            target_fps: config.capture.capture_fps.max(1),
-            ..ScreenCaptureConfig::default()
-        };
+        let capture_config = screen_capture_config_from(&config.capture);
         input_manager.add_source(Box::new(WaylandScreenCaptureInput::new(capture_config)));
     }
 
     input_manager
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn screen_capture_config_from(
+    capture: &hypercolor_types::config::CaptureConfig,
+) -> ScreenCaptureConfig {
+    ScreenCaptureConfig {
+        target_fps: capture.capture_fps.max(1),
+        grid_cols: capture.grid_cols.clamp(1, 64),
+        grid_rows: capture.grid_rows.clamp(1, 64),
+        smoothing_alpha: capture.smoothing.clamp(0.0, 1.0),
+        scene_cut_threshold: capture.scene_cut_threshold.max(0.0),
+        letterbox_threshold: capture.letterbox_threshold.clamp(0.0, 1.0),
+        letterbox_enabled: capture.letterbox,
+        tuning: hypercolor_core::input::screen::ColorTuning {
+            saturation: capture.saturation,
+            brightness: capture.brightness,
+            gamma: capture.gamma,
+        }
+        .clamped(),
+        restore_token: capture.restore_token.clone(),
+    }
 }
 
 fn audio_source_from_device(device: &str) -> AudioSourceType {
@@ -614,15 +631,6 @@ fn audio_source_from_device(device: &str) -> AudioSourceType {
         AudioSourceType::Microphone
     } else {
         AudioSourceType::Named(normalized.to_owned())
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn monitor_select_from_config(monitor_index: u32) -> MonitorSelect {
-    if monitor_index == 0 {
-        MonitorSelect::Primary
-    } else {
-        MonitorSelect::ByIndex(monitor_index)
     }
 }
 

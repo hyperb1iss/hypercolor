@@ -66,6 +66,11 @@ impl TemporalSmoother {
         self.alpha = alpha.clamp(0.0, 1.0);
     }
 
+    /// Update the scene-cut threshold at runtime.
+    pub fn set_scene_cut_threshold(&mut self, threshold: f32) {
+        self.scene_cut_threshold = threshold.max(0.0);
+    }
+
     /// Apply temporal smoothing to a set of zone colors in-place.
     ///
     /// Each entry in `colors` is `[R, G, B]` as `u8`. The smoother maintains

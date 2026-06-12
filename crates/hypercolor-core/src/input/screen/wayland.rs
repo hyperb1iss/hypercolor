@@ -270,7 +270,7 @@ fn run_capture_worker(
     }
 }
 
-async fn open_portal_session(config: &CaptureConfig) -> anyhow::Result<PortalCaptureSession> {
+async fn open_portal_session(_config: &CaptureConfig) -> anyhow::Result<PortalCaptureSession> {
     let proxy = Screencast::new()
         .await
         .context("failed to connect to xdg-desktop-portal screencast interface")?;
@@ -310,7 +310,6 @@ async fn open_portal_session(config: &CaptureConfig) -> anyhow::Result<PortalCap
     info!(
         pipewire_node = stream.pipe_wire_node_id(),
         stream = ?stream,
-        monitor = ?config.monitor,
         "Wayland screencast session established"
     );
 

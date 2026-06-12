@@ -4,7 +4,7 @@
 
 use hypercolor_core::input::screen::sector::{LetterboxBars, SectorGrid};
 use hypercolor_core::input::screen::smooth::TemporalSmoother;
-use hypercolor_core::input::screen::{CaptureConfig, ScreenCaptureInput};
+use hypercolor_core::input::screen::{CaptureConfig, ColorTuning, ScreenCaptureInput};
 use hypercolor_core::input::{InputData, InputSource};
 use hypercolor_types::canvas::{DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH};
 
@@ -687,4 +687,217 @@ fn temporal_smoother_zone_count_change_reinitializes() {
 fn letterbox_bars_default_has_no_bars() {
     let bars = LetterboxBars::default();
     assert!(!bars.has_bars());
+}
+
+// ── Color Tuning ──────────────────────────────────────────────────────────
+
+#[test]
+fn color_tuning_neutral_is_identity() {
+    let tuning = ColorTuning::default();
+    assert!(tuning.is_neutral());
+
+    let original = [[200u8, 100, 50], [0, 255, 128]];
+    let mut colors = original;
+    tuning.apply(&mut colors);
+    assert_eq!(colors, original, "neutral tuning must not alter colors");
+}
+
+#[test]
+fn color_tuning_zero_saturation_produces_gray() {
+    let tuning = ColorTuning {
+        saturation: 0.0,
+        ..ColorTuning::default()
+    };
+
+    let mut colors = [[255u8, 0, 0]];
+    tuning.apply(&mut colors);
+    let [r, g, b] = colors[0];
+    assert_eq!(r, g, "desaturated color should be gray");
+    assert_eq!(g, b, "desaturated color should be gray");
+}
+
+#[test]
+fn color_tuning_saturation_boost_increases_chroma() {
+    let tuning = ColorTuning {
+        saturation: 2.0,
+        ..ColorTuning::default()
+    };
+
+    // A muted red: some chroma, plenty of headroom.
+    let mut colors = [[160u8, 110, 110]];
+    tuning.apply(&mut colors);
+    let [r, g, b] = colors[0];
+    let boosted_spread = i16::from(r) - i16::from(g);
+    assert!(
+        boosted_spread > 50,
+        "saturation boost should widen channel spread, got {boosted_spread}"
+    );
+    assert_eq!(g, b, "neutral channels should stay matched");
+}
+
+#[test]
+fn color_tuning_brightness_scales_output() {
+    let brighter = ColorTuning {
+        brightness: 1.5,
+        ..ColorTuning::default()
+    };
+    let mut colors = [[100u8, 100, 100]];
+    brighter.apply(&mut colors);
+    assert!(
+        colors[0][0] > 100,
+        "brightness > 1 should lift output, got {}",
+        colors[0][0]
+    );
+
+    let dimmer = ColorTuning {
+        brightness: 0.5,
+        ..ColorTuning::default()
+    };
+    let mut colors = [[100u8, 100, 100]];
+    dimmer.apply(&mut colors);
+    assert!(
+        colors[0][0] < 100,
+        "brightness < 1 should lower output, got {}",
+        colors[0][0]
+    );
+}
+
+#[test]
+fn color_tuning_gamma_shapes_midtones() {
+    let darker_mids = ColorTuning {
+        gamma: 2.0,
+        ..ColorTuning::default()
+    };
+    let mut colors = [[128u8, 128, 128]];
+    darker_mids.apply(&mut colors);
+    assert!(
+        colors[0][0] < 128,
+        "gamma > 1 should darken midtones, got {}",
+        colors[0][0]
+    );
+
+    // Endpoints survive any gamma.
+    let mut endpoints = [[0u8, 0, 0], [255, 255, 255]];
+    darker_mids.apply(&mut endpoints);
+    assert_eq!(endpoints[0], [0, 0, 0]);
+    assert_eq!(endpoints[1], [255, 255, 255]);
+}
+
+#[test]
+fn color_tuning_clamps_out_of_range_parameters() {
+    let wild = ColorTuning {
+        saturation: 100.0,
+        brightness: -5.0,
+        gamma: 0.0,
+    }
+    .clamped();
+    assert!((wild.saturation - 4.0).abs() < f32::EPSILON);
+    assert!(wild.brightness.abs() < f32::EPSILON);
+    assert!((wild.gamma - 0.2).abs() < f32::EPSILON);
+}
+
+// ── Live Settings ─────────────────────────────────────────────────────────
+
+#[test]
+fn apply_settings_updates_tuning_live() {
+    let config = CaptureConfig {
+        grid_cols: 2,
+        grid_rows: 2,
+        smoothing_alpha: 1.0,
+        letterbox_enabled: false,
+        ..CaptureConfig::default()
+    };
+    let mut input = ScreenCaptureInput::new(config.clone());
+    input.start().expect("start should succeed");
+
+    let frame = solid_frame(40, 40, 160, 110, 110);
+    input.push_frame(&frame, 40, 40);
+    let InputData::Screen(before) = input.sample().expect("sample succeeds") else {
+        panic!("expected screen data");
+    };
+
+    input.apply_settings(CaptureConfig {
+        tuning: ColorTuning {
+            saturation: 0.0,
+            ..ColorTuning::default()
+        },
+        ..config
+    });
+    input.push_frame(&frame, 40, 40);
+    let InputData::Screen(after) = input.sample().expect("sample succeeds") else {
+        panic!("expected screen data");
+    };
+
+    let pre = before.zone_colors[0].colors[0];
+    let post = after.zone_colors[0].colors[0];
+    assert_ne!(pre[0], pre[1], "untuned color keeps chroma");
+    assert_eq!(post[0], post[1], "live desaturation should apply");
+}
+
+#[test]
+fn apply_settings_grid_change_takes_effect_next_frame() {
+    let config = CaptureConfig {
+        grid_cols: 2,
+        grid_rows: 2,
+        letterbox_enabled: false,
+        ..CaptureConfig::default()
+    };
+    let mut input = ScreenCaptureInput::new(config.clone());
+    input.start().expect("start should succeed");
+
+    let frame = solid_frame(64, 64, 50, 100, 150);
+    input.push_frame(&frame, 64, 64);
+
+    input.apply_settings(CaptureConfig {
+        grid_cols: 4,
+        grid_rows: 4,
+        ..config
+    });
+    input.push_frame(&frame, 64, 64);
+    let InputData::Screen(data) = input.sample().expect("sample succeeds") else {
+        panic!("expected screen data");
+    };
+
+    assert_eq!(data.grid_width, 4);
+    assert_eq!(data.grid_height, 4);
+    assert_eq!(data.zone_colors.len(), 16);
+}
+
+#[test]
+fn disabling_letterbox_live_clears_stale_bars() {
+    let config = CaptureConfig {
+        grid_cols: 4,
+        grid_rows: 6,
+        smoothing_alpha: 1.0,
+        letterbox_enabled: true,
+        ..CaptureConfig::default()
+    };
+    let mut input = ScreenCaptureInput::new(config.clone());
+    input.start().expect("start should succeed");
+
+    // Heavy letterbox: top and bottom thirds black.
+    let frame = letterbox_frame(60, 60, 20, [200, 50, 50]);
+    input.push_frame(&frame, 60, 60);
+    assert!(
+        input.letterbox_bars().has_bars(),
+        "letterbox should be detected while enabled"
+    );
+
+    input.apply_settings(CaptureConfig {
+        letterbox_enabled: false,
+        ..config
+    });
+    input.push_frame(&frame, 60, 60);
+    assert!(
+        !input.letterbox_bars().has_bars(),
+        "disabling letterbox must clear stale bars"
+    );
+    let InputData::Screen(data) = input.sample().expect("sample succeeds") else {
+        panic!("expected screen data");
+    };
+    assert_eq!(
+        data.zone_colors.len(),
+        24,
+        "full uncropped grid should be reported once letterbox is off"
+    );
 }

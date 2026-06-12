@@ -91,7 +91,24 @@ fn capture_defaults_match_spec() {
     assert!(!c.enabled);
     assert_eq!(c.source, "auto");
     assert_eq!(c.capture_fps, 30);
-    assert_eq!(c.monitor, 0);
+    assert_eq!(c.grid_cols, 8);
+    assert_eq!(c.grid_rows, 6);
+    assert!((c.smoothing - 0.3).abs() < f32::EPSILON);
+    assert!((c.scene_cut_threshold - 100.0).abs() < f32::EPSILON);
+    assert!(c.letterbox);
+    assert!((c.letterbox_threshold - 0.02).abs() < f32::EPSILON);
+    assert!((c.saturation - 1.0).abs() < f32::EPSILON);
+    assert!((c.brightness - 1.0).abs() < f32::EPSILON);
+    assert!((c.gamma - 1.0).abs() < f32::EPSILON);
+    assert_eq!(c.restore_token, None);
+}
+
+#[test]
+fn capture_config_tolerates_legacy_monitor_key() {
+    let parsed: CaptureConfig =
+        toml::from_str("enabled = true\nmonitor = 2\n").expect("legacy capture config parses");
+    assert!(parsed.enabled);
+    assert_eq!(parsed.grid_cols, 8);
 }
 
 #[test]

@@ -17,11 +17,13 @@
 
 pub mod sector;
 pub mod smooth;
+pub mod tune;
 #[cfg(target_os = "linux")]
 pub mod wayland;
 
 pub use sector::{LetterboxBars, SectorGrid};
 pub use smooth::TemporalSmoother;
+pub use tune::ColorTuning;
 #[cfg(target_os = "linux")]
 pub use wayland::WaylandScreenCaptureInput;
 
@@ -35,11 +37,11 @@ use crate::types::event::ZoneColors;
 // ── CaptureConfig ─────────────────────────────────────────────────────────
 
 /// Runtime configuration for the screen capture input source.
-#[derive(Debug, Clone)]
+///
+/// The capture source itself is chosen through the desktop portal picker;
+/// `restore_token` carries the persisted choice back into the portal.
+#[derive(Debug, Clone, PartialEq)]
 pub struct CaptureConfig {
-    /// Which monitor to capture. Default: `MonitorSelect::Primary`.
-    pub monitor: MonitorSelect,
-
     /// Target capture frames per second. Default: 30.
     pub target_fps: u32,
 
@@ -60,12 +62,17 @@ pub struct CaptureConfig {
 
     /// Whether letterbox detection is enabled. Default: true.
     pub letterbox_enabled: bool,
+
+    /// Color tuning applied to zone colors after smoothing.
+    pub tuning: ColorTuning,
+
+    /// XDG portal restore token from a previous session, if any.
+    pub restore_token: Option<String>,
 }
 
 impl Default for CaptureConfig {
     fn default() -> Self {
         Self {
-            monitor: MonitorSelect::Primary,
             target_fps: 30,
             grid_cols: 8,
             grid_rows: 6,
@@ -73,19 +80,10 @@ impl Default for CaptureConfig {
             scene_cut_threshold: 100.0,
             letterbox_threshold: 0.02,
             letterbox_enabled: true,
+            tuning: ColorTuning::default(),
+            restore_token: None,
         }
     }
-}
-
-/// Which display to capture.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MonitorSelect {
-    /// The compositor's primary/focused output.
-    Primary,
-    /// A specific output by name (e.g., `"DP-1"`, `"HDMI-A-1"`).
-    ByName(String),
-    /// A specific output by index (0-based).
-    ByIndex(u32),
 }
 
 // ── ScreenCaptureInput ────────────────────────────────────────────────────
@@ -191,9 +189,12 @@ impl ScreenCaptureInput {
             self.config.grid_rows,
         );
 
-        // 2. Detect letterbox bars (if enabled).
+        // 2. Detect letterbox bars (if enabled). Stale bars must clear when
+        // detection is switched off live, or cropping would continue forever.
         if self.config.letterbox_enabled {
             self.letterbox = grid.detect_letterbox(self.config.letterbox_threshold);
+        } else {
+            self.letterbox = LetterboxBars::default();
         }
 
         // 3. Get zone colors — crop letterbox if bars detected, else use full grid.
@@ -207,8 +208,9 @@ impl ScreenCaptureInput {
         let mut colors: Vec<[u8; 3]> = zone_data.iter().map(|(_, c)| *c).collect();
         self.latest_zone_ids = zone_data.into_iter().map(|(id, _)| id).collect();
 
-        // 4. Apply temporal smoothing.
+        // 4. Apply temporal smoothing, then color tuning on the smoothed output.
         self.smoother.apply(&mut colors);
+        self.config.tuning.apply(&mut colors);
 
         self.latest_colors = Some(colors);
     }
@@ -217,6 +219,21 @@ impl ScreenCaptureInput {
     #[must_use]
     pub fn config(&self) -> &CaptureConfig {
         &self.config
+    }
+
+    /// Apply new analysis settings to a running pipeline.
+    ///
+    /// Grid, smoothing, letterbox, and tuning changes take effect on the next
+    /// pushed frame. The smoother resets when the grid shape changes so stale
+    /// zone state never blends into the new layout.
+    pub fn apply_settings(&mut self, config: CaptureConfig) {
+        if config.grid_cols != self.config.grid_cols || config.grid_rows != self.config.grid_rows {
+            self.smoother.reset();
+        }
+        self.smoother.set_alpha(config.smoothing_alpha);
+        self.smoother
+            .set_scene_cut_threshold(config.scene_cut_threshold);
+        self.config = config;
     }
 
     /// Most recently detected letterbox bars.
