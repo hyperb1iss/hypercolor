@@ -349,9 +349,7 @@ function readMediaInfo(): MediaInfo {
 }
 
 function nowMs(): number {
-    return typeof performance !== 'undefined' && typeof performance.now === 'function'
-        ? performance.now()
-        : Date.now()
+    return typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now()
 }
 
 /** Build a MediaAccessor over the current engine.media state. */
@@ -362,11 +360,7 @@ export function buildMediaAccessor(): MediaAccessor {
     let baselineAtMs = 0
 
     const extrapolatedPositionMs = (state: MediaInfo): number => {
-        if (
-            state.positionMs !== lastRawPositionMs ||
-            state.track !== lastRawTrack ||
-            state.playing !== wasPlaying
-        ) {
+        if (state.positionMs !== lastRawPositionMs || state.track !== lastRawTrack || state.playing !== wasPlaying) {
             lastRawPositionMs = state.positionMs
             lastRawTrack = state.track
             wasPlaying = state.playing

@@ -145,7 +145,7 @@ describe('Timeline', () => {
     })
 
     test('then() chains after the latest segment end', () => {
-        const intro = new Timeline().add('a', 0, 1).then('b', 1, 0.25)
+        const intro = new Timeline().add('a', 0, 1).after('b', 1, 0.25)
         expect(intro.progress('b', 1.24)).toBe(0)
         expect(intro.progress('b', 2.25)).toBe(1)
         expect(intro.duration()).toBeCloseTo(2.25)

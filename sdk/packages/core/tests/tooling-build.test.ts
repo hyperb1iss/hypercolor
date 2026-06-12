@@ -201,9 +201,7 @@ export default face('${slug}', {}, { ${options} }, (ctx) => {
                 sdkAliasPath: SDK_ALIAS,
             })
             expect(lightingOnly.metadata.dataSources).toEqual(['lighting'])
-            expect(readFileSync(lightingOnly.outputPath, 'utf8')).toContain(
-                '<meta data-sources="lighting" />',
-            )
+            expect(readFileSync(lightingOnly.outputPath, 'utf8')).toContain('<meta data-sources="lighting" />')
 
             const [bare] = await buildArtifacts({
                 entryPaths: [writeFace('bare-probe', "description: 'control'")],

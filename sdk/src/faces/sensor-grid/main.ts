@@ -8,14 +8,14 @@ import {
     lerpColor,
     num,
     palette,
-    sensor,
     Smoothed,
+    sensor,
     toggle,
     ValueHistory,
     withAlpha,
 } from '@hypercolor/sdk'
 
-import { drawNebulaField, entrance, makeDrifters, drawRisingMotes } from '../shared/atmosphere'
+import { drawNebulaField, drawRisingMotes, entrance, makeDrifters } from '../shared/atmosphere'
 import {
     clamp01,
     createFaceRoot,
@@ -290,11 +290,7 @@ function buildSensorGrid(ctx: FaceContext, wide: boolean) {
     const sensorKeys = ['sensor1', 'sensor2', 'sensor3', 'sensor4'] as const
     let bootAt = Number.NaN
 
-    return (
-        time: number,
-        controls: Record<string, unknown>,
-        sensors: import('@hypercolor/sdk').SensorAccessor,
-    ) => {
+    return (time: number, controls: Record<string, unknown>, sensors: import('@hypercolor/sdk').SensorAccessor) => {
         if (Number.isNaN(bootAt)) bootAt = time
         const boot = time - bootAt
         const dt = 1 / 30
@@ -307,9 +303,12 @@ function buildSensorGrid(ctx: FaceContext, wide: boolean) {
         root.style.setProperty('--ui-ink', ink.ui)
         root.style.setProperty('--hero-font', `"${controls.heroFont as string}", sans-serif`)
         root.style.setProperty('--ui-font', `"${controls.uiFont as string}", sans-serif`)
-        const scaleBasis = wide ? ctx.height / 480 * 1.7 : Math.min(safe.width, safe.height) / 339
+        const scaleBasis = wide ? (ctx.height / 480) * 1.7 : Math.min(safe.width, safe.height) / 339
         root.style.setProperty('--value-size', `${(controls.valueSize as number) * scaleBasis}`)
-        root.style.setProperty('--label-size', `${Math.max(9, (controls.labelSize as number) * Math.max(scaleBasis, 0.85))}`)
+        root.style.setProperty(
+            '--label-size',
+            `${Math.max(9, (controls.labelSize as number) * Math.max(scaleBasis, 0.85))}`,
+        )
 
         const c = ctx.ctx
         const W = ctx.width
@@ -334,7 +333,7 @@ function buildSensorGrid(ctx: FaceContext, wide: boolean) {
             const reading = sensors.read(label)
             const normalized = clamp01(sensors.normalized(label))
             const heat = cell.heat.update(normalized, dt)
-            const ramp = auto ? autoRamp(label) : [withAlpha(accent, 0.55), accent] as [string, string]
+            const ramp = auto ? autoRamp(label) : ([withAlpha(accent, 0.55), accent] as [string, string])
             const heatColor = auto ? lerpColor(ramp[0], ramp[1], heat) : accent
 
             if (time - cell.lastPush >= HISTORY_PUSH_INTERVAL) {

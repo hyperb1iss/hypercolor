@@ -7,8 +7,8 @@ import {
     lerpColor,
     num,
     palette,
-    sensor,
     Smoothed,
+    sensor,
     toggle,
     ValueHistory,
     withAlpha,
@@ -248,11 +248,7 @@ function buildPulseTemp(ctx: FaceContext, wide: boolean) {
 
     const scaleBasis = Math.min(ctx.width, ctx.height) / (wide ? 230 : 480)
 
-    return (
-        time: number,
-        controls: Record<string, unknown>,
-        sensors: import('@hypercolor/sdk').SensorAccessor,
-    ) => {
+    return (time: number, controls: Record<string, unknown>, sensors: import('@hypercolor/sdk').SensorAccessor) => {
         const dt = Number.isNaN(lastTime) ? 1 / 30 : Math.max(time - lastTime, 0)
         lastTime = time
 
@@ -445,9 +441,7 @@ function drawHaloScale(
         const lit = fraction <= t
         const inner = radius - (lit ? 7 : 4)
         const outer = radius + (lit ? 3 : 0)
-        c.strokeStyle = lit
-            ? withAlpha(rampColor(ramp, fraction), 0.55 + 0.4 * glow)
-            : withAlpha('#8a8fa8', 0.14)
+        c.strokeStyle = lit ? withAlpha(rampColor(ramp, fraction), 0.55 + 0.4 * glow) : withAlpha('#8a8fa8', 0.14)
         c.lineWidth = lit ? 2 : 1
         c.beginPath()
         c.moveTo(cx + Math.cos(angle) * inner, cy + Math.sin(angle) * inner)
@@ -495,10 +489,7 @@ function drawVectorScale(
         const angle = SCALE_START + fraction * SCALE_SWEEP
         const major = index % 3 === 0
         const inner = radius - (major ? 10 : 5)
-        c.strokeStyle = withAlpha(
-            fraction <= t ? rampColor(ramp, fraction) : '#8a8fa8',
-            fraction <= t ? 0.7 : 0.18,
-        )
+        c.strokeStyle = withAlpha(fraction <= t ? rampColor(ramp, fraction) : '#8a8fa8', fraction <= t ? 0.7 : 0.18)
         c.lineWidth = major ? 2 : 1
         c.beginPath()
         c.moveTo(cx + Math.cos(angle) * inner, cy + Math.sin(angle) * inner)
@@ -548,9 +539,7 @@ function drawStripScale(
         const x = left + fraction * span
         const major = index % 6 === 0
         const lit = fraction <= t
-        c.strokeStyle = lit
-            ? withAlpha(rampColor(ramp, fraction), 0.6 + 0.35 * glow)
-            : withAlpha('#8a8fa8', 0.16)
+        c.strokeStyle = lit ? withAlpha(rampColor(ramp, fraction), 0.6 + 0.35 * glow) : withAlpha('#8a8fa8', 0.16)
         c.lineWidth = lit ? 2 : 1
         c.beginPath()
         c.moveTo(x, y - (major ? 9 : 5))

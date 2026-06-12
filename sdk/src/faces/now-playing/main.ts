@@ -1,16 +1,5 @@
 import type { FaceContext, FaceDataSources, MediaInfo } from '@hypercolor/sdk'
-import {
-    arcGauge,
-    clamp,
-    color,
-    face,
-    font,
-    lerpColor,
-    palette,
-    Smoothed,
-    toggle,
-    withAlpha,
-} from '@hypercolor/sdk'
+import { arcGauge, clamp, color, face, font, lerpColor, palette, Smoothed, toggle, withAlpha } from '@hypercolor/sdk'
 import { drawNebulaField } from '../shared/atmosphere'
 import {
     clamp01,

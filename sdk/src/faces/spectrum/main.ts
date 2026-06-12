@@ -113,12 +113,7 @@ function buildSpectrum(ctx: FaceContext, wide: boolean) {
     let lastTime = Number.NaN
     let loudAt = 0
 
-    const advanceBands = (
-        mel: Float32Array,
-        count: number,
-        time: number,
-        dt: number,
-    ): BandState[] => {
+    const advanceBands = (mel: Float32Array, count: number, time: number, dt: number): BandState[] => {
         if (bands.length !== count) bands = createBands(count)
         const decay = 1 - 0.5 ** (dt / BAR_DECAY_HALFLIFE)
         for (let index = 0; index < count; index += 1) {
@@ -147,7 +142,7 @@ function buildSpectrum(ctx: FaceContext, wide: boolean) {
     ): string => {
         if (controls.colorMode === 'chromagram') {
             const hue = chromaHue(chromagram)
-            const spread = ((index / Math.max(count - 1, 1)) - 0.5) * 40
+            const spread = (index / Math.max(count - 1, 1) - 0.5) * 40
             return hsl(hue + spread, 0.85, 0.5 + value * 0.22)
         }
         return lerpColor(controls.accent as string, controls.secondaryAccent as string, value)
