@@ -59,6 +59,25 @@ class HypercolorConflictError(HypercolorError):
     """Raised when a request conflicts with current daemon state."""
 
 
+class HypercolorPreconditionError(HypercolorError):
+    """Raised when an ``If-Match`` precondition fails (HTTP 412).
+
+    ``current_revision`` carries the authoritative revision from the
+    daemon's ``ETag`` reply when available — refetch, rebase, retry.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        error: ApiErrorDetails | None = None,
+        status_code: int | None = None,
+        current_revision: int | None = None,
+    ) -> None:
+        super().__init__(message, error=error, status_code=status_code)
+        self.current_revision = current_revision
+
+
 class HypercolorUnavailableError(HypercolorError):
     """Raised when the daemon is starting up or otherwise unavailable."""
 
@@ -73,3 +92,4 @@ NotFoundError = HypercolorNotFoundError
 ValidationError = HypercolorValidationError
 RateLimitError = HypercolorRateLimitError
 ConflictError = HypercolorConflictError
+PreconditionError = HypercolorPreconditionError

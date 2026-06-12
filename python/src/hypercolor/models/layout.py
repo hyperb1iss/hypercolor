@@ -1,36 +1,17 @@
-"""Layout models."""
+"""Layout models.
+
+Layout detail endpoints (``GET /layouts/{id}``, ``GET /layouts/active``)
+return the raw spatial layout; see :mod:`hypercolor.models.spatial`.
+"""
 
 from __future__ import annotations
 
 import msgspec
 
+from .spatial import LayoutOutput, NormalizedPosition, SpatialLayout
 
-class Point(msgspec.Struct, kw_only=True):
-    """Normalized 2D point."""
-
-    x: float
-    y: float
-
-
-class Size(msgspec.Struct, kw_only=True):
-    """Normalized 2D size."""
-
-    w: float
-    h: float
-
-
-class LayoutZone(msgspec.Struct, kw_only=True):
-    """A mapped device zone inside a spatial layout."""
-
-    device_id: str
-    zone_id: str
-    position: Point
-    size: Size
-    rotation: float
-    topology: str
-    led_count: int
-    mirror: bool = False
-    reverse: bool = False
+Layout = SpatialLayout
+"""Full spatial layout — alias for :class:`SpatialLayout`."""
 
 
 class LayoutSummary(msgspec.Struct, kw_only=True):
@@ -44,7 +25,4 @@ class LayoutSummary(msgspec.Struct, kw_only=True):
     is_active: bool | None = None
 
 
-class Layout(LayoutSummary):
-    """Full spatial layout with all zone positions."""
-
-    zones: list[LayoutZone] = msgspec.field(default_factory=list)
+__all__ = ["Layout", "LayoutOutput", "LayoutSummary", "NormalizedPosition", "SpatialLayout"]

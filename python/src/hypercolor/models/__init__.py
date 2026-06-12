@@ -24,7 +24,7 @@ from .common import (
     TransitionSpec,
 )
 from .control import ControlActionResult, ControlApplyResult, ControlSurface
-from .device import Device, DeviceUpdate, Zone
+from .device import Device, DeviceUpdate, DeviceZone
 from .display import DisplayFaceAssignment, DisplaySummary
 from .driver import (
     Driver,
@@ -43,15 +43,26 @@ from .effect import (
     EffectCoverImage,
     EffectSummary,
 )
-from .layout import Layout, LayoutSummary, LayoutZone, Point, Size
+from .layout import Layout, LayoutSummary
 from .library import Favorite, Playlist, PlaylistItem, Preset, PresetApplyResult
 from .profile import ApplyProfileResult, Profile, ProfileSummary
-from .scene import ActivateSceneResult, Scene
+from .scene import ActivateSceneResult, ActiveScene, DeactivateSceneResult, Scene
+from .spatial import LayoutOutput, NormalizedPosition, SpatialLayout
 from .system import HealthStatus, RenderLoopStatus, ServerIdentity, SystemState
+from .zone import (
+    DisplayTarget,
+    SceneLayer,
+    UnassignedBehaviorResult,
+    Zone,
+    ZoneDeleteResult,
+    ZoneListResult,
+    ZoneResult,
+)
 
 __all__ = [
     "ActivateSceneResult",
     "ActiveEffect",
+    "ActiveScene",
     "ApiErrorBody",
     "ApplyEffectResult",
     "ApplyProfileResult",
@@ -67,11 +78,14 @@ __all__ = [
     "ControlDefinition",
     "ControlSurface",
     "ControlUpdateResult",
+    "DeactivateSceneResult",
     "Device",
     "DeviceUpdate",
+    "DeviceZone",
     "DiscoverResult",
     "DisplayFaceAssignment",
     "DisplaySummary",
+    "DisplayTarget",
     "Driver",
     "DriverCapabilitySet",
     "DriverModuleDescriptor",
@@ -87,26 +101,31 @@ __all__ = [
     "JsonObject",
     "JsonValue",
     "Layout",
+    "LayoutOutput",
     "LayoutSummary",
-    "LayoutZone",
     "Meta",
     "MutationResult",
     "NamedRef",
+    "NormalizedPosition",
     "Pagination",
     "Playlist",
     "PlaylistItem",
-    "Point",
     "Preset",
     "PresetApplyResult",
     "Profile",
     "ProfileSummary",
     "RenderLoopStatus",
     "Scene",
+    "SceneLayer",
     "ServerIdentity",
-    "Size",
+    "SpatialLayout",
     "SpectrumSnapshot",
     "SystemState",
     "TransitionSpec",
     "TransportKind",
+    "UnassignedBehaviorResult",
     "Zone",
+    "ZoneDeleteResult",
+    "ZoneListResult",
+    "ZoneResult",
 ]
