@@ -49,6 +49,7 @@ export interface Readout {
     place(rect: Rect): void
     update(value: string): void
     setLabel(label: string): void
+    setAccent(color: string): void
 }
 
 /** Label + value pair with tabular numerals. */
@@ -78,6 +79,9 @@ export function createReadout(parent: HTMLElement, options: ReadoutOptions): Rea
     return {
         element: root,
         place: (rect) => placeInto(root, rect),
+        setAccent(color) {
+            label.style.color = withAlpha(color, 0.7)
+        },
         setLabel(text) {
             label.textContent = text
         },
@@ -104,6 +108,7 @@ export interface ProgressBar {
     update(normalized: number, dt: number): void
     /** Current eased fill 0–1. */
     value(): number
+    setAccent(color: string): void
 }
 
 /** Animated horizontal fill bar. */
@@ -131,6 +136,10 @@ export function createProgressBar(parent: HTMLElement, options: ProgressBarOptio
         element: track,
         place(rect) {
             placeInto(track, { ...rect, height, y: rect.y + (rect.height - height) / 2 })
+        },
+        setAccent(color) {
+            fill.style.background = color
+            fill.style.boxShadow = `0 0 ${height * 1.5}px ${withAlpha(color, 0.55)}`
         },
         update(normalized, dt) {
             const next = eased.update(Math.max(0, Math.min(1, normalized)), dt)
@@ -173,6 +182,8 @@ export interface MetricCard {
     place(rect: Rect): void
     update(update: MetricCardUpdate): void
     setLabel(label: string): void
+    /** Recolor the border, label, bar, and sparkline. */
+    setAccent(color: string): void
     /** Current eased bar fill 0–1. */
     barValue(): number
 }
@@ -220,6 +231,12 @@ export function createMetricCard(parent: HTMLElement, options: MetricCardOptions
             placeInto(root, rect)
             chart?.resize(rect.width, rect.height)
         },
+        setAccent(color) {
+            root.style.border = `1px solid ${withAlpha(color, 0.18)}`
+            readout.setAccent(color)
+            bar?.setAccent(color)
+            chart?.setColor(withAlpha(color, 0.5))
+        },
         setLabel: (label) => readout.setLabel(label),
         update({ text, normalized, dt }) {
             readout.update(text)
@@ -253,6 +270,7 @@ export interface ChartPanel {
     /** Render the current history; `drawIn` overrides the option. */
     draw(drawIn?: number): void
     history: ValueHistory
+    setColor(color: string): void
 }
 
 /** Canvas-backed rolling chart built on the SDK sparkline. */
@@ -261,6 +279,7 @@ export function createChartPanel(parent: HTMLElement, options: ChartPanelOptions
     canvas.width = 1
     canvas.height = 1
     const history = new ValueHistory(options.capacity ?? 60)
+    let lineColor = options.color
 
     const panel: ChartPanel = {
         draw(drawIn) {
@@ -269,7 +288,7 @@ export function createChartPanel(parent: HTMLElement, options: ChartPanelOptions
             ctx.clearRect(0, 0, canvas.width, canvas.height)
             sparkline(ctx, {
                 bands: options.bands,
-                color: options.color,
+                color: lineColor,
                 drawIn: drawIn ?? options.drawIn ?? 1,
                 height: canvas.height,
                 range: options.range,
@@ -286,6 +305,9 @@ export function createChartPanel(parent: HTMLElement, options: ChartPanelOptions
             panel.resize(rect.width, rect.height)
         },
         push: (value) => history.push(value),
+        setColor(color) {
+            lineColor = color
+        },
         resize(width, height) {
             const w = Math.max(Math.round(width), 1)
             const h = Math.max(Math.round(height), 1)

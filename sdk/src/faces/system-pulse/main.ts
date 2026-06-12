@@ -235,6 +235,7 @@ export default face(
 
 interface NetPanel {
     update(rxBps: number, txBps: number, iface: string): void
+    setAccent(color: string): void
 }
 
 function createNetPanel(parent: HTMLElement, accent: string, width: number, height: number): NetPanel {
@@ -267,8 +268,12 @@ function createNetPanel(parent: HTMLElement, accent: string, width: number, heig
     const rxHistory = new ValueHistory(NET_HISTORY)
     const txHistory = new ValueHistory(NET_HISTORY)
     let scale = NET_SCALE_FLOOR_BPS
+    let lineColor = accent
 
     return {
+        setAccent(color) {
+            lineColor = color
+        },
         update(rxBps, txBps, iface) {
             rxHistory.push(rxBps)
             txHistory.push(txBps)
@@ -282,7 +287,7 @@ function createNetPanel(parent: HTMLElement, accent: string, width: number, heig
             if (!chartCtx) return
             chartCtx.clearRect(0, 0, canvas.width, canvas.height)
             sparkline(chartCtx, {
-                color: accent,
+                color: lineColor,
                 fillOpacity: 0.18,
                 height: canvas.height - 6,
                 range: [0, scale],
@@ -292,7 +297,7 @@ function createNetPanel(parent: HTMLElement, accent: string, width: number, heig
                 y: 4,
             })
             sparkline(chartCtx, {
-                color: withAlpha(accent, 0.45),
+                color: withAlpha(lineColor, 0.45),
                 fill: false,
                 height: canvas.height - 6,
                 range: [0, scale],
@@ -374,6 +379,7 @@ function buildSystemPulse(ctx: FaceContext, wide: boolean) {
 
     let lastTime = Number.NaN
     let lastRigKey = ''
+    let lastAccent = ''
     const drifters = makeDrifters(wide ? 28 : 18)
 
     return (
@@ -396,6 +402,11 @@ function buildSystemPulse(ctx: FaceContext, wide: boolean) {
         root.style.setProperty('--dim-ink', ink.dim)
         root.style.setProperty('--hero-font', `"${controls.heroFont as string}", sans-serif`)
         root.style.setProperty('--ui-font', `"${controls.uiFont as string}", sans-serif`)
+        if (accentColor !== lastAccent) {
+            lastAccent = accentColor
+            for (const { card } of cards) card.setAccent(accentColor)
+            netPanel.setAccent(accentColor)
+        }
 
         const now = new Date()
         let hours = now.getHours()
