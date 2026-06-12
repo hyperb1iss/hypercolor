@@ -1,358 +1,140 @@
-import type { FaceContext, SensorAccessor, SparklineBand } from '@hypercolor/sdk'
+import type { FaceContext } from '@hypercolor/sdk'
 import {
-    arcGauge,
-    clamp,
     color,
-    colorByValue,
     combo,
-    easeOutCubic,
     face,
     font,
     lerpColor,
     num,
     palette,
-    Smoothed,
     sensor,
-    sparkline,
-    Transition,
+    Smoothed,
     toggle,
     ValueHistory,
     withAlpha,
 } from '@hypercolor/sdk'
-
 import {
     clamp01,
+    createFaceRoot,
     DISPLAY_FONT_FAMILIES,
+    ensureFaceStyles,
     humanizeSensorLabel,
-    mixFaceAccent,
-    resolveFaceInk,
     UI_FONT_FAMILIES,
 } from '../shared/dom'
 
-const FACE_SCHEMES = {
-    load: ['#50fa7b', '#00d4ff', '#ff5ca8'] as const,
-    memory: ['#77ecff', '#8f70ff'] as const,
-    temperature: ['#7ce9ff', '#ffb35f', '#ff6b7a'] as const,
+const STYLE_ID = 'hc-face-pulse-temp'
+const HISTORY_LENGTH = 120
+const HISTORY_PUSH_INTERVAL = 0.5
+const EMBER_COUNT_ROUND = 26
+const EMBER_COUNT_WIDE = 44
+const HOT_THRESHOLD = 0.75
+
+/** Cool → warm → hot color ramps per scheme. */
+const RAMPS: Record<string, [string, string, string]> = {
+    Custom: ['#3a3f66', palette.neonCyan, palette.coral],
+    Load: ['#2b5d8f', palette.neonCyan, palette.electricYellow],
+    Memory: ['#3f3a8f', palette.electricPurple, palette.coral],
+    Temperature: ['#2e6b8f', '#a06bff', '#ff5e7a'],
 }
 
-function fontStack(family: string): string {
-    return `"${family}", sans-serif`
+const STYLES = `
+.hc-pulse-temp {
+    --hero-font: 'Rajdhani', sans-serif;
+    --ui-font: 'Inter', sans-serif;
+    --heat: ${palette.neonCyan};
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: ${palette.fg.primary};
 }
 
-function canvasFont(size: number, weight: number, family: string): string {
-    return `${weight} ${size}px ${fontStack(family)}`
+.hc-pulse-temp__stack {
+    position: relative;
+    z-index: 2;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    text-align: center;
 }
 
-function measureText(ctx: CanvasRenderingContext2D, text: string, font: string): number {
-    if (text.length === 0) return 0
-    ctx.font = font
-    return ctx.measureText(text).width
+.hc-pulse-temp__value {
+    display: inline-flex;
+    align-items: flex-start;
+    justify-content: center;
+    font-family: var(--hero-font);
+    font-weight: 300;
+    line-height: 0.84;
+    letter-spacing: -0.01em;
+    color: ${palette.fg.primary};
+    font-variant-numeric: tabular-nums lining-nums;
+    font-feature-settings: 'tnum' 1, 'lnum' 1;
+    text-shadow:
+        0 0 32px color-mix(in srgb, var(--heat) 42%, transparent),
+        0 0 90px color-mix(in srgb, var(--heat) 22%, transparent);
 }
 
-function fillGlowingText(
-    ctx: CanvasRenderingContext2D,
-    text: string,
-    x: number,
-    y: number,
-    fontSpec: string,
-    fill: string,
-    shadowColor: string,
-    shadowBlur: number,
-): void {
-    if (text.length === 0) return
-    ctx.save()
-    ctx.font = fontSpec
-    ctx.fillStyle = fill
-    ctx.textAlign = 'center'
-    ctx.textBaseline = 'middle'
-    ctx.shadowColor = shadowColor
-    ctx.shadowBlur = shadowBlur
-    ctx.fillText(text, x, y)
-    ctx.restore()
+.hc-pulse-temp__unit {
+    font-weight: 400;
+    margin-top: 0.14em;
+    margin-left: 0.06em;
+    color: color-mix(in srgb, ${palette.fg.primary} 62%, var(--heat));
 }
 
-function drawReadout(
-    ctx: CanvasRenderingContext2D,
-    cx: number,
-    cy: number,
-    maxWidth: number,
-    numberText: string,
-    unitText: string,
-    heroFont: string,
-    uiFont: string,
-    heroSize: number,
-    unitSize: number,
-    ink: string,
-    uiInk: string,
-    glowColor: string,
-    accent: string,
-    glow: number,
-): void {
-    const numberVisible = numberText.length > 0
-    const unitVisible = unitText.length > 0
-    if (!numberVisible && !unitVisible) return
+.hc-pulse-temp__label {
+    font-family: var(--ui-font);
+    font-weight: 600;
+    letter-spacing: 0.34em;
+    text-transform: uppercase;
+    color: ${palette.fg.tertiary};
+    margin-top: 10px;
+}
 
-    let fittedHeroSize = heroSize
-    let fittedUnitSize = unitSize
-    let gap = numberVisible && unitVisible ? 8 : 0
-    let numberFont = canvasFont(fittedHeroSize, 700, heroFont)
-    let unitFont = canvasFont(fittedUnitSize, 600, uiFont)
-    let numberWidth = measureText(ctx, numberText, numberFont)
-    let unitWidth = measureText(ctx, unitText, unitFont)
-    let totalWidth = numberWidth + unitWidth + gap
+/* ── Wide strip: title-card left, atmosphere flows right ── */
 
-    if (totalWidth > maxWidth) {
-        const scale = maxWidth / totalWidth
-        fittedHeroSize = Math.max(42, fittedHeroSize * scale)
-        fittedUnitSize = Math.max(16, fittedUnitSize * scale)
-        gap *= scale
-        numberFont = canvasFont(fittedHeroSize, 700, heroFont)
-        unitFont = canvasFont(fittedUnitSize, 600, uiFont)
-        numberWidth = measureText(ctx, numberText, numberFont)
-        unitWidth = measureText(ctx, unitText, unitFont)
-        totalWidth = numberWidth + unitWidth + gap
+.hc-pulse-temp--wide .hc-pulse-temp__stack {
+    position: absolute;
+    left: 4.5%;
+    top: 50%;
+    transform: translateY(-50%);
+    align-items: flex-start;
+    text-align: left;
+}
+
+.hc-pulse-temp--wide .hc-pulse-temp__label {
+    margin-top: 4px;
+}
+
+.hc-pulse-temp__hidden { display: none !important; }
+`
+
+interface Ember {
+    seed: number
+    lane: number
+}
+
+function makeEmbers(count: number): Ember[] {
+    return Array.from({ length: count }, (_, index) => ({
+        lane: (index * 0.618_03) % 1,
+        seed: index * 137.508,
+    }))
+}
+
+function rampColor(ramp: [string, string, string], t: number): string {
+    if (t <= 0.5) return lerpColor(ramp[0], ramp[1], clamp01(t * 2))
+    return lerpColor(ramp[1], ramp[2], clamp01((t - 0.5) * 2))
+}
+
+function resolveRamp(controls: Record<string, unknown>): [string, string, string] {
+    const scheme = (controls.colorScheme as string) ?? 'Temperature'
+    if (scheme === 'Custom') {
+        const custom = controls.customColor as string
+        return ['#3a3f66', custom, lerpColor(custom, palette.coral, 0.55)]
     }
-
-    let x = cx - totalWidth * 0.5
-    if (numberVisible) {
-        const numberX = x + numberWidth * 0.5
-        fillGlowingText(ctx, numberText, numberX, cy, numberFont, ink, glowColor, 18 + glow * 12)
-        fillGlowingText(ctx, numberText, numberX, cy, numberFont, ink, accent, (18 + glow * 12) * 0.42)
-        x += numberWidth + gap
-    }
-    if (unitVisible) {
-        fillGlowingText(
-            ctx,
-            unitText,
-            x + unitWidth * 0.5,
-            cy + fittedHeroSize * 0.08,
-            unitFont,
-            uiInk,
-            glowColor,
-            6 + glow * 5,
-        )
-    }
-}
-
-function drawDetailLine(
-    ctx: CanvasRenderingContext2D,
-    cx: number,
-    y: number,
-    trendText: string,
-    peakText: string,
-    fontSpec: string,
-    uiInk: string,
-    dimInk: string,
-    glowColor: string,
-    glow: number,
-): void {
-    const trendVisible = trendText.length > 0
-    const peakVisible = peakText.length > 0
-    if (!trendVisible && !peakVisible) return
-
-    const gap = trendVisible && peakVisible ? 18 : 0
-    const trendWidth = measureText(ctx, trendText, fontSpec)
-    const peakWidth = measureText(ctx, peakText, fontSpec)
-    const totalWidth = trendWidth + peakWidth + gap
-    let x = cx - totalWidth * 0.5
-
-    if (trendVisible) {
-        fillGlowingText(ctx, trendText, x + trendWidth * 0.5, y, fontSpec, uiInk, glowColor, 4 + glow * 4)
-        x += trendWidth + gap
-    }
-    if (peakVisible) {
-        fillGlowingText(ctx, peakText, x + peakWidth * 0.5, y, fontSpec, dimInk, glowColor, 4 + glow * 4)
-    }
-}
-
-// ── Shared per-frame state ──────────────────────────────────────────────
-
-const PULSE_THRESHOLD = 0.78
-const PULSE_SECONDS = 0.9
-const DRAW_IN_SECONDS = 1.2
-
-interface PulseFrame {
-    accent: string
-    secondary: string
-    ink: ReturnType<typeof resolveFaceInk>
-    glow: number
-    glowColor: string
-    arcValue: number
-    smooth: number
-    numberText: string
-    unitText: string
-    labelText: string
-    trendText: string
-    peakText: string
-    history: number[]
-    historyCapacity: number
-    bands: SparklineBand[]
-    pulse: number
-    drawIn: number
-}
-
-function schemeBands(accent: string, ink: ReturnType<typeof resolveFaceInk>): SparklineBand[] {
-    return [
-        { color: withAlpha(lerpColor(accent, ink.ui, 0.35), 0.85), min: 0 },
-        { color: withAlpha(palette.electricYellow, 0.9), min: 0.65 },
-        { color: withAlpha(palette.errorRed, 0.95), min: 0.85 },
-    ]
-}
-
-function createPulseEngine() {
-    const smooth = new Smoothed(0, 0.35)
-    const arc = new Transition(0.8)
-    let arcPrimed = false
-    let lastTime = Number.NaN
-    let lastHistoryPush = 0
-    let peakReading = Number.NEGATIVE_INFINITY
-    let peakDisplay = '--'
-    let activeSensor = ''
-    let history = new ValueHistory(48)
-    let pulseAt = Number.NEGATIVE_INFINITY
-    let wasAboveThreshold = false
-    let appearedAt = Number.NaN
-
-    return (time: number, controls: Record<string, unknown>, sensors: SensorAccessor): PulseFrame => {
-        const dt = Number.isNaN(lastTime) ? 1 / 30 : Math.max(time - lastTime, 0)
-        lastTime = time
-        if (Number.isNaN(appearedAt)) appearedAt = time
-
-        const sensorLabel = controls.targetSensor as string
-        const reading = sensors.read(sensorLabel)
-        const normalized = sensors.normalized(sensorLabel)
-
-        if (activeSensor !== sensorLabel) {
-            activeSensor = sensorLabel
-            peakReading = Number.NEGATIVE_INFINITY
-            peakDisplay = '--'
-            history = new ValueHistory(48)
-            wasAboveThreshold = normalized >= PULSE_THRESHOLD
-        }
-
-        const value = smooth.update(normalized, dt)
-        if (!arcPrimed) {
-            arcPrimed = true
-            arc.update(0, time)
-        }
-        const arcValue = arc.update(Math.round(value * 200) / 200, time)
-
-        // Pulse once per upward threshold crossing.
-        const above = value >= PULSE_THRESHOLD
-        if (above && !wasAboveThreshold) pulseAt = time
-        wasAboveThreshold = above
-        const pulse = 1 - clamp((time - pulseAt) / PULSE_SECONDS, 0, 1)
-
-        const scheme = controls.colorScheme as string
-        let baseAccent =
-            scheme === 'Temperature'
-                ? colorByValue(value, FACE_SCHEMES.temperature)
-                : scheme === 'Load'
-                  ? colorByValue(value, FACE_SCHEMES.load)
-                  : scheme === 'Memory'
-                    ? colorByValue(value, FACE_SCHEMES.memory)
-                    : (controls.customColor as string)
-
-        const formatted = sensors.formatted(sensorLabel)
-        const match = formatted.match(/^([\d.]+)\s*(.*)$/)
-        const numberText = match?.[1] ?? formatted
-        const unitText = match?.[2] || (reading?.unit ?? '')
-        const labelText = humanizeSensorLabel(sensorLabel)
-
-        if (time - lastHistoryPush > 0.12) {
-            history.push(normalized)
-            lastHistoryPush = time
-        }
-        if (reading?.value != null && reading.value >= peakReading) {
-            peakReading = reading.value
-            peakDisplay = formatted
-        }
-        const values = history.values()
-        const sampleBack = values[Math.max(0, values.length - 8)] ?? value
-        const trendDelta = values.length > 8 ? value - sampleBack : 0
-        const trendText = trendDelta > 0.018 ? 'RISING' : trendDelta < -0.018 ? 'COOLING' : 'STEADY'
-
-        // Trend nudges the accent: rising leans hot, cooling leans cool.
-        if (trendText === 'RISING') baseAccent = lerpColor(baseAccent, palette.coral, 0.16)
-        if (trendText === 'COOLING') baseAccent = lerpColor(baseAccent, palette.neonCyan, 0.14)
-
-        const secondary =
-            scheme === 'Temperature'
-                ? mixFaceAccent(baseAccent, palette.coral, 0.34)
-                : scheme === 'Memory'
-                  ? mixFaceAccent(baseAccent, palette.electricPurple, 0.48)
-                  : mixFaceAccent(baseAccent)
-        const ink = resolveFaceInk(baseAccent)
-        const glow = clamp01((controls.glowIntensity as number) / 100)
-
-        return {
-            accent: baseAccent,
-            arcValue,
-            bands: schemeBands(baseAccent, ink),
-            drawIn: easeOutCubic(clamp((time - appearedAt) / DRAW_IN_SECONDS, 0, 1)),
-            glow,
-            glowColor: withAlpha(baseAccent, 0.22 + glow * 0.22),
-            history: values,
-            historyCapacity: 48,
-            ink,
-            labelText,
-            numberText,
-            peakText: `PEAK ${peakDisplay}`,
-            pulse,
-            secondary,
-            smooth: value,
-            trendText,
-            unitText,
-        }
-    }
-}
-
-function drawThresholdSparkline(
-    ctx: CanvasRenderingContext2D,
-    frame: PulseFrame,
-    x: number,
-    y: number,
-    width: number,
-    height: number,
-): void {
-    if (frame.history.length < 2) return
-    // Right-align the rolling window so fresh samples enter from the right.
-    const pad = frame.historyCapacity - frame.history.length
-    const slotWidth = width / Math.max(frame.historyCapacity - 1, 1)
-    sparkline(ctx, {
-        bands: frame.bands,
-        color: withAlpha(frame.ink.ui, 0.8),
-        drawIn: frame.drawIn,
-        fill: true,
-        fillOpacity: 0.1,
-        height,
-        lineWidth: 2,
-        range: [0, 1],
-        values: frame.history,
-        width: width - pad * slotWidth,
-        x: x + pad * slotWidth,
-        y,
-    })
-}
-
-function drawThresholdPulse(
-    ctx: CanvasRenderingContext2D,
-    frame: PulseFrame,
-    cx: number,
-    cy: number,
-    baseRadius: number,
-): void {
-    if (frame.pulse <= 0) return
-    const expansion = easeOutCubic(1 - frame.pulse)
-    ctx.save()
-    ctx.lineWidth = 3 * frame.pulse
-    ctx.strokeStyle = withAlpha(frame.accent, 0.5 * frame.pulse)
-    ctx.shadowColor = withAlpha(frame.accent, 0.4 * frame.pulse)
-    ctx.shadowBlur = 24 * frame.pulse
-    ctx.beginPath()
-    ctx.arc(cx, cy, baseRadius + expansion * 36, 0, Math.PI * 2)
-    ctx.stroke()
-    ctx.restore()
+    return RAMPS[scheme] ?? ['#2e6b8f', '#a06bff', '#ff5e7a']
 }
 
 export default face(
@@ -365,328 +147,445 @@ export default face(
         heroFont: font('Hero Font', 'Rajdhani', { families: [...DISPLAY_FONT_FAMILIES], group: 'Typography' }),
         heroSize: num('Hero Size', [72, 164], 132, { group: 'Typography' }),
         meterStyle: combo('Meter Style', ['Halo', 'Vector', 'Scope'], { group: 'Layout' }),
-        showArc: toggle('Show Arc', true, { group: 'Elements' }),
+        showArc: toggle('Show Scale', true, { group: 'Elements' }),
         showLabel: toggle('Show Label', true, { group: 'Elements' }),
         showNumber: toggle('Show Number', true, { group: 'Elements' }),
         showPeak: toggle('Show Peak', false, { group: 'Elements' }),
-        showTrend: toggle('Show Trend', false, { group: 'Elements' }),
+        showTrend: toggle('Show Trend', true, { group: 'Elements' }),
         showUnit: toggle('Show Unit', true, { group: 'Elements' }),
         targetSensor: sensor('Sensor', 'cpu_temp', { group: 'Data' }),
         uiFont: font('UI Font', 'Inter', { families: [...UI_FONT_FAMILIES], group: 'Typography' }),
     },
     {
         author: 'Hypercolor',
-        description: 'A centered single-sensor readout. Every element is independently toggleable.',
+        description:
+            'A single reading as cinema: a thermal field that grades from cool teal to ember coral, rising heat particles, and title-card type.',
         designBasis: { height: 480, width: 480 },
         presets: [
             {
-                controls: {
-                    colorScheme: 'Temperature',
-                    glowIntensity: 60,
-                    heroFont: 'Rajdhani',
-                    meterStyle: 'Halo',
-                    targetSensor: 'cpu_temp',
-                    uiFont: 'Inter',
-                },
-                description: 'Cyan-to-hot thermal watch with clear tech numerals.',
+                controls: { colorScheme: 'Temperature', meterStyle: 'Halo', targetSensor: 'cpu_temp' },
+                description: 'The full thermal field with the fine halo scale.',
                 name: 'CPU Siren',
             },
             {
-                controls: {
-                    colorScheme: 'Temperature',
-                    glowIntensity: 54,
-                    heroFont: 'Roboto Condensed',
-                    meterStyle: 'Vector',
-                    targetSensor: 'gpu_temp',
-                    uiFont: 'Inter',
-                },
-                description: 'Warm overclock mood with bold condensed numerals.',
+                controls: { colorScheme: 'Temperature', meterStyle: 'Vector', targetSensor: 'gpu_temp' },
+                description: 'GPU heat with the sweeping vector needle.',
                 name: 'GPU Ember',
             },
             {
-                controls: {
-                    colorScheme: 'Load',
-                    glowIntensity: 58,
-                    heroFont: 'Exo 2',
-                    meterStyle: 'Scope',
-                    targetSensor: 'cpu_load',
-                    uiFont: 'DM Sans',
-                },
-                description: 'Green-magenta load readout with compact secondary detail.',
+                controls: { colorScheme: 'Load', meterStyle: 'Halo', targetSensor: 'cpu_load' },
+                description: 'CPU load as a cool blue bloom that ignites under pressure.',
                 name: 'Load Bloom',
             },
             {
-                controls: {
-                    colorScheme: 'Memory',
-                    glowIntensity: 42,
-                    heroFont: 'Rajdhani',
-                    meterStyle: 'Halo',
-                    targetSensor: 'ram_used',
-                    uiFont: 'Inter',
-                },
-                description: 'Clean violet memory monitor.',
+                controls: { colorScheme: 'Memory', meterStyle: 'Scope', targetSensor: 'ram_used' },
+                description: 'Memory pressure with the aurora history front and center.',
                 name: 'Memory Core',
             },
             {
-                controls: {
-                    colorScheme: 'Custom',
-                    customColor: palette.coral,
-                    glowIntensity: 52,
-                    heroFont: 'Exo 2',
-                    meterStyle: 'Scope',
-                    targetSensor: 'cpu_temp',
-                    uiFont: 'Space Grotesk',
-                },
-                description: 'Custom coral readout with softer chrome.',
+                controls: { colorScheme: 'Custom', customColor: palette.coral, meterStyle: 'Halo' },
+                description: 'Coral-keyed field for warm builds.',
                 name: 'Coral Signal',
             },
             {
                 controls: {
-                    colorScheme: 'Load',
-                    glowIntensity: 34,
-                    heroFont: 'Space Mono',
+                    colorScheme: 'Custom',
+                    customColor: '#c8d5ff',
+                    glowIntensity: 30,
                     meterStyle: 'Vector',
-                    targetSensor: 'gpu_load',
-                    uiFont: 'JetBrains Mono',
+                    showTrend: false,
                 },
-                description: 'Sharper monospaced numerals.',
+                description: 'Restrained monochrome with a hairline needle.',
                 name: 'Mono Luxe',
             },
             {
-                controls: {
-                    colorScheme: 'Custom',
-                    customColor: '#ffb35c',
-                    glowIntensity: 50,
-                    heroFont: 'Rajdhani',
-                    meterStyle: 'Halo',
-                    targetSensor: 'cpu_temp',
-                    uiFont: 'DM Sans',
-                },
-                description: 'Warm gold thermal halo with clean sans meta.',
+                controls: { colorScheme: 'Custom', customColor: '#ffb347', meterStyle: 'Halo' },
+                description: 'Amber field, ember-heavy.',
                 name: 'Amber Core',
             },
             {
                 controls: {
-                    colorScheme: 'Temperature',
-                    heroFont: 'Rajdhani',
+                    glowIntensity: 20,
                     showArc: false,
                     showLabel: false,
-                    showPeak: false,
                     showTrend: false,
-                    showUnit: false,
-                    targetSensor: 'cpu_temp',
-                    uiFont: 'Inter',
                 },
-                description: 'Just the number. No chrome, no arc, no meta.',
+                description: 'Just the numeral floating in the field.',
                 name: 'Naked Digit',
             },
         ],
         variants: {
-            wide: (ctx: FaceContext) => {
-                const advance = createPulseEngine()
-                const { width: W, height: H } = ctx
-
-                return (time, controls, sensors) => {
-                    const frame = advance(time, controls, sensors)
-                    const uiFont = controls.uiFont as string
-                    const heroFont = controls.heroFont as string
-                    const detailSize = Math.max(9, Math.min(14, H * 0.08))
-                    const showNumber = controls.showNumber as boolean
-                    const showUnit = controls.showUnit as boolean
-                    const showLabel = controls.showLabel as boolean
-                    const showTrend = controls.showTrend as boolean
-                    const showPeak = controls.showPeak as boolean
-
-                    const c = ctx.ctx
-                    c.clearRect(0, 0, W, H)
-
-                    // Left third: hero readout stacked over its label.
-                    const readoutCx = W * 0.16
-                    const heroSize = H * 0.46
-                    drawReadout(
-                        c,
-                        readoutCx,
-                        H * 0.42,
-                        W * 0.28,
-                        showNumber ? frame.numberText : '',
-                        showUnit ? frame.unitText.toUpperCase() : '',
-                        heroFont,
-                        uiFont,
-                        heroSize,
-                        Math.max(14, heroSize * 0.28),
-                        frame.ink.hero,
-                        frame.ink.ui,
-                        frame.glowColor,
-                        frame.accent,
-                        frame.glow,
-                    )
-                    if (showLabel) {
-                        fillGlowingText(
-                            c,
-                            frame.labelText.toUpperCase(),
-                            readoutCx,
-                            H * 0.78,
-                            canvasFont(detailSize, 600, uiFont),
-                            frame.ink.ui,
-                            frame.glowColor,
-                            4 + frame.glow * 4,
-                        )
-                    }
-
-                    // Remaining width: the full-height banded history rail.
-                    const railX = W * 0.34
-                    const railWidth = W * 0.62
-                    const railY = H * 0.18
-                    const railHeight = H * 0.58
-                    c.save()
-                    c.strokeStyle = withAlpha(frame.ink.ui, 0.12)
-                    c.lineWidth = 1
-                    c.beginPath()
-                    c.moveTo(railX, railY + railHeight)
-                    c.lineTo(railX + railWidth, railY + railHeight)
-                    c.stroke()
-                    c.restore()
-                    drawThresholdSparkline(c, frame, railX, railY, railWidth, railHeight)
-                    drawDetailLine(
-                        c,
-                        railX + railWidth / 2,
-                        H * 0.88,
-                        showTrend ? frame.trendText : '',
-                        showPeak ? frame.peakText : '',
-                        canvasFont(detailSize, 600, uiFont),
-                        frame.ink.ui,
-                        frame.ink.dim,
-                        frame.glowColor,
-                        frame.glow,
-                    )
-                }
-            },
+            wide: (ctx: FaceContext) => buildPulseTemp(ctx, true),
         },
     },
-    (ctx) => {
-        const advance = createPulseEngine()
-        const { width: W, height: H } = ctx
-        const cx = W * 0.5
-        const cy = H * 0.5
-
-        return (time, controls, sensors) => {
-            const frame = advance(time, controls, sensors)
-            const meterStyle = (controls.meterStyle as string).toLowerCase()
-            const heroFont = controls.heroFont as string
-            const uiFont = controls.uiFont as string
-            const heroSize = controls.heroSize as number
-            const detailSize = controls.detailSize as number
-
-            const showNumber = controls.showNumber as boolean
-            const showUnit = controls.showUnit as boolean
-            const showLabel = controls.showLabel as boolean
-            const showTrend = controls.showTrend as boolean
-            const showPeak = controls.showPeak as boolean
-            const showArc = controls.showArc as boolean
-
-            const unitSize = Math.max(20, Math.min(36, heroSize * 0.22))
-            const c = ctx.ctx
-            c.clearRect(0, 0, W, H)
-
-            c.save()
-            if (showArc) {
-                c.globalAlpha = 0.92
-
-                if (meterStyle === 'vector') {
-                    arcGauge(c, {
-                        cx,
-                        cy,
-                        fillColor: [frame.accent, frame.secondary],
-                        glow: 0.18 + frame.glow * 0.24,
-                        radius: 134,
-                        startAngle: Math.PI * 0.98,
-                        sweep: Math.PI * 0.86,
-                        thickness: 10,
-                        trackColor: withAlpha(frame.ink.ui, 0.1),
-                        value: frame.arcValue,
-                    })
-                    drawThresholdPulse(c, frame, cx, cy, 134)
-                } else if (meterStyle === 'scope') {
-                    arcGauge(c, {
-                        cx,
-                        cy,
-                        fillColor: [frame.accent, frame.secondary],
-                        glow: 0.2 + frame.glow * 0.28,
-                        radius: 146,
-                        startAngle: Math.PI * 0.74,
-                        sweep: Math.PI * 1.12,
-                        thickness: 12,
-                        trackColor: withAlpha(frame.ink.ui, 0.1),
-                        value: frame.arcValue,
-                    })
-                    drawThresholdPulse(c, frame, cx, cy, 146)
-                } else {
-                    arcGauge(c, {
-                        cx,
-                        cy,
-                        fillColor: [frame.accent, frame.secondary],
-                        glow: 0.24 + frame.glow * 0.32,
-                        radius: 156,
-                        startAngle: Math.PI * 0.72,
-                        sweep: Math.PI * 1.42,
-                        thickness: 16,
-                        trackColor: withAlpha(frame.ink.ui, 0.12),
-                        value: frame.arcValue,
-                    })
-                    drawThresholdPulse(c, frame, cx, cy, 156)
-                }
-                c.globalAlpha = 1
-            }
-            c.restore()
-
-            drawReadout(
-                c,
-                cx,
-                cy,
-                W * 0.84,
-                showNumber ? frame.numberText : '',
-                showUnit ? frame.unitText.toUpperCase() : '',
-                heroFont,
-                uiFont,
-                heroSize,
-                unitSize,
-                frame.ink.hero,
-                frame.ink.ui,
-                frame.glowColor,
-                frame.accent,
-                frame.glow,
-            )
-
-            if (showLabel) {
-                fillGlowingText(
-                    c,
-                    frame.labelText.toUpperCase(),
-                    cx,
-                    cy + 74,
-                    canvasFont(detailSize, 600, uiFont),
-                    frame.ink.ui,
-                    frame.glowColor,
-                    6 + frame.glow * 5,
-                )
-            }
-
-            drawDetailLine(
-                c,
-                cx,
-                cy + 100,
-                showTrend ? frame.trendText : '',
-                showPeak ? frame.peakText : '',
-                canvasFont(Math.max(8, detailSize - 1), 600, uiFont),
-                frame.ink.ui,
-                frame.ink.dim,
-                frame.glowColor,
-                frame.glow,
-            )
-
-            // The 48-sample history, finally on screen: a banded sparkline
-            // tucked into the lower safe area.
-            const sparkWidth = Math.min(W * 0.46, 240)
-            drawThresholdSparkline(c, frame, cx - sparkWidth / 2, cy + 122, sparkWidth, 36)
-        }
-    },
+    (ctx) => buildPulseTemp(ctx, false),
 )
+
+function buildPulseTemp(ctx: FaceContext, wide: boolean) {
+    ensureFaceStyles(STYLE_ID, STYLES)
+    const root = createFaceRoot(ctx, 'hc-pulse-temp')
+    root.classList.toggle('hc-pulse-temp--wide', wide)
+    root.innerHTML = `
+        <div class="hc-pulse-temp__stack">
+            <div class="hc-pulse-temp__value"><span class="hc-pulse-temp__digits">--</span><span class="hc-pulse-temp__unit">°C</span></div>
+            <div class="hc-pulse-temp__label">CPU TEMP</div>
+        </div>`
+    const digitsEl = root.querySelector<HTMLSpanElement>('.hc-pulse-temp__digits')
+    const unitEl = root.querySelector<HTMLSpanElement>('.hc-pulse-temp__unit')
+    const valueEl = root.querySelector<HTMLDivElement>('.hc-pulse-temp__value')
+    const labelEl = root.querySelector<HTMLDivElement>('.hc-pulse-temp__label')
+    if (!digitsEl || !unitEl || !valueEl || !labelEl) {
+        throw new Error('Pulse Temp face failed to build its DOM')
+    }
+
+    const heat = new Smoothed(0, 0.9)
+    const displayValue = new Smoothed(0, 0.3)
+    const history = new ValueHistory(HISTORY_LENGTH)
+    const embers = makeEmbers(wide ? EMBER_COUNT_WIDE : EMBER_COUNT_ROUND)
+    let lastTime = Number.NaN
+    let lastHistoryPush = Number.NEGATIVE_INFINITY
+    let peak = 0
+
+    const scaleBasis = Math.min(ctx.width, ctx.height) / (wide ? 230 : 480)
+
+    return (
+        time: number,
+        controls: Record<string, unknown>,
+        sensors: import('@hypercolor/sdk').SensorAccessor,
+    ) => {
+        const dt = Number.isNaN(lastTime) ? 1 / 30 : Math.max(time - lastTime, 0)
+        lastTime = time
+
+        const sensorLabel = controls.targetSensor as string
+        const reading = sensors.read(sensorLabel)
+        const normalized = clamp01(sensors.normalized(sensorLabel))
+        const t = heat.update(normalized, dt)
+        const ramp = resolveRamp(controls)
+        const heatColor = rampColor(ramp, t)
+        const glow = clamp01((controls.glowIntensity as number) / 100)
+        const hot = clamp01((t - HOT_THRESHOLD) / (1 - HOT_THRESHOLD))
+        const pulse = hot > 0 ? hot * (0.5 + 0.5 * Math.sin(time * 2.4)) : 0
+
+        if (time - lastHistoryPush >= HISTORY_PUSH_INTERVAL) {
+            lastHistoryPush = time
+            history.push(normalized)
+        }
+        peak = Math.max(peak * (1 - dt * 0.01), normalized)
+
+        // ── Type layer ──
+        root.style.setProperty('--heat', heatColor)
+        root.style.setProperty('--hero-font', `"${controls.heroFont as string}", sans-serif`)
+        root.style.setProperty('--ui-font', `"${controls.uiFont as string}", sans-serif`)
+        const heroSize = (controls.heroSize as number) * scaleBasis
+        valueEl.style.fontSize = `${heroSize}px`
+        unitEl.style.fontSize = `${heroSize * 0.34}px`
+        labelEl.style.fontSize = `${Math.max(9, (controls.detailSize as number) * Math.max(scaleBasis, 0.8))}px`
+
+        const shown = displayValue.update(reading?.value ?? 0, dt)
+        digitsEl.textContent = reading ? `${Math.round(shown)}` : '--'
+        unitEl.textContent = reading?.unit ?? '°C'
+        labelEl.textContent = humanizeSensorLabel(sensorLabel).toUpperCase()
+        valueEl.classList.toggle('hc-pulse-temp__hidden', controls.showNumber !== true)
+        unitEl.classList.toggle('hc-pulse-temp__hidden', controls.showUnit !== true)
+        labelEl.classList.toggle('hc-pulse-temp__hidden', controls.showLabel !== true)
+
+        // ── Atmosphere layer ──
+        const c = ctx.ctx
+        const W = ctx.width
+        const H = ctx.height
+        c.clearRect(0, 0, W, H)
+
+        drawThermalField(c, W, H, time, t, ramp, glow, pulse)
+        drawEmbers(c, W, H, time, t, embers, heatColor, glow)
+
+        const meterStyle = (controls.meterStyle as string) ?? 'Halo'
+        if (controls.showTrend === true) {
+            drawAuroraHistory(c, W, H, wide, history.values(), ramp, glow, meterStyle === 'Scope')
+        }
+        if (controls.showArc === true) {
+            if (wide) {
+                drawStripScale(c, W, H, t, peak, ramp, heatColor, controls.showPeak === true, glow)
+            } else if (meterStyle === 'Vector') {
+                drawVectorScale(c, W, H, t, ramp, heatColor, glow)
+            } else {
+                drawHaloScale(c, W, H, t, peak, ramp, heatColor, controls.showPeak === true, glow)
+            }
+        }
+    }
+}
+
+/** Full-bleed atmosphere: graded base, drifting thermal glows, hot pulse. */
+function drawThermalField(
+    c: CanvasRenderingContext2D,
+    W: number,
+    H: number,
+    time: number,
+    t: number,
+    ramp: [string, string, string],
+    glow: number,
+    pulse: number,
+): void {
+    const horizon = rampColor(ramp, t)
+    const deep = rampColor(ramp, Math.max(0, t - 0.35))
+
+    const base = c.createLinearGradient(0, H, 0, 0)
+    base.addColorStop(0, withAlpha(horizon, 0.16 + 0.1 * t + 0.08 * pulse))
+    base.addColorStop(0.55, withAlpha(deep, 0.05))
+    base.addColorStop(1, withAlpha('#05030a', 0))
+    c.fillStyle = base
+    c.fillRect(0, 0, W, H)
+
+    const blobs = [
+        { phase: 0, radius: 0.62, x: 0.24, y: 0.78 },
+        { phase: 2.1, radius: 0.5, x: 0.74, y: 0.66 },
+        { phase: 4.4, radius: 0.44, x: 0.52, y: 0.3 },
+    ]
+    for (const blob of blobs) {
+        const bx = W * (blob.x + 0.06 * Math.sin(time * 0.11 + blob.phase))
+        const by = H * (blob.y + 0.05 * Math.cos(time * 0.09 + blob.phase * 1.7))
+        const radius = Math.max(W, H) * blob.radius
+        const gradient = c.createRadialGradient(bx, by, 0, bx, by, radius)
+        gradient.addColorStop(0, withAlpha(horizon, (0.05 + 0.09 * t) * (0.4 + glow)))
+        gradient.addColorStop(1, withAlpha(horizon, 0))
+        c.fillStyle = gradient
+        c.fillRect(0, 0, W, H)
+    }
+}
+
+/** Heat particles that rise faster and burn brighter as the reading climbs. */
+function drawEmbers(
+    c: CanvasRenderingContext2D,
+    W: number,
+    H: number,
+    time: number,
+    t: number,
+    embers: Ember[],
+    heatColor: string,
+    glow: number,
+): void {
+    const activity = 0.15 + t * 0.85
+    const visible = Math.max(3, Math.floor(embers.length * activity))
+    for (let index = 0; index < visible; index += 1) {
+        const ember = embers[index]
+        if (!ember) continue
+        const speed = 0.025 + activity * 0.085 + (ember.seed % 1) * 0.02
+        const progress = (time * speed + ember.seed) % 1
+        const sway = Math.sin(time * 0.7 + ember.seed) * W * 0.015
+        const x = ember.lane * W + sway
+        const y = H * (1.05 - progress * 1.15)
+        if (y < -8 || y > H + 8) continue
+        const fade = Math.sin(progress * Math.PI)
+        const size = 1 + (ember.seed % 2.3) + t * 1.2
+        c.fillStyle = withAlpha(heatColor, fade * (0.1 + 0.4 * t) * (0.35 + glow * 0.65))
+        c.beginPath()
+        c.arc(x, y, size, 0, Math.PI * 2)
+        c.fill()
+    }
+}
+
+/** History as a soft aurora ribbon instead of a clinical sparkline. */
+function drawAuroraHistory(
+    c: CanvasRenderingContext2D,
+    W: number,
+    H: number,
+    wide: boolean,
+    values: number[],
+    ramp: [string, string, string],
+    glow: number,
+    emphasized: boolean,
+): void {
+    if (values.length < 2) return
+    const left = wide ? W * 0.3 : W * 0.14
+    const right = wide ? W * 0.97 : W * 0.86
+    const baseY = wide ? H * 0.82 : H * 0.78
+    const amplitude = (wide ? H * 0.42 : H * 0.16) * (emphasized ? 1.35 : 1)
+    const alpha = (emphasized ? 0.34 : 0.18) * (0.5 + glow * 0.5)
+    const span = right - left
+
+    c.beginPath()
+    c.moveTo(left, baseY)
+    for (let index = 0; index < values.length; index += 1) {
+        const x = left + (index / (values.length - 1)) * span
+        const y = baseY - clamp01(values[index] ?? 0) * amplitude
+        c.lineTo(x, y)
+    }
+    c.lineTo(right, baseY)
+    c.closePath()
+    const latest = clamp01(values[values.length - 1] ?? 0)
+    const ribbon = c.createLinearGradient(0, baseY - amplitude, 0, baseY)
+    ribbon.addColorStop(0, withAlpha(rampColor(ramp, latest), alpha))
+    ribbon.addColorStop(1, withAlpha(rampColor(ramp, latest), 0))
+    c.fillStyle = ribbon
+    c.fill()
+}
+
+const SCALE_START = Math.PI * 0.78
+const SCALE_SWEEP = Math.PI * 1.44
+
+/** Round: a fine tick halo with a glowing comet head at the live value. */
+function drawHaloScale(
+    c: CanvasRenderingContext2D,
+    W: number,
+    H: number,
+    t: number,
+    peak: number,
+    ramp: [string, string, string],
+    heatColor: string,
+    showPeak: boolean,
+    glow: number,
+): void {
+    const cx = W / 2
+    const cy = H / 2
+    const radius = Math.min(W, H) * 0.41
+    const ticks = 72
+
+    for (let index = 0; index < ticks; index += 1) {
+        const fraction = index / (ticks - 1)
+        const angle = SCALE_START + fraction * SCALE_SWEEP
+        const lit = fraction <= t
+        const inner = radius - (lit ? 7 : 4)
+        const outer = radius + (lit ? 3 : 0)
+        c.strokeStyle = lit
+            ? withAlpha(rampColor(ramp, fraction), 0.55 + 0.4 * glow)
+            : withAlpha('#8a8fa8', 0.14)
+        c.lineWidth = lit ? 2 : 1
+        c.beginPath()
+        c.moveTo(cx + Math.cos(angle) * inner, cy + Math.sin(angle) * inner)
+        c.lineTo(cx + Math.cos(angle) * outer, cy + Math.sin(angle) * outer)
+        c.stroke()
+    }
+
+    const headAngle = SCALE_START + t * SCALE_SWEEP
+    c.save()
+    c.shadowColor = heatColor
+    c.shadowBlur = 18 * glow
+    c.fillStyle = '#ffffff'
+    c.beginPath()
+    c.arc(cx + Math.cos(headAngle) * radius, cy + Math.sin(headAngle) * radius, 3.4, 0, Math.PI * 2)
+    c.fill()
+    c.restore()
+
+    if (showPeak && peak > 0.01) {
+        const peakAngle = SCALE_START + clamp01(peak) * SCALE_SWEEP
+        c.strokeStyle = withAlpha(palette.electricYellow, 0.8)
+        c.lineWidth = 1.5
+        c.beginPath()
+        c.moveTo(cx + Math.cos(peakAngle) * (radius - 10), cy + Math.sin(peakAngle) * (radius - 10))
+        c.lineTo(cx + Math.cos(peakAngle) * (radius + 5), cy + Math.sin(peakAngle) * (radius + 5))
+        c.stroke()
+    }
+}
+
+/** Round alternative: hairline sweep needle over sparse ticks. */
+function drawVectorScale(
+    c: CanvasRenderingContext2D,
+    W: number,
+    H: number,
+    t: number,
+    ramp: [string, string, string],
+    heatColor: string,
+    glow: number,
+): void {
+    const cx = W / 2
+    const cy = H / 2
+    const radius = Math.min(W, H) * 0.41
+
+    for (let index = 0; index < 13; index += 1) {
+        const fraction = index / 12
+        const angle = SCALE_START + fraction * SCALE_SWEEP
+        const major = index % 3 === 0
+        const inner = radius - (major ? 10 : 5)
+        c.strokeStyle = withAlpha(
+            fraction <= t ? rampColor(ramp, fraction) : '#8a8fa8',
+            fraction <= t ? 0.7 : 0.18,
+        )
+        c.lineWidth = major ? 2 : 1
+        c.beginPath()
+        c.moveTo(cx + Math.cos(angle) * inner, cy + Math.sin(angle) * inner)
+        c.lineTo(cx + Math.cos(angle) * radius, cy + Math.sin(angle) * radius)
+        c.stroke()
+    }
+
+    const angle = SCALE_START + t * SCALE_SWEEP
+    c.save()
+    c.shadowColor = heatColor
+    c.shadowBlur = 16 * glow
+    c.strokeStyle = withAlpha(heatColor, 0.9)
+    c.lineWidth = 2
+    c.beginPath()
+    c.moveTo(cx + Math.cos(angle) * (radius * 0.55), cy + Math.sin(angle) * (radius * 0.55))
+    c.lineTo(cx + Math.cos(angle) * (radius + 2), cy + Math.sin(angle) * (radius + 2))
+    c.stroke()
+    c.restore()
+}
+
+/** Strip: hairline rail with ticks and comet cursor, edge to edge. */
+function drawStripScale(
+    c: CanvasRenderingContext2D,
+    W: number,
+    H: number,
+    t: number,
+    peak: number,
+    ramp: [string, string, string],
+    heatColor: string,
+    showPeak: boolean,
+    glow: number,
+): void {
+    const left = W * 0.3
+    const right = W * 0.97
+    const y = H * 0.82
+    const span = right - left
+
+    c.strokeStyle = withAlpha('#8a8fa8', 0.16)
+    c.lineWidth = 1
+    c.beginPath()
+    c.moveTo(left, y)
+    c.lineTo(right, y)
+    c.stroke()
+
+    for (let index = 0; index <= 24; index += 1) {
+        const fraction = index / 24
+        const x = left + fraction * span
+        const major = index % 6 === 0
+        const lit = fraction <= t
+        c.strokeStyle = lit
+            ? withAlpha(rampColor(ramp, fraction), 0.6 + 0.35 * glow)
+            : withAlpha('#8a8fa8', 0.16)
+        c.lineWidth = lit ? 2 : 1
+        c.beginPath()
+        c.moveTo(x, y - (major ? 9 : 5))
+        c.lineTo(x, y + (major ? 4 : 2))
+        c.stroke()
+    }
+
+    const litGradient = c.createLinearGradient(left, 0, right, 0)
+    litGradient.addColorStop(0, withAlpha(ramp[0], 0.55))
+    litGradient.addColorStop(0.5, withAlpha(ramp[1], 0.55))
+    litGradient.addColorStop(1, withAlpha(ramp[2], 0.55))
+    c.strokeStyle = litGradient
+    c.lineWidth = 2
+    c.beginPath()
+    c.moveTo(left, y)
+    c.lineTo(left + span * t, y)
+    c.stroke()
+
+    const hx = left + span * t
+    c.save()
+    c.shadowColor = heatColor
+    c.shadowBlur = 16 * glow
+    c.fillStyle = '#ffffff'
+    c.beginPath()
+    c.arc(hx, y, 3.2, 0, Math.PI * 2)
+    c.fill()
+    c.restore()
+
+    if (showPeak && peak > 0.01) {
+        const px = left + span * clamp01(peak)
+        c.strokeStyle = withAlpha(palette.electricYellow, 0.8)
+        c.lineWidth = 1.5
+        c.beginPath()
+        c.moveTo(px, y - 11)
+        c.lineTo(px, y + 5)
+        c.stroke()
+    }
+}
