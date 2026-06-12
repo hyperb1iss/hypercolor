@@ -778,7 +778,10 @@ jobs:
 
       - uses: actions/setup-node@v6
         with:
-          node-version: 24
+          # Node 24.16+ hangs `playwright install` in extract-zip
+          # (microsoft/playwright#41000, fixed in Playwright 1.60); stay on
+          # 22 LTS until the e2e Playwright dependency is bumped past 1.60.
+          node-version: 22
           cache: npm
           cache-dependency-path: e2e/package-lock.json
 
