@@ -1,152 +1,111 @@
-import type { FaceContext, Rect, SensorAccessor } from '@hypercolor/sdk'
+import type { FaceContext } from '@hypercolor/sdk'
 import {
     color,
-    colorByValue,
     combo,
+    easeOutCubic,
     face,
     font,
-    grid,
     lerpColor,
     num,
     palette,
-    rail,
-    Smoothed,
     sensor,
-    sensorColors,
-    Timeline,
+    Smoothed,
     toggle,
+    ValueHistory,
     withAlpha,
 } from '@hypercolor/sdk'
-import type { ChartPanel } from '../shared/components'
-import { createChartPanel } from '../shared/components'
 
+import { drawNebulaField, entrance, makeDrifters, drawRisingMotes } from '../shared/atmosphere'
 import {
     clamp01,
     createFaceRoot,
     DISPLAY_FONT_FAMILIES,
     ensureFaceStyles,
     humanizeSensorLabel,
-    mixFaceAccent,
     resolveFaceInk,
     UI_FONT_FAMILIES,
 } from '../shared/dom'
 
 const STYLE_ID = 'hc-face-sensor-grid'
+const HISTORY_PUSH_INTERVAL = 0.6
+
+/** Per-domain heat ramps for Auto color mode. */
+function autoRamp(label: string): [string, string] {
+    const key = label.toLowerCase()
+    if (key.includes('temp')) return ['#37e0ff', '#ff5e7a']
+    if (key.includes('load') || key.includes('usage')) return ['#5a8dff', palette.electricYellow]
+    if (key.includes('ram') || key.includes('mem')) return [palette.electricPurple, palette.coral]
+    return [palette.neonCyan, palette.electricPurple]
+}
 
 const STYLES = `
 .hc-sensor-grid {
     --accent: ${palette.neonCyan};
-    --secondary: ${palette.electricPurple};
     --hero-font: 'Rajdhani', sans-serif;
     --ui-font: 'Inter', sans-serif;
-    --value-size: 50;
-    --label-size: 11;
     --hero-ink: ${palette.fg.primary};
     --ui-ink: ${palette.fg.secondary};
-    --dim-ink: ${palette.fg.tertiary};
+    --value-size: 50;
+    --label-size: 11;
     position: absolute;
     inset: 0;
     overflow: hidden;
-    color: var(--hero-ink);
-}
-
-.hc-sensor-grid__frame {
-    position: relative;
-}
-
-.hc-sensor-grid__cards {
-    position: relative;
-    width: 100%;
-    height: 100%;
-}
-
-.hc-sensor-grid__card {
-    position: absolute;
     display: flex;
     align-items: center;
     justify-content: center;
-    text-align: center;
-    padding: 8px;
-    box-sizing: border-box;
-    background: transparent;
-    border: none;
-    will-change: transform, opacity;
+    color: var(--hero-ink);
 }
 
-.hc-sensor-grid__spark {
-    position: absolute;
-    inset: 12% 6% 12% 6%;
-    opacity: 0.5;
-    pointer-events: none;
+.hc-sensor-grid__cells {
+    position: relative;
+    z-index: 2;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
 }
 
-.hc-sensor-grid__card-inner {
+.hc-sensor-grid__cell {
     display: flex;
     flex-direction: column;
-    gap: 8px;
     align-items: center;
+    justify-content: center;
+    gap: 6px;
     text-align: center;
-    width: 100%;
+    will-change: transform, opacity;
 }
-
 
 .hc-sensor-grid__label {
     font-family: var(--ui-font);
     font-size: calc(var(--label-size) * 1px);
     font-weight: 600;
-    letter-spacing: 0.18em;
+    letter-spacing: 0.26em;
     text-transform: uppercase;
-    text-align: center;
     color: var(--ui-ink);
 }
 
 .hc-sensor-grid__value {
+    display: inline-flex;
+    align-items: flex-start;
     font-family: var(--hero-font);
     font-size: calc(var(--value-size) * 1px);
-    font-weight: 600;
-    line-height: 0.9;
-    letter-spacing: 0.015em;
-    text-align: center;
+    font-weight: 400;
+    line-height: 0.86;
     color: var(--hero-ink);
     font-variant-numeric: tabular-nums lining-nums;
     font-feature-settings: 'tnum' 1, 'lnum' 1;
-    text-shadow:
-        0 0 18px color-mix(in srgb, var(--accent) 12%, transparent),
-        0 8px 24px rgba(0,0,0,0.24);
+    text-shadow: 0 0 26px color-mix(in srgb, var(--cell-heat, var(--accent)) 45%, transparent);
 }
 
-.hc-sensor-grid__percent {
-    font-family: var(--ui-font);
-    font-size: calc(var(--label-size) * 1px);
-    font-weight: 600;
-    letter-spacing: 0.18em;
-    text-transform: uppercase;
-    color: var(--dim-ink);
-    font-variant-numeric: tabular-nums lining-nums;
-    font-feature-settings: 'tnum' 1, 'lnum' 1;
+.hc-sensor-grid__unit {
+    font-size: 0.42em;
+    font-weight: 500;
+    margin-top: 0.16em;
+    margin-left: 0.08em;
+    color: color-mix(in srgb, var(--hero-ink) 55%, var(--cell-heat, var(--accent)));
 }
 
-.hc-sensor-grid__track {
-    position: relative;
-    width: 80%;
-    height: 6px;
-    border-radius: 999px;
-    overflow: hidden;
-    background: rgba(255,255,255,0.06);
-    justify-self: center;
-}
-
-.hc-sensor-grid__track-fill {
-    position: absolute;
-    inset: 0 auto 0 0;
-    width: calc(var(--fill, 0) * 100%);
-    border-radius: 999px;
-    background: linear-gradient(90deg, var(--accent), var(--secondary));
-}
-
-.hc-sensor-grid__hidden {
-    display: none !important;
-}
+.hc-sensor-grid__hidden { display: none !important; }
 `
 
 export default face(
@@ -162,7 +121,7 @@ export default face(
         sensor4: sensor('Bottom Right', 'ram_used', { group: 'Sensors' }),
         showLabels: toggle('Show Labels', true, { group: 'Elements' }),
         showPercents: toggle('Show Percents', false, { group: 'Elements' }),
-        showSparklines: toggle('Show Sparklines', false, { group: 'Elements' }),
+        showSparklines: toggle('Show Sparklines', true, { group: 'Elements' }),
         showTracks: toggle('Show Tracks', true, { group: 'Elements' }),
         showValues: toggle('Show Values', true, { group: 'Elements' }),
         uiFont: font('UI Font', 'Inter', { families: [...UI_FONT_FAMILIES], group: 'Typography' }),
@@ -170,7 +129,8 @@ export default face(
     },
     {
         author: 'Hypercolor',
-        description: 'A readable four-panel dashboard. Every element is independently toggleable.',
+        description:
+            'Four readings as living energy cells: each value breathes its own heat glow over a shared nebula.',
         designBasis: { height: 480, width: 480 },
         presets: [
             {
@@ -262,182 +222,193 @@ export default face(
             },
         ],
         variants: {
-            wide: (ctx: FaceContext) => buildSensorGrid(ctx, 'rail'),
+            wide: (ctx: FaceContext) => buildSensorGrid(ctx, true),
         },
     },
-    (ctx) => buildSensorGrid(ctx, 'grid'),
+    (ctx) => buildSensorGrid(ctx, false),
 )
 
-// ── Shared implementation ───────────────────────────────────────────────
+interface CellRuntime {
+    root: HTMLDivElement
+    labelEl: HTMLElement
+    valueEl: HTMLElement
+    digitsEl: HTMLElement
+    unitEl: HTMLElement
+    heat: Smoothed
+    shown: Smoothed
+    history: ValueHistory
+    lastPush: number
+}
 
-const ENTRANCE_STAGGER = 0.12
-const ENTRANCE_DURATION = 0.5
-
-type GridLayoutMode = 'grid' | 'rail'
-
-function buildSensorGrid(ctx: FaceContext, mode: GridLayoutMode) {
+function buildSensorGrid(ctx: FaceContext, wide: boolean) {
     ensureFaceStyles(STYLE_ID, STYLES)
     const root = createFaceRoot(ctx, 'hc-sensor-grid')
-    root.innerHTML = `
-        <div class="hc-sensor-grid__frame">
-            <div class="hc-sensor-grid__cards">
-                ${Array.from(
-                    { length: 4 },
-                    () => `
-                    <div class="hc-sensor-grid__card">
-                        <div class="hc-sensor-grid__card-inner">
-                            <div class="hc-sensor-grid__label">UNASSIGNED</div>
-                            <div class="hc-sensor-grid__value">--</div>
-                            <div class="hc-sensor-grid__percent">0%</div>
-                            <div class="hc-sensor-grid__track"><div class="hc-sensor-grid__track-fill"></div></div>
-                        </div>
-                    </div>
-                `,
-                ).join('')}
-            </div>
-        </div>
-    `
+    const cellsEl = document.createElement('div')
+    cellsEl.className = 'hc-sensor-grid__cells'
+    root.appendChild(cellsEl)
 
-    const frameEl = root.querySelector<HTMLDivElement>('.hc-sensor-grid__frame')
-    const cards = Array.from(root.querySelectorAll<HTMLDivElement>('.hc-sensor-grid__card'))
-    if (!frameEl || cards.length !== 4) throw new Error('sensor-grid DOM failed to build')
-
-    // Cells come from the layout module over the device safe area, so the
-    // 2x2 stays inside a round panel and the rail spans the whole strip.
     const safe = ctx.display.safeArea
-    const gap = Math.max(8, Math.round(Math.min(safe.width, safe.height) * 0.03))
-    const area: Rect = { height: safe.height, width: safe.width, x: 0, y: 0 }
-    const cells = mode === 'rail' ? rail(area, 4, gap) : grid(area, 2, 2, gap)
-    frameEl.style.position = 'absolute'
-    frameEl.style.left = `${safe.x}px`
-    frameEl.style.top = `${safe.y}px`
-    frameEl.style.width = `${safe.width}px`
-    frameEl.style.height = `${safe.height}px`
-    cards.forEach((card, index) => {
-        const cell = cells[index]
-        if (!cell) return
-        card.style.left = `${cell.x}px`
-        card.style.top = `${cell.y}px`
-        card.style.width = `${cell.width}px`
-        card.style.height = `${cell.height}px`
-    })
+    const gridW = wide ? ctx.width * 0.94 : safe.width
+    const gridH = wide ? ctx.height * 0.92 : safe.height
+    cellsEl.style.width = `${gridW}px`
+    cellsEl.style.height = `${gridH}px`
 
+    const cellW = wide ? gridW / 4 : gridW / 2
+    const cellH = wide ? gridH : gridH / 2
+
+    const cells: CellRuntime[] = []
+    for (let index = 0; index < 4; index += 1) {
+        const cell = document.createElement('div')
+        cell.className = 'hc-sensor-grid__cell'
+        cell.style.width = `${cellW}px`
+        cell.style.height = `${cellH}px`
+        cell.innerHTML = `
+            <div class="hc-sensor-grid__label">--</div>
+            <div class="hc-sensor-grid__value"><span class="hc-sensor-grid__digits">--</span><span class="hc-sensor-grid__unit"></span></div>`
+        cellsEl.appendChild(cell)
+        const labelEl = cell.querySelector<HTMLElement>('.hc-sensor-grid__label')
+        const valueEl = cell.querySelector<HTMLElement>('.hc-sensor-grid__value')
+        const digitsEl = cell.querySelector<HTMLElement>('.hc-sensor-grid__digits')
+        const unitEl = cell.querySelector<HTMLElement>('.hc-sensor-grid__unit')
+        if (!labelEl || !valueEl || !digitsEl || !unitEl) {
+            throw new Error('Sensor Grid failed to build its DOM')
+        }
+        cells.push({
+            digitsEl,
+            heat: new Smoothed(0, 0.8),
+            history: new ValueHistory(60),
+            labelEl,
+            lastPush: Number.NEGATIVE_INFINITY,
+            root: cell,
+            shown: new Smoothed(0, 0.3),
+            unitEl,
+            valueEl,
+        })
+    }
+
+    const drifters = makeDrifters(wide ? 30 : 18)
     const sensorKeys = ['sensor1', 'sensor2', 'sensor3', 'sensor4'] as const
-    const smoothValues = sensorKeys.map(() => new Smoothed(0, 0.3))
-    const charts: Array<ChartPanel | null> = sensorKeys.map(() => null)
-    const entrance = new Timeline()
-    sensorKeys.forEach((_, index) => {
-        entrance.add(`card${index}`, index * ENTRANCE_STAGGER, ENTRANCE_DURATION)
-    })
-    let appearedAt = Number.NaN
-    let lastTime = Number.NaN
-    let lastHistoryPush = 0
+    let bootAt = Number.NaN
 
-    return (time: number, controls: Record<string, unknown>, sensors: SensorAccessor) => {
-        const dt = Number.isNaN(lastTime) ? 1 / 30 : Math.max(time - lastTime, 0)
-        lastTime = time
-        if (Number.isNaN(appearedAt)) appearedAt = time
-        const sinceAppear = time - appearedAt
-
-        const colorMode = controls.colorMode as string
-        const accent = lerpColor(controls.accent as string, palette.fg.primary, 0.04)
-        const secondary = mixFaceAccent(accent)
+    return (
+        time: number,
+        controls: Record<string, unknown>,
+        sensors: import('@hypercolor/sdk').SensorAccessor,
+    ) => {
+        if (Number.isNaN(bootAt)) bootAt = time
+        const boot = time - bootAt
+        const dt = 1 / 30
+        const accent = controls.accent as string
         const ink = resolveFaceInk(accent)
+        const auto = controls.colorMode !== 'Accent'
 
         root.style.setProperty('--accent', accent)
-        root.style.setProperty('--secondary', secondary)
         root.style.setProperty('--hero-ink', ink.hero)
         root.style.setProperty('--ui-ink', ink.ui)
-        root.style.setProperty('--dim-ink', ink.dim)
         root.style.setProperty('--hero-font', `"${controls.heroFont as string}", sans-serif`)
         root.style.setProperty('--ui-font', `"${controls.uiFont as string}", sans-serif`)
-        const valueScale = mode === 'rail' ? 0.72 : 1
-        root.style.setProperty('--value-size', `${(controls.valueSize as number) * valueScale}`)
-        root.style.setProperty('--label-size', `${controls.labelSize as number}`)
-
-        const showLabels = controls.showLabels as boolean
-        const showValues = controls.showValues as boolean
-        const showPercents = controls.showPercents as boolean
-        const showTracks = controls.showTracks as boolean
-        const showSparklines = controls.showSparklines as boolean
-        const pushHistory = time - lastHistoryPush > 0.25
-        if (pushHistory) lastHistoryPush = time
-
-        cards.forEach((card, index) => {
-            const sensorLabel = controls[sensorKeys[index]] as string
-            const reading = sensors.read(sensorLabel)
-            const rawValue = sensors.normalized(sensorLabel)
-            const value = smoothValues[index].update(rawValue, dt)
-
-            const baseColor =
-                colorMode === 'Auto'
-                    ? reading?.unit === '°C' || reading?.unit === '°F'
-                        ? colorByValue(value, sensorColors.temperature.gradient)
-                        : reading?.unit === 'MB'
-                          ? colorByValue(value, sensorColors.memory.gradient)
-                          : colorByValue(value, sensorColors.load.gradient)
-                    : accent
-            const cardColor = lerpColor(baseColor, palette.fg.primary, 0.04)
-            const cardSecondary = mixFaceAccent(cardColor, secondary, 0.32)
-            const cardInk = resolveFaceInk(cardColor)
-
-            card.style.setProperty('--accent', cardColor)
-            card.style.setProperty('--secondary', cardSecondary)
-            card.style.setProperty('--hero-ink', cardInk.hero)
-            card.style.setProperty('--ui-ink', cardInk.ui)
-            card.style.setProperty('--dim-ink', cardInk.dim)
-
-            // Staggered entrance: cards rise and fade in one after another.
-            const progress = entrance.progress(`card${index}`, sinceAppear)
-            if (progress < 1) {
-                card.style.opacity = `${progress}`
-                card.style.transform = `translateY(${(1 - progress) * 14}px)`
-            } else {
-                card.style.opacity = '1'
-                card.style.transform = 'translateY(0)'
-            }
-
-            const labelEl = card.querySelector<HTMLElement>('.hc-sensor-grid__label')
-            const valueEl = card.querySelector<HTMLElement>('.hc-sensor-grid__value')
-            const percentEl = card.querySelector<HTMLElement>('.hc-sensor-grid__percent')
-            const trackEl = card.querySelector<HTMLElement>('.hc-sensor-grid__track')
-            const fillEl = card.querySelector<HTMLElement>('.hc-sensor-grid__track-fill')
-            if (!labelEl || !valueEl || !percentEl || !trackEl || !fillEl) return
-
-            valueEl.textContent = sensors.formatted(sensorLabel)
-            labelEl.textContent = humanizeSensorLabel(sensorLabel)
-            percentEl.textContent = `${Math.round(clamp01(value) * 100)}%`
-            fillEl.style.setProperty('--fill', clamp01(value).toFixed(4))
-
-            labelEl.classList.toggle('hc-sensor-grid__hidden', !showLabels)
-            valueEl.classList.toggle('hc-sensor-grid__hidden', !showValues)
-            percentEl.classList.toggle('hc-sensor-grid__hidden', !showPercents)
-            trackEl.classList.toggle('hc-sensor-grid__hidden', !showTracks)
-
-            if (showSparklines) {
-                if (!charts[index]) {
-                    const panel = createChartPanel(card, {
-                        capacity: 48,
-                        color: withAlpha(cardColor, 0.6),
-                        range: [0, 1],
-                    })
-                    panel.element.className = 'hc-sensor-grid__spark'
-                    const cell = cells[index]
-                    panel.resize((cell?.width ?? 100) * 0.88, (cell?.height ?? 100) * 0.6)
-                    charts[index] = panel
-                }
-                const panel = charts[index]
-                if (panel) {
-                    if (pushHistory) panel.push(clamp01(value))
-                    panel.draw()
-                    panel.element.style.display = ''
-                }
-            } else if (charts[index]) {
-                charts[index]?.element.style.setProperty('display', 'none')
-            }
-        })
+        const scaleBasis = wide ? ctx.height / 480 * 1.7 : Math.min(safe.width, safe.height) / 339
+        root.style.setProperty('--value-size', `${(controls.valueSize as number) * scaleBasis}`)
+        root.style.setProperty('--label-size', `${Math.max(9, (controls.labelSize as number) * Math.max(scaleBasis, 0.85))}`)
 
         const c = ctx.ctx
-        c.clearRect(0, 0, ctx.width, ctx.height)
+        const W = ctx.width
+        const H = ctx.height
+        c.clearRect(0, 0, W, H)
+
+        // Shared sky, tinted toward the hottest cell.
+        let hottest = 0
+        for (const cell of cells) hottest = Math.max(hottest, cell.heat.value)
+        const skyColor = auto ? lerpColor('#37e0ff', '#ff5e7a', hottest) : accent
+        drawNebulaField(c, W, H, time, skyColor, accent, 0.55 + hottest * 0.5)
+        drawRisingMotes(c, W, H, time, drifters, skyColor, 0.6, hottest)
+
+        const gridLeft = (W - gridW) / 2
+        const gridTop = (H - gridH) / 2
+
+        for (let index = 0; index < 4; index += 1) {
+            const cell = cells[index]
+            const key = sensorKeys[index]
+            if (!cell || !key) continue
+            const label = controls[key] as string
+            const reading = sensors.read(label)
+            const normalized = clamp01(sensors.normalized(label))
+            const heat = cell.heat.update(normalized, dt)
+            const ramp = auto ? autoRamp(label) : [withAlpha(accent, 0.55), accent] as [string, string]
+            const heatColor = auto ? lerpColor(ramp[0], ramp[1], heat) : accent
+
+            if (time - cell.lastPush >= HISTORY_PUSH_INTERVAL) {
+                cell.lastPush = time
+                cell.history.push(normalized)
+            }
+
+            // Staggered entrance, one beat per cell.
+            const cellIn = entrance(boot, 0.12 + index * 0.14, 0.8)
+            cell.root.style.opacity = `${cellIn}`
+            cell.root.style.transform = `translateY(${(1 - cellIn) * 14}px)`
+            cell.root.style.setProperty('--cell-heat', heatColor)
+
+            cell.labelEl.textContent = humanizeSensorLabel(label).toUpperCase()
+            const shown = cell.shown.update(reading?.value ?? 0, dt)
+            const showPercent = controls.showPercents === true && reading?.unit === '%'
+            cell.digitsEl.textContent = reading ? `${Math.round(shown)}` : '--'
+            cell.unitEl.textContent = reading ? (showPercent || reading.unit !== '%' ? reading.unit : '') : ''
+            cell.labelEl.classList.toggle('hc-sensor-grid__hidden', controls.showLabels !== true)
+            cell.valueEl.classList.toggle('hc-sensor-grid__hidden', controls.showValues !== true)
+
+            // ── Canvas layer per cell: heat glow, track, aurora ──
+            const col = wide ? index : index % 2
+            const row = wide ? 0 : Math.floor(index / 2)
+            const cx = gridLeft + col * cellW + cellW / 2
+            const cy = gridTop + row * cellH + cellH / 2
+            const glowRadius = Math.min(cellW, cellH) * (0.52 + heat * 0.16)
+            const glowGradient = c.createRadialGradient(cx, cy, 0, cx, cy, glowRadius)
+            glowGradient.addColorStop(0, withAlpha(heatColor, (0.1 + heat * 0.16) * cellIn))
+            glowGradient.addColorStop(1, withAlpha(heatColor, 0))
+            c.fillStyle = glowGradient
+            c.fillRect(cx - glowRadius, cy - glowRadius, glowRadius * 2, glowRadius * 2)
+
+            if (controls.showTracks === true) {
+                const trackW = cellW * 0.42
+                const trackY = cy + cellH * 0.26
+                c.strokeStyle = withAlpha('#8a8fa8', 0.18)
+                c.lineWidth = 2
+                c.beginPath()
+                c.moveTo(cx - trackW / 2, trackY)
+                c.lineTo(cx + trackW / 2, trackY)
+                c.stroke()
+                c.save()
+                c.shadowColor = heatColor
+                c.shadowBlur = 8
+                c.strokeStyle = withAlpha(heatColor, 0.85 * cellIn)
+                c.beginPath()
+                c.moveTo(cx - trackW / 2, trackY)
+                c.lineTo(cx - trackW / 2 + trackW * heat * easeOutCubic(cellIn), trackY)
+                c.stroke()
+                c.restore()
+            }
+
+            if (controls.showSparklines === true) {
+                const values = cell.history.values()
+                if (values.length > 1) {
+                    const sparkW = cellW * 0.52
+                    const sparkH = cellH * 0.14
+                    const baseY = cy + cellH * 0.38
+                    c.beginPath()
+                    c.moveTo(cx - sparkW / 2, baseY)
+                    for (let vi = 0; vi < values.length; vi += 1) {
+                        const x = cx - sparkW / 2 + (vi / (values.length - 1)) * sparkW
+                        c.lineTo(x, baseY - clamp01(values[vi] ?? 0) * sparkH)
+                    }
+                    c.lineTo(cx + sparkW / 2, baseY)
+                    c.closePath()
+                    const ribbon = c.createLinearGradient(0, baseY - sparkH, 0, baseY)
+                    ribbon.addColorStop(0, withAlpha(heatColor, 0.3 * cellIn))
+                    ribbon.addColorStop(1, withAlpha(heatColor, 0))
+                    c.fillStyle = ribbon
+                    c.fill()
+                }
+            }
+        }
     }
 }
