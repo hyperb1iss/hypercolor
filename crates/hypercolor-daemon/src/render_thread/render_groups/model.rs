@@ -128,6 +128,10 @@ pub(super) enum RenderedGroupFrameTarget {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum RenderedGroupResidency {
     Cpu,
+    #[cfg_attr(
+        not(any(feature = "wgpu", feature = "servo-gpu-import")),
+        allow(dead_code)
+    )]
     Gpu,
 }
 

@@ -1,8 +1,11 @@
-use std::collections::{HashMap, VecDeque};
+#[cfg(feature = "wgpu")]
+use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::time::Instant;
 
 use anyhow::Result;
 use hypercolor_core::asset::AssetLibrary;
+#[cfg(feature = "wgpu")]
 use hypercolor_core::bus::DisplayGroupOutputRoute;
 use hypercolor_core::effect::EffectRegistry;
 use hypercolor_core::engine::FpsTier;
@@ -14,9 +17,12 @@ use hypercolor_core::types::canvas::{
 };
 use hypercolor_core::types::event::{FrameData, HypercolorEvent};
 use hypercolor_types::config::RenderAccelerationMode;
+#[cfg(feature = "wgpu")]
 use hypercolor_types::device::DisplayFrameFormat;
 use hypercolor_types::event::ZoneColors;
-use hypercolor_types::scene::{DisplayFaceTarget, SceneId, ZoneId};
+use hypercolor_types::scene::SceneId;
+#[cfg(feature = "wgpu")]
+use hypercolor_types::scene::{DisplayFaceTarget, ZoneId};
 use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::spatial::{Output, SpatialLayout};
 use std::sync::Arc;

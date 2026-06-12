@@ -150,27 +150,36 @@ pub(super) fn composed_frame_to_producer_frame(
     composed: ComposedFrameSet,
     sparkleflinger: &mut SparkleFlinger,
 ) -> Option<ProducerFrame> {
-    composed
+    let frame = composed
         .sampling_surface
         .map(ProducerFrame::Surface)
         .or_else(|| composed.sampling_canvas.map(ProducerFrame::Canvas))
-        .or_else(|| composed.preview_surface.map(ProducerFrame::Surface))
-        .or_else(|| {
-            #[cfg(feature = "wgpu")]
-            {
-                if composed.backend == CompositorBackendKind::Gpu && !composed.gpu_readback_failed {
-                    return sparkleflinger
-                        .current_output_frame()
-                        .ok()
-                        .flatten()
-                        .map(ProducerFrame::GpuTexture);
-                }
-            }
+        .or_else(|| composed.preview_surface.map(ProducerFrame::Surface));
 
-            None
-        })
+    #[cfg(feature = "wgpu")]
+    let frame = frame.or_else(|| {
+        if composed.backend == CompositorBackendKind::Gpu && !composed.gpu_readback_failed {
+            return sparkleflinger
+                .current_output_frame()
+                .ok()
+                .flatten()
+                .map(ProducerFrame::GpuTexture);
+        }
+
+        None
+    });
+    #[cfg(not(feature = "wgpu"))]
+    let _ = sparkleflinger;
+
+    frame
 }
 
+// The final wildcard also covers the GPU frame variants when those features
+// are enabled, so it must stay a wildcard in every feature combination.
+#[cfg_attr(
+    not(any(feature = "wgpu", feature = "servo-gpu-import")),
+    allow(clippy::match_wildcard_for_single_variants)
+)]
 pub(super) fn surface_backed_frame(
     surface_pool: &mut RenderSurfacePool,
     frame: ProducerFrame,

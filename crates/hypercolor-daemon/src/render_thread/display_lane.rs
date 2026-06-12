@@ -126,13 +126,6 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
             .collect()
     }
 
-    #[cfg_attr(
-        not(feature = "wgpu"),
-        expect(
-            clippy::unnecessary_wraps,
-            reason = "the return type stays feature-stable because GPU readback can skip a frame"
-        )
-    )]
     fn materialize_group_canvas(
         &mut self,
         group_id: ZoneId,

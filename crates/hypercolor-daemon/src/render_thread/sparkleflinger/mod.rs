@@ -7,6 +7,7 @@ mod gpu_sampling;
 mod transform;
 
 use anyhow::{Result, bail};
+#[cfg(feature = "wgpu")]
 use hypercolor_core::bus::DisplayYuv420Frame;
 use hypercolor_core::spatial::PreparedZonePlan;
 #[cfg(feature = "wgpu")]
@@ -374,6 +375,7 @@ impl MediaTextureSourceKey {
     }
 }
 
+#[cfg_attr(not(feature = "wgpu"), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct DisplayFinalizeCacheKey {
     pub(crate) group_id: ZoneId,
@@ -384,6 +386,7 @@ pub(crate) struct DisplayFinalizeCacheKey {
     pub(crate) frame_format: DisplayFrameFormat,
 }
 
+#[cfg_attr(not(feature = "wgpu"), allow(dead_code))]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct DisplayFinalizeParams {
     pub(crate) cache_key: DisplayFinalizeCacheKey,

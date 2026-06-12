@@ -191,6 +191,13 @@ fn fallback_zone_colors(
     Some(SpatialEngine::new(fallback_layout).sample(&fallback_canvas))
 }
 
+#[cfg_attr(
+    not(any(feature = "wgpu", feature = "servo-gpu-import")),
+    expect(
+        clippy::unnecessary_wraps,
+        reason = "the return type stays feature-stable because GPU frames cannot be materialized on the CPU"
+    )
+)]
 fn producer_frame_canvas(frame: &ProducerFrame) -> Option<Canvas> {
     match frame {
         ProducerFrame::Canvas(canvas) => Some(canvas.clone()),
