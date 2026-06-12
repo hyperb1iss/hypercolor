@@ -240,9 +240,27 @@ async fn handle_default_scope(
             }
             removed
         };
-        {
+        let (was_live, scene_id, cleared_zone) = {
             let mut scene_manager = state.scene_manager.write().await;
+            let scene_assigned = scene_manager
+                .active_scene()
+                .and_then(|scene| scene.display_group_for(device_id))
+                .is_some_and(|zone| zone.effect_id.is_some());
+            let cleared = scene_manager.default_display_group_for(device_id).cloned();
             scene_manager.remove_default_display_group(device_id);
+            let scene_id = scene_manager
+                .active_scene()
+                .map(|scene| scene.id)
+                .unwrap_or(hypercolor_types::scene::SceneId::DEFAULT);
+            (!scene_assigned, scene_id, cleared)
+        };
+        if removed
+            && was_live
+            && let Some(mut zone) = cleared_zone
+        {
+            zone.effect_id = None;
+            zone.layers.clear();
+            publish_render_group_changed(state, scene_id, &zone, ZoneChangeKind::Updated);
         }
         let live_scope = live_scope_payload(state, device_id).await;
         return Ok(json!({
@@ -271,6 +289,15 @@ async fn handle_default_scope(
                 reason: format!("effect '{}' is not a display face", effect.name),
             });
         }
+        if !matches!(
+            effect.source,
+            hypercolor_types::effect::EffectSource::Html { .. }
+        ) {
+            return Err(ToolError::InvalidParam {
+                param: "effect_id".into(),
+                reason: format!("effect '{}' is not an HTML display face", effect.name),
+            });
+        }
         effect
     };
 
@@ -297,6 +324,16 @@ async fn handle_default_scope(
         ));
     };
     let live_scope = live_scope_payload(state, device_id).await;
+    if live_scope == json!("default") {
+        let scene_id = {
+            let scene_manager = state.scene_manager.read().await;
+            scene_manager
+                .active_scene()
+                .map(|scene| scene.id)
+                .unwrap_or(hypercolor_types::scene::SceneId::DEFAULT)
+        };
+        publish_render_group_changed(state, scene_id, &group, ZoneChangeKind::Updated);
+    }
 
     Ok(json!({
         "device": display_device_payload(info, surface),

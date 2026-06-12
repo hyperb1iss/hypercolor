@@ -81,6 +81,16 @@ impl LightingFeedState {
 
 fn effect_names_for_groups(groups: &[Zone], registry: &EffectRegistry) -> Vec<String> {
     let mut names = Vec::new();
+    let mut push_effect = |effect_id: &hypercolor_types::effect::EffectId,
+                           names: &mut Vec<String>| {
+        let Some(entry) = registry.get(effect_id) else {
+            return;
+        };
+        let name = entry.metadata.name.clone();
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    };
     for group in groups {
         if !group.enabled {
             continue;
@@ -89,16 +99,16 @@ fn effect_names_for_groups(groups: &[Zone], registry: &EffectRegistry) -> Vec<St
             if !layer.enabled {
                 continue;
             }
-            let LayerSource::Effect { effect_id, .. } = &layer.source else {
-                continue;
-            };
-            let Some(entry) = registry.get(effect_id) else {
-                continue;
-            };
-            let name = entry.metadata.name.clone();
-            if !names.contains(&name) {
-                names.push(name);
+            if let LayerSource::Effect { effect_id, .. } = &layer.source {
+                push_effect(effect_id, &mut names);
             }
+        }
+        // Default-face overlay zones carry their effect on the legacy
+        // zone-level field with no layer stack.
+        if group.layers.is_empty()
+            && let Some(effect_id) = group.effect_id.as_ref()
+        {
+            push_effect(effect_id, &mut names);
         }
     }
     names

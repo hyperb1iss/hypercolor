@@ -1344,7 +1344,11 @@ pub async fn install_effect(
             || sanitize_effect_filename_stem(&validated.title),
             sanitize_effect_filename_stem,
         );
-    let installed_path = dedupe_install_path(&install_dir, &preferred_stem);
+    // Same stem updates in place: the path-derived effect id stays stable,
+    // so existing assignments follow the update instead of a `-2` clone
+    // appearing beside the original.
+    let installed_path = install_dir.join(format!("{preferred_stem}.html"));
+    let replacing = installed_path.exists();
 
     if let Err(error) = fs::write(&installed_path, html.as_bytes()).await {
         return ApiError::internal(format!(
@@ -1388,6 +1392,7 @@ pub async fn install_effect(
     info!(
         effect = %entry.metadata.name,
         path = %entry.source_path.display(),
+        replaced_existing = replacing,
         "Installed uploaded effect"
     );
 
@@ -2144,22 +2149,6 @@ fn sanitize_effect_filename_stem(input: &str) -> String {
         "effect".to_owned()
     } else {
         out
-    }
-}
-
-fn dedupe_install_path(directory: &FsPath, preferred_stem: &str) -> PathBuf {
-    let mut attempt = 1usize;
-    loop {
-        let name = if attempt == 1 {
-            format!("{preferred_stem}.html")
-        } else {
-            format!("{preferred_stem}-{attempt}.html")
-        };
-        let candidate = directory.join(name);
-        if !candidate.exists() {
-            return candidate;
-        }
-        attempt += 1;
     }
 }
 

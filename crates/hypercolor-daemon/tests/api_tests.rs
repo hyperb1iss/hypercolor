@@ -1840,25 +1840,27 @@ async fn install_effect_upload_rejects_oversized_payloads() {
 }
 
 #[tokio::test]
-async fn install_effect_upload_dedupes_colliding_filenames() {
+async fn install_effect_upload_updates_existing_file_in_place() {
     let (state, tempdir) = isolated_state_with_tempdir();
     let state = Arc::new(state);
-    let app = test_app_with_state(state);
+    let app = test_app_with_state(Arc::clone(&state));
     let user_effects_dir = tempdir.path().join("data/effects/user");
     fs::create_dir_all(&user_effects_dir).expect("user effects dir should exist");
+    let existing_path = user_effects_dir.join("aurora.html");
     fs::write(
-        user_effects_dir.join("aurora.html"),
-        "<!DOCTYPE html><html><head><title>Existing</title></head><body><canvas id=\"exCanvas\"></canvas><script>1</script></body></html>",
+        &existing_path,
+        "<!DOCTYPE html><html><head><title>Aurora</title></head><body><canvas id=\"exCanvas\"></canvas><script>1</script></body></html>",
     )
     .expect("existing effect should be written");
     let html = r#"<!DOCTYPE html>
 <html>
   <head>
     <title>Aurora</title>
+    <meta description="Updated build" />
   </head>
   <body>
     <canvas id="exCanvas"></canvas>
-    <script>console.log("ok")</script>
+    <script>console.log("updated")</script>
   </body>
 </html>"#;
 
@@ -1873,9 +1875,26 @@ async fn install_effect_upload_dedupes_colliding_filenames() {
         .as_str()
         .expect("installed path should be present");
     assert!(
-        installed_path.ends_with("aurora-2.html"),
-        "expected deduped filename, got {installed_path}"
+        installed_path.ends_with("aurora.html"),
+        "same-stem uploads must update in place, got {installed_path}"
     );
+    assert!(
+        !user_effects_dir.join("aurora-2.html").exists(),
+        "no -2 clone should appear beside the original"
+    );
+    let written = fs::read_to_string(&existing_path).expect("updated file should read");
+    assert!(
+        written.contains("updated"),
+        "file content should be replaced"
+    );
+
+    // Path-derived id is stable, so the registry holds one updated entry.
+    let registry = state.effect_registry.read().await;
+    let aurora_entries = registry
+        .iter()
+        .filter(|(_, entry)| entry.metadata.name == "Aurora")
+        .count();
+    assert_eq!(aurora_entries, 1);
 }
 
 async fn activate_empty_test_scene(state: &Arc<AppState>, name: &str) -> SceneId {
