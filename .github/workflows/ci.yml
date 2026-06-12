@@ -171,112 +171,6 @@ jobs:
           cargo clippy --locked ${{ env.RUST_SHARED_WORKSPACE_ARGS }} --all-targets
           -- -D warnings
 
-  rust-check-servo:
-    name: Rust Check / ${{ matrix.label }}
-    needs: changes
-    if: >-
-      needs.changes.outputs.rust == 'true' &&
-      needs.changes.outputs.full == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - suite: core-servo
-            label: Core Servo
-            shared_key: servo-core
-            target_dir: .cache/hypercolor/target/servo-core
-          - suite: daemon-servo
-            label: Daemon Servo
-            shared_key: servo-daemon
-            target_dir: .cache/hypercolor/target/servo-daemon
-    env:
-      CARGO_TARGET_DIR: ${{ github.workspace }}/${{ matrix.target_dir }}
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Install system dependencies
-        run: |
-          sudo timeout --kill-after=30s "$APT_STEP_TIMEOUT" apt-get \
-            -o Acquire::Retries="$APT_RETRIES" \
-            -o Acquire::http::Timeout="$APT_HTTP_TIMEOUT" \
-            -o Acquire::https::Timeout="$APT_HTTP_TIMEOUT" \
-            update
-          sudo env DEBIAN_FRONTEND=noninteractive timeout --kill-after=30s "$APT_STEP_TIMEOUT" apt-get \
-            -o Dpkg::Use-Pty=0 \
-            -o Acquire::Retries="$APT_RETRIES" \
-            -o Acquire::http::Timeout="$APT_HTTP_TIMEOUT" \
-            -o Acquire::https::Timeout="$APT_HTTP_TIMEOUT" \
-            install -y --no-install-recommends ${{ env.LINUX_RUST_DEPS }}
-
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-          components: clippy
-
-      - uses: ./.github/actions/rust-build-cache
-        with:
-          shared-key: ${{ matrix.shared_key }}
-          workspaces: . -> ${{ matrix.target_dir }}
-          cache-on-failure: "false"
-
-      - name: Clippy core with Servo
-        if: matrix.suite == 'core-servo'
-        run: >-
-          ./scripts/cargo-cache-build.sh
-          cargo clippy --locked -p hypercolor-core --features servo --lib --tests
-          -- -D warnings
-
-      - name: Clippy daemon with Servo
-        if: matrix.suite == 'daemon-servo'
-        run: >-
-          ./scripts/cargo-cache-build.sh
-          cargo clippy --locked -p hypercolor-daemon --lib --bin hypercolor-daemon --tests
-          -- -D warnings
-
-  rust-check-native:
-    name: Rust Check / Native App
-    needs: changes
-    if: needs.changes.outputs.rust == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    env:
-      CARGO_TARGET_DIR: ${{ github.workspace }}/.cache/hypercolor/target/rust-check-native
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Install system dependencies
-        run: |
-          sudo timeout --kill-after=30s "$APT_STEP_TIMEOUT" apt-get \
-            -o Acquire::Retries="$APT_RETRIES" \
-            -o Acquire::http::Timeout="$APT_HTTP_TIMEOUT" \
-            -o Acquire::https::Timeout="$APT_HTTP_TIMEOUT" \
-            update
-          sudo env DEBIAN_FRONTEND=noninteractive timeout --kill-after=30s "$APT_STEP_TIMEOUT" apt-get \
-            -o Dpkg::Use-Pty=0 \
-            -o Acquire::Retries="$APT_RETRIES" \
-            -o Acquire::http::Timeout="$APT_HTTP_TIMEOUT" \
-            -o Acquire::https::Timeout="$APT_HTTP_TIMEOUT" \
-            install -y --no-install-recommends ${{ env.LINUX_DEPS }}
-
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-          components: clippy
-
-      - uses: ./.github/actions/rust-build-cache
-        with:
-          shared-key: rust-check-native
-          workspaces: . -> .cache/hypercolor/target/rust-check-native
-          cache-on-failure: "false"
-
-      - name: Clippy native app crates
-        run: >-
-          ./scripts/cargo-cache-build.sh
-          cargo clippy --locked -p hypercolor-app -p hypercolor-tray --all-targets
-          -- -D warnings
-
   # ── Generated Effects Artifact ────────────────────────────────
   generated-effects:
     name: Generated Effects
@@ -346,6 +240,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy
 
       - uses: ./.github/actions/rust-build-cache
         with:
@@ -376,6 +271,13 @@ jobs:
         run: >-
           ./scripts/cargo-cache-build.sh
           cargo test --doc --locked ${{ env.RUST_SHARED_WORKSPACE_ARGS }}
+
+      - name: Clippy native app crates
+        if: matrix.suite == 'native'
+        run: >-
+          ./scripts/cargo-cache-build.sh
+          cargo clippy --locked -p hypercolor-app -p hypercolor-tray --all-targets
+          -- -D warnings
 
       - name: Run native app tests
         if: matrix.suite == 'native'
@@ -409,24 +311,28 @@ jobs:
           cargo test --doc --locked -p hypercolor-daemon --no-default-features
           --features builtin-drivers
 
+  # Clippy and tests run in one job per Servo shape so the saved cache entry
+  # holds the union of check and build artifacts. Splitting them across jobs
+  # with a shared key means only the first save wins and the other job
+  # rebuilds its artifacts on every run.
   rust-test-servo:
-    name: Rust Test / ${{ matrix.label }}
+    name: Rust Servo / ${{ matrix.label }}
     needs: changes
     if: >-
       needs.changes.outputs.rust == 'true' &&
       needs.changes.outputs.full == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:
         include:
           - suite: core-servo
-            label: Core Servo
+            label: Core
             shared_key: servo-core
             target_dir: .cache/hypercolor/target/servo-core
           - suite: daemon-servo
-            label: Daemon Servo
+            label: Daemon
             shared_key: servo-daemon
             target_dir: .cache/hypercolor/target/servo-daemon
     env:
@@ -451,6 +357,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy
 
       - uses: ./.github/actions/rust-build-cache
         with:
@@ -462,6 +369,20 @@ jobs:
         uses: taiki-e/install-action@b550161ef8a7bc4f2a671c0b03a18ac9ccedea1e # v2.79.1
         with:
           tool: cargo-nextest
+
+      - name: Clippy core with Servo
+        if: matrix.suite == 'core-servo'
+        run: >-
+          ./scripts/cargo-cache-build.sh
+          cargo clippy --locked -p hypercolor-core --features servo --lib --tests
+          -- -D warnings
+
+      - name: Clippy daemon with Servo
+        if: matrix.suite == 'daemon-servo'
+        run: >-
+          ./scripts/cargo-cache-build.sh
+          cargo clippy --locked -p hypercolor-daemon --lib --bin hypercolor-daemon --tests
+          -- -D warnings
 
       - name: Run core Servo tests
         if: matrix.suite == 'core-servo'
@@ -573,6 +494,8 @@ jobs:
     defaults:
       run:
         working-directory: python
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/.cache/hypercolor/target/rust-test-daemon
     steps:
       - uses: actions/checkout@v6
 
@@ -605,6 +528,10 @@ jobs:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
 
       - uses: ./.github/actions/rust-build-cache
+        with:
+          shared-key: rust-test-daemon
+          workspaces: . -> .cache/hypercolor/target/rust-test-daemon
+          save-if: "false"
 
       - name: Install dependencies
         run: uv sync --frozen
@@ -711,18 +638,19 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Both suites restore the matching test job's cache shape and never
+          # save, so e2e builds reuse warm dependency artifacts without adding
+          # entries to the cache quota.
           - suite: servo
             label: Servo
             build_recipe: e2e-build
             shared_key: servo-daemon
-            cache_key: e2e-dev-v1
             target_dir: .cache/hypercolor/target/servo-daemon
           - suite: cpu
             label: CPU Smoke
             build_recipe: e2e-build-cpu
-            shared_key: e2e-cpu
-            cache_key: ""
-            target_dir: .cache/hypercolor/target/e2e-cpu
+            shared_key: rust-test-daemon
+            target_dir: .cache/hypercolor/target/rust-test-daemon
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/${{ matrix.target_dir }}
     steps:
@@ -758,9 +686,8 @@ jobs:
       - uses: ./.github/actions/rust-build-cache
         with:
           shared-key: ${{ matrix.shared_key }}
-          key: ${{ matrix.cache_key }}
           workspaces: . -> ${{ matrix.target_dir }}
-          cache-on-failure: "false"
+          save-if: "false"
 
       - name: Install just
         uses: taiki-e/install-action@b550161ef8a7bc4f2a671c0b03a18ac9ccedea1e # v2.79.1
@@ -979,7 +906,7 @@ jobs:
       startsWith(github.ref, 'refs/tags/') ||
       (github.event_name == 'workflow_dispatch' &&
       inputs.release_artifacts == 'full')
-    needs: [rust-check-shared, rust-check-servo, rust-check-native, rust-test, rust-test-servo, rust-deny, sdk, ui, e2e, web-assets]
+    needs: [rust-check-shared, rust-test, rust-test-servo, rust-deny, sdk, ui, e2e, web-assets]
     strategy:
       fail-fast: false
       matrix:
@@ -1278,7 +1205,7 @@ jobs:
       startsWith(github.ref, 'refs/tags/') ||
       (github.event_name == 'workflow_dispatch' &&
       inputs.release_artifacts == 'full')
-    needs: [rust-check-shared, rust-check-servo, rust-check-native, rust-test, rust-test-servo, rust-deny, sdk, ui, e2e, web-assets]
+    needs: [rust-check-shared, rust-test, rust-test-servo, rust-deny, sdk, ui, e2e, web-assets]
     strategy:
       fail-fast: false
       matrix:
