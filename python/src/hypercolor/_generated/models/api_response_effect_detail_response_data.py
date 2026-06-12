@@ -21,12 +21,12 @@ T = TypeVar("T", bound="ApiResponseEffectDetailResponseData")
 
 @_attrs_define
 class ApiResponseEffectDetailResponseData:
-    """
+    """Response for `GET /api/v1/effects/{id}`.
+
     Attributes:
         audio_reactive (bool):
         author (str):
         category (str):
-        controls (list[ControlDefinition]):
         description (str):
         id (str):
         name (str):
@@ -35,6 +35,7 @@ class ApiResponseEffectDetailResponseData:
         tags (list[str]):
         version (str):
         active_control_values (ApiResponseEffectDetailResponseDataActiveControlValuesType0 | None | Unset):
+        controls (list[ControlDefinition] | Unset):
         cover_image_url (None | str | Unset):
         presets (list[PresetTemplate] | Unset):
     """
@@ -42,7 +43,6 @@ class ApiResponseEffectDetailResponseData:
     audio_reactive: bool
     author: str
     category: str
-    controls: list[ControlDefinition]
     description: str
     id: str
     name: str
@@ -53,6 +53,7 @@ class ApiResponseEffectDetailResponseData:
     active_control_values: (
         ApiResponseEffectDetailResponseDataActiveControlValuesType0 | None | Unset
     ) = UNSET
+    controls: list[ControlDefinition] | Unset = UNSET
     cover_image_url: None | str | Unset = UNSET
     presets: list[PresetTemplate] | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -67,11 +68,6 @@ class ApiResponseEffectDetailResponseData:
         author = self.author
 
         category = self.category
-
-        controls = []
-        for controls_item_data in self.controls:
-            controls_item = controls_item_data.to_dict()
-            controls.append(controls_item)
 
         description = self.description
 
@@ -98,6 +94,13 @@ class ApiResponseEffectDetailResponseData:
         else:
             active_control_values = self.active_control_values
 
+        controls: list[dict[str, Any]] | Unset = UNSET
+        if not isinstance(self.controls, Unset):
+            controls = []
+            for controls_item_data in self.controls:
+                controls_item = controls_item_data.to_dict()
+                controls.append(controls_item)
+
         cover_image_url: None | str | Unset
         if isinstance(self.cover_image_url, Unset):
             cover_image_url = UNSET
@@ -118,7 +121,6 @@ class ApiResponseEffectDetailResponseData:
                 "audio_reactive": audio_reactive,
                 "author": author,
                 "category": category,
-                "controls": controls,
                 "description": description,
                 "id": id,
                 "name": name,
@@ -130,6 +132,8 @@ class ApiResponseEffectDetailResponseData:
         )
         if active_control_values is not UNSET:
             field_dict["active_control_values"] = active_control_values
+        if controls is not UNSET:
+            field_dict["controls"] = controls
         if cover_image_url is not UNSET:
             field_dict["cover_image_url"] = cover_image_url
         if presets is not UNSET:
@@ -151,13 +155,6 @@ class ApiResponseEffectDetailResponseData:
         author = d.pop("author")
 
         category = d.pop("category")
-
-        controls = []
-        _controls = d.pop("controls")
-        for controls_item_data in _controls:
-            controls_item = ControlDefinition.from_dict(controls_item_data)
-
-            controls.append(controls_item)
 
         description = d.pop("description")
 
@@ -201,6 +198,15 @@ class ApiResponseEffectDetailResponseData:
             d.pop("active_control_values", UNSET)
         )
 
+        _controls = d.pop("controls", UNSET)
+        controls: list[ControlDefinition] | Unset = UNSET
+        if _controls is not UNSET:
+            controls = []
+            for controls_item_data in _controls:
+                controls_item = ControlDefinition.from_dict(controls_item_data)
+
+                controls.append(controls_item)
+
         def _parse_cover_image_url(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -223,7 +229,6 @@ class ApiResponseEffectDetailResponseData:
             audio_reactive=audio_reactive,
             author=author,
             category=category,
-            controls=controls,
             description=description,
             id=id,
             name=name,
@@ -232,6 +237,7 @@ class ApiResponseEffectDetailResponseData:
             tags=tags,
             version=version,
             active_control_values=active_control_values,
+            controls=controls,
             cover_image_url=cover_image_url,
             presets=presets,
         )

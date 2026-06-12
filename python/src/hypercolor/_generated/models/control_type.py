@@ -2,6 +2,7 @@ from enum import Enum
 
 
 class ControlType(str, Enum):
+    ASSET = "asset"
     COLOR_PICKER = "color_picker"
     DROPDOWN = "dropdown"
     GRADIENT_EDITOR = "gradient_editor"

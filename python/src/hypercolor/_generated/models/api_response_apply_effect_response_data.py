@@ -22,20 +22,21 @@ T = TypeVar("T", bound="ApiResponseApplyEffectResponseData")
 
 @_attrs_define
 class ApiResponseApplyEffectResponseData:
-    """
+    """Response for `POST /api/v1/effects/{id}/apply`.
+
     Attributes:
         applied_controls (ApiResponseApplyEffectResponseDataAppliedControls):
-        effect (EffectRefSummary):
-        transition (ApplyTransitionResponse):
-        warnings (list[str]):
+        effect (EffectRefSummary): `{ id, name }` reference to an effect.
+        transition (ApplyTransitionResponse): Transition actually applied by the daemon.
         layout (EffectLayoutApplyResult | None | Unset):
+        warnings (list[str] | Unset):
     """
 
     applied_controls: ApiResponseApplyEffectResponseDataAppliedControls
     effect: EffectRefSummary
     transition: ApplyTransitionResponse
-    warnings: list[str]
     layout: EffectLayoutApplyResult | None | Unset = UNSET
+    warnings: list[str] | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -47,8 +48,6 @@ class ApiResponseApplyEffectResponseData:
 
         transition = self.transition.to_dict()
 
-        warnings = self.warnings
-
         layout: dict[str, Any] | None | Unset
         if isinstance(self.layout, Unset):
             layout = UNSET
@@ -57,6 +56,10 @@ class ApiResponseApplyEffectResponseData:
         else:
             layout = self.layout
 
+        warnings: list[str] | Unset = UNSET
+        if not isinstance(self.warnings, Unset):
+            warnings = self.warnings
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -64,11 +67,12 @@ class ApiResponseApplyEffectResponseData:
                 "applied_controls": applied_controls,
                 "effect": effect,
                 "transition": transition,
-                "warnings": warnings,
             }
         )
         if layout is not UNSET:
             field_dict["layout"] = layout
+        if warnings is not UNSET:
+            field_dict["warnings"] = warnings
 
         return field_dict
 
@@ -90,8 +94,6 @@ class ApiResponseApplyEffectResponseData:
 
         transition = ApplyTransitionResponse.from_dict(d.pop("transition"))
 
-        warnings = cast(list[str], d.pop("warnings"))
-
         def _parse_layout(data: object) -> EffectLayoutApplyResult | None | Unset:
             if data is None:
                 return data
@@ -109,12 +111,14 @@ class ApiResponseApplyEffectResponseData:
 
         layout = _parse_layout(d.pop("layout", UNSET))
 
+        warnings = cast(list[str], d.pop("warnings", UNSET))
+
         api_response_apply_effect_response_data = cls(
             applied_controls=applied_controls,
             effect=effect,
             transition=transition,
-            warnings=warnings,
             layout=layout,
+            warnings=warnings,
         )
 
         api_response_apply_effect_response_data.additional_properties = d

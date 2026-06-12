@@ -21,7 +21,7 @@ class ApiResponseDeviceListResponse:
     """Standard success response wrapper.
 
     Attributes:
-        data (ApiResponseDeviceListResponseData):
+        data (ApiResponseDeviceListResponseData): Response for `GET /api/v1/devices`.
         meta (Meta): Response metadata included in every envelope.
     """
 

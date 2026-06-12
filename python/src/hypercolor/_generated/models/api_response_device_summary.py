@@ -19,7 +19,7 @@ class ApiResponseDeviceSummary:
     """Standard success response wrapper.
 
     Attributes:
-        data (ApiResponseDeviceSummaryData):
+        data (ApiResponseDeviceSummaryData): One device in the list/detail responses.
         meta (Meta): Response metadata included in every envelope.
     """
 

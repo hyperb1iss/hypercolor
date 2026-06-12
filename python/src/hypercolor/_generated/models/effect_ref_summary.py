@@ -11,7 +11,8 @@ T = TypeVar("T", bound="EffectRefSummary")
 
 @_attrs_define
 class EffectRefSummary:
-    """
+    """`{ id, name }` reference to an effect.
+
     Attributes:
         id (str):
         name (str):

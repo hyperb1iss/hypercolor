@@ -15,25 +15,35 @@ T = TypeVar("T", bound="GpuCompositorProbeStatus")
 class GpuCompositorProbeStatus:
     """
     Attributes:
+        adapter_device_type (str):
         adapter_name (str):
         backend (str):
         linux_servo_gpu_import_backend_compatible (bool):
         max_storage_textures_per_shader_stage (int):
         max_texture_dimension_2d (int):
+        servo_gpu_import_backend_compatible (bool):
         texture_format (str):
         linux_servo_gpu_import_backend_reason (None | str | Unset):
+        servo_gpu_import_backend_reason (None | str | Unset):
+        software_adapter_reason (None | str | Unset):
     """
 
+    adapter_device_type: str
     adapter_name: str
     backend: str
     linux_servo_gpu_import_backend_compatible: bool
     max_storage_textures_per_shader_stage: int
     max_texture_dimension_2d: int
+    servo_gpu_import_backend_compatible: bool
     texture_format: str
     linux_servo_gpu_import_backend_reason: None | str | Unset = UNSET
+    servo_gpu_import_backend_reason: None | str | Unset = UNSET
+    software_adapter_reason: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        adapter_device_type = self.adapter_device_type
+
         adapter_name = self.adapter_name
 
         backend = self.backend
@@ -48,6 +58,8 @@ class GpuCompositorProbeStatus:
 
         max_texture_dimension_2d = self.max_texture_dimension_2d
 
+        servo_gpu_import_backend_compatible = self.servo_gpu_import_backend_compatible
+
         texture_format = self.texture_format
 
         linux_servo_gpu_import_backend_reason: None | str | Unset
@@ -58,15 +70,29 @@ class GpuCompositorProbeStatus:
                 self.linux_servo_gpu_import_backend_reason
             )
 
+        servo_gpu_import_backend_reason: None | str | Unset
+        if isinstance(self.servo_gpu_import_backend_reason, Unset):
+            servo_gpu_import_backend_reason = UNSET
+        else:
+            servo_gpu_import_backend_reason = self.servo_gpu_import_backend_reason
+
+        software_adapter_reason: None | str | Unset
+        if isinstance(self.software_adapter_reason, Unset):
+            software_adapter_reason = UNSET
+        else:
+            software_adapter_reason = self.software_adapter_reason
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
+                "adapter_device_type": adapter_device_type,
                 "adapter_name": adapter_name,
                 "backend": backend,
                 "linux_servo_gpu_import_backend_compatible": linux_servo_gpu_import_backend_compatible,
                 "max_storage_textures_per_shader_stage": max_storage_textures_per_shader_stage,
                 "max_texture_dimension_2d": max_texture_dimension_2d,
+                "servo_gpu_import_backend_compatible": servo_gpu_import_backend_compatible,
                 "texture_format": texture_format,
             }
         )
@@ -74,12 +100,20 @@ class GpuCompositorProbeStatus:
             field_dict["linux_servo_gpu_import_backend_reason"] = (
                 linux_servo_gpu_import_backend_reason
             )
+        if servo_gpu_import_backend_reason is not UNSET:
+            field_dict["servo_gpu_import_backend_reason"] = (
+                servo_gpu_import_backend_reason
+            )
+        if software_adapter_reason is not UNSET:
+            field_dict["software_adapter_reason"] = software_adapter_reason
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
+        adapter_device_type = d.pop("adapter_device_type")
+
         adapter_name = d.pop("adapter_name")
 
         backend = d.pop("backend")
@@ -93,6 +127,10 @@ class GpuCompositorProbeStatus:
         )
 
         max_texture_dimension_2d = d.pop("max_texture_dimension_2d")
+
+        servo_gpu_import_backend_compatible = d.pop(
+            "servo_gpu_import_backend_compatible"
+        )
 
         texture_format = d.pop("texture_format")
 
@@ -111,14 +149,40 @@ class GpuCompositorProbeStatus:
             )
         )
 
+        def _parse_servo_gpu_import_backend_reason(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        servo_gpu_import_backend_reason = _parse_servo_gpu_import_backend_reason(
+            d.pop("servo_gpu_import_backend_reason", UNSET)
+        )
+
+        def _parse_software_adapter_reason(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        software_adapter_reason = _parse_software_adapter_reason(
+            d.pop("software_adapter_reason", UNSET)
+        )
+
         gpu_compositor_probe_status = cls(
+            adapter_device_type=adapter_device_type,
             adapter_name=adapter_name,
             backend=backend,
             linux_servo_gpu_import_backend_compatible=linux_servo_gpu_import_backend_compatible,
             max_storage_textures_per_shader_stage=max_storage_textures_per_shader_stage,
             max_texture_dimension_2d=max_texture_dimension_2d,
+            servo_gpu_import_backend_compatible=servo_gpu_import_backend_compatible,
             texture_format=texture_format,
             linux_servo_gpu_import_backend_reason=linux_servo_gpu_import_backend_reason,
+            servo_gpu_import_backend_reason=servo_gpu_import_backend_reason,
+            software_adapter_reason=software_adapter_reason,
         )
 
         gpu_compositor_probe_status.additional_properties = d

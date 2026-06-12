@@ -11,7 +11,8 @@ T = TypeVar("T", bound="ApplyTransitionResponse")
 
 @_attrs_define
 class ApplyTransitionResponse:
-    """
+    """Transition actually applied by the daemon.
+
     Attributes:
         duration_ms (int):
         type_ (str):

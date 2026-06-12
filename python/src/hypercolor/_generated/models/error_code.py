@@ -10,6 +10,7 @@ class ErrorCode(str, Enum):
     PAYLOAD_TOO_LARGE = "payload_too_large"
     RATE_LIMITED = "rate_limited"
     UNAUTHORIZED = "unauthorized"
+    UNSUPPORTED_MEDIA_TYPE = "unsupported_media_type"
     VALIDATION_ERROR = "validation_error"
 
     def __str__(self) -> str:

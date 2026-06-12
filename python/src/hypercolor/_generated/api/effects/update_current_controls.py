@@ -43,6 +43,9 @@ def _parse_response(
     if response.status_code == 409:
         return None
 
+    if response.status_code == 412:
+        return None
+
     if response.status_code == 422:
         return None
 
@@ -74,7 +77,8 @@ def sync_detailed(
     """Update current effect controls
 
     Args:
-        body (UpdateCurrentControlsRequest):
+        body (UpdateCurrentControlsRequest): Request body for `PATCH
+            /api/v1/effects/current/controls`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -103,7 +107,8 @@ async def asyncio_detailed(
     """Update current effect controls
 
     Args:
-        body (UpdateCurrentControlsRequest):
+        body (UpdateCurrentControlsRequest): Request body for `PATCH
+            /api/v1/effects/current/controls`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

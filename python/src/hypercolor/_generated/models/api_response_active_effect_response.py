@@ -21,7 +21,8 @@ class ApiResponseActiveEffectResponse:
     """Standard success response wrapper.
 
     Attributes:
-        data (ApiResponseActiveEffectResponseData):
+        data (ApiResponseActiveEffectResponseData): Response for `GET /api/v1/effects/active` — the primary zone's
+            effect, or the idle shape (`state == "idle"`, `id`/`name` null).
         meta (Meta): Response metadata included in every envelope.
     """
 

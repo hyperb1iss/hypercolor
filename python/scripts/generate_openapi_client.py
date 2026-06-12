@@ -126,6 +126,7 @@ def prepare_generator_spec(path: Path, temp_dir: Path) -> Path:
         "ControlOwner",
         "ControlSurfaceEvent",
         "ControlSurfaceScope",
+        "EdgeBehavior",
     ):
         schema = schemas.get(name)
         if isinstance(schema, dict):

@@ -21,7 +21,7 @@ class ApiResponseEffectDetailResponse:
     """Standard success response wrapper.
 
     Attributes:
-        data (ApiResponseEffectDetailResponseData):
+        data (ApiResponseEffectDetailResponseData): Response for `GET /api/v1/effects/{id}`.
         meta (Meta): Response metadata included in every envelope.
     """
 

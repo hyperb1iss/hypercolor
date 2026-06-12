@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING, Any, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
+from ..types import UNSET, Unset
+
 if TYPE_CHECKING:
     from ..models.update_current_controls_request_controls import (
         UpdateCurrentControlsRequestControls,
@@ -17,24 +19,25 @@ T = TypeVar("T", bound="UpdateCurrentControlsRequest")
 
 @_attrs_define
 class UpdateCurrentControlsRequest:
-    """
+    """Request body for `PATCH /api/v1/effects/current/controls`.
+
     Attributes:
-        controls (UpdateCurrentControlsRequestControls):
+        controls (UpdateCurrentControlsRequestControls | Unset):
     """
 
-    controls: UpdateCurrentControlsRequestControls
+    controls: UpdateCurrentControlsRequestControls | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        controls = self.controls.to_dict()
+        controls: dict[str, Any] | Unset = UNSET
+        if not isinstance(self.controls, Unset):
+            controls = self.controls.to_dict()
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update(
-            {
-                "controls": controls,
-            }
-        )
+        field_dict.update({})
+        if controls is not UNSET:
+            field_dict["controls"] = controls
 
         return field_dict
 
@@ -45,7 +48,12 @@ class UpdateCurrentControlsRequest:
         )
 
         d = dict(src_dict)
-        controls = UpdateCurrentControlsRequestControls.from_dict(d.pop("controls"))
+        _controls = d.pop("controls", UNSET)
+        controls: UpdateCurrentControlsRequestControls | Unset
+        if isinstance(_controls, Unset):
+            controls = UNSET
+        else:
+            controls = UpdateCurrentControlsRequestControls.from_dict(_controls)
 
         update_current_controls_request = cls(
             controls=controls,

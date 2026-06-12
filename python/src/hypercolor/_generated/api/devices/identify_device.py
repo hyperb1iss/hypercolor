@@ -48,6 +48,9 @@ def _parse_response(
     if response.status_code == 409:
         return None
 
+    if response.status_code == 412:
+        return None
+
     if response.status_code == 422:
         return None
 
@@ -81,7 +84,7 @@ def sync_detailed(
 
     Args:
         id (str):
-        body (IdentifyRequest | Unset):
+        body (IdentifyRequest | Unset): Request body for `POST /api/v1/devices/{id}/identify`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -113,7 +116,7 @@ async def asyncio_detailed(
 
     Args:
         id (str):
-        body (IdentifyRequest | Unset):
+        body (IdentifyRequest | Unset): Request body for `POST /api/v1/devices/{id}/identify`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

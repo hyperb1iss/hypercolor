@@ -13,7 +13,8 @@ T = TypeVar("T", bound="IdentifyRequest")
 
 @_attrs_define
 class IdentifyRequest:
-    """
+    """Request body for `POST /api/v1/devices/{id}/identify`.
+
     Attributes:
         color (None | str | Unset):
         duration_ms (int | None | Unset):

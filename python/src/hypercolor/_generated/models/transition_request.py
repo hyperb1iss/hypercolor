@@ -13,7 +13,8 @@ T = TypeVar("T", bound="TransitionRequest")
 
 @_attrs_define
 class TransitionRequest:
-    """
+    """Transition override on apply.
+
     Attributes:
         duration_ms (int | None | Unset):
         type_ (None | str | Unset):
