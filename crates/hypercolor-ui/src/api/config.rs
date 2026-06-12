@@ -58,9 +58,18 @@ pub async fn fetch_audio_devices() -> Result<AudioDevicesData, String> {
         .map_err(Into::into)
 }
 
+/// Re-open the desktop portal source picker for screen capture.
+pub async fn pick_capture_source() -> Result<(), String> {
+    client::post_empty("/api/v1/capture/source/pick")
+        .await
+        .map_err(Into::into)
+}
+
 fn applies_live(key: &str) -> bool {
     key == "audio"
         || key.starts_with("audio.")
+        || key == "capture"
+        || key.starts_with("capture.")
         || matches!(
             key,
             "daemon.target_fps" | "daemon.canvas_width" | "daemon.canvas_height"
@@ -81,5 +90,13 @@ mod tests {
     #[test]
     fn restart_only_render_keys_do_not_apply_live() {
         assert!(!applies_live("effect_engine.render_acceleration_mode"));
+    }
+
+    #[test]
+    fn capture_keys_apply_live() {
+        assert!(applies_live("capture"));
+        assert!(applies_live("capture.enabled"));
+        assert!(applies_live("capture.saturation"));
+        assert!(applies_live("capture.capture_fps"));
     }
 }

@@ -26,14 +26,15 @@ use web_sys::MessageEvent;
 use super::messages::{
     AudioLevel, BackpressureNotice, CanvasFrame, ConnectionState, ControlSurfaceEventHint,
     DeviceEventHint, EffectErrorHint, PerformanceMetrics, PreviewFrameChannel, SceneEventHint,
-    decode_preview_frame, handle_json_message,
+    ScreenZonesFrame, decode_preview_frame, decode_screen_zones_frame, handle_json_message,
 };
 use super::preview::{
     DEFAULT_PREVIEW_FPS_CAP, PreviewSubscriptionRequest, clear_preview_subscription,
     clear_screen_preview_subscription, clear_web_viewport_preview_subscription,
     request_preview_subscription, request_screen_preview_subscription,
     request_web_viewport_preview_subscription, send_canvas_unsubscribe,
-    send_screen_canvas_unsubscribe, send_web_viewport_canvas_unsubscribe, should_stream_preview,
+    send_screen_canvas_unsubscribe, send_screen_zones_subscribe, send_screen_zones_unsubscribe,
+    send_web_viewport_canvas_unsubscribe, should_stream_preview,
 };
 use crate::api::DeviceMetricsSnapshot;
 use crate::api::client;
@@ -88,6 +89,12 @@ pub struct WsManager {
     pub set_preview_width_cap: WriteSignal<u32>,
     pub set_preview_consumers: WriteSignal<u32>,
     pub set_screen_preview_consumers: WriteSignal<u32>,
+    /// Latest ambilight zone grid from the `screen_zones` WS channel —
+    /// the smoothed, color-tuned colors that screen-reactive effects see.
+    pub screen_zones_frame: ReadSignal<Option<ScreenZonesFrame>>,
+    /// Bump while a view renders the ambilight zone preview; the channel
+    /// subscription turns on at 0→n and off back at zero.
+    pub set_screen_zones_consumers: WriteSignal<u32>,
     pub set_web_viewport_preview_consumers: WriteSignal<u32>,
     /// Set to `Some(device_id)` to subscribe the `display_preview`
     /// channel to that device, or `None` to unsubscribe. The subscription
@@ -138,6 +145,9 @@ impl WsManager {
         let (preview_width_cap, set_preview_width_cap) = signal(0_u32);
         let (preview_consumers, set_preview_consumers) = signal(0_u32);
         let (screen_preview_consumers, set_screen_preview_consumers) = signal(0_u32);
+        let (screen_zones_frame, set_screen_zones_frame) = signal(None::<ScreenZonesFrame>);
+        let (screen_zones_consumers, set_screen_zones_consumers) = signal(0_u32);
+        let screen_zones_requested: StoredValue<bool> = StoredValue::new(false);
         let (web_viewport_preview_consumers, set_web_viewport_preview_consumers) = signal(0_u32);
         let (preview_transport_cap, set_preview_transport_cap) = signal(DEFAULT_PREVIEW_FPS_CAP);
         let (page_visible, set_page_visible) = signal(document_is_visible());
@@ -193,6 +203,7 @@ impl WsManager {
             requested_preview.set_value(None);
             requested_screen_preview.set_value(None);
             requested_web_viewport_preview.set_value(None);
+            screen_zones_requested.set_value(false);
             set_preview_fps.set(0.0);
             set_sensors.set(None);
 
@@ -242,6 +253,8 @@ impl WsManager {
                     requested_web_viewport_preview,
                     &set_web_viewport_canvas_frame,
                 );
+                screen_zones_requested.set_value(false);
+                set_screen_zones_frame.set(None);
                 set_display_preview_frame.set(None);
                 set_sensors.set(None);
                 schedule_reconnect(reconnect_attempts, reconnect_timeout, connect);
@@ -257,6 +270,10 @@ impl WsManager {
             let on_message = move |event: MessageEvent| {
                 // Binary frame (ArrayBuffer)
                 if let Some(buffer) = message_array_buffer(&event) {
+                    if let Some(zones) = decode_screen_zones_frame(&buffer) {
+                        set_screen_zones_frame.set(Some(zones));
+                        return;
+                    }
                     if let Some((channel, frame)) = decode_preview_frame(buffer) {
                         match channel {
                             PreviewFrameChannel::Canvas => {
@@ -406,6 +423,31 @@ impl WsManager {
                     engine_target,
                     is_visible,
                 );
+            }
+        });
+
+        // Zone frames are tiny and carry no per-client config, so the
+        // subscription is a simple on/off keyed to consumers, connection
+        // state, and app window visibility.
+        Effect::new(move |_| {
+            let connected = connection_state.get() == ConnectionState::Connected;
+            let consumer_count = screen_zones_consumers.get();
+            let window_visible = app_window_visible.get();
+            let wants_stream = connected && window_visible && consumer_count > 0;
+
+            if wants_stream {
+                if !screen_zones_requested.get_value()
+                    && let Some(ws) = ws_handle.get_value()
+                {
+                    send_screen_zones_subscribe(&ws);
+                    screen_zones_requested.set_value(true);
+                }
+            } else if screen_zones_requested.get_value() {
+                if let Some(ws) = ws_handle.get_value() {
+                    send_screen_zones_unsubscribe(&ws);
+                }
+                screen_zones_requested.set_value(false);
+                set_screen_zones_frame.set(None);
             }
         });
 
@@ -608,6 +650,8 @@ impl WsManager {
             set_preview_width_cap,
             set_preview_consumers,
             set_screen_preview_consumers,
+            screen_zones_frame,
+            set_screen_zones_consumers,
             set_web_viewport_preview_consumers,
             set_display_preview_device,
             send_zone_layout_preview,

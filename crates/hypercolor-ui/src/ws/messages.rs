@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use hypercolor_leptos_ext::prelude::now_ms;
 pub(super) use hypercolor_leptos_ext::ws::PreviewFrameChannel;
+pub use hypercolor_leptos_ext::ws::ScreenZonesFrame;
 pub use hypercolor_leptos_ext::ws::{
     PreviewFrameView as CanvasFrame, PreviewPixelFormat as CanvasPixelFormat,
 };
@@ -459,6 +460,10 @@ pub(super) fn decode_preview_frame(
 ) -> Option<(PreviewFrameChannel, CanvasFrame)> {
     let frame = CanvasFrame::decode_array_buffer(&buffer).ok()?;
     Some((frame.channel, frame))
+}
+
+pub(super) fn decode_screen_zones_frame(buffer: &js_sys::ArrayBuffer) -> Option<ScreenZonesFrame> {
+    ScreenZonesFrame::decode_array_buffer(buffer).ok()
 }
 
 // ── JSON Message Handler ────────────────────────────────────────────────────

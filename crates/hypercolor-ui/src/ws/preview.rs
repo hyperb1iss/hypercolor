@@ -225,6 +225,22 @@ pub(super) fn send_canvas_unsubscribe(ws: &web_sys::WebSocket) {
     let _ = send_websocket_json(ws, &unsubscribe_msg);
 }
 
+pub(super) fn send_screen_zones_subscribe(ws: &web_sys::WebSocket) {
+    let subscribe_msg = serde_json::json!({
+        "type": "subscribe",
+        "channels": ["screen_zones"]
+    });
+    let _ = send_websocket_json(ws, &subscribe_msg);
+}
+
+pub(super) fn send_screen_zones_unsubscribe(ws: &web_sys::WebSocket) {
+    let unsubscribe_msg = serde_json::json!({
+        "type": "unsubscribe",
+        "channels": ["screen_zones"]
+    });
+    let _ = send_websocket_json(ws, &unsubscribe_msg);
+}
+
 pub(super) fn send_screen_canvas_unsubscribe(ws: &web_sys::WebSocket) {
     let unsubscribe_msg = serde_json::json!({
         "type": "unsubscribe",

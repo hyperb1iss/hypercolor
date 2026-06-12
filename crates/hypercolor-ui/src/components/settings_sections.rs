@@ -111,68 +111,6 @@ fn off_output_behavior_value(behavior: OffOutputBehavior) -> String {
     .to_owned()
 }
 
-// ── Screen Capture ─────────────────────────────────────────────────────────
-
-#[component]
-pub fn CaptureSection(
-    #[prop(into)] config: Signal<Option<HypercolorConfig>>,
-    on_change: Callback<(String, serde_json::Value)>,
-    on_reset: Callback<String>,
-) -> impl IntoView {
-    let enabled = Signal::derive(move || read_config(config, |cfg| cfg.capture.enabled));
-    let source = Signal::derive(move || read_config(config, |cfg| cfg.capture.source.clone()));
-    let capture_fps =
-        Signal::derive(move || read_config(config, |cfg| f64::from(cfg.capture.capture_fps)));
-    let monitor = Signal::derive(move || read_config(config, |cfg| f64::from(cfg.capture.monitor)));
-
-    let source_options = vec![
-        ("auto".to_string(), "Auto".to_string()),
-        ("pipewire".to_string(), "PipeWire".to_string()),
-    ];
-
-    view! {
-        <section id="section-capture" class="pt-5 pb-3 space-y-0">
-            <SectionHeader title="Screen Capture" icon=LuMonitor />
-            <SettingToggle
-                label="Enabled"
-                description="Enable screen capture for ambient lighting effects"
-                key="capture.enabled"
-                value=enabled
-                on_change=on_change
-            />
-            <SettingDropdown
-                label="Source"
-                description="Screen capture backend"
-                key="capture.source"
-                value=source
-                options=Signal::stored(source_options)
-                on_change=on_change
-                restart_required=true
-            />
-            <SettingSlider
-                label="Capture FPS"
-                description="Screen capture frame rate"
-                key="capture.capture_fps"
-                value=capture_fps
-                on_change=on_change
-                min=1.0 max=60.0 step=1.0
-                decimals=0
-                integer=true
-            />
-            <SettingNumberInput
-                label="Monitor"
-                description="Monitor index for multi-display setups"
-                key="capture.monitor"
-                value=monitor
-                on_change=on_change
-                min=0.0 max=8.0 step=1.0
-                restart_required=true
-            />
-            <SectionReset section_label="Capture" on_reset=Callback::new(move |()| on_reset.run("capture".to_string())) />
-        </section>
-    }
-}
-
 // ── Network ────────────────────────────────────────────────────────────────
 
 #[component]
