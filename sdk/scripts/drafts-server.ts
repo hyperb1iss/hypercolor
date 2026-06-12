@@ -12,7 +12,7 @@
  * Usage: bun sdk/scripts/drafts-server.ts [--port 9431]
  */
 
-import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 
 import sharp from 'sharp'
@@ -85,9 +85,7 @@ async function collectEffects(): Promise<EffectEntry[]> {
         for (const name of variantNames.sort()) {
             const variantDir = resolve(effectDir, name)
             if (!(await isDir(variantDir))) continue
-            const files = (await readdir(variantDir))
-                .filter((f) => /^rank-\d+\.png$/.test(f))
-                .sort()
+            const files = (await readdir(variantDir)).filter((f) => /^rank-\d+\.png$/.test(f)).sort()
             if (files.length === 0) continue
             variants.push({
                 key: name,
@@ -142,16 +140,13 @@ async function promote(effects: EffectEntry[], selections: Selections): Promise<
 function escapeHtml(input: string): string {
     return input.replace(
         /[&<>"']/g,
-        (ch) =>
-            ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch] ?? ch,
+        (ch) => ({ "'": '&#39;', '"': '&quot;', '&': '&amp;', '<': '&lt;', '>': '&gt;' })[ch] ?? ch,
     )
 }
 
 function renderHtml(effects: EffectEntry[]): string {
     const totalVariants = effects.reduce((sum, e) => sum + e.variants.length, 0)
-    const toc = effects
-        .map((e) => `<li><a href="#${escapeHtml(e.slug)}">${escapeHtml(e.slug)}</a></li>`)
-        .join('\n')
+    const toc = effects.map((e) => `<li><a href="#${escapeHtml(e.slug)}">${escapeHtml(e.slug)}</a></li>`).join('\n')
 
     const sections = effects
         .map((effect) => {
@@ -509,7 +504,6 @@ async function main(): Promise<void> {
     }
 
     const server = Bun.serve({
-        port: opts.port,
         async fetch(req) {
             const url = new URL(req.url)
             const path = url.pathname
@@ -548,10 +542,7 @@ async function main(): Promise<void> {
                     const promoted = await promote(effects, current)
                     return Response.json({ ok: true, promoted })
                 } catch (err) {
-                    return Response.json(
-                        { ok: false, error: String(err) },
-                        { status: 500 },
-                    )
+                    return Response.json({ error: String(err), ok: false }, { status: 500 })
                 }
             }
 
@@ -569,6 +560,7 @@ async function main(): Promise<void> {
 
             return new Response('not found', { status: 404 })
         },
+        port: opts.port,
     })
 
     process.stdout.write(`drafts server: http://localhost:${server.port}\n`)
