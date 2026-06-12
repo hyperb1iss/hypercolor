@@ -1,7 +1,9 @@
 use std::time::Instant;
 
 use anyhow::Result;
-use tracing::{debug, warn};
+#[cfg(feature = "wgpu")]
+use tracing::debug;
+use tracing::warn;
 
 use hypercolor_core::types::canvas::PublishedSurface;
 use hypercolor_types::event::{EffectDegradationState, HypercolorEvent};
@@ -554,6 +556,9 @@ impl ComposeContext<'_> {
                 }
             }
         }
+
+        #[cfg(not(feature = "wgpu"))]
+        let _ = requires_full_composition;
 
         fallback.clone()
     }

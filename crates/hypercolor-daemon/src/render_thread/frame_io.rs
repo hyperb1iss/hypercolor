@@ -483,6 +483,13 @@ fn collect_zone_previews(
     previews
 }
 
+#[cfg_attr(
+    not(any(feature = "wgpu", feature = "servo-gpu-import")),
+    expect(
+        clippy::unnecessary_wraps,
+        reason = "the return type stays feature-stable because GPU frames cannot be previewed"
+    )
+)]
 fn zone_preview_frame_from_producer(
     frame: &ProducerFrame,
     frame_number: u32,
