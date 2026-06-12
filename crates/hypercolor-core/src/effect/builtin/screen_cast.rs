@@ -142,6 +142,7 @@ pub(super) fn metadata() -> EffectMetadata {
         category: EffectCategory::Utility,
         tags: vec![
             "screen".into(),
+            "screen-reactive".into(),
             "capture".into(),
             "utility".into(),
             "wayland".into(),

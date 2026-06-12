@@ -7,7 +7,7 @@
 
 use std::io::Cursor;
 use std::os::fd::OwnedFd;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -106,11 +106,25 @@ impl WaylandScreenCaptureInput {
         let fps_changed = self.current_target_fps() != config.target_fps;
 
         if let Ok(mut current) = self.settings.config.lock() {
+            // The worker may have written a freshly granted portal token
+            // since the caller snapshotted its config; never let a stale
+            // None overwrite it. Intentional clears go through
+            // `reselect_source`.
+            let granted_token = current.restore_token.take();
             *current = config;
+            if current.restore_token.is_none() {
+                current.restore_token = granted_token;
+            }
         }
         self.settings.generation.fetch_add(1, Ordering::Release);
 
         if fps_changed && self.worker.is_some() {
+            if self.portal_pending() {
+                warn!(
+                    "Portal source picker is open; new capture FPS applies on the next session restart"
+                );
+                return Ok(());
+            }
             info!("Restarting Wayland capture worker for new target FPS");
             self.restart_worker()?;
         }
@@ -120,6 +134,11 @@ impl WaylandScreenCaptureInput {
 
     /// Drop the persisted portal token and re-open the source picker.
     fn reselect_source(&mut self) -> anyhow::Result<()> {
+        if self.portal_pending() {
+            debug!("Portal source picker is already open; ignoring re-pick request");
+            return Ok(());
+        }
+
         if let Ok(mut current) = self.settings.config.lock() {
             current.restore_token = None;
         }
@@ -135,11 +154,14 @@ impl WaylandScreenCaptureInput {
         self.restart_worker()
     }
 
+    fn portal_pending(&self) -> bool {
+        self.worker
+            .as_ref()
+            .is_some_and(|worker| worker.portal_pending.load(Ordering::Acquire))
+    }
+
     fn restart_worker(&mut self) -> anyhow::Result<()> {
-        if let Some(worker) = &self.worker {
-            let _ = worker.command_tx.send(WorkerCommand::Stop);
-        }
-        self.join_dead_worker();
+        self.shutdown_worker();
         self.spawn_worker()?;
         let active = self.capture_active;
         self.send_worker_command(WorkerCommand::SetActive(active))
@@ -177,17 +199,31 @@ impl WaylandScreenCaptureInput {
         let latest_snapshot = Arc::clone(&self.latest_snapshot);
         let settings = Arc::clone(&self.settings);
         let token_sink = self.token_sink.clone();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let portal_pending = Arc::new(AtomicBool::new(false));
+        let worker_flags = WorkerFlags {
+            cancel: Arc::clone(&cancel),
+            portal_pending: Arc::clone(&portal_pending),
+        };
         let (command_tx, command_rx) = pw::channel::channel();
         let join_handle = thread::Builder::new()
             .name("hypercolor-screen-capture".to_owned())
             .spawn(move || {
-                run_capture_worker(settings, latest_snapshot, command_rx, token_sink);
+                run_capture_worker(
+                    settings,
+                    latest_snapshot,
+                    command_rx,
+                    token_sink,
+                    worker_flags,
+                );
             })
             .context("failed to spawn Wayland screen capture worker")?;
 
         self.worker = Some(WaylandCaptureWorker {
             command_tx,
             join_handle,
+            cancel,
+            portal_pending,
         });
         Ok(())
     }
@@ -202,7 +238,7 @@ impl WaylandScreenCaptureInput {
         }
 
         warn!("Wayland screen capture worker is no longer accepting commands");
-        self.join_dead_worker();
+        self.shutdown_worker();
 
         if matches!(command, WorkerCommand::SetActive(true)) {
             self.spawn_worker()?;
@@ -217,10 +253,30 @@ impl WaylandScreenCaptureInput {
         Ok(())
     }
 
-    fn join_dead_worker(&mut self) {
-        if let Some(worker) = self.worker.take()
-            && let Err(panic) = worker.join_handle.join()
-        {
+    /// Tear down the current worker without ever blocking on the portal.
+    ///
+    /// The worker's command channel only attaches to the PipeWire main loop
+    /// after the portal session opens, so a worker that is mid-picker cannot
+    /// see a Stop command — joining it would block until the user resolves
+    /// the dialog, and callers hold the input-manager lock the render thread
+    /// takes every frame. Such a worker is cancelled and detached instead:
+    /// it observes the cancel flag right after the portal resolves and exits
+    /// without touching shared state.
+    fn shutdown_worker(&mut self) {
+        let Some(worker) = self.worker.take() else {
+            return;
+        };
+
+        worker.cancel.store(true, Ordering::Release);
+        let _ = worker.command_tx.send(WorkerCommand::Stop);
+
+        if worker.portal_pending.load(Ordering::Acquire) {
+            debug!("Detaching Wayland capture worker stuck in the portal dialog");
+            drop(worker.join_handle);
+            return;
+        }
+
+        if let Err(panic) = worker.join_handle.join() {
             warn!(message = ?panic, "Wayland screen capture worker panicked");
         }
     }
@@ -252,11 +308,7 @@ impl InputSource for WaylandScreenCaptureInput {
     fn stop(&mut self) {
         self.running = false;
         self.capture_active = false;
-
-        if let Some(worker) = &self.worker {
-            let _ = worker.command_tx.send(WorkerCommand::Stop);
-        }
-        self.join_dead_worker();
+        self.shutdown_worker();
 
         if let Ok(mut latest) = self.latest_snapshot.lock() {
             *latest = None;
@@ -300,6 +352,18 @@ impl InputSource for WaylandScreenCaptureInput {
 struct WaylandCaptureWorker {
     command_tx: pw::channel::Sender<WorkerCommand>,
     join_handle: thread::JoinHandle<()>,
+    /// Tells the worker to exit at its next checkpoint without touching
+    /// shared state (snapshot, settings, restore token).
+    cancel: Arc<AtomicBool>,
+    /// True while the worker is awaiting the portal source picker — the
+    /// phase during which it cannot see commands and must not be joined.
+    portal_pending: Arc<AtomicBool>,
+}
+
+/// Cancellation and phase flags shared with a capture worker thread.
+struct WorkerFlags {
+    cancel: Arc<AtomicBool>,
+    portal_pending: Arc<AtomicBool>,
 }
 
 #[derive(Clone, Debug)]
@@ -355,6 +419,7 @@ fn run_capture_worker(
     latest_snapshot: Arc<Mutex<Option<ScreenData>>>,
     command_rx: pw::channel::Receiver<WorkerCommand>,
     token_sink: Option<RestoreTokenSink>,
+    flags: WorkerFlags,
 ) {
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -368,13 +433,27 @@ fn run_capture_worker(
     };
 
     let startup_config = settings.snapshot();
-    let (portal, restore_token) = match runtime.block_on(open_portal_session(&startup_config)) {
+    flags.portal_pending.store(true, Ordering::Release);
+    let portal_result = runtime.block_on(open_portal_session(&startup_config));
+    flags.portal_pending.store(false, Ordering::Release);
+
+    let (portal, restore_token) = match portal_result {
         Ok(portal) => portal,
         Err(error) => {
             warn!(%error, "Failed to establish Wayland screencast session");
             return;
         }
     };
+
+    // A cancelled (detached) worker was replaced while the picker was open;
+    // close the session quietly and leave all shared state to its successor.
+    if flags.cancel.load(Ordering::Acquire) {
+        debug!("Wayland capture worker cancelled during portal phase; closing session");
+        if let Err(error) = runtime.block_on(portal.session.close()) {
+            debug!(%error, "Cancelled capture session close reported an error");
+        }
+        return;
+    }
 
     if restore_token != startup_config.restore_token {
         if let Ok(mut config) = settings.config.lock() {

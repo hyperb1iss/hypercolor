@@ -17,20 +17,32 @@ function zoneAt(screen: ReturnType<typeof getScreenZoneData>, x: number, y: numb
     }
 }
 
-/// Average the outer `depth` zones inward from an edge so the projected
-/// color reflects the edge band rather than a single zone row.
+const HUE_WEIGHT_FLOOR = 0.03
+
+/// Average the outer band zones inward from an edge so the projected color
+/// reflects the band rather than a single zone row. The circular hue mean
+/// is chroma-weighted: black or gray zones carry no meaningful hue and must
+/// not drag the band toward their stored (arbitrary) hue value.
 function bandAverage(stops: EdgeStop[]): EdgeStop {
     if (stops.length === 0) return { hue: 0, lightness: 0, saturation: 0 }
     let x = 0
     let y = 0
+    let hueWeight = 0
     let saturation = 0
     let lightness = 0
     for (const stop of stops) {
-        const radians = (stop.hue * Math.PI) / 180
-        x += Math.cos(radians)
-        y += Math.sin(radians)
+        const weight = stop.saturation * stop.lightness
+        if (weight > HUE_WEIGHT_FLOOR) {
+            const radians = (stop.hue * Math.PI) / 180
+            x += Math.cos(radians) * weight
+            y += Math.sin(radians) * weight
+            hueWeight += weight
+        }
         saturation += stop.saturation
         lightness += stop.lightness
+    }
+    if (hueWeight <= 0) {
+        return { hue: 0, lightness: lightness / stops.length, saturation: 0 }
     }
     const hue = ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360
     return {
@@ -40,6 +52,23 @@ function bandAverage(stops: EdgeStop[]): EdgeStop {
     }
 }
 
+function mixStops(a: EdgeStop, b: EdgeStop): EdgeStop {
+    const ax = Math.cos((a.hue * Math.PI) / 180) * a.saturation
+    const ay = Math.sin((a.hue * Math.PI) / 180) * a.saturation
+    const bx = Math.cos((b.hue * Math.PI) / 180) * b.saturation
+    const by = Math.sin((b.hue * Math.PI) / 180) * b.saturation
+    const mx = (ax + bx) / 2
+    const my = (ay + by) / 2
+    return {
+        hue: ((Math.atan2(my, mx) * 180) / Math.PI + 360) % 360,
+        saturation: Math.min(1, Math.hypot(mx, my)),
+        lightness: (a.lightness + b.lightness) / 2,
+    }
+}
+
+/// Canvas gradients interpolate in sRGB, which collapses saturated
+/// transitions (blue to red) through muddy gray midpoints on LED strips.
+/// Inserting an HSL-mixed midpoint per stop pair keeps the path saturated.
 function edgeGradient(
     ctx: CanvasRenderingContext2D,
     stops: EdgeStop[],
@@ -52,6 +81,10 @@ function edgeGradient(
     const last = Math.max(stops.length - 1, 1)
     stops.forEach((stop, index) => {
         gradient.addColorStop(index / last, hslCss(stop.hue, stop.saturation * 100, stop.lightness * 100))
+        if (index < stops.length - 1) {
+            const mid = mixStops(stop, stops[index + 1])
+            gradient.addColorStop((index + 0.5) / last, hslCss(mid.hue, mid.saturation * 100, mid.lightness * 100))
+        }
     })
     return gradient
 }
@@ -65,7 +98,7 @@ export default canvas.stateful(
         }),
         edge_band: num('Edge Band', [0.05, 0.5], 0.2, { group: 'Projection' }),
         ring_depth: num('Ring Depth', [0.1, 0.5], 0.25, { group: 'Projection' }),
-        intensity: num('Intensity', [0, 2], 1, { group: 'Output' }),
+        intensity: num('Intensity', [0, 1.5], 1, { group: 'Output' }),
         center_dim: num('Center Dim', [0, 1], 0.85, { group: 'Output' }),
     },
     () => {
@@ -78,7 +111,7 @@ export default canvas.stateful(
             const screen = getScreenZoneData()
             const width = ctx.canvas.width
             const height = ctx.canvas.height
-            const intensity = clamp(controls.intensity as number, 0, 2)
+            const intensity = clamp(controls.intensity as number, 0, 1.5)
             const edgeBand = clamp(controls.edge_band as number, 0.05, 0.5)
 
             ctx.fillStyle = 'rgba(0, 0, 0, 1)'
@@ -161,7 +194,7 @@ export default canvas.stateful(
                 controls: {
                     center_dim: 0.9,
                     edge_band: 0.15,
-                    intensity: 1.2,
+                    intensity: 1.1,
                     mode: 'Ring',
                     ring_depth: 0.3,
                 },
@@ -253,6 +286,16 @@ function renderRing(
     ctx.fillStyle = edgeGradient(ctx, rightStops, 0, 0, 0, height)
     ctx.fillRect(width - bandWidth, 0, bandWidth, height)
     ctx.restore()
+
+    // The trapezoids cover the whole canvas at deep ring depths, so the
+    // interior must be re-blacked before the veil — alpha-dimmed band
+    // color reads as a visible haze on LEDs, never as off.
+    const innerWidth = Math.max(0, width - 2 * bandWidth)
+    const innerHeight = Math.max(0, height - 2 * bandHeight)
+    if (innerWidth > 0 && innerHeight > 0) {
+        ctx.fillStyle = `rgba(0, 0, 0, ${centerDim})`
+        ctx.fillRect(bandWidth, bandHeight, innerWidth, innerHeight)
+    }
 
     // Center fade: a radial veil that dims the interior, letting the ring
     // bleed inward as center_dim drops.

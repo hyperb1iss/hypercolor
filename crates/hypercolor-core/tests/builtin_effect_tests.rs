@@ -1302,8 +1302,16 @@ fn registered_effects_searchable_by_tag() {
     register_builtin_effects(&mut registry);
 
     let results = registry.search("reactive");
-    assert_eq!(results.len(), 1);
-    assert_eq!(results[0].metadata.name, "Audio Pulse");
+    let names: Vec<&str> = results
+        .iter()
+        .map(|entry| entry.metadata.name.as_str())
+        .collect();
+    assert_eq!(results.len(), 2, "found: {names:?}");
+    assert!(names.contains(&"Audio Pulse"), "audio-reactive tag matches");
+    assert!(
+        names.contains(&"Screen Cast"),
+        "screen-reactive tag matches"
+    );
 }
 
 #[test]

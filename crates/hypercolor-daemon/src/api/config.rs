@@ -116,7 +116,18 @@ pub async fn set_config_value(
         return ApiError::validation(error);
     }
 
-    manager.update(updated);
+    // Re-apply the validated key against the freshest config under the
+    // manager's write lock, so a concurrent targeted writer (e.g. the
+    // capture restore-token sink) is not clobbered by this handler's
+    // earlier snapshot.
+    manager.modify(|config| {
+        let reapplied = serde_json::to_value(&*config).ok().and_then(|mut root| {
+            set_json_path(&mut root, &key, parsed_value.clone())
+                .then(|| serde_json::from_value::<HypercolorConfig>(root).ok())
+                .flatten()
+        });
+        *config = reapplied.unwrap_or_else(|| updated.clone());
+    });
     if let Err(e) = manager.save() {
         return ApiError::internal(format!("Failed to persist config: {e}"));
     }
@@ -202,7 +213,22 @@ pub async fn reset_config_value(
         return ApiError::validation(error);
     }
 
-    manager.update(updated);
+    // Keyed resets re-apply the default at the key against the freshest
+    // config under the write lock (same race protection as set); a full
+    // reset replaces wholesale by design.
+    let reset_key = normalized_key.clone();
+    manager.modify(move |config| {
+        let reapplied = reset_key.as_deref().and_then(|key| {
+            let default_value = serde_json::to_value(HypercolorConfig::default())
+                .ok()
+                .and_then(|defaults| get_json_path(&defaults, key).cloned())?;
+            let mut root = serde_json::to_value(&*config).ok()?;
+            set_json_path(&mut root, key, default_value)
+                .then(|| serde_json::from_value::<HypercolorConfig>(root).ok())
+                .flatten()
+        });
+        *config = reapplied.unwrap_or(updated);
+    });
     if let Err(e) = manager.save() {
         return ApiError::internal(format!("Failed to persist config: {e}"));
     }

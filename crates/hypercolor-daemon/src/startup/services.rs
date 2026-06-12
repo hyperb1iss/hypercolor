@@ -615,12 +615,12 @@ pub(crate) fn build_screen_capture_source(
 ) -> Box<dyn hypercolor_core::input::InputSource> {
     let capture_config = screen_capture_config_from(capture);
     let sink = Arc::new(move |token: Option<String>| {
-        let mut updated = (**config_manager.get()).clone();
-        if updated.capture.restore_token == token {
+        if config_manager.get().capture.restore_token == token {
             return;
         }
-        updated.capture.restore_token = token;
-        config_manager.update(updated);
+        config_manager.modify(|config| {
+            config.capture.restore_token.clone_from(&token);
+        });
         if let Err(error) = config_manager.save() {
             warn!(%error, "Failed to persist screen capture restore token");
         }
@@ -634,7 +634,7 @@ pub(crate) fn screen_capture_config_from(
     capture: &hypercolor_types::config::CaptureConfig,
 ) -> ScreenCaptureConfig {
     ScreenCaptureConfig {
-        target_fps: capture.capture_fps.max(1),
+        target_fps: capture.capture_fps.clamp(1, 240),
         grid_cols: capture.grid_cols.clamp(1, 64),
         grid_rows: capture.grid_rows.clamp(1, 64),
         smoothing_alpha: capture.smoothing.clamp(0.0, 1.0),

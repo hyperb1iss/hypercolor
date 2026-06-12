@@ -28,6 +28,10 @@ pub struct ConfigManager {
     config: Arc<ArcSwap<HypercolorConfig>>,
     /// Path to the TOML configuration file this manager was loaded from.
     config_path: PathBuf,
+    /// Serializes read-modify-write mutations and file writes so concurrent
+    /// writers (config API, capture restore-token sink) cannot lose updates
+    /// or interleave partial file contents.
+    write_lock: std::sync::Mutex<()>,
 }
 
 impl ConfigManager {
@@ -55,6 +59,7 @@ impl ConfigManager {
         Ok(Self {
             config: Arc::new(ArcSwap::from_pointee(config)),
             config_path,
+            write_lock: std::sync::Mutex::new(()),
         })
     }
 
@@ -80,6 +85,26 @@ impl ConfigManager {
 
     /// Replace the live configuration snapshot without re-reading from disk.
     pub fn update(&self, config: HypercolorConfig) {
+        let _guard = self
+            .write_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.config.store(Arc::new(normalize_config(config)));
+    }
+
+    /// Atomically read-modify-write the live configuration.
+    ///
+    /// Unlike [`update`](Self::update), which replaces the snapshot wholesale
+    /// (and can therefore lose a concurrent writer's change), `modify` runs
+    /// the closure against the freshest config under the write lock. Use this
+    /// for targeted mutations like the capture restore-token sink.
+    pub fn modify(&self, mutate: impl FnOnce(&mut HypercolorConfig)) {
+        let _guard = self
+            .write_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut config = (**self.config.load()).clone();
+        mutate(&mut config);
         self.config.store(Arc::new(normalize_config(config)));
     }
 
@@ -101,18 +126,29 @@ impl ConfigManager {
 
     /// Persist the current live configuration to disk.
     ///
+    /// The write goes through a temp file and rename so a concurrent reader
+    /// (or a crash mid-write) never observes a torn config file; the write
+    /// lock keeps concurrent savers from interleaving.
+    ///
     /// # Errors
     ///
     /// Returns an error if serialization fails or the file cannot be written.
     pub fn save(&self) -> Result<()> {
-        let snapshot = self.get();
+        let _guard = self
+            .write_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let snapshot = self.config.load();
         let toml = toml::to_string_pretty(&**snapshot).context("failed to serialize config")?;
         if let Some(parent) = self.config_path.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("failed to create {}", parent.display()))?;
         }
-        std::fs::write(&self.config_path, toml)
-            .with_context(|| format!("failed to write {}", self.config_path.display()))
+        let tmp_path = self.config_path.with_extension("toml.tmp");
+        std::fs::write(&tmp_path, toml)
+            .with_context(|| format!("failed to write {}", tmp_path.display()))?;
+        std::fs::rename(&tmp_path, &self.config_path)
+            .with_context(|| format!("failed to replace {}", self.config_path.display()))
     }
 
     /// Path backing this manager's configuration file.
