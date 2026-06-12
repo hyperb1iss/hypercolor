@@ -15,6 +15,7 @@ use leptos::prelude::*;
 
 use crate::api;
 use crate::components::control_panel::ControlPanel;
+use crate::components::control_panel::capture_group::CaptureSharedControls;
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::control_session::{
     ControlPatchConfig, ControlPatchFn, ControlPatchFuture, use_control_patch_session,
@@ -63,6 +64,14 @@ pub fn EffectControlsSection(
             .and_then(Result::ok)
             .map(|detail| detail.controls)
             .unwrap_or_default()
+    });
+    let screen_reactive = Signal::derive(move || {
+        detail.get().and_then(Result::ok).is_some_and(|detail| {
+            detail
+                .tags
+                .iter()
+                .any(|tag| tag.eq_ignore_ascii_case("screen-reactive"))
+        })
     });
 
     // Optimistic local control values; the shared patch session owns the
@@ -118,6 +127,10 @@ pub fn EffectControlsSection(
                             control_values=values
                             accent_rgb=Signal::derive(|| LAYER_ACCENT_RGB.to_owned())
                             on_change=on_change
+                        />
+                        <CaptureSharedControls
+                            visible=screen_reactive
+                            accent_rgb=Signal::derive(|| LAYER_ACCENT_RGB.to_owned())
                         />
                     }
                         .into_any()

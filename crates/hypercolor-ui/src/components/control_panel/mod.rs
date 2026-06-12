@@ -23,6 +23,7 @@ use crate::app::WsContext;
 use crate::icons::*;
 
 mod boolean;
+pub mod capture_group;
 mod color;
 mod enum_select;
 mod number;

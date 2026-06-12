@@ -111,6 +111,182 @@ fn off_output_behavior_value(behavior: OffOutputBehavior) -> String {
     .to_owned()
 }
 
+// ── Screen Capture ─────────────────────────────────────────────────────────
+
+#[component]
+pub fn CaptureSection(
+    #[prop(into)] config: Signal<Option<HypercolorConfig>>,
+    on_change: Callback<(String, serde_json::Value)>,
+    on_reset: Callback<String>,
+) -> impl IntoView {
+    let enabled = Signal::derive(move || read_config(config, |cfg| cfg.capture.enabled));
+    let source = Signal::derive(move || read_config(config, |cfg| cfg.capture.source.clone()));
+    let capture_fps =
+        Signal::derive(move || read_config(config, |cfg| f64::from(cfg.capture.capture_fps)));
+    let grid_cols =
+        Signal::derive(move || read_config(config, |cfg| f64::from(cfg.capture.grid_cols)));
+    let grid_rows =
+        Signal::derive(move || read_config(config, |cfg| f64::from(cfg.capture.grid_rows)));
+    let smoothing =
+        Signal::derive(move || read_config(config, |cfg| f64::from(cfg.capture.smoothing)));
+    let scene_cut = Signal::derive(move || {
+        read_config(config, |cfg| f64::from(cfg.capture.scene_cut_threshold))
+    });
+    let letterbox = Signal::derive(move || read_config(config, |cfg| cfg.capture.letterbox));
+    let letterbox_threshold = Signal::derive(move || {
+        read_config(config, |cfg| f64::from(cfg.capture.letterbox_threshold))
+    });
+    let saturation =
+        Signal::derive(move || read_config(config, |cfg| f64::from(cfg.capture.saturation)));
+    let brightness =
+        Signal::derive(move || read_config(config, |cfg| f64::from(cfg.capture.brightness)));
+    let gamma = Signal::derive(move || read_config(config, |cfg| f64::from(cfg.capture.gamma)));
+
+    let source_options = vec![
+        ("auto".to_string(), "Auto".to_string()),
+        ("pipewire".to_string(), "PipeWire".to_string()),
+    ];
+
+    let (picking, set_picking) = signal(false);
+    let pick_source = move |_| {
+        if picking.get_untracked() {
+            return;
+        }
+        set_picking.set(true);
+        leptos::task::spawn_local(async move {
+            if let Err(e) = crate::api::pick_capture_source().await {
+                leptos::logging::warn!("Capture source pick failed: {e}");
+            }
+            set_picking.set(false);
+        });
+    };
+
+    view! {
+        <section id="section-capture" class="pt-5 pb-3 space-y-0">
+            <SectionHeader title="Screen Capture" icon=LuMonitor />
+            <SettingToggle
+                label="Enabled"
+                description="Capture the screen for ambient lighting effects"
+                key="capture.enabled"
+                value=enabled
+                on_change=on_change
+            />
+            <SettingDropdown
+                label="Source"
+                description="Screen capture backend"
+                key="capture.source"
+                value=source
+                options=Signal::stored(source_options)
+                on_change=on_change
+            />
+            <div class="flex items-center justify-between gap-4 py-3 border-b border-edge-subtle/40">
+                <div class="min-w-0">
+                    <div class="text-[13px] text-fg-primary">"Capture source"</div>
+                    <div class="text-xs text-fg-tertiary">
+                        "Re-open the system picker to capture a different screen; the choice persists across restarts"
+                    </div>
+                </div>
+                <button
+                    type="button"
+                    class="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-edge-subtle bg-surface-overlay px-2.5 py-1.5 text-xs text-fg-primary hover:bg-surface-overlay/80 disabled:opacity-50"
+                    disabled=move || !enabled.get() || picking.get()
+                    on:click=pick_source
+                >
+                    {move || if picking.get() { "Opening picker\u{2026}" } else { "Choose source" }}
+                </button>
+            </div>
+            <SettingSlider
+                label="Capture FPS"
+                description="Screen capture frame rate"
+                key="capture.capture_fps"
+                value=capture_fps
+                on_change=on_change
+                min=1.0 max=60.0 step=1.0
+                decimals=0
+                integer=true
+            />
+            <SettingSlider
+                label="Grid columns"
+                description="Horizontal zones sampled from the screen"
+                key="capture.grid_cols"
+                value=grid_cols
+                on_change=on_change
+                min=2.0 max=32.0 step=1.0
+                decimals=0
+                integer=true
+            />
+            <SettingSlider
+                label="Grid rows"
+                description="Vertical zones sampled from the screen"
+                key="capture.grid_rows"
+                value=grid_rows
+                on_change=on_change
+                min=2.0 max=32.0 step=1.0
+                decimals=0
+                integer=true
+            />
+            <SettingSlider
+                label="Smoothing"
+                description="Temporal response: low is cinematic, high is twitchy"
+                key="capture.smoothing"
+                value=smoothing
+                on_change=on_change
+                min=0.05 max=1.0 step=0.05
+            />
+            <SettingSlider
+                label="Scene cut threshold"
+                description="Frame-change level that snaps colors instantly instead of smoothing"
+                key="capture.scene_cut_threshold"
+                value=scene_cut
+                on_change=on_change
+                min=0.0 max=500.0 step=10.0
+                decimals=0
+            />
+            <SettingToggle
+                label="Letterbox crop"
+                description="Detect and crop black letterbox or pillarbox bars"
+                key="capture.letterbox"
+                value=letterbox
+                on_change=on_change
+            />
+            <SettingSlider
+                label="Letterbox threshold"
+                description="Luminance below this counts as a black bar"
+                key="capture.letterbox_threshold"
+                value=letterbox_threshold
+                on_change=on_change
+                min=0.0 max=0.2 step=0.005
+                decimals=3
+            />
+            <SettingSlider
+                label="Saturation"
+                description="Chroma boost on extracted zone colors"
+                key="capture.saturation"
+                value=saturation
+                on_change=on_change
+                min=0.0 max=2.5 step=0.05
+            />
+            <SettingSlider
+                label="Brightness"
+                description="Brightness multiplier on extracted zone colors"
+                key="capture.brightness"
+                value=brightness
+                on_change=on_change
+                min=0.0 max=2.0 step=0.05
+            />
+            <SettingSlider
+                label="Gamma"
+                description="Midtone shaping: above 1.0 deepens darks"
+                key="capture.gamma"
+                value=gamma
+                on_change=on_change
+                min=0.4 max=2.5 step=0.05
+            />
+            <SectionReset section_label="Capture" on_reset=Callback::new(move |()| on_reset.run("capture".to_string())) />
+        </section>
+    }
+}
+
 // ── Network ────────────────────────────────────────────────────────────────
 
 #[component]

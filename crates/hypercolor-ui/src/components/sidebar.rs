@@ -613,12 +613,6 @@ fn nav_items(studio_ui: bool) -> Vec<NavItem> {
         icon: LuCpu,
         divider_before: false,
     };
-    let capture = NavItem {
-        path: "/capture",
-        label: "Capture",
-        icon: LuMonitorPlay,
-        divider_before: false,
-    };
     let settings = NavItem {
         path: "/settings",
         label: "Settings",
@@ -643,7 +637,6 @@ fn nav_items(studio_ui: bool) -> Vec<NavItem> {
                 divider_before: false,
             },
             devices,
-            capture,
             settings,
         ]
     } else {
@@ -669,7 +662,6 @@ fn nav_items(studio_ui: bool) -> Vec<NavItem> {
                 icon: LuMonitor,
                 divider_before: false,
             },
-            capture,
             settings,
         ]
     }

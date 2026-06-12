@@ -9,7 +9,7 @@ pub use icondata::{
     LuEyeOff, LuFlipHorizontal, LuFlipVertical, LuFoldHorizontal, LuFoldVertical, LuFolder,
     LuGauge, LuGlobe, LuGrid2x2, LuGripVertical, LuHeart, LuInfo, LuKeyRound, LuKeyboard, LuLayers,
     LuLayoutDashboard, LuLayoutTemplate, LuLightbulb, LuLink, LuList, LuLoader, LuLock, LuMaximize,
-    LuMic, LuMinimize, LuMinus, LuMonitor, LuMonitorPlay, LuMousePointerClick, LuNetwork, LuPalette, LuPause,
+    LuMic, LuMinimize, LuMinus, LuMonitor, LuMousePointerClick, LuNetwork, LuPalette, LuPause,
     LuPencil, LuPlay, LuPlus, LuPower, LuRadar, LuRedo2, LuRefreshCw, LuRepeat, LuRotateCcw,
     LuSave, LuSearch, LuSettings, LuSettings2, LuShieldCheck, LuShuffle, LuSkipBack, LuSkipForward,
     LuSlidersHorizontal, LuSquare, LuSquarePen, LuSun, LuTimer, LuToggleLeft, LuTrash2,

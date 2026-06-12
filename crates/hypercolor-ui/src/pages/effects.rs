@@ -8,6 +8,7 @@ use crate::api;
 use crate::app::{EffectsContext, WsContext};
 use crate::apply_target::ApplyTarget;
 use crate::components::calibration_guide::CalibrationGuide;
+use crate::components::control_panel::capture_group::CaptureSharedControls;
 use crate::components::effect_card::EffectCard;
 use crate::components::install_effect_panel::InstallEffectPanel;
 use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, PageHeader};
@@ -286,6 +287,14 @@ pub fn EffectsPage() -> impl IntoView {
                 .iter()
                 .find(|entry| entry.effect.id == active_id)
                 .map(|entry| entry.effect.clone())
+        })
+    });
+    let screen_reactive_active = Memo::new(move |_| {
+        active_effect_summary.get().is_some_and(|effect| {
+            effect
+                .tags
+                .iter()
+                .any(|tag| tag.eq_ignore_ascii_case("screen-reactive"))
         })
     });
     let show_calibration_guide = Memo::new(move |_| {
@@ -938,6 +947,10 @@ pub fn EffectsPage() -> impl IntoView {
                                                         on_control_change=on_control_change
                                                         schema_cache=zone_schema_cache
                                                     />
+                                                    <CaptureSharedControls
+                                                        visible=screen_reactive_active
+                                                        accent_rgb=accent_rgb
+                                                    />
                                                 </div>
                                             </div>
                                         </div>
@@ -1009,6 +1022,10 @@ pub fn EffectsPage() -> impl IntoView {
                                                             accent_rgb=accent_rgb
                                                             on_control_change=on_control_change
                                                             schema_cache=zone_schema_cache
+                                                        />
+                                                        <CaptureSharedControls
+                                                            visible=screen_reactive_active
+                                                            accent_rgb=accent_rgb
                                                         />
                                                     </div>
                                                 </div>

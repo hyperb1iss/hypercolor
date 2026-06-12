@@ -18,6 +18,7 @@ use hypercolor_leptos_ext::events::{document as browser_document, scroll_into_vi
 /// Section IDs for nav and scroll spy.
 const SECTION_IDS: &[&str] = &[
     "audio",
+    "capture",
     "rendering",
     "network",
     "session",
@@ -190,6 +191,12 @@ pub fn SettingsPage() -> impl IntoView {
             separator_before: false,
         },
         TabEntry {
+            id: "capture",
+            label: "Capture",
+            icon: LuMonitor,
+            separator_before: false,
+        },
+        TabEntry {
             id: "rendering",
             label: "Rendering",
             icon: LuGauge,
@@ -351,6 +358,7 @@ pub fn SettingsPage() -> impl IntoView {
                                 class="settings-card"
                                 style="animation: enter-fade 0.4s ease-out 0.125s both"
                             >
+                                <CaptureSection config=config on_change=on_change on_reset=on_reset />
                                 <RenderingSection config=config on_change=on_change on_reset=on_reset />
                             </div>
                             <div

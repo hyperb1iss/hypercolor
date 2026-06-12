@@ -25,7 +25,6 @@ use crate::control_value_json::controls_to_json;
 use crate::device_event_logic::should_refetch_devices_for_event;
 use crate::effect_search::IndexedEffect;
 use crate::pages::assets::AssetsPage;
-use crate::pages::capture::CapturePage;
 use crate::pages::dashboard::DashboardPage;
 use crate::pages::devices::DevicesPage;
 use crate::pages::display_preview::DisplayPreviewPage;
@@ -951,7 +950,6 @@ fn AppRoutes() -> impl IntoView {
                         <Route path=path!("/media") view=MediaRoute />
                         <Route path=path!("/layout") view=LayoutPage />
                         <Route path=path!("/devices") view=DevicesPage />
-                        <Route path=path!("/capture") view=CapturePage />
                         <Route path=path!("/displays") view=DisplaysPage />
                         <Route path=path!("/settings") view=SettingsPage />
                     </Routes>

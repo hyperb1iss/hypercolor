@@ -22,23 +22,21 @@ use crate::zones::{ScenesContext, ZonesContext};
 /// Assets/Layout/Displays when the beta flag is on).
 #[must_use]
 pub fn nav_shortcut_path(studio_ui: bool, key: &str) -> Option<&'static str> {
-    const BASE: [&str; 8] = [
+    const BASE: [&str; 7] = [
         "/",
         "/effects",
         "/assets",
         "/layout",
         "/devices",
         "/displays",
-        "/capture",
         "/settings",
     ];
-    const STUDIO: [&str; 7] = [
+    const STUDIO: [&str; 6] = [
         "/",
         "/effects",
         "/studio",
         "/media",
         "/devices",
-        "/capture",
         "/settings",
     ];
 

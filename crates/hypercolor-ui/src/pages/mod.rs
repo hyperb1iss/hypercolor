@@ -1,5 +1,4 @@
 pub mod assets;
-pub mod capture;
 pub mod dashboard;
 pub mod devices;
 pub mod display_preview;
