@@ -15,13 +15,16 @@ inputs:
     required: false
     default: ". -> .cache/hypercolor/target"
   save-if:
-    description: Whether to save cache entries after the job.
+    description: >-
+      Whether to save cache entries after the job. "auto" saves only on the
+      default branch so PR and tag runs restore without competing for the
+      repo's 10GB cache quota.
     required: false
-    default: "true"
+    default: "auto"
   cache-all-crates:
     description: Cache all crates, including CI tooling crates.
     required: false
-    default: "true"
+    default: "false"
   cache-workspace-crates:
     description: Cache workspace crate artifacts as well as dependencies.
     required: false
@@ -34,20 +37,13 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Install sccache
-      uses: mozilla-actions/sccache-action@v0.0.9
-
     - name: Enable compiler cache
       shell: bash
       run: |
         {
-          echo "SCCACHE_GHA_ENABLED=true"
-          echo "RUSTC_WRAPPER=sccache"
-          echo "HYPERCOLOR_FORCE_SCCACHE=1"
           echo "CARGO_INCREMENTAL=0"
           echo "CCACHE_COMPRESS=true"
-          echo "CCACHE_MAXSIZE=2G"
-          echo "SCCACHE_CACHE_SIZE=8G"
+          echo "CCACHE_MAXSIZE=500M"
           echo "CARGO_PROFILE_DEV_DEBUG=0"
           echo "CARGO_PROFILE_TEST_DEBUG=0"
           echo "CARGO_PROFILE_DEV_BUILD_OVERRIDE_DEBUG=0"
@@ -68,4 +64,6 @@ runs:
         cache-all-crates: ${{ inputs.cache-all-crates }}
         cache-workspace-crates: ${{ inputs.cache-workspace-crates }}
         cache-on-failure: ${{ inputs.cache-on-failure }}
-        save-if: ${{ inputs.save-if }}
+        save-if: >-
+          ${{ inputs.save-if == 'true' ||
+              (inputs.save-if == 'auto' && github.ref == 'refs/heads/main') }}
