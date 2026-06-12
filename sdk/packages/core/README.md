@@ -113,6 +113,15 @@ Pre-release. The SDK is not yet published to npm. Standalone workspaces should p
 
 The scaffolder's `--sdk-spec` flag and the `HYPERCOLOR_SDK_PACKAGE_SPEC` environment variable both accept this form.
 
+## Display faces
+
+The SDK also builds full-screen faces for LCD displays (pump screens, the
+Push 2 strip) via `face()` — DOM + canvas pages with display-shape
+variants, typed data sources (sensors, audio, media, net, lighting), and
+the shared cinematic atmosphere kit. The authoring guide lives at
+`docs/content/effects/display-faces.md`; `just face-dev <name>` runs the
+build-install-preview loop against both simulator form factors.
+
 ## License
 
 Apache-2.0

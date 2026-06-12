@@ -160,3 +160,4 @@ For deeper information, consult:
 - **`references/effect-design.md`** — Complete effect design theory: noise functions, Voronoi, metaballs, temporal patterns, palette design, shader porting, rendering pipeline details
 - **`docs/content/effects/color-science.md`** — The shipping guide: hue tiers, saturation strategy, whiteness ratio test, gamma, composite modes, community patterns
 - **`docs/content/effects/typescript-effects.md`**, **`glsl-effects.md`**, **`raw-html.md`** — Authoring references for each rendering path
+- **`docs/content/effects/display-faces.md`** — Display-face authoring: the descriptor contract, layout variants per form factor, typed data sources (media/net/lighting), 15-30fps motion design, the Servo CSS support matrix, and the two-display quality gate
