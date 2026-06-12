@@ -75,7 +75,7 @@ needless_continue = { level = "allow", priority = 36 }
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-toml = "0.8"
+toml = "1.0"
 base64 = "0.22"
 chrono = { version = "0.4.44", default-features = false, features = ["std", "serde", "clock"] }
 
@@ -98,13 +98,13 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 # Data structures
 uuid = { version = "1.11", features = ["v4", "v7", "serde"] }
 ulid = { version = "1.2.1", features = ["serde"] }
-sha2 = "0.10"
+sha2 = "0.11"
 arc-swap = "1.7"
-strum = { version = "0.27", features = ["derive"] }
+strum = { version = "0.28", features = ["derive"] }
 
 # Config
 dirs = "6.0"
-notify = "7.0"
+notify = "8.2"
 sysinfo = "0.38.4"
 nvml-wrapper = "0.12.1"
 wmi = "0.18.4"
@@ -116,9 +116,9 @@ dbus-secret-service-keyring-store = { version = "1.0.0", features = ["crypto-rus
 ed25519-dalek = { version = "2.2.0", features = ["rand_core"] }
 keyring-core = "1.0.0"
 rand = "0.10"
-rand_core = { version = "0.6", features = ["getrandom"] }
+rand_core = { version = "0.10", features = ["getrandom"] }
 webrtc-dtls = "0.12.0"
-webrtc-util = "0.11.0"
+webrtc-util = "0.17.1"
 windows-native-keyring-store = "1.0.0"
 
 # Workspace crates
@@ -142,31 +142,31 @@ hypercolor-tui = { path = "crates/hypercolor-tui" }
 # Audio + input capture
 realfft = "3.4"
 rustfft = "6.2"
-cpal = "0.17.3"
+cpal = "0.18.1"
 libpulse-binding = "2.30.1"
 device_query = "4.0.1"
 evdev = "0.13.2"
 
 # HTTP client
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.13", features = ["json"] }
 
 # Zero-copy byte reinterpretation for wire-format protocol structs
 zerocopy = { version = "0.8", features = ["derive"] }
 
 # Network / device backends
-if-addrs = "0.13.4"
-mdns-sd = "0.11"
+if-addrs = "0.15.0"
+mdns-sd = "0.20"
 tonic = "0.12"
 prost = "0.13"
 nusb = { version = "0.2.2", features = ["tokio"] }
-zbus = { version = "=5.13.0", default-features = false, features = ["tokio"] }
+zbus = { version = "=5.16.0", default-features = false, features = ["tokio"] }
 
 # Screen capture
 ash = "0.38"
 ashpd = { version = "0.13.9", default-features = false, features = ["tokio", "screencast"] }
 glow = "0.17"
 libc = "0.2"
-pipewire = "0.9.2"
+pipewire = "0.10.0"
 
 # HTTP / API
 axum = { version = "0.8", features = ["multipart", "ws"] }
@@ -188,8 +188,8 @@ crossterm = "0.29"
 dpi = "0.1"
 opaline = { version = "0.4", features = ["global-state", "owo-colors", "widgets", "discovery"] }
 tachyonfx = "0.25"
-ratatui-image = { version = "10", default-features = false, features = ["crossterm", "image-defaults"] }
-tokio-tungstenite = "0.26"
+ratatui-image = { version = "11", default-features = false, features = ["crossterm", "image-defaults"] }
+tokio-tungstenite = "0.29"
 open = "5"
 
 # Imaging
