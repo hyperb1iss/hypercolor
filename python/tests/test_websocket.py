@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import struct
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -11,12 +12,16 @@ import pytest
 
 from hypercolor import ws_protocol
 from hypercolor.websocket import (
+    BinaryMessage,
     CanvasData,
     EventMessage,
     FrameData,
     HelloMessage,
     HypercolorEventStream,
+    ScreenZonesData,
     SpectrumData,
+    ZonePreviewData,
+    _encode_text,
 )
 
 PROTOCOL_MANIFEST = Path(__file__).resolve().parents[2] / "protocol" / "websocket-v1.json"
@@ -145,3 +150,60 @@ def _expect_dict(value: Any) -> dict[str, Any]:
 def _expect_list(value: Any) -> list[Any]:
     assert isinstance(value, list)
     return value
+
+
+def test_parse_zone_preview() -> None:
+    scene_id = uuid.uuid4()
+    zone_id = uuid.uuid4()
+    pixels = b"\x01\x02\x03"
+    payload = bytearray()
+    payload.extend(b"\x08")
+    payload.extend(struct.pack("<II", 42, 4242))
+    payload.extend(scene_id.bytes)
+    payload.extend(zone_id.bytes)
+    payload.extend(struct.pack("<HH", 1, 1))
+    payload.extend(b"\x00")
+    payload.extend(pixels)
+
+    message = HypercolorEventStream._decode_binary(bytes(payload))
+
+    assert isinstance(message, ZonePreviewData)
+    assert message.scene_id == str(scene_id)
+    assert message.zone_id == str(zone_id)
+    assert message.format == "rgb"
+    assert message.pixels == pixels
+
+
+def test_parse_screen_zones() -> None:
+    rgb = bytes([255, 0, 255] * 6)
+    payload = bytearray()
+    payload.extend(b"\x09")
+    payload.extend(struct.pack("<II", 9, 9999))
+    payload.extend(struct.pack("<HH", 1920, 1080))
+    payload.extend(bytes([3, 2]))
+    payload.extend(bytes([0, 1, 0, 0]))
+    payload.extend(rgb)
+
+    message = HypercolorEventStream._decode_binary(bytes(payload))
+
+    assert isinstance(message, ScreenZonesData)
+    assert message.grid_cols == 3
+    assert message.grid_rows == 2
+    assert message.letterbox == (0, 1, 0, 0)
+    assert message.rgb == rgb
+
+
+def test_unknown_binary_tag_is_tolerated() -> None:
+    payload = b"\x7f\x00\x01\x02"
+
+    message = HypercolorEventStream._decode_binary(payload)
+
+    assert isinstance(message, BinaryMessage)
+    assert message.tag == 0x7F
+    assert message.payload == payload
+
+
+def test_client_messages_are_text_frames() -> None:
+    encoded = _encode_text({"type": "subscribe", "channels": ["frames"]})
+
+    assert isinstance(encoded, str)

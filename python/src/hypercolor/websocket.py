@@ -106,6 +106,42 @@ class CanvasData:
     channel: str = "canvas"
 
 
+@dataclass(slots=True)
+class ZonePreviewData:
+    """Per-zone canvas preview payload."""
+
+    scene_id: str
+    zone_id: str
+    frame_number: int
+    timestamp_ms: int
+    width: int
+    height: int
+    format: str
+    pixels: bytes
+
+
+@dataclass(slots=True)
+class ScreenZonesData:
+    """Ambilight zone grid payload — row-major RGB, ``cols * rows * 3`` bytes."""
+
+    frame_number: int
+    timestamp_ms: int
+    source_width: int
+    source_height: int
+    grid_cols: int
+    grid_rows: int
+    letterbox: tuple[int, int, int, int]
+    rgb: bytes
+
+
+@dataclass(slots=True)
+class BinaryMessage:
+    """Unrecognized binary frame, carried whole for forward compatibility."""
+
+    tag: int
+    payload: bytes
+
+
 type WsMessage = (
     HelloMessage
     | EventMessage
@@ -114,6 +150,13 @@ type WsMessage = (
     | FrameData
     | SpectrumData
     | CanvasData
+    | ZonePreviewData
+    | ScreenZonesData
+    | BinaryMessage
+)
+
+type _BinaryWsMessage = (
+    FrameData | SpectrumData | CanvasData | ZonePreviewData | ScreenZonesData | BinaryMessage
 )
 
 
@@ -218,7 +261,7 @@ class HypercolorEventStream:
             "body": dict(body) if body is not None else None,
         }
         async with self._send_lock:
-            await connection.send(msgspec.json.encode(payload))
+            await connection.send(_encode_text(payload))
 
         while not future.done():
             await self.receive()
@@ -249,7 +292,7 @@ class HypercolorEventStream:
     async def _send_json(self, payload: JsonObject) -> None:
         connection = self._require_connection()
         async with self._send_lock:
-            await connection.send(msgspec.json.encode(payload))
+            await connection.send(_encode_text(payload))
 
     def _require_connection(self) -> ClientConnection:
         if self._connection is None:
@@ -297,7 +340,7 @@ class HypercolorEventStream:
         )
 
     @staticmethod
-    def _decode_binary(payload: bytes) -> FrameData | SpectrumData | CanvasData:
+    def _decode_binary(payload: bytes) -> _BinaryWsMessage:
         message_type = payload[0]
         if message_type == BINARY_MESSAGE_TAGS["led_frame"]:
             return HypercolorEventStream._parse_led_frame(payload)
@@ -305,8 +348,11 @@ class HypercolorEventStream:
             return HypercolorEventStream._parse_spectrum(payload)
         if message_type in PREVIEW_CHANNEL_TAGS:
             return HypercolorEventStream._parse_canvas(payload)
-        msg = f"Unknown Hypercolor binary message type: {message_type:#x}"
-        raise RuntimeError(msg)
+        if message_type == BINARY_MESSAGE_TAGS["zone_preview"]:
+            return HypercolorEventStream._parse_zone_preview(payload)
+        if message_type == BINARY_MESSAGE_TAGS["screen_zones"]:
+            return HypercolorEventStream._parse_screen_zones(payload)
+        return BinaryMessage(tag=message_type, payload=payload)
 
     async def _dispatch_json(self, message: WsMessage) -> None:
         if isinstance(message, CommandResponse):
@@ -322,7 +368,7 @@ class HypercolorEventStream:
             for handler in self._metrics_handlers:
                 await _run_handler(handler, message)
 
-    async def _dispatch_binary(self, message: FrameData | SpectrumData | CanvasData) -> None:
+    async def _dispatch_binary(self, message: _BinaryWsMessage) -> None:
         if isinstance(message, FrameData):
             for handler in self._frame_handlers:
                 await _run_handler(handler, message)
@@ -394,6 +440,48 @@ class HypercolorEventStream:
             pixels=pixels,
             channel=PREVIEW_CHANNEL_TAGS[payload[0]],
         )
+
+    @staticmethod
+    def _parse_zone_preview(payload: bytes) -> ZonePreviewData:
+        frame_number, timestamp_ms = struct.unpack_from("<II", payload, 1)
+        scene_id = uuid.UUID(bytes=payload[9:25])
+        zone_id = uuid.UUID(bytes=payload[25:41])
+        width, height = struct.unpack_from("<HH", payload, 41)
+        return ZonePreviewData(
+            scene_id=str(scene_id),
+            zone_id=str(zone_id),
+            frame_number=frame_number,
+            timestamp_ms=timestamp_ms,
+            width=width,
+            height=height,
+            format=CANVAS_FORMAT_TAGS.get(payload[45], "rgb"),
+            pixels=payload[46:],
+        )
+
+    @staticmethod
+    def _parse_screen_zones(payload: bytes) -> ScreenZonesData:
+        frame_number, timestamp_ms = struct.unpack_from("<II", payload, 1)
+        source_width, source_height = struct.unpack_from("<HH", payload, 9)
+        return ScreenZonesData(
+            frame_number=frame_number,
+            timestamp_ms=timestamp_ms,
+            source_width=source_width,
+            source_height=source_height,
+            grid_cols=payload[13],
+            grid_rows=payload[14],
+            letterbox=(payload[15], payload[16], payload[17], payload[18]),
+            rgb=payload[19:],
+        )
+
+
+def _encode_text(payload: JsonObject) -> str:
+    """Encode a client message as ``str`` so it ships as a WS text frame.
+
+    The daemon only parses client messages from text frames; sending raw
+    ``bytes`` would silently arrive as an ignored binary frame.
+    """
+
+    return msgspec.json.encode(payload).decode("utf-8")
 
 
 async def _run_handler(handler: EventHandler, payload: Any) -> None:
