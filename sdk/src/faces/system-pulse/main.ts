@@ -11,6 +11,7 @@ import {
     ValueHistory,
     withAlpha,
 } from '@hypercolor/sdk'
+import { drawNebulaField, drawRisingMotes, makeDrifters } from '../shared/atmosphere'
 import { createMetricCard, type MetricCard } from '../shared/components'
 import {
     clamp01,
@@ -384,6 +385,7 @@ function buildSystemPulse(ctx: FaceContext, wide: boolean) {
 
     let lastTime = Number.NaN
     let lastRigKey = ''
+    const drifters = makeDrifters(wide ? 28 : 18)
 
     return (
         time: number,
@@ -454,5 +456,7 @@ function buildSystemPulse(ctx: FaceContext, wide: boolean) {
         }
 
         ctx.ctx.clearRect(0, 0, ctx.width, ctx.height)
+        drawNebulaField(ctx.ctx, ctx.width, ctx.height, time, accentColor, secondary, 1.0)
+        drawRisingMotes(ctx.ctx, ctx.width, ctx.height, time, drifters, accentColor, 0.6, 0.4)
     }
 }

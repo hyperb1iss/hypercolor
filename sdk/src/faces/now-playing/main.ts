@@ -11,6 +11,7 @@ import {
     toggle,
     withAlpha,
 } from '@hypercolor/sdk'
+import { drawNebulaField } from '../shared/atmosphere'
 import {
     clamp01,
     createFaceRoot,
@@ -435,6 +436,7 @@ function buildNowPlaying(ctx: FaceContext, wide: boolean) {
 
         const c = ctx.ctx
         c.clearRect(0, 0, ctx.width, ctx.height)
+        drawNebulaField(c, ctx.width, ctx.height, time, accent, secondary, playing ? 1.0 : 0.55)
 
         const progress = progressGlide.update(media.available ? data.media.progress() : 0, dt)
         const breathe = idlePulse.update(media.available ? 0 : 1, dt)

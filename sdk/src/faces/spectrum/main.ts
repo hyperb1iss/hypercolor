@@ -1,5 +1,6 @@
 import type { FaceContext } from '@hypercolor/sdk'
 import { color, combo, face, lerpColor, num, palette, Smoothed, withAlpha } from '@hypercolor/sdk'
+import { drawNebulaField } from '../shared/atmosphere'
 import { clamp01, createFaceRoot } from '../shared/dom'
 
 const PEAK_FALL_PER_SEC = 0.35
@@ -171,6 +172,15 @@ function buildSpectrum(ctx: FaceContext, wide: boolean) {
 
         const c = ctx.ctx
         c.clearRect(0, 0, ctx.width, ctx.height)
+        drawNebulaField(
+            c,
+            ctx.width,
+            ctx.height,
+            time,
+            controls.accent as string,
+            controls.secondaryAccent as string,
+            0.4 + level * 0.7,
+        )
 
         // Idle breath: a slow wave rolls across the bars so silence still moves.
         const idleValue = (index: number): number =>
