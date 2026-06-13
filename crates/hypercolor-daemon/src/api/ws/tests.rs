@@ -1319,9 +1319,13 @@ fn cached_display_preview_payload_respects_the_size_boundary() {
     let header_len = probe.len() - 1;
     reset_ws_payload_caches();
 
+    // The cache key includes the jpeg Arc's storage address, so both calls
+    // must share one snapshot; per-call snapshots only matched before when
+    // the allocator happened to reuse the freed Vec's address.
     let at_limit = WS_DISPLAY_PREVIEW_PAYLOAD_CACHE_MAX_BYTES - header_len;
-    let first = cached_display_preview_payload(&display_preview_snapshot(at_limit, 31));
-    let second = cached_display_preview_payload(&display_preview_snapshot(at_limit, 31));
+    let snapshot = display_preview_snapshot(at_limit, 31);
+    let first = cached_display_preview_payload(&snapshot);
+    let second = cached_display_preview_payload(&snapshot);
     assert_eq!(
         first.as_ptr(),
         second.as_ptr(),
@@ -1329,8 +1333,9 @@ fn cached_display_preview_payload_respects_the_size_boundary() {
     );
 
     reset_ws_payload_caches();
-    let first = cached_display_preview_payload(&display_preview_snapshot(at_limit + 1, 32));
-    let second = cached_display_preview_payload(&display_preview_snapshot(at_limit + 1, 32));
+    let snapshot = display_preview_snapshot(at_limit + 1, 32);
+    let first = cached_display_preview_payload(&snapshot);
+    let second = cached_display_preview_payload(&snapshot);
     assert_ne!(
         first.as_ptr(),
         second.as_ptr(),
