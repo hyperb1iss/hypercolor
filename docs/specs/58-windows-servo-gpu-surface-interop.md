@@ -2,9 +2,56 @@
 
 **Status:** Implemented and Windows-fixture verified; cross-vendor soak and performance characterization ongoing
 **Author:** Nova
-**Date:** 2026-05-22
+**Date:** 2026-05-22 (FBO revision 2026-06-12)
 **Crates:** `hypercolor-core`, `hypercolor-daemon`, `hypercolor-windows-gpu-interop`
 **Related:** Specs 32, 48, 56, 57; `docs/design/45-graphics-pipeline-unification-plan.md`
+
+## 0.0 FBO Revision (2026-06-12)
+
+After Linux and macOS moved to the FBO-based GPU import architecture, the
+Windows path was rebuilt to match. The architecture below this note is
+preserved for history; the following supersedes the producer design in
+Sections 5.2, 7, and 8:
+
+- Servo renders into **one stable GL framebuffer** (texture color attachment
+  plus DEPTH24_STENCIL8 renderbuffer) owned by
+  `WindowsAngleRenderingContext`, never directly into a shared surface.
+  WebRender keeps a stable render-target identity across frames; the context
+  surface is a plain generic pbuffer that is never rebound.
+- `present()` publishes by **blitting the render FBO into the next available
+  ring slot** — a D3D11 `SHARED | SHARED_NTHANDLE` texture bound into ANGLE
+  as a GL texture via Surfman `create_surface_texture_from_texture` and
+  wrapped in a slot framebuffer — then inserts a GL fence and flushes. No
+  `glFinish`.
+- `native_frame()` idempotently returns the newest slot whose fence has
+  signaled, carrying a monotonic `content_generation`. Repeated calls without
+  a new publish return the same slot and generation. The first call eagerly
+  publishes so warmup needs no special casing.
+- The importer caches one wgpu texture per NT handle (ring depth 3) and
+  stamps each frame's `storage_id` with the producer `content_generation`,
+  matching macOS semantics. The previous design's per-handle cached
+  `storage_id` made repeated publishes look unchanged to SparkleFlinger's
+  upload-skip logic, which the multi-zone / multi-layer stack relies on.
+- mozangle quirks found on hardware: gleam's GLES `read_buffer` is an
+  unconditional panic (the slot framebuffer's read buffer already defaults to
+  `COLOR_ATTACHMENT0`), and `glClientWaitSync` does not reliably block on a
+  nonzero timeout, so the bounded fence wait polls with an explicit deadline
+  (50ms cap, 500µs interval).
+- Surfman is now upstream 0.12.2 from crates.io; the `hyperb1iss/surfman`
+  fork described in Section 3.5 has been dropped. Both
+  `create_surface_from_texture` and `create_surface_texture_from_texture`
+  exist upstream as `pub unsafe fn`.
+
+Verification receipts on the Windows workstation (2026-06-12):
+
+- `HYPERCOLOR_RUN_WINDOWS_D3D11_FIXTURE=1 cargo test -p
+  hypercolor-windows-gpu-interop imports_synthetic_d3d11_shared_texture_into_wgpu_texture`
+  passed with `1 passed`.
+- `HYPERCOLOR_RUN_WINDOWS_ANGLE_CONTEXT_FIXTURE=1 cargo test -p
+  hypercolor-windows-gpu-interop --features servo-context
+  angle_context_renders_into_importable_d3d11_ring` passed with `1 passed`,
+  covering five publish generations, ring wrap-around, idempotent
+  `native_frame`, and pixel-verified imports.
 
 ## 0. Research Pass Summary
 

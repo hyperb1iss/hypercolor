@@ -17,7 +17,7 @@ use image::RgbaImage;
 use paint_api::rendering_context::RenderingContext;
 use surfman::{
     Adapter, Connection, Context, ContextAttributeFlags, ContextAttributes, Device, Error, GLApi,
-    Surface, SurfaceInfo, SurfaceTexture,
+    Surface, SurfaceAccess, SurfaceInfo, SurfaceTexture, SurfaceType,
 };
 use webrender_api::units::DeviceIntRect;
 use winapi::Interface;
@@ -35,13 +35,19 @@ use crate::{
     WindowsD3d11SharedTextureImporter, WindowsGpuInteropError,
 };
 
-const WINDOWS_SERVO_RING_DEPTH: usize = 4;
-const GL_SYNC_GPU_COMMANDS_COMPLETE: gl::GLenum = 0x9117;
-const GL_ALREADY_SIGNALED: gl::GLenum = 0x911A;
-const GL_TIMEOUT_EXPIRED: gl::GLenum = 0x911B;
-const GL_CONDITION_SATISFIED: gl::GLenum = 0x911C;
-const GL_WAIT_FAILED: gl::GLenum = 0x911D;
-const GL_WAIT_TIMEOUT_NS: gl::GLuint64 = u64::MAX;
+/// Number of D3D11 shared textures in the publish ring: one being written,
+/// one held by the Vulkan consumer, and one spare so the producer never
+/// stalls.
+const WINDOWS_SERVO_RING_SLOTS: usize = 3;
+/// Bounded fence wait before reporting a transient fence timeout instead of
+/// stalling the render thread. Steady-state waits return as soon as the
+/// fence signals; the bound only caps cold-start submissions, where ANGLE's
+/// first D3D11 work can take tens of milliseconds.
+const PUBLISH_FENCE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(50);
+/// Poll interval while waiting on a publish fence.
+const PUBLISH_FENCE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_micros(500);
+const GL_READ_FRAMEBUFFER: gl::GLenum = 0x8CA8;
+const GL_DRAW_FRAMEBUFFER: gl::GLenum = 0x8CA9;
 
 /// DXGI adapter identity used to pin ANGLE to wgpu's Vulkan adapter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,29 +81,34 @@ pub struct WindowsServoNativeFrame {
     pub slot_index: usize,
     /// NT shared handle for this frame's D3D11 texture.
     pub shared_handle: windows::Win32::Foundation::HANDLE,
-    /// Time spent waiting for producer GL work to finish.
+    /// Monotonically increasing content version for this frame.
+    ///
+    /// Contents changed iff this changed; repeated fetches without a new
+    /// publish return the same generation.
+    pub content_generation: u64,
+    /// Time spent waiting for the producer blit fence, in microseconds.
     pub sync_us: u64,
 }
 
-/// Windows Servo rendering context backed by ANGLE D3D11 shared textures.
+/// Windows Servo rendering context backed by an FBO render target published
+/// into a ring of D3D11 shared textures.
+///
+/// Servo renders into one stable GL framebuffer. `present` blits that
+/// framebuffer into the next available ring slot and fences the copy;
+/// `native_frame` hands out the newest slot whose fence has signaled so the
+/// Vulkan consumer never races in-flight GL writes.
 pub struct WindowsAngleRenderingContext {
     size: Cell<PhysicalSize<u32>>,
     gleam_gl: Rc<dyn Gl>,
     glow_gl: Arc<glow::Context>,
     device: RefCell<Device>,
     context: RefCell<Context>,
-    ring: RefCell<Vec<WindowsServoTextureSlot>>,
-    current_slot: Cell<usize>,
-}
-
-struct WindowsServoTextureSlot {
-    texture: WindowsD3d11SharedTexture,
-    surface: Option<Surface>,
-    fence: Option<gl::GLsync>,
+    framebuffer: RefCell<Option<WindowsServoFramebuffer>>,
 }
 
 impl WindowsAngleRenderingContext {
-    /// Creates an ANGLE context with a D3D11 shared-texture ring.
+    /// Creates an ANGLE context with an FBO render target and a D3D11
+    /// shared-texture publish ring.
     pub fn new(
         width: u32,
         height: u32,
@@ -119,9 +130,22 @@ impl WindowsAngleRenderingContext {
             .create_device(&adapter)
             .map_err(context_error("create ANGLE device"))?;
         let mut context = create_context(&device, &connection)?;
+        let surface = device
+            .create_surface(
+                &context,
+                SurfaceAccess::GPUOnly,
+                SurfaceType::Generic {
+                    size: Size2D::new(width as i32, height as i32),
+                },
+            )
+            .map_err(context_error("create context surface"))?;
+        bind_surface(&device, &mut context, surface)?;
         device
             .make_context_current(&context)
             .map_err(context_error("make context current"))?;
+
+        let gleam_gl = load_gleam_gl(&device, &context, connection.gl_api());
+        let glow_gl = load_glow_gl(&device, &context);
 
         let native_device = device.native_device();
         // SAFETY: native_device.d3d11_device is an owned AddRef returned by Surfman.
@@ -130,21 +154,14 @@ impl WindowsAngleRenderingContext {
                 native_device.d3d11_device.cast::<c_void>(),
             )?
         };
-        let descriptor = WindowsD3d11SharedTextureImportDescriptor::new(
-            width,
-            height,
-            ImportedFrameFormat::Bgra8Unorm,
+        let framebuffer = WindowsServoFramebuffer::new(
+            Rc::clone(&gleam_gl),
+            &device,
+            &mut context,
+            &d3d11,
+            size,
+            1,
         )?;
-        let surfman_size = Size2D::new(width as i32, height as i32);
-        let mut ring = create_texture_ring(&device, &context, &d3d11, descriptor, surfman_size)?;
-        let first_surface = ring[0]
-            .surface
-            .take()
-            .ok_or(WindowsGpuInteropError::WindowsImportStaleFrame)?;
-        bind_surface(&device, &mut context, first_surface)?;
-
-        let gleam_gl = load_gleam_gl(&device, &context, connection.gl_api());
-        let glow_gl = load_glow_gl(&device, &context);
 
         Ok(Self {
             size: Cell::new(size),
@@ -152,185 +169,31 @@ impl WindowsAngleRenderingContext {
             glow_gl: Arc::new(glow_gl),
             device: RefCell::new(device),
             context: RefCell::new(context),
-            ring: RefCell::new(ring),
-            current_slot: Cell::new(0),
+            framebuffer: RefCell::new(Some(framebuffer)),
         })
     }
 
-    /// Publishes current Servo GL work and returns the oldest completed frame.
-    pub fn publish_current_frame(&self) -> Result<Option<WindowsServoNativeFrame>> {
+    /// Returns the newest published ring slot for import.
+    ///
+    /// The returned slot's blit fence has signaled, so Vulkan can sample the
+    /// shared texture without racing Servo's in-flight GL writes. Repeated
+    /// calls without a new [`RenderingContext::present`] publish return the
+    /// same slot and content generation.
+    pub fn native_frame(&self) -> Result<WindowsServoNativeFrame> {
         self.make_current()
-            .map_err(context_error("make current for shared frame"))?;
-        self.prepare_for_rendering();
-        let current_slot = self.current_slot.get();
-        self.fence_current_slot(current_slot)?;
-        let completed_slot = self.previous_slot(current_slot);
-        let completed_had_frame = self.ring.borrow()[completed_slot].fence.is_some();
-        let sync_us = self.wait_for_slot(completed_slot)?;
-        let next_slot = self.next_slot(current_slot);
-        if self.ring.borrow()[next_slot].fence.is_some() {
-            let _ = self.wait_for_slot(next_slot)?;
-        }
-        self.rotate_to_slot(current_slot, next_slot)?;
-        if !completed_had_frame {
-            return Ok(None);
-        }
-        let completed_frame = self.native_frame_for_slot(completed_slot, sync_us)?;
-        Ok(Some(completed_frame))
+            .map_err(context_error("make context current for native frame"))?;
+        let mut framebuffer = self.framebuffer.borrow_mut();
+        let framebuffer = framebuffer
+            .as_mut()
+            .ok_or(WindowsGpuInteropError::MissingWindowsAngleContext)?;
+        framebuffer.acquire_native_frame()
     }
 
-    fn rotate_to_slot(&self, current_slot: usize, next_slot: usize) -> Result<()> {
-        if current_slot == next_slot {
-            return Ok(());
-        }
+    fn resize_framebuffer(&self, size: PhysicalSize<u32>) -> Result<()> {
+        self.make_current()
+            .map_err(context_error("make context current for resize"))?;
         let device = self.device.borrow();
         let mut context = self.context.borrow_mut();
-        let mut ring = self.ring.borrow_mut();
-        let next_surface = ring[next_slot]
-            .surface
-            .take()
-            .ok_or(WindowsGpuInteropError::WindowsImportStaleFrame)?;
-        let current_surface = device
-            .unbind_surface_from_context(&mut context)
-            .map_err(context_error("unbind current shared surface"))?
-            .ok_or(WindowsGpuInteropError::WindowsImportStaleFrame)?;
-
-        match device.bind_surface_to_context(&mut context, next_surface) {
-            Ok(()) => {
-                ring[current_slot].surface = Some(current_surface);
-                self.current_slot.set(next_slot);
-                device
-                    .make_context_current(&context)
-                    .map_err(context_error("make rotated context current"))?;
-                Ok(())
-            }
-            Err((error, next_surface)) => {
-                ring[next_slot].surface = Some(next_surface);
-                let _ = device.bind_surface_to_context(&mut context, current_surface);
-                Err(context_error("bind next shared surface")(error))
-            }
-        }
-    }
-
-    fn fence_current_slot(&self, slot_index: usize) -> Result<()> {
-        let fence = self.gleam_gl.fence_sync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-        if fence.is_null() {
-            return Err(WindowsGpuInteropError::ServoContext {
-                operation: "fence shared frame",
-                message: "glFenceSync returned null".to_owned(),
-            });
-        }
-        self.gleam_gl.flush();
-        let mut ring = self.ring.borrow_mut();
-        let slot = ring
-            .get_mut(slot_index)
-            .ok_or(WindowsGpuInteropError::WindowsImportStaleFrame)?;
-        if let Some(previous) = slot.fence.replace(fence) {
-            self.gleam_gl.delete_sync(previous);
-        }
-        Ok(())
-    }
-
-    fn wait_for_slot(&self, slot_index: usize) -> Result<u64> {
-        let Some(fence) = self
-            .ring
-            .borrow()
-            .get(slot_index)
-            .and_then(|slot| slot.fence)
-        else {
-            return Ok(0);
-        };
-        let sync_start = Instant::now();
-        let status = self.gleam_gl.client_wait_sync(fence, 0, GL_WAIT_TIMEOUT_NS);
-        let sync_us = elapsed_micros(sync_start);
-        match status {
-            GL_ALREADY_SIGNALED | GL_CONDITION_SATISFIED => {
-                self.complete_slot_fence(slot_index, fence)?;
-                Ok(sync_us)
-            }
-            GL_TIMEOUT_EXPIRED => Err(WindowsGpuInteropError::ServoContext {
-                operation: "wait for shared frame fence",
-                message: "glClientWaitSync timed out".to_owned(),
-            }),
-            GL_WAIT_FAILED => Err(WindowsGpuInteropError::ServoContext {
-                operation: "wait for shared frame fence",
-                message: "glClientWaitSync returned GL_WAIT_FAILED".to_owned(),
-            }),
-            status => Err(WindowsGpuInteropError::ServoContext {
-                operation: "wait for shared frame fence",
-                message: format!("glClientWaitSync returned unexpected status {status:#x}"),
-            }),
-        }
-    }
-
-    fn complete_slot_fence(&self, slot_index: usize, fence: gl::GLsync) -> Result<()> {
-        self.gleam_gl.delete_sync(fence);
-        let mut ring = self.ring.borrow_mut();
-        let slot = ring
-            .get_mut(slot_index)
-            .ok_or(WindowsGpuInteropError::WindowsImportStaleFrame)?;
-        if slot.fence == Some(fence) {
-            slot.fence = None;
-        }
-        Ok(())
-    }
-
-    fn native_frame_for_slot(
-        &self,
-        slot_index: usize,
-        sync_us: u64,
-    ) -> Result<WindowsServoNativeFrame> {
-        let ring = self.ring.borrow();
-        let texture = &ring
-            .get(slot_index)
-            .ok_or(WindowsGpuInteropError::WindowsImportStaleFrame)?
-            .texture;
-        let descriptor = texture.descriptor();
-        Ok(WindowsServoNativeFrame {
-            width: descriptor.width,
-            height: descriptor.height,
-            format: descriptor.format,
-            origin: WindowsServoFrameOrigin::BottomLeft,
-            slot_index,
-            shared_handle: texture.shared_handle(),
-            sync_us,
-        })
-    }
-
-    fn next_slot(&self, current_slot: usize) -> usize {
-        (current_slot + 1) % self.ring.borrow().len()
-    }
-
-    fn previous_slot(&self, current_slot: usize) -> usize {
-        let ring_len = self.ring.borrow().len();
-        (current_slot + ring_len - 1) % ring_len
-    }
-
-    fn framebuffer(&self) -> Option<glow::NativeFramebuffer> {
-        let device = self.device.borrow();
-        let context = self.context.borrow();
-        device
-            .context_surface_info(&context)
-            .unwrap_or(None)
-            .and_then(|info| info.framebuffer_object)
-    }
-
-    fn recreate_ring(&self, size: PhysicalSize<u32>) -> Result<()> {
-        let device = self.device.borrow();
-        let mut context = self.context.borrow_mut();
-        let mut ring = self.ring.borrow_mut();
-        if let Ok(Some(surface)) = device.unbind_surface_from_context(&mut context) {
-            ring[self.current_slot.get()].surface = Some(surface);
-        }
-        for slot in ring.iter_mut() {
-            if let Some(fence) = slot.fence.take() {
-                self.gleam_gl.delete_sync(fence);
-            }
-            if let Some(mut surface) = slot.surface.take() {
-                destroy_surface_or_forget(&device, &mut context, &mut surface);
-            }
-        }
-
         let native_device = device.native_device();
         // SAFETY: native_device.d3d11_device is an owned AddRef returned by Surfman.
         let d3d11 = unsafe {
@@ -338,21 +201,22 @@ impl WindowsAngleRenderingContext {
                 native_device.d3d11_device.cast::<c_void>(),
             )?
         };
-        let descriptor = WindowsD3d11SharedTextureImportDescriptor::new(
-            size.width,
-            size.height,
-            ImportedFrameFormat::Bgra8Unorm,
+        let next_generation = self
+            .framebuffer
+            .borrow()
+            .as_ref()
+            .map_or(1, WindowsServoFramebuffer::next_generation);
+        let framebuffer = WindowsServoFramebuffer::new(
+            Rc::clone(&self.gleam_gl),
+            &device,
+            &mut context,
+            &d3d11,
+            size,
+            next_generation,
         )?;
-        let surfman_size = Size2D::new(size.width as i32, size.height as i32);
-        let mut next_ring =
-            create_texture_ring(&device, &context, &d3d11, descriptor, surfman_size)?;
-        let first_surface = next_ring[0]
-            .surface
-            .take()
-            .ok_or(WindowsGpuInteropError::WindowsImportStaleFrame)?;
-        bind_surface(&device, &mut context, first_surface)?;
-        *ring = next_ring;
-        self.current_slot.set(0);
+        if let Some(mut previous) = self.framebuffer.borrow_mut().replace(framebuffer) {
+            previous.destroy(&device, &mut context);
+        }
         Ok(())
     }
 }
@@ -365,8 +229,15 @@ impl WindowsD3d11SharedTextureImporter {
         frame: WindowsServoNativeFrame,
     ) -> Result<ImportedEffectFrame> {
         // SAFETY: WindowsServoNativeFrame is only produced by the ANGLE
-        // context after publish_current_frame observes a completed GL fence.
-        unsafe { self.import_shared_handle(device, frame.shared_handle, frame.sync_us) }
+        // context after native_frame observes a completed GL blit fence.
+        unsafe {
+            self.import_shared_handle(
+                device,
+                frame.shared_handle,
+                frame.content_generation,
+                frame.sync_us,
+            )
+        }
     }
 }
 
@@ -374,17 +245,12 @@ impl Drop for WindowsAngleRenderingContext {
     fn drop(&mut self) {
         let device = self.device.get_mut();
         let context = self.context.get_mut();
-        let ring = self.ring.get_mut();
-        if let Ok(Some(surface)) = device.unbind_surface_from_context(context) {
-            ring[self.current_slot.get()].surface = Some(surface);
+        let _ = device.make_context_current(context);
+        if let Some(mut framebuffer) = self.framebuffer.get_mut().take() {
+            framebuffer.destroy(device, context);
         }
-        for slot in ring {
-            if let Some(fence) = slot.fence.take() {
-                self.gleam_gl.delete_sync(fence);
-            }
-            if let Some(mut surface) = slot.surface.take() {
-                destroy_surface_or_forget(device, context, &mut surface);
-            }
+        if let Ok(Some(mut surface)) = device.unbind_surface_from_context(context) {
+            destroy_surface_or_forget(device, context, &mut surface);
         }
         let _ = device.destroy_context(context);
     }
@@ -392,11 +258,11 @@ impl Drop for WindowsAngleRenderingContext {
 
 impl RenderingContext for WindowsAngleRenderingContext {
     fn prepare_for_rendering(&self) {
-        let framebuffer_id = self
-            .framebuffer()
-            .map_or(0, |framebuffer| framebuffer.0.into());
-        self.gleam_gl
-            .bind_framebuffer(gl::FRAMEBUFFER, framebuffer_id);
+        if let Some(framebuffer) = self.framebuffer.borrow().as_ref() {
+            framebuffer.bind();
+        } else {
+            self.gleam_gl.bind_framebuffer(gl::FRAMEBUFFER, 0);
+        }
     }
 
     fn read_to_image(&self, source_rectangle: DeviceIntRect) -> Option<RgbaImage> {
@@ -434,13 +300,29 @@ impl RenderingContext for WindowsAngleRenderingContext {
         if self.size.get() == size {
             return;
         }
-        match validate_size(size.width, size.height).and_then(|_| self.recreate_ring(size)) {
+        match validate_size(size.width, size.height).and_then(|_| self.resize_framebuffer(size)) {
             Ok(()) => self.size.set(size),
             Err(error) => tracing::warn!(%error, "failed to resize Windows ANGLE Servo context"),
         }
     }
 
-    fn present(&self) {}
+    fn present(&self) {
+        // Publish the render target into the next ring slot. The blit is
+        // fenced (not glFinish-ed); `native_frame` only hands out slots whose
+        // fences have signaled.
+        if let Err(error) = self.make_current() {
+            tracing::warn!(
+                ?error,
+                "Windows Servo present skipped: context could not be made current"
+            );
+            return;
+        }
+        if let Some(framebuffer) = self.framebuffer.borrow_mut().as_mut()
+            && let Err(error) = framebuffer.copy_to_shared_texture()
+        {
+            tracing::warn!(%error, "Windows Servo shared-texture publish failed");
+        }
+    }
 
     fn make_current(&self) -> std::result::Result<(), Error> {
         let device = self.device.borrow();
@@ -492,34 +374,516 @@ impl RenderingContext for WindowsAngleRenderingContext {
     }
 }
 
-fn create_texture_ring(
-    device: &Device,
-    context: &Context,
-    d3d11: &WindowsD3d11Device,
-    descriptor: WindowsD3d11SharedTextureImportDescriptor,
-    size: Size2D<i32>,
-) -> Result<Vec<WindowsServoTextureSlot>> {
-    let mut ring = Vec::with_capacity(WINDOWS_SERVO_RING_DEPTH);
-    for _ in 0..WINDOWS_SERVO_RING_DEPTH {
-        let texture = d3d11.create_shared_texture(descriptor)?;
-        // SAFETY: texture stays alive in the ring while the Surfman surface exists.
-        let surfman_texture = unsafe { texture.to_surfman_texture() };
-        // SAFETY: the surface is used on this Servo worker thread, and the
-        // D3D11 texture remains owned by the slot for at least as long.
-        let surface = unsafe {
-            device
-                .create_surface_from_texture(context, &size, surfman_texture)
-                .map_err(context_error(
-                    crate::WINDOWS_ANGLE_CLIENT_BUFFER_SURFACE_OPERATION,
-                ))?
+/// One publish target in the D3D11 shared-texture ring.
+struct WindowsSharedRingSlot {
+    texture: WindowsD3d11SharedTexture,
+    /// ANGLE binding of `texture` as a GL texture; kept alive so the slot
+    /// framebuffer stays valid. Must be destroyed through the Surfman device.
+    surface_texture: Option<SurfaceTexture>,
+    framebuffer_id: u32,
+    /// Fence inserted after the most recent blit into this slot; `None` once
+    /// the blit is known complete (or the slot was never written).
+    fence: Option<gl::GLsync>,
+    /// Content version of the most recent blit; `0` means never written.
+    content_generation: u64,
+}
+
+struct WindowsServoFramebuffer {
+    gl: Rc<dyn Gl>,
+    size: PhysicalSize<u32>,
+    render_framebuffer_id: u32,
+    render_texture_id: u32,
+    depth_stencil_renderbuffer_id: u32,
+    slots: Vec<WindowsSharedRingSlot>,
+    /// Ring cursor: index after the most recently written slot.
+    next_slot: usize,
+    /// Slot most recently handed to the Vulkan consumer; never reused for a
+    /// blit while it remains the newest completed frame.
+    last_ready_slot: Option<usize>,
+    /// Next content generation to assign; survives ring rebuilds.
+    next_generation: u64,
+}
+
+impl WindowsServoFramebuffer {
+    fn new(
+        gl: Rc<dyn Gl>,
+        device: &Device,
+        context: &mut Context,
+        d3d11: &WindowsD3d11Device,
+        size: PhysicalSize<u32>,
+        next_generation: u64,
+    ) -> Result<Self> {
+        let mut framebuffer = Self {
+            gl,
+            size,
+            render_framebuffer_id: 0,
+            render_texture_id: 0,
+            depth_stencil_renderbuffer_id: 0,
+            slots: Vec::with_capacity(WINDOWS_SERVO_RING_SLOTS),
+            next_slot: 0,
+            last_ready_slot: None,
+            next_generation,
         };
-        ring.push(WindowsServoTextureSlot {
-            texture,
-            surface: Some(surface),
-            fence: None,
+        if let Err(error) = framebuffer.init(device, context, d3d11) {
+            framebuffer.destroy(device, context);
+            return Err(error);
+        }
+        Ok(framebuffer)
+    }
+
+    fn init(
+        &mut self,
+        device: &Device,
+        context: &mut Context,
+        d3d11: &WindowsD3d11Device,
+    ) -> Result<()> {
+        let gl = Rc::clone(&self.gl);
+        let gl = gl.as_ref();
+        let size = self.size;
+
+        self.render_framebuffer_id = single_gl_id(gl.gen_framebuffers(1), "framebuffer")?;
+        gl.bind_framebuffer(gl::FRAMEBUFFER, self.render_framebuffer_id);
+
+        self.render_texture_id = single_gl_id(gl.gen_textures(1), "texture")?;
+        gl.bind_texture(gl::TEXTURE_2D, self.render_texture_id);
+        gl.tex_image_2d(
+            gl::TEXTURE_2D,
+            0,
+            gl::RGBA as gl::GLint,
+            size.width as gl::GLsizei,
+            size.height as gl::GLsizei,
+            0,
+            gl::RGBA,
+            gl::UNSIGNED_BYTE,
+            None,
+        );
+        gl.tex_parameter_i(
+            gl::TEXTURE_2D,
+            gl::TEXTURE_MAG_FILTER,
+            gl::NEAREST as gl::GLint,
+        );
+        gl.tex_parameter_i(
+            gl::TEXTURE_2D,
+            gl::TEXTURE_MIN_FILTER,
+            gl::NEAREST as gl::GLint,
+        );
+        gl.tex_parameter_i(
+            gl::TEXTURE_2D,
+            gl::TEXTURE_WRAP_S,
+            gl::CLAMP_TO_EDGE as gl::GLint,
+        );
+        gl.tex_parameter_i(
+            gl::TEXTURE_2D,
+            gl::TEXTURE_WRAP_T,
+            gl::CLAMP_TO_EDGE as gl::GLint,
+        );
+        check_gl_error(gl, "glTexImage2D")?;
+        gl.framebuffer_texture_2d(
+            gl::FRAMEBUFFER,
+            gl::COLOR_ATTACHMENT0,
+            gl::TEXTURE_2D,
+            self.render_texture_id,
+            0,
+        );
+
+        self.depth_stencil_renderbuffer_id = single_gl_id(gl.gen_renderbuffers(1), "renderbuffer")?;
+        gl.bind_renderbuffer(gl::RENDERBUFFER, self.depth_stencil_renderbuffer_id);
+        gl.renderbuffer_storage(
+            gl::RENDERBUFFER,
+            gl::DEPTH24_STENCIL8,
+            size.width as gl::GLsizei,
+            size.height as gl::GLsizei,
+        );
+        gl.framebuffer_renderbuffer(
+            gl::FRAMEBUFFER,
+            gl::DEPTH_STENCIL_ATTACHMENT,
+            gl::RENDERBUFFER,
+            self.depth_stencil_renderbuffer_id,
+        );
+        gl.bind_renderbuffer(gl::RENDERBUFFER, 0);
+        check_gl_error(gl, "glFramebufferRenderbuffer")?;
+
+        let status = gl.check_frame_buffer_status(gl::FRAMEBUFFER);
+        if status != gl::FRAMEBUFFER_COMPLETE {
+            return Err(WindowsGpuInteropError::GlFramebufferIncomplete { status });
+        }
+
+        for _ in 0..WINDOWS_SERVO_RING_SLOTS {
+            let slot = create_ring_slot(gl, device, context, d3d11, size)?;
+            self.slots.push(slot);
+        }
+
+        gl.bind_texture(gl::TEXTURE_2D, 0);
+        gl.bind_framebuffer(gl::FRAMEBUFFER, self.render_framebuffer_id);
+        Ok(())
+    }
+
+    fn bind(&self) {
+        self.gl
+            .bind_framebuffer(gl::FRAMEBUFFER, self.render_framebuffer_id);
+    }
+
+    const fn next_generation(&self) -> u64 {
+        self.next_generation
+    }
+
+    /// Blits the render target into the next available ring slot and fences
+    /// the copy, without stalling the CPU on the GPU.
+    fn copy_to_shared_texture(&mut self) -> Result<()> {
+        let slot_index = self.acquire_blit_slot()?;
+        let gl = self.gl.as_ref();
+        gl.bind_framebuffer(GL_READ_FRAMEBUFFER, self.render_framebuffer_id);
+        gl.bind_framebuffer(GL_DRAW_FRAMEBUFFER, self.slots[slot_index].framebuffer_id);
+        // gleam's GLES backend panics on glReadBuffer; framebuffer objects
+        // already default their read buffer to COLOR_ATTACHMENT0.
+        gl.draw_buffers(&[gl::COLOR_ATTACHMENT0]);
+        gl.blit_framebuffer(
+            0,
+            0,
+            self.size.width as gl::GLint,
+            self.size.height as gl::GLint,
+            0,
+            0,
+            self.size.width as gl::GLint,
+            self.size.height as gl::GLint,
+            gl::COLOR_BUFFER_BIT,
+            gl::NEAREST,
+        );
+        let blit_result = check_gl_error(gl, "glBlitFramebuffer");
+        self.bind();
+        blit_result?;
+
+        let fence = create_blit_fence(self.gl.as_ref())?;
+        // Flush so the blit and fence reach the GPU promptly; consumers wait
+        // on the fence instead of a full glFinish.
+        self.gl.flush();
+        let generation = self.next_generation;
+        self.next_generation += 1;
+        let slot = &mut self.slots[slot_index];
+        slot.fence = Some(fence);
+        slot.content_generation = generation;
+        self.next_slot = (slot_index + 1) % self.slots.len();
+        Ok(())
+    }
+
+    /// Picks the next reusable ring slot for a blit.
+    ///
+    /// Scans in ring order, skipping the consumer-visible slot, and accepts
+    /// slots whose previous blit fence is absent or signaled. When every
+    /// candidate is still in flight, bounded-waits the oldest one.
+    fn acquire_blit_slot(&mut self) -> Result<usize> {
+        for offset in 0..self.slots.len() {
+            let index = (self.next_slot + offset) % self.slots.len();
+            if self.last_ready_slot == Some(index) {
+                continue;
+            }
+            match self.slots[index].fence {
+                None => return Ok(index),
+                Some(fence) => {
+                    if fence_signaled(self.gl.as_ref(), fence)? {
+                        self.gl.delete_sync(fence);
+                        self.slots[index].fence = None;
+                        return Ok(index);
+                    }
+                }
+            }
+        }
+
+        let oldest = self
+            .slots
+            .iter()
+            .enumerate()
+            .filter(|(index, slot)| self.last_ready_slot != Some(*index) && slot.fence.is_some())
+            .min_by_key(|(_, slot)| slot.content_generation)
+            .map(|(index, _)| index)
+            .ok_or(WindowsGpuInteropError::PublishFenceTimeout)?;
+        let Some(fence) = self.slots[oldest].fence else {
+            return Ok(oldest);
+        };
+        if wait_fence_bounded(self.gl.as_ref(), fence)? {
+            self.gl.delete_sync(fence);
+            self.slots[oldest].fence = None;
+            Ok(oldest)
+        } else {
+            Err(WindowsGpuInteropError::PublishFenceTimeout)
+        }
+    }
+
+    /// Returns the newest ring slot whose blit has completed.
+    fn acquire_native_frame(&mut self) -> Result<WindowsServoNativeFrame> {
+        // First-frame case: nothing has ever been published, so blit the
+        // current render target before looking for a completed slot.
+        if self.slots.iter().all(|slot| slot.content_generation == 0) {
+            self.copy_to_shared_texture()?;
+        }
+
+        // Retire every signaled fence so completed slots become visible to
+        // the consumer and reusable for later blits.
+        for index in 0..self.slots.len() {
+            if let Some(fence) = self.slots[index].fence
+                && fence_signaled(self.gl.as_ref(), fence)?
+            {
+                self.gl.delete_sync(fence);
+                self.slots[index].fence = None;
+            }
+        }
+
+        if let Some(index) = self.newest_ready_slot() {
+            self.last_ready_slot = Some(index);
+            return Ok(self.frame_for_slot(index, 0));
+        }
+
+        // No blit has completed yet: bounded-wait the newest pending fence.
+        let pending = self
+            .slots
+            .iter()
+            .enumerate()
+            .filter(|(_, slot)| slot.fence.is_some())
+            .max_by_key(|(_, slot)| slot.content_generation)
+            .map(|(index, _)| index)
+            .ok_or(WindowsGpuInteropError::PublishFenceTimeout)?;
+        let Some(fence) = self.slots[pending].fence else {
+            return Err(WindowsGpuInteropError::PublishFenceTimeout);
+        };
+        let sync_start = Instant::now();
+        if wait_fence_bounded(self.gl.as_ref(), fence)? {
+            let sync_us = elapsed_micros(sync_start);
+            self.gl.delete_sync(fence);
+            self.slots[pending].fence = None;
+            self.last_ready_slot = Some(pending);
+            Ok(self.frame_for_slot(pending, sync_us))
+        } else {
+            Err(WindowsGpuInteropError::PublishFenceTimeout)
+        }
+    }
+
+    fn newest_ready_slot(&self) -> Option<usize> {
+        self.slots
+            .iter()
+            .enumerate()
+            .filter(|(_, slot)| slot.fence.is_none() && slot.content_generation != 0)
+            .max_by_key(|(_, slot)| slot.content_generation)
+            .map(|(index, _)| index)
+    }
+
+    fn frame_for_slot(&self, index: usize, sync_us: u64) -> WindowsServoNativeFrame {
+        let slot = &self.slots[index];
+        WindowsServoNativeFrame {
+            width: self.size.width,
+            height: self.size.height,
+            format: ImportedFrameFormat::Bgra8Unorm,
+            origin: WindowsServoFrameOrigin::BottomLeft,
+            slot_index: index,
+            shared_handle: slot.texture.shared_handle(),
+            content_generation: slot.content_generation,
+            sync_us,
+        }
+    }
+
+    /// Releases every GL and Surfman resource owned by this framebuffer.
+    ///
+    /// Must be called with the owning ANGLE context current. After this, the
+    /// plain `Drop` impl has nothing left to release.
+    fn destroy(&mut self, device: &Device, context: &mut Context) {
+        let gl = Rc::clone(&self.gl);
+        let gl = gl.as_ref();
+        gl.bind_framebuffer(gl::FRAMEBUFFER, 0);
+        for mut slot in self.slots.drain(..) {
+            if let Some(fence) = slot.fence.take() {
+                gl.delete_sync(fence);
+            }
+            if slot.framebuffer_id != 0 {
+                gl.delete_framebuffers(&[slot.framebuffer_id]);
+            }
+            if let Some(surface_texture) = slot.surface_texture.take() {
+                destroy_slot_surface_texture(device, context, surface_texture);
+            }
+        }
+        if self.render_texture_id != 0 {
+            gl.delete_textures(&[self.render_texture_id]);
+            self.render_texture_id = 0;
+        }
+        if self.depth_stencil_renderbuffer_id != 0 {
+            gl.delete_renderbuffers(&[self.depth_stencil_renderbuffer_id]);
+            self.depth_stencil_renderbuffer_id = 0;
+        }
+        if self.render_framebuffer_id != 0 {
+            gl.delete_framebuffers(&[self.render_framebuffer_id]);
+            self.render_framebuffer_id = 0;
+        }
+    }
+}
+
+impl Drop for WindowsServoFramebuffer {
+    fn drop(&mut self) {
+        for slot in &mut self.slots {
+            if let Some(surface_texture) = slot.surface_texture.take() {
+                // destroy() did not run, so the Surfman device is gone;
+                // forgetting avoids Surfman's drop panic at the cost of a
+                // leak that context destruction reclaims.
+                mem::forget(surface_texture);
+            }
+        }
+    }
+}
+
+/// Creates one D3D11 shared-texture FBO slot for the publish ring.
+fn create_ring_slot(
+    gl: &dyn Gl,
+    device: &Device,
+    context: &mut Context,
+    d3d11: &WindowsD3d11Device,
+    size: PhysicalSize<u32>,
+) -> Result<WindowsSharedRingSlot> {
+    let descriptor = WindowsD3d11SharedTextureImportDescriptor::new(
+        size.width,
+        size.height,
+        ImportedFrameFormat::Bgra8Unorm,
+    )?;
+    let texture = d3d11.create_shared_texture(descriptor)?;
+    // SAFETY: texture stays alive in the slot while the Surfman binding exists.
+    let surfman_texture = unsafe { texture.to_surfman_texture() };
+    let surfman_size = Size2D::new(size.width as i32, size.height as i32);
+    // SAFETY: the surface texture is used on this Servo worker thread, and the
+    // D3D11 texture remains owned by the slot for at least as long.
+    let surface_texture = unsafe {
+        device
+            .create_surface_texture_from_texture(context, &surfman_size, surfman_texture)
+            .map_err(context_error(
+                crate::WINDOWS_ANGLE_CLIENT_BUFFER_SURFACE_OPERATION,
+            ))?
+    };
+    let gl_texture = device
+        .surface_texture_object(&surface_texture)
+        .map_or(0, |texture| texture.0.get());
+
+    let mut framebuffer_id = 0;
+    let result = (|| {
+        if gl_texture == 0 {
+            return Err(WindowsGpuInteropError::GlCreateResource {
+                resource: "surface texture",
+                message: "Surfman returned no GL texture for the shared slot".to_owned(),
+            });
+        }
+        framebuffer_id = single_gl_id(gl.gen_framebuffers(1), "framebuffer")?;
+        gl.bind_framebuffer(gl::FRAMEBUFFER, framebuffer_id);
+        gl.framebuffer_texture_2d(
+            gl::FRAMEBUFFER,
+            gl::COLOR_ATTACHMENT0,
+            gl::TEXTURE_2D,
+            gl_texture,
+            0,
+        );
+        check_gl_error(gl, "glFramebufferTexture2D")?;
+
+        let status = gl.check_frame_buffer_status(gl::FRAMEBUFFER);
+        if status != gl::FRAMEBUFFER_COMPLETE {
+            return Err(WindowsGpuInteropError::GlFramebufferIncomplete { status });
+        }
+        Ok(())
+    })();
+
+    if let Err(error) = result {
+        if framebuffer_id != 0 {
+            gl.delete_framebuffers(&[framebuffer_id]);
+        }
+        destroy_slot_surface_texture(device, context, surface_texture);
+        return Err(error);
+    }
+
+    Ok(WindowsSharedRingSlot {
+        texture,
+        surface_texture: Some(surface_texture),
+        framebuffer_id,
+        fence: None,
+        content_generation: 0,
+    })
+}
+
+/// Destroys a ring slot's Surfman binding, including the client-buffer
+/// surface beneath it.
+fn destroy_slot_surface_texture(
+    device: &Device,
+    context: &mut Context,
+    surface_texture: SurfaceTexture,
+) {
+    match device.destroy_surface_texture(context, surface_texture) {
+        Ok(mut surface) => destroy_surface_or_forget(device, context, &mut surface),
+        Err((error, surface_texture)) => {
+            mem::forget(surface_texture);
+            tracing::warn!(?error, "failed to destroy Windows shared slot binding");
+        }
+    }
+}
+
+/// Inserts a fence after the slot blit so consumers can wait on the copy
+/// without a full pipeline sync.
+fn create_blit_fence(gl: &dyn Gl) -> Result<gl::GLsync> {
+    let fence = gl.fence_sync(gl::SYNC_GPU_COMMANDS_COMPLETE, 0);
+    if fence.is_null() {
+        return Err(WindowsGpuInteropError::GlCreateResource {
+            resource: "sync object",
+            message: "glFenceSync returned null".to_owned(),
         });
     }
-    Ok(ring)
+    check_gl_error(gl, "glFenceSync")?;
+    Ok(fence)
+}
+
+/// Non-blocking fence poll; `Ok(true)` when the blit has completed.
+fn fence_signaled(gl: &dyn Gl, fence: gl::GLsync) -> Result<bool> {
+    match gl.client_wait_sync(fence, 0, 0) {
+        gl::ALREADY_SIGNALED | gl::CONDITION_SATISFIED => Ok(true),
+        gl::TIMEOUT_EXPIRED => Ok(false),
+        code => Err(WindowsGpuInteropError::GlOperation {
+            operation: "glClientWaitSync",
+            code,
+        }),
+    }
+}
+
+/// Bounded fence wait; `Ok(true)` when the blit completed within the window.
+///
+/// mozangle's `glClientWaitSync` does not reliably block on a nonzero
+/// timeout, so this polls with a flush on the first check and an explicit
+/// deadline.
+fn wait_fence_bounded(gl: &dyn Gl, fence: gl::GLsync) -> Result<bool> {
+    let deadline = Instant::now() + PUBLISH_FENCE_TIMEOUT;
+    match gl.client_wait_sync(fence, gl::SYNC_FLUSH_COMMANDS_BIT, 0) {
+        gl::ALREADY_SIGNALED | gl::CONDITION_SATISFIED => return Ok(true),
+        gl::TIMEOUT_EXPIRED => {}
+        code => {
+            return Err(WindowsGpuInteropError::GlOperation {
+                operation: "glClientWaitSync",
+                code,
+            });
+        }
+    }
+    while Instant::now() < deadline {
+        std::thread::sleep(PUBLISH_FENCE_POLL_INTERVAL);
+        if fence_signaled(gl, fence)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn single_gl_id(ids: Vec<u32>, resource: &'static str) -> Result<u32> {
+    ids.into_iter()
+        .find(|id| *id != 0)
+        .ok_or_else(|| WindowsGpuInteropError::GlCreateResource {
+            resource,
+            message: "driver returned no object name".to_owned(),
+        })
+}
+
+fn check_gl_error(gl: &dyn Gl, operation: &'static str) -> Result<()> {
+    let code = gl.get_error();
+    if code == gl::NO_ERROR {
+        Ok(())
+    } else {
+        Err(WindowsGpuInteropError::GlOperation { operation, code })
+    }
 }
 
 fn create_context(device: &Device, connection: &Connection) -> Result<Context> {
@@ -620,7 +984,7 @@ fn bind_surface(device: &Device, context: &mut Context, surface: Surface) -> Res
         .bind_surface_to_context(context, surface)
         .map_err(|(error, mut surface)| {
             destroy_surface_or_forget(device, context, &mut surface);
-            context_error("bind ANGLE shared surface")(error)
+            context_error("bind ANGLE context surface")(error)
         })
 }
 

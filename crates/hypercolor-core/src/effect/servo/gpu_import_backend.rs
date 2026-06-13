@@ -341,15 +341,7 @@ impl ServoGpuImportBackend {
         _width: u32,
         _height: u32,
     ) -> Result<ImportedEffectFrame> {
-        let context = self.windows_angle_context()?;
-        let Some(native_frame) = context.publish_current_frame()? else {
-            return Err(ServoFrameUnavailable::new(
-                "windows_import_warmup",
-                "Windows ANGLE fence ring has no completed frame yet".to_owned(),
-                0,
-            )
-            .into());
-        };
+        let native_frame = self.windows_native_frame()?;
         let descriptor =
             hypercolor_windows_gpu_interop::WindowsD3d11SharedTextureImportDescriptor::new(
                 native_frame.width,
@@ -482,13 +474,13 @@ impl ServoGpuImportBackend {
     }
 
     #[cfg(target_os = "windows")]
-    fn windows_angle_context(
+    fn windows_native_frame(
         &self,
-    ) -> Result<Rc<hypercolor_windows_gpu_interop::WindowsAngleRenderingContext>> {
-        self.windows_angle_context.as_ref().cloned().ok_or_else(|| {
-            hypercolor_windows_gpu_interop::WindowsGpuInteropError::MissingWindowsAngleContext
-                .into()
-        })
+    ) -> Result<hypercolor_windows_gpu_interop::WindowsServoNativeFrame> {
+        let context = self.windows_angle_context.as_ref().ok_or(
+            hypercolor_windows_gpu_interop::WindowsGpuInteropError::MissingWindowsAngleContext,
+        )?;
+        Ok(context.native_frame()?)
     }
 
     #[cfg(target_os = "macos")]
@@ -716,6 +708,18 @@ pub(super) fn classify_failure(error: &Error) -> ServoGpuImportFallbackReason {
                 } => ServoGpuImportFallbackReason::InvalidDimensions,
                 hypercolor_windows_gpu_interop::WindowsGpuInteropError::VulkanD3d11ImportFailed => {
                     ServoGpuImportFallbackReason::VulkanD3d11ImportFailed
+                }
+                hypercolor_windows_gpu_interop::WindowsGpuInteropError::GlCreateResource {
+                    ..
+                } => ServoGpuImportFallbackReason::GlResource,
+                hypercolor_windows_gpu_interop::WindowsGpuInteropError::GlOperation { .. } => {
+                    ServoGpuImportFallbackReason::GlOperation
+                }
+                hypercolor_windows_gpu_interop::WindowsGpuInteropError::GlFramebufferIncomplete {
+                    ..
+                } => ServoGpuImportFallbackReason::GlFramebufferIncomplete,
+                hypercolor_windows_gpu_interop::WindowsGpuInteropError::PublishFenceTimeout => {
+                    ServoGpuImportFallbackReason::WindowsImportStaleFrame
                 }
                 hypercolor_windows_gpu_interop::WindowsGpuInteropError::ServoContext {
                     operation,

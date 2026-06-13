@@ -139,6 +139,35 @@ pub enum WindowsGpuInteropError {
         /// Platform error detail.
         message: String,
     },
+
+    /// Creating a GL resource for the publish pipeline failed.
+    #[error("failed to create GL {resource}: {message}")]
+    GlCreateResource {
+        /// Resource kind that failed to allocate.
+        resource: &'static str,
+        /// Driver-reported detail.
+        message: String,
+    },
+
+    /// A GL operation in the publish pipeline failed.
+    #[error("GL {operation} failed with error {code:#06x}")]
+    GlOperation {
+        /// Failing GL operation.
+        operation: &'static str,
+        /// GL error code.
+        code: u32,
+    },
+
+    /// A publish framebuffer was incomplete.
+    #[error("GL framebuffer incomplete with status {status:#06x}")]
+    GlFramebufferIncomplete {
+        /// GL framebuffer status.
+        status: u32,
+    },
+
+    /// Waiting on a published Servo frame fence timed out.
+    #[error("timed out waiting for a published Servo frame fence")]
+    PublishFenceTimeout,
 }
 
 /// Pixel format shared by the D3D11 texture and imported wgpu texture.
@@ -208,7 +237,9 @@ pub struct ImportedEffectFrame {
     pub height: u32,
     /// Frame pixel format.
     pub format: ImportedFrameFormat,
-    /// Monotonic storage identity for cache comparisons.
+    /// Monotonically increasing content version; contents changed iff this
+    /// changed. Does NOT imply distinct GPU storage — the same D3D11 shared
+    /// texture (and cached wgpu texture) can carry many successive versions.
     pub storage_id: u64,
     /// Imported wgpu texture.
     pub texture: Arc<wgpu::Texture>,
@@ -444,7 +475,6 @@ pub struct WindowsD3d11SharedTextureImporter {
 
 #[derive(Debug, Clone)]
 struct ImportedSharedTexture {
-    storage_id: u64,
     texture: Arc<wgpu::Texture>,
     view: Arc<wgpu::TextureView>,
 }
@@ -475,6 +505,10 @@ impl WindowsD3d11SharedTextureImporter {
 
     /// Imports a D3D11 NT shared handle into the supplied wgpu device.
     ///
+    /// `content_generation` is the producer's monotonic content version for
+    /// the texture contents and becomes the frame's `storage_id`. Repeated
+    /// imports of the same shared handle reuse the cached wgpu texture.
+    ///
     /// # Safety
     ///
     /// The handle must be a live NT handle from
@@ -485,6 +519,7 @@ impl WindowsD3d11SharedTextureImporter {
         &mut self,
         device: &wgpu::Device,
         shared_handle: HANDLE,
+        content_generation: u64,
         sync_us: u64,
     ) -> Result<ImportedEffectFrame> {
         if shared_handle.is_invalid() {
@@ -498,7 +533,7 @@ impl WindowsD3d11SharedTextureImporter {
                 width: self.descriptor.width,
                 height: self.descriptor.height,
                 format: self.descriptor.format,
-                storage_id: imported.storage_id,
+                storage_id: content_generation,
                 texture: Arc::clone(&imported.texture),
                 view: Arc::clone(&imported.view),
                 timings: ImportedFrameTimings {
@@ -529,13 +564,11 @@ impl WindowsD3d11SharedTextureImporter {
         };
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let wrap_us = elapsed_micros(wrap_start);
-        let storage_id = NEXT_STORAGE_ID.fetch_add(1, Ordering::Relaxed);
         let texture = Arc::new(texture);
         let view = Arc::new(view);
         self.imported_textures.insert(
             shared_handle_key,
             ImportedSharedTexture {
-                storage_id,
                 texture: Arc::clone(&texture),
                 view: Arc::clone(&view),
             },
@@ -545,7 +578,7 @@ impl WindowsD3d11SharedTextureImporter {
             width: self.descriptor.width,
             height: self.descriptor.height,
             format: self.descriptor.format,
-            storage_id,
+            storage_id: content_generation,
             texture,
             view,
             timings: ImportedFrameTimings {
@@ -554,6 +587,25 @@ impl WindowsD3d11SharedTextureImporter {
                 total_us: elapsed_micros(total_start),
             },
         })
+    }
+
+    /// Imports a shared handle that has no producer content generation.
+    ///
+    /// Allocates a fresh content version from a process-global counter, so
+    /// every call reports changed contents. Intended for tests and
+    /// compatibility probes built around synthetic D3D11 textures.
+    ///
+    /// # Safety
+    ///
+    /// Same contract as [`Self::import_shared_handle`].
+    pub unsafe fn import_shared_handle_for_test(
+        &mut self,
+        device: &wgpu::Device,
+        shared_handle: HANDLE,
+    ) -> Result<ImportedEffectFrame> {
+        let content_generation = NEXT_STORAGE_ID.fetch_add(1, Ordering::Relaxed);
+        // SAFETY: forwarded directly under the caller's contract.
+        unsafe { self.import_shared_handle(device, shared_handle, content_generation, 0) }
     }
 }
 
