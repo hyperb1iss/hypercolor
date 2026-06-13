@@ -363,6 +363,10 @@ pub fn bind_api_listener(bind: SocketAddr) -> Result<TcpListener> {
     if bind.is_ipv6() {
         socket.set_only_v6(true)?;
     }
+    // SO_REUSEADDR means fast restart through TIME_WAIT on Unix, but on
+    // Windows it lets a second socket bind over a live listener (port
+    // hijack). Windows rebinds a closed listener without it.
+    #[cfg(unix)]
     socket.set_reuse_address(true)?;
 
     socket.bind(&bind.into())?;
