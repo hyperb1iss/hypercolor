@@ -793,6 +793,22 @@ async fn wait_for_next_frame(
     .expect("expected the next frame within 2 seconds")
 }
 
+async fn wait_until<F>(description: &str, condition: F)
+where
+    F: Fn() -> bool,
+{
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if condition() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("timed out waiting for {description}"));
+}
+
 #[cfg(feature = "wgpu")]
 async fn wait_for_next_frame_with_watchdog<F>(
     rx: &mut watch::Receiver<FrameData>,
@@ -1864,10 +1880,18 @@ async fn render_thread_prunes_stale_group_canvas_streams_when_face_groups_change
     let mut rt = RenderThread::spawn(state.clone());
     let first_frame = wait_for_next_frame(&mut frame_rx, 0).await;
     assert!(first_frame.frame_number > 0);
-    assert_eq!(state.event_bus.group_canvas_stream_count(), 1);
-    let (_, first_targets) = state.event_bus.display_group_targets_snapshot();
-    assert_eq!(state.event_bus.display_group_target_count(), 1);
-    assert!(first_targets.contains_key(&first_group_id));
+    // Group canvas streams and display targets register as the render loop
+    // publishes them, on channels separate from the lighting frame above, so
+    // wait for convergence instead of racing the first iteration.
+    wait_until("first group canvas stream", || {
+        state.event_bus.group_canvas_stream_count() == 1
+    })
+    .await;
+    wait_until("first display group target", || {
+        let (_, targets) = state.event_bus.display_group_targets_snapshot();
+        state.event_bus.display_group_target_count() == 1 && targets.contains_key(&first_group_id)
+    })
+    .await;
 
     {
         let mut scene_manager = state.scene_manager.write().await;
@@ -1878,16 +1902,21 @@ async fn render_thread_prunes_stale_group_canvas_streams_when_face_groups_change
 
     let second_frame = wait_for_next_frame(&mut frame_rx, first_frame.frame_number).await;
     assert!(second_frame.frame_number > first_frame.frame_number);
-    assert_eq!(state.event_bus.group_canvas_stream_count(), 1);
-    let (_, second_targets) = state.event_bus.display_group_targets_snapshot();
-    assert_eq!(state.event_bus.display_group_target_count(), 1);
-    assert!(!second_targets.contains_key(&first_group_id));
-    assert!(second_targets.contains_key(&second_group_id));
+    wait_until("stale group stream pruned", || {
+        let (_, targets) = state.event_bus.display_group_targets_snapshot();
+        state.event_bus.group_canvas_stream_count() == 1
+            && state.event_bus.display_group_target_count() == 1
+            && !targets.contains_key(&first_group_id)
+            && targets.contains_key(&second_group_id)
+    })
+    .await;
 
-    let stale_rx = state.event_bus.group_canvas_receiver(first_group_id);
-    let stale_frame = stale_rx.borrow().clone();
-    assert_eq!(stale_frame.width(), 0);
-    assert_eq!(stale_frame.height(), 0);
+    wait_until("stale group canvas cleared", || {
+        let stale_rx = state.event_bus.group_canvas_receiver(first_group_id);
+        let stale_frame = stale_rx.borrow().clone();
+        stale_frame.width() == 0 && stale_frame.height() == 0
+    })
+    .await;
 
     {
         let mut rl = state.render_loop.write().await;
