@@ -472,11 +472,11 @@ impl WindowsSensorExtras {
 
         // 3. ACPI thermal zones — additive context, only backfills cpu_temp
         //    if no better source produced one.
-        if self.acpi_zones_enabled {
-            if let Some(con) = self.acpi_zones.as_ref() {
-                let still_enabled = merge_acpi_thermal_zones(con, snapshot);
-                self.acpi_zones_enabled = still_enabled;
-            }
+        if self.acpi_zones_enabled
+            && let Some(con) = self.acpi_zones.as_ref()
+        {
+            let still_enabled = merge_acpi_thermal_zones(con, snapshot);
+            self.acpi_zones_enabled = still_enabled;
         }
     }
 
@@ -495,6 +495,7 @@ impl WindowsSensorExtras {
         };
 
         let mut best_cpu_temp: Option<f32> = None;
+        let mut cpu_package_temp_seen = false;
         let mut best_gpu_temp: Option<f32> = None;
         let mut best_gpu_load: Option<f32> = None;
 
@@ -508,18 +509,19 @@ impl WindowsSensorExtras {
                     if is_cpu_sensor(&sensor.identifier, &sensor.name) {
                         // Prefer "package" / "tdie" / "ccd" over per-core; otherwise take max.
                         if is_cpu_package(&sensor.name) {
-                            best_cpu_temp = Some(value);
-                        } else if best_cpu_temp.is_none() {
-                            best_cpu_temp = Some(value);
-                        } else {
-                            best_cpu_temp = best_cpu_temp.map(|cur| cur.max(value));
+                            best_cpu_temp = if cpu_package_temp_seen {
+                                Some(best_cpu_temp.map_or(value, |cur| cur.max(value)))
+                            } else {
+                                Some(value)
+                            };
+                            cpu_package_temp_seen = true;
+                        } else if !cpu_package_temp_seen {
+                            best_cpu_temp = Some(best_cpu_temp.map_or(value, |cur| cur.max(value)));
                         }
-                    } else if is_gpu_sensor(&sensor.identifier, &sensor.name) {
-                        if is_gpu_core(&sensor.name) {
-                            best_gpu_temp = Some(value);
-                        } else if best_gpu_temp.is_none() {
-                            best_gpu_temp = Some(value);
-                        }
+                    } else if is_gpu_sensor(&sensor.identifier, &sensor.name)
+                        && (is_gpu_core(&sensor.name) || best_gpu_temp.is_none())
+                    {
+                        best_gpu_temp = Some(value);
                     }
                     snapshot.components.push(SensorReading::new(
                         format!("{label_prefix}_{}", sanitize_zone_label(&sensor.identifier)),
@@ -530,11 +532,11 @@ impl WindowsSensorExtras {
                         None,
                     ));
                 }
-                "Load" => {
-                    if is_gpu_sensor(&sensor.identifier, &sensor.name) && is_gpu_core(&sensor.name)
-                    {
-                        best_gpu_load = Some(value);
-                    }
+                "Load"
+                    if is_gpu_sensor(&sensor.identifier, &sensor.name)
+                        && is_gpu_core(&sensor.name) =>
+                {
+                    best_gpu_load = Some(value);
                 }
                 _ => {}
             }
@@ -662,7 +664,7 @@ fn is_gpu_core(name: &str) -> bool {
 #[cfg(target_os = "windows")]
 #[allow(clippy::as_conversions, clippy::cast_precision_loss)]
 fn deci_kelvin_to_celsius(value: u32) -> f32 {
-    (value as f64 / 10.0 - 273.15) as f32
+    (f64::from(value) / 10.0 - 273.15) as f32
 }
 
 /// Strip ACPI / HardwareMonitor path prefixes for clean labels.
