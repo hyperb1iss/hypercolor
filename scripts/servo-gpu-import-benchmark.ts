@@ -659,7 +659,7 @@ function analyze(config: Config, samples: StatusSample[], startedAt: Date, ended
         importBackendCompatible: boolAt(last, [
             "compositor_acceleration",
             "gpu_probe",
-            "linux_servo_gpu_import_backend_compatible",
+            "servo_gpu_import_backend_compatible",
         ]),
         compositorBackend: stringAt(last, ["latest_frame", "compositor_backend"]),
         targetFps: numberAt(last, ["render_loop", "target_fps"]),
