@@ -21,6 +21,6 @@ pub use protocol_config::{ProtocolRuntimeConfig, runtime_config_for_attachment_p
 pub use registry::{DeviceDescriptor, ProtocolBinding, ProtocolFactory, TransportType};
 pub use smbus_registry::{
     ASUS_AURA_SMBUS_PROTOCOL_ID, SmBusProbe, SmBusProbeError, build_smbus_protocol,
-    probe_smbus_devices_in_root,
+    probe_smbus_devices_in_root, probe_smbus_devices_system,
 };
 pub use transport::{Transport, TransportError};

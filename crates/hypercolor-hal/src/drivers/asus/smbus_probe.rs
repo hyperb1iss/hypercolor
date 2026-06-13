@@ -133,6 +133,12 @@ pub fn build_aura_smbus_protocol() -> Box<dyn Protocol> {
     Box::new(AuraSmBusProtocol::new())
 }
 
+/// Probe the platform's real `SMBus` buses.
+#[cfg(target_os = "linux")]
+pub async fn probe_asus_smbus_devices_system() -> Result<Vec<SmBusProbe>> {
+    probe_asus_smbus_devices_in_root(Path::new("/dev")).await
+}
+
 #[cfg(target_os = "linux")]
 pub async fn probe_asus_smbus_devices_in_root(dev_root: &Path) -> Result<Vec<SmBusProbe>> {
     let mut discovered = Vec::new();
@@ -182,13 +188,25 @@ pub async fn probe_asus_smbus_devices_in_root(dev_root: &Path) -> Result<Vec<SmB
     Ok(discovered)
 }
 
+/// Root-scoped scans only see filesystem device nodes; Windows buses come
+/// from PawnIO, so a custom root never discovers anything. This keeps
+/// hermetic tests from probing live hardware.
 #[cfg(target_os = "windows")]
 #[allow(
     clippy::unused_async,
     reason = "the scanner uses one async probe interface across supported platforms"
 )]
 pub async fn probe_asus_smbus_devices_in_root(dev_root: &Path) -> Result<Vec<SmBusProbe>> {
-    let _ = dev_root;
+    trace!(
+        dev_root = %dev_root.display(),
+        "skipping root-scoped ASUS Aura SMBus probe; Windows buses are not device nodes"
+    );
+    Ok(Vec::new())
+}
+
+/// Probe the platform's real `SMBus` buses via PawnIO.
+#[cfg(target_os = "windows")]
+pub async fn probe_asus_smbus_devices_system() -> Result<Vec<SmBusProbe>> {
     let buses = match SmBusTransport::enumerate_buses() {
         Ok(buses) => buses,
         Err(error) => {
@@ -246,6 +264,15 @@ pub async fn probe_asus_smbus_devices_in_root(dev_root: &Path) -> Result<Vec<SmB
 )]
 pub async fn probe_asus_smbus_devices_in_root(dev_root: &Path) -> Result<Vec<SmBusProbe>> {
     let _ = dev_root;
+    Ok(Vec::new())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+#[allow(
+    clippy::unused_async,
+    reason = "the scanner uses one async probe interface across supported and excluded platforms"
+)]
+pub async fn probe_asus_smbus_devices_system() -> Result<Vec<SmBusProbe>> {
     SMBUS_UNAVAILABLE_WARN_ONCE.call_once(|| {
         tracing::warn!(
             "ASUS Aura SMBus discovery is only implemented on Linux and Windows; RGB RAM and SMBus motherboard controllers will not be discovered"

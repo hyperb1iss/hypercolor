@@ -29,7 +29,8 @@ pub use smbus::{
 };
 pub use smbus_probe::{
     AuraSmBusProbeError, SmBusControllerKind, SmBusProbe, build_aura_smbus_protocol,
-    dram_capable_pci_id, probe_asus_smbus_devices_in_root, resolve_parent_pci_id_from_sysfs_path,
+    dram_capable_pci_id, probe_asus_smbus_devices_in_root, probe_asus_smbus_devices_system,
+    resolve_parent_pci_id_from_sysfs_path,
 };
 pub use types::{
     ASUS_VID, AURA_DIRECT_LED_CHUNK, AURA_DIRECT_LED_MAX, AURA_REPORT_ID, AURA_REPORT_PAYLOAD_LEN,

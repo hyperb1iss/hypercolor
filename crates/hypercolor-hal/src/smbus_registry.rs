@@ -13,6 +13,11 @@ pub async fn probe_smbus_devices_in_root(
     crate::drivers::asus::probe_asus_smbus_devices_in_root(dev_root).await
 }
 
+/// Probe the platform's real `SMBus` buses (Linux `/dev`, Windows PawnIO).
+pub async fn probe_smbus_devices_system() -> Result<Vec<SmBusProbe>, SmBusProbeError> {
+    crate::drivers::asus::probe_asus_smbus_devices_system().await
+}
+
 #[must_use]
 pub fn build_smbus_protocol(protocol_id: &str) -> Option<Box<dyn Protocol>> {
     match protocol_id {
