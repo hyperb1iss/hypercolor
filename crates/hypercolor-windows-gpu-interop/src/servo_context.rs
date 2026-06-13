@@ -81,6 +81,12 @@ pub struct WindowsServoNativeFrame {
     pub slot_index: usize,
     /// NT shared handle for this frame's D3D11 texture.
     pub shared_handle: windows::Win32::Foundation::HANDLE,
+    /// Identity of the texture ring that minted `shared_handle`.
+    ///
+    /// Bumps whenever the ring is rebuilt (resize). Closed NT handle values
+    /// can be recycled by the OS, so importer caches must reset when this
+    /// changes.
+    pub ring_epoch: u64,
     /// Monotonically increasing content version for this frame.
     ///
     /// Contents changed iff this changed; repeated fetches without a new
@@ -130,38 +136,56 @@ impl WindowsAngleRenderingContext {
             .create_device(&adapter)
             .map_err(context_error("create ANGLE device"))?;
         let mut context = create_context(&device, &connection)?;
-        let surface = device
-            .create_surface(
-                &context,
-                SurfaceAccess::GPUOnly,
-                SurfaceType::Generic {
-                    size: Size2D::new(width as i32, height as i32),
-                },
-            )
-            .map_err(context_error("create context surface"))?;
-        bind_surface(&device, &mut context, surface)?;
-        device
-            .make_context_current(&context)
-            .map_err(context_error("make context current"))?;
+        // Surfman contexts and surfaces panic when dropped live, so any
+        // failure past this point must tear them down explicitly before
+        // returning Err; Auto mode relies on Err for CPU fallback.
+        let built = (|| -> Result<(Rc<dyn Gl>, glow::Context, WindowsServoFramebuffer)> {
+            let surface = device
+                .create_surface(
+                    &context,
+                    SurfaceAccess::GPUOnly,
+                    SurfaceType::Generic {
+                        size: Size2D::new(width as i32, height as i32),
+                    },
+                )
+                .map_err(context_error("create context surface"))?;
+            bind_surface(&device, &mut context, surface)?;
+            device
+                .make_context_current(&context)
+                .map_err(context_error("make context current"))?;
 
-        let gleam_gl = load_gleam_gl(&device, &context, connection.gl_api());
-        let glow_gl = load_glow_gl(&device, &context);
+            let gleam_gl = load_gleam_gl(&device, &context, connection.gl_api());
+            let glow_gl = load_glow_gl(&device, &context);
 
-        let native_device = device.native_device();
-        // SAFETY: native_device.d3d11_device is an owned AddRef returned by Surfman.
-        let d3d11 = unsafe {
-            WindowsD3d11Device::from_owned_raw_d3d11_device(
-                native_device.d3d11_device.cast::<c_void>(),
-            )?
+            let native_device = device.native_device();
+            // SAFETY: native_device.d3d11_device is an owned AddRef returned by Surfman.
+            let d3d11 = unsafe {
+                WindowsD3d11Device::from_owned_raw_d3d11_device(
+                    native_device.d3d11_device.cast::<c_void>(),
+                )?
+            };
+            let framebuffer = WindowsServoFramebuffer::new(
+                Rc::clone(&gleam_gl),
+                &device,
+                &mut context,
+                &d3d11,
+                size,
+                1,
+                1,
+            )?;
+            Ok((gleam_gl, glow_gl, framebuffer))
+        })();
+
+        let (gleam_gl, glow_gl, framebuffer) = match built {
+            Ok(parts) => parts,
+            Err(error) => {
+                if let Ok(Some(surface)) = device.unbind_surface_from_context(&mut context) {
+                    destroy_surface_or_forget(&device, &mut context, surface);
+                }
+                let _ = device.destroy_context(&mut context);
+                return Err(error);
+            }
         };
-        let framebuffer = WindowsServoFramebuffer::new(
-            Rc::clone(&gleam_gl),
-            &device,
-            &mut context,
-            &d3d11,
-            size,
-            1,
-        )?;
 
         Ok(Self {
             size: Cell::new(size),
@@ -201,11 +225,16 @@ impl WindowsAngleRenderingContext {
                 native_device.d3d11_device.cast::<c_void>(),
             )?
         };
-        let next_generation = self
-            .framebuffer
-            .borrow()
-            .as_ref()
-            .map_or(1, WindowsServoFramebuffer::next_generation);
+        let (next_generation, next_ring_epoch) =
+            self.framebuffer
+                .borrow()
+                .as_ref()
+                .map_or((1, 1), |current| {
+                    (
+                        current.next_generation(),
+                        current.ring_epoch().saturating_add(1),
+                    )
+                });
         let framebuffer = WindowsServoFramebuffer::new(
             Rc::clone(&self.gleam_gl),
             &device,
@@ -213,6 +242,7 @@ impl WindowsAngleRenderingContext {
             &d3d11,
             size,
             next_generation,
+            next_ring_epoch,
         )?;
         if let Some(mut previous) = self.framebuffer.borrow_mut().replace(framebuffer) {
             previous.destroy(&device, &mut context);
@@ -228,6 +258,7 @@ impl WindowsD3d11SharedTextureImporter {
         device: &wgpu::Device,
         frame: WindowsServoNativeFrame,
     ) -> Result<ImportedEffectFrame> {
+        self.reset_cache_for_ring_epoch(frame.ring_epoch);
         // SAFETY: WindowsServoNativeFrame is only produced by the ANGLE
         // context after native_frame observes a completed GL blit fence.
         unsafe {
@@ -249,8 +280,8 @@ impl Drop for WindowsAngleRenderingContext {
         if let Some(mut framebuffer) = self.framebuffer.get_mut().take() {
             framebuffer.destroy(device, context);
         }
-        if let Ok(Some(mut surface)) = device.unbind_surface_from_context(context) {
-            destroy_surface_or_forget(device, context, &mut surface);
+        if let Ok(Some(surface)) = device.unbind_surface_from_context(context) {
+            destroy_surface_or_forget(device, context, surface);
         }
         let _ = device.destroy_context(context);
     }
@@ -345,8 +376,7 @@ impl RenderingContext for WindowsAngleRenderingContext {
         let surface_texture = match device.create_surface_texture(&mut context, surface) {
             Ok(surface_texture) => surface_texture,
             Err((_, surface)) => {
-                let mut surface = surface;
-                destroy_surface_or_forget(&device, &mut context, &mut surface);
+                destroy_surface_or_forget(&device, &mut context, surface);
                 return None;
             }
         };
@@ -402,6 +432,8 @@ struct WindowsServoFramebuffer {
     last_ready_slot: Option<usize>,
     /// Next content generation to assign; survives ring rebuilds.
     next_generation: u64,
+    /// Ring identity; bumps on every rebuild so handle-keyed caches reset.
+    ring_epoch: u64,
 }
 
 impl WindowsServoFramebuffer {
@@ -412,6 +444,7 @@ impl WindowsServoFramebuffer {
         d3d11: &WindowsD3d11Device,
         size: PhysicalSize<u32>,
         next_generation: u64,
+        ring_epoch: u64,
     ) -> Result<Self> {
         let mut framebuffer = Self {
             gl,
@@ -423,6 +456,7 @@ impl WindowsServoFramebuffer {
             next_slot: 0,
             last_ready_slot: None,
             next_generation,
+            ring_epoch,
         };
         if let Err(error) = framebuffer.init(device, context, d3d11) {
             framebuffer.destroy(device, context);
@@ -525,6 +559,10 @@ impl WindowsServoFramebuffer {
 
     const fn next_generation(&self) -> u64 {
         self.next_generation
+    }
+
+    const fn ring_epoch(&self) -> u64 {
+        self.ring_epoch
     }
 
     /// Blits the render target into the next available ring slot and fences
@@ -675,6 +713,7 @@ impl WindowsServoFramebuffer {
             origin: WindowsServoFrameOrigin::BottomLeft,
             slot_index: index,
             shared_handle: slot.texture.shared_handle(),
+            ring_epoch: self.ring_epoch,
             content_generation: slot.content_generation,
             sync_us,
         }
@@ -808,7 +847,7 @@ fn destroy_slot_surface_texture(
     surface_texture: SurfaceTexture,
 ) {
     match device.destroy_surface_texture(context, surface_texture) {
-        Ok(mut surface) => destroy_surface_or_forget(device, context, &mut surface),
+        Ok(surface) => destroy_surface_or_forget(device, context, surface),
         Err((error, surface_texture)) => {
             mem::forget(surface_texture);
             tracing::warn!(?error, "failed to destroy Windows shared slot binding");
@@ -982,19 +1021,17 @@ fn find_dxgi_adapter(identity: WindowsDxgiAdapterIdentity) -> Result<ComPtr<IDXG
 fn bind_surface(device: &Device, context: &mut Context, surface: Surface) -> Result<()> {
     device
         .bind_surface_to_context(context, surface)
-        .map_err(|(error, mut surface)| {
-            destroy_surface_or_forget(device, context, &mut surface);
+        .map_err(|(error, surface)| {
+            destroy_surface_or_forget(device, context, surface);
             context_error("bind ANGLE context surface")(error)
         })
 }
 
-fn destroy_surface_or_forget(device: &Device, context: &mut Context, surface: &mut Surface) {
-    if device.destroy_surface(context, surface).is_err() {
-        // SAFETY: destroy_surface failed, so Surfman's Drop would panic; move
-        // the surface value out and intentionally leak the platform handle.
-        unsafe {
-            std::mem::forget(std::ptr::read(surface));
-        }
+fn destroy_surface_or_forget(device: &Device, context: &mut Context, mut surface: Surface) {
+    if device.destroy_surface(context, &mut surface).is_err() {
+        // destroy_surface failed, so Surfman's Drop would panic; intentionally
+        // leak the platform handle instead.
+        mem::forget(surface);
     }
 }
 

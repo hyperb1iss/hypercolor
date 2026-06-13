@@ -146,6 +146,56 @@ fn angle_context_renders_into_importable_d3d11_ring() -> Result<(), String> {
     )?;
     assert_uniform_bgra(&wrapped_pixels, [255, 255, 255, 255]);
 
+    // A two-tone frame pins the blit as non-flipping: imported texture row 0
+    // must match GL row 0, per the BottomLeft origin contract.
+    render_two_tone(&context, [1.0, 0.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0])?;
+    context.present();
+    let two_tone_frame = wait_for_generation(&context, 6)?;
+    let two_tone_imported = importer
+        .import_servo_native_frame(&wgpu.device, two_tone_frame)
+        .map_err(|error| error.to_string())?;
+    let two_tone_pixels = read_texture_pixels(
+        &wgpu.device,
+        &wgpu.queue,
+        two_tone_imported.texture.as_ref(),
+        WIDTH,
+        HEIGHT,
+    )?;
+    let stride = (WIDTH * 4) as usize;
+    assert_eq!(
+        &two_tone_pixels[..4],
+        &[0, 0, 255, 255],
+        "imported row 0 should be the GL bottom row (red)"
+    );
+    assert_eq!(
+        &two_tone_pixels[stride..stride + 4],
+        &[255, 0, 0, 255],
+        "imported row 1 should be the GL upper region (blue)"
+    );
+
+    Ok(())
+}
+
+/// Clears the bottom row and the remaining rows to different colors.
+fn render_two_tone(
+    context: &WindowsAngleRenderingContext,
+    bottom: [f32; 4],
+    top: [f32; 4],
+) -> Result<(), String> {
+    context
+        .make_current()
+        .map_err(|error| format!("make current failed: {error:?}"))?;
+    context.prepare_for_rendering();
+    let gl = context.gleam_gl_api();
+    gl.viewport(0, 0, WIDTH as i32, HEIGHT as i32);
+    gl.enable(gl::SCISSOR_TEST);
+    gl.scissor(0, 0, WIDTH as i32, 1);
+    gl.clear_color(bottom[0], bottom[1], bottom[2], bottom[3]);
+    gl.clear(gl::COLOR_BUFFER_BIT);
+    gl.scissor(0, 1, WIDTH as i32, HEIGHT as i32 - 1);
+    gl.clear_color(top[0], top[1], top[2], top[3]);
+    gl.clear(gl::COLOR_BUFFER_BIT);
+    gl.disable(gl::SCISSOR_TEST);
     Ok(())
 }
 

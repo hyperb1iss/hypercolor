@@ -471,6 +471,7 @@ impl Drop for WindowsD3d11SharedTexture {
 pub struct WindowsD3d11SharedTextureImporter {
     descriptor: WindowsD3d11SharedTextureImportDescriptor,
     imported_textures: HashMap<usize, ImportedSharedTexture>,
+    last_ring_epoch: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -494,7 +495,20 @@ impl WindowsD3d11SharedTextureImporter {
         Ok(Self {
             descriptor,
             imported_textures: HashMap::new(),
+            last_ring_epoch: None,
         })
+    }
+
+    /// Drops cached wgpu textures when the producer's texture ring changes.
+    ///
+    /// Closed NT handle values can be recycled by the OS, so a cache entry
+    /// keyed on a handle from an earlier ring could alias a brand-new
+    /// texture.
+    pub fn reset_cache_for_ring_epoch(&mut self, ring_epoch: u64) {
+        if self.last_ring_epoch != Some(ring_epoch) {
+            self.imported_textures.clear();
+            self.last_ring_epoch = Some(ring_epoch);
+        }
     }
 
     /// Returns the descriptor this importer was built for.
