@@ -3968,7 +3968,10 @@ async fn shared_backend_output_queues_serialize_without_starving_peers() {
 
     let started = Instant::now();
     let mut step = 1_u8;
-    while started.elapsed() < Duration::from_millis(180) {
+    // Windows quantizes tokio sleeps to ~15.6ms at the default timer
+    // resolution, so each serialized 20ms write round costs ~62ms there.
+    // The pump window must fit enough rounds for three writes per device.
+    while started.elapsed() < Duration::from_millis(600) {
         let zone_colors = vec![
             ZoneColors {
                 zone_id: "zone_left".into(),
