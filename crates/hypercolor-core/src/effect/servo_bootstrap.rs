@@ -136,6 +136,7 @@ pub fn bootstrap_software_rendering_context(
     })
 }
 
+#[cfg_attr(target_os = "windows", allow(dead_code))]
 pub(crate) fn bootstrap_software_rendering_context_handle(
     width: u32,
     height: u32,

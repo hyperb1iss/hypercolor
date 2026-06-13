@@ -58,7 +58,7 @@ pub enum ComponentRegistryError {
     ParseManifest {
         path: PathBuf,
         #[source]
-        source: toml::de::Error,
+        source: Box<toml::de::Error>,
     },
     #[error("invalid attachment template '{id}': {reason}")]
     InvalidTemplate { id: String, reason: String },
@@ -86,7 +86,7 @@ impl ComponentRegistry {
                 toml::from_str(raw_toml).map_err(|source| {
                     ComponentRegistryError::ParseManifest {
                         path: PathBuf::from(relative_path),
-                        source,
+                        source: Box::new(source),
                     }
                 })?;
             self.register_manifest(manifest, ComponentOrigin::BuiltIn)?;
@@ -110,7 +110,7 @@ impl ComponentRegistry {
             let manifest: ComponentTemplateManifest =
                 toml::from_str(&raw).map_err(|source| ComponentRegistryError::ParseManifest {
                     path: file.clone(),
-                    source,
+                    source: Box::new(source),
                 })?;
             self.register_manifest(manifest, ComponentOrigin::User)?;
             loaded = loaded.saturating_add(1);

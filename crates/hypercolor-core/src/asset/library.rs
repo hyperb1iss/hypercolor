@@ -1198,6 +1198,7 @@ fn sync_dir(path: &Path) -> Result<(), AssetLibraryError> {
 }
 
 #[cfg(not(unix))]
+#[allow(clippy::unnecessary_wraps)]
 fn sync_dir(_path: &Path) -> Result<(), AssetLibraryError> {
     Ok(())
 }

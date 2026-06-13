@@ -579,6 +579,7 @@ pub fn servo_telemetry_snapshot() -> ServoTelemetrySnapshot {
 }
 
 #[cfg(all(feature = "servo-gpu-import", target_os = "windows"))]
+#[allow(clippy::unnecessary_wraps)]
 const fn windows_gpu_import_sync_mode() -> Option<&'static str> {
     Some(hypercolor_windows_gpu_interop::WINDOWS_SERVO_GPU_IMPORT_SYNC_MODE)
 }

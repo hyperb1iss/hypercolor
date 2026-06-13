@@ -367,6 +367,7 @@ fn restrict_file_permissions_blocking(path: &Path) -> Result<()> {
 }
 
 #[cfg(not(unix))]
+#[allow(clippy::unnecessary_wraps)]
 fn restrict_file_permissions_blocking(_path: &Path) -> Result<()> {
     Ok(())
 }
@@ -386,6 +387,7 @@ async fn restrict_file_permissions(path: &Path) -> Result<()> {
 }
 
 #[cfg(not(unix))]
+#[allow(clippy::unused_async, clippy::unnecessary_wraps)]
 async fn restrict_file_permissions(_path: &Path) -> Result<()> {
     Ok(())
 }

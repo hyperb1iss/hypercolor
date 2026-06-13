@@ -47,6 +47,7 @@ impl PlaybackStatus {
         }
     }
 
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     fn parse(value: &str) -> Self {
         match value {
             "Playing" => Self::Playing,

@@ -488,6 +488,7 @@ fn should_reconfigure_capture(key: Option<&str>) -> bool {
 /// reach the capture worker without interrupting the stream. A target FPS
 /// change restarts the worker, which is silent once a portal restore token
 /// has been persisted.
+#[cfg_attr(not(target_os = "linux"), allow(clippy::unused_async))]
 async fn maybe_apply_capture_config_change(state: &Arc<AppState>, key: Option<&str>) -> bool {
     if !should_reconfigure_capture(key) {
         return false;
