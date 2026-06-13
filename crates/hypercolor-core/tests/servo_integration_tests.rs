@@ -8,9 +8,7 @@ use std::time::Duration;
 #[path = "support/effect_engine.rs"]
 mod effect_engine;
 
-use hypercolor_core::effect::{
-    bundled_effects_root, load_html_effect_file, parse_html_effect_metadata,
-};
+use hypercolor_core::effect::{load_html_effect_file, parse_html_effect_metadata};
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::Canvas;
 use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
@@ -80,8 +78,17 @@ fn render_frames(path: &Path, frame_count: usize) -> Vec<Canvas> {
         .collect()
 }
 
+/// Repo effects catalog root.
+///
+/// Deliberately not `bundled_effects_root()`: that helper prefers a
+/// machine's installed bundle, which would couple these tests to whatever
+/// an installer last staged (layouts and content drift across versions).
+fn test_effects_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../effects")
+}
+
 fn bundled_html_metadata(relative: &str) -> EffectMetadata {
-    let path = bundled_effects_root().join(relative);
+    let path = test_effects_root().join(relative);
     assert!(
         path.exists(),
         "expected generated HTML effect at {}; run `just effects-build` first",
@@ -293,7 +300,7 @@ fn frame_has_spatial_variance(canvas: &Canvas) -> bool {
 }
 
 fn effect_paths_in(bucket: &str) -> Vec<PathBuf> {
-    let root = bundled_effects_root().join(bucket);
+    let root = test_effects_root().join(bucket);
     let entries = match fs::read_dir(&root) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
@@ -324,7 +331,7 @@ fn effect_paths_in(bucket: &str) -> Vec<PathBuf> {
     paths
         .into_iter()
         .map(|path| {
-            path.strip_prefix(bundled_effects_root())
+            path.strip_prefix(test_effects_root())
                 .map_or(path.clone(), Path::to_path_buf)
         })
         .collect()
@@ -340,7 +347,7 @@ fn sampled_paths(paths: &[PathBuf], count: usize) -> Vec<PathBuf> {
 }
 
 fn webgl_effect_paths(paths: &[PathBuf]) -> Vec<PathBuf> {
-    let root = bundled_effects_root();
+    let root = test_effects_root();
     paths
         .iter()
         .filter_map(|relative_path| {
