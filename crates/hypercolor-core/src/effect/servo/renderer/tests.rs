@@ -717,8 +717,9 @@ fn frame_payloads_track_animation_cap_without_js_throttle() {
 }
 
 #[test]
-fn frame_payloads_let_sdk_raf_drive_animation() {
+fn frame_payloads_request_host_driven_sdk_render() {
     let mut renderer = ServoRenderer::new();
+    renderer.host_driven_animation = true;
     let mut input = frame_input(1.0 / 30.0);
     input.time_secs = 2.5;
 
@@ -736,7 +737,10 @@ fn frame_payloads_let_sdk_raf_drive_animation() {
             .iter()
             .all(|script| !script.contains("instance.render("))
     );
-    assert!(frame_payload_value(&renderer.pending_frame_payloads)["renderHostFrame"].is_null());
+    assert_eq!(
+        frame_payload_value(&renderer.pending_frame_payloads)["renderHostFrame"],
+        serde_json::json!(true)
+    );
 }
 
 #[test]
@@ -758,11 +762,11 @@ fn display_frame_payloads_keep_fixed_animation_cap() {
 }
 
 #[test]
-fn display_html_uses_host_driven_animation() {
+fn html_effects_use_host_driven_animation() {
     let html = html_metadata(PathBuf::from("effect.html"));
     let display = display_html_metadata(PathBuf::from("display.html"));
 
-    assert!(!host_driven_animation(&html));
+    assert!(host_driven_animation(&html));
     assert!(host_driven_animation(&display));
 }
 

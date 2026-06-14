@@ -11,7 +11,9 @@
 use anyhow::{Result, bail};
 use hypercolor_types::canvas::{Canvas, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, Rgba};
 use hypercolor_types::display::DisplayDescriptor;
-use hypercolor_types::effect::{ControlKind, ControlValue, EffectCategory, EffectMetadata};
+use hypercolor_types::effect::{
+    ControlKind, ControlValue, EffectCategory, EffectMetadata, EffectSource,
+};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -332,7 +334,7 @@ fn effect_has_tag(metadata: &EffectMetadata, name: &str) -> bool {
 }
 
 fn host_driven_animation(metadata: &EffectMetadata) -> bool {
-    metadata.category == EffectCategory::Display
+    matches!(metadata.source, EffectSource::Html { .. })
 }
 
 #[cfg(feature = "servo-gpu-import")]

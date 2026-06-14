@@ -99,6 +99,9 @@ declare global {
             stop: () => void
         }
 
+        /** Called by Hypercolor when the host owns effect animation cadence */
+        __hypercolorRenderHostFrame?: () => void
+
         /** Current animation frame ID */
         currentAnimationFrame?: number
 
@@ -113,6 +116,9 @@ declare global {
 
         /** Indicates the effect is running in a capture/readback host. */
         __hypercolorCaptureMode?: boolean
+
+        /** Indicates the host drives animation frames explicitly. */
+        __hypercolorHostDrivenAnimation?: boolean
 
         /** Set by the daemon when dynamic controls changed since the last frame. */
         __hypercolorControlsDirty?: boolean

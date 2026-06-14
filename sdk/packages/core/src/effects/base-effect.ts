@@ -57,8 +57,12 @@ export abstract class BaseEffect<T> {
 
     private fpsCapLastFrameTime = 0
     private lastControlPollTime = Number.NEGATIVE_INFINITY
+    private running = false
     private readonly animationFrameCallback = (timestamp: number): void => {
         this.animationFrame(timestamp)
+    }
+    private readonly hostFrameCallback = (): void => {
+        this.renderHostFrame()
     }
 
     constructor(config: EffectConfig) {
@@ -113,13 +117,22 @@ export abstract class BaseEffect<T> {
     }
 
     protected startAnimation(): void {
+        this.running = true
+        window.effectInstance = this
+        window.__hypercolorRenderHostFrame = this.hostFrameCallback
+
+        if (shouldUseHostDrivenEffectLoop()) {
+            window.currentAnimationFrame = undefined
+            this.renderHostFrame()
+            return
+        }
+
         this.animationId = requestAnimationFrame(this.animationFrameCallback)
         window.currentAnimationFrame = this.animationId
-        window.effectInstance = this
     }
 
     protected animationFrame(timestamp: number): void {
-        if (this.animationId === null) return
+        if (!this.running || this.animationId === null) return
 
         this.animationId = requestAnimationFrame(this.animationFrameCallback)
         window.currentAnimationFrame = this.animationId
@@ -137,11 +150,41 @@ export abstract class BaseEffect<T> {
         this.onFrame(timestamp / 1000)
     }
 
-    public stop(): void {
+    private renderHostFrame(): void {
+        if (!this.running) return
+        if (!shouldUseHostDrivenEffectLoop()) return
+
         if (this.animationId !== null) {
             cancelAnimationFrame(this.animationId)
             this.animationId = null
             window.currentAnimationFrame = undefined
+        }
+
+        this.syncCanvasSizeFromEngine()
+        const browserPerformance = typeof performance === 'undefined' ? undefined : performance
+        const timestamp =
+            typeof window.performance?.now === 'function'
+                ? window.performance.now()
+                : typeof browserPerformance?.now === 'function'
+                  ? browserPerformance.now()
+                  : Date.now()
+        const time = timestamp / 1000
+        this.render(time)
+        this.onFrame(time)
+    }
+
+    public stop(): void {
+        this.running = false
+        if (this.animationId !== null) {
+            cancelAnimationFrame(this.animationId)
+            this.animationId = null
+            window.currentAnimationFrame = undefined
+        }
+        if (window.__hypercolorRenderHostFrame === this.hostFrameCallback) {
+            window.__hypercolorRenderHostFrame = undefined
+        }
+        if (window.effectInstance === this) {
+            window.effectInstance = undefined
         }
     }
 
@@ -273,6 +316,21 @@ function nextFpsCapFrameTime(timestamp: number, lastFrameTime: number, fpsCap: n
     return lastFrameTime + elapsedFrames * frameInterval
 }
 
+function shouldUseHostDrivenEffectLoop(): boolean {
+    if (typeof window === 'undefined') return false
+
+    const host = window as Window & {
+        __hypercolorHostDrivenAnimation?: boolean
+    }
+    const globals = globalThis as Record<string, unknown>
+
+    return (
+        Boolean(host.__hypercolorCaptureMode ?? globals.__hypercolorCaptureMode) &&
+        Boolean(host.__hypercolorHostDrivenAnimation ?? globals.__hypercolorHostDrivenAnimation)
+    )
+}
+
 export const __testing = {
     nextFpsCapFrameTime,
+    shouldUseHostDrivenEffectLoop,
 }
