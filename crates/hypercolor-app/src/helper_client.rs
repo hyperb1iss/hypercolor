@@ -49,6 +49,15 @@ pub struct HelperOutcome {
 /// probing) are enabled in debug builds to support `just dev`.
 #[must_use]
 pub fn resolve_helper_path(resource_dir: Option<&Path>) -> Option<PathBuf> {
+    let env_override = std::env::var_os(HELPER_PATH_ENV).filter(|value| !value.is_empty());
+    resolve_helper_path_with_options(resource_dir, env_override, cfg!(debug_assertions))
+}
+
+fn resolve_helper_path_with_options(
+    resource_dir: Option<&Path>,
+    env_override: Option<std::ffi::OsString>,
+    allow_dev_fallbacks: bool,
+) -> Option<PathBuf> {
     if let Some(dir) = resource_dir {
         let bundled = dir.join("tools").join(HELPER_BINARY_NAME);
         if bundled.is_file() {
@@ -56,11 +65,11 @@ pub fn resolve_helper_path(resource_dir: Option<&Path>) -> Option<PathBuf> {
         }
     }
 
-    if !cfg!(debug_assertions) {
+    if !allow_dev_fallbacks {
         return None;
     }
 
-    if let Some(value) = std::env::var_os(HELPER_PATH_ENV).filter(|v| !v.is_empty()) {
+    if let Some(value) = env_override {
         let path = PathBuf::from(value);
         if path.is_file() {
             return Some(path);
@@ -251,11 +260,27 @@ mod tests {
             .expect("mkdir attacker dir");
         std::fs::write(&attacker, b"attacker").expect("write attacker helper");
 
-        unsafe { std::env::set_var(HELPER_PATH_ENV, attacker.as_os_str()) };
-        let resolved = resolve_helper_path(Some(temp.path()));
-        unsafe { std::env::remove_var(HELPER_PATH_ENV) };
+        let resolved = resolve_helper_path_with_options(
+            Some(temp.path()),
+            Some(attacker.clone().into_os_string()),
+            true,
+        );
 
         assert_eq!(resolved.as_deref(), Some(bundled.as_path()));
+    }
+
+    #[test]
+    fn resolve_helper_path_ignores_env_override_when_dev_fallbacks_disabled() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let attacker = temp.path().join("attacker").join(HELPER_BINARY_NAME);
+        std::fs::create_dir_all(attacker.parent().expect("attacker parent"))
+            .expect("mkdir attacker dir");
+        std::fs::write(&attacker, b"attacker").expect("write attacker helper");
+
+        let resolved =
+            resolve_helper_path_with_options(None, Some(attacker.into_os_string()), false);
+
+        assert_eq!(resolved, None);
     }
 
     // No "returns None when nothing nearby" test: the dev fallback in
