@@ -518,19 +518,26 @@ pub async fn enforce_security(
         return next.run(request).await;
     }
 
-    if !state.security_enabled() {
-        request
-            .extensions_mut()
-            .insert(RequestAuthContext::unsecured());
-        return next.run(request).await;
-    }
-
     if request_is_loopback(&request) {
         if is_mutating_request(request.method()) && is_cross_site_request(&request) {
             return ApiError::forbidden(
                 "Cross-site mutating requests to the loopback API are blocked to prevent CSRF.",
             );
         }
+
+        if !state.security_enabled() {
+            request
+                .extensions_mut()
+                .insert(RequestAuthContext::unsecured());
+            return next.run(request).await;
+        }
+        request
+            .extensions_mut()
+            .insert(RequestAuthContext::unsecured());
+        return next.run(request).await;
+    }
+
+    if !state.security_enabled() {
         request
             .extensions_mut()
             .insert(RequestAuthContext::unsecured());
@@ -901,6 +908,10 @@ mod tests {
             .route("/api/v1/ws", get(|| async { StatusCode::OK }))
             .route("/api/v1/scenes", post(|| async { StatusCode::CREATED }))
             .route(
+                "/api/v1/effects/install",
+                post(|| async { StatusCode::CREATED }),
+            )
+            .route(
                 "/api/v1/devices/discover",
                 post(|| async { StatusCode::ACCEPTED }),
             )
@@ -1054,6 +1065,28 @@ mod tests {
             .expect("request failed");
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn unsecured_loopback_cross_site_effect_installs_are_rejected() {
+        let app = router_with_security_state(SecurityState::with_keys(None, None));
+        let response = app
+            .oneshot(with_connect_info(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/effects/install")
+                    .header("sec-fetch-site", "cross-site")
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                1042,
+            ))
+            .await
+            .expect("request failed");
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let json = response_json(response).await;
+        assert_eq!(json["error"]["code"], "forbidden");
     }
 
     #[tokio::test]
