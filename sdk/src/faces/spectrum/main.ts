@@ -1,5 +1,5 @@
 import type { FaceContext } from '@hypercolor/sdk'
-import { color, combo, face, lerpColor, num, palette, Smoothed, withAlpha } from '@hypercolor/sdk'
+import { color, combo, face, num, palette, Smoothed, withAlpha } from '@hypercolor/sdk'
 import { drawNebulaField } from '../shared/atmosphere'
 import { clamp01, createFaceRoot } from '../shared/dom'
 

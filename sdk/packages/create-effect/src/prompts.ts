@@ -26,7 +26,7 @@ async function promptEffectId(initialValue: string | undefined, label: string): 
             message: label,
             placeholder: 'my-effect',
             validate(input) {
-                return normalizeEffectId(input).length > 0 ? undefined : 'Enter an effect name'
+                return normalizeEffectId(input ?? '').length > 0 ? undefined : 'Enter an effect name'
             },
         }),
     )
@@ -87,7 +87,7 @@ export async function promptWorkspaceOptions(initial: {
                         message: "What's your workspace called?",
                         placeholder: 'my-effects',
                         validate(input) {
-                            return normalizeWorkspaceName(input).length > 0 ? undefined : 'Enter a workspace name'
+                            return normalizeWorkspaceName(input ?? '').length > 0 ? undefined : 'Enter a workspace name'
                         },
                     }),
                 ),
