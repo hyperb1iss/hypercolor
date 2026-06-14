@@ -83,8 +83,19 @@ impl RequestAuthContext {
     }
 
     #[must_use]
+    #[cfg(test)]
+    pub(crate) const fn control() -> Self {
+        Self::authenticated(AccessTier::Control)
+    }
+
+    #[must_use]
     pub(crate) const fn security_enabled(self) -> bool {
         self.security_enabled
+    }
+
+    #[must_use]
+    pub(crate) const fn can_control(self) -> bool {
+        !self.security_enabled || matches!(self.granted_tier, Some(AccessTier::Control))
     }
 
     #[must_use]

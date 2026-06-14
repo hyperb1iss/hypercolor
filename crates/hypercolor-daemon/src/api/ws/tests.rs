@@ -51,6 +51,7 @@ use super::relays::{
     relay_sensors, relay_spectrum, relay_web_viewport_canvas, sync_preview_receiver,
     try_enqueue_json,
 };
+use super::session::authorize_subscription_channels;
 use crate::api::AppState;
 use crate::api::security::{RequestAuthContext, SecurityState};
 use crate::device_metrics::{DeviceMetrics, DeviceMetricsSnapshot};
@@ -1540,6 +1541,47 @@ fn parse_channels_rejects_unknown_channel() {
     let channels = vec!["unknown".to_owned()];
     let error = parse_channels(&channels).expect_err("unknown channel should fail");
     assert_eq!(error.code, "invalid_request");
+}
+
+#[test]
+fn read_only_auth_rejects_screen_capture_preview_subscriptions() {
+    let channels = [
+        WsChannel::Events,
+        WsChannel::ScreenCanvas,
+        WsChannel::ScreenZones,
+    ];
+    let error = authorize_subscription_channels(RequestAuthContext::read_only(), &channels)
+        .expect_err("read-only clients must not subscribe to capture-demand channels");
+
+    assert_eq!(error.code, "forbidden");
+    assert_eq!(
+        error.details,
+        Some(serde_json::json!({
+            "channels": ["screen_canvas", "screen_zones"],
+            "required_tier": "control"
+        }))
+    );
+}
+
+#[test]
+fn read_only_auth_allows_non_capture_preview_subscriptions() {
+    let channels = [
+        WsChannel::Events,
+        WsChannel::Metrics,
+        WsChannel::Canvas,
+        WsChannel::WebViewportCanvas,
+    ];
+
+    authorize_subscription_channels(RequestAuthContext::read_only(), &channels)
+        .expect("read-only clients may subscribe to non-capture channels");
+}
+
+#[test]
+fn control_auth_allows_screen_capture_preview_subscriptions() {
+    let channels = [WsChannel::ScreenCanvas, WsChannel::ScreenZones];
+
+    authorize_subscription_channels(RequestAuthContext::control(), &channels)
+        .expect("control clients may subscribe to capture preview channels");
 }
 
 #[test]

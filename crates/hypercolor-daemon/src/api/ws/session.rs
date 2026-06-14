@@ -15,6 +15,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use hypercolor_leptos_ext::axum::upgrade_handler;
 use serde::Serialize;
+use serde_json::json;
 use tokio::sync::watch;
 use tracing::{debug, warn};
 use uuid::Uuid;
@@ -26,7 +27,7 @@ use super::cache::{WS_BUFFER_SIZE, WsClientGuard, track_ws_bytes_sent};
 use super::command::dispatch_command;
 use super::protocol::{
     ClientMessage, HelloFps, HelloState, NameRef, SceneRef, ServerMessage, SubscriptionState,
-    WsProtocolError, parse_channels, sorted_channel_names, unique_sorted_channel_names,
+    WsChannel, WsProtocolError, parse_channels, sorted_channel_names, unique_sorted_channel_names,
     ws_capabilities,
 };
 use super::relays::{
@@ -331,6 +332,31 @@ async fn handle_socket(
     debug!("WebSocket client disconnected");
 }
 
+pub(super) fn authorize_subscription_channels(
+    auth_context: RequestAuthContext,
+    channels: &[WsChannel],
+) -> Result<(), WsProtocolError> {
+    if auth_context.can_control() {
+        return Ok(());
+    }
+
+    let restricted_channels: Vec<&'static str> = channels
+        .iter()
+        .copied()
+        .filter(|channel| channel.requires_control_subscription())
+        .map(WsChannel::as_str)
+        .collect();
+
+    if restricted_channels.is_empty() {
+        Ok(())
+    } else {
+        Err(WsProtocolError::forbidden(
+            "Screen capture preview subscriptions require a control-tier API key",
+            json!({"channels": restricted_channels, "required_tier": "control"}),
+        ))
+    }
+}
+
 /// Process a client subscription/unsubscription message.
 async fn handle_client_message(
     text: &str,
@@ -363,6 +389,11 @@ async fn handle_client_message(
                     return;
                 }
             };
+
+            if let Err(error) = authorize_subscription_channels(auth_context, &parsed_channels) {
+                let _ = send_json(socket, &error.into_message()).await;
+                return;
+            }
 
             if let Some(config_patch) = config
                 && let Err(error) = subscriptions.config.apply_patch(config_patch)
