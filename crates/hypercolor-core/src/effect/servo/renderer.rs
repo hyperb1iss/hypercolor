@@ -350,6 +350,8 @@ fn effect_has_tag(metadata: &EffectMetadata, name: &str) -> bool {
 
 fn host_driven_animation(metadata: &EffectMetadata) -> bool {
     matches!(metadata.source, EffectSource::Html { .. })
+        && !effect_has_tag(metadata, "webgl")
+        && !effect_has_tag(metadata, "canvas2d")
 }
 
 #[cfg(feature = "servo-gpu-import")]

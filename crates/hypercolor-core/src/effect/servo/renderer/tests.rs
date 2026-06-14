@@ -791,9 +791,15 @@ fn display_frame_payloads_keep_fixed_animation_cap() {
 fn html_effects_use_host_driven_animation() {
     let html = html_metadata(PathBuf::from("effect.html"));
     let display = display_html_metadata(PathBuf::from("display.html"));
+    let mut webgl = html_metadata(PathBuf::from("webgl.html"));
+    let mut canvas2d = html_metadata(PathBuf::from("canvas2d.html"));
+    webgl.tags.push("webgl".to_owned());
+    canvas2d.tags.push("canvas2d".to_owned());
 
     assert!(host_driven_animation(&html));
     assert!(host_driven_animation(&display));
+    assert!(!host_driven_animation(&webgl));
+    assert!(!host_driven_animation(&canvas2d));
 }
 
 #[test]
