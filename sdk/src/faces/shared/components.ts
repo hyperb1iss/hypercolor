@@ -310,14 +310,14 @@ export function createChartPanel(parent: HTMLElement, options: ChartPanelOptions
             panel.resize(rect.width, rect.height)
         },
         push: (value) => history.push(value),
-        setColor(color) {
-            lineColor = color
-        },
         resize(width, height) {
             const w = Math.max(Math.round(width), 1)
             const h = Math.max(Math.round(height), 1)
             if (canvas.width !== w) canvas.width = w
             if (canvas.height !== h) canvas.height = h
+        },
+        setColor(color) {
+            lineColor = color
         },
     }
     return panel
