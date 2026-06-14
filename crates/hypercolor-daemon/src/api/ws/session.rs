@@ -486,11 +486,12 @@ async fn handle_client_message(
 }
 
 fn ensure_control_tier(auth_context: RequestAuthContext) -> Result<(), WsProtocolError> {
-    if auth_context.can_perform_write() {
+    if auth_context.can_control() {
         Ok(())
     } else {
-        Err(WsProtocolError::invalid_request(
+        Err(WsProtocolError::forbidden(
             "Read-only API key cannot perform write operations",
+            serde_json::json!({"required_tier": "control"}),
         ))
     }
 }
@@ -689,10 +690,14 @@ mod security_tests {
     fn read_only_auth_cannot_mutate_zone_layout_previews() {
         let error = ensure_control_tier(RequestAuthContext::read_only())
             .expect_err("read-only auth context should be rejected for mutating preview messages");
-        assert_eq!(error.code, "invalid_request");
+        assert_eq!(error.code, "forbidden");
         assert_eq!(
             error.message,
             "Read-only API key cannot perform write operations"
+        );
+        assert_eq!(
+            error.details,
+            Some(serde_json::json!({"required_tier": "control"}))
         );
     }
 

@@ -1179,6 +1179,14 @@ impl WsProtocolError {
         }
     }
 
+    pub(super) fn forbidden(message: impl Into<String>, details: serde_json::Value) -> Self {
+        Self {
+            code: "forbidden",
+            message: message.into(),
+            details: Some(details),
+        }
+    }
+
     pub(super) fn invalid_config(field: &'static str, message: &'static str) -> Self {
         Self {
             code: "invalid_config",
