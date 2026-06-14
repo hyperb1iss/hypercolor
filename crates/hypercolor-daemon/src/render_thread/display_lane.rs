@@ -323,12 +323,11 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
             return DisplayFinalizeProgress::Idle;
         }
 
-        match self.try_finish_display_finalize_work(&mut work) {
-            Some(frame) => DisplayFinalizeProgress::Ready(frame),
-            None => {
-                self.compose.display_finalize_runtime.insert(group_id, work);
-                DisplayFinalizeProgress::Pending
-            }
+        if let Some(frame) = self.try_finish_display_finalize_work(&mut work) {
+            DisplayFinalizeProgress::Ready(frame)
+        } else {
+            self.compose.display_finalize_runtime.insert(group_id, work);
+            DisplayFinalizeProgress::Pending
         }
     }
 

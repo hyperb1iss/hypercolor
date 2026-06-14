@@ -44,6 +44,7 @@ impl LightScriptFramePayload {
         serde_json::to_string(self).unwrap_or_else(|_| "{}".to_owned())
     }
 
+    #[cfg(feature = "servo")]
     pub(super) fn is_host_frame_only(&self) -> bool {
         self.render_host_frame
             && self.audio.is_none()

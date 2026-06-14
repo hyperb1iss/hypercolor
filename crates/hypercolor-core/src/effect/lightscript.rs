@@ -82,6 +82,7 @@ pub struct LightScriptFrameUpdateOptions<'a> {
     pub selected_sensor_labels: Option<&'a [String]>,
 }
 
+#[cfg(feature = "servo")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum LightScriptFrameUpdate {
     PayloadJson(String),
@@ -476,6 +477,7 @@ impl LightscriptRuntime {
             .map(|payload| payload.to_json_string())
     }
 
+    #[cfg(feature = "servo")]
     pub(crate) fn frame_update(
         &mut self,
         input: &FrameInput<'_>,
@@ -900,6 +902,7 @@ impl LightscriptRuntime {
     }
 }
 
+#[cfg(feature = "servo")]
 fn host_frame_script(payload: &LightScriptFramePayload) -> String {
     let time_secs = payload.timing.time_secs;
     let delta_secs = payload.timing.delta_secs;
