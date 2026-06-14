@@ -1203,14 +1203,6 @@ impl WsProtocolError {
         }
     }
 
-    pub(super) fn forbidden(message: impl Into<String>, details: serde_json::Value) -> Self {
-        Self {
-            code: "forbidden",
-            message: message.into(),
-            details: Some(details),
-        }
-    }
-
     pub(super) fn into_message(self) -> ServerMessage {
         ServerMessage::Error {
             code: self.code.to_owned(),
