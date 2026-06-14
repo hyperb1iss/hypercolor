@@ -93,6 +93,10 @@ impl WsChannel {
         Self::SUPPORTED.contains(&self)
     }
 
+    pub(super) const fn requires_control_subscription(self) -> bool {
+        matches!(self, Self::ScreenCanvas | Self::ScreenZones)
+    }
+
     const fn bit(self) -> u16 {
         match self {
             Self::Frames => 1 << 0,
@@ -1188,6 +1192,14 @@ impl WsProtocolError {
             code: "unsupported_channel",
             message: format!("Channel '{channel}' is not supported by this server"),
             details: Some(json!({"channel": channel})),
+        }
+    }
+
+    pub(super) fn forbidden(message: impl Into<String>, details: serde_json::Value) -> Self {
+        Self {
+            code: "forbidden",
+            message: message.into(),
+            details: Some(details),
         }
     }
 
