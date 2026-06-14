@@ -82,6 +82,12 @@ pub struct LightScriptFrameUpdateOptions<'a> {
     pub selected_sensor_labels: Option<&'a [String]>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum LightScriptFrameUpdate {
+    PayloadJson(String),
+    HostFrameScript(String),
+}
+
 /// Runtime state for Lightscript injection.
 #[derive(Debug, Clone)]
 pub struct LightscriptRuntime {
@@ -468,6 +474,21 @@ impl LightscriptRuntime {
     ) -> Option<String> {
         self.frame_payload(input, controls, options)
             .map(|payload| payload.to_json_string())
+    }
+
+    pub(crate) fn frame_update(
+        &mut self,
+        input: &FrameInput<'_>,
+        controls: &HashMap<String, ControlValue>,
+        options: LightScriptFrameUpdateOptions<'_>,
+    ) -> Option<LightScriptFrameUpdate> {
+        self.frame_payload(input, controls, options).map(|payload| {
+            if payload.is_host_frame_only() {
+                LightScriptFrameUpdate::HostFrameScript(host_frame_script(&payload))
+            } else {
+                LightScriptFrameUpdate::PayloadJson(payload.to_json_string())
+            }
+        })
     }
 
     fn frame_payload(
@@ -877,6 +898,17 @@ impl LightscriptRuntime {
         }
         changed_controls
     }
+}
+
+fn host_frame_script(payload: &LightScriptFramePayload) -> String {
+    let time_secs = payload.timing.time_secs;
+    let delta_secs = payload.timing.delta_secs;
+    let frame_number = payload.timing.frame_number;
+    let width = payload.canvas.width;
+    let height = payload.canvas.height;
+    format!(
+        "window.__hypercolorApplyHostFrame({time_secs},{delta_secs},{frame_number},{width},{height});"
+    )
 }
 
 fn frame_payload_adapter_script() -> &'static str {

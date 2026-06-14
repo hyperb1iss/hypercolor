@@ -61,6 +61,7 @@ fn bootstrap_script_contains_runtime_shape_and_frame_adapter() {
     assert!(script.contains("window.engine.zone.hue = new Int16Array(560)"));
     assert!(script.contains("window.engine.getSensorValue = function(name)"));
     assert!(script.contains("window.engine.keyboard.isKeyDown = function(key)"));
+    assert!(script.contains("window.__hypercolorApplyHostFrame = function("));
     assert!(script.contains("window.__hypercolorApplyFramePayload = function(payload)"));
     assert!(script.contains("applyAudio(engine, payload.audio)"));
     assert!(script.contains("applyControls(payload.controls)"));

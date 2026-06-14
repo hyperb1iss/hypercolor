@@ -717,14 +717,21 @@ fn frame_payloads_track_animation_cap_without_js_throttle() {
 }
 
 #[test]
-fn frame_payloads_request_host_driven_sdk_render() {
+fn host_driven_frames_use_fast_host_script_without_payload() {
     let mut renderer = ServoRenderer::new();
     renderer.host_driven_animation = true;
+    renderer.include_audio_updates = false;
     let mut input = frame_input(1.0 / 30.0);
     input.time_secs = 2.5;
 
     renderer.enqueue_frame_payloads(&input);
 
+    assert!(renderer.pending_frame_payloads.is_empty());
+    let script = renderer
+        .pending_scripts
+        .first()
+        .expect("host-driven frame should queue a fast script");
+    assert!(script.starts_with("window.__hypercolorApplyHostFrame(2.5,"));
     assert!(
         renderer
             .pending_scripts
@@ -737,9 +744,25 @@ fn frame_payloads_request_host_driven_sdk_render() {
             .iter()
             .all(|script| !script.contains("instance.render("))
     );
+}
+
+#[test]
+fn host_driven_control_updates_still_use_full_payload() {
+    let mut renderer = ServoRenderer::new();
+    renderer.host_driven_animation = true;
+    renderer.include_audio_updates = false;
+    renderer.set_control("speed", &ControlValue::Float(0.75));
+
+    renderer.enqueue_frame_payloads(&frame_input(1.0 / 30.0));
+
+    assert!(renderer.pending_scripts.is_empty());
     assert_eq!(
         frame_payload_value(&renderer.pending_frame_payloads)["renderHostFrame"],
         serde_json::json!(true)
+    );
+    assert_eq!(
+        frame_payload_value(&renderer.pending_frame_payloads)["controls"]["speed"],
+        serde_json::json!(0.75)
     );
 }
 
@@ -748,16 +771,19 @@ fn display_frame_payloads_keep_fixed_animation_cap() {
     let mut renderer = ServoRenderer::new();
     renderer.animation_cadence = AnimationCadence::Fixed(30);
     renderer.host_driven_animation = true;
+    renderer.include_audio_updates = false;
     renderer.enqueue_bootstrap_scripts();
     renderer.pending_scripts.clear();
 
     renderer.enqueue_frame_payloads(&frame_input(1.0 / 60.0));
 
     assert_eq!(renderer.last_animation_fps_cap, Some(30));
-    assert!(renderer.pending_scripts.is_empty());
-    assert_eq!(
-        frame_payload_value(&renderer.pending_frame_payloads)["renderHostFrame"],
-        serde_json::json!(true)
+    assert!(renderer.pending_frame_payloads.is_empty());
+    assert!(
+        renderer
+            .pending_scripts
+            .first()
+            .is_some_and(|script| script.starts_with("window.__hypercolorApplyHostFrame("))
     );
 }
 

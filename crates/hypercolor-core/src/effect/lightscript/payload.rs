@@ -43,6 +43,18 @@ impl LightScriptFramePayload {
     pub(super) fn to_json_string(&self) -> String {
         serde_json::to_string(self).unwrap_or_else(|_| "{}".to_owned())
     }
+
+    pub(super) fn is_host_frame_only(&self) -> bool {
+        self.render_host_frame
+            && self.audio.is_none()
+            && self.screen.is_none()
+            && self.sensors.is_none()
+            && self.media.is_none()
+            && self.net.is_none()
+            && self.lighting.is_none()
+            && self.controls.is_empty()
+            && self.interaction.is_none()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]

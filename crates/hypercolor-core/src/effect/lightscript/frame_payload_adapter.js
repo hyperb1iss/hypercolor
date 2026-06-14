@@ -157,17 +157,33 @@
       engine.mouse.down = mouse.down === true;
       engine.mouse.buttons = trueObject(mouse.buttons);
     };
+    const applyTimingAndCanvas = function(engine, timing, canvas) {
+      engine.time = finiteNumber(timing.timeSecs, engine.time || 0);
+      engine.deltaTime = finiteNumber(timing.deltaSecs, engine.deltaTime || 0);
+      engine.frame = finiteNumber(timing.frameNumber, engine.frame || 0);
+      engine.width = finiteNumber(canvas.width, engine.width || 1);
+      engine.height = finiteNumber(canvas.height, engine.height || 1);
+      if (typeof globalThis === 'object' && globalThis !== null) { globalThis.engine = engine; }
+    };
+    const renderHostFrame = function() {
+      if (typeof window.__hypercolorRenderHostFrame === 'function') { window.__hypercolorRenderHostFrame(); }
+    };
+    window.__hypercolorApplyHostFrame = function(timeSecs, deltaSecs, frameNumber, width, height) {
+      if (typeof window.engine !== 'object' || window.engine === null) { window.engine = {}; }
+      applyTimingAndCanvas(
+        window.engine,
+        { timeSecs: timeSecs, deltaSecs: deltaSecs, frameNumber: frameNumber },
+        { width: width, height: height }
+      );
+      renderHostFrame();
+    };
     window.__hypercolorApplyFramePayload = function(payload) {
       if (typeof payload !== 'object' || payload === null) { return; }
       if (typeof window.engine !== 'object' || window.engine === null) { window.engine = {}; }
       const engine = window.engine;
       const timing = typeof payload.timing === 'object' && payload.timing !== null ? payload.timing : {};
       const canvas = typeof payload.canvas === 'object' && payload.canvas !== null ? payload.canvas : {};
-      engine.time = finiteNumber(timing.timeSecs, engine.time || 0);
-      engine.deltaTime = finiteNumber(timing.deltaSecs, engine.deltaTime || 0);
-      engine.frame = finiteNumber(timing.frameNumber, engine.frame || 0);
-      engine.width = finiteNumber(canvas.width, engine.width || 1);
-      engine.height = finiteNumber(canvas.height, engine.height || 1);
+      applyTimingAndCanvas(engine, timing, canvas);
       applyAudio(engine, payload.audio);
       applyScreen(engine, payload.screen);
       applySensors(engine, payload.sensors);
@@ -176,7 +192,6 @@
       applyLighting(engine, payload.lighting);
       applyControls(payload.controls);
       applyInteraction(engine, payload.interaction);
-      if (typeof globalThis === 'object' && globalThis !== null) { globalThis.engine = engine; }
-      if (payload.renderHostFrame && typeof window.__hypercolorRenderHostFrame === 'function') { window.__hypercolorRenderHostFrame(); }
+      if (payload.renderHostFrame) { renderHostFrame(); }
     };
   }

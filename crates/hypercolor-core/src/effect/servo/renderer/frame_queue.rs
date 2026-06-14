@@ -8,7 +8,7 @@ use super::super::note_servo_session_error;
 use super::super::session::ServoRenderSubmission;
 use super::super::worker_client::ServoFramePayload;
 use super::{DEFAULT_DISPLAY_FPS_CAP, DEFAULT_EFFECT_FPS_CAP, MAX_EFFECT_FPS_CAP, ServoRenderer};
-use crate::effect::lightscript::LightScriptFrameUpdateOptions;
+use crate::effect::lightscript::{LightScriptFrameUpdate, LightScriptFrameUpdateOptions};
 use crate::effect::traits::FrameInput;
 use crate::engine::FpsTier;
 
@@ -56,7 +56,7 @@ impl ServoRenderer {
     pub(super) fn enqueue_frame_payloads(&mut self, input: &FrameInput<'_>) {
         let fps_cap = self.animation_cadence.fps_cap(input.delta_secs);
         self.last_animation_fps_cap = Some(fps_cap);
-        if let Some(payload) = self.runtime.frame_payload_json(
+        if let Some(update) = self.runtime.frame_update(
             input,
             &self.controls,
             LightScriptFrameUpdateOptions {
@@ -75,10 +75,17 @@ impl ServoRenderer {
                 .as_deref(),
             },
         ) {
-            self.pending_frame_payloads.push(
-                ServoFramePayload::from_json(payload)
-                    .expect("LightScript frame payload should serialize as a JSON object"),
-            );
+            match update {
+                LightScriptFrameUpdate::PayloadJson(payload) => {
+                    self.pending_frame_payloads.push(
+                        ServoFramePayload::from_json(payload)
+                            .expect("LightScript frame payload should serialize as a JSON object"),
+                    );
+                }
+                LightScriptFrameUpdate::HostFrameScript(script) => {
+                    self.pending_scripts.push(script);
+                }
+            }
         }
     }
 
