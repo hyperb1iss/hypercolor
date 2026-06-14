@@ -251,11 +251,15 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
             opacity: display_target.opacity,
         };
 
-        if let Some(frame) =
-            self.finish_pending_display_finalize_work(group_id, display_target, display_route)
-        {
-            return Some(frame);
-        }
+        let completed = match self.finish_pending_display_finalize_work(
+            group_id,
+            display_target,
+            display_route,
+        ) {
+            DisplayFinalizeProgress::Ready(frame) => Some(frame),
+            DisplayFinalizeProgress::Pending => return None,
+            DisplayFinalizeProgress::Idle => None,
+        };
 
         let dispatch = if display_route.frame_format == DisplayFrameFormat::Jpeg {
             self.compose
@@ -294,6 +298,7 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
                 None
             }
         }
+        .or(completed)
     }
 
     #[cfg(feature = "wgpu")]
@@ -302,9 +307,9 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
         group_id: ZoneId,
         display_target: &DisplayFaceTarget,
         display_route: &DisplayGroupOutputRoute,
-    ) -> Option<DisplayGroupFrame> {
+    ) -> DisplayFinalizeProgress {
         let Some(mut work) = self.compose.display_finalize_runtime.take(group_id) else {
-            return None;
+            return DisplayFinalizeProgress::Idle;
         };
         if !work.matches(
             self.context.dependency_key,
@@ -315,14 +320,16 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
             self.compose
                 .display_sparkleflinger
                 .discard_pending_display_finalization(work.pending);
-            return None;
+            return DisplayFinalizeProgress::Idle;
         }
 
-        let frame = self.try_finish_display_finalize_work(&mut work);
-        if frame.is_none() {
-            self.compose.display_finalize_runtime.insert(group_id, work);
+        match self.try_finish_display_finalize_work(&mut work) {
+            Some(frame) => DisplayFinalizeProgress::Ready(frame),
+            None => {
+                self.compose.display_finalize_runtime.insert(group_id, work);
+                DisplayFinalizeProgress::Pending
+            }
         }
-        frame
     }
 
     #[cfg(feature = "wgpu")]
@@ -343,6 +350,13 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
             }
         }
     }
+}
+
+#[cfg(feature = "wgpu")]
+enum DisplayFinalizeProgress {
+    Idle,
+    Pending,
+    Ready(DisplayGroupFrame),
 }
 
 fn display_route_matches_target(
@@ -395,6 +409,8 @@ mod tests {
     };
     use hypercolor_core::types::canvas::Canvas;
     use hypercolor_types::canvas::Rgba;
+    #[cfg(feature = "wgpu")]
+    use hypercolor_types::config::RenderAccelerationMode;
     use hypercolor_types::device::{DeviceId, DisplayFrameFormat};
     use hypercolor_types::scene::{DisplayFaceBlendMode, DisplayFaceTarget, ZoneId};
     use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition};
@@ -603,6 +619,60 @@ mod tests {
 
     #[cfg(feature = "wgpu")]
     #[test]
+    fn display_lane_pipelines_next_finalize_when_previous_completes() {
+        let Some(mut harness) = DisplayLaneHarness::with_gpu_display() else {
+            return;
+        };
+        let group_id = ZoneId::new();
+        let device_id = DeviceId::new();
+        let display_target = DisplayFaceTarget::new(device_id);
+        let display_route = rgb_display_route(device_id);
+        let dependency_key = SceneDependencyKey::new(1, 1);
+        let mut elapsed_ms = 100;
+
+        assert_eq!(
+            materialize_display_color(
+                &mut harness,
+                group_id,
+                &display_target,
+                &display_route,
+                dependency_key,
+                elapsed_ms,
+                [255, 0, 0],
+            ),
+            None
+        );
+
+        let red = wait_for_materialized_color(
+            &mut harness,
+            group_id,
+            &display_target,
+            &display_route,
+            dependency_key,
+            &mut elapsed_ms,
+            [0, 255, 0],
+            [255, 0, 0, 255],
+        );
+        assert!(red, "first async display finalization should complete");
+
+        let green = wait_for_materialized_color(
+            &mut harness,
+            group_id,
+            &display_target,
+            &display_route,
+            dependency_key,
+            &mut elapsed_ms,
+            [0, 0, 255],
+            [0, 255, 0, 255],
+        );
+        assert!(
+            green,
+            "completing one finalization should submit the next face frame"
+        );
+    }
+
+    #[cfg(feature = "wgpu")]
+    #[test]
     fn unsupported_and_saturated_display_finalize_dispatches_retain_previous_frame() {
         assert!(display_finalize_dispatch_reuses_retained_frame(
             &DisplayFinalizeDispatch::Unsupported
@@ -678,6 +748,16 @@ mod tests {
     }
 
     #[cfg(feature = "wgpu")]
+    fn rgb_display_route(device_id: DeviceId) -> DisplayGroupOutputRoute {
+        let mut route = display_route(device_id, 1.0);
+        route.width = 2;
+        route.height = 2;
+        route.circular = false;
+        route.frame_format = DisplayFrameFormat::Rgb;
+        route
+    }
+
+    #[cfg(feature = "wgpu")]
     fn color_canvas(rgb: [u8; 3]) -> Canvas {
         let mut canvas = Canvas::new(2, 2);
         canvas.fill(Rgba::new(rgb[0], rgb[1], rgb[2], 255));
@@ -718,6 +798,78 @@ mod tests {
     }
 
     #[cfg(feature = "wgpu")]
+    fn materialize_display_color(
+        harness: &mut DisplayLaneHarness,
+        group_id: ZoneId,
+        display_target: &DisplayFaceTarget,
+        display_route: &DisplayGroupOutputRoute,
+        dependency_key: SceneDependencyKey,
+        elapsed_ms: u32,
+        rgb: [u8; 3],
+    ) -> Option<[u8; 4]> {
+        let current_routes = HashMap::from([(group_id, display_route.clone())]);
+        let fallback_routes = HashMap::new();
+        let target_fps = HashMap::from([(group_id, 30)]);
+        let context = DisplayLaneContext {
+            elapsed_ms,
+            dependency_key,
+            target_fps: &target_fps,
+            routes: DisplayLaneRoutes {
+                current: &current_routes,
+                fallback: &fallback_routes,
+            },
+        };
+        let scene_frame = ProducerFrame::Canvas(color_canvas([0, 0, 0]));
+        let face_frame = PendingGroupCanvasFrame {
+            frame: ProducerFrame::Canvas(color_canvas(rgb)),
+            display_target: display_target.clone(),
+            empty_direct_shell: false,
+        };
+        let mut compose = harness.compose_runtime();
+        let materialized = DisplayLaneMaterializer::new(&mut compose, context)
+            .materialize_group_canvases(&[group_id], vec![(group_id, face_frame)], &scene_frame);
+
+        match materialized.as_slice() {
+            [] => None,
+            [(_, frame)] => Some(first_pixel(&frame.frame)),
+            _ => panic!("single display group should produce at most one frame"),
+        }
+    }
+
+    #[cfg(feature = "wgpu")]
+    fn wait_for_materialized_color(
+        harness: &mut DisplayLaneHarness,
+        group_id: ZoneId,
+        display_target: &DisplayFaceTarget,
+        display_route: &DisplayGroupOutputRoute,
+        dependency_key: SceneDependencyKey,
+        elapsed_ms: &mut u32,
+        submitted_rgb: [u8; 3],
+        expected_rgba: [u8; 4],
+    ) -> bool {
+        let start = std::time::Instant::now();
+        loop {
+            *elapsed_ms = elapsed_ms.saturating_add(33);
+            if materialize_display_color(
+                harness,
+                group_id,
+                display_target,
+                display_route,
+                dependency_key,
+                *elapsed_ms,
+                submitted_rgb,
+            ) == Some(expected_rgba)
+            {
+                return true;
+            }
+            if start.elapsed() >= std::time::Duration::from_secs(2) {
+                return false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
+    #[cfg(feature = "wgpu")]
     struct DisplayLaneHarness {
         screen_queue: ProducerQueue,
         composition_planner: CompositionPlanner,
@@ -740,6 +892,13 @@ mod tests {
                 render_group_runtime: ZoneRuntime::new(2, 2),
                 output_artifacts: OutputArtifactsState::default(),
             }
+        }
+
+        fn with_gpu_display() -> Option<Self> {
+            let mut harness = Self::new();
+            harness.display_sparkleflinger =
+                SparkleFlinger::new(RenderAccelerationMode::Gpu).ok()?;
+            Some(harness)
         }
 
         fn compose_runtime(&mut self) -> ComposeRuntime<'_> {
