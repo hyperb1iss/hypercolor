@@ -176,6 +176,9 @@ impl ZoneRuntime {
                 context.display_group_target_fps,
                 context.dependency_key,
             ) {
+                let render_start = Instant::now();
+                self.advance_direct_group_effects(group, context.group_context())?;
+                output.record_render_elapsed(render_start);
                 output
                     .rendered_groups
                     .push_retained_direct_group_frame(group.id, retained);

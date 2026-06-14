@@ -176,6 +176,74 @@ fn materialized_group_reuse_obeys_cadence_and_route_identity() {
 }
 
 #[test]
+fn display_retention_allows_thirty_fps_on_sixty_fps_ticks() {
+    let mut runtime = ZoneRuntime::new(4, 4);
+    let group = sample_display_group(4, 4);
+    let display_target = group
+        .display_target
+        .as_ref()
+        .expect("display group should have a target")
+        .clone();
+    let direct_frame = PendingGroupCanvasFrame {
+        frame: ProducerFrame::Canvas(Canvas::new(4, 4)),
+        display_target: display_target.clone(),
+        empty_direct_shell: false,
+    };
+    let materialized_frame = sample_group_canvas_frame(&display_target, true);
+    let display_route = sample_display_route(display_target.device_id);
+    let dependency_key = SceneDependencyKey::new(1, 1);
+    let target_fps = HashMap::from([(group.id, 30)]);
+
+    runtime.retain_direct_group_frame(group.id, 100, dependency_key, &direct_frame);
+    runtime.retain_materialized_group_frame(
+        group.id,
+        100,
+        dependency_key,
+        &display_target,
+        &display_route,
+        false,
+        &materialized_frame,
+    );
+
+    assert!(
+        runtime
+            .reuse_retained_direct_group_frame(&group, 132, &target_fps, dependency_key)
+            .is_some()
+    );
+    assert!(
+        runtime
+            .reuse_retained_direct_group_frame(&group, 133, &target_fps, dependency_key)
+            .is_none()
+    );
+    assert!(
+        runtime
+            .reuse_retained_materialized_group_frame(
+                group.id,
+                132,
+                Some(30),
+                dependency_key,
+                &display_target,
+                &display_route,
+                false,
+            )
+            .is_some()
+    );
+    assert!(
+        runtime
+            .reuse_retained_materialized_group_frame(
+                group.id,
+                133,
+                Some(30),
+                dependency_key,
+                &display_target,
+                &display_route,
+                false,
+            )
+            .is_none()
+    );
+}
+
+#[test]
 fn latest_direct_group_reuse_keeps_display_face_visible_across_dependency_change() {
     let mut runtime = ZoneRuntime::new(4, 4);
     let group = sample_display_group(4, 4);

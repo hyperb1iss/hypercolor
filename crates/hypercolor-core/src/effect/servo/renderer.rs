@@ -142,6 +142,14 @@ impl ServoRenderer {
         let color = Rgba::new(frame_mod, audio_mod, frame_mod.saturating_add(32), 255);
         target.fill(color);
     }
+
+    #[cfg(feature = "servo-gpu-import")]
+    fn drive_output_frame(&mut self, input: &FrameInput<'_>) {
+        self.poll_load_task();
+        self.queue_frame(input);
+        self.poll_in_flight_render_output();
+        self.try_submit_queued_frame_with_gpu_preference(super::servo_gpu_import_should_attempt());
+    }
 }
 
 fn copy_completed_canvas_into_target(source: &Canvas, target: &mut Canvas) {
@@ -192,10 +200,7 @@ impl EffectRenderer for ServoRenderer {
             bail!("ServoRenderer tick called before init");
         }
 
-        self.poll_load_task();
-        self.queue_frame(input);
-        self.poll_in_flight_render_output();
-        self.try_submit_queued_frame_with_gpu_preference(super::servo_gpu_import_should_attempt());
+        self.drive_output_frame(input);
 
         if let Some(frame) = self.last_gpu_frame.as_ref()
             && frame.width == input.canvas_width
@@ -219,6 +224,16 @@ impl EffectRenderer for ServoRenderer {
         let mut placeholder = Canvas::new(input.canvas_width, input.canvas_height);
         Self::render_placeholder_into(&mut placeholder, input);
         Ok(EffectRenderOutput::Cpu(placeholder))
+    }
+
+    #[cfg(feature = "servo-gpu-import")]
+    fn advance_output(&mut self, input: &FrameInput<'_>) -> Result<()> {
+        if !self.initialized {
+            bail!("ServoRenderer tick called before init");
+        }
+
+        self.drive_output_frame(input);
+        Ok(())
     }
 
     fn set_control(&mut self, name: &str, value: &ControlValue) {

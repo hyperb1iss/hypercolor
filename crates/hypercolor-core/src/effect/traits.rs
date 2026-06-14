@@ -199,6 +199,13 @@ pub trait EffectRenderer: Send {
         Ok(EffectRenderOutput::Cpu(canvas))
     }
 
+    /// Advance an output-capable renderer without requiring the caller to
+    /// consume a frame immediately.
+    fn advance_output(&mut self, input: &FrameInput<'_>) -> anyhow::Result<()> {
+        let _ = input;
+        Ok(())
+    }
+
     /// Produce a single frame.
     ///
     /// Legacy convenience wrapper that allocates a fresh target canvas and

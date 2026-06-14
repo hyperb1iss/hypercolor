@@ -31,7 +31,7 @@ impl ZoneRuntime {
         if retained.dependency_key != dependency_key {
             return None;
         }
-        let frame_interval_ms = 1000_u32.div_ceil(target_fps.max(1));
+        let frame_interval_ms = display_frame_interval_ms(target_fps);
         (elapsed_ms.saturating_sub(retained.rendered_at_ms) < frame_interval_ms)
             .then(|| retained.frame.clone())
     }
@@ -99,7 +99,7 @@ impl ZoneRuntime {
             return None;
         }
 
-        let frame_interval_ms = 1000_u32.div_ceil(target_fps.max(1));
+        let frame_interval_ms = display_frame_interval_ms(target_fps);
         (elapsed_ms.saturating_sub(retained.rendered_at_ms) < frame_interval_ms)
             .then(|| retained.frame.clone())
     }
@@ -152,4 +152,8 @@ impl ZoneRuntime {
             },
         );
     }
+}
+
+fn display_frame_interval_ms(target_fps: u32) -> u32 {
+    (1000 / target_fps.max(1)).max(1)
 }

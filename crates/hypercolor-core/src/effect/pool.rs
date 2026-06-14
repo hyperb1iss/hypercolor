@@ -190,7 +190,7 @@ impl EffectPool {
         let key = EffectSlotKey::new(group.id, layer.id);
         let slot = self.slots.get_mut(&key).ok_or_else(|| {
             anyhow!(
-                "zone '{}' layer '{}' is not reconciled before rendering",
+                "zone '{}' layer '{}' is not reconciled before advancing",
                 group.name,
                 layer.id
             )
@@ -271,6 +271,45 @@ impl EffectPool {
             )
         })?;
         slot.render_output(
+            delta_secs,
+            audio,
+            interaction,
+            screen,
+            sensors,
+            sources,
+            group.layout.canvas_width,
+            group.layout.canvas_height,
+        )
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "advancing output-capable renderers needs the full frame input"
+    )]
+    pub fn advance_layer_output(
+        &mut self,
+        group: &Zone,
+        layer: &SceneLayer,
+        delta_secs: f32,
+        audio: &AudioData,
+        interaction: &InteractionData,
+        screen: Option<&ScreenData>,
+        sensors: &SystemSnapshot,
+        sources: FrameDataSources<'_>,
+    ) -> Result<()> {
+        if !group.enabled || !layer.enabled || layer_effect_source(layer).is_none() {
+            return Ok(());
+        }
+
+        let key = EffectSlotKey::new(group.id, layer.id);
+        let slot = self.slots.get_mut(&key).ok_or_else(|| {
+            anyhow!(
+                "zone '{}' layer '{}' is not reconciled before rendering",
+                group.name,
+                layer.id
+            )
+        })?;
+        slot.advance_output(
             delta_secs,
             audio,
             interaction,
@@ -471,6 +510,46 @@ impl EffectSlot {
         let output = self.renderer.render_output(&input)?;
         self.frame_number = self.frame_number.wrapping_add(1);
         Ok(output)
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "advancing output-capable renderers needs the full frame input"
+    )]
+    fn advance_output(
+        &mut self,
+        delta_secs: f32,
+        audio: &AudioData,
+        interaction: &InteractionData,
+        screen: Option<&ScreenData>,
+        sensors: &SystemSnapshot,
+        sources: FrameDataSources<'_>,
+        canvas_width: u32,
+        canvas_height: u32,
+    ) -> Result<()> {
+        self.elapsed_secs += delta_secs;
+        apply_sensor_bindings(
+            self.renderer.as_mut(),
+            &self.metadata,
+            &self.controls,
+            &mut self.binding_state,
+            sensors,
+        );
+        let input = FrameInput {
+            time_secs: self.elapsed_secs,
+            delta_secs,
+            frame_number: self.frame_number,
+            audio,
+            interaction,
+            screen,
+            sensors,
+            sources,
+            canvas_width,
+            canvas_height,
+        };
+        self.renderer.advance_output(&input)?;
+        self.frame_number = self.frame_number.wrapping_add(1);
+        Ok(())
     }
 }
 
@@ -702,7 +781,7 @@ mod tests {
     use std::collections::HashMap;
     use std::path::PathBuf;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::time::SystemTime;
 
     use anyhow::Result;
@@ -712,7 +791,9 @@ mod tests {
     use super::{EffectPool, EffectSlot, EffectSlotKey};
     use crate::effect::builtin::register_builtin_effects;
     use crate::effect::registry::EffectRegistry;
-    use crate::effect::traits::{EffectRenderer, FrameInput};
+    use crate::effect::traits::{EffectRenderer, FrameDataSources, FrameInput};
+    use crate::input::InteractionData;
+    use hypercolor_types::audio::AudioData;
     use hypercolor_types::canvas::Canvas;
     use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
     use hypercolor_types::layer::SceneLayerId;
@@ -728,6 +809,10 @@ mod tests {
 
     struct DestroySpyRenderer {
         destroyed: Arc<AtomicBool>,
+    }
+
+    struct AdvanceSpyRenderer {
+        advanced: Arc<AtomicU64>,
     }
 
     impl DestroySpyRenderer {
@@ -750,6 +835,27 @@ mod tests {
         fn destroy(&mut self) {
             self.destroyed.store(true, Ordering::SeqCst);
         }
+    }
+
+    impl EffectRenderer for AdvanceSpyRenderer {
+        fn init(&mut self, _metadata: &EffectMetadata) -> Result<()> {
+            Ok(())
+        }
+
+        fn render_into(&mut self, _input: &FrameInput<'_>, _target: &mut Canvas) -> Result<()> {
+            Ok(())
+        }
+
+        fn advance_output(&mut self, input: &FrameInput<'_>) -> Result<()> {
+            assert_eq!(input.canvas_width, 32);
+            assert_eq!(input.canvas_height, 16);
+            self.advanced.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn set_control(&mut self, _name: &str, _value: &hypercolor_types::effect::ControlValue) {}
+
+        fn destroy(&mut self) {}
     }
 
     fn sample_layout() -> SpatialLayout {
@@ -820,6 +926,23 @@ mod tests {
             metadata: registry_metadata,
             display_descriptor: None,
             renderer: Box::new(DestroySpyRenderer::new(destroyed)),
+            controls: HashMap::new(),
+            binding_state: HashMap::new(),
+            elapsed_secs: 0.0,
+            frame_number: 0,
+        }
+    }
+
+    fn advance_spy_slot(effect_id: EffectId, advanced: Arc<AtomicU64>) -> EffectSlot {
+        let registry_metadata = spy_metadata(effect_id);
+        EffectSlot {
+            effect_id,
+            registry_metadata: registry_metadata.clone(),
+            registry_source_path: PathBuf::from("mock/advance-spy.wgsl"),
+            registry_modified: SystemTime::UNIX_EPOCH,
+            metadata: registry_metadata,
+            display_descriptor: None,
+            renderer: Box::new(AdvanceSpyRenderer { advanced }),
             controls: HashMap::new(),
             binding_state: HashMap::new(),
             elapsed_secs: 0.0,
@@ -933,6 +1056,48 @@ mod tests {
         assert!(
             pool.slots
                 .contains_key(&EffectSlotKey::new(kept_group_id, kept_layer_id))
+        );
+    }
+
+    #[test]
+    fn advance_layer_output_ticks_renderer_without_rendering_canvas() {
+        let advanced = Arc::new(AtomicU64::new(0));
+        let effect_id = EffectId::new(uuid::Uuid::now_v7());
+        let group_id = ZoneId::new();
+        let group = render_group(group_id, effect_id);
+        let layer = group
+            .effective_layers()
+            .into_iter()
+            .next()
+            .expect("legacy effect group should expose an effective layer");
+        let mut pool = EffectPool::new();
+        pool.slots.insert(
+            EffectSlotKey::new(group_id, layer.id),
+            advance_spy_slot(effect_id, Arc::clone(&advanced)),
+        );
+        let audio = AudioData::silence();
+        let interaction = InteractionData::default();
+        let sensors = hypercolor_types::sensor::SystemSnapshot::empty();
+
+        pool.advance_layer_output(
+            &group,
+            &layer,
+            1.0 / 60.0,
+            &audio,
+            &interaction,
+            None,
+            &sensors,
+            FrameDataSources::default(),
+        )
+        .expect("advance should succeed");
+
+        assert_eq!(advanced.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            pool.slots
+                .get(&EffectSlotKey::new(group_id, layer.id))
+                .expect("slot should remain")
+                .frame_number,
+            1
         );
     }
 

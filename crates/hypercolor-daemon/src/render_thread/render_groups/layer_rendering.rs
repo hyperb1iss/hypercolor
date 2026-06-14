@@ -328,6 +328,37 @@ impl ZoneRuntime {
         Ok(frame)
     }
 
+    pub(super) fn advance_direct_group_effects(
+        &mut self,
+        group: &Zone,
+        context: GroupFrameContext<'_>,
+    ) -> Result<()> {
+        for layer in group.effective_layers() {
+            if !layer.enabled {
+                continue;
+            }
+            let layer_runtime = evaluate_layer_runtime(
+                &layer,
+                context.inputs.audio,
+                context.inputs.sensors,
+                context.elapsed_ms,
+            )
+            .apply_to_layer(&layer);
+            match &layer_runtime.source {
+                LayerSource::Effect { .. } => {
+                    self.advance_effect_layer_output(group, &layer_runtime, context)?;
+                }
+                #[cfg(feature = "servo")]
+                LayerSource::WebViewport { .. } => {
+                    self.advance_effect_layer_output(group, &layer_runtime, context)?;
+                }
+                _ => {}
+            }
+        }
+
+        Ok(())
+    }
+
     fn render_effect_layer_frame(
         &mut self,
         group: &Zone,
@@ -387,5 +418,32 @@ impl ZoneRuntime {
                 })?;
             Ok(Some(ProducerFrame::Canvas(canvas)))
         }
+    }
+
+    fn advance_effect_layer_output(
+        &mut self,
+        group: &Zone,
+        layer: &SceneLayer,
+        context: GroupFrameContext<'_>,
+    ) -> Result<()> {
+        self.effect_pool
+            .advance_layer_output(
+                group,
+                layer,
+                context.inputs.delta_secs,
+                context.inputs.audio,
+                context.inputs.interaction,
+                context.inputs.screen,
+                context.inputs.sensors,
+                context.inputs.sources(),
+            )
+            .map_err(|error| {
+                anyhow::Error::new(render_layer_effect_error(
+                    group,
+                    layer,
+                    context.registry,
+                    error,
+                ))
+            })
     }
 }
