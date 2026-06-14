@@ -86,7 +86,13 @@ $pawnIoDll = "C:\Program Files\PawnIO\PawnIOLib.dll"
 Write-Check "PawnIOLib.dll" (Test-Path -LiteralPath $pawnIoDll) $pawnIoDll
 
 $moduleDir = Join-Path $env:LOCALAPPDATA "hypercolor\pawnio\modules"
-foreach ($module in @("SmbusI801.bin", "SmbusPIIX4.bin", "SmbusNCT6793.bin")) {
+foreach ($module in @(
+    "SmbusI801.bin",
+    "SmbusPIIX4.bin",
+    "SmbusNCT6793.bin",
+    "IntelMSR.bin",
+    "AMDFamily17.bin"
+)) {
     $path = Join-Path $moduleDir $module
     Write-Check $module (Test-Path -LiteralPath $path) $path
 }

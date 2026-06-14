@@ -154,7 +154,13 @@ function Resolve-PawnIoModuleDir {
     }
 
     foreach ($candidate in $candidates) {
-        foreach ($module in @("SmbusI801.bin", "SmbusPIIX4.bin", "SmbusNCT6793.bin")) {
+        foreach ($module in @(
+            "SmbusI801.bin",
+            "SmbusPIIX4.bin",
+            "SmbusNCT6793.bin",
+            "IntelMSR.bin",
+            "AMDFamily17.bin"
+        )) {
             if (Test-Path -LiteralPath (Join-Path $candidate $module)) {
                 $resolved = (Resolve-Path -LiteralPath $candidate).Path
                 Assert-ServicePawnIoPath $resolved

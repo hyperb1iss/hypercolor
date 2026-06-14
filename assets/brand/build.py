@@ -9,9 +9,10 @@ Idempotent — safe to re-run.
 """
 from __future__ import annotations
 
+import shutil
 import sys
 from pathlib import Path
-from PIL import Image, ImageChops, ImageDraw, ImageFilter
+from PIL import Image, ImageChops, ImageFilter
 import numpy as np
 
 # Windows console defaults to cp1252; force UTF-8 so arrows/checkmarks print.
@@ -20,10 +21,14 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
     sys.stderr.reconfigure(encoding="utf-8")
 
 BRAND = Path(__file__).parent
+REPO_ROOT = BRAND.parent.parent
 SOURCE = BRAND / "source"
 MASTER = BRAND / "master"
 MASK = BRAND / "mask"
 DERIVED = BRAND / "derived"
+APP_ICON_DIR = REPO_ROOT / "crates" / "hypercolor-app" / "icons"
+
+INSTALLER_APP_ASSETS = ("installer.ico", "nsis-header.bmp", "nsis-sidebar.bmp")
 
 AI_PETAL_SOURCES = {
     "top": SOURCE / "petal-ai-top.png",
@@ -575,25 +580,48 @@ def build_installer_win() -> None:
     out = DERIVED / "installer-win"
     out.mkdir(parents=True, exist_ok=True)
 
-    # WiX banner: 493x58
-    bg = radial_gradient((493, 58), inner=(35, 15, 70), outer=VOID_BLACK).convert("RGBA")
     h_lockup = Image.open(MASTER / "lockup-horizontal-color.png").convert("RGBA")
     hw, hh = h_lockup.size
+    v_lockup = Image.open(MASTER / "lockup-vertical-color.png").convert("RGBA")
+    vw, vh = v_lockup.size
+
+    # WiX banner: 493x58
+    bg = radial_gradient((493, 58), inner=(35, 15, 70), outer=VOID_BLACK).convert("RGBA")
     target_h = 44
     target_w = int(hw * target_h / hh)
     h_scaled = h_lockup.resize((target_w, target_h), Image.LANCZOS)
     bg.paste(h_scaled, (12, (58 - target_h) // 2), h_scaled)
     bg.convert("RGB").save(out / "wix-banner.bmp", format="BMP")
 
+    # NSIS header: 150x57
+    bg = radial_gradient((150, 57), inner=(35, 15, 70), outer=VOID_BLACK).convert("RGBA")
+    target_h = 34
+    target_w = int(hw * target_h / hh)
+    if target_w > 132:
+        target_w = 132
+        target_h = int(hh * target_w / hw)
+    h_scaled = h_lockup.resize((target_w, target_h), Image.LANCZOS)
+    bg.paste(h_scaled, (9, (57 - target_h) // 2), h_scaled)
+    bg.convert("RGB").save(out / "nsis-header.bmp", format="BMP")
+
     # WiX dialog: 493x312
     bg = radial_gradient((493, 312), inner=(50, 22, 95), outer=VOID_BLACK).convert("RGBA")
-    v_lockup = Image.open(MASTER / "lockup-vertical-color.png").convert("RGBA")
-    vw, vh = v_lockup.size
     target_h = 250
     target_w = int(vw * target_h / vh)
     v_scaled = v_lockup.resize((target_w, target_h), Image.LANCZOS)
     bg.paste(v_scaled, ((493 - target_w) // 2, (312 - target_h) // 2), v_scaled)
     bg.convert("RGB").save(out / "wix-dialog.bmp", format="BMP")
+
+    # NSIS sidebar: 164x314
+    bg = radial_gradient((164, 314), inner=(50, 22, 95), outer=VOID_BLACK).convert("RGBA")
+    target_h = 250
+    target_w = int(vw * target_h / vh)
+    if target_w > 142:
+        target_w = 142
+        target_h = int(vh * target_w / vw)
+    v_scaled = v_lockup.resize((target_w, target_h), Image.LANCZOS)
+    bg.paste(v_scaled, ((164 - target_w) // 2, (314 - target_h) // 2), v_scaled)
+    bg.convert("RGB").save(out / "nsis-sidebar.bmp", format="BMP")
 
     # Installer .ico (same as app-icon, copied for clarity)
     mark = Image.open(MASTER / "mark-color.png").convert("RGBA")
@@ -604,7 +632,12 @@ def build_installer_win() -> None:
         sizes=[(16, 16), (32, 32), (48, 48), (256, 256)],
     )
 
+    APP_ICON_DIR.mkdir(parents=True, exist_ok=True)
+    for asset in INSTALLER_APP_ASSETS:
+        shutil.copy2(out / asset, APP_ICON_DIR / asset)
+
     print(f"  → installer-win: {len(list(out.glob('*')))} files")
+    print(f"  → app installer icons: {len(INSTALLER_APP_ASSETS)} files")
 
 
 def build_social() -> None:

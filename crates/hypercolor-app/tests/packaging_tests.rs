@@ -4,11 +4,17 @@ const JUSTFILE: &str = include_str!("../../../justfile");
 const WINDOWS_INSTALLER_SCRIPT: &str = include_str!("../../../scripts/build-windows-installer.ps1");
 const CARGO_CACHE_BUILD_SH: &str = include_str!("../../../scripts/cargo-cache-build.sh");
 const CARGO_CACHE_BUILD_PS1: &str = include_str!("../../../scripts/cargo-cache-build.ps1");
+const BRAND_BUILD_PY: &str = include_str!("../../../assets/brand/build.py");
+const DIAGNOSE_WINDOWS_PS1: &str = include_str!("../../../scripts/diagnose-windows.ps1");
 const FETCH_PAWNIO_ASSETS_PS1: &str = include_str!("../../../scripts/fetch-pawnio-assets.ps1");
 const INSTALL_BUNDLED_PAWNIO_PS1: &str =
     include_str!("../../../scripts/install-bundled-pawnio.ps1");
 const INSTALL_PAWNIO_MODULES_PS1: &str =
     include_str!("../../../scripts/install-pawnio-modules.ps1");
+const INSTALL_WINDOWS_SERVICE_PS1: &str =
+    include_str!("../../../scripts/install-windows-service.ps1");
+const INSTALL_WINDOWS_SMBUS_SERVICE_PS1: &str =
+    include_str!("../../../scripts/install-windows-smbus-service.ps1");
 const PACKAGE_DEB_SH: &str = include_str!("../../../scripts/package-deb.sh");
 const VERIFY_DEB_SH: &str = include_str!("../../../scripts/verify-deb-package.sh");
 const STAGE_APP_BUNDLE_PS1: &str = include_str!("../../../scripts/stage-app-bundle-assets.ps1");
@@ -24,7 +30,13 @@ const WINDOWS_TOOL_SCRIPTS: &[&str] = &[
     "install-windows-hardware-support.ps1",
 ];
 
-const REQUIRED_PAWNIO_MODULES: &[&str] = &["SmbusI801.bin", "SmbusPIIX4.bin", "SmbusNCT6793.bin"];
+const REQUIRED_PAWNIO_MODULES: &[&str] = &[
+    "SmbusI801.bin",
+    "SmbusPIIX4.bin",
+    "SmbusNCT6793.bin",
+    "IntelMSR.bin",
+    "AMDFamily17.bin",
+];
 
 #[test]
 fn homebrew_cask_template_targets_normalized_macos_dmg_names() {
@@ -84,7 +96,9 @@ fn app_bundle_staging_includes_windows_support_helpers() {
     }
 
     assert!(STAGE_APP_BUNDLE_PS1.contains("hypercolor-smbus-service"));
+    assert!(STAGE_APP_BUNDLE_PS1.contains("hypercolor-windows-helper"));
     assert!(STAGE_APP_BUNDLE_SH.contains("hypercolor-smbus-service"));
+    assert!(STAGE_APP_BUNDLE_SH.contains("hypercolor-windows-helper"));
 }
 
 #[test]
@@ -96,11 +110,36 @@ fn app_bundle_staging_includes_pawnio_runtime_payloads() {
     assert!(STAGE_APP_BUNDLE_SH.contains("PawnIO.Modules.zip"));
     assert!(STAGE_APP_BUNDLE_SH.contains("manifest.json"));
     for module in REQUIRED_PAWNIO_MODULES {
+        for (script_name, script) in [
+            ("diagnose-windows.ps1", DIAGNOSE_WINDOWS_PS1),
+            ("fetch-pawnio-assets.ps1", FETCH_PAWNIO_ASSETS_PS1),
+            ("install-bundled-pawnio.ps1", INSTALL_BUNDLED_PAWNIO_PS1),
+            ("install-pawnio-modules.ps1", INSTALL_PAWNIO_MODULES_PS1),
+            ("install-windows-service.ps1", INSTALL_WINDOWS_SERVICE_PS1),
+            (
+                "install-windows-smbus-service.ps1",
+                INSTALL_WINDOWS_SMBUS_SERVICE_PS1,
+            ),
+            ("stage-app-bundle-assets.sh", STAGE_APP_BUNDLE_SH),
+        ] {
+            assert!(
+                script.contains(module),
+                "{script_name} should include PawnIO module {module}"
+            );
+        }
+    }
+}
+
+#[test]
+fn brand_build_pipeline_mirrors_nsis_assets_to_tauri_icons() {
+    assert!(BRAND_BUILD_PY.contains("crates\" / \"hypercolor-app\" / \"icons"));
+    for asset in ["installer.ico", "nsis-header.bmp", "nsis-sidebar.bmp"] {
         assert!(
-            STAGE_APP_BUNDLE_SH.contains(module),
-            "Bash staging should bundle PawnIO module {module}"
+            BRAND_BUILD_PY.contains(asset),
+            "brand build pipeline should mirror {asset} for Tauri bundling"
         );
     }
+    assert!(BRAND_BUILD_PY.contains("shutil.copy2"));
 }
 
 #[test]

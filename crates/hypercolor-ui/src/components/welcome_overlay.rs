@@ -5,10 +5,6 @@
 //! "Let's go" CTA. Dismissing applies the autostart choice (when native
 //! bridge is available) and persists a marker so the overlay doesn't
 //! reappear.
-//!
-//! Future passes can layer additional steps onto the same skeleton —
-//! e.g. motherboard-aware hardware-support offer and post-wizard device
-//! discovery kickoff.
 
 use leptos::prelude::*;
 use leptos_icons::Icon;
@@ -18,6 +14,8 @@ use leptos_router::hooks::use_navigate;
 use crate::components::modal::Modal;
 use crate::icons::*;
 use crate::tauri_bridge::{self, PawnIoSupportStatus, smbus_support_ready};
+
+pub const WELCOME_MARK_SRC: &str = "/assets/brand/mark-color.png";
 
 #[component]
 pub fn WelcomeOverlay() -> impl IntoView {
@@ -104,16 +102,25 @@ pub fn WelcomeOverlay() -> impl IntoView {
                     class="relative w-full max-w-md rounded-xl border border-edge-subtle bg-surface-overlay p-6 modal-glow animate-enter-fade"
                     style="box-shadow: 0 0 60px rgba(225, 53, 255, 0.18), 0 0 24px rgba(128, 255, 234, 0.08)"
                 >
-                    <div class="flex items-center gap-2.5">
-                        <Icon
-                            icon=LuZap
-                            width="18px"
-                            height="18px"
-                            style="color: rgba(225, 53, 255, 0.9)"
-                        />
-                        <span class="text-base font-semibold text-fg-primary">
-                            "Welcome to Hypercolor"
-                        </span>
+                    <div class="flex items-center gap-3">
+                        <div
+                            class="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg"
+                            style="background: radial-gradient(circle at 45% 30%, rgba(225, 53, 255, 0.18), rgba(128, 255, 234, 0.05) 58%, rgba(10, 6, 18, 0.0)); box-shadow: 0 0 22px rgba(225, 53, 255, 0.16)"
+                        >
+                            <img
+                                src=WELCOME_MARK_SRC
+                                alt=""
+                                class="h-10 w-10 object-contain"
+                            />
+                        </div>
+                        <div class="min-w-0">
+                            <div class="text-base font-semibold text-fg-primary">
+                                "Welcome to Hypercolor"
+                            </div>
+                            <div class="text-xs font-mono uppercase tracking-wide text-accent-cyan/70">
+                                "RGB orchestration is ready"
+                            </div>
+                        </div>
                     </div>
                     <div class="mt-2 text-sm text-fg-tertiary/80 leading-relaxed">
                         "Orchestrate every RGB device in your setup from one place. \
@@ -300,6 +307,21 @@ mod tests {
         let mut status = windows_status();
         status.platform_supported = false;
         assert!(!hardware_offer_visible(&status));
+    }
+
+    #[test]
+    fn welcome_mark_asset_is_bundled_by_trunk() {
+        let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let asset_path = WELCOME_MARK_SRC.trim_start_matches('/');
+
+        assert!(
+            manifest_dir.join(asset_path).is_file(),
+            "welcome mark asset should exist under the UI assets directory"
+        );
+        assert!(
+            include_str!("../../index.html").contains(r#"rel="copy-dir" href="assets""#),
+            "Trunk should copy UI assets into dist for bundled app builds"
+        );
     }
 }
 

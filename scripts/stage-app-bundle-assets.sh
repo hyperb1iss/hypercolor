@@ -163,7 +163,13 @@ stage_pawnio_assets() {
   cp "${modules_cache}" "${dest}/PawnIO.Modules.zip"
   unzip -q "${modules_cache}" -d "${extract}"
 
-  for module in SmbusI801.bin SmbusPIIX4.bin SmbusNCT6793.bin; do
+  for module in \
+    SmbusI801.bin \
+    SmbusPIIX4.bin \
+    SmbusNCT6793.bin \
+    IntelMSR.bin \
+    AMDFamily17.bin
+  do
     local source
     source="$(find "${extract}" -type f -name "${module}" -print -quit)"
     if [[ -z "${source}" ]]; then
@@ -196,7 +202,9 @@ stage_pawnio_assets() {
     "installed_modules": [
       "SmbusI801.bin",
       "SmbusPIIX4.bin",
-      "SmbusNCT6793.bin"
+      "SmbusNCT6793.bin",
+      "IntelMSR.bin",
+      "AMDFamily17.bin"
     ],
     "modules": [
 EOF

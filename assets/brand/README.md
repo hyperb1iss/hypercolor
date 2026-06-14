@@ -32,8 +32,10 @@ and `derived/`. Idempotent.
   in the UI. See `mask/README.md` for the three flavors of dynamic-tint and
   Leptos usage.
 - **`derived/`** — final sized/format outputs: Tauri app icon set, Windows ICO,
-  favicons, OG images, WiX installer BMPs, social avatars. Regenerated on
-  release, not edited by hand.
+  favicons, OG images, WiX/NSIS installer BMPs, social avatars. Regenerated on
+  release, not edited by hand. The Windows installer assets are also mirrored
+  into `crates/hypercolor-app/icons/` because Tauri consumes them from the app
+  crate during bundling.
 
 ## Color palette
 

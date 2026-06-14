@@ -124,8 +124,8 @@ fn tauri_config_uses_per_machine_nsis_installs() {
         .and_then(|nsis| nsis.get("installMode"))
         .and_then(serde_json::Value::as_str);
 
-    // Installer hooks perform one-shot hardware setup for PawnIO, the broker
-    // service, and firewall rules, so NSIS must run elevated.
+    // Installer hooks perform one-shot PawnIO setup and firewall rule creation,
+    // so NSIS must run elevated.
     assert_eq!(install_mode, Some("perMachine"));
 }
 
@@ -291,7 +291,16 @@ fn tauri_windows_bundle_config_layers_pawnio_resources() {
             "../../target/bundle-stage/tools/hypercolor-smbus-service.exe",
             "tools/hypercolor-smbus-service.exe",
         ),
+        (
+            "../../target/bundle-stage/tools/hypercolor-windows-helper.exe",
+            "tools/hypercolor-windows-helper.exe",
+        ),
         ("../../target/bundle-stage/tools/pawnio/", "tools/pawnio/"),
+        ("../../target/bundle-stage/dlls/libEGL.dll", "libEGL.dll"),
+        (
+            "../../target/bundle-stage/dlls/libGLESv2.dll",
+            "libGLESv2.dll",
+        ),
     ] {
         assert_eq!(
             resources.get(source).and_then(serde_json::Value::as_str),
@@ -299,6 +308,44 @@ fn tauri_windows_bundle_config_layers_pawnio_resources() {
             "windows bundle should map {source} -> {target}"
         );
     }
+}
+
+#[test]
+fn tauri_windows_bundle_config_uses_branded_nsis_assets() {
+    let config = config_json("tauri.windows.bundle.conf.json");
+    let nsis = config
+        .get("bundle")
+        .and_then(|bundle| bundle.get("windows"))
+        .and_then(|windows| windows.get("nsis"))
+        .and_then(serde_json::Value::as_object)
+        .expect("windows nsis config should be a map");
+    let root = manifest_dir();
+
+    for (key, file_name) in [
+        ("installerIcon", "icons/installer.ico"),
+        ("uninstallerIcon", "icons/installer.ico"),
+        ("headerImage", "icons/nsis-header.bmp"),
+        ("sidebarImage", "icons/nsis-sidebar.bmp"),
+    ] {
+        assert_eq!(
+            nsis.get(key).and_then(serde_json::Value::as_str),
+            Some(file_name),
+            "NSIS config should set {key}"
+        );
+        assert!(
+            root.join(file_name).exists(),
+            "configured NSIS asset should exist: {file_name}"
+        );
+    }
+
+    assert_eq!(
+        bitmap_dimensions(&root.join("icons/nsis-header.bmp")),
+        (150, 57)
+    );
+    assert_eq!(
+        bitmap_dimensions(&root.join("icons/nsis-sidebar.bmp")),
+        (164, 314)
+    );
 }
 
 #[test]
@@ -318,6 +365,14 @@ fn tauri_config_icon_files_exist() {
         let path = root.join(Path::new(icon));
         assert!(path.exists(), "configured icon should exist: {icon}");
     }
+}
+
+fn bitmap_dimensions(path: &Path) -> (i32, i32) {
+    let bytes = fs::read(path).expect("bitmap should be readable");
+    assert!(bytes.len() >= 26, "bitmap header should be present");
+    let width = i32::from_le_bytes(bytes[18..22].try_into().expect("width bytes"));
+    let height = i32::from_le_bytes(bytes[22..26].try_into().expect("height bytes"));
+    (width, height)
 }
 
 #[test]

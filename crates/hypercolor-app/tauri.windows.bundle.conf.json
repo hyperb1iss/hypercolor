@@ -9,6 +9,10 @@
     },
     "windows": {
       "nsis": {
+        "installerIcon": "icons/installer.ico",
+        "uninstallerIcon": "icons/installer.ico",
+        "headerImage": "icons/nsis-header.bmp",
+        "sidebarImage": "icons/nsis-sidebar.bmp",
         "installerHooks": "./installer-hooks.nsh"
       }
     }

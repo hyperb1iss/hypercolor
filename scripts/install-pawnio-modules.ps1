@@ -9,7 +9,9 @@ $ErrorActionPreference = "Stop"
 $modules = @(
     "SmbusI801.bin",
     "SmbusPIIX4.bin",
-    "SmbusNCT6793.bin"
+    "SmbusNCT6793.bin",
+    "IntelMSR.bin",
+    "AMDFamily17.bin"
 )
 
 $zip = Join-Path $env:TEMP "hypercolor-pawnio-modules-$Version.zip"
