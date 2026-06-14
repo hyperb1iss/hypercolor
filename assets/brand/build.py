@@ -131,6 +131,181 @@ def radial_gradient(size: tuple[int, int], inner=(40, 20, 80), outer=(8, 4, 18))
     return Image.fromarray(grad.astype(np.uint8), "RGB")
 
 
+# ─── luminary installer compositing ──────────────────────────────────────────
+# The Windows installer only gives us a 164x314 sidebar and a 150x57 header to
+# carry the brand, and Windows DPI-upscales both. So the art is composed
+# supersampled then downsampled (crisp edges), and built from soft glow + bloom
+# rather than fine detail so it stays gorgeous when the installer stretches it.
+
+LUMA_SS = 4  # supersample factor for installer art
+LUMA_SEED = 0xC0107  # deterministic sparkle/dither so rebuilds don't churn
+
+DEEP_VIOLET = (138, 72, 255)
+HORIZON_MAGENTA = (225, 53, 255)
+
+
+def _to_pil(buf: np.ndarray) -> Image.Image:
+    return Image.fromarray(np.clip(buf, 0, 255).astype(np.uint8), "RGB")
+
+
+def _fit_width(im: Image.Image, target_w: int) -> Image.Image:
+    w, h = im.size
+    return im.resize((target_w, max(1, round(h * target_w / w))), Image.LANCZOS)
+
+
+def _fit_height(im: Image.Image, target_h: int) -> Image.Image:
+    w, h = im.size
+    return im.resize((max(1, round(w * target_h / h)), target_h), Image.LANCZOS)
+
+
+def _grad_v(w: int, h: int, stops: list[tuple[float, tuple[int, int, int]]]) -> np.ndarray:
+    """Vertical multi-stop gradient → float HxWx3."""
+    ys = np.linspace(0.0, 1.0, h)
+    pos = [s[0] for s in stops]
+    col = np.stack([np.interp(ys, pos, [s[1][c] for s in stops]) for c in range(3)], axis=1)
+    return np.repeat(col[:, None, :], w, axis=1).astype(np.float32)
+
+
+def _grad_h(w: int, h: int, stops: list[tuple[float, tuple[int, int, int]]]) -> np.ndarray:
+    """Horizontal multi-stop gradient → float HxWx3."""
+    xs = np.linspace(0.0, 1.0, w)
+    pos = [s[0] for s in stops]
+    row = np.stack([np.interp(xs, pos, [s[1][c] for s in stops]) for c in range(3)], axis=1)
+    return np.repeat(row[None, :, :], h, axis=0).astype(np.float32)
+
+
+def _radial(w: int, h: int, cx: float, cy: float, radius: float, power: float = 2.0) -> np.ndarray:
+    """Smooth radial falloff (1.0 at center → 0.0 at radius) → float HxW."""
+    y, x = np.indices((h, w), dtype=np.float32)
+    d = np.sqrt((x - cx) ** 2 + (y - cy) ** 2) / radius
+    return np.clip(1.0 - d, 0.0, 1.0) ** power
+
+
+def _add_glow(buf: np.ndarray, fall: np.ndarray, color: tuple[int, int, int], gain: float) -> None:
+    buf += fall[..., None] * np.array(color, np.float32) * gain
+
+
+def _add_color_bloom(buf: np.ndarray, layer: Image.Image, passes: list[tuple[float, float]]) -> None:
+    """Bleed a layer's own color outward as a luminous halo (additive)."""
+    arr = np.asarray(layer, np.float32)
+    prem = Image.fromarray((arr[..., :3] * (arr[..., 3:4] / 255.0)).astype(np.uint8), "RGB")
+    for blur, gain in passes:
+        buf += np.asarray(prem.filter(ImageFilter.GaussianBlur(blur)), np.float32) * gain
+
+
+def _over(buf: np.ndarray, fg: Image.Image, xy: tuple[int, int]) -> None:
+    """Alpha-composite an RGBA layer onto a float buffer at top-left xy."""
+    fx, fy = xy
+    fw, fh = fg.size
+    h, w = buf.shape[:2]
+    x0, y0 = max(0, fx), max(0, fy)
+    x1, y1 = min(w, fx + fw), min(h, fy + fh)
+    if x0 >= x1 or y0 >= y1:
+        return
+    f = np.asarray(fg, np.float32)[y0 - fy:y1 - fy, x0 - fx:x1 - fx]
+    a = f[..., 3:4] / 255.0
+    buf[y0:y1, x0:x1] = f[..., :3] * a + buf[y0:y1, x0:x1] * (1.0 - a)
+
+
+def _vignette(buf: np.ndarray, strength: float) -> None:
+    h, w = buf.shape[:2]
+    fall = _radial(w, h, w / 2, h * 0.42, (w ** 2 + h ** 2) ** 0.5 * 0.5, power=1.6)
+    buf *= (1.0 - strength) + strength * fall[..., None]
+
+
+def _sparkles(buf: np.ndarray, rng: np.random.Generator, n: int, ss: int) -> None:
+    """Scatter soft additive light motes — the app's electric energy as particles."""
+    h, w = buf.shape[:2]
+    palette = [ELECTRIC_MAGENTA, NEON_CYAN, CORAL_PINK, (255, 255, 255)]
+    weights = [0.34, 0.30, 0.30, 0.06]
+    for _ in range(n):
+        x = rng.uniform(0.05, 0.95) * w
+        y = rng.uniform(0.04, 0.96) * h
+        r = rng.uniform(0.6, 2.4) * ss
+        color = palette[rng.choice(len(palette), p=weights)]
+        _add_glow(buf, _radial(w, h, x, y, r * 3.2, 2.6), color, rng.uniform(0.45, 1.0))
+
+
+def _luminary_vertical(
+    w: int,
+    h: int,
+    *,
+    mark_wf: float,
+    mark_y: float,
+    wm_wf: float,
+    wm_y: float,
+    sparkles: int,
+    ss: int = LUMA_SS,
+    seed: int = LUMA_SEED,
+) -> Image.Image:
+    """Glowing triskelion over a nebula field with a glowing wordmark below."""
+    big_w, big_h = w * ss, h * ss
+    rng = np.random.default_rng(seed)
+    buf = _grad_v(big_w, big_h, [
+        (0.00, (12, 7, 22)),
+        (0.34, (27, 13, 52)),
+        (0.62, (17, 9, 34)),
+        (1.00, (9, 5, 16)),
+    ])
+    _add_glow(buf, _radial(big_w, big_h, big_w * 0.30, big_h * 0.28, big_w * 0.95, 1.7), DEEP_VIOLET, 0.10)
+    _add_glow(buf, _radial(big_w, big_h, big_w * 0.76, big_h * 0.48, big_w * 0.80, 1.8), NEON_CYAN, 0.045)
+    _add_glow(buf, _radial(big_w, big_h, big_w * 0.26, big_h * 0.70, big_w * 0.75, 1.8), CORAL_PINK, 0.05)
+    _vignette(buf, 0.50)
+    _add_glow(buf, _radial(big_w, big_h, big_w * 0.5, big_h * (mark_y + 0.16), big_w * 0.9, 1.5),
+              ELECTRIC_MAGENTA, 0.16)
+
+    mark = _fit_width(Image.open(MASTER / "mark-color.png").convert("RGBA"), int(big_w * mark_wf))
+    mlayer = Image.new("RGBA", (big_w, big_h), (0, 0, 0, 0))
+    mlayer.paste(mark, ((big_w - mark.width) // 2, int(big_h * mark_y)), mark)
+    _add_color_bloom(buf, mlayer, [(big_w * 0.05, 0.55), (big_w * 0.11, 0.40), (big_w * 0.20, 0.22)])
+    _over(buf, mlayer, (0, 0))
+
+    _sparkles(buf, rng, sparkles, ss)
+
+    wm = _fit_width(Image.open(MASTER / "wordmark-glow-color.png").convert("RGBA"), int(big_w * wm_wf))
+    wlayer = Image.new("RGBA", (big_w, big_h), (0, 0, 0, 0))
+    wlayer.paste(wm, ((big_w - wm.width) // 2, int(big_h * wm_y)), wm)
+    _add_color_bloom(buf, wlayer, [(big_w * 0.04, 0.45), (big_w * 0.09, 0.28)])
+    _over(buf, wlayer, (0, 0))
+
+    _add_glow(buf, _radial(big_w, big_h, big_w * 0.5, big_h * 1.02, big_w * 0.9, 1.5), HORIZON_MAGENTA, 0.12)
+    buf += rng.normal(0.0, 1.4, buf.shape)
+    return _to_pil(buf).resize((w, h), Image.LANCZOS)
+
+
+def _luminary_horizontal(
+    w: int,
+    h: int,
+    *,
+    lockup_wf: float = 0.84,
+    underline: bool = True,
+    ss: int = LUMA_SS,
+) -> Image.Image:
+    """Horizontal lockup glowing on a dark gradient chip with a neon underline."""
+    big_w, big_h = w * ss, h * ss
+    buf = _grad_h(big_w, big_h, [(0.0, (10, 6, 20)), (0.5, (23, 11, 44)), (1.0, (10, 6, 20))])
+    _add_glow(buf, _radial(big_w, big_h, big_w * 0.5, big_h * 0.5, big_w * 0.7, 1.6), DEEP_VIOLET, 0.12)
+    _vignette(buf, 0.30)
+
+    lock = _fit_width(Image.open(MASTER / "lockup-horizontal-color.png").convert("RGBA"), int(big_w * lockup_wf))
+    max_h = int(big_h * 0.64)
+    if lock.height > max_h:
+        lock = _fit_height(lock, max_h)
+    llayer = Image.new("RGBA", (big_w, big_h), (0, 0, 0, 0))
+    llayer.paste(lock, ((big_w - lock.width) // 2, (big_h - lock.height) // 2), lock)
+    _add_color_bloom(buf, llayer, [(big_w * 0.015, 0.40), (big_w * 0.04, 0.22)])
+    _over(buf, llayer, (0, 0))
+
+    if underline:
+        line = _grad_h(big_w, big_h, [(0.0, ELECTRIC_MAGENTA), (0.5, NEON_CYAN), (1.0, CORAL_PINK)])
+        mask = np.zeros((big_h, big_w), np.float32)
+        mask[int(big_h * 0.86):int(big_h * 0.92), int(big_w * 0.06):int(big_w * 0.94)] = 1.0
+        soft = Image.fromarray((mask * 255).astype(np.uint8), "L").filter(ImageFilter.GaussianBlur(big_h * 0.04))
+        buf += line * (np.asarray(soft, np.float32)[..., None] / 255.0) * 0.85
+
+    return _to_pil(buf).resize((w, h), Image.LANCZOS)
+
+
 # ─── stage 1: masters ──────────────────────────────────────────────────────
 
 def build_masters() -> None:
@@ -580,56 +755,28 @@ def build_installer_win() -> None:
     out = DERIVED / "installer-win"
     out.mkdir(parents=True, exist_ok=True)
 
-    h_lockup = Image.open(MASTER / "lockup-horizontal-color.png").convert("RGBA")
-    hw, hh = h_lockup.size
-    v_lockup = Image.open(MASTER / "lockup-vertical-color.png").convert("RGBA")
-    vw, vh = v_lockup.size
+    # NSIS welcome/finish hero (164x314) — the first and last thing the user sees.
+    _luminary_vertical(164, 314, mark_wf=0.66, mark_y=0.10, wm_wf=0.74, wm_y=0.77, sparkles=54).save(
+        out / "nsis-sidebar.bmp", format="BMP"
+    )
+    # NSIS page header chip (150x57) — branded bar on the inner wizard pages.
+    _luminary_horizontal(150, 57).save(out / "nsis-header.bmp", format="BMP")
+    # WiX equivalents kept in sync for any MSI build path.
+    _luminary_vertical(493, 312, mark_wf=0.30, mark_y=0.12, wm_wf=0.40, wm_y=0.64, sparkles=130).save(
+        out / "wix-dialog.bmp", format="BMP"
+    )
+    _luminary_horizontal(493, 58, lockup_wf=0.50).save(out / "wix-banner.bmp", format="BMP")
 
-    # WiX banner: 493x58
-    bg = radial_gradient((493, 58), inner=(35, 15, 70), outer=VOID_BLACK).convert("RGBA")
-    target_h = 44
-    target_w = int(hw * target_h / hh)
-    h_scaled = h_lockup.resize((target_w, target_h), Image.LANCZOS)
-    bg.paste(h_scaled, (12, (58 - target_h) // 2), h_scaled)
-    bg.convert("RGB").save(out / "wix-banner.bmp", format="BMP")
-
-    # NSIS header: 150x57
-    bg = radial_gradient((150, 57), inner=(35, 15, 70), outer=VOID_BLACK).convert("RGBA")
-    target_h = 34
-    target_w = int(hw * target_h / hh)
-    if target_w > 132:
-        target_w = 132
-        target_h = int(hh * target_w / hw)
-    h_scaled = h_lockup.resize((target_w, target_h), Image.LANCZOS)
-    bg.paste(h_scaled, (9, (57 - target_h) // 2), h_scaled)
-    bg.convert("RGB").save(out / "nsis-header.bmp", format="BMP")
-
-    # WiX dialog: 493x312
-    bg = radial_gradient((493, 312), inner=(50, 22, 95), outer=VOID_BLACK).convert("RGBA")
-    target_h = 250
-    target_w = int(vw * target_h / vh)
-    v_scaled = v_lockup.resize((target_w, target_h), Image.LANCZOS)
-    bg.paste(v_scaled, ((493 - target_w) // 2, (312 - target_h) // 2), v_scaled)
-    bg.convert("RGB").save(out / "wix-dialog.bmp", format="BMP")
-
-    # NSIS sidebar: 164x314
-    bg = radial_gradient((164, 314), inner=(50, 22, 95), outer=VOID_BLACK).convert("RGBA")
-    target_h = 250
-    target_w = int(vw * target_h / vh)
-    if target_w > 142:
-        target_w = 142
-        target_h = int(vh * target_w / vw)
-    v_scaled = v_lockup.resize((target_w, target_h), Image.LANCZOS)
-    bg.paste(v_scaled, ((164 - target_w) // 2, (314 - target_h) // 2), v_scaled)
-    bg.convert("RGB").save(out / "nsis-sidebar.bmp", format="BMP")
-
-    # Installer .ico (same as app-icon, copied for clarity)
+    # Installer .ico — crisp transparent petal mark with a safe margin, multi-res.
     mark = Image.open(MASTER / "mark-color.png").convert("RGBA")
-    sq = pad_to_square(mark).resize((256, 256), Image.LANCZOS)
-    sq.save(
+    sq = pad_to_square(mark)
+    margin = int(sq.width * 0.06)
+    canvas = Image.new("RGBA", (sq.width + margin * 2, sq.height + margin * 2), (0, 0, 0, 0))
+    canvas.paste(sq, (margin, margin), sq)
+    canvas.resize((256, 256), Image.LANCZOS).save(
         out / "installer.ico",
         format="ICO",
-        sizes=[(16, 16), (32, 32), (48, 48), (256, 256)],
+        sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
     )
 
     APP_ICON_DIR.mkdir(parents=True, exist_ok=True)
@@ -738,6 +885,18 @@ def build_derived() -> None:
 # ─── orchestration ─────────────────────────────────────────────────────────
 
 def main() -> None:
+    stage = sys.argv[1] if len(sys.argv) > 1 else "all"
+
+    # `installer` rebuilds only the Windows installer art from the checked-in
+    # masters — no source/ needed, and it won't churn unrelated derived assets.
+    if stage == "installer":
+        if not MASTER.exists():
+            raise SystemExit(f"missing master/ — run a full build first ({MASTER})")
+        print("rebuilding Windows installer art from master/")
+        build_installer_win()
+        print("\n✦ done.")
+        return
+
     if not SOURCE.exists():
         raise SystemExit(f"missing source/ — copy raw PNGs to {SOURCE}")
     print(f"building hypercolor brand assets from {SOURCE}")
