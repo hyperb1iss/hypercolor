@@ -629,19 +629,6 @@ mod tests {
         let dependency_key = SceneDependencyKey::new(1, 1);
         let mut elapsed_ms = 100;
 
-        assert_eq!(
-            materialize_display_color(
-                &mut harness,
-                group_id,
-                &display_target,
-                &display_route,
-                dependency_key,
-                elapsed_ms,
-                [255, 0, 0],
-            ),
-            None
-        );
-
         let red = wait_for_materialized_color(
             &mut harness,
             group_id,
@@ -649,10 +636,10 @@ mod tests {
             &display_route,
             dependency_key,
             &mut elapsed_ms,
-            [0, 255, 0],
+            [255, 0, 0],
             [255, 0, 0, 255],
         );
-        assert!(red, "first async display finalization should complete");
+        assert!(red, "first display finalization should complete");
 
         let green = wait_for_materialized_color(
             &mut harness,
@@ -661,7 +648,7 @@ mod tests {
             &display_route,
             dependency_key,
             &mut elapsed_ms,
-            [0, 0, 255],
+            [0, 255, 0],
             [0, 255, 0, 255],
         );
         assert!(
