@@ -46,6 +46,7 @@ def main() -> None:
             cwd=PYTHON_ROOT,
         )
         write_generated_marker(output_path)
+        normalize_generated_files(output_path)
         if args.check:
             ensure_generated_matches(output_path)
         else:
@@ -147,6 +148,13 @@ def replace_generated(source: Path) -> None:
     shutil.copytree(source, GENERATED_ROOT, ignore=ignore)
 
 
+def normalize_generated_files(root: Path) -> None:
+    for path in root.rglob("*"):
+        if path.suffix == ".py" or path.name == "GENERATED.md":
+            text = path.read_text(encoding="utf-8")
+            path.write_text(text, encoding="utf-8", newline="\n")
+
+
 def write_generated_marker(root: Path) -> None:
     (root / "GENERATED.md").write_text(
         "\n".join(
@@ -159,6 +167,7 @@ def write_generated_marker(root: Path) -> None:
             ]
         ),
         encoding="utf-8",
+        newline="\n",
     )
 
 
@@ -206,6 +215,7 @@ def run(
         env=env,
         stdout=stdout,
         text=True,
+        encoding="utf-8",
         check=True,
     )
 
