@@ -20,6 +20,7 @@ use crate::components::scene_switcher::{
 use crate::components::zone_now_playing::{SidebarZoneRows, set_zone_enabled};
 use crate::config_state::ConfigContext;
 use crate::icons::*;
+use crate::nav::{NavExtensionItems, nav_model};
 use crate::route_ui::{NowPlayingCanvasMode, now_playing_canvas_mode};
 use crate::style_utils::category_accent_rgb;
 use crate::tauri_bridge;
@@ -38,6 +39,8 @@ pub fn Sidebar() -> impl IntoView {
     let location = use_location();
     let fx = expect_context::<EffectsContext>();
     let studio_flag = expect_context::<StudioFlag>();
+    // Extension-contributed nav items (empty in the standalone OSS app).
+    let extension_nav = use_context::<NavExtensionItems>().unwrap_or_default();
     let zones_ctx = expect_context::<crate::zones::ZonesContext>();
 
     // Multi-zone scenes keep the panel alive whenever any zone is
@@ -255,7 +258,7 @@ pub fn Sidebar() -> impl IntoView {
 
             // Nav items — the set swaps with the studio_ui_beta flag (§5.1).
             <div class="flex-1 py-3 space-y-0.5 px-2">
-                {move || nav_items(studio_flag.enabled.get()).into_iter().map(|item| {
+                {move || nav_model(studio_flag.enabled.get(), &extension_nav.0).into_iter().map(|item| {
                     let is_active = {
                         let path = item.path;
                         Memo::new(move |_| {
@@ -584,88 +587,10 @@ pub fn Sidebar() -> impl IntoView {
     }
 }
 
-struct NavItem {
-    path: &'static str,
-    label: &'static str,
-    icon: icondata_core::Icon,
-    divider_before: bool,
-}
-
-/// Navigation set for the sidebar. With the `studio_ui_beta` flag on,
-/// Studio and Media replace Assets, Layout, and Displays (Spec 65 §5.1);
-/// with it off, the nav is unchanged from before the redesign.
-fn nav_items(studio_ui: bool) -> Vec<NavItem> {
-    let dashboard = NavItem {
-        path: "/",
-        label: "Dashboard",
-        icon: LuLayoutDashboard,
-        divider_before: false,
-    };
-    let effects = NavItem {
-        path: "/effects",
-        label: "Effects",
-        icon: LuLayers,
-        divider_before: false,
-    };
-    let devices = NavItem {
-        path: "/devices",
-        label: "Devices",
-        icon: LuCpu,
-        divider_before: false,
-    };
-    let settings = NavItem {
-        path: "/settings",
-        label: "Settings",
-        icon: LuSettings,
-        divider_before: true,
-    };
-
-    if studio_ui {
-        vec![
-            dashboard,
-            effects,
-            NavItem {
-                path: "/studio",
-                label: "Studio",
-                icon: LuLayoutTemplate,
-                divider_before: false,
-            },
-            NavItem {
-                path: "/media",
-                label: "Media",
-                icon: LuFolder,
-                divider_before: false,
-            },
-            devices,
-            settings,
-        ]
-    } else {
-        vec![
-            dashboard,
-            effects,
-            NavItem {
-                path: "/assets",
-                label: "Assets",
-                icon: LuFolder,
-                divider_before: false,
-            },
-            NavItem {
-                path: "/layout",
-                label: "Layout",
-                icon: LuLayoutTemplate,
-                divider_before: false,
-            },
-            devices,
-            NavItem {
-                path: "/displays",
-                label: "Displays",
-                icon: LuMonitor,
-                divider_before: false,
-            },
-            settings,
-        ]
-    }
-}
+// The nav set + `Ctrl/Cmd+<digit>` shortcut map now live in `crate::nav`
+// (`nav_model`/`nav_shortcut_path`), so the sidebar and the shell shortcut
+// handler share one source of truth and extension-contributed items land in
+// both consistently.
 
 // ── Sidebar Scene Chip ─────────────────────────────────────────────────────
 

@@ -134,7 +134,6 @@ pub fn CaptureSharedControls(
                                 .unwrap_or(1.0)
                         });
                         let fmt_value = move || format!("{:.*}", knob.decimals, value.get());
-                        let on_change = on_change.clone();
                         view! {
                             <div
                                 class="flex items-center gap-2.5 rounded-lg px-3 py-2 hover:bg-surface-hover/20 transition-colors duration-200 group"

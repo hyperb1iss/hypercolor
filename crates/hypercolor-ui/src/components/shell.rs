@@ -15,35 +15,8 @@ use crate::components::page_search_bar::PAGE_SEARCH_INPUT_ID;
 use crate::components::scene_switcher::active_saved_scene_id;
 use crate::components::sidebar::Sidebar;
 use crate::icons::*;
+use crate::nav::{NavExtensionItems, nav_shortcut_path};
 use crate::zones::{ScenesContext, ZonesContext};
-
-/// Path for a `Ctrl/Cmd+<digit>` nav shortcut, mirroring the sidebar's nav
-/// order for the active nav set (Spec 65 §5.1 swaps Studio/Media in for
-/// Assets/Layout/Displays when the beta flag is on).
-#[must_use]
-pub fn nav_shortcut_path(studio_ui: bool, key: &str) -> Option<&'static str> {
-    const BASE: [&str; 7] = [
-        "/",
-        "/effects",
-        "/assets",
-        "/layout",
-        "/devices",
-        "/displays",
-        "/settings",
-    ];
-    const STUDIO: [&str; 6] = [
-        "/",
-        "/effects",
-        "/studio",
-        "/media",
-        "/devices",
-        "/settings",
-    ];
-
-    let paths: &[&str] = if studio_ui { &STUDIO } else { &BASE };
-    let digit = key.parse::<usize>().ok()?;
-    (1..=paths.len()).contains(&digit).then(|| paths[digit - 1])
-}
 
 /// Whether the event originated from a text-entry surface, where global
 /// single-key shortcuts (like `/`) must stay inert.
@@ -109,6 +82,8 @@ pub fn Shell(children: Children) -> impl IntoView {
     // Global keyboard shortcuts
     let navigate = use_navigate();
     let studio_flag = expect_context::<StudioFlag>();
+    // Extension-contributed nav items (empty in the standalone OSS app).
+    let extension_nav = use_context::<NavExtensionItems>().unwrap_or_default();
     let keydown_handler = move |ev: leptos::ev::KeyboardEvent| {
         let key = ev.key();
         let ctrl_or_meta = ev.ctrl_key() || ev.meta_key();
@@ -126,10 +101,11 @@ pub fn Shell(children: Children) -> impl IntoView {
 
         // Ctrl/Cmd+1..7 jump straight to a nav page in sidebar order.
         if ctrl_or_meta
-            && let Some(path) = nav_shortcut_path(studio_flag.enabled.get_untracked(), &key)
+            && let Some(path) =
+                nav_shortcut_path(studio_flag.enabled.get_untracked(), &extension_nav.0, &key)
         {
             ev.prevent_default();
-            navigate(path, Default::default());
+            navigate(&path, Default::default());
             return;
         }
 

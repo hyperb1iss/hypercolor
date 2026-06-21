@@ -1,9 +1,11 @@
 use std::collections::{HashMap, HashSet};
 
 use leptos::prelude::*;
+use leptos::tachys::view::iterators::StaticVec;
 use leptos_meta::*;
-use leptos_router::components::{Route, Router, Routes};
-use leptos_router::hooks::{use_location, use_navigate, use_query_map};
+use leptos_router::any_nested_route::AnyNestedRoute;
+use leptos_router::components::{Outlet, RouteChildren, Router, Routes, RoutesProps};
+use leptos_router::hooks::{use_navigate, use_query_map};
 use leptos_router::path;
 
 use hypercolor_leptos_ext::events::Input;
@@ -24,6 +26,8 @@ use crate::config_state::ConfigContext;
 use crate::control_value_json::controls_to_json;
 use crate::device_event_logic::should_refetch_devices_for_event;
 use crate::effect_search::IndexedEffect;
+use crate::extensions::{UiExtensions, parent_route, ui_route};
+use crate::nav::NavExtensionItems;
 use crate::pages::assets::AssetsPage;
 use crate::pages::dashboard::DashboardPage;
 use crate::pages::devices::DevicesPage;
@@ -420,10 +424,22 @@ impl EffectsContext {
     }
 }
 
-#[component]
-pub fn App() -> impl IntoView {
+/// Build every app-wide context, then render the router with `ext` composed in.
+///
+/// Replaces the old `App` component. Route defs are taken **by value** (erased
+/// `AnyNestedRoute`s are `Send` but not `Sync`, so they cannot travel through
+/// context); the extension nav items are surfaced via context for the sidebar +
+/// shortcut model. With an empty `UiExtensions` this renders the standalone OSS
+/// app unchanged.
+pub fn app_view(ext: UiExtensions) -> impl IntoView {
+    let UiExtensions {
+        routes: extension_routes,
+        nav_items: extension_nav,
+        ..
+    } = ext;
     provide_meta_context();
     leptoaster::provide_toaster();
+    provide_context(NavExtensionItems(extension_nav));
 
     // Global WebSocket connection
     let ws = WsManager::new();
@@ -847,7 +863,7 @@ pub fn App() -> impl IntoView {
         <Title text="Hypercolor" />
 
         <Router>
-            <AppRoutes />
+            {app_routes(extension_routes)}
         </Router>
 
         <Show when=move || api_key_required.get()>
@@ -931,34 +947,52 @@ fn reload_page() {
     }
 }
 
-#[component]
-fn AppRoutes() -> impl IntoView {
-    let location = use_location();
-    let preview_shell_active = Memo::new(move |_| location.pathname.get() == "/preview");
-
+/// The app shell that hosts every child route through an `<Outlet/>`.
+fn shell_outlet() -> impl IntoView {
     view! {
-        <Show
-            when=move || preview_shell_active.get()
-            fallback=move || view! {
-                <Shell>
-                    <Routes fallback=NotFoundPage>
-                        <Route path=path!("/") view=DashboardPage />
-                        <Route path=path!("/effects") view=EffectsPage />
-                        <Route path=path!("/effects/:id") view=EffectsPage />
-                        <Route path=path!("/assets") view=AssetsPage />
-                        <Route path=path!("/studio") view=StudioRoute />
-                        <Route path=path!("/media") view=MediaRoute />
-                        <Route path=path!("/layout") view=LayoutPage />
-                        <Route path=path!("/devices") view=DevicesPage />
-                        <Route path=path!("/displays") view=DisplaysPage />
-                        <Route path=path!("/settings") view=SettingsPage />
-                    </Routes>
-                </Shell>
-            }
-        >
-            <DisplayPreviewPage />
-        </Show>
+        <Shell>
+            <Outlet />
+        </Shell>
     }
+}
+
+/// Compose the core routes with any extension-contributed routes into one
+/// `StaticVec` of erased route defs, built **once** — leptos_router 0.8 fixes
+/// its route set when `<Routes>` is constructed and cannot add routes later.
+/// `/preview` stays a top-level route with no shell; every other route renders
+/// inside the shell (an empty parent segment with the shell `<Outlet/>`).
+fn route_defs(extra: Vec<AnyNestedRoute>) -> StaticVec<AnyNestedRoute> {
+    let mut shell = vec![
+        ui_route(path!("/"), DashboardPage),
+        ui_route(path!("/effects"), EffectsPage),
+        ui_route(path!("/effects/:id"), EffectsPage),
+        ui_route(path!("/assets"), AssetsPage),
+        ui_route(path!("/studio"), StudioRoute),
+        ui_route(path!("/media"), MediaRoute),
+        ui_route(path!("/layout"), LayoutPage),
+        ui_route(path!("/devices"), DevicesPage),
+        ui_route(path!("/displays"), DisplaysPage),
+        ui_route(path!("/settings"), SettingsPage),
+    ];
+    shell.extend(extra);
+    StaticVec::from(vec![
+        ui_route(path!("/preview"), DisplayPreviewPage),
+        parent_route(path!(""), shell_outlet, StaticVec::from(shell)),
+    ])
+}
+
+/// Build the `<Routes>` tree from core + extension route defs.
+///
+/// `<Routes>` cannot take a runtime `Vec` through the `view!` macro (the macro
+/// treats a `{block}` child as a rendered view, not route defs), so we build
+/// `RoutesProps` directly and wrap the composed `StaticVec` in `RouteChildren`.
+fn app_routes(extra: Vec<AnyNestedRoute>) -> impl IntoView {
+    Routes(
+        RoutesProps::builder()
+            .fallback(NotFoundPage)
+            .children(RouteChildren::to_children(move || route_defs(extra)))
+            .build(),
+    )
 }
 
 /// The 404 surface — kept on-brand instead of a bare paragraph so a
