@@ -32,7 +32,13 @@ check_absent() {
   local label="$1"
   local pattern="$2"
 
-  if rg "${rg_args[@]}" --regexp "$pattern" "$repo_root"; then
+  # Search the repo from inside its root with a relative path (`.`) so the
+  # relative `--glob '!...'` exclusions below anchor correctly. ripgrep only
+  # anchors leading-path globs against the search root when that root is
+  # relative; passing an absolute `$repo_root` leaves `scripts/...`, `.git/**`,
+  # and the doc excludes unanchored, which produced false positives against the
+  # script's own pattern table, `.git/COMMIT_EDITMSG`, and the boundary doc.
+  if (cd "$repo_root" && rg "${rg_args[@]}" --regexp "$pattern" .); then
     echo "forbidden OSS boundary marker found: $label" >&2
     fail=1
   fi
