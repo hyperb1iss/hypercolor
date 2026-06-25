@@ -29,7 +29,7 @@ curl -fsSL https://install.hypercolor.dev | bash -s -- --version v0.1.0
 To install to a different prefix instead of `~/.local`:
 
 ```bash
-HYPERCOLOR_INSTALL_PREFIX=/opt/hypercolor curl -fsSL https://install.hypercolor.dev | bash
+curl -fsSL https://install.hypercolor.dev | HYPERCOLOR_INSTALL_PREFIX=/opt/hypercolor bash
 ```
 
 {% callout(type="warning") %}

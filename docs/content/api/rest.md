@@ -611,16 +611,17 @@ List defined scenes.
 {% end %}
 
 {% api_endpoint(method="POST", path="/api/v1/scenes") %}
-Create a scene with an effect, controls, and an optional transition.
+Create a named scene. New scenes are born with a default Primary zone, live
+mutation mode, and the engine's default scene transition.
 
 **Request body:**
 
 ```json
 {
   "name": "Late Night",
-  "effect_id": "ambient-glow",
-  "controls": { "speed": 2, "brightness": 30 },
-  "transition": { "duration_ms": 2000, "easing": "ease_in_out" }
+  "description": "Dim amber for late sessions",
+  "enabled": true,
+  "mutation_mode": "live"
 }
 ```
 {% end %}

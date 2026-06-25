@@ -21,7 +21,7 @@ name = "Elite Capellix LCD"
 type = "lcd"
 status = "supported"
 driver = "corsair"
-transport = "usb_bulk"
+transport = "usb_hid"
 notes = "480x480 JPEG streaming, 30fps"
 
 [[devices]]
@@ -30,7 +30,7 @@ name = "Elite Capellix LCD (Alt PID)"
 type = "lcd"
 status = "supported"
 driver = "corsair"
-transport = "usb_bulk"
+transport = "usb_hid"
 
 [[devices]]
 pid = 0x0C4E
@@ -38,7 +38,7 @@ name = "iCUE LINK LCD"
 type = "lcd"
 status = "supported"
 driver = "corsair"
-transport = "usb_bulk"
+transport = "usb_hid"
 
 [[devices]]
 pid = 0x0C55
@@ -46,7 +46,7 @@ name = "Nautilus RS LCD"
 type = "lcd"
 status = "supported"
 driver = "corsair"
-transport = "usb_bulk"
+transport = "usb_hid"
 
 [[devices]]
 pid = 0x0C42
@@ -54,7 +54,7 @@ name = "XC7 RGB Elite LCD"
 type = "lcd"
 status = "supported"
 driver = "corsair"
-transport = "usb_bulk"
+transport = "usb_hid"
 leds = 31
 notes = "480x480 display + 31-LED ring, custom XC7 init sequence"
 
@@ -64,7 +64,7 @@ name = "XD6 Elite LCD"
 type = "lcd"
 status = "supported"
 driver = "corsair"
-transport = "usb_bulk"
+transport = "usb_hid"
 
 # ─── Lighting Node Family ────────────────────────────────────────────
 

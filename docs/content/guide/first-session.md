@@ -381,9 +381,9 @@ hypercolor scenes create "Late Night" --description "Dim amber for late sessions
 hypercolor scenes activate "Focus Mode"
 ```
 
-Scene activation through the CLI is immediate. Stored scene transition settings
-are used by the daemon scene engine, but the CLI activate endpoint does not
-override them yet.
+Scene activation uses the stored scene transition. The CLI `--transition` flag
+is accepted for forward compatibility, but the activate endpoint does not
+override the stored value yet.
 
 **Return to the Default scene:**
 

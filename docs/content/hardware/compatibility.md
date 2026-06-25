@@ -80,10 +80,10 @@ Hypercolor tracks **414 devices** across **32 vendors** in `data/drivers/vendors
 | Corsair | Commander Pro | 0x0C10 | Fan controller | `corsair` | USB HID | — | 2 RGB channels + fan control |
 | Corsair | Dark Core RGB Pro SE (Wired) | 0x1B7E | Mouse | `corsair` | USB HID | 12 | Bragi 64-byte HID reports |
 | Corsair | Dark Core RGB SE (Wired) | 0x1B4B | Mouse | `corsair` | USB HID | 12 | Bragi 64-byte HID reports |
-| Corsair | Elite Capellix LCD | 0x0C39 | LCD module | `corsair` | USB bulk transfer | — | 480x480 JPEG streaming, 30fps |
-| Corsair | Elite Capellix LCD (Alt PID) | 0x0C33 | LCD module | `corsair` | USB bulk transfer | — | — |
+| Corsair | Elite Capellix LCD | 0x0C39 | LCD module | `corsair` | USB HID | — | 480x480 JPEG streaming, 30fps |
+| Corsair | Elite Capellix LCD (Alt PID) | 0x0C33 | LCD module | `corsair` | USB HID | — | — |
 | Corsair | Harpoon Wireless (Wired) | 0x1B5E | Mouse | `corsair` | USB HID | 2 | Bragi 64-byte HID reports |
-| Corsair | iCUE LINK LCD | 0x0C4E | LCD module | `corsair` | USB bulk transfer | — | — |
+| Corsair | iCUE LINK LCD | 0x0C4E | LCD module | `corsair` | USB HID | — | — |
 | Corsair | iCUE LINK System Hub | 0x0C3F | Fan controller | `corsair` | USB HID | — | Hub-and-spoke daisy-chain protocol, dynamic device enumeration |
 | Corsair | Ironclaw Wireless (Wired) | 0x1B4C | Mouse | `corsair` | USB HID | 6 | Bragi 64-byte HID reports |
 | Corsair | K100 MX Red | 0x1B7D | Keyboard | `corsair` | USB HID | 193 | Bragi 1024-byte HID reports, alternate RGB payload |
@@ -120,11 +120,11 @@ Hypercolor tracks **414 devices** across **32 vendors** in `data/drivers/vendors
 | Corsair | M75 Gaming Mouse | 0x1BF0 | Mouse | `corsair` | USB HID | 2 | Bragi 64-byte HID reports |
 | Corsair | MM700 | 0x1B9B | Mousepad | `corsair` | USB HID | 3 | Bragi 64-byte HID reports |
 | Corsair | MM700 3XL | 0x1BC9 | Mousepad | `corsair` | USB HID | 3 | Bragi 64-byte HID reports |
-| Corsair | Nautilus RS LCD | 0x0C55 | LCD module | `corsair` | USB bulk transfer | — | — |
+| Corsair | Nautilus RS LCD | 0x0C55 | LCD module | `corsair` | USB HID | — | — |
 | Corsair | Scimitar Elite | 0x1BE3 | Mouse | `corsair` | USB HID | 5 | Bragi 128-byte HID reports |
 | Corsair | SPEC OMEGA RGB | 0x1D04 | ARGB controller | `corsair` | USB HID | — | 2 channels |
-| Corsair | XC7 RGB Elite LCD | 0x0C42 | LCD module | `corsair` | USB bulk transfer | 31 | 480x480 display + 31-LED ring, custom XC7 init sequence |
-| Corsair | XD6 Elite LCD | 0x0C43 | LCD module | `corsair` | USB bulk transfer | — | — |
+| Corsair | XC7 RGB Elite LCD | 0x0C42 | LCD module | `corsair` | USB HID | 31 | 480x480 display + 31-LED ring, custom XC7 init sequence |
+| Corsair | XD6 Elite LCD | 0x0C43 | LCD module | `corsair` | USB HID | — | — |
 | Glorious | GMMK Pro | 0x5044 | Keyboard | `qmk` | USB HID | — | VID 0x320F, supported via QMK driver |
 | Govee | Govee Outdoor & String Lights | — | LED strip | `govee` | UDP | — | Outdoor string lights, curtain lights, and permanent outdoor lights with Govee LAN protocol support. |
 | Govee | Govee RGBIC LED Strip | — | LED strip | `govee` | UDP | — | Per-segment RGBIC strips streamed over the Govee LAN protocol. Select SKUs (H619A, H70B1) also support Razer streaming for higher frame rates. |
@@ -660,10 +660,10 @@ VID 0x1B1C · Driver `corsair`
 | Commander Pro | 0x0C10 | Fan controller | `corsair` | USB HID | — | 2 RGB channels + fan control |
 | Dark Core RGB Pro SE (Wired) | 0x1B7E | Mouse | `corsair` | USB HID | 12 | Bragi 64-byte HID reports |
 | Dark Core RGB SE (Wired) | 0x1B4B | Mouse | `corsair` | USB HID | 12 | Bragi 64-byte HID reports |
-| Elite Capellix LCD | 0x0C39 | LCD module | `corsair` | USB bulk transfer | — | 480x480 JPEG streaming, 30fps |
-| Elite Capellix LCD (Alt PID) | 0x0C33 | LCD module | `corsair` | USB bulk transfer | — | — |
+| Elite Capellix LCD | 0x0C39 | LCD module | `corsair` | USB HID | — | 480x480 JPEG streaming, 30fps |
+| Elite Capellix LCD (Alt PID) | 0x0C33 | LCD module | `corsair` | USB HID | — | — |
 | Harpoon Wireless (Wired) | 0x1B5E | Mouse | `corsair` | USB HID | 2 | Bragi 64-byte HID reports |
-| iCUE LINK LCD | 0x0C4E | LCD module | `corsair` | USB bulk transfer | — | — |
+| iCUE LINK LCD | 0x0C4E | LCD module | `corsair` | USB HID | — | — |
 | iCUE LINK System Hub | 0x0C3F | Fan controller | `corsair` | USB HID | — | Hub-and-spoke daisy-chain protocol, dynamic device enumeration |
 | Ironclaw Wireless (Wired) | 0x1B4C | Mouse | `corsair` | USB HID | 6 | Bragi 64-byte HID reports |
 | K100 MX Red | 0x1B7D | Keyboard | `corsair` | USB HID | 193 | Bragi 1024-byte HID reports, alternate RGB payload |
@@ -700,11 +700,11 @@ VID 0x1B1C · Driver `corsair`
 | M75 Gaming Mouse | 0x1BF0 | Mouse | `corsair` | USB HID | 2 | Bragi 64-byte HID reports |
 | MM700 | 0x1B9B | Mousepad | `corsair` | USB HID | 3 | Bragi 64-byte HID reports |
 | MM700 3XL | 0x1BC9 | Mousepad | `corsair` | USB HID | 3 | Bragi 64-byte HID reports |
-| Nautilus RS LCD | 0x0C55 | LCD module | `corsair` | USB bulk transfer | — | — |
+| Nautilus RS LCD | 0x0C55 | LCD module | `corsair` | USB HID | — | — |
 | Scimitar Elite | 0x1BE3 | Mouse | `corsair` | USB HID | 5 | Bragi 128-byte HID reports |
 | SPEC OMEGA RGB | 0x1D04 | ARGB controller | `corsair` | USB HID | — | 2 channels |
-| XC7 RGB Elite LCD | 0x0C42 | LCD module | `corsair` | USB bulk transfer | 31 | 480x480 display + 31-LED ring, custom XC7 init sequence |
-| XD6 Elite LCD | 0x0C43 | LCD module | `corsair` | USB bulk transfer | — | — |
+| XC7 RGB Elite LCD | 0x0C42 | LCD module | `corsair` | USB HID | 31 | 480x480 display + 31-LED ring, custom XC7 init sequence |
+| XD6 Elite LCD | 0x0C43 | LCD module | `corsair` | USB HID | — | — |
 
 #### Researched (34)
 

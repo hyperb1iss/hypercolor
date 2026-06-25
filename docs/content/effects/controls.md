@@ -161,7 +161,7 @@ message: text("Display Text", "HYPERCOLOR", { group: "Content" });
 
 ### `font(label, defaultFamily, options?)`
 
-Font family picker. This is syntactic sugar over `combo()` — it produces a `combobox` spec whose values are font family names. The face runtime loads the selected family before the first render, so the glyphs are ready by frame one.
+Font family picker. This is syntactic sugar over `combo()` — it produces a `combobox` spec whose values are font family names. The face runtime loads the selected family before the first render, so the glyphs are ready by frame one. Capture mode disables remote font loading.
 
 ```typescript
 family: font("Family", "JetBrains Mono", { group: "Typography" });

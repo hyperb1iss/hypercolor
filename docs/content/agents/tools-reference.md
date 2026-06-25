@@ -61,7 +61,7 @@ Apply a lighting effect. The `query` argument is fuzzy-matched against effect na
 
 - **Mutates state.** `read_only: false`, `idempotent: true`.
 - **Required:** `query` (string) — effect name or natural-language description.
-- **Optional:** `controls` (object) — parameter overrides as key-value pairs; `transition_ms` (integer, default `500`, range 0–10000) — accepted and echoed for forward compatibility; `devices` (array of strings) — device IDs to target, omit for all.
+- **Optional:** `controls` (object) — parameter overrides as key-value pairs; `transition_ms` (integer, default `500`, range 0–10000) — accepted and echoed for forward compatibility; `devices` (array of strings) — accepted by the schema for forward compatibility, but the live handler applies to the active output today.
 
 A display-face effect cannot be applied through `set_effect`; it returns an invalid-parameter error pointing you at [`set_display_face`](#set-display-face).
 Effect switches are immediate today; `transition_ms` does not produce a crossfade yet.
@@ -108,7 +108,7 @@ The response carries `effects`, `total`, `has_more`, `limit`, and `offset`. The 
 
 Stop the currently running effect. LEDs go dark unless a fallback is configured. Mutates state, idempotent.
 
-- **Optional:** `transition_ms` (integer, default `300`, range 0–5000) — fade-out duration.
+- **Optional:** `transition_ms` (integer, default `300`, range 0–5000) — accepted and echoed for forward compatibility; the stop is immediate today.
 
 ```json
 { "name": "stop_effect", "arguments": { "transition_ms": 600 } }
@@ -116,12 +116,12 @@ Stop the currently running effect. LEDs go dark unless a fallback is configured.
 
 ### set_color
 
-Set a solid color on all or specific devices. Under the hood this applies the `solid_color` effect; it is not a separate device mode. Mutates state, idempotent.
+Set a solid color globally. Under the hood this applies the `solid_color` effect; it is not a separate device mode. Mutates state, idempotent.
 
 The `color` argument accepts CSS color names (`coral`, `dodgerblue`), hex (`#ff6ac1`), `rgb()`, `hsl()`, and natural-language descriptions (`warm sunset orange`, `deep ocean blue`), all resolved by the daemon's fuzzy color resolver.
 
 - **Required:** `color` (string).
-- **Optional:** `brightness` (integer, range 0–100); `transition_ms` (integer, default `500`, range 0–10000); `devices` (array of strings).
+- **Optional:** `brightness` (integer, range 0–100). The tool schema also exposes `transition_ms` and `devices` for forward compatibility, but the live handler ignores them today.
 
 ```json
 { "name": "set_color", "arguments": { "color": "#e135ff", "brightness": 70 } }
@@ -149,16 +149,16 @@ The response carries a `devices` array plus a `summary` with `total`, `connected
 
 ### set_brightness
 
-Set the brightness level globally or for a specific device. Brightness is a **percentage from 0 to 100** (not a 0.0–1.0 float); the daemon normalizes it internally. Mutates state, idempotent.
+Set the global brightness level. Brightness is a **percentage from 0 to 100** (not a 0.0–1.0 float); the daemon normalizes it internally. Mutates state, idempotent.
 
 - **Required:** `brightness` (integer, range 0–100).
-- **Optional:** `device_id` (string) — per-device target, omit for global; `transition_ms` (integer, default `300`, range 0–5000).
+- **Optional:** `device_id` (string) and `transition_ms` (integer, default `300`, range 0–5000) are accepted by the schema for forward compatibility, but the live handler applies a global, immediate brightness change today.
 
 ```json
 { "name": "set_brightness", "arguments": { "brightness": 35 } }
 ```
 
-The response reports the applied `brightness`, the `scope` (`global` or `device`), the `device_id`, and the `previous_brightness`.
+The response reports the applied `brightness`, the previous global brightness, and any echoed `device_id`.
 
 ---
 
@@ -198,7 +198,7 @@ Each entry includes `id`, `name`, `description`, `enabled`, `mutation_mode`, and
 Create a new scene. This is the **only non-idempotent tool**: `read_only: false`, `idempotent: false`. It is more constrained than "save the current state" implies, requiring three arguments.
 
 - **Required:** `name` (string); `profile_id` (string) — must reference an existing profile, or the call fails with an invalid-parameter error; `trigger` (object) — whose `type` is one of `schedule`, `sunset`, `sunrise`, `device_connect`, `device_disconnect`, `audio_beat`, `webhook`. For `schedule`, supply a `cron` expression inside the trigger object.
-- **Optional:** `description` (string); `transition_ms` (integer, default `1000`, range 0–30000); `enabled` (boolean, default `true`); `mutation_mode` (enum, default `live`) — `live` lets runtime effect and display-face actions rewrite the scene, `snapshot` freezes it.
+- **Optional:** `description` (string); `enabled` (boolean, default `true`); `mutation_mode` (enum, default `live`) — `live` lets runtime effect and display-face actions rewrite the scene, `snapshot` freezes it. The schema accepts `transition_ms` for forward compatibility, but `create_scene` does not store it yet.
 
 ```json
 {
@@ -324,7 +324,7 @@ To clear a face, pass `"clear": true` and the same `scope`. See [display faces](
 Activate a saved profile by name or fuzzy query. A profile captures the complete lighting state: effect, control parameters, device selection, and brightness. Mutates state, idempotent.
 
 - **Required:** `query` (string) — profile name or description.
-- **Optional:** `transition_ms` (integer, default `1000`, range 0–10000).
+- **Optional:** `transition_ms` (integer, default `1000`, range 0–10000) is accepted by the schema for forward compatibility, but profile apply is immediate today.
 
 ```json
 { "name": "set_profile", "arguments": { "query": "Focus" } }

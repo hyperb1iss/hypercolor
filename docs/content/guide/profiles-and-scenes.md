@@ -180,7 +180,8 @@ what is currently running, including its kind, mutation mode, priority, and grou
 count.
 
 The `--transition` flag is accepted by the CLI but the activate endpoint does not
-read it yet, so scene activation is immediate regardless of the value you pass.
+read it yet, so the value you pass is ignored. Scene activation uses the stored
+scene transition instead.
 
 ### List and inspect scenes
 

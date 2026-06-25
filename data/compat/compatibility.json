@@ -865,7 +865,7 @@
           "type": "lcd",
           "status": "supported",
           "driver": "corsair",
-          "transport": "usb_bulk",
+          "transport": "usb_hid",
           "leds": null,
           "notes": "480x480 JPEG streaming, 30fps"
         },
@@ -876,7 +876,7 @@
           "type": "lcd",
           "status": "supported",
           "driver": "corsair",
-          "transport": "usb_bulk",
+          "transport": "usb_hid",
           "leds": null,
           "notes": null
         },
@@ -898,7 +898,7 @@
           "type": "lcd",
           "status": "supported",
           "driver": "corsair",
-          "transport": "usb_bulk",
+          "transport": "usb_hid",
           "leds": null,
           "notes": null
         },
@@ -1305,7 +1305,7 @@
           "type": "lcd",
           "status": "supported",
           "driver": "corsair",
-          "transport": "usb_bulk",
+          "transport": "usb_hid",
           "leds": null,
           "notes": null
         },
@@ -1338,7 +1338,7 @@
           "type": "lcd",
           "status": "supported",
           "driver": "corsair",
-          "transport": "usb_bulk",
+          "transport": "usb_hid",
           "leds": 31,
           "notes": "480x480 display + 31-LED ring, custom XC7 init sequence"
         },
@@ -1349,7 +1349,7 @@
           "type": "lcd",
           "status": "supported",
           "driver": "corsair",
-          "transport": "usb_bulk",
+          "transport": "usb_hid",
           "leds": null,
           "notes": null
         },
@@ -1741,7 +1741,6 @@
         "corsair"
       ],
       "transports": [
-        "usb_bulk",
         "usb_hid"
       ],
       "deviceTypes": [

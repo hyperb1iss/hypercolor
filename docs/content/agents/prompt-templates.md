@@ -61,13 +61,13 @@ The `diagnose` tool returns rich live metrics, including the FPS pair, consecuti
 
 ## setup_automation
 
-Create automated lighting schedules and scenes. The template walks the assistant through trigger selection, profile assignment, and transition settings, ending in a `create_scene` call.
+Create automated lighting schedules and scenes. The template walks the assistant through trigger selection and profile assignment, ending in a `create_scene` call.
 
 | Argument | Required | Description |
 | --- | --- | --- |
 | `description` | no | A natural-language description of the desired automation, e.g. `dim lights at 10pm`, `warm colors at sunset`. If omitted, the assistant opens an open-ended automation conversation. |
 
-The flow reads `hypercolor://profiles` and `hypercolor://state`, then has the assistant interview you across four points before building anything: when the automation should trigger (time of day, solar event, device connection), what should happen (apply a profile, set an effect, adjust brightness), any conditions (weekdays only, only when a device is connected), and the transition style (instant or slow fade). With those answers it calls `create_scene` to persist the rule.
+The flow reads `hypercolor://profiles` and `hypercolor://state`, then has the assistant interview you across three points before building anything: when the automation should trigger (time of day, solar event, device connection), what should happen (apply a profile, set an effect, adjust brightness), and any conditions (weekdays only, only when a device is connected). With those answers it calls `create_scene` to persist the rule.
 
 {% callout(type="warning") %}
 `create_scene` is more constrained than "save the current state." It requires three arguments: a `name`, an existing `profile_id`, and a `trigger` object whose `type` is one of `schedule`, `sunset`, `sunrise`, `device_connect`, `device_disconnect`, `audio_beat`, or `webhook`. The `profile_id` must reference a profile that already exists, so the template reads `hypercolor://profiles` first. If no suitable profile exists yet, save one before the automation can be created. See [create_scene in the tools reference](@/agents/tools-reference.md) for the full argument list.

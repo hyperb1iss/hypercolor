@@ -70,12 +70,14 @@ The file uses vendor-wide rules for brands where new product IDs should work wit
 | ZSA (QMK) | `3297` | Vendor-wide |
 | Drop/OLKB (QMK) | `feed` | Vendor-wide |
 | Glorious (QMK) | `320f` | Vendor-wide |
-| PrismRGB / Nollie / GCS | `16d1`, `16d2`, `16d3`, `16d5`, `3061` | PID-scoped |
-| Lian Li | `0cf2`, `0416` | PID-scoped |
+| PrismRGB | `16d0` | Vendor-wide |
+| PrismRGB / Nollie / GCS | `16d1`, `16d2`, `16d3`, `16d5` | PID-scoped |
+| Nollie Gen 2 | `3061` | Vendor-wide |
+| Lian Li | `0cf2`, `0416` | Vendor-wide |
 
-PrismRGB, Nollie, and GCS share several VIDs with hardware that Hypercolor does
-not support, so those rules are scoped to known working PIDs. Lian Li controllers
-use their own vendor IDs and are also PID-scoped.
+The mixed PrismRGB / Nollie / GCS VID ranges are scoped where those vendors share
+IDs with unrelated hardware. PrismRGB `16d0`, Nollie Gen 2 `3061`, and Lian Li
+vendor IDs are granted vendor-wide in the udev rules.
 
 ## Transport types
 
