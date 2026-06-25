@@ -51,7 +51,7 @@ See [network devices](@/hardware/network-devices.md) for the setup overview, the
 
 ### LCD and display devices
 
-Some hardware carries a small LCD or display panel that Hypercolor can drive alongside its RGB zones. The Corsair AIO LCD modules — Elite Capellix LCD (PIDs `0x0C39`, `0x0C33`) and iCUE LINK LCD (PID `0x0C4E`) — stream 480×480 JPEG frames chunked over HID at up to 30 fps. The Ableton Push 2 uses a composite MIDI + bulk transport for its pad-grid lighting and display. These are treated as ordinary device zones in Hypercolor; effect output is composited from the same canvas as everything else.
+Some hardware carries a small LCD or display panel that Hypercolor can drive alongside its RGB zones. The Corsair AIO LCD modules — Elite Capellix LCD (PIDs `0x0C39`, `0x0C33`) and iCUE LINK LCD (PID `0x0C4E`) — stream 480×480 JPEG frames over USB bulk transfers at up to 30 fps. The Ableton Push 2 uses a composite MIDI + bulk transport for its pad-grid lighting and display. These are treated as ordinary device zones in Hypercolor; effect output is composited from the same canvas as everything else.
 
 ### OpenRGB bridge
 

@@ -6,8 +6,6 @@ weight = 20
 
 Audio-reactive effects go silent for three reasons: the wrong audio source is configured, the `device` name in config doesn't match what PipeWire or PulseAudio exposes, or audio capture is disabled entirely. Work through the checklist below in order.
 
-<!-- TODO screenshot: TUI audio panel showing spectrum bars active -->
-
 ## Quick checklist
 
 1. Confirm `audio.enabled = true` in `~/.config/hypercolor/hypercolor.toml`.

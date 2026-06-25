@@ -91,7 +91,7 @@ The canvas never auto-clears in the TypeScript SDK. `clearCanvas()` is intention
 
 TypeScript canvas, GLSL, and display-face effects all render through Servo. Servo runs in-process and carries real memory weight (the daemon's resident set includes the in-process Servo runtime), so a few habits keep an HTML effect honest:
 
-- **The artifact is fully self-contained.** The build inlines the JS bundle (IIFE), shader text, palette tables, and metadata into one HTML file. There is no runtime CDN fetch, which is good for cold start but means a bloated bundle is bloated at load time. Keep dependencies lean.
+- **The artifact is bundled into one file.** The build inlines the JS bundle (IIFE), shader text, palette tables, and metadata into one HTML file. Display-face font controls can load selected Google Fonts at runtime unless capture mode disables remote fonts, so keep font choices intentional and dependencies lean.
 - **Lean on built-in helpers instead of heavy libraries.** The SDK ships math, motion, layout, and palette helpers (see the [SDK API reference](@/effects/sdk-api-reference.md)). Reaching for a large external animation or color library to do what a built-in already does pays for it in bundle size and per-frame cost.
 - **GLSL moves per-pixel work to the GPU, but it is still WebGL2 in Servo**, not a native pipeline. A fragment shader is the right tool for dense per-pixel math; it is not free, and an expensive shader still has to land its surface inside the frame budget. See [GLSL shader effects](@/effects/glsl-effects.md).
 

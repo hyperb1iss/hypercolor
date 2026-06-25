@@ -46,7 +46,7 @@ That loop is a little slower than a browser shell, but it exercises the behavior
 bun run build
 ```
 
-This compiles every effect under your workspace `effects/` directory into a standalone HTML file in `dist/`. Each artifact inlines all of its JavaScript (bundled as an IIFE), shader source (loaded as text via the `.glsl` import), palette tables, and metadata into a single file. No runtime loading, no CDN dependency, no external fetch.
+This compiles every effect under your workspace `effects/` directory into a standalone HTML file in `dist/`. Each artifact inlines all of its JavaScript (bundled as an IIFE), shader source (loaded as text via the `.glsl` import), palette tables, and metadata into a single file. Display-face font controls can load selected Google Fonts at runtime unless capture mode disables remote fonts.
 
 Build a single effect by passing its entry path:
 

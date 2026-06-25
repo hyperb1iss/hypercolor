@@ -186,6 +186,6 @@ metadata; Hypercolor falls back to Gamut C in that case.
   shared across Hue, Nanoleaf, WLED, and Govee
 - [Finding devices](@/guide/finding-devices.md) — general device discovery workflow
 - [Layouts](@/studio/layouts.md) — positioning Hue zones on the spatial canvas
-- [Compatibility matrix](@/hardware/compatibility.md) — supported bridge models and
-  entertainment-capable bulbs
+- [Compatibility matrix](@/hardware/compatibility.md) — supported Hue Bridge entry;
+  attached lights are discovered through the bridge and its Entertainment areas
 - [Network discovery troubleshooting](@/troubleshooting/network-discovery.md)

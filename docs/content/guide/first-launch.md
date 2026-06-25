@@ -89,8 +89,6 @@ your system browser rather than opening additional in-app tabs.
 On a fresh install the web UI detects that the first-run marker file does not exist and
 shows the **Welcome to Hypercolor** overlay before you reach the dashboard.
 
-<!-- TODO screenshot: welcome overlay / first-run wizard -->
-
 The wizard is a single centered card. It covers three orientation topics and one
 preference toggle.
 

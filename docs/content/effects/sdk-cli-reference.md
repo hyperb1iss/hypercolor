@@ -58,7 +58,7 @@ The everyday loop is `add` to create an effect, `build` to compile it, `validate
 
 ## `build`
 
-Compile effect entrypoints into self-contained HTML artifacts. Each `effects/<id>/main.ts` (or `faces/<id>/main.ts`) becomes one HTML file in the output directory, with the JS bundle, inlined shader source, palette tables, and `<meta>` control metadata all baked in. No runtime or CDN loading.
+Compile effect entrypoints into self-contained HTML artifacts. Each `effects/<id>/main.ts` (or `faces/<id>/main.ts`) becomes one HTML file in the output directory, with the JS bundle, inlined shader source, palette tables, and `<meta>` control metadata all baked in. Display-face font controls can load selected Google Fonts at runtime unless capture mode disables remote fonts.
 
 ```bash
 # Build everything the workspace discovers

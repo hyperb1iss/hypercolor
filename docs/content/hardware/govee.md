@@ -181,6 +181,11 @@ Open **Drivers → Govee** in the web UI and use the clear-credentials control. 
 
 ## LAN versus cloud
 
-Hypercolor uses the local LAN UDP protocol for all color output. The cloud API key is only used during discovery to enrich device inventory — color frames are never routed through Govee's servers. If your internet connection is unavailable, devices with LAN control enabled continue to work.
+Hypercolor uses the local LAN UDP protocol for high-rate frame output whenever a
+device has a LAN address. The cloud API key enriches discovery and also enables a
+coarse fallback for cloud-only SKUs: on/off, brightness, and solid color commands
+go through Govee's Developer API v1 when LAN control is unavailable. If your
+internet connection is unavailable, devices with LAN control enabled continue to
+work.
 
 For broader network device context — how mDNS and multicast work across drivers, VLAN configurations, and multi-vendor coordination — see [Network devices](@/hardware/network-devices.md).

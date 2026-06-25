@@ -15,7 +15,7 @@ The `@hypercolor/sdk` package is pre-release and not on npm yet. Workspaces poin
 
 ## What ships: the artifact contract
 
-`bunx hypercolor build` compiles each effect into one self-contained HTML file. The JavaScript bundle, any inlined GLSL, palette tables, and every `<meta>` tag the daemon reads are all written into that single file. Nothing loads from a CDN at runtime, which is exactly why an effect stays portable and installable.
+`bunx hypercolor build` compiles each effect into one self-contained HTML file. The JavaScript bundle, any inlined GLSL, palette tables, and every `<meta>` tag the daemon reads are all written into that single file. Display-face font controls can load selected Google Fonts at runtime unless capture mode disables remote fonts.
 
 The build always stamps these tags from your effect definition:
 
@@ -154,5 +154,3 @@ graph TD
 - [Effect troubleshooting](@/effects/troubleshooting.md) — the build-time hard errors and how to clear them.
 - [SDK CLI reference](@/effects/sdk-cli-reference.md) — every `bunx hypercolor` flag, exit code, and environment variable.
 - [Display faces](@/effects/display-faces.md) — the same publish path applies to full-screen faces for LCD devices.
-
-<!-- TODO: community gallery submission flow is not yet a shipped surface; document the process once a submission/review queue exists. -->

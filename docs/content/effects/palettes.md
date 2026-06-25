@@ -9,8 +9,6 @@ A palette is a curated color ramp with an `id`, `name`, mood tags, hex `stops`, 
 
 Twenty-eight palettes ship in the registry today, all tuned for LED hardware: high saturation, dark floors, and a wide berth around the orange-yellow washout zone. The registry lives in `sdk/shared/palettes.json` and is the single source of truth. Read it there rather than memorizing a list that will drift.
 
-<!-- TODO: palette swatch grid image once /img/effects/palettes.webp exists -->
-
 ## The registry
 
 Every palette is keyed by its `name` (not its `id`). Fetch the full list at runtime instead of hardcoding:

@@ -12,9 +12,9 @@ of raw REST. It runs inside the daemon and speaks the MCP **Streamable HTTP**
 transport, mounted at `/mcp` on the same `:9420` port as everything else.
 
 {% callout(type="info") %}
-This page is the API-reference stub for the MCP surface. The full, worked
-documentation — client setup, every tool schema, the resource shapes, and the
-prompt templates — lives in the **Agents** section. Start there:
+This page is the compact API-reference entry point for the MCP surface. The
+full, worked documentation — client setup, every tool schema, the resource
+shapes, and the prompt templates — lives in the **Agents** section. Start there:
 
 - [Agents & MCP overview](@/agents/_index.md) — MCP vs CLI and the three primitives
 - [MCP setup](@/agents/mcp-setup.md) — Claude Code / Desktop / Cursor / Zed config

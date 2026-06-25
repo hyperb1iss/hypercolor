@@ -225,6 +225,8 @@ face-specific conventions:
 
 A built face is one self-contained HTML file with its manifest in meta
 tags: controls, presets, data-source opt-ins, and the format version.
+Font controls can load selected Google Fonts at runtime unless capture mode
+disables remote fonts.
 
 ```bash
 just face-build system-pulse            # build to effects/hypercolor/

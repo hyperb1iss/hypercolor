@@ -227,9 +227,10 @@ bun run build
 ```
 
 Each effect compiles to a single file in `dist/` — the JavaScript bundle, any shader
-source, palette tables, and metadata are all inlined. Nothing loads from a CDN at
-runtime. The build also extracts `<meta>` tags the daemon reads for controls, presets,
-and audio reactivity.
+source, palette tables, and metadata are all inlined. Display-face font controls
+can load selected Google Fonts at runtime unless capture mode disables remote
+fonts. The build also extracts `<meta>` tags the daemon reads for controls,
+presets, and audio reactivity.
 
 {% callout(type="warning") %}
 If your draw function reads audio (`audio()`, `ctx.audio`, `getAudioData()`, or
