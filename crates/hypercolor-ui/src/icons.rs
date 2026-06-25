@@ -3,7 +3,8 @@
 pub use icondata::{
     LuActivity, LuAlignCenterHorizontal, LuAlignCenterVertical, LuAlignEndHorizontal,
     LuAlignEndVertical, LuAlignHorizontalDistributeCenter, LuAlignStartHorizontal,
-    LuAlignStartVertical, LuAlignVerticalDistributeCenter, LuAudioLines, LuBan, LuCable, LuCheck,
+    LuAlignStartVertical, LuAlignVerticalDistributeCenter, LuArrowRightLeft, LuAudioLines, LuBan,
+    LuCable, LuCheck,
     LuChevronDown, LuChevronLeft, LuChevronRight, LuChevronUp, LuCircle, LuCircleCheck,
     LuCircleDot, LuCode, LuColumns3, LuCopy, LuCpu, LuDownload, LuEllipsis, LuExternalLink, LuEye,
     LuEyeOff, LuFlipHorizontal, LuFlipVertical, LuFoldHorizontal, LuFoldVertical, LuFolder,

@@ -265,10 +265,10 @@ fn device_location(groups: &[Zone], device_id: &str, target: &str) -> String {
     "unassigned".to_owned()
 }
 
-/// Display name for a zone. Copies the rule used in `zone_assignment`
-/// so the Default zone reads as "Default zone" rather than its raw role
-/// string.
-fn zone_display_name(group: &Zone) -> String {
+/// Display name for a zone: the user's typed name, or "Default zone" for an
+/// unnamed `Primary` group, so it never surfaces a raw role string. Shared
+/// with the device card's move-to-zone picker.
+pub(super) fn zone_display_name(group: &Zone) -> String {
     let trimmed = group.name.trim();
     if group.role == ZoneRole::Primary
         && (trimmed.is_empty() || trimmed.eq_ignore_ascii_case("primary"))

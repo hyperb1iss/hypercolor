@@ -12,6 +12,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_icons::Icon;
 
+use hypercolor_types::scene::ZoneRole;
 use hypercolor_types::spatial::SpatialLayout;
 
 use crate::api::zones::ZoneOutcome;
@@ -21,13 +22,14 @@ use crate::components::device_card::{
     brand_colors, brand_label, brand_vendor, classify_brand, classify_device, device_class_icon,
     driver_identifier_label, topology_shape_svg,
 };
+use crate::components::silk_select::SilkSelect;
 use crate::icons::*;
 use crate::layout_utils;
 use crate::toasts;
 use crate::vendors::{VendorMark, VendorMarkSize};
 
 use super::device_grouping::ZoneDeviceRow;
-use super::zone_add_device::assign_device_to_zone;
+use super::zone_add_device::{assign_device_to_zone, zone_display_name};
 use super::{StudioContext, hidden_outputs_storage_key};
 
 /// How a device card behaves, which decides its trailing actions and
@@ -257,6 +259,7 @@ pub fn StudioDeviceCard(
     let shape_style = format!("color: rgba({primary}, 0.7)");
 
     let select_body = select.clone();
+    let select_for_rows = select.clone();
     let physical_id = device.id.clone();
     // An Available card carries the device record so its add action can
     // mint outputs and assign them into the zone.
@@ -378,6 +381,7 @@ pub fn StudioDeviceCard(
                                         studio,
                                         scene_key.clone(),
                                         physical_id_for_rows.clone(),
+                                        select_for_rows.clone(),
                                         row,
                                         shape_style.clone(),
                                     )
@@ -419,6 +423,9 @@ fn card_actions(args: CardActionsArgs) -> impl IntoView {
         add_device,
     } = args;
     let (identifying, set_identifying) = signal(false);
+    // The device's outputs in this zone — moved as a unit when the card's
+    // move-to-zone control fires (before `hide_all_pair` consumes the rest).
+    let move_output_ids = output_ids.clone();
     // Hide-all is only meaningful when the card sits in a real zone
     // (so it has a scene_key) and the device actually owns outputs
     // there (otherwise there is nothing to toggle).
@@ -507,9 +514,16 @@ fn card_actions(args: CardActionsArgs) -> impl IntoView {
                 })}
             {match mode {
                 CardMode::Placed => {
-                    let select = select.clone();
+                    let move_select = select.clone();
+                    let remove_select = select.clone();
                     Some(
                         view! {
+                            {move_to_zone_control(
+                                studio,
+                                move_select,
+                                move_output_ids,
+                                MoveSize::Card,
+                            )}
                             <button
                                 type="button"
                                 class="btn-press flex h-6 w-6 items-center justify-center rounded-md transition-colors"
@@ -517,7 +531,7 @@ fn card_actions(args: CardActionsArgs) -> impl IntoView {
                                 title="Remove from this zone"
                                 on:click=move |ev: web_sys::MouseEvent| {
                                     ev.stop_propagation();
-                                    remove_device_from_zone(studio, select.clone(), device_id.clone());
+                                    remove_device_from_zone(studio, remove_select.clone(), device_id.clone());
                                 }
                             >
                                 <Icon icon=LuTrash2 width="12px" height="12px" />
@@ -553,17 +567,166 @@ fn card_actions(args: CardActionsArgs) -> impl IntoView {
     }
 }
 
+/// How a move-to-zone control is sized: a card-level control sits in the
+/// device's action cluster, a channel-level one is a touch smaller and
+/// lives in the per-channel row.
+#[derive(Clone, Copy)]
+enum MoveSize {
+    Card,
+    Channel,
+}
+
+/// A "move to another zone" control: an icon button that swaps in a
+/// `SilkSelect` of every other LED zone. Picking one reassigns
+/// `output_ids` into it. Renders nothing when the scene has no other zone
+/// to move into, so a single-zone scene never shows it.
+fn move_to_zone_control(
+    studio: StudioContext,
+    current_zone_id: String,
+    output_ids: Vec<String>,
+    size: MoveSize,
+) -> impl IntoView {
+    let picking = RwSignal::new(false);
+    let current = StoredValue::new(current_zone_id);
+    let ids = StoredValue::new(output_ids);
+
+    // Every non-display zone except the one this device already sits in.
+    let zone_options = Memo::new(move |_| {
+        studio.active_scene.with(|scene| {
+            scene
+                .as_ref()
+                .map(|scene| {
+                    scene
+                        .groups
+                        .iter()
+                        .filter(|group| group.role != ZoneRole::Display)
+                        .filter(|group| group.id.to_string() != current.get_value())
+                        .map(|group| (group.id.to_string(), zone_display_name(group)))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        })
+    });
+    let has_targets = Memo::new(move |_| !zone_options.get().is_empty());
+
+    let on_pick = Callback::new(move |zone_id: String| {
+        picking.set(false);
+        if zone_id.is_empty() {
+            return;
+        }
+        move_outputs_to_zone(studio, zone_id, ids.get_value());
+    });
+
+    let (btn_class, icon_px, select_class) = match size {
+        MoveSize::Card => (
+            "btn-press flex h-6 w-6 items-center justify-center rounded-md text-fg-tertiary/55 transition-colors hover:text-fg-secondary",
+            "12px",
+            "min-w-[7rem] border border-accent-muted bg-surface-sunken/60 px-2 py-1 text-[11px]",
+        ),
+        MoveSize::Channel => (
+            "btn-press flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-tertiary/50 transition-colors hover:text-fg-secondary",
+            "10px",
+            "min-w-[6rem] border border-accent-muted bg-surface-sunken/60 px-1.5 py-0.5 text-[10px]",
+        ),
+    };
+
+    view! {
+        <Show when=move || has_targets.get()>
+            <Show
+                when=move || picking.get()
+                fallback=move || {
+                    view! {
+                        <button
+                            type="button"
+                            class=btn_class
+                            title="Move to another zone"
+                            on:click=move |ev: web_sys::MouseEvent| {
+                                ev.stop_propagation();
+                                picking.set(true);
+                            }
+                        >
+                            <Icon icon=LuArrowRightLeft width=icon_px height=icon_px />
+                        </button>
+                    }
+                }
+            >
+                <div
+                    class="flex items-center gap-1"
+                    on:click=|ev: web_sys::MouseEvent| ev.stop_propagation()
+                >
+                    <SilkSelect
+                        value=Signal::derive(String::new)
+                        options=zone_options
+                        on_change=on_pick
+                        placeholder="Move to\u{2026}".to_string()
+                        class=select_class.to_string()
+                    />
+                    <button
+                        type="button"
+                        class="btn-press flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-tertiary/55 transition-colors hover:text-fg-secondary"
+                        title="Cancel"
+                        on:click=move |ev: web_sys::MouseEvent| {
+                            ev.stop_propagation();
+                            picking.set(false);
+                        }
+                    >
+                        <Icon icon=LuX width="10px" height="10px" />
+                    </button>
+                </div>
+            </Show>
+        </Show>
+    }
+}
+
+/// Move a set of device outputs into `target_zone_id` by reassigning them
+/// as existing outputs in one call. The daemon moves each output out of
+/// whatever zone currently holds it. Shared by the card-level move (all of
+/// a device's outputs) and the per-channel move (a single output).
+fn move_outputs_to_zone(studio: StudioContext, target_zone_id: String, output_ids: Vec<String>) {
+    if output_ids.is_empty() {
+        return;
+    }
+    let Some(scene) = studio.active_scene.get_untracked() else {
+        toasts::toast_error("No active scene is available");
+        return;
+    };
+    let count = output_ids.len();
+    let assignments = output_ids
+        .into_iter()
+        .map(|id| api::zones::OutputAssignment::Existing { id })
+        .collect::<Vec<_>>();
+    let scene_id = scene.id.clone();
+    let revision = scene.groups_revision;
+    spawn_local(async move {
+        match api::zones::assign_devices(&scene_id, &target_zone_id, assignments, Some(revision))
+            .await
+        {
+            Ok(ZoneOutcome::Applied(_)) => {
+                let suffix = if count == 1 { "" } else { "s" };
+                toasts::toast_success(&format!("Moved {count} output{suffix}"));
+                studio.refresh_scene.run(());
+            }
+            Ok(ZoneOutcome::Stale { .. }) => {
+                toasts::toast_error("Scene changed elsewhere \u{2014} reloaded, try again");
+                studio.refresh_scene.run(());
+            }
+            Err(error) => toasts::toast_error(&format!("Move failed: {error}")),
+        }
+    });
+}
+
 /// Render one per-channel row beneath the card body.
 ///
 /// Each row shows the channel's topology shape and name, a live
 /// component badge listing what is bound to this channel, the channel's
-/// LED count, and a per-output hide toggle when the channel has an
-/// output in the current zone. Hidden state is per-(scene, zone) client
-/// UI state, not the daemon's `layout_auto_exclusions`.
+/// LED count, a move-to-zone control and a per-output hide toggle when the
+/// channel has an output in the current zone. Hidden state is per-(scene,
+/// zone) client UI state, not the daemon's `layout_auto_exclusions`.
 fn component_row_view(
     studio: StudioContext,
     scene_key: Option<String>,
     physical_device_id: String,
+    current_zone_id: String,
     row: ComponentRow,
     shape_style: String,
 ) -> impl IntoView {
@@ -629,6 +792,7 @@ fn component_row_view(
     let click_output = output_id.clone();
     let enter_output = output_id.clone();
     let row_selected_id = output_id.clone();
+    let move_output = output_id.clone();
     let is_row_selected = Signal::derive(move || {
         row_selected_id
             .as_ref()
@@ -711,6 +875,10 @@ fn component_row_view(
             <span class="shrink-0 font-mono text-[9px] tabular-nums text-fg-tertiary/55">
                 {led_count}
             </span>
+            {move_output
+                .map(move |oid| {
+                    move_to_zone_control(studio, current_zone_id, vec![oid], MoveSize::Channel)
+                })}
             {hide_pair
                 .map(|(key, id)| {
                     view! {

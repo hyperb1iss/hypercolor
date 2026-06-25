@@ -34,7 +34,6 @@ use crate::ws::CanvasFrame;
 use crate::ws::messages::group_has_degraded_layer;
 
 use super::surface::{Surface, SurfaceKind, UNASSIGNED_SURFACE_ID, surfaces_from_groups};
-use super::zone_assignment::ZoneAssignment;
 use super::zone_controls::unassigned_behavior_label;
 use super::{StudioContext, hidden_outputs_storage_key};
 
@@ -109,12 +108,6 @@ fn SurfaceStage() -> impl IntoView {
 
     let is_screen =
         Memo::new(move |_| selected_surface.get().map(|s| s.kind) == Some(SurfaceKind::Screen));
-    let multi_zone = Memo::new(move |_| {
-        studio
-            .active_scene
-            .get()
-            .is_some_and(|scene| super::surface::led_zone_count(&scene.groups) > 1)
-    });
 
     // The selected surface flags itself when its layer stack has a failed or
     // asset-missing layer — the §6.7 Stage-side degraded indicator.
@@ -305,8 +298,8 @@ fn SurfaceStage() -> impl IntoView {
                         .into_any()
                 } else {
                     // Light surface — the always-on spatial layout editor.
-                    // In a multi-zone scene the zone-assignment panel docks
-                    // below it (§9.3).
+                    // Devices move between zones from the zone tree's per-card
+                    // controls, so no assignment panel docks here.
                     view! {
                         <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
                             {move || {
@@ -318,7 +311,6 @@ fn SurfaceStage() -> impl IntoView {
                             <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
                                 <LayoutWorkspace compact=true />
                             </div>
-                            {move || multi_zone.get().then(|| view! { <ZoneAssignment /> })}
                         </div>
                     }
                         .into_any()

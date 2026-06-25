@@ -12,7 +12,6 @@ mod scene_selector;
 mod stage;
 pub use crate::zones::surface;
 mod zone_add_device;
-mod zone_assignment;
 mod zone_controls;
 mod zone_tree;
 
