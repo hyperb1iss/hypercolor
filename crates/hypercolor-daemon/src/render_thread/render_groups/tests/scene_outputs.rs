@@ -121,7 +121,7 @@ fn single_full_display_group_keeps_shared_scene_canvas_blank() {
 }
 
 #[test]
-fn empty_display_group_publishes_transparent_direct_surface() {
+fn empty_display_group_does_not_publish_direct_surface() {
     let mut runtime = ZoneRuntime::new(4, 4);
     let registry = builtin_registry();
     let mut group = sample_display_group(4, 4);
@@ -141,18 +141,11 @@ fn empty_display_group_publishes_transparent_direct_surface() {
         &registry,
         &mut zones,
     )
-    .expect("empty display group should render a stable direct surface");
+    .expect("empty display group should be ignored by direct rendering");
 
-    let [(_, group_canvas_frame)] = &result.group_canvases[..] else {
-        panic!("empty display group should publish a direct surface");
-    };
-
-    assert_eq!(result.active_group_canvas_ids, vec![group.id]);
+    assert!(result.group_canvases.is_empty());
+    assert!(result.active_group_canvas_ids.is_empty());
     assert_eq!(result.logical_layer_count, 0);
-    assert_eq!(
-        group_canvas_frame.surface_for_test().get_pixel(0, 0),
-        Rgba::TRANSPARENT
-    );
     assert!(zones.is_empty());
 }
 

@@ -4,11 +4,11 @@ use std::sync::Arc;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::asset::AssetId;
 use hypercolor_types::layer::LayerSource;
-use hypercolor_types::scene::{Zone, ZoneRole};
+use hypercolor_types::scene::Zone;
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 
 pub(super) fn group_is_active(group: &Zone) -> bool {
-    enabled_layer_count(group) > 0 || group_publishes_empty_direct_canvas(group)
+    enabled_layer_count(group) > 0
 }
 
 pub(super) fn group_contributes_to_scene_canvas(group: &Zone) -> bool {
@@ -16,16 +16,7 @@ pub(super) fn group_contributes_to_scene_canvas(group: &Zone) -> bool {
 }
 
 pub(super) fn group_publishes_direct_canvas(group: &Zone) -> bool {
-    group.enabled
-        && group.display_target.is_some()
-        && (enabled_layer_count(group) > 0 || group_publishes_empty_direct_canvas(group))
-}
-
-pub(super) fn group_publishes_empty_direct_canvas(group: &Zone) -> bool {
-    group.enabled
-        && group.display_target.is_some()
-        && group.role == ZoneRole::Display
-        && enabled_layer_count(group) == 0
+    group.enabled && group.display_target.is_some() && enabled_layer_count(group) > 0
 }
 
 pub(super) fn enabled_layer_count(group: &Zone) -> u32 {

@@ -213,16 +213,10 @@ fn empty_display_group_does_not_reuse_previous_face_surface() {
         &registry,
         &mut zones,
     )
-    .expect("empty display group should render a transparent shell");
-    let [(_, cleared_frame)] = &cleared.group_canvases[..] else {
-        panic!("empty display group should still publish a direct surface");
-    };
+    .expect("empty display group should clear its direct route");
 
-    assert!(cleared_frame.empty_direct_shell);
-    assert_eq!(
-        cleared_frame.surface_for_test().get_pixel(0, 0),
-        Rgba::TRANSPARENT
-    );
+    assert!(cleared.group_canvases.is_empty());
+    assert!(cleared.active_group_canvas_ids.is_empty());
 }
 
 #[test]

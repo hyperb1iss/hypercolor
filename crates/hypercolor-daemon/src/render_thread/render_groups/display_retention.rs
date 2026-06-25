@@ -4,7 +4,7 @@ use hypercolor_core::bus::DisplayGroupOutputRoute;
 use hypercolor_types::scene::{DisplayFaceTarget, Zone, ZoneId};
 
 use super::ZoneRuntime;
-use super::group_state::{group_publishes_direct_canvas, group_publishes_empty_direct_canvas};
+use super::group_state::group_publishes_direct_canvas;
 use super::model::{
     GroupCanvasFrame, PendingGroupCanvasFrame, RetainedDirectGroupFrame,
     RetainedMaterializedGroupFrame,
@@ -25,7 +25,7 @@ impl ZoneRuntime {
 
         let target_fps = *display_group_target_fps.get(&group.id)?;
         let retained = self.retained_direct_group_frames.get(&group.id)?;
-        if retained.frame.empty_direct_shell != group_publishes_empty_direct_canvas(group) {
+        if retained.frame.empty_direct_shell {
             return None;
         }
         if retained.dependency_key != dependency_key {
@@ -61,7 +61,7 @@ impl ZoneRuntime {
             return None;
         }
         let retained = self.retained_direct_group_frames.get(&group.id)?;
-        if retained.frame.empty_direct_shell != group_publishes_empty_direct_canvas(group) {
+        if retained.frame.empty_direct_shell {
             return None;
         }
         let display_target = group.display_target.as_ref()?;
