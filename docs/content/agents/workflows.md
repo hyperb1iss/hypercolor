@@ -63,14 +63,13 @@ Browse the catalog instead of guessing an effect name. Filter `list_effects` to 
 
 ### 3. Apply it
 
-Call `set_effect`. The required argument is `query`, which does fuzzy and natural-language matching, so a description works as well as an exact name. Pass `controls` to tune it and `transition_ms` for a gentle crossfade (default 500, max 10000).
+Call `set_effect`. The required argument is `query`, which does fuzzy and natural-language matching, so a description works as well as an exact name. Pass `controls` to tune it. `transition_ms` is accepted and echoed for forward compatibility, but effect switches are immediate today.
 
 ```json
 // set_effect with
 {
   "query": "calm blue borealis",
-  "controls": { "speed": 2 },
-  "transition_ms": 1500
+  "controls": { "speed": 2 }
 }
 // → returns
 {
@@ -112,11 +111,11 @@ The same loop in the CLI, for an agent that shells out rather than speaking MCP:
 ```bash
 hypercolor status -j
 hypercolor effects list --category ambient -j
-hypercolor effects activate "calm blue borealis" --speed 2 --transition 1500
+hypercolor effects activate "calm blue borealis" --speed 2
 hypercolor brightness set 35
 ```
 
-Note the CLI surface differs from the MCP tool. The activate verb uses `--speed`, `--intensity`, and repeatable `--param key=value` shorthands, and `--transition` is the crossfade duration in milliseconds. The CLI's `scenes create` is lighter than the MCP tool, taking just a `name` and an optional `--mutation-mode`.
+Note the CLI surface differs from the MCP tool. The activate verb uses `--speed`, `--intensity`, and repeatable `--param key=value` shorthands. The CLI's `scenes create` is lighter than the MCP tool, taking just a `name` and an optional `--mutation-mode`.
 
 ## Workflow B: build an effect, then apply it
 
@@ -165,7 +164,7 @@ hypercolor effects list --search aurora -j
 Then apply it through whichever surface the agent already speaks. Over the daemon CLI:
 
 ```bash
-hypercolor effects activate "Aurora" --param speed=7 --transition 800
+hypercolor effects activate "Aurora" --param speed=7
 ```
 
 Or over MCP, with `set_effect`:

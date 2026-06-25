@@ -61,17 +61,17 @@ Apply a lighting effect. The `query` argument is fuzzy-matched against effect na
 
 - **Mutates state.** `read_only: false`, `idempotent: true`.
 - **Required:** `query` (string) — effect name or natural-language description.
-- **Optional:** `controls` (object) — parameter overrides as key-value pairs; `transition_ms` (integer, default `500`, range 0–10000) — crossfade duration; `devices` (array of strings) — device IDs to target, omit for all.
+- **Optional:** `controls` (object) — parameter overrides as key-value pairs; `transition_ms` (integer, default `500`, range 0–10000) — accepted and echoed for forward compatibility; `devices` (array of strings) — device IDs to target, omit for all.
 
 A display-face effect cannot be applied through `set_effect`; it returns an invalid-parameter error pointing you at [`set_display_face`](#set-display-face).
+Effect switches are immediate today; `transition_ms` does not produce a crossfade yet.
 
 ```json
 {
   "name": "set_effect",
   "arguments": {
     "query": "calm blue waves",
-    "controls": { "speed": 2 },
-    "transition_ms": 1500
+    "controls": { "speed": 2 }
   }
 }
 ```
@@ -86,7 +86,7 @@ Response (abridged):
   "applied": true,
   "applied_controls": { "speed": 2 },
   "rejected_controls": {},
-  "transition_ms": 1500
+  "transition_ms": 500
 }
 ```
 

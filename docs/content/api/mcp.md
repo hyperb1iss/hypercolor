@@ -99,7 +99,7 @@ graph TD
   R --> E
 {% end %}
 
-**Tools** are actions and reads. Eleven are listed as `read_only` (`list_effects`,
+**Tools** are actions and reads. Eight are listed as `read_only` (`list_effects`,
 `get_devices`, `get_status`, `list_scenes`, `get_audio_state`, `get_sensor_data`,
 `get_layout`, `diagnose`), and the mutating ones carry `idempotent` annotations so
 agents can reason about retries. `create_scene` is the one tool flagged

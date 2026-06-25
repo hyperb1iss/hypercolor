@@ -171,7 +171,6 @@ the Studio always has at least one zone to work with.
 
 ```bash
 hypercolor scenes activate "Stream Mode"
-hypercolor scenes activate "Stream Mode" --transition 500
 hypercolor scenes active
 hypercolor scenes deactivate
 ```

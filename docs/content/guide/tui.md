@@ -169,7 +169,7 @@ The TUI runs a `tachyonfx`-based motion layer that animates state changes withou
 
 - **Title shimmer** — continuous color wash on the `H Y P E R C O L O R` brand text.
 - **Screen transitions** — dissolve when switching screens.
-- **Effect transitions** — crossfade when the active effect changes.
+- **Effect changes** — quick visual feedback when the active effect changes.
 - **Device arrival / departure** — sweep-in and dissolve-out animations.
 - **Connection lost / restored** — persistent glitch effect on loss, green flash on reconnect.
 - **Spectrum pulse** — border brightness driven by audio bass energy.

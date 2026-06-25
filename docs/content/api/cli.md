@@ -177,7 +177,6 @@ Activate an effect by name or slug (fuzzy-matched). Tune it with repeatable
 hypercolor effects activate borealis
 hypercolor effects activate borealis --speed 30 --intensity 70
 hypercolor effects activate plasma-engine --param hue_shift=120 --param density=0.8
-hypercolor effects activate iris --transition 800
 ```
 
 `effects activate` flags:
@@ -187,7 +186,7 @@ hypercolor effects activate iris --transition 800
 | `-p`, `--param <KEY=VALUE>` | | Arbitrary control value. Repeatable. Values parse as JSON when valid, otherwise as a string. |
 | `--speed <0-100>` | | Speed-control shorthand. |
 | `--intensity <0-100>` | | Intensity-control shorthand. |
-| `--transition <MS>` | `0` | Crossfade duration. `0` is a hard cut. |
+| `--transition <MS>` | `0` | Reserved for effect crossfades. Only `0` is accepted today. |
 
 {% callout(type="tip") %}
 `--param` values are parsed as JSON first. So `--param density=0.8` sends a
@@ -240,7 +239,7 @@ finer-grained partition of the canvas.
 hypercolor scenes list
 hypercolor scenes active
 hypercolor scenes create "Movie Night" --description "Dim and warm"
-hypercolor scenes activate "Movie Night" --transition 1200
+hypercolor scenes activate "Movie Night"
 hypercolor scenes deactivate          # Return to the Default scene
 hypercolor scenes info "Movie Night"
 hypercolor scenes delete "Movie Night" --yes
@@ -412,13 +411,13 @@ layout) so you can restore it later.
 ```bash
 hypercolor profiles list
 hypercolor profiles create "My Setup" --description "Desk default"
-hypercolor profiles apply "My Setup" --transition 500
+hypercolor profiles apply "My Setup"
 hypercolor profiles info "My Setup"
 hypercolor profiles delete "My Setup" --yes
 ```
 
-`create` accepts `--force` to overwrite an existing profile; `apply` accepts a
-`--transition` crossfade in milliseconds.
+`create` accepts `--force` to overwrite an existing profile. Profile apply is
+immediate; `--transition` is reserved for crossfades and only accepts `0` today.
 
 ## Network
 

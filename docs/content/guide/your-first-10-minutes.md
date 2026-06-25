@@ -128,7 +128,9 @@ hypercolor effects stop
 ```
 
 {% callout(type="tip") %}
-`activate` also accepts `--transition <ms>` for a crossfade between the current and incoming effect. `--transition 500` gives a half-second blend.
+Effect switches are immediate today. The `--transition` flag is reserved for
+future crossfades, and nonzero values are rejected until that renderer path
+lands.
 {% end %}
 
 ---

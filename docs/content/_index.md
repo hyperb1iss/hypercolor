@@ -70,13 +70,13 @@ tweak live controls, design spatial layouts, manage scenes and zones. Ambient re
 tints the UI edges to match the active effect.
 
 **Studio** — the [multi-zone workspace](@/studio/_index.md) inside the web UI. Assign
-different effects to different zones across your rig. Scene switching with Oklab cross-fades.
+different effects to different zones across your rig, then save the whole layout as a scene.
 
 **TUI** — a Ratatui terminal dashboard with true-color LED preview and fullscreen effect
 rendering. Runs wherever you have a terminal. Launch with `hypercolor tui`.
 
 **CLI** — `hypercolor effects list`, `hypercolor effects activate "Neon City"`,
-`hypercolor devices`, `hypercolor scenes activate <id>`. JSON output for scripting.
+`hypercolor devices list`, `hypercolor scenes activate <id>`. JSON output for scripting.
 Full reference at [API: CLI](@/api/cli.md).
 
 ---

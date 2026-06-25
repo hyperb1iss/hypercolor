@@ -177,11 +177,11 @@ To stop the active effect and return to a dark state:
 hypercolor effects stop
 ```
 
-**Apply an effect with initial parameters.** Use `--speed` and `--intensity` as shorthand controls, and `--param key=value` (repeatable) for any other named parameter. `--transition` sets a crossfade duration in milliseconds:
+**Apply an effect with initial parameters.** Use `--speed` and `--intensity` as shorthand controls, and `--param key=value` (repeatable) for any other named parameter:
 
 ```bash
 hypercolor effects activate breathing --speed 30 --intensity 70
-hypercolor effects activate audio-pulse --param sensitivity=80 --transition 500
+hypercolor effects activate audio-pulse --param sensitivity=80
 ```
 
 **Show what parameters an effect exposes:**
@@ -342,11 +342,8 @@ hypercolor profiles list
 hypercolor profiles apply "Gaming"
 ```
 
-Add a crossfade when switching:
-
-```bash
-hypercolor profiles apply "Gaming" --transition 800
-```
+Profile switching is immediate. The `--transition` flag is reserved for profile
+crossfades, but only `0` is accepted today.
 
 **Delete a profile** when you no longer need it (requires `--yes` to confirm):
 
@@ -384,11 +381,9 @@ hypercolor scenes create "Late Night" --description "Dim amber for late sessions
 hypercolor scenes activate "Focus Mode"
 ```
 
-Add a crossfade transition:
-
-```bash
-hypercolor scenes activate "Focus Mode" --transition 1000
-```
+Scene activation through the CLI is immediate. Stored scene transition settings
+are used by the daemon scene engine, but the CLI activate endpoint does not
+override them yet.
 
 **Return to the Default scene:**
 

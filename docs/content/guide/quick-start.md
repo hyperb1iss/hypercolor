@@ -84,8 +84,8 @@ hypercolor effects activate audio-pulse --speed 60 --intensity 80
 # With arbitrary control parameters
 hypercolor effects activate color-wave --param palette=SilkCircuit --param speed=40
 
-# With a crossfade transition
-hypercolor effects activate nebula-drift --transition 800
+# Effect switches are immediate today
+hypercolor effects activate nebula-drift
 ```
 
 Via REST:

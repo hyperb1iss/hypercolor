@@ -56,6 +56,7 @@ magic numbers, taken straight from the source constants.
 
 | Tag | Frame | Convention | Source constant |
 |---|---|---|---|
+| `0x01` | LED color frames | single byte | `led_frame` |
 | `0x02` | Audio spectrum | single byte | `SPECTRUM_FRAME_TAG` |
 | `0x03` | Preview — render canvas | single byte | `PreviewFrameChannel::Canvas` |
 | `0x05` | Preview — screen-capture canvas | single byte | `PreviewFrameChannel::ScreenCanvas` |
@@ -67,10 +68,9 @@ magic numbers, taken straight from the source constants.
 | `0x81` | RPC response | tag + schema | `RPC_RESPONSE_TAG` |
 
 {% callout(type="info") %}
-`0x04` is intentionally unused in the current channel set, and `0x01` is reserved
-for the JSON control channel's framing on the daemon side. Treat any unknown tag as
-a frame you should skip rather than reject the connection — the channel space is
-designed to grow.
+`0x04` is intentionally unused in the current channel set. Treat any unknown tag
+as a frame you should skip rather than reject the connection — the channel space
+is designed to grow.
 {% end %}
 
 ## Preview frame (`0x03`, `0x05`, `0x06`, `0x07`)

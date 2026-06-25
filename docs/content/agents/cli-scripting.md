@@ -122,11 +122,11 @@ hypercolor devices list -j
 
 ### 3. Act
 
-Activating an effect takes a fuzzy name or slug. Pass control values with repeatable `--param key=value` flags, or use the `--speed` and `--intensity` shorthands. `--transition` sets a crossfade duration in milliseconds (default `0`, which cuts instantly).
+Activating an effect takes a fuzzy name or slug. Pass control values with repeatable `--param key=value` flags, or use the `--speed` and `--intensity` shorthands. Effect switches are immediate today; `--transition` is reserved for future crossfades and only accepts `0`.
 
 ```bash
 hypercolor effects activate borealis --param speed=7 --param palette=SilkCircuit
-hypercolor effects activate "calm waves" --speed 3 --transition 1500
+hypercolor effects activate "calm waves" --speed 3
 ```
 
 To retune the running effect without re-applying it, use `effects patch`. This is the cheap path for live adjustments inside a control loop.
@@ -139,7 +139,7 @@ Brightness is a global percentage from 0 to 100. Scene activation takes a scene 
 
 ```bash
 hypercolor brightness set 35
-hypercolor scenes activate "evening" --transition 800
+hypercolor scenes activate "evening"
 ```
 
 {% callout(type="info") %}
@@ -175,7 +175,7 @@ First effect name in a search, ready to feed straight back into `activate`:
 
 ```bash
 EFFECT=$(hypercolor effects list --search nebula -j | jq -r '.items[0].name')
-hypercolor effects activate "$EFFECT" --transition 1000
+hypercolor effects activate "$EFFECT"
 ```
 
 The current effect and live FPS from `status`:
@@ -233,7 +233,7 @@ bunx hypercolor install dist/aurora.html --daemon
 
 # Back on the daemon CLI: pick up the new effect and apply it
 hypercolor effects rescan
-hypercolor effects activate aurora --transition 1000
+hypercolor effects activate aurora
 ```
 
 The SDK is pre-release and not yet on npm, so the exact `bunx hypercolor` invocation depends on the workspace's local `file:` spec until it is published. See [effects setup](@/effects/setup.md) for the authoring side.

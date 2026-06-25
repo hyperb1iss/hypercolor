@@ -244,7 +244,7 @@ Apply an effect to the active output. Optionally override control defaults.
 ```
 
 **Response:** the applied effect, the resolved control values, any layout
-binding, the transition used, and a `warnings` array.
+binding, the resolved transition (`cut`, `0` today), and a `warnings` array.
 {% end %}
 
 {% api_endpoint(method="GET", path="/api/v1/effects/active") %}
