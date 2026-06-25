@@ -690,7 +690,6 @@ async fn display_targets(
     };
     let (display_group_targets_revision, published_display_group_targets) =
         event_bus.display_group_targets_snapshot();
-    let display_face_targets = display_face_targets_by_device(published_display_group_targets);
     let logical_store = logical_devices.read().await;
     let display_preview_subscribers = display_frames.read().await.subscribed_device_ids();
     let registry_generation = registry.generation();
@@ -717,6 +716,7 @@ async fn display_targets(
         };
     }
 
+    let display_face_targets = display_face_targets_by_device(published_display_group_targets);
     let mut targets = Vec::new();
     for tracked in registry
         .list()
