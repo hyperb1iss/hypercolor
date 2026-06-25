@@ -20,6 +20,11 @@ on:
       release_version:
         description: "Dry-run semver for artifact names (blank = Cargo version + -ci.0)"
         required: false
+      deploy_docs:
+        description: "Deploy the current main docs site to GitHub Pages"
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -825,7 +830,12 @@ jobs:
   docs:
     name: Docs
     needs: changes
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push' && needs.changes.outputs.docs == 'true'
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (
+        (github.event_name == 'push' && needs.changes.outputs.docs == 'true') ||
+        (github.event_name == 'workflow_dispatch' && inputs.deploy_docs)
+      )
     runs-on: ubuntu-latest
     permissions:
       contents: read
