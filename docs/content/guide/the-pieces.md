@@ -27,7 +27,7 @@ For service management on Linux, `systemctl --user` is the right tool (it is a u
 
 ## The desktop app is the recommended front door
 
-`hypercolor-app` is a [Tauri](https://tauri.app/) shell that owns the native window, the system tray icon, daemon supervision, autostart registration, and single-instance forwarding. When you install Hypercolor on Linux, Windows, or macOS via the signed installer or DMG, this is what you get.
+`hypercolor-app` is a [Tauri](https://tauri.app/) shell that owns the native window, the system tray icon, daemon supervision, autostart registration, and single-instance forwarding. When you install Hypercolor on Linux, Windows, or macOS via a desktop package, this is what you get.
 
 The app supervises the daemon — it spawns and watches `hypercolor-daemon` as a child process, restarting it if it exits unexpectedly (up to five rapid restarts within five minutes before the watchdog circuit-breaker trips). On Linux it also probes for a running systemd user service and connects to that instead of spawning a child. You do not need to start the daemon separately when you use the app.
 

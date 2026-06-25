@@ -648,7 +648,7 @@ _Source: [`data/drivers/vendors/coolermaster.toml`](../../../data/drivers/vendor
 
 ### Corsair {#corsair}
 
-[corsair.com](https://corsair.com) · VID 0x1B1C · Driver `corsair`
+VID 0x1B1C · Driver `corsair`
 
 **Devices tracked:** 49 supported · 34 researched
 

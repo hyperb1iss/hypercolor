@@ -23,7 +23,7 @@ Not everyone needs to build from source. The right starting point depends on you
 | If you are… | Start here |
 |---|---|
 | A Linux user who wants a quick install | [Choose your install](@/guide/choose-your-install.md) → prebuilt one-liner |
-| On Windows or macOS | [Choose your install](@/guide/choose-your-install.md) → signed desktop installer |
+| On Windows or macOS | [Choose your install](@/guide/choose-your-install.md) → desktop package |
 | Running Arch Linux | [Choose your install](@/guide/choose-your-install.md) → AUR package |
 | A developer hacking on Hypercolor itself | [Installation](@/guide/installation.md) → build from source |
 

@@ -11,7 +11,10 @@ Not sure which path fits? Read [Choose your install](@/guide/choose-your-install
 
 ## Linux — prebuilt installer
 
-The fastest path on any Linux distribution. The script downloads a signed release tarball from GitHub, installs the daemon and CLI to `~/.local/bin`, sets up a systemd user service, and applies udev rules for USB device access.
+The fastest path on any Linux distribution. The script downloads a release
+tarball from GitHub, verifies its SHA256 checksum, installs the daemon and CLI
+to `~/.local/bin`, sets up a systemd user service, and prompts before applying
+udev rules and `i2c-dev` setup for USB and SMBus device access.
 
 ```bash
 curl -fsSL https://install.hypercolor.dev | bash
@@ -20,7 +23,7 @@ curl -fsSL https://install.hypercolor.dev | bash
 The installer is idempotent: re-running it upgrades an existing install. To pin a specific version:
 
 ```bash
-HYPERCOLOR_VERSION=0.1.0 curl -fsSL https://install.hypercolor.dev | bash
+curl -fsSL https://install.hypercolor.dev | bash -s -- --version v0.1.0
 ```
 
 To install to a different prefix instead of `~/.local`:
@@ -30,7 +33,9 @@ HYPERCOLOR_INSTALL_PREFIX=/opt/hypercolor curl -fsSL https://install.hypercolor.
 ```
 
 {% callout(type="warning") %}
-After installation, **re-plug your USB devices or log out and back in** so the new udev rules take effect. If your devices are still not detected, see [Devices not found](@/troubleshooting/devices-not-found.md).
+If you installed the system hooks, **re-plug your USB devices or log out and
+back in** so the new udev rules take effect. If your devices are still not
+detected, see [Devices not found](@/troubleshooting/devices-not-found.md).
 {% end %}
 
 {% callout(type="info") %}
@@ -51,7 +56,9 @@ The PKGBUILD installs binaries, the systemd user service, shell completions, and
 
 ## Linux — udev rules (USB device access)
 
-USB device access on Linux requires udev rules. The prebuilt installer and AUR package handle this automatically. If you are installing manually or from source:
+USB device access on Linux requires udev rules. The prebuilt installer prompts
+for these hooks, and the AUR package handles them automatically. If you are
+installing manually or from source:
 
 ```bash
 just udev-install
@@ -63,7 +70,7 @@ This copies `udev/99-hypercolor.rules` to `/etc/udev/rules.d/`, reloads udev, an
 
 ## Windows
 
-Download the NSIS installer from [hypercolor.lighting/download](https://hypercolor.lighting/download). The installer:
+Download the NSIS installer from the [download page](@/download.md). The installer:
 
 - Bundles `hypercolor-daemon.exe` and the `hypercolor-app` desktop shell
 - Registers the app for autostart at login
@@ -80,7 +87,15 @@ For SMBus devices (ASUS Aura DRAM, some Gigabyte and MSI motherboards), the firs
 
 ## macOS
 
-Download the signed DMG from [hypercolor.lighting/download](https://hypercolor.lighting/download). Open the DMG, drag Hypercolor to Applications, and launch it. The app registers a LaunchAgent for autostart and supervises the daemon — no terminal setup required.
+Download the DMG from the [download page](@/download.md). Open the DMG, drag
+Hypercolor to Applications, and launch it. The app registers a LaunchAgent for
+autostart and supervises the daemon — no terminal setup required.
+
+{% callout(type="warning") %}
+Current builds are unsigned while the Developer ID and notarization rollout
+completes. Gatekeeper will block the app on first launch. Right-click the app
+and choose **Open** to confirm.
+{% end %}
 
 {% callout(type="info") %}
 macOS hardware support covers USB-HID and network devices (Hue, Nanoleaf, WLED, Govee). SMBus/motherboard RGB is Linux and Windows only.
@@ -254,16 +269,18 @@ just verify          # fmt + lint + test — run this before committing
 
 ### Install from source
 
-After building, install the daemon and CLI to `~/.local/bin`, the web UI assets, the systemd user service, and udev rules:
+After building, install the daemon and CLI to `~/.local/bin`, the web UI assets,
+the systemd user service, and, by default, udev rules plus `i2c-dev` setup:
 
 ```bash
 just install
 ```
 
-Then apply USB device permissions:
+Pass `--skip-system-hooks` if you want to skip the sudo-backed udev and SMBus
+setup:
 
 ```bash
-just udev-install
+just install -- --skip-system-hooks
 ```
 
 ### Run the desktop app from source

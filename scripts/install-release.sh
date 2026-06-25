@@ -565,7 +565,7 @@ do_install() {
     printf "  ${DIM}Quick start:${RESET}\n"
     printf "    hypercolor status     ${DIM}# Check daemon status${RESET}\n"
     printf "    hypercolor effects list ${DIM}# Browse available effects${RESET}\n"
-    printf "    hypercolor devices    ${DIM}# List connected devices${RESET}\n"
+    printf "    hypercolor devices list ${DIM}# List connected devices${RESET}\n"
     printf "\n"
 
     if [[ "$NO_SERVICE" == true ]]; then

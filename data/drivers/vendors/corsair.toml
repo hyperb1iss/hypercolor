@@ -1,7 +1,6 @@
 [vendor]
 name = "Corsair"
 vid = [0x1B1C]
-website = "https://corsair.com"
 
 # ─── LINK Hub ────────────────────────────────────────────────────────
 

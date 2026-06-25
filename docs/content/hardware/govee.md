@@ -51,7 +51,7 @@ curl -X POST http://localhost:9420/api/v1/devices/discover \
 
 **Via the web UI:**
 
-Open [http://localhost:9420](http://localhost:9420), navigate to **Devices**, and click **Discover**.
+Open `http://localhost:9420`, navigate to **Devices**, and click **Discover**.
 
 ![Device discovery in the Hypercolor web UI](/img/ui/ui-devices.webp)
 

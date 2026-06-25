@@ -9,7 +9,9 @@ weight = 20
 Not every install path is right for every person. This page routes you to the correct one before you spend time on the wrong steps.
 
 {% callout(type="info") %}
-Linux is the fully supported install platform for v0.1.0. Windows and macOS ship signed desktop installers with their own hardware scope. Source builds on macOS are useful for development but not required by end users.
+Linux is the fully supported install platform for v0.1.0. Windows and macOS ship
+desktop packages with their own hardware scope. Source builds on macOS are
+useful for development but not required by end users.
 {% end %}
 
 ## Decide in 30 seconds
@@ -17,7 +19,7 @@ Linux is the fully supported install platform for v0.1.0. Windows and macOS ship
 | I am... | My OS | Go here |
 |---|---|---|
 | A regular user who wants things to work | Linux | [Prebuilt one-liner](#prebuilt-linux) |
-| A regular user who wants things to work | Windows | [Signed installer](#windows-installer) |
+| A regular user who wants things to work | Windows | [Desktop installer](#windows-installer) |
 | A regular user who wants things to work | macOS | [DMG or Homebrew Cask](#macos-dmg) |
 | An Arch Linux user | Linux | [AUR package](#aur) |
 | A developer or contributor | Any | [Build from source](#build-from-source) |
@@ -28,7 +30,10 @@ If you are not sure whether you are a developer, you are not a developer. Start 
 
 ## Prebuilt one-liner (Linux) {#prebuilt-linux}
 
-The fastest path on Linux. Downloads the latest release binaries from GitHub, installs them to `~/.local/bin`, sets up the systemd user service, installs udev rules for USB device access, and persists the `i2c-dev` kernel module for SMBus RGB hardware.
+The fastest path on Linux. Downloads the latest release binaries from GitHub,
+installs them to `~/.local/bin`, sets up the systemd user service, and prompts
+before installing udev rules for USB device access or persisting the `i2c-dev`
+kernel module for SMBus RGB hardware.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/install-release.sh | bash
@@ -61,8 +66,8 @@ You can also set `HYPERCOLOR_INSTALL_PREFIX` to override the install root (defau
 2. Verifies the SHA256 checksum before extracting.
 3. Installs `hypercolor-daemon` and `hypercolor` to `~/.local/bin`.
 4. Installs the systemd **user** service to `~/.config/systemd/user/hypercolor.service` and enables it.
-5. Copies `udev/99-hypercolor.rules` to `/etc/udev/rules.d/` (requires `sudo`) and reloads.
-6. Loads `i2c-dev` immediately and persists it via `/etc/modules-load.d/i2c-dev.conf` (requires `sudo`).
+5. Prompts to copy `udev/99-hypercolor.rules` to `/etc/udev/rules.d/` (requires `sudo`) and reloads udev if approved.
+6. When system hooks are approved, loads `i2c-dev` immediately and persists it via `/etc/modules-load.d/i2c-dev.conf` (requires `sudo`).
 
 After the installer finishes, see [First launch](@/guide/first-launch.md) to open the UI for the first time.
 
@@ -70,7 +75,11 @@ After the installer finishes, see [First launch](@/guide/first-launch.md) to ope
 
 ## Windows installer {#windows-installer}
 
-Download the signed installer from [hypercolor.lighting/download](https://hypercolor.lighting/download) and run it. Per-user install — no UAC prompt unless you opt into SMBus/RAM RGB hardware support, which installs the [PawnIO](https://github.com/namazso/PawnIO) kernel driver via a one-click flow. Tested on Windows 10 22H2 and Windows 11 23H2/24H2, x64.
+Download the installer from the [download page](@/download.md) and run it.
+Per-user install — no UAC prompt unless you opt into SMBus/RAM RGB hardware
+support, which installs the [PawnIO](https://github.com/namazso/PawnIO) kernel
+driver via a one-click flow. Tested on Windows 10 22H2 and Windows 11 23H2/24H2,
+x64.
 
 USB-HID lighting (Razer, Corsair, Lian Li, and others) and network devices (Hue, WLED, Nanoleaf, Govee) work out of the box. Motherboard and DRAM SMBus lighting (ASUS Aura, MSI, Gigabyte) requires the optional PawnIO install — Hypercolor prompts you only if compatible hardware is detected.
 
@@ -80,7 +89,9 @@ USB-HID lighting (Razer, Corsair, Lian Li, and others) and network devices (Hue,
 
 ### DMG
 
-Download `Hypercolor-<version>-arm64.dmg` (Apple Silicon) or `-x86_64.dmg` (Intel) from [hypercolor.lighting/download](https://hypercolor.lighting/download), drag the app into `/Applications`, and launch. Minimum macOS 11 (Big Sur).
+Download `Hypercolor-<version>-arm64.dmg` (Apple Silicon) or `-x86_64.dmg`
+(Intel) from the [download page](@/download.md), drag the app into
+`/Applications`, and launch. Minimum macOS 11 (Big Sur).
 
 {% callout(type="warning") %}
 Current builds are unsigned while the Developer ID and notarization rollout completes. Gatekeeper will block the app on first launch. Right-click the app and choose **Open** to confirm.

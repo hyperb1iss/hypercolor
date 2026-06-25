@@ -36,7 +36,7 @@ If you have OpenRGB, Aura Sync, or another RGB manager running, it may be holdin
 
 ### In the web UI or desktop app
 
-Open a browser to [http://localhost:9420](http://localhost:9420), or use the desktop app. The Devices panel lists every device Hypercolor has discovered. Each entry shows the device name, driver, LED count, and connection status.
+Open a browser to `http://localhost:9420`, or use the desktop app. The Devices panel lists every device Hypercolor has discovered. Each entry shows the device name, driver, LED count, and connection status.
 
 ![Device discovery in the Hypercolor web UI](/img/ui/ui-devices.webp)
 

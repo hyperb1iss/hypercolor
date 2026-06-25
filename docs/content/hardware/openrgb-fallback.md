@@ -38,7 +38,7 @@ process.
    package repository.
 2. Complete OpenRGB's own Linux setup — udev rules, i2c-dev module for SMBus hardware,
    and any chipset-specific kernel parameters. Follow the
-   [OpenRGB Linux Setup Guide](https://openrgb-wiki.readthedocs.io/en/latest/Linux-Setup-Guide/)
+   [OpenRGB udev rules guide](https://openrgb.org/udev.html)
    for that; it is separate from Hypercolor's udev rules.
 3. Start the OpenRGB SDK server before triggering Hypercolor discovery:
 
