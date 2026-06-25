@@ -2,9 +2,9 @@
 // Base — reset, typography, noise overlay, scrollbars, print
 // ═══════════════════════════════════════════════════════════════
 
-// Google Fonts: Inter + JetBrains Mono
-// NOTE: Satoshi (used in the app) isn't on Google Fonts. Self-host later.
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+// Fonts (Satoshi + JetBrains Mono) load via Bunny Fonts in base.html <head>,
+// matching the app exactly. No CSS @import here — font loading belongs in the
+// document head for performance.
 
 // ---------------------------------------------------------------------------
 // Box-sizing reset
@@ -73,18 +73,19 @@ code, pre, kbd, samp {
 
 ::selection {
   background: var(--selection-bg);
-  color: white;
+  color: var(--text-primary);
 }
 
 // ---------------------------------------------------------------------------
 // Focus — glow rings, never outline
 // ---------------------------------------------------------------------------
 
+// Glow-ring focus: cyan in dark, purple in light (tokens flip per theme).
 :focus-visible {
   outline: none;
   box-shadow:
     0 0 0 2px var(--border-focus),
-    0 0 12px oklch(0.88 0.18 175 / 0.15);
+    0 0 12px var(--glow-focus-soft);
 }
 
 // ---------------------------------------------------------------------------
@@ -141,7 +142,7 @@ body::after {
   z-index: 9999;
   padding: 8px 16px;
   background: var(--accent);
-  color: white;
+  color: var(--text-inverse);
   border-radius: $radius-md;
   font-weight: 600;
   font-size: 0.9rem;

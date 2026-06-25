@@ -2,13 +2,14 @@
 // Sidebar — glass panel, group titles, links, active states
 // ═══════════════════════════════════════════════════════════════
 
+// Desktop sidebar is a PRIMARY surface — solid --surface-raised, no glass.
+// Glass is reserved for floating UI (mobile drawer + search modal).
 .site-sidebar {
   width: 260px;
   min-height: calc(100vh - 64px);
   padding: 24px 16px;
   overflow-y: auto;
-  background: var(--glass-bg);
-  @include glass;
+  background: var(--surface-raised);
   border-right: 1px solid var(--border-subtle);
   transition: background var(--duration-slow) var(--ease-silk);
 }
@@ -28,7 +29,7 @@
   &::before {
     content: '\203A'; // ›
     margin-right: 6px;
-    color: oklch(0.88 0.18 175); // cyan
+    color: var(--text-tertiary);
     font-weight: 400;
     transition: margin-right var(--duration-medium) var(--ease-spring);
   }
@@ -64,7 +65,7 @@
 
   &:hover {
     color: var(--text-primary);
-    background: oklch(0.88 0.18 175 / 0.04);
+    background: var(--accent-subtle);
   }
 
   // Active state — accent color + left bar with glow
@@ -74,7 +75,7 @@
     border-left: 3px solid var(--accent);
     padding-left: 9px; // compensate for border width
     background: var(--accent-subtle);
-    box-shadow: -2px 0 12px oklch(0.65 0.30 320 / 0.20);
+    box-shadow: -2px 0 12px var(--glow-accent-50);
   }
 }
 
@@ -83,6 +84,7 @@
 // ═══════════════════════════════════════════════════════════════
 
 @media (max-width: $bp-mobile - 1px) {
+  // Mobile drawer floats — real glass here (the one sanctioned sidebar glass).
   .site-sidebar {
     position: fixed;
     top: 64px;
@@ -91,27 +93,31 @@
     z-index: 90;
     width: 280px;
     background: var(--glass-bg-dense);
+    @include glass-dense;
     transform: translateX(-100%);
     transition: transform var(--duration-slow) var(--ease-silk);
 
-    &.is-open {
+    &--open {
       transform: translateX(0);
     }
   }
+}
 
-  .sidebar-overlay {
-    position: fixed;
-    inset: 0;
-    background: oklch(0 0 0 / 0.50);
-    backdrop-filter: blur(4px);
-    z-index: 89;
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity var(--duration-slow) var(--ease-silk);
+// Mobile sidebar backdrop — class names match sidebar.js
+// (.site-overlay / .site-overlay--active). Emitted from base.html.
+.site-overlay {
+  position: fixed;
+  inset: 0;
+  background: oklch(0 0 0 / 0.50);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  z-index: 89;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--duration-slow) var(--ease-silk);
 
-    &.is-visible {
-      opacity: 1;
-      pointer-events: auto;
-    }
+  &--active {
+    opacity: 1;
+    pointer-events: auto;
   }
 }

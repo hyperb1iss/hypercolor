@@ -20,20 +20,21 @@
   <meta name="twitter:title" content="{% block twitter_title %}{{ config.title }}{% endblock twitter_title %}">
   <meta name="twitter:description" content="{% block twitter_description %}{{ config.description }}{% endblock twitter_description %}">
 
-  <!-- Fonts -->
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <!-- Fonts — Satoshi + JetBrains Mono via Bunny (the app's exact source) -->
+  <link rel="preconnect" href="https://fonts.bunny.net">
+  <link href="https://fonts.bunny.net/css?family=satoshi:400,500,600,700|jetbrains-mono:400,500,600,400i" rel="stylesheet">
 
   <!-- Styles -->
   <link rel="stylesheet" href="{{ get_url(path='silkcircuit.css') }}">
 
   {% block head_extra %}{% endblock head_extra %}
 </head>
-<body>
+<body data-search-index="{{ get_url(path='search_index.en.js') }}">
   <a href="#main-content" class="skip-link">Skip to main content</a>
 
   {% include "partials/nav.html" %}
+
+  <div class="site-overlay" id="site-overlay" aria-hidden="true"></div>
 
   {% block content %}{% endblock content %}
 
@@ -43,6 +44,8 @@
   <script defer src="{{ get_url(path='js/theme-toggle.js') }}"></script>
   <script defer src="{{ get_url(path='js/search.js') }}"></script>
   <script defer src="{{ get_url(path='js/mermaid-loader.js') }}"></script>
+  <script defer src="{{ get_url(path='js/toc-highlight.js') }}"></script>
+  <script defer src="{{ get_url(path='js/sidebar.js') }}"></script>
 
   {% block body_extra %}{% endblock body_extra %}
 </body>

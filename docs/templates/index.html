@@ -2,55 +2,78 @@
 
 {% block title %}{{ config.title }} — {{ config.description }}{% endblock title %}
 
-{% block head_extra %}
-<style>.hero-shader--fallback{background:radial-gradient(ellipse at 50% 40%,oklch(0.35 0.18 320) 0%,oklch(0.20 0.10 300) 30%,oklch(0.11 0.02 280) 70%)}</style>
-{% endblock head_extra %}
-
 {% block content %}
 <main id="main-content">
-  <section class="hero">
-    <div class="hero-shader" id="hero-shader"></div>
+  <section class="hero hero--home">
+    <!-- Brand stage: the gradient paints immediately; the nebula shader
+         enhances on top when WebGL + motion are available. -->
+    <div class="hero-shader hero-shader--fallback" id="hero-shader"></div>
     <div class="hero-shader__overlay"></div>
-    <h1 class="hero__title gradient-text">Hypercolor</h1>
+
+    <div class="hero__lockup">
+      <img
+        class="hero__lockup-img"
+        src="{{ get_url(path='img/brand/mark-512.png') }}"
+        srcset="{{ get_url(path='img/brand/mark-256.png') }} 256w, {{ get_url(path='img/brand/mark-512.png') }} 512w"
+        sizes="(max-width: 768px) 120px, 160px"
+        width="160"
+        height="160"
+        alt="Hypercolor"
+        fetchpriority="high"
+      >
+    </div>
+
+    <h1 class="hero__title gradient-text"><span class="hero__title-hyper">hyper</span><span class="hero__title-color">color</span></h1>
+
     <p class="hero__tagline">RGB lighting orchestration for Linux. Open source, Rust-powered, endlessly extensible.</p>
+
     <div class="hero__actions">
-      <a class="btn btn--primary" href="{{ get_url(path='@/guide/_index.md') }}">Get Started</a>
-      <a class="btn btn--secondary" href="{{ config.extra.github_url }}" target="_blank" rel="noopener noreferrer">GitHub</a>
+      <a class="btn btn--primary" href="{{ config.base_url | safe }}/guide/">Get Started</a>
+      <a class="btn btn--secondary" href="{{ config.base_url | safe }}/effects/">Build an Effect</a>
+      <a class="btn btn--ghost" href="{{ config.extra.github_url }}" target="_blank" rel="noopener noreferrer">GitHub</a>
     </div>
   </section>
 
   <section class="features">
-    <div class="feature-grid">
-      <div class="feature-card">
+    <h2 class="features__heading">Three front doors</h2>
+    <div class="feature-grid feature-grid--doors">
+      <a class="feature-card feature-card--door" href="{{ config.base_url | safe }}/guide/">
+        <div class="feature-card__icon">&#128218;</div>
+        <h3 class="feature-card__title">Guide</h3>
+        <p class="feature-card__desc">Install the daemon, connect your first device, and light up your rig in minutes.</p>
+        <span class="feature-card__cta">Start here &rarr;</span>
+      </a>
+      <a class="feature-card feature-card--door" href="{{ config.base_url | safe }}/effects/">
         <div class="feature-card__icon">&#127912;</div>
-        <h3 class="feature-card__title">HTML Effect Engine</h3>
-        <p class="feature-card__desc">Author effects with HTML Canvas, WebGL, or the TypeScript SDK. Full creative freedom.</p>
-      </div>
-      <div class="feature-card">
+        <h3 class="feature-card__title">Effects</h3>
+        <p class="feature-card__desc">Author HTML Canvas, WebGL, and audio-reactive effects with the TypeScript SDK.</p>
+        <span class="feature-card__cta">Create &rarr;</span>
+      </a>
+      <a class="feature-card feature-card--door" href="{{ config.base_url | safe }}/agents/">
+        <div class="feature-card__icon">&#129302;</div>
+        <h3 class="feature-card__title">Agents &amp; MCP</h3>
+        <p class="feature-card__desc">Drive your lighting from AI agents over the MCP server: 16 tools, 5 resources.</p>
+        <span class="feature-card__cta">Automate &rarr;</span>
+      </a>
+    </div>
+
+    <h2 class="features__heading">Go deeper</h2>
+    <div class="feature-grid">
+      <a class="feature-card" href="{{ config.base_url | safe }}/studio/">
+        <div class="feature-card__icon">&#127917;</div>
+        <h3 class="feature-card__title">Studio</h3>
+        <p class="feature-card__desc">Compose your whole rig with the Scene, Zone, Layers, and Layout model.</p>
+      </a>
+      <a class="feature-card" href="{{ config.base_url | safe }}/hardware/">
         <div class="feature-card__icon">&#128268;</div>
-        <h3 class="feature-card__title">Universal Hardware</h3>
-        <p class="feature-card__desc">Razer, Corsair, ASUS, WLED, and more. One engine to rule them all.</p>
-      </div>
-      <div class="feature-card">
-        <div class="feature-card__icon">&#127925;</div>
-        <h3 class="feature-card__title">Audio Reactive</h3>
-        <p class="feature-card__desc">Beat detection, FFT analysis, mel bands. Your lights dance to the music.</p>
-      </div>
-      <div class="feature-card">
-        <div class="feature-card__icon">&#128506;</div>
-        <h3 class="feature-card__title">Spatial Mapping</h3>
-        <p class="feature-card__desc">Map effects across your entire setup. Room-scale lighting choreography.</p>
-      </div>
-      <div class="feature-card">
-        <div class="feature-card__icon">&#128421;</div>
-        <h3 class="feature-card__title">Linux Native</h3>
-        <p class="feature-card__desc">Built for Linux from day one. D-Bus, systemd, Wayland: first-class integration.</p>
-      </div>
-      <div class="feature-card">
+        <h3 class="feature-card__title">Hardware</h3>
+        <p class="feature-card__desc">Razer, Corsair, ASUS, WLED, Hue, Nanoleaf, Govee, and more. One engine.</p>
+      </a>
+      <a class="feature-card" href="{{ config.base_url | safe }}/api/">
         <div class="feature-card__icon">&#9889;</div>
-        <h3 class="feature-card__title">Wicked Fast</h3>
-        <p class="feature-card__desc">60fps render loop in Rust. Zero-copy frame encoding. Sub-millisecond latency.</p>
-      </div>
+        <h3 class="feature-card__title">API</h3>
+        <p class="feature-card__desc">REST + WebSocket on :9420. A 60fps render loop in Rust, sub-millisecond latency.</p>
+      </a>
     </div>
   </section>
 </main>

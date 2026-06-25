@@ -1,0 +1,36 @@
+# Netlify deploy for the Hypercolor documentation site (Zola).
+# Connect a Netlify site to this repo; `base` scopes the build to docs/.
+# Point the custom domain docs.hypercolor.lighting at this site.
+
+[build]
+  base = "docs"
+  publish = "public"
+  command = "zola build"
+
+[build.environment]
+  ZOLA_VERSION = "0.22.1"
+
+# Per-context base URLs so internal links + canonical resolve correctly:
+# production uses the canonical domain, previews/branches use their own URL.
+[context.production]
+  command = "zola build --base-url $URL"
+
+[context.deploy-preview]
+  command = "zola build --base-url $DEPLOY_PRIME_URL"
+
+[context.branch-deploy]
+  command = "zola build --base-url $DEPLOY_PRIME_URL"
+
+# Long-cache the immutable image assets.
+[[headers]]
+  for = "/img/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+# Baseline security headers for all responses.
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "SAMEORIGIN"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"

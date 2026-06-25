@@ -1,6 +1,6 @@
 title = "Hypercolor"
 description = "Open-source RGB lighting orchestration engine for Linux"
-base_url = "https://hyperb1iss.github.io/hypercolor"
+base_url = "https://docs.hypercolor.lighting"
 compile_sass = true
 build_search_index = true
 generate_feeds = false
@@ -14,6 +14,8 @@ include_content = true
 
 [markdown]
 smart_punctuation = true
+insert_anchor_links = "left"
+bottom_footnotes = true
 
 [markdown.highlighting]
 enabled = true
@@ -23,3 +25,62 @@ theme = "one-dark-pro"
 github_url = "https://github.com/hyperb1iss/hypercolor"
 license = "Apache-2.0"
 author = "Stefanie Jane"
+
+# Top navigation — the 11 doc front doors, in order. Plain url paths (not
+# @/…_index.md colocation lookups) so the build never trips on a section that
+# is still being authored (e.g. agents/). `prefix` drives the active-link
+# highlight via current_path matching.
+[[extra.menu]]
+name = "Home"
+url = "/"
+prefix = "$home"
+
+[[extra.menu]]
+name = "Guide"
+url = "/guide/"
+prefix = "/guide/"
+
+[[extra.menu]]
+name = "Studio"
+url = "/studio/"
+prefix = "/studio/"
+
+[[extra.menu]]
+name = "Effects"
+url = "/effects/"
+prefix = "/effects/"
+
+[[extra.menu]]
+name = "Agents & MCP"
+url = "/agents/"
+prefix = "/agents/"
+
+[[extra.menu]]
+name = "API"
+url = "/api/"
+prefix = "/api/"
+
+[[extra.menu]]
+name = "Hardware"
+url = "/hardware/"
+prefix = "/hardware/"
+
+[[extra.menu]]
+name = "Troubleshooting"
+url = "/troubleshooting/"
+prefix = "/troubleshooting/"
+
+[[extra.menu]]
+name = "Architecture"
+url = "/architecture/"
+prefix = "/architecture/"
+
+[[extra.menu]]
+name = "Contributing"
+url = "/contributing/"
+prefix = "/contributing/"
+
+[[extra.menu]]
+name = "Theme"
+url = "/theme/"
+prefix = "/theme/"

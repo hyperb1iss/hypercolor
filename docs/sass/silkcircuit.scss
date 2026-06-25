@@ -46,7 +46,7 @@
   @include glass;
   border-top: 1px solid var(--border-subtle);
 
-  // Animated gradient divider — oracle flow
+  // Animated gradient divider — oracle flow, purple-only chrome
   &::before {
     content: '';
     display: block;
@@ -54,9 +54,9 @@
     background: linear-gradient(
       90deg,
       transparent 0%,
-      oklch(0.65 0.30 320) 20%,
-      oklch(0.88 0.18 175) 50%,
-      oklch(0.65 0.30 320) 80%,
+      var(--accent) 20%,
+      var(--accent-hover) 50%,
+      var(--accent) 80%,
       transparent 100%
     );
     background-size: 200% 100%;
@@ -76,14 +76,14 @@
   }
 
   a {
-    color: oklch(0.88 0.18 175);
+    color: var(--accent);
     transition:
       color var(--duration-medium) var(--ease-smooth),
       text-shadow var(--duration-medium) var(--ease-smooth);
 
     &:hover {
-      color: var(--accent);
-      text-shadow: 0 0 12px oklch(0.65 0.30 320 / 0.25);
+      color: var(--accent-hover);
+      text-shadow: 0 0 12px var(--glow-accent-50);
     }
   }
 }

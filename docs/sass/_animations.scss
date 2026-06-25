@@ -40,19 +40,26 @@
 @keyframes breathe {
   0%, 100% {
     box-shadow:
-      0 0 20px oklch(0.65 0.30 320 / 0.08),
-      0 0 2px oklch(0.65 0.30 320 / 0.12);
+      0 0 20px var(--ambient-glow),
+      0 0 2px var(--glow-accent-50);
   }
   50% {
     box-shadow:
-      0 0 32px oklch(0.65 0.30 320 / 0.18),
-      0 0 4px oklch(0.65 0.30 320 / 0.25);
+      0 0 32px var(--glow-accent-50),
+      0 0 4px var(--glow-accent-50);
   }
 }
 
+// Lockup glow — drop-shadow breathing for the transparent brand PNG. Uses
+// filter (not box-shadow) so the halo follows the art's alpha, no rectangle.
+@keyframes lockupGlow {
+  0%, 100% { filter: drop-shadow(0 0 28px var(--glow-accent-50)); }
+  50%      { filter: drop-shadow(0 0 48px var(--glow-accent-70)); }
+}
+
 @keyframes borderGlow {
-  0%, 100% { border-color: oklch(0.65 0.30 320 / 0.12); }
-  50%      { border-color: oklch(0.70 0.30 320); }
+  0%, 100% { border-color: var(--accent-muted); }
+  50%      { border-color: var(--accent-hover); }
 }
 
 @keyframes dotPulse {
@@ -61,11 +68,11 @@
 }
 
 @keyframes edgeShimmer {
-  0%   { border-color: oklch(1 0 0 / 0.06); }
-  25%  { border-color: oklch(0.65 0.30 320 / 0.12); }
-  50%  { border-color: oklch(0.70 0.30 320); }
-  75%  { border-color: oklch(0.65 0.30 320 / 0.12); }
-  100% { border-color: oklch(1 0 0 / 0.06); }
+  0%   { border-color: var(--border-subtle); }
+  25%  { border-color: var(--accent-muted); }
+  50%  { border-color: var(--accent-hover); }
+  75%  { border-color: var(--accent-muted); }
+  100% { border-color: var(--border-subtle); }
 }
 
 // Oracle Flow — gradient position animation (footer divider)
@@ -85,8 +92,16 @@
 // Utility Classes
 // ---------------------------------------------------------------------------
 
+// Brand-only utility — reserved for the hero/logo wordmark, the one
+// sanctioned place a multi-hue sweep is allowed. Do not apply to chrome.
 .gradient-text {
-  background: linear-gradient(135deg, var(--accent), oklch(0.88 0.18 175));
+  background: linear-gradient(
+    135deg,
+    oklch(0.70 0.30 320) 0%,
+    oklch(0.88 0.18 175) 50%,
+    oklch(0.65 0.30 320) 100%
+  );
+  background-size: 200% 200%;
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
@@ -114,6 +129,10 @@
 // Reduced Motion — disable all animations and backdrop effects
 // ---------------------------------------------------------------------------
 
+// Suppress every continuous + entrance animation (breathe, oracle-flow,
+// pulse-glow, fadeInUp, scaleIn, …), the noise overlay, and glass blur.
+// Any new continuous/entrance animation is covered by the universal rule;
+// no per-keyframe opt-out needed.
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -121,6 +140,8 @@
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
   }
 
   body::after {

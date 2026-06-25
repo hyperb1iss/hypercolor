@@ -5,11 +5,16 @@
   let index = null, debounceTimer = null, activeIdx = -1;
   const isMac = navigator.platform.toUpperCase().includes('MAC');
 
+  // Index URL is injected by base.html via Zola get_url() so it resolves
+  // under any base_url (GitHub Pages sub-path, custom domain). Falls back to
+  // the root-relative path only if the attribute is absent.
+  const indexUrl = document.body.getAttribute('data-search-index') || '/search_index.en.js';
+
   const loadIndex = () => {
     if (index) return Promise.resolve();
     return new Promise((resolve, reject) => {
       const s = document.createElement('script');
-      s.src = '/search_index.en.js';
+      s.src = indexUrl;
       s.onload = () => window.elasticlunr
         ? (index = elasticlunr.Index.load(window.searchIndex), resolve())
         : reject(new Error('No elasticlunr'));

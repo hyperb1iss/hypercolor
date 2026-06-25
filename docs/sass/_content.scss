@@ -15,14 +15,14 @@
     margin: 0 0 16px;
   }
 
-  // ── H1 — gradient text, accent → cyan ──────────────────────
+  // ── H1 — purple-only gradient (chrome discipline) ──────────
 
   h1 {
     font-size: 2rem;
     font-weight: 800;
     margin-bottom: 16px;
     letter-spacing: -0.02em;
-    background: linear-gradient(135deg, var(--accent), oklch(0.88 0.18 175));
+    background: linear-gradient(135deg, var(--accent), var(--accent-hover));
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
@@ -67,10 +67,10 @@
     color: var(--text-primary);
   }
 
-  // ── Links — cyan, hover → accent purple ────────────────────
+  // ── Links — purple resting, purple underline-grow on hover ──
 
   a {
-    color: oklch(0.88 0.18 175); // cyan
+    color: var(--accent);
     text-decoration: none;
     background-image: linear-gradient(var(--accent), var(--accent));
     background-size: 0% 1px;
@@ -82,17 +82,19 @@
       text-shadow var(--duration-medium) var(--ease-smooth);
 
     &:hover {
-      color: var(--accent);
+      color: var(--accent-hover);
       background-size: 100% 1px;
-      text-shadow: 0 0 12px oklch(0.65 0.30 320 / 0.20);
+      text-shadow: 0 0 12px var(--glow-accent-50);
     }
   }
 
   // ── Inline Code — sunken bg, coral text ────────────────────
+  // Coral is a sanctioned "code is special" semantic, not chrome. Routed
+  // through the palette token so it swaps with the theme.
 
   :not(pre) > code {
     background: var(--surface-sunken);
-    color: oklch(0.72 0.22 350); // coral
+    color: var(--color-coral);
     border-radius: $radius-sm;
     padding: 2px 6px;
     font-size: 0.9em;
@@ -117,7 +119,7 @@
 
     &:hover {
       border-color: var(--border-default);
-      box-shadow: 0 0 12px oklch(0.65 0.30 320 / 0.06),
+      box-shadow: 0 0 12px var(--ambient-glow),
                   0 0 1px var(--border-default),
                   inset 0 1px 0 oklch(1 0 0 / 0.04);
     }
@@ -173,8 +175,8 @@
       box-shadow var(--duration-medium) var(--ease-smooth);
 
     &:hover {
-      border-left-color: oklch(0.88 0.18 175);
-      box-shadow: -2px 0 12px oklch(0.88 0.18 175 / 0.10);
+      border-left-color: var(--accent-hover);
+      box-shadow: -2px 0 12px var(--ambient-glow);
     }
 
     p {
@@ -221,7 +223,7 @@
     transition: box-shadow var(--duration-medium) var(--ease-smooth);
 
     &:hover {
-      box-shadow: 0 0 24px oklch(0.65 0.30 320 / 0.10);
+      box-shadow: 0 0 24px var(--ambient-glow);
     }
   }
 }

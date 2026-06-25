@@ -24,9 +24,11 @@
   // Apply immediately — no waiting for DOMContentLoaded
   apply(getPreferred());
 
+  // The sun/moon SVGs in the nav are shown/hidden by CSS keyed on
+  // [data-theme] \u2014 never mutate the button's contents here, or the icons
+  // get nuked. Only the accessible label needs to track state.
   const updateButton = (btn, theme) => {
     const isDark = theme === DARK;
-    btn.textContent = isDark ? '\u2600\uFE0F' : '\uD83C\uDF19';
     btn.setAttribute('aria-label', isDark ? 'Switch to light mode' : 'Switch to dark mode');
   };
 

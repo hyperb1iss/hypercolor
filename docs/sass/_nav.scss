@@ -54,13 +54,13 @@
 
   &:hover {
     .nav-title__hyper {
-      filter: drop-shadow(0 0 8px oklch(0.65 0.30 320 / 0.40));
+      filter: drop-shadow(0 0 8px var(--glow-accent-50));
       animation-duration: 3s;
     }
 
     .nav-title__color {
-      color: oklch(0.88 0.18 175);
-      text-shadow: 0 0 12px oklch(0.88 0.18 175 / 0.30);
+      color: var(--accent);
+      text-shadow: 0 0 12px var(--glow-accent-50);
     }
   }
 }
@@ -93,10 +93,10 @@
     box-shadow var(--duration-medium) var(--ease-smooth);
 
   &:hover {
-    color: var(--text-primary);
-    background: oklch(0.88 0.18 175 / 0.06);
-    text-shadow: 0 0 16px oklch(0.88 0.18 175 / 0.25);
-    box-shadow: 0 0 12px oklch(0.88 0.18 175 / 0.06);
+    color: var(--accent);
+    background: var(--accent-subtle);
+    text-shadow: 0 0 16px var(--glow-accent-50);
+    box-shadow: 0 0 12px var(--ambient-glow);
   }
 
   &--active {
@@ -111,7 +111,7 @@
       height: 2px;
       background: var(--accent);
       border-radius: 1px;
-      box-shadow: 0 0 8px oklch(0.65 0.30 320 / 0.40);
+      box-shadow: 0 0 8px var(--glow-accent-50);
     }
   }
 }
@@ -147,8 +147,8 @@
   &:hover {
     border-color: var(--border-default);
     color: var(--text-secondary);
-    box-shadow: 0 0 10px oklch(0.65 0.30 320 / 0.06);
-    background: oklch(0.65 0.30 320 / 0.04);
+    box-shadow: 0 0 10px var(--ambient-glow);
+    background: var(--accent-subtle);
   }
 
   kbd {
@@ -188,7 +188,7 @@
     color: var(--accent);
     background: var(--accent-subtle);
     border-color: var(--accent-muted);
-    box-shadow: 0 0 14px oklch(0.65 0.30 320 / 0.18);
+    box-shadow: 0 0 14px var(--glow-accent-50);
   }
 
   &:active {
@@ -203,6 +203,28 @@
 [data-theme="light"] .theme-toggle {
   .theme-toggle__sun  { display: none; }
   .theme-toggle__moon { display: block; }
+}
+
+// ── GitHub Icon Link — purple-only chrome ────────────────────
+
+.nav-github {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  color: var(--text-secondary);
+  border-radius: $radius-sm;
+  transition:
+    color var(--duration-medium) var(--ease-smooth),
+    background var(--duration-medium) var(--ease-smooth),
+    box-shadow var(--duration-medium) var(--ease-smooth);
+
+  &:hover {
+    color: var(--accent);
+    background: var(--accent-subtle);
+    box-shadow: 0 0 14px var(--glow-accent-50);
+  }
 }
 
 // ── Nav Logo ─────────────────────────────────────────────────
@@ -236,7 +258,7 @@
 
   &:hover {
     border-color: var(--border-default);
-    box-shadow: 0 0 10px oklch(0.65 0.30 320 / 0.08);
+    box-shadow: 0 0 10px var(--ambient-glow);
   }
 
   span {

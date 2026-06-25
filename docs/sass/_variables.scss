@@ -9,12 +9,12 @@
 // Font Stacks (SCSS variables — referenced in mixins/partials)
 // ---------------------------------------------------------------------------
 
-$font-sans:    'Inter', system-ui, -apple-system, sans-serif;
+$font-sans:    'Satoshi', 'Inter', system-ui, -apple-system, sans-serif;
 $font-mono:    'JetBrains Mono', 'Fira Code', 'SF Mono', ui-monospace, monospace;
-$font-display: 'Inter', system-ui, sans-serif;
+$font-display: 'Satoshi', system-ui, sans-serif;
 
-// NOTE: The app uses Satoshi as primary. It's not on Google Fonts — self-host
-// later. Inter serves as the stand-in and is visually close.
+// Satoshi + JetBrains Mono load via Bunny Fonts in base.html — the app's exact
+// source (crates/hypercolor-ui/index.html). Inter stays as the local fallback.
 
 // ---------------------------------------------------------------------------
 // Breakpoints
@@ -28,10 +28,13 @@ $bp-desktop: 1280px;
 // Radii
 // ---------------------------------------------------------------------------
 
-$radius-sm:  6px;
-$radius-md: 10px;
-$radius-lg: 14px;
-$radius-xl: 20px;
+// Canonical Luminary radii — sharp. 8px is the largest corner in the product
+// (DESIGN-SYSTEM §3.1). Pills 999px, circles 50%, nothing between.
+$radius-sm:  2px;
+$radius-md:  4px;
+$radius-lg:  6px;
+$radius-xl:  8px;
+$radius-pill: 999px;
 
 // ---------------------------------------------------------------------------
 // Motion (SCSS vars for shorthand use — also declared as CSS custom props)
@@ -85,10 +88,11 @@ $duration-slow:   400ms;
   --duration-slow:   #{$duration-slow};
 
   // ── Radii ───────────────────────────────────────────────────
-  --radius-sm: #{$radius-sm};
-  --radius-md: #{$radius-md};
-  --radius-lg: #{$radius-lg};
-  --radius-xl: #{$radius-xl};
+  --radius-sm:   #{$radius-sm};
+  --radius-md:   #{$radius-md};
+  --radius-lg:   #{$radius-lg};
+  --radius-xl:   #{$radius-xl};
+  --radius-pill: #{$radius-pill};
 
   // ── Surfaces ────────────────────────────────────────────────
   --surface-base:    oklch(0.110 0.020 280);
@@ -111,9 +115,9 @@ $duration-slow:   400ms;
   --text-tertiary:   oklch(0.52 0.04 280);
 
   // ── Borders ─────────────────────────────────────────────────
-  --border-subtle:   oklch(1 0 0 / 0.06);
-  --border-default:  oklch(1 0 0 / 0.10);
-  --border-strong:   oklch(1 0 0 / 0.16);
+  --border-subtle:   oklch(1 0 0 / 0.10);
+  --border-default:  oklch(1 0 0 / 0.16);
+  --border-strong:   oklch(1 0 0 / 0.22);
   --border-focus:    oklch(0.88 0.18 175 / 0.40);
 
   // ── Accent ──────────────────────────────────────────────────
@@ -121,6 +125,9 @@ $duration-slow:   400ms;
   --accent-hover:    oklch(0.70 0.30 320);
   --accent-muted:    oklch(0.65 0.30 320 / 0.12);
   --accent-subtle:   oklch(0.65 0.30 320 / 0.06);
+
+  // ── Text inverse — on-accent / skip-link text ──────────────
+  --text-inverse:    oklch(0.110 0.020 280);
 
   // ── SilkCircuit Palette ─────────────────────────────────────
   --color-purple:    oklch(0.65 0.30 320);
@@ -137,15 +144,35 @@ $duration-slow:   400ms;
   --status-warning:  oklch(0.93 0.15 105);
   --status-info:     oklch(0.72 0.12 260);
 
-  // ── Scrollbar ───────────────────────────────────────────────
-  --scrollbar-thumb: oklch(0.65 0.30 320 / 0.15);
-  --scrollbar-hover: oklch(0.65 0.30 320 / 0.30);
+  // ── Ambient reactivity — hue 320 (purple) is the static fallback;
+  //    a future hero shader could write --ambient-hue to make the docs
+  //    literally ambient-reactive. Until then it's a no-op purple tint.
+  --ambient-hue:     320;
+  --ambient-glow:    oklch(0.65 0.20 var(--ambient-hue) / 0.08);
+  --ambient-border:  oklch(0.65 0.20 var(--ambient-hue) / 0.15);
+  --ambient-tint:    oklch(0.65 0.20 var(--ambient-hue) / 0.04);
 
-  // ── Interactive Glows ───────────────────────────────────────
+  // ── Scrollbar — ambient-tinted, low chroma so it reads as chrome ──
+  --scrollbar-thumb: oklch(0.65 0.10 var(--ambient-hue) / 0.18);
+  --scrollbar-hover: oklch(0.65 0.12 var(--ambient-hue) / 0.32);
+
+  // ── Interactive Glows — purple accent ladder + cyan focus (dark) ──
   --glow-accent:     oklch(0.65 0.30 320);
+  --glow-accent-50:  oklch(0.65 0.30 320 / 0.5);
+  --glow-accent-70:  oklch(0.65 0.30 320 / 0.7);
+  --glow-accent-80:  oklch(0.65 0.30 320 / 0.8);
   --glow-focus:      oklch(0.88 0.18 175 / 0.30);
   --glow-focus-soft: oklch(0.88 0.18 175 / 0.15);
   --selection-bg:    oklch(0.65 0.30 320 / 0.25);
+
+  // ── Brand Stage — the canonical hypercolor "lit in a real room"
+  //    surface the logo lands on. Drives the hero background.
+  --brand-stage-inner:   oklch(0.250 0.130 295);
+  --brand-stage-outer:   oklch(0.100 0.020 285);
+  --gradient-brand-stage:
+    radial-gradient(ellipse at center top,
+      var(--brand-stage-inner) 0%,
+      var(--brand-stage-outer) 70%);
 
   // ── Noise ───────────────────────────────────────────────────
   --noise-opacity:   0.014;
@@ -175,11 +202,12 @@ $duration-slow:   400ms;
   --text-primary:    oklch(0.18 0.02 280);
   --text-secondary:  oklch(0.42 0.03 280);
   --text-tertiary:   oklch(0.58 0.02 280);
+  --text-inverse:    oklch(0.985 0.005 280);
 
   // Borders
-  --border-subtle:   oklch(0 0 0 / 0.06);
-  --border-default:  oklch(0 0 0 / 0.10);
-  --border-strong:   oklch(0 0 0 / 0.18);
+  --border-subtle:   oklch(0 0 0 / 0.10);
+  --border-default:  oklch(0 0 0 / 0.16);
+  --border-strong:   oklch(0 0 0 / 0.24);
   --border-focus:    oklch(0.65 0.30 320 / 0.50);
 
   // Accent (desaturated for light backgrounds)
@@ -188,9 +216,40 @@ $duration-slow:   400ms;
   --accent-muted:    oklch(0.58 0.28 320 / 0.10);
   --accent-subtle:   oklch(0.58 0.28 320 / 0.05);
 
+  // Status (darkened for contrast on light surfaces)
+  --status-success:  oklch(0.55 0.18 155);
+  --status-error:    oklch(0.55 0.22 25);
+  --status-warning:  oklch(0.58 0.14 85);
+  --status-info:     oklch(0.50 0.12 260);
+
+  // Palette hues the theme paints with (tip callout, inline code) darkened
+  // so they stay readable on bright surfaces. Tier-1 primaries otherwise
+  // stay invariant.
+  --color-cyan:      oklch(0.58 0.13 195);
+  --color-coral:     oklch(0.55 0.20 350);
+
+  // Ambient (lower intensity on light)
+  --ambient-glow:    oklch(0.58 0.15 var(--ambient-hue) / 0.06);
+  --ambient-border:  oklch(0.58 0.15 var(--ambient-hue) / 0.12);
+  --ambient-tint:    oklch(0.58 0.15 var(--ambient-hue) / 0.03);
+
   // Scrollbar
   --scrollbar-thumb: oklch(0 0 0 / 0.12);
   --scrollbar-hover: oklch(0 0 0 / 0.24);
+
+  // Interactive Glows — purple focus in light mode; accent ladder
+  // tracks the desaturated light accent.
+  --glow-accent:     oklch(0.58 0.28 320);
+  --glow-accent-50:  oklch(0.58 0.28 320 / 0.5);
+  --glow-accent-70:  oklch(0.58 0.28 320 / 0.7);
+  --glow-accent-80:  oklch(0.58 0.28 320 / 0.8);
+  --glow-focus:      oklch(0.58 0.28 320 / 0.35);
+  --glow-focus-soft: oklch(0.58 0.28 320 / 0.18);
+  --selection-bg:    oklch(0.58 0.28 320 / 0.22);
+
+  // Brand Stage (lighter so the hero reads on a bright page)
+  --brand-stage-inner: oklch(0.92 0.06 300);
+  --brand-stage-outer: oklch(0.985 0.005 280);
 
   // Noise
   --noise-opacity:   0.006;

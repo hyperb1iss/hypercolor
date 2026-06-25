@@ -22,13 +22,8 @@
 // ---------------------------------------------------------------------------
 
 @media (max-width: $bp-mobile - 1px) {
-  .site-sidebar {
-    display: none;
-
-    &.is-open {
-      display: block;
-    }
-  }
+  // Drawer visibility is driven by the translateX transform in _sidebar.scss
+  // (.site-sidebar--open), not display — keeps the slide-in animation intact.
 
   .site-toc {
     display: none;
