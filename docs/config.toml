@@ -1,6 +1,6 @@
 title = "Hypercolor"
 description = "Open-source RGB lighting orchestration engine for Linux"
-base_url = "https://docs.hypercolor.lighting"
+base_url = "https://hyperb1iss.github.io/hypercolor"
 compile_sass = true
 build_search_index = true
 generate_feeds = false
