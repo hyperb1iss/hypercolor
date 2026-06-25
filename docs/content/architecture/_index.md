@@ -1,226 +1,190 @@
 +++
-title = "Architecture"
-description = "System design, crate structure, and key technical decisions"
+title = "Architecture overview"
+description = "Crate graph, render pipeline, SparkleFlinger compositor, adaptive FPS tiers, and the 640x480 canvas."
+weight = 80
 sort_by = "weight"
 template = "section.html"
 +++
 
-Hypercolor is a daemon-first lighting engine. A background service runs the render thread, composes frames through **SparkleFlinger**, manages device connections, and exposes control interfaces. Clients (web UI, TUI, CLI, AI assistants) connect to the daemon — they never talk to hardware directly.
+Hypercolor is a daemon-first RGB lighting engine. A background service owns the render thread, manages hardware connections, and exposes REST, WebSocket, and MCP interfaces. Clients — the web UI, TUI, CLI, and AI assistants — connect to the daemon and never touch hardware directly.
 
-## System Overview
+This section goes deep on how that works: the crate boundaries that keep the system coherent, the frame pipeline that turns effect output into per-LED colors, the compositor that blends multiple producers, and the renderer paths available to effect authors.
+
+## In this section
+
+- [Render pipeline](@/architecture/render-pipeline.md) — Frame lifecycle from input sampling through SparkleFlinger composition to device write.
+- [Event bus](@/architecture/event-bus.md) — How broadcast and watch channels serve different data-freshness contracts across all subscribers.
+- [Renderer internals](@/architecture/renderer-internals.md) — Deep dive on the Servo HTML path, the native Rust path, the display-face variant, and the GPU acceleration roadmap.
+
+---
+
+## Crate graph
+
+The project is split into focused crates with strict one-way dependency boundaries. The shared vocabulary lives at the bottom; application binaries sit at the top and never import each other.
 
 {% mermaid() %}
-graph TB
-subgraph Input Sources
-A1[Audio FFT]
-A2[Screen Capture]
-A3[MIDI]
-end
-
-    subgraph Effect Engine
-        B1[HTML/Canvas/WebGL<br/>Servo Path]
-        B2[wgpu Native<br/>Shader Path]
-    end
-
-    subgraph Daemon Core
-        SF[SparkleFlinger<br/>compositor]
-        C[Spatial Sampler<br/>composed frame → LEDs]
-        D[Event Bus<br/>tokio broadcast/watch]
-        E[Device Registry]
-    end
-
-    subgraph Device Backends
-        F1[Razer USB HID]
-        F2[Corsair USB HID]
-        F3[ASUS USB/I2C]
-        F4[PrismRGB USB HID]
-        F5[WLED UDP DDP]
-        F6[Hue / Nanoleaf REST]
-        F7[QMK USB HID]
-        F8[Lian Li USB HID]
-        F9[Govee LAN / Cloud]
-        F10[Dygma USB Serial<br/>⚠ blocked]
-    end
-
-    subgraph Client Interfaces
-        G1[Web UI<br/>Leptos WASM]
-        G2[TUI<br/>Ratatui]
-        G3[CLI<br/>hypercolor]
-        G4[MCP Server<br/>AI Assistants]
-    end
-
-    A1 --> B1
-    A1 --> B2
-    A2 --> B1
-    A3 --> B1
-
-    B1 -->|surface| SF
-    B2 -->|surface| SF
-    SF -->|composed frame| C
-    C -->|per-zone colors| E
-    E --> F1
-    E --> F2
-    E --> F3
-    E --> F4
-    E --> F5
-    E --> F6
-    E --> F7
-    E --> F8
-    E --> F9
-    E --> F10
-
-    D <--> G1
-    D <--> G2
-    D <--> G3
-    D <--> G4
-
-    C -.->|frame data| D
-    E -.->|device events| D
-
+graph TD
+    T[hypercolor-types] --> HAL[hypercolor-hal]
+    T --> CORE[hypercolor-core]
+    T --> LGI[hypercolor-linux-gpu-interop]
+    T --> WPI[hypercolor-windows-pawnio]
+    HAL --> CORE
+    LGI --> CORE
+    WPI --> CORE
+    T & CORE --> DAPI[hypercolor-driver-api]
+    DAPI --> HUE[hypercolor-driver-hue]
+    DAPI --> NL[hypercolor-driver-nanoleaf]
+    DAPI --> WLED[hypercolor-driver-wled]
+    DAPI --> GV[hypercolor-driver-govee]
+    DAPI --> NET[hypercolor-network]
+    HAL & HUE & NL & WLED & GV --> DB[hypercolor-driver-builtin]
+    CORE & HAL & DB & NET --> D[hypercolor-daemon]
+    CORE --> CLI[hypercolor-cli]
+    T --> TUI[hypercolor-tui]
+    CORE & T --> TRAY[hypercolor-tray]
+    APP[hypercolor-app] --> D & TRAY
+    T --> UI["hypercolor-ui (excluded from workspace)"]
+    LE[hypercolor-leptos-ext] --> UI & D & TUI
 {% end %}
 
-## Crate Structure
+**Golden rule:** `hypercolor-hal` must never depend on `hypercolor-core` — that would be circular. Network drivers depend on `driver-api`, not on `core` directly.
 
-The project is organized into focused crates with strict dependency boundaries, grouped by layer:
+| Crate | Role |
+|---|---|
+| `hypercolor-types` | Zero-dependency shared vocabulary — canvas, effect, color, and API types |
+| `hypercolor-core` | Engine: render loop, effect registry, SparkleFlinger, spatial sampler, input pipeline, scene management |
+| `hypercolor-hal` | Hardware abstraction: USB/HID/SMBus protocol encoding and transport |
+| `hypercolor-linux-gpu-interop` | Linux zero-copy GL to wgpu texture import; stubbed on other platforms |
+| `hypercolor-windows-pawnio` | Windows SMBus via the PawnIO kernel driver; stubbed on other platforms |
+| `hypercolor-driver-api` | Stable trait boundary between the daemon and all driver implementations |
+| `hypercolor-driver-builtin` | Compile-time bundle of HAL and network drivers, assembled via feature flags |
+| Network drivers | `driver-hue`, `driver-nanoleaf`, `driver-wled`, `driver-govee`, `network` |
+| `hypercolor-daemon` | Daemon binary: render-loop host, REST/WebSocket/MCP server on `:9420` |
+| `hypercolor-cli` | The `hypercolor` CLI binary |
+| `hypercolor-tui` | Ratatui terminal UI library |
+| `hypercolor-tray` | System tray applet |
+| `hypercolor-app` | Unified desktop shell: supervises the daemon, owns the tray, handles autostart |
+| `hypercolor-leptos-ext` | Leptos 0.8 extension helpers for the web UI and TUI |
+| `hypercolor-ui` | Leptos 0.8 CSR web app compiled to WASM via Trunk — excluded from the workspace |
 
-### 💎 Shared Types
-
-| Crate                  | Depends On | Responsibility                                               |
-| ---------------------- | ---------- | ------------------------------------------------------------ |
-| `hypercolor-types`     | (none)     | Zero-dependency shared data vocabulary — import from here, never sibling internals |
-
-### Engine Core
-
-| Crate                  | Depends On        | Responsibility                                                                      |
-| ---------------------- | ----------------- | ----------------------------------------------------------------------------------- |
-| `hypercolor-core`      | `types`           | Render loop, device backends, Servo renderer, event bus, spatial sampler, input pipeline, scenes |
-
-### HAL + Platform Interop
-
-| Crate                           | Depends On | Responsibility                                                           |
-| ------------------------------- | ---------- | ------------------------------------------------------------------------ |
-| `hypercolor-hal`                | `types`    | Hardware abstraction: USB/HID/SMBus protocol encoding and transport       |
-| `hypercolor-linux-gpu-interop`  | `types`    | Linux zero-copy GL→wgpu texture import; stubbed on other platforms *(unsafe boundary)* |
-| `hypercolor-windows-pawnio`     | `types`    | Windows SMBus via the PawnIO kernel driver; stubbed elsewhere *(unsafe boundary)* |
-
-### Driver Layer
-
-| Crate                      | Depends On            | Responsibility                                                               |
-| -------------------------- | --------------------- | ---------------------------------------------------------------------------- |
-| `hypercolor-driver-api`    | `types`, `core`       | Stable trait/type boundary between daemon and drivers                        |
-| `hypercolor-driver-builtin`| `driver-api`, `hal`, network drivers | Compile-time bundle of HAL + network drivers via feature flags |
-
-### Network Driver Layer
-
-| Crate                       | Depends On   | Responsibility                                           |
-| --------------------------- | ------------ | -------------------------------------------------------- |
-| `hypercolor-driver-hue`     | `driver-api` | Philips Hue Bridge driver (Entertainment API over DTLS)  |
-| `hypercolor-driver-nanoleaf`| `driver-api` | Nanoleaf panels driver (HTTP pairing + UDP control)      |
-| `hypercolor-driver-wled`    | `driver-api` | WLED driver (DDP / E1.31 sACN)                           |
-| `hypercolor-driver-govee`   | `driver-api` | Govee driver (LAN UDP + Govee Cloud API)                 |
-| `hypercolor-network`        | `driver-api` | Network driver registry and orchestration                |
-
-### Daemon + API
-
-| Crate                    | Depends On                                                            | Responsibility                                               |
-| ------------------------ | --------------------------------------------------------------------- | ------------------------------------------------------------ |
-| `hypercolor-daemon`      | `types`, `core`, `driver-api`, `network`, `leptos-ext`; optionally `driver-builtin` (hal + drivers) | Daemon binary: render-loop host, REST/WebSocket/MCP server |
-
-### Clients and UIs
-
-| Crate                        | Depends On       | Responsibility                                                                      |
-| ---------------------------- | ---------------- | ----------------------------------------------------------------------------------- |
-| `hypercolor-cli`             | `core`           | The `hypercolor` CLI binary — parsing, output formatting, IPC client                |
-| `hypercolor-tui`             | `types`          | Ratatui terminal UI library, launched via `hypercolor tui`                          |
-| `hypercolor-tray`            | `types`, `core`  | System tray applet binary                                                           |
-| `hypercolor-app`             | `types`, `core`  | Unified desktop app shell: supervises daemon, owns tray, handles autostart          |
-| `hypercolor-leptos-ext`      | (standalone)     | Leptos 0.8 extension helpers for the web UI                                         |
-| `hypercolor-leptos-ext-macros`| (standalone)    | Proc macros powering `hypercolor-leptos-ext`                                        |
-| `hypercolor-ui`              | (standalone)     | Leptos 0.8 CSR web app, compiled to WASM via Trunk — excluded from the workspace   |
-
-{% callout(type="note", title="Unsafe boundary policy") %}
-Application, driver, and domain crates inherit the workspace `unsafe_code = "forbid"` lint.
-The only current opt-outs are `hypercolor-linux-gpu-interop` for Linux GPU surface import
-and `hypercolor-windows-pawnio` for Windows service/process interop. Those crates isolate
-raw platform calls and deny undocumented unsafe blocks.
+{% callout(type="warning") %}
+`hypercolor-ui` targets `wasm32-unknown-unknown` and is excluded from the Cargo workspace. `cargo check --workspace` does not cover it. Build the UI separately with `just ui-dev` or `just ui-build`.
 {% end %}
 
-{% callout(type="warning", title="UI crate exclusion") %}
-`hypercolor-ui` is excluded from the Cargo workspace because it targets `wasm32-unknown-unknown`. Running `cargo check --workspace` does NOT cover it. Build the UI separately with `just ui-dev` or `cd crates/hypercolor-ui && trunk build`.
-{% end %}
+---
 
-## Render Pipeline
+## Render pipeline
 
-The render thread is the heart of the system. It runs on a dedicated OS thread with adaptive FPS (10–60fps across 5 tiers) and drives the pipeline one frame at a time:
+The render thread runs on a dedicated OS thread and drives all frame production. At the start of each frame it samples every input source, runs effect producers, composites their surfaces, maps LED positions, and writes device output — in that order.
 
-1. **Sample inputs** — Collect audio FFT data, screen capture, MIDI events
-2. **Render producers** — The active effect (HTML via Servo or native via wgpu), screen source, and any other producers publish their newest RGBA surface to the queue
-3. **Compose with SparkleFlinger** — The render-thread compositor latches one surface per producer at the frame boundary and blends them into a single canonical frame. Blend modes are `Replace`, `Alpha`, `Add`, and `Screen`, with math in premultiplied linear-light sRGB. A single full-opacity layer takes the bypass fast path — the source surface passes through untouched, with no per-pixel work
-4. **Spatial mapping** — Sample the composed frame at each LED's physical position using bilinear interpolation (or area averaging / Gaussian, configurable per zone)
-5. **Push to devices** — Send per-zone color arrays to hardware backends via their protocol encoders
-6. **Publish state** — Broadcast the frame data and canvas preview on the event bus for UI subscribers
-
-SparkleFlinger is the composition boundary that lets render groups, overlapping zones, and mixed-cadence producers (Servo at 30fps, native at 60fps, screen capture at whatever PipeWire hands us) all flow into a single deadline-driven frame. See `docs/design/30-sparkleflinger-implementation.md` for the shipped invariants.
-
-The canvas defaults to 640×480 and is configurable via `daemon.canvas_width` / `daemon.canvas_height`. Effects render in normalized `[0.0, 1.0]` spatial coordinates, so they stay resolution-independent — tune the canvas to match your sampling needs without touching effect code. Readback cost scales with the canvas (≈1.17 MB/frame at 640×480, still trivially fast). Canvas dimensions retune through the scene transaction path at frame boundaries; target FPS can be retuned live too.
-
-## Dual-Path Effect Engine
-
-Hypercolor supports two rendering paths:
-
-**Servo Path (HTML/Canvas/WebGL)** — The primary authoring path. Uses an embedded Servo browser engine to render HTML effects headlessly. This provides full Canvas 2D and WebGL support, letting effect authors use the entire web platform. The `@hypercolor/sdk` compiles effects to self-contained HTML files that Servo loads and renders.
-
-**wgpu Path (Native Shaders)** — For maximum performance. WGSL compute/render pipelines that bypass the browser engine entirely. Used for effects that need every last drop of GPU throughput.
-
-Both paths produce the same output: an RGBA pixel buffer that feeds into the spatial sampler.
-
-## Event Bus
-
-All frontends subscribe to the same event stream. Two channel types serve different semantics:
-
-**`broadcast::Sender<HypercolorEvent>`** — Every subscriber sees every event. Used for device connect/disconnect, profile changes, errors — events where history matters.
-
-**`watch::Sender<FrameData>`** — Only the latest value matters. Subscribers skip stale frames. Used for LED color data and audio spectrum — where freshness matters more than completeness.
-
-```rust
-pub enum HypercolorEvent {
-    DeviceConnected(DeviceInfo),
-    DeviceDisconnected(String),
-    EffectChanged(String),
-    ProfileLoaded(String),
-    InputSourceAdded(String),
-    Error(String),
-}
+```
+InputManager::sample_all()          → audio FFT, screen capture, MIDI/keyboard
+build_frame_scene_snapshot()        → active scene, effect groups, live control state
+SparkleFlinger::compose_frame()     → blend per-producer surfaces into one canonical RGBA canvas
+SpatialEngine::sample()             → map canvas pixels to LED positions → ZoneColors
+BackendManager::write_frame()       → group by device, queue async protocol sends
+HypercolorBus::publish()            → broadcast frame data, canvas preview, timing metrics
 ```
 
-The daemon runs the core engine. The TUI and CLI connect via HTTP. The web frontend connects via WebSocket. All receive the same events.
+The full lifecycle — with timing budgets, snapshot mechanics, and the zone mapping contract — is detailed in [Render pipeline](@/architecture/render-pipeline.md).
 
-## Spatial Layout Engine
+### The canvas
 
-The spatial engine bridges the gap between the 2D effect canvas and physical LED positions in 3D space.
+All effect paths write into a `Canvas` — a row-major RGBA pixel buffer at a configurable resolution. The default is **640x480**, declared as constants in `hypercolor-types/src/canvas.rs`:
 
-Each device zone defines:
+```rust
+pub const DEFAULT_CANVAS_WIDTH: u32 = 640;
+pub const DEFAULT_CANVAS_HEIGHT: u32 = 480;
+```
 
-- **Position and size** on the canvas (normalized 0-1 coordinates)
-- **LED topology** — strip, matrix, ring, or custom positions
-- **Rotation** — Allows angled placement
-- **LED positions** — Individual LED coordinates within the zone
+At 640x480 the buffer is roughly 1.17 MB per frame. Effects render in normalized `[0.0, 1.0]` spatial coordinates and remain resolution-independent — tune `daemon.canvas_width` / `daemon.canvas_height` in your config for your hardware density without touching effect code. Canvas dimensions retune at frame boundaries via `SceneTransaction::ResizeCanvas`; never hardcode pixel dimensions in effects or drivers.
 
-The sampler uses bilinear interpolation at each LED's canvas position to produce smooth color output even when LEDs are sparse relative to the canvas resolution.
+Sampling from the canvas to LED positions supports three interpolation strategies: nearest-neighbor, bilinear (the default), and area averaging. Bilinear reads 4 surrounding pixels and blends by distance; it is gamma-correct via precomputed sRGB LUTs, which makes it essentially free in the hot path.
 
-## Key Design Decisions
+### SparkleFlinger
 
-| Decision          | Choice                    | Rationale                                                                                                                                                         |
-| ----------------- | ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Language          | Rust                      | Performance (60fps render thread), safety (USB HID), ecosystem (wgpu, Servo, Ratatui)                                                                             |
-| Effect renderer   | wgpu + Servo dual path    | Native performance for new effects + compatibility with existing HTML effects                                                                                     |
-| Frame composition | SparkleFlinger compositor | Decouples producer cadence from frame deadlines; enables render groups, overlapping zones, and mixed-rate sources without coupling composition to the render loop |
-| Web UI            | Leptos 0.8 (WASM)         | Type-safe, fine-grained reactivity, single Rust ecosystem                                                                                                         |
-| Web server        | Axum                      | tokio-native, first-class WebSocket, serves embedded SPA                                                                                                          |
-| TUI               | Ratatui                   | Established ecosystem, true-color LED preview                                                                                                                     |
-| Audio             | cpal + custom FFT         | Cross-platform capture, low-latency processing                                                                                                                    |
-| IPC               | tokio broadcast/watch     | Multi-consumer events + latest-value state for real-time data                                                                                                     |
-| Config            | TOML                      | Rust ecosystem standard, human-readable                                                                                                                           |
-| Wire format       | zerocopy structs          | Zero-allocation frame encoding at 60fps                                                                                                                           |
-| Canvas resolution | 640×480 (configurable)    | Resolution-independent effects render in normalized coords; tune via `daemon.canvas_width` / `canvas_height`                                                      |
-| License           | Apache-2.0                | Permissive open source                                                                                                                                            |
+SparkleFlinger is the frame compositor inside the daemon. Each active producer — an HTML effect running in Servo, a native Rust effect, a screen capture source — publishes its latest surface at its own cadence. SparkleFlinger latches the newest surface per producer at the frame deadline and blends them into one canonical canvas using the configured blend mode and layer transform.
+
+This design decouples producer cadence from the render deadline. Servo might deliver frames at 30 fps while a native effect runs at 60 fps and a screen capture arrives whenever PipeWire hands one over. SparkleFlinger handles all of that without coupling or stalling.
+
+Blend modes available for layer compositing are defined in `BlendMode` (in `hypercolor-types/src/canvas.rs`): `Normal`, `Add`, `Screen`, `Multiply`, `Overlay`, `SoftLight`, `ColorDodge`, and `Difference`. A single full-opacity layer with no transform takes a bypass fast path with no per-pixel work.
+
+### Adaptive FPS: five tiers
+
+The `FpsController` manages frame timing across five `FpsTier` variants, shifting automatically based on measured render performance:
+
+| Tier | FPS | Frame budget |
+|---|---|---|
+| `Minimal` | 10 | 100 ms |
+| `Low` | 20 | 50 ms |
+| `Medium` | 30 | ~33.3 ms |
+| `High` | 45 | ~22.2 ms |
+| `Full` | 60 | ~16.6 ms |
+
+Downshift is aggressive: two consecutive budget misses trigger an immediate drop. Upshift is conservative: the controller requires sustained headroom over a configurable window before stepping up. This prevents oscillation when the system is near a tier boundary.
+
+Never reduce these tier ceilings or default fps values as a workaround. If a frame is taking too long, diagnose the actual bottleneck.
+
+---
+
+## Effect renderer paths
+
+Hypercolor supports two rendering paths, both producing an RGBA `Canvas` that feeds the spatial sampler.
+
+### Servo path (HTML/Canvas/WebGL)
+
+The primary authoring surface. An embedded Servo browser engine runs headlessly on a dedicated worker thread, keeping the `EffectRenderer` trait `Send` while Servo itself stays pinned to one OS thread. Effects are `.html` files that use Canvas 2D, WebGL2, and the `@hypercolor/sdk` JavaScript API.
+
+**Startup cost:** The Servo worker initializes once per daemon session, not per effect load. Initial startup takes a few seconds — subsequent effect loads into the running worker are fast. The circuit breaker tracks consecutive failures with exponential cooldown so transient faults cannot poison the shared worker. A separate `ServoSessionHandle` manages `Idle → Loading → Running` state transitions.
+
+GLSL effects in the SDK compile to WebGL2 and run inside Servo; there is no separate native GLSL lane. The `EffectSource::Shader` variant exists in the type system but bails immediately at renderer creation:
+
+```
+shader effect '<name>' is not runnable yet (source: <path>)
+```
+
+GPU acceleration via wgpu is future work; treat any reference to a "native shader path" as referring to the compiled-in Rust effects, not GPU shaders.
+
+Display-face effects (`EffectCategory::Display`) use a dedicated `ServoRenderer::new_display_face()` constructor. This variant targets LCD surfaces attached to devices and gets a different compositor path through SparkleFlinger. See [Renderer internals](@/architecture/renderer-internals.md) for the display-face render path.
+
+The Servo feature is compile-time gated. Without the `servo` feature in `hypercolor-core`, `EffectSource::Html` effects return an error at renderer creation time and the `web_viewport` builtin is unavailable. Use `just daemon-servo` to run the daemon with Servo enabled.
+
+### Native Rust path
+
+The always-available path. Native effects implement the `EffectRenderer` trait directly in Rust and are compiled into `hypercolor-core/src/effect/builtin/`. They require no GPU and no browser engine.
+
+Registration happens in `core/src/effect/builtin/mod.rs` via `register_builtin_effects()`. The `create_builtin_renderer()` function maps effect name strings — derived from the `EffectSource::Native` path stem — to renderer instances. The native set covers solid fills, gradients, rainbow cycling, breathing, audio-reactive pulse, color waves, color zones, screen cast, media player integration, and calibration patterns. The `web_viewport` builtin is added behind the `servo` feature flag.
+
+See [Renderer internals](@/architecture/renderer-internals.md) for the full `EffectRenderer` trait contract and how to implement a native effect.
+
+---
+
+## Audio capture
+
+Audio input arrives through the `InputManager`. The render loop calls `sample_all()` each frame; audio data arrives as an FFT spectrum and RMS level. Effects declare `audio_reactive: true` in their metadata and receive `AudioData` injected into their `FrameInput` on each render call.
+
+Audio-reactive HTML effects receive the spectrum as a JavaScript global injected by the Servo renderer before each frame. Native effects receive it directly as typed Rust data via `FrameInput::audio`. See [Audio setup](@/guide/audio-setup.md) for configuration and [Effects: audio](@/effects/audio.md) for authoring patterns.
+
+---
+
+## Playlists and library
+
+The daemon maintains a library of saved presets, favorites, and playlists. Playlists are ordered sequences of scene configurations the engine can step through automatically — time-based, event-triggered, or manually advanced. The library API lives under `/api/v1/library/` and includes favorites CRUD and playlist management. Scenes and zones are covered in [Studio](@/studio/_index.md); the library API surface is documented in [REST reference](@/api/rest.md).
+
+---
+
+## Key decisions
+
+| Decision | Choice | Rationale |
+|---|---|---|
+| Language | Rust | Performance for the render thread, safety for USB HID, ecosystem match for Servo and Ratatui |
+| Effect renderer | Servo HTML + native Rust | Web platform for authoring, compiled Rust for built-in utilities; GPU lane is future work |
+| Frame compositor | SparkleFlinger | Decouples producer cadence from frame deadlines; enables mixed-rate sources and render groups |
+| Canvas resolution | 640x480 (configurable) | Resolution-independent normalized coordinates; tune per hardware density |
+| Adaptive FPS | Five tiers, 10–60 fps | Fast downshift on budget miss; slow upshift to prevent oscillation |
+| Event bus | `broadcast` + `watch` | Discrete events need history; high-frequency frame data needs only the latest value |
+| Web UI | Leptos 0.8 WASM | Type-safe fine-grained reactivity in the Rust ecosystem |
+| API server | Axum | tokio-native, first-class WebSocket, serves the embedded SPA |
+| Wire format | zerocopy structs (HAL) | Zero-allocation frame encoding at 60 fps |
+| Config | TOML | Rust ecosystem standard, human-readable |
+| License | Apache-2.0 | Permissive open source |

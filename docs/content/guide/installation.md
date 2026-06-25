@@ -1,47 +1,181 @@
 +++
 title = "Installation"
-description = "Build Hypercolor from source and set up system dependencies"
-weight = 1
+description = "Install Hypercolor on Linux, Windows, and macOS. Prebuilt packages and one-line installers first; source build is a labeled developer section."
+weight = 30
 template = "page.html"
 +++
 
-## Prerequisites
+Most users should install a prebuilt package — no Rust toolchain required. Source builds are for contributors and platform porters.
 
-Hypercolor needs **Rust 1.94+** (Edition 2024) and a few system libraries to talk to your hardware and capture audio. The fast path: clone the repo, install [just](https://github.com/casey/just), run `just setup`.
+Not sure which path fits? Read [Choose your install](@/guide/choose-your-install.md) first.
 
-Linux is the supported launch install path. macOS setup is useful for release/build testing, and Windows source builds are experimental until the installer and runtime gates are in CI.
+## Linux — prebuilt installer
 
-## Quick Start (Recommended)
+The fastest path on any Linux distribution. The script downloads a signed release tarball from GitHub, installs the daemon and CLI to `~/.local/bin`, sets up a systemd user service, and applies udev rules for USB device access.
+
+```bash
+curl -fsSL https://install.hypercolor.dev | bash
+```
+
+The installer is idempotent: re-running it upgrades an existing install. To pin a specific version:
+
+```bash
+HYPERCOLOR_VERSION=0.1.0 curl -fsSL https://install.hypercolor.dev | bash
+```
+
+To install to a different prefix instead of `~/.local`:
+
+```bash
+HYPERCOLOR_INSTALL_PREFIX=/opt/hypercolor curl -fsSL https://install.hypercolor.dev | bash
+```
+
+{% callout(type="warning") %}
+After installation, **re-plug your USB devices or log out and back in** so the new udev rules take effect. If your devices are still not detected, see [Devices not found](@/troubleshooting/devices-not-found.md).
+{% end %}
+
+{% callout(type="info") %}
+AppImage and Flatpak packages do not automatically apply udev rules. If you use one of those formats, run `just udev-install` from a repo checkout or copy `udev/99-hypercolor.rules` to `/etc/udev/rules.d/` manually and reload with `sudo udevadm control --reload-rules`.
+{% end %}
+
+### Arch Linux (AUR)
+
+An AUR package (`hypercolor-bin`) will be available at v0.1.0 release. Once published:
+
+```bash
+yay -S hypercolor-bin
+```
+
+The PKGBUILD installs binaries, the systemd user service, shell completions, and udev rules automatically as part of the package install hooks.
+
+---
+
+## Linux — udev rules (USB device access)
+
+USB device access on Linux requires udev rules. The prebuilt installer and AUR package handle this automatically. If you are installing manually or from source:
+
+```bash
+just udev-install
+```
+
+This copies `udev/99-hypercolor.rules` to `/etc/udev/rules.d/`, reloads udev, and triggers a rescan of the `hidraw`, `usb`, `tty`, and `i2c-dev` subsystems. You will need to re-plug connected devices or log out and back in for group membership changes to propagate.
+
+---
+
+## Windows
+
+Download the NSIS installer from [hypercolor.lighting/download](https://hypercolor.lighting/download). The installer:
+
+- Bundles `hypercolor-daemon.exe` and the `hypercolor-app` desktop shell
+- Registers the app for autostart at login
+- Installs the PawnIO helper for SMBus access (motherboard and DRAM RGB)
+- Creates Start menu and Desktop shortcuts
+
+Run the installer and launch Hypercolor from the Start menu. The app supervises the daemon automatically, so there is no separate daemon window to manage.
+
+{% callout(type="info") %}
+For SMBus devices (ASUS Aura DRAM, some Gigabyte and MSI motherboards), the first-run wizard will prompt you to install the PawnIO kernel helper. Click "Install SMBus support" when prompted, and it runs an elevated helper that handles the driver install.
+{% end %}
+
+---
+
+## macOS
+
+Download the signed DMG from [hypercolor.lighting/download](https://hypercolor.lighting/download). Open the DMG, drag Hypercolor to Applications, and launch it. The app registers a LaunchAgent for autostart and supervises the daemon — no terminal setup required.
+
+{% callout(type="info") %}
+macOS hardware support covers USB-HID and network devices (Hue, Nanoleaf, WLED, Govee). SMBus/motherboard RGB is Linux and Windows only.
+{% end %}
+
+A Homebrew cask (`brew install --cask hyperb1iss/tap/hypercolor-app`) will be published at v0.1.0 release.
+
+---
+
+## The desktop app and autostart
+
+On all platforms, Hypercolor ships a unified desktop app (`hypercolor-app`) built on Tauri. When you launch it:
+
+1. The app checks if a daemon is already running on `127.0.0.1:9420`. If so, it connects to it.
+2. On Linux, it checks for an enabled systemd user service (`hypercolor.service`) and defers to it.
+3. If no daemon is found, the app spawns one as a supervised child process with a watchdog that restarts it on crash.
+4. The tray icon appears, and the main window opens (or the app starts minimized if launched with `--minimized`).
+
+Autostart is managed by the app's autostart plugin. On Linux it creates a `~/.config/autostart/` entry; on macOS it registers a LaunchAgent. Toggle it from the tray menu or from within the app's Settings page.
+
+The app window is 1200×800 by default, with a minimum of 800×500. Close clicks hide the window rather than quit — Hypercolor stays in the tray. To fully quit, use the tray menu.
+
+---
+
+## Linux — systemd user service
+
+The prebuilt installer and `just install` both install a systemd user service. Manage it with the CLI:
+
+```bash
+hypercolor service enable     # enable autostart on login
+hypercolor service start      # start the daemon now
+hypercolor service stop       # stop it
+hypercolor service restart    # restart
+hypercolor service status     # check current state
+hypercolor service logs       # last 50 lines
+hypercolor service logs --follow   # live tail
+```
+
+On Linux this wraps `systemctl --user` — it is a **user** service, not a system service. Never use `sudo systemctl` to manage it.
+
+The unit file lives at `~/.config/systemd/user/hypercolor.service` and uses `%h/.local/bin/hypercolor-daemon` as the executable path.
+
+---
+
+## macOS — LaunchAgent
+
+The macOS app install registers a LaunchAgent (`tech.hyperbliss.hypercolor`) in `~/Library/LaunchAgents`. The same `hypercolor service` subcommands work on macOS, wrapping `launchctl`.
+
+---
+
+## Verify the daemon is running
+
+Regardless of install method, confirm the daemon is up:
+
+```bash
+curl http://localhost:9420/health
+```
+
+A `200 OK` response means the daemon is healthy and accepting connections. The web UI is available at `http://localhost:9420` in your browser.
+
+---
+
+## Developer install — build from source
+
+This section is for contributors and platform porters. Ordinary users do not need to build from source.
+
+### Prerequisites
+
+- **Rust 1.94+** (Edition 2024). Install via [rustup](https://rustup.rs/).
+- **`just`** — the task runner. `cargo install just` or your distro's package manager.
+- **Bun** — required for the web UI and TypeScript SDK. `curl -fsSL https://bun.sh/install | bash`.
+- **Platform libraries** — see the distribution-specific lists below.
+
+### Bootstrap (recommended)
 
 ```bash
 git clone https://github.com/hyperb1iss/hypercolor.git
 cd hypercolor
-
-# Install just if you don't have it
-cargo install just     # or: brew install just / winget install Casey.Just
-
-# Bootstrap everything: system packages, Rust toolchain, cargo tools, Bun, frontend deps
 just setup
 ```
 
-`just setup` is **idempotent** — re-running it only installs what's missing. It detects your platform (Debian/Ubuntu, Fedora, Arch, macOS, Windows) and uses the right package manager. On macOS and Windows this is a developer bootstrap, not a fully supported hardware install path yet.
+`just setup` installs system packages, the Rust toolchain, the WASM target, cargo tools (`trunk`, `cargo-deny`, `sccache`), and frontend dependencies. It is idempotent: re-running only installs what is missing.
 
-### Setup Flags
+Setup flags:
 
 ```bash
-just setup -- -y              # don't prompt for sudo / package installs
-just setup -- --minimal       # rust + wasm target only (skip system pkgs, frontend, etc.)
-just setup -- --no-system     # skip system packages (no sudo prompts)
-just setup -- --with-servo    # include extra deps for the Servo HTML renderer
+just setup -- -y              # non-interactive (no sudo prompts)
+just setup -- --minimal       # Rust + wasm target only
+just setup -- --no-system     # skip system package install
+just setup -- --with-servo    # include Servo HTML renderer build deps
 ```
 
-On Windows the same recipe dispatches to `scripts/setup.ps1` — flags are PowerShell-style: `-Yes`, `-Minimal`, `-NoSystem`, `-WithServo`.
+On Windows the same recipe dispatches to `scripts/setup.ps1`. Use PowerShell-style flags: `-Yes`, `-Minimal`, `-NoSystem`, `-WithServo`.
 
-## Manual Setup
-
-If you'd rather install pieces individually, here's what `just setup` does for you.
-
-### System Dependencies
+### System libraries
 
 **Debian / Ubuntu:**
 
@@ -70,7 +204,7 @@ sudo dnf install gcc gcc-c++ pkg-config cmake nasm \
 ```bash
 sudo pacman -S base-devel pkgconf cmake nasm \
   libusb hidapi alsa-lib libpulse pipewire \
-  xdotool gtk3 webkit2gtk-4.1 appmenu-gtk-module \
+  xdotool gtk3 webkit2gtk-4.1 \
   libappindicator-gtk3 librsvg openssl \
   clang lld
 ```
@@ -82,146 +216,74 @@ xcode-select --install
 brew install hidapi pkg-config cmake nasm
 ```
 
-**Windows:** install [Visual Studio 2022 Build Tools](https://visualstudio.microsoft.com/downloads/) with the "Desktop development with C++" workload.
+**Windows:** Install [Visual Studio 2022 Build Tools](https://visualstudio.microsoft.com/downloads/) with the "Desktop development with C++" workload.
 
-### Rust Toolchain
+### WASM target
 
-If you don't have Rust installed:
-
-```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh    # Linux/macOS
-winget install Rustlang.Rustup                                    # Windows
-```
-
-Hypercolor also needs the WASM target for the web UI:
+Required for the web UI:
 
 ```bash
 rustup target add wasm32-unknown-unknown
-# or, as a shortcut:
+# or use the shortcut:
 just setup-wasm
 ```
 
-### Dev Tools
+### Additional dev tools
 
 ```bash
 cargo install --locked trunk cargo-deny    # required
-cargo install --locked sccache             # optional but recommended
-curl -fsSL https://bun.sh/install | bash   # required for UI and SDK assets
+cargo install --locked sccache             # optional; speeds rebuilds
 ```
 
-### Frontend Dependencies
+### Frontend dependencies
 
 ```bash
-cd crates/hypercolor-ui && bun install --frozen-lockfile  # Tailwind v4
-cd ../../sdk && bun install --frozen-lockfile             # SDK
-cd ../e2e && npm ci                        # Playwright e2e (optional)
+cd crates/hypercolor-ui && bun install --frozen-lockfile   # Tailwind v4
+cd ../../sdk && bun install --frozen-lockfile               # TypeScript SDK
 ```
 
-## Building from Source
+### Build
 
 ```bash
-just build          # Debug build
-just release        # Full release bundle in dist/
-just release-bin    # Release binaries only
-just check          # Type-check without building
-just verify         # Format check + lint + test — run this after changes
+just build           # debug build
+just build-preview   # preview profile (optimized, fast compile)
+just release         # full release bundle in dist/
+just check           # type-check only, no artifact
+just verify          # fmt + lint + test — run this before committing
 ```
 
-### Direct Cargo Commands
+### Install from source
 
-```bash
-cargo build --workspace              # Debug build
-cargo build --workspace --release    # Release build
-cargo test --workspace               # Run all tests
-cargo clippy --workspace --all-targets -- -D warnings   # Lint
-```
-
-## USB Device Access
-
-Hypercolor needs permission to access USB HID devices. Install the udev rules:
-
-```bash
-just udev-install
-```
-
-This copies the rules to `/etc/udev/rules.d/` and triggers a reload. You may need to re-plug your devices or log out and back in for group membership changes to take effect.
-
-## Running the Daemon
-
-Start the daemon in preview mode with debug logging:
-
-```bash
-just daemon
-```
-
-The daemon starts on port **9420** by default. Verify it's running:
-
-```bash
-curl http://localhost:9420/health
-```
-
-You should get a `200 OK` response.
-
-{% callout(type="tip", title="Preview profile") %}
-`just daemon` uses the `preview` build profile — optimized for runtime performance while keeping reasonable compile times. For maximum performance, use `just daemon-release`.
-{% end %}
-
-## Service and Autostart
-
-For everyday use you'll want the daemon to start automatically on login rather than running it manually from the terminal.
-
-### Linux (systemd user service)
-
-First install the daemon binaries and the systemd user unit file:
+After building, install the daemon and CLI to `~/.local/bin`, the web UI assets, the systemd user service, and udev rules:
 
 ```bash
 just install
 ```
 
-This copies the `hypercolor.service` unit from `packaging/systemd/user/` to
-`~/.config/systemd/user/`, then enables and starts the service automatically.
-If you need the unit installed but not yet started, pass `--no-start-service`.
-
-Once the unit is installed, you can manage it with the CLI:
+Then apply USB device permissions:
 
 ```bash
-hypercolor service enable    # calls systemctl --user enable hypercolor
-hypercolor service start     # start immediately
+just udev-install
 ```
 
-Check service status at any time:
+### Run the desktop app from source
 
 ```bash
-hypercolor service status
+just app
 ```
 
-The full service lifecycle:
+This builds the daemon and the Tauri app at the `preview` profile and launches `hypercolor-app`. The app supervisor handles starting the daemon.
+
+To run the daemon directly without the app shell:
 
 ```bash
-hypercolor service start
-hypercolor service stop
-hypercolor service restart
-hypercolor service logs           # last 50 lines
-hypercolor service logs --follow  # live tail
+just daemon
 ```
 
-### macOS (LaunchAgent)
+The daemon starts on `127.0.0.1:9420` by default with debug logging enabled.
 
-The LaunchAgent plist (`packaging/launchd/tech.hyperbliss.hypercolor.plist`) handles autostart on macOS. Copy it to your LaunchAgents directory and load it:
+---
 
-```bash
-cp packaging/launchd/tech.hyperbliss.hypercolor.plist \
-  ~/Library/LaunchAgents/
-hypercolor service enable
-```
+## What's next
 
-`hypercolor service enable` on macOS calls `launchctl load` on the installed plist. The same `start`, `stop`, `status`, and `logs` subcommands work on macOS.
-
-### Pre-built Packages
-
-- **Arch Linux (AUR):** A `hypercolor` PKGBUILD is available in `packaging/aur/` and will be published to the AUR at v0.1 release. Once available: `yay -S hypercolor`.
-- **Homebrew (macOS):** A formula template is in `packaging/homebrew/hypercolor.rb`. It will be published to a tap when the release artifacts are finalized; check the [releases page](https://github.com/hyperb1iss/hypercolor/releases) for the current install command.
-
-## What's Next
-
-With the daemon running, head to the [Quick Start](@/guide/quick-start.md) to connect a device and apply your first effect.
+With Hypercolor running, head to [First launch](@/guide/first-launch.md) to walk through the welcome wizard and connect your first device, or jump straight to the [Quick start](@/guide/quick-start.md) if you already know your way around.

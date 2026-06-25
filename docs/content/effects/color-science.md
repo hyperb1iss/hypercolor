@@ -1,13 +1,13 @@
 +++
-title = "Color Science for RGB LEDs"
-description = "Why LED lighting is different from screens, and how to make colors look great"
-weight = 9
+title = "Color science for LEDs"
+description = "Why LED lighting differs from screens, and how to make colors look stunning on real hardware."
+weight = 70
 template = "page.html"
 +++
 
 Designing colors for physical RGB LEDs is not the same as designing for screens. LEDs are point light sources viewed directly; the eye sees the raw emitted spectrum, not reflected light. Getting this wrong is the difference between effects that look stunning and effects that look like a washed-out mess.
 
-This page is the practical guide. Everything here is distilled from LED color science research, analysis of 210 community HTML effects, and the Hypercolor engine's rendering pipeline.
+This page is the practical guide. Everything here is distilled from LED color science research, analysis of 210 community HTML effects, and the Hypercolor engine's rendering pipeline. It applies to every authoring path, whether you write a TypeScript canvas effect, a GLSL shader, or a native Rust renderer.
 
 ## LEDs are not screens
 
@@ -225,6 +225,25 @@ Pair this with `globalCompositeOperation = 'lighter'` when drawing multiple over
 
 `'lighter'` is the most important for LED work: it simulates how light from multiple emissive sources actually combines.
 
+## How the compositor blends your layers
+
+Everything above governs color *inside* a single effect surface. When you stack effects in a Studio zone, a second blend happens above your code: the compositor combines each layer's surface into one canonical canvas before the spatial sampler maps it to LEDs.
+
+That blend is not a naive sRGB lerp. The compositor decodes each pixel from sRGB to linear light, blends in linear space, then re-encodes to sRGB. Linear-light blending is the physically correct model for combining emitted light, so overlapping layers brighten the way real light does rather than dipping through a muddy midpoint. The blend modes exposed to layers map onto the same math used by the per-frame canvas:
+
+| Layer blend mode | Behavior                                                  |
+| ---------------- | --------------------------------------------------------- |
+| Normal           | Standard alpha-over with layer opacity                    |
+| Add              | Additive in linear light (the layer equivalent of `lighter`) |
+| Screen           | Soft additive that never exceeds full white               |
+| Multiply         | Darken overlaps                                            |
+
+{% callout(type="tip") %}
+Author each layer as a self-contained image. If you want glow where two layers overlap, set the upper layer to **Add** or **Screen** rather than baking the combination into a single effect. The compositor does the linear-light math for you, and the result stays correct as zone opacity changes.
+{% end %}
+
+Native Rust effects receive color controls already converted to linear RGBA (0.0–1.0), not sRGB. The UI picker is sRGB and the daemon converts before delivery, so convert back to sRGB bytes only when you write the final canvas. See the native effect authoring path for the full color-type vocabulary and transfer functions.
+
 ## Practical tips
 
 1. **Test on hardware, not just the preview.** The studio is a guide, not ground truth. What looks good in the browser may look different on your LEDs.
@@ -244,3 +263,12 @@ Pair this with `globalCompositeOperation = 'lighter'` when drawing multiple over
 | **6+**  | Festive / party              | Rainbow effects fun but rarely "clean"                        |
 
 The 80/20 rule: one color dominates, the other accents. The most admired setups use one or two coordinated colors.
+
+## See also
+
+- [Palettes](@/effects/palettes.md) — the built-in palette registry and its Oklab interpolation.
+- [Audio API](@/effects/audio.md) — drive color and brightness from spectrum data.
+- [GLSL shader effects](@/effects/glsl-effects.md) — color math in WebGL2 fragment shaders (rendered via Servo, not wgpu).
+- [TypeScript canvas effects](@/effects/typescript-effects.md) — the `canvas()` authoring surface these techniques target.
+
+Building a compiled-in native renderer instead? The native Rust effect path lives in `crates/hypercolor-core/src/effect/builtin/`, registered through that module's `mod.rs`. It ships the real color vocabulary (`Rgba`, `RgbaF32`, `Oklab`, `Oklch`) with working sRGB-to-linear transfer functions, so the linear-light rules on this page apply directly in code.

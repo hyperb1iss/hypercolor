@@ -1,117 +1,152 @@
 +++
-title = "Quick Start"
-description = "Get from zero to RGB in five minutes"
-weight = 2
-template = "page.html"
+title = "Quick start"
+description = "Zero to RGB in five minutes, including a no-hardware simulator path and a conflicting-software callout."
+weight = 70
 +++
 
-This guide assumes you've completed the [installation](@/guide/installation.md) and have the daemon running on `localhost:9420`.
-
-## 1. Start the Daemon
-
-If it's not already running:
+This guide assumes you have completed [installation](@/guide/installation.md) and understand the [pieces](@/guide/the-pieces.md) (daemon, CLI, web UI). If you just ran the installer, the daemon is probably already running. If not, start it now:
 
 ```bash
 just daemon
+# or, for a packaged install:
+hypercolor service start
 ```
 
-{% callout(type="tip", title="Daemon + UI together") %}
-Use `just dev` to launch the daemon and the web UI dev server simultaneously. The UI will be available at `http://localhost:9430` with hot reload.
+Then verify it is up:
+
+```bash
+curl -s http://localhost:9420/health
+```
+
+A `200 OK` response means the daemon is running and the REST API is reachable.
+
+{% callout(type="warning") %}
+**Close other RGB software first.** OpenRGB, Aura Sync, openrazer daemon, iCUE wine layers, and similar tools all grab USB HID devices exclusively. If one of them is running, Hypercolor cannot claim the same device. Stop those tools before continuing. If a USB device appears in `lsusb` but not in `hypercolor devices list`, a conflicting tool is the most likely cause. See [conflicting software](@/hardware/conflicting-software.md) for diagnosis steps.
 {% end %}
 
-## 2. Check Device Discovery
+## 1. Check device discovery
 
-Hypercolor automatically discovers connected USB HID devices and network devices (WLED via mDNS). Check what's been found:
-
-**Via CLI:**
+The daemon discovers USB HID devices automatically on startup and rescans when you plug in hardware. Network devices (WLED via mDNS, Hue, Nanoleaf, Govee) are discovered on the same background loop.
 
 ```bash
 hypercolor devices list
 ```
 
-**Via REST API:**
+You should see a table of connected devices with their name, driver, output route, LED count, status, and firmware. If the list is empty and you have hardware plugged in, check the [udev rules](@/guide/installation.md) and confirm no conflicting software is running.
+
+![Device discovery in the Hypercolor web UI](/img/ui/ui-devices.webp)
+
+{% callout(type="info") %}
+**No hardware? Use a simulated display.** The daemon has a built-in virtual display simulator — no physical LEDs required. Create one via the REST API and it will appear in `devices list` just like real hardware:
 
 ```bash
-curl http://localhost:9420/api/v1/devices | jq
+curl -s -X POST http://localhost:9420/api/v1/simulators/displays \
+  -H "Content-Type: application/json" \
+  -d '{"name": "My Simulator", "width": 32, "height": 8}'
 ```
 
-You should see a response envelope with `data.items`, the discovered devices with their names, types, LED counts, and connection status.
-
-{% callout(type="info", title="No hardware yet?") %}
-You can still browse and preview effects through the web UI without physical devices connected. The preview renderer shows what effects look like on a virtual canvas.
+You can then apply effects to it and preview frames at `GET /api/v1/simulators/displays/{id}/frame` (returns JPEG). Delete it when you are done with `DELETE /api/v1/simulators/displays/{id}`. The web UI canvas preview at `http://localhost:9420` works without any physical devices at all.
 {% end %}
 
-## 3. Browse Effects
+## 2. Browse effects
 
-Hypercolor ships with a library of 44 built-in effects: audio-reactive visualizers, ambient gradients, particle systems, and more.
-
-**Via CLI:**
+The library ships with a large collection of built-in effects spanning audio-reactive visualizers, ambient gradients, particle systems, and more. Browse the full gallery in the [effect catalog](@/effects/_index.md).
 
 ```bash
+# List all effects
 hypercolor effects list
+
+# Filter to audio-reactive effects only
+hypercolor effects list --audio
+
+# Search by name or description
+hypercolor effects list --search borealis
+
+# Filter by category
+hypercolor effects list --category ambient
 ```
 
-**Via REST API:**
+The web UI at `http://localhost:9420` has a visual effect browser with search, category filters, and canvas preview before you apply anything.
+
+![Web UI dashboard showing the effect browser](/img/ui/dashboard.webp)
+
+## 3. Apply an effect
+
+Effect names are fuzzy-matched — you do not need an exact ID.
 
 ```bash
-curl http://localhost:9420/api/v1/effects | jq '.data.items[].name'
+# Activate by name (fuzzy match)
+hypercolor effects activate borealis
+
+# With shorthand controls
+hypercolor effects activate audio-pulse --speed 60 --intensity 80
+
+# With arbitrary control parameters
+hypercolor effects activate color-wave --param palette=SilkCircuit --param speed=40
+
+# With a crossfade transition
+hypercolor effects activate nebula-drift --transition 800
 ```
 
-**Via Web UI:**
-
-Open `http://localhost:9430` (if running `just dev`) or `http://localhost:9420` (if the daemon is serving the embedded UI). The effect browser lets you search, filter by category, and preview effects before applying.
-
-## 4. Apply an Effect
-
-Pick an effect ID from the list and apply it:
-
-**Via CLI:**
+Via REST:
 
 ```bash
-hypercolor effects activate <effect-id>
-```
-
-**Via REST API:**
-
-```bash
-curl -X POST http://localhost:9420/api/v1/effects/<effect-id>/apply
-```
-
-You can also apply effects with custom control values:
-
-```bash
-curl -X POST http://localhost:9420/api/v1/effects/<effect-id>/apply \
+curl -X POST http://localhost:9420/api/v1/effects/borealis/apply \
   -H "Content-Type: application/json" \
-  -d '{"controls": {"speed": 7, "intensity": 85}}'
+  -d '{"controls": {"speed": 50, "intensity": 75}}'
 ```
 
-## 5. Adjust Controls
+## 4. Tweak controls in real time
 
-Most effects expose user-configurable parameters — speed, color palette, intensity, audio reactivity. Tweak them in real time:
+Most effects expose configurable parameters — speed, color palette, intensity, audio sensitivity. Changes apply immediately without re-applying the effect:
 
-**Via REST API:**
+```bash
+# Patch one or more controls on the running effect
+hypercolor effects patch --param speed=30 --param palette=Midnight
+
+# Reset all controls to their defaults
+hypercolor effects reset
+```
+
+Via REST:
 
 ```bash
 curl -X PATCH http://localhost:9420/api/v1/effects/current/controls \
   -H "Content-Type: application/json" \
-  -d '{"controls": {"speed": 3, "palette": "SilkCircuit"}}'
+  -d '{"controls": {"speed": 30, "palette": "Midnight"}}'
 ```
 
-Changes apply immediately. The render loop picks up new control values on the next frame.
+The render loop picks up new values on the next frame. It targets up to 60 fps and adapts down across five tiers under load, so a change lands in roughly 17 to 100 ms depending on the active tier.
 
-## 6. Connect via WebSocket
+## 5. Try the TUI
 
-For real-time state updates, connect to the WebSocket endpoint:
+The terminal UI gives you a full interactive control surface in one pane — device list, effect browser, live canvas preview, and spectrum meter — all over the same WebSocket connection the web UI uses.
 
 ```bash
-websocat ws://localhost:9420/api/v1/ws
+hypercolor tui
 ```
 
-You'll receive JSON messages whenever the system state changes: effects applied, devices connected/disconnected, control values updated. The web UI and TUI both use this channel for live updates.
+![TUI dashboard view](/img/tui/tui-dashboard.png)
 
-## What's Next
+See [the TUI guide](@/guide/tui.md) for keyboard shortcuts and layout details.
 
-- [Configuration](@/guide/configuration.md) — Set up profiles, audio input, and device mappings
-- [Creating Effects](@/effects/creating-effects.md) — Write your own effects with the TypeScript SDK
-- [REST API Reference](@/api/rest.md) — Full API documentation
-- [Hardware Support](@/hardware/_index.md) — Details on supported devices and drivers
+## 6. Stop the effect
+
+```bash
+hypercolor effects stop
+```
+
+Or via REST:
+
+```bash
+curl -X POST http://localhost:9420/api/v1/effects/stop
+```
+
+## What's next
+
+- [Your first 10 minutes](@/guide/your-first-10-minutes.md) — an opinionated golden path through the web UI
+- [First session](@/guide/first-session.md) — a longer hands-on walkthrough: devices, layouts, profiles, and scenes
+- [Audio setup](@/guide/audio-setup.md) — configure PipeWire/PulseAudio so reactive effects respond to your music
+- [Profiles and scenes](@/guide/profiles-and-scenes.md) — save your lighting state and switch between setups
+- [Effect catalog](@/effects/_index.md) — browse every built-in effect with parameters and previews
+- [Configuration](@/guide/configuration.md) — tune FPS, canvas size, network access, and more
