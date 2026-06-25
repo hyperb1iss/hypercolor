@@ -76,6 +76,7 @@ jobs:
       sdk: ${{ (github.event_name == 'workflow_dispatch' && inputs.release_artifacts == 'smoke') && 'false' || (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.release_artifacts != 'smoke')) && 'true' || steps.filter.outputs.sdk }}
       ui: ${{ (github.event_name == 'workflow_dispatch' && inputs.release_artifacts == 'smoke') && 'false' || (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.release_artifacts != 'smoke')) && 'true' || steps.filter.outputs.ui }}
       compat: ${{ (github.event_name == 'workflow_dispatch' && inputs.release_artifacts == 'smoke') && 'false' || (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.release_artifacts != 'smoke')) && 'true' || steps.filter.outputs.compat }}
+      docs: ${{ steps.filter.outputs.docs }}
       workflow: ${{ steps.filter.outputs.workflow }}
     steps:
       - uses: actions/checkout@v6
@@ -109,6 +110,11 @@ jobs:
               - 'data/drivers/vendors/**'
               - 'data/compat/**'
               - 'docs/content/hardware/compatibility.md'
+              - 'scripts/gen-compat.ts'
+            docs:
+              - 'docs/**'
+              - 'data/drivers/vendors/**'
+              - 'data/compat/**'
               - 'scripts/gen-compat.ts'
             workflow:
               - '.github/workflows/**'
@@ -818,7 +824,8 @@ jobs:
   # ── Docs (Zola → GitHub Pages) ─────────────────────────────────
   docs:
     name: Docs
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: changes
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push' && needs.changes.outputs.docs == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
