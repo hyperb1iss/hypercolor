@@ -22,7 +22,6 @@ use crate::components::device_card::{
     brand_colors, brand_label, brand_vendor, classify_brand, classify_device, device_class_icon,
     driver_identifier_label, topology_shape_svg,
 };
-use crate::components::silk_select::SilkSelect;
 use crate::icons::*;
 use crate::layout_utils;
 use crate::toasts;
@@ -121,16 +120,25 @@ pub fn StudioDeviceCard(
                         {leds}
                     </span>
                 </button>
-                {card_actions(CardActionsArgs {
-                    studio,
-                    mode,
-                    select,
-                    device_id: row_device_id,
-                    physical_id: None,
-                    output_ids: Vec::new(),
-                    scene_key: None,
-                    add_device: None,
-                })}
+                {matches!(mode, CardMode::Placed)
+                    .then(|| {
+                        let select = select.clone();
+                        let device_id = row_device_id.clone();
+                        view! {
+                            <button
+                                type="button"
+                                class="btn-press mr-1.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-colors"
+                                style="color: rgba(255, 99, 99, 0.5)"
+                                title="Remove from this zone"
+                                on:click=move |ev: web_sys::MouseEvent| {
+                                    ev.stop_propagation();
+                                    remove_device_from_zone(studio, select.clone(), device_id.clone());
+                                }
+                            >
+                                <Icon icon=LuTrash2 width="12px" height="12px" />
+                            </button>
+                        }
+                    })}
             </div>
         }
         .into_any();
@@ -259,8 +267,15 @@ pub fn StudioDeviceCard(
     let shape_style = format!("color: rgba({primary}, 0.7)");
 
     let select_body = select.clone();
-    let select_for_rows = select.clone();
     let physical_id = device.id.clone();
+    // The Placed card's operations menu (identify / move / remove) expands
+    // inline below the body and is toggled by the action cluster's kebab.
+    // Capture what it needs before `select` and `device_output_ids` move
+    // into `card_actions`.
+    let ops_open = RwSignal::new(false);
+    let menu_select = select.clone();
+    let menu_physical_id = device.id.clone();
+    let menu_output_ids = device_output_ids.clone();
     // An Available card carries the device record so its add action can
     // mint outputs and assign them into the zone.
     let add_device = matches!(mode, CardMode::Available).then(|| device.clone());
@@ -362,13 +377,28 @@ pub fn StudioDeviceCard(
                     studio,
                     mode,
                     select,
-                    device_id: row_device_id,
                     physical_id: Some(physical_id),
                     output_ids: device_output_ids,
                     scene_key: scene_key.clone(),
                     add_device,
+                    ops_open,
                 })}
             </div>
+            {(mode == CardMode::Placed)
+                .then(move || {
+                    view! {
+                        <div class=("hidden", move || !ops_open.get())>
+                            {card_ops_menu(
+                                studio,
+                                ops_open,
+                                menu_physical_id,
+                                menu_select,
+                                row_device_id,
+                                menu_output_ids,
+                            )}
+                        </div>
+                    }
+                })}
             {show_components
                 .then(move || {
                     let scene_key = scene_key.clone();
@@ -381,7 +411,6 @@ pub fn StudioDeviceCard(
                                         studio,
                                         scene_key.clone(),
                                         physical_id_for_rows.clone(),
-                                        select_for_rows.clone(),
                                         row,
                                         shape_style.clone(),
                                     )
@@ -399,33 +428,31 @@ struct CardActionsArgs {
     studio: StudioContext,
     mode: CardMode,
     select: String,
-    device_id: String,
     physical_id: Option<String>,
     output_ids: Vec<String>,
     scene_key: Option<String>,
     add_device: Option<DeviceSummary>,
+    ops_open: RwSignal<bool>,
 }
 
-/// The trailing-edge action cluster. Hide-all toggles every output of a
-/// placed device in unison; identify flashes the hardware whenever it is
-/// online (`physical_id` is `Some`). The final action depends on `mode`:
-/// a placed device offers remove, an available device offers a one-tap
-/// add into the zone, and an Unassigned-bucket row offers neither.
+/// The trailing-edge action cluster, capped at two icons. Hide-all toggles
+/// every output of a placed device in unison. The second slot depends on
+/// `mode`: a placed device gets a kebab that opens the inline operations
+/// menu (identify / move / remove), an available device gets identify plus
+/// a one-tap add into the zone, and an Unassigned-bucket row gets identify
+/// only.
 fn card_actions(args: CardActionsArgs) -> impl IntoView {
     let CardActionsArgs {
         studio,
         mode,
         select,
-        device_id,
         physical_id,
         output_ids,
         scene_key,
         add_device,
+        ops_open,
     } = args;
     let (identifying, set_identifying) = signal(false);
-    // The device's outputs in this zone — moved as a unit when the card's
-    // move-to-zone control fires (before `hide_all_pair` consumes the rest).
-    let move_output_ids = output_ids.clone();
     // Hide-all is only meaningful when the card sits in a real zone
     // (so it has a scene_key) and the device actually owns outputs
     // there (otherwise there is nothing to toggle).
@@ -490,6 +517,7 @@ fn card_actions(args: CardActionsArgs) -> impl IntoView {
                     }
                 })}
             {physical_id
+                .filter(|_| !matches!(mode, CardMode::Placed))
                 .map(|id| {
                     let identify_id = id.clone();
                     view! {
@@ -513,33 +541,23 @@ fn card_actions(args: CardActionsArgs) -> impl IntoView {
                     }
                 })}
             {match mode {
-                CardMode::Placed => {
-                    let move_select = select.clone();
-                    let remove_select = select.clone();
-                    Some(
-                        view! {
-                            {move_to_zone_control(
-                                studio,
-                                move_select,
-                                move_output_ids,
-                                MoveSize::Card,
-                            )}
-                            <button
-                                type="button"
-                                class="btn-press flex h-6 w-6 items-center justify-center rounded-md transition-colors"
-                                style="color: rgba(255, 99, 99, 0.5)"
-                                title="Remove from this zone"
-                                on:click=move |ev: web_sys::MouseEvent| {
-                                    ev.stop_propagation();
-                                    remove_device_from_zone(studio, remove_select.clone(), device_id.clone());
-                                }
-                            >
-                                <Icon icon=LuTrash2 width="12px" height="12px" />
-                            </button>
-                        }
-                        .into_any(),
-                    )
-                }
+                CardMode::Placed => Some(
+                    view! {
+                        <button
+                            type="button"
+                            class="btn-press flex h-6 w-6 items-center justify-center rounded-md text-fg-tertiary/55 transition-colors hover:text-fg-secondary"
+                            class=("text-fg-secondary", move || ops_open.get())
+                            title="Device options"
+                            on:click=move |ev: web_sys::MouseEvent| {
+                                ev.stop_propagation();
+                                ops_open.update(|open| *open = !*open);
+                            }
+                        >
+                            <Icon icon=LuEllipsis width="14px" height="14px" />
+                        </button>
+                    }
+                    .into_any(),
+                ),
                 CardMode::Available => {
                     add_device
                         .map(|device| {
@@ -567,27 +585,24 @@ fn card_actions(args: CardActionsArgs) -> impl IntoView {
     }
 }
 
-/// How a move-to-zone control is sized: a card-level control sits in the
-/// device's action cluster, a channel-level one is a touch smaller and
-/// lives in the per-channel row.
-#[derive(Clone, Copy)]
-enum MoveSize {
-    Card,
-    Channel,
-}
-
-/// A "move to another zone" control: an icon button that swaps in a
-/// `SilkSelect` of every other LED zone. Picking one reassigns
-/// `output_ids` into it. Renders nothing when the scene has no other zone
-/// to move into, so a single-zone scene never shows it.
-fn move_to_zone_control(
+/// The Placed device card's operations menu — identify, move-to-zone, and
+/// remove — folded behind the card's kebab so the action cluster stays at
+/// two icons. Expands inline below the card body, mirroring the zone node's
+/// settings kebab. Every row closes the menu, then runs its action. The
+/// move rows are one per other LED zone (none in a single-zone scene), so a
+/// move is a single click rather than a nested picker.
+fn card_ops_menu(
     studio: StudioContext,
+    ops_open: RwSignal<bool>,
+    physical_id: String,
     current_zone_id: String,
+    device_id: String,
     output_ids: Vec<String>,
-    size: MoveSize,
 ) -> impl IntoView {
-    let picking = RwSignal::new(false);
+    let (identifying, set_identifying) = signal(false);
+    let identify_id = StoredValue::new(physical_id);
     let current = StoredValue::new(current_zone_id);
+    let remove_device_id = StoredValue::new(device_id);
     let ids = StoredValue::new(output_ids);
 
     // Every non-display zone except the one this device already sits in.
@@ -607,81 +622,67 @@ fn move_to_zone_control(
                 .unwrap_or_default()
         })
     });
-    let has_targets = Memo::new(move |_| !zone_options.get().is_empty());
 
-    let on_pick = Callback::new(move |zone_id: String| {
-        picking.set(false);
-        if zone_id.is_empty() {
-            return;
-        }
-        move_outputs_to_zone(studio, zone_id, ids.get_value());
-    });
-
-    let (btn_class, icon_px, select_class) = match size {
-        MoveSize::Card => (
-            "btn-press flex h-6 w-6 items-center justify-center rounded-md text-fg-tertiary/55 transition-colors hover:text-fg-secondary",
-            "12px",
-            "min-w-[7rem] border border-accent-muted bg-surface-sunken/60 px-2 py-1 text-[11px]",
-        ),
-        MoveSize::Channel => (
-            "btn-press flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-tertiary/50 transition-colors hover:text-fg-secondary",
-            "10px",
-            "min-w-[6rem] border border-accent-muted bg-surface-sunken/60 px-1.5 py-0.5 text-[10px]",
-        ),
-    };
+    let row = "btn-press flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left \
+               text-[11px] transition-colors";
 
     view! {
-        <Show when=move || has_targets.get()>
-            <Show
-                when=move || picking.get()
-                fallback=move || {
-                    view! {
-                        <button
-                            type="button"
-                            class=btn_class
-                            title="Move to another zone"
-                            on:click=move |ev: web_sys::MouseEvent| {
-                                ev.stop_propagation();
-                                picking.set(true);
-                            }
-                        >
-                            <Icon icon=LuArrowRightLeft width=icon_px height=icon_px />
-                        </button>
-                    }
+        <div class="space-y-0.5 border-t border-edge-subtle/45 bg-surface-sunken/60 px-1.5 py-1.5">
+            <button
+                type="button"
+                class=format!("{row} text-fg-secondary hover:bg-surface-hover/40 disabled:opacity-60")
+                disabled=move || identifying.get()
+                on:click=move |ev: web_sys::MouseEvent| {
+                    ev.stop_propagation();
+                    ops_open.set(false);
+                    identify_device_now(&identify_id.get_value(), set_identifying);
                 }
             >
-                <div
-                    class="flex items-center gap-1"
-                    on:click=|ev: web_sys::MouseEvent| ev.stop_propagation()
-                >
-                    <SilkSelect
-                        value=Signal::derive(String::new)
-                        options=zone_options
-                        on_change=on_pick
-                        placeholder="Move to\u{2026}".to_string()
-                        class=select_class.to_string()
-                    />
-                    <button
-                        type="button"
-                        class="btn-press flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-tertiary/55 transition-colors hover:text-fg-secondary"
-                        title="Cancel"
-                        on:click=move |ev: web_sys::MouseEvent| {
-                            ev.stop_propagation();
-                            picking.set(false);
+                <Icon icon=LuZap width="12px" height="12px" />
+                <span>"Identify"</span>
+            </button>
+            {move || {
+                zone_options
+                    .get()
+                    .into_iter()
+                    .map(|(zone_id, zone_name)| {
+                        view! {
+                            <button
+                                type="button"
+                                class=format!("{row} text-fg-secondary hover:bg-surface-hover/40")
+                                on:click=move |ev: web_sys::MouseEvent| {
+                                    ev.stop_propagation();
+                                    ops_open.set(false);
+                                    move_outputs_to_zone(studio, zone_id.clone(), ids.get_value());
+                                }
+                            >
+                                <Icon icon=LuArrowRightLeft width="12px" height="12px" />
+                                <span>{format!("Move to {zone_name}")}</span>
+                            </button>
                         }
-                    >
-                        <Icon icon=LuX width="10px" height="10px" />
-                    </button>
-                </div>
-            </Show>
-        </Show>
+                    })
+                    .collect_view()
+            }}
+            <button
+                type="button"
+                class=format!("{row} hover:bg-surface-hover/40")
+                style="color: rgba(255, 99, 99, 0.85)"
+                on:click=move |ev: web_sys::MouseEvent| {
+                    ev.stop_propagation();
+                    ops_open.set(false);
+                    remove_device_from_zone(studio, current.get_value(), remove_device_id.get_value());
+                }
+            >
+                <Icon icon=LuTrash2 width="12px" height="12px" />
+                <span>"Remove from zone"</span>
+            </button>
+        </div>
     }
 }
 
 /// Move a set of device outputs into `target_zone_id` by reassigning them
 /// as existing outputs in one call. The daemon moves each output out of
-/// whatever zone currently holds it. Shared by the card-level move (all of
-/// a device's outputs) and the per-channel move (a single output).
+/// whatever zone currently holds it.
 fn move_outputs_to_zone(studio: StudioContext, target_zone_id: String, output_ids: Vec<String>) {
     if output_ids.is_empty() {
         return;
@@ -719,14 +720,15 @@ fn move_outputs_to_zone(studio: StudioContext, target_zone_id: String, output_id
 ///
 /// Each row shows the channel's topology shape and name, a live
 /// component badge listing what is bound to this channel, the channel's
-/// LED count, a move-to-zone control and a per-output hide toggle when the
-/// channel has an output in the current zone. Hidden state is per-(scene,
-/// zone) client UI state, not the daemon's `layout_auto_exclusions`.
+/// LED count, and a per-output hide toggle when the channel has an output
+/// in the current zone. Hidden state is per-(scene, zone) client UI state,
+/// not the daemon's `layout_auto_exclusions`. Moving a single channel
+/// between zones is not surfaced here; the card's operations menu moves the
+/// whole device.
 fn component_row_view(
     studio: StudioContext,
     scene_key: Option<String>,
     physical_device_id: String,
-    current_zone_id: String,
     row: ComponentRow,
     shape_style: String,
 ) -> impl IntoView {
@@ -792,7 +794,6 @@ fn component_row_view(
     let click_output = output_id.clone();
     let enter_output = output_id.clone();
     let row_selected_id = output_id.clone();
-    let move_output = output_id.clone();
     let is_row_selected = Signal::derive(move || {
         row_selected_id
             .as_ref()
@@ -875,10 +876,6 @@ fn component_row_view(
             <span class="shrink-0 font-mono text-[9px] tabular-nums text-fg-tertiary/55">
                 {led_count}
             </span>
-            {move_output
-                .map(move |oid| {
-                    move_to_zone_control(studio, current_zone_id, vec![oid], MoveSize::Channel)
-                })}
             {hide_pair
                 .map(|(key, id)| {
                     view! {
