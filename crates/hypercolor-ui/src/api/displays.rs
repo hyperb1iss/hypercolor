@@ -133,7 +133,11 @@ pub async fn set_display_face(
     let body = SetDisplayFaceRequest {
         effect_id: effect_id.to_owned(),
         controls: HashMap::new(),
-        blend_mode: Some(DisplayFaceBlendMode::Replace),
+        // Default to a blended overlay so a freshly-assigned face layers
+        // over the live effect — transparent regions reveal it — instead of
+        // blacking the effect out. Replace stays available in the
+        // composition panel for face-only looks.
+        blend_mode: Some(DisplayFaceBlendMode::Alpha),
         opacity: Some(1.0),
         scope,
     };

@@ -331,8 +331,10 @@ pub async fn set_display_face(
             opacity: body.opacity.unwrap_or(1.0),
         }
     } else {
+        // No explicit composition: default to a blended overlay so the face
+        // layers over the live effect instead of replacing it.
         DisplayFaceTarget {
-            blend_mode: DisplayFaceBlendMode::Replace,
+            blend_mode: DisplayFaceBlendMode::Alpha,
             device_id,
             opacity: 1.0,
         }

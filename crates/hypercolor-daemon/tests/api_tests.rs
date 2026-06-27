@@ -10125,7 +10125,7 @@ async fn patch_face_composition_updates_material_blend_mode_and_normalizes_repla
 }
 
 #[tokio::test]
-async fn reassigning_display_face_resets_composition_to_replace() {
+async fn reassigning_display_face_resets_composition_to_blended_default() {
     let state = Arc::new(isolated_state());
     let display_id = insert_test_display_device(&state, "Pump LCD").await;
     let face_a = insert_test_display_face_effect(&state, "System Monitor").await;
@@ -10184,11 +10184,11 @@ async fn reassigning_display_face_resets_composition_to_replace() {
     assert_eq!(assign_b_json["data"]["effect"]["id"], face_b.id.to_string());
     assert!(
         assign_b_json["data"]["group"]["display_target"]["blend_mode"].is_null(),
-        "reassigning a face should reset composition mode to replace"
+        "reassigning a face should reset composition mode to the blended default (alpha serializes as absent)"
     );
     assert!(
         assign_b_json["data"]["group"]["display_target"]["opacity"].is_null(),
-        "reassigning a face should reset opacity to the replace default"
+        "reassigning a face should reset opacity to the default"
     );
 
     let manager = state.scene_manager.read().await;
@@ -10200,7 +10200,7 @@ async fn reassigning_display_face_resets_composition_to_replace() {
         .display_target
         .clone()
         .expect("display target should remain present");
-    assert_eq!(target.blend_mode, DisplayFaceBlendMode::Replace);
+    assert_eq!(target.blend_mode, DisplayFaceBlendMode::Alpha);
     assert!((target.opacity - 1.0).abs() < f32::EPSILON);
 }
 

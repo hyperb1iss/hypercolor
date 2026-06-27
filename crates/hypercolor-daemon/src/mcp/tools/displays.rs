@@ -183,6 +183,17 @@ pub(super) async fn handle_set_display_face_with_state(
             )
             .map_err(|error| ToolError::Internal(error.to_string()))?
             .clone();
+        // upsert seeds the target as Replace; blend over the live effect by
+        // default so the face layers on top instead of blacking it out,
+        // mirroring the REST scene-scope contract.
+        let group = scene_manager
+            .patch_display_group_target(
+                group.id,
+                Some(hypercolor_types::scene::DisplayFaceBlendMode::Alpha),
+                Some(1.0),
+            )
+            .ok_or_else(|| ToolError::Internal("failed to set display face composition".into()))?
+            .clone();
         (active_scene_id, group, change_kind)
     };
     publish_render_group_changed(state, active_scene_id, &group, change_kind);
@@ -306,7 +317,9 @@ async fn handle_default_scope(
         store.set(
             device_id,
             crate::display_preferences::DisplayPreference {
-                blend_mode: hypercolor_types::scene::DisplayFaceBlendMode::Replace,
+                // Blend over the live effect by default; Replace is opt-in
+                // via the composition controls for face-only looks.
+                blend_mode: hypercolor_types::scene::DisplayFaceBlendMode::Alpha,
                 controls,
                 effect_id: effect.id,
                 opacity: 1.0,

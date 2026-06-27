@@ -355,7 +355,7 @@ pub(crate) async fn apply_profile_snapshot(
                 &prepared_display.metadata,
                 &prepared_display.controls,
             );
-            scene_manager
+            let group_id = scene_manager
                 .upsert_display_group(
                     prepared_display.device_id,
                     prepared_display.device_name.as_str(),
@@ -368,7 +368,15 @@ pub(crate) async fn apply_profile_snapshot(
                         "failed to assign profile display face '{}' to {}: {error}",
                         prepared_display.metadata.name, prepared_display.device_id
                     ))
-                })?;
+                })?
+                .id;
+            // upsert seeds the target as Replace; blend the restored face over
+            // the live effect so profile apply doesn't black the effect out.
+            scene_manager.patch_display_group_target(
+                group_id,
+                Some(hypercolor_types::scene::DisplayFaceBlendMode::Alpha),
+                Some(1.0),
+            );
 
             if !rejected_controls.is_empty() {
                 warn!(
