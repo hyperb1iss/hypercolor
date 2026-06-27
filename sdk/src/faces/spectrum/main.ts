@@ -1,6 +1,6 @@
 import type { FaceContext } from '@hypercolor/sdk'
 import { color, combo, face, num, palette, Smoothed, withAlpha } from '@hypercolor/sdk'
-import { drawNebulaField } from '../shared/atmosphere'
+import { atmosphereVisible, drawNebulaField, transparentBackgroundControl } from '../shared/atmosphere'
 import { clamp01, createFaceRoot } from '../shared/dom'
 
 const FAST_DECAY_HALFLIFE = 0.14
@@ -61,6 +61,7 @@ export default face(
         glow: num('Glow', [0, 1], 0.6, { group: 'Style' }),
         peakColor: color('Ridge Color', '#ffffff', { group: 'Style' }),
         secondaryAccent: color('High Color', palette.electricPurple, { group: 'Style' }),
+        transparentBackground: transparentBackgroundControl(),
     },
     {
         audio: true,
@@ -200,7 +201,9 @@ function buildSpectrum(ctx: FaceContext, wide: boolean) {
         const W = ctx.width
         const H = ctx.height
         c.clearRect(0, 0, W, H)
-        drawNebulaField(c, W, H, time, lowColor, highColor, 0.45 + level * 0.8 + pulse * 0.4)
+        if (atmosphereVisible(controls)) {
+            drawNebulaField(c, W, H, time, lowColor, highColor, 0.45 + level * 0.8 + pulse * 0.4)
+        }
 
         const safe = ctx.display.safeArea
         const left = wide ? W * 0.025 : safe.x

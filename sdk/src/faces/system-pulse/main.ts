@@ -1,6 +1,12 @@
 import type { FaceContext, FaceDataSources } from '@hypercolor/sdk'
 import { color, combo, face, font, palette, sensor, sparkline, toggle, ValueHistory, withAlpha } from '@hypercolor/sdk'
-import { drawNebulaField, drawRisingMotes, makeDrifters } from '../shared/atmosphere'
+import {
+    atmosphereVisible,
+    drawNebulaField,
+    drawRisingMotes,
+    makeDrifters,
+    transparentBackgroundControl,
+} from '../shared/atmosphere'
 import { createMetricCard, type MetricCard } from '../shared/components'
 import {
     clamp01,
@@ -191,6 +197,7 @@ export default face(
         showClock: toggle('Show Clock', true, { group: 'Elements' }),
         showNet: toggle('Show Network', true, { group: 'Elements' }),
         showRig: toggle('Show Rig Colors', true, { group: 'Elements' }),
+        transparentBackground: transparentBackgroundControl(),
         uiFont: font('UI Font', 'Inter', { families: [...UI_FONT_FAMILIES], group: 'Typography' }),
     },
     {
@@ -456,7 +463,9 @@ function buildSystemPulse(ctx: FaceContext, wide: boolean) {
         }
 
         ctx.ctx.clearRect(0, 0, ctx.width, ctx.height)
-        drawNebulaField(ctx.ctx, ctx.width, ctx.height, time, accentColor, secondary, 1.0)
-        drawRisingMotes(ctx.ctx, ctx.width, ctx.height, time, drifters, accentColor, 0.6, 0.4)
+        if (atmosphereVisible(controls)) {
+            drawNebulaField(ctx.ctx, ctx.width, ctx.height, time, accentColor, secondary, 1.0)
+            drawRisingMotes(ctx.ctx, ctx.width, ctx.height, time, drifters, accentColor, 0.6, 0.4)
+        }
     }
 }

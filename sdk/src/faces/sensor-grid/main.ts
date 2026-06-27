@@ -15,7 +15,14 @@ import {
     withAlpha,
 } from '@hypercolor/sdk'
 
-import { drawNebulaField, drawRisingMotes, entrance, makeDrifters } from '../shared/atmosphere'
+import {
+    atmosphereVisible,
+    drawNebulaField,
+    drawRisingMotes,
+    entrance,
+    makeDrifters,
+    transparentBackgroundControl,
+} from '../shared/atmosphere'
 import {
     clamp01,
     createFaceRoot,
@@ -124,6 +131,7 @@ export default face(
         showSparklines: toggle('Show Sparklines', true, { group: 'Elements' }),
         showTracks: toggle('Show Tracks', true, { group: 'Elements' }),
         showValues: toggle('Show Values', true, { group: 'Elements' }),
+        transparentBackground: transparentBackgroundControl(),
         uiFont: font('UI Font', 'Inter', { families: [...UI_FONT_FAMILIES], group: 'Typography' }),
         valueSize: num('Value Size', [28, 84], 50, { group: 'Typography' }),
     },
@@ -319,8 +327,10 @@ function buildSensorGrid(ctx: FaceContext, wide: boolean) {
         let hottest = 0
         for (const cell of cells) hottest = Math.max(hottest, cell.heat.value)
         const skyColor = auto ? lerpColor('#37e0ff', '#ff5e7a', hottest) : accent
-        drawNebulaField(c, W, H, time, skyColor, accent, 0.55 + hottest * 0.5)
-        drawRisingMotes(c, W, H, time, drifters, skyColor, 0.6, hottest)
+        if (atmosphereVisible(controls)) {
+            drawNebulaField(c, W, H, time, skyColor, accent, 0.55 + hottest * 0.5)
+            drawRisingMotes(c, W, H, time, drifters, skyColor, 0.6, hottest)
+        }
 
         const gridLeft = (W - gridW) / 2
         const gridTop = (H - gridH) / 2

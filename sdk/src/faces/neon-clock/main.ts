@@ -2,12 +2,14 @@ import type { FaceContext } from '@hypercolor/sdk'
 import { color, combo, easeOutCubic, face, font, num, palette, toggle, withAlpha } from '@hypercolor/sdk'
 
 import {
+    atmosphereVisible,
     drawCometRail,
     drawCometRing,
     drawNebulaField,
     drawRisingMotes,
     entrance,
     makeDrifters,
+    transparentBackgroundControl,
 } from '../shared/atmosphere'
 import {
     clamp01,
@@ -30,6 +32,7 @@ const STYLES = `
     --ui-ink: ${palette.fg.secondary};
     --time-size: 150;
     --meta-size: 12;
+    --digit-gap: 0.04;
     position: absolute;
     inset: 0;
     overflow: hidden;
@@ -52,7 +55,7 @@ const STYLES = `
     display: inline-flex;
     align-items: baseline;
     justify-content: center;
-    gap: 0.04em;
+    gap: calc(var(--digit-gap) * 1em);
     font-family: var(--hero-font);
     font-size: calc(var(--time-size) * 1px);
     font-weight: 500;
@@ -131,6 +134,7 @@ const STYLES = `
 const CONTROLS = {
     accent: color('Accent', palette.neonCyan, { group: 'Style' }),
     dialStyle: combo('Dial Style', ['Orbit', 'Split', 'Pulse'], { group: 'Clock' }),
+    digitSpacing: num('Digit Spacing', [0, 50], 4, { group: 'Typography' }),
     glowIntensity: num('Glow', [0, 100], 56, { group: 'Style' }),
     headlineFont: font('Headline Font', 'Rajdhani', { families: [...DISPLAY_FONT_FAMILIES], group: 'Typography' }),
     hourFormat: combo('Format', ['24h', '12h'], { group: 'Clock' }),
@@ -143,6 +147,7 @@ const CONTROLS = {
     showSeparator: toggle('Show Separator', true, { group: 'Elements' }),
     showTime: toggle('Show Time', true, { group: 'Elements' }),
     timeSize: num('Time Size', [72, 164], 150, { group: 'Typography' }),
+    transparentBackground: transparentBackgroundControl(),
     uiFont: font('UI Font', 'Inter', { families: [...UI_FONT_FAMILIES], group: 'Typography' }),
 }
 
@@ -343,6 +348,7 @@ function buildNeonClock(ctx: FaceContext, wide: boolean) {
         const timeScale = (controls.timeSize as number) / 150
         const timeSize = wide ? ctx.height * 0.62 * timeScale : ctx.width * 0.31 * timeScale
         root.style.setProperty('--time-size', `${timeSize}`)
+        root.style.setProperty('--digit-gap', `${(controls.digitSpacing as number) / 100}`)
         root.style.setProperty(
             '--meta-size',
             `${Math.max(9, (controls.metaSize as number) * (wide ? (ctx.height / 480) * 2.1 : ctx.width / 480))}`,
@@ -392,8 +398,10 @@ function buildNeonClock(ctx: FaceContext, wide: boolean) {
         const W = ctx.width
         const H = ctx.height
         c.clearRect(0, 0, W, H)
-        drawNebulaField(c, W, H, time, accent, secondary, 0.5 + glow * 0.9)
-        drawRisingMotes(c, W, H, time, drifters, accent, glow, 0.45)
+        if (atmosphereVisible(controls)) {
+            drawNebulaField(c, W, H, time, accent, secondary, 0.5 + glow * 0.9)
+            drawRisingMotes(c, W, H, time, drifters, accent, glow, 0.45)
+        }
 
         if (controls.showDial !== true) return
         const dialStyle = (controls.dialStyle as string) ?? 'Orbit'

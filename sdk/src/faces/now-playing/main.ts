@@ -1,6 +1,6 @@
 import type { FaceContext, FaceDataSources, MediaInfo } from '@hypercolor/sdk'
 import { arcGauge, clamp, color, face, font, lerpColor, palette, Smoothed, toggle, withAlpha } from '@hypercolor/sdk'
-import { drawNebulaField } from '../shared/atmosphere'
+import { atmosphereVisible, drawNebulaField, transparentBackgroundControl } from '../shared/atmosphere'
 import {
     clamp01,
     createFaceRoot,
@@ -268,6 +268,7 @@ export default face(
         secondaryAccent: color('Secondary', palette.coral, { group: 'Style' }),
         showProgress: toggle('Show Progress', true, { group: 'Elements' }),
         showTimes: toggle('Show Times', true, { group: 'Elements' }),
+        transparentBackground: transparentBackgroundControl(),
         uiFont: font('UI Font', 'Inter', { families: [...UI_FONT_FAMILIES], group: 'Typography' }),
         useArtAccent: toggle('Accent From Art', true, { group: 'Style' }),
     },
@@ -425,7 +426,9 @@ function buildNowPlaying(ctx: FaceContext, wide: boolean) {
 
         const c = ctx.ctx
         c.clearRect(0, 0, ctx.width, ctx.height)
-        drawNebulaField(c, ctx.width, ctx.height, time, accent, secondary, playing ? 1.0 : 0.55)
+        if (atmosphereVisible(controls)) {
+            drawNebulaField(c, ctx.width, ctx.height, time, accent, secondary, playing ? 1.0 : 0.55)
+        }
 
         const progress = progressGlide.update(media.available ? data.media.progress() : 0, dt)
         const breathe = idlePulse.update(media.available ? 0 : 1, dt)
@@ -469,7 +472,7 @@ function buildNowPlaying(ctx: FaceContext, wide: boolean) {
             }
         }
 
-        if (!media.available) {
+        if (!media.available && atmosphereVisible(controls)) {
             const pulse = 0.5 + 0.5 * Math.sin(time * 1.4)
             const glowRadius = artSize * (0.62 + 0.05 * pulse) * breathe
             if (glowRadius > 1) {

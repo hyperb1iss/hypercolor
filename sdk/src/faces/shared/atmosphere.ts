@@ -7,8 +7,22 @@
  * strobing.
  */
 
-import { easeOutCubic, lerpColor, withAlpha } from '@hypercolor/sdk'
+import { easeOutCubic, lerpColor, toggle, withAlpha } from '@hypercolor/sdk'
 import { clamp01 } from './dom'
+
+/**
+ * Shared background-mode control. Every face spreads this in so it can be
+ * worn as a transparent overlay — atmosphere skipped — on top of the live
+ * effect, instead of always painting its own opaque sky.
+ */
+export function transparentBackgroundControl(group = 'Background') {
+    return toggle('Transparent Background', false, { group })
+}
+
+/** Whether a face should paint its full-bleed atmosphere this frame. */
+export function atmosphereVisible(controls: Record<string, unknown>): boolean {
+    return controls.transparentBackground !== true
+}
 
 /** Eased 0→1 progress for staggered boot choreography. */
 export function entrance(time: number, delay: number, duration = 0.9): number {

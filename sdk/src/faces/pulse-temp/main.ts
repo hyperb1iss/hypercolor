@@ -13,6 +13,7 @@ import {
     ValueHistory,
     withAlpha,
 } from '@hypercolor/sdk'
+import { atmosphereVisible, transparentBackgroundControl } from '../shared/atmosphere'
 import {
     clamp01,
     createFaceRoot,
@@ -154,6 +155,7 @@ export default face(
         showTrend: toggle('Show Trend', true, { group: 'Elements' }),
         showUnit: toggle('Show Unit', true, { group: 'Elements' }),
         targetSensor: sensor('Sensor', 'cpu_temp', { group: 'Data' }),
+        transparentBackground: transparentBackgroundControl(),
         uiFont: font('UI Font', 'Inter', { families: [...UI_FONT_FAMILIES], group: 'Typography' }),
     },
     {
@@ -291,8 +293,10 @@ function buildPulseTemp(ctx: FaceContext, wide: boolean) {
         const H = ctx.height
         c.clearRect(0, 0, W, H)
 
-        drawThermalField(c, W, H, time, t, ramp, glow, pulse)
-        drawEmbers(c, W, H, time, t, embers, heatColor, glow)
+        if (atmosphereVisible(controls)) {
+            drawThermalField(c, W, H, time, t, ramp, glow, pulse)
+            drawEmbers(c, W, H, time, t, embers, heatColor, glow)
+        }
 
         const meterStyle = (controls.meterStyle as string) ?? 'Halo'
         if (controls.showTrend === true) {

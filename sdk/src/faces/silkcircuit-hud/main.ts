@@ -13,7 +13,14 @@ import {
     toggle,
     withAlpha,
 } from '@hypercolor/sdk'
-import { drawNebulaField, drawRisingMotes, entrance, makeDrifters } from '../shared/atmosphere'
+import {
+    atmosphereVisible,
+    drawNebulaField,
+    drawRisingMotes,
+    entrance,
+    makeDrifters,
+    transparentBackgroundControl,
+} from '../shared/atmosphere'
 import {
     clamp01,
     createFaceRoot,
@@ -292,6 +299,7 @@ export default face(
         showDate: toggle('Show Date', true, { group: 'Elements' }),
         showMetricLabels: toggle('Show Metric Labels', true, { group: 'Elements' }),
         showMetrics: toggle('Show Metrics', true, { group: 'Elements' }),
+        transparentBackground: transparentBackgroundControl(),
         uiFont: font('UI Font', 'Inter', { families: [...UI_FONT_FAMILIES], group: 'Typography' }),
     },
     {
@@ -602,7 +610,11 @@ function buildHud(ctx: FaceContext, wide: boolean) {
             c.clearRect(0, 0, ctx.width, ctx.height)
 
             if (backgroundCtx) {
-                drawHudBackground(backgroundCtx, ctx.width, ctx.height, time, accent, secondary)
+                if (atmosphereVisible(controls)) {
+                    drawHudBackground(backgroundCtx, ctx.width, ctx.height, time, accent, secondary)
+                } else {
+                    backgroundCtx.clearRect(0, 0, ctx.width, ctx.height)
+                }
             }
         }
     }
