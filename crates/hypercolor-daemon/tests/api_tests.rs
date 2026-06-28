@@ -84,12 +84,18 @@ use hypercolor_types::spatial::{
 static COVER_DATA_DIR_LOCK: LazyLock<AsyncMutex<()>> = LazyLock::new(|| AsyncMutex::new(()));
 
 fn assert_canvas_frame_black(frame: &CanvasFrame) {
+    assert_canvas_frame_color(frame, [0, 0, 0]);
+}
+
+fn assert_canvas_frame_color(frame: &CanvasFrame, color: [u8; 3]) {
     assert!(
-        frame
-            .rgba_bytes()
-            .chunks_exact(4)
-            .all(|pixel| pixel[0] == 0 && pixel[1] == 0 && pixel[2] == 0 && pixel[3] == 255),
-        "canvas frame should be opaque black"
+        frame.rgba_bytes().chunks_exact(4).all(|pixel| {
+            pixel[0] == color[0] && pixel[1] == color[1] && pixel[2] == color[2] && pixel[3] == 255
+        }),
+        "canvas frame should be opaque rgb({}, {}, {})",
+        color[0],
+        color[1],
+        color[2]
     );
 }
 
@@ -4682,6 +4688,24 @@ async fn stop_effect_returns_not_found_when_none() {
 }
 
 #[tokio::test]
+async fn pause_effect_returns_not_found_when_none() {
+    let app = test_app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/pause")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn stop_current_clears_primary_effect_id_but_keeps_scene() {
     let state = Arc::new(isolated_state());
     insert_test_effect(&state, "solid_color").await;
@@ -4720,6 +4744,122 @@ async fn stop_current_clears_primary_effect_id_but_keeps_scene() {
         .primary_group()
         .expect("primary group shell should remain after stop");
     assert!(primary.effect_id.is_none());
+}
+
+#[tokio::test]
+async fn pause_resume_preserves_effect_state_and_holds_static_output() {
+    let state = Arc::new(isolated_state());
+    insert_test_effect(&state, "solid_color").await;
+    state.render_loop.write().await.start();
+
+    let group_id = hypercolor_types::scene::ZoneId::new();
+    state.event_bus.upsert_display_group_target(
+        group_id,
+        DisplayGroupTarget {
+            device_id: DeviceId::new(),
+            blend_mode: DisplayFaceBlendMode::Alpha,
+            opacity: 1.0,
+            finalized: false,
+        },
+    );
+    let group_sender = state.event_bus.group_canvas_sender(group_id);
+    let mut red_canvas = Canvas::new(2, 2);
+    red_canvas.fill(Rgba::new(255, 0, 0, 255));
+    group_sender.send_replace(display_group_frame(&red_canvas, 7, 7));
+    let group_receiver = group_sender.subscribe();
+
+    let app = test_app_with_state(Arc::clone(&state));
+    let apply_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/solid_color/apply")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"controls":{"speed":7.5}}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(apply_response.status(), StatusCode::OK);
+
+    let pause_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/pause")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(pause_response.status(), StatusCode::OK);
+
+    assert_eq!(
+        state.render_loop.read().await.state(),
+        RenderLoopState::Paused
+    );
+    let power_state = *state.power_state.borrow();
+    assert!(power_state.sleeping);
+    assert_eq!(power_state.session_brightness, 0.0);
+    assert_eq!(power_state.off_output_behavior, OffOutputBehavior::Static);
+    assert_canvas_frame_black(&state.event_bus.canvas_receiver().borrow());
+    assert_display_group_frame_black(&group_receiver.borrow());
+
+    let active_paused_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/effects/active")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(active_paused_response.status(), StatusCode::OK);
+    let active_paused_json = body_json(active_paused_response).await;
+    assert_eq!(active_paused_json["data"]["state"], "paused");
+    assert_eq!(
+        active_paused_json["data"]["control_values"]["speed"]["float"],
+        7.5
+    );
+
+    let resume_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/resume")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(resume_response.status(), StatusCode::OK);
+
+    assert_eq!(
+        state.render_loop.read().await.state(),
+        RenderLoopState::Running
+    );
+    let power_state = *state.power_state.borrow();
+    assert!(!power_state.sleeping);
+    assert_eq!(power_state.session_brightness, 1.0);
+    let active_resumed_response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/effects/active")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    let active_resumed_json = body_json(active_resumed_response).await;
+    assert_eq!(active_resumed_json["data"]["state"], "running");
+    assert_eq!(
+        active_resumed_json["data"]["control_values"]["speed"]["float"],
+        7.5
+    );
 }
 
 #[tokio::test]

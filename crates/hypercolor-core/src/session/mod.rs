@@ -19,7 +19,7 @@ use tracing::{debug, warn};
 
 #[cfg(target_os = "linux")]
 use self::logind::LogindMonitor;
-pub use self::policy::SleepPolicy;
+pub use self::policy::{SleepPolicy, parse_static_color};
 #[cfg(target_os = "linux")]
 use self::screensaver::ScreensaverMonitor;
 

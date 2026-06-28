@@ -132,6 +132,7 @@ pub(super) fn apply_active_effect_snapshot(
     controls: Vec<ControlDefinition>,
     control_values: HashMap<String, ControlValue>,
     active_preset_id: Option<String>,
+    is_playing: bool,
 ) {
     let category = ctx
         .effect_summary(&id)
@@ -143,7 +144,7 @@ pub(super) fn apply_active_effect_snapshot(
     ctx.set_active_controls.set(controls);
     ctx.set_active_control_values.set(control_values.clone());
     ctx.set_active_preset_id.set(active_preset_id.clone());
-    ctx.set_is_playing.set(true);
+    ctx.set_is_playing.set(is_playing);
     if ctx.active_effect_id.get_untracked().as_deref() != Some(id.as_str()) {
         ctx.set_active_effect_id.set(Some(id.clone()));
     }

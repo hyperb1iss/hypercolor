@@ -113,6 +113,20 @@ pub async fn apply_effect(id: &str, body: Option<&ApplyEffectBody>) -> Result<()
     }
 }
 
+/// Pause output while preserving the currently active effect and controls.
+pub async fn pause_effect() -> Result<(), String> {
+    client::post_empty("/api/v1/effects/pause")
+        .await
+        .map_err(Into::into)
+}
+
+/// Resume output for the preserved active effect.
+pub async fn resume_effect() -> Result<(), String> {
+    client::post_empty("/api/v1/effects/resume")
+        .await
+        .map_err(Into::into)
+}
+
 /// Stop the currently active effect.
 pub async fn stop_effect() -> Result<(), String> {
     client::post_empty("/api/v1/effects/stop")

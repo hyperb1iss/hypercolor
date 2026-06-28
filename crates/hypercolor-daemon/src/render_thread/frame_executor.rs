@@ -4,10 +4,14 @@ use std::sync::Arc;
 use std::task::Poll;
 use std::time::Instant;
 
-use tracing::info;
+use tracing::{info, warn};
 
+use hypercolor_core::bus::{CanvasFrame, DisplayGroupFrame};
+use hypercolor_core::device::BackendManager;
+use hypercolor_core::types::canvas::{Canvas, Rgba};
 use hypercolor_core::types::event::FrameTiming;
-use hypercolor_types::event::{HypercolorEvent, Severity};
+use hypercolor_types::event::{FrameData, HypercolorEvent, Severity};
+use hypercolor_types::session::OffOutputBehavior;
 
 use super::frame_composer::{ComposeRequest, RenderStageStats, compose_frame};
 use super::frame_io::{FramePublicationRequest, FramePublicationSurfaces, publish_frame_updates};
@@ -19,7 +23,9 @@ use super::frame_throttle::{maybe_idle_throttle, maybe_sleep_throttle};
 use super::pipeline_runtime::{
     OutputFrameSource, OutputReuseKey, PendingSamplingWork, PipelineRuntime,
 };
-use super::scene_snapshot::{build_frame_scene_snapshot, refresh_effect_scene_snapshot};
+use super::scene_snapshot::{
+    FrameSceneSnapshot, build_frame_scene_snapshot, refresh_effect_scene_snapshot,
+};
 use super::sparkleflinger::ComposedFrameSet;
 use super::unassigned_output::{UnassignedOutputPlanner, unassigned_behavior_generation};
 use super::{RenderThreadState, micros_between, micros_u32, u64_to_u32};
@@ -109,6 +115,22 @@ pub(crate) async fn execute_frame(
         .await;
     let scene_snapshot_done_us = micros_u32(frame_start.elapsed());
     if output_power.sleeping {
+        if output_power.off_output_behavior == OffOutputBehavior::Static
+            && !frame_loop.throttle.sleep_black_pushed()
+        {
+            force_static_sleep_snapshot(
+                state,
+                &scene_snapshot,
+                output_power.off_output_color,
+                None,
+            )
+            .await;
+            frame_loop.throttle.note_sleep_frame_published();
+            let mut render_loop = state.render_loop.write().await;
+            return runtime
+                .frame_policy
+                .sleep_throttle_execution(&mut render_loop);
+        }
         let sleep_render_surfaces =
             render.render_surface_snapshot(state.published_canvas_receiver_count());
         if let Some(frame) = maybe_sleep_throttle(
@@ -264,6 +286,22 @@ pub(crate) async fn execute_frame(
         } else {
             state.backend_manager.lock().await
         };
+        let latest_output_power = *state.power_state.borrow();
+        if should_switch_to_late_sleep_frame(output_power, latest_output_power) {
+            scene_snapshot.output_power = latest_output_power;
+            force_static_sleep_snapshot(
+                state,
+                &scene_snapshot,
+                latest_output_power.off_output_color,
+                Some(&mut *manager),
+            )
+            .await;
+            frame_loop.throttle.note_sleep_frame_published();
+            let mut render_loop = state.render_loop.write().await;
+            return runtime
+                .frame_policy
+                .sleep_throttle_execution(&mut render_loop);
+        }
         let unassigned_output_plan = UnassignedOutputPlanner::new(
             &manager,
             &mut render.output_artifacts.unassigned_output_cache,
@@ -415,6 +453,22 @@ pub(crate) async fn execute_frame(
             },
         },
     );
+    let latest_output_power = *state.power_state.borrow();
+    if should_switch_to_late_sleep_frame(output_power, latest_output_power) {
+        scene_snapshot.output_power = latest_output_power;
+        force_static_sleep_snapshot(
+            state,
+            &scene_snapshot,
+            latest_output_power.off_output_color,
+            None,
+        )
+        .await;
+        frame_loop.throttle.note_sleep_frame_published();
+        let mut render_loop = state.render_loop.write().await;
+        return runtime
+            .frame_policy
+            .sleep_throttle_execution(&mut render_loop);
+    }
     let publish_us = publish_stats.elapsed_us;
     let publish_done_at = Instant::now();
     let publish_done_us = micros_between(frame_start, publish_done_at);
@@ -531,6 +585,74 @@ fn should_record_idle_black_frame(
     !effect_running && !screen_capture_active && !reuses_published_frame
 }
 
+async fn force_static_sleep_snapshot(
+    state: &RenderThreadState,
+    scene_snapshot: &FrameSceneSnapshot,
+    color: [u8; 3],
+    backend_manager: Option<&mut BackendManager>,
+) {
+    let layout = scene_snapshot.spatial_engine.layout();
+    let mut canvas = Canvas::new(layout.canvas_width, layout.canvas_height);
+    canvas.fill(Rgba::new(color[0], color[1], color[2], 255));
+    let zones = scene_snapshot.spatial_engine.sample(&canvas);
+
+    let (write_stats, async_failures) = if let Some(manager) = backend_manager {
+        let write_stats = manager.write_frame(&zones, layout.as_ref()).await;
+        let async_failures = manager.async_write_failures();
+        (write_stats, async_failures)
+    } else {
+        let mut manager = state.backend_manager.lock().await;
+        let write_stats = manager.write_frame(&zones, layout.as_ref()).await;
+        let async_failures = manager.async_write_failures();
+        (write_stats, async_failures)
+    };
+    if let Some(runtime) = &state.discovery_runtime {
+        handle_async_write_failures(runtime, async_failures);
+    }
+    if !write_stats.errors.is_empty() {
+        warn!(
+            error_count = write_stats.errors.len(),
+            "Forced static sleep snapshot encountered output errors"
+        );
+    }
+
+    let frame_number = state
+        .event_bus
+        .frame_receiver()
+        .borrow()
+        .frame_number
+        .saturating_add(1);
+    let elapsed_ms = scene_snapshot.elapsed_ms;
+    let canvas_frame = CanvasFrame::from_canvas(&canvas, frame_number, elapsed_ms);
+    let group_frame = DisplayGroupFrame::Canvas(canvas_frame.clone());
+    let (_, display_group_targets) = state.event_bus.display_group_targets_snapshot();
+    for group_id in display_group_targets.keys().copied() {
+        state
+            .event_bus
+            .group_canvas_sender(group_id)
+            .send_replace(group_frame.clone());
+    }
+    state
+        .event_bus
+        .frame_sender()
+        .send_replace(FrameData::new(zones, frame_number, elapsed_ms));
+    state
+        .event_bus
+        .scene_canvas_sender()
+        .send_replace(canvas_frame.clone());
+    state.event_bus.canvas_sender().send_replace(canvas_frame);
+    state
+        .preview_runtime
+        .record_canvas_publication(frame_number, elapsed_ms);
+}
+
+fn should_switch_to_late_sleep_frame(
+    frame_output_power: crate::session::OutputPowerState,
+    latest_output_power: crate::session::OutputPowerState,
+) -> bool {
+    !frame_output_power.sleeping && latest_output_power.sleeping
+}
+
 const fn output_frame_source_kind(source: OutputFrameSource) -> OutputFrameSourceKind {
     match source {
         OutputFrameSource::CurrentFrame => OutputFrameSourceKind::CurrentFrame,
@@ -555,6 +677,7 @@ mod tests {
     use hypercolor_core::types::canvas::{Canvas, PublishedSurface};
     use hypercolor_core::types::event::{FrameData, ZoneColors};
     use hypercolor_types::scene::{ColorInterpolation, SceneId};
+    use hypercolor_types::session::OffOutputBehavior;
     use hypercolor_types::spatial::{
         EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     };
@@ -571,6 +694,7 @@ mod tests {
     use crate::render_thread::pipeline_runtime::SceneTransitionKey;
     use crate::render_thread::pipeline_runtime::needs_gpu_preview_advance;
     use crate::render_thread::sparkleflinger::ComposedFrameSet;
+    use crate::session::OutputPowerState;
 
     fn render_stage(
         backend: CompositorBackendKind,
@@ -679,6 +803,24 @@ mod tests {
         assert!(!super::should_record_idle_black_frame(false, false, true));
         assert!(!super::should_record_idle_black_frame(false, true, false));
         assert!(!super::should_record_idle_black_frame(true, false, false));
+    }
+
+    #[test]
+    fn late_sleep_frame_takes_over_admitted_running_frame() {
+        let running = OutputPowerState::default();
+        let sleeping = OutputPowerState {
+            sleeping: true,
+            session_brightness: 0.0,
+            off_output_behavior: OffOutputBehavior::Static,
+            off_output_color: [0, 0, 0],
+            ..OutputPowerState::default()
+        };
+
+        assert!(super::should_switch_to_late_sleep_frame(running, sleeping));
+        assert!(!super::should_switch_to_late_sleep_frame(
+            sleeping, sleeping
+        ));
+        assert!(!super::should_switch_to_late_sleep_frame(running, running));
     }
 
     #[test]

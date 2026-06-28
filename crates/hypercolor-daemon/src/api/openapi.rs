@@ -634,6 +634,18 @@ pub const ROUTES: &[RouteSpec] = &[
         "Reset current effect controls",
     ),
     RouteSpec::post(
+        "/api/v1/effects/pause",
+        "pause_effect",
+        "effects",
+        "Pause active effect output",
+    ),
+    RouteSpec::post(
+        "/api/v1/effects/resume",
+        "resume_effect",
+        "effects",
+        "Resume active effect output",
+    ),
+    RouteSpec::post(
         "/api/v1/effects/stop",
         "stop_effect",
         "effects",

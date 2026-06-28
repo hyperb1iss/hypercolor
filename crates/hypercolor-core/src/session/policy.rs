@@ -136,7 +136,8 @@ fn sleep_action_from_behavior(
     }
 }
 
-fn parse_static_color(raw: &str) -> [u8; 3] {
+#[must_use]
+pub fn parse_static_color(raw: &str) -> [u8; 3] {
     let trimmed = raw.trim();
     let hex = trimmed.strip_prefix('#').unwrap_or(trimmed);
     match hex.len() {

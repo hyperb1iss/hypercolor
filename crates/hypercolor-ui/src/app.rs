@@ -235,6 +235,7 @@ impl EffectsContext {
         leptos::task::spawn_local(async move {
             match api::fetch_active_effect().await {
                 Ok(Some(active)) => {
+                    let is_playing = active.state != "paused";
                     apply_active_effect_snapshot(
                         &ctx,
                         active.id.clone(),
@@ -242,6 +243,7 @@ impl EffectsContext {
                         active.controls,
                         active.control_values,
                         active.active_preset_id,
+                        is_playing,
                     );
                 }
                 Ok(None) => ctx.set_is_playing.set(false),
@@ -400,24 +402,25 @@ impl EffectsContext {
         self.set_last_effect_error.set(None);
         let ctx = *self;
         leptos::task::spawn_local(async move {
-            if api::stop_effect().await.is_err() {
+            if api::pause_effect().await.is_err() {
                 ctx.refresh_active_effect();
                 toasts::toast_error("Couldn't pause the effect");
             }
         });
     }
 
-    /// Resume the previously stopped effect.
+    /// Resume the previously paused effect.
     pub fn resume_effect(&self) {
-        if let Some(id) = self.active_effect_id.get_untracked() {
+        if self.active_effect_id.get_untracked().is_some() {
             self.set_is_playing.set(true);
             self.set_last_effect_error.set(None);
             let ctx = *self;
             leptos::task::spawn_local(async move {
-                if api::apply_effect(&id, None).await.is_ok() {
+                if api::resume_effect().await.is_ok() {
                     ctx.refresh_active_effect();
                 } else {
                     ctx.set_is_playing.set(false);
+                    ctx.refresh_active_effect();
                 }
             });
         }
@@ -753,6 +756,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
     // Initialize active effect from API on load
     Effect::new(move |_| {
         if let Some(Ok(Some(active))) = active_resource.get() {
+            let is_playing = active.state != "paused";
             apply_active_effect_snapshot(
                 &effects_ctx,
                 active.id,
@@ -760,6 +764,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
                 active.controls,
                 active.control_values,
                 active.active_preset_id,
+                is_playing,
             );
         } else if let Some(Ok(None)) = active_resource.get() {
             effects_ctx.set_is_playing.set(false);

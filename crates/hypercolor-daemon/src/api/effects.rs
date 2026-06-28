@@ -17,8 +17,10 @@ use hypercolor_core::effect::{
     EffectRegistry, HtmlControlKind, ParsedHtmlEffectMetadata, load_html_effect_file,
     parse_html_effect_metadata,
 };
+use hypercolor_core::engine::RenderLoopState;
 use hypercolor_core::scene::ControlsVersionMismatch;
-use hypercolor_types::canvas::Canvas;
+use hypercolor_core::session::parse_static_color;
+use hypercolor_types::canvas::{Canvas, Rgba};
 use hypercolor_types::device::{DriverModuleKind, DriverTransportKind};
 use hypercolor_types::effect::{
     ControlBinding, ControlDefinition, ControlValue, EffectCategory, EffectId, EffectMetadata,
@@ -87,6 +89,12 @@ pub(crate) struct StopActiveEffectResult {
 }
 
 #[derive(Debug)]
+pub(crate) struct PauseActiveEffectResult {
+    pub effect: EffectRef,
+    pub off_output_color: [u8; 3],
+}
+
+#[derive(Debug)]
 pub(crate) enum StopActiveEffectError {
     NoActiveEffect,
     ActiveScene(ActiveSceneMutationError),
@@ -152,6 +160,50 @@ pub(crate) async fn stop_active_effect_and_quiesce_output(
         effect,
         released_network_devices,
     })
+}
+
+pub(crate) async fn pause_active_effect_output(
+    state: &AppState,
+) -> Result<PauseActiveEffectResult, StopActiveEffectError> {
+    let Some((_group, active_effect)) = active_primary_effect(state).await else {
+        return Err(StopActiveEffectError::NoActiveEffect);
+    };
+
+    let off_output_color = configured_static_off_color(state);
+    let current = *state.power_state.borrow();
+    state.power_state.send_replace(OutputPowerState {
+        global_brightness: current.global_brightness,
+        session_brightness: 0.0,
+        sleeping: true,
+        off_output_behavior: OffOutputBehavior::Static,
+        off_output_color,
+    });
+    publish_static_output_snapshot(state, off_output_color).await;
+    state.performance.write().await.clear_frame_timings();
+
+    {
+        let mut render_loop = state.render_loop.write().await;
+        render_loop.pause();
+    }
+    super::save_runtime_session_snapshot(state).await;
+
+    Ok(PauseActiveEffectResult {
+        effect: effect_ref(&active_effect),
+        off_output_color,
+    })
+}
+
+pub(crate) async fn resume_active_effect_output(
+    state: &AppState,
+) -> Result<EffectRef, StopActiveEffectError> {
+    let Some((_group, active_effect)) = active_primary_effect(state).await else {
+        return Err(StopActiveEffectError::NoActiveEffect);
+    };
+
+    wake_output_for_effect_start(state).await;
+    super::save_runtime_session_snapshot(state).await;
+
+    Ok(effect_ref(&active_effect))
 }
 
 async fn resume_paused_render_loop(state: &AppState) {
@@ -242,16 +294,24 @@ async fn quiesce_output_after_effect_stop(state: &AppState) -> usize {
     let runtime = super::discovery_runtime(state);
     let released_network_devices = discovery::release_renderable_network_devices(&runtime).await;
 
-    publish_black_output_snapshot(state).await;
+    publish_static_output_snapshot(state, [0, 0, 0]).await;
     state.performance.write().await.clear_frame_timings();
     released_network_devices
 }
 
-async fn publish_black_output_snapshot(state: &AppState) {
+fn configured_static_off_color(state: &AppState) -> [u8; 3] {
+    state.config_manager.as_ref().map_or([0, 0, 0], |manager| {
+        let config = manager.get();
+        parse_static_color(&config.session.off_output_color)
+    })
+}
+
+async fn publish_static_output_snapshot(state: &AppState, color: [u8; 3]) {
     let (layout, canvas, zones) = {
         let spatial = state.spatial_engine.read().await;
         let layout = spatial.layout();
-        let canvas = Canvas::new(layout.canvas_width, layout.canvas_height);
+        let mut canvas = Canvas::new(layout.canvas_width, layout.canvas_height);
+        canvas.fill(Rgba::new(color[0], color[1], color[2], 255));
         let zones = spatial.sample(&canvas);
         (layout, canvas, zones)
     };
@@ -265,7 +325,7 @@ async fn publish_black_output_snapshot(state: &AppState) {
     if !write_stats.errors.is_empty() {
         warn!(
             error_count = write_stats.errors.len(),
-            "One-shot black frame encountered output errors while stopping effect"
+            "One-shot static frame encountered output errors while quiescing effect output"
         );
     }
 
@@ -804,11 +864,21 @@ pub async fn get_active_effect(State(state): State<Arc<AppState>>) -> Response {
         return ApiResponse::ok(ActiveEffectResponse::idle());
     };
 
+    let loop_state = {
+        let render_loop = state.render_loop.read().await;
+        render_loop.state()
+    };
+    let power_state = *state.power_state.borrow();
+    let effect_state = if loop_state == RenderLoopState::Paused || power_state.sleeping {
+        "paused"
+    } else {
+        "running"
+    };
     let controls_version = group.controls_version;
     let response = ActiveEffectResponse {
         id: Some(meta.id.to_string()),
         name: Some(meta.name.clone()),
-        state: "running".to_owned(),
+        state: effect_state.to_owned(),
         controls: controls_with_group_bindings(&meta, &group),
         control_values: resolved_control_values(&meta, &group),
         active_preset_id: group.preset_id.map(|preset| preset.to_string()),
@@ -843,6 +913,50 @@ pub async fn get_effect_cover(
     };
 
     effect_cover_image_response(&metadata, EffectCoverCache::Catalog).await
+}
+
+/// `POST /api/v1/effects/pause` — Pause output without clearing active effect state.
+pub async fn pause_effect(State(state): State<Arc<AppState>>) -> Response {
+    let pause_result = match pause_active_effect_output(state.as_ref()).await {
+        Ok(result) => result,
+        Err(StopActiveEffectError::NoActiveEffect | StopActiveEffectError::ActiveGroupMissing) => {
+            return ApiError::not_found("No effect is currently active");
+        }
+        Err(StopActiveEffectError::ActiveScene(error)) => {
+            return error.api_response("pausing the active effect");
+        }
+    };
+
+    ApiResponse::ok(serde_json::json!({
+        "paused": true,
+        "effect": {
+            "id": pause_result.effect.id.clone(),
+            "name": pause_result.effect.name,
+        },
+        "off_output_behavior": "static",
+        "off_output_color": pause_result.off_output_color,
+    }))
+}
+
+/// `POST /api/v1/effects/resume` — Resume output for the preserved active effect.
+pub async fn resume_effect(State(state): State<Arc<AppState>>) -> Response {
+    let effect = match resume_active_effect_output(state.as_ref()).await {
+        Ok(effect) => effect,
+        Err(StopActiveEffectError::NoActiveEffect | StopActiveEffectError::ActiveGroupMissing) => {
+            return ApiError::not_found("No effect is currently active");
+        }
+        Err(StopActiveEffectError::ActiveScene(error)) => {
+            return error.api_response("resuming the active effect");
+        }
+    };
+
+    ApiResponse::ok(serde_json::json!({
+        "resumed": true,
+        "effect": {
+            "id": effect.id.clone(),
+            "name": effect.name,
+        },
+    }))
 }
 
 /// `POST /api/v1/effects/stop` — Stop the currently active effect.

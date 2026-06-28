@@ -1129,6 +1129,8 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             "/effects/current/reset",
             axum::routing::post(effects::reset_controls),
         )
+        .route("/effects/pause", axum::routing::post(effects::pause_effect))
+        .route("/effects/resume", axum::routing::post(effects::resume_effect))
         .route("/effects/stop", axum::routing::post(effects::stop_effect))
         .route(
             "/effects/rescan",
