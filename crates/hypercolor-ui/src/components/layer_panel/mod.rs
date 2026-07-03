@@ -264,10 +264,17 @@ pub fn LayerPanel(
                             </div>
                         }.into_any(),
                         Some(Ok(stack)) => {
+                            // `try_get`: Suspense can re-poll this closure after
+                            // the panel instance owning these memos is disposed
+                            // (host swapped the mounted view mid-fetch). A plain
+                            // `get` panics the whole reactive runtime there.
+                            let (Some(names), Some(effect_name_map)) =
+                                (media_names.try_get(), effect_names.try_get())
+                            else {
+                                return view! { <LayerLoadingSkeleton /> }.into_any();
+                            };
                             let scene_id = active_scene.get().map(|scene| scene.id).unwrap_or_default();
                             let group_id = selected_group_id.get().unwrap_or_default();
-                            let names = media_names.get();
-                            let effect_name_map = effect_names.get();
                             let version = stack.layers_version;
                             let total = stack.items.len();
                             let mut rows = stack

@@ -31,9 +31,14 @@ pub fn CompositionPanel(
 ) -> impl IntoView {
     let studio = expect_context::<StudioContext>();
     let open = studio.composition_open;
-    // The synthetic Unassigned entry has no layer stack (§9.4).
+    // The synthetic Unassigned entry has no layer stack (§9.4). A `Memo`,
+    // not a plain derived signal: the body below swaps the mounted panel
+    // on this value, and a non-memoized derive re-runs that swap on every
+    // selection change — disposing a `LayerPanel` whose resources are
+    // still in flight, which panics the reactive runtime when the stale
+    // Suspense closure re-polls.
     let is_unassigned =
-        Signal::derive(move || selected_group_id.get().as_deref() == Some(UNASSIGNED_SURFACE_ID));
+        Memo::new(move |_| selected_group_id.get().as_deref() == Some(UNASSIGNED_SURFACE_ID));
 
     // Escape closes the panel while it is open.
     let _keydown = window_event_listener(ev::keydown, move |event| {
