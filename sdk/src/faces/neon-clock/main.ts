@@ -285,7 +285,7 @@ function createDigitMorph(element: HTMLElement) {
         const progress = clamp01((time - changedAt) / 0.5)
         const eased = easeOutCubic(progress)
         element.style.opacity = `${0.25 + 0.75 * eased}`
-        element.style.transform = `translateY(${(1 - eased) * 0.12 * -1 * -36}px) scale(${0.96 + eased * 0.04})`
+        element.style.transform = `translateY(${(1 - eased) * 4.3}px) scale(${0.96 + eased * 0.04})`
         if (progress >= 1) {
             element.style.opacity = '1'
             element.style.transform = 'translateY(0) scale(1)'
@@ -414,7 +414,31 @@ function buildNeonClock(ctx: FaceContext, wide: boolean) {
         if (dialIn <= 0.01) return
 
         if (wide) {
-            drawCometRail(c, W * 0.04, W * 0.96, H * 0.88, secondsExact / 60, accent, glow * dialIn)
+            const left = W * 0.04
+            const right = W * 0.96
+            const railY = H * 0.88
+            if (dialStyle === 'Pulse') {
+                // The strip counterpart of the breathing ring: no comet, just
+                // a full-width line that swells once per breath.
+                const breath = 0.5 + 0.5 * Math.sin(time * 0.9)
+                c.strokeStyle = withAlpha(accent, (0.18 + 0.2 * breath) * glow * dialIn)
+                c.lineWidth = 1.5 + breath * 1.5
+                c.beginPath()
+                c.moveTo(left, railY)
+                c.lineTo(right, railY)
+                c.stroke()
+                return
+            }
+            if (dialStyle === 'Split') {
+                const minuteProgress = (now.getMinutes() + secondsExact / 60) / 60
+                c.strokeStyle = withAlpha(secondary, 0.4 * glow * dialIn)
+                c.lineWidth = 2
+                c.beginPath()
+                c.moveTo(left, railY + 7)
+                c.lineTo(left + (right - left) * minuteProgress, railY + 7)
+                c.stroke()
+            }
+            drawCometRail(c, left, right, railY, secondsExact / 60, accent, glow * dialIn)
             return
         }
 
