@@ -9,7 +9,7 @@ import msgspec
 import pytest
 import respx
 
-from hypercolor.client import HypercolorClient
+from hypercolor.client import HypercolorClient, _normalize_payload
 from hypercolor.exceptions import (
     HypercolorConnectionError,
     HypercolorNotFoundError,
@@ -17,7 +17,28 @@ from hypercolor.exceptions import (
 )
 from hypercolor.models.control import ControlSurface
 from hypercolor.models.driver import Driver
-from hypercolor.models.effect import ActiveEffect, Effect
+from hypercolor.models.effect import ActiveEffect, ControlDefinition, Effect
+
+
+def test_normalize_payload_bridges_dropdown_labels_to_options() -> None:
+    """Dropdown choices ship under `labels`; expose them as model `options`."""
+    control = {
+        "id": "palette",
+        "name": "Palette",
+        "control_type": "dropdown",
+        "kind": "combobox",
+        "default_value": {"enum": "Sunset"},
+        "labels": ["Sunset", "Ocean"],
+    }
+
+    normalized = _normalize_payload(control)
+
+    assert normalized["options"] == ["Sunset", "Ocean"]
+    assert normalized["type"] == "select"
+    assert normalized["label"] == "Palette"
+    # And the choices survive conversion into the typed model the client returns.
+    definition = msgspec.convert(normalized, ControlDefinition)
+    assert definition.options == ["Sunset", "Ocean"]
 
 
 def _envelope(data: object) -> bytes:

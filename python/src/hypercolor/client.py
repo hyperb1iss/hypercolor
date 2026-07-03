@@ -1469,6 +1469,11 @@ def _normalize_payload(value: Any) -> Any:
         normalized.setdefault("label", normalized["name"])
         normalized.setdefault("type", _legacy_control_type(normalized["control_type"]))
         normalized.setdefault("default", _control_value(normalized["default_value"]))
+        # Dropdown/enum choices ship under `labels`; expose them as the
+        # `options` field the ControlDefinition model (and downstream cards)
+        # read, so select controls carry their selectable values.
+        if isinstance(normalized.get("labels"), list):
+            normalized.setdefault("options", normalized["labels"])
     for key in (
         "control_values",
         "active_control_values",
