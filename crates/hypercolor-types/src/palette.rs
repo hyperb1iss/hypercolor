@@ -9,6 +9,10 @@ use std::sync::LazyLock;
 
 use serde::{Deserialize, Serialize};
 
+use crate::canvas::{
+    Oklab, linear_srgb_to_oklab, linear_to_srgb, oklab_to_linear_srgb, srgb_to_linear,
+};
+
 // ── Raw JSON Palette Data ───────────────────────────────────────────────
 
 /// The palette registry JSON, embedded at compile time.
@@ -42,6 +46,8 @@ struct PaletteData {
     id: String,
     mood: Vec<String>,
     stops: Vec<[f32; 3]>,
+    /// Stops pre-converted to Oklab for perceptual gradient sampling.
+    stops_oklab: Vec<Oklab>,
     iq: IqParams,
     accent: [f32; 3],
     background: [f32; 3],
@@ -54,14 +60,19 @@ static REGISTRY: LazyLock<Vec<PaletteData>> = LazyLock::new(|| {
         serde_json::from_str(PALETTES_JSON).expect("palettes.json is valid");
 
     defs.into_iter()
-        .map(|def| PaletteData {
-            name: def.name,
-            id: def.id,
-            mood: def.mood,
-            stops: def.stops.iter().map(|hex| parse_hex_rgb(hex)).collect(),
-            iq: def.iq,
-            accent: parse_hex_rgb(&def.accent),
-            background: parse_hex_rgb(&def.background),
+        .map(|def| {
+            let stops: Vec<[f32; 3]> = def.stops.iter().map(|hex| parse_hex_rgb(hex)).collect();
+            let stops_oklab = stops.iter().copied().map(srgb_to_oklab).collect();
+            PaletteData {
+                name: def.name,
+                id: def.id,
+                mood: def.mood,
+                stops,
+                stops_oklab,
+                iq: def.iq,
+                accent: parse_hex_rgb(&def.accent),
+                background: parse_hex_rgb(&def.background),
+            }
         })
         .collect()
 });
@@ -170,19 +181,19 @@ impl Palette {
         &REGISTRY[self.index()].mood
     }
 
-    /// Color stops as linear RGB triplets `[r, g, b]` in 0.0–1.0.
+    /// Color stops as gamma-encoded sRGB triplets `[r, g, b]` in 0.0–1.0.
     #[must_use]
     pub fn stops(self) -> &'static [[f32; 3]] {
         &REGISTRY[self.index()].stops
     }
 
-    /// Accent color as linear RGB.
+    /// Accent color as gamma-encoded sRGB in 0.0–1.0.
     #[must_use]
     pub fn accent(self) -> [f32; 3] {
         REGISTRY[self.index()].accent
     }
 
-    /// Background color as linear RGB.
+    /// Background color as gamma-encoded sRGB in 0.0–1.0.
     #[must_use]
     pub fn background(self) -> [f32; 3] {
         REGISTRY[self.index()].background
@@ -190,12 +201,12 @@ impl Palette {
 
     /// Sample the palette at position `t` (0.0–1.0) using gradient stop interpolation.
     ///
-    /// Interpolates linearly between the nearest stops. Values outside
-    /// 0.0–1.0 are clamped.
+    /// Interpolates between the nearest stops in Oklab space — matching the
+    /// canvas SDK runtime (`sdk/packages/core/src/palette/runtime.ts`) — and
+    /// returns gamma-encoded sRGB. Values outside 0.0–1.0 are clamped.
     #[must_use]
     pub fn sample(self, t: f32) -> [f32; 3] {
-        let stops = self.stops();
-        gradient_sample(stops, t)
+        gradient_sample(&REGISTRY[self.index()].stops_oklab, t)
     }
 
     /// Sample using the IQ cosine palette formula for smooth continuous color.
@@ -245,41 +256,52 @@ impl std::fmt::Display for Palette {
 
 // ── Color Math ──────────────────────────────────────────────────────────
 
-/// Linear interpolation between gradient stops.
+/// Convert a gamma-encoded sRGB triplet to Oklab.
+fn srgb_to_oklab(rgb: [f32; 3]) -> Oklab {
+    linear_srgb_to_oklab(
+        srgb_to_linear(rgb[0]),
+        srgb_to_linear(rgb[1]),
+        srgb_to_linear(rgb[2]),
+        1.0,
+    )
+}
+
+/// Convert an Oklab color back to a gamma-encoded sRGB triplet, clamped to 0.0–1.0.
+fn oklab_to_srgb(lab: Oklab) -> [f32; 3] {
+    let linear = oklab_to_linear_srgb(lab);
+    [
+        linear_to_srgb(linear.r).clamp(0.0, 1.0),
+        linear_to_srgb(linear.g).clamp(0.0, 1.0),
+        linear_to_srgb(linear.b).clamp(0.0, 1.0),
+    ]
+}
+
+/// Interpolation between gradient stops in Oklab space.
+///
+/// Mirrors the canvas SDK runtime (`sdk/packages/core/src/palette/runtime.ts`):
+/// stops are linearly interpolated in Oklab and converted back to gamma-encoded
+/// sRGB, so daemon-side sampling matches HTML effect rendering.
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
     clippy::as_conversions,
-    reason = "t is clamped to 0.0-1.0, idx is always non-negative and within stop count"
+    reason = "t is clamped to 0.0-1.0, idx is always non-negative and within the small (3-8) stop count"
 )]
-fn gradient_sample(stops: &[[f32; 3]], t: f32) -> [f32; 3] {
-    if stops.is_empty() {
+fn gradient_sample(stops: &[Oklab], t: f32) -> [f32; 3] {
+    let Some((&first, rest)) = stops.split_first() else {
         return [0.0; 3];
-    }
-    if stops.len() == 1 {
-        return stops[0];
+    };
+    if rest.is_empty() {
+        return oklab_to_srgb(first);
     }
 
     let t = t.clamp(0.0, 1.0);
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "stop count is always small (3-8)"
-    )]
     let scaled = t * (stops.len() - 1) as f32;
-    let idx = scaled.floor() as usize;
-    let frac = scaled - scaled.floor();
+    let idx = (scaled.floor() as usize).min(stops.len() - 2);
+    let frac = scaled - idx as f32;
 
-    if idx >= stops.len() - 1 {
-        return stops[stops.len() - 1];
-    }
-
-    let a = stops[idx];
-    let b = stops[idx + 1];
-    [
-        a[0] + (b[0] - a[0]) * frac,
-        a[1] + (b[1] - a[1]) * frac,
-        a[2] + (b[2] - a[2]) * frac,
-    ]
+    oklab_to_srgb(stops[idx].lerp(stops[idx + 1], frac))
 }
 
 /// IQ cosine palette: `offset + amplitude * cos(2π(frequency * t + phase))`.

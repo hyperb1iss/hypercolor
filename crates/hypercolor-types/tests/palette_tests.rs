@@ -50,6 +50,79 @@ fn palette_sample_endpoints() {
 }
 
 #[test]
+fn palette_sample_endpoints_match_stops() {
+    // Oklab interpolation must round-trip the exact stop colors at t=0 and t=1.
+    for palette in Palette::ALL {
+        let stops = palette.stops();
+        let first = stops.first().expect("palette has stops");
+        let last = stops.last().expect("palette has stops");
+        let start = palette.sample(0.0);
+        let end = palette.sample(1.0);
+        for channel in 0..3 {
+            assert!(
+                (start[channel] - first[channel]).abs() < 0.01,
+                "{palette} start channel {channel}: {} vs stop {}",
+                start[channel],
+                first[channel]
+            );
+            assert!(
+                (end[channel] - last[channel]).abs() < 0.01,
+                "{palette} end channel {channel}: {} vs stop {}",
+                end[channel],
+                last[channel]
+            );
+        }
+    }
+}
+
+#[test]
+fn palette_sample_interpolates_in_oklab_like_canvas_runtime() {
+    // Reference values computed with the canvas SDK runtime math
+    // (sdk/packages/core/src/palette/runtime.ts): srgb -> linear -> Oklab,
+    // lerp, back to srgb. Raw-sRGB lerp would give very different values
+    // (e.g. Cyberpunk t=0.5 would be (0.5, 0.5, 0.698)).
+    let cases: [(Palette, f32, [f32; 3]); 3] = [
+        (Palette::Cyberpunk, 0.5, [0.8244, 0.6585, 0.6939]),
+        (Palette::Ocean, 0.5, [0.0837, 0.6332, 0.8340]),
+        // Midpoint of Cyberpunk's #ff0066 -> #6600ff (red <-> blue) segment.
+        (Palette::Cyberpunk, 5.0 / 6.0, [0.6848, 0.2500, 0.7247]),
+    ];
+    for (palette, t, expected) in cases {
+        let got = palette.sample(t);
+        for channel in 0..3 {
+            assert!(
+                (got[channel] - expected[channel]).abs() < 0.01,
+                "{palette} t={t} channel {channel}: got {} expected {}",
+                got[channel],
+                expected[channel]
+            );
+        }
+    }
+}
+
+#[test]
+fn palette_red_blue_midpoint_is_not_gray_mud() {
+    // The midpoint of a red <-> blue span must stay saturated and bright, not
+    // collapse into gray or murky half-brightness purple.
+    let mid = Palette::Cyberpunk.sample(5.0 / 6.0);
+    let max = mid[0].max(mid[1]).max(mid[2]);
+    let min = mid[0].min(mid[1]).min(mid[2]);
+    assert!(max > 0.5, "midpoint too dark: {mid:?}");
+    assert!(
+        (max - min) / max > 0.5,
+        "midpoint desaturated to mud: {mid:?}"
+    );
+
+    let ocean_mid = Palette::Ocean.sample(0.5);
+    let max = ocean_mid[0].max(ocean_mid[1]).max(ocean_mid[2]);
+    let min = ocean_mid[0].min(ocean_mid[1]).min(ocean_mid[2]);
+    assert!(
+        (max - min) / max > 0.6,
+        "ocean midpoint desaturated: {ocean_mid:?}"
+    );
+}
+
+#[test]
 fn palette_sample_iq_is_clamped() {
     for palette in Palette::ALL {
         for t in [0.0, 0.25, 0.5, 0.75, 1.0] {
