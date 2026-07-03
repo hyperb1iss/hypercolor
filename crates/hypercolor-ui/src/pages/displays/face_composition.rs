@@ -5,125 +5,13 @@ use leptos_use::use_debounce_fn;
 
 use crate::api;
 use crate::app::EffectsContext;
+use crate::face_blend::{FACE_BLEND_OPTIONS, FACE_BLEND_PRESETS, FaceBlendPreset, face_blend_option};
 use crate::icons::*;
 use crate::toasts;
 use hypercolor_leptos_ext::events::Input;
 use hypercolor_types::scene::DisplayFaceBlendMode;
 
 use super::snapshot_scene_lock_message;
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct FaceBlendOption {
-    mode: DisplayFaceBlendMode,
-    label: &'static str,
-    blurb: &'static str,
-}
-
-#[derive(Clone, Copy)]
-struct FaceBlendPreset {
-    label: &'static str,
-    mode: DisplayFaceBlendMode,
-    opacity: f32,
-}
-
-const FACE_BLEND_OPTIONS: [FaceBlendOption; 11] = [
-    FaceBlendOption {
-        mode: DisplayFaceBlendMode::Replace,
-        label: "Replace",
-        blurb: "Render the face on its own. Transparent regions stay empty instead of pulling in the live effect.",
-    },
-    FaceBlendOption {
-        mode: DisplayFaceBlendMode::Alpha,
-        label: "Cutout",
-        blurb: "Use face transparency as a clean reveal into the live effect layer.",
-    },
-    FaceBlendOption {
-        mode: DisplayFaceBlendMode::Tint,
-        label: "Effect Tint",
-        blurb: "Let the effect provide the living color while the face behaves like tinted material.",
-    },
-    FaceBlendOption {
-        mode: DisplayFaceBlendMode::LumaReveal,
-        label: "Luma Reveal",
-        blurb: "Drive bright face details from the effect while darker panels stay anchored to the face artwork.",
-    },
-    FaceBlendOption {
-        mode: DisplayFaceBlendMode::Screen,
-        label: "Screen",
-        blurb: "Fuse face highlights with the effect for luminous neon glass.",
-    },
-    FaceBlendOption {
-        mode: DisplayFaceBlendMode::Add,
-        label: "Add",
-        blurb: "Push both layers together for hotter, flashier glow.",
-    },
-    FaceBlendOption {
-        mode: DisplayFaceBlendMode::Multiply,
-        label: "Multiply",
-        blurb: "Turn the face into tinted glass that darkens and colors the effect.",
-    },
-    FaceBlendOption {
-        mode: DisplayFaceBlendMode::Overlay,
-        label: "Overlay",
-        blurb: "Blend contrast-rich UI material that pops without flattening the effect.",
-    },
-    FaceBlendOption {
-        mode: DisplayFaceBlendMode::SoftLight,
-        label: "Soft Light",
-        blurb: "Keep the effect alive under a softer satin face treatment.",
-    },
-    FaceBlendOption {
-        mode: DisplayFaceBlendMode::ColorDodge,
-        label: "Color Dodge",
-        blurb: "Turn bright face areas into intense reactive highlights.",
-    },
-    FaceBlendOption {
-        mode: DisplayFaceBlendMode::Difference,
-        label: "Difference",
-        blurb: "Create reactive inversions for wilder holographic looks.",
-    },
-];
-
-const FACE_BLEND_PRESETS: [FaceBlendPreset; 6] = [
-    FaceBlendPreset {
-        label: "Clean Reveal",
-        mode: DisplayFaceBlendMode::Alpha,
-        opacity: 0.78,
-    },
-    FaceBlendPreset {
-        label: "Neon Glass",
-        mode: DisplayFaceBlendMode::Screen,
-        opacity: 0.88,
-    },
-    FaceBlendPreset {
-        label: "Signal Mask",
-        mode: DisplayFaceBlendMode::LumaReveal,
-        opacity: 1.0,
-    },
-    FaceBlendPreset {
-        label: "Tinted HUD",
-        mode: DisplayFaceBlendMode::Tint,
-        opacity: 0.92,
-    },
-    FaceBlendPreset {
-        label: "Smoked Panel",
-        mode: DisplayFaceBlendMode::Multiply,
-        opacity: 0.84,
-    },
-    FaceBlendPreset {
-        label: "Hot Bloom",
-        mode: DisplayFaceBlendMode::Add,
-        opacity: 0.54,
-    },
-];
-
-fn face_blend_option(mode: DisplayFaceBlendMode) -> FaceBlendOption {
-    FACE_BLEND_OPTIONS
-        .iter()
-        .copied()
-        .find(|option| option.mode == mode)
-        .unwrap_or(FACE_BLEND_OPTIONS[0])
-}
 
 fn sync_face_composition_from_server(
     display_face: ReadSignal<Option<Result<Option<api::DisplayFaceResponse>, String>>>,

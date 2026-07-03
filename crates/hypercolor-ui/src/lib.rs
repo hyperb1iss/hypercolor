@@ -30,6 +30,7 @@ pub mod display_utils;
 pub mod driver_settings;
 pub mod effect_search;
 pub mod extensions;
+pub mod face_blend;
 pub mod icons;
 pub mod label_utils;
 pub mod layout_geometry;

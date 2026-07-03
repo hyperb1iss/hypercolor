@@ -9,11 +9,14 @@ use leptos::ev;
 use leptos::prelude::*;
 use leptos_icons::Icon;
 
+use hypercolor_types::scene::ZoneRole;
+
 use crate::api;
 use crate::components::layer_panel::LayerPanel;
 use crate::icons::*;
 
 use super::StudioContext;
+use super::face_composition::ScreenCompositionSection;
 use super::surface::UNASSIGNED_SURFACE_ID;
 
 /// The right-edge composition slide-over. Stays mounted and animates via
@@ -39,6 +42,20 @@ pub fn CompositionPanel(
     // Suspense closure re-polls.
     let is_unassigned =
         Memo::new(move |_| selected_group_id.get().as_deref() == Some(UNASSIGNED_SURFACE_ID));
+
+    // A Screen surface's backing display device — present only while the
+    // selection is a display-role group with a bound target. Drives the
+    // face-composition section above the layer stack.
+    let screen_device_id = Memo::new(move |_| {
+        let selected = selected_group_id.get()?;
+        let scene = active_scene.get()?;
+        scene
+            .groups
+            .iter()
+            .find(|group| group.id.to_string() == selected && group.role == ZoneRole::Display)
+            .and_then(|group| group.display_target.as_ref())
+            .map(|target| target.device_id.to_string())
+    });
 
     // Escape closes the panel while it is open.
     let _keydown = window_event_listener(ev::keydown, move |event| {
@@ -78,6 +95,7 @@ pub fn CompositionPanel(
                         view! { <UnassignedNote /> }.into_any()
                     } else {
                         view! {
+                            <ScreenCompositionSection display_device_id=screen_device_id />
                             <LayerPanel
                                 active_scene=active_scene
                                 selected_group_id=selected_group_id

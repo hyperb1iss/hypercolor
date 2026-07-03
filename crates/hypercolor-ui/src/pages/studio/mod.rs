@@ -8,6 +8,7 @@
 mod composition_panel;
 mod device_card;
 pub mod device_grouping;
+mod face_composition;
 mod scene_selector;
 mod stage;
 pub use crate::zones::surface;
