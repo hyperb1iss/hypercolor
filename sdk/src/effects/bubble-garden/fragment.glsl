@@ -15,7 +15,7 @@ uniform float iSize;
 uniform float iSpeed;
 uniform int iTheme;
 
-const int MAX_BUBBLES = 120;
+const int MAX_BUBBLES = 96;
 
 struct Palette {
     vec3 primary;
@@ -55,7 +55,7 @@ vec3 smoothMix(vec3 a, vec3 b, float t) {
 
 Palette themePalette(int theme) {
     if (theme == 0) return Palette(vec3(1.0, 0.3098, 0.6039), vec3(1.0, 0.4549, 0.7725), vec3(0.5412, 0.3608, 1.0));
-    if (theme == 1) return Palette(vec3(1.0, 0.7020, 0.2784), vec3(1.0, 0.4784, 0.1843), vec3(1.0, 0.3294, 0.4706));
+    if (theme == 1) return Palette(vec3(1.0, 0.7059, 0.0), vec3(1.0, 0.4784, 0.1843), vec3(1.0, 0.3294, 0.4706));
     if (theme == 3) return Palette(vec3(0.0314, 0.9686, 0.9961), vec3(1.0, 0.0235, 0.7098), vec3(0.4353, 0.1765, 1.0));
     if (theme == 4) return Palette(vec3(0.5412, 0.4863, 1.0), vec3(1.0, 0.4980, 0.8118), vec3(0.4627, 1.0, 0.9451));
     if (theme == 5) return Palette(vec3(0.2745, 0.9451, 0.8627), vec3(0.3647, 0.6588, 1.0), vec3(0.0902, 0.2745, 1.0));
@@ -133,12 +133,16 @@ BubbleColors resolveBubbleColors(float id, float mixSeed, float bandSeed, float 
         vec3 nextBody;
         vec3 nextRim;
         vec3 nextGloss;
-        paletteSet(bandSeed, palette, baseBody, baseRim, baseGloss);
-        paletteSet(bandSeed + 1.0, palette, nextBody, nextRim, nextGloss);
-        float blend = smoothstep(0.15, 0.85, blendSeed);
-        body = mix(baseBody, nextBody, blend * 0.52);
-        rim = mix(baseRim, nextRim, blend * 0.4);
-        gloss = mix(baseGloss, nextGloss, blend * 0.34);
+        // Cycle slowly through the palette bands over time; the per-bubble
+        // seeds offset the phase so bubbles never shift in lockstep. The
+        // blend reaches 1.0 before the band wraps, keeping the cycle seamless.
+        float cycle = bandSeed + blendSeed + iTime * 0.25;
+        paletteSet(cycle, palette, baseBody, baseRim, baseGloss);
+        paletteSet(cycle + 1.0, palette, nextBody, nextRim, nextGloss);
+        float blend = smoothstep(0.15, 0.85, fract(cycle));
+        body = mix(baseBody, nextBody, blend);
+        rim = mix(baseRim, nextRim, blend);
+        gloss = mix(baseGloss, nextGloss, blend);
     }
 
     body = saturateColor(body, 1.55, 0.78);
