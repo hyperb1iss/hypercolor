@@ -110,6 +110,16 @@ const STYLES = `
     font-feature-settings: 'tnum' 1, 'lnum' 1;
 }
 
+.hc-now__times--round {
+    justify-content: center;
+    gap: 8px;
+    width: auto;
+}
+
+.hc-now__times-sep {
+    color: color-mix(in srgb, var(--dim-ink) 55%, transparent);
+}
+
 /* ── Wide strip layout ── */
 
 .hc-now--wide .hc-now__stack {
@@ -317,6 +327,9 @@ function buildNowPlaying(ctx: FaceContext, wide: boolean) {
 
     const safe = ctx.display.safeArea
     const artSize = wide ? ctx.height * 0.78 : Math.min(safe.width, safe.height) * 0.46
+    // Round text lives inside the inscribed square so long titles ellipsize
+    // instead of clipping against the physical circle.
+    const roundStackWidth = Math.min(safe.width, safe.height)
 
     root.innerHTML = wide
         ? `
@@ -341,6 +354,7 @@ function buildNowPlaying(ctx: FaceContext, wide: boolean) {
             </div>
             <div class="hc-now__title">Nothing Playing</div>
             <div class="hc-now__artist">waiting for a player</div>
+            <div class="hc-now__times hc-now__times--round"><span class="hc-now__elapsed">0:00</span><span class="hc-now__times-sep">/</span><span class="hc-now__total">0:00</span></div>
         </div>`
 
     const artWrap = root.querySelector<HTMLDivElement>('.hc-now__art-wrap')
@@ -356,6 +370,8 @@ function buildNowPlaying(ctx: FaceContext, wide: boolean) {
         throw new Error('Now Playing face failed to build its DOM')
     }
 
+    const stackEl = root.querySelector<HTMLDivElement>('.hc-now__stack')
+    if (stackEl && !wide) stackEl.style.width = `${roundStackWidth}px`
     artWrap.style.width = `${artSize}px`
     artWrap.style.height = `${artSize}px`
     glyphEl.style.fontSize = `${artSize * 0.42}px`
@@ -424,8 +440,11 @@ function buildNowPlaying(ctx: FaceContext, wide: boolean) {
         const positionMs = data.media.positionMs()
         if (elapsedEl && totalEl) {
             const showTimes = controls.showTimes === true && media.available
-            elapsedEl.textContent = showTimes ? formatTrackTime(positionMs) : ''
-            totalEl.textContent = showTimes ? formatTrackTime(media.durationMs) : ''
+            elapsedEl.parentElement?.classList.toggle('hc-now__hidden', !showTimes)
+            if (showTimes) {
+                elapsedEl.textContent = formatTrackTime(positionMs)
+                totalEl.textContent = formatTrackTime(media.durationMs)
+            }
         }
 
         const c = ctx.ctx
