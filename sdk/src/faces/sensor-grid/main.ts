@@ -301,11 +301,13 @@ function buildSensorGrid(ctx: FaceContext, wide: boolean) {
     const drifters = makeDrifters(wide ? 30 : 18)
     const sensorKeys = ['sensor1', 'sensor2', 'sensor3', 'sensor4'] as const
     let bootAt = Number.NaN
+    let lastTime = Number.NaN
 
     return (time: number, controls: Record<string, unknown>, sensors: import('@hypercolor/sdk').SensorAccessor) => {
         if (Number.isNaN(bootAt)) bootAt = time
         const boot = time - bootAt
-        const dt = 1 / 30
+        const dt = Number.isNaN(lastTime) ? 1 / 30 : Math.max(time - lastTime, 0)
+        lastTime = time
         const accent = controls.accent as string
         const ink = resolveFaceInk(accent)
         const auto = controls.colorMode !== 'Accent'
