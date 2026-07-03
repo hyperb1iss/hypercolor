@@ -310,7 +310,7 @@ function buildPulseTemp(ctx: FaceContext, wide: boolean) {
             if (wide) {
                 drawStripScale(c, W, H, t, peak, ramp, heatColor, controls.showPeak === true, glow)
             } else if (meterStyle === 'Vector') {
-                drawVectorScale(c, W, H, t, ramp, heatColor, glow)
+                drawVectorScale(c, W, H, t, peak, ramp, heatColor, controls.showPeak === true, glow)
             } else {
                 drawHaloScale(c, W, H, t, peak, ramp, heatColor, controls.showPeak === true, glow)
             }
@@ -484,8 +484,10 @@ function drawVectorScale(
     W: number,
     H: number,
     t: number,
+    peak: number,
     ramp: [string, string, string],
     heatColor: string,
+    showPeak: boolean,
     glow: number,
 ): void {
     const cx = W / 2
@@ -516,6 +518,16 @@ function drawVectorScale(
     c.lineTo(cx + Math.cos(angle) * (radius + 2), cy + Math.sin(angle) * (radius + 2))
     c.stroke()
     c.restore()
+
+    if (showPeak && peak > 0.01) {
+        const peakAngle = SCALE_START + clamp01(peak) * SCALE_SWEEP
+        c.strokeStyle = withAlpha(palette.electricYellow, 0.8)
+        c.lineWidth = 1.5
+        c.beginPath()
+        c.moveTo(cx + Math.cos(peakAngle) * (radius - 10), cy + Math.sin(peakAngle) * (radius - 10))
+        c.lineTo(cx + Math.cos(peakAngle) * (radius + 5), cy + Math.sin(peakAngle) * (radius + 5))
+        c.stroke()
+    }
 }
 
 /** Strip: hairline rail with ticks and comet cursor, edge to edge. */
