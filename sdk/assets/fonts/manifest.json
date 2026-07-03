@@ -1,0 +1,129 @@
+{
+    "families": {
+        "Audiowide": {
+            "family": "Audiowide",
+            "license": "OFL-1.1",
+            "licenseFile": "audiowide/OFL.txt",
+            "weights": {
+                "400": "audiowide/audiowide-400.woff2"
+            }
+        },
+        "Bebas Neue": {
+            "family": "Bebas Neue",
+            "license": "OFL-1.1",
+            "licenseFile": "bebas-neue/OFL.txt",
+            "weights": {
+                "400": "bebas-neue/bebas-neue-400.woff2"
+            }
+        },
+        "DM Sans": {
+            "family": "DM Sans",
+            "license": "OFL-1.1",
+            "licenseFile": "dm-sans/OFL.txt",
+            "weights": {
+                "300": "dm-sans/dm-sans-300.woff2",
+                "400": "dm-sans/dm-sans-400.woff2",
+                "500": "dm-sans/dm-sans-500.woff2",
+                "600": "dm-sans/dm-sans-600.woff2"
+            }
+        },
+        "Exo 2": {
+            "family": "Exo 2",
+            "license": "OFL-1.1",
+            "licenseFile": "exo-2/OFL.txt",
+            "weights": {
+                "300": "exo-2/exo-2-300.woff2",
+                "400": "exo-2/exo-2-400.woff2",
+                "500": "exo-2/exo-2-500.woff2",
+                "600": "exo-2/exo-2-600.woff2"
+            }
+        },
+        "Inter": {
+            "family": "Inter",
+            "license": "OFL-1.1",
+            "licenseFile": "inter/OFL.txt",
+            "weights": {
+                "300": "inter/inter-300.woff2",
+                "400": "inter/inter-400.woff2",
+                "500": "inter/inter-500.woff2",
+                "600": "inter/inter-600.woff2"
+            }
+        },
+        "JetBrains Mono": {
+            "family": "JetBrains Mono",
+            "license": "OFL-1.1",
+            "licenseFile": "jetbrains-mono/OFL.txt",
+            "weights": {
+                "300": "jetbrains-mono/jetbrains-mono-300.woff2",
+                "400": "jetbrains-mono/jetbrains-mono-400.woff2",
+                "500": "jetbrains-mono/jetbrains-mono-500.woff2",
+                "600": "jetbrains-mono/jetbrains-mono-600.woff2"
+            }
+        },
+        "Orbitron": {
+            "family": "Orbitron",
+            "license": "OFL-1.1",
+            "licenseFile": "orbitron/OFL.txt",
+            "weights": {
+                "400": "orbitron/orbitron-400.woff2",
+                "500": "orbitron/orbitron-500.woff2",
+                "600": "orbitron/orbitron-600.woff2"
+            }
+        },
+        "Rajdhani": {
+            "family": "Rajdhani",
+            "license": "OFL-1.1",
+            "licenseFile": "rajdhani/OFL.txt",
+            "weights": {
+                "300": "rajdhani/rajdhani-300.woff2",
+                "400": "rajdhani/rajdhani-400.woff2",
+                "500": "rajdhani/rajdhani-500.woff2",
+                "600": "rajdhani/rajdhani-600.woff2"
+            }
+        },
+        "Roboto Condensed": {
+            "family": "Roboto Condensed",
+            "license": "OFL-1.1",
+            "licenseFile": "roboto-condensed/OFL.txt",
+            "weights": {
+                "300": "roboto-condensed/roboto-condensed-300.woff2",
+                "400": "roboto-condensed/roboto-condensed-400.woff2",
+                "500": "roboto-condensed/roboto-condensed-500.woff2",
+                "600": "roboto-condensed/roboto-condensed-600.woff2"
+            }
+        },
+        "Sora": {
+            "family": "Sora",
+            "license": "OFL-1.1",
+            "licenseFile": "sora/OFL.txt",
+            "weights": {
+                "300": "sora/sora-300.woff2",
+                "400": "sora/sora-400.woff2",
+                "500": "sora/sora-500.woff2",
+                "600": "sora/sora-600.woff2"
+            }
+        },
+        "Space Grotesk": {
+            "family": "Space Grotesk",
+            "license": "OFL-1.1",
+            "licenseFile": "space-grotesk/OFL.txt",
+            "weights": {
+                "300": "space-grotesk/space-grotesk-300.woff2",
+                "400": "space-grotesk/space-grotesk-400.woff2",
+                "500": "space-grotesk/space-grotesk-500.woff2",
+                "600": "space-grotesk/space-grotesk-600.woff2"
+            }
+        },
+        "Space Mono": {
+            "family": "Space Mono",
+            "license": "OFL-1.1",
+            "licenseFile": "space-mono/OFL.txt",
+            "weights": {
+                "400": "space-mono/space-mono-400.woff2",
+                "700": "space-mono/space-mono-700.woff2"
+            }
+        }
+    },
+    "generatedBy": "sdk/scripts/fetch-fonts.ts",
+    "subset": "latin"
+}
