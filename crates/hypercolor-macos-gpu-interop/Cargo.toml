@@ -27,10 +27,10 @@ objc2 = { workspace = true, features = ["std"] }
 objc2-core-foundation = { workspace = true, features = ["std", "CFDictionary", "CFNumber", "CFString"] }
 objc2-io-surface = { workspace = true, features = ["std", "IOSurfaceRef", "IOSurfaceTypes", "objc2-core-foundation", "libc", "bitflags"] }
 objc2-metal = { workspace = true, features = ["std", "MTLAllocation", "MTLDevice", "MTLPixelFormat", "MTLResource", "MTLTexture", "objc2-io-surface"] }
-paint_api = { package = "servo-paint-api", version = "0.2.0" }
-surfman = "=0.12.2"
+paint_api = { workspace = true }
+surfman = { workspace = true }
 tracing = { workspace = true }
-webrender_api = "0.68"
+webrender_api = { workspace = true }
 wgpu-hal = { workspace = true, features = ["metal"] }
 
 [dev-dependencies]

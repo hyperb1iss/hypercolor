@@ -109,6 +109,14 @@ sysinfo = "0.38.4"
 nvml-wrapper = "0.12.1"
 wmi = "0.18.4"
 
+# Servo embedder boundary
+base = { package = "servo-base", version = "0.3.0" }
+paint_api = { package = "servo-paint-api", version = "0.3.0" }
+profile_traits = { package = "servo-profile-traits", version = "0.3.0" }
+servo = { version = "0.3.0", default-features = false }
+surfman = "0.12"
+webrender_api = "0.68"
+
 # Crypto / auth
 aes-gcm = "0.10.3"
 apple-native-keyring-store = { version = "1.0.0", features = ["keychain"] }
