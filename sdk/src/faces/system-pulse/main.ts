@@ -7,12 +7,13 @@ import {
     makeDrifters,
     transparentBackgroundControl,
 } from '../shared/atmosphere'
-import { createMetricCard, type MetricCard } from '../shared/components'
+import { createMetricCard } from '../shared/components'
 import {
     clamp01,
     createFaceRoot,
     DISPLAY_FONT_FAMILIES,
     ensureFaceStyles,
+    humanizeSensorLabel,
     resolveFaceInk,
     UI_FONT_FAMILIES,
 } from '../shared/dom'
@@ -356,18 +357,23 @@ function buildSystemPulse(ctx: FaceContext, wide: boolean) {
     if (wide) stack.appendChild(sideEl)
 
     const accent = palette.neonCyan
+    // Compact names for the stock bindings; rebound sensors take their own
+    // humanized label so the card never lies about what it reads.
     const cardSpecs = [
-        { key: 'cpuTempSensor', label: 'CPU' },
-        { key: 'gpuTempSensor', label: 'GPU' },
-        { key: 'ramSensor', label: 'RAM' },
+        { key: 'cpuTempSensor', label: 'CPU', stockSensor: 'cpu_temp' },
+        { key: 'gpuTempSensor', label: 'GPU', stockSensor: 'gpu_temp' },
+        { key: 'ramSensor', label: 'RAM', stockSensor: 'ram_used' },
     ] as const
-    const cards: { key: string; card: MetricCard }[] = cardSpecs.map((spec) => ({
+    const cards = cardSpecs.map((spec) => ({
         card: createMetricCard(cardsEl, {
             accent,
             label: spec.label,
             sparkline: true,
         }),
-        key: spec.key,
+        compactLabel: spec.label,
+        key: spec.key as string,
+        lastLabel: spec.label as string,
+        stockSensor: spec.stockSensor as string,
     }))
 
     const netPanel = createNetPanel(
@@ -432,9 +438,14 @@ function buildSystemPulse(ctx: FaceContext, wide: boolean) {
         }
         clockEl.classList.toggle('hc-pulse__hidden', controls.showClock !== true)
 
-        for (const { key, card } of cards) {
-            const label = controls[key] as string
-            card.update({
+        for (const entry of cards) {
+            const label = controls[entry.key] as string
+            const cardLabel = label === entry.stockSensor ? entry.compactLabel : humanizeSensorLabel(label)
+            if (cardLabel !== entry.lastLabel) {
+                entry.lastLabel = cardLabel
+                entry.card.setLabel(cardLabel)
+            }
+            entry.card.update({
                 dt,
                 normalized: clamp01(sensors.normalized(label)),
                 text: sensors.formatted(label),
