@@ -1,7 +1,7 @@
 import type { FaceContext } from '@hypercolor/sdk'
 import { color, combo, face, num, palette, Smoothed, withAlpha } from '@hypercolor/sdk'
 import { atmosphereVisible, drawNebulaField, transparentBackgroundControl } from '../shared/atmosphere'
-import { clamp01, createFaceRoot } from '../shared/dom'
+import { clamp01, createFaceRoot, SmoothedColor } from '../shared/dom'
 
 const FAST_DECAY_HALFLIFE = 0.14
 const GHOST_DECAY_HALFLIFE = 0.85
@@ -121,6 +121,11 @@ function buildSpectrum(ctx: FaceContext, wide: boolean) {
     const levelGlide = new Smoothed(0, 0.25)
     const idleBlend = new Smoothed(0, 0.6)
     const bloom = new Smoothed(0, 0.18)
+    // Hex control colors glide; chromagram hsl strings pass through, since
+    // pitch-driven hue already moves on its own clock.
+    const lowGlide = new SmoothedColor(palette.neonCyan)
+    const highGlide = new SmoothedColor(palette.electricPurple)
+    const ridgeGlide = new SmoothedColor('#ffffff')
     let lastTime = Number.NaN
     let loudAt = 0
 
@@ -193,9 +198,12 @@ function buildSpectrum(ctx: FaceContext, wide: boolean) {
         const glow = clamp01(controls.glow as number)
         const chromaMode = controls.colorMode === 'chromagram'
         const hue = chromaHue(audioData.chromagram)
-        const lowColor = chromaMode ? hsl(hue - 24, 0.8, 0.42) : (controls.accent as string)
-        const highColor = chromaMode ? hsl(hue + 24, 0.85, 0.6) : (controls.secondaryAccent as string)
-        const ridgeColor = controls.peakColor as string
+        const lowColor = lowGlide.update(chromaMode ? hsl(hue - 24, 0.8, 0.42) : (controls.accent as string), dt)
+        const highColor = highGlide.update(
+            chromaMode ? hsl(hue + 24, 0.85, 0.6) : (controls.secondaryAccent as string),
+            dt,
+        )
+        const ridgeColor = ridgeGlide.update(controls.peakColor as string, dt)
 
         const c = ctx.ctx
         const W = ctx.width

@@ -20,6 +20,7 @@ import {
     DISPLAY_FONT_FAMILIES,
     ensureFaceStyles,
     humanizeSensorLabel,
+    SmoothedColor,
     UI_FONT_FAMILIES,
 } from '../shared/dom'
 
@@ -248,6 +249,13 @@ function buildPulseTemp(ctx: FaceContext, wide: boolean) {
     const displayValue = new Smoothed(0, 0.3)
     const history = new ValueHistory(HISTORY_LENGTH)
     const embers = makeEmbers(wide ? EMBER_COUNT_WIDE : EMBER_COUNT_ROUND)
+    // Glide each ramp stop so scheme and custom-color changes sweep the
+    // whole thermal field instead of snapping it.
+    const rampGlides = [
+        new SmoothedColor('#2e6b8f', 0.14),
+        new SmoothedColor('#a06bff', 0.14),
+        new SmoothedColor('#ff5e7a', 0.14),
+    ] as const
     let lastTime = Number.NaN
     let lastHistoryPush = Number.NEGATIVE_INFINITY
     let peak = 0
@@ -262,7 +270,12 @@ function buildPulseTemp(ctx: FaceContext, wide: boolean) {
         const reading = sensors.read(sensorLabel)
         const normalized = clamp01(sensors.normalized(sensorLabel))
         const t = heat.update(normalized, dt)
-        const ramp = resolveRamp(controls)
+        const targetRamp = resolveRamp(controls)
+        const ramp: [string, string, string] = [
+            rampGlides[0].update(targetRamp[0], dt),
+            rampGlides[1].update(targetRamp[1], dt),
+            rampGlides[2].update(targetRamp[2], dt),
+        ]
         const heatColor = rampColor(ramp, t)
         const glow = clamp01((controls.glowIntensity as number) / 100)
         const hot = clamp01((t - HOT_THRESHOLD) / (1 - HOT_THRESHOLD))

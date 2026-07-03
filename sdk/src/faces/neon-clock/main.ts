@@ -17,6 +17,7 @@ import {
     DISPLAY_FONT_FAMILIES,
     ensureFaceStyles,
     resolveFaceInk,
+    SmoothedColor,
     UI_FONT_FAMILIES,
 } from '../shared/dom'
 
@@ -332,13 +333,18 @@ function buildNeonClock(ctx: FaceContext, wide: boolean) {
     ]
 
     const drifters = makeDrifters(wide ? 36 : 22)
+    const accentGlide = new SmoothedColor(palette.neonCyan)
+    const secondaryGlide = new SmoothedColor(palette.electricPurple)
     let bootAt = Number.NaN
+    let lastTime = Number.NaN
 
     return (time: number, controls: Record<string, unknown>) => {
         if (Number.isNaN(bootAt)) bootAt = time
         const boot = time - bootAt
-        const accent = controls.accent as string
-        const secondary = controls.secondaryAccent as string
+        const dt = Number.isNaN(lastTime) ? 1 / 30 : Math.max(time - lastTime, 0)
+        lastTime = time
+        const accent = accentGlide.update(controls.accent as string, dt)
+        const secondary = secondaryGlide.update(controls.secondaryAccent as string, dt)
         const ink = resolveFaceInk(accent)
         const glow = clamp01((controls.glowIntensity as number) / 100)
 

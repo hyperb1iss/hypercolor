@@ -15,6 +15,7 @@ import {
     ensureFaceStyles,
     humanizeSensorLabel,
     resolveFaceInk,
+    SmoothedColor,
     UI_FONT_FAMILIES,
 } from '../shared/dom'
 
@@ -394,6 +395,8 @@ function buildSystemPulse(ctx: FaceContext, wide: boolean) {
     const rigStripEl = rigEl.querySelector<HTMLSpanElement>('.hc-pulse__rig-strip')
     if (rigSceneEl) rigSceneEl.style.fontSize = `${Math.round(10 * Math.max(heroScale, 0.9))}px`
 
+    const accentGlide = new SmoothedColor(palette.neonCyan)
+    const secondaryGlide = new SmoothedColor(palette.electricPurple)
     let lastTime = Number.NaN
     let lastRigKey = ''
     let lastAccent = ''
@@ -408,8 +411,8 @@ function buildSystemPulse(ctx: FaceContext, wide: boolean) {
     ) => {
         const dt = Number.isNaN(lastTime) ? 1 / 30 : Math.max(time - lastTime, 0)
         lastTime = time
-        const accentColor = controls.accent as string
-        const secondary = controls.secondaryAccent as string
+        const accentColor = accentGlide.update(controls.accent as string, dt)
+        const secondary = secondaryGlide.update(controls.secondaryAccent as string, dt)
         const ink = resolveFaceInk(accentColor)
 
         root.style.setProperty('--accent', accentColor)

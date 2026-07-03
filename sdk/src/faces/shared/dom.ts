@@ -1,5 +1,5 @@
 import type { FaceContext } from '@hypercolor/sdk'
-import { lerpColor, palette, withAlpha } from '@hypercolor/sdk'
+import { lerpColor, palette, parseHex, Smoothed, withAlpha } from '@hypercolor/sdk'
 
 export const DISPLAY_FONT_FAMILIES = [
     'Orbitron',
@@ -54,6 +54,48 @@ export function humanizeSensorLabel(label: string): string {
 
 export function clamp01(value: number): number {
     return Math.max(0, Math.min(1, value))
+}
+
+/**
+ * Frame-rate-independent glide between hex colors, so control and preset
+ * changes sweep instead of snapping. Non-hex inputs (hsl strings from
+ * audio-driven palettes) pass through and reset the glide.
+ */
+export class SmoothedColor {
+    private readonly r: Smoothed
+    private readonly g: Smoothed
+    private readonly b: Smoothed
+    private last: string
+
+    /** @param halflife seconds to close half the distance (default 0.1). */
+    constructor(initial: string, halflife = 0.1) {
+        const [r, g, b] = parseHex(initial.startsWith('#') ? initial : '#ffffff')
+        this.r = new Smoothed(r, halflife)
+        this.g = new Smoothed(g, halflife)
+        this.b = new Smoothed(b, halflife)
+        this.last = initial
+    }
+
+    /** Advance toward `target` by `dt` seconds; returns the glided color. */
+    update(target: string, dt: number): string {
+        if (!target.startsWith('#')) {
+            this.last = target
+            return target
+        }
+        if (!this.last.startsWith('#')) {
+            const [r, g, b] = parseHex(target)
+            this.r.snap(r)
+            this.g.snap(g)
+            this.b.snap(b)
+        }
+        this.last = target
+        const [r, g, b] = parseHex(target)
+        const channel = (value: number) =>
+            Math.round(Math.max(0, Math.min(255, value)))
+                .toString(16)
+                .padStart(2, '0')
+        return `#${channel(this.r.update(r, dt))}${channel(this.g.update(g, dt))}${channel(this.b.update(b, dt))}`
+    }
 }
 
 export interface FaceInk {

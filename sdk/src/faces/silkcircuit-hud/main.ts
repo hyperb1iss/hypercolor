@@ -28,6 +28,7 @@ import {
     ensureFaceStyles,
     mixFaceAccent,
     resolveFaceInk,
+    SmoothedColor,
     UI_FONT_FAMILIES,
 } from '../shared/dom'
 
@@ -530,6 +531,8 @@ function buildHud(ctx: FaceContext, wide: boolean) {
 
         const loadFill = new Smoothed(0, 0.25)
         const ramFill = new Smoothed(0, 0.25)
+        const accentGlide = new SmoothedColor(palette.neonCyan)
+        const secondaryGlide = new SmoothedColor(palette.coral)
         let bootAt = Number.NaN
         const morphCpu = createValueMorph(cpuValueEl)
         const morphGpu = createValueMorph(gpuValueEl)
@@ -551,8 +554,8 @@ function buildHud(ctx: FaceContext, wide: boolean) {
             metricsEl.style.transform = `translateY(${(1 - metricsIn) * 12}px)`
             barsEl.style.opacity = `${barsIn}`
             barsEl.style.transform = `translateY(${(1 - barsIn) * 10}px)`
-            const accent = lerpColor(controls.accent as string, palette.fg.primary, 0.05)
-            const secondary = mixFaceAccent(controls.secondaryAccent as string, accent, 0.14)
+            const accent = accentGlide.update(lerpColor(controls.accent as string, palette.fg.primary, 0.05), dt)
+            const secondary = secondaryGlide.update(mixFaceAccent(controls.secondaryAccent as string, accent, 0.14), dt)
             const ink = resolveFaceInk(accent)
 
             root.style.setProperty('--accent', accent)

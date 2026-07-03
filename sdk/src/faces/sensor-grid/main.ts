@@ -30,6 +30,7 @@ import {
     ensureFaceStyles,
     humanizeSensorLabel,
     resolveFaceInk,
+    SmoothedColor,
     UI_FONT_FAMILIES,
 } from '../shared/dom'
 
@@ -247,6 +248,7 @@ interface CellRuntime {
     digitsEl: HTMLElement
     unitEl: HTMLElement
     heat: Smoothed
+    heatGlide: SmoothedColor
     shown: Smoothed
     history: ValueHistory
     lastPush: number
@@ -288,6 +290,7 @@ function buildSensorGrid(ctx: FaceContext, wide: boolean) {
         cells.push({
             digitsEl,
             heat: new Smoothed(0, 0.8),
+            heatGlide: new SmoothedColor(palette.neonCyan, 0.14),
             history: new ValueHistory(60),
             labelEl,
             lastPush: Number.NEGATIVE_INFINITY,
@@ -300,6 +303,7 @@ function buildSensorGrid(ctx: FaceContext, wide: boolean) {
 
     const drifters = makeDrifters(wide ? 30 : 18)
     const sensorKeys = ['sensor1', 'sensor2', 'sensor3', 'sensor4'] as const
+    const accentGlide = new SmoothedColor(palette.neonCyan)
     let bootAt = Number.NaN
     let lastTime = Number.NaN
 
@@ -308,7 +312,7 @@ function buildSensorGrid(ctx: FaceContext, wide: boolean) {
         const boot = time - bootAt
         const dt = Number.isNaN(lastTime) ? 1 / 30 : Math.max(time - lastTime, 0)
         lastTime = time
-        const accent = controls.accent as string
+        const accent = accentGlide.update(controls.accent as string, dt)
         const ink = resolveFaceInk(accent)
         const auto = controls.colorMode !== 'Accent'
 
@@ -349,8 +353,8 @@ function buildSensorGrid(ctx: FaceContext, wide: boolean) {
             const reading = sensors.read(label)
             const normalized = clamp01(sensors.normalized(label))
             const heat = cell.heat.update(normalized, dt)
-            const ramp = auto ? autoRamp(label) : ([withAlpha(accent, 0.55), accent] as [string, string])
-            const heatColor = auto ? lerpColor(ramp[0], ramp[1], heat) : accent
+            const ramp = autoRamp(label)
+            const heatColor = cell.heatGlide.update(auto ? lerpColor(ramp[0], ramp[1], heat) : accent, dt)
 
             if (time - cell.lastPush >= HISTORY_PUSH_INTERVAL) {
                 cell.lastPush = time

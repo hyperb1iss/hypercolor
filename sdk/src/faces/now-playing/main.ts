@@ -7,6 +7,7 @@ import {
     DISPLAY_FONT_FAMILIES,
     ensureFaceStyles,
     resolveFaceInk,
+    SmoothedColor,
     UI_FONT_FAMILIES,
 } from '../shared/dom'
 
@@ -385,6 +386,9 @@ function buildNowPlaying(ctx: FaceContext, wide: boolean) {
     const artAccentFor = createArtAccentSampler(artFront)
     const progressGlide = new Smoothed(0, 0.2)
     const idlePulse = new Smoothed(1, 0.4)
+    // A longer halflife here so art-derived accents wash in with the fade.
+    const accentGlide = new SmoothedColor(palette.electricPurple, 0.18)
+    const secondaryGlide = new SmoothedColor(palette.coral)
     let lastTime = Number.NaN
     let lastTrackKey = ''
 
@@ -402,8 +406,8 @@ function buildNowPlaying(ctx: FaceContext, wide: boolean) {
 
         const artAccent = controls.useArtAccent === true ? artAccentFor() : null
         const baseAccent = controls.accent as string
-        const accent = artAccent ? lerpColor(artAccent, baseAccent, 0.25) : baseAccent
-        const secondary = controls.secondaryAccent as string
+        const accent = accentGlide.update(artAccent ? lerpColor(artAccent, baseAccent, 0.25) : baseAccent, dt)
+        const secondary = secondaryGlide.update(controls.secondaryAccent as string, dt)
         const ink = resolveFaceInk(accent)
 
         root.style.setProperty('--accent', accent)
