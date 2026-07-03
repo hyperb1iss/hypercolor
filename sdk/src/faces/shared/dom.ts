@@ -56,40 +56,43 @@ export function clamp01(value: number): number {
     return Math.max(0, Math.min(1, value))
 }
 
+const GLIDABLE_HEX = /^#[0-9a-f]{6}$/i
+
 /**
  * Frame-rate-independent glide between hex colors, so control and preset
- * changes sweep instead of snapping. Non-hex inputs (hsl strings from
- * audio-driven palettes) pass through and reset the glide.
+ * changes sweep instead of snapping. The first update adopts its target
+ * directly (no boot wash from the constructor seed), and anything that
+ * isn't 6-digit hex (hsl strings from audio-driven palettes) passes
+ * through and resets the glide.
  */
 export class SmoothedColor {
     private readonly r: Smoothed
     private readonly g: Smoothed
     private readonly b: Smoothed
-    private last: string
+    private initialized = false
 
     /** @param halflife seconds to close half the distance (default 0.1). */
     constructor(initial: string, halflife = 0.1) {
-        const [r, g, b] = parseHex(initial.startsWith('#') ? initial : '#ffffff')
+        const [r, g, b] = parseHex(GLIDABLE_HEX.test(initial) ? initial : '#ffffff')
         this.r = new Smoothed(r, halflife)
         this.g = new Smoothed(g, halflife)
         this.b = new Smoothed(b, halflife)
-        this.last = initial
     }
 
     /** Advance toward `target` by `dt` seconds; returns the glided color. */
     update(target: string, dt: number): string {
-        if (!target.startsWith('#')) {
-            this.last = target
+        if (!GLIDABLE_HEX.test(target)) {
+            this.initialized = false
             return target
         }
-        if (!this.last.startsWith('#')) {
-            const [r, g, b] = parseHex(target)
+        const [r, g, b] = parseHex(target)
+        if (!this.initialized) {
+            this.initialized = true
             this.r.snap(r)
             this.g.snap(g)
             this.b.snap(b)
+            return target
         }
-        this.last = target
-        const [r, g, b] = parseHex(target)
         const channel = (value: number) =>
             Math.round(Math.max(0, Math.min(255, value)))
                 .toString(16)

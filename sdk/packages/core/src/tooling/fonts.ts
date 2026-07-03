@@ -90,7 +90,13 @@ export function buildFontFaceCss(plan: Map<string, Set<number>>, fontAssetsDir?:
         return ''
     }
 
-    const manifest = JSON.parse(readFileSync(join(assetsDir, 'manifest.json'), 'utf8')) as FontManifest
+    let manifest: FontManifest
+    try {
+        manifest = JSON.parse(readFileSync(join(assetsDir, 'manifest.json'), 'utf8')) as FontManifest
+    } catch {
+        console.warn(`font embed: no readable manifest in ${assetsDir} — faces will fall back to system fonts`)
+        return ''
+    }
     const rules: string[] = []
 
     for (const [family, wantedWeights] of [...plan.entries()].sort(([a], [b]) => a.localeCompare(b))) {

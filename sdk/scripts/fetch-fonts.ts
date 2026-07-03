@@ -114,11 +114,56 @@ async function fetchFamily(spec: FamilySpec): Promise<ManifestEntry> {
     return { family: spec.family, license: spec.license, licenseFile, weights }
 }
 
+/**
+ * Google serves one variable font for VF families no matter which weight
+ * the CSS block declares, and Servo renders VFs at their default instance
+ * (the wght axis is never applied — verified by pixel probe). Instance
+ * every vendored file to a true static weight so weights render everywhere.
+ */
+const INSTANCER_PY = `
+import json, sys
+from fontTools.ttLib import TTFont
+from fontTools.varLib import instancer
+
+for job in json.load(sys.stdin):
+    font = TTFont(job["path"])
+    if "fvar" not in font:
+        print(f"static {job['path']}")
+        continue
+    axes = {axis.axisTag: axis.defaultValue for axis in font["fvar"].axes}
+    axes["wght"] = job["weight"]
+    instancer.instantiateVariableFont(font, axes, inplace=True)
+    font.flavor = "woff2"
+    font.save(job["path"])
+    print(f"instanced {job['path']} wght={job['weight']}")
+`
+
+async function instanceStaticWeights(jobs: { path: string; weight: number }[]): Promise<void> {
+    const proc = Bun.spawn(['uvx', '--from', 'fonttools', '--with', 'brotli', 'python3', '-c', INSTANCER_PY], {
+        stderr: 'inherit',
+        stdin: new TextEncoder().encode(JSON.stringify(jobs)),
+        stdout: 'inherit',
+    })
+    if ((await proc.exited) !== 0) {
+        throw new Error('fontTools instancing failed')
+    }
+}
+
 console.log(`Vendoring ${FAMILIES.length} families into ${OUT_ROOT}\n`)
 const entries: ManifestEntry[] = []
 for (const spec of FAMILIES) {
     entries.push(await fetchFamily(spec))
 }
+
+console.log('\nInstancing variable fonts to static weights…')
+await instanceStaticWeights(
+    entries.flatMap((entry) =>
+        Object.entries(entry.weights).map(([weight, relativePath]) => ({
+            path: join(OUT_ROOT, relativePath),
+            weight: Number(weight),
+        })),
+    ),
+)
 
 const manifest = {
     families: Object.fromEntries(entries.map((entry) => [entry.family, entry])),

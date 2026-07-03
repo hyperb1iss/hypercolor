@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test'
+import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 import { buildFontFaceCss, defaultFontAssetsDir, resolveFaceFontEmbedPlan } from '../src/tooling'
@@ -74,5 +75,17 @@ describe('face font embedding', () => {
 
     test('locates the vendored assets from the source tree', () => {
         expect(defaultFontAssetsDir()).toBe(FONT_ASSETS)
+    })
+
+    test('degrades to no CSS when an explicit assets dir has no manifest', () => {
+        const plan = new Map([['Rajdhani', new Set([400])]])
+        expect(buildFontFaceCss(plan, '/definitely/not/a/font/dir')).toBe('')
+    })
+
+    test('vendored weights are true statics, not one shared variable font', () => {
+        const interDir = resolve(FONT_ASSETS, 'inter')
+        const light = readFileSync(resolve(interDir, 'inter-300.woff2'))
+        const semibold = readFileSync(resolve(interDir, 'inter-600.woff2'))
+        expect(light.equals(semibold)).toBeFalse()
     })
 })
