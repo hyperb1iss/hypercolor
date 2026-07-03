@@ -108,6 +108,7 @@ const STYLES = `
     font-weight: 600;
     font-variant-numeric: tabular-nums lining-nums;
     font-feature-settings: 'tnum' 1, 'lnum' 1;
+    white-space: nowrap;
     position: relative;
     z-index: 1;
 }
@@ -251,7 +252,13 @@ interface NetPanel {
     setAccent(color: string): void
 }
 
-function createNetPanel(parent: HTMLElement, accent: string, width: number, height: number): NetPanel {
+function createNetPanel(
+    parent: HTMLElement,
+    accent: string,
+    width: number,
+    height: number,
+    fontSize: number,
+): NetPanel {
     const root = document.createElement('div')
     root.className = 'hc-pulse__net'
     root.style.height = `${height}px`
@@ -266,6 +273,7 @@ function createNetPanel(parent: HTMLElement, accent: string, width: number, heig
 
     const head = document.createElement('div')
     head.className = 'hc-pulse__net-head'
+    head.style.fontSize = `${fontSize}px`
     head.innerHTML = `
         <span class="hc-pulse__net-label">NET</span>
         <span class="hc-pulse__net-rates">
@@ -382,6 +390,7 @@ function buildSystemPulse(ctx: FaceContext, wide: boolean) {
         accent,
         wide ? contentWidth * 0.3 : contentWidth,
         Math.round((wide ? 64 : 56) * Math.max(heroScale, 0.8)),
+        Math.round(12 * Math.max(heroScale, 0.85)),
     )
     const netEl = sideEl.querySelector<HTMLDivElement>('.hc-pulse__net') ?? sideEl
 
