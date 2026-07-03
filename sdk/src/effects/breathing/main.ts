@@ -8,7 +8,11 @@ export default canvas(
         mode: combo('Mode', ['Single', 'Dual', 'Aurora'], { default: 'Single', group: 'Pattern' }),
         color: color('Primary Color', '#ff8a33', { group: 'Colors' }),
         secondaryColor: color('Secondary Color', '#80ffea', { group: 'Colors' }),
-        speed: num('Speed', [2, 60], 15, { group: 'Motion' }),
+        speed: num('Speed', [2, 60], 15, {
+            group: 'Motion',
+            normalize: 'none',
+            tooltip: 'Breaths per minute — 2 is a 30-second ambient swell, 60 a one-second alert pulse.',
+        }),
         minBrightness: num('Minimum Brightness', [0, 100], 10, { group: 'Output' }),
         maxBrightness: num('Maximum Brightness', [0, 100], 100, { group: 'Output' }),
         glow: num('Glow', [0, 100], 35, { group: 'Output' }),
@@ -24,7 +28,11 @@ export default canvas(
         const maxBrightness = (controls.maxBrightness as number) / 100
         const glow = (controls.glow as number) / 100
         const drift = (controls.drift as number) / 100
-        const pulse = easeInOutSine(0.5 + 0.5 * Math.sin(time * ((controls.speed as number) / 60) * Math.PI * 2))
+        // Speed is breaths per minute (raw — no magic normalization), so the
+        // cycle period is 60 / speed seconds: the default 15 BPM breathes on a
+        // four-second cycle, 2 BPM is a slow ambient swell, 60 BPM an alert.
+        const breathsPerSecond = (controls.speed as number) / 60
+        const pulse = easeInOutSine(0.5 + 0.5 * Math.sin(time * breathsPerSecond * Math.PI * 2))
         const brightness = minBrightness + (maxBrightness - minBrightness) * pulse
         const mode = controls.mode as string
 
@@ -73,12 +81,12 @@ export default canvas(
             {
                 controls: {
                     color: '#ff6d2a',
-                    drift: 14,
-                    glow: 28,
+                    drift: 10,
+                    glow: 26,
                     maxBrightness: 78,
                     minBrightness: 5,
                     mode: 'Single',
-                    speed: 8,
+                    speed: 12,
                 },
                 description: 'A warm ember inhale and exhale that stays cozy instead of glaring.',
                 name: 'Warm Ember',
@@ -86,14 +94,15 @@ export default canvas(
             {
                 controls: {
                     color: '#2d4dff',
-                    drift: 22,
-                    glow: 24,
+                    drift: 34,
+                    glow: 48,
                     maxBrightness: 68,
                     minBrightness: 8,
-                    mode: 'Single',
-                    speed: 6,
+                    mode: 'Aurora',
+                    secondaryColor: '#00e6c3',
+                    speed: 7,
                 },
-                description: 'Slow tidal blue breathing with plenty of darkness left in the room.',
+                description: 'Slow tidal blue breathing with a teal undertow and plenty of darkness left in the room.',
                 name: 'Ocean Calm',
             },
             {
@@ -105,7 +114,7 @@ export default canvas(
                     minBrightness: 18,
                     mode: 'Dual',
                     secondaryColor: '#fff0f0',
-                    speed: 34,
+                    speed: 45,
                 },
                 description: 'Sharper dual-tone pulsing for warnings, timers, and “look here now” moments.',
                 name: 'Alert Pulse',
@@ -119,7 +128,7 @@ export default canvas(
                     minBrightness: 10,
                     mode: 'Aurora',
                     secondaryColor: '#80ffea',
-                    speed: 11,
+                    speed: 8,
                 },
                 description: 'A drifting neon bloom with layered color and a slow crossfade.',
                 name: 'Silk Bloom',

@@ -1,6 +1,21 @@
 import { canvas, combo, num, scaleContext } from '@hypercolor/sdk'
 
-import { BUILTIN_DESIGN_BASIS, clamp01, hslCss } from '../_builtin/common'
+import { BUILTIN_DESIGN_BASIS, clamp01, hslCss, lerp, wrapHue } from '../_builtin/common'
+
+function ledSafeHue(hue: number): number {
+    const wrapped = wrapHue(hue)
+    if (wrapped >= 30 && wrapped < 90) {
+        const t = (wrapped - 30) / 60
+        return lerp(24, 120, t * t * (3 - 2 * t))
+    }
+    return wrapped
+}
+
+function yellowLumaDip(hue: number): number {
+    const wrapped = wrapHue(hue)
+    if (wrapped < 40 || wrapped > 80) return 1
+    return 1 - Math.sin(((wrapped - 40) / 40) * Math.PI) * 0.18
+}
 
 export default canvas(
     'Rainbow',
@@ -37,8 +52,11 @@ export default canvas(
             for (let ring = stripCount; ring >= 1; ring--) {
                 const t = ring / stripCount
                 const radius = Math.min(width, height) * 0.5 * t
-                const hue = time * speed * 1.8 + t * 360 * density + Math.sin(time * 2 + t * 8) * shimmer * 45
-                ctx.strokeStyle = hslCss(hue, saturation, brightness * (0.48 + (1 - t) * 0.42), 0.95)
+                const hue = ledSafeHue(
+                    time * speed * 1.8 + t * 360 * density + Math.sin(time * 2 + t * 8) * shimmer * 45,
+                )
+                const lightness = Math.min(55, brightness * (0.48 + (1 - t) * 0.42)) * yellowLumaDip(hue)
+                ctx.strokeStyle = hslCss(hue, saturation, lightness, 0.95)
                 ctx.lineWidth = Math.max(2, (Math.min(width, height) / stripCount) * 0.9)
                 ctx.beginPath()
                 ctx.arc(centerX, centerY, radius, 0, Math.PI * 2)
@@ -61,12 +79,16 @@ export default canvas(
 
         for (let index = -2; index < stripCount + 2; index++) {
             const t = index / stripCount
-            const hue =
+            const hue = ledSafeHue(
                 time * speed * 2.2 +
-                t * 360 * density +
-                Math.sin(time * 1.4 + index * 0.23) * shimmer * 28 +
-                Math.cos(time * 0.37 + index * 0.11) * shimmer * 12
-            const lightness = brightness * (0.68 + Math.sin(time * 0.75 + index * 0.18) * shimmer * 0.08)
+                    t * 360 * density +
+                    Math.sin(time * 1.4 + index * 0.23) * shimmer * 28 +
+                    Math.cos(time * 0.37 + index * 0.11) * shimmer * 12,
+            )
+            const lightness =
+                Math.min(55, brightness * (0.68 + Math.sin(time * 0.75 + index * 0.18) * shimmer * 0.08)) *
+                (1 - blackLevel * 0.85) *
+                yellowLumaDip(hue)
             ctx.fillStyle = hslCss(hue, saturation, lightness)
             if (isVertical) {
                 ctx.fillRect(0, index * stripSize, minor, stripSize + 2)
@@ -100,7 +122,7 @@ export default canvas(
             },
             {
                 controls: {
-                    blackLevel: 28,
+                    blackLevel: 14,
                     brightness: 82,
                     density: 130,
                     direction: 'Diagonal',

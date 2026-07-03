@@ -14,6 +14,7 @@ export default effect(
         speed: num('Speed', [1, 10], 4, { group: 'Motion' }),
         spread: num('Spread', [0, 100], 34, { group: 'Scene' }),
         theme: combo('Theme', ['Arcade', 'Aurora', 'Custom', 'Cyberpunk', 'Inferno', 'Oceanic', 'Poison', 'Tropical'], {
+            default: 'Arcade',
             group: 'Color',
         }),
     },
@@ -25,9 +26,6 @@ export default effect(
                 controls: {
                     bgColor: '#0a0200',
                     bloom: 85,
-                    color1: '#ff4400',
-                    color2: '#ffaa00',
-                    color3: '#ff0044',
                     density: 18,
                     speed: 7,
                     spread: 72,
@@ -41,9 +39,6 @@ export default effect(
                 controls: {
                     bgColor: '#010208',
                     bloom: 45,
-                    color1: '#33f587',
-                    color2: '#3fdcff',
-                    color3: '#8c4bff',
                     density: 24,
                     speed: 3,
                     spread: 88,
@@ -57,9 +52,6 @@ export default effect(
                 controls: {
                     bgColor: '#020a0f',
                     bloom: 28,
-                    color1: '#00c8ff',
-                    color2: '#0055aa',
-                    color3: '#003366',
                     density: 62,
                     speed: 2,
                     spread: 55,
@@ -73,9 +65,6 @@ export default effect(
                 controls: {
                     bgColor: '#030802',
                     bloom: 62,
-                    color1: '#44ff00',
-                    color2: '#00ff88',
-                    color3: '#88ff44',
                     density: 45,
                     speed: 4.5,
                     spread: 40,
@@ -89,9 +78,6 @@ export default effect(
                 controls: {
                     bgColor: '#08020e',
                     bloom: 100,
-                    color1: '#ff00ff',
-                    color2: '#00ffff',
-                    color3: '#ff0088',
                     density: 10,
                     speed: 9,
                     spread: 95,
@@ -105,9 +91,6 @@ export default effect(
                 controls: {
                     bgColor: '#0b0802',
                     bloom: 42,
-                    color1: '#ff6b00',
-                    color2: '#00e4a1',
-                    color3: '#ffe030',
                     density: 38,
                     speed: 5,
                     spread: 60,
@@ -121,9 +104,6 @@ export default effect(
                 controls: {
                     bgColor: '#060008',
                     bloom: 8,
-                    color1: '#ff2266',
-                    color2: '#2244ff',
-                    color3: '#ff0099',
                     density: 95,
                     speed: 1,
                     spread: 12,
@@ -132,6 +112,22 @@ export default effect(
                 description:
                     'Dense plasma crawls through an unpowered arcade cabinet. Ghost images of forgotten high scores burn in the phosphors.',
                 name: 'Dead Mall Attract Screen',
+            },
+            {
+                controls: {
+                    bgColor: '#070312',
+                    bloom: 55,
+                    color1: '#ff2ea6',
+                    color2: '#00ffd0',
+                    color3: '#7a26ff',
+                    density: 30,
+                    speed: 5,
+                    spread: 68,
+                    theme: 'Custom',
+                },
+                description:
+                    'Manual override engaged — three raw color feeds spliced straight into the containment field. Repaint the plasma with any spectrum you dare.',
+                name: 'Chromatic Override',
             },
         ],
     },

@@ -284,10 +284,10 @@ canvas(
             if (!ready || !logoSprite || !glowSprite) return
 
             const aspect = logoSprite.width / logoSprite.height
-            const breathe = 1 + idle * 0.04 * (heart - 0.5) * 2 + bass * 0.09 + swell * 0.05 + beatPulse * 0.05
+            const breathe = 1 + idle * 0.09 * (heart - 0.5) * 2 + bass * 0.09 + swell * 0.05 + beatPulse * 0.05
             const baseH = ch * (0.3 + 0.45 * sizeCtl) * breathe
             const baseW = baseH * aspect
-            const sway = idle * 0.03 * Math.sin(time * 0.5 * speedN)
+            const sway = idle * 0.06 * Math.sin(time * 0.5 * speedN)
             const rot = sway + time * spin * 1.3 * speedN
 
             // ── God-rays behind the mark (counter-rotating for parallax) ────────

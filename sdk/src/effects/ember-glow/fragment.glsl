@@ -82,13 +82,13 @@ vec3 paletteColor(float t, int palette) {
         return triGradient(t, vec3(0.02, 0.005, 0.002), vec3(0.82, 0.18, 0.03), vec3(0.96, 0.48, 0.08));
     }
     if (palette == 1) {
-        return triGradient(t, vec3(0.015, 0.05, 0.028), vec3(0.26, 0.88, 0.18), vec3(0.62, 0.90, 0.30));
+        return triGradient(t, vec3(0.05, 0.015, 0.0), vec3(0.95, 0.30, 0.02), vec3(1.0, 0.66, 0.12));
     }
     if (palette == 2) {
-        return triGradient(t, vec3(0.03, 0.02, 0.08), vec3(0.84, 0.18, 0.92), vec3(0.36, 0.88, 0.90));
+        return triGradient(t, vec3(0.015, 0.05, 0.028), vec3(0.26, 0.88, 0.18), vec3(0.62, 0.90, 0.30));
     }
     if (palette == 3) {
-        return triGradient(t, vec3(0.055, 0.025, 0.045), vec3(0.82, 0.20, 0.60), vec3(0.94, 0.56, 0.22));
+        return triGradient(t, vec3(0.03, 0.02, 0.08), vec3(0.84, 0.18, 0.92), vec3(0.36, 0.88, 0.90));
     }
     return triGradient(t, vec3(0.03, 0.045, 0.028), vec3(0.54, 0.80, 0.16), vec3(0.90, 0.48, 0.18));
 }
@@ -162,7 +162,7 @@ void main() {
         vec2 qf = q - 0.5;
         vec2 cell = floor(qf);
         vec2 local = fract(qf);
-        float spawnRate = (0.03 + density * 0.08) * (1.0 - layerMix * 0.16);
+        float spawnRate = (0.01 + density * 0.16) * (1.0 - layerMix * 0.16);
 
         for (int oy = 0; oy <= 1; oy++) {
             for (int ox = 0; ox <= 1; ox++) {

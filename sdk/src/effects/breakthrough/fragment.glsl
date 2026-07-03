@@ -17,7 +17,6 @@ uniform int iStyle;
 
 const float TAU = 6.28318530718;
 const float BASE_COLOR_SHIFT = 1.0;
-const float BASE_ABERRATION = 0.2;
 
 float saturate(float x) {
     return clamp(x, 0.0, 1.0);
@@ -103,6 +102,11 @@ vec3 palette(float t, int mode) {
         // Toxic — vivid acid green, dark teal, purple undertones
         return cosPal(t, vec3(0.25, 0.50, 0.15), vec3(0.20, 0.40, 0.15),
                       vec3(0.8, 0.7, 0.9), vec3(0.35, 0.05, 0.60));
+    }
+    if (mode == 9) {
+        // SilkCircuit — electric magenta, cyan glow, hot pink over a deep violet base
+        return cosPal(t, vec3(0.62, 0.38, 0.66), vec3(0.42, 0.44, 0.32),
+                      vec3(1.0, 1.0, 2.0), vec3(0.16, 0.42, 0.00));
     }
     // Vaporwave — dusty pink, lavender, soft teal, retro pastel
     return cosPal(t, vec3(0.60, 0.45, 0.60), vec3(0.30, 0.25, 0.30),
@@ -270,13 +274,6 @@ void main() {
         color += fractalColor * spokes * 0.12;
     }
 
-    float aberration = BASE_ABERRATION * 0.003;
-    vec3 rShift = color;
-    vec3 gShift = color;
-    vec3 bShift = color;
-    rShift.r = clamp(color.r + aberration * 0.8, 0.0, 1.0);
-    bShift.b = clamp(color.b + aberration * 0.8, 0.0, 1.0);
-    color = vec3(rShift.r, gShift.g, bShift.b);
     color = liftMids(color, 0.10);
     peak = max(color.r, max(color.g, color.b));
     if (peak > 1.0) color /= peak;

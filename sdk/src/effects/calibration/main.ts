@@ -92,14 +92,15 @@ function drawCornerMarkers(ctx: CanvasRenderingContext2D, width: number, height:
     ]
 
     positions.forEach(([x, y], index) => {
-        ctx.save()
+        // Low-alpha halo disc instead of shadowBlur — same read, far cheaper in Servo.
+        ctx.fillStyle = rgbToCss(ORIENTATION_COLORS[index], 0.22)
+        ctx.beginPath()
+        ctx.arc(x, y, size * 0.5, 0, Math.PI * 2)
+        ctx.fill()
         ctx.fillStyle = rgbToCss(ORIENTATION_COLORS[index], 0.92)
-        ctx.shadowBlur = size * 0.6
-        ctx.shadowColor = rgbToCss(ORIENTATION_COLORS[index], 1)
         ctx.beginPath()
         ctx.arc(x, y, size * 0.28, 0, Math.PI * 2)
         ctx.fill()
-        ctx.restore()
     })
 }
 
@@ -112,12 +113,17 @@ function drawLinearSweep(
     bandWidth: number,
     primary: string,
     secondary: string,
+    softness: number,
 ): void {
     const span = Math.hypot(width, height)
     const angle = directionAngle(direction)
     const projection = Math.abs(width * Math.cos(angle)) + Math.abs(height * Math.sin(angle))
     const halfProjection = projection * 0.5
     const position = phase * projection - halfProjection
+
+    // Softness feathers the outer boundary: at 0 the band snaps straight from
+    // background to trail color, at 1 it fades across the full falloff.
+    const feather = 0.3 * softness
 
     ctx.save()
     ctx.translate(width / 2, height / 2)
@@ -127,9 +133,11 @@ function drawLinearSweep(
         const bandCenter = position + offset
         const gradient = ctx.createLinearGradient(bandCenter - bandWidth, 0, bandCenter + bandWidth, 0)
         gradient.addColorStop(0, 'rgba(255, 255, 255, 0)')
+        gradient.addColorStop(0.3 - feather, 'rgba(255, 255, 255, 0)')
         gradient.addColorStop(0.3, secondary)
         gradient.addColorStop(0.5, primary)
         gradient.addColorStop(0.7, secondary)
+        gradient.addColorStop(0.7 + feather, 'rgba(255, 255, 255, 0)')
         gradient.addColorStop(1, 'rgba(255, 255, 255, 0)')
         ctx.fillStyle = gradient
         ctx.fillRect(bandCenter - bandWidth, -span, bandWidth * 2, span * 2)
@@ -147,13 +155,25 @@ function drawRingSweep(
     bandWidth: number,
     primary: string,
     secondary: string,
+    softness: number,
 ): void {
     const maxRadius = Math.min(width, height) * 0.48
     const radius = inward ? maxRadius * (1 - phase) : maxRadius * phase
     ctx.save()
+
+    // Wide low-alpha halo stroke instead of shadowBlur — same soft read,
+    // far cheaper in Servo. Skipped entirely for hard-edged rings.
+    if (softness > 0.01) {
+        ctx.lineWidth = bandWidth * (1 + softness * 1.4)
+        ctx.strokeStyle = primary
+        ctx.globalAlpha = 0.14 + softness * 0.16
+        ctx.beginPath()
+        ctx.arc(width / 2, height / 2, radius, 0, Math.PI * 2)
+        ctx.stroke()
+        ctx.globalAlpha = 1
+    }
+
     ctx.lineWidth = bandWidth
-    ctx.shadowBlur = bandWidth
-    ctx.shadowColor = primary
     ctx.strokeStyle = primary
     ctx.beginPath()
     ctx.arc(width / 2, height / 2, radius, 0, Math.PI * 2)
@@ -163,6 +183,52 @@ function drawRingSweep(
     ctx.beginPath()
     ctx.arc(width / 2, height / 2, radius + bandWidth * 0.3, 0, Math.PI * 2)
     ctx.stroke()
+    ctx.restore()
+}
+
+// Rotating bright sector around canvas center — the angular analogue of the
+// linear sweep, for verifying rotational layout orientation at a glance.
+function drawAngularSweep(
+    ctx: CanvasRenderingContext2D,
+    width: number,
+    height: number,
+    phase: number,
+    clockwise: boolean,
+    bandWidth: number,
+    primary: string,
+    secondary: string,
+    softness: number,
+): void {
+    const cx = width / 2
+    const cy = height / 2
+    const radius = Math.hypot(width, height) * 0.5
+    const sign = clockwise ? 1 : -1
+    const lead = phase * Math.PI * 2 * sign - Math.PI * 0.5
+    const sector = 0.28 + (bandWidth / Math.min(width, height)) * 1.1
+
+    ctx.save()
+
+    const wedge = (farBehind: number, nearBehind: number): void => {
+        ctx.beginPath()
+        ctx.moveTo(cx, cy)
+        ctx.arc(cx, cy, radius, lead - sign * farBehind, lead - sign * nearBehind, !clockwise)
+        ctx.closePath()
+        ctx.fill()
+    }
+
+    // Trailing feather in the trail color; softness stretches and brightens it.
+    const trailSteps = 4
+    const trailSpan = sector * (0.6 + softness * 2.4)
+    ctx.fillStyle = secondary
+    for (let i = trailSteps; i >= 1; i--) {
+        ctx.globalAlpha = (1 - i / (trailSteps + 1)) * (0.3 + softness * 0.35)
+        wedge(sector + (i / trailSteps) * trailSpan, sector + ((i - 1) / trailSteps) * trailSpan)
+    }
+
+    ctx.globalAlpha = 1
+    ctx.fillStyle = primary
+    wedge(sector, 0)
+
     ctx.restore()
 }
 
@@ -195,7 +261,7 @@ export default canvas(
             ],
             { default: 'Left to Right', group: 'Motion' },
         ),
-        speed: num('Sweep Speed', [0, 100], 18, { group: 'Motion' }),
+        speed: num('Sweep Speed', [0, 100], 18, { group: 'Motion', normalize: 'none' }),
         size: num('Marker Size', [1, 100], 22, { group: 'Motion' }),
         softness: num('Edge Softness', [0, 100], 18, { group: 'Motion' }),
         primary_color: color('Lead Color', '#80ffea', { group: 'Colors' }),
@@ -225,8 +291,34 @@ export default canvas(
         ctx.fillRect(0, 0, width, height)
 
         if (pattern === 'Sweep' || pattern === 'Opposing Sweeps') {
-            if (direction === 'Outward' || direction === 'Inward') {
-                drawRingSweep(ctx, width, height, phase, direction === 'Inward', bandWidth, primary, secondary)
+            if (direction === 'Clockwise' || direction === 'Counter Clockwise') {
+                const clockwise = direction === 'Clockwise'
+                drawAngularSweep(ctx, width, height, phase, clockwise, bandWidth, primary, secondary, softness)
+                if (pattern === 'Opposing Sweeps') {
+                    drawAngularSweep(
+                        ctx,
+                        width,
+                        height,
+                        fract(phase + 0.5),
+                        clockwise,
+                        bandWidth,
+                        secondary,
+                        primary,
+                        softness,
+                    )
+                }
+            } else if (direction === 'Outward' || direction === 'Inward') {
+                drawRingSweep(
+                    ctx,
+                    width,
+                    height,
+                    phase,
+                    direction === 'Inward',
+                    bandWidth,
+                    primary,
+                    secondary,
+                    softness,
+                )
                 if (pattern === 'Opposing Sweeps') {
                     drawRingSweep(
                         ctx,
@@ -237,12 +329,23 @@ export default canvas(
                         bandWidth,
                         secondary,
                         primary,
+                        softness,
                     )
                 }
             } else {
-                drawLinearSweep(ctx, width, height, phase, direction, bandWidth, primary, secondary)
+                drawLinearSweep(ctx, width, height, phase, direction, bandWidth, primary, secondary, softness)
                 if (pattern === 'Opposing Sweeps') {
-                    drawLinearSweep(ctx, width, height, fract(phase + 0.5), direction, bandWidth, secondary, primary)
+                    drawLinearSweep(
+                        ctx,
+                        width,
+                        height,
+                        fract(phase + 0.5),
+                        direction,
+                        bandWidth,
+                        secondary,
+                        primary,
+                        softness,
+                    )
                 }
             }
         } else if (pattern === 'Crosshair') {
@@ -253,9 +356,14 @@ export default canvas(
             ctx.shadowBlur = bandWidth * 0.4
             ctx.shadowColor = secondary
 
+            // Softness feathers the line ends: at 0 the bars run solid edge to
+            // edge, at 1 they fade in toward the intersection point.
+            const solidReach = 0.5 * (1 - softness)
+
             const horizontal = ctx.createLinearGradient(0, y, width, y)
             horizontal.addColorStop(0, 'rgba(255, 255, 255, 0)')
-            horizontal.addColorStop(0.5, primary)
+            horizontal.addColorStop(0.5 - solidReach, primary)
+            horizontal.addColorStop(0.5 + solidReach, primary)
             horizontal.addColorStop(1, 'rgba(255, 255, 255, 0)')
             ctx.strokeStyle = horizontal
             ctx.beginPath()
@@ -265,7 +373,8 @@ export default canvas(
 
             const vertical = ctx.createLinearGradient(x, 0, x, height)
             vertical.addColorStop(0, 'rgba(255, 255, 255, 0)')
-            vertical.addColorStop(0.5, secondary)
+            vertical.addColorStop(0.5 - solidReach, secondary)
+            vertical.addColorStop(0.5 + solidReach, secondary)
             vertical.addColorStop(1, 'rgba(255, 255, 255, 0)')
             ctx.strokeStyle = vertical
             ctx.beginPath()
@@ -328,6 +437,7 @@ export default canvas(
                     bandWidth * (0.46 + softness * 0.24),
                     i % 2 === 0 ? primary : secondary,
                     accent,
+                    softness,
                 )
             }
         }

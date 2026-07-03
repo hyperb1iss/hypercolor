@@ -1,6 +1,6 @@
-import { canvas, combo, getScreenZoneData, num } from '@hypercolor/sdk'
+import { canvas, combo, getScreenZoneData, hslToRgb, num } from '@hypercolor/sdk'
 
-import { clamp, clamp01, hslCss } from '../_builtin/common'
+import { clamp, clamp01, hslCss, wrapHue } from '../_builtin/common'
 
 interface EdgeStop {
     hue: number
@@ -96,16 +96,26 @@ export default canvas.stateful(
             default: 'Wash',
             group: 'Projection',
         }),
-        edge_band: num('Edge Band', [0.05, 0.5], 0.2, { group: 'Projection' }),
-        ring_depth: num('Ring Depth', [0.1, 0.5], 0.25, { group: 'Projection' }),
+        edge_band: num('Edge Band', [0.05, 0.5], 0.2, {
+            group: 'Ring',
+            tooltip: 'Ring mode only: how deep into the screen each edge band samples.',
+        }),
+        ring_depth: num('Ring Depth', [0.1, 0.5], 0.25, {
+            group: 'Ring',
+            tooltip: 'Ring mode only: how far the edge bands reach toward the center.',
+        }),
         intensity: num('Intensity', [0, 1.5], 1, { group: 'Output' }),
-        center_dim: num('Center Dim', [0, 1], 0.85, { group: 'Output' }),
+        center_dim: num('Center Dim', [0, 1], 0.85, {
+            group: 'Ring',
+            tooltip: 'Ring mode only: how dark the interior stays inside the ring.',
+        }),
     },
     () => {
         const washCanvas = document.createElement('canvas')
         washCanvas.width = 1
         washCanvas.height = 1
         const washCtx = washCanvas.getContext('2d')
+        let washImage: ImageData | null = null
 
         return (ctx, _time, controls) => {
             const screen = getScreenZoneData()
@@ -154,20 +164,28 @@ export default canvas.stateful(
                 return
             }
 
-            // Wash: paint the zone grid at native resolution and let smooth
-            // upscaling produce the soft full-canvas wall wash.
+            // Wash: fill the zone grid at native resolution into a reused
+            // pixel buffer (one putImageData beats hundreds of 1px fillRects)
+            // and let smooth upscaling produce the soft full-canvas wall wash.
             if (!washCtx) return
-            if (washCanvas.width !== screen.width || washCanvas.height !== screen.height) {
+            if (washCanvas.width !== screen.width || washCanvas.height !== screen.height || !washImage) {
                 washCanvas.width = screen.width
                 washCanvas.height = screen.height
+                washImage = washCtx.createImageData(screen.width, screen.height)
             }
+            const pixels = washImage.data
             for (let y = 0; y < screen.height; y++) {
                 for (let x = 0; x < screen.width; x++) {
                     const stop = zoneAt(screen, x, y, intensity)
-                    washCtx.fillStyle = hslCss(stop.hue, stop.saturation * 100, stop.lightness * 100)
-                    washCtx.fillRect(x, y, 1, 1)
+                    const [r, g, b] = hslToRgb(wrapHue(stop.hue), stop.saturation, stop.lightness)
+                    const offset = (y * screen.width + x) * 4
+                    pixels[offset] = Math.round(r * 255)
+                    pixels[offset + 1] = Math.round(g * 255)
+                    pixels[offset + 2] = Math.round(b * 255)
+                    pixels[offset + 3] = 255
                 }
             }
+            washCtx.putImageData(washImage, 0, 0)
             ctx.imageSmoothingEnabled = true
             ctx.drawImage(washCanvas, 0, 0, screen.width, screen.height, 0, 0, width, height)
         }

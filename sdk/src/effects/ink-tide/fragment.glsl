@@ -71,35 +71,35 @@ struct InkTheme {
 InkTheme getTheme(int id) {
     InkTheme t;
     if (id == 1) {
-        // Sakura — hot pink, deep magenta, crimson rose over dark plum
-        t.water = vec3(0.02, 0.0, 0.025);
-        t.ink1  = vec3(1.0, 0.08, 0.45);
-        t.ink2  = vec3(0.75, 0.0, 0.5);
-        t.ink3  = vec3(0.9, 0.0, 0.25);
-    } else if (id == 2) {
-        // Poison — acid green, deep emerald, toxic chartreuse over swamp
-        t.water = vec3(0.0, 0.015, 0.0);
-        t.ink1  = vec3(0.0, 1.0, 0.2);
-        t.ink2  = vec3(0.0, 0.6, 0.1);
-        t.ink3  = vec3(0.5, 0.9, 0.0);
-    } else if (id == 3) {
-        // Molten — deep red, pure orange, dark amber over volcanic black
-        t.water = vec3(0.02, 0.005, 0.0);
-        t.ink1  = vec3(0.85, 0.04, 0.0);
-        t.ink2  = vec3(1.0, 0.35, 0.0);
-        t.ink3  = vec3(0.8, 0.55, 0.0);
-    } else if (id == 4) {
         // Arctic — deep blue, saturated cyan, teal over dark ocean
         t.water = vec3(0.0, 0.008, 0.03);
         t.ink1  = vec3(0.0, 0.25, 1.0);
         t.ink2  = vec3(0.0, 0.8, 0.9);
         t.ink3  = vec3(0.0, 0.5, 0.7);
-    } else if (id == 5) {
+    } else if (id == 2) {
+        // Molten — deep red, pure orange, dark amber over volcanic black
+        t.water = vec3(0.02, 0.005, 0.0);
+        t.ink1  = vec3(0.85, 0.04, 0.0);
+        t.ink2  = vec3(1.0, 0.35, 0.0);
+        t.ink3  = vec3(0.8, 0.55, 0.0);
+    } else if (id == 3) {
         // Phantom — deep violet, electric purple, dark orchid over void
         t.water = vec3(0.01, 0.0, 0.02);
         t.ink1  = vec3(0.45, 0.0, 1.0);
         t.ink2  = vec3(0.7, 0.0, 0.85);
         t.ink3  = vec3(0.35, 0.1, 0.8);
+    } else if (id == 4) {
+        // Poison — acid green, deep emerald, toxic chartreuse over swamp
+        t.water = vec3(0.0, 0.015, 0.0);
+        t.ink1  = vec3(0.0, 1.0, 0.2);
+        t.ink2  = vec3(0.0, 0.6, 0.1);
+        t.ink3  = vec3(0.5, 0.9, 0.0);
+    } else if (id == 5) {
+        // Sakura — hot pink, deep magenta, crimson rose over dark plum
+        t.water = vec3(0.02, 0.0, 0.025);
+        t.ink1  = vec3(1.0, 0.08, 0.45);
+        t.ink2  = vec3(0.75, 0.0, 0.5);
+        t.ink3  = vec3(0.9, 0.0, 0.25);
     } else {
         // Abyss — teal, deep blue, dark cyan over black water
         t.water = vec3(0.0, 0.005, 0.02);
@@ -189,7 +189,7 @@ void main() {
 
     // ── Saturation — gentle push, never above 1.2x ──
     float lum = dot(color, vec3(0.2126, 0.7152, 0.0722));
-    color = mix(vec3(lum), color, 0.7 + sat * 0.5);
+    color = mix(vec3(lum), color, 0.5 + sat * 0.7);
 
     // ── Gentle vignette ──
     float vignette = smoothstep(1.6, 0.2, length(p));

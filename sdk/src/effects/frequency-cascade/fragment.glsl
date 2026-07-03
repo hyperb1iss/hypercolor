@@ -67,6 +67,14 @@ float fbm(vec2 p) {
     return v;
 }
 
+// 2-octave fbm for the per-cell row-energy path — amplitude-compensated
+// (0.9375 / 0.75 = 1.25) so it spans the same range as the 4-octave fbm.
+float fbm2(vec2 p) {
+    float v = valueNoise(p) * 0.5;
+    v += valueNoise(p * 2.03) * 0.25;
+    return v * 1.25;
+}
+
 // ── Tonemap (Narkowicz ACES fit) ─────────────────────────────────────
 
 vec3 ACESFilm(vec3 x) {
@@ -93,12 +101,19 @@ vec3 paletteColor(float t, int id) {
 // Same five-lobe shape as before — treats bass/mid/treble as spatial
 // frequency regions, with beat transients damped toward smoothed level.
 
+// Cheap gaussian-like lobe: matches exp(-x*x) at x=0 and x≈1 with a
+// finite skirt — runs five times per visited DDA cell, so no exp().
+float lobe(float x) {
+    float t = max(1.0 - x * x * 0.4, 0.0);
+    return t * t;
+}
+
 float spectralEnvelope(float freq, float smoothAmt) {
-    float bassLobe  = exp(-pow((freq - 0.08) * 2.55, 2.0));
-    float lowLobe   = exp(-pow((freq - 0.28) * 2.85, 2.0));
-    float midLobe   = exp(-pow((freq - 0.52) * 2.95, 2.0));
-    float highLobe  = exp(-pow((freq - 0.76) * 2.85, 2.0));
-    float airLobe   = exp(-pow((freq - 0.94) * 3.20, 2.0));
+    float bassLobe  = lobe((freq - 0.08) * 2.55);
+    float lowLobe   = lobe((freq - 0.28) * 2.85);
+    float midLobe   = lobe((freq - 0.52) * 2.95);
+    float highLobe  = lobe((freq - 0.76) * 2.85);
+    float airLobe   = lobe((freq - 0.94) * 3.20);
 
     // Lower damping so bass/mid/treble differentiate boldly in 3D — height
     // variation needs to survive perspective foreshortening.
@@ -128,7 +143,7 @@ float rowEnergy(float freq, float rowAge, float time, float smoothAmt) {
 
     // Synthesized past — fbm parameterized by emission time so the pattern
     // at each cell slides continuously from near to far.
-    float past = fbm(vec2(freq * 4.5, rowTime * 0.55));
+    float past = fbm2(vec2(freq * 4.5, rowTime * 0.55));
     float pastShape = (past - 0.45) * (0.55 + iCascadePresence * 0.45);
 
     // Rolling continuous wave — always-on visible cascade, independent of
@@ -191,7 +206,10 @@ vec3 cellWorldCenter(int cx, int cz, int bc) {
     return vec3(float(cx) * SX - gridW * 0.5, 0.0, -float(cz) * SZ);
 }
 
-float cellBarHeight(int cx, int cz, int bc, float time, float smoothAmt) {
+// Returns bar height; `energy` receives the raw (pre-twinkle) rowEnergy
+// so shading can reuse it instead of recomputing.
+float cellBarHeight(int cx, int cz, int bc, float time, float smoothAmt, out float energy) {
+    energy = 0.0;
     if (cx < 0 || cx >= bc) return 0.0;
     if (cz < 0) return 0.0;
     if (skipCenterLane(cx, bc)) return 0.0;
@@ -199,16 +217,15 @@ float cellBarHeight(int cx, int cz, int bc, float time, float smoothAmt) {
     float freq = float(cx) / max(float(bc - 1), 1.0);
     float rowAge = float(cz) * SZ;
 
-    float energy = rowEnergy(freq, rowAge, time, smoothAmt);
+    energy = rowEnergy(freq, rowAge, time, smoothAmt);
 
     // Per-bar independent twinkle — breaks the static "curve" feel
     // without decorrelating from the spectrum. Each bar breathes on
     // its own phase.
     float twinkle = 0.92 + 0.08 * sin(time * 4.5 + float(cx) * 11.7 + float(cz) * 2.3);
-    energy *= twinkle;
 
     float intensity = clamp(iIntensity * 0.01, 0.0, 1.0);
-    return 0.06 + energy * mix(0.55, 3.40, intensity);
+    return 0.06 + energy * twinkle * mix(0.55, 3.40, intensity);
 }
 
 // Ray-box slab intersection. Returns entry t and entry-face normal.
@@ -243,6 +260,7 @@ struct Hit {
     int   cx;
     int   cz;
     float height;
+    float energy;
     float freq;
     float rowAge;
     float side;   // +1 upper bar, -1 mirrored lower bar (Mirror scene only)
@@ -251,7 +269,7 @@ struct Hit {
 Hit emptyHit() {
     Hit h;
     h.hit = false; h.tHit = 1e9; h.pos = vec3(0.0); h.normal = vec3(0.0);
-    h.cx = 0; h.cz = 0; h.height = 0.0; h.freq = 0.0; h.rowAge = 0.0; h.side = 1.0;
+    h.cx = 0; h.cz = 0; h.height = 0.0; h.energy = 0.0; h.freq = 0.0; h.rowAge = 0.0; h.side = 1.0;
     return h;
 }
 
@@ -272,6 +290,7 @@ Hit traceGrid(vec3 ro, vec3 rd, float time, float smoothAmt) {
 
     int cx = int(floor((ro2.x + gridW * 0.5) / SX + 0.5));
     int cz = int(floor(ro2.y / SZ + 0.5));
+    int cz0 = cz;
 
     vec2 step_ = sign(rd2);
     vec2 delta = vec2(SX, SZ) / max(abs(rd2), vec2(1e-5));
@@ -285,8 +304,9 @@ Hit traceGrid(vec3 ro, vec3 rd, float time, float smoothAmt) {
                : (step_.y < 0.0) ? ((-SZ * 0.5 - rel.y) / rd2.y) : 1e9;
     sideDist = max(sideDist, vec2(1e-5));
 
-    for (int i = 0; i < 200; i++) {
-        float bh = cellBarHeight(cx, cz, bc, time, smoothAmt);
+    for (int i = 0; i < 140; i++) {
+        float cellEnergy;
+        float bh = cellBarHeight(cx, cz, bc, time, smoothAmt, cellEnergy);
         if (bh > 0.015) {
             vec3 c = cellWorldCenter(cx, cz, bc);
             vec3 bMin = vec3(c.x - halfW, 0.0, c.z - halfD);
@@ -300,6 +320,7 @@ Hit traceGrid(vec3 ro, vec3 rd, float time, float smoothAmt) {
                 h.normal = n;
                 h.cx = cx; h.cz = cz;
                 h.height = bh;
+                h.energy = cellEnergy;
                 h.freq = float(cx) / max(float(bc - 1), 1.0);
                 h.rowAge = float(cz) * SZ;
                 h.side = 1.0;
@@ -317,6 +338,7 @@ Hit traceGrid(vec3 ro, vec3 rd, float time, float smoothAmt) {
                     h.normal = n;
                     h.cx = cx; h.cz = cz;
                     h.height = bh;
+                    h.energy = cellEnergy;
                     h.freq = float(cx) / max(float(bc - 1), 1.0);
                     h.rowAge = float(cz) * SZ;
                     h.side = -1.0;
@@ -337,7 +359,10 @@ Hit traceGrid(vec3 ro, vec3 rd, float time, float smoothAmt) {
         }
 
         if (tAdvance > 90.0) break;
-        if (cz > 2400) break;
+        // Depth bound relative to the entry row: 180 cells ≈ 93.6 world
+        // units of z-travel, past the 90-unit fog horizon. (An absolute
+        // cz bound would break once the ever-advancing camera passes it.)
+        if (cz - cz0 > 180) break;
         if (cx < -3 || cx > bc + 2) break;
     }
 
@@ -418,7 +443,7 @@ vec3 shadeBar(Hit h, vec3 ro, vec3 rd, float time, float smoothAmt) {
     vec3 accentColor = paletteColor(paletteT + 0.22, iPalette);
     vec3 peakColor   = paletteColor(paletteT + 0.42, iPalette);
 
-    float energy = rowEnergy(h.freq, h.rowAge, time, smoothAmt);
+    float energy = h.energy;
 
     // Mirror flips local Y: use |pos.y| for yNorm so both sides read
     // "base → top" the same way.

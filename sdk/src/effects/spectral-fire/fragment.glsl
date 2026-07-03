@@ -62,6 +62,20 @@ float fbm(vec2 p) {
     return sum;
 }
 
+// Cheaper 3-octave fbm for secondary fields (texture, haze, breakup, embers).
+// Rescaled so its output range matches fbm's 5-octave amplitude sum
+// (0.875 → 0.96875), keeping overall brightness and shape intact.
+float fbm3(vec2 p) {
+    float sum = 0.0;
+    float amp = 0.5;
+    for (int i = 0; i < 3; i++) {
+        sum += amp * noise(p);
+        p *= 2.0;
+        amp *= 0.5;
+    }
+    return sum * 1.1071;
+}
+
 float ridge(float n) {
     return 1.0 - abs(n * 2.0 - 1.0);
 }
@@ -76,13 +90,13 @@ vec3 fireRamp(float t, vec3 c0, vec3 c1, vec3 c2, vec3 c3) {
 
 vec3 paletteColor(float t, int id) {
     if (id == 0) return fireRamp(t, vec3(0.015, 0.0, 0.0), vec3(0.82, 0.12, 0.0), vec3(1.0, 0.58, 0.02), vec3(1.0, 0.92, 0.45));
-    if (id == 1) return fireRamp(t, vec3(0.02, 0.0, 0.0), vec3(0.92, 0.28, 0.0), vec3(1.0, 0.82, 0.28), vec3(0.82, 0.92, 1.0));
+    if (id == 1) return fireRamp(t, vec3(0.02, 0.0, 0.0), vec3(0.92, 0.28, 0.0), vec3(1.0, 0.82, 0.28), vec3(1.0, 0.85, 0.55));
     if (id == 2) return fireRamp(t, vec3(0.0, 0.02, 0.02), vec3(0.0, 0.48, 0.52), vec3(0.18, 0.82, 0.68), vec3(0.92, 0.68, 0.22));
     if (id == 3) return fireRamp(t, vec3(0.01, 0.0, 0.04), vec3(0.32, 0.02, 0.72), vec3(0.85, 0.12, 0.68), vec3(1.0, 0.52, 0.42));
     if (id == 4) return fireRamp(t, vec3(0.025, 0.0, 0.01), vec3(0.78, 0.0, 0.32), vec3(1.0, 0.22, 0.48), vec3(1.0, 0.72, 0.28));
-    if (id == 5) return fireRamp(t, vec3(0.0, 0.015, 0.005), vec3(0.04, 0.58, 0.12), vec3(0.32, 0.95, 0.28), vec3(0.78, 1.0, 0.52));
+    if (id == 5) return fireRamp(t, vec3(0.0, 0.015, 0.005), vec3(0.04, 0.58, 0.12), vec3(0.32, 0.95, 0.28), vec3(0.45, 1.0, 0.35));
     if (id == 6) return fireRamp(t, vec3(0.0, 0.0, 0.03), vec3(0.04, 0.08, 0.72), vec3(0.28, 0.22, 0.98), vec3(0.82, 0.42, 1.0));
-    if (id == 7) return fireRamp(t, vec3(0.015, 0.015, 0.0), vec3(0.48, 0.44, 0.0), vec3(0.95, 0.88, 0.08), vec3(0.52, 1.0, 0.58));
+    if (id == 7) return fireRamp(t, vec3(0.015, 0.015, 0.0), vec3(0.48, 0.44, 0.0), vec3(1.0, 0.75, 0.05), vec3(0.52, 1.0, 0.58));
     return fireRamp(t, vec3(0.015, 0.0, 0.0), vec3(0.82, 0.12, 0.0), vec3(1.0, 0.58, 0.02), vec3(1.0, 0.92, 0.45));
 }
 
@@ -182,16 +196,16 @@ void main() {
     float fireBody = smoothstep(localHeight + edgeSoftness * 0.3, localHeight - edgeSoftness, uv.y);
 
     // ─── Internal texture — vertically biased for flame-like streaks ───
-    float flow1 = fbm(vec2(fuv.x * aspect * 3.5, uv.y * 6.0 - time * 1.8));
-    float flow2 = fbm(vec2(fuv.x * aspect * 5.5, uv.y * 9.0 - time * 2.6 + 5.0));
-    float flow3 = ridge(fbm(vec2(fuv.x * aspect * 5.0, uv.y * 10.0 - time * 3.2)));
+    float flow1 = fbm3(vec2(fuv.x * aspect * 3.5, uv.y * 6.0 - time * 1.8));
+    float flow2 = fbm3(vec2(fuv.x * aspect * 5.5, uv.y * 9.0 - time * 2.6 + 5.0));
+    float flow3 = ridge(fbm3(vec2(fuv.x * aspect * 5.0, uv.y * 10.0 - time * 3.2)));
     float internal = flow1 * 0.48 + flow2 * 0.30 + flow3 * 0.22;
 
     // More contrast — lower floor so dark pockets read as structure, not flat mass
     float flame = fireBody * (0.22 + internal * 0.78);
 
     // Breakup — stronger at base for more structure, gentler at tips
-    float breakup = ridge(fbm(vec2(fuv.x * 10.0 + time * 0.5, uv.y * 9.0 - time * 2.4)));
+    float breakup = ridge(fbm3(vec2(fuv.x * 10.0 + time * 0.5, uv.y * 9.0 - time * 2.4)));
     flame = max(flame - breakup * (0.07 + uv.y * 0.03) * (0.30 + turbulence * 0.50), 0.0);
 
     // ─── Coloring ───
@@ -206,7 +220,7 @@ void main() {
     col += paletteColor(0.82, iPalette) * rim * (0.03 + intensityCtrl * 0.08);
 
     // ─── Ember bed — uses emberCtrl ───
-    float emberBedNoise = fbm(vec2(fuv.x * 7.0, time * 0.2));
+    float emberBedNoise = fbm3(vec2(fuv.x * 7.0, time * 0.2));
     float emberBed = smoothstep(0.18, 0.0, uv.y) * (0.25 + emberBedNoise * 0.75) * (0.28 + intensityCtrl * 0.5) * emberCtrl;
     col += paletteColor(0.22, iPalette) * emberBed * 0.6;
 
@@ -240,7 +254,7 @@ void main() {
     }
 
     // Haze
-    float haze = fbm(vec2((uv.x - 0.5) * aspect * 2.8, uv.y * 3.6 - time * 0.4));
+    float haze = fbm3(vec2((uv.x - 0.5) * aspect * 2.8, uv.y * 3.6 - time * 0.4));
     col += paletteColor(0.12, iPalette) * haze * (0.03 + flame * 0.04) * (0.6 + intensityCtrl * 0.5);
 
     // Vignette + tone mapping

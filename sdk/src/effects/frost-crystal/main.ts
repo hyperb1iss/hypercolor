@@ -181,6 +181,32 @@ function kochSnowflake(cx: number, cy: number, radius: number, depth: number, ro
     return kochSubdivide(triangle, depth)
 }
 
+// Unit-space Koch geometry, subdivided once — topology is fixed, only the
+// per-cell rotate/scale/translate varies, so cells reuse these points.
+const KOCH_UNIT_OUTER = kochSnowflake(0, 0, 1, 2, 0)
+const KOCH_UNIT_INNER = kochSnowflake(0, 0, 1, 1, 0)
+
+function traceKochPath(
+    ctx: CanvasRenderingContext2D,
+    points: [number, number][],
+    cx: number,
+    cy: number,
+    radius: number,
+    rotation: number,
+): void {
+    const cos = Math.cos(rotation)
+    const sin = Math.sin(rotation)
+    ctx.beginPath()
+    for (let i = 0; i < points.length; i++) {
+        const [ux, uy] = points[i]
+        const x = cx + (ux * cos - uy * sin) * radius
+        const y = cy + (ux * sin + uy * cos) * radius
+        if (i === 0) ctx.moveTo(x, y)
+        else ctx.lineTo(x, y)
+    }
+    ctx.closePath()
+}
+
 // ── Effect ───────────────────────────────────────────────────────────────
 
 export default canvas.stateful(
@@ -558,9 +584,13 @@ export default canvas.stateful(
             const armLength = size * 0.85
             const baseWidth = 2.5 + glow * 3.5
 
+            // Recursion depth scales with cell pixel size — depth-3 twigs on
+            // small cells are sub-LED detail and pure stroke overdraw.
+            const maxDepth = size > 42 ? 3 : size > 26 ? 2 : 1
+
             for (let arm = 0; arm < 6; arm++) {
                 const baseAngle = (TAU / 6) * arm + seed * 0.2
-                drawDendriteBranch(ctx, cx, cy, baseAngle, armLength, baseWidth, pal, alpha, glow, seed, t, 0, 3)
+                drawDendriteBranch(ctx, cx, cy, baseAngle, armLength, baseWidth, pal, alpha, glow, seed, t, 0, maxDepth)
             }
         }
 
@@ -578,7 +608,6 @@ export default canvas.stateful(
             t: number,
         ): void {
             const rotation = t * 0.08 + seed * TAU
-            const points = kochSnowflake(cx, cy, size * 0.88, 2, rotation)
             const edgeWidth = 2.5 + glow * 3.5
 
             // Radial fill — dim interior
@@ -587,12 +616,7 @@ export default canvas.stateful(
             grad.addColorStop(0.6, toRgba(pal.accent, alpha * 0.05))
             grad.addColorStop(1, 'rgba(0,0,0,0)')
             ctx.fillStyle = grad
-            ctx.beginPath()
-            ctx.moveTo(points[0][0], points[0][1])
-            for (let i = 1; i < points.length; i++) {
-                ctx.lineTo(points[i][0], points[i][1])
-            }
-            ctx.closePath()
+            traceKochPath(ctx, KOCH_UNIT_OUTER, cx, cy, size * 0.88, rotation)
             ctx.fill()
 
             // Fractal outline — bold for LED readability
@@ -600,25 +624,13 @@ export default canvas.stateful(
             ctx.lineWidth = edgeWidth
             ctx.strokeStyle = toRgba(mixRgb(pal.primary, pal.highlight, colorT), alpha * (0.35 + glow * 0.45))
             ctx.lineJoin = 'round'
-            ctx.beginPath()
-            ctx.moveTo(points[0][0], points[0][1])
-            for (let i = 1; i < points.length; i++) {
-                ctx.lineTo(points[i][0], points[i][1])
-            }
-            ctx.closePath()
             ctx.stroke()
 
             // Inner snowflake — offset 30°, depth 1, accent color
             if (glow > 0.3) {
-                const innerPts = kochSnowflake(cx, cy, size * 0.45, 1, rotation + Math.PI / 6)
                 ctx.lineWidth = edgeWidth * 0.6
                 ctx.strokeStyle = toRgba(pal.accent, alpha * (glow - 0.3) * 0.5)
-                ctx.beginPath()
-                ctx.moveTo(innerPts[0][0], innerPts[0][1])
-                for (let i = 1; i < innerPts.length; i++) {
-                    ctx.lineTo(innerPts[i][0], innerPts[i][1])
-                }
-                ctx.closePath()
+                traceKochPath(ctx, KOCH_UNIT_INNER, cx, cy, size * 0.45, rotation + Math.PI / 6)
                 ctx.stroke()
             }
         }
@@ -636,8 +648,11 @@ export default canvas.stateful(
             seed: number,
             t: number,
         ): void {
-            // Dense coherent wave rings with 6-fold angular modulation
-            const numRings = 5 + Math.floor(glow * 5)
+            // Dense coherent wave rings with 6-fold angular modulation.
+            // Ring cap scales with cell pixel size — small cells hold ~6 so
+            // ring spacing stays above LED resolution.
+            const ringCap = clamp(Math.floor(size / 5), 6, 10)
+            const numRings = Math.min(5 + Math.floor(glow * 5), ringCap)
             const wavelength = size * 0.32
             const edgeWidth = 1.8 + glow * 2.2
             const angularMod = 0.1 + glow * 0.1

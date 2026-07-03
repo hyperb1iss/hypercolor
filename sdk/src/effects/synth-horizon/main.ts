@@ -58,7 +58,7 @@ export default effect(
                     sunSize: 55,
                 },
                 description:
-                    'The signature run. Coral sun bleeds over a neon cyan grid, amethyst sky holding its breath before midnight.',
+                    'The signature run. A hot-pink sun bleeds over a mint neon grid, amethyst sky holding its breath before midnight.',
                 name: 'Outrun Horizon',
             },
             {

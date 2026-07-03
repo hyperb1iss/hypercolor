@@ -293,9 +293,9 @@ void mainImage(out vec4 color, vec2 fragCoord) {
     float peripheralDim = mix(1.0, 0.22, periphFactor);
     base *= peripheralDim;
 
-    // Film grain noise
-    float grain = (vnoise(uv * 800.0 + t * 6.0) - 0.5)
-            * noise * (0.4 + 0.6 * periphFactor);
+    // Film grain noise — coarse enough to survive LED spatial sampling
+    float grain = (vnoise(uv * 250.0 + t * 6.0) - 0.5)
+            * noise * (0.3 + 0.45 * periphFactor);
     base += grain;
 
     // Dopamine sparks — follow drifting center

@@ -83,6 +83,14 @@ void normalizeControls() {
     cPanWidth      = iPanWidth / 50.0;                // 0–2
 }
 
+// ── Saturation ──────────────────────────────────────────────────
+// Sweeps the palette smoothly: 0 = grayscale, 1 = palette as authored,
+// 2 = oversaturated. Brightness is owned by cColorInt alone.
+vec3 applySaturation(vec3 color) {
+    float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
+    return max(mix(vec3(luma), color, cColorSat), 0.0);
+}
+
 // ── Color palette initialization ────────────────────────────────
 void initializeColorPalette() {
     float neonBoost = 1.0;
@@ -309,7 +317,7 @@ float repeatedBand(float coord, float period, float width, float softness) {
 }
 
 // ── Raymarching ─────────────────────────────────────────────────
-vec4 castRay(vec3 eye, vec3 ray, vec2 center) {
+vec4 castRay(vec3 eye, vec3 ray, vec2 center, int maxSteps) {
     vec2 block = floor(eye.xy);
     vec3 ri = 1.0 / ray;
     vec3 rs = sign(ray);
@@ -317,7 +325,7 @@ vec4 castRay(vec3 eye, vec3 ray, vec2 center) {
     vec2 ris = ri.xy * rs.xy;
     vec2 dis = (block - eye.xy + 0.5 + rs.xy * 0.5) * ri.xy;
 
-    for (int i = 0; i < 16; ++i) {
+    for (int i = 0; i < maxSteps; ++i) {
         float d = dot(block - center, cameraDir.xy);
         float heightScale = 0.4 + cBuildingHeight * 1.3;
         float height = (3.0 * hash1(block) - 1.0 + 1.5 * d - 0.1 * d * d) * heightScale;
@@ -528,7 +536,7 @@ vec3 addSign(vec3 color, vec3 pos, float side, vec2 id) {
     return mix(color, outlineColor, flash * outline);
 }
 
-vec3 renderScene(vec2 fragCoord) {
+vec3 renderScene(vec2 fragCoord, int ddaSteps) {
     // Camera position along flight path
     vec2 center = -speed * iTime * cameraDir.xy;
 
@@ -559,7 +567,7 @@ vec3 renderScene(vec2 fragCoord) {
         xy.x * rolledRight + xy.y * rolledUp + zoom * forward * iResolution.y
     );
 
-    vec4 res = castRay(eye, ray, center);
+    vec4 res = castRay(eye, ray, center, ddaSteps);
     vec3 p = eye + res.x * ray;
 
     vec2 block = floor(p.xy);
@@ -606,13 +614,6 @@ vec3 renderScene(vec2 fragCoord) {
         color += addLight(eye.yxz, ray.yxz, res.x, time * 0.8, lightHeight - 0.8) * swarmIntensity * 0.7;
     }
 
-    // B&W mode at very low saturation
-    if (cColorSat < 0.1) {
-        float c = clamp(dot(vec3(0.4, 0.3, 0.4), color), 0.0, 1.0);
-        c = 1.0 - pow(1.0 - pow(c, 2.0), 4.0);
-        color = vec3(c);
-    }
-
     return color;
 }
 
@@ -624,16 +625,22 @@ void main() {
     // Initialize camera, fog, and color settings
     initializeSettings();
 
-    // Apply color saturation and intensity
-    windowColorA *= cColorSat * cColorInt;
-    windowColorB *= cColorSat * cColorInt;
-    signColorA   *= cColorSat * cColorInt;
-    signColorB   *= cColorSat * cColorInt;
+    // Saturation sweeps the palette gray→vivid; intensity owns brightness
+    windowColorA = applySaturation(windowColorA) * cColorInt;
+    windowColorB = applySaturation(windowColorB) * cColorInt;
+    signColorA   = applySaturation(signColorA) * cColorInt;
+    signColorB   = applySaturation(signColorB) * cColorInt;
+    lightColorA  = applySaturation(lightColorA);
+    lightColorB  = applySaturation(lightColorB);
+    fogColor     = applySaturation(fogColor);
 
-    vec3 color = renderScene(gl_FragCoord.xy);
+    vec3 color = renderScene(gl_FragCoord.xy, 16);
     if (cRgbSmooth > 0.001) {
+        // The offset sample runs a half-depth DDA: at a sub-pixel offset and
+        // at most 65% blend weight, the reduced march depth is imperceptible
+        // but halves the smoothing path's raymarch cost.
         vec2 aaOffset = vec2(0.42, 0.58) * cRgbSmooth;
-        vec3 shifted = renderScene(gl_FragCoord.xy + aaOffset);
+        vec3 shifted = renderScene(gl_FragCoord.xy + aaOffset, 8);
         color = mix(color, 0.5 * (color + shifted), 0.65 * cRgbSmooth);
     }
 

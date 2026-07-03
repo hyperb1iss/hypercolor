@@ -29,7 +29,8 @@ export default effect(
         }),
         palette: combo(
             'Theme',
-            ['Crimson Arc', 'Electric', 'Frozen', 'Phantom', 'Rosewire', 'SilkCircuit Storm', 'Solar Surge', 'Toxic'],
+            // Order must match getPalette() indices in fragment.glsl — combo values map to uniform ints by position.
+            ['Electric', 'SilkCircuit Storm', 'Crimson Arc', 'Toxic', 'Frozen', 'Phantom', 'Solar Surge', 'Rosewire'],
             {
                 default: 'SilkCircuit Storm',
                 group: 'Atmosphere',

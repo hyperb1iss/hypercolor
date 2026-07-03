@@ -49,7 +49,7 @@ export default effect(
             },
             {
                 controls: {
-                    density: 40,
+                    density: 68,
                     palette: 'Phantom Gate',
                     speed: 3,
                     streak: 130,

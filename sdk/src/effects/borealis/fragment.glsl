@@ -104,7 +104,7 @@ float starField(vec2 uv, float time) {
 vec3 auroraLayer(vec2 p, float time, float layer, float baseHeight) {
     float depth = layer * 0.26;
     float warpStrength = 0.22 + iWarpStrength * 0.012;
-    float motion = 0.28 + iSpeed * 0.06;
+    float motion = 0.15 + iSpeed * 0.19;
     float banding = clamp(iBanding * 0.01, 0.0, 1.0);
 
     // Per-layer personality
@@ -252,7 +252,7 @@ vec3 auroraLayer(vec2 p, float time, float layer, float baseHeight) {
 void main() {
     vec2 uv = gl_FragCoord.xy / iResolution.xy;
     vec2 p = (uv - 0.5) * vec2(iResolution.x / iResolution.y, 1.0);
-    float time = iTime * (0.58 + iSpeed * 0.30);
+    float time = iTime * (0.40 + iSpeed * 0.48);
 
     // Deeper sky for stronger contrast against the aurora
     vec3 skyZenith = vec3(0.003, 0.008, 0.022);

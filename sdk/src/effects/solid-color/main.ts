@@ -176,6 +176,34 @@ export default canvas(
                 description: 'Dim neon magenta for night moods that stay vivid without overpowering the room.',
                 name: 'Neon Dusk',
             },
+            {
+                controls: {
+                    accentColor: '#80ffea',
+                    brightness: 34,
+                    color: '#7a2bff',
+                    pattern: 'Halo',
+                    position: 50,
+                    scale: 12,
+                    secondaryColor: '#0a0714',
+                    vignette: 0,
+                },
+                description: 'A dim violet pool with a soft mint core floating on near-black. Nightlight with taste.',
+                name: 'Nightlight Halo',
+            },
+            {
+                controls: {
+                    brightness: 42,
+                    color: '#00e5ff',
+                    pattern: 'Vertical Split',
+                    position: 50,
+                    secondaryColor: '#ff2d95',
+                    softness: 10,
+                    vignette: 0,
+                },
+                description:
+                    'Cyan on one side, magenta on the other. Dual-zone color for split rigs and strong opinions.',
+                name: 'Miami Split',
+            },
         ],
     },
 )

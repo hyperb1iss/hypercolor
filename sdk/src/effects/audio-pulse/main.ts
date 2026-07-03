@@ -24,13 +24,34 @@ function smoothApproach(current: number, target: number, lambda: number, dt: num
     return current + (target - current) * factor
 }
 
+const RAY_COUNT = 10
+const RAY_SPRITE_WIDTH = 256
+const RAY_SPRITE_HEIGHT = 8
+
+/// Bake one ray's gradient strip into an offscreen sprite so the burst is
+/// ten cheap rotated drawImage calls instead of ten fresh gradients a frame.
+function buildRaySprite(color: string): HTMLCanvasElement | null {
+    const sprite = document.createElement('canvas')
+    sprite.width = RAY_SPRITE_WIDTH
+    sprite.height = RAY_SPRITE_HEIGHT
+    const spriteCtx = sprite.getContext('2d')
+    if (!spriteCtx) return null
+    const gradient = spriteCtx.createLinearGradient(0, 0, RAY_SPRITE_WIDTH, 0)
+    gradient.addColorStop(0, 'rgba(255, 255, 255, 0)')
+    gradient.addColorStop(0.35, color)
+    gradient.addColorStop(1, 'rgba(255, 255, 255, 0)')
+    spriteCtx.fillStyle = gradient
+    spriteCtx.fillRect(0, 0, RAY_SPRITE_WIDTH, RAY_SPRITE_HEIGHT)
+    return sprite
+}
+
 function drawRayBurst(
     ctx: CanvasRenderingContext2D,
+    sprite: HTMLCanvasElement,
     cx: number,
     cy: number,
     radius: number,
     length: number,
-    color: string,
     alpha: number,
     rotation: number,
 ): void {
@@ -38,19 +59,11 @@ function drawRayBurst(
     ctx.translate(cx, cy)
     ctx.rotate(rotation)
     ctx.globalAlpha = alpha
-    ctx.fillStyle = color
 
-    for (let i = 0; i < 10; i++) {
-        const angle = (i / 10) * Math.PI * 2
-        ctx.save()
-        ctx.rotate(angle)
-        const gradient = ctx.createLinearGradient(radius, 0, radius + length, 0)
-        gradient.addColorStop(0, 'rgba(255, 255, 255, 0)')
-        gradient.addColorStop(0.35, color)
-        gradient.addColorStop(1, 'rgba(255, 255, 255, 0)')
-        ctx.fillStyle = gradient
-        ctx.fillRect(radius, -3, length, 6)
-        ctx.restore()
+    const step = (Math.PI * 2) / RAY_COUNT
+    for (let i = 0; i < RAY_COUNT; i++) {
+        ctx.drawImage(sprite, radius, -3, length, 6)
+        ctx.rotate(step)
     }
 
     ctx.restore()
@@ -64,7 +77,7 @@ export default canvas.stateful(
         peakColor: color('Peak Color', '#ff3f8f', { group: 'Colors' }),
         accentColor: color('Accent Color', '#80ffea', { group: 'Colors' }),
         sensitivity: num('Sensitivity', [20, 200], 100, { group: 'Audio' }),
-        speed: num('Wave Speed', [0, 100], 54, { group: 'Motion' }),
+        speed: num('Wave Speed', [0, 100], 54, { group: 'Motion', normalize: 'none' }),
         linger: num('Linger', [0, 100], 55, { group: 'Motion' }),
         ringWidth: num('Ring Width', [4, 60], 22, { group: 'Motion' }),
         glow: num('Glow', [0, 100], 58, { group: 'Output' }),
@@ -78,6 +91,8 @@ export default canvas.stateful(
         let lastTime = 0
         let beatHeld = false
         let waves: PulseWave[] = []
+        let raySprite: HTMLCanvasElement | null = null
+        let raySpriteKey = ''
 
         return (ctx, time, controls) => {
             const s = scaleContext(ctx.canvas, BUILTIN_DESIGN_BASIS)
@@ -172,29 +187,49 @@ export default canvas.stateful(
             }
 
             if (style === 'Hybrid' || style === 'Pulse Rays') {
-                drawRayBurst(
-                    ctx,
-                    centerX,
-                    centerY,
-                    s.ds(18),
-                    s.ds(42 + glow * 42 + pulse * 18),
-                    rgbToCss(accent, 0.18 + pulse * 0.14),
-                    0.4 + pulse * 0.25,
-                    time * (0.35 + speed * 0.6),
-                )
+                const rayColor = rgbToCss(accent, 1)
+                if (!raySprite || raySpriteKey !== rayColor) {
+                    raySprite = buildRaySprite(rayColor)
+                    raySpriteKey = rayColor
+                }
+                if (raySprite) {
+                    // The per-frame ray alpha folds into globalAlpha so the
+                    // cached sprite never has to be rebuilt as the beat moves.
+                    drawRayBurst(
+                        ctx,
+                        raySprite,
+                        centerX,
+                        centerY,
+                        s.ds(18),
+                        s.ds(42 + glow * 42 + pulse * 18),
+                        (0.18 + pulse * 0.14) * (0.4 + pulse * 0.25),
+                        time * (0.35 + speed * 0.6),
+                    )
+                }
             }
 
             if (style === 'Hybrid' || style === 'Rings') {
                 for (const wave of waves) {
                     const color = mixRgb(peak, accent, wave.mix)
+                    const ringAlpha = 0.18 + wave.strength * 0.68
+                    const ringWidth = s.ds(2 + ((controls.ringWidth as number) / 60) * 22)
+                    const ringRadius = s.ds(14) + wave.radius
                     ctx.save()
-                    ctx.globalAlpha = 0.18 + wave.strength * 0.68
-                    ctx.lineWidth = s.ds(2 + ((controls.ringWidth as number) / 60) * 22)
-                    ctx.shadowBlur = s.ds(8 + glow * 34)
-                    ctx.shadowColor = rgbToCss(color, 1)
+                    // Halo pass: a wider, dimmer stroke stands in for the old
+                    // shadowBlur glow, which forced a full blur per wave on
+                    // Servo's software canvas.
+                    ctx.globalAlpha = ringAlpha * (0.16 + glow * 0.24)
+                    ctx.lineWidth = ringWidth + s.ds(8 + glow * 34)
+                    ctx.strokeStyle = rgbToCss(color, 1)
+                    ctx.beginPath()
+                    ctx.arc(centerX, centerY, ringRadius, 0, Math.PI * 2)
+                    ctx.stroke()
+
+                    ctx.globalAlpha = ringAlpha
+                    ctx.lineWidth = ringWidth
                     ctx.strokeStyle = rgbToCss(withLift(color, glow * 0.22))
                     ctx.beginPath()
-                    ctx.arc(centerX, centerY, s.ds(14) + wave.radius, 0, Math.PI * 2)
+                    ctx.arc(centerX, centerY, ringRadius, 0, Math.PI * 2)
                     ctx.stroke()
                     ctx.restore()
                 }
@@ -237,7 +272,7 @@ export default canvas.stateful(
             },
             {
                 controls: {
-                    accentColor: '#fff1d0',
+                    accentColor: '#ffcc33',
                     baseColor: '#10040c',
                     brightness: 92,
                     floor: 24,

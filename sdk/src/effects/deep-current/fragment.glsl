@@ -101,11 +101,11 @@ void main() {
 
     float time = iTime * (0.4 + speed * 0.2);
 
-    // ── Flow axis ──
+    // ── Flow axis — combo order is alphabetical: Diagonal(0), Horizontal(1), Vertical(2) ──
     vec2 flowDir;
-    if (iDirection == 1) flowDir = vec2(0.0, 1.0);
-    else if (iDirection == 2) flowDir = normalize(vec2(1.0, 1.0));
-    else flowDir = vec2(1.0, 0.0);
+    if (iDirection == 1) flowDir = vec2(1.0, 0.0);
+    else if (iDirection == 2) flowDir = vec2(0.0, 1.0);
+    else flowDir = normalize(vec2(1.0, 1.0));
 
     // ── Two opposing wave fields ──
     float flowSpeed = 1.5 + flow * 3.0;
@@ -137,9 +137,12 @@ void main() {
     float leftContrib = rippleA * leftStrength;
     float rightContrib = rippleB * rightStrength;
 
-    // Hue blend by contribution ratio — louder wave pulls the color
+    // Hue blend by contribution ratio — louder wave pulls the color.
+    // Mixed in approximate linear light (x² in, √ out) so complementary
+    // palettes stay punchy at the collision seam instead of dulling to mud;
+    // the endpoints are exactly the authored colors.
     float hueBlend = rightContrib / (leftContrib + rightContrib + 1e-4);
-    vec3 waveColor = mix(iLeftColor, iRightColor, hueBlend);
+    vec3 waveColor = sqrt(mix(iLeftColor * iLeftColor, iRightColor * iRightColor, hueBlend));
 
     // Brightness modulates a saturated base — amplitude, not presence
     float fieldBrightness = max(leftContrib, rightContrib);

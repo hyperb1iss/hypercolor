@@ -47,8 +47,6 @@ const THEME_PALETTES: Record<string, ThemePalette> = {
     Toxic: { color1: '#36ff9a', color2: '#0ae0cb', color3: '#6c2bff' },
 }
 
-const STEP = 5
-
 // Marching squares lookup tables (ge1doot algorithm)
 const MSCASES = [0, 3, 0, 3, 1, 3, 0, 3, 2, 2, 0, 2, 1, 1, 0]
 const PLX = [0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 0, 1, 0, 0, 0, 0]
@@ -112,7 +110,9 @@ function createBalls(count: number, w: number, h: number): Ball[] {
 }
 
 function moveBalls(balls: Ball[], speed: number, w: number, h: number): void {
-    const spd = speed / 25
+    // Raw 1-100 slider. The divisor pins the default (22) to the velocity it
+    // had under the old magic normalization: (22/5)^1.5 / 25 ≈ 22 / 59.6.
+    const spd = speed / 59.6
     for (const b of balls) {
         if (b.x >= w - b.size) {
             if (b.vx > 0) b.vx = -b.vx
@@ -137,7 +137,7 @@ function moveBalls(balls: Ball[], speed: number, w: number, h: number): void {
 // Grid construction
 // ---------------------------------------------------------------------------
 
-function createGrid(sx: number, sy: number): GridPoint[] {
+function createGrid(sx: number, sy: number, step: number): GridPoint[] {
     const cols = sx + 2
     const total = cols * (sy + 2)
     const grid: GridPoint[] = new Array(total)
@@ -145,8 +145,8 @@ function createGrid(sx: number, sy: number): GridPoint[] {
         grid[i] = {
             computed: 0,
             force: 0,
-            x: (i % cols) * STEP,
-            y: Math.floor(i / cols) * STEP,
+            x: (i % cols) * step,
+            y: Math.floor(i / cols) * step,
         }
     }
     return grid
@@ -161,6 +161,7 @@ function renderMetaballs(
     grid: GridPoint[],
     sx: number,
     sy: number,
+    step: number,
     balls: Ball[],
     fill: CanvasGradient,
     state: { iter: number; sign: number },
@@ -199,8 +200,8 @@ function renderMetaballs(
     let paint = false
 
     for (const ball of balls) {
-        let x = Math.round(ball.x / STEP)
-        let y = Math.round(ball.y / STEP)
+        let x = Math.round(ball.x / step)
+        let y = Math.round(ball.y / step)
         let pdir: number | false = false
         let safety = (sx + 2) * (sy + 2)
 
@@ -237,7 +238,7 @@ function renderMetaballs(
             const p1 = grid[x + PLX[4 * dir + 2] + (y + PLY[4 * dir + 2]) * cols]
             const p2 = grid[x + PLX[4 * dir + 3] + (y + PLY[4 * dir + 3]) * cols]
             const ratio = Math.abs(Math.abs(p1.force) - 1) / Math.abs(Math.abs(p2.force) - 1)
-            const interp = STEP / (ratio + 1)
+            const interp = step / (ratio + 1)
 
             const base = grid[x + PLX[4 * dir] + (y + PLY[4 * dir]) * cols]
             const base2 = grid[x + PLX[4 * dir + 1] + (y + PLY[4 * dir + 1]) * cols]
@@ -274,7 +275,9 @@ export default canvas.stateful(
         color3: color('Color 3', '#7d49ff', { group: 'Color' }),
         cycleSpeed: num('Cycle Speed', [1, 100], 22, { group: 'Motion' }),
         rainbow: toggle('Rainbow', false, { group: 'Color' }),
-        speed: num('Speed', [1, 100], 22, { group: 'Motion' }),
+        // normalize:'none' — the magic `speed` normalization assumes a 1-10
+        // domain and would compress the lower half of this 1-100 range.
+        speed: num('Speed', [1, 100], 22, { group: 'Motion', normalize: 'none' }),
         theme: combo('Theme', THEMES, { group: 'Color' }),
     },
     () => {
@@ -282,12 +285,17 @@ export default canvas.stateful(
         let grid: GridPoint[] = []
         let sx = 0
         let sy = 0
+        let step = 5
         let prevWidth = 0
         let prevHeight = 0
         let prevCount = 0
         const msState = { iter: 0, sign: 1 }
         let bgCycleHue = 0
         let rainbowHue = 0
+        let glowFill: CanvasGradient | null = null
+        let glowKey = ''
+        let blobFill: CanvasGradient | null = null
+        let blobKey = ''
 
         return (ctx, _time, c) => {
             const bgColor = c.bgColor as string
@@ -307,9 +315,12 @@ export default canvas.stateful(
             // Rebuild on resize or blob count change
             if (w !== prevWidth || h !== prevHeight || bCount !== prevCount) {
                 balls = createBalls(bCount, w, h)
-                sx = Math.floor(w / STEP)
-                sy = Math.floor(h / STEP)
-                grid = createGrid(sx, sy)
+                // Scale the marching-squares grid with resolution (5px at the
+                // default 640x480) so cost stays bounded on larger canvases.
+                step = Math.max(4, Math.round(Math.min(w, h) / 96))
+                sx = Math.floor(w / step)
+                sy = Math.floor(h / step)
+                grid = createGrid(sx, sy, step)
                 msState.iter = 0
                 msState.sign = 1
                 prevWidth = w
@@ -327,36 +338,42 @@ export default canvas.stateful(
             }
             ctx.fillRect(0, 0, w, h)
 
-            // Subtle ambient glow from color3
+            // Subtle ambient glow from color3 — cached until size or color change
             const palette = resolvePalette(theme, color1, color2, color3)
-            const glowRgb = hexToRgb(palette.color3)
-            const glow = ctx.createRadialGradient(w * 0.5, h * 0.65, 0, w * 0.5, h * 0.65, w * 0.55)
-            glow.addColorStop(0, `rgba(${glowRgb.r},${glowRgb.g},${glowRgb.b},0.07)`)
-            glow.addColorStop(1, 'rgba(0,0,0,0)')
-            ctx.fillStyle = glow
+            const nextGlowKey = `${w}|${h}|${palette.color3}`
+            if (!glowFill || glowKey !== nextGlowKey) {
+                const glowRgb = hexToRgb(palette.color3)
+                glowFill = ctx.createRadialGradient(w * 0.5, h * 0.65, 0, w * 0.5, h * 0.65, w * 0.55)
+                glowFill.addColorStop(0, `rgba(${glowRgb.r},${glowRgb.g},${glowRgb.b},0.07)`)
+                glowFill.addColorStop(1, 'rgba(0,0,0,0)')
+                glowKey = nextGlowKey
+            }
+            ctx.fillStyle = glowFill
             ctx.fillRect(0, 0, w, h)
 
-            // Resolve lava fill colors
-            let c0: string
-            let c1: string
-
+            // Radial lava fill — centered at bottom-right for diagonal color
+            // sweep. Rainbow animates the stops every frame; otherwise the
+            // gradient is cached until size or palette change.
+            let fill: CanvasGradient
             if (rainbow) {
                 rainbowHue = (rainbowHue + cycleSpeed / 50) % 360
-                c0 = hslCss(rainbowHue, 1, 0.5)
-                c1 = hslCss(rainbowHue + 60, 1, 0.5)
+                fill = ctx.createRadialGradient(w, h, 0, w, h, w)
+                fill.addColorStop(0, hslCss(rainbowHue, 1, 0.5))
+                fill.addColorStop(1, hslCss(rainbowHue + 60, 1, 0.5))
             } else {
-                c0 = palette.color1
-                c1 = palette.color2
+                const nextBlobKey = `${w}|${h}|${palette.color1}|${palette.color2}`
+                if (!blobFill || blobKey !== nextBlobKey) {
+                    blobFill = ctx.createRadialGradient(w, h, 0, w, h, w)
+                    blobFill.addColorStop(0, palette.color1)
+                    blobFill.addColorStop(1, palette.color2)
+                    blobKey = nextBlobKey
+                }
+                fill = blobFill
             }
-
-            // Radial gradient fill — centered at bottom-right for diagonal color sweep
-            const gradient = ctx.createRadialGradient(w, h, 0, w, h, w)
-            gradient.addColorStop(0, c0)
-            gradient.addColorStop(1, c1)
 
             // Animate and render
             moveBalls(balls, speed, w, h)
-            renderMetaballs(ctx, grid, sx, sy, balls, gradient, msState)
+            renderMetaballs(ctx, grid, sx, sy, step, balls, fill, msState)
         }
     },
     {
@@ -368,9 +385,6 @@ export default canvas.stateful(
                     bCount: 5,
                     bgColor: '#1a0800',
                     bgCycle: false,
-                    color1: '#ff4400',
-                    color2: '#ff8c00',
-                    color3: '#cc2200',
                     cycleSpeed: 15,
                     rainbow: false,
                     speed: 18,
@@ -385,9 +399,6 @@ export default canvas.stateful(
                     bCount: 12,
                     bgColor: '#020818',
                     bgCycle: false,
-                    color1: '#00ffd5',
-                    color2: '#4488ff',
-                    color3: '#0022aa',
                     cycleSpeed: 30,
                     rainbow: false,
                     speed: 12,
@@ -481,6 +492,23 @@ export default canvas.stateful(
                 description:
                     'A solar flare erupts across the chromosphere. Tangerine plasma arcs and collapses in magnetic frenzy.',
                 name: 'Chromosphere Eruption',
+            },
+            {
+                controls: {
+                    bCount: 9,
+                    bgColor: '#07001c',
+                    bgCycle: false,
+                    color1: '#ff1f8f',
+                    color2: '#00e0ff',
+                    color3: '#7a1fff',
+                    cycleSpeed: 25,
+                    rainbow: false,
+                    speed: 20,
+                    theme: 'Custom',
+                },
+                description:
+                    'Neon anemones pulse in a moonless tide pool. Hot magenta and electric cyan wash over ultraviolet dark — a reef mixed from your own three colors.',
+                name: 'Ultraviolet Tide Pool',
             },
         ],
     },

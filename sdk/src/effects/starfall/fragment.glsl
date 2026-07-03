@@ -52,42 +52,43 @@ struct StarPalette {
 };
 
 StarPalette getPalette(int id) {
-    // Heads are tinted (not pure white) for LED pop — keeps whiteness ratio low
-    // 0: Celestial — icy-blue head, cyan trail, deep blue fade
+    // Heads are tinted (not pure white) for LED pop — keeps whiteness ratio low.
+    // Ids follow the combo's alphabetical option order.
+    // 0: Aurora Rain — green-white head, green trail, purple fade
     if (id == 0) return StarPalette(
-        vec3(0.85, 0.95, 1.00),
-        vec3(0.00, 0.90, 1.00),
-        vec3(0.00, 0.10, 0.27)
-    );
-    // 1: Aurora Rain — green-white head, green trail, purple fade
-    if (id == 1) return StarPalette(
         vec3(0.85, 1.00, 0.90),
         vec3(0.31, 0.98, 0.48),
         vec3(0.49, 0.30, 1.00)
     );
-    // 2: Ember Fall — warm-white head, orange trail, dark red fade
+    // 1: Celestial — icy-blue head, cyan trail, deep blue fade
+    if (id == 1) return StarPalette(
+        vec3(0.85, 0.95, 1.00),
+        vec3(0.00, 0.90, 1.00),
+        vec3(0.00, 0.10, 0.27)
+    );
+    // 2: Cosmic — warm-gold head, gold trail, magenta fade
     if (id == 2) return StarPalette(
+        vec3(1.00, 0.95, 0.82),
+        vec3(1.00, 0.65, 0.00),
+        vec3(1.00, 0.00, 1.00)
+    );
+    // 3: Ember Fall — warm-white head, orange trail, dark red fade
+    if (id == 3) return StarPalette(
         vec3(1.00, 0.92, 0.75),
         vec3(1.00, 0.40, 0.00),
         vec3(0.27, 0.00, 0.00)
     );
-    // 3: Frozen Tears — blue-white head, ice blue trail, deep navy fade
-    if (id == 3) return StarPalette(
+    // 4: Frozen Tears — blue-white head, ice blue trail, deep navy fade
+    if (id == 4) return StarPalette(
         vec3(0.88, 0.94, 1.00),
         vec3(0.38, 0.80, 1.00),
         vec3(0.00, 0.04, 0.16)
     );
-    // 4: Neon Rain — pink-white head, hot pink trail, electric purple fade
-    if (id == 4) return StarPalette(
+    // 5: Neon Rain — pink-white head, hot pink trail, electric purple fade
+    return StarPalette(
         vec3(1.00, 0.88, 0.95),
         vec3(1.00, 0.00, 0.67),
         vec3(0.40, 0.00, 1.00)
-    );
-    // 5: Cosmic — warm-gold head, gold trail, magenta fade
-    return StarPalette(
-        vec3(1.00, 0.95, 0.82),
-        vec3(1.00, 0.65, 0.00),
-        vec3(1.00, 0.00, 1.00)
     );
 }
 
@@ -112,18 +113,18 @@ float starField(vec2 uv) {
 // ─── Tail mode color ────────────────────────────────────────────────
 // 0: Palette (original), 1: Rainbow, 2: Ghostly, 3: Electric
 
-vec3 getTailColor(vec3 headCol, vec3 trailCol, vec3 fadeCol, float energy, float particleId, float time, int mode) {
+vec3 getTailColor(vec3 headCol, vec3 trailCol, vec3 fadeCol, float energy, float particleId, float particleHash, float time, int mode) {
     // Palette — original head→trail→fade blend
     if (mode == 0) {
-        vec3 headMix = mix(trailCol, headCol, pow(energy, 2.0));
+        vec3 headMix = mix(trailCol, headCol, energy * energy);
         return mix(fadeCol, headMix, energy);
     }
     // Rainbow — hue shifts along the trail length
     if (mode == 1) {
-        float hueBase = hash11(particleId * 7.31) + time * 0.1;
+        float hueBase = particleHash + time * 0.1;
         float hueShift = (1.0 - energy) * 0.8;
         vec3 rainbow = hsv2rgb(vec3(fract(hueBase + hueShift), 0.9, 1.0));
-        vec3 bright = mix(rainbow, headCol, pow(energy, 3.0));
+        vec3 bright = mix(rainbow, headCol, energy * energy * energy);
         return mix(vec3(0.0), bright, energy);
     }
     // Ghostly — desaturated white-blue fade with ethereal glow
@@ -205,6 +206,11 @@ void main() {
     float perpSpan = perpMax - perpMin;
     float spawnMargin = 0.25 + trailMult * 0.15;
 
+    // Uniform-derived constants hoisted out of the particle loops
+    float margin = 0.3 * sizeMult;
+    float glowRadius = 0.0012 * sizeMult;
+    float glowFloor = 0.0008 * sizeMult;
+
     // Check particles in nearby columns (current + neighbors)
     // Integer loop with constant upper bound for GLSL ES 300 compatibility
     for (int iCol = -1; iCol < 26; iCol++) {
@@ -248,7 +254,6 @@ void main() {
             vec2 particlePos = fallPos * fallDir + colPerp * perpDir;
 
             // Skip particles fully off-screen (with margin for glow/trail)
-            float margin = 0.3 * sizeMult;
             float pxNorm = particlePos.x / aspect;
             float py = particlePos.y;
             if (py < -margin || py > 1.0 + margin) continue;
@@ -270,9 +275,11 @@ void main() {
             // Horizontal squeeze for narrow trail (scaled by star size)
             float hSqueeze = (4.0 + h3 * 2.0) / sizeMult;
 
-            // Trail length from controls + per-particle variation
+            // Trail length from controls + per-particle variation.
+            // The 1.8 non-linear falloff is folded into the decay rate:
+            // pow(exp(-x), 1.8) == exp(-1.8 * x) — one exp, no pow.
             float trailLen = (0.15 + h3 * 0.25) * trailMult;
-            float trailDecay = 1.0 / max(trailLen, 0.01);
+            float trailDecay = 1.8 / max(trailLen, 0.01);
 
             // Asymmetric distance: sharp above, stretched below
             float trailShape = length(vec2(
@@ -285,8 +292,6 @@ void main() {
             float headBrightness = sizeFactor * (0.8 + h2 * 0.4);
 
             // ── Glow calculation ──
-            float glowRadius = 0.0012 * sizeMult;
-            float glowFloor = 0.0008 * sizeMult;
             float glow = headBrightness * glowRadius / (trailShape * trailShape + glowFloor);
 
             // Clamp to avoid firefly-level blowout at exact center
@@ -294,11 +299,10 @@ void main() {
 
             // ── Trail color ──
             float energy = exp(-behind * trailDecay);
-            energy = pow(energy, 1.8);  // non-linear falloff for premium decay
 
             vec3 trailColor = getTailColor(
                 pal.headColor, pal.trailColor, pal.fadeColor,
-                energy, particleId, iTime, tailMode
+                energy, particleId, h0, iTime, tailMode
             );
 
             // ── Sparkle: random trail pixel brightening ──

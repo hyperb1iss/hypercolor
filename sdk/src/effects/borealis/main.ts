@@ -12,7 +12,7 @@ export default effect(
         palette: combo(
             'Palette',
             ['Cyberpunk', 'Fire', 'Ice', 'Northern Lights', 'Phosphor', 'SilkCircuit', 'Sunset', 'Vaporwave'],
-            { group: 'Color' },
+            { default: 'Northern Lights', group: 'Color' },
         ),
         saturation: num('Saturation', [60, 150], 118, { group: 'Color' }),
         speed: num('Speed', [1, 10], 5, { group: 'Motion' }),

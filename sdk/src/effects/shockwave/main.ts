@@ -356,7 +356,7 @@ function drawBrightRays(
     const primaryAng = TAU / spokes
     const primaryInner = maxR * 0.08
     const primaryOuter = maxR * 0.92
-    const primaryWidth = Math.max(3, maxR * 0.007 * (1 + pulse * 1.4))
+    const primaryWidth = Math.max(5, maxR * 0.007 * (1 + pulse * 1.4))
     const primaryBrightness = clamp(0.88 * intensityScale + rawPulse * 0.12, 0, 1)
     for (let i = 0; i < spokes; i += 1) {
         const a = primaryRotation + i * primaryAng
@@ -379,7 +379,7 @@ function drawBrightRays(
     const accentAng = TAU / accentCount
     const accentInner = maxR * 0.1
     const accentOuter = maxR * 0.62
-    const accentWidth = Math.max(1.2, maxR * 0.0034)
+    const accentWidth = Math.max(3, maxR * 0.0034)
     const accentBrightness = clamp(0.6 * intensityScale + treble * 0.22, 0, 1)
     for (let i = 0; i < accentCount; i += 1) {
         const a = accentRotation + i * accentAng + primaryAng * 0.5
@@ -407,7 +407,7 @@ function drawFlashRing(
 
     const radius = f * ring.maxR
     // Width shrinks as the ring expands — the front is thinnest and brightest.
-    const width = Math.max(2, ring.maxR * 0.18 * (1 - f * 0.85) * ring.intensity)
+    const width = Math.max(4, ring.maxR * 0.18 * (1 - f * 0.85) * ring.intensity)
     // Brightness decays with age but stays high early for punch.
     const brightness = clamp(ring.intensity * (1 - f * 0.7) * intensityScale, 0, 1)
 
@@ -524,7 +524,9 @@ export default canvas.stateful(
             group: 'Scene',
         }),
         scene: combo('Scene', [...SCENES], { default: 'Core Burst', group: 'Scene' }),
-        speed: num('Speed', [1, 10], 6, { group: 'Motion' }),
+        // Raw 1-10 — the motion math below is authored against the slider value,
+        // so opt out of the magic speed normalization.
+        speed: num('Speed', [1, 10], 6, { group: 'Motion', normalize: 'none' }),
         intensity: num('Intensity', [0, 100], 78, { group: 'Motion' }),
         decay: num('Decay', [0, 100], 52, { group: 'Motion' }),
         ringCount: num('Ring Count', [2, 12], 6, { group: 'Geometry' }),

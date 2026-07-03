@@ -11,9 +11,9 @@ uniform float iTime;
 uniform vec2 iResolution;
 
 // Controls
+uniform float iSpeed;         // bound by the control pipeline; consumed in the JS frame hook, not here
 uniform float iSensitivity;   // 10–200
 uniform float iFlow;          // -100–100
-uniform float iSpeed;         // 10–200  (applied via iMotionTime in JS)
 uniform float iCurvature;     // 0–150
 uniform float iThrust;        // 0–150
 uniform float iGlowIntensity; // 10–200
@@ -179,7 +179,7 @@ vec3 pulseFieldStyle(vec2 uv, float time) {
     vec3 col = vec3(0.0);
     float travel = 0.0;
 
-    for (int i = 0; i < 70; i++) {
+    for (int i = 0; i < 56; i++) {
         vec3 p = ro + rd * travel * travelDir;
 
         // Depth-dependent arc — positions bend as we march deeper, creating
@@ -214,6 +214,9 @@ vec3 pulseFieldStyle(vec2 uv, float time) {
         // Soft front-to-back: attenuate by luminance already accumulated so
         // dense regions stay saturated instead of summing to gray.
         col += contrib * (1.0 - 0.35 * clamp(dot(col, vec3(0.333)), 0.0, 1.0));
+        // Early out once accumulated luminance saturates — remaining samples
+        // are heavily attenuated and the tonemap pins the pixel anyway.
+        if (dot(col, vec3(0.333)) > 0.95) break;
 
         travel += max(abs(d), 0.038) / (1.0 + energy * 0.12 + pulse * 0.08);
         if (travel > 34.0) break;
@@ -266,7 +269,7 @@ vec3 twistStyle(vec2 uv, float time) {
 
     vec3 col = vec3(0.0);
 
-    for (float i = 0.0, t = 0.0; i < 60.0; i++) {
+    for (float i = 0.0, t = 0.0; i < 48.0; i++) {
         vec3 p = ro + t * rd;
         // Signature positional twist — rotate xy by a depth-phased angle.
         p.xy = rot2(sin(time * 0.05 + p.z * 0.32 + pulse * 0.6) * (0.26 + energy * 0.08)) * p.xy;
@@ -297,6 +300,9 @@ vec3 twistStyle(vec2 uv, float time) {
         // already been accumulated. Prevents the raymarch from summing into white.
         vec3 contrib = sc * glow * fade * g * 0.42;
         col += contrib * (1.0 - 0.45 * clamp(dot(col, vec3(0.333)), 0.0, 1.0));
+        // Early out once accumulated luminance saturates — remaining samples
+        // are heavily attenuated and the tonemap pins the pixel anyway.
+        if (dot(col, vec3(0.333)) > 0.95) break;
 
         t += max(abs(d), 0.042) / (drive * (1.0 + abs(flow) * 0.28 + energy * 0.12 + pulse * 0.08));
         if (t > 35.0) break;

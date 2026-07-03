@@ -56,7 +56,7 @@ export default effect(
         blend: num('Collision Width', [0, 100], 20, { group: 'Color' }),
         direction: combo('Flow Direction', ['Diagonal', 'Horizontal', 'Vertical'], { group: 'Scene' }),
         flow: num('Flow Strength', [0, 100], 65, { group: 'Motion' }),
-        speed: num('Speed', [1, 10], 4, { group: 'Motion' }),
+        speed: num('Speed', [1, 10], 4, { group: 'Motion', normalize: 'none' }),
         turbulence: num('Turbulence', [0, 100], 60, { group: 'Motion' }),
     },
     {

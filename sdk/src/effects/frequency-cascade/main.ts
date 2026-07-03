@@ -94,7 +94,9 @@ export default effect(
             const audio = ctx.audio
             const smoothing = clamp(readNumber(ctx.controls.smoothing, 60) / 100, 0, 1)
             const intensity = clamp(readNumber(ctx.controls.intensity, 80) / 100, 0, 1)
-            const speed = clamp(readNumber(ctx.controls.speed, 5) / 10, 0.1, 1)
+            // ctx.controls.speed arrives engine-normalized (0.2-2.83, default 1);
+            // remap to 0-1 so the knob spans the fallback wiggle's full range.
+            const speed = clamp((readNumber(ctx.controls.speed, 1) - 0.2) / 2.63, 0, 1)
 
             const fallbackLevel = 0.05 + (0.5 + 0.5 * Math.sin(time * (0.24 + speed * 0.24))) * 0.04
             const fallbackBass = fallbackLevel * (0.88 + 0.1 * Math.sin(time * 0.62))

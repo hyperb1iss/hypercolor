@@ -19,6 +19,21 @@ interface RainPalette {
     glitch: Rgb
 }
 
+/** Per-tier fill-style strings quantized across the alpha ladder. */
+interface TierLadder {
+    base: string[]
+    glitched: string[]
+}
+
+interface TierColors {
+    bright: TierLadder
+    glitch: string[]
+    head: TierLadder
+    mid: TierLadder
+    shadow: TierLadder
+    trail: TierLadder
+}
+
 interface ColumnState {
     active: boolean
     glyphs: number[]
@@ -128,6 +143,11 @@ const PALETTES: Record<string, RainPalette> = {
 
 const WHITE: Rgb = { b: 255, g: 255, r: 255 }
 
+// Fill styles are cached per tier across a quantized alpha ladder so the hot
+// per-cell draw loop never allocates rgba() template strings. 16 buckets is
+// visually indistinguishable from continuous alpha at these tier levels.
+const ALPHA_STEPS = 16
+
 // ── Helpers ──────────────────────────────────────────────────────────────
 
 function randomRange(min: number, max: number): number {
@@ -179,6 +199,38 @@ function mixRgb(a: Rgb, b: Rgb, t: number): Rgb {
 
 function resolvePresetPalette(mode: string): RainPalette {
     return PALETTES[mode] ?? PALETTES.Matrix
+}
+
+function buildAlphaLadder(color: Rgb): string[] {
+    const ladder = new Array<string>(ALPHA_STEPS)
+    for (let i = 0; i < ALPHA_STEPS; i++) {
+        ladder[i] = rgba(color, i / (ALPHA_STEPS - 1))
+    }
+    return ladder
+}
+
+function ladderAt(ladder: string[], alpha: number): string {
+    return ladder[Math.round(clamp(alpha, 0, 1) * (ALPHA_STEPS - 1))]
+}
+
+function buildTierLadder(color: Rgb, glitchColor: Rgb): TierLadder {
+    return {
+        base: buildAlphaLadder(color),
+        glitched: buildAlphaLadder(mixRgb(color, glitchColor, 0.42)),
+    }
+}
+
+function buildTierColors(palette: RainPalette, leadWhite: number): TierColors {
+    const head = mixRgb(palette.head, WHITE, clamp(leadWhite / 100, 0, 1) * 0.9)
+    const mid = mixRgb(palette.trail, palette.bright, 0.3)
+    return {
+        bright: buildTierLadder(palette.bright, palette.glitch),
+        glitch: buildAlphaLadder(palette.glitch),
+        head: buildTierLadder(head, palette.glitch),
+        mid: buildTierLadder(mid, palette.glitch),
+        shadow: buildTierLadder(palette.shadow, palette.glitch),
+        trail: buildTierLadder(palette.trail, palette.glitch),
+    }
 }
 
 function resolvePalette(controls: Record<string, unknown>): RainPalette {
@@ -295,9 +347,21 @@ export default canvas.stateful(
         let lastCanvasHeight = 0
         let needsGridSync = true
         let paletteState: RainPalette = PALETTES.Matrix
+        let tierColors: TierColors = buildTierColors(paletteState, 14)
+        let colorCacheKey = ''
         let lastTime = -1
 
         let prevCharSize = 54
+
+        // Rebuild the palette and the cached fill-style ladders only when a
+        // color-affecting control changes — never in the per-cell hot path.
+        function syncColors(c: Record<string, unknown>): void {
+            const key = `${c.colorMode}|${c.bgColor}|${c.rainColor}|${c.headColor}|${c.leadWhite}`
+            if (key === colorCacheKey) return
+            colorCacheKey = key
+            paletteState = resolvePalette(c)
+            tierColors = buildTierColors(paletteState, c.leadWhite as number)
+        }
 
         function rebuildColumns(density: number): void {
             columns = []
@@ -389,7 +453,6 @@ export default canvas.stateful(
             columnIndex: number,
             trailLength: number,
             density: number,
-            leadWhite: number,
             glitch: boolean,
         ): void {
             const trailCells = columnTrailCells(column, trailLength, density)
@@ -405,36 +468,32 @@ export default canvas.stateful(
 
                 const glyph = GLYPHS[column.glyphs[rowIndex] ?? 0]
                 const y = rowIndex * cellHeight
-                let color = paletteState.shadow
-                let alpha = 0.26
+                let tier = tierColors.shadow
+                let alpha = 0.3
 
                 if (step === 0) {
-                    const leadMix = clamp(leadWhite / 100, 0, 1)
+                    tier = tierColors.head
                     alpha = 0.98
-                    color = mixRgb(paletteState.head, WHITE, leadMix * 0.9)
                 } else if (energy > 0.72) {
-                    color = paletteState.bright
+                    tier = tierColors.bright
                     alpha = 0.9
                 } else if (energy > 0.46) {
-                    color = mixRgb(paletteState.trail, paletteState.bright, 0.3)
+                    tier = tierColors.mid
                     alpha = 0.72
                 } else if (energy > 0.24) {
-                    color = paletteState.trail
+                    tier = tierColors.trail
                     alpha = 0.5
-                } else {
-                    color = paletteState.shadow
-                    alpha = 0.3
                 }
 
+                let fill = ladderAt(tier.base, alpha)
                 if (glitch && step < 2 && Math.random() < 0.018) {
                     const jitter = Math.random() < 0.5 ? -1 : 1
-                    ctx.fillStyle = rgba(paletteState.glitch, Math.min(1, alpha * 0.65))
+                    ctx.fillStyle = ladderAt(tierColors.glitch, Math.min(1, alpha * 0.65))
                     ctx.fillText(glyph, x + jitter, y)
-                    color = mixRgb(color, paletteState.glitch, 0.42)
-                    alpha = Math.min(1, alpha + 0.08)
+                    fill = ladderAt(tier.glitched, Math.min(1, alpha + 0.08))
                 }
 
-                ctx.fillStyle = rgba(color, alpha)
+                ctx.fillStyle = fill
                 ctx.fillText(glyph, x, y)
             }
         }
@@ -444,14 +503,13 @@ export default canvas.stateful(
             const density = c.density as number
             const trailLength = c.trailLength as number
             const charSize = c.charSize as number
-            const leadWhite = c.leadWhite as number
             const glitch = c.glitch as boolean
             const w = ctx.canvas.width
             const h = ctx.canvas.height
             const dt = lastTime < 0 ? 1 / 60 : Math.min(0.08, time - lastTime)
             lastTime = time
 
-            paletteState = resolvePalette(c as Record<string, unknown>)
+            syncColors(c as Record<string, unknown>)
             if (charSize !== prevCharSize) {
                 needsGridSync = true
                 prevCharSize = charSize
@@ -478,7 +536,7 @@ export default canvas.stateful(
             for (let columnIndex = 0; columnIndex < columns.length; columnIndex++) {
                 const column = columns[columnIndex]
                 if (!column.active) continue
-                drawColumnTrail(ctx, column, columnIndex, trailLength, density, leadWhite, glitch)
+                drawColumnTrail(ctx, column, columnIndex, trailLength, density, glitch)
             }
 
             ctx.restore()

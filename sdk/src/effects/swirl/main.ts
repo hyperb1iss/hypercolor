@@ -56,7 +56,7 @@ export default canvas(
         particleSpeed: num('Particle Speed', [0, 100], 50, { group: 'Motion' }),
         spiralAmount: num('Spiral Amount', [1, 3], 3, { group: 'Particles' }),
         particleSpawn: num('Particle Amount', [0, 100], 50, { group: 'Particles' }),
-        particleSize: num('Particle Size', [0, 100], 10, { group: 'Particles' }),
+        particleSize: num('Particle Size', [0, 100], 18, { group: 'Particles' }),
         particleGrowth: num('Particle Growth', [-100, 100], 100, { group: 'Particles' }),
     },
     (ctx, time, controls) => {
@@ -98,9 +98,11 @@ export default canvas(
         // Current rotation derived purely from time
         const frameTime = time * 60
         const pulseAmp = spiralAmount === 1 ? Math.PI : Math.PI / 2
+        // Pulse frequency tracks Rotation Speed (default 50 keeps the original 2 rad/s feel)
+        const pulseFreq = rotPerFrame * 40
         const currentRotation =
             rotationMode === 'Pulse'
-                ? Math.sin(time * 2) * pulseAmp
+                ? Math.sin(time * pulseFreq) * pulseAmp
                 : rotationMode === 'Reverse'
                   ? -frameTime * rotPerFrame
                   : frameTime * rotPerFrame
@@ -130,7 +132,7 @@ export default canvas(
 
                 let angle: number
                 if (rotationMode === 'Pulse') {
-                    angle = Math.sin((time - framesAgo / 60) * 2) * pulseAmp + armAngle
+                    angle = Math.sin((time - framesAgo / 60) * pulseFreq) * pulseAmp + armAngle
                 } else if (rotationMode === 'Reverse') {
                     angle = currentRotation + rotPerFrame * framesAgo + armAngle
                 } else {
@@ -182,8 +184,8 @@ export default canvas(
             {
                 controls: {
                     backColor: '#020108',
-                    color1: '#b388ff',
-                    color2: '#64b5f6',
+                    color1: '#7c4dff',
+                    color2: '#2196f3',
                     color3: '#e0e0ff',
                     colorMode: 'Color Cycle',
                     cycleSpeed: 25,
@@ -196,7 +198,7 @@ export default canvas(
                     spiralAmount: 2,
                 },
                 description:
-                    'Twin stellar arms wind inward through deep space. Lavender and ice blue spiral into an invisible drain at the core.',
+                    'Twin stellar arms wind inward through deep space. Violet and electric blue spiral into an invisible drain at the core.',
                 name: 'Galaxy Drain',
             },
             {
@@ -244,7 +246,7 @@ export default canvas(
                     backColor: '#030802',
                     color1: '#39ff14',
                     color2: '#ff00ff',
-                    color3: '#ffff00',
+                    color3: '#ffd000',
                     colorMode: 'Custom',
                     cycleSpeed: 0,
                     effectRotate: 100,
@@ -256,7 +258,7 @@ export default canvas(
                     spiralAmount: 3,
                 },
                 description:
-                    'Neon green, hot magenta, and electric yellow flung outward by violent spin. A lab experiment gone beautifully wrong.',
+                    'Neon green, hot magenta, and molten gold flung outward by violent spin. A lab experiment gone beautifully wrong.',
                 name: 'Toxic Centrifuge',
             },
             {

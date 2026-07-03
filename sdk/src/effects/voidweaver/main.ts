@@ -111,7 +111,7 @@ export default effect(
     },
     {
         description:
-            'Raymarched infinite tunnel. Sixteen palettes, five visual styles, camera physics, surface detail. A void that pulls you in.',
+            'Raymarched infinite tunnel. Sixteen palettes, three visual styles, camera physics, surface detail. A void that pulls you in.',
         presets: [
             {
                 name: 'Infinite Descent',

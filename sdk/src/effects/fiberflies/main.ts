@@ -33,9 +33,23 @@ interface SceneTuning {
     twinkle: number
 }
 
+/** Pre-baked glow layers for one resolved particle color. */
+interface GlowSprites {
+    bloom: HTMLCanvasElement
+    body: HTMLCanvasElement
+    core: HTMLCanvasElement
+    halo: HTMLCanvasElement
+    ring: HTMLCanvasElement
+}
+
 const COLOR_MODES = ['Custom', 'Ember', 'Mint Orchid', 'Rainbow', 'Random', 'SilkCircuit', 'Twilight']
 
 const TAU = Math.PI * 2
+
+const SPRITE_SIZE = 64
+const SPRITE_RADIUS = 30
+const RING_ARC_RADIUS = 26
+const SPRITE_CACHE_LIMIT = 256
 
 const PALETTE_STOPS: Record<string, RGB[]> = {
     Ember: [
@@ -190,6 +204,68 @@ function resetFirefly(firefly: Firefly, w: number, h: number): void {
     Object.assign(firefly, next)
 }
 
+function makeDiscSprite(color: RGB): HTMLCanvasElement {
+    const sprite = document.createElement('canvas')
+    sprite.width = SPRITE_SIZE
+    sprite.height = SPRITE_SIZE
+    const g = sprite.getContext('2d')
+    if (g) {
+        g.fillStyle = rgba(color, 1)
+        g.beginPath()
+        g.arc(SPRITE_SIZE / 2, SPRITE_SIZE / 2, SPRITE_RADIUS, 0, TAU)
+        g.fill()
+    }
+    return sprite
+}
+
+function makeRingSprite(color: RGB, relativeWidth: number): HTMLCanvasElement {
+    const sprite = document.createElement('canvas')
+    sprite.width = SPRITE_SIZE
+    sprite.height = SPRITE_SIZE
+    const g = sprite.getContext('2d')
+    if (g) {
+        g.strokeStyle = rgba(color, 1)
+        g.lineWidth = Math.max(1, RING_ARC_RADIUS * relativeWidth)
+        g.beginPath()
+        g.arc(SPRITE_SIZE / 2, SPRITE_SIZE / 2, RING_ARC_RADIUS, 0, TAU)
+        g.stroke()
+    }
+    return sprite
+}
+
+/**
+ * Pre-bake the five glow layers (bloom, ring, halo, body, core) for one
+ * resolved particle color — the hyperbloom sprite pattern. Each layer is a
+ * unit disc or ring scaled at draw time, so a particle costs five drawImage
+ * calls instead of five path fills and ten rgba() string builds per frame.
+ */
+function bakeSprites(color: RGB, glowMix: number): GlowSprites {
+    return {
+        bloom: makeDiscSprite(mixRgb(color, { b: 228, g: 255, r: 244 }, 0.22)),
+        body: makeDiscSprite(color),
+        core: makeDiscSprite(mixRgb(color, { b: 255, g: 53, r: 225 }, 0.12)),
+        halo: makeDiscSprite(mixRgb(color, { b: 234, g: 255, r: 128 }, 0.1)),
+        // Ring width relative to its radius, at the mid ring-phase for the
+        // current glow setting; the cache clears whenever glow changes.
+        ring: makeRingSprite(
+            mixRgb(color, { b: 234, g: 255, r: 128 }, 0.34),
+            (0.22 + glowMix * 0.16) / (2.0 + glowMix * 0.95),
+        ),
+    }
+}
+
+function drawSprite(
+    ctx: CanvasRenderingContext2D,
+    sprite: HTMLCanvasElement,
+    x: number,
+    y: number,
+    radius: number,
+    spriteRadius: number,
+): void {
+    const half = (SPRITE_SIZE / 2) * (radius / spriteRadius)
+    ctx.drawImage(sprite, x - half, y - half, half * 2, half * 2)
+}
+
 export default canvas.stateful(
     'Fiberflies',
     {
@@ -209,10 +285,40 @@ export default canvas.stateful(
         let cachedBaseHsl: HSL = { h: 111, l: 0.54, s: 1 }
         let lastTime = -1
 
+        const spriteCache = new Map<number, GlowSprites>()
+        let spriteCacheMode = ''
+        let spriteCacheBase = ''
+        let spriteCacheGlow = -1
+
         function updateBaseColorCache(color: string): void {
             if (color === cachedBaseColor) return
             cachedBaseColor = color
             cachedBaseHsl = rgbToHsl(hexToRgb(color))
+        }
+
+        function invalidateSprites(colorMode: string, baseColor: string, glowMix: number): void {
+            if (colorMode === spriteCacheMode && baseColor === spriteCacheBase && glowMix === spriteCacheGlow) return
+            spriteCache.clear()
+            spriteCacheMode = colorMode
+            spriteCacheBase = baseColor
+            spriteCacheGlow = glowMix
+        }
+
+        function resolveSprites(color: RGB, glowMix: number): GlowSprites {
+            // Quantize to 32 levels per channel — resolved colors drift smoothly
+            // with twinkle and palette phase, so near-identical colors share one
+            // baked sprite set instead of re-baking every frame.
+            const key = ((color.r >> 3) << 10) | ((color.g >> 3) << 5) | (color.b >> 3)
+            let sprites = spriteCache.get(key)
+            if (!sprites) {
+                if (spriteCache.size >= SPRITE_CACHE_LIMIT) {
+                    const oldest = spriteCache.keys().next().value
+                    if (oldest !== undefined) spriteCache.delete(oldest)
+                }
+                sprites = bakeSprites(color, glowMix)
+                spriteCache.set(key, sprites)
+            }
+            return sprites
         }
 
         function ensureFireflyCount(count: number, w: number, h: number): void {
@@ -297,7 +403,7 @@ export default canvas.stateful(
         function drawBody(
             ctx: CanvasRenderingContext2D,
             firefly: Firefly,
-            color: RGB,
+            sprites: GlowSprites,
             radius: number,
             brightness: number,
             glowMix: number,
@@ -305,39 +411,24 @@ export default canvas.stateful(
         ): void {
             const bloomPhase = 0.5 + 0.5 * Math.sin(time * (0.9 + firefly.driftBias * 0.22) + firefly.phase * 2.6)
             const ringPhase = 0.5 + 0.5 * Math.sin(time * (1.4 + firefly.driftBias * 0.28) + firefly.phase * 4.9)
-            const bloomColor = mixRgb(color, { b: 228, g: 255, r: 244 }, 0.22)
-            const ringColor = mixRgb(color, { b: 234, g: 255, r: 128 }, 0.34)
-            const haloColor = mixRgb(color, { b: 234, g: 255, r: 128 }, 0.1)
-            const coreColor = mixRgb(color, { b: 255, g: 53, r: 225 }, 0.12)
             const bloomRadius = radius * (2.9 + glowMix * 2.4 + bloomPhase * 1.15)
             const ringRadius = radius * (1.8 + glowMix * 0.95 + ringPhase * 0.4)
             const haloRadius = radius * (2.5 + glowMix * 2.1)
 
-            ctx.fillStyle = rgba(bloomColor, (0.04 + glowMix * 0.15) * brightness * (0.4 + bloomPhase * 0.6))
-            ctx.beginPath()
-            ctx.arc(firefly.x, firefly.y, bloomRadius, 0, TAU)
-            ctx.fill()
+            ctx.globalAlpha = clamp((0.04 + glowMix * 0.15) * brightness * (0.4 + bloomPhase * 0.6), 0, 1)
+            drawSprite(ctx, sprites.bloom, firefly.x, firefly.y, bloomRadius, SPRITE_RADIUS)
 
-            ctx.strokeStyle = rgba(ringColor, (0.08 + glowMix * 0.12) * brightness * (0.35 + ringPhase * 0.65))
-            ctx.lineWidth = Math.max(0.45, radius * (0.22 + glowMix * 0.16))
-            ctx.beginPath()
-            ctx.arc(firefly.x, firefly.y, ringRadius, 0, TAU)
-            ctx.stroke()
+            ctx.globalAlpha = clamp((0.08 + glowMix * 0.12) * brightness * (0.35 + ringPhase * 0.65), 0, 1)
+            drawSprite(ctx, sprites.ring, firefly.x, firefly.y, ringRadius, RING_ARC_RADIUS)
 
-            ctx.fillStyle = rgba(haloColor, (0.08 + glowMix * 0.22) * brightness)
-            ctx.beginPath()
-            ctx.arc(firefly.x, firefly.y, haloRadius, 0, TAU)
-            ctx.fill()
+            ctx.globalAlpha = clamp((0.08 + glowMix * 0.22) * brightness, 0, 1)
+            drawSprite(ctx, sprites.halo, firefly.x, firefly.y, haloRadius, SPRITE_RADIUS)
 
-            ctx.fillStyle = rgba(color, 0.52 + brightness * 0.4)
-            ctx.beginPath()
-            ctx.arc(firefly.x, firefly.y, radius * 1.3, 0, TAU)
-            ctx.fill()
+            ctx.globalAlpha = clamp(0.52 + brightness * 0.4, 0, 1)
+            drawSprite(ctx, sprites.body, firefly.x, firefly.y, radius * 1.3, SPRITE_RADIUS)
 
-            ctx.fillStyle = rgba(coreColor, 0.44 + brightness * 0.2)
-            ctx.beginPath()
-            ctx.arc(firefly.x, firefly.y, Math.max(0.65, radius * 0.55), 0, TAU)
-            ctx.fill()
+            ctx.globalAlpha = clamp(0.44 + brightness * 0.2, 0, 1)
+            drawSprite(ctx, sprites.core, firefly.x, firefly.y, Math.max(0.65, radius * 0.55), SPRITE_RADIUS)
         }
 
         return (ctx, time, c) => {
@@ -361,6 +452,7 @@ export default canvas.stateful(
             const baseSize = clamp(size, 1, 8)
 
             updateBaseColorCache(baseColor)
+            invalidateSprites(colorMode, baseColor, glowMix)
             ensureFireflyCount(count, w, h)
 
             ctx.fillStyle = bgColor
@@ -381,7 +473,7 @@ export default canvas.stateful(
                 const color = resolveColor(firefly, i, time, brightness, particleCount, colorMode)
                 const radius = Math.max(0.8, baseSize * (0.72 + brightness * 0.48) * firefly.sizeJitter)
 
-                drawBody(ctx, firefly, color, radius, brightness, glowMix, time)
+                drawBody(ctx, firefly, resolveSprites(color, glowMix), radius, brightness, glowMix, time)
             }
 
             ctx.restore()

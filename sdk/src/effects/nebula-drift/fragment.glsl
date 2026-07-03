@@ -63,15 +63,17 @@ mat2 rot(float a) {
 
 vec3 triGradient(float t, vec3 a, vec3 b, vec3 c) {
     t = fract(t);
-    if (t < 0.5) return mix(a, b, t * 2.0);
-    return mix(b, c, (t - 0.5) * 2.0);
+    // Blend in approximately-linear space (square in, sqrt out) so midpoints
+    // between saturated stops stay vivid instead of dimming toward gray.
+    if (t < 0.5) return sqrt(mix(a * a, b * b, t * 2.0));
+    return sqrt(mix(b * b, c * c, (t - 0.5) * 2.0));
 }
 
 vec3 paletteColor(float t, int id) {
-    if (id == 0) return triGradient(t, vec3(0.16, 0.04, 0.24), vec3(0.96, 0.12, 0.74), vec3(0.08, 0.94, 0.92));
+    if (id == 0) return triGradient(t, vec3(0.02, 0.12, 0.08), vec3(0.04, 0.92, 0.40), vec3(0.54, 0.26, 0.98));
     if (id == 1) return triGradient(t, vec3(0.02, 0.10, 0.24), vec3(0.04, 0.84, 1.00), vec3(1.00, 0.14, 0.82));
-    if (id == 2) return triGradient(t, vec3(0.02, 0.12, 0.08), vec3(0.04, 0.92, 0.40), vec3(0.54, 0.26, 0.98));
-    if (id == 3) return triGradient(t, vec3(0.18, 0.03, 0.01), vec3(0.98, 0.18, 0.04), vec3(1.00, 0.58, 0.08));
+    if (id == 2) return triGradient(t, vec3(0.18, 0.03, 0.01), vec3(0.98, 0.18, 0.04), vec3(1.00, 0.58, 0.08));
+    if (id == 3) return triGradient(t, vec3(0.08, 0.02, 0.16), vec3(0.88, 0.21, 1.00), vec3(0.50, 1.00, 0.92));
     return triGradient(t, vec3(0.10, 0.03, 0.18), vec3(0.96, 0.14, 0.76), vec3(0.30, 0.82, 0.98));
 }
 
@@ -84,18 +86,19 @@ vec3 richPaletteColor(float t, int id, float phase) {
     float wb = 0.75 + 0.55 * sin(6.2831853 * (t + 0.31 - phase * 0.05));
     float wc = 0.65 + 0.45 * sin(6.2831853 * (t + 0.63 + phase * 0.04));
 
-    vec3 blended = (a * wa + b * wb + c * wc) / (wa + wb + wc);
+    // Weighted blend in approximately-linear space to keep the seams saturated.
+    vec3 blended = (a * a * wa + b * b * wb + c * c * wc) / (wa + wb + wc);
     vec3 dominant = a;
     if (wb > wa && wb >= wc) dominant = b;
     if (wc > wa && wc > wb) dominant = c;
-    return mix(blended, dominant, 0.34);
+    return sqrt(mix(blended, dominant * dominant, 0.34));
 }
 
 float starLayer(vec2 uv, float time, float scale, float drift, float amount) {
     vec2 grid = uv * scale + vec2(time * drift, -time * drift * 0.38);
     vec2 cell = floor(grid);
     float seed = hash21(cell);
-    if (seed > mix(0.022, 0.008, amount)) return 0.0;
+    if (seed > mix(0.006, 0.03, amount)) return 0.0;
 
     vec2 local = fract(grid) - 0.5;
     vec2 jitter = hash22(cell + seed * 31.7) - 0.5;
@@ -203,7 +206,10 @@ void main() {
     float saturation = clamp(iSaturation * 0.01, 0.0, 1.6);
     float contrast = clamp(iContrast * 0.01, 0.6, 1.5);
     color = mix(vec3(luminance), color, saturation);
-    color = (color - 0.5) * contrast + 0.5;
+    // Pivot low-contrast values around a darker point so blacks stay black
+    // (a 0.5 pivot lifts them to 0.15 gray at the minimum control value).
+    float contrastPivot = mix(0.16, 0.5, smoothstep(0.7, 1.0, contrast));
+    color = (color - contrastPivot) * contrast + contrastPivot;
     color = pow(clamp(color, 0.0, 1.0), vec3(0.94));
     fragColor = vec4(color, 1.0);
 }

@@ -52,6 +52,16 @@ interface SquigglePoint {
     y: number
 }
 
+interface BackgroundGradients {
+    key: string
+    halo: CanvasGradient
+    sweep: CanvasGradient
+}
+
+interface BackgroundCache {
+    gradients: BackgroundGradients | null
+}
+
 const THEMES: ThemeName[] = ['Blacklight', 'Bus Seat', 'Laser Lime', 'Cotton Candy', 'Arcade Heat', 'Custom']
 const SCENES: SceneName[] = ['Pattern 1', 'Pattern 2', 'Pattern 3']
 const COLOR_MODES: ColorMode[] = ['Static', 'Color Cycle']
@@ -79,7 +89,7 @@ const THEME_PALETTES: Record<Exclude<ThemeName, 'Custom'>, Palette> = {
         accent: '#ffb347',
         background: '#0b0811',
         front: '#ff61bf',
-        squiggle: '#6af2ff',
+        squiggle: '#2ee6ff',
     },
     'Laser Lime': {
         accent: '#ff6ac1',
@@ -391,7 +401,7 @@ function drawMiniSquiggle(
     ctx.rotate(rotation)
     ctx.scale(size, size)
     ctx.strokeStyle = color
-    ctx.lineWidth = 0.25
+    ctx.lineWidth = 0.55
     ctx.lineCap = 'round'
     ctx.lineJoin = 'round'
     ctx.beginPath()
@@ -405,7 +415,7 @@ function drawMiniSquiggle(
 
 function drawStarburst(ctx: CanvasRenderingContext2D, x: number, y: number, radius: number, color: string): void {
     ctx.strokeStyle = color
-    ctx.lineWidth = Math.max(1, radius * 0.14)
+    ctx.lineWidth = Math.max(2.5, radius * 0.3)
     ctx.lineCap = 'round'
     for (let index = 0; index < 8; index++) {
         const angle = (Math.PI * 2 * index) / 8
@@ -416,6 +426,29 @@ function drawStarburst(ctx: CanvasRenderingContext2D, x: number, y: number, radi
     }
 }
 
+function buildBackgroundGradients(
+    ctx: CanvasRenderingContext2D,
+    w: number,
+    h: number,
+    palette: Palette,
+    glow: number,
+    key: string,
+): BackgroundGradients {
+    const glowRadius = Math.max(w, h) * (0.72 + glow * 0.12)
+
+    const halo = ctx.createRadialGradient(0, 0, 0, 0, 0, glowRadius)
+    halo.addColorStop(0, rgba(mixHex(palette.front, palette.background, 0.38), 0.05 + glow * 0.15))
+    halo.addColorStop(0.55, rgba(mixHex(palette.squiggle, palette.background, 0.56), 0.025 + glow * 0.09))
+    halo.addColorStop(1, 'rgba(0, 0, 0, 0)')
+
+    const sweep = ctx.createLinearGradient(0, 0, w, h)
+    sweep.addColorStop(0, rgba(mixHex(palette.accent, palette.background, 0.62), 0.02 + glow * 0.06))
+    sweep.addColorStop(0.48, 'rgba(0, 0, 0, 0)')
+    sweep.addColorStop(1, rgba(mixHex(palette.squiggle, palette.background, 0.66), 0.018 + glow * 0.055))
+
+    return { halo, key, sweep }
+}
+
 function drawBackground(
     ctx: CanvasRenderingContext2D,
     w: number,
@@ -424,29 +457,28 @@ function drawBackground(
     time: number,
     glow: number,
     motion: number,
+    cache: BackgroundCache,
 ): void {
     ctx.fillStyle = palette.background
     ctx.fillRect(0, 0, w, h)
+
+    const key = `${w}|${h}|${glow}|${palette.background}|${palette.front}|${palette.squiggle}|${palette.accent}`
+    if (!cache.gradients || cache.gradients.key !== key) {
+        cache.gradients = buildBackgroundGradients(ctx, w, h, palette, glow, key)
+    }
 
     ctx.save()
     ctx.globalCompositeOperation = 'lighter'
 
     const glowCenterX = w * (0.34 + Math.sin(time * (0.08 + motion * 0.06)) * 0.08)
     const glowCenterY = h * (0.3 + Math.cos(time * (0.07 + motion * 0.05)) * 0.08)
-    const glowRadius = Math.max(w, h) * (0.72 + glow * 0.12)
 
-    const halo = ctx.createRadialGradient(glowCenterX, glowCenterY, 0, glowCenterX, glowCenterY, glowRadius)
-    halo.addColorStop(0, rgba(mixHex(palette.front, palette.background, 0.38), 0.05 + glow * 0.05))
-    halo.addColorStop(0.55, rgba(mixHex(palette.squiggle, palette.background, 0.56), 0.025 + glow * 0.03))
-    halo.addColorStop(1, 'rgba(0, 0, 0, 0)')
-    ctx.fillStyle = halo
-    ctx.fillRect(0, 0, w, h)
+    ctx.translate(glowCenterX, glowCenterY)
+    ctx.fillStyle = cache.gradients.halo
+    ctx.fillRect(-glowCenterX, -glowCenterY, w, h)
+    ctx.translate(-glowCenterX, -glowCenterY)
 
-    const sweep = ctx.createLinearGradient(0, 0, w, h)
-    sweep.addColorStop(0, rgba(mixHex(palette.accent, palette.background, 0.62), 0.02 + glow * 0.02))
-    sweep.addColorStop(0.48, 'rgba(0, 0, 0, 0)')
-    sweep.addColorStop(1, rgba(mixHex(palette.squiggle, palette.background, 0.66), 0.018 + glow * 0.02))
-    ctx.fillStyle = sweep
+    ctx.fillStyle = cache.gradients.sweep
     ctx.fillRect(0, 0, w, h)
 
     ctx.restore()
@@ -487,7 +519,7 @@ function buildFlecks(count: number): Fleck[] {
         drift: 1.2 + hash(index * 5.31 + 2.2) * 4.4,
         phase: hash(index * 7.19 + 8.1) * Math.PI * 2,
         rotation: hash(index * 2.31 + 7.4) * Math.PI * 2,
-        size: 0.8 + hash(index * 1.71 + 2.3) * 2.1,
+        size: 2.2 + hash(index * 1.71 + 2.3) * 4.6,
         variant: Math.floor(hash(index * 3.07 + 4.8) * 5),
         x: 0.04 + hash(index * 0.83 + 1.1) * 0.92,
         y: 0.05 + hash(index * 1.21 + 6.2) * 0.9,
@@ -500,7 +532,7 @@ function buildOrnaments(count: number): Ornament[] {
         drift: 8 + hash(index * 7.43 + 8.9) * 14,
         phase: hash(index * 6.71 + 1.7) * Math.PI * 2,
         rotation: hash(index * 3.71 + 9.5) * Math.PI * 2,
-        size: 8 + hash(index * 2.93 + 6.1) * 18,
+        size: 14 + hash(index * 2.93 + 6.1) * 30,
         variant: Math.floor(hash(index * 4.13 + 2.9) * 5),
         x: 0.1 + hash(index * 0.91 + 2.4) * 0.8,
         y: 0.12 + hash(index * 1.47 + 4.2) * 0.74,
@@ -534,7 +566,7 @@ function drawCarpetFlecks(
             ctx.fillStyle = ink
             ctx.fillRect(x, y, size, size)
         } else if (fleck.variant === 1) {
-            drawDash(ctx, x, y, size * 2.5, fleck.rotation, Math.max(1, size * 0.45), ink)
+            drawDash(ctx, x, y, size * 2.5, fleck.rotation, Math.max(2, size * 0.45), ink)
         } else if (fleck.variant === 2) {
             ctx.fillStyle = ink
             ctx.beginPath()
@@ -543,7 +575,7 @@ function drawCarpetFlecks(
         } else if (fleck.variant === 3) {
             drawTriangle(ctx, x, y, size * 0.75, fleck.rotation, ink)
         } else {
-            drawRing(ctx, x, y, size * 0.7, Math.max(1, size * 0.28), ink)
+            drawRing(ctx, x, y, size * 0.7, Math.max(2, size * 0.28), ink)
         }
     }
 }
@@ -584,9 +616,9 @@ function drawOrnaments(
         } else if (ornament.variant === 1) {
             drawDiamond(ctx, x, y, size * 0.36, ornament.rotation, ink)
         } else if (ornament.variant === 2) {
-            drawRing(ctx, x, y, size * 0.3, Math.max(1.2, size * 0.08), ink)
+            drawRing(ctx, x, y, size * 0.3, Math.max(2.5, size * 0.1), ink)
         } else if (ornament.variant === 3) {
-            drawDash(ctx, x, y, size * 0.9, ornament.rotation, Math.max(1.8, size * 0.09), ink)
+            drawDash(ctx, x, y, size * 0.9, ornament.rotation, Math.max(3, size * 0.11), ink)
         } else {
             drawStarburst(ctx, x, y, size * 0.34, ink)
         }
@@ -647,7 +679,7 @@ function drawPatternOne(
 
         for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
             const points = scalePoints(rows[rowIndex], xOffset, y, sx, sy)
-            drawPolyline(ctx, points, rgba(palette.squiggle, 0.1 + glow * 0.06), lineWidth * 1.55)
+            drawPolyline(ctx, points, rgba(palette.squiggle, 0.08 + glow * 0.24), lineWidth * 1.55)
             drawPolyline(ctx, points, palette.squiggle, lineWidth)
         }
     }
@@ -685,14 +717,14 @@ function drawPatternTwo(
     glow: number,
 ): void {
     const densityMix = clamp(density / 100, 0, 1)
-    const squiggleCount = Math.floor(5 + densityMix * 5)
+    const squiggleCount = Math.floor(4 + densityMix * 3)
 
     for (let index = 0; index < squiggleCount; index++) {
         const baseX = (index + 0.5) * (w / squiggleCount)
         const y =
             h * lerp(0.18, 0.82, index / Math.max(1, squiggleCount - 1)) +
             Math.sin(time * (0.4 + moveScale * 0.36) + index * 0.9) * h * 0.05
-        const size = 8 + (index % 3) * 4
+        const size = 12 + (index % 3) * 6
         drawMiniSquiggle(
             ctx,
             baseX + Math.sin(time * (0.46 + moveScale * 0.34) + index) * w * 0.018,
@@ -741,7 +773,7 @@ function drawPatternTwo(
         h * 0.5,
         Math.min(w, h) * 0.16,
         Math.max(4, Math.min(w, h) * 0.022),
-        rgba(palette.squiggle, 0.1 + glow * 0.06),
+        rgba(palette.squiggle, 0.08 + glow * 0.24),
     )
 }
 
@@ -797,10 +829,19 @@ function drawPatternThree(
 ): void {
     const flow = time * (0.34 + moveScale * 0.52)
 
-    drawRibbon(ctx, w, h * 0.42, h * 0.09, Math.max(26, h * 0.15), rgba(palette.front, 0.1 + glow * 0.05), flow, 0)
+    drawRibbon(ctx, w, h * 0.42, h * 0.09, Math.max(26, h * 0.15), rgba(palette.front, 0.08 + glow * 0.22), flow, 0)
     drawRibbon(ctx, w, h * 0.42, h * 0.09, Math.max(17, h * 0.1), palette.front, flow, 0)
     drawRibbon(ctx, w, h * 0.42, h * 0.09, Math.max(7, h * 0.042), palette.accent, flow, 0.7)
-    drawRibbon(ctx, w, h * 0.68, h * 0.08, Math.max(22, h * 0.13), rgba(palette.squiggle, 0.1 + glow * 0.05), flow, 1.4)
+    drawRibbon(
+        ctx,
+        w,
+        h * 0.68,
+        h * 0.08,
+        Math.max(22, h * 0.13),
+        rgba(palette.squiggle, 0.08 + glow * 0.22),
+        flow,
+        1.4,
+    )
     drawRibbon(ctx, w, h * 0.68, h * 0.08, Math.max(14, h * 0.085), palette.squiggle, flow, 1.4)
     drawRibbon(ctx, w, h * 0.68, h * 0.08, Math.max(6, h * 0.034), palette.accent, flow, 2.1)
 
@@ -841,10 +882,11 @@ export default canvas.stateful(
         let flecks: Fleck[] = []
         let ornaments: Ornament[] = []
         let lastDensity = -1
+        const backgroundCache: BackgroundCache = { gradients: null }
 
         function reseed(density: number): void {
-            const fleckCount = Math.floor(20 + density * 0.46)
-            const ornamentCount = Math.floor(4 + density * 0.08)
+            const fleckCount = Math.floor(10 + density * 0.22)
+            const ornamentCount = Math.floor(3 + density * 0.05)
             flecks = buildFlecks(fleckCount)
             ornaments = buildOrnaments(ornamentCount)
             lastDensity = density
@@ -864,7 +906,7 @@ export default canvas.stateful(
             const scene = controls.scene as SceneName
             const palette = getActivePalette(controls as Record<string, unknown>, time)
 
-            drawBackground(ctx, width, height, palette, time, glow, moveScale)
+            drawBackground(ctx, width, height, palette, time, glow, moveScale, backgroundCache)
             drawCarpetFlecks(ctx, width, height, flecks, palette, time, moveScale)
             drawOrnaments(ctx, width, height, ornaments, palette, time, scene, moveScale)
 
@@ -912,7 +954,7 @@ export default canvas.stateful(
                     glow: 78,
                     moveSpeed: 40,
                     scene: 'Pattern 2',
-                    squiggleColor: '#6af2ff',
+                    squiggleColor: '#2ee6ff',
                     theme: 'Cotton Candy',
                 },
                 description:
@@ -984,7 +1026,7 @@ export default canvas.stateful(
                     glow: 100,
                     moveSpeed: 88,
                     scene: 'Pattern 3',
-                    squiggleColor: '#6af2ff',
+                    squiggleColor: '#2ee6ff',
                     theme: 'Cotton Candy',
                 },
                 description:

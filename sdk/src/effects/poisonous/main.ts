@@ -28,7 +28,7 @@ const FULL_CIRCLE = Math.PI * 2
 
 const THEMES = ['Blacklight', 'Cotton Candy', 'Custom', 'Nightshade', 'Poison', 'Radioactive'] as const
 
-const THEME_PALETTES: Record<(typeof THEMES)[number], ThemePalette> = {
+const THEME_PALETTES: Record<Exclude<(typeof THEMES)[number], 'Custom'>, ThemePalette> = {
     Blacklight: {
         bg: '#06050d',
         colors: ['#ff58c8', '#30e5ff', '#ffb347'],
@@ -36,10 +36,6 @@ const THEME_PALETTES: Record<(typeof THEMES)[number], ThemePalette> = {
     'Cotton Candy': {
         bg: '#110816',
         colors: ['#ff74c5', '#79ecff', '#ffb347'],
-    },
-    Custom: {
-        bg: '#130032',
-        colors: ['#6000fc', '#b300ff', '#8a42ff'],
     },
     Nightshade: {
         bg: '#0b0615',
@@ -92,6 +88,61 @@ function mixRgb(a: RGB, b: RGB, t: number): RGB {
         g: Math.round(a.g + (b.g - a.g) * ratio),
         r: Math.round(a.r + (b.r - a.r) * ratio),
     }
+}
+
+/** sRGB → Oklab (ported from the SDK palette runtime). */
+function rgbToOklab(color: RGB): [number, number, number] {
+    const linear = (channel: number): number => {
+        const c = channel / 255
+        return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4
+    }
+    const lr = linear(color.r)
+    const lg = linear(color.g)
+    const lb = linear(color.b)
+
+    const l = Math.cbrt(0.4122214708 * lr + 0.5363325363 * lg + 0.0514459929 * lb)
+    const m = Math.cbrt(0.2119034982 * lr + 0.6806995451 * lg + 0.1073969566 * lb)
+    const s = Math.cbrt(0.0883024619 * lr + 0.2817188376 * lg + 0.6299787005 * lb)
+
+    return [
+        0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s,
+        1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s,
+        0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s,
+    ]
+}
+
+/** Oklab → sRGB (ported from the SDK palette runtime). */
+function oklabToRgb(lightness: number, a: number, b: number): RGB {
+    const lRoot = lightness + 0.3963377774 * a + 0.2158037573 * b
+    const mRoot = lightness - 0.1055613458 * a - 0.0638541728 * b
+    const sRoot = lightness - 0.0894841775 * a - 1.291485548 * b
+
+    const l = lRoot * lRoot * lRoot
+    const m = mRoot * mRoot * mRoot
+    const s = sRoot * sRoot * sRoot
+
+    const compress = (channel: number): number => {
+        const c = channel <= 0.0031308 ? 12.92 * channel : 1.055 * channel ** (1 / 2.4) - 0.055
+        return Math.round(clamp(c, 0, 1) * 255)
+    }
+
+    return {
+        b: compress(-0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s),
+        g: compress(-1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s),
+        r: compress(4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s),
+    }
+}
+
+/** Perceptual blend between two colors — avoids the muddy midpoints of sRGB mixing. */
+function mixOklab(a: RGB, b: RGB, t: number): RGB {
+    const ratio = clamp(t, 0, 1)
+    const from = rgbToOklab(a)
+    const to = rgbToOklab(b)
+    return oklabToRgb(
+        from[0] + (to[0] - from[0]) * ratio,
+        from[1] + (to[1] - from[1]) * ratio,
+        from[2] + (to[2] - from[2]) * ratio,
+    )
 }
 
 function canvasScale(width: number, height: number): number {
@@ -165,6 +216,7 @@ export default canvas.stateful(
         let particles: RingParticle[] = []
         let lastWidth = 0
         let lastHeight = 0
+        let lastTime = -1
 
         function particlesPerDirectionForRings(ringCount: number): number {
             const normalized = clamp((ringCount - 1) / 5, 0, 1)
@@ -200,7 +252,7 @@ export default canvas.stateful(
             }
         }
 
-        return (ctx, _time, controls) => {
+        return (ctx, time, controls) => {
             const width = ctx.canvas.width
             const height = ctx.canvas.height
             const themePalette = resolveThemePalette(controls as Record<string, unknown>)
@@ -210,6 +262,11 @@ export default canvas.stateful(
             const ringCount = Math.round(controls.ringCount as number)
             const speedScale = speedRaw / 50
             const targetPerDirection = particlesPerDirectionForRings(ringCount)
+            // Delta-time keeps motion identical across the daemon's FPS tiers,
+            // scaled so per-frame speeds match the original 60fps tuning.
+            const dt = lastTime < 0 ? 1 / 60 : Math.min(0.05, Math.max(0, time - lastTime))
+            lastTime = time
+            const frameScale = dt * 60
 
             if (width !== lastWidth || height !== lastHeight || particles.length === 0) {
                 reset(width, height, palette.length, targetPerDirection)
@@ -217,7 +274,9 @@ export default canvas.stateful(
                 ensureParticleCount(width, height, palette.length, targetPerDirection)
             }
 
-            ctx.fillStyle = speedRaw > 0 ? rgba(background, 0.16) : rgba(background, 1)
+            // Framerate-compensated trail fade: 0.16/frame at 60fps regardless of tier.
+            const fadeAlpha = 1 - 0.84 ** frameScale
+            ctx.fillStyle = speedRaw > 0 ? rgba(background, fadeAlpha) : rgba(background, 1)
             ctx.fillRect(0, 0, width, height)
 
             for (const particle of particles) {
@@ -233,7 +292,7 @@ export default canvas.stateful(
                     if (ringRadius <= 0.75) break
 
                     const blend = ringCount <= 1 ? 0 : ringIndex / Math.max(1, ringCount - 1)
-                    const ringColor = mixRgb(base, accent, blend * 0.72)
+                    const ringColor = mixOklab(base, accent, blend * 0.72)
                     const targetBandWidth = Math.max(1.5, particle.lineWidth * (1 - ringIndex * 0.18))
                     const bandWidth = Math.min(targetBandWidth, Math.max(1.5, ringStep - ringGap))
                     const innerRadius = Math.max(0, ringRadius - bandWidth / 2)
@@ -243,10 +302,10 @@ export default canvas.stateful(
                     fillRingBand(ctx, particle.x, particle.y, innerRadius, outerRadius)
                 }
 
-                particle.x += particle.speedX * speedScale
-                particle.y += particle.speedY * speedScale * particle.direction
+                particle.x += particle.speedX * speedScale * frameScale
+                particle.y += particle.speedY * speedScale * particle.direction * frameScale
                 if (speedRaw > 0) {
-                    const growth = (Math.random() / 1.4) * speedScale
+                    const growth = (Math.random() / 1.4) * speedScale * frameScale
                     particle.radius += growth
                 }
             }
@@ -265,10 +324,6 @@ export default canvas.stateful(
         presets: [
             {
                 controls: {
-                    bgColor: '#060b05',
-                    color1: '#5cff24',
-                    color2: '#00ff9d',
-                    color3: '#ff9a3d',
                     ringCount: 4,
                     speedRaw: 22,
                     theme: 'Radioactive',
@@ -279,10 +334,6 @@ export default canvas.stateful(
             },
             {
                 controls: {
-                    bgColor: '#0b0615',
-                    color1: '#8d5cff',
-                    color2: '#ff4fd1',
-                    color3: '#56d8ff',
                     ringCount: 6,
                     speedRaw: 6,
                     theme: 'Nightshade',
@@ -292,10 +343,6 @@ export default canvas.stateful(
             },
             {
                 controls: {
-                    bgColor: '#110816',
-                    color1: '#ff74c5',
-                    color2: '#79ecff',
-                    color3: '#ffb347',
                     ringCount: 3,
                     speedRaw: 38,
                     theme: 'Cotton Candy',
@@ -305,10 +352,6 @@ export default canvas.stateful(
             },
             {
                 controls: {
-                    bgColor: '#130032',
-                    color1: '#6000fc',
-                    color2: '#b300ff',
-                    color3: '#8a42ff',
                     ringCount: 5,
                     speedRaw: 0,
                     theme: 'Poison',
@@ -319,10 +362,6 @@ export default canvas.stateful(
             },
             {
                 controls: {
-                    bgColor: '#06050d',
-                    color1: '#ff58c8',
-                    color2: '#30e5ff',
-                    color3: '#ffb347',
                     ringCount: 2,
                     speedRaw: 58,
                     theme: 'Blacklight',
@@ -336,7 +375,7 @@ export default canvas.stateful(
                     bgColor: '#020200',
                     color1: '#ff3300',
                     color2: '#ff8800',
-                    color3: '#ffcc00',
+                    color3: '#ffb300',
                     ringCount: 1,
                     speedRaw: 90,
                     theme: 'Custom',

@@ -44,12 +44,95 @@ function saturateRgb(rgb: { r: number; g: number; b: number }, saturation: numbe
     return hslCss(hue, clamp01(sat * saturation) * 100, lightness * 100)
 }
 
+// ── Oklab interpolation for the Smooth blend mode ───────────────────────────
+// Ported from sdk/packages/core/src/palette/runtime.ts (the converters there
+// are private, and the public palette API only samples named palettes).
+
+function srgbChannelToLinear(channel: number): number {
+    const v = channel / 255
+    return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4
+}
+
+function linearChannelToSrgb(value: number): number {
+    const v = value <= 0.0031308 ? 12.92 * value : 1.055 * value ** (1 / 2.4) - 0.055
+    return Math.round(clamp01(v) * 255)
+}
+
+function rgbToOklab(rgb: { r: number; g: number; b: number }): [number, number, number] {
+    const lr = srgbChannelToLinear(rgb.r)
+    const lg = srgbChannelToLinear(rgb.g)
+    const lb = srgbChannelToLinear(rgb.b)
+
+    const l = Math.cbrt(0.4122214708 * lr + 0.5363325363 * lg + 0.0514459929 * lb)
+    const m = Math.cbrt(0.2119034982 * lr + 0.6806995451 * lg + 0.1073969566 * lb)
+    const s = Math.cbrt(0.0883024619 * lr + 0.2817188376 * lg + 0.6299787005 * lb)
+
+    return [
+        0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s,
+        1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s,
+        0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s,
+    ]
+}
+
+function oklabToCss(lightnessL: number, a: number, b: number): string {
+    const l_ = lightnessL + 0.3963377774 * a + 0.2158037573 * b
+    const m_ = lightnessL - 0.1055613458 * a - 0.0638541728 * b
+    const s_ = lightnessL - 0.0894841775 * a - 1.291485548 * b
+
+    const l = l_ * l_ * l_
+    const m = m_ * m_ * m_
+    const s = s_ * s_ * s_
+
+    return rgbToCss({
+        b: linearChannelToSrgb(-0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s),
+        g: linearChannelToSrgb(-1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s),
+        r: linearChannelToSrgb(4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s),
+    })
+}
+
+const SMOOTH_SEGMENTS = 8
+
+/**
+ * Append Oklab-interpolated color stops for one gradient segment, including
+ * the starting stop but excluding the final one (the caller closes the ramp).
+ * The Saturation control scales Oklab chroma (a/b) so it stays live in Smooth.
+ */
+function pushOklabStops(
+    stops: [number, string][],
+    from: { r: number; g: number; b: number },
+    to: { r: number; g: number; b: number },
+    fromPos: number,
+    toPos: number,
+    chroma: number,
+): void {
+    const a = rgbToOklab(from)
+    const b = rgbToOklab(to)
+    for (let i = 0; i < SMOOTH_SEGMENTS; i++) {
+        const t = i / SMOOTH_SEGMENTS
+        stops.push([
+            fromPos + (toPos - fromPos) * t,
+            oklabToCss(
+                a[0] + (b[0] - a[0]) * t,
+                (a[1] + (b[1] - a[1]) * t) * chroma,
+                (a[2] + (b[2] - a[2]) * t) * chroma,
+            ),
+        ])
+    }
+}
+
+// Frame-to-frame gradient cache — with Clamp mode and zero scroll speed the
+// stops and geometry never change, so the CanvasGradient is built exactly once.
+let cachedGradient: CanvasGradient | null = null
+let cachedGradientKey = ''
+let cachedShadow: CanvasGradient | null = null
+let cachedShadowKey = ''
+
 export default canvas(
     'Gradient',
     {
         color_start: color('Color A', '#e135ff', { group: 'Colors' }),
         use_mid_color: toggle('Use Middle Color', true, { group: 'Colors' }),
-        color_mid: color('Color B', '#80ffea', { group: 'Colors' }),
+        color_mid: color('Color B', '#1adfc9', { group: 'Colors' }),
         midpoint: num('Middle Position', [0.05, 0.95], 0.5, { group: 'Colors' }),
         color_end: color('Color C', '#0b1020', { group: 'Colors' }),
         interpolation: combo('Color Blend', ['Vivid', 'Smooth', 'Direct'], { default: 'Vivid', group: 'Colors' }),
@@ -65,7 +148,9 @@ export default canvas(
         }),
         repeat_mode: combo('Repeat', ['Clamp', 'Repeat', 'Mirror'], { default: 'Clamp', group: 'Motion' }),
         offset: num('Offset', [-1, 1], 0, { group: 'Motion' }),
-        speed: num('Scroll Speed', [-1, 1], 0.18, { group: 'Motion' }),
+        // normalize:'none' — the magic `speed` normalization assumes a 1-10 domain;
+        // on this [-1, 1] range it NaNs negatives and clamps positives to 0.2.
+        speed: num('Scroll Speed', [-1, 1], 0.18, { group: 'Motion', normalize: 'none' }),
         brightness: num('Brightness', [0, 1], 1, { group: 'Output' }),
     },
     (ctx, time, controls) => {
@@ -82,28 +167,53 @@ export default canvas(
         const scale = controls.scale as number
         const easing = controls.easing as string
         const repeatMode = controls.repeat_mode as string
-        const animatedOffset = repeatOffset((controls.offset as number) + time * (controls.speed as number), repeatMode)
+        const speed = controls.speed as number
+        const interpolation = controls.interpolation as string
+        const animatedOffset = repeatOffset((controls.offset as number) + time * speed, repeatMode)
 
         ctx.clearRect(0, 0, width, height)
 
-        const startCss = controls.interpolation === 'Direct' ? rgbToCss(start) : saturateRgb(start, saturation)
-        const midCss = controls.interpolation === 'Direct' ? rgbToCss(mid) : saturateRgb(mid, saturation)
-        const endCss = controls.interpolation === 'Direct' ? rgbToCss(end) : saturateRgb(end, saturation)
+        const easedMid = ease(midpoint, easing)
+        const isRadial = (controls.mode as string) === 'Radial'
 
-        if ((controls.mode as string) === 'Radial') {
-            const cx = width * clamp01((controls.center_x as number) + animatedOffset * 0.18)
-            const cy =
-                height *
-                clamp01((controls.center_y as number) + Math.sin(time * 0.33) * (controls.speed as number) * 0.08)
-            const radius = (Math.max(width, height) * 0.62) / Math.max(scale, 0.1)
-            const gradient = ctx.createRadialGradient(cx, cy, width * 0.02, cx, cy, radius)
-            gradient.addColorStop(0, startCss)
+        // Assemble the color-stop list for the active blend mode.
+        const stops: [number, string][] = []
+        if (interpolation === 'Smooth') {
+            // Perceptual ramp — Oklab-interpolated stops between the user colors.
             if (useMid) {
-                gradient.addColorStop(ease(midpoint, easing), midCss)
+                pushOklabStops(stops, start, mid, 0, easedMid, saturation)
+                pushOklabStops(stops, mid, end, easedMid, 1, saturation)
+            } else {
+                pushOklabStops(stops, start, end, 0, 1, saturation)
             }
-            gradient.addColorStop(1, endCss)
-            ctx.fillStyle = gradient
-            ctx.fillRect(0, 0, width, height)
+            const endLab = rgbToOklab(end)
+            stops.push([1, oklabToCss(endLab[0], endLab[1] * saturation, endLab[2] * saturation)])
+        } else {
+            const direct = interpolation === 'Direct'
+            const startCss = direct ? rgbToCss(start) : saturateRgb(start, saturation)
+            const midCss = direct ? rgbToCss(mid) : saturateRgb(mid, saturation)
+            const endCss = direct ? rgbToCss(end) : saturateRgb(end, saturation)
+            stops.push([0, startCss])
+            if (useMid && isRadial) {
+                stops.push([easedMid, midCss])
+            } else if (useMid) {
+                const preMix = mixRgb(start, mid, 0.65)
+                const postMix = mixRgb(mid, end, 0.55)
+                stops.push([clamp01(easedMid - 0.06), direct ? rgbToCss(preMix) : saturateRgb(preMix, saturation)])
+                stops.push([easedMid, midCss])
+                stops.push([clamp01(easedMid + 0.06), direct ? rgbToCss(postMix) : saturateRgb(postMix, saturation)])
+            }
+            stops.push([1, endCss])
+        }
+
+        let key: string
+        let create: () => CanvasGradient
+        if (isRadial) {
+            const cx = width * clamp01((controls.center_x as number) + animatedOffset * 0.18)
+            const cy = height * clamp01((controls.center_y as number) + Math.sin(time * 0.33) * speed * 0.08)
+            const radius = (Math.max(width, height) * 0.62) / Math.max(scale, 0.1)
+            key = `radial|${cx}|${cy}|${radius}`
+            create = () => ctx.createRadialGradient(cx, cy, width * 0.02, cx, cy, radius)
         } else {
             const angle = ((controls.angle as number) * Math.PI) / 180
             const axisOffsetX = Math.cos(angle) * animatedOffset * width * 0.45
@@ -112,35 +222,31 @@ export default canvas(
             const dy = (Math.sin(angle) * height * 0.62) / Math.max(scale, 0.1)
             const cx = width * (controls.center_x as number) + axisOffsetX
             const cy = height * (controls.center_y as number) + axisOffsetY
-            const gradient = ctx.createLinearGradient(cx - dx, cy - dy, cx + dx, cy + dy)
-            gradient.addColorStop(0, startCss)
-            if (useMid) {
-                const easedMid = ease(midpoint, easing)
-                gradient.addColorStop(
-                    clamp01(easedMid - 0.06),
-                    controls.interpolation === 'Direct'
-                        ? rgbToCss(mixRgb(start, mid, 0.65))
-                        : saturateRgb(mixRgb(start, mid, 0.65), saturation),
-                )
-                gradient.addColorStop(easedMid, midCss)
-                gradient.addColorStop(
-                    clamp01(easedMid + 0.06),
-                    controls.interpolation === 'Direct'
-                        ? rgbToCss(mixRgb(mid, end, 0.55))
-                        : saturateRgb(mixRgb(mid, end, 0.55), saturation),
-                )
-            }
-            gradient.addColorStop(1, endCss)
-            ctx.fillStyle = gradient
-            ctx.fillRect(0, 0, width, height)
+            key = `linear|${cx - dx}|${cy - dy}|${cx + dx}|${cy + dy}`
+            create = () => ctx.createLinearGradient(cx - dx, cy - dy, cx + dx, cy + dy)
         }
+        for (const [pos, css] of stops) key += `|${pos}:${css}`
+
+        if (!cachedGradient || key !== cachedGradientKey) {
+            const gradient = create()
+            for (const [pos, css] of stops) gradient.addColorStop(pos, css)
+            cachedGradient = gradient
+            cachedGradientKey = key
+        }
+        ctx.fillStyle = cachedGradient
+        ctx.fillRect(0, 0, width, height)
 
         if (brightness < 1) {
-            const shadow = ctx.createLinearGradient(0, 0, width, height)
-            shadow.addColorStop(0, `rgba(0, 0, 0, ${(1 - brightness) * 0.1})`)
-            shadow.addColorStop(0.5, 'rgba(0, 0, 0, 0)')
-            shadow.addColorStop(1, `rgba(255, 255, 255, ${(1 - brightness) * 0.04})`)
-            ctx.fillStyle = shadow
+            const shadowKey = `${width}|${height}|${brightness}`
+            if (!cachedShadow || shadowKey !== cachedShadowKey) {
+                const shadow = ctx.createLinearGradient(0, 0, width, height)
+                shadow.addColorStop(0, `rgba(0, 0, 0, ${(1 - brightness) * 0.1})`)
+                shadow.addColorStop(0.5, 'rgba(0, 0, 0, 0)')
+                shadow.addColorStop(1, `rgba(255, 255, 255, ${(1 - brightness) * 0.04})`)
+                cachedShadow = shadow
+                cachedShadowKey = shadowKey
+            }
+            ctx.fillStyle = cachedShadow
             ctx.fillRect(0, 0, width, height)
         }
     },

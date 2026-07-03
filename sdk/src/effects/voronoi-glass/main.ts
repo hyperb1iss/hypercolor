@@ -438,22 +438,10 @@ export default canvas.stateful(
                 centerY,
                 minDim * (0.9 + refractionMix * 0.2),
             )
-            ambientGlow.addColorStop(0, toRgba(palette.glint, 0.03 + glazeMix * 0.02))
-            ambientGlow.addColorStop(0.38, toRgba(palette.colors[0], 0.018 + contrastMix * 0.02))
+            ambientGlow.addColorStop(0, toRgba(palette.glint, 0.05))
+            ambientGlow.addColorStop(0.38, toRgba(palette.colors[0], 0.03 + contrastMix * 0.02))
             ambientGlow.addColorStop(1, 'rgba(0,0,0,0)')
             ctx.fillStyle = ambientGlow
-            ctx.fillRect(0, 0, w, h)
-
-            const ambientWash = ctx.createLinearGradient(
-                w * (0.08 + Math.sin(time * 0.07) * 0.1),
-                0,
-                w * (0.92 + Math.cos(time * 0.06) * 0.08),
-                h,
-            )
-            ambientWash.addColorStop(0, toRgba(palette.colors[1], 0.02 + glazeMix * 0.01))
-            ambientWash.addColorStop(0.5, 'rgba(0,0,0,0)')
-            ambientWash.addColorStop(1, toRgba(palette.edge, 0.018 + refractionMix * 0.018))
-            ctx.fillStyle = ambientWash
             ctx.fillRect(0, 0, w, h)
 
             const cells: Array<{ centroid: Vec2; polygon: Vec2[]; radius: number; seed: SeedPosition }> = []
@@ -494,12 +482,12 @@ export default canvas.stateful(
                 const refracted = mixRgb(baseColor, accentColor, 0.16 + refractionMix * 0.36)
                 const highlight = scaleRgb(
                     saturateRgb(mixRgb(palette.glint, baseColor, 0.36 + shimmer * 0.18), 1.12),
-                    0.72 + glazeMix * 0.08 + shimmer * 0.12,
+                    0.72 + glazeMix * 0.18 + shimmer * 0.12,
                 )
 
                 fillGradient.addColorStop(0, toRgba(deepTone, 0.96))
                 fillGradient.addColorStop(0.64, toRgba(refracted, 0.9))
-                fillGradient.addColorStop(1, toRgba(highlight, 0.84))
+                fillGradient.addColorStop(1, toRgba(highlight, 0.45 + glazeMix * 0.5))
 
                 drawPolygonPath(ctx, cell.polygon)
                 ctx.fillStyle = fillGradient
@@ -519,7 +507,7 @@ export default canvas.stateful(
                     cell.centroid.y + beamDy * cell.radius * 1.35 - beamDx * cell.radius * 0.45,
                 )
                 beam.addColorStop(0, 'rgba(0,0,0,0)')
-                beam.addColorStop(0.48, toRgba(palette.glint, 0.025 + glazeMix * 0.08 + refractionMix * 0.05))
+                beam.addColorStop(0.48, toRgba(palette.glint, 0.04 + refractionMix * 0.05))
                 beam.addColorStop(0.54, toRgba(highlight, 0.07 + edgeGlowMix * 0.08))
                 beam.addColorStop(1, 'rgba(0,0,0,0)')
                 ctx.fillStyle = beam
@@ -539,7 +527,7 @@ export default canvas.stateful(
                         cell.centroid.y +
                         Math.sin(time * (0.58 + speedMix * 0.28) + cell.seed.phase * 1.3) * cell.radius * 0.16,
                 }
-                const shardPolygon = insetPolygon(cell.polygon, cell.centroid, 0.42 + shimmer * 0.16 + glazeMix * 0.05)
+                const shardPolygon = insetPolygon(cell.polygon, cell.centroid, 0.42 + shimmer * 0.16)
                 for (let i = 0; i < shardPolygon.length; i++) {
                     const current = shardPolygon[i]
                     const next = shardPolygon[(i + 1) % shardPolygon.length]
@@ -555,10 +543,7 @@ export default canvas.stateful(
                     ctx.lineTo(current.x, current.y)
                     ctx.lineTo(next.x, next.y)
                     ctx.closePath()
-                    ctx.fillStyle = toRgba(
-                        mixRgb(highlight, accentColor, (i % 3) / 2),
-                        0.018 + shardPulse * 0.05 + glazeMix * 0.02,
-                    )
+                    ctx.fillStyle = toRgba(mixRgb(highlight, accentColor, (i % 3) / 2), 0.02 + shardPulse * 0.05)
                     ctx.fill()
                 }
 
@@ -566,20 +551,6 @@ export default canvas.stateful(
                 drawPolygonPath(ctx, cell.polygon)
                 ctx.strokeStyle = toRgba(leadColor, 0.22 + edgeGlowMix * 0.3 + contrastMix * 0.06)
                 ctx.lineWidth = 1.2 + edgeGlowMix * 2.2
-                ctx.stroke()
-
-                ctx.setLineDash([cell.radius * 0.22, cell.radius * 0.12])
-                ctx.lineDashOffset = -(time * (16 + speedMix * 16) + cell.seed.phase * cell.radius * 0.35)
-                drawPolygonPath(ctx, cell.polygon)
-                ctx.strokeStyle = toRgba(palette.glint, 0.04 + edgeGlowMix * 0.08 + glazeMix * 0.02)
-                ctx.lineWidth = 0.8 + edgeGlowMix * 1.1
-                ctx.stroke()
-                ctx.setLineDash([])
-
-                const innerPolygon = insetPolygon(cell.polygon, cell.centroid, 0.78 - glazeMix * 0.12)
-                drawPolygonPath(ctx, innerPolygon)
-                ctx.strokeStyle = toRgba(palette.glint, 0.03 + glazeMix * 0.06 + refractionMix * 0.04)
-                ctx.lineWidth = 0.8 + refractionMix * 1.3
                 ctx.stroke()
             }
 
@@ -600,53 +571,12 @@ export default canvas.stateful(
                     glowY,
                     cell.radius * (0.26 + edgeGlowMix * 0.2),
                 )
-                glow.addColorStop(0, toRgba(palette.glint, 0.02 + sparkle * 0.03 + glazeMix * 0.02))
+                glow.addColorStop(0, toRgba(palette.glint, 0.024 + sparkle * 0.03))
                 glow.addColorStop(0.55, toRgba(palette.edge, 0.014 + edgeGlowMix * 0.016))
                 glow.addColorStop(1, 'rgba(0,0,0,0)')
                 ctx.fillStyle = glow
                 ctx.fillRect(glowX - cell.radius * 0.7, glowY - cell.radius * 0.7, cell.radius * 1.4, cell.radius * 1.4)
             }
-
-            ctx.save()
-            ctx.translate(centerX, centerY)
-            ctx.rotate(-0.58 + Math.sin(time * (0.05 + speedMix * 0.03)) * 0.1)
-            for (let band = 0; band < 3; band++) {
-                const bandWidth = minDim * (0.09 + band * 0.018 + refractionMix * 0.03)
-                const travel = ((time * (28 + speedMix * 24) + band * minDim * 0.55) % (minDim * 2.8)) - minDim * 1.4
-                const ribbonColor = band % 2 === 0 ? palette.glint : palette.edge
-                const ribbon = ctx.createLinearGradient(0, travel - bandWidth, 0, travel + bandWidth)
-                ribbon.addColorStop(0, 'rgba(0,0,0,0)')
-                ribbon.addColorStop(0.5, toRgba(ribbonColor, 0.016 + edgeGlowMix * 0.018 + glazeMix * 0.01))
-                ribbon.addColorStop(1, 'rgba(0,0,0,0)')
-                ctx.fillStyle = ribbon
-                ctx.fillRect(-w, travel - bandWidth, w * 2, bandWidth * 2)
-            }
-            ctx.restore()
-
-            const glazeOverlay = ctx.createLinearGradient(0, 0, w, h)
-            const shimmerStop = clamp(0.38 + Math.sin(time * (0.05 + speedMix * 0.04)) * 0.18, 0.16, 0.84)
-            glazeOverlay.addColorStop(0, toRgba(palette.glint, 0.005 + glazeMix * 0.008))
-            glazeOverlay.addColorStop(
-                shimmerStop,
-                toRgba(palette.edge, 0.012 + glazeMix * 0.012 + refractionMix * 0.01),
-            )
-            glazeOverlay.addColorStop(1, 'rgba(0,0,0,0)')
-            ctx.fillStyle = glazeOverlay
-            ctx.fillRect(0, 0, w, h)
-
-            const cathedralGlow = ctx.createRadialGradient(
-                w * (0.34 + Math.sin(time * (0.08 + speedMix * 0.06)) * 0.1),
-                h * (0.32 + Math.cos(time * (0.07 + speedMix * 0.05)) * 0.12),
-                0,
-                w * 0.5,
-                h * 0.48,
-                minDim * (0.72 + refractionMix * 0.18),
-            )
-            cathedralGlow.addColorStop(0, toRgba(palette.glint, 0.012 + edgeGlowMix * 0.01 + glazeMix * 0.012))
-            cathedralGlow.addColorStop(0.56, toRgba(palette.edge, 0.01 + edgeGlowMix * 0.016))
-            cathedralGlow.addColorStop(1, 'rgba(0,0,0,0)')
-            ctx.fillStyle = cathedralGlow
-            ctx.fillRect(0, 0, w, h)
 
             ctx.restore()
         }
@@ -754,14 +684,14 @@ export default canvas.stateful(
                 controls: {
                     background: '#0c0808',
                     color1: '#ff6600',
-                    color2: '#ffcc00',
+                    color2: '#ffb300',
                     color3: '#ff0044',
                     contrast: 62,
                     density: 28,
                     drift: 95,
                     edgeGlow: 80,
                     glaze: 45,
-                    palette: 'Solar',
+                    palette: 'Custom',
                     refraction: 30,
                     speed: 5,
                 },
@@ -779,7 +709,7 @@ export default canvas.stateful(
                     density: 15,
                     drift: 10,
                     edgeGlow: 12,
-                    glaze: 90,
+                    glaze: 70,
                     palette: 'Glacier',
                     refraction: 20,
                     speed: 1,

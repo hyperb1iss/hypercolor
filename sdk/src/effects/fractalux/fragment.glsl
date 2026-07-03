@@ -92,22 +92,22 @@ vec3 paletteColor(float t, int id) {
         vec3(0.55, 0.10, 1.00),
         vec3(1.00, 0.25, 0.65));
 
-    // 1: Crystal — ice refraction: white → vivid cyan → deep sapphire
+    // 1: Crystal — ice refraction: ice blue → vivid cyan → deep sapphire
     if (id == 1) return triGradient(t,
-        vec3(0.92, 0.98, 1.00),
+        vec3(0.55, 0.85, 1.00),
         vec3(0.00, 0.95, 1.00),
         vec3(0.05, 0.18, 0.60));
 
-    // 2: Ember — molten fire: crimson → orange → amber → hot yellow
+    // 2: Ember — molten fire: crimson → orange → amber → gold
     if (id == 2) return quadGradient(t,
         vec3(0.72, 0.00, 0.05),
         vec3(1.00, 0.45, 0.00),
         vec3(1.00, 0.72, 0.00),
-        vec3(1.00, 0.95, 0.20));
+        vec3(1.00, 0.80, 0.10));
 
-    // 3: Frozen — arctic abyss: ice → cyan → deep navy
+    // 3: Frozen — arctic abyss: glacial blue → cyan → deep navy
     if (id == 3) return triGradient(t,
-        vec3(0.78, 0.94, 1.00),
+        vec3(0.45, 0.82, 1.00),
         vec3(0.00, 0.88, 1.00),
         vec3(0.02, 0.06, 0.25));
 
@@ -147,7 +147,7 @@ void main() {
     int   octaves  = 3 + int(clamp(iComplexity * 0.01, 0.0, 1.0) * 4.0);
     float zoom     = 1.5 + clamp(iZoom * 0.01, 0.0, 1.0) * 4.5;
     float bright   = 0.6 + clamp(iBrightness * 0.01, 0.0, 1.0) * 1.4;
-    float sat      = 1.0 + clamp(iSaturation * 0.01, 0.0, 1.0) * 1.5;
+    float sat      = 0.25 + clamp(iSaturation * 0.01, 0.0, 1.0) * 2.5;
     float warpStr  = 0.1 + clamp(iWarp * 0.01, 0.0, 1.0) * 0.9;
     float pulseStr = clamp(iPulse * 0.01, 0.0, 1.0);
 
@@ -212,16 +212,14 @@ void main() {
     float macro  = fbm(warped * 0.6 + vec2(-time * 0.06, time * 0.04), 3);
     float pattern = coarse * 0.55 + fine * 0.28 + macro * 0.17;
 
-    // ── Step 7: Contour glow (3-tier neon refraction lines) ─────
+    // ── Step 7: Contour glow (2-tier neon refraction lines) ─────
     float contour1 = abs(fract(pattern * 4.0) - 0.5);
     float contour2 = abs(fract(pattern * 8.0 + 0.25) - 0.5);
-    float contour3 = abs(fract(pattern * 16.0 + 0.5) - 0.5);
 
     float glow1 = 0.012 / (contour1 + 0.010);
     float glow2 = 0.006 / (contour2 + 0.010);
-    float glow3 = 0.003 / (contour3 + 0.012);
 
-    float glow = glow1 * 0.55 + glow2 * 0.30 + glow3 * 0.15;
+    float glow = glow1 * 0.65 + glow2 * 0.35;
 
     // ── Step 8: Segment boundary lines ──────────────────────────
     float rawAngle = atan(centered.y, centered.x) + time * 0.08;
@@ -234,12 +232,12 @@ void main() {
     edgeLine *= exp(-r * 1.5) * 0.22;
 
     // ── Step 9: Radial brightness ───────────────────────────────
-    float centerGlow = exp(-r * 1.4);
-    float radialMask = 0.40 + 0.60 * centerGlow;
+    float centerGlow = exp(-r * r * 4.5);
+    float radialMask = 0.05 + 0.95 * centerGlow;
 
     // ── Step 10: Chromatic dispersion ───────────────────────────
     // Per-channel palette offset for prismatic rainbow fringing
-    float dispersion = warpStr * 0.035;
+    float dispersion = warpStr * 0.0175;
     float colorTR = pattern + time * 0.04 + dispersion;
     float colorTG = pattern + time * 0.04;
     float colorTB = pattern + time * 0.04 - dispersion;

@@ -1,6 +1,6 @@
 import { canvas, color, combo, num } from '@hypercolor/sdk'
 
-import { BUILTIN_DESIGN_BASIS, hexToRgb } from '../_builtin/common'
+import { hexToRgb } from '../_builtin/common'
 
 interface LinRgb {
     r: number
@@ -71,7 +71,7 @@ function smoothstepBlend(t: number, blend: number): number {
     return n * n * (3 - 2 * n)
 }
 
-export default canvas(
+export default canvas.stateful(
     'Color Zones',
     {
         zoneCount: combo('Zone Count', ['2', '3', '4', '5', '6', '7', '8', '9'], {
@@ -87,133 +87,168 @@ export default canvas(
         zone2: color('Zone 2', '#80ffea', { group: 'Zone Colors' }),
         zone3: color('Zone 3', '#ff6ac1', { group: 'Zone Colors' }),
         zone4: color('Zone 4', '#50fa7b', { group: 'Zone Colors' }),
-        zone5: color('Zone 5', '#f1fa8c', { group: 'Zone Colors' }),
+        zone5: color('Zone 5', '#ffc21a', { group: 'Zone Colors' }),
         zone6: color('Zone 6', '#ff6363', { group: 'Zone Colors' }),
         zone7: color('Zone 7', '#4f7dff', { group: 'Zone Colors' }),
         zone8: color('Zone 8', '#ff9f45', { group: 'Zone Colors' }),
         zone9: color('Zone 9', '#6c2bff', { group: 'Zone Colors' }),
     },
-    (ctx, _time, controls) => {
-        const width = ctx.canvas.width
-        const height = ctx.canvas.height
-        if (width <= 0 || height <= 0) return
+    () => {
+        // The scene is fully static for a given control set, so the per-pixel
+        // bilinear render is cached as ImageData and only recomputed when the
+        // canvas size or a control value changes. Steady-state frames are a
+        // single putImageData.
+        let cached: ImageData | null = null
+        let cacheKey = ''
 
-        const zoneCount = Math.max(1, Math.min(9, Number.parseInt(controls.zoneCount as string, 10) || 3))
-        const brightness = Math.max(0, Math.min(1, (controls.brightness as number) / 100))
-        const blend = Math.max(0, Math.min(1, (controls.blend as number) / 100))
-        const sheenAmount = Math.max(0, Math.min(1, (controls.sheen as number) / 100))
-        const vignetteAmount = Math.max(0, Math.min(1, (controls.vignette as number) / 100))
-        const layout = controls.layout as string
+        return (ctx, _time, controls) => {
+            const width = ctx.canvas.width
+            const height = ctx.canvas.height
+            if (width <= 0 || height <= 0) return
 
-        const [rows, cols] = gridDimensions(layout, zoneCount)
-
-        const zones: LinRgb[] = [
-            hexToLinearRgb(controls.zone1 as string),
-            hexToLinearRgb(controls.zone2 as string),
-            hexToLinearRgb(controls.zone3 as string),
-            hexToLinearRgb(controls.zone4 as string),
-            hexToLinearRgb(controls.zone5 as string),
-            hexToLinearRgb(controls.zone6 as string),
-            hexToLinearRgb(controls.zone7 as string),
-            hexToLinearRgb(controls.zone8 as string),
-            hexToLinearRgb(controls.zone9 as string),
-        ]
-
-        // Apply brightness in linear-light space so "dim" looks right on LEDs
-        // after the display/driver applies gamma.
-        const scaled: LinRgb[] = zones.map((z) => ({
-            b: z.b * brightness,
-            g: z.g * brightness,
-            r: z.r * brightness,
-        }))
-
-        const zoneAt = (row: number, col: number): LinRgb => {
-            const clampedCol = Math.max(0, Math.min(cols - 1, col))
-            const clampedRow = Math.max(0, Math.min(rows - 1, row))
-            const idx = Math.min(clampedRow * cols + clampedCol, zoneCount - 1)
-            return scaled[idx]
-        }
-
-        const maxBaseCol = Math.max(0, cols - 2)
-        const maxBaseRow = Math.max(0, rows - 2)
-
-        const image = ctx.createImageData(width, height)
-        const data = image.data
-
-        // Sheen: soft diagonal silk band across the upper-left → lower-right axis.
-        // Peak at ~0.35 along the diagonal, gentle falloff.
-        const sheenPeak = 0.35
-        const sheenFalloff = 3.0
-        const sheenGain = sheenAmount * 0.18
-
-        // Vignette: quadratic darkening from center to corners.
-        // At amount=1.0, corners drop to ~45% brightness. At amount=0.1, ~94%.
-        const vignetteGain = vignetteAmount * 0.55
-
-        for (let y = 0; y < height; y++) {
-            const ny = (y + 0.5) / height
-            const gy = ny * rows
-            const baseRow = Math.max(0, Math.min(maxBaseRow, Math.floor(gy - 0.5)))
-            const centerTop = baseRow + 0.5
-            const fy = Math.max(0, Math.min(1, gy - centerTop))
-            const sy = smoothstepBlend(fy, blend)
-            const bottomRow = baseRow + 1
-
-            const dy = ny - 0.5
-
-            for (let x = 0; x < width; x++) {
-                const nx = (x + 0.5) / width
-                const gx = nx * cols
-                const baseCol = Math.max(0, Math.min(maxBaseCol, Math.floor(gx - 0.5)))
-                const centerLeft = baseCol + 0.5
-                const fx = Math.max(0, Math.min(1, gx - centerLeft))
-                const sx = smoothstepBlend(fx, blend)
-                const rightCol = baseCol + 1
-
-                const c00 = zoneAt(baseRow, baseCol)
-                const c10 = zoneAt(baseRow, rightCol)
-                const c01 = zoneAt(bottomRow, baseCol)
-                const c11 = zoneAt(bottomRow, rightCol)
-
-                // Bilinear interpolation in linear-light RGB.
-                const topR = c00.r + (c10.r - c00.r) * sx
-                const topG = c00.g + (c10.g - c00.g) * sx
-                const topB = c00.b + (c10.b - c00.b) * sx
-                const botR = c01.r + (c11.r - c01.r) * sx
-                const botG = c01.g + (c11.g - c01.g) * sx
-                const botB = c01.b + (c11.b - c01.b) * sx
-                let r = topR + (botR - topR) * sy
-                let g = topG + (botG - topG) * sy
-                let b = topB + (botB - topB) * sy
-
-                if (vignetteGain > 0) {
-                    const dx = nx - 0.5
-                    // Normalize radial distance so corners reach 1.0 (2 * 0.5^2 = 0.5).
-                    const distSq = Math.min(1, (dx * dx + dy * dy) * 2)
-                    const shade = 1 - distSq * vignetteGain
-                    r *= shade
-                    g *= shade
-                    b *= shade
-                }
-
-                if (sheenGain > 0) {
-                    const diag = (nx + ny) * 0.5
-                    const band = Math.max(0, 1 - Math.abs(diag - sheenPeak) * sheenFalloff)
-                    const bump = band * band * sheenGain
-                    r += bump
-                    g += bump
-                    b += bump
-                }
-
-                const i = (y * width + x) * 4
-                data[i] = linearToByte(r)
-                data[i + 1] = linearToByte(g)
-                data[i + 2] = linearToByte(b)
-                data[i + 3] = 255
+            const key = [
+                width,
+                height,
+                controls.zoneCount,
+                controls.layout,
+                controls.blend,
+                controls.sheen,
+                controls.vignette,
+                controls.brightness,
+                controls.zone1,
+                controls.zone2,
+                controls.zone3,
+                controls.zone4,
+                controls.zone5,
+                controls.zone6,
+                controls.zone7,
+                controls.zone8,
+                controls.zone9,
+            ].join('|')
+            if (cached && cacheKey === key) {
+                ctx.putImageData(cached, 0, 0)
+                return
             }
-        }
 
-        ctx.putImageData(image, 0, 0)
+            const zoneCount = Math.max(1, Math.min(9, Number.parseInt(controls.zoneCount as string, 10) || 3))
+            const brightness = Math.max(0, Math.min(1, (controls.brightness as number) / 100))
+            const blend = Math.max(0, Math.min(1, (controls.blend as number) / 100))
+            const sheenAmount = Math.max(0, Math.min(1, (controls.sheen as number) / 100))
+            const vignetteAmount = Math.max(0, Math.min(1, (controls.vignette as number) / 100))
+            const layout = controls.layout as string
+
+            const [rows, cols] = gridDimensions(layout, zoneCount)
+
+            const zones: LinRgb[] = [
+                hexToLinearRgb(controls.zone1 as string),
+                hexToLinearRgb(controls.zone2 as string),
+                hexToLinearRgb(controls.zone3 as string),
+                hexToLinearRgb(controls.zone4 as string),
+                hexToLinearRgb(controls.zone5 as string),
+                hexToLinearRgb(controls.zone6 as string),
+                hexToLinearRgb(controls.zone7 as string),
+                hexToLinearRgb(controls.zone8 as string),
+                hexToLinearRgb(controls.zone9 as string),
+            ]
+
+            // Apply brightness in linear-light space so "dim" looks right on LEDs
+            // after the display/driver applies gamma.
+            const scaled: LinRgb[] = zones.map((z) => ({
+                b: z.b * brightness,
+                g: z.g * brightness,
+                r: z.r * brightness,
+            }))
+
+            const zoneAt = (row: number, col: number): LinRgb => {
+                const clampedCol = Math.max(0, Math.min(cols - 1, col))
+                const clampedRow = Math.max(0, Math.min(rows - 1, row))
+                const idx = Math.min(clampedRow * cols + clampedCol, zoneCount - 1)
+                return scaled[idx]
+            }
+
+            const maxBaseCol = Math.max(0, cols - 2)
+            const maxBaseRow = Math.max(0, rows - 2)
+
+            const image = ctx.createImageData(width, height)
+            const data = image.data
+
+            // Sheen: soft diagonal silk band across the upper-left → lower-right axis.
+            // Peak at ~0.35 along the diagonal, gentle falloff.
+            const sheenPeak = 0.35
+            const sheenFalloff = 3.0
+            const sheenGain = sheenAmount * 0.18
+
+            // Vignette: quadratic darkening from center to corners.
+            // At amount=1.0, corners drop to ~45% brightness. At amount=0.1, ~94%.
+            const vignetteGain = vignetteAmount * 0.55
+
+            for (let y = 0; y < height; y++) {
+                const ny = (y + 0.5) / height
+                const gy = ny * rows
+                const baseRow = Math.max(0, Math.min(maxBaseRow, Math.floor(gy - 0.5)))
+                const centerTop = baseRow + 0.5
+                const fy = Math.max(0, Math.min(1, gy - centerTop))
+                const sy = smoothstepBlend(fy, blend)
+                const bottomRow = baseRow + 1
+
+                const dy = ny - 0.5
+
+                for (let x = 0; x < width; x++) {
+                    const nx = (x + 0.5) / width
+                    const gx = nx * cols
+                    const baseCol = Math.max(0, Math.min(maxBaseCol, Math.floor(gx - 0.5)))
+                    const centerLeft = baseCol + 0.5
+                    const fx = Math.max(0, Math.min(1, gx - centerLeft))
+                    const sx = smoothstepBlend(fx, blend)
+                    const rightCol = baseCol + 1
+
+                    const c00 = zoneAt(baseRow, baseCol)
+                    const c10 = zoneAt(baseRow, rightCol)
+                    const c01 = zoneAt(bottomRow, baseCol)
+                    const c11 = zoneAt(bottomRow, rightCol)
+
+                    // Bilinear interpolation in linear-light RGB.
+                    const topR = c00.r + (c10.r - c00.r) * sx
+                    const topG = c00.g + (c10.g - c00.g) * sx
+                    const topB = c00.b + (c10.b - c00.b) * sx
+                    const botR = c01.r + (c11.r - c01.r) * sx
+                    const botG = c01.g + (c11.g - c01.g) * sx
+                    const botB = c01.b + (c11.b - c01.b) * sx
+                    let r = topR + (botR - topR) * sy
+                    let g = topG + (botG - topG) * sy
+                    let b = topB + (botB - topB) * sy
+
+                    if (vignetteGain > 0) {
+                        const dx = nx - 0.5
+                        // Normalize radial distance so corners reach 1.0 (2 * 0.5^2 = 0.5).
+                        const distSq = Math.min(1, (dx * dx + dy * dy) * 2)
+                        const shade = 1 - distSq * vignetteGain
+                        r *= shade
+                        g *= shade
+                        b *= shade
+                    }
+
+                    if (sheenGain > 0) {
+                        const diag = (nx + ny) * 0.5
+                        const band = Math.max(0, 1 - Math.abs(diag - sheenPeak) * sheenFalloff)
+                        const bump = band * band * sheenGain
+                        r += bump
+                        g += bump
+                        b += bump
+                    }
+
+                    const i = (y * width + x) * 4
+                    data[i] = linearToByte(r)
+                    data[i + 1] = linearToByte(g)
+                    data[i + 2] = linearToByte(b)
+                    data[i + 3] = 255
+                }
+            }
+
+            cached = image
+            cacheKey = key
+            ctx.putImageData(image, 0, 0)
+        }
     },
     {
         author: 'Hypercolor',
@@ -221,7 +256,6 @@ export default canvas(
         category: 'ambient',
         description:
             'A multi-zone scene builder with clean geometric boundaries, smooth seam blending, and curated palettes for room setups.',
-        designBasis: BUILTIN_DESIGN_BASIS,
         presets: [
             {
                 controls: {
@@ -282,7 +316,7 @@ export default canvas(
                     vignette: 18,
                     zone1: '#ff6ac1',
                     zone2: '#ff9f45',
-                    zone3: '#f1fa8c',
+                    zone3: '#ffc21a',
                     zone4: '#80ffea',
                     zone5: '#7d49ff',
                     zone6: '#50fa7b',

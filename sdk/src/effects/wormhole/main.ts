@@ -302,19 +302,6 @@ function perpendicular(point: Point): Point {
     return { x: -point.y, y: point.x }
 }
 
-function cubicBezierPoint(p0: Point, p1: Point, p2: Point, p3: Point, t: number): Point {
-    const inverse = 1 - t
-    const inverse2 = inverse * inverse
-    const inverse3 = inverse2 * inverse
-    const t2 = t * t
-    const t3 = t2 * t
-
-    return {
-        x: p0.x * inverse3 + 3 * p1.x * inverse2 * t + 3 * p2.x * inverse * t2 + p3.x * t3,
-        y: p0.y * inverse3 + 3 * p1.y * inverse2 * t + 3 * p2.y * inverse * t2 + p3.y * t3,
-    }
-}
-
 function drawPolyline(ctx: CanvasRenderingContext2D, points: Point[]): void {
     if (points.length === 0) return
     ctx.beginPath()
@@ -403,6 +390,7 @@ function buildRibbonPoints(
     twistMix: number,
     pulseMix: number,
     thicknessMix: number,
+    out: Point[],
 ): Point[] {
     const axis = subPoint(rightNode, leftNode)
     const span = Math.hypot(axis.x, axis.y)
@@ -424,9 +412,9 @@ function buildRibbonPoints(
         scalePoint(normal, -bow * direction - laneOffset * 0.5),
     )
 
-    const points: Point[] = []
     const sampleCount = 56
 
+    // Scalar math into a reused buffer — no per-sample Point allocations
     for (let index = 0; index < sampleCount; index++) {
         const t = index / (sampleCount - 1)
         const envelope = Math.sin(t * Math.PI) ** 0.92
@@ -447,19 +435,35 @@ function buildRibbonPoints(
             (0.65 + pulseMix * 0.9) *
             (geometry === 'Halo Exchange' ? 1.2 : geometry === 'Tidal Lattice' ? 1.1 : 1)
 
-        const base = cubicBezierPoint(p0, p1, p2, p3, t)
-        const towardCenter = subPoint(midpoint, base)
-        const centerDir = normalizePoint(towardCenter, normal)
+        const inverse = 1 - t
+        const inverse2 = inverse * inverse
+        const t2 = t * t
+        const baseX = p0.x * inverse2 * inverse + 3 * p1.x * inverse2 * t + 3 * p2.x * inverse * t2 + p3.x * t2 * t
+        const baseY = p0.y * inverse2 * inverse + 3 * p1.y * inverse2 * t + 3 * p2.y * inverse * t2 + p3.y * t2 * t
 
-        points.push(
-            addPoint(
-                addPoint(base, scalePoint(normal, weave)),
-                addPoint(scalePoint(tangent, ripple), scalePoint(centerDir, centerPull * envelope)),
-            ),
-        )
+        let centerDirX = midpoint.x - baseX
+        let centerDirY = midpoint.y - baseY
+        const centerLength = Math.hypot(centerDirX, centerDirY)
+        if (centerLength <= 0.0001) {
+            centerDirX = normal.x
+            centerDirY = normal.y
+        } else {
+            centerDirX /= centerLength
+            centerDirY /= centerLength
+        }
+
+        const pull = centerPull * envelope
+        let point = out[index]
+        if (!point) {
+            point = { x: 0, y: 0 }
+            out[index] = point
+        }
+        point.x = baseX + normal.x * weave + tangent.x * ripple + centerDirX * pull
+        point.y = baseY + normal.y * weave + tangent.y * ripple + centerDirY * pull
     }
 
-    return points
+    out.length = sampleCount
+    return out
 }
 
 function drawNodeHalo(
@@ -471,14 +475,13 @@ function drawNodeHalo(
     phase: number,
     geometry: GeometryName,
     pulseMix: number,
-    _contrastMix: number,
     strength: number,
 ): void {
     ctx.save()
     ctx.globalCompositeOperation = 'source-over'
     ctx.lineCap = 'round'
 
-    const haloCount = geometry === 'Halo Exchange' ? 4 : 3
+    const haloCount = geometry === 'Halo Exchange' ? 3 : 2
     for (let ring = 0; ring < haloCount; ring++) {
         const orbit = ring / Math.max(1, haloCount - 1)
         const rotation = time * (0.18 + orbit * 0.12) + phase + ring * 0.65
@@ -517,23 +520,24 @@ function drawNodeHalo(
             y: Math.sin(rotation + Math.PI * 0.5) * chromaSpread,
         }
 
-        ctx.setLineDash([radius * 0.22, radius * 0.16 + ring * 2])
+        // Coarse dashes and >=3px strokes — finer detail aliases on LED sampling
+        ctx.setLineDash([radius * 0.55, radius * 0.4 + ring * 3])
         ctx.lineDashOffset = -time * (22 + ring * 6)
         ctx.beginPath()
         ctx.ellipse(node.x - chromaOffset.x, node.y - chromaOffset.y, radiusX, radiusY, rotation, 0, TAU)
-        ctx.lineWidth = Math.max(1, radius * 0.06 * (1 - orbit * 0.25) * (0.7 + strength * 0.3))
+        ctx.lineWidth = Math.max(3, radius * 0.06 * (1 - orbit * 0.25) * (0.7 + strength * 0.3))
         ctx.strokeStyle = rgb(scaleRgb(fringeA, fringeFactor))
         ctx.stroke()
 
         ctx.beginPath()
         ctx.ellipse(node.x + chromaOffset.x, node.y + chromaOffset.y, radiusX, radiusY, rotation, 0, TAU)
-        ctx.lineWidth = Math.max(1, radius * 0.06 * (1 - orbit * 0.25) * (0.7 + strength * 0.3))
+        ctx.lineWidth = Math.max(3, radius * 0.06 * (1 - orbit * 0.25) * (0.7 + strength * 0.3))
         ctx.strokeStyle = rgb(scaleRgb(fringeB, fringeFactor))
         ctx.stroke()
 
         ctx.beginPath()
         ctx.ellipse(node.x, node.y, radiusX, radiusY, rotation, 0, TAU)
-        ctx.lineWidth = Math.max(1, radius * 0.075 * (1 - orbit * 0.25) * (0.7 + strength * 0.3))
+        ctx.lineWidth = Math.max(3, radius * 0.075 * (1 - orbit * 0.25) * (0.7 + strength * 0.3))
         ctx.strokeStyle = rgb(scaleRgb(color, ringFactor))
         ctx.stroke()
     }
@@ -622,15 +626,27 @@ export default canvas.stateful(
         geometry: combo('Geometry', GEOMETRY_NAMES, { default: 'Braided Flux', group: 'Scene' }),
         pulse: num('Pulse', [0, 100], 34, { group: 'Atmosphere' }),
         speed: num('Speed', [1, 10], 5, { group: 'Motion' }),
-        theme: combo('Theme', THEME_NAMES, { default: 'Event Horizon', group: 'Scene' }),
+        theme: combo('Theme', THEME_NAMES, { default: 'Custom', group: 'Scene' }),
         thickness: num('Wall Thickness', [0, 100], 56, { group: 'Atmosphere' }),
         twist: num('Twist', [0, 100], 58, { group: 'Motion' }),
     },
     () => {
         const ribbons: RibbonSeed[] = []
         const sparks: SparkSeed[] = []
+        const ribbonPointBuffers: Point[][] = []
         let ribbonCount = 0
         let sparkCount = 0
+        let ribbonBufferCursor = 0
+
+        function acquireRibbonBuffer(): Point[] {
+            let buffer = ribbonPointBuffers[ribbonBufferCursor]
+            if (!buffer) {
+                buffer = []
+                ribbonPointBuffers[ribbonBufferCursor] = buffer
+            }
+            ribbonBufferCursor += 1
+            return buffer
+        }
 
         function ensureRibbons(count: number): void {
             const target = clamp(Math.round(count), 4, 8)
@@ -685,7 +701,10 @@ export default canvas.stateful(
 
             if (width === 0 || height === 0) return
 
-            const speedMix = clamp((((controls.speed as number) ?? 5) - 1) / 9, 0, 1)
+            ribbonBufferCursor = 0
+
+            // controls.speed arrives pre-normalized by the SDK (1-10 slider → 0.2-2.83)
+            const speedMix = clamp((((controls.speed as number) ?? 1) - 0.2) / 2.628, 0, 1)
             const motionTime = time * lerp(0.45, 2.1, speedMix)
             const depthMix = clamp(((controls.depth as number) ?? 66) / 100, 0, 1)
             const twistMix = clamp(((controls.twist as number) ?? 58) / 100, 0, 1)
@@ -693,7 +712,10 @@ export default canvas.stateful(
             const pulseMix = clamp(((controls.pulse as number) ?? 34) / 100, 0, 1)
             const thicknessMix = clamp(((controls.thickness as number) ?? 56) / 100, 0, 1)
             const contrastMix = clamp(((controls.contrast as number) ?? 60) / 100, 0, 1)
-            const theme = (controls.theme as ThemeName) ?? 'Event Horizon'
+            // Contrast separates ribbons from the background halo glow (neutral at the default 60)
+            const haloContrast = clamp(1 - (contrastMix - 0.6) * 0.85, 0.5, 1.4)
+            const ribbonContrast = clamp(1 + (contrastMix - 0.6) * 0.55, 0.7, 1.25)
+            const theme = (controls.theme as ThemeName) ?? 'Custom'
             const geometry = (controls.geometry as GeometryName) ?? 'Braided Flux'
 
             const palette = resolvePalette(
@@ -793,8 +815,7 @@ export default canvas.stateful(
                     fieldIndex * 0.75,
                     geometry,
                     pulseMix,
-                    contrastMix,
-                    field.strength,
+                    field.strength * haloContrast,
                 )
                 drawNodeHalo(
                     ctx,
@@ -805,8 +826,7 @@ export default canvas.stateful(
                     Math.PI + fieldIndex * 0.75,
                     geometry,
                     pulseMix,
-                    contrastMix,
-                    field.strength,
+                    field.strength * haloContrast,
                 )
             }
 
@@ -843,6 +863,7 @@ export default canvas.stateful(
                         twistMix,
                         pulseMix,
                         thicknessMix,
+                        acquireRibbonBuffer(),
                     )
                     const colorA = richenRgb(
                         sampleSpectralPalette(fieldSeed.colorBias + motionTime * (0.04 + speedMix * 0.03), palette),
@@ -915,9 +936,9 @@ export default canvas.stateful(
                 renderedRibbons.push(...fieldRibbons)
 
                 for (const ribbon of fieldRibbons) {
-                    const bodyFactor = 0.58 + ribbon.strength * 0.28
-                    const edgeFactor = 0.48 + ribbon.strength * 0.24
-                    const coreFactor = 0.74 + ribbon.strength * 0.18
+                    const bodyFactor = (0.58 + ribbon.strength * 0.28) * ribbonContrast
+                    const edgeFactor = (0.48 + ribbon.strength * 0.24) * ribbonContrast
+                    const coreFactor = (0.74 + ribbon.strength * 0.18) * ribbonContrast
                     const gradient = ctx.createLinearGradient(
                         ribbon.leftNode.x,
                         ribbon.leftNode.y,
@@ -1014,13 +1035,13 @@ export default canvas.stateful(
                     244,
                 )
                 drawPolyline(ctx, tail)
-                ctx.lineWidth = Math.max(1, ribbon.width * (0.07 + spark.size * 0.06))
+                ctx.lineWidth = Math.max(3, ribbon.width * (0.07 + spark.size * 0.06))
                 ctx.strokeStyle = rgb(scaleRgb(sparkColor, 0.88))
                 ctx.stroke()
 
                 ctx.fillStyle = rgb(scaleRgb(richenRgb(mixRgb(sparkColor, ribbon.core, 0.18), 1.08, 0.06, 248), 0.96))
                 ctx.beginPath()
-                ctx.arc(point.x, point.y, Math.max(0.75, ribbon.width * (0.08 + spark.size * 0.05)), 0, TAU)
+                ctx.arc(point.x, point.y, Math.max(3, ribbon.width * (0.08 + spark.size * 0.05)), 0, TAU)
                 ctx.fill()
             }
             ctx.restore()
@@ -1092,17 +1113,13 @@ export default canvas.stateful(
             },
             {
                 controls: {
-                    background: '#08030c',
-                    color1: '#ff6400',
-                    color2: '#ff2f86',
-                    color3: '#ffc14d',
                     contrast: 82,
                     depth: 84,
                     drift: 24,
                     geometry: 'Halo Exchange',
                     pulse: 70,
                     speed: 5,
-                    theme: 'Custom',
+                    theme: 'Solar Flare',
                     thickness: 54,
                     twist: 42,
                 },
@@ -1112,17 +1129,13 @@ export default canvas.stateful(
             },
             {
                 controls: {
-                    background: '#06050b',
-                    color1: '#ff5a00',
-                    color2: '#5d32ff',
-                    color3: '#ff2f8f',
                     contrast: 76,
                     depth: 86,
                     drift: 18,
                     geometry: 'Braided Flux',
                     pulse: 62,
                     speed: 4,
-                    theme: 'Custom',
+                    theme: 'Abyssal',
                     thickness: 58,
                     twist: 60,
                 },

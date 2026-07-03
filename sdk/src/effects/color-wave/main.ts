@@ -1,7 +1,16 @@
 import { canvas, color, combo, num, scaleContext } from '@hypercolor/sdk'
 
 import type { Rgb } from '../_builtin/common'
-import { BUILTIN_DESIGN_BASIS, hexToRgb, hslCss, mixRgb, rgbToCss, scaleRgb, withLift } from '../_builtin/common'
+import {
+    BUILTIN_DESIGN_BASIS,
+    hexToRgb,
+    hslCss,
+    mixOklab,
+    mixRgb,
+    rgbToCss,
+    scaleRgb,
+    withLift,
+} from '../_builtin/common'
 
 interface PaletteTriad {
     primary: string
@@ -25,7 +34,7 @@ const PALETTES: Record<string, PaletteTriad> = {
     Pastel: { accent: '#cdb4db', primary: '#ffafcc', secondary: '#bde0fe' },
     Monochrome: { accent: '#e5e7eb', primary: '#ffffff', secondary: '#6b7280' },
     Forest: { accent: '#ffd166', primary: '#2d6a4f', secondary: '#95d5b2' },
-    CMYK: { accent: '#ffff00', primary: '#00ffff', secondary: '#ff00ff' },
+    CMYK: { accent: '#ffd700', primary: '#00ffff', secondary: '#ff00ff' },
     'Blood Moon': { accent: '#ffb199', primary: '#8b0000', secondary: '#ff3344' },
     'Neon 80s': { accent: '#ffe66d', primary: '#ff006e', secondary: '#00f5ff' },
 }
@@ -67,6 +76,14 @@ function directionAngle(direction: string): number {
     return 0
 }
 
+// Desaturate toward luminance so the Saturation control works in every color
+// mode, not just Spectrum. At saturation=1 the color passes through untouched.
+function applySaturation(rgb: Rgb, saturation: number): Rgb {
+    if (saturation >= 1) return rgb
+    const luma = rgb.r * 0.2126 + rgb.g * 0.7152 + rgb.b * 0.0722
+    return mixRgb({ b: luma, g: luma, r: luma }, rgb, saturation)
+}
+
 function waveColor(
     mode: string,
     phase: number,
@@ -78,7 +95,8 @@ function waveColor(
 ): Rgb {
     if (mode === 'Spectrum') {
         // hslCss returns a css string; we want an Rgb value for consistent paint code.
-        const cssString = hslCss(phase * 360, 62 + saturation * 30, 46 + brightness * 24, 1)
+        // Lightness is capped at 55 — anything higher washes out to white on LEDs.
+        const cssString = hslCss(phase * 360, 62 + saturation * 30, Math.min(55, 46 + brightness * 24), 1)
         const match = cssString.match(/rgba?\(([\d.]+),\s*([\d.]+),\s*([\d.]+)/i)
         if (match) {
             return { b: Number.parseFloat(match[3]), g: Number.parseFloat(match[2]), r: Number.parseFloat(match[1]) }
@@ -88,12 +106,19 @@ function waveColor(
 
     if (mode === 'Triad Cycle') {
         const t = fract(phase)
-        if (t < 1 / 3) return scaleRgb(mixRgb(primary, secondary, t * 3), brightness)
-        if (t < 2 / 3) return scaleRgb(mixRgb(secondary, accent, (t - 1 / 3) * 3), brightness)
-        return scaleRgb(mixRgb(accent, primary, (t - 2 / 3) * 3), brightness)
+        let blended: Rgb
+        if (t < 1 / 3) {
+            blended = mixOklab(primary, secondary, t * 3)
+        } else if (t < 2 / 3) {
+            blended = mixOklab(secondary, accent, (t - 1 / 3) * 3)
+        } else {
+            blended = mixOklab(accent, primary, (t - 2 / 3) * 3)
+        }
+        return scaleRgb(applySaturation(blended, saturation), brightness)
     }
 
-    return scaleRgb(mixRgb(primary, secondary, 0.5 + Math.sin(phase * Math.PI * 2) * 0.5), brightness)
+    const duo = mixOklab(primary, secondary, 0.5 + Math.sin(phase * Math.PI * 2) * 0.5)
+    return scaleRgb(applySaturation(duo, saturation), brightness)
 }
 
 // Paint a band whose cross-section profile morphs from soft glow (edge=0) to
@@ -156,7 +181,7 @@ export default canvas(
             default: 'Horizontal',
             group: 'Motion',
         }),
-        speed: num('Speed', [0, 100], 54, { group: 'Motion' }),
+        speed: num('Speed', [0, 100], 54, { group: 'Motion', normalize: 'none' }),
         density: num('Density', [0, 100], 42, { group: 'Motion' }),
         width: num('Band Width', [4, 100], 34, { group: 'Motion' }),
         trail: num('Trail', [0, 100], 46, { group: 'Motion' }),
@@ -176,7 +201,10 @@ export default canvas(
         const direction = controls.direction as string
         const colorMode = controls.colorMode as string
         const paletteName = controls.palette as string
-        const speed = (controls.speed as number) / 100
+        // Perceptual ease-in curve: raw 0-100 → multiplier 0-1, weighted so the
+        // low half of the slider covers slow speeds. Matches the feel the old
+        // magic speed normalization produced, now explicit.
+        const speed = ((controls.speed as number) / 100) ** 1.5
         const density = (controls.density as number) / 100
         const bandWidth = s.ds(12 + (controls.width as number) * 1.4)
         const trail = (controls.trail as number) / 100
@@ -193,12 +221,12 @@ export default canvas(
         // full contrast; soft presets keep the gradient underbed so bloom
         // has something warm to land on.
         const bgBright = brightness * 0.12 * Math.max(0, 1 - edge * 1.1)
-        const base = scaleRgb(mixRgb(primary, secondary, 0.18), bgBright)
+        const base = scaleRgb(mixOklab(primary, secondary, 0.18), bgBright)
         const accentMix = 0.25 * Math.max(0, 1 - edge * 1.3)
         const endScale = Math.max(0, 0.9 - edge * 0.9)
         const fill = ctx.createLinearGradient(0, 0, width, height)
         fill.addColorStop(0, rgbToCss(base))
-        fill.addColorStop(1, rgbToCss(scaleRgb(mixRgb(base, accent, accentMix), endScale)))
+        fill.addColorStop(1, rgbToCss(scaleRgb(mixOklab(base, accent, accentMix), endScale)))
         ctx.fillStyle = fill
         ctx.fillRect(0, 0, width, height)
 
@@ -459,7 +487,7 @@ export default canvas(
             },
             {
                 controls: {
-                    accentColor: '#ffff00',
+                    accentColor: '#ffd700',
                     brightness: 95,
                     colorMode: 'Triad Cycle',
                     density: 72,

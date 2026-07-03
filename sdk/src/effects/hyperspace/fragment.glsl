@@ -58,8 +58,8 @@ void streakColors(int id, float laneHash, out vec3 core, out vec3 tint) {
         return;
     }
     if (id == 4) {
-        // Void — dim white core, deep red streaks
-        core = vec3(0.75, 0.72, 0.70);
+        // Void — cold faint violet-gray core, deep red streaks
+        core = vec3(0.62, 0.55, 0.75);
         tint = vec3(1.0, 0.13, 0.0);
         return;
     }
@@ -125,8 +125,8 @@ vec3 starLayer(
         // Brightness: hot near the star head, fading along the streak
         float streakT = clamp(along / max(sLen, 0.001), 0.0, 1.0);
 
-        // Core glow — inverse square with floor
-        float glow = brightness / (perp * perp * 800.0 + 0.0004);
+        // Core glow — inverse square with floor, widened so streaks survive LED sampling
+        float glow = brightness / (perp * perp * 260.0 + 0.0004);
 
         // Fade stars near center (they're "approaching") and at the edge (wrapping)
         float radialFade = smoothstep(0.0, 0.08, starR) * smoothstep(maxR, maxR * 0.85, starR);
@@ -140,7 +140,7 @@ vec3 starLayer(
         vec3 coreColor, tintColor;
         streakColors(palette, laneHash, coreColor, tintColor);
 
-        float tintMix = smoothstep(0.0, 0.6, streakT) * 0.7;
+        float tintMix = 0.35 + smoothstep(0.0, 0.6, streakT) * 0.5;
         vec3 starColor = mix(coreColor, tintColor, tintMix);
 
         // Subtle brightness pulsing per star
@@ -159,7 +159,7 @@ void main() {
     vec2 uv = gl_FragCoord.xy / iResolution.xy;
     vec2 p = (uv - 0.5) * vec2(iResolution.x / iResolution.y, 1.0);
 
-    float speed = max(iSpeed, 0.5);
+    float speed = max(iSpeed, 0.2);
     // Preserve the original 0-100 response, then use the 100-160 band as overdrive.
     float density = clamp(iDensity * 0.01, 0.0, 1.0);
     float densityOverdrive = smoothstep(0.0, 1.0, clamp((iDensity - 100.0) / 60.0, 0.0, 1.0));
@@ -177,9 +177,9 @@ void main() {
     float bgGlow = exp(-radius * 4.0) * 0.03;
     vec3 color = vec3(bgGlow * 0.4, bgGlow * 0.3, bgGlow * 0.6);
 
-    float layer0Lanes = mix(30.0, 60.0, density) + densityOverdrive * 24.0;
-    float layer1Lanes = mix(15.0, 30.0, density) + densityOverdrive * 12.0;
-    float layer2Lanes = mix(8.0, 18.0, density) + densityOverdrive * 8.0;
+    float layer0Lanes = mix(4.0, 60.0, density) + densityOverdrive * 24.0;
+    float layer1Lanes = mix(2.0, 30.0, density) + densityOverdrive * 12.0;
+    float layer2Lanes = mix(1.0, 18.0, density) + densityOverdrive * 8.0;
 
     float layer0Streak = mix(0.02, 0.08, streak) + streakOverdrive * 0.04;
     float layer1Streak = mix(0.05, 0.18, streak) + streakOverdrive * 0.10;

@@ -54,8 +54,10 @@ vec3 rgb = vec3(0);
 // ── Tunnel path ──────────────────────────────────────────────────
 
 vec3 tunnelPath(float z) {
-    float ampX = 12.0 * normWidth;
-    float ampY = 24.0 * normWidth;
+    // Width drives the weave at half strength — the bore (in map) takes the rest
+    float weave = 0.5 + 0.5 * normWidth;
+    float ampX = 12.0 * weave;
+    float ampY = 24.0 * weave;
     return vec3(
         tanh(cos(z * 0.2 + sin(iTime * normWave) * 2.0 * normWave) * 0.4) * ampX,
         5.0 + tanh(cos(z * 0.14 + cos(iTime * normWave * 0.5) * 3.0 * normWave) * 0.5) * ampY,
@@ -206,7 +208,7 @@ vec3 getColorPalette(int scheme, vec3 baseColor) {
         rainbow.g = sin(hueBase + 2.0 + hueSpatial) * 0.5 + 0.7;
         rainbow.b = sin(hueBase + 4.0 + hueSpatial) * 0.5 + 0.7;
         float rainbowPulse = sin(CT * 2.0) * 0.1 + 0.9;
-        color = enhanced * (rainbow * rainbowPulse) + vec3(0.15);
+        color = enhanced * (rainbow * rainbowPulse) + vec3(0.05);
     } else if (scheme == 7) {
         // Electric — crackling blues with lightning flashes
         float flash = pow(sin(CT * 10.0) * 0.5 + 0.5, 4.0) * sin(CT * 5.0);
@@ -257,7 +259,7 @@ vec3 getColorPalette(int scheme, vec3 baseColor) {
         if (hueSector < 1.0)      neonColor = vec3(1.0, 0.1, 0.8);
         else if (hueSector < 2.0) neonColor = vec3(0.1, 1.0, 0.8);
         else                      neonColor = vec3(0.9, 0.8, 0.1);
-        color = enhanced * neonColor * neonPulse + vec3(0.05);
+        color = enhanced * neonColor * neonPulse + vec3(0.02);
         color = mix(vec3(0.02, 0.02, 0.05), color, min(1.0, color.r + color.g + color.b));
     } else if (scheme == 13) {
         // Rose Gold — warm metallic pinks and golds
@@ -330,19 +332,13 @@ vec4 applyStyle(vec4 color, float depth) {
         color.g *= 1.0 - abs(rShift + bShift) * 5.0;
         return color;
     } else if (iStyle == 2) {
-        // Phosphor — CRT phosphor decay with sub-pixel color separation
-        vec2 px = gl_FragCoord.xy;
-        float subpixel = mod(px.x, 3.0);
-        vec3 mask = vec3(
-            smoothstep(0.0, 1.0, 1.0 - abs(subpixel - 0.5)),
-            smoothstep(0.0, 1.0, 1.0 - abs(subpixel - 1.5)),
-            smoothstep(0.0, 1.0, 1.0 - abs(subpixel - 2.5))
-        );
-        // Scanline with depth-dependent intensity
-        float scanGap = sin(px.y * 1.5) * 0.5 + 0.5;
-        float scanIntensity = mix(0.15, 0.05, exp(-depth * 0.05));
-        float scan = 1.0 - scanGap * scanIntensity;
-        color.rgb *= mix(vec3(1.0), mask * 1.4 + 0.3, 0.4) * scan;
+        // Phosphor — coarse CRT scanline bands, LED-safe (~10px pitch,
+        // mild contrast, no per-pixel RGB mask)
+        float band = sin(gl_FragCoord.y * 0.628) * 0.5 + 0.5;
+        float scanIntensity = mix(0.16, 0.06, exp(-depth * 0.05));
+        color.rgb *= 1.0 - band * scanIntensity;
+        // Warm phosphor tint keeps the CRT identity
+        color.rgb *= vec3(1.05, 1.0, 0.92);
         // Subtle bloom on bright pixels
         float brightness = dot(color.rgb, vec3(0.299, 0.587, 0.114));
         color.rgb += color.rgb * max(0.0, brightness - 0.6) * 0.3;
@@ -372,11 +368,18 @@ float triSurface(vec3 p) {
 
 float map(vec3 p) {
     float a;
-    float s = 1.5 - min(length(p.xy - tunnelPath(p.z).xy), p.y - tunnelPath(p.z).x);
+    // Bore radius follows the Width control (default ≈1.5); the weave keeps
+    // a reduced share so both aspects respond to the same slider.
+    float bore = 1.5 * (0.55 + 0.45 * normWidth);
+    float s = bore - min(length(p.xy - tunnelPath(p.z).xy), p.y - tunnelPath(p.z).x);
     s = min(6.5 + p.y, s);
     s -= triSurface(p);
 
-    for (a = 0.1; a < 1.0; s -= abs(dot(sin(T + p * a * 40.0), vec3(0.01))) / a, a += a * 1.5);
+    // Fine ripple detail only matters near the surface — skip the inner
+    // loop for far samples (roughly halves worst-case per-fragment cost)
+    if (s < 1.0) {
+        for (a = 0.1; a < 1.0; s -= abs(dot(sin(T + p * a * 40.0), vec3(0.01))) / a, a += a * 1.5);
+    }
 
     rgb += sin(p) * 0.15 + 0.175;
 
@@ -429,7 +432,7 @@ void main() {
 
     // Ray march
     float s = 0.002, d = 0.0, i = 0.0;
-    while (i++ < 60.0 && s > 0.001 && d < 100.0) {
+    while (i++ < 44.0 && s > 0.001 && d < 100.0) {
         p = ro + D * d;
         d += s = map(p) * 0.4;
     }
@@ -448,7 +451,7 @@ void main() {
     // Fog attenuation
     float fogScale = 2.0 + (2.0 - normFog) * 3.0;
     float distAtten = mix(1.0, exp(-d / fogScale), 0.85);
-    vec3 rawColor = rgb * distAtten + 0.03;
+    vec3 rawColor = rgb * distAtten + 0.01;
 
     // Tone map after palette to cap highlights without changing palette character
     rawColor = rawColor / (1.0 + rawColor);
@@ -457,7 +460,7 @@ void main() {
 
     // Saturation + whiteness control
     baseColor = saturateColor(baseColor, normSaturation);
-    baseColor = limitWhiteness(baseColor, 0.9);
+    baseColor = limitWhiteness(baseColor, 0.78);
     baseColor = blendSoftLight(baseColor, baseColor * vec3(0.95, 1.0, 1.05));
 
     // Apply visual style

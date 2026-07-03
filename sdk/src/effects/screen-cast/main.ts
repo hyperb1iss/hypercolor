@@ -1,6 +1,6 @@
-import { canvas, combo, getScreenZoneData, num, rect } from '@hypercolor/sdk'
+import { canvas, combo, getScreenZoneData, hslToRgb, num, rect } from '@hypercolor/sdk'
 
-import { hslCss } from '../_builtin/common'
+import { wrapHue } from '../_builtin/common'
 
 interface RectValue {
     x: number
@@ -71,6 +71,7 @@ export default canvas.stateful(
         sourceCanvas.width = 1
         sourceCanvas.height = 1
         const sourceCtx = sourceCanvas.getContext('2d')
+        let frame: ImageData | null = null
 
         return (ctx, _time, controls) => {
             if (!sourceCtx) return
@@ -82,17 +83,26 @@ export default canvas.stateful(
             if (sourceCanvas.width !== screen.width || sourceCanvas.height !== screen.height) {
                 sourceCanvas.width = screen.width
                 sourceCanvas.height = screen.height
+                frame = null
             }
 
-            sourceCtx.clearRect(0, 0, screen.width, screen.height)
-            for (let y = 0; y < screen.height; y++) {
-                for (let x = 0; x < screen.width; x++) {
-                    const index = y * screen.width + x
-                    const lightness = clamp(screen.lightness[index] * brightness, 0, 1)
-                    sourceCtx.fillStyle = hslCss(screen.hue[index], screen.saturation[index] * 100, lightness * 100)
-                    sourceCtx.fillRect(x, y, 1, 1)
-                }
+            if (!frame) {
+                frame = sourceCtx.createImageData(screen.width, screen.height)
             }
+
+            const pixels = frame.data
+            const cellCount = screen.width * screen.height
+            for (let index = 0; index < cellCount; index++) {
+                const lightness = clamp(screen.lightness[index] * brightness, 0, 1)
+                const saturation = clamp(screen.saturation[index], 0, 1)
+                const [r, g, b] = hslToRgb(wrapHue(screen.hue[index]), saturation, lightness)
+                const offset = index * 4
+                pixels[offset] = Math.round(r * 255)
+                pixels[offset + 1] = Math.round(g * 255)
+                pixels[offset + 2] = Math.round(b * 255)
+                pixels[offset + 3] = 255
+            }
+            sourceCtx.putImageData(frame, 0, 0)
 
             const sx = viewport.x * screen.width
             const sy = viewport.y * screen.height

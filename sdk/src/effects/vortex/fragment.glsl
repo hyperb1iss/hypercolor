@@ -61,19 +61,20 @@ vec2 domainWarp(vec2 p, float t, float strength) {
 
 vec3 triGradient(float t, vec3 a, vec3 b, vec3 c) {
     t = fract(t);
-    if (t < 0.5) return mix(a, b, t * 2.0);
-    return mix(b, c, (t - 0.5) * 2.0);
+    // Mix in squared space — keeps midpoints luminous instead of muddy
+    if (t < 0.5) return sqrt(mix(a * a, b * b, t * 2.0));
+    return sqrt(mix(b * b, c * c, (t - 0.5) * 2.0));
 }
 
 vec3 paletteColor(float t, int id) {
     if (id == 0) return triGradient(t, vec3(0.88, 0.21, 1.00), vec3(0.50, 1.00, 0.92), vec3(1.00, 0.42, 0.76));
     if (id == 1) return triGradient(t, vec3(1.00, 0.00, 1.00), vec3(0.00, 1.00, 1.00), vec3(0.40, 0.00, 1.00));
     if (id == 2) return triGradient(t, vec3(0.48, 0.00, 0.72), vec3(1.00, 0.00, 0.42), vec3(1.00, 0.40, 0.00));
-    if (id == 3) return triGradient(t, vec3(0.00, 0.90, 1.00), vec3(0.30, 0.69, 0.31), vec3(0.49, 0.30, 0.99));
-    if (id == 4) return triGradient(t, vec3(0.55, 0.00, 0.00), vec3(1.00, 0.27, 0.00), vec3(1.00, 0.65, 0.00));
+    if (id == 3) return triGradient(t, vec3(0.00, 0.90, 1.00), vec3(0.12, 0.55, 0.95), vec3(0.49, 0.30, 0.99));
+    if (id == 4) return triGradient(t, vec3(1.00, 0.00, 0.67), vec3(0.00, 1.00, 0.80), vec3(0.67, 0.00, 1.00));
     if (id == 5) return triGradient(t, vec3(0.05, 0.28, 0.63), vec3(0.00, 0.90, 1.00), vec3(0.70, 0.90, 0.99));
-    if (id == 6) return triGradient(t, vec3(0.00, 0.12, 0.25), vec3(0.00, 0.46, 0.85), vec3(0.22, 0.80, 0.80));
-    return triGradient(t, vec3(1.00, 0.00, 0.67), vec3(0.00, 1.00, 0.80), vec3(0.67, 0.00, 1.00));
+    if (id == 6) return triGradient(t, vec3(0.88, 0.21, 1.00), vec3(0.00, 0.90, 0.82), vec3(1.00, 0.18, 0.62));
+    return triGradient(t, vec3(0.45, 0.05, 0.85), vec3(1.00, 0.15, 0.60), vec3(1.00, 0.55, 0.05));
 }
 
 // ─── Main ───────────────────────────────────────────────────────────
@@ -90,7 +91,7 @@ void main() {
     float turb = clamp(iTurbulence * 0.01, 0.0, 1.0);
     float intensity = clamp(iIntensity * 0.01, 0.0, 1.0);
 
-    float time = iTime * (0.3 + speed * 0.14);
+    float time = iTime * (0.14 + speed * 0.3);
 
     // ── Domain warp — organic turbulence at low spatial frequency ──
     vec2 wp = domainWarp(p * 1.6, time, turb * 0.7);

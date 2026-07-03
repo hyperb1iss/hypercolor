@@ -46,6 +46,16 @@ interface BuildingLayout {
     pulse: number
 }
 
+interface GradientCache {
+    background: CanvasGradient
+    blooms: CanvasGradient[]
+    key: string
+    moonDisk: CanvasGradient
+    moonHalo: CanvasGradient
+    sweeps: CanvasGradient[]
+    wetGround: CanvasGradient
+}
+
 interface PaletteSet {
     bgTop: string
     bgBottom: string
@@ -221,6 +231,19 @@ function hexToRgba(hex: string, alpha: number): string {
     return `rgba(${color.r}, ${color.g}, ${color.b}, ${clamp(alpha, 0, 1).toFixed(3)})`
 }
 
+const fillStyleCache = new Map<string, string>()
+
+/** rgba() fill string with the alpha baked in, cached per (color, quantized alpha) pair. */
+function cachedFillStyle(color: string, alpha: number): string {
+    const quantized = Math.round(clamp(alpha, 0, 1) * 255)
+    const key = `${color}|${quantized}`
+    const cached = fillStyleCache.get(key)
+    if (cached) return cached
+    const style = hexToRgba(color, quantized / 255)
+    fillStyleCache.set(key, style)
+    return style
+}
+
 function fillRectAlpha(
     ctx: CanvasRenderingContext2D,
     color: string,
@@ -230,17 +253,13 @@ function fillRectAlpha(
     width: number,
     height: number,
 ): void {
-    ctx.globalAlpha = clamp(alpha, 0, 1)
-    ctx.fillStyle = color
+    ctx.fillStyle = cachedFillStyle(color, alpha)
     ctx.fillRect(x, y, width, height)
-    ctx.globalAlpha = 1
 }
 
 function fillPathAlpha(ctx: CanvasRenderingContext2D, color: string, alpha: number): void {
-    ctx.globalAlpha = clamp(alpha, 0, 1)
-    ctx.fillStyle = color
+    ctx.fillStyle = cachedFillStyle(color, alpha)
     ctx.fill()
-    ctx.globalAlpha = 1
 }
 
 function getPalette(name: string): PaletteSet {
@@ -315,7 +334,11 @@ export default canvas.stateful(
         scene: combo('Scene', [...SCENES], { default: 'Skyline', group: 'Scene' }),
         speed: num('Speed', [1, 10], 4, { group: 'Motion' }),
         trafficFlow: num('Traffic Flow', [0, 100], 58, { group: 'Motion' }),
-        windowDensity: num('Window Density', [10, 100], 56, { group: 'Geometry' }),
+        // Control id kept as 'windowDensity' for preset/profile compat.
+        windowDensity: num('City Density', [10, 100], 56, {
+            group: 'Geometry',
+            tooltip: 'Skyline density: building, transit lane, and beacon count, plus how many windows stay lit',
+        }),
     },
     () => {
         let buildings: Building[] = []
@@ -325,6 +348,68 @@ export default canvas.stateful(
         let counts = computeCounts(56)
         let lastDensity = 56
         let initialized = false
+        let gradients: GradientCache | null = null
+
+        // Gradients are rebuilt only when size/palette/controls change; drifting
+        // layers reposition the cached gradients via ctx.translate at draw time.
+        function ensureGradients(
+            ctx: CanvasRenderingContext2D,
+            w: number,
+            h: number,
+            palette: PaletteSet,
+            colorMode: string,
+            haze: number,
+            glow: number,
+            sceneIndex: number,
+        ): GradientCache {
+            const key = `${w}x${h}|${colorMode}|${sceneIndex}|${haze}|${glow}`
+            if (gradients && gradients.key === key) return gradients
+
+            const background = ctx.createLinearGradient(0, 0, 0, h)
+            background.addColorStop(0, palette.bgTop)
+            background.addColorStop(0.62, palette.bgBottom)
+            background.addColorStop(1, palette.buildingA)
+
+            const blooms = sceneBloomAnchors(sceneIndex).map((_, index) => {
+                const radius = Math.max(w, h) * (sceneIndex === 2 ? 0.42 : 0.34) * (1 + index * 0.08)
+                const bloom = ctx.createRadialGradient(0, 0, 0, 0, 0, radius)
+                bloom.addColorStop(0, hexToRgba(palette.haze, 0.04 + haze * (0.1 + index * 0.03)))
+                bloom.addColorStop(1, hexToRgba(palette.haze, 0))
+                return bloom
+            })
+
+            const moonR = sceneMoonCenter(w, h, sceneIndex, 0).r
+            const intensity = 0.28 + glow * 0.32 + haze * 0.16
+            const moonHalo = ctx.createRadialGradient(0, 0, moonR * 0.2, 0, 0, moonR * 3.4)
+            moonHalo.addColorStop(0, hexToRgba(palette.haze, intensity * 0.5))
+            moonHalo.addColorStop(0.35, hexToRgba(palette.haze, intensity * 0.18))
+            moonHalo.addColorStop(1, hexToRgba(palette.haze, 0))
+
+            const moonDisk = ctx.createRadialGradient(0, 0, 0, 0, 0, moonR)
+            moonDisk.addColorStop(0, hexToRgba(palette.haze, 0.55 + glow * 0.25))
+            moonDisk.addColorStop(0.45, hexToRgba(palette.haze, 0.22 + glow * 0.18))
+            moonDisk.addColorStop(1, hexToRgba(palette.haze, 0))
+
+            const sweepStrength = 0.06 + glow * 0.16
+            const sweepWidth = w * (sceneIndex === 1 ? 0.18 : 0.13)
+            const sweepCount = sceneIndex === 2 ? 4 : 3
+            const sweeps = Array.from({ length: sweepCount }, (_, index) => {
+                const sweep = ctx.createLinearGradient(0, 0, sweepWidth, 0)
+                sweep.addColorStop(0, hexToRgba(palette.haze, 0))
+                sweep.addColorStop(0.5, hexToRgba(palette.haze, sweepStrength + index * 0.01))
+                sweep.addColorStop(1, hexToRgba(palette.haze, 0))
+                return sweep
+            })
+
+            const ground = sceneGround(h, sceneIndex)
+            const wetGround = ctx.createLinearGradient(0, ground, 0, h)
+            wetGround.addColorStop(0, hexToRgba(palette.traffic, 0.04 + glow * 0.06))
+            wetGround.addColorStop(0.5, hexToRgba(palette.haze, 0.08 + glow * 0.06 + haze * 0.06))
+            wetGround.addColorStop(1, hexToRgba(palette.bgBottom, 0.6))
+
+            gradients = { background, blooms, key, moonDisk, moonHalo, sweeps, wetGround }
+            return gradients
+        }
 
         function seedCity(): void {
             buildings = Array.from({ length: counts.buildings }, (_, index) => {
@@ -368,29 +453,25 @@ export default canvas.stateful(
             ctx: CanvasRenderingContext2D,
             w: number,
             h: number,
-            palette: PaletteSet,
-            haze: number,
+            cache: GradientCache,
             sceneIndex: number,
             time: number,
         ): void {
-            const gradient = ctx.createLinearGradient(0, 0, 0, h)
-            gradient.addColorStop(0, palette.bgTop)
-            gradient.addColorStop(0.62, palette.bgBottom)
-            gradient.addColorStop(1, palette.buildingA)
-            ctx.fillStyle = gradient
+            ctx.fillStyle = cache.background
             ctx.fillRect(0, 0, w, h)
 
             const bloomY = sceneIndex === 2 ? h * 0.55 : h * 0.72
             const anchors = sceneBloomAnchors(sceneIndex)
             for (const [index, anchor] of anchors.entries()) {
+                const bloom = cache.blooms[index]
+                if (!bloom) continue
                 const drift = Math.sin(time * (0.22 + index * 0.04) + anchor * 8) * w * 0.04
                 const x = w * anchor + drift
-                const radius = Math.max(w, h) * (sceneIndex === 2 ? 0.42 : 0.34) * (1 + index * 0.08)
-                const bloom = ctx.createRadialGradient(x, bloomY, 0, x, bloomY, radius)
-                bloom.addColorStop(0, hexToRgba(palette.haze, 0.04 + haze * (0.1 + index * 0.03)))
-                bloom.addColorStop(1, hexToRgba(palette.haze, 0))
+                ctx.save()
+                ctx.translate(x, bloomY)
                 ctx.fillStyle = bloom
-                ctx.fillRect(0, 0, w, h)
+                ctx.fillRect(-x, -bloomY, w, h)
+                ctx.restore()
             }
         }
 
@@ -398,28 +479,19 @@ export default canvas.stateful(
             ctx: CanvasRenderingContext2D,
             w: number,
             h: number,
-            palette: PaletteSet,
-            haze: number,
-            glow: number,
+            cache: GradientCache,
             sceneIndex: number,
             time: number,
         ): void {
             const moon = sceneMoonCenter(w, h, sceneIndex, time)
-            const intensity = 0.28 + glow * 0.32 + haze * 0.16
-
-            const halo = ctx.createRadialGradient(moon.x, moon.y, moon.r * 0.2, moon.x, moon.y, moon.r * 3.4)
-            halo.addColorStop(0, hexToRgba(palette.haze, intensity * 0.5))
-            halo.addColorStop(0.35, hexToRgba(palette.haze, intensity * 0.18))
-            halo.addColorStop(1, hexToRgba(palette.haze, 0))
-            ctx.fillStyle = halo
-            ctx.fillRect(0, 0, w, h)
-
-            const disk = ctx.createRadialGradient(moon.x, moon.y, 0, moon.x, moon.y, moon.r)
-            disk.addColorStop(0, hexToRgba(palette.haze, 0.55 + glow * 0.25))
-            disk.addColorStop(0.45, hexToRgba(palette.haze, 0.22 + glow * 0.18))
-            disk.addColorStop(1, hexToRgba(palette.haze, 0))
-            ctx.fillStyle = disk
-            ctx.fillRect(0, 0, w, h)
+            ctx.save()
+            ctx.globalCompositeOperation = 'lighter'
+            ctx.translate(moon.x, moon.y)
+            ctx.fillStyle = cache.moonHalo
+            ctx.fillRect(-moon.x, -moon.y, w, h)
+            ctx.fillStyle = cache.moonDisk
+            ctx.fillRect(-moon.x, -moon.y, w, h)
+            ctx.restore()
         }
 
         function drawHorizonGrid(
@@ -463,25 +535,25 @@ export default canvas.stateful(
             ctx: CanvasRenderingContext2D,
             w: number,
             h: number,
-            palette: PaletteSet,
-            glow: number,
+            cache: GradientCache,
             sceneIndex: number,
             time: number,
         ): void {
-            const sweepStrength = 0.06 + glow * 0.16
             const sweepWidth = w * (sceneIndex === 1 ? 0.18 : 0.13)
-            const sweepCount = sceneIndex === 2 ? 4 : 3
+            const sweepCount = cache.sweeps.length
+            const sweepHeight = h * (sceneIndex === 2 ? 0.82 : 0.66)
 
             for (let i = 0; i < sweepCount; i++) {
+                const gradient = cache.sweeps[i]
+                if (!gradient) continue
                 const cycle = w / sweepCount
                 const anchor = (time * (14 + sceneIndex * 8 + i * 2.4) + i * cycle * 1.2) % (w + sweepWidth * 2)
                 const x = anchor - sweepWidth
-                const gradient = ctx.createLinearGradient(x, 0, x + sweepWidth, 0)
-                gradient.addColorStop(0, hexToRgba(palette.haze, 0))
-                gradient.addColorStop(0.5, hexToRgba(palette.haze, sweepStrength + i * 0.01))
-                gradient.addColorStop(1, hexToRgba(palette.haze, 0))
+                ctx.save()
+                ctx.translate(x, 0)
                 ctx.fillStyle = gradient
-                ctx.fillRect(x, 0, sweepWidth, h * (sceneIndex === 2 ? 0.82 : 0.66))
+                ctx.fillRect(0, 0, sweepWidth, sweepHeight)
+                ctx.restore()
             }
         }
 
@@ -559,6 +631,7 @@ export default canvas.stateful(
             palette: PaletteSet,
             glow: number,
             haze: number,
+            litBase: number,
             sceneIndex: number,
             time: number,
         ): number {
@@ -622,6 +695,8 @@ export default canvas.stateful(
                 const cellHeight = usableHeight / building.windowRows
 
                 if (cellWidth >= 3 && cellHeight >= 3) {
+                    // Windows blend additively — the dark facades keep the bloom in check.
+                    ctx.globalCompositeOperation = 'lighter'
                     for (let row = 0; row < building.windowRows; row++) {
                         for (let col = 0; col < building.windowCols; col++) {
                             const id = row * 29.3 + col * 11.7 + building.pulse
@@ -646,7 +721,7 @@ export default canvas.stateful(
                                             districtPhase,
                                     )
                             const flicker = 0.3 + 0.7 * pulseBand
-                            const lit = hash(id * 4.9) > 0.44 - pulseBand * 0.18
+                            const lit = hash(id * 4.9) > litBase - pulseBand * 0.18
                             if (!lit) continue
 
                             const wx = x + windowPad + col * cellWidth + cellWidth * 0.18
@@ -666,6 +741,7 @@ export default canvas.stateful(
                             )
                         }
                     }
+                    ctx.globalCompositeOperation = 'source-over'
                 }
 
                 const atmosphereDepth = 1 - building.layer
@@ -798,18 +874,14 @@ export default canvas.stateful(
             ctx: CanvasRenderingContext2D,
             w: number,
             h: number,
+            cache: GradientCache,
             palette: PaletteSet,
             glow: number,
-            haze: number,
             sceneIndex: number,
             time: number,
         ): void {
             const ground = sceneGround(h, sceneIndex)
-            const gradient = ctx.createLinearGradient(0, ground, 0, h)
-            gradient.addColorStop(0, hexToRgba(palette.traffic, 0.04 + glow * 0.06))
-            gradient.addColorStop(0.5, hexToRgba(palette.haze, 0.08 + glow * 0.06 + haze * 0.06))
-            gradient.addColorStop(1, hexToRgba(palette.bgBottom, 0.6))
-            ctx.fillStyle = gradient
+            ctx.fillStyle = cache.wetGround
             ctx.fillRect(0, ground, w, h - ground)
 
             const stripeCount = 5
@@ -856,6 +928,8 @@ export default canvas.stateful(
             glow: number,
             time: number,
         ): void {
+            // Beacon halos blend additively over the dark skyline.
+            ctx.globalCompositeOperation = 'lighter'
             for (const beacon of beacons) {
                 if (layoutCount === 0) continue
                 const building = layouts[beacon.building % layoutCount]
@@ -895,6 +969,7 @@ export default canvas.stateful(
                 ctx.closePath()
                 fillPathAlpha(ctx, palette.beacon, sweepAlpha)
             }
+            ctx.globalCompositeOperation = 'source-over'
         }
 
         function drawAircraftWarnings(
@@ -943,20 +1018,24 @@ export default canvas.stateful(
                 initialized = true
             }
 
-            drawBackground(ctx, w, h, palette, haze, sceneIndex, t)
-            drawMoon(ctx, w, h, palette, haze, glow, sceneIndex, t)
+            // City Density also nudges the lit-window probability (0.44 base ± 0.1).
+            const litBase = 0.54 - ((density - 10) / 90) * 0.2
+            const cache = ensureGradients(ctx, w, h, palette, controls.colorMode as string, haze, glow, sceneIndex)
+
+            drawBackground(ctx, w, h, cache, sceneIndex, t)
+            drawMoon(ctx, w, h, cache, sceneIndex, t)
             drawHorizonGrid(ctx, w, h, palette, haze, sceneIndex, t)
-            drawSkySweep(ctx, w, h, palette, glow, sceneIndex, t)
+            drawSkySweep(ctx, w, h, cache, sceneIndex, t)
 
             if (isRainGrid) {
                 drawRainStreaks(ctx, w, h, palette, haze, t)
             }
 
-            const layoutCount = drawBuildings(ctx, w, h, palette, glow, haze, sceneIndex, t)
+            const layoutCount = drawBuildings(ctx, w, h, palette, glow, haze, litBase, sceneIndex, t)
             drawTransit(ctx, w, h, palette, trafficFlow / 100, glow, sceneIndex, t)
 
             if (isRainGrid) {
-                drawWetGround(ctx, w, h, palette, glow, haze, sceneIndex, t)
+                drawWetGround(ctx, w, h, cache, palette, glow, sceneIndex, t)
             }
 
             if (beaconsEnabled) {

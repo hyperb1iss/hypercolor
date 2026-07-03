@@ -21,13 +21,16 @@ vec3 cosPalette(float t, vec3 a, vec3 b, vec3 c, vec3 d) {
     return clamp(a + b * cos(6.283185 * (c * t + d)), 0.0, 1.0);
 }
 
-// Smooth cyclic interpolation for custom user colors
+// Smooth cyclic interpolation for custom user colors.
+// Mixed in squared space (approx. linear light) so midpoints stay vivid
+// instead of dipping through muddy raw-sRGB averages.
 vec3 cyclicPalette(float t, vec3 c1, vec3 c2, vec3 c3) {
     float t3 = fract(t) * 3.0;
-    vec3 color = mix(c1, c2, smoothstep(0.0, 1.0, t3));
-    color = mix(color, c3, smoothstep(1.0, 2.0, t3));
-    color = mix(color, c1, smoothstep(2.0, 3.0, t3));
-    return color;
+    vec3 sq1 = c1 * c1;
+    vec3 color = mix(sq1, c2 * c2, smoothstep(0.0, 1.0, t3));
+    color = mix(color, c3 * c3, smoothstep(1.0, 2.0, t3));
+    color = mix(color, sq1, smoothstep(2.0, 3.0, t3));
+    return sqrt(color);
 }
 
 vec3 themedPalette(float t) {
@@ -123,13 +126,14 @@ void main() {
     float shift = time * (0.02 + speed * 0.015);
     vec3 color = themedPalette(fract(plasma + shift));
 
-    // === GLOW on peaks ===
-    float peak = smoothstep(0.6, 0.95, plasma);
-    color += color * peak * glow * 0.3;
+    // === GLOW on peaks — wide window so low bloom reads and high bloom blazes ===
+    // Multiplicative lift preserves hue ratios, keeping whiteness in check.
+    float peak = smoothstep(0.5, 0.9, plasma);
+    color += color * peak * glow * 0.85;
 
     // === BACKGROUND in dark valleys only ===
     float dark = smoothstep(0.25, 0.0, plasma);
-    color = mix(color, iBackgroundColor * 0.5, dark * 0.35);
+    color = mix(color, iBackgroundColor * 0.7, dark * 0.5);
 
     // === VIGNETTE ===
     float vig = smoothstep(1.5, 0.2, length(p));

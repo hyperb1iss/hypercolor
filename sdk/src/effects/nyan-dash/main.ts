@@ -63,7 +63,8 @@ const STAR_COLOR_MODES = ['White', 'Cream', 'Candy', 'Mint', 'Ice', 'Rainbow'] a
 const CAT_THEMES = ['Classic', 'Blueberry', 'Mint', 'Midnight'] as const
 const FACE_STYLES = ['Classic', 'Sleepy', 'Sparkle'] as const
 
-const CLASSIC_RAINBOW = ['#ff0000', '#ff9900', '#ffff00', '#33ff00', '#0099ff', '#6633ff'] as const
+// Yellow band is gold (#ffb400) rather than pure #ffff00, which washes out on LEDs.
+const CLASSIC_RAINBOW = ['#ff0000', '#ff9900', '#ffb400', '#33ff00', '#0099ff', '#6633ff'] as const
 
 const CAT_THEMES_PALETTE: Record<CatTheme, CatPalette> = {
     Blueberry: {
@@ -1157,7 +1158,7 @@ canvas(
             {
                 name: 'Midnight Meteors',
                 description:
-                    'Dark velvet cat, comet traffic, and a cooler palette that still feels sweet instead of moody.',
+                    'Dark velvet cat in a midnight warp field, icy meteor streaks raking past a palette that stays sweet instead of moody.',
                 controls: {
                     animationSpeed: 5,
                     backgroundMode: 'Deep Space',
@@ -1169,7 +1170,7 @@ canvas(
                     rainbowMode: 'Wavy',
                     scale: 114,
                     starColorMode: 'Ice',
-                    starMode: 'Comets',
+                    starMode: 'Warp',
                     starDensity: 58,
                 },
             },

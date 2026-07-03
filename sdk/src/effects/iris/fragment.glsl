@@ -19,11 +19,13 @@ uniform float iColorAccent;
 uniform float iBandSharpness;
 uniform float iParticleDensity;
 
-// Control uniforms (animation — consumed by JS frame hook, not used in shader)
+// Control uniform (raw 0-100 slider — scales beat-driven folding and flash below)
+uniform float iBeatFlash;
+
+// Bound by the control pipeline; consumed in the JS frame hook, not here
 uniform float iTimeSpeed;
 uniform float iRotationSpeed;
 uniform float iWanderSpeed;
-uniform float iBeatFlash;
 
 // Audio uniforms (auto-provided by SDK)
 uniform float iAudioLevel;
@@ -395,13 +397,14 @@ vec3 getHarmonic(float g, float l, float t) {
 vec3 getSchemeColor(float g, float l, float t) {
     // Harmonic mode: keep the musical mapping, but anchor it in cooler LED-safe undertones.
     if (iColorScheme == 3) {
-        vec3 base = mix(
-            getMidnightFlux(g, l * 0.8, t),
-            getAurora(fract(g * 0.85 + 0.08), l * 0.9, t),
-            0.45 + iAudioFluxBands.y * 0.15
-        );
+        // Cheap cool anchor standing in for the former MidnightFlux + Aurora
+        // double evaluation — it only carries ~24% of the final mix.
+        float anchorWave = sin(t * 0.4 + g * 3.0) * 0.5 + 0.5;
+        vec3 anchor = mix(vec3(0.45, 0.14, 0.72), vec3(0.06, 0.34, 0.62), anchorWave);
+        anchor = mix(anchor, vec3(0.1, 0.5, 0.42), 0.35 + iAudioFluxBands.y * 0.15);
+        anchor *= 0.38 + l * 0.32;
         vec3 harmonic = getHarmonic(g, l, t);
-        return limitWhitenessRatio(mix(base, harmonic, 0.76), 0.24, 0.34);
+        return limitWhitenessRatio(mix(anchor, harmonic, 0.76), 0.24, 0.34);
     }
     if (iColorScheme == 2) return getGoldBlue(g, l, t);
     if (iColorScheme == 1) return getCyberpunk(g, l, t);
@@ -630,7 +633,7 @@ void mainImage(out vec4 outColor, vec2 fragCoord) {
     float ring = smoothstep(ringWidth, 0.0, abs(l - ringRadius));
     vec3 ringColor = mix(
         mix(rgbSecondary, rgbCounter, 0.4),
-        getSchemeColor(fract(g * 0.5 + ringPhase), l, t),
+        mix(rgb, rgbSecondary, ringPhase),
         0.42
     );
     c += ringColor * ring * (0.04 + beatFlash * 0.28);
@@ -645,7 +648,7 @@ void mainImage(out vec4 outColor, vec2 fragCoord) {
     float vascularMask = smoothstep(-0.3, 0.6, vascular);
     vec3 coreColor = mix(
         rgbCounter,
-        getSchemeColor(fract(0.5 + paletteShift * 0.5 + vascular * 0.05), l * 0.2, t * 0.7),
+        mix(rgb, rgbSecondary, 0.5 + vascular * 0.1) * 0.7,
         0.55
     );
     vec3 coreTexture = mix(coreColor, rgb, 0.2);
@@ -670,18 +673,14 @@ void mainImage(out vec4 outColor, vec2 fragCoord) {
     vec3 fieldColor = mix(rgb, rgbCounter, 0.32);
     c = mix(fieldColor * (0.035 + energyMix * 0.03), c, detailFactor);
     float lowStructure = clamp(1.0 - detailFactor, 0.0, 1.0);
-    vec3 fallback = mix(
-        rgbCounter,
-        getSchemeColor(fract(uv.x * 0.08 + uv.y * 0.12 + paletteShift * 0.2 + t * 0.02), l * 0.3 + 0.15, t * 0.2),
-        0.55
-    );
+    vec3 fallback = mix(rgbCounter, mix(rgb, rgbSecondary, 0.5), 0.55);
     c = mix(c, fallback * 0.42, lowStructure * 0.07);
 
-    // Chromatic aberration accent
+    // Chromatic aberration accent — cheap channel split of the already-computed
+    // band color (undoing the audio boost) instead of two extra scheme evaluations
     float aberration = (0.002 + flowDrive * 0.001) + iAudioFluxBands.z * 0.002 + iAudioBrightness * 0.001;
-    vec3 fringeR = getSchemeColor(fract(g + aberration), l, t);
-    vec3 fringeB = getSchemeColor(fract(g - aberration), l, t);
-    vec3 aberrated = vec3(fringeR.r, c.g, fringeB.b);
+    vec3 fringe = rgb / audioBoost;
+    vec3 aberrated = vec3(fringe.r + aberration, c.g, fringe.b - aberration);
     c = mix(c, aberrated, 0.25 + iAudioFluxBands.z * 0.3);
 
     float contrast = mix(0.92, 1.7, accentNorm);
@@ -697,7 +696,7 @@ void mainImage(out vec4 outColor, vec2 fragCoord) {
     float weaveMask = smoothstep(-0.25 - weaveAA * 3.0, 0.25 + weaveAA * 3.0, weave);
     vec3 weaveColor = mix(
         rgbSecondary,
-        getSchemeColor(fract(g * 0.35 + weaveMask * 0.25 + paletteShift * 0.4), l * 0.5 + 0.2, t * 0.5),
+        mix(rgb, rgbCounter, 0.35 + weaveMask * 0.25),
         0.6
     );
     float weaveMix = texture * (0.1 + energyMix * 0.4);

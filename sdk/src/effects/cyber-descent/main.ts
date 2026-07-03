@@ -47,7 +47,7 @@ export default effect(
         cameraYaw: num('Camera Yaw', [0, 100], 50, { group: 'Camera', tooltip: 'Horizontal turn (50 = forward)' }),
         panSpeed: num('Pan Speed', [0, 100], 30, { group: 'Camera', tooltip: 'Horizontal weaving speed' }),
         panWidth: num('Pan Width', [0, 100], 40, { group: 'Camera', tooltip: 'How wide the camera weaves' }),
-        speed: num('Flight Speed', [1, 10], 5, { group: 'Camera' }),
+        speed: num('Flight Speed', [1, 10], 5, { group: 'Camera', normalize: 'none' }),
         zoom: num('Camera Zoom', [1, 10], 5, { group: 'Camera' }),
 
         colorIntensity: num('Color Intensity', [0, 100], 50, { group: 'Color' }),
@@ -118,7 +118,7 @@ export default effect(
                     cameraYaw: 50,
                     colorIntensity: 48,
                     colorPalette: 'Noir',
-                    colorSaturation: 32,
+                    colorSaturation: 8,
                     cyberpunkMode: 'Standard',
                     fogDensity: 55,
                     lightIntensity: 50,

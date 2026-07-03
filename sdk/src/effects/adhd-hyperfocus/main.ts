@@ -255,19 +255,19 @@ export default effect(
             },
             {
                 controls: {
-                    colorMode: 'Melatonin',
+                    colorMode: 'Void',
                     energy: 80,
                     focusRadius: 40,
                     focusStrength: 110,
                     noise: 90,
-                    paralysis: 50,
+                    paralysis: 80,
                     peripheralBlur: 100,
                     saturation: 100,
                     sparkDensity: 55,
-                    tunnelSpeed: 45,
+                    tunnelSpeed: 12,
                 },
                 description:
-                    'Thoughts scatter like moths around a dying streetlamp. The tunnel drifts sideways, half-asleep, refusing to commit to any direction.',
+                    'Every task is visible and none are possible. The tunnel hangs frozen in violet-black stasis, sparks stalling mid-flight while you watch.',
                 name: 'Task Paralysis Limbo',
             },
         ],

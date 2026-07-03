@@ -44,7 +44,7 @@ export default effect(
             {
                 controls: { flow: 90, palette: 'Molten', saturation: 100, speed: 7, turbulence: 65 },
                 description:
-                    'Red, orange, and amber rivers of molten pigment collide and fold over volcanic black; overlaps burn white-hot.',
+                    'Red, orange, and amber rivers of molten pigment fold over volcanic black, fusing into molten seams where the currents collide.',
                 name: 'Volcanic Calligraphy',
             },
             {
@@ -74,7 +74,7 @@ export default effect(
             {
                 controls: { flow: 80, palette: 'Sakura', saturation: 100, speed: 9.5, turbulence: 90 },
                 description:
-                    'All three sakura inks at terminal velocity. Overlapping zones flare white-hot as the currents rip into turbulent chaos.',
+                    'All three sakura inks at terminal velocity. Overlapping zones fuse into deep magenta as the currents rip into turbulent chaos.',
                 name: 'Dopamine Rush',
             },
         ],

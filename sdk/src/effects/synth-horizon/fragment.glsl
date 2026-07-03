@@ -87,7 +87,7 @@ vec3 paletteColor(int id, int slot) {
         if (slot == 0) return vec3(0.078, 0.039, 0.157);
         if (slot == 1) return vec3(0.290, 0.102, 0.361);
         if (slot == 2) return vec3(0.910, 0.353, 0.561);
-        if (slot == 3) return vec3(0.953, 0.808, 0.459);
+        if (slot == 3) return vec3(1.000, 0.720, 0.300);
         if (slot == 4) return vec3(0.016, 0.769, 0.792);
         if (slot == 5) return vec3(0.039, 0.020, 0.094);
         return vec3(0.012, 0.006, 0.032);
@@ -127,7 +127,7 @@ vec3 paletteColor(int id, int slot) {
         if (slot == 0) return vec3(0.102, 0.043, 0.251);
         if (slot == 1) return vec3(0.439, 0.247, 1.000);
         if (slot == 2) return vec3(1.000, 0.443, 0.808);
-        if (slot == 3) return vec3(1.000, 0.984, 0.588);
+        if (slot == 3) return vec3(1.000, 0.850, 0.400);
         if (slot == 4) return vec3(0.004, 0.804, 0.996);
         if (slot == 5) return vec3(0.063, 0.027, 0.188);
         return vec3(0.020, 0.006, 0.070);
@@ -157,8 +157,8 @@ vec3 paletteColor(int id, int slot) {
         if (slot == 0) return vec3(0.118, 0.043, 0.094);
         if (slot == 1) return vec3(0.427, 0.125, 0.247);
         if (slot == 2) return vec3(1.000, 0.557, 0.604);
-        if (slot == 3) return vec3(1.000, 0.882, 0.702);
-        if (slot == 4) return vec3(1.000, 0.733, 0.627);
+        if (slot == 3) return vec3(1.000, 0.800, 0.450);
+        if (slot == 4) return vec3(1.000, 0.700, 0.400);
         if (slot == 5) return vec3(0.086, 0.031, 0.078);
         return vec3(0.035, 0.012, 0.035);
     }
@@ -412,7 +412,9 @@ void main() {
     float mtnBias = clamp(iMountains / 100.0, 0.0, 1.0);
     float speed = max(iSpeed, 0.05);
     float t = iTime * (0.35 + speed * 0.65);
-    float cycleShift = iTime * (iCycleSpeed * 0.006);
+    // Color Cycle keeps rotating even at cycleSpeed 0 (mirrors Evolve's floor)
+    float cycleRate = iColorMode == 1 ? max(iCycleSpeed * 0.006, 0.04) : iCycleSpeed * 0.006;
+    float cycleShift = iTime * cycleRate;
 
     SceneConfig scene = getScene(iScene);
 

@@ -11,6 +11,7 @@ const PALETTE_MODES = [
     'Sunset',
     'Toxic',
     'Vaporwave',
+    'SilkCircuit',
 ] as const
 const STYLE_MODES = ['Glitch', 'Grain', 'Holo', 'Standard', 'Fractal'] as const
 
@@ -171,13 +172,28 @@ export default effect(
                     pulse: 78,
                     segments: 10,
                     speed: 18,
-                    style: 'Fractal',
+                    style: 'Glitch',
                     twist: 100,
                     warp: 90,
                 },
                 description:
-                    'Lightning strikes a hall of mirrors. Ten electric facets shatter and reassemble at impossible velocity.',
+                    'Lightning strikes a hall of mirrors. Ten electric facets tear into corrupted bands, shattering and reassembling at impossible velocity.',
                 name: 'Mirror Strike',
+            },
+            {
+                controls: {
+                    flow: 20,
+                    palette: 'SilkCircuit',
+                    pulse: 25,
+                    segments: 6,
+                    speed: 2.5,
+                    style: 'Standard',
+                    twist: 30,
+                    warp: 18,
+                },
+                description:
+                    'The tunnel at rest. Magenta and cyan facets turn in unhurried symmetry, every edge clean, every color exactly where it belongs.',
+                name: 'Silk Meditation',
             },
         ],
     },
