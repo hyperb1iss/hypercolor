@@ -267,6 +267,12 @@ pub fn StudioDeviceCard(
     let shape_style = format!("color: rgba({primary}, 0.7)");
 
     let select_body = select.clone();
+    // A display device's home surface is its Screen entry: the card sits
+    // under an LED zone but owns no output boxes on the spatial canvas,
+    // so a zone-select from here is a dead click. Clicking it jumps to
+    // the screen surface instead.
+    let is_display = resolution.is_some();
+    let click_device_id = device.id.clone();
     let physical_id = device.id.clone();
     // The Placed card's operations menu (identify / move / remove) expands
     // inline below the body and is toggled by the action cluster's kebab.
@@ -316,6 +322,13 @@ pub fn StudioDeviceCard(
                     type="button"
                     class="flex min-w-0 flex-1 items-stretch gap-2.5 px-2.5 py-2 text-left"
                     on:click=move |_| {
+                        if is_display
+                            && let Some(screen_id) =
+                                screen_surface_id_for_device(studio, &click_device_id)
+                        {
+                            studio.selected_surface_id.set(Some(screen_id));
+                            return;
+                        }
                         studio.selected_surface_id.set(Some(select_body.clone()));
                         studio.selected_output_ids.set(click_outputs.iter().cloned().collect());
                     }
@@ -1076,4 +1089,25 @@ fn transport_label(transport: &str) -> Option<&'static str> {
         "serial" => Some("Serial"),
         _ => None,
     }
+}
+
+/// The Screen surface backed by a physical display device, if the active
+/// scene carries one. Looked up at click time so the redirect always
+/// follows the current scene.
+fn screen_surface_id_for_device(studio: StudioContext, device_id: &str) -> Option<String> {
+    studio.active_scene.with_untracked(|scene| {
+        scene.as_ref().and_then(|scene| {
+            scene
+                .groups
+                .iter()
+                .find(|group| {
+                    group.role == ZoneRole::Display
+                        && group
+                            .display_target
+                            .as_ref()
+                            .is_some_and(|target| target.device_id.to_string() == device_id)
+                })
+                .map(|group| group.id.to_string())
+        })
+    })
 }
