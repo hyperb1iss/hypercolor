@@ -608,6 +608,19 @@ impl SceneManager {
                 group.display_target = Some(DisplayFaceTarget::new(device_id));
                 structural_changed = true;
             }
+            // Repair pass: earlier builds seeded face-less screen groups
+            // with Replace, which drops the scene frame the moment a face
+            // arrives via the layer path. A face-less group cannot carry a
+            // deliberate composition choice (the composition endpoint
+            // rejects targets with no face), so normalizing to the blended
+            // default is always safe here.
+            if !display_group_has_face(group)
+                && let Some(target) = group.display_target.as_mut()
+                && target.blend_mode == DisplayFaceBlendMode::Replace
+            {
+                target.blend_mode = DisplayFaceBlendMode::default();
+                structural_changed = true;
+            }
             if group.layout != layout {
                 group.layout = layout;
                 structural_changed = true;
@@ -1966,6 +1979,18 @@ fn materialize_legacy_effect_layer(group: &mut Zone) {
 
 fn bump_groups_revision(scene: &mut Scene) {
     scene.groups_revision = scene.groups_revision.saturating_add(1);
+}
+
+/// Whether a display group carries a face, on either representation:
+/// the legacy `effect_id` field or an Effect-source scene layer. The
+/// in-memory zone can hold the face in only one of the two, so both
+/// must be consulted.
+fn display_group_has_face(group: &Zone) -> bool {
+    group.effect_id.is_some()
+        || group
+            .layers
+            .iter()
+            .any(|layer| matches!(layer.source, LayerSource::Effect { .. }))
 }
 
 fn scene_has_custom_led_groups(scene: &Scene) -> bool {

@@ -2831,7 +2831,11 @@ async fn display_group_replace_keeps_transparent_face_pixels_from_bleeding_effec
             .await
     );
 
-    publish_direct_display_face_route(event_bus.as_ref(), device_id, group_id);
+    // Replace is an explicit composition choice now — the seed target
+    // blends — so this isolation contract publishes it deliberately.
+    let mut replace_target = DisplayFaceTarget::new(device_id);
+    replace_target.blend_mode = DisplayFaceBlendMode::Replace;
+    publish_display_face_route(event_bus.as_ref(), group_id, replace_target);
 
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),

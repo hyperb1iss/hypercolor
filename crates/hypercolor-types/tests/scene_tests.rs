@@ -229,6 +229,18 @@ fn scene_effective_zone_assignments_flatten_render_groups() {
 }
 
 #[test]
+fn display_face_target_new_seeds_blended_default() {
+    let target = DisplayFaceTarget::new(DeviceId::new());
+
+    // A fresh target must agree with the enum's serde default: blended
+    // over the effect, never Replace. A Replace seed blacks out the live
+    // effect for any face assigned without an explicit composition patch.
+    assert_eq!(target.blend_mode, DisplayFaceBlendMode::default());
+    assert_eq!(target.blend_mode, DisplayFaceBlendMode::Alpha);
+    assert!(target.blends_with_effect());
+}
+
+#[test]
 fn render_group_display_target_round_trips_in_scene_json() {
     let effect_id = EffectId::from(Uuid::now_v7());
     let device_id = DeviceId::new();

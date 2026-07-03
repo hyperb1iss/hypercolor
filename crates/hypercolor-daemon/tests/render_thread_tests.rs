@@ -1720,9 +1720,11 @@ async fn late_group_canvas_subscribers_see_last_display_face_frame() {
         .get(&group_id)
         .expect("display group target metadata should publish with the face frame");
     assert_eq!(published_target.device_id, display_id);
+    // The fixture group carries the seed target, which defaults to the
+    // blended composition; the published metadata must mirror it.
     assert_eq!(
         published_target.blend_mode,
-        hypercolor_types::scene::DisplayFaceBlendMode::Replace
+        hypercolor_types::scene::DisplayFaceBlendMode::Alpha
     );
     assert_eq!(published_target.opacity, 1.0);
 

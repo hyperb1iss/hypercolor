@@ -396,9 +396,13 @@ pub struct DisplayFaceTarget {
 impl DisplayFaceTarget {
     #[must_use]
     pub fn new(device_id: DeviceId) -> Self {
+        // Matches the enum's serde default: a fresh target blends the face
+        // over the live effect. Seeding Replace here blacked out the effect
+        // for every face assigned through a path that never patched the
+        // target (the Studio add-layer flow).
         Self {
             device_id,
-            blend_mode: DisplayFaceBlendMode::Replace,
+            blend_mode: DisplayFaceBlendMode::default(),
             opacity: default_display_face_opacity(),
         }
     }

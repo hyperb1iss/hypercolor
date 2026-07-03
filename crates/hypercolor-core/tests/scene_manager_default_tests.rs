@@ -295,6 +295,96 @@ fn ensure_display_group_surface_creates_empty_screen_surface() {
 }
 
 #[test]
+fn ensure_display_group_surface_repairs_replace_seed_on_faceless_group() {
+    let device_id = DeviceId::new();
+    let mut scene = make_scene("Desk");
+    let scene_id = scene.id;
+    let mut stale_target = DisplayFaceTarget::new(device_id);
+    stale_target.blend_mode = DisplayFaceBlendMode::Replace;
+    scene.groups = vec![Zone {
+        id: ZoneId::new(),
+        name: "Pump LCD".to_owned(),
+        description: None,
+        effect_id: None,
+        controls: HashMap::new(),
+        control_bindings: HashMap::new(),
+        preset_id: None,
+        layers: Vec::new(),
+        layout: sample_layout("display"),
+        brightness: 1.0,
+        enabled: true,
+        color: None,
+        display_target: Some(stale_target),
+        role: ZoneRole::Display,
+        controls_version: 0,
+        layers_version: 0,
+    }];
+    let mut manager = SceneManager::new();
+    manager.create(scene).expect("scene should create");
+    manager
+        .activate(&scene_id, None)
+        .expect("scene should activate");
+
+    let group = manager
+        .ensure_display_group_surface(device_id, "Pump LCD", sample_layout("display"))
+        .expect("display surface sync should succeed")
+        .clone();
+
+    // The Replace seed on a face-less screen came from older builds; a
+    // face-less group cannot carry a deliberate composition choice, so
+    // sync normalizes it back to the blended default.
+    let target = group
+        .display_target
+        .expect("display target should remain bound");
+    assert_eq!(target.blend_mode, DisplayFaceBlendMode::Alpha);
+}
+
+#[test]
+fn ensure_display_group_surface_preserves_deliberate_replace_with_face() {
+    let device_id = DeviceId::new();
+    let effect = sample_effect("Clock");
+    let mut scene = make_scene("Desk");
+    let scene_id = scene.id;
+    let mut replace_target = DisplayFaceTarget::new(device_id);
+    replace_target.blend_mode = DisplayFaceBlendMode::Replace;
+    scene.groups = vec![Zone {
+        id: ZoneId::new(),
+        name: "Pump LCD".to_owned(),
+        description: None,
+        effect_id: Some(effect.id),
+        controls: HashMap::new(),
+        control_bindings: HashMap::new(),
+        preset_id: None,
+        layers: Vec::new(),
+        layout: sample_layout("display"),
+        brightness: 1.0,
+        enabled: true,
+        color: None,
+        display_target: Some(replace_target),
+        role: ZoneRole::Display,
+        controls_version: 0,
+        layers_version: 0,
+    }];
+    let mut manager = SceneManager::new();
+    manager.create(scene).expect("scene should create");
+    manager
+        .activate(&scene_id, None)
+        .expect("scene should activate");
+
+    let group = manager
+        .ensure_display_group_surface(device_id, "Pump LCD", sample_layout("display"))
+        .expect("display surface sync should succeed")
+        .clone();
+
+    // Replace on a group that carries a face is a composition the user
+    // could have chosen through the panel; sync must not override it.
+    let target = group
+        .display_target
+        .expect("display target should remain bound");
+    assert_eq!(target.blend_mode, DisplayFaceBlendMode::Replace);
+}
+
+#[test]
 fn upsert_display_group_reuses_empty_screen_surface() {
     let mut manager = SceneManager::with_default();
     let device_id = DeviceId::new();
