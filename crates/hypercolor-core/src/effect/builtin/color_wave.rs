@@ -104,7 +104,7 @@ impl ColorWaveRenderer {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            wave_color: [0.5, 1.0, 0.92, 1.0],
+            wave_color: [0.0, 1.0, 0.85, 1.0],
             background_color: [0.0, 0.02, 0.08, 1.0],
             speed: 85.0,
             wave_width: 50.0,
@@ -586,7 +586,7 @@ fn controls() -> Vec<ControlDefinition> {
         color_control(
             "wave_color",
             "Wave Color",
-            [0.5, 1.0, 0.92, 1.0],
+            [0.0, 1.0, 0.85, 1.0],
             "Colors",
             "Primary color for the traveling wavefront.",
         ),
@@ -694,7 +694,7 @@ fn presets() -> Vec<PresetTemplate> {
             "Neon Scanner",
             "Fast cyan scan lines bouncing across the rig",
             &[
-                ("wave_color", ControlValue::Color([0.5, 1.0, 0.92, 1.0])),
+                ("wave_color", ControlValue::Color([0.0, 1.0, 0.85, 1.0])),
                 (
                     "background_color",
                     ControlValue::Color([0.0, 0.01, 0.04, 1.0]),

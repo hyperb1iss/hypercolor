@@ -635,12 +635,13 @@ fn audio_pulse_responds_to_beat() {
     let mut r = AudioPulseRenderer::new();
     r.init(&make_metadata("audio_pulse")).expect("init");
 
-    // No beat
+    // Same RMS on both frames so only the beat differs.
+    let mut steady = AudioData::silence();
+    steady.rms_level = 0.5;
     let canvas_no_beat = r
-        .tick(&frame_with_audio(0.0, &AudioData::silence()))
+        .tick(&frame_with_audio(0.0, &steady))
         .expect("tick no beat");
 
-    // Beat detected
     let mut beat_audio = AudioData::silence();
     beat_audio.beat_detected = true;
     beat_audio.rms_level = 0.5;
@@ -648,12 +649,41 @@ fn audio_pulse_responds_to_beat() {
         .tick(&frame_with_audio(0.0, &beat_audio))
         .expect("tick with beat");
 
-    let p_no_beat = top_left(&canvas_no_beat);
-    let p_beat = top_left(&canvas_beat);
+    let center_no_beat = canvas_no_beat.get_pixel(W / 2, H / 2);
+    let center_beat = canvas_beat.get_pixel(W / 2, H / 2);
 
     assert_ne!(
-        p_no_beat, p_beat,
-        "audio pulse should flash differently on beat detection"
+        center_no_beat, center_beat,
+        "a beat should spawn a ring visible at the canvas center"
+    );
+}
+
+#[test]
+fn audio_pulse_beat_does_not_brighten_far_field() {
+    let mut r = AudioPulseRenderer::new();
+    r.init(&make_metadata("audio_pulse")).expect("init");
+
+    // Same RMS on both frames so the ambient floor is identical.
+    let mut steady = AudioData::silence();
+    steady.rms_level = 0.5;
+    let canvas_no_beat = r
+        .tick(&frame_with_audio(0.0, &steady))
+        .expect("tick no beat");
+
+    let mut beat_audio = AudioData::silence();
+    beat_audio.beat_detected = true;
+    beat_audio.rms_level = 0.5;
+    let canvas_beat = r
+        .tick(&frame_with_audio(0.0, &beat_audio))
+        .expect("tick with beat");
+
+    // The freshly spawned ring sits near the center; the far corner must be
+    // untouched — beat energy drives ring motion, never a canvas-wide
+    // brightness add.
+    assert_eq!(
+        top_left(&canvas_no_beat),
+        top_left(&canvas_beat),
+        "beat energy must not flat-boost pixels far from the ring"
     );
 }
 
@@ -770,6 +800,57 @@ fn rainbow_has_spatial_variation() {
     assert_ne!(
         left, right,
         "rainbow should produce different hues across the canvas"
+    );
+}
+
+#[test]
+fn rainbow_horizontal_is_uniform_down_each_column() {
+    let mut r = RainbowRenderer::new();
+    r.init(&make_metadata("rainbow")).expect("init");
+
+    let canvas = r.tick(&frame(0.0, 0)).expect("tick");
+    assert_eq!(
+        canvas.get_pixel(W / 2, 0),
+        canvas.get_pixel(W / 2, H - 1),
+        "default horizontal sweep should not vary along y"
+    );
+}
+
+#[test]
+fn rainbow_vertical_direction_varies_by_row() {
+    let mut r = RainbowRenderer::new();
+    r.init(&make_metadata("rainbow")).expect("init");
+    r.set_control("direction", &ControlValue::Enum("Vertical".into()));
+
+    let canvas = r.tick(&frame(0.0, 0)).expect("tick");
+    assert_ne!(
+        canvas.get_pixel(0, 0),
+        canvas.get_pixel(0, H - 1),
+        "vertical sweep should vary along y"
+    );
+    assert_eq!(
+        canvas.get_pixel(0, H / 2),
+        canvas.get_pixel(W - 1, H / 2),
+        "vertical sweep should not vary along x"
+    );
+}
+
+#[test]
+fn rainbow_diagonal_direction_varies_along_both_axes() {
+    let mut r = RainbowRenderer::new();
+    r.init(&make_metadata("rainbow")).expect("init");
+    r.set_control("direction", &ControlValue::Enum("Diagonal".into()));
+
+    let canvas = r.tick(&frame(0.0, 0)).expect("tick");
+    assert_ne!(
+        canvas.get_pixel(0, 0),
+        canvas.get_pixel(W - 1, 0),
+        "diagonal sweep should vary along x"
+    );
+    assert_ne!(
+        canvas.get_pixel(0, 0),
+        canvas.get_pixel(0, H - 1),
+        "diagonal sweep should vary along y"
     );
 }
 
@@ -1284,6 +1365,7 @@ fn rainbow_metadata_includes_color_controls() {
     assert!(ids.contains(&"scale"));
     assert!(ids.contains(&"saturation"));
     assert!(ids.contains(&"brightness"));
+    assert!(ids.contains(&"direction"));
 }
 
 #[test]
@@ -1481,6 +1563,30 @@ fn color_zones_has_spatial_variation() {
     assert_ne!(
         left, right,
         "left and right columns should be different colors"
+    );
+}
+
+#[test]
+fn color_zones_blended_path_reflects_zone_color_updates() {
+    let mut r = ColorZonesRenderer::new();
+    r.init(&make_metadata("color_zones")).expect("init");
+    // Blend > 0 exercises the Oklab path, which reads the cached zone
+    // conversions — a stale cache would keep rendering the old color.
+    r.set_control("zone_count", &ControlValue::Enum("2".to_owned()));
+    r.set_control("blend", &ControlValue::Float(0.5));
+    r.set_control("zone_1", &ControlValue::Color([1.0, 0.0, 0.0, 1.0]));
+    r.set_control("zone_2", &ControlValue::Color([0.0, 0.0, 1.0, 1.0]));
+
+    let before = r.tick(&frame(0.0, 0)).expect("tick");
+    let left_before = top_left(&before);
+    assert!(left_before.r > left_before.g, "zone 1 should start red");
+
+    r.set_control("zone_1", &ControlValue::Color([0.0, 1.0, 0.0, 1.0]));
+    let after = r.tick(&frame(0.0, 1)).expect("tick after recolor");
+    let left_after = top_left(&after);
+    assert!(
+        left_after.g > left_after.r,
+        "updating zone_1 must refresh the blended output, got {left_after:?}"
     );
 }
 

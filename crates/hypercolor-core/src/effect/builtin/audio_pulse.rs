@@ -5,6 +5,10 @@
 //! center on every detected beat. Rings expand outward in normalized
 //! coordinates so the effect stays resolution-independent across LED layouts.
 //!
+//! Beat energy drives ring *motion* — a temporary surge in expansion speed and
+//! ring width — never a canvas-wide brightness add, which reads as strobing on
+//! LED hardware.
+//!
 //! This replaces an older single-color flash renderer whose output was identical
 //! for every pixel — see the deep backend audit (M10) for the frame-rate-
 //! dependent beat decay bug that the time-based envelope here also fixes.
@@ -41,7 +45,9 @@ pub struct AudioPulseRenderer {
     beat_decay_secs: f32,
     brightness: f32,
     waves: Vec<RadialWave>,
-    beat_flash: f32,
+    /// Decaying beat envelope. Drives ring expansion speed and width — never
+    /// a flat brightness add.
+    beat_energy: f32,
 }
 
 impl AudioPulseRenderer {
@@ -57,7 +63,7 @@ impl AudioPulseRenderer {
             beat_decay_secs: 0.35,
             brightness: 1.0,
             waves: Vec::new(),
-            beat_flash: 0.0,
+            beat_energy: 0.0,
         }
     }
 
@@ -70,15 +76,15 @@ impl AudioPulseRenderer {
 
     /// Exponential time-based decay. `beat_decay_secs` is the ~95% decay time
     /// (three time constants), so `tau = beat_decay_secs / 3`.
-    fn decay_beat_flash(&mut self, delta_secs: f32) {
+    fn decay_beat_energy(&mut self, delta_secs: f32) {
         if self.beat_decay_secs <= 1e-4 {
-            self.beat_flash = 0.0;
+            self.beat_energy = 0.0;
             return;
         }
         let tau = self.beat_decay_secs / 3.0;
-        self.beat_flash *= (-delta_secs / tau).exp();
-        if self.beat_flash < 1e-3 {
-            self.beat_flash = 0.0;
+        self.beat_energy *= (-delta_secs / tau).exp();
+        if self.beat_energy < 1e-3 {
+            self.beat_energy = 0.0;
         }
     }
 }
@@ -92,7 +98,7 @@ impl Default for AudioPulseRenderer {
 impl EffectRenderer for AudioPulseRenderer {
     fn init(&mut self, _metadata: &EffectMetadata) -> anyhow::Result<()> {
         self.waves.clear();
-        self.beat_flash = 0.0;
+        self.beat_energy = 0.0;
         Ok(())
     }
 
@@ -107,14 +113,17 @@ impl EffectRenderer for AudioPulseRenderer {
         let delta = input.delta_secs.max(0.0);
 
         if input.audio.beat_detected {
-            self.beat_flash = 1.0;
+            self.beat_energy = 1.0;
             self.spawn_wave();
         } else {
-            self.decay_beat_flash(delta);
+            self.decay_beat_energy(delta);
         }
 
+        // Beat energy surges the rings outward faster instead of brightening
+        // the whole canvas — motion, not a flat flash.
+        let beat_surge = 1.0 + self.beat_energy * 0.8;
         for wave in &mut self.waves {
-            wave.radius += self.wave_speed * delta;
+            wave.radius += self.wave_speed * beat_surge * delta;
         }
         self.waves.retain(|w| w.radius < 2.0);
 
@@ -152,8 +161,9 @@ impl EffectRenderer for AudioPulseRenderer {
         let rms_t = (input.audio.rms_level * self.sensitivity).clamp(0.0, 1.0);
         let ambient = RgbaF32::lerp(&base, &peak, rms_t);
 
-        let beat_boost = self.beat_flash * 0.22;
-        let half_width = self.wave_width.max(1e-4);
+        // Rings momentarily widen with beat energy so each hit reads as a
+        // stronger pulse without any canvas-wide brightness add.
+        let half_width = self.wave_width.max(1e-4) * (1.0 + self.beat_energy * 0.5);
 
         let row_stride = (width as usize) * BYTES_PER_PIXEL;
         let bytes = canvas.as_rgba_bytes_mut();
@@ -179,9 +189,9 @@ impl EffectRenderer for AudioPulseRenderer {
                 }
                 let wave_t = wave_accum.clamp(0.0, 1.0);
 
-                let mut r = ambient.r + (accent.r - ambient.r) * wave_t + beat_boost;
-                let mut g = ambient.g + (accent.g - ambient.g) * wave_t + beat_boost;
-                let mut b = ambient.b + (accent.b - ambient.b) * wave_t + beat_boost;
+                let mut r = ambient.r + (accent.r - ambient.r) * wave_t;
+                let mut g = ambient.g + (accent.g - ambient.g) * wave_t;
+                let mut b = ambient.b + (accent.b - ambient.b) * wave_t;
 
                 r = (r * self.brightness).clamp(0.0, 1.0);
                 g = (g * self.brightness).clamp(0.0, 1.0);
@@ -228,7 +238,9 @@ impl EffectRenderer for AudioPulseRenderer {
             }
             "beat_decay" => {
                 if let Some(v) = value.as_f32() {
-                    self.beat_decay_secs = v.clamp(0.02, 3.0);
+                    // Floor of 0.15 s: shorter envelopes make consecutive
+                    // beats read as strobing on LED hardware.
+                    self.beat_decay_secs = v.clamp(0.15, 3.0);
                 }
             }
             "brightness" => {
@@ -242,7 +254,7 @@ impl EffectRenderer for AudioPulseRenderer {
 
     fn destroy(&mut self) {
         self.waves.clear();
-        self.beat_flash = 0.0;
+        self.beat_energy = 0.0;
     }
 }
 
@@ -276,11 +288,11 @@ fn controls() -> Vec<ControlDefinition> {
             "beat_decay",
             "Beat Decay",
             0.35,
-            0.05,
+            0.15,
             1.5,
             0.01,
             "Audio",
-            "How many seconds the beat flash lingers after a detected beat.",
+            "How many seconds the beat-driven ring surge lingers after a detected beat.",
         ),
         slider_control(
             "wave_speed",

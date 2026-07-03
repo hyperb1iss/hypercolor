@@ -40,6 +40,11 @@ impl ZoneLayout {
 /// Multi-zone static color renderer with per-zone color pickers and soft blending.
 pub struct ColorZonesRenderer {
     zones: [[f32; 4]; 9],
+    /// Oklab-converted cache of `zones`. Zone colors only change through
+    /// `set_control`, so the per-pixel blend path reads this cache instead of
+    /// re-deriving Oklab (three cube roots per conversion) for every corner
+    /// of every pixel each frame.
+    zones_oklab: [Oklab; 9],
     zone_count: u8,
     layout: ZoneLayout,
     blend: f32,
@@ -49,18 +54,20 @@ pub struct ColorZonesRenderer {
 impl ColorZonesRenderer {
     #[must_use]
     pub fn new() -> Self {
+        let zones = [
+            [0.88, 0.08, 1.0, 1.0],  // Electric purple
+            [0.0, 1.0, 0.85, 1.0],   // Neon cyan
+            [1.0, 0.25, 0.55, 1.0],  // Hot coral
+            [0.31, 0.98, 0.48, 1.0], // Success green
+            [1.0, 0.78, 0.0, 1.0],   // Gold
+            [1.0, 0.15, 0.15, 1.0],  // Vivid red
+            [0.0, 0.4, 1.0, 1.0],    // Deep blue
+            [1.0, 0.6, 0.0, 1.0],    // Amber
+            [0.6, 0.0, 1.0, 1.0],    // Deep purple
+        ];
         Self {
-            zones: [
-                [0.88, 0.08, 1.0, 1.0],  // Electric purple
-                [0.0, 1.0, 0.85, 1.0],   // Neon cyan
-                [1.0, 0.25, 0.55, 1.0],  // Hot coral
-                [0.31, 0.98, 0.48, 1.0], // Success green
-                [0.95, 0.98, 0.55, 1.0], // Electric yellow
-                [1.0, 0.39, 0.39, 1.0],  // Error red
-                [0.0, 0.4, 1.0, 1.0],    // Deep blue
-                [1.0, 0.6, 0.0, 1.0],    // Amber
-                [0.6, 0.0, 1.0, 1.0],    // Deep purple
-            ],
+            zones,
+            zones_oklab: zones.map(rgba_to_oklab),
             zone_count: 3,
             layout: ZoneLayout::Columns,
             blend: 0.15,
@@ -87,11 +94,19 @@ impl ColorZonesRenderer {
         }
     }
 
+    /// Flatten (row, col) into a zone index, clamping to valid indices.
+    fn zone_index(&self, row: usize, col: usize, cols: u8) -> usize {
+        (row * usize::from(cols) + col).min(usize::from(self.zone_count) - 1)
+    }
+
     /// Look up the color for a zone at (row, col), clamping to valid indices.
-    #[allow(clippy::as_conversions)]
     fn zone_color(&self, row: usize, col: usize, cols: u8) -> [f32; 4] {
-        let index = (row * usize::from(cols) + col).min(usize::from(self.zone_count) - 1);
-        self.zones[index]
+        self.zones[self.zone_index(row, col, cols)]
+    }
+
+    /// Look up the cached Oklab color for a zone at (row, col).
+    fn zone_oklab(&self, row: usize, col: usize, cols: u8) -> Oklab {
+        self.zones_oklab[self.zone_index(row, col, cols)]
     }
 
     /// Sample blended zone color at normalized canvas position.
@@ -125,10 +140,10 @@ impl ColorZonesRenderer {
         let right_col = (base_col + 1).min(usize::from(cols) - 1);
         let bottom_row = (base_row + 1).min(usize::from(rows) - 1);
 
-        let c00 = rgba_to_oklab(self.zone_color(base_row, base_col, cols));
-        let c10 = rgba_to_oklab(self.zone_color(base_row, right_col, cols));
-        let c01 = rgba_to_oklab(self.zone_color(bottom_row, base_col, cols));
-        let c11 = rgba_to_oklab(self.zone_color(bottom_row, right_col, cols));
+        let c00 = self.zone_oklab(base_row, base_col, cols);
+        let c10 = self.zone_oklab(base_row, right_col, cols);
+        let c01 = self.zone_oklab(bottom_row, base_col, cols);
+        let c11 = self.zone_oklab(bottom_row, right_col, cols);
 
         // Bilinear interpolation in Oklab.
         let top = Oklab::lerp(c00, c10, sx);
@@ -207,6 +222,7 @@ impl EffectRenderer for ColorZonesRenderer {
                 && let ControlValue::Color(c) = value
             {
                 self.zones[n - 1] = *c;
+                self.zones_oklab[n - 1] = rgba_to_oklab(*c);
             }
             return;
         }
@@ -344,14 +360,14 @@ fn controls() -> Vec<ControlDefinition> {
         color_control(
             "zone_5",
             "Zone 5",
-            [0.95, 0.98, 0.55, 1.0],
+            [1.0, 0.78, 0.0, 1.0],
             "Zone Colors",
             "Color for zone 5.",
         ),
         color_control(
             "zone_6",
             "Zone 6",
-            [1.0, 0.39, 0.39, 1.0],
+            [1.0, 0.15, 0.15, 1.0],
             "Zone Colors",
             "Color for zone 6.",
         ),

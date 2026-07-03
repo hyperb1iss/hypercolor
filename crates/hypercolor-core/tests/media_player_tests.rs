@@ -28,9 +28,20 @@ fn png_bytes(color: [u8; 4]) -> Vec<u8> {
 }
 
 fn render_media_player(asset_value: &str, library: Arc<RwLock<AssetLibrary>>) -> Canvas {
+    render_media_player_with_controls(asset_value, library, &[])
+}
+
+fn render_media_player_with_controls(
+    asset_value: &str,
+    library: Arc<RwLock<AssetLibrary>>,
+    controls: &[(&str, ControlValue)],
+) -> Canvas {
     let mut renderer = create_builtin_renderer("media_player").expect("media_player renderer");
     renderer.bind_asset_library(library);
     renderer.set_control("asset", &ControlValue::Text(asset_value.to_owned()));
+    for (name, value) in controls {
+        renderer.set_control(name, value);
+    }
 
     let audio = AudioData::silence();
     let interaction = InteractionData::default();
@@ -111,5 +122,41 @@ fn media_player_rejects_unknown_asset_ids() {
     assert!(
         !canvas_has_content(&canvas),
         "an asset id absent from the library must not resolve to media"
+    );
+}
+
+#[test]
+fn media_player_hue_shift_rotates_rendered_colors() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let mut library = AssetLibrary::open(tempdir.path().join("assets")).expect("open library");
+    let upsert = library
+        .add_bytes(
+            &png_bytes([255, 0, 0, 255]),
+            AssetUploadOptions::new("red.png"),
+        )
+        .expect("add asset");
+    let asset_id = upsert.record.id.to_string();
+    let library = Arc::new(RwLock::new(library));
+
+    let baseline = render_media_player(&asset_id, Arc::clone(&library));
+    let rotated = render_media_player_with_controls(
+        &asset_id,
+        library,
+        &[("hue_shift", ControlValue::Float(std::f32::consts::PI))],
+    );
+
+    let base_pixel = baseline.get_pixel(W / 2, H / 2);
+    let rotated_pixel = rotated.get_pixel(W / 2, H / 2);
+    assert_ne!(
+        base_pixel, rotated_pixel,
+        "a pi hue shift should visibly rotate the media colors"
+    );
+    assert!(
+        rotated_pixel.r < base_pixel.r,
+        "red media rotated half the color wheel should no longer be red-dominant, got {rotated_pixel:?}"
+    );
+    assert!(
+        canvas_has_content(&rotated),
+        "hue-shifted media should still render visible content"
     );
 }

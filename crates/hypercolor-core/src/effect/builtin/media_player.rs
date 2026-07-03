@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use hypercolor_types::asset::AssetId;
-use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, RgbaF32};
+use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, Oklch, RgbaF32};
 use hypercolor_types::effect::{
     ControlDefinition, ControlValue, EffectCategory, EffectMetadata, EffectSource,
 };
@@ -215,11 +215,18 @@ fn apply_output_adjustments(
     brightness: f32,
     tint: [f32; 4],
     tint_strength: f32,
-    _hue_shift: f32,
+    hue_shift: f32,
 ) {
     let tint_strength = tint_strength.clamp(0.0, 1.0);
+    // Hue rotation runs in Oklch (two Oklab conversions per pixel), so the
+    // common hue_shift == 0 path skips it entirely.
+    let apply_hue = hue_shift.abs() > 1e-3;
+    let hue_degrees = hue_shift.to_degrees();
     for pixel in canvas.as_rgba_bytes_mut().chunks_exact_mut(BYTES_PER_PIXEL) {
         let mut color = RgbaF32::from_srgb_u8(pixel[0], pixel[1], pixel[2], pixel[3]);
+        if apply_hue {
+            color = rotate_hue(color, hue_degrees);
+        }
         color.r *= brightness;
         color.g *= brightness;
         color.b *= brightness;
@@ -240,6 +247,22 @@ fn apply_output_adjustments(
         pixel[2] = rgba.b;
         pixel[3] = rgba.a;
     }
+}
+
+/// Rotate a linear-light color's hue in Oklch, preserving lightness and
+/// chroma. Near-achromatic pixels pass through unchanged — hue is
+/// meaningless at zero chroma and rotating it only adds noise.
+fn rotate_hue(color: RgbaF32, degrees: f32) -> RgbaF32 {
+    let lch = color.to_oklch();
+    if lch.c <= 1e-4 {
+        return color;
+    }
+    RgbaF32::from_oklch(Oklch::new(
+        lch.l,
+        lch.c,
+        (lch.h + degrees).rem_euclid(360.0),
+        lch.alpha,
+    ))
 }
 
 #[expect(
@@ -321,7 +344,7 @@ fn controls() -> Vec<ControlDefinition> {
             std::f32::consts::PI,
             0.01,
             "Output",
-            "Reserved hue rotation control for media output.",
+            "Rotate media hues around the color wheel (radians, Oklch).",
         ),
     ]
 }
