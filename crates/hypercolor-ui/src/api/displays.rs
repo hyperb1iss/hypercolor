@@ -147,10 +147,7 @@ pub async fn set_display_face(
 }
 
 /// `DELETE /api/v1/displays/{id}/face?scope=...` — clear one layer's assignment.
-pub async fn delete_display_face(
-    display_id: &str,
-    scope: DisplayFaceScope,
-) -> Result<(), String> {
+pub async fn delete_display_face(display_id: &str, scope: DisplayFaceScope) -> Result<(), String> {
     let url = format!(
         "/api/v1/displays/{display_id}/face?scope={}",
         scope.as_str()

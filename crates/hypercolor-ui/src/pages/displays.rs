@@ -234,8 +234,7 @@ pub fn DisplaysPage() -> impl IntoView {
     let clear_face = Callback::new(move |_| {
         let scope = assign_scope.get_untracked();
         if scope == api::DisplayFaceScope::Scene
-            && let Some(message) =
-                snapshot_scene_lock_message(Some(fx), "clearing display faces")
+            && let Some(message) = snapshot_scene_lock_message(Some(fx), "clearing display faces")
         {
             toasts::toast_error(&message);
             return;
