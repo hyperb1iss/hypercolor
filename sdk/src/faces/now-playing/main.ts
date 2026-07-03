@@ -264,12 +264,16 @@ export default face(
     'Now Playing',
     {
         accent: color('Accent', palette.electricPurple, { group: 'Style' }),
-        heroFont: font('Title Font', 'Sora', { families: [...DISPLAY_FONT_FAMILIES], group: 'Typography' }),
+        heroFont: font('Title Font', 'Sora', {
+            families: [...DISPLAY_FONT_FAMILIES],
+            group: 'Typography',
+            weights: [600],
+        }),
         secondaryAccent: color('Secondary', palette.coral, { group: 'Style' }),
         showProgress: toggle('Show Progress', true, { group: 'Elements' }),
         showTimes: toggle('Show Times', true, { group: 'Elements' }),
         transparentBackground: transparentBackgroundControl(),
-        uiFont: font('UI Font', 'Inter', { families: [...UI_FONT_FAMILIES], group: 'Typography' }),
+        uiFont: font('UI Font', 'Inter', { families: [...UI_FONT_FAMILIES], group: 'Typography', weights: [600] }),
         useArtAccent: toggle('Accent From Art', true, { group: 'Style' }),
     },
     {

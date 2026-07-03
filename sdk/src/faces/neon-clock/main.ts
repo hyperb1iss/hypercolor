@@ -136,7 +136,11 @@ const CONTROLS = {
     dialStyle: combo('Dial Style', ['Orbit', 'Split', 'Pulse'], { group: 'Clock' }),
     digitSpacing: num('Digit Spacing', [0, 50], 4, { group: 'Typography' }),
     glowIntensity: num('Glow', [0, 100], 56, { group: 'Style' }),
-    headlineFont: font('Headline Font', 'Rajdhani', { families: [...DISPLAY_FONT_FAMILIES], group: 'Typography' }),
+    headlineFont: font('Headline Font', 'Rajdhani', {
+        families: [...DISPLAY_FONT_FAMILIES],
+        group: 'Typography',
+        weights: [500],
+    }),
     hourFormat: combo('Format', ['24h', '12h'], { group: 'Clock' }),
     metaSize: num('Meta Size', [8, 24], 12, { group: 'Typography' }),
     secondaryAccent: color('Secondary', palette.electricPurple, { group: 'Style' }),
@@ -148,7 +152,7 @@ const CONTROLS = {
     showTime: toggle('Show Time', true, { group: 'Elements' }),
     timeSize: num('Time Size', [72, 164], 150, { group: 'Typography' }),
     transparentBackground: transparentBackgroundControl(),
-    uiFont: font('UI Font', 'Inter', { families: [...UI_FONT_FAMILIES], group: 'Typography' }),
+    uiFont: font('UI Font', 'Inter', { families: [...UI_FONT_FAMILIES], group: 'Typography', weights: [600] }),
 }
 
 export default face(

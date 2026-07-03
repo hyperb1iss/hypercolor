@@ -120,7 +120,11 @@ export default face(
     {
         accent: color('Accent', palette.neonCyan, { group: 'Style' }),
         colorMode: combo('Colors', ['Auto', 'Accent'], { group: 'Style' }),
-        heroFont: font('Hero Font', 'Rajdhani', { families: [...DISPLAY_FONT_FAMILIES], group: 'Typography' }),
+        heroFont: font('Hero Font', 'Rajdhani', {
+            families: [...DISPLAY_FONT_FAMILIES],
+            group: 'Typography',
+            weights: [400, 500],
+        }),
         labelSize: num('Label Size', [9, 20], 11, { group: 'Typography' }),
         sensor1: sensor('Top Left', 'cpu_temp', { group: 'Sensors' }),
         sensor2: sensor('Top Right', 'gpu_temp', { group: 'Sensors' }),
@@ -132,7 +136,7 @@ export default face(
         showTracks: toggle('Show Tracks', true, { group: 'Elements' }),
         showValues: toggle('Show Values', true, { group: 'Elements' }),
         transparentBackground: transparentBackgroundControl(),
-        uiFont: font('UI Font', 'Inter', { families: [...UI_FONT_FAMILIES], group: 'Typography' }),
+        uiFont: font('UI Font', 'Inter', { families: [...UI_FONT_FAMILIES], group: 'Typography', weights: [600] }),
         valueSize: num('Value Size', [28, 84], 50, { group: 'Typography' }),
     },
     {

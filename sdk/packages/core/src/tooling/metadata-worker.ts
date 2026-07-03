@@ -23,6 +23,11 @@ function toBuildControls(def: RegisteredArtifactDef): BuildControlDef[] {
         if (ctrl.spec.meta.aspectLock != null) buildControl.aspectLock = ctrl.spec.meta.aspectLock as number
         if (ctrl.spec.meta.preview) buildControl.preview = ctrl.spec.meta.preview as 'screen' | 'web' | 'canvas'
         if (ctrl.spec.meta.mediaKind) buildControl.mediaKind = String(ctrl.spec.meta.mediaKind)
+        if (Array.isArray(ctrl.spec.meta.fontWeights)) {
+            buildControl.fontWeights = (ctrl.spec.meta.fontWeights as number[]).filter(
+                (weight) => typeof weight === 'number',
+            )
+        }
 
         return buildControl
     })

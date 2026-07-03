@@ -190,7 +190,11 @@ export default face(
         cpuLoadSensor: sensor('CPU Load Sensor', 'cpu_load', { group: 'Sensors' }),
         cpuTempSensor: sensor('CPU Temp Sensor', 'cpu_temp', { group: 'Sensors' }),
         gpuTempSensor: sensor('GPU Temp Sensor', 'gpu_temp', { group: 'Sensors' }),
-        heroFont: font('Hero Font', 'Rajdhani', { families: [...DISPLAY_FONT_FAMILIES], group: 'Typography' }),
+        heroFont: font('Hero Font', 'Rajdhani', {
+            families: [...DISPLAY_FONT_FAMILIES],
+            group: 'Typography',
+            weights: [600],
+        }),
         hourFormat: combo('Clock Format', ['24h', '12h'], { group: 'Clock' }),
         ramSensor: sensor('RAM Sensor', 'ram_used', { group: 'Sensors' }),
         secondaryAccent: color('Secondary', palette.electricPurple, { group: 'Style' }),
@@ -198,7 +202,7 @@ export default face(
         showNet: toggle('Show Network', true, { group: 'Elements' }),
         showRig: toggle('Show Rig Colors', true, { group: 'Elements' }),
         transparentBackground: transparentBackgroundControl(),
-        uiFont: font('UI Font', 'Inter', { families: [...UI_FONT_FAMILIES], group: 'Typography' }),
+        uiFont: font('UI Font', 'Inter', { families: [...UI_FONT_FAMILIES], group: 'Typography', weights: [600] }),
     },
     {
         author: 'Hypercolor',

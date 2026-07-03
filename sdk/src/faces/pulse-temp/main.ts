@@ -145,7 +145,11 @@ export default face(
         customColor: color('Custom Color', palette.neonCyan, { group: 'Style' }),
         detailSize: num('Detail Size', [9, 24], 12, { group: 'Typography' }),
         glowIntensity: num('Glow', [0, 100], 54, { group: 'Style' }),
-        heroFont: font('Hero Font', 'Rajdhani', { families: [...DISPLAY_FONT_FAMILIES], group: 'Typography' }),
+        heroFont: font('Hero Font', 'Rajdhani', {
+            families: [...DISPLAY_FONT_FAMILIES],
+            group: 'Typography',
+            weights: [300, 400],
+        }),
         heroSize: num('Hero Size', [72, 164], 132, { group: 'Typography' }),
         meterStyle: combo('Meter Style', ['Halo', 'Vector', 'Scope'], { group: 'Layout' }),
         showArc: toggle('Show Scale', true, { group: 'Elements' }),
@@ -156,7 +160,7 @@ export default face(
         showUnit: toggle('Show Unit', true, { group: 'Elements' }),
         targetSensor: sensor('Sensor', 'cpu_temp', { group: 'Data' }),
         transparentBackground: transparentBackgroundControl(),
-        uiFont: font('UI Font', 'Inter', { families: [...UI_FONT_FAMILIES], group: 'Typography' }),
+        uiFont: font('UI Font', 'Inter', { families: [...UI_FONT_FAMILIES], group: 'Typography', weights: [600] }),
     },
     {
         author: 'Hypercolor',

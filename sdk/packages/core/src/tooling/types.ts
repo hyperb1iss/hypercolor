@@ -53,6 +53,8 @@ export interface BuildControlDef {
     aspectLock?: number
     preview?: 'screen' | 'web' | 'canvas'
     mediaKind?: string
+    /** Weights a font-picker control renders at; drives face font embedding. */
+    fontWeights?: number[]
 }
 
 export interface ExtractedArtifactMetadata {
@@ -86,6 +88,8 @@ export interface BuildArtifactsOptions {
     outDir: string
     minify?: boolean
     sdkAliasPath?: string
+    /** Vendored font directory; auto-located (sdk/assets/fonts) if omitted. */
+    fontAssetsDir?: string
 }
 
 export interface HtmlControlMetadata {

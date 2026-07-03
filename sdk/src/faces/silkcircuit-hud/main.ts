@@ -288,7 +288,11 @@ export default face(
         cpuTempSensor: sensor('CPU Temp Sensor', 'cpu_temp', { group: 'Sensors' }),
         detailSize: num('Detail Size', [9, 20], 11, { group: 'Typography' }),
         gpuTempSensor: sensor('GPU Temp Sensor', 'gpu_temp', { group: 'Sensors' }),
-        heroFont: font('Hero Font', 'Rajdhani', { families: [...DISPLAY_FONT_FAMILIES], group: 'Typography' }),
+        heroFont: font('Hero Font', 'Rajdhani', {
+            families: [...DISPLAY_FONT_FAMILIES],
+            group: 'Typography',
+            weights: [600],
+        }),
         hourFormat: combo('Clock Format', ['24h', '12h'], { group: 'Clock' }),
         metricSize: num('Metric Size', [28, 92], 56, { group: 'Typography' }),
         ramSensor: sensor('RAM Sensor', 'ram_used', { group: 'Sensors' }),
@@ -300,7 +304,7 @@ export default face(
         showMetricLabels: toggle('Show Metric Labels', true, { group: 'Elements' }),
         showMetrics: toggle('Show Metrics', true, { group: 'Elements' }),
         transparentBackground: transparentBackgroundControl(),
-        uiFont: font('UI Font', 'Inter', { families: [...UI_FONT_FAMILIES], group: 'Typography' }),
+        uiFont: font('UI Font', 'Inter', { families: [...UI_FONT_FAMILIES], group: 'Typography', weights: [600] }),
     },
     {
         author: 'Hypercolor',

@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 
 import { HYPERCOLOR_FORMAT_VERSION } from './constants'
+import { faceFontFaceCss } from './fonts'
 import { artifactIdFromEntry, extractArtifactMetadata } from './metadata'
 import type { BuildArtifactResult, BuildArtifactsOptions, BuildControlDef, PresetDef } from './types'
 
@@ -108,6 +109,7 @@ function faceHtml(args: {
     author: string
     controlMetas: string[]
     description: string
+    fontFaceCss: string
     jsBundle: string
     name: string
     presets: string[]
@@ -117,6 +119,7 @@ function faceHtml(args: {
     const presetBlock = args.presets.length > 0 ? `\n${args.presets.join('\n')}` : ''
     const dataSourcesTag =
         args.dataSources.length > 0 ? `\n    <meta data-sources="${escapeAttr(args.dataSources.join(','))}" />` : ''
+    const fontBlock = args.fontFaceCss ? `\n    <style>\n${args.fontFaceCss}\n    </style>` : ''
 
     return `<!DOCTYPE html>
 <html lang="en" style="width:100%;height:100%;background:transparent;">
@@ -129,7 +132,7 @@ function faceHtml(args: {
     <meta publisher="${escapeAttr(args.author)}" />
     <meta audio-reactive="${args.audioReactive}" />${dataSourcesTag}
     <meta category="display" />
-${args.controlMetas.join('\n')}${presetBlock}
+${args.controlMetas.join('\n')}${presetBlock}${fontBlock}
   </head>
   <body style="margin:0;width:100%;height:100%;overflow:hidden;background:transparent;-webkit-user-select:none;user-select:none;">
     <div id="faceContainer" style="position:relative;overflow:hidden;width:100vw;height:100vh;background:transparent;">
@@ -180,6 +183,7 @@ export async function buildArtifactDocument(options: {
     outDir: string
     minify?: boolean
     sdkAliasPath?: string
+    fontAssetsDir?: string
 }): Promise<BuildArtifactResult> {
     const id = artifactIdFromEntry(options.entryPath)
     const metadata = await extractArtifactMetadata(options.entryPath)
@@ -194,6 +198,7 @@ export async function buildArtifactDocument(options: {
                   controlMetas,
                   dataSources: metadata.dataSources,
                   description: metadata.description,
+                  fontFaceCss: faceFontFaceCss(metadata.controls, options.fontAssetsDir),
                   jsBundle,
                   name: metadata.name,
                   presets: presetMetas,
@@ -230,6 +235,7 @@ export async function buildArtifacts(options: BuildArtifactsOptions): Promise<Bu
     for (const entryPath of options.entryPaths) {
         const artifact = await buildArtifactDocument({
             entryPath,
+            fontAssetsDir: options.fontAssetsDir,
             minify: options.minify,
             outDir: options.outDir,
             sdkAliasPath: options.sdkAliasPath,

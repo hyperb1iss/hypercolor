@@ -1,5 +1,6 @@
 export { buildArtifactDocument, buildArtifacts, discoverWorkspaceEntries } from './build'
 export { HYPERCOLOR_FORMAT_VERSION } from './constants'
+export { buildFontFaceCss, defaultFontAssetsDir, faceFontFaceCss, resolveFaceFontEmbedPlan } from './fonts'
 export { parseHtmlArtifact } from './html'
 export { installArtifactsLocally, installArtifactsViaDaemon, resolveInstallInputs } from './install'
 export { artifactIdFromEntry, extractArtifactMetadata } from './metadata'

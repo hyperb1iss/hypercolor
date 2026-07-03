@@ -260,6 +260,9 @@ export interface FontOptions {
     group?: string
     /** Available font families. Defaults to a curated set if omitted. */
     families?: string[]
+    /** Weights the artifact renders this control's family at. Face builds
+     *  embed exactly these weights (default: 400 and 600). */
+    weights?: number[]
 }
 
 const DEFAULT_FONT_FAMILIES = [
@@ -287,5 +290,7 @@ export function font(label: string, defaultFamily: string, opts?: FontOptions): 
     const families = opts?.families ?? DEFAULT_FONT_FAMILIES
     // Auto-prepend the default family if it's not already in the list
     const values = families.includes(defaultFamily) ? [...families] : [defaultFamily, ...families]
-    return spec('combobox', label, defaultFamily, { values }, opts)
+    const meta: Record<string, unknown> = { values }
+    if (opts?.weights?.length) meta.fontWeights = [...opts.weights]
+    return spec('combobox', label, defaultFamily, meta, opts)
 }
