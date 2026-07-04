@@ -77,7 +77,7 @@ pub(super) const fn should_stream_preview(
 
 fn preview_canvas_format_for_host(hostname: &str) -> &'static str {
     match hostname {
-        host if is_loopback_host(host) => "rgb",
+        host if is_loopback_host(host) => "rgba",
         _ if supports_remote_jpeg_preview() => "jpeg",
         _ => "rgb",
     }
@@ -400,8 +400,8 @@ mod tests {
     }
 
     #[test]
-    fn loopback_preview_uses_rgb_format() {
-        assert_eq!(preview_canvas_format_for_host("localhost"), "rgb");
+    fn loopback_preview_uses_rgba_format() {
+        assert_eq!(preview_canvas_format_for_host("localhost"), "rgba");
     }
 
     #[test]
@@ -473,7 +473,7 @@ mod tests {
                 fps: 15,
                 width: 0,
                 height: 0,
-                format: "rgb",
+                format: "rgba",
             }
         );
     }
