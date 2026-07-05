@@ -7,8 +7,10 @@ use leptos_use::{UseIntersectionObserverOptions, use_intersection_observer_with_
 
 use crate::api;
 use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, PageHeader};
+use crate::components::settings_controls::SectionHeader;
 use crate::components::settings_sections::*;
 use crate::config_state::{ConfigContext, apply_config_key};
+use crate::extensions::SettingsExtensionSections;
 use crate::icons::*;
 use crate::settings_audio_devices::{
     AudioDeviceChoice, AudioDeviceLoadState, resolve_audio_device_dropdown,
@@ -27,13 +29,14 @@ const SECTION_IDS: &[&str] = &[
     "about",
 ];
 
-fn settings_section_targets() -> Vec<web_sys::Element> {
+fn settings_section_targets(extension_ids: &[&'static str]) -> Vec<web_sys::Element> {
     let Some(doc) = browser_document() else {
         return Vec::new();
     };
 
     SECTION_IDS
         .iter()
+        .chain(extension_ids)
         .filter_map(|id| doc.get_element_by_id(&format!("section-{id}")))
         .collect()
 }
@@ -46,18 +49,28 @@ pub fn SettingsPage() -> impl IntoView {
     let config = config_ctx.config;
     let set_config = config_ctx.set_config;
     let (active_section, set_active_section) = signal("audio".to_string());
+    // Extension-contributed sections (empty in the standalone OSS app).
+    let extension_sections = use_context::<SettingsExtensionSections>().unwrap_or_default();
+    let extension_ids: Vec<&'static str> = extension_sections
+        .0
+        .iter()
+        .map(|section| section.id)
+        .collect();
 
     // Only transitions once: false -> true. Memo deduplicates, so downstream
     // closures reading this won't re-run on every config update.
     let config_loaded = Memo::new(move |_| config.get().is_some());
 
-    let section_targets = Signal::derive(move || {
-        if config_loaded.get() {
-            settings_section_targets()
-        } else {
-            Vec::new()
-        }
-    });
+    let section_targets = {
+        let extension_ids = extension_ids.clone();
+        Signal::derive(move || {
+            if config_loaded.get() {
+                settings_section_targets(&extension_ids)
+            } else {
+                Vec::new()
+            }
+        })
+    };
     let _scroll_spy = use_intersection_observer_with_options(
         section_targets,
         move |entries, _| {
@@ -157,11 +170,12 @@ pub fn SettingsPage() -> impl IntoView {
     // they actually wanted. spawn_local yields to the event loop so the
     // section DOM is mounted by the time we look it up.
     let query = use_query_map();
+    let focus_ids = extension_ids.clone();
     Effect::new(move |_| {
         let Some(focus) = query.with(|map| map.get("focus")) else {
             return;
         };
-        if !SECTION_IDS.contains(&focus.as_str()) {
+        if !SECTION_IDS.contains(&focus.as_str()) && !focus_ids.contains(&focus.as_str()) {
             return;
         }
         set_active_section.set(focus.clone());
@@ -183,7 +197,7 @@ pub fn SettingsPage() -> impl IntoView {
         separator_before: bool,
     }
 
-    let tabs = vec![
+    let mut tabs = vec![
         TabEntry {
             id: "audio",
             label: "Audio",
@@ -233,6 +247,18 @@ pub fn SettingsPage() -> impl IntoView {
             separator_before: false,
         },
     ];
+    tabs.extend(
+        extension_sections
+            .0
+            .iter()
+            .enumerate()
+            .map(|(index, section)| TabEntry {
+                id: section.id,
+                label: section.label,
+                icon: section.icon,
+                separator_before: index == 0,
+            }),
+    );
 
     view! {
         <div class="flex flex-col h-full">
@@ -396,6 +422,26 @@ pub fn SettingsPage() -> impl IntoView {
                             >
                                 <AboutSection />
                             </div>
+                            // Extension sections — the page supplies the card,
+                            // anchor, and header so they read exactly like core
+                            // sections; the extension supplies only the rows.
+                            {extension_sections.0.iter().enumerate().map(|(index, section)| {
+                                let delay = 0.4 + 0.05 * (index as f64);
+                                view! {
+                                    <div
+                                        class="settings-card"
+                                        style=format!("animation: enter-fade 0.4s ease-out {delay}s both")
+                                    >
+                                        <section
+                                            id=format!("section-{}", section.id)
+                                            class="pt-5 pb-3 space-y-0"
+                                        >
+                                            <SectionHeader title=section.label icon=section.icon />
+                                            {(section.view)()}
+                                        </section>
+                                    </div>
+                                }
+                            }).collect_view()}
                         </div>
                     })
                 }}

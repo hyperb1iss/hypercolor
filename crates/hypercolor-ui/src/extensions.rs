@@ -18,9 +18,18 @@
 //! into the mount closure. Nav items are plain `Send + Sync` data and may be
 //! provided through context.
 
-use leptos::prelude::IntoView;
+use std::sync::Arc;
+
+use leptos::prelude::{AnyView, IntoView};
 use leptos_router::any_nested_route::{AnyNestedRoute, IntoAnyNestedRoute};
 use leptos_router::{MatchNestedRoutes, NestedRoute, PossibleRouteMatch};
+
+/// Type-erased view builder for extension-contributed UI fragments.
+///
+/// `Arc` (not `Box`) so the carrying registries stay `Clone` and can travel
+/// through context; the closure must be `Send + Sync` for the same reason.
+/// The *returned* view only needs to render where it's called.
+pub type UiViewBuilder = Arc<dyn Fn() -> AnyView + Send + Sync>;
 
 /// Build a type-erased leaf route from a matcher segment and a view closure.
 ///
@@ -100,14 +109,34 @@ impl UiNavItem {
     }
 }
 
-/// Placeholder for an extension-contributed settings section.
+/// An extension-contributed Settings section.
 ///
-/// Settings-section injection is deferred past the current MVP; the type exists
-/// so [`UiExtensions`] carries the field without a later breaking change.
+/// Rendered by the Settings page as its own card after the core sections,
+/// with a matching toolbar tab and scroll-spy anchor (`section-<id>`). The
+/// view builder renders the section body; the OSS page supplies the card
+/// chrome so extension sections read identically to core ones.
 #[derive(Clone)]
 pub struct UiSettingsSection {
-    /// Stable identifier for the section.
+    /// Stable identifier — becomes the `section-<id>` anchor and tab id.
     pub id: &'static str,
+    /// Tab and section label.
+    pub label: &'static str,
+    /// Tab icon.
+    pub icon: icondata_core::Icon,
+    /// Section body, rendered inside the page-provided settings card.
+    pub view: UiViewBuilder,
+}
+
+/// An extension-contributed sidebar widget.
+///
+/// Rendered in the sidebar footer between the scene chip and the collapse
+/// bar, only while the sidebar is expanded (the 56px rail has no room).
+#[derive(Clone)]
+pub struct UiSidebarWidget {
+    /// Stable identifier for the widget.
+    pub id: &'static str,
+    /// Widget body; the sidebar provides only position, not chrome.
+    pub view: UiViewBuilder,
 }
 
 /// Registry of everything an embedder injects into the app at startup.
@@ -123,6 +152,19 @@ pub struct UiExtensions {
     /// Extra sidebar nav items, appended after the core items. Threaded through
     /// context (plain `Send + Sync` data).
     pub nav_items: Vec<UiNavItem>,
-    /// Extra settings sections (deferred; reserved for future use).
+    /// Extra Settings sections, appended after the core sections with their
+    /// own toolbar tabs. Threaded through context.
     pub settings_sections: Vec<UiSettingsSection>,
+    /// Extra sidebar footer widgets. Threaded through context.
+    pub sidebar_widgets: Vec<UiSidebarWidget>,
 }
+
+/// Context wrapper for extension Settings sections (provided by
+/// [`crate::app::app_view`], read by the Settings page).
+#[derive(Clone, Default)]
+pub struct SettingsExtensionSections(pub Arc<Vec<UiSettingsSection>>);
+
+/// Context wrapper for extension sidebar widgets (provided by
+/// [`crate::app::app_view`], read by the sidebar).
+#[derive(Clone, Default)]
+pub struct SidebarExtensionWidgets(pub Arc<Vec<UiSidebarWidget>>);

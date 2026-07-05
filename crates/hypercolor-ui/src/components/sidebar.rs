@@ -19,6 +19,7 @@ use crate::components::scene_switcher::{
 };
 use crate::components::zone_now_playing::{SidebarZoneRows, set_zone_enabled};
 use crate::config_state::ConfigContext;
+use crate::extensions::SidebarExtensionWidgets;
 use crate::icons::*;
 use crate::nav::{NavExtensionItems, nav_model};
 use crate::route_ui::{NowPlayingCanvasMode, now_playing_canvas_mode};
@@ -39,8 +40,10 @@ pub fn Sidebar() -> impl IntoView {
     let location = use_location();
     let fx = expect_context::<EffectsContext>();
     let studio_flag = expect_context::<StudioFlag>();
-    // Extension-contributed nav items (empty in the standalone OSS app).
+    // Extension-contributed nav items and footer widgets (both empty in the
+    // standalone OSS app).
     let extension_nav = use_context::<NavExtensionItems>().unwrap_or_default();
+    let extension_widgets = use_context::<SidebarExtensionWidgets>().unwrap_or_default();
     let zones_ctx = expect_context::<crate::zones::ZonesContext>();
 
     // Multi-zone scenes keep the panel alive whenever any zone is
@@ -565,6 +568,22 @@ pub fn Sidebar() -> impl IntoView {
             // Rendered only when there is somewhere to switch to, and only
             // expanded (a 56px rail has no room for a scene name).
             {move || (!collapsed.get()).then(|| view! { <SidebarSceneChip /> })}
+
+            // Extension footer widgets — expanded-only, same as the scene
+            // chip; the widget brings its own chrome, the sidebar only
+            // provides the slot.
+            {
+                let extension_widgets = extension_widgets.clone();
+                move || {
+                    (!collapsed.get() && !extension_widgets.0.is_empty()).then(|| {
+                        extension_widgets
+                            .0
+                            .iter()
+                            .map(|widget| (widget.view)())
+                            .collect_view()
+                    })
+                }
+            }
 
             // Bottom bar — collapse toggle only
             <div class="shrink-0 border-t border-edge-subtle px-2 py-2">

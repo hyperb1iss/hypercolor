@@ -438,11 +438,18 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
     let UiExtensions {
         routes: extension_routes,
         nav_items: extension_nav,
-        ..
+        settings_sections: extension_settings,
+        sidebar_widgets: extension_widgets,
     } = ext;
     provide_meta_context();
     leptoaster::provide_toaster();
     provide_context(NavExtensionItems(extension_nav));
+    provide_context(crate::extensions::SettingsExtensionSections(
+        std::sync::Arc::new(extension_settings),
+    ));
+    provide_context(crate::extensions::SidebarExtensionWidgets(
+        std::sync::Arc::new(extension_widgets),
+    ));
 
     // Global WebSocket connection
     let ws = WsManager::new();
