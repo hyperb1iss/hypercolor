@@ -186,6 +186,16 @@ component patterns. All UI design work follows it; §14 is the rules checklist.
 **Gotcha:** `leptos_icons::Icon`'s `style` prop accepts `MaybeProp<String>` — it takes
 `&str` or `String`, NOT closures. Use conditional rendering to vary icon styles reactively.
 
+**Never poll from the browser.** A timer-driven fetch loop anywhere in the UI is a
+fatal defect. The daemon relays every `HypercolorBus` event to ws `events`
+subscribers, and `WsManager`/`WsContext` expose them as hint signals
+(`last_device_event`, `last_scene_event`, `last_extension_event`, …). To make a
+`LocalResource` live, read a hint-derived signal inside its fetcher. Daemon
+extensions push their own state changes as
+`HypercolorEvent::ExtensionStateChanged { source, kind, payload }` — the relay and
+the `last_extension_event` hint carry them with no OSS changes. One-shot handshakes
+with server-driven pacing (device-authorization login) are protocol, not polling.
+
 ## SDK
 
 TypeScript SDK for building HTML effects, managed with **Bun**:
