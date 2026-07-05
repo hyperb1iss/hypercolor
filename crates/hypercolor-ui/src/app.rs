@@ -100,6 +100,10 @@ pub struct WsContext {
     /// Latest daemon-extension state-change event. UI extensions filter on
     /// `source`/`kind` and refetch their REST state — never poll.
     pub last_extension_event: ReadSignal<Option<ExtensionEventHint>>,
+    /// Increments each time the daemon socket (re)opens. Fold into fetcher
+    /// epochs to refetch REST mirrors after a reconnect gap, since bus
+    /// events are not replayed.
+    pub connection_generation: ReadSignal<u64>,
     /// Per-layer runtime health, keyed by `scene/group/layer`, fed by the
     /// daemon's `layer_health_changed` events. A layer with no entry is
     /// treated as healthy — including, until the daemon replays a snapshot
@@ -519,6 +523,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         last_effect_error: ws.last_effect_error,
         last_control_surface_event: ws.last_control_surface_event,
         last_extension_event: ws.last_extension_event,
+        connection_generation: ws.connection_generation,
         layer_health: ws.layer_health,
         audio_level: ws.audio_level,
         send_zone_layout_preview: ws.send_zone_layout_preview,

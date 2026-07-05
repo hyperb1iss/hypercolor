@@ -193,7 +193,9 @@ subscribers, and `WsManager`/`WsContext` expose them as hint signals
 `LocalResource` live, read a hint-derived signal inside its fetcher. Daemon
 extensions push their own state changes as
 `HypercolorEvent::ExtensionStateChanged { source, kind, payload }` — the relay and
-the `last_extension_event` hint carry them with no OSS changes. One-shot handshakes
+the `last_extension_event` hint carry them with no OSS changes. Events are not
+replayed across a socket gap, so also fold `connection_generation` (bumps on every
+ws open) into fetcher epochs to refetch after reconnects. One-shot handshakes
 with server-driven pacing (device-authorization login) are protocol, not polling.
 
 ## SDK

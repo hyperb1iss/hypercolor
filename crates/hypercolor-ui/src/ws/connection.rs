@@ -87,6 +87,11 @@ pub struct WsManager {
     /// UI extensions filter on `source`/`kind` and refetch instead of
     /// polling.
     pub last_extension_event: ReadSignal<Option<ExtensionEventHint>>,
+    /// Increments each time the daemon socket (re)opens. Bus events fired
+    /// while the socket was down are not replayed, so resources mirroring
+    /// daemon state over REST should fold this into their fetcher epochs
+    /// to heal after a reconnect gap.
+    pub connection_generation: ReadSignal<u64>,
     pub layer_health: ReadSignal<HashMap<String, LayerHealth>>,
     pub audio_level: ReadSignal<AudioLevel>,
     pub preview_target_fps: ReadSignal<u32>,
@@ -124,6 +129,7 @@ impl WsManager {
         let (display_preview_frame, set_display_preview_frame) = signal(None::<CanvasFrame>);
         let (display_preview_device, set_display_preview_device) = signal(None::<String>);
         let (connection_state, set_connection_state) = signal(ConnectionState::Disconnected);
+        let (connection_generation, set_connection_generation) = signal(0_u64);
         let (preview_fps, set_preview_fps) = signal(0.0_f32);
         let (metrics, set_metrics) = signal(None::<PerformanceMetrics>);
         let (sensors, set_sensors) = signal(None::<SystemSnapshot>);
@@ -228,6 +234,7 @@ impl WsManager {
             let ws_clone = ws.clone();
             let on_open = move |_| {
                 set_connection_state.set(ConnectionState::Connected);
+                set_connection_generation.update(|generation| *generation += 1);
                 reconnect_attempts.set_value(0);
                 clear_reconnect_timer(reconnect_timeout);
 
@@ -651,6 +658,7 @@ impl WsManager {
             last_effect_error,
             last_control_surface_event,
             last_extension_event,
+            connection_generation,
             layer_health,
             audio_level,
             preview_target_fps,
