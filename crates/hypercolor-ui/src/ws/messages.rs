@@ -407,6 +407,16 @@ pub struct EffectErrorHint {
     pub fallback: Option<String>,
 }
 
+/// Hint from an `extension_state_changed` event: a daemon extension's owned
+/// state changed. UI extensions filter on `source`/`kind` and refresh the
+/// matching REST resources — the push replaces any need to poll.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExtensionEventHint {
+    pub source: String,
+    pub kind: String,
+    pub payload: serde_json::Value,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ControlSurfaceEventHint {
     pub event_type: String,
@@ -483,6 +493,7 @@ pub(super) fn handle_json_message(
     set_last_scene_event: &WriteSignal<Option<SceneEventHint>>,
     set_last_effect_error: &WriteSignal<Option<EffectErrorHint>>,
     set_last_control_surface_event: &WriteSignal<Option<ControlSurfaceEventHint>>,
+    set_last_extension_event: &WriteSignal<Option<ExtensionEventHint>>,
     set_layer_health: &WriteSignal<HashMap<String, LayerHealth>>,
     set_audio_level: &WriteSignal<AudioLevel>,
     set_engine_preview_target: &WriteSignal<u32>,
@@ -610,6 +621,21 @@ pub(super) fn handle_json_message(
                     let data = msg.get("data").unwrap_or(&serde_json::Value::Null);
                     set_last_control_surface_event
                         .set(extract_control_surface_event_hint(event_type, data));
+                } else if event_type == "extension_state_changed" {
+                    let data = msg.get("data").unwrap_or(&serde_json::Value::Null);
+                    if let (Some(source), Some(kind)) = (
+                        data.get("source").and_then(serde_json::Value::as_str),
+                        data.get("kind").and_then(serde_json::Value::as_str),
+                    ) {
+                        set_last_extension_event.set(Some(ExtensionEventHint {
+                            source: source.to_owned(),
+                            kind: kind.to_owned(),
+                            payload: data
+                                .get("payload")
+                                .cloned()
+                                .unwrap_or(serde_json::Value::Null),
+                        }));
+                    }
                 } else if DEVICE_LIFECYCLE_EVENTS.contains(&event_type)
                     && let Some(hint) = extract_device_event_hint(event_type, msg.get("data"))
                 {

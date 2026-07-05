@@ -25,8 +25,9 @@ use web_sys::MessageEvent;
 
 use super::messages::{
     AudioLevel, BackpressureNotice, CanvasFrame, ConnectionState, ControlSurfaceEventHint,
-    DeviceEventHint, EffectErrorHint, PerformanceMetrics, PreviewFrameChannel, SceneEventHint,
-    ScreenZonesFrame, decode_preview_frame, decode_screen_zones_frame, handle_json_message,
+    DeviceEventHint, EffectErrorHint, ExtensionEventHint, PerformanceMetrics, PreviewFrameChannel,
+    SceneEventHint, ScreenZonesFrame, decode_preview_frame, decode_screen_zones_frame,
+    handle_json_message,
 };
 use super::preview::{
     DEFAULT_PREVIEW_FPS_CAP, PreviewSubscriptionRequest, clear_preview_subscription,
@@ -82,6 +83,10 @@ pub struct WsManager {
     pub last_scene_event: ReadSignal<Option<SceneEventHint>>,
     pub last_effect_error: ReadSignal<Option<EffectErrorHint>>,
     pub last_control_surface_event: ReadSignal<Option<ControlSurfaceEventHint>>,
+    /// Latest `extension_state_changed` event from a daemon extension.
+    /// UI extensions filter on `source`/`kind` and refetch instead of
+    /// polling.
+    pub last_extension_event: ReadSignal<Option<ExtensionEventHint>>,
     pub layer_health: ReadSignal<HashMap<String, LayerHealth>>,
     pub audio_level: ReadSignal<AudioLevel>,
     pub preview_target_fps: ReadSignal<u32>,
@@ -128,6 +133,7 @@ impl WsManager {
         let (backpressure_notice, set_backpressure_notice) = signal(None::<BackpressureNotice>);
         let (active_effect, set_active_effect) = signal(None::<String>);
         let (last_device_event, set_last_device_event) = signal(None::<DeviceEventHint>);
+        let (last_extension_event, set_last_extension_event) = signal(None::<ExtensionEventHint>);
         let (last_scene_event, set_last_scene_event) = signal(None::<SceneEventHint>);
         let (last_effect_error, set_last_effect_error) = signal(None::<EffectErrorHint>);
         let (last_control_surface_event, set_last_control_surface_event) =
@@ -349,6 +355,7 @@ impl WsManager {
                         &set_last_scene_event,
                         &set_last_effect_error,
                         &set_last_control_surface_event,
+                        &set_last_extension_event,
                         &set_layer_health,
                         &set_audio_level,
                         &set_engine_preview_target,
@@ -643,6 +650,7 @@ impl WsManager {
             last_scene_event,
             last_effect_error,
             last_control_surface_event,
+            last_extension_event,
             layer_health,
             audio_level,
             preview_target_fps,

@@ -46,7 +46,8 @@ use crate::toasts;
 use crate::ws::messages::scene_event_affects_active_effect;
 use crate::ws::{
     AudioLevel, BackpressureNotice, CanvasFrame, ControlSurfaceEventHint, DeviceEventHint,
-    EffectErrorHint, PerformanceMetrics, SceneEventHint, ScreenZonesFrame, WsManager,
+    EffectErrorHint, ExtensionEventHint, PerformanceMetrics, SceneEventHint, ScreenZonesFrame,
+    WsManager,
 };
 
 mod effect_state;
@@ -96,6 +97,9 @@ pub struct WsContext {
     pub last_scene_event: ReadSignal<Option<SceneEventHint>>,
     pub last_effect_error: ReadSignal<Option<EffectErrorHint>>,
     pub last_control_surface_event: ReadSignal<Option<ControlSurfaceEventHint>>,
+    /// Latest daemon-extension state-change event. UI extensions filter on
+    /// `source`/`kind` and refetch their REST state — never poll.
+    pub last_extension_event: ReadSignal<Option<ExtensionEventHint>>,
     /// Per-layer runtime health, keyed by `scene/group/layer`, fed by the
     /// daemon's `layer_health_changed` events. A layer with no entry is
     /// treated as healthy — including, until the daemon replays a snapshot
@@ -514,6 +518,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         last_scene_event: ws.last_scene_event,
         last_effect_error: ws.last_effect_error,
         last_control_surface_event: ws.last_control_surface_event,
+        last_extension_event: ws.last_extension_event,
         layer_health: ws.layer_health,
         audio_level: ws.audio_level,
         send_zone_layout_preview: ws.send_zone_layout_preview,
