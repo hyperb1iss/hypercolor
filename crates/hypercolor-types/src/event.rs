@@ -866,6 +866,20 @@ pub enum HypercolorEvent {
         input_type: String,
         enabled: bool,
     },
+
+    /// A daemon extension's owned state changed.
+    ///
+    /// The engine relays these without interpreting them: `source` names
+    /// the publishing extension, `kind` names which piece of its state
+    /// changed, and `payload` is extension-defined. UI extensions watch
+    /// these over the `events` WS channel and refresh on receipt instead
+    /// of polling REST endpoints.
+    ExtensionStateChanged {
+        source: String,
+        kind: String,
+        #[serde(default)]
+        payload: serde_json::Value,
+    },
 }
 
 // ── Event Categories ────────────────────────────────────────────────────
@@ -974,7 +988,9 @@ impl HypercolorEvent {
             | Self::InputEventReceived { .. }
             | Self::InputSourceChanged { .. } => EventCategory::Input,
 
-            Self::WebhookReceived { .. } => EventCategory::Integration,
+            Self::WebhookReceived { .. } | Self::ExtensionStateChanged { .. } => {
+                EventCategory::Integration
+            }
         }
     }
 
