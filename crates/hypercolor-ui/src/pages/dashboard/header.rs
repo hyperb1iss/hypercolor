@@ -11,7 +11,7 @@ use crate::api::SystemStatus;
 use crate::components::scene_switcher::{
     SceneSwitcherMenu, active_scene_label, active_scene_locked,
 };
-use crate::components::section_label::{LabelSize, LabelTone, label_class};
+use crate::components::status_pill::StatusPill;
 use crate::icons::*;
 use crate::ws::PerformanceMetrics;
 use crate::zones::ScenesContext;
@@ -167,54 +167,13 @@ fn ScenePill(fallback_scene: Option<String>, fallback_locked: bool) -> impl Into
 }
 
 #[component]
-fn StatusPill(
-    label: &'static str,
-    #[prop(into)] value: String,
-    color: &'static str,
-    pulsing: bool,
-) -> impl IntoView {
-    view! {
-        <div class="flex items-center gap-2.5">
-            <div
-                class="w-2 h-2 rounded-full shrink-0"
-                class=("animate-pulse", pulsing)
-                style=format!("background: {color}; box-shadow: 0 0 8px {color}aa")
-            />
-            <div>
-                <div class=label_class(LabelSize::Micro, LabelTone::Default)>{label}</div>
-                <div
-                    class="text-[14px] font-semibold tabular-nums leading-none mt-0.5"
-                    style=format!("color: {color}")
-                >
-                    {value}
-                </div>
-            </div>
-        </div>
-    }
-}
-
-#[component]
 fn StatusPillDynamic(
     label: &'static str,
     #[prop(into)] value: Signal<String>,
     color: &'static str,
 ) -> impl IntoView {
     view! {
-        <div class="flex items-center gap-2.5">
-            <div
-                class="w-2 h-2 rounded-full shrink-0"
-                style=format!("background: {color}; box-shadow: 0 0 8px {color}aa")
-            />
-            <div>
-                <div class=label_class(LabelSize::Micro, LabelTone::Default)>{label}</div>
-                <div
-                    class="text-[14px] font-semibold tabular-nums leading-none mt-0.5"
-                    style=format!("color: {color}")
-                >
-                    {move || value.get()}
-                </div>
-            </div>
-        </div>
+        {move || view! { <StatusPill label=label value=value.get() color=color pulsing=false /> }}
     }
 }
 
