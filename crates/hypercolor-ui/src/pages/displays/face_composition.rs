@@ -5,7 +5,9 @@ use leptos_use::use_debounce_fn;
 
 use crate::api;
 use crate::app::EffectsContext;
-use crate::face_blend::{FACE_BLEND_OPTIONS, FACE_BLEND_PRESETS, FaceBlendPreset, face_blend_option};
+use crate::face_blend::{
+    FACE_BLEND_OPTIONS, FACE_BLEND_PRESETS, FaceBlendPreset, face_blend_option,
+};
 use crate::icons::*;
 use crate::toasts;
 use hypercolor_leptos_ext::events::Input;
