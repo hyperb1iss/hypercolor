@@ -727,6 +727,10 @@ face-dev name:
 capture-screenshots *FLAGS:
     cd sdk && bun run capture:screenshots {{ FLAGS }}
 
+# Capture display-face screenshots on the Face Dev simulators (writes effects/screenshots/drafts/)
+capture-faces *FLAGS:
+    cd sdk && bun run capture:faces {{ FLAGS }}
+
 # Promote draft rank-1 frames into effects/screenshots/curated/ as WebP q=0.92
 promote-screenshots:
     cd sdk && bun run capture:promote
