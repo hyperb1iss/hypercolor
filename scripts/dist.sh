@@ -11,6 +11,7 @@
 #   ./scripts/dist.sh --skip-effects     # reuse existing bundled effects/faces
 #   ./scripts/dist.sh --skip-docs        # reuse docs or omit them from the bundle
 #   ./scripts/dist.sh --ci               # use pre-built web assets from --web-assets
+#   ./scripts/dist.sh --bin-dir /abs/dir # package pre-built binaries from a directory
 
 set -euo pipefail
 
@@ -21,6 +22,7 @@ SKIP_EFFECTS=0
 SKIP_DOCS=0
 CI_MODE=0
 WEB_ASSETS_DIR=""
+BIN_DIR=""
 RUST_TARGET=""
 RELEASE_VERSION=""
 BUILD_ROOT=""
@@ -70,6 +72,7 @@ while [[ $# -gt 0 ]]; do
     --skip-docs)        SKIP_DOCS=1; shift ;;
     --ci)               CI_MODE=1; shift ;;
     --web-assets)       WEB_ASSETS_DIR="$2"; shift 2 ;;
+    --bin-dir)          BIN_DIR="$2"; shift 2 ;;
     --target)           RUST_TARGET="$(normalize_target "$2")"; shift 2 ;;
     --version)          RELEASE_VERSION="$2"; shift 2 ;;
     -h|--help)
@@ -84,6 +87,9 @@ Options:
   --skip-docs          Skip Zola docs compilation
   --ci                 CI mode (expect --web-assets for pre-built UI/effects)
   --web-assets <dir>   Path to pre-built web assets (ui/ + effects/)
+  --bin-dir <dir>      Package pre-built binaries from <dir> instead of
+                       building them (absolute path; must contain the four
+                       release binaries)
   -h, --help           Show this help
 EOF
       exit 0
@@ -91,6 +97,18 @@ EOF
     *) die "unknown option: $1" ;;
   esac
 done
+
+if [[ -n "${BIN_DIR}" ]]; then
+  [[ "${BIN_DIR}" == /* ]] || die "--bin-dir must be an absolute path (the script runs from the repo root): ${BIN_DIR}"
+  [[ -d "${BIN_DIR}" ]] || die "--bin-dir does not exist: ${BIN_DIR}"
+  MISSING_BINS=()
+  for bin in hypercolor-daemon hypercolor hypercolor-app hypercolor-tray; do
+    [[ -f "${BIN_DIR}/${bin}" && -x "${BIN_DIR}/${bin}" ]] || MISSING_BINS+=("${bin}")
+  done
+  if [[ ${#MISSING_BINS[@]} -ne 0 ]]; then
+    die "--bin-dir is missing executable binaries: ${MISSING_BINS[*]}"
+  fi
+fi
 
 require_cmd cargo
 require_cmd jq
@@ -132,6 +150,9 @@ RELEASE_DIR="${CARGO_TARGET_DIR}/release"
 if [[ ${#TARGET_FLAG[@]} -ne 0 ]]; then
   RELEASE_DIR="${CARGO_TARGET_DIR}/${RUST_TARGET}/release"
 fi
+if [[ -n "${BIN_DIR}" ]]; then
+  RELEASE_DIR="${BIN_DIR}"
+fi
 
 DIST_NAME="hypercolor-${VERSION}-${PLATFORM}"
 DIST_DIR="${ROOT_DIR}/dist/${DIST_NAME}"
@@ -142,13 +163,17 @@ SITE_BUILD_DIR=""
 info "Building Hypercolor v${VERSION} for ${PLATFORM} (${RUST_TARGET})"
 info "Rust artifacts will land in ${CARGO_TARGET_DIR}"
 
-info "Building release binaries"
-./scripts/cargo-cache-build.sh cargo build --release --locked \
-  -p hypercolor-daemon --bin hypercolor-daemon \
-  -p hypercolor-cli --bin hypercolor \
-  -p hypercolor-tray --bin hypercolor-tray \
-  -p hypercolor-app --bin hypercolor-app \
-  "${TARGET_FLAG[@]}"
+if [[ -n "${BIN_DIR}" ]]; then
+  info "Using pre-built binaries from ${BIN_DIR}"
+else
+  info "Building release binaries"
+  ./scripts/cargo-cache-build.sh cargo build --release --locked \
+    -p hypercolor-daemon --bin hypercolor-daemon \
+    -p hypercolor-cli --bin hypercolor \
+    -p hypercolor-tray --bin hypercolor-tray \
+    -p hypercolor-app --bin hypercolor-app \
+    "${TARGET_FLAG[@]}"
+fi
 
 if [[ "${CI_MODE}" -eq 1 ]]; then
   [[ -n "${WEB_ASSETS_DIR}" ]] || die "--ci requires --web-assets <dir>"
