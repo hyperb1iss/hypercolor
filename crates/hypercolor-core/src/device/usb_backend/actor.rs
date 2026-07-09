@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 use hypercolor_hal::protocol::{Protocol, ProtocolCommand, ProtocolError, ResponseStatus};
-use hypercolor_hal::transport::Transport;
+use hypercolor_hal::transport::{Transport, TransportError};
 use hypercolor_types::device::DeviceId;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
@@ -15,6 +15,12 @@ use super::{
     describe_packet, format_error_chain, format_hex_preview, map_transport_error,
     record_usb_display_lane,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum FrameWriteDisposition {
+    Transient,
+    Fatal,
+}
 
 impl UsbBackend {
     #[expect(
@@ -245,7 +251,7 @@ impl UsbBackend {
                         continue;
                     };
 
-                    Self::run_device_frame(
+                    Self::run_resilient_device_frame(
                         device_id,
                         protocol.as_ref(),
                         transport.as_ref(),
@@ -523,7 +529,7 @@ impl UsbBackend {
                         continue;
                     };
 
-                    Self::run_device_frame(
+                    Self::run_resilient_device_frame(
                         device_id,
                         protocol.as_ref(),
                         transport.as_ref(),
@@ -576,9 +582,73 @@ impl UsbBackend {
             return Ok(false);
         };
 
-        Self::run_device_frame(device_id, protocol, transport, &frame, commands)
+        Self::run_resilient_device_frame(device_id, protocol, transport, &frame, commands)
             .await
             .map(|()| true)
+    }
+
+    async fn run_resilient_device_frame(
+        device_id: DeviceId,
+        protocol: &dyn Protocol,
+        transport: &dyn Transport,
+        frame: &UsbFramePayload,
+        commands: &mut Vec<ProtocolCommand>,
+    ) -> Result<()> {
+        match Self::run_device_frame(device_id, protocol, transport, frame, commands).await {
+            Ok(()) => Ok(()),
+            Err(error)
+                if Self::classify_frame_write_error(&error) == FrameWriteDisposition::Transient =>
+            {
+                warn!(
+                    device_id = %device_id,
+                    protocol = protocol.name(),
+                    transport = transport.name(),
+                    error = %error,
+                    error_chain = %format_error_chain(&error),
+                    "transient USB frame write failed; actor will continue"
+                );
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    pub(super) fn classify_frame_write_error(error: &anyhow::Error) -> FrameWriteDisposition {
+        match error
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<TransportError>())
+        {
+            Some(TransportError::IoError { detail })
+                if Self::io_error_indicates_liveness_loss(detail) =>
+            {
+                FrameWriteDisposition::Fatal
+            }
+            Some(TransportError::Timeout { .. } | TransportError::IoError { .. }) => {
+                FrameWriteDisposition::Transient
+            }
+            Some(
+                TransportError::NotFound { .. }
+                | TransportError::Closed
+                | TransportError::PermissionDenied { .. }
+                | TransportError::UnsupportedTransfer { .. },
+            )
+            | None => FrameWriteDisposition::Fatal,
+        }
+    }
+
+    fn io_error_indicates_liveness_loss(detail: &str) -> bool {
+        let detail = detail.to_ascii_lowercase();
+        [
+            "disconnected",
+            "not connected",
+            "device removed",
+            "no such device",
+            "permission denied",
+            "access denied",
+            "transport closed",
+        ]
+        .iter()
+        .any(|marker| detail.contains(marker))
     }
 
     async fn run_device_frame(
@@ -589,20 +659,22 @@ impl UsbBackend {
         commands: &mut Vec<ProtocolCommand>,
     ) -> Result<()> {
         protocol.encode_frame_into(frame.colors.as_slice(), commands);
-        let first_packet = commands.first().map_or_else(
-            || "<none>".to_owned(),
-            |command| describe_packet(&command.data),
-        );
+        if tracing::enabled!(tracing::Level::TRACE) {
+            let first_packet = commands.first().map_or_else(
+                || "<none>".to_owned(),
+                |command| describe_packet(&command.data),
+            );
 
-        trace!(
-            device_id = %device_id,
-            protocol = protocol.name(),
-            transport = transport.name(),
-            led_count = frame.colors.len(),
-            command_count = commands.len(),
-            first_packet = %first_packet,
-            "usb frame write requested"
-        );
+            trace!(
+                device_id = %device_id,
+                protocol = protocol.name(),
+                transport = transport.name(),
+                led_count = frame.colors.len(),
+                command_count = commands.len(),
+                first_packet = %first_packet,
+                "usb frame write requested"
+            );
+        }
 
         Self::run_commands(protocol, transport, commands.as_slice())
             .await
@@ -621,21 +693,23 @@ impl UsbBackend {
             .with_context(|| {
                 format!("USB protocol does not support display output for device {device_id}")
             })?;
-        let first_packet = commands.first().map_or_else(
-            || "<none>".to_owned(),
-            |command| describe_packet(&command.data),
-        );
+        if tracing::enabled!(tracing::Level::TRACE) {
+            let first_packet = commands.first().map_or_else(
+                || "<none>".to_owned(),
+                |command| describe_packet(&command.data),
+            );
 
-        trace!(
-            device_id = %device_id,
-            protocol = protocol.name(),
-            transport = transport.name(),
-            display_format = %frame.payload.format,
-            display_bytes = frame.payload.data.len(),
-            command_count = commands.len(),
-            first_packet = %first_packet,
-            "usb display write requested"
-        );
+            trace!(
+                device_id = %device_id,
+                protocol = protocol.name(),
+                transport = transport.name(),
+                display_format = %frame.payload.format,
+                display_bytes = frame.payload.data.len(),
+                command_count = commands.len(),
+                first_packet = %first_packet,
+                "usb display write requested"
+            );
+        }
 
         Self::run_commands(protocol, transport, commands.as_slice())
             .await

@@ -1,5 +1,7 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{LazyLock, Mutex};
 
+use anyhow::anyhow;
 use async_trait::async_trait;
 use hypercolor_hal::protocol::{
     ProtocolCommand, ProtocolError, ProtocolResponse, ProtocolZone, ResponseStatus, TransferType,
@@ -367,6 +369,129 @@ async fn parallel_display_write_failure_does_not_stop_control_lane() {
         .expect("actor should exit cleanly");
 }
 
+#[test]
+fn transient_and_fatal_frame_write_errors_classify_transport_liveness() {
+    let transient_errors = [
+        TransportError::Timeout { timeout_ms: 25 },
+        TransportError::IoError {
+            detail: "temporary bus contention".to_owned(),
+        },
+    ];
+    for error in transient_errors {
+        let error = anyhow!(error).context("USB frame write failed");
+        assert_eq!(
+            UsbBackend::classify_frame_write_error(&error),
+            actor::FrameWriteDisposition::Transient
+        );
+    }
+
+    let fatal_errors = [
+        TransportError::NotFound {
+            detail: "device removed".to_owned(),
+        },
+        TransportError::PermissionDenied {
+            detail: "access revoked".to_owned(),
+        },
+        TransportError::Closed,
+        TransportError::UnsupportedTransfer {
+            transport: "test".to_owned(),
+            transfer_type: TransferType::Primary,
+        },
+        TransportError::IoError {
+            detail: "hidraw device disconnected".to_owned(),
+        },
+    ];
+    for error in fatal_errors {
+        let error = anyhow!(error).context("USB frame write failed");
+        assert_eq!(
+            UsbBackend::classify_frame_write_error(&error),
+            actor::FrameWriteDisposition::Fatal
+        );
+    }
+
+    assert_eq!(
+        UsbBackend::classify_frame_write_error(&anyhow!("protocol encoding failed")),
+        actor::FrameWriteDisposition::Fatal
+    );
+}
+
+#[tokio::test]
+async fn single_lane_actor_survives_transient_io_frame_failure() {
+    assert_transient_frame_failure_survival(false, InjectedPrimaryFailure::Io).await;
+}
+
+#[tokio::test]
+async fn parallel_actor_survives_transient_timeout_frame_failure() {
+    assert_transient_frame_failure_survival(true, InjectedPrimaryFailure::Timeout).await;
+}
+
+async fn assert_transient_frame_failure_survival(
+    parallel_transfer_lanes: bool,
+    failure: InjectedPrimaryFailure,
+) {
+    let (frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
+    let (_display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
+    let (command_tx, command_rx) = mpsc::unbounded_channel();
+
+    let transport = RecordingTransport::default()
+        .with_failed_primary_send_attempt(1, failure)
+        .with_parallel_transfer_lanes_if(parallel_transfer_lanes);
+    let transport = Arc::new(transport);
+    let actor_protocol: Arc<dyn Protocol> = Arc::new(FairnessProtocol);
+    let actor_transport: Arc<dyn Transport> = transport.clone();
+    let device_id = DeviceId::new();
+
+    let actor = if parallel_transfer_lanes {
+        tokio::spawn(UsbBackend::test_run_parallel_device_actor(
+            device_id,
+            "transient-frame-failure-test-device",
+            actor_protocol,
+            actor_transport,
+            frame_rx,
+            display_rx,
+            command_rx,
+        ))
+    } else {
+        tokio::spawn(UsbBackend::test_run_device_actor(
+            device_id,
+            "transient-frame-failure-test-device",
+            actor_protocol,
+            actor_transport,
+            frame_rx,
+            display_rx,
+            command_rx,
+        ))
+    };
+
+    frame_tx.send_replace(Some(Arc::new(UsbFramePayload {
+        colors: Arc::new(vec![[0x11, 0x22, 0x33]]),
+    })));
+    wait_for_primary_send_attempts(&transport, 1).await;
+    assert!(transport.writes().is_empty());
+
+    frame_tx.send_replace(Some(Arc::new(UsbFramePayload {
+        colors: Arc::new(vec![[0x22, 0x33, 0x44]]),
+    })));
+    assert_eq!(wait_for_writes(&transport, 1).await, vec![vec![0x22]]);
+    assert!(!actor.is_finished());
+
+    let (response_tx, response_rx) = oneshot::channel();
+    command_tx
+        .send(UsbDeviceCommand::Shutdown {
+            led_count: 0,
+            response_tx,
+        })
+        .expect("actor command channel should remain open after transient frame failure");
+    response_rx
+        .await
+        .expect("shutdown response should be delivered")
+        .expect("shutdown should succeed");
+    actor
+        .await
+        .expect("actor task should join")
+        .expect("actor should exit cleanly");
+}
+
 async fn wait_for_writes(transport: &RecordingTransport, count: usize) -> Vec<Vec<u8>> {
     timeout(Duration::from_secs(1), async {
         loop {
@@ -380,6 +505,20 @@ async fn wait_for_writes(transport: &RecordingTransport, count: usize) -> Vec<Ve
     })
     .await
     .expect("transport writes should arrive before timeout")
+}
+
+async fn wait_for_primary_send_attempts(transport: &RecordingTransport, count: usize) {
+    timeout(Duration::from_secs(1), async {
+        loop {
+            if transport.primary_send_attempts() >= count {
+                return;
+            }
+
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("transport send attempt should arrive before timeout");
 }
 
 struct FairnessProtocol;
@@ -484,6 +623,12 @@ impl Protocol for ParallelFairnessProtocol {
     }
 }
 
+#[derive(Clone, Copy)]
+enum InjectedPrimaryFailure {
+    Io,
+    Timeout,
+}
+
 #[derive(Default)]
 struct RecordingTransport {
     writes: Mutex<Vec<Vec<u8>>>,
@@ -492,6 +637,9 @@ struct RecordingTransport {
     bulk_send_delay: Option<Duration>,
     parallel_transfer_lanes: bool,
     failed_transfer_type: Option<TransferType>,
+    primary_send_attempts: AtomicUsize,
+    failed_primary_send_attempt: Option<usize>,
+    failed_primary_send_error: Option<InjectedPrimaryFailure>,
 }
 
 impl RecordingTransport {
@@ -510,8 +658,23 @@ impl RecordingTransport {
         self
     }
 
+    const fn with_parallel_transfer_lanes_if(mut self, enabled: bool) -> Self {
+        self.parallel_transfer_lanes = enabled;
+        self
+    }
+
     const fn with_failed_transfer_type(mut self, transfer_type: TransferType) -> Self {
         self.failed_transfer_type = Some(transfer_type);
+        self
+    }
+
+    const fn with_failed_primary_send_attempt(
+        mut self,
+        attempt: usize,
+        error: InjectedPrimaryFailure,
+    ) -> Self {
+        self.failed_primary_send_attempt = Some(attempt);
+        self.failed_primary_send_error = Some(error);
         self
     }
 
@@ -520,6 +683,10 @@ impl RecordingTransport {
             .lock()
             .expect("recording transport mutex should not be poisoned")
             .clone()
+    }
+
+    fn primary_send_attempts(&self) -> usize {
+        self.primary_send_attempts.load(Ordering::Relaxed)
     }
 
     async fn record_send(&self, data: &[u8], send_delay: Duration) {
@@ -565,6 +732,22 @@ impl Transport for RecordingTransport {
             return Err(TransportError::IoError {
                 detail: format!("injected {transfer_type:?} failure"),
             });
+        }
+        if transfer_type == TransferType::Primary {
+            let attempt = self.primary_send_attempts.fetch_add(1, Ordering::Relaxed) + 1;
+            if self.failed_primary_send_attempt == Some(attempt) {
+                return Err(match self.failed_primary_send_error {
+                    Some(InjectedPrimaryFailure::Io) => TransportError::IoError {
+                        detail: format!("injected primary send failure on attempt {attempt}"),
+                    },
+                    Some(InjectedPrimaryFailure::Timeout) => {
+                        TransportError::Timeout { timeout_ms: 25 }
+                    }
+                    None => TransportError::IoError {
+                        detail: "injected primary send failure".to_owned(),
+                    },
+                });
+            }
         }
         self.record_send(data, self.send_delay_for(transfer_type))
             .await;
