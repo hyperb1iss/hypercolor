@@ -139,22 +139,24 @@ impl ComposeContext<'_> {
         }
 
         let producer_start = Instant::now();
-        let (render_group_result, effect_retained, live_dependency_key) = {
+        let registry = {
             let registry = self.state.effect_registry.read().await;
-            let live_dependency_key = self
-                .scene_snapshot
-                .scene_runtime
-                .dependency_key(registry.generation());
-            let (render_group_result, effect_retained) = self.compose.reuse_or_render_scene(
-                self.scene_snapshot,
-                live_dependency_key,
-                &registry,
-                self.skip_decision,
-                self.frame_delta,
-                self.inputs,
-            );
-            (render_group_result, effect_retained, live_dependency_key)
+            self.compose
+                .render_group_runtime
+                .effect_registry_snapshot(&registry)
         };
+        let live_dependency_key = self
+            .scene_snapshot
+            .scene_runtime
+            .dependency_key(registry.generation());
+        let (render_group_result, effect_retained) = self.compose.reuse_or_render_scene(
+            self.scene_snapshot,
+            live_dependency_key,
+            &registry,
+            self.skip_decision,
+            self.frame_delta,
+            self.inputs,
+        );
         if !effect_retained {
             let producer_done_at = Instant::now();
             let producer_us = micros_between(producer_start, producer_done_at);

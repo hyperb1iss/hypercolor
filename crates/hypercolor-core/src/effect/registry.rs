@@ -68,6 +68,7 @@ impl EffectEntry {
 ///
 /// For async filesystem scanning and hot-reload watching, a higher-level
 /// coordinator uses this registry as the backing store.
+#[derive(Clone)]
 pub struct EffectRegistry {
     /// All known effects, indexed by their unique id.
     effects: HashMap<EffectId, EffectEntry>,

@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use anyhow::Result;
 use hypercolor_core::effect::EffectRegistry;
@@ -22,6 +23,21 @@ const DIRECT_SURFACE_POOL_INITIAL_SLOTS: usize = 6;
 const DIRECT_SURFACE_POOL_MAX_SLOTS: usize = 32;
 
 impl ZoneRuntime {
+    pub(crate) fn effect_registry_snapshot(
+        &mut self,
+        registry: &EffectRegistry,
+    ) -> Arc<EffectRegistry> {
+        if let Some(snapshot) = self.effect_registry_snapshot.as_ref()
+            && snapshot.generation() == registry.generation()
+        {
+            return Arc::clone(snapshot);
+        }
+
+        let snapshot = Arc::new(registry.clone());
+        self.effect_registry_snapshot = Some(Arc::clone(&snapshot));
+        snapshot
+    }
+
     pub(crate) fn clear_inactive_groups(&mut self) {
         if !self.has_inactive_group_resources() {
             return;

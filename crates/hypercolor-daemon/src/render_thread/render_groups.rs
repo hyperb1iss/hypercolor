@@ -8,7 +8,7 @@ use tokio::sync::RwLock;
 use hypercolor_core::asset::AssetLibrary;
 #[cfg(test)]
 use hypercolor_core::bus::{DisplayGroupFrame, DisplayGroupOutputRoute, DisplayGroupTarget};
-use hypercolor_core::effect::EffectPool;
+use hypercolor_core::effect::{EffectPool, EffectRegistry};
 #[cfg(test)]
 use hypercolor_core::input::ScreenData;
 use hypercolor_core::spatial::SpatialEngine;
@@ -92,6 +92,7 @@ pub(crate) struct ZoneRuntime {
     direct_surface_pools: HashMap<ZoneId, RenderSurfacePool>,
     retained_direct_group_frames: HashMap<ZoneId, RetainedDirectGroupFrame>,
     retained_materialized_group_frames: HashMap<ZoneId, RetainedMaterializedGroupFrame>,
+    effect_registry_snapshot: Option<Arc<EffectRegistry>>,
     static_layer_surface_cache: StaticLayerSurfaceCache,
     scene_surface_pool: RenderSurfacePool,
     reconciled_dependency_key: Option<SceneDependencyKey>,
@@ -119,6 +120,7 @@ impl ZoneRuntime {
             direct_surface_pools: HashMap::new(),
             retained_direct_group_frames: HashMap::new(),
             retained_materialized_group_frames: HashMap::new(),
+            effect_registry_snapshot: None,
             static_layer_surface_cache: StaticLayerSurfaceCache::default(),
             // 8 slots absorbs typical downstream fan-out (watch channel +
             // display-output dispatch + one pin per display worker mid-

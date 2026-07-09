@@ -1,6 +1,49 @@
 use super::*;
 
 #[test]
+fn effect_registry_snapshot_reuses_generation_and_refreshes_after_rescan() {
+    let temp = tempfile::tempdir().expect("effect registry tempdir should be created");
+    let root = temp.path().join("effects");
+    std::fs::create_dir_all(&root).expect("effect registry root should be created");
+    let mut runtime = ZoneRuntime::new(4, 4);
+    let mut registry = EffectRegistry::new(vec![root.clone()]);
+
+    let empty = runtime.effect_registry_snapshot(&registry);
+    let reused = runtime.effect_registry_snapshot(&registry);
+
+    assert!(Arc::ptr_eq(&empty, &reused));
+
+    let effect_path = root.join("aurora.html");
+    std::fs::write(
+        &effect_path,
+        r#"<head><title>Aurora</title><meta description="Northern lights" /></head>"#,
+    )
+    .expect("effect source should be written");
+    let added = registry.rescan();
+    let installed = runtime.effect_registry_snapshot(&registry);
+
+    assert_eq!(added.added, 1);
+    assert_eq!(installed.len(), 1);
+    assert!(!Arc::ptr_eq(&empty, &installed));
+    assert_ne!(
+        SceneDependencyKey::new(7, empty.generation()),
+        SceneDependencyKey::new(7, installed.generation())
+    );
+    assert!(Arc::ptr_eq(
+        &installed,
+        &runtime.effect_registry_snapshot(&registry)
+    ));
+
+    std::fs::remove_file(effect_path).expect("effect source should be removed");
+    let removed = registry.rescan();
+    let pruned = runtime.effect_registry_snapshot(&registry);
+
+    assert_eq!(removed.removed, 1);
+    assert!(pruned.is_empty());
+    assert!(!Arc::ptr_eq(&installed, &pruned));
+}
+
+#[test]
 fn retained_scene_invalidates_when_registry_generation_changes() {
     let mut runtime = ZoneRuntime::new(4, 4);
     let mut registry = builtin_registry();
