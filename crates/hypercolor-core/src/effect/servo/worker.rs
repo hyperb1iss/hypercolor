@@ -80,6 +80,8 @@ use readback::read_framebuffer_into_canvas;
 pub(super) use runtime_html::{effect_is_audio_reactive, prepare_runtime_html_source};
 use scheduler::{PendingRenderCommand, ScheduledServoWork, ServoWorkerScheduler};
 #[cfg(test)]
+use shared::shared_worker_acquisition_allowed;
+#[cfg(test)]
 pub(super) use shared::{
     ServoWorker, install_poisoned_shared_worker, install_running_shared_worker,
     reset_shared_servo_worker_state, shared_worker_is_vacant, shutdown_shared_servo_worker,
@@ -98,6 +100,7 @@ const SCHEDULER_DRAIN_LIMIT: usize = 64;
 const JS_TIMER_MIN_DURATION_MS: i64 = 4;
 const MAX_SERVO_READBACK_RETIREES: usize = 8;
 const STATIC_CANVAS_REUSE_NO_READY_FRAMES: u32 = 2;
+const TRANSPARENT_READBACK_STARTUP_GRACE_FRAMES: u64 = 2;
 
 /// Per-frame Servo render timings, split by stage. All durations in
 /// microseconds; the shared `_us` suffix is deliberate.
@@ -186,14 +189,17 @@ fn can_reuse_cached_canvas(
 }
 
 fn should_reuse_cached_canvas_after_transparent_readback(
+    renders_since_load: u64,
     cached: Option<&Canvas>,
     candidate: &Canvas,
     width: u32,
     height: u32,
 ) -> bool {
-    cached.is_some_and(|cached| {
-        cached.width() == width && cached.height() == height && canvas_has_visible_alpha(cached)
-    }) && candidate.width() == width
+    renders_since_load <= TRANSPARENT_READBACK_STARTUP_GRACE_FRAMES
+        && cached.is_some_and(|cached| {
+            cached.width() == width && cached.height() == height && canvas_has_visible_alpha(cached)
+        })
+        && candidate.width() == width
         && candidate.height() == height
         && canvas_is_fully_transparent(candidate)
 }
@@ -202,12 +208,17 @@ fn should_reuse_cached_canvas_after_transparent_readback(
 fn can_reuse_cached_gpu_frame(
     reuse_cached_on_no_ready: bool,
     frame_ready: bool,
+    consecutive_no_ready_frames: u32,
     cached_width: u32,
     cached_height: u32,
     width: u32,
     height: u32,
 ) -> bool {
-    reuse_cached_on_no_ready && !frame_ready && cached_width == width && cached_height == height
+    reuse_cached_on_no_ready
+        && !frame_ready
+        && consecutive_no_ready_frames >= STATIC_CANVAS_REUSE_NO_READY_FRAMES
+        && cached_width == width
+        && cached_height == height
 }
 
 fn canvas_has_visible_alpha(canvas: &Canvas) -> bool {
@@ -893,6 +904,7 @@ impl ServoWorkerRuntime {
                 && can_reuse_cached_gpu_frame(
                     mode.reuse_cached_gpu_frame_on_no_ready(),
                     frame_ready,
+                    consecutive_no_ready_frames,
                     cached.width,
                     cached.height,
                     width,
@@ -924,6 +936,7 @@ impl ServoWorkerRuntime {
                         session.gpu_import.clear_cached_frame();
                     }
                     if should_reuse_cached_canvas_after_transparent_readback(
+                        renders_since_load,
                         session.last_canvas.as_ref(),
                         &canvas,
                         width,

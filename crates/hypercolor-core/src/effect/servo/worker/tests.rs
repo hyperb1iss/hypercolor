@@ -63,15 +63,22 @@ fn combined_script_appends_frame_payloads_through_stable_adapter() {
 fn frame_payload_requires_json_object() {
     assert!(ServoFramePayload::from_json("not json".to_owned()).is_err());
     assert!(ServoFramePayload::from_json("[]".to_owned()).is_err());
+    assert!(ServoFramePayload::from_json("null".to_owned()).is_err());
+    assert!(ServoFramePayload::from_json("\"text\"".to_owned()).is_err());
     assert!(ServoFramePayload::from_json("{\"ok\":true}".to_owned()).is_ok());
 }
 
 #[test]
-fn frame_payload_canonicalizes_json_for_script_embedding() {
-    let payload = ServoFramePayload::from_json("{\"text\":\"line\u{2028}break\"}".to_owned())
-        .expect("valid JSON object");
+fn frame_payload_preserves_serialization_and_escapes_js_line_separators() {
+    let payload = ServoFramePayload::from_json(
+        "{ \"z\": 1, \"text\":\"line\u{2028}middle\u{2029}end\" }".to_owned(),
+    )
+    .expect("valid JSON object");
 
-    assert_eq!(payload.as_json(), "{\"text\":\"line\\u2028break\"}");
+    assert_eq!(
+        payload.as_json(),
+        "{ \"z\": 1, \"text\":\"line\\u2028middle\\u2029end\" }"
+    );
 }
 
 #[test]
@@ -258,13 +265,54 @@ fn scheduler_alternates_scene_and_display_render_lanes_before_barrier() {
 #[cfg(feature = "servo-gpu-import")]
 #[test]
 fn cached_gpu_frame_reuse_requires_policy_no_ready_and_matching_size() {
-    assert!(can_reuse_cached_gpu_frame(true, false, 480, 480, 480, 480));
-    assert!(!can_reuse_cached_gpu_frame(
-        false, false, 480, 480, 480, 480
+    assert!(can_reuse_cached_gpu_frame(
+        true,
+        false,
+        STATIC_CANVAS_REUSE_NO_READY_FRAMES,
+        480,
+        480,
+        480,
+        480
     ));
-    assert!(!can_reuse_cached_gpu_frame(true, true, 480, 480, 480, 480));
-    assert!(!can_reuse_cached_gpu_frame(true, false, 480, 480, 640, 480));
-    assert!(!can_reuse_cached_gpu_frame(true, false, 480, 480, 480, 640));
+    assert!(!can_reuse_cached_gpu_frame(
+        true, false, 1, 480, 480, 480, 480
+    ));
+    assert!(!can_reuse_cached_gpu_frame(
+        false,
+        false,
+        STATIC_CANVAS_REUSE_NO_READY_FRAMES,
+        480,
+        480,
+        480,
+        480
+    ));
+    assert!(!can_reuse_cached_gpu_frame(
+        true,
+        true,
+        STATIC_CANVAS_REUSE_NO_READY_FRAMES,
+        480,
+        480,
+        480,
+        480
+    ));
+    assert!(!can_reuse_cached_gpu_frame(
+        true,
+        false,
+        STATIC_CANVAS_REUSE_NO_READY_FRAMES,
+        480,
+        480,
+        640,
+        480
+    ));
+    assert!(!can_reuse_cached_gpu_frame(
+        true,
+        false,
+        STATIC_CANVAS_REUSE_NO_READY_FRAMES,
+        480,
+        480,
+        480,
+        640
+    ));
 }
 
 #[test]
@@ -332,6 +380,32 @@ fn fatal_classifier_keeps_transport_failures_global() {
 }
 
 #[test]
+fn soft_frame_failures_do_not_gate_worker_acquisition() {
+    let _lock = test_support::SHARED_WORKER_STATE_TEST_LOCK
+        .lock()
+        .expect("shared worker test lock");
+    reset_shared_servo_worker_state();
+    let frame_error = anyhow!("javascript evaluation failed: TypeError: boom");
+
+    for _ in 0..3 {
+        poison_shared_servo_worker_if_fatal("Servo frame render failed", &frame_error);
+    }
+
+    assert!(shared_worker_acquisition_allowed());
+    reset_shared_servo_worker_state();
+}
+
+#[test]
+fn post_readback_gl_errors_reject_the_candidate() {
+    assert!(super::readback::validate_post_readback_gl_errors(&[]).is_ok());
+
+    let error = super::readback::validate_post_readback_gl_errors(&[0x0506])
+        .expect_err("GL errors after read_pixels must reject the candidate");
+
+    assert!(error.to_string().contains("0x506"));
+}
+
+#[test]
 fn cached_canvas_reuse_waits_for_settled_no_ready_frames() {
     let cached = Canvas::new(320, 200);
 
@@ -392,7 +466,7 @@ fn cached_canvas_reuse_requires_matching_dimensions() {
 }
 
 #[test]
-fn transparent_readback_reuses_visible_cached_canvas() {
+fn transparent_startup_readback_reuse_is_bounded() {
     use hypercolor_types::canvas::Rgba;
 
     let mut cached = Canvas::new(320, 200);
@@ -402,24 +476,35 @@ fn transparent_readback_reuses_visible_cached_canvas() {
     visible.fill(Rgba::new(12, 34, 56, 255));
 
     assert!(should_reuse_cached_canvas_after_transparent_readback(
+        TRANSPARENT_READBACK_STARTUP_GRACE_FRAMES,
         Some(&cached),
         &transparent,
         320,
         200
     ));
     assert!(!should_reuse_cached_canvas_after_transparent_readback(
+        TRANSPARENT_READBACK_STARTUP_GRACE_FRAMES + 1,
+        Some(&cached),
+        &transparent,
+        320,
+        200
+    ));
+    assert!(!should_reuse_cached_canvas_after_transparent_readback(
+        TRANSPARENT_READBACK_STARTUP_GRACE_FRAMES,
         Some(&cached),
         &visible,
         320,
         200
     ));
     assert!(!should_reuse_cached_canvas_after_transparent_readback(
+        TRANSPARENT_READBACK_STARTUP_GRACE_FRAMES,
         Some(&cached),
         &transparent,
         480,
         480
     ));
     assert!(!should_reuse_cached_canvas_after_transparent_readback(
+        TRANSPARENT_READBACK_STARTUP_GRACE_FRAMES,
         Some(&transparent),
         &transparent,
         320,

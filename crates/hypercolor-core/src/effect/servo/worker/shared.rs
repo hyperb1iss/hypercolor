@@ -120,7 +120,6 @@ pub(in crate::effect::servo) fn poison_shared_servo_worker_if_fatal(
     error: &anyhow::Error,
 ) {
     if !servo_worker_is_fatal_error(error) {
-        SERVO_CIRCUIT_BREAKER.record_failure();
         return;
     }
     let message = format!("{context}: {error}");
@@ -307,6 +306,12 @@ pub(in crate::effect::servo) fn reset_shared_servo_worker_state() {
         Err(poisoned) => poisoned.into_inner(),
     };
     *guard = SharedServoWorkerState::Vacant;
+    SERVO_CIRCUIT_BREAKER.record_success();
+}
+
+#[cfg(test)]
+pub(super) fn shared_worker_acquisition_allowed() -> bool {
+    SERVO_CIRCUIT_BREAKER.can_attempt()
 }
 
 #[cfg(test)]

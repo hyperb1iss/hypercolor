@@ -28,6 +28,7 @@ use std::time::{Duration, Instant};
 use super::memory::ServoMemoryReportSnapshot;
 use crate::effect::traits::EffectRenderOutput;
 use anyhow::{Context, Result, bail};
+use serde::de::{Deserializer as _, IgnoredAny, MapAccess, Visitor};
 
 /// Maximum time a `load` call waits for the worker to finish loading the page.
 pub(super) const WORKER_READY_TIMEOUT: Duration = Duration::from_secs(10);
@@ -62,16 +63,10 @@ pub(super) struct ServoFramePayload {
 
 impl ServoFramePayload {
     pub(super) fn from_json(json: String) -> Result<Self> {
-        let value = serde_json::from_str::<serde_json::Value>(&json)
-            .context("Servo frame payload should be valid JSON")?;
-        if !value.is_object() {
-            bail!("Servo frame payload should be a JSON object");
-        }
-        let json = serde_json::to_string(&value)
-            .context("Servo frame payload should canonicalize as JSON")?
-            .replace('\u{2028}', "\\u2028")
-            .replace('\u{2029}', "\\u2029");
-        Ok(Self { json })
+        validate_json_object(&json).context("Servo frame payload should be a valid JSON object")?;
+        Ok(Self {
+            json: escape_js_line_separators(json),
+        })
     }
 
     pub(super) fn as_json(&self) -> &str {
@@ -81,6 +76,47 @@ impl ServoFramePayload {
     pub(super) fn len(&self) -> usize {
         self.json.len()
     }
+}
+
+fn validate_json_object(json: &str) -> Result<()> {
+    struct ObjectVisitor;
+
+    impl<'de> Visitor<'de> for ObjectVisitor {
+        type Value = ();
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a JSON object")
+        }
+
+        fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+        where
+            A: MapAccess<'de>,
+        {
+            while map.next_entry::<IgnoredAny, IgnoredAny>()?.is_some() {}
+            Ok(())
+        }
+    }
+
+    let mut deserializer = serde_json::Deserializer::from_str(json);
+    deserializer.deserialize_map(ObjectVisitor)?;
+    deserializer.end()?;
+    Ok(())
+}
+
+fn escape_js_line_separators(json: String) -> String {
+    if !json.contains(['\u{2028}', '\u{2029}']) {
+        return json;
+    }
+
+    let mut escaped = String::with_capacity(json.len());
+    for character in json.chars() {
+        match character {
+            '\u{2028}' => escaped.push_str("\\u2028"),
+            '\u{2029}' => escaped.push_str("\\u2029"),
+            _ => escaped.push(character),
+        }
+    }
+    escaped
 }
 
 /// Lifecycle state a `ServoWorkerClient` tracks from the caller side.

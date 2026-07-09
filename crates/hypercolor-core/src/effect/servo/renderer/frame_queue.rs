@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::{Arc, LazyLock};
 
 use hypercolor_types::effect::{ControlValue, EffectCategory, EffectMetadata};
 use hypercolor_types::sensor::SystemSnapshot;
@@ -114,12 +115,21 @@ impl ServoRenderer {
     }
 
     pub(super) fn queue_frame(&mut self, input: &FrameInput<'_>) {
+        let demand = QueuedFrameDemand {
+            audio: self.include_audio_updates,
+            interaction: self.include_interaction_updates,
+            screen: self.include_screen_updates,
+            sensors: self.include_sensor_updates,
+            media: self.include_media_updates,
+            net: self.include_net_updates,
+            lighting: self.include_lighting_updates,
+        };
         if let Some(frame) = self.queued_frame.as_mut() {
-            frame.merge_from_input(input);
+            frame.merge_from_input(input, demand);
             return;
         }
 
-        self.queued_frame = Some(QueuedFrameInput::from_input(input));
+        self.queued_frame = Some(QueuedFrameInput::from_input(input, demand));
     }
 
     pub(super) fn try_submit_queued_frame(&mut self) {
@@ -197,60 +207,100 @@ impl ServoRenderer {
     }
 }
 
+static SILENT_AUDIO: LazyLock<hypercolor_types::audio::AudioData> =
+    LazyLock::new(hypercolor_types::audio::AudioData::silence);
+static EMPTY_INTERACTION: LazyLock<crate::input::InteractionData> =
+    LazyLock::new(crate::input::InteractionData::default);
+static EMPTY_SENSORS: LazyLock<SystemSnapshot> = LazyLock::new(SystemSnapshot::empty);
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct QueuedFrameDemand {
+    audio: bool,
+    interaction: bool,
+    screen: bool,
+    sensors: bool,
+    media: bool,
+    net: bool,
+    lighting: bool,
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct QueuedFrameInput {
     time_secs: f32,
     delta_secs: f32,
     frame_number: u64,
-    audio: hypercolor_types::audio::AudioData,
-    interaction: crate::input::InteractionData,
-    screen: Option<crate::input::ScreenData>,
-    sensors: SystemSnapshot,
-    media: Option<hypercolor_types::media::MediaState>,
-    net: Option<hypercolor_types::net::NetStats>,
-    lighting: Option<hypercolor_types::lighting::LightingState>,
+    audio: Option<Arc<hypercolor_types::audio::AudioData>>,
+    interaction: Option<Arc<crate::input::InteractionData>>,
+    screen: Option<Arc<crate::input::ScreenData>>,
+    sensors: Option<Arc<SystemSnapshot>>,
+    media: Option<Arc<hypercolor_types::media::MediaState>>,
+    net: Option<Arc<hypercolor_types::net::NetStats>>,
+    lighting: Option<Arc<hypercolor_types::lighting::LightingState>>,
     canvas_width: u32,
     canvas_height: u32,
 }
 
 impl QueuedFrameInput {
-    pub(super) fn from_input(input: &FrameInput<'_>) -> Self {
+    pub(super) fn from_input(input: &FrameInput<'_>, demand: QueuedFrameDemand) -> Self {
         Self {
             time_secs: input.time_secs,
             delta_secs: input.delta_secs,
             frame_number: input.frame_number,
-            audio: input.audio.clone(),
-            interaction: input.interaction.clone(),
-            screen: input.screen.cloned(),
-            sensors: input.sensors.clone(),
-            media: input.sources.media.cloned(),
-            net: input.sources.net.cloned(),
-            lighting: input.sources.lighting.cloned(),
+            audio: demand.audio.then(|| Arc::new(input.audio.clone())),
+            interaction: demand
+                .interaction
+                .then(|| Arc::new(input.interaction.clone())),
+            screen: if demand.screen {
+                input.screen.map(|screen| Arc::new(screen.clone()))
+            } else {
+                None
+            },
+            sensors: demand.sensors.then(|| Arc::new(input.sensors.clone())),
+            media: if demand.media {
+                input.sources.media.map(|media| Arc::new(media.clone()))
+            } else {
+                None
+            },
+            net: if demand.net {
+                input.sources.net.map(|net| Arc::new(net.clone()))
+            } else {
+                None
+            },
+            lighting: if demand.lighting {
+                input
+                    .sources
+                    .lighting
+                    .map(|lighting| Arc::new(lighting.clone()))
+            } else {
+                None
+            },
             canvas_width: input.canvas_width,
             canvas_height: input.canvas_height,
         }
     }
 
-    fn merge_from_input(&mut self, input: &FrameInput<'_>) {
-        let prior_recent_keys = std::mem::take(&mut self.interaction.keyboard.recent_keys);
+    fn merge_from_input(&mut self, input: &FrameInput<'_>, demand: QueuedFrameDemand) {
+        let prior_recent_keys = self
+            .interaction
+            .as_mut()
+            .map(|interaction| std::mem::take(&mut Arc::make_mut(interaction).keyboard.recent_keys))
+            .unwrap_or_default();
         self.time_secs = input.time_secs;
         self.delta_secs = input.delta_secs;
         self.frame_number = input.frame_number;
-        self.audio.clone_from(input.audio);
-        self.interaction.clone_from(input.interaction);
-        match (&mut self.screen, input.screen) {
-            (Some(current), Some(next)) => current.clone_from(next),
-            (slot, Some(next)) => *slot = Some(next.clone()),
-            (slot, None) => *slot = None,
+        clone_demanded_from(&mut self.audio, input.audio, demand.audio);
+        clone_demanded_from(&mut self.interaction, input.interaction, demand.interaction);
+        clone_optional_demanded_from(&mut self.screen, input.screen, demand.screen);
+        clone_demanded_from(&mut self.sensors, input.sensors, demand.sensors);
+        clone_optional_demanded_from(&mut self.media, input.sources.media, demand.media);
+        clone_optional_demanded_from(&mut self.net, input.sources.net, demand.net);
+        clone_optional_demanded_from(&mut self.lighting, input.sources.lighting, demand.lighting);
+        if let Some(interaction) = self.interaction.as_mut() {
+            merge_unique_strings(
+                &mut Arc::make_mut(interaction).keyboard.recent_keys,
+                prior_recent_keys,
+            );
         }
-        self.sensors.clone_from(input.sensors);
-        clone_optional_from(&mut self.media, input.sources.media);
-        clone_optional_from(&mut self.net, input.sources.net);
-        clone_optional_from(&mut self.lighting, input.sources.lighting);
-        merge_unique_strings(
-            &mut self.interaction.keyboard.recent_keys,
-            prior_recent_keys,
-        );
         self.canvas_width = input.canvas_width;
         self.canvas_height = input.canvas_height;
     }
@@ -260,25 +310,55 @@ impl QueuedFrameInput {
             time_secs: self.time_secs,
             delta_secs: self.delta_secs,
             frame_number: self.frame_number,
-            audio: &self.audio,
-            interaction: &self.interaction,
-            screen: self.screen.as_ref(),
-            sensors: &self.sensors,
+            audio: self.audio.as_deref().unwrap_or(&SILENT_AUDIO),
+            interaction: self.interaction.as_deref().unwrap_or(&EMPTY_INTERACTION),
+            screen: self.screen.as_deref(),
+            sensors: self.sensors.as_deref().unwrap_or(&EMPTY_SENSORS),
             sources: crate::effect::traits::FrameDataSources {
-                media: self.media.as_ref(),
-                net: self.net.as_ref(),
-                lighting: self.lighting.as_ref(),
+                media: self.media.as_deref(),
+                net: self.net.as_deref(),
+                lighting: self.lighting.as_deref(),
             },
             canvas_width: self.canvas_width,
             canvas_height: self.canvas_height,
         }
     }
+
+    #[cfg(test)]
+    pub(super) fn retained_input_domains(&self) -> [bool; 7] {
+        [
+            self.audio.is_some(),
+            self.interaction.is_some(),
+            self.screen.is_some(),
+            self.sensors.is_some(),
+            self.media.is_some(),
+            self.net.is_some(),
+            self.lighting.is_some(),
+        ]
+    }
+
+    #[cfg(test)]
+    pub(super) fn queued_interaction(&self) -> Option<&crate::input::InteractionData> {
+        self.interaction.as_deref()
+    }
 }
 
-fn clone_optional_from<T: Clone>(slot: &mut Option<T>, next: Option<&T>) {
+fn clone_demanded_from<T: Clone>(slot: &mut Option<Arc<T>>, next: &T, demanded: bool) {
+    clone_optional_demanded_from(slot, Some(next), demanded);
+}
+
+fn clone_optional_demanded_from<T: Clone>(
+    slot: &mut Option<Arc<T>>,
+    next: Option<&T>,
+    demanded: bool,
+) {
+    if !demanded {
+        *slot = None;
+        return;
+    }
     match (slot.as_mut(), next) {
-        (Some(current), Some(next)) => current.clone_from(next),
-        (None, Some(next)) => *slot = Some(next.clone()),
+        (Some(current), Some(next)) => Arc::make_mut(current).clone_from(next),
+        (None, Some(next)) => *slot = Some(Arc::new(next.clone())),
         (_, None) => *slot = None,
     }
 }

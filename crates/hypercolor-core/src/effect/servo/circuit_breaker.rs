@@ -1,8 +1,8 @@
 //! Circuit breaker for the shared Servo worker.
 //!
 //! Wraps worker acquisition with failure tracking and exponential backoff so
-//! transient faults (one flaky effect load, one hung frame render) can't
-//! poison the shared runtime for the rest of the daemon lifetime. The older
+//! transient acquisition faults can't poison the shared runtime for the rest
+//! of the daemon lifetime. The older
 //! "mark poisoned forever on the first fatal error" behavior remains in place
 //! for unrecoverable conditions (thread exit, channel disconnect); this
 //! breaker only gates retries for soft failures.
@@ -90,7 +90,7 @@ impl ServoCircuitBreaker {
         }
     }
 
-    /// Record a successful worker acquisition or operation.
+    /// Record a successful worker acquisition.
     pub(super) fn record_success(&self) {
         self.failures.store(0, Ordering::Release);
         self.consecutive_opens.store(0, Ordering::Release);

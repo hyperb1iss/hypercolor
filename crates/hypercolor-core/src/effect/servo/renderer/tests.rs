@@ -173,7 +173,7 @@ fn destroy_clears_renderer_state_without_shutting_down_shared_worker() {
     renderer.warned_stalled_frame = true;
     renderer.include_audio_updates = false;
     renderer.host_driven_animation = true;
-    renderer.queued_frame = Some(QueuedFrameInput::from_input(&frame_input(1.0 / 30.0)));
+    renderer.queue_frame(&frame_input(1.0 / 30.0));
     renderer
         .session
         .as_mut()
@@ -1140,6 +1140,71 @@ fn queued_frames_submit_latest_state_after_in_flight_render_finishes() {
 
     drop(worker);
     assert!(stopped.load(Ordering::SeqCst));
+}
+
+#[test]
+fn queued_frames_do_not_retain_undemanded_input_domains() {
+    let audio = custom_audio(0.8);
+    let interaction = custom_interaction(&["space"], &["space"]);
+    let screen = crate::input::ScreenData::from_zones(Vec::new(), 8, 6);
+    let mut sensors = SystemSnapshot::empty();
+    sensors.cpu_loads = vec![10.0, 20.0, 30.0];
+    let media = hypercolor_types::media::MediaState {
+        track: "heavy-track".to_owned(),
+        art_data_url: Some("data:image/jpeg;base64,payload".to_owned()),
+        ..Default::default()
+    };
+    let net = hypercolor_types::net::NetStats {
+        iface: "ethernet-test".to_owned(),
+        ..Default::default()
+    };
+    let lighting = hypercolor_types::lighting::LightingState {
+        effect_names: vec!["large-lighting-state".to_owned()],
+        ..Default::default()
+    };
+    let input = FrameInput {
+        time_secs: 1.0,
+        delta_secs: 1.0 / 30.0,
+        frame_number: 30,
+        audio: &audio,
+        interaction: &interaction,
+        screen: Some(&screen),
+        sensors: &sensors,
+        sources: crate::effect::traits::FrameDataSources {
+            media: Some(&media),
+            net: Some(&net),
+            lighting: Some(&lighting),
+        },
+        canvas_width: 320,
+        canvas_height: 200,
+    };
+    let mut renderer = ServoRenderer::new();
+    renderer.include_audio_updates = false;
+
+    renderer.queue_frame(&input);
+
+    let queued = renderer.queued_frame.as_ref().expect("queued frame");
+    assert_eq!(queued.retained_input_domains(), [false; 7]);
+}
+
+#[test]
+fn queued_frames_merge_recent_keys_from_superseded_inputs() {
+    let audio = custom_audio(0.0);
+    let first_interaction = custom_interaction(&["a", "b"], &["a"]);
+    let second_interaction = custom_interaction(&["b", "c"], &["c"]);
+    let first = frame_input_with(1.0 / 30.0, 1, &audio, &first_interaction, 320, 200);
+    let second = frame_input_with(1.0 / 30.0, 2, &audio, &second_interaction, 320, 200);
+    let mut renderer = ServoRenderer::new();
+    renderer.include_audio_updates = false;
+    renderer.include_interaction_updates = true;
+
+    renderer.queue_frame(&first);
+    renderer.queue_frame(&second);
+
+    let queued = renderer.queued_frame.as_ref().expect("queued frame");
+    let interaction = queued.queued_interaction().expect("demanded interaction");
+    assert_eq!(interaction.keyboard.pressed_keys, ["c"]);
+    assert_eq!(interaction.keyboard.recent_keys, ["b", "c", "a"]);
 }
 
 #[test]

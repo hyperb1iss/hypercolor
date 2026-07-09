@@ -69,7 +69,12 @@ pub(super) fn read_framebuffer_into_canvas(
         &mut pixels,
     );
     let gl_errors = collect_gl_errors_until_clear(gl::NO_ERROR, || gl.get_error());
-    log_servo_readback_gl_errors(&gl_errors);
+    if let Err(error) = validate_post_readback_gl_errors(&gl_errors) {
+        session
+            .readback_buffers
+            .retire_canvas(Canvas::from_vec(pixels, width_u32, height_u32));
+        return Err(error);
+    }
 
     flip_rows_in_place(&mut pixels, stride);
 
@@ -94,6 +99,18 @@ fn format_gl_error_codes(errors: &[u32]) -> String {
         .map(|error| format!("0x{error:x}"))
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+pub(super) fn validate_post_readback_gl_errors(errors: &[u32]) -> Result<()> {
+    if errors.is_empty() {
+        return Ok(());
+    }
+
+    log_servo_readback_gl_errors(errors);
+    bail!(
+        "Servo framebuffer readback failed with GL errors: {}",
+        format_gl_error_codes(errors)
+    )
 }
 
 fn log_servo_readback_gl_errors(errors: &[u32]) {
