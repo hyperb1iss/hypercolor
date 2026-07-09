@@ -209,6 +209,7 @@ pub(crate) fn publish_frame_updates(
         frame_number,
         elapsed_ms,
         timestamp_ms,
+        &mut publication_full_frame_copy,
     );
     let scene_canvas_receivers = state.scene_canvas_receiver_count();
     if scene_canvas_receivers > 0 {
@@ -406,6 +407,7 @@ fn publish_zone_previews(
     frame_number: u32,
     elapsed_ms: u64,
     timestamp_ms: u32,
+    publication_full_frame_copy: &mut FullFrameCopyMetrics,
 ) {
     let Some(scene_id) = scene_id else {
         return;
@@ -429,6 +431,7 @@ fn publish_zone_previews(
         zone_canvases,
         frame_number,
         timestamp_ms,
+        publication_full_frame_copy,
     );
     if zone_previews.is_empty() {
         return;
@@ -457,6 +460,7 @@ fn collect_zone_previews(
     zone_canvases: &[(ZoneId, ProducerFrame)],
     frame_number: u32,
     timestamp_ms: u32,
+    publication_full_frame_copy: &mut FullFrameCopyMetrics,
 ) -> Vec<ZonePreviewFrame> {
     let display_group_ids = group_canvases
         .iter()
@@ -467,7 +471,12 @@ fn collect_zone_previews(
         if display_group_ids.contains(group_id) {
             continue;
         }
-        if let Some(frame) = zone_preview_frame_from_producer(frame, frame_number, timestamp_ms) {
+        if let Some(frame) = zone_preview_frame_from_producer(
+            frame,
+            frame_number,
+            timestamp_ms,
+            publication_full_frame_copy,
+        ) {
             previews.push(ZonePreviewFrame {
                 scene_id,
                 zone_id: *group_id,
@@ -500,9 +509,14 @@ fn zone_preview_frame_from_producer(
     frame: &ProducerFrame,
     frame_number: u32,
     timestamp_ms: u32,
+    publication_full_frame_copy: &mut FullFrameCopyMetrics,
 ) -> Option<CanvasFrame> {
     match frame {
         ProducerFrame::Canvas(canvas) => {
+            publication_full_frame_copy.record(
+                usize_to_u32(canvas.rgba_len()),
+                "zone_preview_canvas_snapshot",
+            );
             Some(CanvasFrame::from_canvas(canvas, frame_number, timestamp_ms))
         }
         ProducerFrame::Surface(surface) => Some(CanvasFrame::from_surface(
@@ -963,7 +977,7 @@ mod tests {
         let mut recycled_frame = FrameData::empty();
         let mut cadence = PublicationCadenceState::default();
 
-        publish_frame_updates(
+        let stats = publish_frame_updates(
             &state,
             &mut cadence,
             FramePublicationRequest {
@@ -997,6 +1011,12 @@ mod tests {
         assert_eq!(previews[0].frame.frame_number, 7);
         assert_eq!(previews[0].frame.timestamp_ms, 42);
         assert_eq!(previews[0].frame.rgba_bytes(), &[10, 20, 30, 255]);
+        assert_eq!(stats.publication_full_frame_copy.count, 1);
+        assert_eq!(stats.publication_full_frame_copy.bytes, 4);
+        assert_eq!(
+            stats.publication_full_frame_copy.reason,
+            Some("zone_preview_canvas_snapshot")
+        );
     }
 
     #[test]
