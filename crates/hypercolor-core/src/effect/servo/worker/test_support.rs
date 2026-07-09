@@ -49,12 +49,14 @@ fn empty_memory_report() -> ServoMemoryReportSnapshot {
 }
 
 pub fn spawn_test_worker() -> (ServoWorker, Arc<AtomicBool>) {
-    let (command_tx, command_rx) = mpsc::channel();
+    let (command_tx, command_rx) = mpsc::sync_channel(16);
     let client_state = Arc::new(ServoWorkerClientSharedState::new());
+    let worker_client_state = Arc::clone(&client_state);
     let stopped = Arc::new(AtomicBool::new(false));
     let stopped_clone = Arc::clone(&stopped);
     let thread_handle = thread::spawn(move || {
         while let Ok(command) = command_rx.recv() {
+            worker_client_state.note_command_dequeued(&command);
             match command {
                 WorkerCommand::CreateSession { response_tx, .. }
                 | WorkerCommand::Load { response_tx, .. }
@@ -99,8 +101,9 @@ pub fn spawn_render_test_worker() -> (
     Receiver<()>,
     Arc<AtomicBool>,
 ) {
-    let (command_tx, command_rx) = mpsc::channel();
+    let (command_tx, command_rx) = mpsc::sync_channel(16);
     let client_state = Arc::new(ServoWorkerClientSharedState::new());
+    let worker_client_state = Arc::clone(&client_state);
     let (render_tx, render_rx) = mpsc::channel();
     let (result_tx, result_rx) = mpsc::channel();
     let (delivered_tx, delivered_rx) = mpsc::channel();
@@ -109,6 +112,7 @@ pub fn spawn_render_test_worker() -> (
     let stopped_clone = Arc::clone(&stopped);
     let thread_handle = thread::spawn(move || {
         while let Ok(command) = command_rx.recv() {
+            worker_client_state.note_command_dequeued(&command);
             match command {
                 WorkerCommand::CreateSession { response_tx, .. } => {
                     let _ = response_tx.send(Ok(()));
@@ -186,14 +190,16 @@ pub fn spawn_load_test_worker() -> (
     Receiver<()>,
     Arc<AtomicBool>,
 ) {
-    let (command_tx, command_rx) = mpsc::channel();
+    let (command_tx, command_rx) = mpsc::sync_channel(16);
     let client_state = Arc::new(ServoWorkerClientSharedState::new());
+    let worker_client_state = Arc::clone(&client_state);
     let (load_tx, load_rx) = mpsc::channel();
     let (unload_tx, unload_rx) = mpsc::channel();
     let stopped = Arc::new(AtomicBool::new(false));
     let stopped_clone = Arc::clone(&stopped);
     let thread_handle = thread::spawn(move || {
         while let Ok(command) = command_rx.recv() {
+            worker_client_state.note_command_dequeued(&command);
             match command {
                 WorkerCommand::CreateSession {
                     width,
@@ -248,8 +254,9 @@ pub fn spawn_blocking_load_test_worker() -> (
     Receiver<()>,
     Arc<AtomicBool>,
 ) {
-    let (command_tx, command_rx) = mpsc::channel();
+    let (command_tx, command_rx) = mpsc::sync_channel(16);
     let client_state = Arc::new(ServoWorkerClientSharedState::new());
+    let worker_client_state = Arc::clone(&client_state);
     let (load_tx, load_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
     let (unload_tx, unload_rx) = mpsc::channel();
@@ -257,6 +264,7 @@ pub fn spawn_blocking_load_test_worker() -> (
     let stopped_clone = Arc::clone(&stopped);
     let thread_handle = thread::spawn(move || {
         while let Ok(command) = command_rx.recv() {
+            worker_client_state.note_command_dequeued(&command);
             match command {
                 WorkerCommand::CreateSession {
                     width,

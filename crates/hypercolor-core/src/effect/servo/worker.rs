@@ -14,7 +14,8 @@ use std::collections::{HashMap, VecDeque};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::mpsc::{self, Receiver};
+use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -49,8 +50,8 @@ use super::telemetry::{
     record_servo_render_queue_wait,
 };
 use super::worker_client::{
-    ServoFramePayload, ServoProducerRole, ServoRenderMode, ServoSessionId, WORKER_READY_TIMEOUT,
-    WorkerCommand,
+    ServoFramePayload, ServoProducerRole, ServoRenderMode, ServoSessionId,
+    ServoWorkerClientSharedState, WORKER_READY_TIMEOUT, WorkerCommand,
 };
 use crate::effect::servo_bootstrap::ServoRenderingContextHandle;
 #[cfg(not(all(feature = "servo-gpu-import", target_os = "linux")))]
@@ -94,7 +95,7 @@ pub use shared::{servo_memory_report_snapshot, shutdown_servo_runtime};
 pub(super) const LOAD_TIMEOUT: Duration = Duration::from_secs(5);
 const URL_LOAD_TIMEOUT: Duration = Duration::from_secs(15);
 const SCRIPT_TIMEOUT: Duration = Duration::from_millis(250);
-pub(super) const RENDER_RESPONSE_TIMEOUT: Duration = Duration::from_millis(500);
+pub(super) const HARD_STALL_TIMEOUT: Duration = Duration::from_millis(500);
 pub(super) const RECENT_CONSOLE_SAMPLE_SIZE: usize = 6;
 const SCHEDULER_DRAIN_LIMIT: usize = 64;
 const JS_TIMER_MIN_DURATION_MS: i64 = 4;
@@ -367,7 +368,11 @@ impl ServoWorkerRuntime {
         })
     }
 
-    fn run(mut self, command_rx: Receiver<WorkerCommand>) {
+    fn run(
+        mut self,
+        command_rx: Receiver<WorkerCommand>,
+        client_state: Arc<ServoWorkerClientSharedState>,
+    ) {
         let mut scheduler = ServoWorkerScheduler::default();
 
         loop {
@@ -375,14 +380,34 @@ impl ServoWorkerRuntime {
                 let Ok(command) = command_rx.recv() else {
                     break;
                 };
+                client_state.note_command_dequeued(&command);
                 scheduler.push(command);
             }
 
+            let mut drained_to_empty = false;
             for _ in 0..SCHEDULER_DRAIN_LIMIT {
-                let Ok(command) = command_rx.try_recv() else {
-                    break;
-                };
-                scheduler.push(command);
+                match command_rx.try_recv() {
+                    Ok(command) => {
+                        client_state.note_command_dequeued(&command);
+                        scheduler.push(command);
+                    }
+                    Err(TryRecvError::Empty | TryRecvError::Disconnected) => {
+                        drained_to_empty = true;
+                        break;
+                    }
+                }
+            }
+            if drained_to_empty {
+                for session_id in client_state.take_deferred_destroys() {
+                    let (response_tx, _response_rx) = mpsc::sync_channel(1);
+                    scheduler.push(WorkerCommand::DestroySession {
+                        session_id,
+                        response_tx,
+                    });
+                }
+                if let Some(response_tx) = client_state.take_deferred_shutdown() {
+                    scheduler.push(WorkerCommand::Shutdown { response_tx });
+                }
             }
 
             let Some(work) = scheduler.next() else {

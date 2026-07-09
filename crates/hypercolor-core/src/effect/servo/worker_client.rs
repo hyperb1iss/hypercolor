@@ -17,23 +17,28 @@
 //! Rendering only flows while `Running`. Calling `submit_render` from any
 //! other state returns an error rather than queuing a doomed request.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
+use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
+use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::time::{Duration, Instant};
 
 use super::memory::ServoMemoryReportSnapshot;
 use crate::effect::traits::EffectRenderOutput;
 use anyhow::{Context, Result, bail};
 use serde::de::{Deserializer as _, IgnoredAny, MapAccess, Visitor};
+use thiserror::Error;
 
 /// Maximum time a `load` call waits for the worker to finish loading the page.
 pub(super) const WORKER_READY_TIMEOUT: Duration = Duration::from_secs(10);
 /// Maximum time an `unload` call waits for the worker to tear the page down.
 pub(super) const UNLOAD_TIMEOUT: Duration = Duration::from_secs(8);
+pub(super) const SERVO_RENDER_COMMAND_CAPACITY: usize = 256;
+pub(super) const SERVO_CONTROL_COMMAND_RESERVE: usize = 64;
+pub(super) const SERVO_COMMAND_QUEUE_CAPACITY: usize =
+    SERVO_RENDER_COMMAND_CAPACITY + SERVO_CONTROL_COMMAND_RESERVE;
 
 /// Opaque handle for a provisioned Servo session on the shared worker thread.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -198,6 +203,12 @@ pub(super) enum WorkerCommand {
     },
 }
 
+#[derive(Debug, Error)]
+#[error("Servo worker control queue is saturated while queuing {command}")]
+struct ServoControlQueueSaturated {
+    command: &'static str,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ServoRenderMode {
     Cpu,
@@ -230,13 +241,40 @@ pub(super) struct PendingServoFrame {
     pub(super) submitted_at: Instant,
 }
 
+pub(super) enum ServoRenderEnqueue {
+    Submitted(PendingServoFrame),
+    Saturated,
+}
+
+pub(super) struct ServoCommandReservation {
+    shared: Arc<ServoWorkerClientSharedState>,
+    render: bool,
+    active: bool,
+}
+
+impl ServoCommandReservation {
+    pub(super) fn commit(mut self) {
+        self.active = false;
+    }
+}
+
+impl Drop for ServoCommandReservation {
+    fn drop(&mut self) {
+        if self.active {
+            self.shared.release_command_reservation(self.render);
+        }
+    }
+}
+
+pub(super) struct ServoRenderReservation(ServoCommandReservation);
+
 /// Cloneable handle to the Servo worker that owns the command state machine.
 ///
 /// Clones share the same underlying channel and state, so cloning is cheap
 /// and safe for multiple renderer instances to hold simultaneously.
 #[derive(Clone)]
 pub(super) struct ServoWorkerClient {
-    command_tx: Sender<WorkerCommand>,
+    command_tx: SyncSender<WorkerCommand>,
     shared: Arc<ServoWorkerClientSharedState>,
 }
 
@@ -269,6 +307,10 @@ impl ClientStateSlot {
 pub(super) struct ServoWorkerClientSharedState {
     sessions: Mutex<HashMap<ServoSessionId, ClientStateSlot>>,
     next_id: AtomicU64,
+    queued_commands: AtomicUsize,
+    queued_render_commands: AtomicUsize,
+    deferred_destroys: Mutex<HashSet<ServoSessionId>>,
+    deferred_shutdown: Mutex<Option<SyncSender<()>>>,
 }
 
 impl ServoWorkerClientSharedState {
@@ -277,13 +319,111 @@ impl ServoWorkerClientSharedState {
         Self {
             sessions: Mutex::new(HashMap::new()),
             next_id: AtomicU64::new(1),
+            queued_commands: AtomicUsize::new(0),
+            queued_render_commands: AtomicUsize::new(0),
+            deferred_destroys: Mutex::new(HashSet::new()),
+            deferred_shutdown: Mutex::new(None),
+        }
+    }
+
+    fn try_reserve_command(self: &Arc<Self>, render: bool) -> Option<ServoCommandReservation> {
+        self.queued_commands
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |queued| {
+                (queued < SERVO_COMMAND_QUEUE_CAPACITY).then_some(queued + 1)
+            })
+            .ok()?;
+
+        if render
+            && self
+                .queued_render_commands
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |queued| {
+                    (queued < SERVO_RENDER_COMMAND_CAPACITY).then_some(queued + 1)
+                })
+                .is_err()
+        {
+            let previous = self.queued_commands.fetch_sub(1, Ordering::AcqRel);
+            debug_assert!(previous > 0, "command reservation underflow");
+            return None;
+        }
+
+        Some(ServoCommandReservation {
+            shared: Arc::clone(self),
+            render,
+            active: true,
+        })
+    }
+
+    pub(super) fn try_reserve_control_command(self: &Arc<Self>) -> Option<ServoCommandReservation> {
+        self.try_reserve_command(false)
+    }
+
+    fn try_reserve_render_command(self: &Arc<Self>) -> Option<ServoRenderReservation> {
+        self.try_reserve_command(true).map(ServoRenderReservation)
+    }
+
+    fn release_command_reservation(&self, render: bool) {
+        if render {
+            let previous = self.queued_render_commands.fetch_sub(1, Ordering::AcqRel);
+            debug_assert!(previous > 0, "render command reservation underflow");
+        }
+        let previous = self.queued_commands.fetch_sub(1, Ordering::AcqRel);
+        debug_assert!(previous > 0, "command reservation underflow");
+    }
+
+    pub(super) fn note_command_dequeued(&self, command: &WorkerCommand) {
+        self.release_command_reservation(matches!(command, WorkerCommand::Render { .. }));
+    }
+
+    fn defer_destroy(&self, session_id: ServoSessionId) {
+        match self.deferred_destroys.lock() {
+            Ok(mut deferred) => {
+                deferred.insert(session_id);
+            }
+            Err(poisoned) => {
+                poisoned.into_inner().insert(session_id);
+            }
+        }
+    }
+
+    pub(super) fn take_deferred_destroys(&self) -> Vec<ServoSessionId> {
+        let deferred = match self.deferred_destroys.lock() {
+            Ok(mut deferred) => deferred.drain().collect::<Vec<_>>(),
+            Err(poisoned) => poisoned.into_inner().drain().collect::<Vec<_>>(),
+        };
+        match self.sessions.lock() {
+            Ok(mut sessions) => {
+                for session_id in &deferred {
+                    sessions.remove(session_id);
+                }
+            }
+            Err(poisoned) => {
+                let mut sessions = poisoned.into_inner();
+                for session_id in &deferred {
+                    sessions.remove(session_id);
+                }
+            }
+        }
+        deferred
+    }
+
+    pub(super) fn defer_shutdown(&self, response_tx: SyncSender<()>) {
+        match self.deferred_shutdown.lock() {
+            Ok(mut deferred) => *deferred = Some(response_tx),
+            Err(poisoned) => *poisoned.into_inner() = Some(response_tx),
+        }
+    }
+
+    pub(super) fn take_deferred_shutdown(&self) -> Option<SyncSender<()>> {
+        match self.deferred_shutdown.lock() {
+            Ok(mut deferred) => deferred.take(),
+            Err(poisoned) => poisoned.into_inner().take(),
         }
     }
 }
 
 impl ServoWorkerClient {
     pub(super) fn new(
-        command_tx: Sender<WorkerCommand>,
+        command_tx: SyncSender<WorkerCommand>,
         shared: Arc<ServoWorkerClientSharedState>,
     ) -> Self {
         Self { command_tx, shared }
@@ -323,15 +463,18 @@ impl ServoWorkerClient {
         }
 
         let (response_tx, response_rx) = mpsc::sync_channel(1);
-        if let Err(error) = self.command_tx.send(WorkerCommand::CreateSession {
-            session_id,
-            producer_role,
-            width,
-            height,
-            response_tx,
-        }) {
+        if let Err(error) = self.try_send_command(
+            WorkerCommand::CreateSession {
+                session_id,
+                producer_role,
+                width,
+                height,
+                response_tx,
+            },
+            "create-session",
+        ) {
             self.remove_session(session_id);
-            return Err(error).context("failed to send create-session command to Servo worker");
+            return Err(error);
         }
 
         match response_rx.recv_timeout(WORKER_READY_TIMEOUT) {
@@ -364,15 +507,18 @@ impl ServoWorkerClient {
         self.transition_to(session_id, WorkerClientState::Loading)?;
 
         let (response_tx, response_rx) = mpsc::sync_channel(1);
-        if let Err(error) = self.command_tx.send(WorkerCommand::Load {
-            session_id,
-            html_path: html_path.to_path_buf(),
-            width,
-            height,
-            response_tx,
-        }) {
+        if let Err(error) = self.try_send_command(
+            WorkerCommand::Load {
+                session_id,
+                html_path: html_path.to_path_buf(),
+                width,
+                height,
+                response_tx,
+            },
+            "load",
+        ) {
             self.transition_to(session_id, WorkerClientState::Idle)?;
-            return Err(error).context("failed to send load command to Servo worker");
+            return Err(error);
         }
 
         match response_rx.recv_timeout(WORKER_READY_TIMEOUT) {
@@ -408,15 +554,18 @@ impl ServoWorkerClient {
         self.transition_to(session_id, WorkerClientState::Loading)?;
 
         let (response_tx, response_rx) = mpsc::sync_channel(1);
-        if let Err(error) = self.command_tx.send(WorkerCommand::LoadUrl {
-            session_id,
-            url: url.to_owned(),
-            width,
-            height,
-            response_tx,
-        }) {
+        if let Err(error) = self.try_send_command(
+            WorkerCommand::LoadUrl {
+                session_id,
+                url: url.to_owned(),
+                width,
+                height,
+                response_tx,
+            },
+            "load-url",
+        ) {
             self.transition_to(session_id, WorkerClientState::Idle)?;
-            return Err(error).context("failed to send load-url command to Servo worker");
+            return Err(error);
         }
 
         match response_rx.recv_timeout(WORKER_READY_TIMEOUT) {
@@ -450,32 +599,78 @@ impl ServoWorkerClient {
         width: u32,
         height: u32,
         mode: ServoRenderMode,
-    ) -> Result<PendingServoFrame> {
-        let (state, producer_role) =
-            self.with_session_slot(session_id, |slot| (slot.load(), slot.producer_role()))?;
+    ) -> Result<ServoRenderEnqueue> {
+        let Some(reservation) = self.try_reserve_render(session_id)? else {
+            return Ok(ServoRenderEnqueue::Saturated);
+        };
+        self.submit_reserved_render_with_payloads_and_mode(
+            reservation,
+            session_id,
+            scripts,
+            frame_payloads,
+            width,
+            height,
+            mode,
+        )
+        .map(ServoRenderEnqueue::Submitted)
+    }
+
+    pub(super) fn try_reserve_render(
+        &self,
+        session_id: ServoSessionId,
+    ) -> Result<Option<ServoRenderReservation>> {
+        let state = self.with_session_slot(session_id, ClientStateSlot::load)?;
         if state != WorkerClientState::Running {
             bail!("Servo session {session_id:?} is not ready to render (state: {state:?})");
         }
+        Ok(self.shared.try_reserve_render_command())
+    }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the render command carries one coherent worker request"
+    )]
+    pub(super) fn submit_reserved_render_with_payloads_and_mode(
+        &self,
+        reservation: ServoRenderReservation,
+        session_id: ServoSessionId,
+        scripts: Vec<String>,
+        frame_payloads: Vec<ServoFramePayload>,
+        width: u32,
+        height: u32,
+        mode: ServoRenderMode,
+    ) -> Result<PendingServoFrame> {
+        let producer_role = self.with_session_slot(session_id, ClientStateSlot::producer_role)?;
         let submitted_at = Instant::now();
         let (response_tx, response_rx) = mpsc::sync_channel(1);
-        self.command_tx
-            .send(WorkerCommand::Render {
-                session_id,
-                producer_role,
-                scripts,
-                frame_payloads,
-                width,
-                height,
-                mode,
-                submitted_at,
-                response_tx,
-            })
-            .context("failed to send render command to Servo worker")?;
-        Ok(PendingServoFrame {
-            response_rx,
+        let command = WorkerCommand::Render {
+            session_id,
+            producer_role,
+            scripts,
+            frame_payloads,
+            width,
+            height,
+            mode,
             submitted_at,
-        })
+            response_tx,
+        };
+        match self.command_tx.try_send(command) {
+            Ok(()) => {
+                reservation.0.commit();
+                Ok(PendingServoFrame {
+                    response_rx,
+                    submitted_at,
+                })
+            }
+            Err(TrySendError::Full(_)) => {
+                bail!(
+                    "failed to send render command to Servo worker: reserved queue slot was unavailable"
+                )
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                bail!("failed to send render command to Servo worker: channel disconnected")
+            }
+        }
     }
 
     pub(super) fn destroy_session(&self, session_id: ServoSessionId) -> Result<()> {
@@ -484,12 +679,19 @@ impl ServoWorkerClient {
         }
 
         let (response_tx, response_rx) = mpsc::sync_channel(1);
-        if let Err(error) = self.command_tx.send(WorkerCommand::DestroySession {
-            session_id,
-            response_tx,
-        }) {
-            self.remove_session(session_id);
-            return Err(error).context("failed to send destroy-session command to Servo worker");
+        if let Err(error) = self.try_send_command(
+            WorkerCommand::DestroySession {
+                session_id,
+                response_tx,
+            },
+            "destroy-session",
+        ) {
+            if error.downcast_ref::<ServoControlQueueSaturated>().is_some() {
+                self.shared.defer_destroy(session_id);
+            } else {
+                self.remove_session(session_id);
+            }
+            return Err(error);
         }
 
         let result = match response_rx.recv_timeout(UNLOAD_TIMEOUT) {
@@ -513,13 +715,19 @@ impl ServoWorkerClient {
         }
 
         let (response_tx, _response_rx) = mpsc::sync_channel(1);
-        if let Err(error) = self.command_tx.send(WorkerCommand::DestroySession {
-            session_id,
-            response_tx,
-        }) {
-            self.remove_session(session_id);
-            return Err(error)
-                .context("failed to send detached destroy-session command to Servo worker");
+        if let Err(error) = self.try_send_command(
+            WorkerCommand::DestroySession {
+                session_id,
+                response_tx,
+            },
+            "detached destroy-session",
+        ) {
+            if error.downcast_ref::<ServoControlQueueSaturated>().is_some() {
+                self.shared.defer_destroy(session_id);
+            } else {
+                self.remove_session(session_id);
+            }
+            return Err(error);
         }
 
         self.remove_session(session_id);
@@ -528,9 +736,7 @@ impl ServoWorkerClient {
 
     pub(super) fn memory_report(&self) -> Result<ServoMemoryReportSnapshot> {
         let (response_tx, response_rx) = mpsc::sync_channel(1);
-        self.command_tx
-            .send(WorkerCommand::MemoryReport { response_tx })
-            .context("failed to send memory-report command to Servo worker")?;
+        self.try_send_command(WorkerCommand::MemoryReport { response_tx }, "memory-report")?;
 
         match response_rx.recv_timeout(WORKER_READY_TIMEOUT) {
             Ok(result) => result,
@@ -546,6 +752,22 @@ impl ServoWorkerClient {
 
     fn transition_to(&self, session_id: ServoSessionId, next: WorkerClientState) -> Result<()> {
         self.with_session_slot(session_id, |slot| slot.store(next))
+    }
+
+    fn try_send_command(&self, command: WorkerCommand, name: &'static str) -> Result<()> {
+        let Some(reservation) = self.shared.try_reserve_control_command() else {
+            return Err(ServoControlQueueSaturated { command: name }.into());
+        };
+        match self.command_tx.try_send(command) {
+            Ok(()) => {
+                reservation.commit();
+                Ok(())
+            }
+            Err(TrySendError::Full(_)) => Err(ServoControlQueueSaturated { command: name }.into()),
+            Err(TrySendError::Disconnected(_)) => {
+                bail!("failed to send {name} command to Servo worker: channel disconnected")
+            }
+        }
     }
 
     fn has_session(&self, session_id: ServoSessionId) -> bool {
@@ -588,7 +810,7 @@ mod tests {
 
     #[test]
     fn client_starts_idle_after_create() {
-        let (command_tx, _rx) = mpsc::channel();
+        let (command_tx, _rx) = mpsc::sync_channel(1);
         let client =
             ServoWorkerClient::new(command_tx, Arc::new(ServoWorkerClientSharedState::new()));
 
@@ -605,7 +827,7 @@ mod tests {
 
     #[test]
     fn detached_destroy_removes_session_without_waiting_for_worker_reply() {
-        let (command_tx, command_rx) = mpsc::channel();
+        let (command_tx, command_rx) = mpsc::sync_channel(1);
         let client =
             ServoWorkerClient::new(command_tx, Arc::new(ServoWorkerClientSharedState::new()));
 
@@ -632,5 +854,97 @@ mod tests {
             panic!("expected detached destroy command");
         };
         assert_eq!(queued_id, session_id);
+    }
+
+    #[test]
+    fn render_submission_retains_work_without_blocking_when_command_queue_is_full() {
+        let (command_tx, _command_rx) = mpsc::sync_channel(1);
+        let shared = Arc::new(ServoWorkerClientSharedState::new());
+        let client = ServoWorkerClient::new(command_tx, Arc::clone(&shared));
+        let session_id = ServoSessionId(7);
+        client.with_sessions(|sessions| {
+            let slot = ClientStateSlot::new(ServoProducerRole::SceneHtml);
+            slot.store(WorkerClientState::Running);
+            sessions.insert(session_id, slot);
+        });
+        let reservations = (0..SERVO_RENDER_COMMAND_CAPACITY)
+            .map(|_| {
+                shared
+                    .try_reserve_render_command()
+                    .expect("test should reserve the render budget")
+            })
+            .collect::<Vec<_>>();
+
+        let result = client
+            .submit_render_with_payloads_and_mode(
+                session_id,
+                vec!["window.tick()".to_owned()],
+                Vec::new(),
+                320,
+                200,
+                ServoRenderMode::Cpu,
+            )
+            .expect("queue saturation should be recoverable");
+
+        let ServoRenderEnqueue::Saturated = result else {
+            panic!("a full command queue must report saturation without blocking");
+        };
+        assert_eq!(client.state(session_id), WorkerClientState::Running);
+        drop(reservations);
+    }
+
+    #[test]
+    fn render_admission_preserves_control_queue_capacity() {
+        let shared = Arc::new(ServoWorkerClientSharedState::new());
+        let render_reservations = (0..SERVO_RENDER_COMMAND_CAPACITY)
+            .map(|_| {
+                shared
+                    .try_reserve_render_command()
+                    .expect("render reservation")
+            })
+            .collect::<Vec<_>>();
+        let control_reservations = (0..SERVO_CONTROL_COMMAND_RESERVE)
+            .map(|_| {
+                shared
+                    .try_reserve_control_command()
+                    .expect("reserved control capacity")
+            })
+            .collect::<Vec<_>>();
+
+        assert!(shared.try_reserve_render_command().is_none());
+        assert!(shared.try_reserve_control_command().is_none());
+
+        drop(control_reservations);
+        assert!(shared.try_reserve_control_command().is_some());
+        drop(render_reservations);
+    }
+
+    #[test]
+    fn saturated_destroy_is_deferred_without_poisoning_or_forgetting_session() {
+        let (command_tx, _command_rx) = mpsc::sync_channel(1);
+        let fill_tx = command_tx.clone();
+        let shared = Arc::new(ServoWorkerClientSharedState::new());
+        let client = ServoWorkerClient::new(command_tx, Arc::clone(&shared));
+        let session_id = ServoSessionId(9);
+        client.with_sessions(|sessions| {
+            sessions.insert(
+                session_id,
+                ClientStateSlot::new(ServoProducerRole::SceneHtml),
+            );
+        });
+        let (response_tx, _response_rx) = mpsc::sync_channel(1);
+        fill_tx
+            .try_send(WorkerCommand::MemoryReport { response_tx })
+            .expect("test command should fill the bounded queue");
+
+        let error = client
+            .destroy_session_detached(session_id)
+            .expect_err("saturated control queue should defer cleanup");
+
+        assert!(error.downcast_ref::<ServoControlQueueSaturated>().is_some());
+        assert!(!super::super::worker::servo_worker_is_fatal_error(&error));
+        assert!(client.has_session(session_id));
+        assert_eq!(shared.take_deferred_destroys(), [session_id]);
+        assert!(!client.has_session(session_id));
     }
 }

@@ -2,7 +2,8 @@ use super::*;
 #[cfg(feature = "servo-gpu-import")]
 use crate::effect::servo::set_servo_gpu_import_mode;
 use crate::effect::servo::worker::{
-    install_running_shared_worker, reset_shared_servo_worker_state, shutdown_shared_servo_worker,
+    HARD_STALL_TIMEOUT, install_running_shared_worker, reset_shared_servo_worker_state,
+    shutdown_shared_servo_worker,
     test_support::{
         SHARED_WORKER_STATE_TEST_LOCK, spawn_blocking_load_test_worker, spawn_load_test_worker,
         spawn_render_test_worker, spawn_test_worker, worker_client_from,
@@ -171,6 +172,10 @@ fn destroy_clears_renderer_state_without_shutting_down_shared_worker() {
     renderer.runtime_html_path = Some(PathBuf::from("runtime.html"));
     renderer.warned_fallback_frame = true;
     renderer.warned_stalled_frame = true;
+    renderer.hard_stall = Some(ServoHardStall {
+        pending_age: HARD_STALL_TIMEOUT,
+    });
+    renderer.command_queue_saturated = true;
     renderer.include_audio_updates = false;
     renderer.host_driven_animation = true;
     renderer.queue_frame(&frame_input(1.0 / 30.0));
@@ -203,6 +208,8 @@ fn destroy_clears_renderer_state_without_shutting_down_shared_worker() {
     assert!(!renderer.initialized);
     assert!(!renderer.warned_fallback_frame);
     assert!(!renderer.warned_stalled_frame);
+    assert!(renderer.hard_stall.is_none());
+    assert!(!renderer.command_queue_saturated);
     assert!(renderer.include_audio_updates);
     assert!(!renderer.include_sensor_updates);
     assert!(!renderer.host_driven_animation);
@@ -212,7 +219,7 @@ fn destroy_clears_renderer_state_without_shutting_down_shared_worker() {
 }
 
 #[test]
-fn frame_payload_render_preserves_in_flight_submission() {
+fn render_admission_stays_pending_while_a_frame_is_in_flight() {
     let (worker, render_rx, result_tx, delivered_rx, _unload_rx, stopped) =
         spawn_render_test_worker();
     let mut renderer = ServoRenderer::new();
@@ -226,20 +233,10 @@ fn frame_payload_render_preserves_in_flight_submission() {
         .recv_timeout(Duration::from_millis(100))
         .expect("first render command");
 
-    let payload =
-        ServoFramePayload::from_json("{\"frame\":2}".to_owned()).expect("valid frame payload");
-    let submission = session
-        .request_render_cpu_with_frame_payloads(Vec::new(), vec![payload])
-        .expect("pending payload render should return preserved queues");
-    let ServoRenderSubmission::Pending {
-        scripts,
-        frame_payloads,
-    } = submission
-    else {
-        panic!("payload render should not submit over an in-flight render");
-    };
-    assert!(scripts.is_empty());
-    assert_eq!(frame_payloads.len(), 1);
+    assert!(matches!(
+        session.reserve_render().expect("render admission"),
+        crate::effect::servo::session::ServoRenderAdmission::Pending
+    ));
 
     result_tx
         .send(Ok(solid_canvas(
@@ -951,6 +948,48 @@ fn poll_in_flight_render_clears_stall_warning_after_completed_frame() {
 }
 
 #[test]
+fn hard_stalled_render_surfaces_an_error_until_a_frame_completes() {
+    let mut renderer = ServoRenderer::new();
+    renderer.initialized = true;
+    renderer.update_stall_state(
+        Some(HARD_STALL_TIMEOUT + Duration::from_millis(1)),
+        Duration::from_millis(50),
+    );
+    let mut target = Canvas::new(DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT);
+
+    let error = renderer
+        .render_into(&frame_input(1.0 / 60.0), &mut target)
+        .expect_err("hard-stalled renders must reach the effect error seam");
+    assert!(error.to_string().contains("hard-stalled after 501ms"));
+    renderer.update_stall_state(
+        Some(HARD_STALL_TIMEOUT + Duration::from_millis(300)),
+        Duration::from_millis(50),
+    );
+    let repeated = renderer
+        .render_into(&frame_input(1.0 / 60.0), &mut target)
+        .expect_err("hard-stalled renders remain degraded until recovery");
+    assert_eq!(repeated.to_string(), error.to_string());
+
+    renderer.handle_poll_error(anyhow::anyhow!("render failed after the stall"));
+    let after_error = renderer
+        .render_into(&frame_input(1.0 / 60.0), &mut target)
+        .expect_err("a failed render is not hard-stall recovery");
+    assert_eq!(after_error.to_string(), error.to_string());
+
+    renderer.accept_completed_canvas(
+        solid_canvas(DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT, 4, 5, 6),
+        false,
+    );
+
+    assert!(renderer.hard_stall.is_none());
+    assert!(
+        renderer
+            .render_into(&frame_input(1.0 / 60.0), &mut target)
+            .is_ok()
+    );
+}
+
+#[test]
 fn frame_payloads_skip_near_tier_jitter_updates() {
     let mut renderer = ServoRenderer::new();
     renderer.enqueue_bootstrap_scripts();
@@ -1205,6 +1244,64 @@ fn queued_frames_merge_recent_keys_from_superseded_inputs() {
     let interaction = queued.queued_interaction().expect("demanded interaction");
     assert_eq!(interaction.keyboard.pressed_keys, ["c"]);
     assert_eq!(interaction.keyboard.recent_keys, ["b", "c", "a"]);
+}
+
+#[test]
+fn queue_saturation_preserves_runtime_deltas_until_admission() {
+    let (worker, render_rx, result_tx, delivered_rx, _unload_rx, stopped) =
+        spawn_render_test_worker();
+    let mut renderer = ServoRenderer::new();
+    attach_renderer_session(&mut renderer, &worker);
+    renderer.initialized = true;
+    renderer.include_interaction_updates = true;
+    renderer
+        .pending_scripts
+        .push("persistent-control".to_owned());
+    let reservations = renderer
+        .session
+        .as_ref()
+        .expect("attached session")
+        .reserve_all_render_capacity()
+        .expect("test should exhaust render admission");
+    let audio = custom_audio(0.0);
+    let interaction = custom_interaction(&["space"], &["space"]);
+    let input = frame_input_with(1.0 / 60.0, 3, &audio, &interaction, 320, 200);
+
+    let error = renderer
+        .tick(&input)
+        .expect_err("saturated render admission should report degradation");
+    assert!(error.to_string().contains("render queue is saturated"));
+    assert_eq!(renderer.pending_scripts, ["persistent-control"]);
+    assert!(renderer.pending_frame_payloads.is_empty());
+    assert_eq!(
+        renderer
+            .queued_frame
+            .as_ref()
+            .expect("latest queued frame")
+            .queued_frame_number(),
+        3
+    );
+    assert!(render_rx.try_recv().is_err());
+
+    drop(reservations);
+    renderer
+        .tick(&input)
+        .expect("the retained frame should submit when capacity returns");
+    let command = render_rx
+        .recv_timeout(Duration::from_millis(100))
+        .expect("retained render command");
+    assert_eq!(command.scripts, ["persistent-control"]);
+    assert!(frame_payload_value(&command.frame_payloads)["interaction"].is_object());
+
+    result_tx
+        .send(Ok(solid_canvas(320, 200, 1, 2, 3)))
+        .expect("render result");
+    delivered_rx
+        .recv_timeout(Duration::from_millis(100))
+        .expect("render delivery");
+    renderer.destroy();
+    drop(worker);
+    assert!(stopped.load(Ordering::SeqCst));
 }
 
 #[test]

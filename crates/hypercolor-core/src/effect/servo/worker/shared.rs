@@ -1,4 +1,4 @@
-use std::sync::mpsc::{self, Sender};
+use std::sync::mpsc::{self, SyncSender, TrySendError};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
@@ -9,7 +9,8 @@ use tracing::warn;
 use super::super::circuit_breaker::ServoCircuitBreaker;
 use super::super::memory::ServoMemoryReportSnapshot;
 use super::super::worker_client::{
-    ServoWorkerClient, ServoWorkerClientSharedState, WORKER_READY_TIMEOUT, WorkerCommand,
+    SERVO_COMMAND_QUEUE_CAPACITY, ServoWorkerClient, ServoWorkerClientSharedState,
+    WORKER_READY_TIMEOUT, WorkerCommand,
 };
 use super::ServoWorkerRuntime;
 use super::console::panic_payload_message;
@@ -22,7 +23,6 @@ enum SharedServoWorkerState {
 
 static SERVO_WORKER: OnceLock<Mutex<SharedServoWorkerState>> = OnceLock::new();
 static SERVO_CIRCUIT_BREAKER: ServoCircuitBreaker = ServoCircuitBreaker::new();
-
 pub(in crate::effect::servo) fn acquire_servo_worker() -> Result<ServoWorkerClient> {
     if !SERVO_CIRCUIT_BREAKER.can_attempt() {
         let cooldown = SERVO_CIRCUIT_BREAKER
@@ -192,16 +192,17 @@ fn retire_shared_servo_worker(replacement: SharedServoWorkerState) -> Result<()>
 }
 
 pub(in crate::effect::servo) struct ServoWorker {
-    pub(super) command_tx: Option<Sender<WorkerCommand>>,
+    pub(super) command_tx: Option<SyncSender<WorkerCommand>>,
     pub(super) thread_handle: Option<thread::JoinHandle<()>>,
     pub(super) client_state: std::sync::Arc<ServoWorkerClientSharedState>,
 }
 
 impl ServoWorker {
     fn spawn() -> Result<Self> {
-        let (command_tx, command_rx) = mpsc::channel();
+        let (command_tx, command_rx) = mpsc::sync_channel(SERVO_COMMAND_QUEUE_CAPACITY);
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let client_state = std::sync::Arc::new(ServoWorkerClientSharedState::new());
+        let worker_client_state = std::sync::Arc::clone(&client_state);
 
         let thread_handle = thread::Builder::new()
             .name("hypercolor-servo-worker".to_owned())
@@ -216,7 +217,7 @@ impl ServoWorker {
                         return;
                     }
                 };
-                runtime.run(command_rx);
+                runtime.run(command_rx, worker_client_state);
             })
             .context("failed to spawn Servo worker thread")?;
 
@@ -249,27 +250,42 @@ impl ServoWorker {
     }
 
     pub(super) fn shutdown(&mut self) -> Result<()> {
-        let command_tx = self.command_tx.take();
-        if let Some(command_tx) = command_tx {
+        if let Some(command_tx) = self.command_tx.as_ref() {
             let (response_tx, response_rx) = mpsc::sync_channel(1);
-            if command_tx
-                .send(WorkerCommand::Shutdown { response_tx })
-                .is_ok()
-            {
+            let await_shutdown =
+                if let Some(reservation) = self.client_state.try_reserve_control_command() {
+                    match command_tx.try_send(WorkerCommand::Shutdown { response_tx }) {
+                        Ok(()) => {
+                            reservation.commit();
+                            true
+                        }
+                        Err(TrySendError::Full(WorkerCommand::Shutdown { response_tx })) => {
+                            self.client_state.defer_shutdown(response_tx);
+                            true
+                        }
+                        Err(TrySendError::Full(_)) => {
+                            unreachable!("shutdown should retain its command")
+                        }
+                        Err(TrySendError::Disconnected(_)) => false,
+                    }
+                } else {
+                    self.client_state.defer_shutdown(response_tx);
+                    true
+                };
+            if await_shutdown {
                 match response_rx.recv_timeout(WORKER_READY_TIMEOUT) {
                     Ok(()) => {}
-                    Err(mpsc::RecvTimeoutError::Timeout) => {
-                        bail!(
-                            "timed out waiting for Servo worker shutdown after {}ms",
-                            WORKER_READY_TIMEOUT.as_millis()
-                        );
-                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) => bail!(
+                        "timed out waiting for Servo worker shutdown after {}ms",
+                        WORKER_READY_TIMEOUT.as_millis()
+                    ),
                     Err(mpsc::RecvTimeoutError::Disconnected) => {
-                        bail!("Servo worker disconnected before acknowledging shutdown");
+                        bail!("Servo worker disconnected before acknowledging shutdown")
                     }
                 }
             }
         }
+        self.command_tx = None;
 
         if let Some(thread_handle) = self.thread_handle.take() {
             thread_handle.join().map_err(|panic| {
@@ -283,7 +299,7 @@ impl ServoWorker {
         Ok(())
     }
 
-    fn command_tx(&self) -> Result<&Sender<WorkerCommand>> {
+    fn command_tx(&self) -> Result<&SyncSender<WorkerCommand>> {
         self.command_tx
             .as_ref()
             .ok_or_else(|| anyhow!("Servo worker is not running"))

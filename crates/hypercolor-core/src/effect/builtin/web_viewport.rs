@@ -272,6 +272,9 @@ impl EffectRenderer for WebViewportRenderer {
                     }
                 }
                 Ok(ServoRenderStatus::Pending) => {}
+                Ok(ServoRenderStatus::Saturated) => {
+                    bail!("Servo worker render queue is saturated")
+                }
                 Err(error) => {
                     note_servo_session_error("web viewport render request failed", &error);
                     return Err(error);

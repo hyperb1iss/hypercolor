@@ -11,7 +11,7 @@ Looking at `crates/hypercolor-core/src/effect/servo/renderer.rs:30-31`:
 - **`DEFAULT_EFFECT_FPS_CAP: u32 = 30`** — bootstrap default written to
   `window.__hypercolorFpsCap` before the first frame arrives. The SDK's RAF helper
   reads this to gate its animation loop. It's a _pre-frame placeholder_; on the first
-  real tick, `enqueue_frame_scripts` overwrites it with
+  real tick, `enqueue_frame_payloads` overwrites it with
   `FpsTier::from_fps((1.0 / delta_secs).round())`, clamped to
   `MAX_EFFECT_FPS_CAP = 60`. So non-Display effects dynamically track the render
   loop's current tier (10/20/30/45/60).
@@ -63,9 +63,10 @@ upscale path.
 - **Read framebuffer directly and flip rows in place** (commit `aa48aeac`). Bypasses
   Servo's `read_framebuffer_to_image()` which did `glReadPixels` + `Vec::clone` +
   per-row flip. Each byte now moves at most once. ~50% reduction in readback cost.
-- **Servo prefs hardened** (`worker.rs:587-629`). JIT disabled, threadpools pinned to 1,
-  unused subsystems disabled (devtools, gamepad, IndexedDB, WebRTC, WebXR, WebGPU,
-  serviceworkers, worklets). ~20% startup speedup, ~10 MB lower memory footprint.
+- **Servo prefs hardened** (`worker.rs:587-629`). JIT remains enabled, threadpools are
+  pinned to 1, and unused subsystems are disabled (devtools, gamepad, IndexedDB,
+  WebRTC, WebXR, WebGPU, serviceworkers, worklets). ~20% startup speedup, ~10 MB
+  lower memory footprint.
 - **Global jemalloc allocator** via `servo-allocator` on Linux.
 - **Per-effect FPS cap throttling** (`renderer.rs:35-59`, `AnimationCadence`). Display
   effects run fixed at 30fps; others match daemon tick rate with early-exit on
@@ -118,17 +119,27 @@ optimization should target script generation, event-loop behavior, or readback.
 
 #### 3. Tighten per-tick stall handling around in-flight renders _(medium, high stability impact)_
 
-`SCRIPT_TIMEOUT` is 250ms and `RENDER_RESPONSE_TIMEOUT` is 500ms. A runaway effect
-can still leave the main renderer reusing stale frames for far too long.
+`SCRIPT_TIMEOUT` is 250ms and `HARD_STALL_TIMEOUT` is 500ms. The script deadline
+is only observed after Servo returns to the embedder, so it cannot interrupt
+runaway JavaScript. The renderer-side deadline is an observation boundary, not
+a cancellation mechanism.
 
 - Derive a soft stall threshold from the active FPS tier and compare it against
   `pending_render_age()` in the poll path.
 - When the soft threshold is exceeded, keep reusing `last_canvas`, increment per-effect
   stall telemetry, and surface the condition in logs/metrics without pretending we
   canceled the worker-side render.
-- Keep the existing hard timeouts and fatal-path handling for truly wedged sessions.
-  If a render crosses that line, let the existing worker/session teardown semantics
-  take over.
+- At 500ms, enter an explicit hard-stalled state and return a renderer error through
+  the existing effect-degradation event path. Keep the pending request in place so
+  the renderer cannot enqueue more work behind a wedged session.
+- Keep worker ingress bounded and nonblocking. Render admission retains the latest
+  unsent frame when saturated, while reserved control capacity keeps lifecycle work
+  moving. A saturated destroy is deferred in shared worker state and consumed as soon
+  as the worker resumes; saturation is not permission to grow memory or block the
+  render thread.
+- Do not claim the in-process thread was canceled. Recovery remains possible if the
+  render eventually completes; enforceable cancellation belongs to the supervised
+  subprocess design in `70-servo-subprocess-isolation.md`.
 
 **Win:** We stop conflating "the renderer is temporarily late" with "we successfully
 killed the work," and we get cleaner degradation without lying to ourselves about
@@ -188,14 +199,14 @@ still take the whole process down.**
 
 - **In-process architecture.** Servo runs on a dedicated OS thread
   (`ServoWorker::spawn()` at `worker.rs:1396`), same address space as the daemon.
-- **No `catch_unwind`** anywhere in the `effect/` tree (verified by grep). But Rust
-  thread panics don't crash the parent process: the `mpsc` channel disconnects,
-  `servo_worker_is_fatal_error` (`worker.rs:110`) catches it, and
-  `ServoCircuitBreaker` opens for 30s (exponential backoff to 300s).
-- **What survives gracefully:** single JS errors, `while(1){}` loops (250ms
-  `SCRIPT_TIMEOUT` / 500ms `RENDER_RESPONSE_TIMEOUT`), WebGL context loss,
-  Servo-internal panics on that thread. Daemon keeps running; HTML effects go dark
-  until the breaker closes.
+- **No `catch_unwind`** anywhere in the `effect/` tree (verified by grep). In unwind
+  builds, a worker-thread panic disconnects the channel without crashing the parent,
+  and `servo_worker_is_fatal_error` catches the transport failure. Distribution
+  builds use `panic=abort`, so a panic there still terminates the daemon process.
+- **What survives gracefully:** single JS errors, WebGL context loss, and worker
+  panics in unwind builds. Renderer-side stalls become
+  explicit degraded errors after 500ms, but a `while(1){}` loop is not interrupted;
+  it can still wedge every HTML session on the shared worker.
 - **What still takes the daemon down:** OOM. An effect doing `new Uint8Array(1e9)` in
   a loop allocates into the shared address space with no cap. Same for Servo-internal
   unbounded growth.
@@ -213,5 +224,6 @@ for a given LED or display workload, fix that at the render-group or display-sur
 configuration layer rather than teaching Servo to render at one size and present at
 another.
 
-Hold Tier 3 subprocess isolation for a dedicated design doc since the IPC protocol,
-packaging story, and worker lifecycle deserve careful thought.
+Tier 3 subprocess isolation is specified in
+`70-servo-subprocess-isolation.md`, including the IPC protocol, watchdog,
+resource boundary, packaging, and migration gates.

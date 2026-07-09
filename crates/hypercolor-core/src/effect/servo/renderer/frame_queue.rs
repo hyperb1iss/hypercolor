@@ -6,7 +6,7 @@ use hypercolor_types::sensor::SystemSnapshot;
 use tracing::warn;
 
 use super::super::note_servo_session_error;
-use super::super::session::ServoRenderSubmission;
+use super::super::session::ServoRenderAdmission;
 use super::super::worker_client::ServoFramePayload;
 use super::{DEFAULT_DISPLAY_FPS_CAP, DEFAULT_EFFECT_FPS_CAP, MAX_EFFECT_FPS_CAP, ServoRenderer};
 use crate::effect::lightscript::{LightScriptFrameUpdate, LightScriptFrameUpdateOptions};
@@ -103,17 +103,6 @@ impl ServoRenderer {
         )
     }
 
-    pub(super) fn restore_pending_updates(
-        &mut self,
-        mut scripts: Vec<String>,
-        mut frame_payloads: Vec<ServoFramePayload>,
-    ) {
-        scripts.append(&mut self.pending_scripts);
-        frame_payloads.append(&mut self.pending_frame_payloads);
-        self.pending_scripts = scripts;
-        self.pending_frame_payloads = frame_payloads;
-    }
-
     pub(super) fn queue_frame(&mut self, input: &FrameInput<'_>) {
         let demand = QueuedFrameDemand {
             audio: self.include_audio_updates,
@@ -154,12 +143,41 @@ impl ServoRenderer {
             return;
         }
 
+        let reservation = match self
+            .session
+            .as_ref()
+            .expect("session presence should be stable while admitting one render")
+            .reserve_render()
+        {
+            Ok(ServoRenderAdmission::Reserved(reservation)) => reservation,
+            Ok(ServoRenderAdmission::Pending) => {
+                self.queued_frame = Some(frame);
+                return;
+            }
+            Ok(ServoRenderAdmission::Saturated) => {
+                self.retain_saturated_frame(frame);
+                return;
+            }
+            Err(error) => {
+                self.command_queue_saturated = false;
+                note_servo_session_error("Failed to admit Servo frame render", &error);
+                self.session = None;
+                warn!(%error, "Failed to admit Servo frame render");
+                if !self.warned_fallback_frame {
+                    warn!("Falling back to the previous completed frame for this effect");
+                    self.warned_fallback_frame = true;
+                }
+                return;
+            }
+        };
+
         let frame_input = frame.as_frame_input();
+        let mut scripts = self.take_pending_scripts();
         self.enqueue_frame_payloads(&frame_input);
+        scripts.append(&mut self.take_pending_scripts());
         if let Some(session) = self.session.as_mut() {
             session.resize(frame.canvas_width, frame.canvas_height);
         }
-        let scripts = self.take_pending_scripts();
         let frame_payloads = self.take_pending_frame_payloads();
         let request_result = {
             #[cfg(feature = "servo-gpu-import")]
@@ -171,30 +189,38 @@ impl ServoRenderer {
             if prefer_gpu {
                 #[cfg(feature = "servo-gpu-import")]
                 {
-                    session.request_render_gpu(scripts, frame_payloads, reuse_cached_on_no_ready)
+                    session.request_reserved_render_gpu(
+                        reservation,
+                        scripts,
+                        frame_payloads,
+                        reuse_cached_on_no_ready,
+                    )
                 }
                 #[cfg(not(feature = "servo-gpu-import"))]
                 {
-                    session.request_render_cpu_with_frame_payloads(scripts, frame_payloads)
+                    session.request_reserved_render_cpu_with_frame_payloads(
+                        reservation,
+                        scripts,
+                        frame_payloads,
+                    )
                 }
             } else {
-                session.request_render_cpu_with_frame_payloads(scripts, frame_payloads)
+                session.request_reserved_render_cpu_with_frame_payloads(
+                    reservation,
+                    scripts,
+                    frame_payloads,
+                )
             }
         };
 
         match request_result {
-            Ok(ServoRenderSubmission::Submitted) => {
+            Ok(()) => {
                 self.warned_stalled_frame = false;
+                self.command_queue_saturated = false;
                 self.last_submit_time_secs = Some(frame.time_secs);
             }
-            Ok(ServoRenderSubmission::Pending {
-                scripts,
-                frame_payloads,
-            }) => {
-                self.restore_pending_updates(scripts, frame_payloads);
-                self.queued_frame = Some(frame);
-            }
             Err(error) => {
+                self.command_queue_saturated = false;
                 note_servo_session_error("Failed to queue Servo frame render", &error);
                 self.session = None;
                 warn!(%error, "Failed to queue Servo frame render");
@@ -204,6 +230,14 @@ impl ServoRenderer {
                 }
             }
         }
+    }
+
+    pub(super) fn retain_saturated_frame(&mut self, frame: QueuedFrameInput) {
+        self.queued_frame = Some(frame);
+        if !self.command_queue_saturated {
+            warn!("Servo worker render queue is saturated; retaining latest frame");
+        }
+        self.command_queue_saturated = true;
     }
 }
 
@@ -340,6 +374,11 @@ impl QueuedFrameInput {
     #[cfg(test)]
     pub(super) fn queued_interaction(&self) -> Option<&crate::input::InteractionData> {
         self.interaction.as_deref()
+    }
+
+    #[cfg(test)]
+    pub(super) const fn queued_frame_number(&self) -> u64 {
+        self.frame_number
     }
 }
 
