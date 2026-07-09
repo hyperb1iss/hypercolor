@@ -1,5 +1,6 @@
 //! `SMBus` transport framing and Linux transport support.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
@@ -14,6 +15,44 @@ const SMBUS_OP_WRITE_BYTE_DATA: u8 = 0x02;
 const SMBUS_OP_READ_BYTE_DATA: u8 = 0x03;
 const SMBUS_OP_WRITE_BLOCK_DATA: u8 = 0x04;
 const SMBUS_OP_DELAY: u8 = 0x05;
+
+/// Shared transaction lock for every device on one physical `SMBus` bus.
+#[derive(Clone, Default)]
+pub struct SmBusBusArbiter {
+    transaction_lock: Arc<tokio::sync::Mutex<()>>,
+}
+
+impl SmBusBusArbiter {
+    /// Acquire exclusive ownership of one physical bus transaction segment.
+    pub async fn acquire_transaction(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        Arc::clone(&self.transaction_lock).lock_owned().await
+    }
+
+    /// Run one blocking transaction while retaining physical bus ownership.
+    ///
+    /// The owned guard moves into the blocking task so cancelling the async
+    /// waiter cannot expose a bus transaction that is still in progress.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TransportError`] when the transaction fails or its blocking
+    /// task cannot be joined.
+    pub async fn run_blocking<R, F>(&self, operation: F) -> Result<R, TransportError>
+    where
+        R: Send + 'static,
+        F: FnOnce() -> Result<R, TransportError> + Send + 'static,
+    {
+        let transaction = self.acquire_transaction().await;
+        tokio::task::spawn_blocking(move || {
+            let _transaction = transaction;
+            operation()
+        })
+        .await
+        .map_err(|error| TransportError::IoError {
+            detail: format!("SMBus transaction task failed: {error}"),
+        })?
+    }
+}
 
 /// One framed `SMBus` operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -196,7 +235,7 @@ pub fn decode_operations(data: &[u8]) -> Result<Vec<SmBusOperation>, TransportEr
 #[cfg(target_os = "linux")]
 use std::path::Path;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 #[cfg(target_os = "linux")]
 use i2cdev::core::I2CDevice;
@@ -217,6 +256,7 @@ pub struct SmBusTransport {
     device: Arc<Mutex<LinuxI2CDevice>>,
     closed: AtomicBool,
     op_lock: tokio::sync::Mutex<()>,
+    bus_arbiter: SmBusBusArbiter,
 }
 
 #[cfg(target_os = "linux")]
@@ -227,6 +267,19 @@ impl SmBusTransport {
     ///
     /// Returns [`TransportError`] when the device path cannot be opened.
     pub fn open<P: AsRef<Path>>(path: P, address: u16) -> Result<Self, TransportError> {
+        Self::open_with_arbiter(path, address, SmBusBusArbiter::default())
+    }
+
+    /// Open one `SMBus` slave with a transaction arbiter shared by its bus.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TransportError`] when the device path cannot be opened.
+    pub fn open_with_arbiter<P: AsRef<Path>>(
+        path: P,
+        address: u16,
+        bus_arbiter: SmBusBusArbiter,
+    ) -> Result<Self, TransportError> {
         let path_string = path.as_ref().display().to_string();
         let device = LinuxI2CDevice::new(path.as_ref(), address)
             .map_err(|error| map_linux_i2c_error(&path_string, address, &error))?;
@@ -237,6 +290,7 @@ impl SmBusTransport {
             device: Arc::new(Mutex::new(device)),
             closed: AtomicBool::new(false),
             op_lock: tokio::sync::Mutex::new(()),
+            bus_arbiter,
         })
     }
 
@@ -288,7 +342,7 @@ impl SmBusTransport {
         Ok(())
     }
 
-    fn execute_operations_locked(
+    fn execute_transfer_segment_locked(
         device: &Mutex<LinuxI2CDevice>,
         path: &str,
         address: u16,
@@ -315,11 +369,55 @@ impl SmBusTransport {
                 SmBusOperation::WriteBlockData { register, data } => device
                     .smbus_write_block_data(*register, data)
                     .map_err(|error| map_linux_i2c_error(path, address, &error))?,
-                SmBusOperation::Delay { duration } => std::thread::sleep(*duration),
+                SmBusOperation::Delay { .. } => {
+                    return Err(TransportError::IoError {
+                        detail: "SMBus delay reached a transfer-only segment".to_owned(),
+                    });
+                }
             }
         }
 
         Ok(reads)
+    }
+
+    async fn execute_operations(
+        &self,
+        operations: Vec<SmBusOperation>,
+    ) -> Result<Vec<u8>, TransportError> {
+        let mut reads = Vec::new();
+        let mut transfer_segment = Vec::new();
+
+        for operation in operations {
+            if let SmBusOperation::Delay { duration } = operation {
+                reads.extend(self.execute_transfer_segment(&mut transfer_segment).await?);
+                tokio::time::sleep(duration).await;
+            } else {
+                transfer_segment.push(operation);
+            }
+        }
+        reads.extend(self.execute_transfer_segment(&mut transfer_segment).await?);
+
+        Ok(reads)
+    }
+
+    async fn execute_transfer_segment(
+        &self,
+        operations: &mut Vec<SmBusOperation>,
+    ) -> Result<Vec<u8>, TransportError> {
+        if operations.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let operations = std::mem::take(operations);
+        let device = Arc::clone(&self.device);
+        let path = self.path.clone();
+        let address = self.address;
+
+        self.bus_arbiter
+            .run_blocking(move || {
+                Self::execute_transfer_segment_locked(device.as_ref(), &path, address, &operations)
+            })
+            .await
     }
 }
 
@@ -334,17 +432,7 @@ impl Transport for SmBusTransport {
         self.check_open()?;
         let operations = decode_operations(data)?;
         let _guard = self.op_lock.lock().await;
-        let device = Arc::clone(&self.device);
-        let path = self.path.clone();
-        let address = self.address;
-
-        tokio::task::spawn_blocking(move || {
-            Self::execute_operations_locked(device.as_ref(), &path, address, &operations)
-        })
-        .await
-        .map_err(|error| TransportError::IoError {
-            detail: format!("SMBus send task failed: {error}"),
-        })??;
+        self.execute_operations(operations).await?;
 
         Ok(())
     }
@@ -364,17 +452,7 @@ impl Transport for SmBusTransport {
         self.check_open()?;
         let operations = decode_operations(data)?;
         let _guard = self.op_lock.lock().await;
-        let device = Arc::clone(&self.device);
-        let path = self.path.clone();
-        let address = self.address;
-
-        tokio::task::spawn_blocking(move || {
-            Self::execute_operations_locked(device.as_ref(), &path, address, &operations)
-        })
-        .await
-        .map_err(|error| TransportError::IoError {
-            detail: format!("SMBus send/receive task failed: {error}"),
-        })?
+        self.execute_operations(operations).await
     }
 
     async fn close(&self) -> Result<(), TransportError> {
@@ -391,6 +469,7 @@ pub struct SmBusTransport {
     bus: Arc<Mutex<WindowsSmBusBus>>,
     closed: AtomicBool,
     op_lock: tokio::sync::Mutex<()>,
+    bus_arbiter: SmBusBusArbiter,
 }
 
 #[cfg(target_os = "windows")]
@@ -401,6 +480,19 @@ impl SmBusTransport {
     ///
     /// Returns [`TransportError`] when PawnIO cannot open the bus.
     pub fn open(path: &str, address: u16) -> Result<Self, TransportError> {
+        Self::open_with_arbiter(path, address, SmBusBusArbiter::default())
+    }
+
+    /// Open one `SMBus` slave with a transaction arbiter shared by its bus.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TransportError`] when PawnIO cannot open the bus.
+    pub fn open_with_arbiter(
+        path: &str,
+        address: u16,
+        bus_arbiter: SmBusBusArbiter,
+    ) -> Result<Self, TransportError> {
         let bus = open_smbus_bus(path).map_err(map_windows_pawnio_error)?;
 
         Ok(Self {
@@ -409,6 +501,7 @@ impl SmBusTransport {
             bus: Arc::new(Mutex::new(bus)),
             closed: AtomicBool::new(false),
             op_lock: tokio::sync::Mutex::new(()),
+            bus_arbiter,
         })
     }
 
@@ -452,7 +545,7 @@ impl SmBusTransport {
         Ok(())
     }
 
-    fn execute_operations_locked(
+    fn execute_transfer_segment_locked(
         bus: &Mutex<WindowsSmBusBus>,
         path: &str,
         address: u16,
@@ -495,8 +588,8 @@ impl SmBusTransport {
                         },
                     })
                 }
-                SmBusOperation::Delay { duration } => Ok(SmBusBatchOperation::Delay {
-                    duration: *duration,
+                SmBusOperation::Delay { .. } => Err(TransportError::IoError {
+                    detail: "SMBus delay reached a transfer-only segment".to_owned(),
                 }),
             })
             .collect::<Result<Vec<_>, TransportError>>()?;
@@ -517,6 +610,46 @@ impl SmBusTransport {
 
         Ok(reads)
     }
+
+    async fn execute_operations(
+        &self,
+        operations: Vec<SmBusOperation>,
+    ) -> Result<Vec<u8>, TransportError> {
+        let mut reads = Vec::new();
+        let mut transfer_segment = Vec::new();
+
+        for operation in operations {
+            if let SmBusOperation::Delay { duration } = operation {
+                reads.extend(self.execute_transfer_segment(&mut transfer_segment).await?);
+                tokio::time::sleep(duration).await;
+            } else {
+                transfer_segment.push(operation);
+            }
+        }
+        reads.extend(self.execute_transfer_segment(&mut transfer_segment).await?);
+
+        Ok(reads)
+    }
+
+    async fn execute_transfer_segment(
+        &self,
+        operations: &mut Vec<SmBusOperation>,
+    ) -> Result<Vec<u8>, TransportError> {
+        if operations.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let operations = std::mem::take(operations);
+        let bus = Arc::clone(&self.bus);
+        let path = self.path.clone();
+        let address = self.address;
+
+        self.bus_arbiter
+            .run_blocking(move || {
+                Self::execute_transfer_segment_locked(bus.as_ref(), &path, address, &operations)
+            })
+            .await
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -530,17 +663,7 @@ impl Transport for SmBusTransport {
         self.check_open()?;
         let operations = decode_operations(data)?;
         let _guard = self.op_lock.lock().await;
-        let bus = Arc::clone(&self.bus);
-        let path = self.path.clone();
-        let address = self.address;
-
-        tokio::task::spawn_blocking(move || {
-            Self::execute_operations_locked(bus.as_ref(), &path, address, &operations)
-        })
-        .await
-        .map_err(|error| TransportError::IoError {
-            detail: format!("SMBus send task failed: {error}"),
-        })??;
+        self.execute_operations(operations).await?;
 
         Ok(())
     }
@@ -560,17 +683,7 @@ impl Transport for SmBusTransport {
         self.check_open()?;
         let operations = decode_operations(data)?;
         let _guard = self.op_lock.lock().await;
-        let bus = Arc::clone(&self.bus);
-        let path = self.path.clone();
-        let address = self.address;
-
-        tokio::task::spawn_blocking(move || {
-            Self::execute_operations_locked(bus.as_ref(), &path, address, &operations)
-        })
-        .await
-        .map_err(|error| TransportError::IoError {
-            detail: format!("SMBus send/receive task failed: {error}"),
-        })?
+        self.execute_operations(operations).await
     }
 
     async fn close(&self) -> Result<(), TransportError> {
@@ -627,6 +740,17 @@ pub struct SmBusTransport;
 impl SmBusTransport {
     /// `SMBus` transport is only available on Linux and Windows.
     pub fn open(_path: &str, _address: u16) -> Result<Self, TransportError> {
+        Err(TransportError::IoError {
+            detail: "SMBus transport is only available on Linux and Windows".to_owned(),
+        })
+    }
+
+    /// `SMBus` transport is only available on Linux and Windows.
+    pub fn open_with_arbiter(
+        _path: &str,
+        _address: u16,
+        _bus_arbiter: SmBusBusArbiter,
+    ) -> Result<Self, TransportError> {
         Err(TransportError::IoError {
             detail: "SMBus transport is only available on Linux and Windows".to_owned(),
         })

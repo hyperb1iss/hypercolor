@@ -4,18 +4,22 @@ use std::cmp::min;
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use hypercolor_hal::protocol::{Protocol, ProtocolCommand, ProtocolError, ResponseStatus};
 use hypercolor_hal::smbus_registry::build_smbus_protocol;
-use hypercolor_hal::transport::smbus::SmBusTransport;
+use hypercolor_hal::transport::smbus::{SmBusBusArbiter, SmBusTransport};
 use hypercolor_hal::transport::{Transport, TransportError};
 use hypercolor_types::device::{DeviceId, DeviceInfo, SMBUS_OUTPUT_BACKEND_ID, ZoneInfo};
+use tokio::sync::Mutex;
 use tracing::{debug, trace, warn};
 
 use super::smbus_scanner::SmBusScanner;
-use super::traits::{BackendInfo, ConnectExecution, DeviceBackend, DeviceLifecyclePolicy};
+use super::traits::{
+    BackendInfo, ConnectExecution, DeviceBackend, DeviceFrameSink, DeviceLifecyclePolicy,
+};
 use super::{DiscoveredDevice, TransportScanner};
 
 const RETRY_BACKOFF: Duration = Duration::from_millis(100);
@@ -32,20 +36,34 @@ struct PendingSmBusDevice {
 struct ConnectedSmBusDevice {
     bus_path: String,
     address: u16,
-    protocol: Box<dyn Protocol>,
-    transport: Box<dyn Transport>,
     info_template: DeviceInfo,
     target_fps: Option<u32>,
+    bus_arbiter: SmBusBusArbiter,
+    io: Arc<Mutex<SmBusDeviceIo>>,
+    connected: AtomicBool,
+}
+
+struct SmBusDeviceIo {
+    protocol: Box<dyn Protocol>,
+    transport: Box<dyn Transport>,
     frame_commands: Vec<ProtocolCommand>,
 }
 
-type SmBusTransportFactory = Arc<dyn Fn(&str, u16) -> Result<Box<dyn Transport>> + Send + Sync>;
+type SmBusTransportFactory =
+    Arc<dyn Fn(&str, u16, SmBusBusArbiter) -> Result<Box<dyn Transport>> + Send + Sync>;
+
+struct SmBusDeviceFrameSink {
+    device_id: DeviceId,
+    device: Arc<ConnectedSmBusDevice>,
+    transport_factory: SmBusTransportFactory,
+}
 
 /// Core `SMBus` backend for HAL-managed ENE controllers.
 pub struct SmBusBackend {
     scanner: Box<dyn TransportScanner>,
     pending: HashMap<DeviceId, PendingSmBusDevice>,
-    connected: HashMap<DeviceId, ConnectedSmBusDevice>,
+    connected: HashMap<DeviceId, Arc<ConnectedSmBusDevice>>,
+    bus_arbiters: HashMap<String, SmBusBusArbiter>,
     transport_factory: SmBusTransportFactory,
 }
 
@@ -61,11 +79,15 @@ impl SmBusBackend {
     where
         S: TransportScanner + 'static,
     {
-        Self::with_scanner_and_transport_factory(scanner, |bus_path, address| {
+        Self::with_scanner_and_transport_factory(scanner, |bus_path, address, bus_arbiter| {
             Ok(Box::new(
-                SmBusTransport::open(bus_path, address).with_context(|| {
-                    format!("failed to open SMBus transport at {bus_path} address 0x{address:02X}")
-                })?,
+                SmBusTransport::open_with_arbiter(bus_path, address, bus_arbiter).with_context(
+                    || {
+                        format!(
+                            "failed to open SMBus transport at {bus_path} address 0x{address:02X}"
+                        )
+                    },
+                )?,
             ))
         })
     }
@@ -75,12 +97,13 @@ impl SmBusBackend {
     pub fn with_scanner_and_transport_factory<S, F>(scanner: S, transport_factory: F) -> Self
     where
         S: TransportScanner + 'static,
-        F: Fn(&str, u16) -> Result<Box<dyn Transport>> + Send + Sync + 'static,
+        F: Fn(&str, u16, SmBusBusArbiter) -> Result<Box<dyn Transport>> + Send + Sync + 'static,
     {
         Self {
             scanner: Box::new(scanner),
             pending: HashMap::new(),
             connected: HashMap::new(),
+            bus_arbiters: HashMap::new(),
             transport_factory: Arc::new(transport_factory),
         }
     }
@@ -89,6 +112,19 @@ impl SmBusBackend {
 impl Default for SmBusBackend {
     fn default() -> Self {
         Self::with_scanner(SmBusScanner::default())
+    }
+}
+
+#[async_trait::async_trait]
+impl DeviceFrameSink for SmBusDeviceFrameSink {
+    async fn write_colors_shared(&self, colors: Arc<Vec<[u8; 3]>>) -> Result<()> {
+        write_connected_device(
+            self.device_id,
+            self.device.as_ref(),
+            &self.transport_factory,
+            colors.as_slice(),
+        )
+        .await
     }
 }
 
@@ -129,6 +165,11 @@ impl DeviceBackend for SmBusBackend {
     }
 
     async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+        if self.connected.contains_key(id) {
+            debug!(device_id = %id, "SMBus device already connected; skipping duplicate connect");
+            return Ok(());
+        }
+
         let pending = self.pending.get(id).cloned().with_context(|| {
             format!(
                 "device {id} has no pending SMBus descriptor; run discover() (pending_cache_size={})",
@@ -143,8 +184,13 @@ impl DeviceBackend for SmBusBackend {
             "attempting SMBus connect"
         );
 
-        let device = connect_pending_device(&pending, &self.transport_factory).await?;
-        self.connected.insert(*id, device);
+        let bus_arbiter = self
+            .bus_arbiters
+            .entry(pending.bus_path.clone())
+            .or_default()
+            .clone();
+        let device = connect_pending_device(&pending, &self.transport_factory, bus_arbiter).await?;
+        self.connected.insert(*id, Arc::new(device));
 
         Ok(())
     }
@@ -154,10 +200,12 @@ impl DeviceBackend for SmBusBackend {
             return Ok(());
         };
 
-        let shutdown_sequence = device.protocol.shutdown_sequence();
+        device.connected.store(false, Ordering::Release);
+        let io = device.io.lock().await;
+        let shutdown_sequence = io.protocol.shutdown_sequence();
         if let Err(error) = run_commands(
-            device.protocol.as_ref(),
-            device.transport.as_ref(),
+            io.protocol.as_ref(),
+            io.transport.as_ref(),
             shutdown_sequence.as_slice(),
         )
         .await
@@ -165,82 +213,43 @@ impl DeviceBackend for SmBusBackend {
             warn!(device_id = %id, error = %error, "SMBus shutdown sequence failed");
         }
 
-        device.transport.close().await.map_err(map_transport_error)
+        io.transport.close().await.map_err(map_transport_error)
     }
 
     async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
-        let transport_factory = Arc::clone(&self.transport_factory);
         let device = self
             .connected
-            .get_mut(id)
+            .get(id)
+            .cloned()
             .with_context(|| format!("device {id} is not connected on SMBus backend"))?;
-
-        device
-            .protocol
-            .encode_frame_into(colors, &mut device.frame_commands);
-        if let Err(initial_error) = run_commands(
-            device.protocol.as_ref(),
-            device.transport.as_ref(),
-            device.frame_commands.as_slice(),
-        )
-        .await
-        {
-            warn!(
-                device_id = %id,
-                bus_path = device.bus_path,
-                address = format_args!("0x{:02X}", device.address),
-                error = %initial_error,
-                "SMBus frame write failed; attempting one-shot transport reinitialize"
-            );
-
-            reinitialize_connected_device(device, &transport_factory)
-                .await
-                .with_context(|| {
-                    format!(
-                        "failed to recover SMBus device {id} after write failure: {initial_error}"
-                    )
-                })?;
-
-            device
-                .protocol
-                .encode_frame_into(colors, &mut device.frame_commands);
-            run_commands(
-                device.protocol.as_ref(),
-                device.transport.as_ref(),
-                device.frame_commands.as_slice(),
-            )
-            .await
-            .with_context(|| {
-                format!(
-                    "SMBus frame write still failing for device {id} after recovery (initial error: {initial_error})"
-                )
-            })?;
-
-            debug!(
-                device_id = %id,
-                bus_path = device.bus_path,
-                address = format_args!("0x{:02X}", device.address),
-                "SMBus transport recovered after frame write failure"
-            );
-        }
-
-        Ok(())
+        write_connected_device(*id, device.as_ref(), &self.transport_factory, colors).await
     }
 
     async fn connected_device_info(&self, id: &DeviceId) -> Result<Option<DeviceInfo>> {
         let Some(device) = self.connected.get(id) else {
             return Ok(None);
         };
+        let io = device.io.lock().await;
 
         Ok(Some(build_connected_device_info(
             *id,
             &device.info_template,
-            device.protocol.as_ref(),
+            io.protocol.as_ref(),
         )))
     }
 
     fn target_fps(&self, id: &DeviceId) -> Option<u32> {
         self.connected.get(id).and_then(|device| device.target_fps)
+    }
+
+    fn frame_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {
+        self.connected.get(id).map(|device| {
+            Arc::new(SmBusDeviceFrameSink {
+                device_id: *id,
+                device: Arc::clone(device),
+                transport_factory: Arc::clone(&self.transport_factory),
+            }) as Arc<dyn DeviceFrameSink>
+        })
     }
 }
 
@@ -259,8 +268,9 @@ fn pending_from_discovered(discovered: &DiscoveredDevice) -> Option<PendingSmBus
 async fn connect_pending_device(
     pending: &PendingSmBusDevice,
     transport_factory: &SmBusTransportFactory,
+    bus_arbiter: SmBusBusArbiter,
 ) -> Result<ConnectedSmBusDevice> {
-    let transport = transport_factory(&pending.bus_path, pending.address)?;
+    let transport = transport_factory(&pending.bus_path, pending.address, bus_arbiter.clone())?;
     let protocol = build_smbus_protocol(&pending.protocol_id).with_context(|| {
         format!(
             "SMBus protocol '{}' is not registered for {} at {} address 0x{:02X}",
@@ -280,21 +290,27 @@ async fn connect_pending_device(
     Ok(ConnectedSmBusDevice {
         bus_path: pending.bus_path.clone(),
         address: pending.address,
-        protocol,
-        transport,
         info_template: pending.info_template.clone(),
         target_fps,
-        frame_commands: Vec::new(),
+        bus_arbiter,
+        io: Arc::new(Mutex::new(SmBusDeviceIo {
+            protocol,
+            transport,
+            frame_commands: Vec::new(),
+        })),
+        connected: AtomicBool::new(true),
     })
 }
 
 async fn reinitialize_connected_device(
-    device: &mut ConnectedSmBusDevice,
+    device: &ConnectedSmBusDevice,
+    io: &mut SmBusDeviceIo,
     transport_factory: &SmBusTransportFactory,
 ) -> Result<()> {
-    let replacement = transport_factory(&device.bus_path, device.address)?;
+    let replacement =
+        transport_factory(&device.bus_path, device.address, device.bus_arbiter.clone())?;
     if let Err(error) = run_init_sequence(
-        device.protocol.as_ref(),
+        io.protocol.as_ref(),
         replacement.as_ref(),
         &device.info_template.name,
         &device.bus_path,
@@ -306,13 +322,90 @@ async fn reinitialize_connected_device(
         return Err(error);
     }
 
-    let old_transport = std::mem::replace(&mut device.transport, replacement);
+    let old_transport = std::mem::replace(&mut io.transport, replacement);
     if let Err(error) = old_transport.close().await.map_err(map_transport_error) {
         warn!(
             bus_path = device.bus_path,
             address = format_args!("0x{:02X}", device.address),
             error = %error,
             "failed to close previous SMBus transport during recovery"
+        );
+    }
+
+    Ok(())
+}
+
+async fn write_connected_device(
+    device_id: DeviceId,
+    device: &ConnectedSmBusDevice,
+    transport_factory: &SmBusTransportFactory,
+    colors: &[[u8; 3]],
+) -> Result<()> {
+    if !device.connected.load(Ordering::Acquire) {
+        return Err(anyhow!("SMBus device {device_id} is disconnected"));
+    }
+    let mut io = device.io.lock().await;
+    if !device.connected.load(Ordering::Acquire) {
+        return Err(anyhow!("SMBus device {device_id} is disconnected"));
+    }
+    let SmBusDeviceIo {
+        protocol,
+        transport,
+        frame_commands,
+    } = &mut *io;
+    protocol.encode_frame_into(colors, frame_commands);
+    if let Err(initial_error) = run_commands(
+        protocol.as_ref(),
+        transport.as_ref(),
+        frame_commands.as_slice(),
+    )
+    .await
+    {
+        if !device.connected.load(Ordering::Acquire) {
+            return Err(anyhow!("SMBus device {device_id} is disconnected"));
+        }
+        warn!(
+            %device_id,
+            bus_path = device.bus_path,
+            address = format_args!("0x{:02X}", device.address),
+            error = %initial_error,
+            "SMBus frame write failed; attempting one-shot transport reinitialize"
+        );
+
+        reinitialize_connected_device(device, &mut io, transport_factory)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to recover SMBus device {device_id} after write failure: {initial_error}"
+                )
+            })?;
+        if !device.connected.load(Ordering::Acquire) {
+            return Err(anyhow!("SMBus device {device_id} is disconnected"));
+        }
+
+        let SmBusDeviceIo {
+            protocol,
+            transport,
+            frame_commands,
+        } = &mut *io;
+        protocol.encode_frame_into(colors, frame_commands);
+        run_commands(
+            protocol.as_ref(),
+            transport.as_ref(),
+            frame_commands.as_slice(),
+        )
+        .await
+        .with_context(|| {
+            format!(
+                "SMBus frame write still failing for device {device_id} after recovery (initial error: {initial_error})"
+            )
+        })?;
+
+        debug!(
+            %device_id,
+            bus_path = device.bus_path,
+            address = format_args!("0x{:02X}", device.address),
+            "SMBus transport recovered after frame write failure"
         );
     }
 
