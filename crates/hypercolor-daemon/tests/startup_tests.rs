@@ -318,9 +318,7 @@ async fn initialize_handles_explicit_gpu_render_acceleration_when_wgpu_is_enable
     match DaemonState::initialize(&config, temp.path().to_path_buf()) {
         Ok(daemon) => drop(daemon),
         Err(error) => {
-            assert!(
-                format!("{error:#}").contains("gpu compositor acceleration is not available yet")
-            );
+            assert!(format!("{error:#}").contains("gpu compositor acceleration is unavailable"));
         }
     }
 }
