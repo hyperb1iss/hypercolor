@@ -422,6 +422,12 @@ impl GpuSparkleFlinger {
             .map(|pending| match &pending.readback {
                 PendingPreviewReadback::PreviewBuffer { slot, .. } => *slot,
             });
+        if let Some(encoder) =
+            self.supersede_frame_in_flight("preview restaged over retained frame")
+        {
+            drop(encoder);
+            self.clear_pending_upload_buffers();
+        }
         let preview_surfaces = self
             .preview_surfaces
             .as_mut()

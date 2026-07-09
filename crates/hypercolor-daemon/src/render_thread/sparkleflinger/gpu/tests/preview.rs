@@ -350,6 +350,75 @@ fn gpu_fresh_preview_restage_uses_alternate_readback_slot() {
 }
 
 #[test]
+fn gpu_current_output_preview_restage_supersedes_retained_submitted_frame() {
+    let mut compositor = match GpuSparkleFlinger::new() {
+        Ok(compositor) => compositor,
+        Err(_) => return,
+    };
+    let first_plan = CompositionPlan::single(
+        4,
+        4,
+        CompositionLayer::replace(ProducerFrame::Canvas(solid_canvas(Rgba::new(
+            255, 32, 0, 255,
+        )))),
+    );
+    let second_plan = CompositionPlan::single(
+        4,
+        4,
+        CompositionLayer::replace(ProducerFrame::Canvas(solid_canvas(Rgba::new(
+            32, 64, 255, 255,
+        )))),
+    );
+    let request = PreviewSurfaceRequest {
+        width: 2,
+        height: 2,
+    };
+
+    compositor
+        .compose(&first_plan, false, Some(request))
+        .expect("first compose should stage a preview surface");
+    compositor
+        .submit_pending_preview_work()
+        .expect("first preview submit should succeed");
+    defer_pending_preview_map(&mut compositor);
+
+    compositor
+        .compose(&second_plan, false, Some(request))
+        .expect("second compose should stage a preview behind the pending map");
+    compositor
+        .submit_pending_preview_work()
+        .expect("second preview submit should remain retained behind the pending map");
+    assert!(compositor.pending_preview_submission().is_some());
+    let output_generation = compositor.output_generation;
+    let output = compositor
+        .current_output_frame()
+        .expect("current output frame lookup should succeed")
+        .expect("current output frame should exist");
+    let current_output_plan = CompositionPlan::single(
+        4,
+        4,
+        CompositionLayer::replace(ProducerFrame::GpuTexture(output)),
+    );
+    let superseded_before = compositor.superseded_frame_count;
+
+    compositor
+        .compose(&current_output_plan, false, Some(request))
+        .expect("current-output preview restage should explicitly supersede retained work");
+
+    assert_eq!(compositor.output_generation, output_generation);
+    assert_eq!(compositor.superseded_frame_count, superseded_before + 1);
+    assert!(compositor.has_pending_output_submission());
+    assert!(compositor.pending_preview_submission().is_none());
+    assert!(compositor.pending_preview_readback().is_some());
+    assert!(compositor.pending_preview_map.is_some());
+
+    let first_preview = resolve_preview_surface_blocking(&mut compositor);
+    assert_eq!(&first_preview.rgba_bytes()[0..4], &[255, 32, 0, 255]);
+    let current_preview = resolve_preview_surface_blocking(&mut compositor);
+    assert_eq!(&current_preview.rgba_bytes()[0..4], &[32, 64, 255, 255]);
+}
+
+#[test]
 fn gpu_deferred_preview_is_superseded_by_non_bypass_resize_compose() {
     let mut compositor = match GpuSparkleFlinger::new() {
         Ok(compositor) => compositor,
@@ -475,5 +544,5 @@ fn gpu_discard_superseded_preview_work_clears_preview_state() {
     assert!(compositor.pending_preview_submission().is_none());
     assert!(compositor.pending_preview_map.is_none());
     assert!(compositor.ready_preview_surface.is_none());
-    assert_eq!(compositor.discarded_output_submission_count, 1);
+    assert_eq!(compositor.superseded_frame_count, 1);
 }

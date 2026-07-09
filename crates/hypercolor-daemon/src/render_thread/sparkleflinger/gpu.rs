@@ -90,7 +90,7 @@ pub(crate) struct GpuSparkleFlinger {
     producer_texture_generation: u64,
     cached_sample_result: Option<CachedSampleResult>,
     #[cfg(test)]
-    discarded_output_submission_count: usize,
+    superseded_frame_count: usize,
     #[cfg(test)]
     preview_surface_allocation_count: usize,
     #[cfg(test)]
@@ -413,7 +413,7 @@ impl GpuSparkleFlinger {
             producer_texture_generation: 0,
             cached_sample_result: None,
             #[cfg(test)]
-            discarded_output_submission_count: 0,
+            superseded_frame_count: 0,
             #[cfg(test)]
             preview_surface_allocation_count: 0,
             #[cfg(test)]
@@ -545,12 +545,9 @@ impl GpuSparkleFlinger {
     ) -> Option<wgpu::CommandEncoder> {
         let frame = self.frame_in_flight.take()?;
         let encoder = frame.supersede(reason);
-        if encoder.is_some() {
-            #[cfg(test)]
-            {
-                self.discarded_output_submission_count =
-                    self.discarded_output_submission_count.saturating_add(1);
-            }
+        #[cfg(test)]
+        {
+            self.superseded_frame_count = self.superseded_frame_count.saturating_add(1);
         }
         encoder
     }
