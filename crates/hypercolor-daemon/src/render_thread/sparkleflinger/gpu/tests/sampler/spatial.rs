@@ -183,3 +183,51 @@ fn gpu_sampler_matches_cpu_spatial_sampling_for_area_plans() {
     );
     assert_zone_colors_within(&sampled, &expected_zones, 1);
 }
+
+#[test]
+fn gpu_sampler_matches_cpu_when_negative_area_radius_clamps_to_zero() {
+    let mut compositor = match GpuSparkleFlinger::new() {
+        Ok(compositor) => compositor,
+        Err(_) => return,
+    };
+    let engine = SpatialEngine::new(sampling_layout(SamplingMode::AreaAverage {
+        radius_x: -1.0,
+        radius_y: -1.0,
+    }));
+    let prepared = engine.sampling_plan();
+    let hypercolor_core::spatial::PreparedZoneSamples::Area(samples) =
+        &prepared[0].prepared_samples
+    else {
+        panic!("negative area radius should remain an area-sampling plan");
+    };
+    assert!(samples.iter().all(|sample| sample.radius == 0));
+    assert!(compositor.can_sample_zone_plan(prepared.as_ref()));
+
+    let plan = CompositionPlan::with_layers(
+        4,
+        4,
+        vec![
+            CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(12))),
+            CompositionLayer::screen(ProducerFrame::Canvas(patterned_canvas(96)), 0.6),
+        ],
+    );
+    let expected =
+        CpuSparkleFlinger::new().compose(plan.clone(), true, full_preview_request(&plan));
+    let expected_zones = engine.sample(
+        expected
+            .sampling_canvas
+            .as_ref()
+            .expect("CPU compose should materialize a canvas"),
+    );
+
+    compositor
+        .compose(&plan, false, None)
+        .expect("GPU composition should succeed before clamped area sampling");
+    let mut sampled = Vec::new();
+    assert!(
+        compositor
+            .sample_zone_plan_into(prepared.as_ref(), &mut sampled)
+            .expect("GPU sampler should accept the clamped area plan")
+    );
+    assert_zone_colors_within(&sampled, &expected_zones, 1);
+}
