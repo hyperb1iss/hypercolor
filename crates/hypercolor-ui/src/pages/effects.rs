@@ -335,14 +335,16 @@ pub fn EffectsPage() -> impl IntoView {
                     .zone_effects
                     .with(|zones| zones.iter().any(ZoneEffectState::is_active)))
     });
-    let named_scene_warning = Memo::new(move |_| {
-        (fx.active_scene_kind.get() == Some(SceneKind::Named)).then(|| {
-            (
-                fx.active_scene_name
-                    .get()
-                    .unwrap_or_else(|| "Active scene".to_owned()),
-                fx.active_scene_mutation_mode.get() == Some(SceneMutationMode::Snapshot),
-            )
+    // Only snapshot-locked scenes get a banner: the daemon rejects their
+    // mutations outright, so the unblock path has to be visible. A merely
+    // active named scene is normal operation, not a warning.
+    let snapshot_locked_warning = Memo::new(move |_| {
+        (fx.active_scene_kind.get() == Some(SceneKind::Named)
+            && fx.active_scene_mutation_mode.get() == Some(SceneMutationMode::Snapshot))
+        .then(|| {
+            fx.active_scene_name
+                .get()
+                .unwrap_or_else(|| "Active scene".to_owned())
         })
     });
     let degraded_effect = Memo::new(move |_| {
@@ -749,17 +751,13 @@ pub fn EffectsPage() -> impl IntoView {
                 </HeaderToolbar>
             </PageHeader>
 
-            {move || named_scene_warning.get().map(|(scene_name, snapshot_locked)| view! {
+            {move || snapshot_locked_warning.get().map(|scene_name| view! {
                 <div class="px-6 pt-4">
                     <StatusBanner
                         tone=StatusBannerTone::Warning
-                        title=if snapshot_locked { "Snapshot Scene Locked" } else { "Named Scene Active" }
+                        title="Snapshot Scene Locked"
                         subject=scene_name
-                        detail=if snapshot_locked {
-                            " is snapshot-locked. Return to Default before applying an effect or changing its controls."
-                        } else {
-                            " is active. Applying an effect here rewrites that scene’s default-zone effect."
-                        }
+                        detail=" is snapshot-locked. Return to Default before applying an effect or changing its controls."
                     >
                         <button
                             class="shrink-0 rounded-lg border border-status-warning/28 px-3 py-1.5 text-[11px] font-medium text-status-warning/92 transition-all duration-200 hover:bg-status-warning/8 disabled:cursor-wait disabled:opacity-60"
