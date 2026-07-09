@@ -1,7 +1,5 @@
 //! Per-device display worker event loop.
 
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -382,11 +380,7 @@ fn should_hash_display_source_identity(identity: DisplaySourceIdentity) -> bool 
 }
 
 fn display_source_content_hash(source: &CanvasFrame) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    source.width.hash(&mut hasher);
-    source.height.hash(&mut hasher);
-    source.rgba_bytes().hash(&mut hasher);
-    hasher.finish()
+    source.surface().content_digest()
 }
 
 fn display_group_source_content_hash(source: &DisplayGroupFrame) -> u64 {

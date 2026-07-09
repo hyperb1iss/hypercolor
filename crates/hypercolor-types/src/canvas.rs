@@ -4,9 +4,10 @@
 //! color representations (`Rgba`, `RgbaF32`, `Rgb`), blend mode compositing (`BlendMode`),
 //! and Oklab/Oklch perceptual color spaces for smooth interpolation.
 
-use std::sync::Arc;
-use std::sync::LazyLock;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, LazyLock, OnceLock};
 
 use serde::{Deserialize, Serialize};
 
@@ -896,7 +897,11 @@ pub struct PublishedSurface {
 
 #[derive(Clone, Debug)]
 enum PublishedSurfaceStorage {
-    CpuRgba { id: u64, rgba: Arc<Vec<u8>> },
+    CpuRgba {
+        id: u64,
+        rgba: Arc<Vec<u8>>,
+        content_digest: Arc<OnceLock<u64>>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -905,6 +910,14 @@ pub enum PublishedSurfaceStorageIdentity {
 }
 
 impl PublishedSurfaceStorage {
+    fn new_cpu_rgba(id: u64, rgba: Arc<Vec<u8>>) -> Self {
+        Self::CpuRgba {
+            id,
+            rgba,
+            content_digest: Arc::new(OnceLock::new()),
+        }
+    }
+
     fn cpu_rgba(&self) -> &Arc<Vec<u8>> {
         match self {
             Self::CpuRgba { rgba, .. } => rgba,
@@ -922,6 +935,28 @@ impl PublishedSurfaceStorage {
             Self::CpuRgba { id, .. } => *id,
         }
     }
+
+    fn content_digest(&self, width: u32, height: u32) -> u64 {
+        match self {
+            Self::CpuRgba {
+                rgba,
+                content_digest,
+                ..
+            } => *content_digest.get_or_init(|| {
+                let mut hasher = DefaultHasher::new();
+                width.hash(&mut hasher);
+                height.hash(&mut hasher);
+                rgba.hash(&mut hasher);
+                hasher.finish()
+            }),
+        }
+    }
+
+    fn cached_content_digest(&self) -> Option<u64> {
+        match self {
+            Self::CpuRgba { content_digest, .. } => content_digest.get().copied(),
+        }
+    }
 }
 
 impl PublishedSurface {
@@ -933,10 +968,10 @@ impl PublishedSurface {
             generation: 0,
             frame_number: 0,
             timestamp_ms: 0,
-            storage: PublishedSurfaceStorage::CpuRgba {
-                id: EMPTY_PUBLISHED_SURFACE_STORAGE_ID,
-                rgba: Arc::new(Vec::new()),
-            },
+            storage: PublishedSurfaceStorage::new_cpu_rgba(
+                EMPTY_PUBLISHED_SURFACE_STORAGE_ID,
+                Arc::new(Vec::new()),
+            ),
         }
     }
 
@@ -948,10 +983,10 @@ impl PublishedSurface {
             generation: 0,
             frame_number,
             timestamp_ms,
-            storage: PublishedSurfaceStorage::CpuRgba {
-                id: next_published_surface_storage_id(),
-                rgba: Arc::new(canvas.as_rgba_bytes().to_vec()),
-            },
+            storage: PublishedSurfaceStorage::new_cpu_rgba(
+                next_published_surface_storage_id(),
+                Arc::new(canvas.as_rgba_bytes().to_vec()),
+            ),
         }
     }
 
@@ -984,10 +1019,10 @@ impl PublishedSurface {
             generation: 0,
             frame_number,
             timestamp_ms,
-            storage: PublishedSurfaceStorage::CpuRgba {
-                id: next_published_surface_storage_id(),
-                rgba: Arc::new(rgba),
-            },
+            storage: PublishedSurfaceStorage::new_cpu_rgba(
+                next_published_surface_storage_id(),
+                Arc::new(rgba),
+            ),
         }
     }
 
@@ -1017,10 +1052,7 @@ impl PublishedSurface {
                 generation: 0,
                 frame_number,
                 timestamp_ms,
-                storage: PublishedSurfaceStorage::CpuRgba {
-                    id: storage_id,
-                    rgba: pixels,
-                },
+                storage: PublishedSurfaceStorage::new_cpu_rgba(storage_id, pixels),
             },
             false,
         )
@@ -1078,6 +1110,18 @@ impl PublishedSurface {
     #[must_use]
     pub fn storage_identity(&self) -> PublishedSurfaceStorageIdentity {
         self.storage.identity()
+    }
+
+    /// Content digest cached on this surface's immutable backing storage.
+    #[must_use]
+    pub fn content_digest(&self) -> u64 {
+        self.storage.content_digest(self.width(), self.height())
+    }
+
+    /// Previously computed content digest without forcing a full-buffer hash.
+    #[must_use]
+    pub fn cached_content_digest(&self) -> Option<u64> {
+        self.storage.cached_content_digest()
     }
 
     /// Published RGBA byte length.
@@ -1458,10 +1502,10 @@ impl SurfaceLease<'_> {
             generation: self.slot.generation,
             frame_number,
             timestamp_ms,
-            storage: PublishedSurfaceStorage::CpuRgba {
-                id: self.slot.canvas.storage_id,
-                rgba: Arc::clone(&self.slot.canvas.pixels),
-            },
+            storage: PublishedSurfaceStorage::new_cpu_rgba(
+                self.slot.canvas.storage_id,
+                Arc::clone(&self.slot.canvas.pixels),
+            ),
         }
     }
 

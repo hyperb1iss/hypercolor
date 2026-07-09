@@ -470,6 +470,20 @@ fn published_surface_storage_identity_survives_metadata_updates() {
 }
 
 #[test]
+fn published_surface_content_digest_is_shared_across_metadata_clones() {
+    let mut canvas = Canvas::new(2, 1);
+    canvas.set_pixel(0, 0, Rgba::new(10, 20, 30, 255));
+    let surface = PublishedSurface::from_owned_canvas(canvas, 1, 10);
+    let updated = surface.with_frame_metadata(2, 20);
+
+    assert_eq!(surface.cached_content_digest(), None);
+    let digest = updated.content_digest();
+    assert_eq!(surface.cached_content_digest(), Some(digest));
+    assert_eq!(updated.cached_content_digest(), Some(digest));
+    assert_eq!(surface.content_digest(), digest);
+}
+
+#[test]
 fn published_surface_storage_identity_distinguishes_new_owned_surfaces() {
     let first = PublishedSurface::from_owned_canvas(Canvas::new(2, 1), 1, 10);
     let second = PublishedSurface::from_owned_canvas(Canvas::new(2, 1), 2, 20);
