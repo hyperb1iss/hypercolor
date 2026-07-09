@@ -21,10 +21,10 @@ use hypercolor_types::spatial::{
 #[cfg(all(feature = "servo-gpu-import", target_os = "linux"))]
 use super::CachedGpuSourceCopy;
 use super::{
-    DISPLAY_FINALIZE_READBACK_SLOT_COUNT, DisplayYuv420Frame, GpuDisplayFinalizeDispatch,
-    GpuDisplayFinalizeFrame, GpuSparkleFlinger, GpuZoneSamplingDispatch,
-    MEDIA_UPLOAD_TEXTURE_POOL_IDLE_FRAMES, MEDIA_UPLOAD_TEXTURE_RING_LEN, MediaTextureSourceKey,
-    MediaUploadTextureKey, PendingPreviewMap, PendingPreviewReadback,
+    DISPLAY_FINALIZE_READBACK_SLOT_COUNT, DisplayYuv420Frame, FrameInFlight,
+    GpuDisplayFinalizeDispatch, GpuDisplayFinalizeFrame, GpuSparkleFlinger,
+    GpuZoneSamplingDispatch, MEDIA_UPLOAD_TEXTURE_POOL_IDLE_FRAMES, MEDIA_UPLOAD_TEXTURE_RING_LEN,
+    MediaTextureSourceKey, MediaUploadTextureKey, PendingPreviewMap, PendingPreviewReadback,
 };
 #[cfg(all(feature = "servo-gpu-import", target_os = "macos"))]
 use crate::performance::CompositorBackendKind;
@@ -101,6 +101,29 @@ fn patterned_canvas_with_size(width: u32, height: u32, seed: u8) -> Canvas {
         }
     }
     canvas
+}
+
+#[test]
+fn frame_in_flight_requires_explicit_supersede_for_encoded_readbacks() {
+    let frame = FrameInFlight::encoded_preview_for_test();
+    assert_eq!(frame.generation, 7);
+    assert!(frame.is_building());
+    assert!(frame.preview_readback().is_some());
+
+    assert!(frame.supersede("typed-state regression").is_none());
+}
+
+#[test]
+fn frame_in_flight_rejects_silent_encoded_readback_drop() {
+    let result = std::panic::catch_unwind(|| {
+        drop(FrameInFlight::encoded_preview_for_test());
+    });
+
+    if cfg!(debug_assertions) {
+        assert!(result.is_err());
+    } else {
+        assert!(result.is_ok());
+    }
 }
 
 fn slot_surface(color: Rgba) -> PublishedSurface {
@@ -186,7 +209,7 @@ fn resolve_preview_surface_blocking(compositor: &mut GpuSparkleFlinger) -> Publi
             return surface;
         }
 
-        if let Some(submission_index) = compositor.pending_preview_submission.clone() {
+        if let Some(submission_index) = compositor.pending_preview_submission() {
             compositor
                 .device
                 .poll(wgpu::PollType::Wait {
@@ -253,7 +276,7 @@ fn defer_pending_preview_map(compositor: &mut GpuSparkleFlinger) {
             .is_none()
     );
 
-    if let Some(submission_index) = compositor.pending_preview_submission.clone() {
+    if let Some(submission_index) = compositor.pending_preview_submission() {
         compositor
             .device
             .poll(wgpu::PollType::Wait {
@@ -270,8 +293,8 @@ fn defer_pending_preview_map(compositor: &mut GpuSparkleFlinger) {
         );
     }
 
-    assert!(compositor.pending_preview_submission.is_none());
-    assert!(compositor.pending_preview_readback.is_none());
+    assert!(compositor.pending_preview_submission().is_none());
+    assert!(compositor.pending_preview_readback().is_none());
     assert!(compositor.pending_preview_map.is_some());
 }
 
@@ -927,8 +950,8 @@ fn gpu_full_size_preview_stages_publication_without_sampling_canvas() {
     assert!(composed.sampling_surface.is_none());
     assert!(composed.preview_surface.is_none());
     assert!(compositor.preview_surfaces.is_some());
-    assert!(compositor.pending_preview_readback.is_some());
-    assert!(compositor.pending_output_submission.is_some());
+    assert!(compositor.pending_preview_readback().is_some());
+    assert!(compositor.has_pending_output_submission());
     assert!(compositor.cached_readback_surface.is_none());
     assert!(compositor.cached_preview_surfaces.is_empty());
 

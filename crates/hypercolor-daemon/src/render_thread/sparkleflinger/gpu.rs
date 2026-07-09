@@ -82,9 +82,7 @@ pub(crate) struct GpuSparkleFlinger {
     cached_composition_key: Option<CachedReadbackKey>,
     cached_readback_surface: Option<CachedReadbackSurface>,
     cached_preview_surfaces: Vec<CachedPreviewSurface>,
-    pending_output_submission: Option<wgpu::CommandEncoder>,
-    pending_preview_readback: Option<PendingPreviewReadback>,
-    pending_preview_submission: Option<wgpu::SubmissionIndex>,
+    frame_in_flight: Option<FrameInFlight>,
     pending_preview_map: Option<PendingPreviewMap>,
     ready_preview_surface: Option<PublishedSurface>,
     sampling_latch: SamplingReadbackLatch,
@@ -99,6 +97,181 @@ pub(crate) struct GpuSparkleFlinger {
     defer_preview_resolve_once: bool,
     #[cfg(test)]
     defer_preview_map_resolve_once: bool,
+}
+
+struct FrameInFlight {
+    generation: u64,
+    encoder: EncoderStage,
+    readbacks: Vec<StagedReadback>,
+}
+
+enum EncoderStage {
+    Building(Option<wgpu::CommandEncoder>),
+    Submitted(wgpu::SubmissionIndex),
+    Superseded,
+}
+
+enum StagedReadback {
+    Preview {
+        readback: PendingPreviewReadback,
+        stage: ReadbackStage,
+    },
+}
+
+enum ReadbackStage {
+    Encoded,
+    Submitted(wgpu::SubmissionIndex),
+}
+
+impl FrameInFlight {
+    fn building(
+        generation: u64,
+        encoder: wgpu::CommandEncoder,
+        preview_readback: Option<PendingPreviewReadback>,
+    ) -> Self {
+        let readbacks = preview_readback.map_or_else(Vec::new, |readback| {
+            vec![StagedReadback::Preview {
+                readback,
+                stage: ReadbackStage::Encoded,
+            }]
+        });
+        Self {
+            generation,
+            encoder: EncoderStage::Building(Some(encoder)),
+            readbacks,
+        }
+    }
+
+    fn submitted(
+        generation: u64,
+        submission_index: wgpu::SubmissionIndex,
+        preview_readback: PendingPreviewReadback,
+    ) -> Self {
+        Self {
+            generation,
+            encoder: EncoderStage::Submitted(submission_index.clone()),
+            readbacks: vec![StagedReadback::Preview {
+                readback: preview_readback,
+                stage: ReadbackStage::Submitted(submission_index),
+            }],
+        }
+    }
+
+    fn preview_readback(&self) -> Option<&PendingPreviewReadback> {
+        self.readbacks.first().map(|readback| match readback {
+            StagedReadback::Preview { readback, .. } => readback,
+        })
+    }
+
+    fn preview_submission_index(&self) -> Option<wgpu::SubmissionIndex> {
+        self.readbacks.iter().find_map(|readback| match readback {
+            StagedReadback::Preview {
+                stage: ReadbackStage::Submitted(submission_index),
+                ..
+            } => Some(submission_index.clone()),
+            StagedReadback::Preview {
+                stage: ReadbackStage::Encoded,
+                ..
+            } => None,
+        })
+    }
+
+    fn take_preview_readback(&mut self) -> Option<PendingPreviewReadback> {
+        let index = self
+            .readbacks
+            .iter()
+            .position(|readback| matches!(readback, StagedReadback::Preview { .. }))?;
+        match self.readbacks.remove(index) {
+            StagedReadback::Preview { readback, .. } => Some(readback),
+        }
+    }
+
+    fn submission_index(&self) -> Option<wgpu::SubmissionIndex> {
+        match &self.encoder {
+            EncoderStage::Submitted(submission_index) => Some(submission_index.clone()),
+            EncoderStage::Building(_) | EncoderStage::Superseded => None,
+        }
+    }
+
+    fn is_building(&self) -> bool {
+        matches!(self.encoder, EncoderStage::Building(_))
+    }
+
+    fn take_encoder_for_chaining(&mut self) -> Option<wgpu::CommandEncoder> {
+        match &mut self.encoder {
+            EncoderStage::Building(encoder) => encoder.take(),
+            EncoderStage::Submitted(_) | EncoderStage::Superseded => None,
+        }
+    }
+
+    fn mark_submitted(&mut self, submission_index: wgpu::SubmissionIndex) {
+        debug_assert!(
+            matches!(self.encoder, EncoderStage::Building(None)),
+            "only a consumed building encoder can advance to submitted"
+        );
+        self.encoder = EncoderStage::Submitted(submission_index.clone());
+        for readback in &mut self.readbacks {
+            match readback {
+                StagedReadback::Preview { stage, .. } => {
+                    *stage = ReadbackStage::Submitted(submission_index.clone());
+                }
+            }
+        }
+    }
+
+    fn submit(&mut self, queue: &wgpu::Queue) -> Option<wgpu::SubmissionIndex> {
+        if let Some(submission_index) = self.submission_index() {
+            return Some(submission_index);
+        }
+        let encoder = self.take_encoder_for_chaining()?;
+        let submission_index = queue.submit(Some(encoder.finish()));
+        self.mark_submitted(submission_index.clone());
+        Some(submission_index)
+    }
+
+    fn supersede(mut self, reason: &'static str) -> Option<wgpu::CommandEncoder> {
+        let encoder = self.take_encoder_for_chaining();
+        self.encoder = EncoderStage::Superseded;
+        self.readbacks.clear();
+        tracing::trace!(
+            generation = self.generation,
+            reason,
+            "superseding deferred GPU frame"
+        );
+        encoder
+    }
+
+    #[cfg(test)]
+    fn encoded_preview_for_test() -> Self {
+        Self {
+            generation: 7,
+            encoder: EncoderStage::Building(None),
+            readbacks: vec![StagedReadback::Preview {
+                readback: PendingPreviewReadback::PreviewBuffer {
+                    request: super::PreviewSurfaceRequest {
+                        width: 2,
+                        height: 2,
+                    },
+                    readback_key: None,
+                    cache_as_full_size: false,
+                    slot: 0,
+                },
+                stage: ReadbackStage::Encoded,
+            }],
+        }
+    }
+}
+
+impl Drop for FrameInFlight {
+    fn drop(&mut self) {
+        if cfg!(debug_assertions) && !std::thread::panicking() {
+            debug_assert!(
+                !self.is_building() || self.readbacks.is_empty(),
+                "generation {} dropped with encoded GPU readbacks before submit or supersede",
+                self.generation
+            );
+        }
+    }
 }
 
 struct GpuCompositorSurfaceSet {
@@ -232,9 +405,7 @@ impl GpuSparkleFlinger {
             cached_composition_key: None,
             cached_readback_surface: None,
             cached_preview_surfaces: Vec::with_capacity(MAX_CACHED_PREVIEW_SURFACES),
-            pending_output_submission: None,
-            pending_preview_readback: None,
-            pending_preview_submission: None,
+            frame_in_flight: None,
             pending_preview_map: None,
             ready_preview_surface: None,
             sampling_latch: SamplingReadbackLatch::default(),
@@ -355,34 +526,67 @@ impl GpuSparkleFlinger {
     }
 
     fn flush_pending_output_submission(&mut self) -> Result<()> {
-        if self.pending_preview_readback.is_some() {
+        if self.pending_preview_readback().is_some() {
             return self.submit_pending_preview_work();
         }
-        if let Some(encoder) = self.pending_output_submission.take() {
-            self.queue.submit(Some(encoder.finish()));
+        if let Some(mut frame) = self.frame_in_flight.take() {
+            debug_assert_eq!(frame.generation, self.output_generation);
+            let submission_index = frame.submit(&self.queue);
+            debug_assert!(submission_index.is_some());
             self.clear_pending_upload_buffers();
             self.release_retired_uniform_slots();
         }
         Ok(())
     }
 
-    /// Drops a deferred compose submission without executing it. Encoded
-    /// work referenced by `output_generation` consumers must never be
-    /// silently abandoned; every discard comes through here so the sites
-    /// stay greppable and observable.
-    pub(super) fn discard_pending_output_submission(&mut self, reason: &'static str) {
-        if self.pending_output_submission.take().is_some() {
-            // Happy-path housekeeping that fires at frame cadence while no
-            // preview consumer resolves the deferred encoder; trace keeps
-            // debug-level daemon logs readable.
-            tracing::trace!(reason, "discarding deferred GPU compose submission");
-            self.clear_pending_upload_buffers();
+    pub(super) fn supersede_frame_in_flight(
+        &mut self,
+        reason: &'static str,
+    ) -> Option<wgpu::CommandEncoder> {
+        let frame = self.frame_in_flight.take()?;
+        let encoder = frame.supersede(reason);
+        if encoder.is_some() {
             #[cfg(test)]
             {
                 self.discarded_output_submission_count =
                     self.discarded_output_submission_count.saturating_add(1);
             }
         }
+        encoder
+    }
+
+    fn stage_frame_in_flight(
+        &mut self,
+        encoder: wgpu::CommandEncoder,
+        preview_readback: Option<PendingPreviewReadback>,
+    ) {
+        debug_assert!(
+            self.frame_in_flight.is_none(),
+            "deferred GPU frame must be submitted or superseded before replacement"
+        );
+        self.frame_in_flight = Some(FrameInFlight::building(
+            self.output_generation,
+            encoder,
+            preview_readback,
+        ));
+    }
+
+    fn pending_preview_readback(&self) -> Option<&PendingPreviewReadback> {
+        self.frame_in_flight
+            .as_ref()
+            .and_then(FrameInFlight::preview_readback)
+    }
+
+    pub(super) fn pending_preview_submission(&self) -> Option<wgpu::SubmissionIndex> {
+        self.frame_in_flight
+            .as_ref()
+            .and_then(FrameInFlight::preview_submission_index)
+    }
+
+    pub(super) fn has_pending_output_submission(&self) -> bool {
+        self.frame_in_flight
+            .as_ref()
+            .is_some_and(FrameInFlight::is_building)
     }
 
     pub(super) fn clear_pending_upload_buffers(&mut self) {
@@ -397,7 +601,7 @@ impl GpuSparkleFlinger {
     /// submitted encoder references it. Call sites guarantee no local encoder
     /// is being built; the guard covers the stashed compositor encoder.
     pub(super) fn release_retired_uniform_slots(&mut self) {
-        if self.pending_output_submission.is_none() {
+        if !self.has_pending_output_submission() {
             self.pipeline.release_retired_uniform_slots();
         }
     }

@@ -35,15 +35,15 @@ fn gpu_sampler_arms_preview_map_after_sampling_completion() {
             .expect("GPU zone sampling should succeed")
     );
     assert!(compositor.ready_preview_surface.is_none());
-    assert!(compositor.pending_preview_readback.is_none());
-    assert!(compositor.pending_preview_submission.is_none());
+    assert!(compositor.pending_preview_readback().is_none());
+    assert!(compositor.pending_preview_submission().is_none());
     assert!(compositor.pending_preview_map.is_some());
 
     let preview_surface = resolve_preview_surface_blocking(&mut compositor);
     assert_eq!(preview_surface.width(), 2);
     assert_eq!(preview_surface.height(), 2);
-    assert!(compositor.pending_preview_readback.is_none());
-    assert!(compositor.pending_preview_submission.is_none());
+    assert!(compositor.pending_preview_readback().is_none());
+    assert!(compositor.pending_preview_submission().is_none());
     assert!(compositor.pending_preview_map.is_none());
 }
 
@@ -120,8 +120,8 @@ fn gpu_sampler_preserves_mapped_preview_when_new_sample_submits() {
         _ => panic!("first preview map should still be pending"),
     };
     assert_eq!(mapped_slot, first_slot);
-    assert!(compositor.pending_preview_readback.is_some());
-    assert!(compositor.pending_preview_submission.is_some());
+    assert!(compositor.pending_preview_readback().is_some());
+    assert!(compositor.pending_preview_submission().is_some());
 
     let first_preview = resolve_preview_surface_blocking(&mut compositor);
     assert_eq!(&first_preview.rgba_bytes()[0..4], &[255, 32, 0, 255]);
@@ -165,8 +165,8 @@ fn gpu_zero_sample_plan_keeps_pending_preview_work() {
             .expect("GPU zone sampling should succeed for empty plans")
     );
     assert!(sampled.is_empty());
-    assert!(compositor.pending_preview_readback.is_none());
-    assert!(compositor.pending_preview_submission.is_none());
+    assert!(compositor.pending_preview_readback().is_none());
+    assert!(compositor.pending_preview_submission().is_none());
     assert!(compositor.pending_preview_map.is_some());
 
     let preview_surface = resolve_preview_surface_blocking(&mut compositor);
@@ -564,8 +564,8 @@ fn gpu_cached_sample_hit_preserves_retained_preview_submission() {
         )
         .expect("retained GPU composition should stage a scaled preview");
     assert!(composed.preview_surface.is_none());
-    assert!(compositor.pending_output_submission.is_some());
-    assert!(compositor.pending_preview_readback.is_some());
+    assert!(compositor.has_pending_output_submission());
+    assert!(compositor.pending_preview_readback().is_some());
 
     let mut cached_sample = Vec::new();
     match compositor
@@ -577,8 +577,8 @@ fn gpu_cached_sample_hit_preserves_retained_preview_submission() {
     }
 
     assert_eq!(cached_sample, first_sample);
-    assert!(compositor.pending_output_submission.is_some());
-    assert!(compositor.pending_preview_readback.is_some());
+    assert!(compositor.has_pending_output_submission());
+    assert!(compositor.pending_preview_readback().is_some());
 
     compositor
         .submit_pending_preview_work()

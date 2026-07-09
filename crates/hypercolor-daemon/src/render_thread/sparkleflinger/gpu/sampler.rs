@@ -6,7 +6,7 @@ use crate::render_thread::sparkleflinger::gpu_sampling::{
     GpuSampleSource, GpuSamplingPlan, GpuSamplingPlanKey, PendingGpuSampleReadback,
 };
 
-use super::{GpuCompositorOutputSurface, GpuSparkleFlinger};
+use super::{FrameInFlight, GpuCompositorOutputSurface, GpuSparkleFlinger};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct CachedSampleResultKey {
@@ -84,9 +84,20 @@ impl GpuSparkleFlinger {
             };
             (source, source_view, surfaces.width, surfaces.height)
         };
-        let pending_output_submission = self.pending_output_submission.take();
-        let pending_preview_readback = self.pending_preview_readback.take();
-        let sampling_dispatch = self.spatial_sampler.sample_texture_into(
+        let mut frame_in_flight = self.frame_in_flight.take();
+        if let Some(frame) = frame_in_flight.as_ref() {
+            debug_assert_eq!(frame.generation, self.output_generation);
+        }
+        let pending_output_submission = frame_in_flight
+            .as_mut()
+            .and_then(FrameInFlight::take_encoder_for_chaining);
+        let pending_preview_generation = frame_in_flight
+            .as_ref()
+            .map_or(self.output_generation, |frame| frame.generation);
+        let previous_submission = frame_in_flight
+            .as_ref()
+            .and_then(FrameInFlight::submission_index);
+        let sampling_dispatch = match self.spatial_sampler.sample_texture_into(
             &self.device,
             &self.queue,
             source,
@@ -96,22 +107,39 @@ impl GpuSparkleFlinger {
             prepared_zones,
             zones,
             pending_output_submission,
-        )?;
-        if let Some(pending_preview_readback) = pending_preview_readback {
-            if let Some(submission_index) = sampling_dispatch.submission_index.clone() {
+        ) {
+            Ok(dispatch) => dispatch,
+            Err(error) => {
+                if let Some(frame) = frame_in_flight.take() {
+                    drop(frame.supersede("GPU sampling dispatch failed"));
+                }
+                return Err(error);
+            }
+        };
+        if let Some(submission_index) = sampling_dispatch
+            .submission_index
+            .clone()
+            .or(previous_submission)
+        {
+            if let Some(pending_preview_readback) = frame_in_flight
+                .as_mut()
+                .and_then(FrameInFlight::take_preview_readback)
+            {
                 if self.pending_preview_map.is_some() {
-                    self.pending_preview_readback = Some(pending_preview_readback);
-                    self.pending_preview_submission = Some(submission_index);
+                    self.frame_in_flight = Some(FrameInFlight::submitted(
+                        pending_preview_generation,
+                        submission_index,
+                        pending_preview_readback,
+                    ));
                 } else {
                     self.begin_pending_preview_map(
                         pending_preview_readback,
                         Some(submission_index),
                     )?;
-                    self.pending_preview_submission = None;
                 }
-            } else {
-                self.pending_preview_readback = Some(pending_preview_readback);
             }
+        } else if let Some(frame) = frame_in_flight.take() {
+            drop(frame.supersede("GPU sampling dispatch produced no submission"));
         }
         if sampling_dispatch.queue_saturated {
             return Ok(GpuZoneSamplingDispatch::Saturated);

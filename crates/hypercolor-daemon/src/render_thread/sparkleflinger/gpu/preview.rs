@@ -134,23 +134,21 @@ impl GpuSparkleFlinger {
             if let Some(surface) = self.try_finish_pending_preview_map()? {
                 return Ok(Some(surface));
             }
-            if let Some(submission_index) = self.pending_preview_submission.clone()
-                && self.preview_submission_ready(submission_index)?
-            {
-                self.pending_preview_submission = None;
-            }
             return Ok(None);
         }
 
-        if self.pending_preview_submission.is_some() || self.pending_preview_readback.is_some() {
-            let Some(submission_index) = self.pending_preview_submission.take() else {
+        if self.pending_preview_readback().is_some() {
+            let Some(submission_index) = self.pending_preview_submission() else {
                 return Ok(None);
             };
             if !self.preview_submission_ready(submission_index.clone())? {
-                self.pending_preview_submission = Some(submission_index);
                 return Ok(None);
             }
-            let Some(pending_preview_readback) = self.pending_preview_readback.take() else {
+            let mut frame = self
+                .frame_in_flight
+                .take()
+                .expect("submitted preview frame should remain staged until mapping begins");
+            let Some(pending_preview_readback) = frame.take_preview_readback() else {
                 return Ok(None);
             };
             if self.pending_preview_map.is_some() {
@@ -167,39 +165,37 @@ impl GpuSparkleFlinger {
     }
 
     pub(crate) fn submit_pending_preview_work(&mut self) -> Result<()> {
-        if self.pending_preview_submission.is_some() || self.pending_preview_readback.is_none() {
+        if self.pending_preview_readback().is_none() {
             return Ok(());
         }
-        let Some(encoder) = self.pending_output_submission.take() else {
-            return Ok(());
-        };
-        let submission_index = self.queue.submit(Some(encoder.finish()));
-        self.clear_pending_upload_buffers();
-        self.release_retired_uniform_slots();
+        let (frame_in_flight, queue) = (&mut self.frame_in_flight, &self.queue);
+        let submitted = frame_in_flight
+            .as_mut()
+            .and_then(|frame| frame.submit(queue))
+            .is_some();
+        if submitted {
+            self.clear_pending_upload_buffers();
+            self.release_retired_uniform_slots();
+        }
         if self.pending_preview_map.is_some() {
-            self.pending_preview_submission = Some(submission_index);
             return Ok(());
         }
-        let pending_preview_readback = self
-            .pending_preview_readback
+        let mut frame = self
+            .frame_in_flight
             .take()
+            .expect("pending preview readback should have a frame owner");
+        let submission_index = frame
+            .submission_index()
+            .context("pending preview frame should be submitted before mapping")?;
+        let pending_preview_readback = frame
+            .take_preview_readback()
             .expect("pending preview readback should exist before GPU preview submit");
         self.begin_pending_preview_map(pending_preview_readback, Some(submission_index))?;
-        self.pending_preview_submission = None;
         Ok(())
     }
 
-    pub(super) fn discard_ready_and_pending_preview_surface(&mut self) {
-        self.pending_preview_readback = None;
-        self.pending_preview_submission = None;
-        self.discard_pending_preview_map();
-        self.ready_preview_surface = None;
-    }
-
     pub(super) fn clear_superseded_preview_outputs(&mut self) {
-        self.discard_pending_output_submission("preview outputs superseded");
-        self.pending_preview_readback = None;
-        self.pending_preview_submission = None;
+        drop(self.supersede_frame_in_flight("preview outputs superseded"));
         self.ready_preview_surface = None;
         self.clear_pending_upload_buffers();
     }
@@ -315,8 +311,7 @@ impl GpuSparkleFlinger {
         self.ready_preview_surface.as_ref().is_some_and(|surface| {
             surface.width() == request.width && surface.height() == request.height
         }) || self
-            .pending_preview_readback
-            .as_ref()
+            .pending_preview_readback()
             .is_some_and(|pending| pending.matches_request(request))
             || self
                 .pending_preview_map
@@ -395,7 +390,11 @@ impl GpuSparkleFlinger {
                 request,
             })
         {
-            self.discard_pending_output_submission("cached preview served instead");
+            if let Some(encoder) = encoder {
+                self.stage_frame_in_flight(encoder, None);
+            }
+            drop(self.supersede_frame_in_flight("cached preview served instead"));
+            self.clear_pending_upload_buffers();
             return Ok(gpu_composed_with_preview_surface(cached));
         }
 
@@ -511,14 +510,15 @@ impl GpuSparkleFlinger {
                 u64::from(preview_surfaces.padded_bytes_per_row) * u64::from(request.height),
             );
         }
-        self.pending_output_submission = Some(encoder);
-        self.pending_preview_readback = Some(PendingPreviewReadback::PreviewBuffer {
-            request,
-            readback_key,
-            cache_as_full_size,
-            slot: readback_slot,
-        });
-        self.pending_preview_submission = None;
+        self.stage_frame_in_flight(
+            encoder,
+            Some(PendingPreviewReadback::PreviewBuffer {
+                request,
+                readback_key,
+                cache_as_full_size,
+                slot: readback_slot,
+            }),
+        );
         Ok(gpu_composed_without_surfaces())
     }
 

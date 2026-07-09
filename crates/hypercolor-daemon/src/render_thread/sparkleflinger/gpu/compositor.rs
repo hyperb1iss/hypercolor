@@ -193,11 +193,13 @@ impl GpuSparkleFlinger {
             {
                 return Ok(gpu_composed_without_surfaces());
             }
-            let pending_output_submission = self.pending_output_submission.take();
+            let pending_output_submission =
+                self.supersede_frame_in_flight("current output readback restaged");
             if preview_surface_request.is_some() && !requires_cpu_sampling_canvas {
-                self.clear_superseded_preview_outputs();
+                self.ready_preview_surface = None;
             } else {
-                self.discard_ready_and_pending_preview_surface();
+                self.discard_pending_preview_map();
+                self.ready_preview_surface = None;
             }
             return self.read_back_current_output_surface(
                 plan.width,
@@ -294,7 +296,7 @@ impl GpuSparkleFlinger {
         self.output_generation = self.output_generation.saturating_add(1);
         self.cached_sample_result = None;
         if !requires_cpu_sampling_canvas && !requires_preview_surface {
-            self.pending_output_submission = Some(encoder);
+            self.stage_frame_in_flight(encoder, None);
             return Ok(gpu_composed_without_surfaces());
         }
 
@@ -337,6 +339,7 @@ impl GpuSparkleFlinger {
 
         self.discard_pending_preview_map();
         self.clear_sampling_readback_latch();
+        drop(self.supersede_frame_in_flight("compositor surfaces resized"));
         self.surfaces = Some(GpuCompositorSurfaceSet::new(
             &self.device,
             &self.pipeline,
@@ -348,9 +351,6 @@ impl GpuSparkleFlinger {
         self.cached_composition_key = None;
         self.cached_readback_surface = None;
         self.cached_preview_surfaces.clear();
-        self.discard_pending_output_submission("compositor surfaces resized");
-        self.pending_preview_readback = None;
-        self.pending_preview_submission = None;
         self.pending_preview_map = None;
         self.ready_preview_surface = None;
         self.cached_sample_result = None;
@@ -513,7 +513,7 @@ impl GpuSparkleFlinger {
             // sampler through the one-frame readback latch.
             if readback_key.is_some() {
                 if let Some(encoder) = encoder {
-                    self.pending_output_submission = Some(encoder);
+                    self.stage_frame_in_flight(encoder, None);
                 }
                 return Ok(gpu_composed_without_surfaces());
             }
@@ -535,7 +535,7 @@ impl GpuSparkleFlinger {
             );
         }
         if let Some(encoder) = encoder {
-            self.pending_output_submission = Some(encoder);
+            self.stage_frame_in_flight(encoder, None);
         }
         Ok(gpu_composed_without_surfaces())
     }
@@ -662,13 +662,17 @@ impl GpuSparkleFlinger {
         // A staged preview readback shares the deferred-submission slot.
         // Route it through the preview machinery first so its buffer map
         // still begins before this path claims the queue.
-        if self.pending_preview_readback.is_some()
-            && self.pending_output_submission.is_some()
+        if self.pending_preview_readback().is_some()
+            && self.has_pending_output_submission()
             && let Err(error) = self.submit_pending_preview_work()
         {
             tracing::debug!(%error, "GPU preview submit ahead of sampling readback failed");
         }
-        let encoder = match (encoder, self.pending_output_submission.take()) {
+        let stashed = self
+            .has_pending_output_submission()
+            .then(|| self.supersede_frame_in_flight("sampling readback chained"))
+            .flatten();
+        let encoder = match (encoder, stashed) {
             (Some(encoder), Some(stashed)) => {
                 // Submit the stashed encoder first so its work stays ordered
                 // ahead of the compose encoder we are extending.

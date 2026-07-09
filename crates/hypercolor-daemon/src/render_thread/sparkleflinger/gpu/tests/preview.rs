@@ -46,8 +46,8 @@ fn gpu_scaled_preview_reuses_cached_surface_across_size_flips() {
         .expect("cached large scaled preview should be returned immediately");
     assert_eq!(preview_surface.width(), 3);
     assert_eq!(preview_surface.height(), 3);
-    assert!(compositor.pending_preview_readback.is_none());
-    assert!(compositor.pending_output_submission.is_none());
+    assert!(compositor.pending_preview_readback().is_none());
+    assert!(!compositor.has_pending_output_submission());
     assert!(compositor.cached_preview_surfaces.len() >= 2);
 }
 
@@ -77,20 +77,26 @@ fn gpu_preview_work_can_submit_before_finalize() {
         )
         .expect("GPU composition should stage a scaled preview surface");
     assert!(composed.preview_surface.is_none());
-    assert!(compositor.pending_preview_submission.is_none());
+    assert!(compositor.pending_preview_submission().is_none());
+    let staged = compositor
+        .frame_in_flight
+        .as_ref()
+        .expect("preview compose should own one staged frame");
+    assert_eq!(staged.generation, compositor.output_generation);
+    assert!(staged.is_building());
 
     compositor
         .submit_pending_preview_work()
         .expect("GPU preview submit should succeed");
-    assert!(compositor.pending_preview_submission.is_none());
-    assert!(compositor.pending_preview_readback.is_none());
+    assert!(compositor.pending_preview_submission().is_none());
+    assert!(compositor.pending_preview_readback().is_none());
     assert!(compositor.pending_preview_map.is_some());
-    assert!(compositor.pending_output_submission.is_none());
+    assert!(!compositor.has_pending_output_submission());
 
     let preview_surface = resolve_preview_surface_blocking(&mut compositor);
     assert_eq!(preview_surface.width(), 2);
     assert_eq!(preview_surface.height(), 2);
-    assert!(compositor.pending_preview_submission.is_none());
+    assert!(compositor.pending_preview_submission().is_none());
 }
 
 #[test]
@@ -125,10 +131,10 @@ fn gpu_active_preview_map_is_reused_on_identical_compose() {
         .compose(&plan, false, Some(request))
         .expect("identical compose should reuse the pending preview map");
     assert!(composed.preview_surface.is_none());
-    assert!(compositor.pending_preview_submission.is_none());
-    assert!(compositor.pending_preview_readback.is_none());
+    assert!(compositor.pending_preview_submission().is_none());
+    assert!(compositor.pending_preview_readback().is_none());
     assert!(compositor.pending_preview_map.is_some());
-    assert!(compositor.pending_output_submission.is_none());
+    assert!(!compositor.has_pending_output_submission());
 
     let preview_surface = resolve_preview_surface_blocking(&mut compositor);
     assert_eq!(preview_surface.width(), 2);
@@ -168,8 +174,8 @@ fn gpu_preview_finalize_can_defer_without_blocking() {
     let preview_surface = resolve_preview_surface_blocking(&mut compositor);
     assert_eq!(preview_surface.width(), 2);
     assert_eq!(preview_surface.height(), 2);
-    assert!(compositor.pending_preview_submission.is_none());
-    assert!(compositor.pending_preview_readback.is_none());
+    assert!(compositor.pending_preview_submission().is_none());
+    assert!(compositor.pending_preview_readback().is_none());
     assert!(compositor.pending_preview_map.is_none());
 }
 
@@ -206,10 +212,10 @@ fn gpu_matching_pending_preview_map_is_reused_on_identical_compose() {
         .compose(&plan, false, Some(request))
         .expect("identical compose should reuse the pending preview map");
     assert!(composed.preview_surface.is_none());
-    assert!(compositor.pending_preview_submission.is_none());
-    assert!(compositor.pending_preview_readback.is_none());
+    assert!(compositor.pending_preview_submission().is_none());
+    assert!(compositor.pending_preview_readback().is_none());
     assert!(compositor.pending_preview_map.is_some());
-    assert!(compositor.pending_output_submission.is_none());
+    assert!(!compositor.has_pending_output_submission());
 
     let preview_surface = resolve_preview_surface_blocking(&mut compositor);
     assert_eq!(preview_surface.width(), 2);
@@ -253,7 +259,7 @@ fn gpu_deferred_preview_queues_next_compose_after_pending_map() {
         .compose(&second_plan, false, Some(request))
         .expect("second compose should queue behind the first deferred preview");
     assert!(compositor.ready_preview_surface.is_none());
-    assert!(compositor.pending_preview_readback.is_some());
+    assert!(compositor.pending_preview_readback().is_some());
 
     let first_preview = resolve_preview_surface_blocking(&mut compositor);
     assert_eq!(&first_preview.rgba_bytes()[0..4], &[255, 32, 0, 255]);
@@ -312,7 +318,7 @@ fn gpu_fresh_preview_restage_uses_alternate_readback_slot() {
     compositor
         .compose(&second_plan, false, Some(request))
         .expect("second compose should stage a newer preview surface");
-    let second_slot = match compositor.pending_preview_readback.as_ref() {
+    let second_slot = match compositor.pending_preview_readback() {
         Some(PendingPreviewReadback::PreviewBuffer { slot, .. }) => *slot,
         _ => panic!("second preview should keep a staged preview-buffer readback"),
     };
@@ -321,8 +327,8 @@ fn gpu_fresh_preview_restage_uses_alternate_readback_slot() {
     compositor
         .submit_pending_preview_work()
         .expect("second preview submit should succeed");
-    assert!(compositor.pending_preview_submission.is_some());
-    assert!(compositor.pending_preview_readback.is_some());
+    assert!(compositor.pending_preview_submission().is_some());
+    assert!(compositor.pending_preview_readback().is_some());
 
     let mapped_slot = match compositor.pending_preview_map.as_ref() {
         Some(PendingPreviewMap {
@@ -339,8 +345,8 @@ fn gpu_fresh_preview_restage_uses_alternate_readback_slot() {
     let second_preview = resolve_preview_surface_blocking(&mut compositor);
     assert_eq!(&second_preview.rgba_bytes()[0..4], &[32, 64, 255, 255]);
     assert!(compositor.pending_preview_map.is_none());
-    assert!(compositor.pending_preview_readback.is_none());
-    assert!(compositor.pending_preview_submission.is_none());
+    assert!(compositor.pending_preview_readback().is_none());
+    assert!(compositor.pending_preview_submission().is_none());
 }
 
 #[test]
@@ -424,20 +430,23 @@ fn gpu_discard_superseded_preview_work_clears_preview_state() {
         Err(_) => return,
     };
 
-    compositor.pending_output_submission = Some(compositor.device.create_command_encoder(
-        &wgpu::CommandEncoderDescriptor {
+    let encoder = compositor
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("stale cached preview test"),
-        },
-    ));
-    compositor.pending_preview_readback = Some(PendingPreviewReadback::PreviewBuffer {
-        request: PreviewSurfaceRequest {
-            width: 2,
-            height: 2,
-        },
-        readback_key: None,
-        cache_as_full_size: false,
-        slot: 0,
-    });
+        });
+    compositor.stage_frame_in_flight(
+        encoder,
+        Some(PendingPreviewReadback::PreviewBuffer {
+            request: PreviewSurfaceRequest {
+                width: 2,
+                height: 2,
+            },
+            readback_key: None,
+            cache_as_full_size: false,
+            slot: 0,
+        }),
+    );
     let (_sender, receiver) = mpsc::channel::<std::result::Result<(), wgpu::BufferAsyncError>>();
     compositor.pending_preview_map = Some(PendingPreviewMap {
         readback: PendingPreviewReadback::PreviewBuffer {
@@ -461,9 +470,10 @@ fn gpu_discard_superseded_preview_work_clears_preview_state() {
 
     compositor.discard_superseded_preview_work();
 
-    assert!(compositor.pending_output_submission.is_none());
-    assert!(compositor.pending_preview_readback.is_none());
-    assert!(compositor.pending_preview_submission.is_none());
+    assert!(!compositor.has_pending_output_submission());
+    assert!(compositor.pending_preview_readback().is_none());
+    assert!(compositor.pending_preview_submission().is_none());
     assert!(compositor.pending_preview_map.is_none());
     assert!(compositor.ready_preview_surface.is_none());
+    assert_eq!(compositor.discarded_output_submission_count, 1);
 }
