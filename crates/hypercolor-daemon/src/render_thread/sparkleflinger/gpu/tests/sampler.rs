@@ -829,6 +829,104 @@ fn gpu_sampler_rotates_readback_slots_for_overlapped_dispatches() {
 }
 
 #[test]
+fn gpu_sampler_keeps_new_generation_slot_leased_after_retired_readback_finishes() {
+    let mut compositor = match GpuSparkleFlinger::new() {
+        Ok(compositor) => compositor,
+        Err(_) => return,
+    };
+    let old_engine = SpatialEngine::new(sampling_layout_with_led_count(SamplingMode::Bilinear, 4));
+    let grown_engine =
+        SpatialEngine::new(sampling_layout_with_led_count(SamplingMode::Bilinear, 16));
+    let second_engine =
+        SpatialEngine::new(sampling_layout_with_led_count(SamplingMode::Nearest, 8));
+    let third_engine = SpatialEngine::new(sampling_layout_with_led_count(
+        SamplingMode::AreaAverage {
+            radius_x: 1.0,
+            radius_y: 1.0,
+        },
+        12,
+    ));
+    let saturated_engine =
+        SpatialEngine::new(sampling_layout_with_led_count(SamplingMode::Nearest, 6));
+    let plan = CompositionPlan::with_layers(
+        4,
+        4,
+        vec![
+            CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(12))),
+            CompositionLayer::alpha(ProducerFrame::Canvas(patterned_canvas(96)), 0.35),
+        ],
+    );
+
+    compositor
+        .compose(&plan, false, None)
+        .expect("GPU composition should succeed before readback generation testing");
+
+    let old_pending = match compositor
+        .begin_sample_zone_plan_into(old_engine.sampling_plan().as_ref(), &mut Vec::new())
+        .expect("old-generation sample dispatch should succeed")
+    {
+        GpuZoneSamplingDispatch::Pending(pending) => pending,
+        _ => panic!("old-generation sample dispatch should defer readback completion"),
+    };
+    let grown_pending = match compositor
+        .begin_sample_zone_plan_into(grown_engine.sampling_plan().as_ref(), &mut Vec::new())
+        .expect("grown-generation sample dispatch should succeed")
+    {
+        GpuZoneSamplingDispatch::Pending(pending) => pending,
+        _ => panic!("grown-generation sample dispatch should defer readback completion"),
+    };
+
+    assert_eq!(old_pending.pending_readback.readback_slot(), 0);
+    assert_eq!(grown_pending.pending_readback.readback_slot(), 0);
+    assert_ne!(
+        old_pending.pending_readback.readback_generation(),
+        grown_pending.pending_readback.readback_generation()
+    );
+
+    compositor
+        .finish_pending_zone_sampling(old_pending, &mut Vec::new())
+        .expect("retired old-generation readback should finish without releasing the new lease");
+
+    let second_pending = match compositor
+        .begin_sample_zone_plan_into(second_engine.sampling_plan().as_ref(), &mut Vec::new())
+        .expect("second current-generation dispatch should succeed")
+    {
+        GpuZoneSamplingDispatch::Pending(pending) => pending,
+        _ => panic!("second current-generation dispatch should defer readback completion"),
+    };
+    let third_pending = match compositor
+        .begin_sample_zone_plan_into(third_engine.sampling_plan().as_ref(), &mut Vec::new())
+        .expect("third current-generation dispatch should succeed")
+    {
+        GpuZoneSamplingDispatch::Pending(pending) => pending,
+        _ => panic!("third current-generation dispatch should defer readback completion"),
+    };
+
+    assert!(
+        matches!(
+            compositor
+                .begin_sample_zone_plan_into(
+                    saturated_engine.sampling_plan().as_ref(),
+                    &mut Vec::new()
+                )
+                .expect("saturated current-generation dispatch should stay non-fatal"),
+            GpuZoneSamplingDispatch::Saturated
+        ),
+        "retired completion must not make the overlapping current-generation slot reusable"
+    );
+
+    compositor
+        .finish_pending_zone_sampling(grown_pending, &mut Vec::new())
+        .expect("grown-generation sample should finish");
+    compositor
+        .finish_pending_zone_sampling(second_pending, &mut Vec::new())
+        .expect("second current-generation sample should finish");
+    compositor
+        .finish_pending_zone_sampling(third_pending, &mut Vec::new())
+        .expect("third current-generation sample should finish");
+}
+
+#[test]
 fn gpu_sampler_refuses_a_fourth_overlapped_readback_until_a_slot_is_released() {
     let mut compositor = match GpuSparkleFlinger::new() {
         Ok(compositor) => compositor,
