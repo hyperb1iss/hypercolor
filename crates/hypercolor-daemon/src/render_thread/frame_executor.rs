@@ -77,6 +77,7 @@ pub(crate) async fn execute_frame(
     let frame_start = Instant::now();
     let frame_tick = frame_loop.clock.advance(frame_start);
     let delta_secs = frame_tick.delta_secs;
+    let frame_interval = frame_tick.frame_interval;
     let frame_interval_us = frame_tick.frame_interval_us;
     let wake_late_us = micros_u32(frame_start.saturating_duration_since(scheduled_start));
     let reused_inputs = matches!(
@@ -237,7 +238,7 @@ pub(crate) async fn execute_frame(
         publish_screen_canvas_preview: screen_canvas_preview_due,
         skip_decision,
         inputs,
-        delta_secs,
+        frame_delta: frame_interval,
     })
     .await;
     let render_us = render_stage.total_us;
@@ -414,7 +415,7 @@ pub(crate) async fn execute_frame(
         state,
         inputs.screen_data.as_ref(),
         frame_num_u32,
-        scene_snapshot.elapsed_ms,
+        u64_to_u32(scene_snapshot.elapsed_ms),
     );
     let publish_stats = publish_frame_updates(
         state,
@@ -622,7 +623,7 @@ async fn force_static_sleep_snapshot(
         .borrow()
         .frame_number
         .saturating_add(1);
-    let elapsed_ms = scene_snapshot.elapsed_ms;
+    let elapsed_ms = u64_to_u32(scene_snapshot.elapsed_ms);
     let canvas_frame = CanvasFrame::from_canvas(&canvas, frame_number, elapsed_ms);
     let group_frame = DisplayGroupFrame::Canvas(canvas_frame.clone());
     let (_, display_group_targets) = state.event_bus.display_group_targets_snapshot();

@@ -15,7 +15,7 @@ impl ZoneRuntime {
     pub(super) fn reuse_retained_direct_group_frame(
         &self,
         group: &Zone,
-        elapsed_ms: u32,
+        elapsed_ms: u64,
         display_group_target_fps: &HashMap<ZoneId, u32>,
         dependency_key: SceneDependencyKey,
     ) -> Option<PendingGroupCanvasFrame> {
@@ -39,7 +39,7 @@ impl ZoneRuntime {
     pub(super) fn retain_direct_group_frame(
         &mut self,
         group_id: ZoneId,
-        elapsed_ms: u32,
+        elapsed_ms: u64,
         dependency_key: SceneDependencyKey,
         frame: &PendingGroupCanvasFrame,
     ) {
@@ -78,7 +78,7 @@ impl ZoneRuntime {
     pub(crate) fn reuse_retained_materialized_group_frame(
         &self,
         group_id: ZoneId,
-        elapsed_ms: u32,
+        elapsed_ms: u64,
         target_fps: Option<u32>,
         dependency_key: SceneDependencyKey,
         display_target: &DisplayFaceTarget,
@@ -129,7 +129,7 @@ impl ZoneRuntime {
     pub(crate) fn retain_materialized_group_frame(
         &mut self,
         group_id: ZoneId,
-        elapsed_ms: u32,
+        elapsed_ms: u64,
         dependency_key: SceneDependencyKey,
         display_target: &DisplayFaceTarget,
         display_route: &DisplayGroupOutputRoute,
@@ -154,6 +154,6 @@ impl ZoneRuntime {
     }
 }
 
-fn display_frame_interval_ms(target_fps: u32) -> u32 {
-    (1000 / target_fps.max(1)).max(1)
+fn display_frame_interval_ms(target_fps: u32) -> u64 {
+    (1000 / u64::from(target_fps.max(1))).max(1)
 }

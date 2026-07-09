@@ -227,7 +227,7 @@ impl ZoneRuntime {
         asset_id: AssetId,
         layer_id: SceneLayerId,
         playback: &MediaPlayback,
-        elapsed_ms: u32,
+        elapsed_ms: u64,
         sparkleflinger: &mut SparkleFlinger,
     ) -> MediaLayerFrame {
         let Some(asset_library) = &self.asset_library else {

@@ -393,9 +393,9 @@ fn micros_between(start: Instant, end: Instant) -> u32 {
     micros_u32(end.saturating_duration_since(start))
 }
 
-/// Saturating conversion from `Duration` milliseconds to `u32`.
-fn millis_u32(d: Duration) -> u32 {
-    u32::try_from(d.as_millis()).unwrap_or(u32::MAX)
+/// Saturating conversion from `Duration` milliseconds to `u64`.
+fn millis_u64(d: Duration) -> u64 {
+    u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
 }
 
 /// Saturating conversion from `u64` to `u32`.
@@ -428,8 +428,8 @@ mod tests {
     use hypercolor_core::types::event::ZoneColors;
 
     use super::frame_policy::SkipDecision;
-    use super::micros_u32;
     use super::screen_canvas::{parse_sector_zone_id, screen_data_to_surface};
+    use super::{micros_u32, millis_u64};
 
     fn frame_stats(
         budget_exceeded: bool,
@@ -474,6 +474,13 @@ mod tests {
     fn micros_u32_saturates_large_duration() {
         let very_large = Duration::from_secs(u64::MAX);
         assert_eq!(micros_u32(very_large), u32::MAX);
+    }
+
+    #[test]
+    fn millis_u64_preserves_elapsed_time_beyond_u32_range() {
+        let elapsed = Duration::from_millis(u64::from(u32::MAX) + 1);
+
+        assert_eq!(millis_u64(elapsed), u64::from(u32::MAX) + 1);
     }
 
     #[test]

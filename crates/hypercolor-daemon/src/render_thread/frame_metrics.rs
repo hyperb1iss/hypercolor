@@ -2,6 +2,7 @@ use super::frame_io::PublishFrameStats;
 use super::frame_policy::FrameAdmissionSample;
 use super::pipeline_runtime::RenderSurfaceSnapshot;
 use super::scene_snapshot::FrameSceneSnapshot;
+use super::u64_to_u32;
 use crate::performance::{
     CompositorBackendKind, FrameTimeline, FullFrameCopyMetrics, LatestFrameMetrics,
     OutputFrameSourceKind,
@@ -157,7 +158,7 @@ pub(crate) fn build_active_frame_metrics(input: ActiveFrameMetricsInput<'_>) -> 
         .saturating_add(publication_full_frame_copy.bytes);
 
     LatestFrameMetrics {
-        timestamp_ms: scene_snapshot.elapsed_ms,
+        timestamp_ms: u64_to_u32(scene_snapshot.elapsed_ms),
         input_us,
         producer_us,
         producer_render_us,
@@ -271,7 +272,7 @@ pub(crate) fn build_throttle_frame_metrics(
         publish_done_us,
     } = input;
     LatestFrameMetrics {
-        timestamp_ms: scene_snapshot.elapsed_ms,
+        timestamp_ms: u64_to_u32(scene_snapshot.elapsed_ms),
         input_us: 0,
         producer_us: 0,
         producer_render_us: 0,

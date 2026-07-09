@@ -13,7 +13,7 @@ use crate::performance::FullFrameCopyMetrics;
 use super::pipeline_runtime::PublicationCadenceState;
 use super::producer_queue::ProducerFrame;
 use super::render_groups::GroupCanvasFrame;
-use super::{RenderThreadState, micros_u32, usize_to_u32};
+use super::{RenderThreadState, micros_u32, u64_to_u32, usize_to_u32};
 
 pub(crate) struct PublishFrameStats {
     pub(crate) elapsed_us: u32,
@@ -75,7 +75,7 @@ pub(crate) struct FramePublicationRequest<'a> {
     pub(crate) zone_canvases: &'a [(ZoneId, ProducerFrame)],
     pub(crate) active_group_canvas_ids: &'a [ZoneId],
     pub(crate) frame_number: u32,
-    pub(crate) elapsed_ms: u32,
+    pub(crate) elapsed_ms: u64,
     pub(crate) reuse_existing_frame: bool,
     pub(crate) refresh_existing_frame_metadata: bool,
     pub(crate) timing: FrameTiming,
@@ -129,6 +129,7 @@ pub(crate) fn publish_frame_updates(
         refresh_existing_frame_metadata,
         timing,
     } = request;
+    let timestamp_ms = u64_to_u32(elapsed_ms);
     let publish_start = Instant::now();
     let event_subscribers = state.event_bus.subscriber_count();
     let spectrum_receivers = state.event_bus.spectrum_receiver_count();
@@ -142,7 +143,7 @@ pub(crate) fn publish_frame_updates(
         state.event_bus.frame_sender(),
         recycled_frame,
         frame_number,
-        elapsed_ms,
+        timestamp_ms,
         reuse_existing_frame,
         refresh_existing_frame_metadata,
     );
@@ -152,7 +153,7 @@ pub(crate) fn publish_frame_updates(
             .event_bus
             .spectrum_sender()
             .send_modify(|published_spectrum| {
-                update_spectrum_from_audio(published_spectrum, audio, audio_signal, elapsed_ms);
+                update_spectrum_from_audio(published_spectrum, audio, audio_signal, timestamp_ms);
             });
     }
     maybe_publish_audio_level_event(
@@ -182,7 +183,7 @@ pub(crate) fn publish_frame_updates(
         };
         let frame = group_canvas
             .frame
-            .with_frame_metadata(frame_number, elapsed_ms);
+            .with_frame_metadata(frame_number, timestamp_ms);
         let publish_group_canvas = {
             let current = sender.borrow();
             should_publish_display_group_frame(&current, &frame)
@@ -195,10 +196,10 @@ pub(crate) fn publish_frame_updates(
     let preview_start = Instant::now();
     state
         .preview_runtime
-        .note_scene_canvas_frame(frame_number, elapsed_ms);
+        .note_scene_canvas_frame(frame_number, timestamp_ms);
     state
         .preview_runtime
-        .note_zone_preview_frame(frame_number, elapsed_ms);
+        .note_zone_preview_frame(frame_number, timestamp_ms);
     publish_zone_previews(
         state,
         publication_cadence,
@@ -207,6 +208,7 @@ pub(crate) fn publish_frame_updates(
         zone_canvases,
         frame_number,
         elapsed_ms,
+        timestamp_ms,
     );
     let scene_canvas_receivers = state.scene_canvas_receiver_count();
     if scene_canvas_receivers > 0 {
@@ -233,7 +235,7 @@ pub(crate) fn publish_frame_updates(
                 CanvasFrame::from_surface(
                     surface
                         .clone()
-                        .with_frame_metadata(frame_number, elapsed_ms),
+                        .with_frame_metadata(frame_number, timestamp_ms),
                 )
             } else {
                 CanvasFrame::empty()
@@ -241,7 +243,7 @@ pub(crate) fn publish_frame_updates(
             publication_cadence.record_scene_canvas_publication(elapsed_ms);
             state
                 .preview_runtime
-                .record_scene_canvas_publication(frame_number, elapsed_ms);
+                .record_scene_canvas_publication(frame_number, timestamp_ms);
             let _ = state.event_bus.scene_canvas_sender().send(scene_frame);
         }
     }
@@ -253,7 +255,7 @@ pub(crate) fn publish_frame_updates(
     };
     state
         .preview_runtime
-        .note_canvas_frame(frame_number, elapsed_ms);
+        .note_canvas_frame(frame_number, timestamp_ms);
     let canvas_receivers = state.preview_canvas_receiver_count();
     if canvas_receivers > 0 {
         let tracked_canvas_receivers = state.preview_runtime.tracked_canvas_receiver_count();
@@ -282,11 +284,14 @@ pub(crate) fn publish_frame_updates(
                 .take()
                 .or_else(|| surfaces.frame_surface.take())
             {
-                CanvasFrame::from_surface(surface.with_frame_metadata(frame_number, elapsed_ms))
+                CanvasFrame::from_surface(surface.with_frame_metadata(frame_number, timestamp_ms))
             } else if let Some(canvas) = surfaces.canvas.take() {
                 let canvas_rgba_len = usize_to_u32(canvas.rgba_len());
-                let (frame, copied) =
-                    CanvasFrame::from_owned_canvas_with_copy_info(canvas, frame_number, elapsed_ms);
+                let (frame, copied) = CanvasFrame::from_owned_canvas_with_copy_info(
+                    canvas,
+                    frame_number,
+                    timestamp_ms,
+                );
                 if copied {
                     publication_full_frame_copy.record(canvas_rgba_len, "owned_canvas_publication");
                 }
@@ -297,13 +302,13 @@ pub(crate) fn publish_frame_updates(
             publication_cadence.record_canvas_publication(elapsed_ms);
             state
                 .preview_runtime
-                .record_canvas_publication(frame_number, elapsed_ms);
+                .record_canvas_publication(frame_number, timestamp_ms);
             let _ = state.event_bus.canvas_sender().send(canvas_frame);
         }
     }
     state
         .preview_runtime
-        .note_screen_canvas_frame(frame_number, elapsed_ms);
+        .note_screen_canvas_frame(frame_number, timestamp_ms);
     if screen_canvas_receivers > 0 {
         let tracked_screen_canvas_receivers = state.preview_runtime.screen_canvas_receiver_count();
         let publish_screen = {
@@ -325,20 +330,20 @@ pub(crate) fn publish_frame_updates(
         };
         if publish_screen {
             let screen_frame = if let Some(surface) = screen_preview_surface {
-                CanvasFrame::from_surface(surface.with_frame_metadata(frame_number, elapsed_ms))
+                CanvasFrame::from_surface(surface.with_frame_metadata(frame_number, timestamp_ms))
             } else {
                 CanvasFrame::empty()
             };
             publication_cadence.record_screen_canvas_publication(elapsed_ms);
             state
                 .preview_runtime
-                .record_screen_canvas_publication(frame_number, elapsed_ms);
+                .record_screen_canvas_publication(frame_number, timestamp_ms);
             let _ = state.event_bus.screen_canvas_sender().send(screen_frame);
         }
     }
     state
         .preview_runtime
-        .note_web_viewport_canvas_frame(frame_number, elapsed_ms);
+        .note_web_viewport_canvas_frame(frame_number, timestamp_ms);
     let web_viewport_canvas_receivers = state.event_bus.web_viewport_canvas_receiver_count();
     if web_viewport_canvas_receivers > 0 {
         let tracked_receivers = state.preview_runtime.web_viewport_canvas_receiver_count();
@@ -359,14 +364,14 @@ pub(crate) fn publish_frame_updates(
         };
         if publish_web_viewport {
             let preview_frame = if let Some(surface) = surfaces.web_viewport_preview_surface {
-                CanvasFrame::from_surface(surface.with_frame_metadata(frame_number, elapsed_ms))
+                CanvasFrame::from_surface(surface.with_frame_metadata(frame_number, timestamp_ms))
             } else {
                 CanvasFrame::empty()
             };
             publication_cadence.record_web_viewport_publication(elapsed_ms);
             state
                 .preview_runtime
-                .record_web_viewport_canvas_publication(frame_number, elapsed_ms);
+                .record_web_viewport_canvas_publication(frame_number, timestamp_ms);
             let _ = state
                 .event_bus
                 .web_viewport_canvas_sender()
@@ -399,7 +404,8 @@ fn publish_zone_previews(
     group_canvases: &[(ZoneId, GroupCanvasFrame)],
     zone_canvases: &[(ZoneId, ProducerFrame)],
     frame_number: u32,
-    elapsed_ms: u32,
+    elapsed_ms: u64,
+    timestamp_ms: u32,
 ) {
     let Some(scene_id) = scene_id else {
         return;
@@ -422,7 +428,7 @@ fn publish_zone_previews(
         group_canvases,
         zone_canvases,
         frame_number,
-        elapsed_ms,
+        timestamp_ms,
     );
     if zone_previews.is_empty() {
         return;
@@ -439,7 +445,7 @@ fn publish_zone_previews(
     publication_cadence.record_zone_preview_publication(elapsed_ms);
     state.preview_runtime.record_zone_preview_publication(
         frame_number,
-        elapsed_ms,
+        timestamp_ms,
         zone_previews.len(),
     );
     let _ = state.event_bus.zone_preview_sender().send(zone_previews);
@@ -450,7 +456,7 @@ fn collect_zone_previews(
     group_canvases: &[(ZoneId, GroupCanvasFrame)],
     zone_canvases: &[(ZoneId, ProducerFrame)],
     frame_number: u32,
-    elapsed_ms: u32,
+    timestamp_ms: u32,
 ) -> Vec<ZonePreviewFrame> {
     let display_group_ids = group_canvases
         .iter()
@@ -461,7 +467,7 @@ fn collect_zone_previews(
         if display_group_ids.contains(group_id) {
             continue;
         }
-        if let Some(frame) = zone_preview_frame_from_producer(frame, frame_number, elapsed_ms) {
+        if let Some(frame) = zone_preview_frame_from_producer(frame, frame_number, timestamp_ms) {
             previews.push(ZonePreviewFrame {
                 scene_id,
                 zone_id: *group_id,
@@ -471,7 +477,7 @@ fn collect_zone_previews(
     }
     for (group_id, group_canvas) in group_canvases {
         if let Some(frame) =
-            zone_preview_frame_from_display(&group_canvas.frame, frame_number, elapsed_ms)
+            zone_preview_frame_from_display(&group_canvas.frame, frame_number, timestamp_ms)
         {
             previews.push(ZonePreviewFrame {
                 scene_id,
@@ -493,16 +499,16 @@ fn collect_zone_previews(
 fn zone_preview_frame_from_producer(
     frame: &ProducerFrame,
     frame_number: u32,
-    elapsed_ms: u32,
+    timestamp_ms: u32,
 ) -> Option<CanvasFrame> {
     match frame {
         ProducerFrame::Canvas(canvas) => {
-            Some(CanvasFrame::from_canvas(canvas, frame_number, elapsed_ms))
+            Some(CanvasFrame::from_canvas(canvas, frame_number, timestamp_ms))
         }
         ProducerFrame::Surface(surface) => Some(CanvasFrame::from_surface(
             surface
                 .clone()
-                .with_frame_metadata(frame_number, elapsed_ms),
+                .with_frame_metadata(frame_number, timestamp_ms),
         )),
         #[cfg(feature = "servo-gpu-import")]
         ProducerFrame::Gpu(_) => {
@@ -520,14 +526,14 @@ fn zone_preview_frame_from_producer(
 fn zone_preview_frame_from_display(
     frame: &DisplayGroupFrame,
     frame_number: u32,
-    elapsed_ms: u32,
+    timestamp_ms: u32,
 ) -> Option<CanvasFrame> {
     match frame {
         DisplayGroupFrame::Canvas(frame) => Some(CanvasFrame::from_surface(
             frame
                 .surface()
                 .clone()
-                .with_frame_metadata(frame_number, elapsed_ms),
+                .with_frame_metadata(frame_number, timestamp_ms),
         )),
         DisplayGroupFrame::Yuv420(_) => None,
     }
@@ -553,7 +559,7 @@ fn update_published_frame(
     frame_sender: &watch::Sender<FrameData>,
     recycled_frame: &mut FrameData,
     frame_number: u32,
-    elapsed_ms: u32,
+    timestamp_ms: u32,
     reuse_existing_frame: bool,
     refresh_existing_frame_metadata: bool,
 ) {
@@ -561,7 +567,7 @@ fn update_published_frame(
         frame_sender.send_modify(|published_frame| {
             std::mem::swap(published_frame, recycled_frame);
             published_frame.frame_number = frame_number;
-            published_frame.timestamp_ms = elapsed_ms;
+            published_frame.timestamp_ms = timestamp_ms;
         });
         return;
     }
@@ -569,7 +575,7 @@ fn update_published_frame(
     if refresh_existing_frame_metadata {
         frame_sender.send_modify(|published_frame| {
             published_frame.frame_number = frame_number;
-            published_frame.timestamp_ms = elapsed_ms;
+            published_frame.timestamp_ms = timestamp_ms;
         });
     }
 }
@@ -676,7 +682,7 @@ fn maybe_publish_audio_level_event(
     state: &RenderThreadState,
     audio: &AudioData,
     signal: Option<&AudioSignalSnapshot>,
-    elapsed_ms: u32,
+    elapsed_ms: u64,
     publication_cadence: &mut PublicationCadenceState,
     should_publish: bool,
 ) {

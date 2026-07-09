@@ -92,7 +92,7 @@ pub(crate) struct EffectSceneSnapshot {
 #[derive(Debug, Clone)]
 pub(crate) struct FrameSceneSnapshot {
     pub frame_token: u64,
-    pub elapsed_ms: u32,
+    pub elapsed_ms: u64,
     pub budget_us: u32,
     pub output_power: OutputPowerState,
     pub effect_demand: EffectDemand,
@@ -104,7 +104,7 @@ pub(crate) struct FrameSceneSnapshot {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RenderLoopSnapshot {
     pub(crate) frame_token: u64,
-    pub(crate) elapsed_ms: u32,
+    pub(crate) elapsed_ms: u64,
     pub(crate) budget_us: u32,
 }
 
@@ -605,7 +605,7 @@ async fn render_loop_snapshot(state: &RenderThreadState) -> RenderLoopSnapshot {
     let render_loop = state.render_loop.read().await;
     RenderLoopSnapshot {
         frame_token: render_loop.frame_number(),
-        elapsed_ms: super::millis_u32(render_loop.elapsed()),
+        elapsed_ms: super::millis_u64(render_loop.elapsed()),
         budget_us: super::micros_u32(render_loop.target_interval()),
     }
 }

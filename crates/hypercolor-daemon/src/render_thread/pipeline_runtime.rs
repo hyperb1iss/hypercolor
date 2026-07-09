@@ -1,7 +1,7 @@
 #[cfg(feature = "wgpu")]
 use std::collections::HashMap;
 use std::collections::VecDeque;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use hypercolor_core::asset::AssetLibrary;
@@ -48,7 +48,7 @@ use super::sparkleflinger::PendingDisplayFinalization;
 use super::sparkleflinger::{PendingZoneSampling, SparkleFlinger};
 use super::{RenderThreadState, micros_u32};
 
-const AUDIO_LEVEL_EVENT_INTERVAL_MS: u32 = 100;
+const AUDIO_LEVEL_EVENT_INTERVAL_MS: u64 = 100;
 const DEFAULT_SCREEN_SURFACE_WIDTH: u32 = 1;
 const DEFAULT_SCREEN_SURFACE_HEIGHT: u32 = 1;
 
@@ -72,6 +72,7 @@ pub(crate) struct FrameInputs {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct FrameTick {
     pub(crate) frame_interval_us: u32,
+    pub(crate) frame_interval: Duration,
     pub(crate) delta_secs: f32,
 }
 
@@ -94,6 +95,7 @@ impl FrameClockState {
         self.last_tick = frame_start;
         FrameTick {
             frame_interval_us: micros_u32(frame_interval),
+            frame_interval,
             delta_secs: frame_interval.as_secs_f32(),
         }
     }
@@ -490,18 +492,18 @@ impl DeferredSamplingState {
 #[derive(Debug, Default)]
 #[allow(clippy::struct_field_names)]
 pub(crate) struct PublicationCadenceState {
-    pub(crate) last_audio_level_update_ms: Option<u32>,
-    pub(crate) last_canvas_preview_publish_ms: Option<u32>,
-    pub(crate) last_scene_canvas_publish_ms: Option<u32>,
-    pub(crate) last_screen_canvas_preview_publish_ms: Option<u32>,
-    pub(crate) last_web_viewport_preview_publish_ms: Option<u32>,
-    pub(crate) last_zone_preview_publish_ms: Option<u32>,
+    pub(crate) last_audio_level_update_ms: Option<u64>,
+    pub(crate) last_canvas_preview_publish_ms: Option<u64>,
+    pub(crate) last_scene_canvas_publish_ms: Option<u64>,
+    pub(crate) last_screen_canvas_preview_publish_ms: Option<u64>,
+    pub(crate) last_web_viewport_preview_publish_ms: Option<u64>,
+    pub(crate) last_zone_preview_publish_ms: Option<u64>,
 }
 
 impl PublicationCadenceState {
     pub(crate) fn should_publish_audio_level(
         &self,
-        elapsed_ms: u32,
+        elapsed_ms: u64,
         has_event_subscribers: bool,
     ) -> bool {
         has_event_subscribers
@@ -510,13 +512,13 @@ impl PublicationCadenceState {
             })
     }
 
-    pub(crate) fn record_audio_level_update(&mut self, elapsed_ms: u32) {
+    pub(crate) fn record_audio_level_update(&mut self, elapsed_ms: u64) {
         self.last_audio_level_update_ms = Some(elapsed_ms);
     }
 
     pub(crate) fn canvas_preview_due(
         &self,
-        elapsed_ms: u32,
+        elapsed_ms: u64,
         total_receivers: usize,
         tracked_receivers: usize,
         tracked_max_fps: u32,
@@ -530,13 +532,13 @@ impl PublicationCadenceState {
         )
     }
 
-    pub(crate) fn record_canvas_publication(&mut self, elapsed_ms: u32) {
+    pub(crate) fn record_canvas_publication(&mut self, elapsed_ms: u64) {
         self.last_canvas_preview_publish_ms = Some(elapsed_ms);
     }
 
     pub(crate) fn scene_canvas_due(
         &self,
-        elapsed_ms: u32,
+        elapsed_ms: u64,
         total_receivers: usize,
         tracked_receivers: usize,
         tracked_max_fps: u32,
@@ -550,13 +552,13 @@ impl PublicationCadenceState {
         )
     }
 
-    pub(crate) fn record_scene_canvas_publication(&mut self, elapsed_ms: u32) {
+    pub(crate) fn record_scene_canvas_publication(&mut self, elapsed_ms: u64) {
         self.last_scene_canvas_publish_ms = Some(elapsed_ms);
     }
 
     pub(crate) fn screen_canvas_preview_due(
         &self,
-        elapsed_ms: u32,
+        elapsed_ms: u64,
         total_receivers: usize,
         tracked_receivers: usize,
         tracked_max_fps: u32,
@@ -570,13 +572,13 @@ impl PublicationCadenceState {
         )
     }
 
-    pub(crate) fn record_screen_canvas_publication(&mut self, elapsed_ms: u32) {
+    pub(crate) fn record_screen_canvas_publication(&mut self, elapsed_ms: u64) {
         self.last_screen_canvas_preview_publish_ms = Some(elapsed_ms);
     }
 
     pub(crate) fn web_viewport_preview_due(
         &self,
-        elapsed_ms: u32,
+        elapsed_ms: u64,
         total_receivers: usize,
         tracked_receivers: usize,
         tracked_max_fps: u32,
@@ -590,13 +592,13 @@ impl PublicationCadenceState {
         )
     }
 
-    pub(crate) fn record_web_viewport_publication(&mut self, elapsed_ms: u32) {
+    pub(crate) fn record_web_viewport_publication(&mut self, elapsed_ms: u64) {
         self.last_web_viewport_preview_publish_ms = Some(elapsed_ms);
     }
 
     pub(crate) fn zone_preview_due(
         &self,
-        elapsed_ms: u32,
+        elapsed_ms: u64,
         total_receivers: usize,
         tracked_receivers: usize,
         tracked_max_fps: u32,
@@ -610,7 +612,7 @@ impl PublicationCadenceState {
         )
     }
 
-    pub(crate) fn record_zone_preview_publication(&mut self, elapsed_ms: u32) {
+    pub(crate) fn record_zone_preview_publication(&mut self, elapsed_ms: u64) {
         self.last_zone_preview_publish_ms = Some(elapsed_ms);
     }
 }
@@ -747,20 +749,20 @@ fn preview_publish_fps_limit(
 }
 
 fn should_publish_preview_frame(
-    elapsed_ms: u32,
-    last_publish_ms: Option<u32>,
+    elapsed_ms: u64,
+    last_publish_ms: Option<u64>,
     target_fps: Option<u32>,
 ) -> bool {
     let Some(target_fps) = target_fps else {
         return true;
     };
-    let interval_ms = 1000_u32.div_ceil(target_fps.max(1));
+    let interval_ms = 1000_u64.div_ceil(u64::from(target_fps.max(1)));
     last_publish_ms.is_none_or(|last_sent| elapsed_ms.saturating_sub(last_sent) >= interval_ms)
 }
 
 fn preview_publication_due(
-    elapsed_ms: u32,
-    last_publish_ms: Option<u32>,
+    elapsed_ms: u64,
+    last_publish_ms: Option<u64>,
     total_receivers: usize,
     tracked_receivers: usize,
     tracked_max_fps: u32,
@@ -799,6 +801,43 @@ pub(crate) struct RenderCaches {
     pub(crate) render_group_runtime: ZoneRuntime,
     pub(crate) render_surface_pool: RenderSurfacePool,
     pub(crate) output_artifacts: OutputArtifactsState,
+    effect_delta_clock: EffectDeltaClock,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct EffectDeltaClock {
+    retained_delta: Duration,
+    dependency_key: Option<SceneDependencyKey>,
+}
+
+impl EffectDeltaClock {
+    fn record_retained_frame(&mut self, dependency_key: SceneDependencyKey, frame_delta: Duration) {
+        if self.dependency_key != Some(dependency_key) {
+            self.retained_delta = Duration::ZERO;
+            self.dependency_key = Some(dependency_key);
+        }
+        self.retained_delta = self.retained_delta.saturating_add(frame_delta);
+    }
+
+    fn take_render_delta(
+        &mut self,
+        dependency_key: SceneDependencyKey,
+        frame_delta: Duration,
+    ) -> f32 {
+        let retained_delta = if self.dependency_key == Some(dependency_key) {
+            self.retained_delta
+        } else {
+            Duration::ZERO
+        };
+        self.clear();
+        let render_delta = retained_delta.saturating_add(frame_delta);
+        render_delta.as_secs_f32()
+    }
+
+    fn clear(&mut self) {
+        self.retained_delta = Duration::ZERO;
+        self.dependency_key = None;
+    }
 }
 
 pub(crate) struct ComposeRuntime<'a> {
@@ -811,6 +850,7 @@ pub(crate) struct ComposeRuntime<'a> {
     pub(crate) display_finalize_runtime: &'a mut DisplayFinalizeRuntime,
     pub(crate) render_group_runtime: &'a mut ZoneRuntime,
     pub(crate) output_artifacts: &'a mut OutputArtifactsState,
+    pub(crate) effect_delta_clock: &'a mut EffectDeltaClock,
 }
 
 #[cfg(feature = "wgpu")]
@@ -887,6 +927,7 @@ impl ComposeRuntime<'_> {
         self.display_sparkleflinger
             .retain_display_finalize_groups(&[]);
         self.render_group_runtime.clear_inactive_groups();
+        self.effect_delta_clock.clear();
     }
 
     #[cfg(feature = "wgpu")]
@@ -908,14 +949,20 @@ impl ComposeRuntime<'_> {
         dependency_key: SceneDependencyKey,
         registry: &EffectRegistry,
         skip_decision: SkipDecision,
-        delta_secs: f32,
+        frame_delta: Duration,
         inputs: &FrameInputs,
     ) -> (Result<ZoneResult>, bool) {
         if skip_decision == SkipDecision::ReuseCanvas
             && let Some(retained) = self.render_group_runtime.reuse_scene(dependency_key)
         {
+            self.effect_delta_clock
+                .record_retained_frame(dependency_key, frame_delta);
             return (Ok(retained), true);
         }
+
+        let delta_secs = self
+            .effect_delta_clock
+            .take_render_delta(dependency_key, frame_delta);
 
         let zones = self.output_artifacts.zones_mut();
         let context = RenderSceneContext {
@@ -1162,6 +1209,7 @@ impl RenderCaches {
         self.display_sparkleflinger
             .retain_display_finalize_groups(&[]);
         self.render_group_runtime.clear_inactive_groups();
+        self.effect_delta_clock.clear();
     }
 
     pub(crate) fn compose_runtime(&mut self) -> ComposeRuntime<'_> {
@@ -1175,6 +1223,7 @@ impl RenderCaches {
             display_finalize_runtime: &mut self.display_finalize_runtime,
             render_group_runtime: &mut self.render_group_runtime,
             output_artifacts: &mut self.output_artifacts,
+            effect_delta_clock: &mut self.effect_delta_clock,
         }
     }
 
@@ -1358,6 +1407,7 @@ impl PipelineRuntime {
                     desired_render_surface_slots(0),
                 ),
                 output_artifacts: OutputArtifactsState::default(),
+                effect_delta_clock: EffectDeltaClock::default(),
             },
             frame_policy: FramePolicy::new(configured_max_fps_tier),
         })
@@ -1367,13 +1417,17 @@ impl PipelineRuntime {
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
+    use std::time::Duration;
 
     use hypercolor_core::engine::FpsTier;
     use hypercolor_core::spatial::SpatialEngine;
     use hypercolor_types::config::RenderAccelerationMode;
     use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 
-    use super::{OutputFrameSource, OutputReuseKey, OutputReuseState, PipelineRuntime};
+    use super::{
+        EffectDeltaClock, OutputFrameSource, OutputReuseKey, OutputReuseState, PipelineRuntime,
+        should_publish_preview_frame,
+    };
 
     fn empty_layout() -> SpatialLayout {
         SpatialLayout {
@@ -1408,6 +1462,54 @@ mod tests {
                 .to_string()
                 .contains("must be resolved before constructing SparkleFlinger")
         );
+    }
+
+    #[test]
+    fn retained_canvas_delta_is_applied_to_the_next_effect_render() {
+        let mut clock = EffectDeltaClock::default();
+        let key = super::SceneDependencyKey::new(1, 2);
+        clock.record_retained_frame(key, Duration::from_millis(16));
+        clock.record_retained_frame(key, Duration::from_millis(17));
+
+        let render_delta = clock.take_render_delta(key, Duration::from_millis(18));
+
+        assert!((render_delta - 0.051).abs() < f32::EPSILON);
+        assert_eq!(clock.retained_delta, Duration::ZERO);
+        assert_eq!(clock.dependency_key, None);
+    }
+
+    #[test]
+    fn retained_canvas_delta_does_not_cross_scene_dependencies() {
+        let mut clock = EffectDeltaClock::default();
+        clock.record_retained_frame(
+            super::SceneDependencyKey::new(1, 2),
+            Duration::from_millis(16),
+        );
+
+        let render_delta = clock.take_render_delta(
+            super::SceneDependencyKey::new(2, 3),
+            Duration::from_millis(17),
+        );
+
+        assert!((render_delta - 0.017).abs() < f32::EPSILON);
+        assert_eq!(clock.retained_delta, Duration::ZERO);
+        assert_eq!(clock.dependency_key, None);
+    }
+
+    #[test]
+    fn preview_cadence_remains_live_after_u32_millisecond_uptime() {
+        let last_publish_ms = u64::from(u32::MAX) + 1_000;
+
+        assert!(!should_publish_preview_frame(
+            last_publish_ms + 15,
+            Some(last_publish_ms),
+            Some(60),
+        ));
+        assert!(should_publish_preview_frame(
+            last_publish_ms + 17,
+            Some(last_publish_ms),
+            Some(60),
+        ));
     }
 
     #[test]

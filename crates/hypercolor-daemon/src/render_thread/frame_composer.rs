@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 #[cfg(feature = "wgpu")]
@@ -65,7 +65,7 @@ pub(crate) struct ComposeRequest<'a> {
     pub(crate) publish_screen_canvas_preview: bool,
     pub(crate) skip_decision: SkipDecision,
     pub(crate) inputs: &'a mut FrameInputs,
-    pub(crate) delta_secs: f32,
+    pub(crate) frame_delta: Duration,
 }
 
 struct ProducedFrame {
@@ -83,7 +83,7 @@ struct ComposeContext<'a> {
     publish_screen_canvas_preview: bool,
     skip_decision: SkipDecision,
     inputs: &'a mut FrameInputs,
-    delta_secs: f32,
+    frame_delta: Duration,
 }
 
 pub(crate) async fn compose_frame(request: ComposeRequest<'_>) -> RenderStageStats {
@@ -95,7 +95,7 @@ pub(crate) async fn compose_frame(request: ComposeRequest<'_>) -> RenderStageSta
         publish_screen_canvas_preview: request.publish_screen_canvas_preview,
         skip_decision: request.skip_decision,
         inputs: request.inputs,
-        delta_secs: request.delta_secs,
+        frame_delta: request.frame_delta,
     }
     .compose()
     .await
@@ -150,7 +150,7 @@ impl ComposeContext<'_> {
                 live_dependency_key,
                 &registry,
                 self.skip_decision,
-                self.delta_secs,
+                self.frame_delta,
                 self.inputs,
             );
             (render_group_result, effect_retained, live_dependency_key)

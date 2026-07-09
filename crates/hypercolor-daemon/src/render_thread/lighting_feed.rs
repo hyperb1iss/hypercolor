@@ -13,7 +13,7 @@ use hypercolor_types::layer::LayerSource;
 use hypercolor_types::lighting::LightingState;
 use hypercolor_types::scene::Zone;
 
-const DOMINANT_REFRESH_INTERVAL_MS: u32 = 500;
+const DOMINANT_REFRESH_INTERVAL_MS: u64 = 500;
 const DOMINANT_COLOR_COUNT: usize = 3;
 const MAX_LED_SAMPLES: usize = 512;
 /// Below this r+g+b sum a sample reads as "off" and is skipped.
@@ -24,7 +24,7 @@ pub(crate) struct LightingFeedState {
     effect_names: Vec<String>,
     effect_names_key: Option<(u64, u64)>,
     dominant_colors: Vec<[u8; 3]>,
-    last_dominant_sample_ms: Option<u32>,
+    last_dominant_sample_ms: Option<u64>,
     current: Option<Arc<LightingState>>,
 }
 
@@ -63,7 +63,7 @@ impl LightingFeedState {
 
     /// Feed the frame's sampled zone colors; recomputes dominant colors at
     /// most every [`DOMINANT_REFRESH_INTERVAL_MS`].
-    pub(crate) fn observe_zones(&mut self, zones: &[ZoneColors], elapsed_ms: u32) {
+    pub(crate) fn observe_zones(&mut self, zones: &[ZoneColors], elapsed_ms: u64) {
         if zones.is_empty() {
             return;
         }

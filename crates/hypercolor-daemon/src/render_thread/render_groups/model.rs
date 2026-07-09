@@ -87,7 +87,7 @@ pub(crate) struct RenderSceneContext<'a> {
     pub(crate) groups: &'a [Zone],
     pub(crate) active_scene_id: Option<SceneId>,
     pub(crate) dependency_key: SceneDependencyKey,
-    pub(crate) elapsed_ms: u32,
+    pub(crate) elapsed_ms: u64,
     pub(crate) display_group_target_fps: &'a HashMap<ZoneId, u32>,
     pub(crate) display_group_descriptors: &'a HashMap<ZoneId, DisplayDescriptor>,
     pub(crate) registry: &'a EffectRegistry,
@@ -97,7 +97,7 @@ pub(crate) struct RenderSceneContext<'a> {
 #[derive(Clone, Copy)]
 pub(super) struct GroupFrameContext<'a> {
     pub(super) active_scene_id: Option<SceneId>,
-    pub(super) elapsed_ms: u32,
+    pub(super) elapsed_ms: u64,
     pub(super) registry: &'a EffectRegistry,
     pub(super) inputs: ZoneFrameInputs<'a>,
 }
@@ -323,14 +323,14 @@ pub(super) struct RetainedRenderGroupFrame {
 #[derive(Clone)]
 pub(super) struct RetainedDirectGroupFrame {
     pub(super) frame: PendingGroupCanvasFrame,
-    pub(super) rendered_at_ms: u32,
+    pub(super) rendered_at_ms: u64,
     pub(super) dependency_key: SceneDependencyKey,
 }
 
 #[derive(Clone)]
 pub(super) struct RetainedMaterializedGroupFrame {
     pub(super) frame: GroupCanvasFrame,
-    pub(super) rendered_at_ms: u32,
+    pub(super) rendered_at_ms: u64,
     pub(super) dependency_key: SceneDependencyKey,
     pub(super) display_target: DisplayFaceTarget,
     pub(super) display_route: DisplayGroupOutputRoute,

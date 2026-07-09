@@ -34,7 +34,7 @@ impl DisplayLaneRoutes<'_> {
 }
 
 pub(super) struct DisplayLaneContext<'a> {
-    pub(super) elapsed_ms: u32,
+    pub(super) elapsed_ms: u64,
     pub(super) dependency_key: SceneDependencyKey,
     pub(super) target_fps: &'a HashMap<ZoneId, u32>,
     pub(super) routes: DisplayLaneRoutes<'a>,
@@ -426,7 +426,7 @@ mod tests {
     use crate::render_thread::composition_planner::CompositionPlanner;
     #[cfg(feature = "wgpu")]
     use crate::render_thread::pipeline_runtime::{
-        ComposeRuntime, DisplayFinalizeRuntime, OutputArtifactsState,
+        ComposeRuntime, DisplayFinalizeRuntime, EffectDeltaClock, OutputArtifactsState,
     };
     use crate::render_thread::producer_queue::ProducerFrame;
     #[cfg(feature = "wgpu")]
@@ -790,7 +790,7 @@ mod tests {
         display_target: &DisplayFaceTarget,
         display_route: &DisplayGroupOutputRoute,
         dependency_key: SceneDependencyKey,
-        elapsed_ms: u32,
+        elapsed_ms: u64,
         rgb: [u8; 3],
     ) -> Option<[u8; 4]> {
         let current_routes = HashMap::from([(group_id, display_route.clone())]);
@@ -829,7 +829,7 @@ mod tests {
         display_target: &DisplayFaceTarget,
         display_route: &DisplayGroupOutputRoute,
         dependency_key: SceneDependencyKey,
-        elapsed_ms: &mut u32,
+        elapsed_ms: &mut u64,
         submitted_rgb: [u8; 3],
         expected_rgba: [u8; 4],
     ) -> bool {
@@ -862,6 +862,7 @@ mod tests {
         sparkleflinger: SparkleFlinger,
         display_sparkleflinger: SparkleFlinger,
         display_finalize_runtime: DisplayFinalizeRuntime,
+        effect_delta_clock: EffectDeltaClock,
         render_group_runtime: ZoneRuntime,
         output_artifacts: OutputArtifactsState,
     }
@@ -875,6 +876,7 @@ mod tests {
                 sparkleflinger: SparkleFlinger::cpu(),
                 display_sparkleflinger: SparkleFlinger::cpu(),
                 display_finalize_runtime: DisplayFinalizeRuntime::default(),
+                effect_delta_clock: EffectDeltaClock::default(),
                 render_group_runtime: ZoneRuntime::new(2, 2),
                 output_artifacts: OutputArtifactsState::default(),
             }
@@ -894,6 +896,7 @@ mod tests {
                 sparkleflinger: &mut self.sparkleflinger,
                 display_sparkleflinger: &mut self.display_sparkleflinger,
                 display_finalize_runtime: &mut self.display_finalize_runtime,
+                effect_delta_clock: &mut self.effect_delta_clock,
                 render_group_runtime: &mut self.render_group_runtime,
                 output_artifacts: &mut self.output_artifacts,
             }

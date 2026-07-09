@@ -46,7 +46,7 @@ pub(crate) fn evaluate_layer_runtime(
     layer: &SceneLayer,
     audio: &AudioData,
     sensors: &SystemSnapshot,
-    elapsed_ms: u32,
+    elapsed_ms: u64,
 ) -> LayerRuntime {
     let mut runtime = LayerRuntime::from_layer(layer);
     for binding in &layer.bindings {
@@ -61,7 +61,7 @@ fn binding_source_value(
     source: &BindingSource,
     audio: &AudioData,
     sensors: &SystemSnapshot,
-    elapsed_ms: u32,
+    elapsed_ms: u64,
 ) -> f32 {
     match source {
         BindingSource::AudioBand { band } => audio_band_value(*band, audio),
@@ -85,13 +85,14 @@ fn audio_band_value(band: AudioBand, audio: &AudioData) -> f32 {
     }
 }
 
-fn time_wave_value(rate_hz: f32, wave: TimeWave, elapsed_ms: u32) -> f32 {
+#[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+fn time_wave_value(rate_hz: f32, wave: TimeWave, elapsed_ms: u64) -> f32 {
     if !rate_hz.is_finite() {
         return 0.0;
     }
 
-    let elapsed_secs = Duration::from_millis(u64::from(elapsed_ms)).as_secs_f32();
-    let phase = (elapsed_secs * rate_hz).rem_euclid(1.0);
+    let elapsed_secs = Duration::from_millis(elapsed_ms).as_secs_f64();
+    let phase = (elapsed_secs * f64::from(rate_hz)).rem_euclid(1.0) as f32;
     match wave {
         TimeWave::Sine => (phase * TAU).sin(),
         TimeWave::Triangle => 1.0 - (4.0 * (phase - 0.5).abs()),
