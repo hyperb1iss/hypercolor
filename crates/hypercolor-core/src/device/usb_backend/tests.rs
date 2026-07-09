@@ -3,6 +3,7 @@ use std::sync::{LazyLock, Mutex};
 
 use anyhow::anyhow;
 use async_trait::async_trait;
+use hypercolor_driver_api::DeviceDeliveryStatus;
 use hypercolor_hal::protocol::{
     ProtocolCommand, ProtocolError, ProtocolResponse, ProtocolZone, ResponseStatus, TransferType,
 };
@@ -89,9 +90,9 @@ async fn display_branch_services_pending_led_frame_before_display_frame() {
     let (display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
     let (command_tx, command_rx) = mpsc::unbounded_channel();
 
-    frame_tx.send_replace(Some(Arc::new(UsbFramePayload {
-        colors: Arc::new(vec![[0x11, 0x22, 0x33]]),
-    })));
+    frame_tx.send_replace(Some(Arc::new(UsbFramePayload::untracked(Arc::new(vec![
+        [0x11, 0x22, 0x33],
+    ])))));
     display_tx.send_replace(Some(Arc::new(UsbDisplayPayload {
         payload: Arc::new(OwnedDisplayFramePayload::jpeg(0, 0, Arc::new(vec![0xD1]))),
     })));
@@ -170,9 +171,9 @@ async fn display_load_services_new_led_before_next_display_frame() {
     let writes = wait_for_writes(&transport, 1).await;
     assert_eq!(writes, vec![vec![0xD1]]);
 
-    frame_tx.send_replace(Some(Arc::new(UsbFramePayload {
-        colors: Arc::new(vec![[0x22, 0x33, 0x44]]),
-    })));
+    frame_tx.send_replace(Some(Arc::new(UsbFramePayload::untracked(Arc::new(vec![
+        [0x22, 0x33, 0x44],
+    ])))));
     display_tx.send_replace(Some(Arc::new(UsbDisplayPayload {
         payload: Arc::new(OwnedDisplayFramePayload::jpeg(0, 0, Arc::new(vec![0xD2]))),
     })));
@@ -212,9 +213,9 @@ async fn parallel_transfer_lanes_do_not_wait_for_pending_led_frame_before_displa
     let (display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
     let (command_tx, command_rx) = mpsc::unbounded_channel();
 
-    frame_tx.send_replace(Some(Arc::new(UsbFramePayload {
-        colors: Arc::new(vec![[0x11, 0x22, 0x33]]),
-    })));
+    frame_tx.send_replace(Some(Arc::new(UsbFramePayload::untracked(Arc::new(vec![
+        [0x11, 0x22, 0x33],
+    ])))));
     display_tx.send_replace(Some(Arc::new(UsbDisplayPayload {
         payload: Arc::new(OwnedDisplayFramePayload::jpeg(0, 0, Arc::new(vec![0xD1]))),
     })));
@@ -294,9 +295,9 @@ async fn display_write_failure_does_not_stop_single_lane_led_actor() {
     ));
 
     tokio::time::sleep(Duration::from_millis(20)).await;
-    frame_tx.send_replace(Some(Arc::new(UsbFramePayload {
-        colors: Arc::new(vec![[0x22, 0x33, 0x44]]),
-    })));
+    frame_tx.send_replace(Some(Arc::new(UsbFramePayload::untracked(Arc::new(vec![
+        [0x22, 0x33, 0x44],
+    ])))));
 
     assert_eq!(wait_for_writes(&transport, 1).await, vec![vec![0x22]]);
 
@@ -346,9 +347,9 @@ async fn parallel_display_write_failure_does_not_stop_control_lane() {
     ));
 
     tokio::time::sleep(Duration::from_millis(20)).await;
-    frame_tx.send_replace(Some(Arc::new(UsbFramePayload {
-        colors: Arc::new(vec![[0x33, 0x44, 0x55]]),
-    })));
+    frame_tx.send_replace(Some(Arc::new(UsbFramePayload::untracked(Arc::new(vec![
+        [0x33, 0x44, 0x55],
+    ])))));
 
     assert_eq!(wait_for_writes(&transport, 1).await, vec![vec![0x33]]);
 
@@ -463,16 +464,40 @@ async fn assert_transient_frame_failure_survival(
         ))
     };
 
-    frame_tx.send_replace(Some(Arc::new(UsbFramePayload {
-        colors: Arc::new(vec![[0x11, 0x22, 0x33]]),
-    })));
+    let first_id = DeviceDeliveryId {
+        queue_generation: 7,
+        sequence: 1,
+    };
+    let (first_frame, first_ack_rx) =
+        UsbFramePayload::tracked(first_id, Arc::new(vec![[0x11, 0x22, 0x33]]));
+    frame_tx.send_replace(Some(Arc::new(first_frame)));
     wait_for_primary_send_attempts(&transport, 1).await;
     assert!(transport.writes().is_empty());
+    let first_ack = timeout(Duration::from_secs(1), first_ack_rx)
+        .await
+        .expect("failed transport acknowledgement should arrive")
+        .expect("failed transport acknowledgement channel should stay open");
+    assert_eq!(first_ack.id, first_id);
+    assert_eq!(first_ack.status, DeviceDeliveryStatus::Failed);
+    assert!(first_ack.transport_started);
+    assert_eq!(first_ack.completed_payload_bytes, 0);
 
-    frame_tx.send_replace(Some(Arc::new(UsbFramePayload {
-        colors: Arc::new(vec![[0x22, 0x33, 0x44]]),
-    })));
+    let second_id = DeviceDeliveryId {
+        queue_generation: 7,
+        sequence: 2,
+    };
+    let (second_frame, second_ack_rx) =
+        UsbFramePayload::tracked(second_id, Arc::new(vec![[0x22, 0x33, 0x44]]));
+    frame_tx.send_replace(Some(Arc::new(second_frame)));
     assert_eq!(wait_for_writes(&transport, 1).await, vec![vec![0x22]]);
+    let second_ack = timeout(Duration::from_secs(1), second_ack_rx)
+        .await
+        .expect("completed transport acknowledgement should arrive")
+        .expect("completed transport acknowledgement channel should stay open");
+    assert_eq!(second_ack.id, second_id);
+    assert_eq!(second_ack.status, DeviceDeliveryStatus::Completed);
+    assert!(second_ack.transport_started);
+    assert_eq!(second_ack.completed_payload_bytes, 3);
     assert!(!actor.is_finished());
 
     let (response_tx, response_rx) = oneshot::channel();

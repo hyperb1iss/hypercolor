@@ -5,17 +5,17 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use anyhow::{Context, Error, Result, bail};
 use async_trait::async_trait;
 use hypercolor_driver_api::{
-    BackendInfo, DeviceBackend, DeviceFrameSink, DiscoveredDevice, DiscoveryCapability,
-    DiscoveryConnectBehavior, DiscoveryRequest, DiscoveryResult, DriverConfigProvider,
-    DriverConfigView, DriverDescriptor, DriverDiscoveredDevice, DriverHost, DriverModule,
-    DriverPresentationProvider, HealthStatus,
+    BackendInfo, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceFrameSink,
+    DiscoveredDevice, DiscoveryCapability, DiscoveryConnectBehavior, DiscoveryRequest,
+    DiscoveryResult, DriverConfigProvider, DriverConfigView, DriverDescriptor,
+    DriverDiscoveredDevice, DriverHost, DriverModule, DriverPresentationProvider, HealthStatus,
 };
 use hypercolor_openrgb_sdk::{
     ControllerData, ControllerMode, ControllerZone, DeviceType, ModeFlagPolicy, OpenRgbClient,
@@ -30,7 +30,7 @@ use hypercolor_types::device::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tokio::sync::{Mutex, watch};
+use tokio::sync::{Mutex, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, sleep};
 use tracing::debug;
@@ -76,6 +76,9 @@ const MAX_CONTROLLERS_PER_ENDPOINT: u32 = 1024;
 const INITIAL_RECONNECT_BACKOFF: Duration = Duration::from_millis(250);
 const MAX_RECONNECT_BACKOFF: Duration = Duration::from_secs(5);
 const OUTPUT_WORKER_STOP_TIMEOUT: Duration = Duration::from_secs(2);
+const DELIVERY_PENDING: u8 = 0;
+const DELIVERY_STARTED: u8 = 1;
+const DELIVERY_REJECTED: u8 = 2;
 
 /// Driver configuration for the OpenRGB fallback bridge.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -453,7 +456,7 @@ impl OpenRgbBackend {
 
 struct ConnectedOutput {
     controller: Arc<Mutex<ConnectedController>>,
-    frame_tx: watch::Sender<Option<Arc<Vec<[u8; 3]>>>>,
+    frame_tx: watch::Sender<Option<Arc<OpenRgbFramePayload>>>,
     io_task: Option<JoinHandle<()>>,
     active: Arc<AtomicBool>,
     last_async_error: Arc<StdMutex<Option<String>>>,
@@ -461,7 +464,7 @@ struct ConnectedOutput {
 
 impl ConnectedOutput {
     fn spawn(controller: Arc<Mutex<ConnectedController>>) -> Self {
-        let (frame_tx, frame_rx) = watch::channel(None::<Arc<Vec<[u8; 3]>>>);
+        let (frame_tx, frame_rx) = watch::channel(None::<Arc<OpenRgbFramePayload>>);
         let active = Arc::new(AtomicBool::new(true));
         let last_async_error = Arc::new(StdMutex::new(None::<String>));
         let io_task = tokio::spawn(run_openrgb_output_worker(
@@ -489,7 +492,12 @@ impl ConnectedOutput {
     }
 
     fn enqueue_colors(&self, colors: Arc<Vec<[u8; 3]>>) -> Result<()> {
-        enqueue_openrgb_colors(&self.frame_tx, &self.active, &self.last_async_error, colors)
+        enqueue_openrgb_payload(
+            &self.frame_tx,
+            &self.active,
+            &self.last_async_error,
+            Arc::new(OpenRgbFramePayload::untracked(colors)),
+        )
     }
 
     async fn stop(mut self) -> Arc<Mutex<ConnectedController>> {
@@ -499,7 +507,9 @@ impl ConnectedOutput {
             controller.accepting_frames = false;
         }
         let controller = Arc::clone(&self.controller);
-        self.frame_tx.send_replace(None);
+        if let Some(pending) = self.frame_tx.send_replace(None) {
+            pending.reject_pending("OpenRGB controller disconnected before transport started");
+        }
         if let Some(mut io_task) = self.io_task.take() {
             tokio::select! {
                 result = &mut io_task => {
@@ -524,14 +534,92 @@ impl ConnectedOutput {
 impl Drop for ConnectedOutput {
     fn drop(&mut self) {
         self.active.store(false, Ordering::Release);
+        if let Some(pending) = self.frame_tx.send_replace(None) {
+            pending.reject_pending("OpenRGB output worker stopped before transport started");
+        }
         if let Some(io_task) = &self.io_task {
             io_task.abort();
         }
     }
 }
 
+#[derive(Debug)]
+struct OpenRgbFramePayload {
+    colors: Arc<Vec<[u8; 3]>>,
+    delivery_id: Option<DeviceDeliveryId>,
+    delivery_tx: StdMutex<Option<oneshot::Sender<DeviceDeliveryAck>>>,
+    delivery_state: AtomicU8,
+}
+
+impl OpenRgbFramePayload {
+    fn untracked(colors: Arc<Vec<[u8; 3]>>) -> Self {
+        Self {
+            colors,
+            delivery_id: None,
+            delivery_tx: StdMutex::new(None),
+            delivery_state: AtomicU8::new(DELIVERY_PENDING),
+        }
+    }
+
+    fn tracked(
+        id: DeviceDeliveryId,
+        colors: Arc<Vec<[u8; 3]>>,
+    ) -> (Self, oneshot::Receiver<DeviceDeliveryAck>) {
+        let (delivery_tx, delivery_rx) = oneshot::channel();
+        (
+            Self {
+                colors,
+                delivery_id: Some(id),
+                delivery_tx: StdMutex::new(Some(delivery_tx)),
+                delivery_state: AtomicU8::new(DELIVERY_PENDING),
+            },
+            delivery_rx,
+        )
+    }
+
+    fn mark_transport_started(&self) -> bool {
+        self.delivery_id.is_none()
+            || self
+                .delivery_state
+                .compare_exchange(
+                    DELIVERY_PENDING,
+                    DELIVERY_STARTED,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+    }
+
+    fn acknowledge(&self, ack: DeviceDeliveryAck) {
+        if let Ok(mut delivery_tx) = self.delivery_tx.lock()
+            && let Some(delivery_tx) = delivery_tx.take()
+        {
+            let _ = delivery_tx.send(ack);
+        }
+    }
+
+    fn reject_pending(&self, error: impl Into<String>) {
+        let Some(id) = self.delivery_id else {
+            return;
+        };
+        if self
+            .delivery_state
+            .compare_exchange(
+                DELIVERY_PENDING,
+                DELIVERY_REJECTED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_err()
+        {
+            return;
+        }
+        self.acknowledge(DeviceDeliveryAck::rejected(id, error));
+    }
+}
+
 struct OpenRgbFrameSink {
-    frame_tx: watch::Sender<Option<Arc<Vec<[u8; 3]>>>>,
+    frame_tx: watch::Sender<Option<Arc<OpenRgbFramePayload>>>,
     active: Arc<AtomicBool>,
     last_async_error: Arc<StdMutex<Option<String>>>,
 }
@@ -539,15 +627,43 @@ struct OpenRgbFrameSink {
 #[async_trait]
 impl DeviceFrameSink for OpenRgbFrameSink {
     async fn write_colors_shared(&self, colors: Arc<Vec<[u8; 3]>>) -> Result<()> {
-        enqueue_openrgb_colors(&self.frame_tx, &self.active, &self.last_async_error, colors)
+        enqueue_openrgb_payload(
+            &self.frame_tx,
+            &self.active,
+            &self.last_async_error,
+            Arc::new(OpenRgbFramePayload::untracked(colors)),
+        )
+    }
+
+    async fn deliver_colors_shared(
+        &self,
+        id: DeviceDeliveryId,
+        colors: Arc<Vec<[u8; 3]>>,
+    ) -> DeviceDeliveryAck {
+        let (payload, delivery_rx) = OpenRgbFramePayload::tracked(id, colors);
+        if let Err(error) = enqueue_openrgb_payload(
+            &self.frame_tx,
+            &self.active,
+            &self.last_async_error,
+            Arc::new(payload),
+        ) {
+            return DeviceDeliveryAck::rejected(id, error.to_string());
+        }
+
+        delivery_rx.await.unwrap_or_else(|_| {
+            DeviceDeliveryAck::rejected(
+                id,
+                "OpenRGB output worker terminated before acknowledging delivery",
+            )
+        })
     }
 }
 
-fn enqueue_openrgb_colors(
-    frame_tx: &watch::Sender<Option<Arc<Vec<[u8; 3]>>>>,
+fn enqueue_openrgb_payload(
+    frame_tx: &watch::Sender<Option<Arc<OpenRgbFramePayload>>>,
     active: &AtomicBool,
     last_async_error: &StdMutex<Option<String>>,
-    colors: Arc<Vec<[u8; 3]>>,
+    payload: Arc<OpenRgbFramePayload>,
 ) -> Result<()> {
     if !active.load(Ordering::Acquire) {
         bail!("OpenRGB controller is disconnected");
@@ -559,13 +675,15 @@ fn enqueue_openrgb_colors(
     {
         bail!("{error}");
     }
-    frame_tx.send_replace(Some(colors));
+    if let Some(previous) = frame_tx.send_replace(Some(payload)) {
+        previous.reject_pending("OpenRGB frame was superseded before transport started");
+    }
     Ok(())
 }
 
 async fn run_openrgb_output_worker(
     controller: Arc<Mutex<ConnectedController>>,
-    mut frame_rx: watch::Receiver<Option<Arc<Vec<[u8; 3]>>>>,
+    mut frame_rx: watch::Receiver<Option<Arc<OpenRgbFramePayload>>>,
     active: Arc<AtomicBool>,
     last_async_error: Arc<StdMutex<Option<String>>>,
 ) {
@@ -576,7 +694,7 @@ async fn run_openrgb_output_worker(
         if !active.load(Ordering::Acquire) {
             break;
         }
-        let Some(mut colors) = frame_rx.borrow_and_update().clone() else {
+        let Some(mut frame) = frame_rx.borrow_and_update().clone() else {
             break;
         };
         while frame_rx.has_changed().unwrap_or(false) {
@@ -589,18 +707,39 @@ async fn run_openrgb_output_worker(
             let Some(latest) = frame_rx.borrow_and_update().clone() else {
                 return;
             };
-            colors = latest;
+            frame = latest;
         }
 
-        match write_controller_colors(&controller, colors.as_slice()).await {
+        if !frame.mark_transport_started() {
+            continue;
+        }
+        let transport_started_at = Instant::now();
+        match write_controller_colors(&controller, frame.colors.as_slice()).await {
             Ok(()) => {
+                if let Some(id) = frame.delivery_id {
+                    frame.acknowledge(DeviceDeliveryAck::completed(
+                        id,
+                        frame.colors.len().saturating_mul(3),
+                        transport_started_at.elapsed(),
+                    ));
+                }
                 if let Ok(mut error) = last_async_error.lock() {
                     *error = None;
                 }
             }
             Err(error) => {
                 let error = error.to_string();
-                if let Ok(mut last_error) = last_async_error.lock() {
+                if let Some(id) = frame.delivery_id {
+                    frame.acknowledge(DeviceDeliveryAck::failed(
+                        id,
+                        true,
+                        transport_started_at.elapsed(),
+                        error,
+                    ));
+                    if let Ok(mut last_error) = last_async_error.lock() {
+                        *last_error = None;
+                    }
+                } else if let Ok(mut last_error) = last_async_error.lock() {
                     *last_error = Some(error);
                 }
             }

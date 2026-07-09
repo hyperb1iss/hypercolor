@@ -5,7 +5,7 @@ mod actor;
 use std::cmp::min;
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write as _;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
@@ -35,8 +35,8 @@ use tracing::{debug, info, trace};
 use hypercolor_hal::transport::hidraw::UsbHidRawTransport;
 
 use super::traits::{
-    BackendInfo, ConnectExecution, DeviceBackend, DeviceDisplaySink, DeviceFrameSink,
-    DeviceLifecyclePolicy,
+    BackendInfo, ConnectExecution, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId,
+    DeviceDisplaySink, DeviceFrameSink, DeviceLifecyclePolicy,
 };
 use super::usb_scanner::UsbScanner;
 use super::{DiscoveredDevice, TransportScanner};
@@ -45,6 +45,9 @@ use crate::attachment::ComponentRegistry;
 const RETRY_BACKOFF: Duration = Duration::from_millis(100);
 const MAX_RETRIES: u8 = 3;
 const USB_MIDI_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+const DELIVERY_PENDING: u8 = 0;
+const DELIVERY_STARTED: u8 = 1;
+const DELIVERY_REJECTED: u8 = 2;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct UsbActorMetricsSnapshot {
@@ -102,6 +105,76 @@ struct PendingUsbDevice {
 #[derive(Debug)]
 struct UsbFramePayload {
     colors: Arc<Vec<[u8; 3]>>,
+    delivery_id: Option<DeviceDeliveryId>,
+    delivery_tx: StdMutex<Option<oneshot::Sender<DeviceDeliveryAck>>>,
+    delivery_state: AtomicU8,
+}
+
+impl UsbFramePayload {
+    fn untracked(colors: Arc<Vec<[u8; 3]>>) -> Self {
+        Self {
+            colors,
+            delivery_id: None,
+            delivery_tx: StdMutex::new(None),
+            delivery_state: AtomicU8::new(DELIVERY_PENDING),
+        }
+    }
+
+    fn tracked(
+        id: DeviceDeliveryId,
+        colors: Arc<Vec<[u8; 3]>>,
+    ) -> (Self, oneshot::Receiver<DeviceDeliveryAck>) {
+        let (delivery_tx, delivery_rx) = oneshot::channel();
+        (
+            Self {
+                colors,
+                delivery_id: Some(id),
+                delivery_tx: StdMutex::new(Some(delivery_tx)),
+                delivery_state: AtomicU8::new(DELIVERY_PENDING),
+            },
+            delivery_rx,
+        )
+    }
+
+    fn acknowledge(&self, ack: DeviceDeliveryAck) {
+        if let Ok(mut delivery_tx) = self.delivery_tx.lock()
+            && let Some(delivery_tx) = delivery_tx.take()
+        {
+            let _ = delivery_tx.send(ack);
+        }
+    }
+
+    fn reject_pending(&self, error: impl Into<String>) {
+        let Some(id) = self.delivery_id else {
+            return;
+        };
+        if self
+            .delivery_state
+            .compare_exchange(
+                DELIVERY_PENDING,
+                DELIVERY_REJECTED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_err()
+        {
+            return;
+        }
+        self.acknowledge(DeviceDeliveryAck::rejected(id, error));
+    }
+
+    fn mark_transport_started(&self) -> bool {
+        self.delivery_id.is_none()
+            || self
+                .delivery_state
+                .compare_exchange(
+                    DELIVERY_PENDING,
+                    DELIVERY_STARTED,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+    }
 }
 
 #[derive(Debug)]
@@ -168,8 +241,12 @@ impl UsbDevice {
     }
 
     fn queue_colors(&self, colors: Arc<Vec<[u8; 3]>>) {
-        self.frame_tx
-            .send_replace(Some(Arc::new(UsbFramePayload { colors })));
+        let previous = self
+            .frame_tx
+            .send_replace(Some(Arc::new(UsbFramePayload::untracked(colors))));
+        if let Some(previous) = previous {
+            previous.reject_pending("USB frame was superseded before transport started");
+        }
     }
 
     fn frame_sink(&self, device_id: DeviceId) -> Arc<dyn DeviceFrameSink> {
@@ -293,6 +370,46 @@ struct UsbFrameSink {
 #[async_trait::async_trait]
 impl DeviceFrameSink for UsbFrameSink {
     async fn write_colors_shared(&self, colors: Arc<Vec<[u8; 3]>>) -> Result<()> {
+        self.ensure_ready()?;
+
+        let previous = self
+            .frame_tx
+            .send_replace(Some(Arc::new(UsbFramePayload::untracked(colors))));
+        if let Some(previous) = previous {
+            previous.reject_pending("USB frame was superseded before transport started");
+        }
+        Ok(())
+    }
+
+    async fn deliver_colors_shared(
+        &self,
+        id: DeviceDeliveryId,
+        colors: Arc<Vec<[u8; 3]>>,
+    ) -> DeviceDeliveryAck {
+        if let Err(error) = self.ensure_ready() {
+            return DeviceDeliveryAck::rejected(id, error.to_string());
+        }
+
+        let (payload, delivery_rx) = UsbFramePayload::tracked(id, colors);
+        let previous = self.frame_tx.send_replace(Some(Arc::new(payload)));
+        if let Some(previous) = previous {
+            previous.reject_pending("USB frame was superseded before transport started");
+        }
+
+        delivery_rx.await.unwrap_or_else(|_| {
+            DeviceDeliveryAck::rejected(
+                id,
+                format!(
+                    "USB device actor terminated before acknowledging delivery for device {}",
+                    self.device_id
+                ),
+            )
+        })
+    }
+}
+
+impl UsbFrameSink {
+    fn ensure_ready(&self) -> Result<()> {
         if !self.active.load(Ordering::Acquire) {
             bail!(
                 "USB device actor is not running for device {}",
@@ -308,9 +425,6 @@ impl DeviceFrameSink for UsbFrameSink {
         {
             bail!("{error}");
         }
-
-        self.frame_tx
-            .send_replace(Some(Arc::new(UsbFramePayload { colors })));
         Ok(())
     }
 }

@@ -594,11 +594,32 @@ impl UsbBackend {
         frame: &UsbFramePayload,
         commands: &mut Vec<ProtocolCommand>,
     ) -> Result<()> {
+        if !frame.mark_transport_started() {
+            return Ok(());
+        }
+        let transport_started_at = Instant::now();
         match Self::run_device_frame(device_id, protocol, transport, frame, commands).await {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                if let Some(id) = frame.delivery_id {
+                    frame.acknowledge(super::DeviceDeliveryAck::completed(
+                        id,
+                        frame.colors.len().saturating_mul(3),
+                        transport_started_at.elapsed(),
+                    ));
+                }
+                Ok(())
+            }
             Err(error)
                 if Self::classify_frame_write_error(&error) == FrameWriteDisposition::Transient =>
             {
+                if let Some(id) = frame.delivery_id {
+                    frame.acknowledge(super::DeviceDeliveryAck::failed(
+                        id,
+                        true,
+                        transport_started_at.elapsed(),
+                        error.to_string(),
+                    ));
+                }
                 warn!(
                     device_id = %device_id,
                     protocol = protocol.name(),
@@ -609,7 +630,17 @@ impl UsbBackend {
                 );
                 Ok(())
             }
-            Err(error) => Err(error),
+            Err(error) => {
+                if let Some(id) = frame.delivery_id {
+                    frame.acknowledge(super::DeviceDeliveryAck::failed(
+                        id,
+                        true,
+                        transport_started_at.elapsed(),
+                        error.to_string(),
+                    ));
+                }
+                Err(error)
+            }
         }
     }
 
@@ -732,6 +763,9 @@ impl UsbBackend {
                 transport,
                 &UsbFramePayload {
                     colors: Arc::new(black_frame),
+                    delivery_id: None,
+                    delivery_tx: StdMutex::new(None),
+                    delivery_state: std::sync::atomic::AtomicU8::new(super::DELIVERY_PENDING),
                 },
                 &mut commands,
             )

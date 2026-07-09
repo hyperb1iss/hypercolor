@@ -6,9 +6,9 @@ use std::time::Duration;
 use anyhow::Result;
 use async_trait::async_trait;
 use hypercolor_driver_api::{
-    DiscoveryConnectBehavior, DiscoveryRequest, DriverConfigView, DriverCredentialStore,
-    DriverDiscoveryState, DriverHost, DriverModule, DriverRuntimeActions, DriverTrackedDevice,
-    HealthStatus,
+    DeviceDeliveryId, DeviceDeliveryStatus, DiscoveryConnectBehavior, DiscoveryRequest,
+    DriverConfigView, DriverCredentialStore, DriverDiscoveryState, DriverHost, DriverModule,
+    DriverRuntimeActions, DriverTrackedDevice, HealthStatus,
 };
 use hypercolor_driver_openrgb::{
     DESCRIPTOR, OpenRgbConfig, OpenRgbDriverModule, OpenRgbOwnership, OpenRgbOwnershipMode,
@@ -556,6 +556,67 @@ async fn write_colors_does_not_wait_for_slow_openrgb_socket() {
     assert_eq!(&update.payload[10..14], &[24, 25, 26, 0]);
 }
 
+#[tokio::test]
+async fn frame_sink_acknowledges_completed_openrgb_transport() {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("fake OpenRGB server should bind");
+    let endpoint = listener
+        .local_addr()
+        .expect("fake OpenRGB server should expose local addr");
+    let server = tokio::spawn(run_slow_update_read_server(listener));
+    let config = OpenRgbConfig {
+        endpoints: vec![endpoint],
+        ownership: OpenRgbOwnership {
+            mode: OpenRgbOwnershipMode::OpenRgbOwned,
+            ..OpenRgbOwnership::default()
+        },
+        teardown_policy: OpenRgbTeardownPolicy::LeaveLastFrame,
+        ..OpenRgbConfig::default()
+    };
+    let entry = config_entry(&config);
+    let view = DriverConfigView {
+        driver_id: DESCRIPTOR.id,
+        entry: &entry,
+    };
+    let host = NullHost;
+    let module = OpenRgbDriverModule;
+    let mut backend = module
+        .build_output_backend(&host, view)
+        .expect("backend construction should succeed")
+        .expect("OpenRGB should build an output backend");
+    let devices = backend
+        .discover()
+        .await
+        .expect("backend discovery should read fake OpenRGB controller");
+    let device_id = devices[0].id;
+
+    backend
+        .connect(&device_id)
+        .await
+        .expect("backend should connect selected controller");
+    let frame_sink = backend
+        .frame_sink(&device_id)
+        .expect("connected controller should expose frame sink");
+    let delivery_id = DeviceDeliveryId {
+        queue_generation: 11,
+        sequence: 29,
+    };
+    let delivery =
+        frame_sink.deliver_colors_shared(delivery_id, Arc::new(vec![[21, 22, 23], [24, 25, 26]]));
+    let ack = tokio::time::timeout(Duration::from_secs(1), delivery)
+        .await
+        .expect("delivery acknowledgement should arrive");
+    assert_eq!(ack.id, delivery_id);
+    assert_eq!(ack.status, DeviceDeliveryStatus::Completed);
+    assert!(ack.transport_started);
+    assert_eq!(ack.completed_payload_bytes, 6);
+
+    let update = server.await.expect("server task should join");
+    assert_eq!(update.header.device_index, 0);
+    assert_eq!(update.header.packet_id, PacketId::UpdateLeds);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn disconnect_completes_while_frame_sink_writers_race() {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
@@ -680,6 +741,17 @@ async fn disconnect_restores_previous_openrgb_mode() {
         .await
         .expect_err("stale frame sink should stop after disconnect");
     assert!(error.to_string().contains("disconnected"));
+    let rejected_id = DeviceDeliveryId {
+        queue_generation: 4,
+        sequence: 8,
+    };
+    let rejected = frame_sink
+        .deliver_colors_shared(rejected_id, Arc::new(vec![[20, 30, 40]; 2]))
+        .await;
+    assert_eq!(rejected.id, rejected_id);
+    assert_eq!(rejected.status, DeviceDeliveryStatus::Failed);
+    assert!(!rejected.transport_started);
+    assert_eq!(rejected.completed_payload_bytes, 0);
 
     let TeardownOutcome::Packet(restore) = server.await.expect("server task should join") else {
         panic!("restore teardown should write a packet");
