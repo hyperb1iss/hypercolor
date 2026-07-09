@@ -1,7 +1,7 @@
 //! Latest-frame output queues for device writes.
 
 use std::ops::Range;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
@@ -11,11 +11,18 @@ use tokio::sync::{Mutex, watch};
 use tokio::task::JoinHandle;
 use tracing::{trace, warn};
 
-use super::traits::{DeviceBackend, DeviceFrameSink, DeviceWriteOutcome, OutputCadence};
+use super::traits::{
+    DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryStatus, DeviceFrameSink,
+    OutputCadence,
+};
 
 type BackendHandle = Arc<Mutex<Box<dyn DeviceBackend>>>;
 type DeviceFrameSinkHandle = Arc<dyn DeviceFrameSink>;
 const OUTPUT_WRITE_FAILURE_REPEAT_LOG_INTERVAL: u64 = 60;
+const WORKER_PHASE_IDLE: u8 = 0;
+const WORKER_PHASE_CADENCE: u8 = 1;
+const WORKER_PHASE_TRANSPORT: u8 = 2;
+static NEXT_QUEUE_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 pub(super) type OutputLaneHandle = Arc<OutputLane>;
 
@@ -42,16 +49,25 @@ impl OutputLane {
         matches!(self, Self::FrameSink { .. })
     }
 
-    async fn write_colors_shared_outcome(
+    async fn deliver_colors_shared(
         &self,
+        id: DeviceDeliveryId,
         colors: Arc<Vec<[u8; 3]>>,
-    ) -> anyhow::Result<DeviceWriteOutcome> {
+    ) -> DeviceDeliveryAck {
         match self {
             Self::Backend { backend, device_id } => {
+                let payload_bytes = colors.len().saturating_mul(3);
+                let started_at = Instant::now();
                 let mut backend = backend.lock().await;
-                backend.write_colors_shared_outcome(device_id, colors).await
+                let result = backend.write_colors_shared_outcome(device_id, colors).await;
+                DeviceDeliveryAck::from_write_result(
+                    id,
+                    payload_bytes,
+                    started_at.elapsed(),
+                    result,
+                )
             }
-            Self::FrameSink { frame_sink } => frame_sink.write_colors_shared_outcome(colors).await,
+            Self::FrameSink { frame_sink } => frame_sink.deliver_colors_shared(id, colors).await,
         }
     }
 }
@@ -147,8 +163,20 @@ pub struct OutputQueueDebugSnapshot {
     /// Total frames accepted from the render loop.
     pub frames_received: u64,
 
+    /// Total frames accepted from the render loop.
+    pub accepted: u64,
+
     /// Total frames successfully written by the worker.
     pub frames_sent: u64,
+
+    /// Total delivery attempts that reached transport I/O.
+    pub transport_started: u64,
+
+    /// Total delivery attempts completed by the transport.
+    pub transport_completed: u64,
+
+    /// Total delivery attempts failed by the lane or transport.
+    pub transport_failed: u64,
 
     /// Total frames intentionally suppressed by the output lane.
     pub frames_suppressed: u64,
@@ -156,8 +184,20 @@ pub struct OutputQueueDebugSnapshot {
     /// Payload bytes successfully written by the worker.
     pub bytes_sent: u64,
 
+    /// Payload bytes completed by the transport.
+    pub completed_payload_bytes: u64,
+
     /// Frames dropped due to latest-frame replacement while I/O was busy.
     pub frames_dropped: u64,
+
+    /// Total pending frames superseded by newer accepted frames.
+    pub coalesced: u64,
+
+    /// Frames superseded while intentionally pacing to the target cadence.
+    pub coalesced_target_cadence: u64,
+
+    /// Frames superseded while transport or its worker was behind.
+    pub coalesced_backend_overrun: u64,
 
     /// Average latency from enqueue to write completion.
     pub avg_latency_ms: u64,
@@ -167,6 +207,9 @@ pub struct OutputQueueDebugSnapshot {
 
     /// Average backend write duration from write start to write completion.
     pub avg_write_ms: u64,
+
+    /// Average actual transport duration from actor start to terminal ack.
+    pub avg_transport_latency_ms: u64,
 
     /// Last async write error observed by this queue worker.
     pub last_error: Option<String>,
@@ -182,6 +225,18 @@ pub struct OutputQueueDebugSnapshot {
 
     /// Most recent frame sequence seen by this queue.
     pub last_sequence: u64,
+
+    /// Generation qualifying every delivery sequence in this snapshot.
+    pub queue_generation: u64,
+
+    /// Most recent sequence acknowledged as transport-started.
+    pub last_transport_started_sequence: u64,
+
+    /// Most recent sequence acknowledged as transport-completed.
+    pub last_transport_completed_sequence: u64,
+
+    /// Most recent sequence acknowledged as transport-failed.
+    pub last_transport_failed_sequence: u64,
 }
 
 /// Typed per-device async output telemetry snapshot.
@@ -214,8 +269,20 @@ pub struct DeviceOutputStatistics {
     /// Total frames accepted from the render loop.
     pub frames_received: u64,
 
+    /// Total frames accepted from the render loop.
+    pub accepted: u64,
+
     /// Total frames successfully written by the worker.
     pub frames_sent: u64,
+
+    /// Total delivery attempts that reached transport I/O.
+    pub transport_started: u64,
+
+    /// Total delivery attempts completed by the transport.
+    pub transport_completed: u64,
+
+    /// Total delivery attempts failed by the lane or transport.
+    pub transport_failed: u64,
 
     /// Total frames intentionally suppressed by the output lane.
     pub frames_suppressed: u64,
@@ -223,8 +290,20 @@ pub struct DeviceOutputStatistics {
     /// Payload bytes successfully written by the worker.
     pub bytes_sent: u64,
 
+    /// Payload bytes completed by the transport.
+    pub completed_payload_bytes: u64,
+
     /// Frames dropped due to latest-frame replacement while I/O was busy.
     pub frames_dropped: u64,
+
+    /// Total pending frames superseded by newer accepted frames.
+    pub coalesced: u64,
+
+    /// Frames superseded while intentionally pacing to the target cadence.
+    pub coalesced_target_cadence: u64,
+
+    /// Frames superseded while transport or its worker was behind.
+    pub coalesced_backend_overrun: u64,
 
     /// Average latency from enqueue to write completion.
     pub avg_latency_ms: u64,
@@ -234,6 +313,9 @@ pub struct DeviceOutputStatistics {
 
     /// Average backend write duration from write start to write completion.
     pub avg_write_ms: u64,
+
+    /// Average actual transport duration from actor start to terminal ack.
+    pub avg_transport_latency_ms: u64,
 
     /// Last async write error observed by this queue worker.
     pub last_error: Option<String>,
@@ -249,6 +331,18 @@ pub struct DeviceOutputStatistics {
 
     /// Most recent frame sequence seen by this queue.
     pub last_sequence: u64,
+
+    /// Generation qualifying every delivery sequence in this snapshot.
+    pub queue_generation: u64,
+
+    /// Most recent sequence acknowledged as transport-started.
+    pub last_transport_started_sequence: u64,
+
+    /// Most recent sequence acknowledged as transport-completed.
+    pub last_transport_completed_sequence: u64,
+
+    /// Most recent sequence acknowledged as transport-failed.
+    pub last_transport_failed_sequence: u64,
 }
 
 impl DeviceOutputStatistics {
@@ -263,18 +357,31 @@ impl DeviceOutputStatistics {
             worker_finished: self.worker_finished,
             worker_recoveries: self.worker_recoveries,
             frames_received: self.frames_received,
+            accepted: self.accepted,
             frames_sent: self.frames_sent,
+            transport_started: self.transport_started,
+            transport_completed: self.transport_completed,
+            transport_failed: self.transport_failed,
             frames_suppressed: self.frames_suppressed,
             bytes_sent: self.bytes_sent,
+            completed_payload_bytes: self.completed_payload_bytes,
             frames_dropped: self.frames_dropped,
+            coalesced: self.coalesced,
+            coalesced_target_cadence: self.coalesced_target_cadence,
+            coalesced_backend_overrun: self.coalesced_backend_overrun,
             avg_latency_ms: self.avg_latency_ms,
             avg_queue_wait_ms: self.avg_queue_wait_ms,
             avg_write_ms: self.avg_write_ms,
+            avg_transport_latency_ms: self.avg_transport_latency_ms,
             last_error: self.last_error,
             errors_total: self.errors_total,
             write_failure_warnings_total: self.write_failure_warnings_total,
             last_sent_ago_ms: self.last_sent_ago_ms,
             last_sequence: self.last_sequence,
+            queue_generation: self.queue_generation,
+            last_transport_started_sequence: self.last_transport_started_sequence,
+            last_transport_completed_sequence: self.last_transport_completed_sequence,
+            last_transport_failed_sequence: self.last_transport_failed_sequence,
         }
     }
 }
@@ -293,12 +400,18 @@ pub struct AsyncWriteFailure {
 #[derive(Debug)]
 struct OutputQueueMetrics {
     started_at: Instant,
+    active_generation: AtomicU64,
+    accepted: AtomicU64,
     frames_received: AtomicU64,
     frames_sent: AtomicU64,
     frames_suppressed: AtomicU64,
     worker_recoveries: AtomicU64,
     bytes_sent: AtomicU64,
     frames_dropped: AtomicU64,
+    coalesced_target_cadence: AtomicU64,
+    coalesced_backend_overrun: AtomicU64,
+    transport_started: AtomicU64,
+    transport_failed: AtomicU64,
     total_latency_us: AtomicU64,
     total_queue_wait_us: AtomicU64,
     total_write_time_us: AtomicU64,
@@ -306,21 +419,28 @@ struct OutputQueueMetrics {
     write_failure_warnings_total: AtomicU64,
     last_sent_offset_us: AtomicU64,
     last_sequence: AtomicU64,
+    last_transport_started_sequence: AtomicU64,
     last_success_sequence: AtomicU64,
     last_error_sequence: AtomicU64,
     last_error: StdMutex<Option<String>>,
 }
 
 impl OutputQueueMetrics {
-    fn new(started_at: Instant) -> Self {
+    fn new(started_at: Instant, generation: u64) -> Self {
         Self {
             started_at,
+            active_generation: AtomicU64::new(generation),
+            accepted: AtomicU64::new(0),
             frames_received: AtomicU64::new(0),
             frames_sent: AtomicU64::new(0),
             frames_suppressed: AtomicU64::new(0),
             worker_recoveries: AtomicU64::new(0),
             bytes_sent: AtomicU64::new(0),
             frames_dropped: AtomicU64::new(0),
+            coalesced_target_cadence: AtomicU64::new(0),
+            coalesced_backend_overrun: AtomicU64::new(0),
+            transport_started: AtomicU64::new(0),
+            transport_failed: AtomicU64::new(0),
             total_latency_us: AtomicU64::new(0),
             total_queue_wait_us: AtomicU64::new(0),
             total_write_time_us: AtomicU64::new(0),
@@ -328,39 +448,67 @@ impl OutputQueueMetrics {
             write_failure_warnings_total: AtomicU64::new(0),
             last_sent_offset_us: AtomicU64::new(0),
             last_sequence: AtomicU64::new(0),
+            last_transport_started_sequence: AtomicU64::new(0),
             last_success_sequence: AtomicU64::new(0),
             last_error_sequence: AtomicU64::new(0),
             last_error: StdMutex::new(None),
         }
     }
 
-    fn record_received(&self, sequence: u64) {
-        self.frames_received.fetch_add(1, Ordering::Relaxed);
-        self.last_sequence.store(sequence, Ordering::Relaxed);
+    fn activate_generation(&self, generation: u64) {
+        self.active_generation.store(generation, Ordering::Release);
     }
 
-    fn record_dropped(&self, dropped: u64) {
-        self.frames_dropped.fetch_add(dropped, Ordering::Relaxed);
+    fn is_current(&self, id: DeviceDeliveryId) -> bool {
+        self.active_generation.load(Ordering::Acquire) == id.queue_generation
+    }
+
+    fn record_accepted(&self, id: DeviceDeliveryId) {
+        if !self.is_current(id) {
+            return;
+        }
+        self.accepted.fetch_add(1, Ordering::Relaxed);
+        self.last_sequence.store(id.sequence, Ordering::Relaxed);
+    }
+
+    fn record_received(&self, id: DeviceDeliveryId) {
+        if self.is_current(id) {
+            self.frames_received.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn record_coalesced(&self, id: DeviceDeliveryId, phase: u8) {
+        if !self.is_current(id) {
+            return;
+        }
+        let counter = if phase == WORKER_PHASE_CADENCE {
+            &self.coalesced_target_cadence
+        } else {
+            &self.coalesced_backend_overrun
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
+        self.frames_dropped.fetch_add(1, Ordering::Relaxed);
     }
 
     fn record_write_success(
         &self,
-        sequence: u64,
+        id: DeviceDeliveryId,
         queue_wait: Duration,
-        write_time: Duration,
+        transport_latency: Duration,
         total_latency: Duration,
         sent_at: Instant,
-        bytes_sent: usize,
+        completed_payload_bytes: u64,
     ) {
+        if !self.is_current(id) {
+            return;
+        }
         self.frames_sent.fetch_add(1, Ordering::Relaxed);
-        self.bytes_sent.fetch_add(
-            u64::try_from(bytes_sent).unwrap_or(u64::MAX),
-            Ordering::Relaxed,
-        );
+        self.bytes_sent
+            .fetch_add(completed_payload_bytes, Ordering::Relaxed);
         self.total_queue_wait_us
             .fetch_add(duration_micros(queue_wait), Ordering::Relaxed);
         self.total_write_time_us
-            .fetch_add(duration_micros(write_time), Ordering::Relaxed);
+            .fetch_add(duration_micros(transport_latency), Ordering::Relaxed);
         self.total_latency_us
             .fetch_add(duration_micros(total_latency), Ordering::Relaxed);
         self.last_sent_offset_us.store(
@@ -368,28 +516,80 @@ impl OutputQueueMetrics {
             Ordering::Relaxed,
         );
         self.last_success_sequence
-            .store(sequence, Ordering::Relaxed);
+            .store(id.sequence, Ordering::Relaxed);
     }
 
-    fn record_write_suppressed(&self, sequence: u64, sent_at: Instant) {
+    fn record_write_suppressed(&self, id: DeviceDeliveryId, sent_at: Instant) {
+        if !self.is_current(id) {
+            return;
+        }
         self.frames_suppressed.fetch_add(1, Ordering::Relaxed);
         self.last_sent_offset_us.store(
             duration_micros(sent_at.saturating_duration_since(self.started_at)),
             Ordering::Relaxed,
         );
         self.last_success_sequence
-            .store(sequence, Ordering::Relaxed);
+            .store(id.sequence, Ordering::Relaxed);
     }
 
-    fn record_write_error(&self, sequence: u64, sent_at: Instant, error: String) {
+    fn record_accepted_duplicate(&self, id: DeviceDeliveryId) {
+        if self.is_current(id) {
+            self.frames_suppressed.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn record_write_error(&self, id: DeviceDeliveryId, sent_at: Instant, error: String) {
+        if !self.is_current(id) {
+            return;
+        }
         self.last_sent_offset_us.store(
             duration_micros(sent_at.saturating_duration_since(self.started_at)),
             Ordering::Relaxed,
         );
         self.errors_total.fetch_add(1, Ordering::Relaxed);
-        self.last_error_sequence.store(sequence, Ordering::Relaxed);
+        self.transport_failed.fetch_add(1, Ordering::Relaxed);
+        self.last_error_sequence
+            .store(id.sequence, Ordering::Relaxed);
         if let Ok(mut last_error) = self.last_error.lock() {
             *last_error = Some(error);
+        }
+    }
+
+    fn record_delivery_ack(
+        &self,
+        ack: &DeviceDeliveryAck,
+        queue_wait: Duration,
+        total_latency: Duration,
+        completed_at: Instant,
+    ) {
+        if !self.is_current(ack.id) {
+            return;
+        }
+        if ack.transport_started {
+            self.transport_started.fetch_add(1, Ordering::Relaxed);
+            self.last_transport_started_sequence
+                .store(ack.id.sequence, Ordering::Relaxed);
+        }
+
+        match ack.status {
+            DeviceDeliveryStatus::Completed => self.record_write_success(
+                ack.id,
+                queue_wait,
+                ack.transport_latency,
+                total_latency,
+                completed_at,
+                ack.completed_payload_bytes,
+            ),
+            DeviceDeliveryStatus::SuppressedDuplicate | DeviceDeliveryStatus::SuppressedCadence => {
+                self.record_write_suppressed(ack.id, completed_at);
+            }
+            DeviceDeliveryStatus::Failed => self.record_write_error(
+                ack.id,
+                completed_at,
+                ack.error
+                    .clone()
+                    .unwrap_or_else(|| "device delivery failed without an error".to_owned()),
+            ),
         }
     }
 
@@ -412,10 +612,15 @@ impl OutputQueueMetrics {
         worker_finished: bool,
     ) -> DeviceOutputStatistics {
         let frames_received = self.frames_received.load(Ordering::Relaxed);
+        let accepted = self.accepted.load(Ordering::Relaxed);
         let frames_sent = self.frames_sent.load(Ordering::Relaxed);
         let frames_suppressed = self.frames_suppressed.load(Ordering::Relaxed);
         let bytes_sent = self.bytes_sent.load(Ordering::Relaxed);
         let frames_dropped = self.frames_dropped.load(Ordering::Relaxed);
+        let transport_started = self.transport_started.load(Ordering::Relaxed);
+        let transport_failed = self.transport_failed.load(Ordering::Relaxed);
+        let coalesced_target_cadence = self.coalesced_target_cadence.load(Ordering::Relaxed);
+        let coalesced_backend_overrun = self.coalesced_backend_overrun.load(Ordering::Relaxed);
         let avg_latency_ms =
             average_micros_ms(self.total_latency_us.load(Ordering::Relaxed), frames_sent);
         let avg_queue_wait_ms = average_micros_ms(
@@ -452,18 +657,33 @@ impl OutputQueueMetrics {
             worker_finished,
             worker_recoveries: self.worker_recoveries.load(Ordering::Relaxed),
             frames_received,
+            accepted,
             frames_sent,
+            transport_started,
+            transport_completed: frames_sent,
+            transport_failed,
             frames_suppressed,
             bytes_sent,
+            completed_payload_bytes: bytes_sent,
             frames_dropped,
+            coalesced: frames_dropped,
+            coalesced_target_cadence,
+            coalesced_backend_overrun,
             avg_latency_ms,
             avg_queue_wait_ms,
             avg_write_ms,
+            avg_transport_latency_ms: avg_write_ms,
             last_error,
             errors_total: self.errors_total.load(Ordering::Relaxed),
             write_failure_warnings_total: self.write_failure_warnings_total.load(Ordering::Relaxed),
             last_sent_ago_ms,
             last_sequence: self.last_sequence.load(Ordering::Relaxed),
+            queue_generation: self.active_generation.load(Ordering::Relaxed),
+            last_transport_started_sequence: self
+                .last_transport_started_sequence
+                .load(Ordering::Relaxed),
+            last_transport_completed_sequence: self.last_success_sequence.load(Ordering::Relaxed),
+            last_transport_failed_sequence: self.last_error_sequence.load(Ordering::Relaxed),
         }
     }
 
@@ -483,7 +703,7 @@ struct FramePayload {
     /// LED colors for the target device.
     colors: Arc<Vec<[u8; 3]>>,
     /// Monotonic sequence for dropped-frame diagnostics.
-    sequence: u64,
+    id: DeviceDeliveryId,
     /// Timestamp when this payload was queued by the render loop.
     produced_at: Instant,
 }
@@ -550,6 +770,9 @@ pub(super) struct OutputQueue {
     cadence: OutputCadence,
     uses_frame_sink: bool,
     metrics: Arc<OutputQueueMetrics>,
+    generation: u64,
+    worker_phase: Arc<AtomicU8>,
+    active_sequence: Arc<AtomicU64>,
     next_sequence: u64,
 }
 
@@ -561,8 +784,11 @@ impl OutputQueue {
         lane: OutputLaneHandle,
         cadence: OutputCadence,
     ) -> Self {
-        let metrics = Arc::new(OutputQueueMetrics::new(Instant::now()));
-        Self::spawn_with_state(backend_id, device_id, lane, cadence, None, metrics, 0)
+        let generation = next_queue_generation();
+        let metrics = Arc::new(OutputQueueMetrics::new(Instant::now(), generation));
+        Self::spawn_with_state(
+            backend_id, device_id, lane, cadence, None, metrics, generation, 0,
+        )
     }
 
     fn spawn_with_state(
@@ -572,17 +798,30 @@ impl OutputQueue {
         cadence: OutputCadence,
         initial_payload: Option<Arc<FramePayload>>,
         metrics: Arc<OutputQueueMetrics>,
+        generation: u64,
         next_sequence: u64,
     ) -> Self {
+        metrics.activate_generation(generation);
+        let initial_payload = initial_payload.map(|payload| {
+            Arc::new(FramePayload {
+                colors: Arc::clone(&payload.colors),
+                id: DeviceDeliveryId {
+                    queue_generation: generation,
+                    sequence: payload.id.sequence,
+                },
+                produced_at: payload.produced_at,
+            })
+        });
         let (tx, mut rx) = watch::channel(initial_payload);
         let metrics_for_task = Arc::clone(&metrics);
+        let worker_phase = Arc::new(AtomicU8::new(WORKER_PHASE_IDLE));
+        let phase_for_task = Arc::clone(&worker_phase);
+        let active_sequence = Arc::new(AtomicU64::new(0));
+        let active_sequence_for_task = Arc::clone(&active_sequence);
         let uses_frame_sink = lane.uses_frame_sink();
-        let initial_last_sent_sequence = metrics.last_success_sequence.load(Ordering::Relaxed);
-
         let io_task = tokio::spawn(async move {
             let send_interval = cadence.min_interval();
             let mut next_send_at = Instant::now();
-            let mut last_sent_sequence = initial_last_sent_sequence;
             let mut pending = rx.borrow_and_update().clone();
             let mut last_logged_write_error = None::<String>;
             let mut repeated_write_failures_since_log = 0_u64;
@@ -598,6 +837,7 @@ impl OutputQueue {
                 }
 
                 if send_interval.is_some() {
+                    phase_for_task.store(WORKER_PHASE_CADENCE, Ordering::Release);
                     while Instant::now() < next_send_at {
                         tokio::select! {
                             changed = rx.changed() => {
@@ -622,57 +862,39 @@ impl OutputQueue {
 
                 let write_started = Instant::now();
                 let queue_wait = write_started.saturating_duration_since(frame.produced_at);
-
-                if frame.sequence > last_sent_sequence + 1 {
-                    let dropped = frame.sequence - last_sent_sequence - 1;
-                    metrics_for_task.record_dropped(dropped);
-
-                    trace!(
-                        backend_id = %backend_id,
-                        device_id = %device_id,
-                        dropped,
-                        "dropping stale device frames"
-                    );
-                }
-
-                let result = lane
-                    .write_colors_shared_outcome(Arc::clone(&frame.colors))
+                phase_for_task.store(WORKER_PHASE_TRANSPORT, Ordering::Release);
+                active_sequence_for_task.store(frame.id.sequence, Ordering::Release);
+                let ack = lane
+                    .deliver_colors_shared(frame.id, Arc::clone(&frame.colors))
                     .await;
                 let send_completed = Instant::now();
-                let write_time = send_completed.saturating_duration_since(write_started);
-                let payload_bytes = frame.colors.len().saturating_mul(3);
+                active_sequence_for_task.store(0, Ordering::Release);
+                phase_for_task.store(WORKER_PHASE_IDLE, Ordering::Release);
+                metrics_for_task.record_delivery_ack(
+                    &ack,
+                    queue_wait,
+                    send_completed.saturating_duration_since(frame.produced_at),
+                    send_completed,
+                );
 
-                match result {
-                    Ok(outcome) => {
-                        if outcome.is_sent() {
-                            metrics_for_task.record_write_success(
-                                frame.sequence,
-                                queue_wait,
-                                write_time,
-                                send_completed.saturating_duration_since(frame.produced_at),
-                                send_completed,
-                                payload_bytes,
-                            );
-                        } else {
-                            metrics_for_task
-                                .record_write_suppressed(frame.sequence, send_completed);
-                        }
+                match ack.status {
+                    DeviceDeliveryStatus::Completed
+                    | DeviceDeliveryStatus::SuppressedDuplicate
+                    | DeviceDeliveryStatus::SuppressedCadence => {
                         last_logged_write_error = None;
                         repeated_write_failures_since_log = 0;
                     }
-                    Err(error) => {
-                        let error = error.to_string();
-                        metrics_for_task.record_write_error(
-                            frame.sequence,
-                            send_completed,
-                            error.clone(),
-                        );
+                    DeviceDeliveryStatus::Failed => {
+                        let error = ack
+                            .error
+                            .as_deref()
+                            .unwrap_or("device delivery failed without an error");
 
-                        if last_logged_write_error.as_deref() == Some(error.as_str()) {
+                        if last_logged_write_error.as_deref() == Some(error) {
                             repeated_write_failures_since_log =
                                 repeated_write_failures_since_log.saturating_add(1);
                         } else {
-                            last_logged_write_error = Some(error.clone());
+                            last_logged_write_error = Some(error.to_owned());
                             repeated_write_failures_since_log = 0;
                         }
 
@@ -700,8 +922,6 @@ impl OutputQueue {
                     }
                 }
 
-                last_sent_sequence = frame.sequence;
-
                 if let Some(interval) = send_interval {
                     next_send_at = advance_deadline(next_send_at, interval, Instant::now());
                 }
@@ -714,6 +934,9 @@ impl OutputQueue {
             cadence,
             uses_frame_sink,
             metrics,
+            generation,
+            worker_phase,
+            active_sequence,
             next_sequence,
         }
     }
@@ -728,6 +951,7 @@ impl OutputQueue {
         let initial_payload = self.latest_unconfirmed_payload();
         let metrics = Arc::clone(&self.metrics);
         let next_sequence = self.next_sequence;
+        let generation = next_queue_generation();
         metrics.record_worker_recovery();
         Self::spawn_with_state(
             backend_id,
@@ -736,6 +960,7 @@ impl OutputQueue {
             cadence,
             initial_payload,
             metrics,
+            generation,
             next_sequence,
         )
     }
@@ -743,7 +968,7 @@ impl OutputQueue {
     fn latest_unconfirmed_payload(&self) -> Option<Arc<FramePayload>> {
         let payload = self.tx.borrow().clone()?;
         let last_success_sequence = self.metrics.last_success_sequence.load(Ordering::Relaxed);
-        (payload.sequence > last_success_sequence).then_some(payload)
+        (payload.id.sequence > last_success_sequence).then_some(payload)
     }
 
     pub(super) fn worker_finished(&self) -> bool {
@@ -756,18 +981,44 @@ impl OutputQueue {
 
     /// Push the latest payload for this device.
     pub(super) fn push(&mut self, colors: Vec<[u8; 3]>) -> Option<Vec<[u8; 3]>> {
+        self.next_sequence = self.next_sequence.saturating_add(1);
+        let id = DeviceDeliveryId {
+            queue_generation: self.generation,
+            sequence: self.next_sequence,
+        };
+        self.metrics.record_accepted(id);
+
         if self.should_suppress_duplicate(&colors) {
+            self.metrics.record_accepted_duplicate(id);
             return Some(colors);
         }
+        self.metrics.record_received(id);
 
-        self.next_sequence = self.next_sequence.saturating_add(1);
-        let sequence = self.next_sequence;
         let produced_at = Instant::now();
-        self.metrics.record_received(sequence);
 
         let mut next_colors = Some(Arc::new(colors));
         let mut recycled = None;
         self.tx.send_modify(|current| {
+            if let Some(previous) = current.as_ref() {
+                let active_sequence = self.active_sequence.load(Ordering::Acquire);
+                let last_terminal_sequence = self
+                    .metrics
+                    .last_success_sequence
+                    .load(Ordering::Relaxed)
+                    .max(self.metrics.last_error_sequence.load(Ordering::Relaxed));
+                if previous.id.sequence != active_sequence
+                    && previous.id.sequence > last_terminal_sequence
+                {
+                    let phase = self.worker_phase.load(Ordering::Acquire);
+                    self.metrics.record_coalesced(previous.id, phase);
+                    trace!(
+                        queue_generation = previous.id.queue_generation,
+                        sequence = previous.id.sequence,
+                        phase,
+                        "coalescing pending device frame"
+                    );
+                }
+            }
             if let Some(payload) = current.as_mut().and_then(Arc::get_mut) {
                 let previous = std::mem::replace(
                     &mut payload.colors,
@@ -776,14 +1027,14 @@ impl OutputQueue {
                         .expect("pending colors should exist before reuse"),
                 );
                 recycled = Arc::try_unwrap(previous).ok();
-                payload.sequence = sequence;
+                payload.id = id;
                 payload.produced_at = produced_at;
             } else {
                 *current = Some(Arc::new(FramePayload {
                     colors: next_colors
                         .take()
                         .expect("pending colors should exist before allocation"),
-                    sequence,
+                    id,
                     produced_at,
                 }));
             }
@@ -804,12 +1055,13 @@ impl OutputQueue {
         let last_success_sequence = self.metrics.last_success_sequence.load(Ordering::Relaxed);
         let last_error_sequence = self.metrics.last_error_sequence.load(Ordering::Relaxed);
 
-        if payload.sequence == last_error_sequence && last_error_sequence > last_success_sequence {
+        if payload.id.sequence == last_error_sequence && last_error_sequence > last_success_sequence
+        {
             return false;
         }
 
-        payload.sequence > last_success_sequence
-            || payload.sequence == last_success_sequence
+        payload.id.sequence > last_success_sequence
+            || payload.id.sequence == last_success_sequence
                 && last_success_sequence >= last_error_sequence
     }
 
@@ -821,23 +1073,29 @@ impl OutputQueue {
 
         let last_success_sequence = self.metrics.last_success_sequence.load(Ordering::Relaxed);
         let last_error_sequence = self.metrics.last_error_sequence.load(Ordering::Relaxed);
-        if payload.sequence != last_error_sequence || last_error_sequence <= last_success_sequence {
+        if payload.id.sequence != last_error_sequence
+            || last_error_sequence <= last_success_sequence
+        {
             return None;
         }
 
         let led_count = payload.colors.len();
         drop(current);
         self.next_sequence = self.next_sequence.saturating_add(1);
-        let sequence = self.next_sequence;
+        let id = DeviceDeliveryId {
+            queue_generation: self.generation,
+            sequence: self.next_sequence,
+        };
         let produced_at = Instant::now();
-        self.metrics.record_received(sequence);
+        self.metrics.record_accepted(id);
+        self.metrics.record_received(id);
         self.tx.send_modify(|current| {
             let Some(payload) = current else {
                 return;
             };
 
             if let Some(payload) = Arc::get_mut(payload) {
-                payload.sequence = sequence;
+                payload.id = id;
                 payload.produced_at = produced_at;
                 return;
             }
@@ -845,7 +1103,7 @@ impl OutputQueue {
             let colors = payload.colors.clone();
             *current = Some(Arc::new(FramePayload {
                 colors,
-                sequence,
+                id,
                 produced_at,
             }));
         });
@@ -894,6 +1152,10 @@ fn average_micros_ms(total_micros: u64, sample_count: u64) -> u64 {
 fn duration_micros(duration: Duration) -> u64 {
     let micros = duration.as_micros();
     u64::try_from(micros).unwrap_or(u64::MAX)
+}
+
+fn next_queue_generation() -> u64 {
+    NEXT_QUEUE_GENERATION.fetch_add(1, Ordering::Relaxed).max(1)
 }
 
 fn advance_deadline(previous_deadline: Instant, interval: Duration, now: Instant) -> Instant {

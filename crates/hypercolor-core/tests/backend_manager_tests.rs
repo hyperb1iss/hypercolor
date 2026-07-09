@@ -4120,9 +4120,18 @@ async fn device_output_statistics_tracks_payload_bytes_on_success() {
     let stats = manager.device_output_statistics();
     assert_eq!(stats.len(), 1);
     assert_eq!(stats[0].device_id, device_id);
+    assert_eq!(stats[0].accepted, 2);
+    assert_eq!(stats[0].transport_started, 2);
+    assert_eq!(stats[0].transport_completed, 2);
+    assert_eq!(stats[0].transport_failed, 0);
     assert_eq!(stats[0].frames_sent, 2);
     assert_eq!(stats[0].bytes_sent, 24);
+    assert_eq!(stats[0].completed_payload_bytes, 24);
     assert_eq!(stats[0].errors_total, 0);
+    assert!(stats[0].queue_generation > 0);
+    assert_eq!(stats[0].last_transport_started_sequence, 2);
+    assert_eq!(stats[0].last_transport_completed_sequence, 2);
+    assert_eq!(stats[0].last_transport_failed_sequence, 0);
 }
 
 #[tokio::test]
@@ -4150,9 +4159,16 @@ async fn device_output_statistics_tracks_async_write_errors() {
     let stats = manager.device_output_statistics();
     assert_eq!(stats.len(), 1);
     assert_eq!(stats[0].device_id, device_id);
+    assert_eq!(stats[0].accepted, 1);
+    assert_eq!(stats[0].transport_started, 1);
+    assert_eq!(stats[0].transport_completed, 0);
+    assert_eq!(stats[0].transport_failed, 1);
     assert_eq!(stats[0].frames_sent, 0);
     assert_eq!(stats[0].bytes_sent, 0);
     assert_eq!(stats[0].errors_total, 1);
+    assert_eq!(stats[0].last_transport_started_sequence, 1);
+    assert_eq!(stats[0].last_transport_completed_sequence, 0);
+    assert_eq!(stats[0].last_transport_failed_sequence, 1);
     assert_eq!(
         stats[0].last_error.as_deref(),
         Some("transient write failure")
@@ -4229,6 +4245,9 @@ async fn write_frame_drops_stale_intermediate_payloads() {
         queue.frames_dropped >= 1,
         "debug snapshot should track dropped stale frames"
     );
+    assert_eq!(queue.coalesced, queue.frames_dropped);
+    assert_eq!(queue.coalesced_target_cadence, 0);
+    assert!(queue.coalesced_backend_overrun >= 1);
     assert_eq!(queue.mapped_layout_ids, vec!["slow:strip".to_string()]);
 }
 
@@ -4268,6 +4287,7 @@ async fn write_frame_suppresses_identical_payloads_after_successful_send() {
         .queues
         .first()
         .expect("expected one queue snapshot");
+    assert_eq!(queue.accepted, 2);
     assert_eq!(queue.frames_received, 1);
     assert_eq!(queue.frames_sent, 1);
     assert_eq!(queue.frames_dropped, 0);
@@ -4529,6 +4549,10 @@ async fn write_frame_sends_latest_pending_payload_at_paced_deadline() {
         !writes[1..].iter().any(|frame| frame[0] == [0, 255, 0]),
         "older pending payloads should be superseded before the paced write fires"
     );
+    let queue = &manager.debug_snapshot().queues[0];
+    assert_eq!(queue.coalesced, 1);
+    assert_eq!(queue.coalesced_target_cadence, 1);
+    assert_eq!(queue.coalesced_backend_overrun, 0);
 }
 
 #[tokio::test]
@@ -4680,7 +4704,7 @@ async fn output_queue_recovers_finished_worker_and_requeues_latest_frame() {
     assert_eq!(recovered.queues[0].worker_recoveries, 1);
     assert_eq!(recovered.queues[0].frames_received, 2);
     assert_eq!(recovered.queues[0].frames_sent, 1);
-    assert_eq!(recovered.queues[0].frames_dropped, 1);
+    assert_eq!(recovered.queues[0].frames_dropped, 0);
 }
 
 #[tokio::test]

@@ -21,8 +21,9 @@ pub mod support;
 pub mod validation;
 
 pub use backend::{
-    BackendInfo, ConnectExecution, DeviceBackend, DeviceDisplaySink, DeviceFrameSink,
-    DeviceLifecyclePolicy, DeviceWriteOutcome, HealthStatus, OutputCadence,
+    BackendInfo, ConnectExecution, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId,
+    DeviceDeliveryStatus, DeviceDisplaySink, DeviceFrameSink, DeviceLifecyclePolicy,
+    DeviceWriteOutcome, HealthStatus, OutputCadence,
 };
 pub use config::{DriverConfigProvider, DriverConfigView};
 pub use controls::{

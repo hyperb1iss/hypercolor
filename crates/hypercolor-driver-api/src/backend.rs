@@ -126,6 +126,126 @@ pub enum DeviceWriteOutcome {
     SuppressedCadence,
 }
 
+/// Queue-qualified identity for one device-frame delivery attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct DeviceDeliveryId {
+    /// Generation of the output queue that issued this attempt.
+    pub queue_generation: u64,
+    /// Monotonic sequence within the queue.
+    pub sequence: u64,
+}
+
+/// Terminal state reported for one device-frame delivery attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceDeliveryStatus {
+    /// The transport completed the payload successfully.
+    Completed,
+    /// The device lane suppressed an unchanged payload.
+    SuppressedDuplicate,
+    /// The device lane suppressed a payload inside its cadence window.
+    SuppressedCadence,
+    /// The transport or output lane rejected the attempt.
+    Failed,
+}
+
+/// Exact acknowledgement for one queue-qualified device-frame delivery.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceDeliveryAck {
+    /// Identity copied from the delivery request.
+    pub id: DeviceDeliveryId,
+    /// Terminal disposition of the attempt.
+    pub status: DeviceDeliveryStatus,
+    /// Whether transport I/O started for this attempt.
+    pub transport_started: bool,
+    /// Payload bytes completed by the transport. Zero for every other state.
+    pub completed_payload_bytes: u64,
+    /// Time spent in actual transport I/O, excluding queue wait.
+    pub transport_latency: Duration,
+    /// Error reported by a failed attempt.
+    pub error: Option<String>,
+}
+
+impl DeviceDeliveryAck {
+    /// Build an acknowledgement from a legacy synchronous lane result.
+    #[must_use]
+    pub fn from_write_result(
+        id: DeviceDeliveryId,
+        payload_bytes: usize,
+        transport_latency: Duration,
+        result: Result<DeviceWriteOutcome>,
+    ) -> Self {
+        match result {
+            Ok(DeviceWriteOutcome::Sent) => Self {
+                id,
+                status: DeviceDeliveryStatus::Completed,
+                transport_started: true,
+                completed_payload_bytes: u64::try_from(payload_bytes).unwrap_or(u64::MAX),
+                transport_latency,
+                error: None,
+            },
+            Ok(DeviceWriteOutcome::SuppressedDuplicate) => {
+                Self::suppressed(id, DeviceDeliveryStatus::SuppressedDuplicate)
+            }
+            Ok(DeviceWriteOutcome::SuppressedCadence) => {
+                Self::suppressed(id, DeviceDeliveryStatus::SuppressedCadence)
+            }
+            Err(error) => Self::failed(id, true, transport_latency, error.to_string()),
+        }
+    }
+
+    /// Build an acknowledgement for a transport attempt rejected before I/O.
+    #[must_use]
+    pub fn rejected(id: DeviceDeliveryId, error: impl Into<String>) -> Self {
+        Self::failed(id, false, Duration::ZERO, error.into())
+    }
+
+    /// Build an acknowledgement for a completed transport attempt.
+    #[must_use]
+    pub fn completed(
+        id: DeviceDeliveryId,
+        payload_bytes: usize,
+        transport_latency: Duration,
+    ) -> Self {
+        Self {
+            id,
+            status: DeviceDeliveryStatus::Completed,
+            transport_started: true,
+            completed_payload_bytes: u64::try_from(payload_bytes).unwrap_or(u64::MAX),
+            transport_latency,
+            error: None,
+        }
+    }
+
+    /// Build an acknowledgement for a failed transport attempt.
+    #[must_use]
+    pub fn failed(
+        id: DeviceDeliveryId,
+        transport_started: bool,
+        transport_latency: Duration,
+        error: impl Into<String>,
+    ) -> Self {
+        Self {
+            id,
+            status: DeviceDeliveryStatus::Failed,
+            transport_started,
+            completed_payload_bytes: 0,
+            transport_latency,
+            error: Some(error.into()),
+        }
+    }
+
+    fn suppressed(id: DeviceDeliveryId, status: DeviceDeliveryStatus) -> Self {
+        Self {
+            id,
+            status,
+            transport_started: false,
+            completed_payload_bytes: 0,
+            transport_latency: Duration::ZERO,
+            error: None,
+        }
+    }
+}
+
 impl DeviceWriteOutcome {
     /// Whether this outcome represents bytes accepted for transport output.
     #[must_use]
@@ -219,6 +339,21 @@ pub trait DeviceFrameSink: Send + Sync {
         self.write_colors_shared(colors)
             .await
             .map(|()| DeviceWriteOutcome::Sent)
+    }
+
+    /// Deliver a queue-qualified payload and acknowledge its terminal state.
+    ///
+    /// Drivers with their own output actor override this method so the future
+    /// resolves after that actor completes or fails the matching transport I/O.
+    async fn deliver_colors_shared(
+        &self,
+        id: DeviceDeliveryId,
+        colors: Arc<Vec<[u8; 3]>>,
+    ) -> DeviceDeliveryAck {
+        let payload_bytes = colors.len().saturating_mul(3);
+        let started_at = std::time::Instant::now();
+        let result = self.write_colors_shared_outcome(colors).await;
+        DeviceDeliveryAck::from_write_result(id, payload_bytes, started_at.elapsed(), result)
     }
 }
 

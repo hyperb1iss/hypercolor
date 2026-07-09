@@ -6,8 +6,9 @@
 use anyhow::Result;
 
 pub use hypercolor_driver_api::{
-    BackendInfo, ConnectExecution, DeviceBackend, DeviceDisplaySink, DeviceFrameSink,
-    DeviceLifecyclePolicy, DeviceWriteOutcome, HealthStatus, OutputCadence,
+    BackendInfo, ConnectExecution, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId,
+    DeviceDeliveryStatus, DeviceDisplaySink, DeviceFrameSink, DeviceLifecyclePolicy,
+    DeviceWriteOutcome, HealthStatus, OutputCadence,
 };
 
 // ── DevicePlugin ─────────────────────────────────────────────────────────
