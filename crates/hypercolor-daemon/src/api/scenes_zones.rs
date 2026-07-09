@@ -13,6 +13,7 @@ use hypercolor_types::scene::{SceneId, UnassignedBehavior, Zone, ZoneId, ZoneRol
 use hypercolor_types::spatial::{Output, SpatialLayout};
 
 use crate::api::envelope::{ApiError, ApiResponse};
+use crate::api::layouts::{validate_layout_sampling_radii, validate_output_sampling_radii};
 use crate::api::{
     AppState, persist_runtime_session, publish_render_group_changed, save_scene_store_snapshot,
     scenes,
@@ -223,6 +224,13 @@ pub async fn assign_devices(
     if body.device_zones.is_empty() {
         return ApiError::bad_request("device_zones must include at least one item");
     }
+    for assignment in &body.device_zones {
+        if let OutputAssignment::New(output) = assignment
+            && let Err(error) = validate_output_sampling_radii(output)
+        {
+            return ApiError::validation(error);
+        }
+    }
     let expected_revision = match parse_if_match_groups_revision(&headers) {
         Ok(version) => version,
         Err(message) => return ApiError::bad_request(message),
@@ -351,6 +359,9 @@ pub async fn update_zone_layout(
     headers: HeaderMap,
     Json(layout): Json<SpatialLayout>,
 ) -> Response {
+    if let Err(error) = validate_layout_sampling_radii(&layout) {
+        return ApiError::validation(error);
+    }
     let Ok(zone_id) = parse_zone_id(&zone_id_raw) else {
         return ApiError::bad_request("zone_id must be a valid UUID");
     };

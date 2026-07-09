@@ -9,7 +9,7 @@ use std::sync::Arc;
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::response::Response;
-use hypercolor_types::spatial::{Output, SpatialLayout};
+use hypercolor_types::spatial::{Output, SamplingMode, SpatialLayout};
 use serde::{Deserialize, Serialize};
 
 use crate::api::AppState;
@@ -202,6 +202,14 @@ pub async fn update_layout(
     Path(id): Path<String>,
     Json(body): Json<UpdateLayoutRequest>,
 ) -> Response {
+    if let Some(zones) = &body.zones {
+        for output in zones {
+            if let Err(error) = validate_output_sampling_radii(output) {
+                return ApiError::validation(error);
+            }
+        }
+    }
+
     let active_layout_id = {
         let spatial = state.spatial_engine.read().await;
         spatial.layout().id.clone()
@@ -313,6 +321,10 @@ pub async fn preview_layout(
     State(state): State<Arc<AppState>>,
     Json(layout): Json<SpatialLayout>,
 ) -> Response {
+    if let Err(error) = validate_layout_sampling_radii(&layout) {
+        return ApiError::validation(error);
+    }
+
     apply_layout_update(
         &state.spatial_engine,
         &state.scene_manager,
@@ -467,6 +479,36 @@ fn normalize_layout_name(raw: &str) -> Result<String, String> {
 fn validate_canvas_dimensions(width: u32, height: u32) -> Result<(), String> {
     if width == 0 || height == 0 {
         return Err("canvas_width and canvas_height must be greater than 0".to_owned());
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_layout_sampling_radii(layout: &SpatialLayout) -> Result<(), String> {
+    validate_sampling_mode_radii(&layout.default_sampling_mode, "default sampling mode")?;
+    for output in &layout.zones {
+        validate_output_sampling_radii(output)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_output_sampling_radii(output: &Output) -> Result<(), String> {
+    let Some(mode) = &output.sampling_mode else {
+        return Ok(());
+    };
+    validate_sampling_mode_radii(mode, &format!("sampling mode for output '{}'", output.id))
+}
+
+fn validate_sampling_mode_radii(mode: &SamplingMode, field: &str) -> Result<(), String> {
+    let SamplingMode::AreaAverage { radius_x, radius_y } = mode else {
+        return Ok(());
+    };
+
+    for (axis, radius) in [("radius_x", radius_x), ("radius_y", radius_y)] {
+        if !radius.is_finite() || *radius < 0.0 {
+            return Err(format!(
+                "{field} {axis} must be finite and greater than or equal to 0"
+            ));
+        }
     }
     Ok(())
 }

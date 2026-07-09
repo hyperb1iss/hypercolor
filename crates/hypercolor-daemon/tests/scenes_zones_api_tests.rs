@@ -368,6 +368,25 @@ async fn device_assignment_moves_existing_zone_to_target_zone() {
     let revision = json["data"]["groups_revision"]
         .as_u64()
         .expect("revision should be u64");
+    let mut invalid_zone = sample_zone("primary-zone");
+    invalid_zone.sampling_mode = Some(SamplingMode::AreaAverage {
+        radius_x: -1.0,
+        radius_y: 0.0,
+    });
+    let response = send(
+        &app,
+        if_match(
+            json_request(
+                "POST",
+                format!("/api/v1/scenes/default/zones/{zone_id}/devices"),
+                serde_json::json!({ "device_zones": [invalid_zone] }),
+            ),
+            revision,
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
     let response = send(
         &app,
         if_match(
@@ -528,6 +547,25 @@ async fn zone_layout_route_merges_placement_and_rejects_output_changes() {
     let next_revision = json["data"]["groups_revision"]
         .as_u64()
         .expect("revision should be u64");
+
+    let mut invalid = sample_layout("primary-zone");
+    invalid.zones[0].sampling_mode = Some(SamplingMode::AreaAverage {
+        radius_x: 0.0,
+        radius_y: -1.0,
+    });
+    let response = send(
+        &app,
+        if_match(
+            json_request(
+                "PUT",
+                format!("/api/v1/scenes/default/zones/{zone_id}/layout"),
+                serde_json::to_value(&invalid).expect("layout should serialize"),
+            ),
+            next_revision,
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
     // An added output is rejected with 422 — adds route through the
     // device endpoints, not the layout endpoint.

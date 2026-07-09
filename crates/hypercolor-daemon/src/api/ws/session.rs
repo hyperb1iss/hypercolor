@@ -37,6 +37,7 @@ use super::relays::{
 };
 use crate::api::AppState;
 use crate::api::effects::active_effect_metadata;
+use crate::api::layouts::validate_layout_sampling_radii;
 use crate::api::scenes;
 use crate::api::security::RequestAuthContext;
 
@@ -537,11 +538,13 @@ async fn handle_zone_layout_preview_clear(
     Ok(())
 }
 
-fn validated_zone_layout_preview(
+pub(super) fn validated_zone_layout_preview(
     scene: &Scene,
     zone_id: ZoneId,
     layout: SpatialLayout,
 ) -> Result<SpatialLayout, WsProtocolError> {
+    validate_layout_sampling_radii(&layout).map_err(WsProtocolError::invalid_request)?;
+
     if scene.blocks_runtime_mutation() {
         return Err(WsProtocolError::invalid_request(format!(
             "Scene '{}' is snapshot locked",

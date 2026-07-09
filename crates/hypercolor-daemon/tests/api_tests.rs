@@ -7762,6 +7762,44 @@ async fn failed_profile_apply_does_not_mutate_layout_or_brightness() {
 
 // ── Layouts ──────────────────────────────────────────────────────────────
 
+fn layout_with_sampling_modes(
+    default_sampling_mode: SamplingMode,
+    output_sampling_mode: SamplingMode,
+) -> SpatialLayout {
+    SpatialLayout {
+        id: "sampling-layout".to_owned(),
+        name: "Sampling Layout".to_owned(),
+        description: None,
+        canvas_width: 4,
+        canvas_height: 4,
+        zones: vec![Output {
+            id: "sampling-output".to_owned(),
+            name: "Sampling Output".to_owned(),
+            device_id: "mock:sampling-output".to_owned(),
+            zone_name: None,
+            position: NormalizedPosition::new(0.5, 0.5),
+            size: NormalizedPosition::new(1.0, 1.0),
+            rotation: 0.0,
+            scale: 1.0,
+            display_order: 0,
+            orientation: None,
+            topology: LedTopology::Point,
+            led_positions: Vec::new(),
+            led_mapping: None,
+            sampling_mode: Some(output_sampling_mode),
+            edge_behavior: Some(EdgeBehavior::Clamp),
+            shape: None,
+            shape_preset: None,
+            attachment: None,
+            brightness: None,
+        }],
+        default_sampling_mode,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
+    }
+}
+
 #[tokio::test]
 async fn layout_crud_lifecycle() {
     let state = Arc::new(isolated_state());
@@ -8085,6 +8123,99 @@ async fn layout_create_validates_input() {
     assert_eq!(
         invalid_canvas_response.status(),
         StatusCode::UNPROCESSABLE_ENTITY
+    );
+}
+
+#[tokio::test]
+async fn layout_update_rejects_negative_output_sampling_radii_without_mutating() {
+    let state = Arc::new(isolated_state());
+    let mut stored = layout_with_sampling_modes(SamplingMode::Bilinear, SamplingMode::Bilinear);
+    stored.zones.clear();
+    state
+        .layouts
+        .write()
+        .await
+        .insert(stored.id.clone(), stored.clone());
+
+    let invalid = layout_with_sampling_modes(
+        SamplingMode::Bilinear,
+        SamplingMode::AreaAverage {
+            radius_x: -1.0,
+            radius_y: 1.0,
+        },
+    );
+    let app = test_app_with_state(Arc::clone(&state));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/layouts/{}", stored.id))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({ "zones": invalid.zones }).to_string(),
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let json = body_json(response).await;
+    assert_eq!(json["error"]["code"], "validation_error");
+    assert!(state.layouts.read().await[&stored.id].zones.is_empty());
+}
+
+#[tokio::test]
+async fn layout_preview_rejects_invalid_sampling_radii_without_mutating() {
+    let state = Arc::new(isolated_state());
+    let original_layout_id = state.spatial_engine.read().await.layout().id.clone();
+    let app = test_app_with_state(Arc::clone(&state));
+    let negative = SamplingMode::AreaAverage {
+        radius_x: -1.0,
+        radius_y: 1.0,
+    };
+    let invalid_layouts = [
+        layout_with_sampling_modes(negative.clone(), SamplingMode::Bilinear),
+        layout_with_sampling_modes(SamplingMode::Bilinear, negative),
+    ];
+
+    for layout in invalid_layouts {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/v1/layouts/active/preview")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&layout).expect("layout should serialize"),
+                    ))
+                    .expect("failed to build request"),
+            )
+            .await
+            .expect("failed to execute request");
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    for radius in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        let layout = layout_with_sampling_modes(
+            SamplingMode::AreaAverage {
+                radius_x: radius,
+                radius_y: 0.0,
+            },
+            SamplingMode::Bilinear,
+        );
+        let response = api::layouts::preview_layout(
+            axum::extract::State(Arc::clone(&state)),
+            axum::Json(layout),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    assert_eq!(
+        state.spatial_engine.read().await.layout().id,
+        original_layout_id
     );
 }
 

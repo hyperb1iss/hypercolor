@@ -15,6 +15,7 @@ use hypercolor_types::device::{ConnectionType, DeviceId, DeviceOrigin};
 use hypercolor_types::event::{FrameData, FrameTiming, HypercolorEvent, SpectrumData, ZoneColors};
 use hypercolor_types::scene::{SceneId, ZoneId, ZoneRole};
 use hypercolor_types::sensor::SystemSnapshot;
+use hypercolor_types::spatial::SamplingMode;
 
 use super::cache::{
     FrameRelayMessage, WS_CANVAS_BINARY_CACHE, WS_CANVAS_HEADER, WS_CANVAS_JPEG_BODY_BUILD_COUNT,
@@ -51,7 +52,7 @@ use super::relays::{
     relay_sensors, relay_spectrum, relay_web_viewport_canvas, sync_preview_receiver,
     try_enqueue_json,
 };
-use super::session::authorize_subscription_channels;
+use super::session::{authorize_subscription_channels, validated_zone_layout_preview};
 use crate::api::AppState;
 use crate::api::security::{RequestAuthContext, SecurityState};
 use crate::device_metrics::{DeviceMetrics, DeviceMetricsSnapshot};
@@ -1641,6 +1642,29 @@ fn zone_layout_preview_client_messages_deserialize() {
             assert_eq!(parsed_zone_id, zone_id);
         }
         _ => panic!("expected zone_layout_preview_clear variant"),
+    }
+}
+
+#[tokio::test]
+async fn zone_layout_preview_rejects_invalid_sampling_radii() {
+    let state = AppState::new();
+    let manager = state.scene_manager.read().await;
+    let scene = manager
+        .get(&SceneId::DEFAULT)
+        .expect("default scene should exist");
+    let group = scene.primary_group().expect("primary zone should exist");
+
+    for radius in [-1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        let mut layout = group.layout.clone();
+        layout.default_sampling_mode = SamplingMode::AreaAverage {
+            radius_x: radius,
+            radius_y: 0.0,
+        };
+
+        let error = validated_zone_layout_preview(scene, group.id, layout)
+            .expect_err("invalid radii must be rejected before preview state changes");
+        assert_eq!(error.code, "invalid_request");
+        assert!(error.message.contains("radius_x"));
     }
 }
 

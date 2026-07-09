@@ -592,6 +592,57 @@ fn area_average_samples_region() {
 }
 
 #[test]
+fn area_average_clamps_invalid_radii_to_point_sampling() {
+    let mut prepared_canvas = Canvas::new(3, 1);
+    prepared_canvas.set_pixel(0, 0, Rgba::new(255, 0, 0, 255));
+    prepared_canvas.set_pixel(1, 0, Rgba::new(0, 255, 0, 255));
+    prepared_canvas.set_pixel(2, 0, Rgba::new(0, 0, 255, 255));
+
+    let mut fallback_canvas = Canvas::new(5, 1);
+    fallback_canvas.set_pixel(0, 0, Rgba::new(255, 0, 0, 255));
+    fallback_canvas.set_pixel(1, 0, Rgba::new(255, 255, 0, 255));
+    fallback_canvas.set_pixel(2, 0, Rgba::new(0, 255, 0, 255));
+    fallback_canvas.set_pixel(3, 0, Rgba::new(0, 255, 255, 255));
+    fallback_canvas.set_pixel(4, 0, Rgba::new(0, 0, 255, 255));
+
+    let zero_radius_zone = custom_zone(
+        "zero-radius",
+        LedTopology::Point,
+        NormalizedPosition::new(0.5, 0.5),
+        NormalizedPosition::new(1.0, 1.0),
+        Some(SamplingMode::AreaAverage {
+            radius_x: 0.0,
+            radius_y: 0.0,
+        }),
+    );
+    let zero_radius = SpatialEngine::new(test_layout(vec![zero_radius_zone], 3, 1));
+    let expected_prepared = zero_radius.sample(&prepared_canvas)[0].colors.clone();
+    let expected_fallback = zero_radius.sample(&fallback_canvas)[0].colors.clone();
+
+    for radius in [-1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        let zone = custom_zone(
+            "invalid-radius",
+            LedTopology::Point,
+            NormalizedPosition::new(0.5, 0.5),
+            NormalizedPosition::new(1.0, 1.0),
+            Some(SamplingMode::AreaAverage {
+                radius_x: radius,
+                radius_y: radius,
+            }),
+        );
+        let engine = SpatialEngine::new(test_layout(vec![zone], 3, 1));
+
+        let plan = engine.sampling_plan();
+        let PreparedZoneSamples::Area(samples) = &plan[0].prepared_samples else {
+            panic!("expected prepared area samples");
+        };
+        assert_eq!(samples[0].radius, 0);
+        assert_eq!(engine.sample(&prepared_canvas)[0].colors, expected_prepared);
+        assert_eq!(engine.sample(&fallback_canvas)[0].colors, expected_fallback);
+    }
+}
+
+#[test]
 fn gaussian_area_samples_weighted_kernel() {
     let mut canvas = Canvas::new(3, 1);
     canvas.set_pixel(0, 0, Rgba::new(255, 0, 0, 255));

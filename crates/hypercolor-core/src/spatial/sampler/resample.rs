@@ -90,7 +90,11 @@ pub(super) fn prepare_area_sample_for_position(
     let clamped = NormalizedPosition::new(position.x.clamp(0.0, 1.0), position.y.clamp(0.0, 1.0));
     let cx = clamped.x * (canvas_width - 1) as f32;
     let cy = clamped.y * (canvas_height - 1) as f32;
-    let radius = radius.ceil() as i32;
+    let radius = if radius.is_finite() {
+        radius.max(0.0).ceil() as i32
+    } else {
+        0
+    };
 
     PreparedAreaSample {
         center_x: cx as i32,
@@ -541,6 +545,7 @@ fn sample_area_linear_rgb(
         }
     }
 
+    let count = count.max(1);
     [
         (sum_r / count) as u16,
         (sum_g / count) as u16,
