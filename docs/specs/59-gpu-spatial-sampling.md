@@ -336,7 +336,7 @@ within the normal rounding tolerance.
 - Linux Servo GPU import covers the real producer path when available.
 - A non-Servo GPU output texture covers the backend-general path in tests.
 - Metrics count GPU producer frames and successful GPU sample dispatches.
-- `cpu_sampling_late_readback` remains false on the successful path.
+- Successful GPU sampling does not emit CPU-readback telemetry.
 
 ### Phase 4: Harden deferred readback behavior
 

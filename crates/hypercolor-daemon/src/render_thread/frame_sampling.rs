@@ -130,7 +130,6 @@ pub(crate) struct LedSamplingOutcome {
     pub(crate) gpu_sample_queue_saturated: bool,
     pub(crate) gpu_sample_wait_blocked: bool,
     pub(crate) gpu_sample_cpu_fallback: bool,
-    pub(crate) cpu_sampling_late_readback: bool,
     pub(crate) refresh_reused_frame_metadata: bool,
     pub(crate) reuses_published_frame: bool,
     pub(crate) zone_shape_signature: u64,
@@ -434,7 +433,6 @@ pub(crate) fn resolve_led_sampling(
     let mut gpu_sample_queue_saturated = false;
     let mut gpu_sample_wait_blocked = false;
     let mut gpu_sample_cpu_fallback = false;
-    let cpu_sampling_late_readback = false;
     let mut refresh_reused_frame_metadata = false;
     let mut zone_shape_signature = None::<u64>;
     let mut pending_gpu_zone_sampling = None;
@@ -847,7 +845,6 @@ pub(crate) fn resolve_led_sampling(
         gpu_sample_queue_saturated,
         gpu_sample_wait_blocked,
         gpu_sample_cpu_fallback,
-        cpu_sampling_late_readback,
         refresh_reused_frame_metadata,
         reuses_published_frame,
         zone_shape_signature,

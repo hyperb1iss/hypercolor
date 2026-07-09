@@ -1463,8 +1463,8 @@ pub(super) async fn build_metrics_message(
                 gpu_sample_queue_saturated: performance_snapshot.pacing.gpu_sample_queue_saturated,
                 gpu_sample_wait_blocked: performance_snapshot.pacing.gpu_sample_wait_blocked,
                 gpu_sample_cpu_fallback: performance_snapshot.pacing.gpu_sample_cpu_fallback,
-                cpu_sampling_late_readback: performance_snapshot.pacing.cpu_sampling_late_readback,
-                led_sampling_readback: performance_snapshot.pacing.led_sampling_readback,
+                cpu_sampling_late_readback: 0,
+                led_sampling_readback: 0,
                 preview_surface: performance_snapshot.pacing.preview_surface,
                 scene_canvas_forced_surface: performance_snapshot
                     .pacing
@@ -1638,8 +1638,8 @@ pub(super) async fn build_metrics_message(
                 gpu_sample_queue_saturated: latest_frame.gpu_sample_queue_saturated,
                 gpu_sample_wait_blocked: latest_frame.gpu_sample_wait_blocked,
                 gpu_sample_cpu_fallback: latest_frame.gpu_sample_cpu_fallback,
-                cpu_sampling_late_readback: latest_frame.cpu_sampling_late_readback,
-                led_sampling_readback: latest_frame.led_sampling_readback,
+                cpu_sampling_late_readback: false,
+                led_sampling_readback: false,
                 preview_surface: latest_frame.preview_surface,
                 scene_canvas_forced_surface: latest_frame.scene_canvas_forced_surface,
                 cpu_readback_skipped: latest_frame.cpu_readback_skipped,

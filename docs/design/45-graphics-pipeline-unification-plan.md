@@ -37,7 +37,7 @@ Hypercolor already has the right architectural bones: render groups, immutable p
 - Servo rendering already coalesces queued frame input and reuses the last completed canvas when a frame is late.
 - Display workers isolate JPEG encoding with `spawn_blocking` and keep per-worker reusable buffers.
 - LED output queues use latest-value watch channels with per-device send cadence and dropped-frame metrics.
-- Adaptive FPS and frame admission already react to budget misses, full-frame copy pressure, late readbacks, and output errors.
+- Adaptive FPS and frame admission already react to budget misses, full-frame copy pressure, and output errors.
 
 ## 4. Biggest Risks To Fix
 

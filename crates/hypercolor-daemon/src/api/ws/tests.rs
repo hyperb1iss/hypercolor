@@ -364,8 +364,6 @@ async fn metrics_message_includes_latest_frame_timeline() {
             gpu_sample_queue_saturated: true,
             gpu_sample_wait_blocked: true,
             gpu_sample_cpu_fallback: true,
-            cpu_sampling_late_readback: true,
-            led_sampling_readback: true,
             preview_surface: true,
             scene_canvas_forced_surface: true,
             cpu_readback_skipped: true,
@@ -463,8 +461,8 @@ async fn metrics_message_includes_latest_frame_timeline() {
     assert_eq!(json["timeline"]["gpu_sample_queue_saturated"], true);
     assert_eq!(json["timeline"]["gpu_sample_wait_blocked"], true);
     assert_eq!(json["timeline"]["gpu_sample_cpu_fallback"], true);
-    assert_eq!(json["timeline"]["cpu_sampling_late_readback"], true);
-    assert_eq!(json["timeline"]["led_sampling_readback"], true);
+    assert_eq!(json["timeline"]["cpu_sampling_late_readback"], false);
+    assert_eq!(json["timeline"]["led_sampling_readback"], false);
     assert_eq!(json["timeline"]["preview_surface"], true);
     assert_eq!(json["timeline"]["scene_canvas_forced_surface"], true);
     assert_eq!(json["timeline"]["cpu_readback_skipped"], true);
@@ -482,8 +480,8 @@ async fn metrics_message_includes_latest_frame_timeline() {
     assert_eq!(json["pacing"]["gpu_sample_queue_saturated"], 1);
     assert_eq!(json["pacing"]["gpu_sample_wait_blocked"], 1);
     assert_eq!(json["pacing"]["gpu_sample_cpu_fallback"], 1);
-    assert_eq!(json["pacing"]["cpu_sampling_late_readback"], 1);
-    assert_eq!(json["pacing"]["led_sampling_readback"], 1);
+    assert_eq!(json["pacing"]["cpu_sampling_late_readback"], 0);
+    assert_eq!(json["pacing"]["led_sampling_readback"], 0);
     assert_eq!(json["pacing"]["preview_surface"], 1);
     assert_eq!(json["pacing"]["scene_canvas_forced_surface"], 1);
     assert_eq!(json["pacing"]["gpu_readback_failed_frames"], 1);

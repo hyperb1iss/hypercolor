@@ -93,8 +93,8 @@ fn performance_metrics_deserializes_renderer_diagnostics() {
         "pacing": {
             "gpu_zone_sampling": 114,
             "gpu_sample_cpu_fallback": 2,
-            "cpu_sampling_late_readback": 1,
-            "led_sampling_readback": 3,
+            "cpu_sampling_late_readback": 0,
+            "led_sampling_readback": 0,
             "gpu_readback_failed_frames": 4,
             "scene_canvas_forced_surface": 5,
             "full_frame_copy_frames": 6

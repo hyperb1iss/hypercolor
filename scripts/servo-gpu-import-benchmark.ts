@@ -685,7 +685,6 @@ function analyze(config: Config, samples: StatusSample[], startedAt: Date, ended
         latestGpuReadbackFailedSamples: latestFrames.filter((frame) => boolAt(frame, ["gpu_readback_failed"])).length,
         latestGpuSampleCpuFallbackSamples: latestFrames.filter((frame) => boolAt(frame, ["gpu_sample_cpu_fallback"])).length,
         latestGpuSampleWaitBlockedSamples: latestFrames.filter((frame) => boolAt(frame, ["gpu_sample_wait_blocked"])).length,
-        latestCpuSamplingLateReadbackSamples: latestFrames.filter((frame) => boolAt(frame, ["cpu_sampling_late_readback"])).length,
         latestFullFrameCopySamples: latestFrames.filter((frame) => numberAt(frame, ["full_frame_copy_count"]) > 0).length,
         frameP50Ms: round(percentile(frameTotals, 50)),
         frameP95Ms: round(percentile(frameTotals, 95)),

@@ -23,7 +23,7 @@ class LatestFrameStatus:
         compositor_backend (str):
         coordination_overhead_ms (float):
         cpu_readback_skipped (bool):
-        cpu_sampling_late_readback (bool):
+        cpu_sampling_late_readback (bool): Deprecated v1 compatibility field. Always `false`.
         device_output_ms (float):
         devices_written (int):
         effect_rendering_ms (float):
@@ -42,7 +42,7 @@ class LatestFrameStatus:
         gpu_zone_sampling (bool):
         input_sampling_ms (float):
         jitter_ms (float):
-        led_sampling_readback (bool):
+        led_sampling_readback (bool): Deprecated v1 compatibility alias. Always `false`.
         logical_layer_count (int):
         output_brightness_bits (int):
         output_brightness_generation (int):

@@ -142,7 +142,7 @@ Key LED-frame fields:
 - `output_reuses_published_frame`: render reused the last published LED frame data
 - `output_routing_signature`, `output_zone_shape_signature`, `output_unassigned_behavior_generation`: changed signatures explain why output reuse did or did not happen
 - `devices_written`, `total_leds`, `sample_us`, `push_us`, `publish_us`, `total_us`
-- GPU sampling flags: `gpu_sample_deferred`, `gpu_sample_stale`, `gpu_sample_retry_hit`, `gpu_sample_queue_saturated`, `gpu_sample_wait_blocked`, `gpu_sample_cpu_fallback`, `cpu_readback_skipped`, `gpu_readback_failed`, `led_sampling_readback`
+- GPU sampling flags: `gpu_sample_deferred`, `gpu_sample_stale`, `gpu_sample_retry_hit`, `gpu_sample_queue_saturated`, `gpu_sample_wait_blocked`, `gpu_sample_cpu_fallback`, `cpu_readback_skipped`, `gpu_readback_failed`
 
 Key device-output fields:
 

@@ -119,7 +119,9 @@ pub struct LatestFrameStatus {
     pub gpu_sample_queue_saturated: bool,
     pub gpu_sample_wait_blocked: bool,
     pub gpu_sample_cpu_fallback: bool,
+    /// Deprecated v1 compatibility field. Always `false`.
     pub cpu_sampling_late_readback: bool,
+    /// Deprecated v1 compatibility alias. Always `false`.
     pub led_sampling_readback: bool,
     pub preview_surface: bool,
     pub scene_canvas_forced_surface: bool,
@@ -1019,8 +1021,8 @@ fn latest_frame_status(frame: &LatestFrameMetrics, render_elapsed_ms: f64) -> La
         gpu_sample_queue_saturated: frame.gpu_sample_queue_saturated,
         gpu_sample_wait_blocked: frame.gpu_sample_wait_blocked,
         gpu_sample_cpu_fallback: frame.gpu_sample_cpu_fallback,
-        cpu_sampling_late_readback: frame.cpu_sampling_late_readback,
-        led_sampling_readback: frame.led_sampling_readback,
+        cpu_sampling_late_readback: false,
+        led_sampling_readback: false,
         preview_surface: frame.preview_surface,
         scene_canvas_forced_surface: frame.scene_canvas_forced_surface,
         cpu_readback_skipped: frame.cpu_readback_skipped,
@@ -1238,8 +1240,6 @@ mod tests {
                 gpu_sample_queue_saturated: true,
                 gpu_sample_wait_blocked: true,
                 gpu_sample_cpu_fallback: true,
-                cpu_sampling_late_readback: true,
-                led_sampling_readback: true,
                 preview_surface: true,
                 scene_canvas_forced_surface: true,
                 cpu_readback_skipped: true,
@@ -1369,9 +1369,12 @@ mod tests {
         );
         assert_eq!(
             json["data"]["latest_frame"]["cpu_sampling_late_readback"],
-            true
+            false
         );
-        assert_eq!(json["data"]["latest_frame"]["led_sampling_readback"], true);
+        assert_eq!(
+            json["data"]["latest_frame"]["led_sampling_readback"],
+            false
+        );
         assert_eq!(json["data"]["latest_frame"]["preview_surface"], true);
         assert_eq!(
             json["data"]["latest_frame"]["scene_canvas_forced_surface"],

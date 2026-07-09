@@ -916,12 +916,7 @@ fn readback_badge(metrics: Option<&PerformanceMetrics>) -> DiagnosticBadge {
 
     if metrics.timeline.gpu_readback_failed || metrics.pacing.gpu_readback_failed_frames > 0 {
         badge("failed", DiagnosticTone::Bad)
-    } else if metrics.timeline.led_sampling_readback
-        || metrics.timeline.cpu_sampling_late_readback
-        || metrics.pacing.led_sampling_readback > 0
-        || metrics.pacing.cpu_sampling_late_readback > 0
-        || metrics.effect_health.servo_render_readback_max_ms > 0.0
-    {
+    } else if metrics.effect_health.servo_render_readback_max_ms > 0.0 {
         badge("present", DiagnosticTone::Warn)
     } else {
         badge("clean", DiagnosticTone::Good)

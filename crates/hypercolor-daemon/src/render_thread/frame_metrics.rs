@@ -43,7 +43,6 @@ pub(crate) struct ActiveFrameMetricsInput<'a> {
     pub(crate) gpu_sample_queue_saturated: bool,
     pub(crate) gpu_sample_wait_blocked: bool,
     pub(crate) gpu_sample_cpu_fallback: bool,
-    pub(crate) cpu_sampling_late_readback: bool,
     pub(crate) cpu_readback_skipped: bool,
     pub(crate) gpu_readback_failed: bool,
     pub(crate) compositor_backend: CompositorBackendKind,
@@ -120,7 +119,6 @@ pub(crate) fn build_active_frame_metrics(input: ActiveFrameMetricsInput<'_>) -> 
         gpu_sample_queue_saturated,
         gpu_sample_wait_blocked,
         gpu_sample_cpu_fallback,
-        cpu_sampling_late_readback,
         cpu_readback_skipped,
         gpu_readback_failed,
         compositor_backend,
@@ -189,7 +187,6 @@ pub(crate) fn build_active_frame_metrics(input: ActiveFrameMetricsInput<'_>) -> 
         gpu_sample_queue_saturated,
         gpu_sample_wait_blocked,
         gpu_sample_cpu_fallback,
-        cpu_sampling_late_readback,
         cpu_readback_skipped,
         gpu_readback_failed,
         compositor_backend,
@@ -229,7 +226,6 @@ pub(crate) fn build_active_frame_metrics(input: ActiveFrameMetricsInput<'_>) -> 
         full_frame_copy_bytes,
         scene_canvas_forced_surface,
         preview_surface: preview_surface_pressure,
-        led_sampling_readback: cpu_sampling_late_readback,
         output_errors,
         timeline: build_frame_timeline(
             scene_snapshot,
@@ -303,7 +299,6 @@ pub(crate) fn build_throttle_frame_metrics(
         gpu_sample_queue_saturated: false,
         gpu_sample_wait_blocked: false,
         gpu_sample_cpu_fallback: false,
-        cpu_sampling_late_readback: false,
         cpu_readback_skipped: false,
         gpu_readback_failed: false,
         compositor_backend: CompositorBackendKind::Cpu,
@@ -343,7 +338,6 @@ pub(crate) fn build_throttle_frame_metrics(
         full_frame_copy_bytes: publish_stats.publication_full_frame_copy.bytes,
         scene_canvas_forced_surface: false,
         preview_surface: false,
-        led_sampling_readback: false,
         output_errors,
         timeline: build_frame_timeline(
             scene_snapshot,
@@ -367,7 +361,6 @@ fn build_frame_admission_sample(metrics: &LatestFrameMetrics) -> FrameAdmissionS
         push_us: metrics.push_us,
         publish_us: metrics.publish_us,
         full_frame_copy_count: metrics.full_frame_copy_count,
-        cpu_sampling_late_readback: metrics.cpu_sampling_late_readback,
         output_errors: metrics.output_errors,
     }
 }
@@ -536,7 +529,6 @@ mod tests {
             gpu_sample_queue_saturated: false,
             gpu_sample_wait_blocked: false,
             gpu_sample_cpu_fallback: true,
-            cpu_sampling_late_readback: true,
             cpu_readback_skipped: true,
             gpu_readback_failed: true,
             compositor_backend: CompositorBackendKind::Gpu,
@@ -573,7 +565,6 @@ mod tests {
         assert_eq!(summary.metrics.full_frame_copy_bytes, 12_288);
         assert!(summary.metrics.preview_surface);
         assert!(summary.metrics.scene_canvas_forced_surface);
-        assert!(summary.metrics.led_sampling_readback);
         assert_eq!(
             summary.metrics.output_frame_source,
             OutputFrameSourceKind::PublishedFrame

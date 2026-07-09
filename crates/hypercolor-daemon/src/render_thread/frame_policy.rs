@@ -154,7 +154,6 @@ mod tests {
             push_us: 500,
             publish_us: 100,
             full_frame_copy_count: 0,
-            cpu_sampling_late_readback: false,
             output_errors: 0,
         }
     }

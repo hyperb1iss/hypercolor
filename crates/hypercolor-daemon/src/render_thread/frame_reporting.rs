@@ -67,8 +67,6 @@ pub(crate) fn report_active_frame_completion(
         gpu_sample_wait_blocked = metrics.gpu_sample_wait_blocked,
         gpu_sample_queue_saturated = metrics.gpu_sample_queue_saturated,
         gpu_sample_cpu_fallback = metrics.gpu_sample_cpu_fallback,
-        cpu_sampling_late_readback = metrics.cpu_sampling_late_readback,
-        led_sampling_readback = metrics.led_sampling_readback,
         preview_surface = metrics.preview_surface,
         scene_canvas_forced_surface = metrics.scene_canvas_forced_surface,
         sample_us = metrics.sample_us,
@@ -134,10 +132,8 @@ pub(crate) fn report_active_frame_completion(
         gpu_sample_wait_blocked = metrics.gpu_sample_wait_blocked,
         gpu_sample_queue_saturated = metrics.gpu_sample_queue_saturated,
         gpu_sample_cpu_fallback = metrics.gpu_sample_cpu_fallback,
-        cpu_sampling_late_readback = metrics.cpu_sampling_late_readback,
         cpu_readback_skipped = metrics.cpu_readback_skipped,
         gpu_readback_failed = metrics.gpu_readback_failed,
-        led_sampling_readback = metrics.led_sampling_readback,
         output_errors = metrics.output_errors,
         devices = report.devices_written,
         leds = report.total_leds,
@@ -172,12 +168,6 @@ fn frame_completion_warning_reason(report: &FrameCompletionReport) -> Option<&'s
     }
     if metrics.gpu_readback_failed {
         return Some("gpu_readback_failed");
-    }
-    if metrics.cpu_sampling_late_readback {
-        return Some("cpu_sampling_late_readback");
-    }
-    if metrics.led_sampling_readback {
-        return Some("led_sampling_readback");
     }
     if metrics.output_errors > 0 {
         return Some("device_output_error");
@@ -228,8 +218,8 @@ mod tests {
     }
 
     #[test]
-    fn frame_completion_warning_reason_detects_led_pipeline_stalls() {
-        let mut metrics = LatestFrameMetrics {
+    fn frame_completion_warning_reason_detects_budget_overrun() {
+        let metrics = LatestFrameMetrics {
             total_us: 20_000,
             ..LatestFrameMetrics::default()
         };
@@ -239,14 +229,6 @@ mod tests {
         assert_eq!(
             frame_completion_warning_reason(&report),
             Some("over_budget")
-        );
-
-        metrics.total_us = 1_000;
-        metrics.led_sampling_readback = true;
-        let report = FrameCompletionReport::new(16_666, &metrics, &write_stats);
-        assert_eq!(
-            frame_completion_warning_reason(&report),
-            Some("led_sampling_readback")
         );
     }
 

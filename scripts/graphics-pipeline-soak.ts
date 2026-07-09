@@ -606,7 +606,6 @@ function analyze(config: Config, samples: MetricSample[], backpressure: Backpres
         maxPublicationFullFrameCopyKb: round(maxAt(observed, ["copies", "publication_full_frame_kb"])),
         latestPublicationFullFrameCopyReason: stringAt(last.data, ["copies", "publication_reason"]),
         maxFrameCopyCount: maxAt(observed, ["copies", "full_frame_count"]),
-        maxLedSamplingReadbackFrames: maxAt(observed, ["pacing", "led_sampling_readback"]),
         maxPreviewSurfaceFrames: maxAt(observed, ["pacing", "preview_surface"]),
         maxSceneCanvasForcedSurfaceFrames: maxAt(observed, ["pacing", "scene_canvas_forced_surface"]),
         poolSaturationDelta,
@@ -806,7 +805,7 @@ function printReport(report: Report): void {
     )
     console.log(
         `${palette.cyan}surface pressure${palette.reset} preview=${summary.maxPreviewSurfaceFrames} ` +
-            `scene_canvas=${summary.maxSceneCanvasForcedSurfaceFrames} led_readback=${summary.maxLedSamplingReadbackFrames}`,
+            `scene_canvas=${summary.maxSceneCanvasForcedSurfaceFrames}`,
     )
     console.log(
         `${palette.cyan}servo qos${palette.reset} queue_wait=${summary.servoQueueWaitMaxMs}ms ` +

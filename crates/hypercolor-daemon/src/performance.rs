@@ -122,7 +122,6 @@ pub(crate) struct LatestFrameMetrics {
     pub gpu_sample_queue_saturated: bool,
     pub gpu_sample_wait_blocked: bool,
     pub gpu_sample_cpu_fallback: bool,
-    pub cpu_sampling_late_readback: bool,
     pub cpu_readback_skipped: bool,
     pub gpu_readback_failed: bool,
     pub compositor_backend: CompositorBackendKind,
@@ -171,7 +170,6 @@ pub(crate) struct LatestFrameMetrics {
     pub full_frame_copy_bytes: u32,
     pub scene_canvas_forced_surface: bool,
     pub preview_surface: bool,
-    pub led_sampling_readback: bool,
     pub output_errors: u32,
     pub timeline: FrameTimeline,
 }
@@ -216,8 +214,6 @@ pub(crate) struct PacingSummary {
     pub gpu_sample_queue_saturated: u32,
     pub gpu_sample_wait_blocked: u32,
     pub gpu_sample_cpu_fallback: u32,
-    pub cpu_sampling_late_readback: u32,
-    pub led_sampling_readback: u32,
     pub preview_surface: u32,
     pub scene_canvas_forced_surface: u32,
     pub gpu_readback_failed_frames: u32,
@@ -286,8 +282,6 @@ impl PerformanceTracker {
             gpu_sample_queue_saturated: metrics.gpu_sample_queue_saturated,
             gpu_sample_wait_blocked: metrics.gpu_sample_wait_blocked,
             gpu_sample_cpu_fallback: metrics.gpu_sample_cpu_fallback,
-            cpu_sampling_late_readback: metrics.cpu_sampling_late_readback,
-            led_sampling_readback: metrics.led_sampling_readback,
             preview_surface: metrics.preview_surface,
             scene_canvas_forced_surface: metrics.scene_canvas_forced_surface,
             gpu_readback_failed: metrics.gpu_readback_failed,
@@ -393,8 +387,6 @@ struct FramePacingSample {
     gpu_sample_queue_saturated: bool,
     gpu_sample_wait_blocked: bool,
     gpu_sample_cpu_fallback: bool,
-    cpu_sampling_late_readback: bool,
-    led_sampling_readback: bool,
     preview_surface: bool,
     scene_canvas_forced_surface: bool,
     gpu_readback_failed: bool,
@@ -522,20 +514,6 @@ fn summarize_pacing(
             pacing_history
                 .iter()
                 .filter(|sample| sample.gpu_sample_cpu_fallback)
-                .count(),
-        )
-        .unwrap_or(u32::MAX),
-        cpu_sampling_late_readback: u32::try_from(
-            pacing_history
-                .iter()
-                .filter(|sample| sample.cpu_sampling_late_readback)
-                .count(),
-        )
-        .unwrap_or(u32::MAX),
-        led_sampling_readback: u32::try_from(
-            pacing_history
-                .iter()
-                .filter(|sample| sample.led_sampling_readback)
                 .count(),
         )
         .unwrap_or(u32::MAX),

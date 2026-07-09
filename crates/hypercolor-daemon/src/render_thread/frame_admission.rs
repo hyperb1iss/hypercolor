@@ -15,7 +15,6 @@ const FULL_TIER_REVOKE_PUSH_RATIO: f64 = 0.24;
 const FULL_TIER_REVOKE_PUBLISH_RATIO: f64 = 0.16;
 const FULL_TIER_REVOKE_P95_RATIO: f64 = 0.95;
 const FULL_TIER_COPY_PRESSURE_THRESHOLD: u32 = 2;
-const FULL_TIER_LATE_READBACK_THRESHOLD: u32 = 2;
 const FULL_TIER_OUTPUT_ERROR_THRESHOLD: u32 = 2;
 const FULL_TIER_REVOKE_MISS_THRESHOLD: u32 = 2;
 const FULL_TIER_REVOKE_PERCENTILE_MIN_SAMPLES: usize = 10;
@@ -30,7 +29,6 @@ pub(crate) struct FrameAdmissionSample {
     pub(crate) push_us: u32,
     pub(crate) publish_us: u32,
     pub(crate) full_frame_copy_count: u32,
-    pub(crate) cpu_sampling_late_readback: bool,
     pub(crate) output_errors: u32,
 }
 
@@ -47,7 +45,6 @@ pub(crate) struct FrameAdmissionController {
     recent_total_len: usize,
     recent_total_next: usize,
     consecutive_copy_frames: u32,
-    consecutive_late_readback_frames: u32,
     consecutive_output_error_frames: u32,
     consecutive_over_budget_frames: u32,
     consecutive_full_eligible_frames: u32,
@@ -67,7 +64,6 @@ impl FrameAdmissionController {
             recent_total_len: 0,
             recent_total_next: 0,
             consecutive_copy_frames: 0,
-            consecutive_late_readback_frames: 0,
             consecutive_output_error_frames: 0,
             consecutive_over_budget_frames: 0,
             consecutive_full_eligible_frames: 0,
@@ -109,13 +105,6 @@ impl FrameAdmissionController {
             self.consecutive_copy_frames = self.consecutive_copy_frames.saturating_add(1);
         } else {
             self.consecutive_copy_frames = 0;
-        }
-
-        if sample.cpu_sampling_late_readback {
-            self.consecutive_late_readback_frames =
-                self.consecutive_late_readback_frames.saturating_add(1);
-        } else {
-            self.consecutive_late_readback_frames = 0;
         }
 
         if sample.output_errors > 0 {
@@ -172,8 +161,6 @@ impl FrameAdmissionController {
         let push_ewma_us = self.push_ewma_us.unwrap_or(0.0);
         let publish_ewma_us = self.publish_ewma_us.unwrap_or(0.0);
         let copy_pressure = self.consecutive_copy_frames >= FULL_TIER_COPY_PRESSURE_THRESHOLD;
-        let late_readback_pressure =
-            self.consecutive_late_readback_frames >= FULL_TIER_LATE_READBACK_THRESHOLD;
         let percentile_window_ready =
             self.recent_total_len >= FULL_TIER_REVOKE_PERCENTILE_MIN_SAMPLES;
         let (p95_total_us, p99_total_us) = if percentile_window_ready {
@@ -183,7 +170,6 @@ impl FrameAdmissionController {
         };
 
         copy_pressure
-            || late_readback_pressure
             || self.consecutive_output_error_frames >= FULL_TIER_OUTPUT_ERROR_THRESHOLD
             || self.consecutive_over_budget_frames >= FULL_TIER_REVOKE_MISS_THRESHOLD
             || (percentile_window_ready
@@ -217,7 +203,6 @@ impl FrameAdmissionController {
                 .unwrap_or((full_budget_us, full_budget_us));
 
         self.consecutive_copy_frames == 0
-            && self.consecutive_late_readback_frames == 0
             && self.consecutive_output_error_frames == 0
             && self.consecutive_over_budget_frames == 0
             && total_ewma_us <= full_budget_us * FULL_TIER_ELIGIBLE_TOTAL_RATIO
@@ -282,7 +267,6 @@ mod tests {
             push_us: 0,
             publish_us: 0,
             full_frame_copy_count: 0,
-            cpu_sampling_late_readback: false,
             output_errors: 0,
         }
     }
@@ -352,25 +336,6 @@ mod tests {
             ..sample(8_000, 4_500, 1_000)
         });
         assert_eq!(second_copy, FpsTier::High);
-    }
-
-    #[test]
-    fn repeated_late_cpu_sampling_readbacks_revoke_full_tier() {
-        let mut admission = FrameAdmissionController::new(FpsTier::Full);
-        let clean = admission.record_frame(sample(8_000, 4_500, 1_000));
-        assert_eq!(clean, FpsTier::Full);
-
-        let first_readback = admission.record_frame(FrameAdmissionSample {
-            cpu_sampling_late_readback: true,
-            ..sample(8_000, 4_500, 1_000)
-        });
-        assert_eq!(first_readback, FpsTier::Full);
-
-        let second_readback = admission.record_frame(FrameAdmissionSample {
-            cpu_sampling_late_readback: true,
-            ..sample(8_000, 4_500, 1_000)
-        });
-        assert_eq!(second_readback, FpsTier::High);
     }
 
     #[test]
