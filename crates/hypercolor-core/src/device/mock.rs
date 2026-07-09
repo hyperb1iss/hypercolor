@@ -435,7 +435,7 @@ impl EffectRenderer for MockEffectRenderer {
 )]
 fn render_rainbow(canvas: &mut Canvas, input: &FrameInput) {
     let w = canvas.width();
-    let time_offset = input.time_secs * 30.0; // Slow drift
+    let time_offset = (input.time_secs * 30.0).rem_euclid(360.0) as f32; // Slow drift
     let row_len = w as usize * BYTES_PER_PIXEL;
 
     if row_len == 0 {

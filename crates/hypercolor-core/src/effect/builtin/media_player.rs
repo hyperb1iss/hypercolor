@@ -269,10 +269,10 @@ fn rotate_hue(color: RgbaF32, degrees: f32) -> RgbaF32 {
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     clippy::as_conversions,
-    reason = "media playback receives bounded render-loop elapsed seconds"
+    reason = "effect time maps to saturating integer milliseconds"
 )]
-fn time_secs_to_elapsed_ms(time_secs: f32) -> u32 {
-    (time_secs * 1_000.0).round().max(0.0) as u32
+fn time_secs_to_elapsed_ms(time_secs: f64) -> u64 {
+    (time_secs * 1_000.0).round().max(0.0) as u64
 }
 
 fn controls() -> Vec<ControlDefinition> {

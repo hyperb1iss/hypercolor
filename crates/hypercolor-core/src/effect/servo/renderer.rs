@@ -77,7 +77,7 @@ pub struct ServoRenderer {
     last_animation_fps_cap: Option<u32>,
     animation_cadence: AnimationCadence,
     host_driven_animation: bool,
-    last_submit_time_secs: Option<f32>,
+    last_submit_time_secs: Option<f64>,
     producer_role: ServoProducerRole,
     display_descriptor: Option<DisplayDescriptor>,
 }

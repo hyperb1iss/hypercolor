@@ -56,7 +56,7 @@ fn make_metadata(name: &str) -> EffectMetadata {
     }
 }
 
-fn frame(time_secs: f32, frame_number: u64) -> FrameInput<'static> {
+fn frame(time_secs: f64, frame_number: u64) -> FrameInput<'static> {
     FrameInput {
         time_secs,
         delta_secs: 1.0 / 60.0,
@@ -72,7 +72,7 @@ fn frame(time_secs: f32, frame_number: u64) -> FrameInput<'static> {
 }
 
 fn frame_with_size(
-    time_secs: f32,
+    time_secs: f64,
     frame_number: u64,
     width: u32,
     height: u32,
@@ -91,7 +91,7 @@ fn frame_with_size(
     }
 }
 
-fn frame_with_audio(time_secs: f32, audio: &AudioData) -> FrameInput<'_> {
+fn frame_with_audio(time_secs: f64, audio: &AudioData) -> FrameInput<'_> {
     FrameInput {
         time_secs,
         delta_secs: 1.0 / 60.0,
@@ -106,7 +106,7 @@ fn frame_with_audio(time_secs: f32, audio: &AudioData) -> FrameInput<'_> {
     }
 }
 
-fn frame_with_screen(time_secs: f32, screen: &ScreenData) -> FrameInput<'_> {
+fn frame_with_screen(time_secs: f64, screen: &ScreenData) -> FrameInput<'_> {
     FrameInput {
         time_secs,
         delta_secs: 1.0 / 60.0,
@@ -160,7 +160,7 @@ fn tick_color_wave(renderer: &mut ColorWaveRenderer, frames: u64) -> Canvas {
 
     for i in 1..frames {
         #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
-        let t = i as f32 / 60.0;
+        let t = i as f64 / 60.0;
         canvas = renderer.tick(&frame(t, i)).expect("tick");
     }
 
@@ -341,7 +341,7 @@ fn hardware_visual_color_wave_retained_frames_do_not_flicker() {
     let mut previous = sample_strip(&r.tick(&frame(0.0, 0)).expect("tick"), 32);
     for frame_number in 1..12 {
         #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
-        let time_secs = frame_number as f32 / 60.0;
+        let time_secs = frame_number as f64 / 60.0;
         let current = sample_strip(&r.tick(&frame(time_secs, frame_number)).expect("tick"), 32);
         assert!(
             changed_led_ratio(&previous, &current) <= 0.35,
@@ -906,7 +906,7 @@ fn solid_color_full_lifecycle() {
     // Tick 10 frames
     for i in 0..10 {
         #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
-        let t = i as f32 / 60.0;
+        let t = i as f64 / 60.0;
         let canvas = r.tick(&frame(t, i)).expect("tick");
         assert_eq!(canvas.width(), W);
         assert_eq!(canvas.height(), H);
@@ -918,7 +918,7 @@ fn solid_color_full_lifecycle() {
     // Tick 10 more frames
     for i in 10..20 {
         #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
-        let t = i as f32 / 60.0;
+        let t = i as f64 / 60.0;
         let canvas = r.tick(&frame(t, i)).expect("tick after control change");
         let p = top_left(&canvas);
         assert_eq!(p.g, 255, "should be green after control change");
@@ -935,7 +935,7 @@ fn gradient_full_lifecycle() {
 
     for i in 0..10 {
         #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
-        let t = i as f32 / 60.0;
+        let t = i as f64 / 60.0;
         r.tick(&frame(t, i)).expect("tick");
     }
 
@@ -943,7 +943,7 @@ fn gradient_full_lifecycle() {
 
     for i in 10..20 {
         #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
-        let t = i as f32 / 60.0;
+        let t = i as f64 / 60.0;
         r.tick(&frame(t, i)).expect("tick after control change");
     }
 
@@ -957,7 +957,7 @@ fn rainbow_full_lifecycle() {
 
     for i in 0..10 {
         #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
-        let t = i as f32 / 60.0;
+        let t = i as f64 / 60.0;
         r.tick(&frame(t, i)).expect("tick");
     }
 
@@ -965,7 +965,7 @@ fn rainbow_full_lifecycle() {
 
     for i in 10..20 {
         #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
-        let t = i as f32 / 60.0;
+        let t = i as f64 / 60.0;
         r.tick(&frame(t, i)).expect("tick after control change");
     }
 
@@ -979,7 +979,7 @@ fn breathing_full_lifecycle() {
 
     for i in 0..10 {
         #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
-        let t = i as f32 / 60.0;
+        let t = i as f64 / 60.0;
         r.tick(&frame(t, i)).expect("tick");
     }
 
@@ -987,7 +987,7 @@ fn breathing_full_lifecycle() {
 
     for i in 10..20 {
         #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
-        let t = i as f32 / 60.0;
+        let t = i as f64 / 60.0;
         r.tick(&frame(t, i)).expect("tick after control change");
     }
 
@@ -1002,7 +1002,7 @@ fn audio_pulse_full_lifecycle() {
     // 10 frames with silence
     for i in 0..10 {
         #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
-        let t = i as f32 / 60.0;
+        let t = i as f64 / 60.0;
         r.tick(&frame(t, i)).expect("tick");
     }
 
@@ -1012,7 +1012,7 @@ fn audio_pulse_full_lifecycle() {
     // 10 frames with audio
     for i in 10..20 {
         #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
-        let t = i as f32 / 60.0;
+        let t = i as f64 / 60.0;
         let mut audio = AudioData::silence();
         audio.rms_level = 0.5;
         if i == 15 {
@@ -1506,7 +1506,7 @@ fn calibration_perf_profile() {
     let calibration_start = Instant::now();
     for i in 0..frames {
         #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
-        let t = i as f32 / 60.0;
+        let t = i as f64 / 60.0;
         calibration
             .render_into(
                 &frame_with_size(t, i, width, height),
@@ -1522,7 +1522,7 @@ fn calibration_perf_profile() {
     let rainbow_start = Instant::now();
     for i in 0..frames {
         #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
-        let t = i as f32 / 60.0;
+        let t = i as f64 / 60.0;
         rainbow
             .render_into(&frame_with_size(t, i, width, height), &mut rainbow_canvas)
             .expect("rainbow render");

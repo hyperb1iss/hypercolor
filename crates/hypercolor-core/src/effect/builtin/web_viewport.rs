@@ -38,7 +38,7 @@ pub struct WebViewportRenderer {
     /// scroll hasn't changed — keeps the JS cost off the happy path
     /// and avoids redundant work for pages sitting at the top.
     last_applied_scroll: Option<(i32, i32)>,
-    last_refresh_time_secs: Option<f32>,
+    last_refresh_time_secs: Option<f64>,
     url_dirty_at: Option<Instant>,
     loaded_url: Option<String>,
     preview_canvas: Option<Canvas>,
@@ -150,12 +150,12 @@ impl WebViewportRenderer {
         Ok(())
     }
 
-    fn maybe_reload(&mut self, time_secs: f32) -> anyhow::Result<()> {
+    fn maybe_reload(&mut self, time_secs: f64) -> anyhow::Result<()> {
         if self.refresh_interval_secs <= 0.0 {
             return Ok(());
         }
         let last_refresh = self.last_refresh_time_secs.unwrap_or(time_secs);
-        if time_secs - last_refresh >= self.refresh_interval_secs {
+        if time_secs - last_refresh >= f64::from(self.refresh_interval_secs) {
             self.load_url_now()?;
             self.last_refresh_time_secs = Some(time_secs);
         }

@@ -218,7 +218,7 @@ fn push_u24_le(bytes: &mut Vec<u8>, value: u32) {
     bytes.push(((value >> 16) & 0xff) as u8);
 }
 
-fn pixel_at(producer: &MediaProducer, playback: &MediaPlayback, elapsed_ms: u32) -> Rgba {
+fn pixel_at(producer: &MediaProducer, playback: &MediaPlayback, elapsed_ms: u64) -> Rgba {
     producer
         .render_frame(playback, elapsed_ms, 1, 1)
         .get_pixel(0, 0)

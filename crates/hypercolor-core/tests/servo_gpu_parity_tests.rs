@@ -251,7 +251,7 @@ fn frame_input(frame_number: u64) -> FrameInput<'static> {
         std::sync::LazyLock::new(SystemSnapshot::empty);
 
     FrameInput {
-        time_secs: frame_number as f32 * FRAME_DT_SECONDS,
+        time_secs: frame_number as f64 * f64::from(FRAME_DT_SECONDS),
         delta_secs: FRAME_DT_SECONDS,
         frame_number,
         audio: &AUDIO,

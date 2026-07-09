@@ -382,7 +382,19 @@ impl EffectRenderer for GradientRenderer {
 
         let width = input.canvas_width.max(1) as f32;
         let height = input.canvas_height.max(1) as f32;
-        let animated_offset = self.offset + input.time_secs * self.speed;
+        #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+        let animated_offset =
+            match self.repeat_mode {
+                RepeatMode::Clamp => {
+                    (f64::from(self.offset) + input.time_secs * f64::from(self.speed)) as f32
+                }
+                RepeatMode::Repeat => (f64::from(self.offset)
+                    + input.time_secs * f64::from(self.speed))
+                .rem_euclid(1.0) as f32,
+                RepeatMode::Mirror => (f64::from(self.offset)
+                    + input.time_secs * f64::from(self.speed))
+                .rem_euclid(2.0) as f32,
+            };
         let scale = self.scale.max(0.1);
         let geometry = PreparedGradientGeometry::new(
             self.mode,

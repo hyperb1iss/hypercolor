@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use anyhow::{Result, anyhow};
 
@@ -338,7 +338,7 @@ struct EffectSlot {
     renderer: Box<dyn EffectRenderer>,
     controls: HashMap<String, ControlValue>,
     binding_state: HashMap<String, ActiveBindingState>,
-    elapsed_secs: f32,
+    elapsed: Duration,
     frame_number: u64,
 }
 
@@ -373,7 +373,7 @@ impl EffectSlot {
             renderer,
             controls: HashMap::new(),
             binding_state: HashMap::new(),
-            elapsed_secs: 0.0,
+            elapsed: Duration::ZERO,
             frame_number: 0,
         };
         slot.sync_layer_state(layer);
@@ -447,7 +447,7 @@ impl EffectSlot {
         canvas_height: u32,
         target: &mut Canvas,
     ) -> Result<()> {
-        self.elapsed_secs += delta_secs;
+        let time_secs = self.advance_elapsed(delta_secs);
         apply_sensor_bindings(
             self.renderer.as_mut(),
             &self.metadata,
@@ -456,7 +456,7 @@ impl EffectSlot {
             sensors,
         );
         let input = FrameInput {
-            time_secs: self.elapsed_secs,
+            time_secs,
             delta_secs,
             frame_number: self.frame_number,
             audio,
@@ -487,7 +487,7 @@ impl EffectSlot {
         canvas_width: u32,
         canvas_height: u32,
     ) -> Result<EffectRenderOutput> {
-        self.elapsed_secs += delta_secs;
+        let time_secs = self.advance_elapsed(delta_secs);
         apply_sensor_bindings(
             self.renderer.as_mut(),
             &self.metadata,
@@ -496,7 +496,7 @@ impl EffectSlot {
             sensors,
         );
         let input = FrameInput {
-            time_secs: self.elapsed_secs,
+            time_secs,
             delta_secs,
             frame_number: self.frame_number,
             audio,
@@ -527,7 +527,7 @@ impl EffectSlot {
         canvas_width: u32,
         canvas_height: u32,
     ) -> Result<()> {
-        self.elapsed_secs += delta_secs;
+        let time_secs = self.advance_elapsed(delta_secs);
         apply_sensor_bindings(
             self.renderer.as_mut(),
             &self.metadata,
@@ -536,7 +536,7 @@ impl EffectSlot {
             sensors,
         );
         let input = FrameInput {
-            time_secs: self.elapsed_secs,
+            time_secs,
             delta_secs,
             frame_number: self.frame_number,
             audio,
@@ -550,6 +550,12 @@ impl EffectSlot {
         self.renderer.advance_output(&input)?;
         self.frame_number = self.frame_number.wrapping_add(1);
         Ok(())
+    }
+
+    fn advance_elapsed(&mut self, delta_secs: f32) -> f64 {
+        let delta = Duration::try_from_secs_f32(delta_secs).unwrap_or_default();
+        self.elapsed = self.elapsed.saturating_add(delta);
+        self.elapsed.as_secs_f64()
     }
 }
 
@@ -782,7 +788,7 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-    use std::time::SystemTime;
+    use std::time::{Duration, SystemTime};
 
     use anyhow::Result;
 
@@ -928,7 +934,7 @@ mod tests {
             renderer: Box::new(DestroySpyRenderer::new(destroyed)),
             controls: HashMap::new(),
             binding_state: HashMap::new(),
-            elapsed_secs: 0.0,
+            elapsed: Duration::ZERO,
             frame_number: 0,
         }
     }
@@ -945,7 +951,7 @@ mod tests {
             renderer: Box::new(AdvanceSpyRenderer { advanced }),
             controls: HashMap::new(),
             binding_state: HashMap::new(),
-            elapsed_secs: 0.0,
+            elapsed: Duration::ZERO,
             frame_number: 0,
         }
     }
@@ -994,6 +1000,19 @@ mod tests {
         drop(slot);
 
         assert!(destroyed.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn effect_slot_clock_advances_after_long_uptime() {
+        let destroyed = Arc::new(AtomicBool::new(false));
+        let mut slot = spy_slot(EffectId::new(uuid::Uuid::now_v7()), destroyed);
+        slot.elapsed = Duration::from_hours(60 * 24);
+        let before = slot.elapsed.as_secs_f64();
+
+        let after = slot.advance_elapsed(1.0 / 60.0);
+
+        assert!(after > before);
+        assert_eq!(after, slot.elapsed.as_secs_f64());
     }
 
     #[test]

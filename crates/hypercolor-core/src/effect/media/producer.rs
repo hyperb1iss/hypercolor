@@ -306,7 +306,7 @@ impl MediaProducer {
     }
 
     #[must_use]
-    pub fn frame_index_at(&self, playback: &MediaPlayback, elapsed_ms: u32) -> usize {
+    pub fn frame_index_at(&self, playback: &MediaPlayback, elapsed_ms: u64) -> usize {
         if self.frames.len() <= 1 || self.total_duration_us == 0 {
             return 0;
         }
@@ -349,7 +349,7 @@ impl MediaProducer {
     }
 
     #[must_use]
-    pub fn intrinsic_frame(&self, playback: &MediaPlayback, elapsed_ms: u32) -> Canvas {
+    pub fn intrinsic_frame(&self, playback: &MediaPlayback, elapsed_ms: u64) -> Canvas {
         #[cfg(feature = "media-video")]
         if let Some(live_stream) = &self.live_stream {
             return live_stream
@@ -366,7 +366,7 @@ impl MediaProducer {
     pub fn render_frame(
         &self,
         playback: &MediaPlayback,
-        elapsed_ms: u32,
+        elapsed_ms: u64,
         width: u32,
         height: u32,
     ) -> Canvas {
@@ -377,7 +377,7 @@ impl MediaProducer {
     pub fn render_frame_with_fit(
         &self,
         playback: &MediaPlayback,
-        elapsed_ms: u32,
+        elapsed_ms: u64,
         width: u32,
         height: u32,
         fit_mode: FitMode,
@@ -1111,7 +1111,7 @@ fn delay_us(delay: image::Delay) -> u64 {
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     clippy::as_conversions,
-    reason = "media playback maps bounded frame time into integer microseconds"
+    reason = "media playback maps bounded start offsets into integer microseconds"
 )]
 fn seconds_to_us(seconds: f32) -> u64 {
     if seconds.is_finite() && seconds > 0.0 {
@@ -1126,8 +1126,10 @@ fn seconds_to_us(seconds: f32) -> u64 {
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     clippy::as_conversions,
-    reason = "media playback maps bounded frame time into integer microseconds"
+    reason = "scaled media time maps through saturating float-to-integer conversion"
 )]
-fn millis_to_scaled_us(elapsed_ms: u32, speed: f32) -> u64 {
-    (elapsed_ms as f32 * speed * 1_000.0).round().max(0.0) as u64
+fn millis_to_scaled_us(elapsed_ms: u64, speed: f32) -> u64 {
+    (elapsed_ms as f64 * f64::from(speed) * 1_000.0)
+        .round()
+        .max(0.0) as u64
 }

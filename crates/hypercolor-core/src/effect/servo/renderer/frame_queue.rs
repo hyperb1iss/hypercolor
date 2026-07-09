@@ -29,15 +29,15 @@ impl AnimationCadence {
 
     pub(super) fn render_due(
         self,
-        last_submit_time_secs: Option<f32>,
-        next_time_secs: f32,
+        last_submit_time_secs: Option<f64>,
+        next_time_secs: f64,
     ) -> bool {
         match self {
             Self::MatchRenderLoop => true,
             Self::Fixed(fps_cap) => {
-                let min_frame_interval_secs = 1.0 / fps_cap.max(1) as f32;
+                let min_frame_interval_secs = 1.0 / f64::from(fps_cap.max(1));
                 last_submit_time_secs.is_none_or(|last_submit_time_secs| {
-                    next_time_secs + f32::EPSILON >= last_submit_time_secs + min_frame_interval_secs
+                    next_time_secs + f64::EPSILON >= last_submit_time_secs + min_frame_interval_secs
                 })
             }
         }
@@ -260,7 +260,7 @@ pub(super) struct QueuedFrameDemand {
 
 #[derive(Debug, Clone)]
 pub(super) struct QueuedFrameInput {
-    time_secs: f32,
+    time_secs: f64,
     delta_secs: f32,
     frame_number: u64,
     audio: Option<Arc<hypercolor_types::audio::AudioData>>,

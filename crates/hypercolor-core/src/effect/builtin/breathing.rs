@@ -54,10 +54,11 @@ impl EffectRenderer for BreathingRenderer {
         prepare_target_canvas(canvas, input.canvas_width, input.canvas_height);
         // Convert BPM to Hz, then to angular frequency
         let freq_hz = self.speed_bpm / 60.0;
-        let phase = input.time_secs * freq_hz * std::f32::consts::TAU;
+        let phase = input.time_secs * f64::from(freq_hz) * std::f64::consts::TAU;
 
         // Sine wave mapped from [-1, 1] to [min_brightness, max_brightness]
-        let sine_01 = (phase.sin() + 1.0) * 0.5;
+        #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+        let sine_01 = ((phase.sin() + 1.0) * 0.5) as f32;
         let brightness =
             self.min_brightness + (self.max_brightness - self.min_brightness) * sine_01;
 

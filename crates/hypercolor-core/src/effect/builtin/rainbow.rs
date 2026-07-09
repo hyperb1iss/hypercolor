@@ -81,7 +81,7 @@ impl EffectRenderer for RainbowRenderer {
         prepare_target_canvas(canvas, input.canvas_width, input.canvas_height);
         let width = input.canvas_width.max(1) as f32;
         let height = input.canvas_height.max(1) as f32;
-        let time_offset = input.time_secs * self.speed;
+        let time_offset = (input.time_secs * f64::from(self.speed)).rem_euclid(360.0) as f32;
         let row_len = input.canvas_width as usize * BYTES_PER_PIXEL;
 
         if row_len == 0 {

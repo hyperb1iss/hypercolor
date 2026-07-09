@@ -59,7 +59,7 @@ pub struct FrameDataSources<'a> {
 #[derive(Debug, Clone, Copy)]
 pub struct FrameInput<'a> {
     /// Elapsed time in seconds since the effect was activated.
-    pub time_secs: f32,
+    pub time_secs: f64,
 
     /// Time delta since the previous frame, in seconds.
     pub delta_secs: f32,

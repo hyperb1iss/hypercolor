@@ -246,13 +246,15 @@ impl ColorWaveRenderer {
         )
     }
 
-    fn current_wave_color(&self, wave: &WaveInstance, time_secs: f32) -> RgbaF32 {
+    #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+    fn current_wave_color(&self, wave: &WaveInstance, time_secs: f64) -> RgbaF32 {
         let shifted = match self.color_mode {
             WaveColorMode::Custom => self.wave_color,
             WaveColorMode::Random => hue_shift(self.wave_color, wave.hue_offset),
-            WaveColorMode::ColorCycle => {
-                hue_shift(self.wave_color, time_secs * self.cycle_speed * 1.2)
-            }
+            WaveColorMode::ColorCycle => hue_shift(
+                self.wave_color,
+                (time_secs * f64::from(self.cycle_speed) * 1.2).rem_euclid(360.0) as f32,
+            ),
         };
         self.scaled_color(shifted)
     }
@@ -279,7 +281,7 @@ impl ColorWaveRenderer {
         }
     }
 
-    fn draw_waves(&self, canvas: &mut Canvas, time_secs: f32, width: u32, height: u32) {
+    fn draw_waves(&self, canvas: &mut Canvas, time_secs: f64, width: u32, height: u32) {
         #[allow(
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss,

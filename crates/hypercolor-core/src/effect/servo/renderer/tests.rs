@@ -79,7 +79,7 @@ fn frame_input_with<'a>(
     canvas_height: u32,
 ) -> FrameInput<'a> {
     FrameInput {
-        time_secs: delta_secs * frame_number as f32,
+        time_secs: f64::from(delta_secs) * frame_number as f64,
         delta_secs,
         frame_number,
         audio,
@@ -436,6 +436,15 @@ fn fixed_animation_cadence_waits_for_next_due_frame() {
     assert!(!cadence.render_due(Some(0.0), 0.01));
     assert!(cadence.render_due(Some(0.0), 1.0 / 30.0));
     assert!(cadence.render_due(Some(0.0), 0.05));
+}
+
+#[test]
+fn fixed_animation_cadence_stays_precise_after_long_uptime() {
+    let cadence = AnimationCadence::Fixed(30);
+    let last_submit = Duration::from_hours(60 * 24).as_secs_f64();
+
+    assert!(!cadence.render_due(Some(last_submit), last_submit + 0.01));
+    assert!(cadence.render_due(Some(last_submit), last_submit + 1.0 / 30.0));
 }
 
 #[test]

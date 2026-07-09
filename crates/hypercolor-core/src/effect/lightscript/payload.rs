@@ -61,7 +61,7 @@ impl LightScriptFramePayload {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct LightScriptTimingPayload {
-    pub(super) time_secs: f32,
+    pub(super) time_secs: f64,
     pub(super) delta_secs: f32,
     pub(super) frame_number: u64,
 }
@@ -432,6 +432,10 @@ fn default_sensor_range(reading: &SensorReading) -> (f32, f32) {
 }
 
 pub(super) fn sanitize_f32(value: f32) -> f32 {
+    if value.is_finite() { value } else { 0.0 }
+}
+
+pub(super) fn sanitize_f64(value: f64) -> f64 {
     if value.is_finite() { value } else { 0.0 }
 }
 

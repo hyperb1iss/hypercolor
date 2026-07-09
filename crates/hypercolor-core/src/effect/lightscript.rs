@@ -21,7 +21,7 @@ use payload::{
     LightScriptAudioPayload, LightScriptCanvasPayload, LightScriptControlValue,
     LightScriptFramePayload, LightScriptInteractionPayload, LightScriptLightingPayload,
     LightScriptMediaPayload, LightScriptNetPayload, LightScriptScreenPayload,
-    LightScriptSensorPayload, LightScriptTimingPayload, sanitize_f32,
+    LightScriptSensorPayload, LightScriptTimingPayload, sanitize_f32, sanitize_f64,
 };
 
 const LEVEL_FLOOR_DB: f32 = -100.0;
@@ -541,7 +541,7 @@ impl LightscriptRuntime {
             || options.render_host_frame;
         should_emit.then(|| LightScriptFramePayload {
             timing: LightScriptTimingPayload {
-                time_secs: sanitize_f32(input.time_secs),
+                time_secs: sanitize_f64(input.time_secs),
                 delta_secs: sanitize_f32(input.delta_secs),
                 frame_number: input.frame_number,
             },

@@ -245,7 +245,7 @@ fn frame_input_construction() {
         canvas_height: DEFAULT_CANVAS_HEIGHT,
     };
 
-    assert!((input.time_secs - 1.5).abs() < f32::EPSILON);
+    assert!((input.time_secs - 1.5).abs() < f64::EPSILON);
     assert!((input.delta_secs - 0.016).abs() < f32::EPSILON);
     assert_eq!(input.frame_number, 90);
     assert_eq!(input.canvas_width, DEFAULT_CANVAS_WIDTH);
@@ -270,7 +270,7 @@ fn frame_input_clone() {
     };
     let cloned = input;
     assert_eq!(cloned.frame_number, input.frame_number);
-    assert!((cloned.time_secs - input.time_secs).abs() < f32::EPSILON);
+    assert!((cloned.time_secs - input.time_secs).abs() < f64::EPSILON);
 }
 
 // ── EffectEngine Tests ───────────────────────────────────────────────────────

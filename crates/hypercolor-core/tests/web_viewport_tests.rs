@@ -50,7 +50,7 @@ fn metadata() -> EffectMetadata {
 
 fn frame(frame_number: u64) -> FrameInput<'static> {
     FrameInput {
-        time_secs: frame_number as f32 * FRAME_DT_SECONDS,
+        time_secs: frame_number as f64 * f64::from(FRAME_DT_SECONDS),
         delta_secs: FRAME_DT_SECONDS,
         frame_number,
         audio: &SILENCE,

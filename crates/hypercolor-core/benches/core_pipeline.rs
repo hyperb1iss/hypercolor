@@ -196,7 +196,7 @@ fn binding_snapshot(hot: bool) -> SystemSnapshot {
     }
 }
 
-fn frame_input(time_secs: f32, frame_number: u64, audio: &AudioData) -> FrameInput<'_> {
+fn frame_input(time_secs: f64, frame_number: u64, audio: &AudioData) -> FrameInput<'_> {
     FrameInput {
         time_secs,
         delta_secs: FRAME_DT_SECONDS,
@@ -212,12 +212,7 @@ fn frame_input(time_secs: f32, frame_number: u64, audio: &AudioData) -> FrameInp
 }
 
 #[expect(clippy::cast_precision_loss, clippy::as_conversions)]
-fn frame_time(frame_number: u64) -> f32 {
-    frame_number as f32 * FRAME_DT_SECONDS
-}
-
-#[expect(clippy::cast_precision_loss, clippy::as_conversions)]
-fn frame_time_f64(frame_number: u64) -> f64 {
+fn frame_time(frame_number: u64) -> f64 {
     frame_number as f64 * f64::from(FRAME_DT_SECONDS)
 }
 
@@ -394,7 +389,7 @@ fn synthetic_beat_frame(frame_number: u64) -> BeatFrame {
             0.04
         },
         dt: FRAME_DT_SECONDS,
-        current_time: frame_time_f64(frame_number),
+        current_time: frame_time(frame_number),
     }
 }
 

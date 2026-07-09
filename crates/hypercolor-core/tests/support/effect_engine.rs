@@ -63,7 +63,7 @@ pub struct EffectEngine {
     binding_state: HashMap<String, ActiveBindingState>,
 
     /// Cumulative elapsed time since effect activation (seconds).
-    elapsed_secs: f32,
+    elapsed_secs: f64,
 
     /// Monotonically increasing frame counter.
     frame_number: u64,
@@ -585,7 +585,7 @@ impl EffectEngine {
             return Ok(());
         };
 
-        self.elapsed_secs += delta_secs;
+        self.elapsed_secs += f64::from(delta_secs);
         apply_sensor_bindings(
             renderer.as_mut(),
             self.metadata.as_ref(),

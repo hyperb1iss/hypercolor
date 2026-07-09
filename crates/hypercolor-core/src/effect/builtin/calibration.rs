@@ -168,8 +168,9 @@ impl CalibrationRenderer {
         self.speed.clamp(0.0, 100.0) * 0.006
     }
 
-    fn phase(&self, time_secs: f32) -> f32 {
-        (time_secs * self.cycles_per_second()).rem_euclid(1.0)
+    #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+    fn phase(&self, time_secs: f64) -> f32 {
+        (time_secs * f64::from(self.cycles_per_second())).rem_euclid(1.0) as f32
     }
 
     fn band_half_width(&self) -> f32 {
