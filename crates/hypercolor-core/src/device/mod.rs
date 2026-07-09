@@ -29,7 +29,8 @@ pub use discovery_server::discover_servers;
 pub use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
 pub use lifecycle::{DeviceLifecycleManager, LifecycleAction};
 pub use manager::{
-    AsyncWriteFailure, BackendIo, BackendManager, DeviceOutputStatistics, SegmentRange,
+    AsyncWriteFailure, BackendIo, BackendManager, DeviceOutputStatistics, DirectControlGuard,
+    SegmentRange,
 };
 pub use registry::DeviceRegistry;
 pub use smbus_backend::SmBusBackend;

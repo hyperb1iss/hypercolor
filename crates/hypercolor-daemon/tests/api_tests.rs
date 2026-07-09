@@ -4018,6 +4018,7 @@ async fn list_device_metrics_returns_seeded_snapshot() {
             mapped_layout_ids: vec!["layout-device".to_owned()],
             uses_frame_sink: true,
             worker_finished: false,
+            worker_recoveries: 3,
             fps_sent: 59.5,
             fps_queued: 60.0,
             fps_actual: 59.5,
@@ -4053,6 +4054,7 @@ async fn list_device_metrics_returns_seeded_snapshot() {
     assert_eq!(response.status(), StatusCode::OK);
 
     let json = body_json(response).await;
+    assert_eq!(json["data"]["items"][0]["worker_recoveries"], 3);
     assert_eq!(json["data"]["taken_at_ms"], 1_234);
     assert_eq!(json["data"]["items"][0]["id"], device_id.to_string());
     assert_eq!(json["data"]["items"][0]["fps_target"], 60);
@@ -11062,9 +11064,23 @@ async fn identify_device_temporarily_connects_known_network_device() {
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
     assert_eq!(json["data"]["device_id"], device_id.to_string());
+    assert!(
+        state
+            .backend_manager
+            .lock()
+            .await
+            .is_direct_control_active("wled", device_id)
+    );
 
     tokio::time::sleep(Duration::from_millis(400)).await;
     assert_eq!(disconnects.load(Ordering::Relaxed), 1);
+    assert!(
+        !state
+            .backend_manager
+            .lock()
+            .await
+            .is_direct_control_active("wled", device_id)
+    );
 }
 
 #[tokio::test]

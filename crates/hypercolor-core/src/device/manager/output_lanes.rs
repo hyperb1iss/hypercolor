@@ -2,7 +2,7 @@ use hypercolor_types::device::DeviceId;
 
 use crate::device::traits::OutputCadence;
 
-use super::{BackendDeviceKey, BackendManager, DeviceFrameSinkHandle};
+use super::{BackendDeviceKey, BackendManager, DeviceFrameSinkHandle, DirectControlGuard};
 
 impl BackendManager {
     /// Cache a backend-provided hot-path frame sink for a physical device.
@@ -56,16 +56,14 @@ impl BackendManager {
 
     /// Suppress queued frame writes for a specific physical device.
     ///
-    /// Returns the active direct-control lock count after incrementing.
-    pub fn begin_direct_control(&mut self, backend_id: &str, device_id: DeviceId) -> usize {
+    /// The returned guard releases suppression when dropped, including during
+    /// task cancellation and panic unwinding.
+    pub fn begin_direct_control(
+        &self,
+        backend_id: &str,
+        device_id: DeviceId,
+    ) -> DirectControlGuard {
         self.output.begin_direct_control(backend_id, device_id)
-    }
-
-    /// Release one direct-control lock for a specific physical device.
-    ///
-    /// Returns the remaining lock count after decrementing.
-    pub fn end_direct_control(&mut self, backend_id: &str, device_id: DeviceId) -> usize {
-        self.output.end_direct_control(backend_id, device_id)
     }
 
     /// Whether queued frame writes are currently suppressed for a device.

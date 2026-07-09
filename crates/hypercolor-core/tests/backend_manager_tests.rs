@@ -3,7 +3,7 @@
 use std::io;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
@@ -354,13 +354,27 @@ impl DeviceBackend for SharedPayloadRecordingBackend {
     }
 }
 
+type RecordedFrameWrites = Arc<Mutex<Vec<Vec<[u8; 3]>>>>;
+
 struct FastFrameSink {
     writes: Arc<AtomicUsize>,
+    recorded_writes: Option<RecordedFrameWrites>,
+    panic_next: Option<Arc<AtomicBool>>,
 }
 
 #[async_trait::async_trait]
 impl DeviceFrameSink for FastFrameSink {
-    async fn write_colors_shared(&self, _colors: Arc<Vec<[u8; 3]>>) -> Result<()> {
+    async fn write_colors_shared(&self, colors: Arc<Vec<[u8; 3]>>) -> Result<()> {
+        if self
+            .panic_next
+            .as_ref()
+            .is_some_and(|panic_next| panic_next.swap(false, Ordering::SeqCst))
+        {
+            panic!("injected output worker panic");
+        }
+        if let Some(recorded_writes) = &self.recorded_writes {
+            recorded_writes.lock().await.push(colors.as_ref().clone());
+        }
         self.writes.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
@@ -390,6 +404,8 @@ struct FastFrameSinkBackend {
     writes: Arc<AtomicUsize>,
     target_fps: u32,
     suppress_writes: bool,
+    recorded_writes: Option<RecordedFrameWrites>,
+    panic_next: Option<Arc<AtomicBool>>,
 }
 
 impl FastFrameSinkBackend {
@@ -399,6 +415,8 @@ impl FastFrameSinkBackend {
             writes,
             target_fps,
             suppress_writes: false,
+            recorded_writes: None,
+            panic_next: None,
         }
     }
 
@@ -408,6 +426,24 @@ impl FastFrameSinkBackend {
             writes: attempts,
             target_fps: 60,
             suppress_writes: true,
+            recorded_writes: None,
+            panic_next: None,
+        }
+    }
+
+    fn panicking(
+        expected_device_id: DeviceId,
+        writes: Arc<AtomicUsize>,
+        recorded_writes: RecordedFrameWrites,
+        panic_next: Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            expected_device_id,
+            writes,
+            target_fps: 60,
+            suppress_writes: false,
+            recorded_writes: Some(recorded_writes),
+            panic_next: Some(panic_next),
         }
     }
 }
@@ -473,6 +509,8 @@ impl DeviceBackend for FastFrameSinkBackend {
 
         Some(Arc::new(FastFrameSink {
             writes: Arc::clone(&self.writes),
+            recorded_writes: self.recorded_writes.clone(),
+            panic_next: self.panic_next.clone(),
         }) as Arc<dyn DeviceFrameSink>)
     }
 
@@ -2223,7 +2261,10 @@ async fn direct_control_suppresses_queued_writes_until_released() {
         colors: vec![[9, 9, 9]; 4],
     }];
 
-    assert_eq!(manager.begin_direct_control("recording", device_id), 1);
+    let direct_control = manager.begin_direct_control("recording", device_id);
+    let nested_direct_control = manager.begin_direct_control("recording", device_id);
+    assert!(manager.is_direct_control_active("recording", device_id));
+    drop(nested_direct_control);
     assert!(manager.is_direct_control_active("recording", device_id));
 
     let suppressed_stats = manager.write_frame(&zone_colors, &layout).await;
@@ -2241,7 +2282,7 @@ async fn direct_control_suppresses_queued_writes_until_released() {
         .expect("direct writes should still succeed");
     assert_eq!(*writes.lock().await, vec![vec![[1, 2, 3]; 4]]);
 
-    assert_eq!(manager.end_direct_control("recording", device_id), 0);
+    drop(direct_control);
     assert!(!manager.is_direct_control_active("recording", device_id));
 
     let resumed_stats = manager.write_frame(&zone_colors, &layout).await;
@@ -2256,6 +2297,40 @@ async fn direct_control_suppresses_queued_writes_until_released() {
         brightness_writes.lock().await.is_empty(),
         "direct-control suppression should not touch brightness"
     );
+}
+
+#[test]
+fn direct_control_guard_releases_during_panic_unwinding() {
+    let manager = BackendManager::new();
+    let device_id = DeviceId::new();
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _direct_control = manager.begin_direct_control("recording", device_id);
+        panic!("injected direct-control panic");
+    }));
+
+    assert!(result.is_err());
+    assert!(!manager.is_direct_control_active("recording", device_id));
+}
+
+#[tokio::test]
+async fn direct_control_guard_releases_when_task_is_cancelled() {
+    let manager = BackendManager::new();
+    let device_id = DeviceId::new();
+    let direct_control = manager.begin_direct_control("recording", device_id);
+    let task = tokio::spawn(async move {
+        let _direct_control = direct_control;
+        std::future::pending::<()>().await;
+    });
+    tokio::task::yield_now().await;
+
+    assert!(manager.is_direct_control_active("recording", device_id));
+    task.abort();
+    let error = task
+        .await
+        .expect_err("cancelled direct-control task should stop");
+    assert!(error.is_cancelled());
+    assert!(!manager.is_direct_control_active("recording", device_id));
 }
 
 // ── write_frame Tests ───────────────────────────────────────────────────────
@@ -4541,6 +4616,73 @@ async fn output_queue_does_not_count_suppressed_lane_outcomes_as_sent() {
     assert_eq!(queue.frames_suppressed, 1);
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn output_queue_recovers_finished_worker_and_requeues_latest_frame() {
+    let device_id = DeviceId::new();
+    let write_count = Arc::new(AtomicUsize::new(0));
+    let writes = Arc::new(Mutex::new(Vec::<Vec<[u8; 3]>>::new()));
+    let panic_next = Arc::new(AtomicBool::new(true));
+    let backend = FastFrameSinkBackend::panicking(
+        device_id,
+        Arc::clone(&write_count),
+        Arc::clone(&writes),
+        Arc::clone(&panic_next),
+    );
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(backend));
+    manager
+        .connect_device("fast_sink", device_id, "fast_sink:recover")
+        .await
+        .expect("connect should succeed");
+
+    let layout = make_layout(vec![make_zone("zone_0", "fast_sink:recover", 4)]);
+    let frame = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[128, 64, 32]; 4],
+    }];
+
+    manager.write_frame(&frame, &layout).await;
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while !manager.debug_snapshot().queues[0].worker_finished {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("injected worker panic should finish the queue task");
+
+    let failed = manager.debug_snapshot();
+    assert_eq!(failed.queues[0].worker_recoveries, 0);
+    assert_eq!(failed.queues[0].frames_received, 1);
+    assert_eq!(failed.queues[0].frames_sent, 0);
+
+    assert!(!manager.can_reuse_routed_frame_outputs(&layout));
+    let latest_frame = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[32, 64, 128]; 4],
+    }];
+    manager.write_frame(&latest_frame, &layout).await;
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while writes.lock().await.is_empty() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("replacement worker should deliver the retained latest frame");
+
+    assert_eq!(write_count.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        writes.lock().await.as_slice(),
+        &[vec![expected_led_color([32, 64, 128]); 4]]
+    );
+    let recovered = manager.debug_snapshot();
+    assert!(!recovered.queues[0].worker_finished);
+    assert_eq!(recovered.queues[0].worker_recoveries, 1);
+    assert_eq!(recovered.queues[0].frames_received, 2);
+    assert_eq!(recovered.queues[0].frames_sent, 1);
+    assert_eq!(recovered.queues[0].frames_dropped, 1);
+}
+
 #[tokio::test]
 async fn output_queue_rebinds_to_frame_sink_registered_after_queue_creation() {
     let device_id = DeviceId::new();
@@ -4578,6 +4720,8 @@ async fn output_queue_rebinds_to_frame_sink_registered_after_queue_creation() {
         device_id,
         Some(Arc::new(FastFrameSink {
             writes: Arc::clone(&sink_writes),
+            recorded_writes: None,
+            panic_next: None,
         })),
     );
 

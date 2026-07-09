@@ -912,6 +912,7 @@ fn device_metrics_message_uses_shared_snapshot() {
             mapped_layout_ids: vec!["layout-device".to_owned()],
             uses_frame_sink: true,
             worker_finished: false,
+            worker_recoveries: 3,
             fps_sent: 58.5,
             fps_queued: 60.0,
             fps_actual: 58.5,
@@ -942,6 +943,7 @@ fn device_metrics_message_uses_shared_snapshot() {
     assert_eq!(data.items[0].id, device_id);
     assert_eq!(data.items[0].backend_id, "usb");
     assert!(data.items[0].uses_frame_sink);
+    assert_eq!(data.items[0].worker_recoveries, 3);
     assert_eq!(data.items[0].avg_queue_wait_ms, 3);
     assert_eq!(data.items[0].avg_write_ms, 8);
     assert_eq!(data.items[0].payload_bps_estimate, 2_048);
@@ -980,6 +982,7 @@ async fn relay_device_metrics_wakes_when_subscription_changes() {
             mapped_layout_ids: vec!["layout-device".to_owned()],
             uses_frame_sink: true,
             worker_finished: false,
+            worker_recoveries: 0,
             fps_sent: 60.0,
             fps_queued: 60.0,
             fps_actual: 60.0,

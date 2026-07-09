@@ -141,6 +141,9 @@ pub struct OutputQueueDebugSnapshot {
     /// Whether the queue worker task has finished unexpectedly.
     pub worker_finished: bool,
 
+    /// Total worker tasks replaced after finishing unexpectedly.
+    pub worker_recoveries: u64,
+
     /// Total frames accepted from the render loop.
     pub frames_received: u64,
 
@@ -205,6 +208,9 @@ pub struct DeviceOutputStatistics {
     /// Whether the queue worker task has finished unexpectedly.
     pub worker_finished: bool,
 
+    /// Total worker tasks replaced after finishing unexpectedly.
+    pub worker_recoveries: u64,
+
     /// Total frames accepted from the render loop.
     pub frames_received: u64,
 
@@ -255,6 +261,7 @@ impl DeviceOutputStatistics {
             target_interval_ms: self.target_interval_ms,
             uses_frame_sink: self.uses_frame_sink,
             worker_finished: self.worker_finished,
+            worker_recoveries: self.worker_recoveries,
             frames_received: self.frames_received,
             frames_sent: self.frames_sent,
             frames_suppressed: self.frames_suppressed,
@@ -289,6 +296,7 @@ struct OutputQueueMetrics {
     frames_received: AtomicU64,
     frames_sent: AtomicU64,
     frames_suppressed: AtomicU64,
+    worker_recoveries: AtomicU64,
     bytes_sent: AtomicU64,
     frames_dropped: AtomicU64,
     total_latency_us: AtomicU64,
@@ -310,6 +318,7 @@ impl OutputQueueMetrics {
             frames_received: AtomicU64::new(0),
             frames_sent: AtomicU64::new(0),
             frames_suppressed: AtomicU64::new(0),
+            worker_recoveries: AtomicU64::new(0),
             bytes_sent: AtomicU64::new(0),
             frames_dropped: AtomicU64::new(0),
             total_latency_us: AtomicU64::new(0),
@@ -389,6 +398,10 @@ impl OutputQueueMetrics {
             .fetch_add(1, Ordering::Relaxed);
     }
 
+    fn record_worker_recovery(&self) {
+        self.worker_recoveries.fetch_add(1, Ordering::Relaxed);
+    }
+
     fn snapshot(
         &self,
         backend_id: &str,
@@ -437,6 +450,7 @@ impl OutputQueueMetrics {
             target_interval_ms: cadence.interval_ms(),
             uses_frame_sink,
             worker_finished,
+            worker_recoveries: self.worker_recoveries.load(Ordering::Relaxed),
             frames_received,
             frames_sent,
             frames_suppressed,
@@ -547,16 +561,29 @@ impl OutputQueue {
         lane: OutputLaneHandle,
         cadence: OutputCadence,
     ) -> Self {
-        let (tx, mut rx) = watch::channel(None::<Arc<FramePayload>>);
         let metrics = Arc::new(OutputQueueMetrics::new(Instant::now()));
+        Self::spawn_with_state(backend_id, device_id, lane, cadence, None, metrics, 0)
+    }
+
+    fn spawn_with_state(
+        backend_id: String,
+        device_id: DeviceId,
+        lane: OutputLaneHandle,
+        cadence: OutputCadence,
+        initial_payload: Option<Arc<FramePayload>>,
+        metrics: Arc<OutputQueueMetrics>,
+        next_sequence: u64,
+    ) -> Self {
+        let (tx, mut rx) = watch::channel(initial_payload);
         let metrics_for_task = Arc::clone(&metrics);
         let uses_frame_sink = lane.uses_frame_sink();
+        let initial_last_sent_sequence = metrics.last_success_sequence.load(Ordering::Relaxed);
 
         let io_task = tokio::spawn(async move {
             let send_interval = cadence.min_interval();
             let mut next_send_at = Instant::now();
-            let mut last_sent_sequence = 0_u64;
-            let mut pending = None::<Arc<FramePayload>>;
+            let mut last_sent_sequence = initial_last_sent_sequence;
+            let mut pending = rx.borrow_and_update().clone();
             let mut last_logged_write_error = None::<String>;
             let mut repeated_write_failures_since_log = 0_u64;
 
@@ -687,8 +714,40 @@ impl OutputQueue {
             cadence,
             uses_frame_sink,
             metrics,
-            next_sequence: 0,
+            next_sequence,
         }
+    }
+
+    pub(super) fn recover(
+        self,
+        backend_id: String,
+        device_id: DeviceId,
+        lane: OutputLaneHandle,
+        cadence: OutputCadence,
+    ) -> Self {
+        let initial_payload = self.latest_unconfirmed_payload();
+        let metrics = Arc::clone(&self.metrics);
+        let next_sequence = self.next_sequence;
+        metrics.record_worker_recovery();
+        Self::spawn_with_state(
+            backend_id,
+            device_id,
+            lane,
+            cadence,
+            initial_payload,
+            metrics,
+            next_sequence,
+        )
+    }
+
+    fn latest_unconfirmed_payload(&self) -> Option<Arc<FramePayload>> {
+        let payload = self.tx.borrow().clone()?;
+        let last_success_sequence = self.metrics.last_success_sequence.load(Ordering::Relaxed);
+        (payload.sequence > last_success_sequence).then_some(payload)
+    }
+
+    pub(super) fn worker_finished(&self) -> bool {
+        self.io_task.is_finished()
     }
 
     pub(super) fn uses_frame_sink(&self) -> bool {

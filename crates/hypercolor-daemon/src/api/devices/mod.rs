@@ -19,7 +19,7 @@ use axum::response::Response;
 use serde::Deserialize;
 use tracing::{debug, warn};
 
-use hypercolor_core::device::{BackendIo, BackendManager, DeviceLifecycleManager};
+use hypercolor_core::device::{BackendIo, DeviceLifecycleManager, DirectControlGuard};
 use hypercolor_types::attachment::{ComponentBinding, ComponentSlot};
 use hypercolor_types::device::{
     DeviceId, DeviceInfo, DeviceState, DeviceTopologyHint, DeviceUserSettings, DriverTransportKind,
@@ -451,18 +451,13 @@ pub async fn identify_device(
     let device_metadata = state.device_registry.metadata_for_id(&device_id).await;
     let connection = device_connection_summary(&tracked.info, device_metadata.as_ref());
     let on_frame = vec![identify_color; led_count];
-    let (manager, direct_backend, disconnect_after_identify) = match prepare_identify_backend(
-        &state,
-        device_id,
-        &tracked.info,
-        tracked.state,
-        &backend_id,
-    )
-    .await
-    {
-        Ok(prepared) => prepared,
-        Err(response) => return response,
-    };
+    let (direct_backend, disconnect_after_identify, direct_control) =
+        match prepare_identify_backend(&state, device_id, &tracked.info, tracked.state, &backend_id)
+            .await
+        {
+            Ok(prepared) => prepared,
+            Err(response) => return response,
+        };
     debug!(
         backend_id = %backend_id,
         device_id = %device_id,
@@ -476,8 +471,7 @@ pub async fn identify_device(
     );
 
     if let Err(error) = direct_backend.write_colors(device_id, &on_frame).await {
-        let mut manager = manager.lock().await;
-        manager.end_direct_control(&backend_id, device_id);
+        drop(direct_control);
         if disconnect_after_identify {
             let _ = direct_backend.disconnect(device_id).await;
         }
@@ -506,13 +500,13 @@ pub async fn identify_device(
         "Identify flash started"
     );
     tokio::spawn(run_identify_flash(
-        manager,
         direct_backend,
         backend_id,
         device_id,
         on_frame,
         Duration::from_millis(duration_ms),
         disconnect_after_identify,
+        direct_control,
     ));
 
     ApiResponse::ok(serde_json::json!({
@@ -579,22 +573,16 @@ pub async fn identify_zone(
 
     let backend_id = resolved_backend_id(&tracked.info);
     sync_identify_usb_protocol_config(state.as_ref(), device_id, &tracked.info).await;
-    let (manager, direct_backend, disconnect_after_identify) = match prepare_identify_backend(
-        &state,
-        device_id,
-        &tracked.info,
-        tracked.state,
-        &backend_id,
-    )
-    .await
-    {
-        Ok(prepared) => prepared,
-        Err(response) => return response,
-    };
+    let (direct_backend, disconnect_after_identify, direct_control) =
+        match prepare_identify_backend(&state, device_id, &tracked.info, tracked.state, &backend_id)
+            .await
+        {
+            Ok(prepared) => prepared,
+            Err(response) => return response,
+        };
 
     if let Err(error) = direct_backend.write_colors(device_id, &on_frame).await {
-        let mut manager = manager.lock().await;
-        manager.end_direct_control(&backend_id, device_id);
+        drop(direct_control);
         if disconnect_after_identify {
             let _ = direct_backend.disconnect(device_id).await;
         }
@@ -623,13 +611,13 @@ pub async fn identify_zone(
         "Zone identify flash started"
     );
     tokio::spawn(run_identify_flash(
-        manager,
         direct_backend,
         backend_id,
         device_id,
         on_frame,
         Duration::from_millis(duration_ms),
         disconnect_after_identify,
+        direct_control,
     ));
 
     ApiResponse::ok(serde_json::json!({
@@ -718,22 +706,16 @@ pub async fn identify_attachment(
 
     let backend_id = resolved_backend_id(&tracked.info);
     sync_identify_usb_protocol_config(state.as_ref(), device_id, &tracked.info).await;
-    let (manager, direct_backend, disconnect_after_identify) = match prepare_identify_backend(
-        &state,
-        device_id,
-        &tracked.info,
-        tracked.state,
-        &backend_id,
-    )
-    .await
-    {
-        Ok(prepared) => prepared,
-        Err(response) => return response,
-    };
+    let (direct_backend, disconnect_after_identify, direct_control) =
+        match prepare_identify_backend(&state, device_id, &tracked.info, tracked.state, &backend_id)
+            .await
+        {
+            Ok(prepared) => prepared,
+            Err(response) => return response,
+        };
 
     if let Err(error) = direct_backend.write_colors(device_id, &on_frame).await {
-        let mut manager = manager.lock().await;
-        manager.end_direct_control(&backend_id, device_id);
+        drop(direct_control);
         if disconnect_after_identify {
             let _ = direct_backend.disconnect(device_id).await;
         }
@@ -762,13 +744,13 @@ pub async fn identify_attachment(
         "Attachment identify flash started"
     );
     tokio::spawn(run_identify_flash(
-        manager,
         direct_backend,
         backend_id,
         device_id,
         on_frame,
         Duration::from_millis(duration_ms),
         disconnect_after_identify,
+        direct_control,
     ));
 
     ApiResponse::ok(serde_json::json!({
@@ -1168,13 +1150,13 @@ fn parse_status_filter(raw: Option<&str>) -> Result<Option<String>, String> {
 }
 
 async fn run_identify_flash(
-    manager: Arc<tokio::sync::Mutex<BackendManager>>,
     direct_backend: BackendIo,
     backend_id: String,
     device_id: DeviceId,
     on_frame: Vec<[u8; 3]>,
     duration: Duration,
     disconnect_after_identify: bool,
+    direct_control: DirectControlGuard,
 ) {
     if on_frame.is_empty() {
         return;
@@ -1239,10 +1221,7 @@ async fn run_identify_flash(
         }
     }
 
-    {
-        let mut manager = manager.lock().await;
-        manager.end_direct_control(&backend_id, device_id);
-    }
+    drop(direct_control);
     debug!(
         backend_id = %backend_id,
         device_id = %device_id,
@@ -1285,7 +1264,7 @@ async fn prepare_identify_backend(
     info: &DeviceInfo,
     device_state: DeviceState,
     backend_id: &str,
-) -> Result<(Arc<tokio::sync::Mutex<BackendManager>>, BackendIo, bool), Response> {
+) -> Result<(BackendIo, bool, DirectControlGuard), Response> {
     let manager = Arc::clone(&state.backend_manager);
     let direct_backend = {
         let manager = manager.lock().await;
@@ -1364,12 +1343,12 @@ async fn prepare_identify_backend(
         )));
     };
 
-    {
-        let mut manager = manager.lock().await;
-        manager.begin_direct_control(backend_id, device_id);
-    }
+    let direct_control = manager
+        .lock()
+        .await
+        .begin_direct_control(backend_id, device_id);
 
-    Ok((manager, direct_backend, disconnect_after_identify))
+    Ok((direct_backend, disconnect_after_identify, direct_control))
 }
 
 fn parse_hex_color(raw: &str) -> Option<String> {

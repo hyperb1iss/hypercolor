@@ -375,6 +375,7 @@ async fn device_metrics_subscription_streams_seeded_snapshot() {
             mapped_layout_ids: vec!["layout-device".to_owned()],
             uses_frame_sink: true,
             worker_finished: false,
+            worker_recoveries: 4,
             fps_sent: 60.0,
             fps_queued: 60.0,
             fps_actual: 60.0,
@@ -429,6 +430,7 @@ async fn device_metrics_subscription_streams_seeded_snapshot() {
         .expect("device_metrics message should arrive");
     assert_eq!(message["data"]["taken_at_ms"], 5_678);
     assert_eq!(message["data"]["items"][0]["id"], device_id.to_string());
+    assert_eq!(message["data"]["items"][0]["worker_recoveries"], 4);
     assert_eq!(message["data"]["items"][0]["payload_bps_estimate"], 2_048);
 }
 

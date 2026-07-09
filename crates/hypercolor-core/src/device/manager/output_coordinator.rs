@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex as StdMutex, PoisonError};
 
 use hypercolor_types::device::DeviceId;
 
@@ -6,6 +7,56 @@ use crate::device::output_queue::{DeviceStagingBuffer, OutputLane, OutputQueue};
 use crate::device::traits::OutputCadence;
 
 use super::{BackendDeviceKey, BackendHandle, DeviceFrameSinkHandle};
+
+#[derive(Debug, Default)]
+struct DirectControlRegistry {
+    counts: StdMutex<HashMap<BackendDeviceKey, usize>>,
+}
+
+impl DirectControlRegistry {
+    fn acquire(self: &Arc<Self>, key: BackendDeviceKey) -> DirectControlGuard {
+        let mut counts = self.counts.lock().unwrap_or_else(PoisonError::into_inner);
+        let count = counts.entry(key.clone()).or_insert(0);
+        *count = count.saturating_add(1);
+        drop(counts);
+        DirectControlGuard {
+            registry: Arc::clone(self),
+            key,
+        }
+    }
+
+    fn release(&self, key: &BackendDeviceKey) {
+        let mut counts = self.counts.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(count) = counts.get_mut(key) else {
+            return;
+        };
+        *count = count.saturating_sub(1);
+        if *count == 0 {
+            counts.remove(key);
+        }
+    }
+
+    fn is_active(&self, key: &BackendDeviceKey) -> bool {
+        self.counts
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(key)
+            .is_some_and(|count| *count > 0)
+    }
+}
+
+/// Owned lease that suppresses queued writes while direct device control is active.
+#[must_use = "dropping the guard releases direct-control suppression"]
+pub struct DirectControlGuard {
+    registry: Arc<DirectControlRegistry>,
+    key: BackendDeviceKey,
+}
+
+impl Drop for DirectControlGuard {
+    fn drop(&mut self) {
+        self.registry.release(&self.key);
+    }
+}
 
 #[derive(Default)]
 pub(super) struct DeviceOutputCoordinator {
@@ -16,7 +67,7 @@ pub(super) struct DeviceOutputCoordinator {
     active_staging_len: usize,
     staging_generation: u64,
     output_cadence: HashMap<BackendDeviceKey, OutputCadence>,
-    direct_control_locks: HashMap<BackendDeviceKey, usize>,
+    direct_control: Arc<DirectControlRegistry>,
     warned_inactive_layout_devices: HashSet<BackendDeviceKey>,
 }
 
@@ -30,8 +81,6 @@ impl DeviceOutputCoordinator {
             .retain(|(staged_backend_id, _), _| staged_backend_id != backend_id);
         self.output_cadence
             .retain(|(cached_backend_id, _), _| cached_backend_id != backend_id);
-        self.direct_control_locks
-            .retain(|(locked_backend_id, _), _| locked_backend_id != backend_id);
         self.warned_inactive_layout_devices
             .retain(|(warn_backend_id, _)| warn_backend_id != backend_id);
     }
@@ -41,7 +90,6 @@ impl DeviceOutputCoordinator {
         self.frame_sinks.remove(key);
         self.staging.remove(key);
         self.output_cadence.remove(key);
-        self.direct_control_locks.remove(key);
         self.warned_inactive_layout_devices.remove(key);
     }
 
@@ -60,32 +108,17 @@ impl DeviceOutputCoordinator {
         }
     }
 
-    pub(super) fn begin_direct_control(&mut self, backend_id: &str, device_id: DeviceId) -> usize {
+    pub(super) fn begin_direct_control(
+        &self,
+        backend_id: &str,
+        device_id: DeviceId,
+    ) -> DirectControlGuard {
         let key = (backend_id.to_owned(), device_id);
-        let count = self.direct_control_locks.entry(key).or_insert(0);
-        *count = count.saturating_add(1);
-        *count
-    }
-
-    pub(super) fn end_direct_control(&mut self, backend_id: &str, device_id: DeviceId) -> usize {
-        let key = (backend_id.to_owned(), device_id);
-        let Some(count) = self.direct_control_locks.get_mut(&key) else {
-            return 0;
-        };
-
-        *count = count.saturating_sub(1);
-        let remaining = *count;
-        if remaining == 0 {
-            self.direct_control_locks.remove(&key);
-        }
-
-        remaining
+        self.direct_control.acquire(key)
     }
 
     pub(super) fn is_direct_control_active_key(&self, key: &BackendDeviceKey) -> bool {
-        self.direct_control_locks
-            .get(key)
-            .is_some_and(|count| *count > 0)
+        self.direct_control.is_active(key)
     }
 
     pub(super) fn set_target_fps(
@@ -204,7 +237,9 @@ impl DeviceOutputCoordinator {
     }
 
     pub(super) fn has_queue(&self, key: &BackendDeviceKey) -> bool {
-        self.queues.contains_key(key)
+        self.queues
+            .get(key)
+            .is_some_and(|queue| !queue.worker_finished())
     }
 
     pub(super) fn queue_mut(&mut self, key: &BackendDeviceKey) -> Option<&mut OutputQueue> {
@@ -215,29 +250,77 @@ impl DeviceOutputCoordinator {
         &mut self,
         key: &BackendDeviceKey,
         backend: Option<BackendHandle>,
-    ) -> Option<&mut OutputQueue> {
+        values: Vec<[u8; 3]>,
+    ) -> bool {
         let frame_sink = self.frame_sinks.get(key).cloned();
-        let should_replace_queue = self
+        let lane_changed = self
             .queues
             .get(key)
             .is_some_and(|queue| queue.uses_frame_sink() != frame_sink.is_some());
+        let worker_finished = self
+            .queues
+            .get(key)
+            .is_some_and(OutputQueue::worker_finished);
 
-        if should_replace_queue {
-            self.queues.remove(key);
-        }
-
-        if !self.queues.contains_key(key) {
-            let backend = backend?;
+        if worker_finished {
+            let recycled = self
+                .queues
+                .get_mut(key)
+                .expect("finished output queue should still exist")
+                .push(values);
             let cadence = self.output_cadence.get(key).copied().unwrap_or_default();
-            let lane = frame_sink.map_or_else(
-                || OutputLane::backend(backend, key.1),
-                OutputLane::frame_sink,
-            );
-            let queue = OutputQueue::spawn(key.0.clone(), key.1, lane, cadence);
+            let lane = if let Some(frame_sink) = frame_sink {
+                OutputLane::frame_sink(frame_sink)
+            } else {
+                let Some(backend) = backend else {
+                    if let (Some(staging), Some(recycled)) = (self.staging.get_mut(key), recycled) {
+                        staging.output = recycled;
+                    }
+                    return false;
+                };
+                OutputLane::backend(backend, key.1)
+            };
+            let previous = self
+                .queues
+                .remove(key)
+                .expect("finished output queue should still exist");
+            let queue = previous.recover(key.0.clone(), key.1, lane, cadence);
             self.queues.insert(key.clone(), queue);
+            if let (Some(staging), Some(recycled)) = (self.staging.get_mut(key), recycled) {
+                staging.output = recycled;
+            }
+            return true;
         }
 
-        self.queues.get_mut(key)
+        if !lane_changed && let Some(queue) = self.queues.get_mut(key) {
+            let recycled = queue.push(values);
+            if let (Some(staging), Some(recycled)) = (self.staging.get_mut(key), recycled) {
+                staging.output = recycled;
+            }
+            return true;
+        }
+
+        let cadence = self.output_cadence.get(key).copied().unwrap_or_default();
+        let lane = if let Some(frame_sink) = frame_sink {
+            OutputLane::frame_sink(frame_sink)
+        } else {
+            let Some(backend) = backend else {
+                if let Some(staging) = self.staging.get_mut(key) {
+                    staging.output = values;
+                }
+                return false;
+            };
+            OutputLane::backend(backend, key.1)
+        };
+        self.queues.remove(key);
+        let mut queue = OutputQueue::spawn(key.0.clone(), key.1, lane, cadence);
+        let recycled = queue.push(values);
+        self.queues.insert(key.clone(), queue);
+
+        if let (Some(staging), Some(recycled)) = (self.staging.get_mut(key), recycled) {
+            staging.output = recycled;
+        }
+        true
     }
 
     pub(super) fn push_staged_frame(
@@ -246,18 +329,7 @@ impl DeviceOutputCoordinator {
         backend: Option<BackendHandle>,
         values: Vec<[u8; 3]>,
     ) -> bool {
-        let Some(queue) = self.ensure_queue_for_key(key, backend) else {
-            if let Some(staging) = self.staging.get_mut(key) {
-                staging.output = values;
-            }
-            return false;
-        };
-
-        let recycled = queue.push(values);
-        if let (Some(staging), Some(recycled)) = (self.staging.get_mut(key), recycled) {
-            staging.output = recycled;
-        }
-        true
+        self.ensure_queue_for_key(key, backend, values)
     }
 
     pub(super) fn queues(&self) -> impl Iterator<Item = (&BackendDeviceKey, &OutputQueue)> + '_ {

@@ -34,6 +34,7 @@ mod warnings;
 pub use backend_io::BackendIo;
 use brightness::DeviceOutputBrightness;
 use output_coordinator::DeviceOutputCoordinator;
+pub use output_coordinator::DirectControlGuard;
 use routing::{DeviceMapping, RoutingPlan};
 use warnings::DeviceOutputWarnings;
 

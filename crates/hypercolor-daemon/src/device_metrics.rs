@@ -24,6 +24,8 @@ pub struct DeviceMetrics {
     pub mapped_layout_ids: Vec<String>,
     pub uses_frame_sink: bool,
     pub worker_finished: bool,
+    #[serde(default)]
+    pub worker_recoveries: u64,
     pub fps_sent: f32,
     pub fps_queued: f32,
     pub fps_actual: f32,
@@ -197,6 +199,7 @@ fn build_device_metrics(
         mapped_layout_ids: stats.mapped_layout_ids.clone(),
         uses_frame_sink: stats.uses_frame_sink,
         worker_finished: stats.worker_finished,
+        worker_recoveries: stats.worker_recoveries,
         fps_sent,
         fps_queued,
         fps_actual: fps_sent,

@@ -40,6 +40,7 @@ fn sample_stats_with_received(
         target_interval_ms: Some(17),
         uses_frame_sink: false,
         worker_finished: false,
+        worker_recoveries: 2,
         frames_received,
         frames_sent,
         frames_suppressed: 0,
@@ -76,6 +77,7 @@ fn collector_reports_zero_rates_without_a_baseline() {
     assert_eq!(collected.items[0].fps_queued, 0.0);
     assert_eq!(collected.items[0].fps_actual, 0.0);
     assert_eq!(collected.items[0].payload_bps_estimate, 0);
+    assert_eq!(collected.items[0].worker_recoveries, 2);
 }
 
 #[test]
