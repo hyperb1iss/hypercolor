@@ -839,28 +839,6 @@ impl SparkleFlinger {
         }
     }
 
-    #[allow(
-        clippy::unnecessary_wraps,
-        reason = "the public wrapper mirrors the GPU backend signature even when only the CPU path is compiled"
-    )]
-    pub(crate) fn finish_pending_zone_sampling(
-        &mut self,
-        pending: PendingZoneSampling,
-        zones: &mut Vec<ZoneColors>,
-    ) -> Result<()> {
-        #[cfg(not(feature = "wgpu"))]
-        let _ = zones;
-        match (&mut self.backend, pending) {
-            (SparkleFlingerBackend::Cpu(_), _) => Ok(()),
-            #[cfg(feature = "wgpu")]
-            (SparkleFlingerBackend::Gpu { gpu, .. }, PendingZoneSampling::Gpu(pending)) => {
-                gpu.finish_pending_zone_sampling(pending, zones)
-            }
-            #[allow(unreachable_patterns)]
-            _ => Ok(()),
-        }
-    }
-
     pub(crate) fn discard_pending_zone_sampling(&mut self, pending: PendingZoneSampling) {
         match (&mut self.backend, pending) {
             (SparkleFlingerBackend::Cpu(_), _) => {}

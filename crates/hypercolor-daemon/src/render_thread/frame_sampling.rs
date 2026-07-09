@@ -699,20 +699,9 @@ pub(crate) fn resolve_led_sampling(
                         .take_last_sample_readback_wait_blocked();
                 }
                 Ok(false) => {
-                    match sampling.sparkleflinger.finish_pending_zone_sampling(
-                        pending,
-                        sampling.output_artifacts.zones_mut(),
-                    ) {
-                        Ok(()) => {
-                            gpu_sample_wait_blocked = sampling
-                                .sparkleflinger
-                                .take_last_sample_readback_wait_blocked();
-                        }
-                        Err(error) => {
-                            warn!(%error, "GPU spatial sampling finalize failed; trying resident CPU sampling");
-                            gpu_zone_sampling = false;
-                        }
-                    }
+                    sampling.deferred_sampling.store_pending(pending);
+                    gpu_zone_sampling = false;
+                    gpu_sample_deferred = true;
                 }
                 Err(error) => {
                     warn!(%error, "GPU spatial sampling finalize failed; trying resident CPU sampling");
