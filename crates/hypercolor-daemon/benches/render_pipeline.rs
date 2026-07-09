@@ -697,25 +697,6 @@ fn bench_sparkleflinger(c: &mut Criterion) {
         let mut sparkleflinger = SparkleFlinger::new(RenderAccelerationMode::Gpu)
             .expect("GPU SparkleFlinger should initialize for the benchmark");
         group.throughput(Throughput::Bytes(CANVAS_RGBA_BYTES));
-        group.bench_function("gpu_alpha_two_layer_compose", |b| {
-            b.iter(|| {
-                let composed = sparkleflinger.compose(CompositionPlan::with_layers(
-                    CANVAS_WIDTH,
-                    CANVAS_HEIGHT,
-                    vec![
-                        CompositionLayer::replace_canvas(black_box(base.clone())),
-                        CompositionLayer::alpha_canvas(black_box(overlay.clone()), 0.35),
-                    ],
-                ));
-                black_box(
-                    composed
-                        .sampling_canvas
-                        .as_ref()
-                        .expect("GPU compose benchmark expects a materialized canvas")
-                        .get_pixel(0, 0),
-                );
-            });
-        });
         group.bench_function("gpu_alpha_two_layer_compose_no_readback", |b| {
             b.iter(|| {
                 let composed = sparkleflinger.compose_for_outputs(
@@ -737,25 +718,6 @@ fn bench_sparkleflinger(c: &mut Criterion) {
         let mut preview_sparkleflinger = SparkleFlinger::new(RenderAccelerationMode::Gpu)
             .expect("GPU SparkleFlinger should initialize for the preview benchmark");
         group.throughput(Throughput::Bytes(preview_rgba_bytes));
-        group.bench_function("gpu_alpha_two_layer_compose_640x480", |b| {
-            b.iter(|| {
-                let composed = preview_sparkleflinger.compose(CompositionPlan::with_layers(
-                    PREVIEW_WIDTH,
-                    PREVIEW_HEIGHT,
-                    vec![
-                        CompositionLayer::replace_canvas(black_box(preview_base.clone())),
-                        CompositionLayer::alpha_canvas(black_box(preview_overlay.clone()), 0.35),
-                    ],
-                ));
-                black_box(
-                    composed
-                        .sampling_canvas
-                        .as_ref()
-                        .expect("GPU preview compose benchmark expects a materialized canvas")
-                        .get_pixel(0, 0),
-                );
-            });
-        });
         group.bench_function("gpu_alpha_two_layer_compose_640x480_no_readback", |b| {
             b.iter(|| {
                 let composed = preview_sparkleflinger.compose_for_outputs(
@@ -778,19 +740,6 @@ fn bench_sparkleflinger(c: &mut Criterion) {
         });
         let mut gpu_multi_blend_sparkleflinger = SparkleFlinger::new(RenderAccelerationMode::Gpu)
             .expect("GPU SparkleFlinger should initialize for multi-blend benchmark");
-        group.bench_function("gpu_multi_blend_alpha_add_screen_640x480", |b| {
-            b.iter(|| {
-                let composed =
-                    gpu_multi_blend_sparkleflinger.compose(black_box(multi_blend_plan.clone()));
-                black_box(
-                    composed
-                        .sampling_canvas
-                        .as_ref()
-                        .expect("GPU multi-blend benchmark expects a materialized canvas")
-                        .get_pixel(0, 0),
-                );
-            });
-        });
         group.bench_function(
             "gpu_multi_blend_alpha_add_screen_640x480_no_readback",
             |b| {
