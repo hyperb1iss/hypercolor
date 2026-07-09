@@ -1,5 +1,76 @@
 use super::*;
 
+fn static_surface(frame: &ProducerFrame) -> &PublishedSurface {
+    match frame {
+        ProducerFrame::Surface(surface) => surface,
+        ProducerFrame::Canvas(_) => panic!("static layer frame should be surface-backed"),
+        #[cfg(feature = "servo-gpu-import")]
+        ProducerFrame::Gpu(_) => panic!("static layer frame should not use imported GPU storage"),
+        #[cfg(feature = "wgpu")]
+        ProducerFrame::GpuTexture(_) => {
+            panic!("static layer frame should not use compositor GPU storage")
+        }
+    }
+}
+
+#[test]
+fn static_layer_surfaces_reuse_final_srgba_storage() {
+    let mut cache = StaticLayerSurfaceCache::default();
+    let rgba = [0.25, 0.5, 0.75, 0.4];
+
+    let first = color_fill_frame(&mut cache, 3, 2, rgba);
+    let second = color_fill_frame(&mut cache, 3, 2, rgba);
+    let expected = RgbaF32::new(rgba[0], rgba[1], rgba[2], rgba[3]).to_srgba();
+
+    assert_eq!(
+        static_surface(&first).storage_identity(),
+        static_surface(&second).storage_identity()
+    );
+    assert_eq!(static_surface(&first).generation(), 1);
+    assert_eq!(static_surface(&first).width(), 3);
+    assert_eq!(static_surface(&first).height(), 2);
+    assert!(
+        static_surface(&first)
+            .rgba_bytes()
+            .chunks_exact(4)
+            .all(|pixel| pixel == [expected.r, expected.g, expected.b, expected.a])
+    );
+    assert_eq!(cache.entry_count(), 1);
+}
+
+#[test]
+fn transparent_static_layer_surface_preserves_zero_alpha() {
+    let mut cache = StaticLayerSurfaceCache::default();
+
+    let frame = transparent_black_frame(&mut cache, 2, 2);
+
+    assert!(
+        static_surface(&frame)
+            .rgba_bytes()
+            .chunks_exact(4)
+            .all(|pixel| pixel == [0, 0, 0, 0])
+    );
+}
+
+#[test]
+fn static_layer_surface_cache_stays_bounded() {
+    let mut cache = StaticLayerSurfaceCache::default();
+    let first = color_fill_frame(&mut cache, 1, 1, [1.0, 0.0, 0.0, 1.0]);
+    let first_identity = static_surface(&first).storage_identity();
+
+    for width in 2..=33 {
+        let _ = color_fill_frame(&mut cache, width, 1, [1.0, 0.0, 0.0, 1.0]);
+    }
+
+    assert_eq!(cache.entry_count(), 32);
+    let recreated = color_fill_frame(&mut cache, 1, 1, [1.0, 0.0, 0.0, 1.0]);
+    assert_ne!(
+        static_surface(&recreated).storage_identity(),
+        first_identity
+    );
+    assert_eq!(cache.entry_count(), 32);
+}
+
 #[test]
 fn legacy_single_effect_group_can_passthrough_layer_compositor() {
     let group = sample_group(4, 4);

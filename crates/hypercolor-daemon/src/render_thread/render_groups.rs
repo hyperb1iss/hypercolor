@@ -48,12 +48,15 @@ use super::sparkleflinger::SparkleFlinger;
 use super::sparkleflinger::{CompositionPlan, PreviewSurfaceRequest};
 #[cfg(test)]
 use crate::performance::FullFrameCopyMetrics;
+use frame_helpers::StaticLayerSurfaceCache;
 #[cfg(all(test, feature = "wgpu"))]
 use frame_helpers::media_mime_prefers_gpu_texture;
 #[cfg(test)]
 use frame_helpers::passthrough_effect_layer;
 #[cfg(test)]
 use frame_helpers::surface_backed_frame;
+#[cfg(test)]
+use frame_helpers::{color_fill_frame, transparent_black_frame};
 use group_state::{combined_led_state, empty_group_layout};
 use model::{
     CachedMediaProducer, RetainedDirectGroupFrame, RetainedMaterializedGroupFrame,
@@ -89,6 +92,7 @@ pub(crate) struct ZoneRuntime {
     direct_surface_pools: HashMap<ZoneId, RenderSurfacePool>,
     retained_direct_group_frames: HashMap<ZoneId, RetainedDirectGroupFrame>,
     retained_materialized_group_frames: HashMap<ZoneId, RetainedMaterializedGroupFrame>,
+    static_layer_surface_cache: StaticLayerSurfaceCache,
     scene_surface_pool: RenderSurfacePool,
     reconciled_dependency_key: Option<SceneDependencyKey>,
     retained_frame: Option<RetainedRenderGroupFrame>,
@@ -115,6 +119,7 @@ impl ZoneRuntime {
             direct_surface_pools: HashMap::new(),
             retained_direct_group_frames: HashMap::new(),
             retained_materialized_group_frames: HashMap::new(),
+            static_layer_surface_cache: StaticLayerSurfaceCache::default(),
             // 8 slots absorbs typical downstream fan-out (watch channel +
             // display-output dispatch + one pin per display worker mid-
             // encode). The higher cap lets preview/display bursts settle

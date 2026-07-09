@@ -1,6 +1,10 @@
+use std::collections::VecDeque;
+
 use hypercolor_core::input::ScreenData;
 use hypercolor_core::spatial::sample_viewport;
-use hypercolor_types::canvas::{Canvas, RenderSurfacePool, Rgba, RgbaF32};
+use hypercolor_types::canvas::{
+    Canvas, PublishedSurface, RenderSurfacePool, Rgba, RgbaF32, SurfaceDescriptor,
+};
 use hypercolor_types::layer::{
     LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
 };
@@ -17,6 +21,51 @@ use super::super::{producer_queue::ProducerFrame, usize_to_u32};
 #[cfg(feature = "wgpu")]
 use crate::performance::CompositorBackendKind;
 use crate::performance::FullFrameCopyMetrics;
+
+const STATIC_LAYER_SURFACE_CACHE_CAPACITY: usize = 32;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StaticLayerSurfaceKey {
+    width: u32,
+    height: u32,
+    color: Rgba,
+}
+
+#[derive(Default)]
+pub(super) struct StaticLayerSurfaceCache {
+    surfaces: VecDeque<(StaticLayerSurfaceKey, PublishedSurface)>,
+}
+
+impl StaticLayerSurfaceCache {
+    fn frame(&mut self, width: u32, height: u32, color: Rgba) -> ProducerFrame {
+        let key = StaticLayerSurfaceKey {
+            width,
+            height,
+            color,
+        };
+        if let Some((_, surface)) = self.surfaces.iter().find(|(cached, _)| *cached == key) {
+            return ProducerFrame::Surface(surface.clone());
+        }
+
+        let mut pool =
+            RenderSurfacePool::with_slot_count(SurfaceDescriptor::rgba8888(width, height), 1);
+        let mut lease = pool
+            .dequeue()
+            .expect("new static layer surface pool should expose its initial slot");
+        lease.canvas_mut().fill(color);
+        let surface = lease.submit(0, 0);
+        if self.surfaces.len() == STATIC_LAYER_SURFACE_CACHE_CAPACITY {
+            let _ = self.surfaces.pop_front();
+        }
+        self.surfaces.push_back((key, surface.clone()));
+        ProducerFrame::Surface(surface)
+    }
+
+    #[cfg(test)]
+    pub(super) fn entry_count(&self) -> usize {
+        self.surfaces.len()
+    }
+}
 
 pub(super) fn passthrough_effect_layer(group: &Zone) -> Option<SceneLayer> {
     if !group.enabled {
@@ -83,10 +132,17 @@ fn composition_mode_for_layer(blend: LayerBlendMode) -> CompositionMode {
     }
 }
 
-pub(super) fn color_fill_frame(width: u32, height: u32, rgba: [f32; 4]) -> ProducerFrame {
-    let mut canvas = Canvas::new(width, height);
-    canvas.fill(RgbaF32::new(rgba[0], rgba[1], rgba[2], rgba[3]).to_srgba());
-    ProducerFrame::Canvas(canvas)
+pub(super) fn color_fill_frame(
+    cache: &mut StaticLayerSurfaceCache,
+    width: u32,
+    height: u32,
+    rgba: [f32; 4],
+) -> ProducerFrame {
+    cache.frame(
+        width,
+        height,
+        RgbaF32::new(rgba[0], rgba[1], rgba[2], rgba[3]).to_srgba(),
+    )
 }
 
 pub(super) fn screen_region_layer_frame(
@@ -108,10 +164,12 @@ pub(super) fn screen_region_layer_frame(
     Some(ProducerFrame::Canvas(target))
 }
 
-pub(super) fn transparent_black_frame(width: u32, height: u32) -> ProducerFrame {
-    let mut canvas = Canvas::new(width, height);
-    canvas.fill(Rgba::TRANSPARENT);
-    ProducerFrame::Canvas(canvas)
+pub(super) fn transparent_black_frame(
+    cache: &mut StaticLayerSurfaceCache,
+    width: u32,
+    height: u32,
+) -> ProducerFrame {
+    cache.frame(width, height, Rgba::TRANSPARENT)
 }
 
 pub(super) fn media_layer_producer_frame(

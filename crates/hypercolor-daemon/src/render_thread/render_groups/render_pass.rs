@@ -50,7 +50,11 @@ impl ZoneRuntime {
         let frame = if empty_direct_shell {
             self.effect_pool.remove_group(group.id);
             self.retained_materialized_group_frames.remove(&group.id);
-            transparent_black_frame(group.layout.canvas_width, group.layout.canvas_height)
+            transparent_black_frame(
+                &mut self.static_layer_surface_cache,
+                group.layout.canvas_width,
+                group.layout.canvas_height,
+            )
         } else if passthrough_effect_layer(group).is_some() {
             let Some(frame) = self.render_passthrough_effect_layer_frame(group, context)? else {
                 return Ok(None);

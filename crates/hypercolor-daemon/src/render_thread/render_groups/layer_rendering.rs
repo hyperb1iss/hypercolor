@@ -55,6 +55,7 @@ impl ZoneRuntime {
                     self.render_effect_layer_frame(group, &layer_runtime, context)?
                 }
                 LayerSource::ColorFill { rgba } => Some(color_fill_frame(
+                    &mut self.static_layer_surface_cache,
                     group.layout.canvas_width,
                     group.layout.canvas_height,
                     *rgba,
@@ -84,6 +85,7 @@ impl ZoneRuntime {
                                 LayerHealth::Loading,
                             );
                             Some(transparent_black_frame(
+                                &mut self.static_layer_surface_cache,
                                 group.layout.canvas_width,
                                 group.layout.canvas_height,
                             ))
@@ -96,6 +98,7 @@ impl ZoneRuntime {
                                 LayerHealth::AssetMissing,
                             );
                             Some(transparent_black_frame(
+                                &mut self.static_layer_surface_cache,
                                 group.layout.canvas_width,
                                 group.layout.canvas_height,
                             ))
@@ -108,6 +111,7 @@ impl ZoneRuntime {
                                 LayerHealth::Failed { reason },
                             );
                             Some(transparent_black_frame(
+                                &mut self.static_layer_surface_cache,
                                 group.layout.canvas_width,
                                 group.layout.canvas_height,
                             ))
@@ -132,6 +136,7 @@ impl ZoneRuntime {
                             LayerHealth::Loading,
                         );
                         Some(transparent_black_frame(
+                            &mut self.static_layer_surface_cache,
                             group.layout.canvas_width,
                             group.layout.canvas_height,
                         ))
@@ -148,6 +153,7 @@ impl ZoneRuntime {
                         },
                     );
                     Some(transparent_black_frame(
+                        &mut self.static_layer_surface_cache,
                         group.layout.canvas_width,
                         group.layout.canvas_height,
                     ))
