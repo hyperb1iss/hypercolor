@@ -57,6 +57,20 @@ describe('sdk cli build + validate', () => {
         }
     })
 
+    test('rejects pruning an explicit build subset', async () => {
+        const output: string[] = []
+        const exitCode = await main(['build', 'src/effects/borealis/main.ts', '--prune'], {
+            cwd: SDK_ROOT,
+            stdout: {
+                error: (message: string) => output.push(message),
+                log: (message: string) => output.push(message),
+            },
+        })
+
+        expect(exitCode).toBe(1)
+        expect(output).toContain('--prune requires a complete --all build.')
+    })
+
     test('validate command returns zero for a generated artifact', async () => {
         const outDir = mkdtempSync(join(tmpdir(), 'hypercolor-cli-validate-'))
 

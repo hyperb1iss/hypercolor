@@ -87,6 +87,7 @@ export interface BuildArtifactsOptions {
     entryPaths: string[]
     outDir: string
     minify?: boolean
+    prune?: boolean
     sdkAliasPath?: string
     /** Vendored font directory; auto-located (sdk/assets/fonts) if omitted. */
     fontAssetsDir?: string

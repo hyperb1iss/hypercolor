@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 
 import { HYPERCOLOR_FORMAT_VERSION } from './constants'
@@ -242,6 +242,15 @@ export async function buildArtifacts(options: BuildArtifactsOptions): Promise<Bu
         })
         await writeArtifactIfChanged(artifact.outputPath, artifact.html)
         results.push(artifact)
+    }
+
+    if (options.prune) {
+        const currentArtifacts = new Set(results.map((result) => resolve(result.outputPath)))
+        for (const dirent of readdirSync(options.outDir, { withFileTypes: true })) {
+            if (!dirent.isFile() || !dirent.name.endsWith('.html')) continue
+            const outputPath = resolve(options.outDir, dirent.name)
+            if (!currentArtifacts.has(outputPath)) rmSync(outputPath)
+        }
     }
 
     return results

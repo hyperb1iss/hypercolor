@@ -101,6 +101,29 @@ describe('tooling build', () => {
         }
     })
 
+    test('prunes stale html artifacts after a complete build', async () => {
+        const outDir = mkdtempSync(join(tmpdir(), 'hypercolor-pruned-build-'))
+        const staleArtifact = join(outDir, 'retired-effect.html')
+        const preservedFile = join(outDir, 'manifest.json')
+        writeFileSync(staleArtifact, '<title>Retired Effect</title>')
+        writeFileSync(preservedFile, '{}')
+
+        try {
+            const [result] = await buildArtifacts({
+                entryPaths: [resolve(SDK_ROOT, 'src/effects/borealis/main.ts')],
+                outDir,
+                prune: true,
+                sdkAliasPath: SDK_ALIAS,
+            })
+
+            expect(existsSync(result.outputPath)).toBeTrue()
+            expect(existsSync(staleArtifact)).toBeFalse()
+            expect(existsSync(preservedFile)).toBeTrue()
+        } finally {
+            rmSync(outDir, { force: true, recursive: true })
+        }
+    })
+
     test('marks shockwave as audio-reactive in built metadata', async () => {
         const outDir = mkdtempSync(join(tmpdir(), 'hypercolor-shockwave-build-'))
         try {

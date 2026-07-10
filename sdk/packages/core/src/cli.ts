@@ -57,10 +57,16 @@ async function runBuild(args: string[], context: CliContext): Promise<number> {
     const sdkAliasArg = optionValue(args, '--sdk-alias-path')
     const sdkAliasPath = sdkAliasArg ? resolve(context.cwd, sdkAliasArg) : undefined
     const minify = args.includes('--minify')
+    const prune = args.includes('--prune')
     const watchMode = args.includes('--watch')
     const buildAll = args.includes('--all') || positionalArgs(args).length === 0
     const explicitEntries = positionalArgs(args).map((entry) => resolve(context.cwd, entry))
     const roots = entryRoots.length > 0 ? entryRoots : ['effects']
+
+    if (prune && !buildAll) {
+        context.stdout.error('--prune requires a complete --all build.')
+        return 1
+    }
 
     const buildOnce = async (): Promise<number> => {
         const entryPaths = buildAll ? discoverWorkspaceEntries(workspaceRoot, roots) : explicitEntries
@@ -73,6 +79,7 @@ async function runBuild(args: string[], context: CliContext): Promise<number> {
             entryPaths,
             minify,
             outDir,
+            prune,
             sdkAliasPath,
         })
 
