@@ -398,6 +398,20 @@ async fn metrics_message_includes_latest_frame_timeline() {
             scene_pool_max_ref_count: 3,
             direct_pool_shared_published_slots: 4,
             direct_pool_max_ref_count: 2,
+            scene_pool_free_slots: 4,
+            scene_pool_published_slots: 5,
+            scene_pool_dequeued_slots: 1,
+            direct_pool_free_slots: 2,
+            direct_pool_published_slots: 3,
+            direct_pool_dequeued_slots: 1,
+            preview_pool_slot_count: 2,
+            preview_pool_free_slots: 1,
+            preview_pool_published_slots: 1,
+            preview_pool_dequeued_slots: 0,
+            compositor_pool_slot_count: 4,
+            compositor_pool_free_slots: 2,
+            compositor_pool_published_slots: 1,
+            compositor_pool_dequeued_slots: 1,
             canvas_receiver_count: 2,
             producer_full_frame_copy: FullFrameCopyMetrics {
                 count: 1,
@@ -505,6 +519,23 @@ async fn metrics_message_includes_latest_frame_timeline() {
         4
     );
     assert_eq!(json["render_surfaces"]["direct_pool_max_ref_count"], 2);
+    assert_eq!(json["render_surfaces"]["scene_pool_free_slots"], 4);
+    assert_eq!(json["render_surfaces"]["scene_pool_published_slots"], 5);
+    assert_eq!(json["render_surfaces"]["scene_pool_dequeued_slots"], 1);
+    assert_eq!(json["render_surfaces"]["direct_pool_free_slots"], 2);
+    assert_eq!(json["render_surfaces"]["direct_pool_published_slots"], 3);
+    assert_eq!(json["render_surfaces"]["direct_pool_dequeued_slots"], 1);
+    assert_eq!(json["render_surfaces"]["preview_pool_slot_count"], 2);
+    assert_eq!(json["render_surfaces"]["preview_pool_free_slots"], 1);
+    assert_eq!(json["render_surfaces"]["preview_pool_published_slots"], 1);
+    assert_eq!(json["render_surfaces"]["preview_pool_dequeued_slots"], 0);
+    assert_eq!(json["render_surfaces"]["compositor_pool_slot_count"], 4);
+    assert_eq!(json["render_surfaces"]["compositor_pool_free_slots"], 2);
+    assert_eq!(
+        json["render_surfaces"]["compositor_pool_published_slots"],
+        1
+    );
+    assert_eq!(json["render_surfaces"]["compositor_pool_dequeued_slots"], 1);
     assert_eq!(json["copies"]["full_frame_count"], 2);
     assert_eq!(json["copies"]["full_frame_kb"], 2.0);
     assert_eq!(json["copies"]["producer_full_frame_count"], 1);

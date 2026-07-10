@@ -14,6 +14,7 @@ use hypercolor_core::spatial::PreparedZonePlan;
 use hypercolor_core::types::canvas::Rgba;
 use hypercolor_core::types::canvas::{
     Canvas, PublishedSurface, RenderSurfacePool, SurfaceDescriptor, SurfaceLease,
+    SurfaceStateCounts,
 };
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::device::{DeviceId, DisplayFrameFormat};
@@ -440,6 +441,12 @@ pub struct SparkleFlinger {
     face_overlay_surface_pool: RenderSurfacePool,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct SparkleFlingerSurfacePoolCounts {
+    pub(crate) preview: SurfaceStateCounts,
+    pub(crate) compositor: SurfaceStateCounts,
+}
+
 #[cfg_attr(not(feature = "wgpu"), allow(dead_code))]
 pub(crate) enum ZoneSamplingDispatch {
     Unsupported,
@@ -470,6 +477,16 @@ pub(crate) enum DisplayFinalizeFrame {
 pub(crate) struct PendingDisplayFinalization(PendingGpuDisplayFinalize);
 
 impl SparkleFlinger {
+    pub(crate) fn surface_pool_counts(&mut self) -> SparkleFlingerSurfacePoolCounts {
+        let preview = self.preview_surface_pool.slot_counts();
+        let composition = self.composition_surface_pool.slot_counts();
+        let face_overlay = self.face_overlay_surface_pool.slot_counts();
+        SparkleFlingerSurfacePoolCounts {
+            preview,
+            compositor: merge_surface_state_counts(composition, face_overlay),
+        }
+    }
+
     pub fn cpu() -> Self {
         Self {
             backend: SparkleFlingerBackend::Cpu(cpu::CpuSparkleFlinger::new()),
@@ -956,6 +973,16 @@ impl SparkleFlinger {
             SparkleFlingerBackend::Gpu { .. } => CompositorBackendKind::Gpu,
         }
     }
+}
+
+fn merge_surface_state_counts(
+    mut total: SurfaceStateCounts,
+    counts: SurfaceStateCounts,
+) -> SurfaceStateCounts {
+    total.free = total.free.saturating_add(counts.free);
+    total.dequeued = total.dequeued.saturating_add(counts.dequeued);
+    total.published = total.published.saturating_add(counts.published);
+    total
 }
 
 #[cfg(feature = "wgpu")]

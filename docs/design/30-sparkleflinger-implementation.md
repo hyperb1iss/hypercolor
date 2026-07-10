@@ -223,15 +223,12 @@ there are active render groups in the scene snapshot.
    queue only keeps a single slot: if the tagged generation matches, the
    latch succeeds and is marked `Fresh` the first time, `Retained` on every
    subsequent latch of the same submission.
-3. Otherwise clear `effect_queue` and render a fresh frame into a pooled
-   render surface lease (`render_effect_into`). If the pool is exhausted,
-   `render_effect_frame` expands the pool by one slot up to
-   `MAX_RENDER_SURFACE_SLOTS` (12), biased toward
-   `desired_render_surface_slots(canvas_receiver_count)`. Beyond that
-   ceiling it falls back to an owned `Canvas` publish path that costs a
-   full-frame copy. The render surface pool starts at
-   `DEFAULT_RENDER_SURFACE_SLOTS` (8) and grows by `2 *
-canvas_receiver_count` as preview consumers attach.
+3. Otherwise clear `effect_queue` and render a fresh producer frame.
+   Render-group outputs move into the bounded scene or per-direct-group
+   surface pools before publication. The scene pool starts with eight slots
+   and can grow to 64 when downstream consumers pin more surfaces. Static
+   color and transparent layers reuse bounded immutable surfaces instead of
+   allocating a full canvas per frame.
 4. Hand the `ProducerFrame` to `CompositionPlanner::compile_primary_frame`,
    which adds crossfade layers if a scene transition is active and
    remembers the last stable frame so the next transition can pin its
@@ -349,8 +346,9 @@ as one `LatestFrameMetrics`, which includes:
   composition_bypassed
 - composition structure: logical_layer_count, render_group_count, scene_active,
   scene_transition_active
-- render surface pool state: slot_count, free_slots, published_slots,
-  dequeued_slots, canvas_receiver_count
+- actual scene, direct-render, preview, and compositor pool state. The legacy
+  `slot_count`, `free_slots`, `published_slots`, and `dequeued_slots` fields
+  remain scene-pool aliases for v1 clients
 - copies: full_frame_copy_count, full_frame_copy_bytes
 - output_errors
 - a `FrameTimeline` with wake-to-publish absolute checkpoints

@@ -31,7 +31,6 @@ use tracing::warn;
 
 use super::capture_demand::CaptureDemandState;
 use super::composition_planner::CompositionPlanner;
-use super::desired_render_surface_slots;
 use super::frame_composer::RenderStageStats;
 use super::frame_policy::FramePolicy;
 use super::frame_policy::SkipDecision;
@@ -799,7 +798,6 @@ pub(crate) struct RenderCaches {
     pub(crate) deferred_sampling: DeferredSamplingState,
     pub(crate) zone_transition_planner: ZoneTransitionPlanner,
     pub(crate) render_group_runtime: ZoneRuntime,
-    pub(crate) render_surface_pool: RenderSurfacePool,
     pub(crate) output_artifacts: OutputArtifactsState,
     effect_delta_clock: EffectDeltaClock,
 }
@@ -1161,6 +1159,20 @@ pub(crate) struct RenderSurfaceSnapshot {
     pub(crate) scene_pool_max_ref_count: u32,
     pub(crate) direct_pool_shared_published_slots: u32,
     pub(crate) direct_pool_max_ref_count: u32,
+    pub(crate) scene_pool_free_slots: u32,
+    pub(crate) scene_pool_published_slots: u32,
+    pub(crate) scene_pool_dequeued_slots: u32,
+    pub(crate) direct_pool_free_slots: u32,
+    pub(crate) direct_pool_published_slots: u32,
+    pub(crate) direct_pool_dequeued_slots: u32,
+    pub(crate) preview_pool_slot_count: u32,
+    pub(crate) preview_pool_free_slots: u32,
+    pub(crate) preview_pool_published_slots: u32,
+    pub(crate) preview_pool_dequeued_slots: u32,
+    pub(crate) compositor_pool_slot_count: u32,
+    pub(crate) compositor_pool_free_slots: u32,
+    pub(crate) compositor_pool_published_slots: u32,
+    pub(crate) compositor_pool_dequeued_slots: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1255,10 +1267,6 @@ impl RenderCaches {
             self.display_sparkleflinger
                 .discard_pending_display_finalization(pending.pending);
         }
-        self.render_surface_pool = RenderSurfacePool::with_slot_count(
-            SurfaceDescriptor::rgba8888(width, height),
-            desired_render_surface_slots(0),
-        );
         self.render_group_runtime = match self.render_group_runtime.asset_library() {
             Some(asset_library) => ZoneRuntime::with_asset_library(width, height, asset_library),
             None => ZoneRuntime::new(width, height),
@@ -1272,15 +1280,52 @@ impl RenderCaches {
         &mut self,
         canvas_receiver_count: usize,
     ) -> RenderSurfaceSnapshot {
-        let slot_counts = self.render_surface_pool.slot_counts();
+        let scene_counts = self.render_group_runtime.scene_surface_pool_state_counts();
+        let direct_counts = self.render_group_runtime.direct_surface_pool_state_counts();
+        let sparkleflinger_counts = self.sparkleflinger.surface_pool_counts();
+        let count = |value| u32::try_from(value).unwrap_or(u32::MAX);
+        let scene_slot_count = count(
+            scene_counts
+                .free
+                .saturating_add(scene_counts.published)
+                .saturating_add(scene_counts.dequeued),
+        );
+        let preview_slot_count = count(
+            sparkleflinger_counts
+                .preview
+                .free
+                .saturating_add(sparkleflinger_counts.preview.published)
+                .saturating_add(sparkleflinger_counts.preview.dequeued),
+        );
+        let compositor_slot_count = count(
+            sparkleflinger_counts
+                .compositor
+                .free
+                .saturating_add(sparkleflinger_counts.compositor.published)
+                .saturating_add(sparkleflinger_counts.compositor.dequeued),
+        );
         let mut snapshot = RenderSurfaceSnapshot {
-            slot_count: u32::try_from(self.render_surface_pool.slot_count()).unwrap_or(u32::MAX),
+            slot_count: scene_slot_count,
+            free_slots: count(scene_counts.free),
+            published_slots: count(scene_counts.published),
+            dequeued_slots: count(scene_counts.dequeued),
             canvas_receivers: u32::try_from(canvas_receiver_count).unwrap_or(u32::MAX),
+            scene_pool_free_slots: count(scene_counts.free),
+            scene_pool_published_slots: count(scene_counts.published),
+            scene_pool_dequeued_slots: count(scene_counts.dequeued),
+            direct_pool_free_slots: count(direct_counts.free),
+            direct_pool_published_slots: count(direct_counts.published),
+            direct_pool_dequeued_slots: count(direct_counts.dequeued),
+            preview_pool_slot_count: preview_slot_count,
+            preview_pool_free_slots: count(sparkleflinger_counts.preview.free),
+            preview_pool_published_slots: count(sparkleflinger_counts.preview.published),
+            preview_pool_dequeued_slots: count(sparkleflinger_counts.preview.dequeued),
+            compositor_pool_slot_count: compositor_slot_count,
+            compositor_pool_free_slots: count(sparkleflinger_counts.compositor.free),
+            compositor_pool_published_slots: count(sparkleflinger_counts.compositor.published),
+            compositor_pool_dequeued_slots: count(sparkleflinger_counts.compositor.dequeued),
             ..RenderSurfaceSnapshot::default()
         };
-        snapshot.free_slots = u32::try_from(slot_counts.free).unwrap_or(u32::MAX);
-        snapshot.published_slots = u32::try_from(slot_counts.published).unwrap_or(u32::MAX);
-        snapshot.dequeued_slots = u32::try_from(slot_counts.dequeued).unwrap_or(u32::MAX);
         snapshot.scene_pool_saturation_reallocs = self
             .render_group_runtime
             .scene_surface_pool_saturation_reallocs();
@@ -1291,7 +1336,7 @@ impl RenderCaches {
             self.render_group_runtime.scene_surface_pool_grown_slots();
         snapshot.direct_pool_grown_slots =
             self.render_group_runtime.direct_surface_pool_grown_slots();
-        snapshot.scene_pool_slot_count = self.render_group_runtime.scene_surface_pool_slot_count();
+        snapshot.scene_pool_slot_count = scene_slot_count;
         snapshot.scene_pool_max_slots = self.render_group_runtime.scene_surface_pool_max_slots();
         snapshot.direct_pool_slot_count =
             self.render_group_runtime.direct_surface_pool_slot_count();
@@ -1402,10 +1447,6 @@ impl PipelineRuntime {
                     }
                     None => ZoneRuntime::new(canvas_width, canvas_height),
                 },
-                render_surface_pool: RenderSurfacePool::with_slot_count(
-                    SurfaceDescriptor::rgba8888(canvas_width, canvas_height),
-                    desired_render_surface_slots(0),
-                ),
                 output_artifacts: OutputArtifactsState::default(),
                 effect_delta_clock: EffectDeltaClock::default(),
             },
@@ -1462,6 +1503,37 @@ mod tests {
                 .to_string()
                 .contains("must be resolved before constructing SparkleFlinger")
         );
+    }
+
+    #[test]
+    fn render_surface_snapshot_reports_actual_runtime_pools() {
+        let mut runtime = PipelineRuntime::new(
+            320,
+            200,
+            SpatialEngine::new(empty_layout()),
+            false,
+            RenderAccelerationMode::Cpu,
+            FpsTier::Full,
+        )
+        .expect("CPU render runtime should initialize");
+
+        let snapshot = runtime.render.render_surface_snapshot(3);
+
+        assert_eq!(snapshot.canvas_receivers, 3);
+        assert_eq!(snapshot.slot_count, snapshot.scene_pool_slot_count);
+        assert_eq!(snapshot.free_slots, snapshot.scene_pool_free_slots);
+        assert_eq!(
+            snapshot.published_slots,
+            snapshot.scene_pool_published_slots
+        );
+        assert_eq!(snapshot.dequeued_slots, snapshot.scene_pool_dequeued_slots);
+        assert_eq!(snapshot.scene_pool_slot_count, 8);
+        assert_eq!(snapshot.scene_pool_free_slots, 8);
+        assert_eq!(snapshot.direct_pool_slot_count, 0);
+        assert_eq!(snapshot.preview_pool_slot_count, 2);
+        assert_eq!(snapshot.preview_pool_free_slots, 2);
+        assert_eq!(snapshot.compositor_pool_slot_count, 4);
+        assert_eq!(snapshot.compositor_pool_free_slots, 4);
     }
 
     #[test]

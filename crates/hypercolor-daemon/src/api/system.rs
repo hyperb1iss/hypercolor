@@ -165,11 +165,31 @@ pub struct LatestFrameStatus {
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct RenderSurfaceStatus {
+    /// Deprecated v1 alias for `scene_pool_slot_count`.
     pub slot_count: u32,
+    /// Deprecated v1 alias for `scene_pool_free_slots`.
     pub free_slots: u32,
+    /// Deprecated v1 alias for `scene_pool_published_slots`.
     pub published_slots: u32,
+    /// Deprecated v1 alias for `scene_pool_dequeued_slots`.
     pub dequeued_slots: u32,
     pub canvas_receivers: u32,
+    pub scene_pool_slot_count: u32,
+    pub scene_pool_free_slots: u32,
+    pub scene_pool_published_slots: u32,
+    pub scene_pool_dequeued_slots: u32,
+    pub direct_pool_slot_count: u32,
+    pub direct_pool_free_slots: u32,
+    pub direct_pool_published_slots: u32,
+    pub direct_pool_dequeued_slots: u32,
+    pub preview_pool_slot_count: u32,
+    pub preview_pool_free_slots: u32,
+    pub preview_pool_published_slots: u32,
+    pub preview_pool_dequeued_slots: u32,
+    pub compositor_pool_slot_count: u32,
+    pub compositor_pool_free_slots: u32,
+    pub compositor_pool_published_slots: u32,
+    pub compositor_pool_dequeued_slots: u32,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -1077,6 +1097,22 @@ fn latest_frame_status(frame: &LatestFrameMetrics, render_elapsed_ms: f64) -> La
             published_slots: frame.render_surface_published_slots,
             dequeued_slots: frame.render_surface_dequeued_slots,
             canvas_receivers: frame.canvas_receiver_count,
+            scene_pool_slot_count: frame.scene_pool_slot_count,
+            scene_pool_free_slots: frame.scene_pool_free_slots,
+            scene_pool_published_slots: frame.scene_pool_published_slots,
+            scene_pool_dequeued_slots: frame.scene_pool_dequeued_slots,
+            direct_pool_slot_count: frame.direct_pool_slot_count,
+            direct_pool_free_slots: frame.direct_pool_free_slots,
+            direct_pool_published_slots: frame.direct_pool_published_slots,
+            direct_pool_dequeued_slots: frame.direct_pool_dequeued_slots,
+            preview_pool_slot_count: frame.preview_pool_slot_count,
+            preview_pool_free_slots: frame.preview_pool_free_slots,
+            preview_pool_published_slots: frame.preview_pool_published_slots,
+            preview_pool_dequeued_slots: frame.preview_pool_dequeued_slots,
+            compositor_pool_slot_count: frame.compositor_pool_slot_count,
+            compositor_pool_free_slots: frame.compositor_pool_free_slots,
+            compositor_pool_published_slots: frame.compositor_pool_published_slots,
+            compositor_pool_dequeued_slots: frame.compositor_pool_dequeued_slots,
         },
     }
 }
@@ -1283,6 +1319,20 @@ mod tests {
                 scene_pool_max_ref_count: 0,
                 direct_pool_shared_published_slots: 0,
                 direct_pool_max_ref_count: 0,
+                scene_pool_free_slots: 0,
+                scene_pool_published_slots: 0,
+                scene_pool_dequeued_slots: 0,
+                direct_pool_free_slots: 0,
+                direct_pool_published_slots: 0,
+                direct_pool_dequeued_slots: 0,
+                preview_pool_slot_count: 0,
+                preview_pool_free_slots: 0,
+                preview_pool_published_slots: 0,
+                preview_pool_dequeued_slots: 0,
+                compositor_pool_slot_count: 0,
+                compositor_pool_free_slots: 0,
+                compositor_pool_published_slots: 0,
+                compositor_pool_dequeued_slots: 0,
                 canvas_receiver_count: 2,
                 producer_full_frame_copy: FullFrameCopyMetrics {
                     count: 1,
@@ -1426,6 +1476,18 @@ mod tests {
         assert_eq!(
             json["data"]["latest_frame"]["render_surfaces"]["slot_count"],
             6
+        );
+        assert_eq!(
+            json["data"]["latest_frame"]["render_surfaces"]["scene_pool_slot_count"],
+            0
+        );
+        assert_eq!(
+            json["data"]["latest_frame"]["render_surfaces"]["preview_pool_slot_count"],
+            0
+        );
+        assert_eq!(
+            json["data"]["latest_frame"]["render_surfaces"]["compositor_pool_slot_count"],
+            0
         );
         assert_eq!(
             json["data"]["latest_frame"]["render_surfaces"]["canvas_receivers"],

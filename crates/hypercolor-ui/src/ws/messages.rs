@@ -278,6 +278,20 @@ pub struct MetricsRenderSurfaces {
     pub scene_pool_max_ref_count: u32,
     pub direct_pool_shared_published_slots: u32,
     pub direct_pool_max_ref_count: u32,
+    pub scene_pool_free_slots: u32,
+    pub scene_pool_published_slots: u32,
+    pub scene_pool_dequeued_slots: u32,
+    pub direct_pool_free_slots: u32,
+    pub direct_pool_published_slots: u32,
+    pub direct_pool_dequeued_slots: u32,
+    pub preview_pool_slot_count: u32,
+    pub preview_pool_free_slots: u32,
+    pub preview_pool_published_slots: u32,
+    pub preview_pool_dequeued_slots: u32,
+    pub compositor_pool_slot_count: u32,
+    pub compositor_pool_free_slots: u32,
+    pub compositor_pool_published_slots: u32,
+    pub compositor_pool_dequeued_slots: u32,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]

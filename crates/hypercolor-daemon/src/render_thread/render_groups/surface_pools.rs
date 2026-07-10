@@ -1,4 +1,4 @@
-use hypercolor_types::canvas::RenderSurfacePool;
+use hypercolor_types::canvas::{RenderSurfacePool, SurfaceStateCounts};
 use hypercolor_types::scene::ZoneId;
 
 use super::ZoneRuntime;
@@ -62,11 +62,6 @@ impl ZoneRuntime {
     }
 
     #[must_use]
-    pub(crate) fn scene_surface_pool_slot_count(&self) -> u32 {
-        u32::try_from(self.scene_surface_pool.slot_count()).unwrap_or(u32::MAX)
-    }
-
-    #[must_use]
     pub(crate) fn scene_surface_pool_max_slots(&self) -> u32 {
         u32::try_from(self.scene_surface_pool.max_slots()).unwrap_or(u32::MAX)
     }
@@ -85,6 +80,17 @@ impl ZoneRuntime {
             .values()
             .map(|pool| u32::try_from(pool.max_slots()).unwrap_or(u32::MAX))
             .fold(0_u32, u32::saturating_add)
+    }
+
+    pub(crate) fn scene_surface_pool_state_counts(&mut self) -> SurfaceStateCounts {
+        self.scene_surface_pool.slot_counts()
+    }
+
+    pub(crate) fn direct_surface_pool_state_counts(&mut self) -> SurfaceStateCounts {
+        self.direct_surface_pools
+            .values_mut()
+            .map(RenderSurfacePool::slot_counts)
+            .fold(SurfaceStateCounts::default(), merge_surface_state_counts)
     }
 
     pub(crate) fn scene_surface_pool_shared_published_slots(&mut self) -> u32 {
@@ -111,4 +117,14 @@ impl ZoneRuntime {
             .max()
             .unwrap_or_default()
     }
+}
+
+fn merge_surface_state_counts(
+    mut total: SurfaceStateCounts,
+    counts: SurfaceStateCounts,
+) -> SurfaceStateCounts {
+    total.free = total.free.saturating_add(counts.free);
+    total.dequeued = total.dequeued.saturating_add(counts.dequeued);
+    total.published = total.published.saturating_add(counts.published);
+    total
 }

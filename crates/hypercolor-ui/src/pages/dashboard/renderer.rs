@@ -542,13 +542,14 @@ pub(super) fn RendererHardwarePanel(
                                     )
                                 })
                             }) />
-                            <DetailRow label="Surface pool" value=Memo::new(move |_| {
+                            <DetailRow label="Surface pools" value=Memo::new(move |_| {
                                 metrics_text(metrics, |m| {
                                     format!(
-                                        "{} slots / {} free / {} shared",
+                                        "{} scene / {} direct / {} preview / {} compositor",
                                         m.render_surfaces.scene_pool_slot_count,
-                                        m.render_surfaces.free_slots,
-                                        m.render_surfaces.scene_pool_shared_published_slots,
+                                        m.render_surfaces.direct_pool_slot_count,
+                                        m.render_surfaces.preview_pool_slot_count,
+                                        m.render_surfaces.compositor_pool_slot_count,
                                     )
                                 })
                             }) />

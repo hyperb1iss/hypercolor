@@ -14,8 +14,10 @@ class RenderLoopStatus:
     """
     Attributes:
         actual_fps (float):
+        capacity_fps (float):
         ceiling_fps (int):
         consecutive_misses (int):
+        delivered_fps (float):
         fps_tier (str):
         state (str):
         target_fps (int):
@@ -23,8 +25,10 @@ class RenderLoopStatus:
     """
 
     actual_fps: float
+    capacity_fps: float
     ceiling_fps: int
     consecutive_misses: int
+    delivered_fps: float
     fps_tier: str
     state: str
     target_fps: int
@@ -34,9 +38,13 @@ class RenderLoopStatus:
     def to_dict(self) -> dict[str, Any]:
         actual_fps = self.actual_fps
 
+        capacity_fps = self.capacity_fps
+
         ceiling_fps = self.ceiling_fps
 
         consecutive_misses = self.consecutive_misses
+
+        delivered_fps = self.delivered_fps
 
         fps_tier = self.fps_tier
 
@@ -51,8 +59,10 @@ class RenderLoopStatus:
         field_dict.update(
             {
                 "actual_fps": actual_fps,
+                "capacity_fps": capacity_fps,
                 "ceiling_fps": ceiling_fps,
                 "consecutive_misses": consecutive_misses,
+                "delivered_fps": delivered_fps,
                 "fps_tier": fps_tier,
                 "state": state,
                 "target_fps": target_fps,
@@ -67,9 +77,13 @@ class RenderLoopStatus:
         d = dict(src_dict)
         actual_fps = d.pop("actual_fps")
 
+        capacity_fps = d.pop("capacity_fps")
+
         ceiling_fps = d.pop("ceiling_fps")
 
         consecutive_misses = d.pop("consecutive_misses")
+
+        delivered_fps = d.pop("delivered_fps")
 
         fps_tier = d.pop("fps_tier")
 
@@ -81,8 +95,10 @@ class RenderLoopStatus:
 
         render_loop_status = cls(
             actual_fps=actual_fps,
+            capacity_fps=capacity_fps,
             ceiling_fps=ceiling_fps,
             consecutive_misses=consecutive_misses,
+            delivered_fps=delivered_fps,
             fps_tier=fps_tier,
             state=state,
             target_fps=target_fps,
