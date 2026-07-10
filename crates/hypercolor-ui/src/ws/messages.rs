@@ -84,7 +84,7 @@ pub struct MetricsFps {
     pub target: u32,
     pub ceiling: u32,
     pub capacity: f64,
-    pub delivered: f64,
+    pub delivered: Option<f64>,
     pub actual: f64,
     pub dropped: u32,
 }
@@ -92,11 +92,7 @@ pub struct MetricsFps {
 impl MetricsFps {
     #[must_use]
     pub fn delivered_or_legacy(&self) -> f64 {
-        if self.delivered > 0.0 {
-            self.delivered
-        } else {
-            self.actual
-        }
+        self.delivered.unwrap_or(self.actual)
     }
 }
 
@@ -556,8 +552,7 @@ pub(super) fn handle_json_message(
                 let delivered = state
                     .get("fps")
                     .and_then(|fps| fps.get("delivered"))
-                    .and_then(|delivered| delivered.as_f64())
-                    .unwrap_or(actual);
+                    .and_then(|delivered| delivered.as_f64());
 
                 if target > 0 || actual > 0.0 {
                     set_metrics.update(|metrics| {

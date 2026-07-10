@@ -378,7 +378,16 @@ pub(super) async fn handle_diagnose_with_state(
     let performance = state.performance.read().await.snapshot();
     let device_metrics = state.device_metrics.load_full();
     let usb_actor_metrics = hypercolor_core::device::usb_actor_metrics_snapshot();
-    let fps = render_capacity_fps(&render_stats);
+    let capacity_fps = render_capacity_fps(&render_stats);
+    let is_running = matches!(
+        render_stats.state,
+        hypercolor_core::engine::RenderLoopState::Running
+    );
+    let delivered_fps = if is_running {
+        performance.delivered_fps
+    } else {
+        0.0
+    };
     let target_fps = render_stats.tier.fps();
     let consecutive_misses = render_stats.consecutive_misses;
     let render_time_ms = render_stats.avg_frame_time.as_secs_f64() * 1000.0;
@@ -466,10 +475,6 @@ pub(super) async fn handle_diagnose_with_state(
         }));
     }
 
-    let is_running = matches!(
-        render_stats.state,
-        hypercolor_core::engine::RenderLoopState::Running
-    );
     if !is_running {
         findings.push(json!({
             "severity": "warning",
@@ -487,7 +492,9 @@ pub(super) async fn handle_diagnose_with_state(
         "overall_status": status,
         "findings": findings,
         "metrics": {
-            "fps": fps,
+            "fps": capacity_fps,
+            "capacity_fps": capacity_fps,
+            "delivered_fps": delivered_fps,
             "target_fps": target_fps,
             "consecutive_misses": consecutive_misses,
             "avg_render_time_ms": render_time_ms,

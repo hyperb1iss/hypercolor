@@ -92,6 +92,18 @@ fn fresh_app_state() -> AppState {
     AppState::new()
 }
 
+#[tokio::test]
+async fn diagnose_exposes_capacity_and_delivered_fps_separately() {
+    let state = fresh_app_state();
+    let result = execute_tool_with_state("diagnose", &json!({}), &state)
+        .await
+        .expect("diagnose should succeed");
+
+    assert_eq!(result["metrics"]["fps"], result["metrics"]["capacity_fps"]);
+    assert!(result["metrics"]["capacity_fps"].is_number());
+    assert!(result["metrics"]["delivered_fps"].is_number());
+}
+
 async fn insert_test_display_device(state: &Arc<AppState>, name: &str) -> DeviceId {
     let id = DeviceId::new();
     let info = DeviceInfo {

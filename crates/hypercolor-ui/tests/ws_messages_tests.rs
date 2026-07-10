@@ -203,6 +203,34 @@ fn performance_metrics_deserializes_renderer_diagnostics() {
 }
 
 #[test]
+fn performance_metrics_preserves_zero_delivered_fps() {
+    let metrics: PerformanceMetrics = serde_json::from_value(serde_json::json!({
+        "fps": {
+            "target": 60,
+            "capacity": 60.0,
+            "delivered": 0.0,
+            "actual": 60.0
+        }
+    }))
+    .expect("new metrics payload should deserialize");
+
+    assert_eq!(metrics.fps.delivered_or_legacy(), 0.0);
+}
+
+#[test]
+fn performance_metrics_falls_back_for_legacy_payload_without_delivered_fps() {
+    let metrics: PerformanceMetrics = serde_json::from_value(serde_json::json!({
+        "fps": {
+            "target": 60,
+            "actual": 60.0
+        }
+    }))
+    .expect("legacy metrics payload should deserialize");
+
+    assert_eq!(metrics.fps.delivered_or_legacy(), 60.0);
+}
+
+#[test]
 fn extract_scene_event_hint_parses_display_render_group_metadata() {
     let hint = extract_scene_event_hint(
         "render_group_changed",
