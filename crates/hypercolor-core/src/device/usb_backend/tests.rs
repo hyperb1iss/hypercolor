@@ -554,7 +554,6 @@ async fn shutdown_gate_prevents_post_cleanup_tracked_publication() {
         sink.deliver_colors_shared(delivery_id, Arc::new(vec![[1, 2, 3]]))
             .await
     });
-    tokio::task::yield_now().await;
     active.store(false, Ordering::Release);
     if let Some(pending) = frame_tx.send_replace(None) {
         pending.reject_pending("test shutdown cleanup");
