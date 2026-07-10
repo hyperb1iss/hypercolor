@@ -11,7 +11,10 @@ use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 use hypercolor_driver_api::CredentialStore;
-use hypercolor_driver_api::{BackendInfo, DeviceBackend, DeviceFrameSink};
+use hypercolor_driver_api::{
+    BackendInfo, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver,
+    DeviceFrameSink, DeviceWriteOutcome,
+};
 use hypercolor_types::device::{DeviceId, DeviceInfo};
 
 use super::scanner::{NanoleafKnownDevice, NanoleafScanner, load_auth_token};
@@ -145,6 +148,7 @@ impl NanoleafBackend {
         device: &Arc<Mutex<NanoleafDeviceState>>,
         colors: &[[u8; 3]],
         transition_time: u16,
+        delivery: Option<(DeviceDeliveryId, &dyn DeviceDeliveryObserver)>,
     ) -> Result<()> {
         let mut device = device.lock().await;
 
@@ -166,6 +170,9 @@ impl NanoleafBackend {
         }
 
         if device.brightness == u8::MAX {
+            if let Some((id, observer)) = delivery {
+                observer.transport_started(id);
+            }
             device.stream.send_frame(colors, transition_time).await?;
             return Ok(());
         }
@@ -182,6 +189,9 @@ impl NanoleafBackend {
         }
 
         let scaled_colors = std::mem::take(&mut device.scaled_colors);
+        if let Some((id, observer)) = delivery {
+            observer.transport_started(id);
+        }
         let result = device
             .stream
             .send_frame(scaled_colors.as_slice(), transition_time)
@@ -205,8 +215,29 @@ impl DeviceFrameSink for NanoleafFrameSink {
             &self.device,
             colors.as_slice(),
             self.transition_time,
+            None,
         )
         .await
+    }
+
+    async fn deliver_colors_shared_observed(
+        &self,
+        id: DeviceDeliveryId,
+        colors: Arc<Vec<[u8; 3]>>,
+        observer: Arc<dyn DeviceDeliveryObserver>,
+    ) -> DeviceDeliveryAck {
+        let payload_bytes = colors.len().saturating_mul(3);
+        let started_at = Instant::now();
+        let result = NanoleafBackend::write_device_colors(
+            &self.device_id,
+            &self.device,
+            colors.as_slice(),
+            self.transition_time,
+            Some((id, observer.as_ref())),
+        )
+        .await
+        .map(|()| DeviceWriteOutcome::Sent);
+        DeviceDeliveryAck::from_write_result(id, payload_bytes, started_at.elapsed(), result)
     }
 }
 
@@ -392,7 +423,7 @@ impl DeviceBackend for NanoleafBackend {
             .devices
             .get(id)
             .with_context(|| format!("Nanoleaf device {id} is not connected"))?;
-        Self::write_device_colors(id, device, colors, self.config.transition_time).await
+        Self::write_device_colors(id, device, colors, self.config.transition_time, None).await
     }
 
     async fn set_brightness(&mut self, id: &DeviceId, brightness: u8) -> Result<()> {

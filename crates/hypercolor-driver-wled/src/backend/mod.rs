@@ -28,7 +28,8 @@ use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
 use hypercolor_driver_api::{
-    BackendInfo, DeviceBackend, DeviceFrameSink, DeviceWriteOutcome, TransportScanner,
+    BackendInfo, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver,
+    DeviceFrameSink, DeviceWriteOutcome, TransportScanner,
 };
 use hypercolor_types::device::{DeviceId, DeviceInfo};
 
@@ -233,6 +234,7 @@ impl WledBackend {
         device: &Arc<Mutex<WledDevice>>,
         colors: &[[u8; 3]],
         realtime_http_enabled: bool,
+        delivery: Option<(DeviceDeliveryId, &dyn DeviceDeliveryObserver)>,
     ) -> Result<DeviceWriteOutcome> {
         let mut device = device.lock().await;
         Self::ensure_device_ready_for_output(id, &mut device, realtime_http_enabled).await?;
@@ -260,7 +262,9 @@ impl WledBackend {
         };
         let pixel_data = encode_colors(colors, wire_format, expected_led_count);
 
-        device.send_frame_outcome(&pixel_data).await
+        device
+            .send_frame_outcome_observed(&pixel_data, delivery)
+            .await
     }
 
     fn allocate_e131_start_universe(
@@ -322,8 +326,28 @@ impl DeviceFrameSink for WledFrameSink {
             &self.device,
             colors.as_slice(),
             self.realtime_http_enabled,
+            None,
         )
         .await
+    }
+
+    async fn deliver_colors_shared_observed(
+        &self,
+        id: DeviceDeliveryId,
+        colors: Arc<Vec<[u8; 3]>>,
+        observer: Arc<dyn DeviceDeliveryObserver>,
+    ) -> DeviceDeliveryAck {
+        let payload_bytes = colors.len().saturating_mul(3);
+        let started_at = Instant::now();
+        let result = WledBackend::write_device_colors(
+            &self.device_id,
+            &self.device,
+            colors.as_slice(),
+            self.realtime_http_enabled,
+            Some((id, observer.as_ref())),
+        )
+        .await;
+        DeviceDeliveryAck::from_write_result(id, payload_bytes, started_at.elapsed(), result)
     }
 }
 
@@ -524,7 +548,7 @@ impl DeviceBackend for WledBackend {
             .devices
             .get(id)
             .with_context(|| format!("WLED device {id} is not connected"))?;
-        Self::write_device_colors(id, device, colors, self.realtime_http_enabled)
+        Self::write_device_colors(id, device, colors, self.realtime_http_enabled, None)
             .await
             .map(|_| ())
     }
@@ -548,7 +572,45 @@ impl DeviceBackend for WledBackend {
             .devices
             .get(id)
             .with_context(|| format!("WLED device {id} is not connected"))?;
-        Self::write_device_colors(id, device, colors.as_slice(), self.realtime_http_enabled).await
+        Self::write_device_colors(
+            id,
+            device,
+            colors.as_slice(),
+            self.realtime_http_enabled,
+            None,
+        )
+        .await
+    }
+
+    async fn deliver_colors_shared_observed(
+        &mut self,
+        device_id: &DeviceId,
+        delivery_id: DeviceDeliveryId,
+        colors: Arc<Vec<[u8; 3]>>,
+        observer: Arc<dyn DeviceDeliveryObserver>,
+    ) -> DeviceDeliveryAck {
+        let payload_bytes = colors.len().saturating_mul(3);
+        let started_at = Instant::now();
+        let Some(device) = self.devices.get(device_id) else {
+            return DeviceDeliveryAck::rejected(
+                delivery_id,
+                format!("WLED device {device_id} is not connected"),
+            );
+        };
+        let result = Self::write_device_colors(
+            device_id,
+            device,
+            colors.as_slice(),
+            self.realtime_http_enabled,
+            Some((delivery_id, observer.as_ref())),
+        )
+        .await;
+        DeviceDeliveryAck::from_write_result(
+            delivery_id,
+            payload_bytes,
+            started_at.elapsed(),
+            result,
+        )
     }
 
     fn target_fps(&self, id: &DeviceId) -> Option<u32> {

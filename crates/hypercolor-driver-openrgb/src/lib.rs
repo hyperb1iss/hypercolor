@@ -459,6 +459,7 @@ struct ConnectedOutput {
     frame_tx: watch::Sender<Option<Arc<OpenRgbFramePayload>>>,
     io_task: Option<JoinHandle<()>>,
     active: Arc<AtomicBool>,
+    lifecycle_gate: Arc<StdMutex<()>>,
     last_async_error: Arc<StdMutex<Option<String>>>,
 }
 
@@ -466,6 +467,7 @@ impl ConnectedOutput {
     fn spawn(controller: Arc<Mutex<ConnectedController>>) -> Self {
         let (frame_tx, frame_rx) = watch::channel(None::<Arc<OpenRgbFramePayload>>);
         let active = Arc::new(AtomicBool::new(true));
+        let lifecycle_gate = Arc::new(StdMutex::new(()));
         let last_async_error = Arc::new(StdMutex::new(None::<String>));
         let io_task = tokio::spawn(run_openrgb_output_worker(
             Arc::clone(&controller),
@@ -479,6 +481,7 @@ impl ConnectedOutput {
             frame_tx,
             io_task: Some(io_task),
             active,
+            lifecycle_gate,
             last_async_error,
         }
     }
@@ -487,6 +490,7 @@ impl ConnectedOutput {
         Arc::new(OpenRgbFrameSink {
             frame_tx: self.frame_tx.clone(),
             active: Arc::clone(&self.active),
+            lifecycle_gate: Arc::clone(&self.lifecycle_gate),
             last_async_error: Arc::clone(&self.last_async_error),
         })
     }
@@ -495,21 +499,25 @@ impl ConnectedOutput {
         enqueue_openrgb_payload(
             &self.frame_tx,
             &self.active,
+            &self.lifecycle_gate,
             &self.last_async_error,
             Arc::new(OpenRgbFramePayload::untracked(colors)),
         )
     }
 
     async fn stop(mut self) -> Arc<Mutex<ConnectedController>> {
-        self.active.store(false, Ordering::Release);
+        {
+            let _gate = lock_lifecycle_gate(&self.lifecycle_gate);
+            self.active.store(false, Ordering::Release);
+            if let Some(pending) = self.frame_tx.send_replace(None) {
+                pending.reject_pending("OpenRGB controller disconnected before transport started");
+            }
+        }
         {
             let mut controller = self.controller.lock().await;
             controller.accepting_frames = false;
         }
         let controller = Arc::clone(&self.controller);
-        if let Some(pending) = self.frame_tx.send_replace(None) {
-            pending.reject_pending("OpenRGB controller disconnected before transport started");
-        }
         if let Some(mut io_task) = self.io_task.take() {
             tokio::select! {
                 result = &mut io_task => {
@@ -533,9 +541,12 @@ impl ConnectedOutput {
 
 impl Drop for ConnectedOutput {
     fn drop(&mut self) {
-        self.active.store(false, Ordering::Release);
-        if let Some(pending) = self.frame_tx.send_replace(None) {
-            pending.reject_pending("OpenRGB output worker stopped before transport started");
+        {
+            let _gate = lock_lifecycle_gate(&self.lifecycle_gate);
+            self.active.store(false, Ordering::Release);
+            if let Some(pending) = self.frame_tx.send_replace(None) {
+                pending.reject_pending("OpenRGB output worker stopped before transport started");
+            }
         }
         if let Some(io_task) = &self.io_task {
             io_task.abort();
@@ -640,6 +651,7 @@ impl OpenRgbFramePayload {
 struct OpenRgbFrameSink {
     frame_tx: watch::Sender<Option<Arc<OpenRgbFramePayload>>>,
     active: Arc<AtomicBool>,
+    lifecycle_gate: Arc<StdMutex<()>>,
     last_async_error: Arc<StdMutex<Option<String>>>,
 }
 
@@ -649,6 +661,7 @@ impl DeviceFrameSink for OpenRgbFrameSink {
         enqueue_openrgb_payload(
             &self.frame_tx,
             &self.active,
+            &self.lifecycle_gate,
             &self.last_async_error,
             Arc::new(OpenRgbFramePayload::untracked(colors)),
         )
@@ -663,6 +676,7 @@ impl DeviceFrameSink for OpenRgbFrameSink {
         if let Err(error) = enqueue_openrgb_payload(
             &self.frame_tx,
             &self.active,
+            &self.lifecycle_gate,
             &self.last_async_error,
             Arc::new(payload),
         ) {
@@ -688,6 +702,7 @@ impl DeviceFrameSink for OpenRgbFrameSink {
         if let Err(error) = enqueue_openrgb_payload(
             &self.frame_tx,
             &self.active,
+            &self.lifecycle_gate,
             &self.last_async_error,
             Arc::new(payload),
         ) {
@@ -706,9 +721,11 @@ impl DeviceFrameSink for OpenRgbFrameSink {
 fn enqueue_openrgb_payload(
     frame_tx: &watch::Sender<Option<Arc<OpenRgbFramePayload>>>,
     active: &AtomicBool,
+    lifecycle_gate: &StdMutex<()>,
     last_async_error: &StdMutex<Option<String>>,
     payload: Arc<OpenRgbFramePayload>,
 ) -> Result<()> {
+    let _gate = lock_lifecycle_gate(lifecycle_gate);
     if !active.load(Ordering::Acquire) {
         bail!("OpenRGB controller is disconnected");
     }
@@ -723,6 +740,13 @@ fn enqueue_openrgb_payload(
         previous.reject_pending("OpenRGB frame was superseded before transport started");
     }
     Ok(())
+}
+
+fn lock_lifecycle_gate(gate: &StdMutex<()>) -> std::sync::MutexGuard<'_, ()> {
+    match gate.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
 }
 
 async fn run_openrgb_output_worker(
@@ -1750,6 +1774,47 @@ const fn default_per_led_mask() -> u32 {
 mod tests {
     use super::*;
     use hypercolor_openrgb_sdk::{ColorMode, ControllerMode, LedData, ZoneType};
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn disconnect_gate_prevents_post_cleanup_tracked_publication() {
+        let (frame_tx, _frame_rx) = watch::channel(None::<Arc<OpenRgbFramePayload>>);
+        let active = Arc::new(AtomicBool::new(true));
+        let lifecycle_gate = Arc::new(StdMutex::new(()));
+        let sink = OpenRgbFrameSink {
+            frame_tx: frame_tx.clone(),
+            active: Arc::clone(&active),
+            lifecycle_gate: Arc::clone(&lifecycle_gate),
+            last_async_error: Arc::new(StdMutex::new(None)),
+        };
+        let delivery_id = DeviceDeliveryId {
+            queue_generation: 37,
+            sequence: 6,
+        };
+
+        let gate = lock_lifecycle_gate(&lifecycle_gate);
+        let delivery = tokio::spawn(async move {
+            sink.deliver_colors_shared(delivery_id, Arc::new(vec![[1, 2, 3]]))
+                .await
+        });
+        tokio::task::yield_now().await;
+        active.store(false, Ordering::Release);
+        if let Some(pending) = frame_tx.send_replace(None) {
+            pending.reject_pending("test disconnect cleanup");
+        }
+        drop(gate);
+
+        let ack = tokio::time::timeout(Duration::from_secs(1), delivery)
+            .await
+            .expect("publication blocked across cleanup should not hang")
+            .expect("delivery task should join");
+        assert_eq!(ack.id, delivery_id);
+        assert_eq!(
+            ack.status,
+            hypercolor_driver_api::DeviceDeliveryStatus::Failed
+        );
+        assert!(!ack.transport_started);
+        assert!(frame_tx.borrow().is_none());
+    }
 
     #[test]
     fn default_config_is_disabled_and_loopback_only() {

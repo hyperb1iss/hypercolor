@@ -57,16 +57,10 @@ impl OutputLane {
     ) -> DeviceDeliveryAck {
         match self {
             Self::Backend { backend, device_id } => {
-                let payload_bytes = colors.len().saturating_mul(3);
-                let started_at = Instant::now();
                 let mut backend = backend.lock().await;
-                let result = backend.write_colors_shared_outcome(device_id, colors).await;
-                DeviceDeliveryAck::from_write_result(
-                    id,
-                    payload_bytes,
-                    started_at.elapsed(),
-                    result,
-                )
+                backend
+                    .deliver_colors_shared_observed(device_id, id, colors, observer)
+                    .await
             }
             Self::FrameSink { frame_sink } => {
                 frame_sink

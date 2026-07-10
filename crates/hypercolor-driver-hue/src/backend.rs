@@ -11,7 +11,10 @@ use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 use hypercolor_driver_api::CredentialStore;
-use hypercolor_driver_api::{BackendInfo, DeviceBackend, DeviceFrameSink};
+use hypercolor_driver_api::{
+    BackendInfo, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver,
+    DeviceFrameSink, DeviceWriteOutcome,
+};
 use hypercolor_types::device::{DeviceId, DeviceInfo};
 
 use super::bridge::HueBridgeClient;
@@ -155,6 +158,7 @@ impl HueBackend {
         id: &DeviceId,
         bridge: &Arc<Mutex<HueBridgeState>>,
         colors: &[[u8; 3]],
+        delivery: Option<(DeviceDeliveryId, &dyn DeviceDeliveryObserver)>,
     ) -> Result<()> {
         let mut bridge = bridge.lock().await;
 
@@ -186,6 +190,9 @@ impl HueBackend {
             .map(|(color, gamut)| rgb_to_cie_xyb(color[0], color[1], color[2], &gamut))
             .collect::<Vec<CieXyb>>();
 
+        if let Some((id, observer)) = delivery {
+            observer.transport_started(id);
+        }
         bridge.stream.send_frame(cie_colors.as_slice()).await
     }
 }
@@ -198,7 +205,27 @@ struct HueFrameSink {
 #[async_trait::async_trait]
 impl DeviceFrameSink for HueFrameSink {
     async fn write_colors_shared(&self, colors: Arc<Vec<[u8; 3]>>) -> Result<()> {
-        HueBackend::write_bridge_colors(&self.device_id, &self.bridge, colors.as_slice()).await
+        HueBackend::write_bridge_colors(&self.device_id, &self.bridge, colors.as_slice(), None)
+            .await
+    }
+
+    async fn deliver_colors_shared_observed(
+        &self,
+        id: DeviceDeliveryId,
+        colors: Arc<Vec<[u8; 3]>>,
+        observer: Arc<dyn DeviceDeliveryObserver>,
+    ) -> DeviceDeliveryAck {
+        let payload_bytes = colors.len().saturating_mul(3);
+        let started_at = Instant::now();
+        let result = HueBackend::write_bridge_colors(
+            &self.device_id,
+            &self.bridge,
+            colors.as_slice(),
+            Some((id, observer.as_ref())),
+        )
+        .await
+        .map(|()| DeviceWriteOutcome::Sent);
+        DeviceDeliveryAck::from_write_result(id, payload_bytes, started_at.elapsed(), result)
     }
 }
 
@@ -406,7 +433,7 @@ impl DeviceBackend for HueBackend {
             .bridges
             .get(id)
             .with_context(|| format!("Hue bridge {id} is not connected"))?;
-        Self::write_bridge_colors(id, bridge, colors).await
+        Self::write_bridge_colors(id, bridge, colors, None).await
     }
 
     async fn set_brightness(&mut self, id: &DeviceId, brightness: u8) -> Result<()> {

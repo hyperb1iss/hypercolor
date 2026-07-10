@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{LazyLock, Mutex};
 
 use anyhow::anyhow;
@@ -452,6 +452,8 @@ async fn actor_shutdown_rejects_pending_tracked_frame() {
         "pending-shutdown-test-device",
         Arc::new(FairnessProtocol),
         Arc::new(RecordingTransport::default()),
+        Arc::new(AtomicBool::new(true)),
+        Arc::new(Mutex::new(())),
         frame_tx,
         frame_rx,
         display_rx,
@@ -499,6 +501,8 @@ async fn fatal_control_exit_rejects_pending_tracked_frame() {
         "pending-control-failure-test-device",
         Arc::new(FairnessProtocol),
         Arc::new(RecordingTransport::default()),
+        Arc::new(AtomicBool::new(true)),
+        Arc::new(Mutex::new(())),
         frame_tx,
         frame_rx,
         display_rx,
@@ -526,6 +530,45 @@ async fn fatal_control_exit_rejects_pending_tracked_frame() {
             .as_deref()
             .is_some_and(|error| error.contains("does not support brightness"))
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shutdown_gate_prevents_post_cleanup_tracked_publication() {
+    let (frame_tx, _frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
+    let active = Arc::new(AtomicBool::new(true));
+    let lifecycle_gate = Arc::new(Mutex::new(()));
+    let sink = UsbFrameSink {
+        device_id: DeviceId::new(),
+        frame_tx: frame_tx.clone(),
+        active: Arc::clone(&active),
+        lifecycle_gate: Arc::clone(&lifecycle_gate),
+        last_async_error: Arc::new(Mutex::new(None)),
+    };
+    let delivery_id = DeviceDeliveryId {
+        queue_generation: 31,
+        sequence: 4,
+    };
+
+    let gate = lock_lifecycle_gate(&lifecycle_gate);
+    let delivery = tokio::spawn(async move {
+        sink.deliver_colors_shared(delivery_id, Arc::new(vec![[1, 2, 3]]))
+            .await
+    });
+    tokio::task::yield_now().await;
+    active.store(false, Ordering::Release);
+    if let Some(pending) = frame_tx.send_replace(None) {
+        pending.reject_pending("test shutdown cleanup");
+    }
+    drop(gate);
+
+    let ack = timeout(Duration::from_secs(1), delivery)
+        .await
+        .expect("publication blocked across cleanup should not hang")
+        .expect("delivery task should join");
+    assert_eq!(ack.id, delivery_id);
+    assert_eq!(ack.status, DeviceDeliveryStatus::Failed);
+    assert!(!ack.transport_started);
+    assert!(frame_tx.borrow().is_none());
 }
 
 async fn assert_transient_frame_failure_survival(

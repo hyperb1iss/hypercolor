@@ -371,8 +371,9 @@ pub trait DeviceFrameSink: Send + Sync {
         &self,
         id: DeviceDeliveryId,
         colors: Arc<Vec<[u8; 3]>>,
-        _observer: Arc<dyn DeviceDeliveryObserver>,
+        observer: Arc<dyn DeviceDeliveryObserver>,
     ) -> DeviceDeliveryAck {
+        observer.transport_started(id);
         self.deliver_colors_shared(id, colors).await
     }
 }
@@ -475,6 +476,26 @@ pub trait DeviceBackend: Send + Sync {
         self.write_colors_shared(id, colors)
             .await
             .map(|()| DeviceWriteOutcome::Sent)
+    }
+
+    /// Deliver a queue-qualified payload with live transport-start observation.
+    async fn deliver_colors_shared_observed(
+        &mut self,
+        device_id: &DeviceId,
+        delivery_id: DeviceDeliveryId,
+        colors: Arc<Vec<[u8; 3]>>,
+        observer: Arc<dyn DeviceDeliveryObserver>,
+    ) -> DeviceDeliveryAck {
+        observer.transport_started(delivery_id);
+        let payload_bytes = colors.len().saturating_mul(3);
+        let started_at = std::time::Instant::now();
+        let result = self.write_colors_shared_outcome(device_id, colors).await;
+        DeviceDeliveryAck::from_write_result(
+            delivery_id,
+            payload_bytes,
+            started_at.elapsed(),
+            result,
+        )
     }
 
     /// Return a cloneable hot-path frame sink for a connected device.

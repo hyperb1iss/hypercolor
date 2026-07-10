@@ -421,6 +421,16 @@ impl DeviceFrameSink for SuppressingFrameSink {
         self.attempts.fetch_add(1, Ordering::Relaxed);
         Ok(DeviceWriteOutcome::SuppressedCadence)
     }
+
+    async fn deliver_colors_shared_observed(
+        &self,
+        id: DeviceDeliveryId,
+        colors: Arc<Vec<[u8; 3]>>,
+        _observer: Arc<dyn DeviceDeliveryObserver>,
+    ) -> DeviceDeliveryAck {
+        let result = self.write_colors_shared_outcome(colors).await;
+        DeviceDeliveryAck::from_write_result(id, 0, Duration::ZERO, result)
+    }
 }
 
 struct FastFrameSinkBackend {
@@ -4683,6 +4693,7 @@ async fn output_queue_does_not_count_suppressed_lane_outcomes_as_sent() {
     assert_eq!(queue.frames_received, 1);
     assert_eq!(queue.frames_sent, 0);
     assert_eq!(queue.frames_suppressed, 1);
+    assert_eq!(queue.transport_started, 0);
     assert_eq!(queue.transport_completed, 0);
     assert_eq!(queue.last_transport_completed_sequence, 0);
 }
@@ -4740,6 +4751,50 @@ async fn output_queue_reports_transport_start_before_terminal_acknowledgement() 
     assert_eq!(completed.queues[0].last_transport_started_sequence, 1);
     assert_eq!(completed.queues[0].last_transport_completed_sequence, 1);
     assert_eq!(writes.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn direct_backend_reports_transport_start_while_write_is_blocked() {
+    let device_id = DeviceId::new();
+    let writes = Arc::new(Mutex::new(Vec::<Vec<[u8; 3]>>::new()));
+    let write_count = Arc::new(AtomicUsize::new(0));
+    let backend = SlowRecordingBackend::new(
+        device_id,
+        Duration::from_millis(100),
+        writes,
+        Arc::clone(&write_count),
+    );
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(backend));
+    manager.map_device("slow:observed", "slow", device_id);
+    let layout = make_layout(vec![make_zone("zone_0", "slow:observed", 4)]);
+    let frame = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[128, 64, 32]; 4],
+    }];
+    manager.write_frame(&frame, &layout).await;
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while manager.debug_snapshot().queues[0].transport_started == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("direct backend should publish transport start before completion");
+
+    let active = manager.debug_snapshot();
+    assert_eq!(active.queues[0].transport_started, 1);
+    assert_eq!(active.queues[0].transport_completed, 0);
+    assert_eq!(active.queues[0].transport_failed, 0);
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while write_count.load(Ordering::Relaxed) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("direct backend write should complete");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

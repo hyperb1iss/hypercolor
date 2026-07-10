@@ -6,8 +6,9 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use hypercolor_driver_api::{
-    BackendInfo, CredentialStore, DeviceBackend, DeviceFrameSink, DeviceWriteOutcome, HealthStatus,
-    OutputCadence, TransportScanner,
+    BackendInfo, CredentialStore, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId,
+    DeviceDeliveryObserver, DeviceFrameSink, DeviceWriteOutcome, HealthStatus, OutputCadence,
+    TransportScanner,
 };
 use hypercolor_types::config::GoveeConfig;
 use hypercolor_types::device::{DeviceId, DeviceInfo};
@@ -275,6 +276,7 @@ impl GoveeBackend {
         credential_store: Option<&Arc<CredentialStore>>,
         cloud_client: Option<&CloudClient>,
         cloud_base_url: Option<&str>,
+        delivery: Option<(DeviceDeliveryId, &dyn DeviceDeliveryObserver)>,
     ) -> Result<DeviceWriteOutcome> {
         if colors.is_empty() {
             return Ok(DeviceWriteOutcome::SuppressedDuplicate);
@@ -314,10 +316,16 @@ impl GoveeBackend {
                 let address = device
                     .address
                     .with_context(|| format!("Govee device {id} has no LAN address"))?;
+                if let Some((id, observer)) = delivery {
+                    observer.transport_started(id);
+                }
                 Self::send_lan_command(shared_socket, address, LanCommand::Razer { pt }).await?;
             }
             LanCommand::ColorWc { red, green, blue } => {
                 if let Some(address) = device.address {
+                    if let Some((id, observer)) = delivery {
+                        observer.transport_started(id);
+                    }
                     Self::send_lan_command(
                         shared_socket,
                         address,
@@ -330,6 +338,9 @@ impl GoveeBackend {
                         .clone()
                         .with_context(|| format!("Govee device {id} is not cloud-backed"))?;
                     let model = device.info.model.clone().unwrap_or_default();
+                    if let Some((id, observer)) = delivery {
+                        observer.transport_started(id);
+                    }
                     Self::send_cloud_command_to(
                         credential_store,
                         cloud_client,
@@ -383,8 +394,32 @@ impl DeviceFrameSink for GoveeFrameSink {
             self.credential_store.as_ref(),
             self.cloud_client.as_ref(),
             self.cloud_base_url.as_deref(),
+            None,
         )
         .await
+    }
+
+    async fn deliver_colors_shared_observed(
+        &self,
+        id: DeviceDeliveryId,
+        colors: Arc<Vec<[u8; 3]>>,
+        observer: Arc<dyn DeviceDeliveryObserver>,
+    ) -> DeviceDeliveryAck {
+        let payload_bytes = colors.len().saturating_mul(3);
+        let started_at = Instant::now();
+        let result = GoveeBackend::write_device_colors(
+            &self.device_id,
+            &self.device,
+            colors.as_slice(),
+            &self.config,
+            &self.shared_socket,
+            self.credential_store.as_ref(),
+            self.cloud_client.as_ref(),
+            self.cloud_base_url.as_deref(),
+            Some((id, observer.as_ref())),
+        )
+        .await;
+        DeviceDeliveryAck::from_write_result(id, payload_bytes, started_at.elapsed(), result)
     }
 }
 
@@ -544,6 +579,7 @@ impl DeviceBackend for GoveeBackend {
             self.credential_store.as_ref(),
             self.cloud_client.as_ref(),
             self.cloud_base_url.as_deref(),
+            None,
         )
         .await
         .map(|_| ())
@@ -566,8 +602,44 @@ impl DeviceBackend for GoveeBackend {
             self.credential_store.as_ref(),
             self.cloud_client.as_ref(),
             self.cloud_base_url.as_deref(),
+            None,
         )
         .await
+    }
+
+    async fn deliver_colors_shared_observed(
+        &mut self,
+        device_id: &DeviceId,
+        delivery_id: DeviceDeliveryId,
+        colors: Arc<Vec<[u8; 3]>>,
+        observer: Arc<dyn DeviceDeliveryObserver>,
+    ) -> DeviceDeliveryAck {
+        let payload_bytes = colors.len().saturating_mul(3);
+        let started_at = Instant::now();
+        let Some(device) = self.devices.get(device_id) else {
+            return DeviceDeliveryAck::rejected(
+                delivery_id,
+                format!("Govee device {device_id} is not connected"),
+            );
+        };
+        let result = Self::write_device_colors(
+            device_id,
+            device,
+            colors.as_slice(),
+            &self.config,
+            &self.shared_socket,
+            self.credential_store.as_ref(),
+            self.cloud_client.as_ref(),
+            self.cloud_base_url.as_deref(),
+            Some((delivery_id, observer.as_ref())),
+        )
+        .await;
+        DeviceDeliveryAck::from_write_result(
+            delivery_id,
+            payload_bytes,
+            started_at.elapsed(),
+            result,
+        )
     }
 
     async fn set_brightness(&mut self, id: &DeviceId, brightness: u8) -> Result<()> {

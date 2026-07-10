@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 use hypercolor_hal::protocol::{Protocol, ProtocolCommand, ProtocolError, ResponseStatus};
@@ -18,7 +18,8 @@ use tracing::{debug, trace, warn};
 
 use super::smbus_scanner::SmBusScanner;
 use super::traits::{
-    BackendInfo, ConnectExecution, DeviceBackend, DeviceFrameSink, DeviceLifecyclePolicy,
+    BackendInfo, ConnectExecution, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId,
+    DeviceDeliveryObserver, DeviceFrameSink, DeviceLifecyclePolicy, DeviceWriteOutcome,
 };
 use super::{DiscoveredDevice, TransportScanner};
 
@@ -123,8 +124,29 @@ impl DeviceFrameSink for SmBusDeviceFrameSink {
             self.device.as_ref(),
             &self.transport_factory,
             colors.as_slice(),
+            None,
         )
         .await
+    }
+
+    async fn deliver_colors_shared_observed(
+        &self,
+        id: DeviceDeliveryId,
+        colors: Arc<Vec<[u8; 3]>>,
+        observer: Arc<dyn DeviceDeliveryObserver>,
+    ) -> DeviceDeliveryAck {
+        let payload_bytes = colors.len().saturating_mul(3);
+        let started_at = Instant::now();
+        let result = write_connected_device(
+            self.device_id,
+            self.device.as_ref(),
+            &self.transport_factory,
+            colors.as_slice(),
+            Some((id, observer.as_ref())),
+        )
+        .await
+        .map(|()| DeviceWriteOutcome::Sent);
+        DeviceDeliveryAck::from_write_result(id, payload_bytes, started_at.elapsed(), result)
     }
 }
 
@@ -222,7 +244,7 @@ impl DeviceBackend for SmBusBackend {
             .get(id)
             .cloned()
             .with_context(|| format!("device {id} is not connected on SMBus backend"))?;
-        write_connected_device(*id, device.as_ref(), &self.transport_factory, colors).await
+        write_connected_device(*id, device.as_ref(), &self.transport_factory, colors, None).await
     }
 
     async fn connected_device_info(&self, id: &DeviceId) -> Result<Option<DeviceInfo>> {
@@ -340,6 +362,7 @@ async fn write_connected_device(
     device: &ConnectedSmBusDevice,
     transport_factory: &SmBusTransportFactory,
     colors: &[[u8; 3]],
+    delivery: Option<(DeviceDeliveryId, &dyn DeviceDeliveryObserver)>,
 ) -> Result<()> {
     if !device.connected.load(Ordering::Acquire) {
         return Err(anyhow!("SMBus device {device_id} is disconnected"));
@@ -354,6 +377,9 @@ async fn write_connected_device(
         frame_commands,
     } = &mut *io;
     protocol.encode_frame_into(colors, frame_commands);
+    if let Some((id, observer)) = delivery {
+        observer.transport_started(id);
+    }
     if let Err(initial_error) = run_commands(
         protocol.as_ref(),
         transport.as_ref(),

@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
@@ -32,6 +33,8 @@ impl UsbBackend {
         device_name: &'static str,
         protocol: Arc<dyn Protocol>,
         transport: Arc<dyn Transport>,
+        active: Arc<AtomicBool>,
+        lifecycle_gate: Arc<StdMutex<()>>,
         frame_tx: watch::Sender<Option<Arc<UsbFramePayload>>>,
         frame_rx: watch::Receiver<Option<Arc<UsbFramePayload>>>,
         display_rx: watch::Receiver<Option<Arc<UsbDisplayPayload>>>,
@@ -71,8 +74,12 @@ impl UsbBackend {
                 .map_or_else(ToString::to_string, |()| {
                     "USB device actor stopped before transport started".to_owned()
                 });
-            if let Some(pending) = frame_tx.send_replace(None) {
-                pending.reject_pending(rejection);
+            {
+                let _gate = super::lock_lifecycle_gate(&lifecycle_gate);
+                active.store(false, Ordering::Release);
+                if let Some(pending) = frame_tx.send_replace(None) {
+                    pending.reject_pending(rejection);
+                }
             }
 
             if let Err(error) = actor_result {
