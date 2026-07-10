@@ -186,7 +186,15 @@ async fn read_state_with_state(state: &AppState) -> Value {
         render_loop.stats()
     };
     let target_fps = render_stats.tier.fps();
-    let actual_fps = super::tools::capped_fps(&render_stats);
+    let capacity_fps = super::tools::render_capacity_fps(&render_stats);
+    let delivered_fps = if matches!(
+        render_stats.state,
+        hypercolor_core::engine::RenderLoopState::Running
+    ) {
+        state.performance.read().await.snapshot().delivered_fps
+    } else {
+        0.0
+    };
     let brightness =
         super::tools::brightness_percent(current_global_brightness(&state.power_state));
 
@@ -231,7 +239,9 @@ async fn read_state_with_state(state: &AppState) -> Value {
         "brightness": brightness,
         "fps": {
             "target": target_fps,
-            "actual": actual_fps
+            "capacity": capacity_fps,
+            "delivered": delivered_fps,
+            "actual": capacity_fps
         },
         "effect": active_effect,
         "devices": {

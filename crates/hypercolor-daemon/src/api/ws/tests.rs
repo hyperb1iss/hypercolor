@@ -863,6 +863,8 @@ async fn metrics_message_includes_latest_frame_timeline() {
     assert_eq!(json["stages"]["publish_preview_ms"], 0.08);
     assert_eq!(json["stages"]["publish_events_ms"], 0.01);
     assert_eq!(json["fps"]["ceiling"], 60);
+    assert_eq!(json["fps"]["capacity"], json["fps"]["actual"]);
+    assert_eq!(json["fps"]["delivered"], 0.0);
     assert_eq!(json["render_surfaces"]["slot_count"], 6);
     assert_eq!(json["render_surfaces"]["published_slots"], 4);
     assert_eq!(json["render_surfaces"]["canvas_receivers"], 2);
@@ -911,6 +913,8 @@ fn device_metrics_message_uses_shared_snapshot() {
             uses_frame_sink: true,
             worker_finished: false,
             worker_recoveries: 3,
+            delivered_fps: 58.5,
+            accepted_fps: 60.0,
             fps_sent: 58.5,
             fps_queued: 60.0,
             fps_actual: 58.5,
@@ -920,15 +924,28 @@ fn device_metrics_message_uses_shared_snapshot() {
             avg_latency_ms: 11,
             avg_queue_wait_ms: 3,
             avg_write_ms: 8,
+            avg_transport_latency_ms: 8,
             frames_received: 302,
+            accepted: 304,
             frames_sent: 300,
+            transport_started: 301,
+            transport_completed: 300,
+            transport_failed: 1,
+            completed_payload_bytes: 153_600,
             frames_suppressed: 0,
             frames_dropped: 4,
+            coalesced: 4,
+            coalesced_target_cadence: 3,
+            coalesced_backend_overrun: 1,
             errors_total: 1,
             write_failure_warnings_total: 1,
             last_error: Some("socket timeout".to_owned()),
             last_sent_ago_ms: Some(12),
             last_sequence: 302,
+            queue_generation: 12,
+            last_transport_started_sequence: 302,
+            last_transport_completed_sequence: 301,
+            last_transport_failed_sequence: 302,
         }],
     }));
 
@@ -944,6 +961,11 @@ fn device_metrics_message_uses_shared_snapshot() {
     assert_eq!(data.items[0].worker_recoveries, 3);
     assert_eq!(data.items[0].avg_queue_wait_ms, 3);
     assert_eq!(data.items[0].avg_write_ms, 8);
+    assert_eq!(data.items[0].avg_transport_latency_ms, 8);
+    assert_eq!(data.items[0].transport_completed, 300);
+    assert_eq!(data.items[0].transport_failed, 1);
+    assert_eq!(data.items[0].coalesced_target_cadence, 3);
+    assert_eq!(data.items[0].coalesced_backend_overrun, 1);
     assert_eq!(data.items[0].payload_bps_estimate, 2_048);
 }
 
@@ -981,6 +1003,8 @@ async fn relay_device_metrics_wakes_when_subscription_changes() {
             uses_frame_sink: true,
             worker_finished: false,
             worker_recoveries: 0,
+            delivered_fps: 60.0,
+            accepted_fps: 60.0,
             fps_sent: 60.0,
             fps_queued: 60.0,
             fps_actual: 60.0,
@@ -990,15 +1014,28 @@ async fn relay_device_metrics_wakes_when_subscription_changes() {
             avg_latency_ms: 8,
             avg_queue_wait_ms: 2,
             avg_write_ms: 6,
+            avg_transport_latency_ms: 6,
             frames_received: 42,
+            accepted: 42,
             frames_sent: 42,
+            transport_started: 42,
+            transport_completed: 42,
+            transport_failed: 0,
+            completed_payload_bytes: 21_504,
             frames_suppressed: 0,
             frames_dropped: 0,
+            coalesced: 0,
+            coalesced_target_cadence: 0,
+            coalesced_backend_overrun: 0,
             errors_total: 0,
             write_failure_warnings_total: 0,
             last_error: None,
             last_sent_ago_ms: Some(7),
             last_sequence: 42,
+            queue_generation: 13,
+            last_transport_started_sequence: 42,
+            last_transport_completed_sequence: 42,
+            last_transport_failed_sequence: 0,
         }],
     }));
     let initial_subscriptions = SubscriptionState::default();

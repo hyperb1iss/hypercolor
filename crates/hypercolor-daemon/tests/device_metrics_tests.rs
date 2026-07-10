@@ -42,18 +42,31 @@ fn sample_stats_with_received(
         worker_finished: false,
         worker_recoveries: 2,
         frames_received,
+        accepted: frames_received,
         frames_sent,
+        transport_started: frames_sent.saturating_add(errors_total),
+        transport_completed: frames_sent,
+        transport_failed: errors_total,
         frames_suppressed: 0,
         bytes_sent,
+        completed_payload_bytes: bytes_sent,
         frames_dropped: 2,
+        coalesced: 2,
+        coalesced_target_cadence: 1,
+        coalesced_backend_overrun: 1,
         avg_latency_ms: 14,
         avg_queue_wait_ms: 3,
         avg_write_ms: 5,
+        avg_transport_latency_ms: 5,
         last_error: last_error.map(str::to_owned),
         errors_total,
         write_failure_warnings_total: errors_total,
         last_sent_ago_ms: Some(25),
         last_sequence: frames_sent,
+        queue_generation: 1,
+        last_transport_started_sequence: frames_sent.saturating_add(errors_total),
+        last_transport_completed_sequence: frames_sent,
+        last_transport_failed_sequence: errors_total,
     }
 }
 
@@ -74,6 +87,8 @@ fn collector_reports_zero_rates_without_a_baseline() {
     assert_eq!(collected.items.len(), 1);
     assert_eq!(collected.items[0].id, device_id);
     assert_eq!(collected.items[0].fps_sent, 0.0);
+    assert_eq!(collected.items[0].delivered_fps, 0.0);
+    assert_eq!(collected.items[0].accepted_fps, 0.0);
     assert_eq!(collected.items[0].fps_queued, 0.0);
     assert_eq!(collected.items[0].fps_actual, 0.0);
     assert_eq!(collected.items[0].payload_bps_estimate, 0);
@@ -125,13 +140,13 @@ fn collector_reports_queued_and_sent_rates_separately() {
     let mut collector = DeviceMetricsCollector::new(snapshot);
     let started_at = Instant::now();
 
-    let _ = collector.update_from_statistics_at(
-        vec![sample_stats_with_received(device_id, 10, 10, 120, 0, None)],
-        started_at,
-        1_000,
-    );
+    let mut initial = sample_stats_with_received(device_id, 10, 10, 120, 0, None);
+    initial.accepted = 12;
+    let _ = collector.update_from_statistics_at(vec![initial], started_at, 1_000);
+    let mut next = sample_stats_with_received(device_id, 40, 25, 270, 0, None);
+    next.accepted = 45;
     let collected = collector.update_from_statistics_at(
-        vec![sample_stats_with_received(device_id, 40, 25, 270, 0, None)],
+        vec![next],
         started_at + Duration::from_millis(500),
         1_500,
     );
@@ -139,7 +154,11 @@ fn collector_reports_queued_and_sent_rates_separately() {
     let item = &collected.items[0];
     assert!((item.fps_queued - 60.0).abs() < f32::EPSILON);
     assert!((item.fps_sent - 30.0).abs() < f32::EPSILON);
+    assert!((item.delivered_fps - 30.0).abs() < f32::EPSILON);
+    assert!((item.accepted_fps - 66.0).abs() < f32::EPSILON);
     assert!((item.fps_actual - item.fps_sent).abs() < f32::EPSILON);
+    assert_eq!(item.coalesced_target_cadence, 1);
+    assert_eq!(item.coalesced_backend_overrun, 1);
 }
 
 #[test]

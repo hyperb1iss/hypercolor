@@ -101,6 +101,7 @@ mod tests {
     fn metrics(id: &str, fps: f32) -> DeviceMetrics {
         DeviceMetrics {
             id: id.to_owned(),
+            delivered_fps: fps,
             fps_sent: fps,
             fps_queued: fps,
             fps_actual: fps,
@@ -115,6 +116,7 @@ mod tests {
             errors_total: 0,
             last_error: None,
             last_sent_ago_ms: None,
+            ..DeviceMetrics::default()
         }
     }
 

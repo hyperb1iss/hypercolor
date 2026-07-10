@@ -1344,7 +1344,7 @@ pub(super) async fn build_metrics_message(
     let target_fps = render_stats.tier.fps();
     let ceiling_fps = render_stats.max_tier.fps();
     let avg_frame_secs = render_stats.avg_frame_time.as_secs_f64();
-    let actual_fps = if render_active {
+    let capacity_fps = if render_active {
         paced_fps(avg_frame_secs, target_fps)
     } else {
         0.0
@@ -1409,7 +1409,13 @@ pub(super) async fn build_metrics_message(
             fps: MetricsFps {
                 target: target_fps,
                 ceiling: ceiling_fps,
-                actual: round_1(actual_fps),
+                capacity: round_1(capacity_fps),
+                delivered: if render_active {
+                    round_1(performance_snapshot.delivered_fps)
+                } else {
+                    0.0
+                },
+                actual: round_1(capacity_fps),
                 dropped: render_stats.consecutive_misses,
             },
             frame_time: MetricsFrameTime {

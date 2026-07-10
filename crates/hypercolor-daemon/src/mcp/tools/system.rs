@@ -2,7 +2,9 @@
 
 use serde_json::{Value, json};
 
-use super::{ToolDefinition, ToolError, brightness_percent, capped_fps, default_output_schema};
+use super::{
+    ToolDefinition, ToolError, brightness_percent, default_output_schema, render_capacity_fps,
+};
 use crate::api::AppState;
 use crate::api::effects::active_effect_metadata;
 use crate::session::current_global_brightness;
@@ -215,7 +217,15 @@ pub(super) async fn handle_get_status_with_state(state: &AppState) -> Result<Val
         render_loop.stats()
     };
     let target_fps = render_stats.tier.fps();
-    let actual_fps = capped_fps(&render_stats);
+    let capacity_fps = render_capacity_fps(&render_stats);
+    let delivered_fps = if matches!(
+        render_stats.state,
+        hypercolor_core::engine::RenderLoopState::Running
+    ) {
+        state.performance.read().await.snapshot().delivered_fps
+    } else {
+        0.0
+    };
 
     let brightness = brightness_percent(current_global_brightness(&state.power_state));
 
@@ -258,7 +268,9 @@ pub(super) async fn handle_get_status_with_state(state: &AppState) -> Result<Val
         "brightness": brightness,
         "fps": {
             "target": target_fps,
-            "actual": actual_fps
+            "capacity": capacity_fps,
+            "delivered": delivered_fps,
+            "actual": capacity_fps
         },
         "effect": active_effect.map(|metadata| json!({
             "id": metadata.id.to_string(),
@@ -366,7 +378,7 @@ pub(super) async fn handle_diagnose_with_state(
     let performance = state.performance.read().await.snapshot();
     let device_metrics = state.device_metrics.load_full();
     let usb_actor_metrics = hypercolor_core::device::usb_actor_metrics_snapshot();
-    let fps = capped_fps(&render_stats);
+    let fps = render_capacity_fps(&render_stats);
     let target_fps = render_stats.tier.fps();
     let consecutive_misses = render_stats.consecutive_misses;
     let render_time_ms = render_stats.avg_frame_time.as_secs_f64() * 1000.0;
@@ -501,24 +513,9 @@ pub(super) async fn handle_diagnose_with_state(
                 "lagging_queues": lagging_queues,
                 "dropped_frames_total": dropped_frames_total,
                 "errors_total": output_errors_total,
-                "items": device_metrics.items.iter().map(|item| json!({
-                    "id": item.id.to_string(),
-                    "backend_id": item.backend_id.clone(),
-                    "mapped_layout_ids": item.mapped_layout_ids.clone(),
-                    "uses_frame_sink": item.uses_frame_sink,
-                    "worker_finished": item.worker_finished,
-                    "fps_sent": item.fps_sent,
-                    "fps_queued": item.fps_queued,
-                    "fps_target": item.fps_target,
-                    "frames_received": item.frames_received,
-                    "frames_sent": item.frames_sent,
-                    "frames_dropped": item.frames_dropped,
-                    "errors_total": item.errors_total,
-                    "avg_queue_wait_ms": item.avg_queue_wait_ms,
-                    "avg_write_ms": item.avg_write_ms,
-                    "last_sent_ago_ms": item.last_sent_ago_ms,
-                    "last_sequence": item.last_sequence
-                })).collect::<Vec<_>>()
+                "items": device_metrics.items.iter().map(|item| {
+                    serde_json::to_value(item).unwrap_or(serde_json::Value::Null)
+                }).collect::<Vec<_>>()
             },
             "usb_actor": {
                 "display_frames_total": usb_actor_metrics.display_frames_total,

@@ -79,7 +79,14 @@ fn extract_scene_event_hint_parses_scene_library_change() {
 #[test]
 fn performance_metrics_deserializes_renderer_diagnostics() {
     let metrics: PerformanceMetrics = serde_json::from_value(serde_json::json!({
-        "fps": { "target": 60, "ceiling": 60, "actual": 58.4, "dropped": 1 },
+        "fps": {
+            "target": 60,
+            "ceiling": 60,
+            "capacity": 60.0,
+            "delivered": 58.4,
+            "actual": 60.0,
+            "dropped": 1
+        },
         "frame_time": { "avg_ms": 8.1, "p95_ms": 12.4, "p99_ms": 15.9, "max_ms": 18.2 },
         "stages": {
             "producer_effect_rendering_ms": 2.1,
@@ -164,6 +171,8 @@ fn performance_metrics_deserializes_renderer_diagnostics() {
     .expect("metrics payload should include renderer diagnostics");
 
     assert_eq!(metrics.fps.ceiling, 60);
+    assert_eq!(metrics.fps.capacity, 60.0);
+    assert_eq!(metrics.fps.delivered_or_legacy(), 58.4);
     assert_eq!(metrics.stages.producer_scene_compose_ms, 3.4);
     assert_eq!(metrics.effect_health.servo_render_gpu_frames_total, 120);
     assert_eq!(

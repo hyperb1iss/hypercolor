@@ -1,6 +1,7 @@
 //! Lightweight render-performance tracking for daemon metrics and UI diagnostics.
 
 use std::collections::VecDeque;
+use std::time::{Duration, Instant};
 
 const FRAME_HISTORY_CAPACITY: usize = 120;
 
@@ -243,6 +244,7 @@ pub(crate) struct PerformanceSnapshot {
     pub latest_frame: Option<LatestFrameMetrics>,
     pub frame_count: u32,
     pub frame_time: FrameTimeSummary,
+    pub delivered_fps: f64,
     pub pacing: PacingSummary,
     pub effect_health: EffectHealthSummary,
 }
@@ -252,6 +254,8 @@ pub(crate) struct PerformanceSnapshot {
 pub struct PerformanceTracker {
     latest_frame: Option<LatestFrameMetrics>,
     frame_times_us: VecDeque<u32>,
+    frame_intervals_us: VecDeque<u64>,
+    last_frame_recorded_at: Option<Instant>,
     jitter_us: VecDeque<u32>,
     wake_delay_us: VecDeque<u32>,
     push_us: VecDeque<u32>,
@@ -263,6 +267,12 @@ pub struct PerformanceTracker {
 impl PerformanceTracker {
     /// Record one completed frame.
     pub(crate) fn record_frame(&mut self, metrics: &LatestFrameMetrics) {
+        let recorded_at = Instant::now();
+        if let Some(previous) = self.last_frame_recorded_at.replace(recorded_at) {
+            self.frame_intervals_us.push_back(duration_micros_u64(
+                recorded_at.saturating_duration_since(previous),
+            ));
+        }
         self.latest_frame = Some(*metrics);
         self.frame_times_us.push_back(metrics.total_us);
         self.jitter_us.push_back(metrics.jitter_us);
@@ -300,6 +310,9 @@ impl PerformanceTracker {
         if self.frame_times_us.len() > FRAME_HISTORY_CAPACITY {
             let _ = self.frame_times_us.pop_front();
         }
+        if self.frame_intervals_us.len() > FRAME_HISTORY_CAPACITY {
+            let _ = self.frame_intervals_us.pop_front();
+        }
         if self.jitter_us.len() > FRAME_HISTORY_CAPACITY {
             let _ = self.jitter_us.pop_front();
         }
@@ -321,6 +334,8 @@ impl PerformanceTracker {
     pub(crate) fn clear_frame_timings(&mut self) {
         self.latest_frame = None;
         self.frame_times_us.clear();
+        self.frame_intervals_us.clear();
+        self.last_frame_recorded_at = None;
         self.jitter_us.clear();
         self.wake_delay_us.clear();
         self.push_us.clear();
@@ -335,6 +350,7 @@ impl PerformanceTracker {
             latest_frame: self.latest_frame,
             frame_count: u32::try_from(self.frame_times_us.len()).unwrap_or(u32::MAX),
             frame_time: summarize_frame_times(&self.frame_times_us),
+            delivered_fps: delivered_fps(&self.frame_intervals_us),
             pacing: summarize_pacing(
                 &self.jitter_us,
                 &self.wake_delay_us,
@@ -636,4 +652,27 @@ fn percentile_ms(sorted: &[u32], numerator: usize, denominator: usize) -> f64 {
 fn micros_to_ms(micros: u64) -> f64 {
     let clamped = u32::try_from(micros).unwrap_or(u32::MAX);
     f64::from(clamped) / 1000.0
+}
+
+fn delivered_fps(frame_intervals_us: &VecDeque<u64>) -> f64 {
+    if frame_intervals_us.is_empty() {
+        return 0.0;
+    }
+
+    let total_us = frame_intervals_us
+        .iter()
+        .fold(0_u64, |total, interval| total.saturating_add(*interval));
+    let sample_count = u64::try_from(frame_intervals_us.len())
+        .unwrap_or(u64::MAX)
+        .max(1);
+    let average_us = total_us.checked_div(sample_count).unwrap_or_default();
+    if average_us == 0 {
+        0.0
+    } else {
+        1_000_000.0 / average_us as f64
+    }
+}
+
+fn duration_micros_u64(duration: Duration) -> u64 {
+    u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
 }

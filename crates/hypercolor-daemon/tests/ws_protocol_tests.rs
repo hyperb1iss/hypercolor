@@ -376,6 +376,8 @@ async fn device_metrics_subscription_streams_seeded_snapshot() {
             uses_frame_sink: true,
             worker_finished: false,
             worker_recoveries: 4,
+            delivered_fps: 60.0,
+            accepted_fps: 60.0,
             fps_sent: 60.0,
             fps_queued: 60.0,
             fps_actual: 60.0,
@@ -385,15 +387,28 @@ async fn device_metrics_subscription_streams_seeded_snapshot() {
             avg_latency_ms: 9,
             avg_queue_wait_ms: 3,
             avg_write_ms: 6,
+            avg_transport_latency_ms: 6,
             frames_received: 64,
+            accepted: 65,
             frames_sent: 64,
+            transport_started: 64,
+            transport_completed: 64,
+            transport_failed: 0,
+            completed_payload_bytes: 32_768,
             frames_suppressed: 0,
             frames_dropped: 1,
+            coalesced: 1,
+            coalesced_target_cadence: 1,
+            coalesced_backend_overrun: 0,
             errors_total: 0,
             write_failure_warnings_total: 0,
             last_error: None,
             last_sent_ago_ms: Some(14),
             last_sequence: 64,
+            queue_generation: 9,
+            last_transport_started_sequence: 64,
+            last_transport_completed_sequence: 64,
+            last_transport_failed_sequence: 0,
         }],
     }));
     let addr = spawn_test_daemon_with_state(state).await;
@@ -431,6 +446,10 @@ async fn device_metrics_subscription_streams_seeded_snapshot() {
     assert_eq!(message["data"]["taken_at_ms"], 5_678);
     assert_eq!(message["data"]["items"][0]["id"], device_id.to_string());
     assert_eq!(message["data"]["items"][0]["worker_recoveries"], 4);
+    assert_eq!(message["data"]["items"][0]["delivered_fps"], 60.0);
+    assert_eq!(message["data"]["items"][0]["accepted"], 65);
+    assert_eq!(message["data"]["items"][0]["transport_completed"], 64);
+    assert_eq!(message["data"]["items"][0]["coalesced_target_cadence"], 1);
     assert_eq!(message["data"]["items"][0]["payload_bps_estimate"], 2_048);
 }
 

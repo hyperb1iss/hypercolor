@@ -83,8 +83,21 @@ pub struct PerformanceMetrics {
 pub struct MetricsFps {
     pub target: u32,
     pub ceiling: u32,
+    pub capacity: f64,
+    pub delivered: f64,
     pub actual: f64,
     pub dropped: u32,
+}
+
+impl MetricsFps {
+    #[must_use]
+    pub fn delivered_or_legacy(&self) -> f64 {
+        if self.delivered > 0.0 {
+            self.delivered
+        } else {
+            self.actual
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
@@ -521,11 +534,23 @@ pub(super) fn handle_json_message(
                     .and_then(|fps| fps.get("actual"))
                     .and_then(|actual| actual.as_f64())
                     .unwrap_or_default();
+                let capacity = state
+                    .get("fps")
+                    .and_then(|fps| fps.get("capacity"))
+                    .and_then(|capacity| capacity.as_f64())
+                    .unwrap_or(actual);
+                let delivered = state
+                    .get("fps")
+                    .and_then(|fps| fps.get("delivered"))
+                    .and_then(|delivered| delivered.as_f64())
+                    .unwrap_or(actual);
 
                 if target > 0 || actual > 0.0 {
                     set_metrics.update(|metrics| {
                         let mut next = metrics.clone().unwrap_or_default();
                         next.fps.target = target;
+                        next.fps.capacity = capacity;
+                        next.fps.delivered = delivered;
                         next.fps.actual = actual;
                         *metrics = Some(next);
                     });

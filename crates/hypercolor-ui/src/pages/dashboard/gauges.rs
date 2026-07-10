@@ -45,7 +45,7 @@ pub(super) fn HeroGauges(
     let engine_raw = Memo::new(move |_| {
         metrics.with(|m| {
             m.as_ref()
-                .map(|m| stabilize_fps_for_display(m.fps.actual, m.fps.target))
+                .map(|m| stabilize_fps_for_display(m.fps.delivered_or_legacy(), m.fps.target))
         })
     });
     let engine_value = use_ema(move || engine_raw.get(), EMA_ALPHA);

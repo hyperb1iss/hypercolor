@@ -69,6 +69,8 @@ pub struct RenderLoopStatus {
     pub fps_tier: String,
     pub target_fps: u32,
     pub ceiling_fps: u32,
+    pub capacity_fps: f64,
+    pub delivered_fps: f64,
     pub actual_fps: f64,
     pub consecutive_misses: u32,
     pub total_frames: u64,
@@ -331,11 +333,13 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
         })
     };
 
+    let performance = state.performance.read().await.snapshot();
+
     // Query the live render loop for timing data.
     let render_loop_status = {
         let rl = state.render_loop.read().await;
         let snapshot = rl.stats();
-        let actual_fps = if snapshot.state == RenderLoopState::Running {
+        let capacity_fps = if snapshot.state == RenderLoopState::Running {
             round_1(paced_fps(
                 snapshot.avg_frame_time.as_secs_f64(),
                 snapshot.tier.fps(),
@@ -348,13 +352,18 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
             fps_tier: snapshot.tier.to_string(),
             target_fps: snapshot.tier.fps(),
             ceiling_fps: snapshot.max_tier.fps(),
-            actual_fps,
+            capacity_fps,
+            delivered_fps: if snapshot.state == RenderLoopState::Running {
+                round_1(performance.delivered_fps)
+            } else {
+                0.0
+            },
+            actual_fps: capacity_fps,
             consecutive_misses: snapshot.consecutive_misses,
             total_frames: snapshot.total_frames,
         }
     };
     let running = render_loop_is_operational(render_loop_status.state.as_str());
-    let performance = state.performance.read().await.snapshot();
     let latest_frame = if render_loop_status.state == "running" {
         performance.latest_frame.as_ref().map(|frame| {
             latest_frame_status(frame, state.start_time.elapsed().as_secs_f64() * 1000.0)
@@ -1312,6 +1321,8 @@ mod tests {
 
         assert_eq!(json["data"]["render_loop"]["target_fps"], 60);
         assert_eq!(json["data"]["render_loop"]["ceiling_fps"], 60);
+        assert_eq!(json["data"]["render_loop"]["capacity_fps"], 60.0);
+        assert_eq!(json["data"]["render_loop"]["delivered_fps"], 0.0);
         assert_eq!(json["data"]["render_loop"]["actual_fps"], 60.0);
         assert_eq!(
             json["data"]["compositor_acceleration"]["requested_mode"],
@@ -1371,10 +1382,7 @@ mod tests {
             json["data"]["latest_frame"]["cpu_sampling_late_readback"],
             false
         );
-        assert_eq!(
-            json["data"]["latest_frame"]["led_sampling_readback"],
-            false
-        );
+        assert_eq!(json["data"]["latest_frame"]["led_sampling_readback"], false);
         assert_eq!(json["data"]["latest_frame"]["preview_surface"], true);
         assert_eq!(
             json["data"]["latest_frame"]["scene_canvas_forced_surface"],

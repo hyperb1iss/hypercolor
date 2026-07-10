@@ -4019,6 +4019,8 @@ async fn list_device_metrics_returns_seeded_snapshot() {
             uses_frame_sink: true,
             worker_finished: false,
             worker_recoveries: 3,
+            delivered_fps: 59.5,
+            accepted_fps: 60.5,
             fps_sent: 59.5,
             fps_queued: 60.0,
             fps_actual: 59.5,
@@ -4028,15 +4030,28 @@ async fn list_device_metrics_returns_seeded_snapshot() {
             avg_latency_ms: 12,
             avg_queue_wait_ms: 4,
             avg_write_ms: 8,
+            avg_transport_latency_ms: 8,
             frames_received: 121,
+            accepted: 122,
             frames_sent: 120,
+            transport_started: 122,
+            transport_completed: 120,
+            transport_failed: 2,
+            completed_payload_bytes: 61_440,
             frames_suppressed: 0,
             frames_dropped: 3,
+            coalesced: 3,
+            coalesced_target_cadence: 2,
+            coalesced_backend_overrun: 1,
             errors_total: 2,
             write_failure_warnings_total: 1,
             last_error: Some("socket timeout".to_owned()),
             last_sent_ago_ms: Some(45),
             last_sequence: 121,
+            queue_generation: 7,
+            last_transport_started_sequence: 121,
+            last_transport_completed_sequence: 120,
+            last_transport_failed_sequence: 121,
         }],
     }));
     let app = test_app_with_state(Arc::clone(&state));
@@ -4058,6 +4073,13 @@ async fn list_device_metrics_returns_seeded_snapshot() {
     assert_eq!(json["data"]["taken_at_ms"], 1_234);
     assert_eq!(json["data"]["items"][0]["id"], device_id.to_string());
     assert_eq!(json["data"]["items"][0]["fps_target"], 60);
+    assert_eq!(json["data"]["items"][0]["delivered_fps"], 59.5);
+    assert_eq!(json["data"]["items"][0]["accepted"], 122);
+    assert_eq!(json["data"]["items"][0]["transport_completed"], 120);
+    assert_eq!(json["data"]["items"][0]["transport_failed"], 2);
+    assert_eq!(json["data"]["items"][0]["coalesced_target_cadence"], 2);
+    assert_eq!(json["data"]["items"][0]["coalesced_backend_overrun"], 1);
+    assert_eq!(json["data"]["items"][0]["queue_generation"], 7);
     assert_eq!(json["data"]["items"][0]["payload_bps_estimate"], 1_024);
     assert_eq!(json["data"]["items"][0]["errors_total"], 2);
     assert_eq!(json["data"]["items"][0]["last_error"], "socket timeout");

@@ -12,6 +12,10 @@ use serde::Deserialize;
 pub struct DeviceMetrics {
     /// Device identity — joined against `DeviceSummary.id` on the client.
     pub id: String,
+    /// Smoothed rate of completed transport deliveries.
+    pub delivered_fps: f32,
+    /// Smoothed rate of frames accepted by the output queue.
+    pub accepted_fps: f32,
     /// Smoothed output write rate.
     pub fps_sent: f32,
     /// Smoothed rate of frames queued into the output lane.
@@ -26,23 +30,39 @@ pub struct DeviceMetrics {
     pub payload_bps_estimate: u64,
     /// Rolling average write-path latency from enqueue to completion.
     pub avg_latency_ms: u32,
+    /// Actual transport duration, excluding queue wait.
+    pub avg_transport_latency_ms: u32,
     /// Total frames accepted by the output queue.
     pub frames_received: u64,
+    pub accepted: u64,
     pub frames_sent: u64,
+    pub transport_started: u64,
+    pub transport_completed: u64,
+    pub transport_failed: u64,
+    pub completed_payload_bytes: u64,
     pub frames_suppressed: u64,
     pub frames_dropped: u64,
+    pub coalesced: u64,
+    pub coalesced_target_cadence: u64,
+    pub coalesced_backend_overrun: u64,
     /// Cumulative async write failures observed by this queue.
     pub errors_total: u64,
     /// Sanitized last-error string (whitespace collapsed, length-capped).
     pub last_error: Option<String>,
     /// Milliseconds since the last write attempt, `None` if none yet.
     pub last_sent_ago_ms: Option<u64>,
+    pub queue_generation: u64,
+    pub last_transport_started_sequence: u64,
+    pub last_transport_completed_sequence: u64,
+    pub last_transport_failed_sequence: u64,
 }
 
 impl DeviceMetrics {
     #[must_use]
     pub fn sent_fps(&self) -> f32 {
-        if self.fps_sent > 0.0 || self.fps_actual <= 0.0 {
+        if self.delivered_fps > 0.0 {
+            self.delivered_fps
+        } else if self.fps_sent > 0.0 || self.fps_actual <= 0.0 {
             self.fps_sent
         } else {
             self.fps_actual

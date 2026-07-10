@@ -776,6 +776,8 @@ pub(super) struct HelloState {
 #[derive(Debug, Serialize)]
 pub(super) struct HelloFps {
     pub(super) target: u32,
+    pub(super) capacity: f64,
+    pub(super) delivered: f64,
     pub(super) actual: f64,
 }
 
@@ -813,6 +815,8 @@ pub(super) struct MetricsPayload {
 pub(super) struct MetricsFps {
     pub(super) target: u32,
     pub(super) ceiling: u32,
+    pub(super) capacity: f64,
+    pub(super) delivered: f64,
     pub(super) actual: f64,
     pub(super) dropped: u32,
 }

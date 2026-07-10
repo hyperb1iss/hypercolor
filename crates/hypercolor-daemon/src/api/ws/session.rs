@@ -629,7 +629,13 @@ fn parse_zone_preview_id(raw: &str) -> Result<ZoneId, WsProtocolError> {
 async fn build_hello_state(state: &AppState) -> HelloState {
     let render_snapshot = state.render_loop.read().await.stats();
     let target_fps = render_snapshot.tier.fps();
-    let actual_fps = paced_fps(render_snapshot.avg_frame_time.as_secs_f64(), target_fps);
+    let capacity_fps = paced_fps(render_snapshot.avg_frame_time.as_secs_f64(), target_fps);
+    let delivered_fps =
+        if render_snapshot.state == hypercolor_core::engine::RenderLoopState::Running {
+            state.performance.read().await.snapshot().delivered_fps
+        } else {
+            0.0
+        };
 
     let active_effect = active_effect_metadata(state).await.map(|meta| NameRef {
         id: meta.id.to_string(),
@@ -656,7 +662,9 @@ async fn build_hello_state(state: &AppState) -> HelloState {
         brightness: 100,
         fps: HelloFps {
             target: target_fps,
-            actual: (actual_fps * 10.0).round() / 10.0,
+            capacity: (capacity_fps * 10.0).round() / 10.0,
+            delivered: (delivered_fps * 10.0).round() / 10.0,
+            actual: (capacity_fps * 10.0).round() / 10.0,
         },
         effect: active_effect,
         scene: active_scene,

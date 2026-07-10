@@ -183,12 +183,12 @@ pub(crate) fn brightness_percent(brightness: f32) -> u8 {
     }
 }
 
-/// Compute actual delivery FPS, capped at the target tier rate.
+/// Compute theoretical render capacity, capped at the target tier rate.
 ///
 /// The EWMA frame time measures render *work* only (excluding the sleep between
 /// frames), so `1/avg_frame_time` gives theoretical throughput. The real delivery
 /// rate is bounded by the FPS tier.
-pub(crate) fn capped_fps(stats: &hypercolor_core::engine::RenderLoopStats) -> f32 {
+pub(crate) fn render_capacity_fps(stats: &hypercolor_core::engine::RenderLoopStats) -> f32 {
     let avg_secs = stats.avg_frame_time.as_secs_f32();
     if avg_secs <= 0.0 {
         return 0.0;

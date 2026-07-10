@@ -26,6 +26,10 @@ pub struct DeviceMetrics {
     pub worker_finished: bool,
     #[serde(default)]
     pub worker_recoveries: u64,
+    #[serde(default)]
+    pub delivered_fps: f32,
+    #[serde(default)]
+    pub accepted_fps: f32,
     pub fps_sent: f32,
     pub fps_queued: f32,
     pub fps_actual: f32,
@@ -35,15 +39,41 @@ pub struct DeviceMetrics {
     pub avg_latency_ms: u32,
     pub avg_queue_wait_ms: u32,
     pub avg_write_ms: u32,
+    #[serde(default)]
+    pub avg_transport_latency_ms: u32,
     pub frames_received: u64,
+    #[serde(default)]
+    pub accepted: u64,
     pub frames_sent: u64,
+    #[serde(default)]
+    pub transport_started: u64,
+    #[serde(default)]
+    pub transport_completed: u64,
+    #[serde(default)]
+    pub transport_failed: u64,
+    #[serde(default)]
+    pub completed_payload_bytes: u64,
     pub frames_suppressed: u64,
     pub frames_dropped: u64,
+    #[serde(default)]
+    pub coalesced: u64,
+    #[serde(default)]
+    pub coalesced_target_cadence: u64,
+    #[serde(default)]
+    pub coalesced_backend_overrun: u64,
     pub errors_total: u64,
     pub write_failure_warnings_total: u64,
     pub last_error: Option<String>,
     pub last_sent_ago_ms: Option<u64>,
     pub last_sequence: u64,
+    #[serde(default)]
+    pub queue_generation: u64,
+    #[serde(default)]
+    pub last_transport_started_sequence: u64,
+    #[serde(default)]
+    pub last_transport_completed_sequence: u64,
+    #[serde(default)]
+    pub last_transport_failed_sequence: u64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -61,7 +91,8 @@ struct CollectorBaseline {
 
 #[derive(Debug, Clone, Copy, Default)]
 struct SmoothedDeviceRates {
-    fps_sent: f32,
+    delivered_fps: f32,
+    accepted_fps: f32,
     fps_queued: f32,
 }
 
@@ -124,7 +155,8 @@ impl DeviceMetricsCollector {
             smoothed_rates_by_device.insert(
                 stats.device_id,
                 SmoothedDeviceRates {
-                    fps_sent: metrics.fps_sent,
+                    delivered_fps: metrics.delivered_fps,
+                    accepted_fps: metrics.accepted_fps,
                     fps_queued: metrics.fps_queued,
                 },
             );
@@ -176,15 +208,27 @@ fn build_device_metrics(
             .saturating_sub(baseline.frames_received)
     });
     let delta_frames_sent = previous.map_or(0, |baseline| {
-        stats.frames_sent.saturating_sub(baseline.frames_sent)
+        stats
+            .transport_completed
+            .saturating_sub(baseline.transport_completed)
+    });
+    let delta_accepted = previous.map_or(0, |baseline| {
+        stats.accepted.saturating_sub(baseline.accepted)
     });
     let delta_bytes_sent = previous.map_or(0, |baseline| {
-        stats.bytes_sent.saturating_sub(baseline.bytes_sent)
+        stats
+            .completed_payload_bytes
+            .saturating_sub(baseline.completed_payload_bytes)
     });
     let has_rate_baseline = previous.is_some() && elapsed_secs > f64::EPSILON;
-    let fps_sent = smooth_rate(
-        previous_rate.map(|rate| rate.fps_sent),
+    let delivered_fps = smooth_rate(
+        previous_rate.map(|rate| rate.delivered_fps),
         rate_as_f32(delta_frames_sent, elapsed_secs),
+        has_rate_baseline,
+    );
+    let accepted_fps = smooth_rate(
+        previous_rate.map(|rate| rate.accepted_fps),
+        rate_as_f32(delta_accepted, elapsed_secs),
         has_rate_baseline,
     );
     let fps_queued = smooth_rate(
@@ -200,24 +244,39 @@ fn build_device_metrics(
         uses_frame_sink: stats.uses_frame_sink,
         worker_finished: stats.worker_finished,
         worker_recoveries: stats.worker_recoveries,
-        fps_sent,
+        delivered_fps,
+        accepted_fps,
+        fps_sent: delivered_fps,
         fps_queued,
-        fps_actual: fps_sent,
+        fps_actual: delivered_fps,
         fps_target: stats.target_fps,
         target_interval_ms: stats.target_interval_ms,
         payload_bps_estimate: rate_as_u64(delta_bytes_sent, elapsed_secs),
         avg_latency_ms: u32::try_from(stats.avg_latency_ms).unwrap_or(u32::MAX),
         avg_queue_wait_ms: u32::try_from(stats.avg_queue_wait_ms).unwrap_or(u32::MAX),
         avg_write_ms: u32::try_from(stats.avg_write_ms).unwrap_or(u32::MAX),
+        avg_transport_latency_ms: u32::try_from(stats.avg_transport_latency_ms).unwrap_or(u32::MAX),
         frames_received: stats.frames_received,
+        accepted: stats.accepted,
         frames_sent: stats.frames_sent,
+        transport_started: stats.transport_started,
+        transport_completed: stats.transport_completed,
+        transport_failed: stats.transport_failed,
+        completed_payload_bytes: stats.completed_payload_bytes,
         frames_suppressed: stats.frames_suppressed,
         frames_dropped: stats.frames_dropped,
+        coalesced: stats.coalesced,
+        coalesced_target_cadence: stats.coalesced_target_cadence,
+        coalesced_backend_overrun: stats.coalesced_backend_overrun,
         errors_total: stats.errors_total,
         write_failure_warnings_total: stats.write_failure_warnings_total,
         last_error: sanitize_last_error(stats.last_error.as_deref()),
         last_sent_ago_ms: stats.last_sent_ago_ms,
         last_sequence: stats.last_sequence,
+        queue_generation: stats.queue_generation,
+        last_transport_started_sequence: stats.last_transport_started_sequence,
+        last_transport_completed_sequence: stats.last_transport_completed_sequence,
+        last_transport_failed_sequence: stats.last_transport_failed_sequence,
     }
 }
 
