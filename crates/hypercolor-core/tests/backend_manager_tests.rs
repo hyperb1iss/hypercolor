@@ -9,7 +9,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use hypercolor_core::device::mock::{MockDeviceBackend, MockDeviceConfig};
 use hypercolor_core::device::{
-    BackendInfo, BackendManager, DeviceBackend, DeviceFrameSink, DeviceWriteOutcome, SegmentRange,
+    BackendInfo, BackendManager, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId,
+    DeviceDeliveryObserver, DeviceFrameSink, DeviceWriteOutcome, SegmentRange,
 };
 use hypercolor_types::canvas::{linear_to_output_u8, srgb_to_linear};
 use hypercolor_types::device::{
@@ -21,7 +22,7 @@ use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, OutputComponent, SamplingMode,
     SpatialLayout,
 };
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 use tracing_subscriber::fmt::writer::MakeWriter;
 
 fn format_error_chain(error: &anyhow::Error) -> String {
@@ -360,6 +361,7 @@ struct FastFrameSink {
     writes: Arc<AtomicUsize>,
     recorded_writes: Option<RecordedFrameWrites>,
     panic_next: Option<Arc<AtomicBool>>,
+    block_release: Option<Arc<Notify>>,
 }
 
 #[async_trait::async_trait]
@@ -377,6 +379,28 @@ impl DeviceFrameSink for FastFrameSink {
         }
         self.writes.fetch_add(1, Ordering::Relaxed);
         Ok(())
+    }
+
+    async fn deliver_colors_shared_observed(
+        &self,
+        id: DeviceDeliveryId,
+        colors: Arc<Vec<[u8; 3]>>,
+        observer: Arc<dyn DeviceDeliveryObserver>,
+    ) -> DeviceDeliveryAck {
+        let Some(block_release) = &self.block_release else {
+            return self.deliver_colors_shared(id, colors).await;
+        };
+        observer.transport_started(id);
+        let transport_started_at = Instant::now();
+        block_release.notified().await;
+        let payload_bytes = colors.len().saturating_mul(3);
+        let result = self.write_colors_shared(colors).await;
+        DeviceDeliveryAck::from_write_result(
+            id,
+            payload_bytes,
+            transport_started_at.elapsed(),
+            result.map(|()| DeviceWriteOutcome::Sent),
+        )
     }
 }
 
@@ -406,6 +430,7 @@ struct FastFrameSinkBackend {
     suppress_writes: bool,
     recorded_writes: Option<RecordedFrameWrites>,
     panic_next: Option<Arc<AtomicBool>>,
+    block_release: Option<Arc<Notify>>,
 }
 
 impl FastFrameSinkBackend {
@@ -417,6 +442,7 @@ impl FastFrameSinkBackend {
             suppress_writes: false,
             recorded_writes: None,
             panic_next: None,
+            block_release: None,
         }
     }
 
@@ -428,6 +454,7 @@ impl FastFrameSinkBackend {
             suppress_writes: true,
             recorded_writes: None,
             panic_next: None,
+            block_release: None,
         }
     }
 
@@ -444,6 +471,23 @@ impl FastFrameSinkBackend {
             suppress_writes: false,
             recorded_writes: Some(recorded_writes),
             panic_next: Some(panic_next),
+            block_release: None,
+        }
+    }
+
+    fn blocking(
+        expected_device_id: DeviceId,
+        writes: Arc<AtomicUsize>,
+        block_release: Arc<Notify>,
+    ) -> Self {
+        Self {
+            expected_device_id,
+            writes,
+            target_fps: 60,
+            suppress_writes: false,
+            recorded_writes: None,
+            panic_next: None,
+            block_release: Some(block_release),
         }
     }
 }
@@ -511,6 +555,7 @@ impl DeviceBackend for FastFrameSinkBackend {
             writes: Arc::clone(&self.writes),
             recorded_writes: self.recorded_writes.clone(),
             panic_next: self.panic_next.clone(),
+            block_release: self.block_release.clone(),
         }) as Arc<dyn DeviceFrameSink>)
     }
 
@@ -4638,6 +4683,63 @@ async fn output_queue_does_not_count_suppressed_lane_outcomes_as_sent() {
     assert_eq!(queue.frames_received, 1);
     assert_eq!(queue.frames_sent, 0);
     assert_eq!(queue.frames_suppressed, 1);
+    assert_eq!(queue.transport_completed, 0);
+    assert_eq!(queue.last_transport_completed_sequence, 0);
+}
+
+#[tokio::test]
+async fn output_queue_reports_transport_start_before_terminal_acknowledgement() {
+    let device_id = DeviceId::new();
+    let writes = Arc::new(AtomicUsize::new(0));
+    let block_release = Arc::new(Notify::new());
+    let backend =
+        FastFrameSinkBackend::blocking(device_id, Arc::clone(&writes), Arc::clone(&block_release));
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(backend));
+    manager
+        .connect_device("fast_sink", device_id, "fast_sink:observed")
+        .await
+        .expect("connect should succeed");
+
+    let layout = make_layout(vec![make_zone("zone_0", "fast_sink:observed", 4)]);
+    let frame = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[128, 64, 32]; 4],
+    }];
+    manager.write_frame(&frame, &layout).await;
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while manager.debug_snapshot().queues[0].transport_started == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("live transport-start observation should arrive");
+
+    let active = manager.debug_snapshot();
+    assert_eq!(active.queues[0].transport_started, 1);
+    assert_eq!(active.queues[0].transport_completed, 0);
+    assert_eq!(active.queues[0].transport_failed, 0);
+    assert_eq!(active.queues[0].last_transport_started_sequence, 1);
+    assert_eq!(active.queues[0].last_transport_completed_sequence, 0);
+
+    block_release.notify_one();
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while manager.debug_snapshot().queues[0].transport_completed == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("terminal acknowledgement should follow transport completion");
+
+    let completed = manager.debug_snapshot();
+    assert_eq!(completed.queues[0].transport_started, 1);
+    assert_eq!(completed.queues[0].transport_completed, 1);
+    assert_eq!(completed.queues[0].transport_failed, 0);
+    assert_eq!(completed.queues[0].last_transport_started_sequence, 1);
+    assert_eq!(completed.queues[0].last_transport_completed_sequence, 1);
+    assert_eq!(writes.load(Ordering::Relaxed), 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4676,6 +4778,7 @@ async fn output_queue_recovers_finished_worker_and_requeues_latest_frame() {
     .expect("injected worker panic should finish the queue task");
 
     let failed = manager.debug_snapshot();
+    let failed_generation = failed.queues[0].queue_generation;
     assert_eq!(failed.queues[0].worker_recoveries, 0);
     assert_eq!(failed.queues[0].frames_received, 1);
     assert_eq!(failed.queues[0].frames_sent, 0);
@@ -4705,6 +4808,10 @@ async fn output_queue_recovers_finished_worker_and_requeues_latest_frame() {
     assert_eq!(recovered.queues[0].frames_received, 2);
     assert_eq!(recovered.queues[0].frames_sent, 1);
     assert_eq!(recovered.queues[0].frames_dropped, 0);
+    assert_ne!(recovered.queues[0].queue_generation, failed_generation);
+    assert_eq!(recovered.queues[0].last_transport_started_sequence, 2);
+    assert_eq!(recovered.queues[0].last_transport_completed_sequence, 2);
+    assert_eq!(recovered.queues[0].last_transport_failed_sequence, 0);
 }
 
 #[tokio::test]
@@ -4746,6 +4853,7 @@ async fn output_queue_rebinds_to_frame_sink_registered_after_queue_creation() {
             writes: Arc::clone(&sink_writes),
             recorded_writes: None,
             panic_next: None,
+            block_release: None,
         })),
     );
 

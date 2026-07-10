@@ -32,6 +32,7 @@ impl UsbBackend {
         device_name: &'static str,
         protocol: Arc<dyn Protocol>,
         transport: Arc<dyn Transport>,
+        frame_tx: watch::Sender<Option<Arc<UsbFramePayload>>>,
         frame_rx: watch::Receiver<Option<Arc<UsbFramePayload>>>,
         display_rx: watch::Receiver<Option<Arc<UsbDisplayPayload>>>,
         command_rx: mpsc::UnboundedReceiver<UsbDeviceCommand>,
@@ -64,6 +65,14 @@ impl UsbBackend {
                 )
                 .await
             };
+
+            let rejection = actor_result.as_ref().map_or_else(
+                |error| error.to_string(),
+                |_| "USB device actor stopped before transport started".to_owned(),
+            );
+            if let Some(pending) = frame_tx.send_replace(None) {
+                pending.reject_pending(rejection);
+            }
 
             if let Err(error) = actor_result {
                 Self::store_actor_error(&last_async_error, error.to_string());
@@ -764,6 +773,7 @@ impl UsbBackend {
                 &UsbFramePayload {
                     colors: Arc::new(black_frame),
                     delivery_id: None,
+                    delivery_observer: None,
                     delivery_tx: StdMutex::new(None),
                     delivery_state: std::sync::atomic::AtomicU8::new(super::DELIVERY_PENDING),
                 },

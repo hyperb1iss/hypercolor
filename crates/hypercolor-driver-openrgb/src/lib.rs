@@ -12,9 +12,9 @@ use std::time::Duration;
 use anyhow::{Context, Error, Result, bail};
 use async_trait::async_trait;
 use hypercolor_driver_api::{
-    BackendInfo, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceFrameSink,
-    DiscoveredDevice, DiscoveryCapability, DiscoveryConnectBehavior, DiscoveryRequest,
-    DiscoveryResult, DriverConfigProvider, DriverConfigView, DriverDescriptor,
+    BackendInfo, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver,
+    DeviceFrameSink, DiscoveredDevice, DiscoveryCapability, DiscoveryConnectBehavior,
+    DiscoveryRequest, DiscoveryResult, DriverConfigProvider, DriverConfigView, DriverDescriptor,
     DriverDiscoveredDevice, DriverHost, DriverModule, DriverPresentationProvider, HealthStatus,
 };
 use hypercolor_openrgb_sdk::{
@@ -543,10 +543,10 @@ impl Drop for ConnectedOutput {
     }
 }
 
-#[derive(Debug)]
 struct OpenRgbFramePayload {
     colors: Arc<Vec<[u8; 3]>>,
     delivery_id: Option<DeviceDeliveryId>,
+    delivery_observer: Option<Arc<dyn DeviceDeliveryObserver>>,
     delivery_tx: StdMutex<Option<oneshot::Sender<DeviceDeliveryAck>>>,
     delivery_state: AtomicU8,
 }
@@ -556,6 +556,7 @@ impl OpenRgbFramePayload {
         Self {
             colors,
             delivery_id: None,
+            delivery_observer: None,
             delivery_tx: StdMutex::new(None),
             delivery_state: AtomicU8::new(DELIVERY_PENDING),
         }
@@ -565,11 +566,20 @@ impl OpenRgbFramePayload {
         id: DeviceDeliveryId,
         colors: Arc<Vec<[u8; 3]>>,
     ) -> (Self, oneshot::Receiver<DeviceDeliveryAck>) {
+        Self::tracked_observed(id, colors, None)
+    }
+
+    fn tracked_observed(
+        id: DeviceDeliveryId,
+        colors: Arc<Vec<[u8; 3]>>,
+        delivery_observer: Option<Arc<dyn DeviceDeliveryObserver>>,
+    ) -> (Self, oneshot::Receiver<DeviceDeliveryAck>) {
         let (delivery_tx, delivery_rx) = oneshot::channel();
         (
             Self {
                 colors,
                 delivery_id: Some(id),
+                delivery_observer,
                 delivery_tx: StdMutex::new(Some(delivery_tx)),
                 delivery_state: AtomicU8::new(DELIVERY_PENDING),
             },
@@ -578,16 +588,25 @@ impl OpenRgbFramePayload {
     }
 
     fn mark_transport_started(&self) -> bool {
-        self.delivery_id.is_none()
-            || self
-                .delivery_state
-                .compare_exchange(
-                    DELIVERY_PENDING,
-                    DELIVERY_STARTED,
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                )
-                .is_ok()
+        let Some(id) = self.delivery_id else {
+            return true;
+        };
+        if self
+            .delivery_state
+            .compare_exchange(
+                DELIVERY_PENDING,
+                DELIVERY_STARTED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_err()
+        {
+            return false;
+        }
+        if let Some(observer) = &self.delivery_observer {
+            observer.transport_started(id);
+        }
+        true
     }
 
     fn acknowledge(&self, ack: DeviceDeliveryAck) {
@@ -641,6 +660,31 @@ impl DeviceFrameSink for OpenRgbFrameSink {
         colors: Arc<Vec<[u8; 3]>>,
     ) -> DeviceDeliveryAck {
         let (payload, delivery_rx) = OpenRgbFramePayload::tracked(id, colors);
+        if let Err(error) = enqueue_openrgb_payload(
+            &self.frame_tx,
+            &self.active,
+            &self.last_async_error,
+            Arc::new(payload),
+        ) {
+            return DeviceDeliveryAck::rejected(id, error.to_string());
+        }
+
+        delivery_rx.await.unwrap_or_else(|_| {
+            DeviceDeliveryAck::rejected(
+                id,
+                "OpenRGB output worker terminated before acknowledging delivery",
+            )
+        })
+    }
+
+    async fn deliver_colors_shared_observed(
+        &self,
+        id: DeviceDeliveryId,
+        colors: Arc<Vec<[u8; 3]>>,
+        observer: Arc<dyn DeviceDeliveryObserver>,
+    ) -> DeviceDeliveryAck {
+        let (payload, delivery_rx) =
+            OpenRgbFramePayload::tracked_observed(id, colors, Some(observer));
         if let Err(error) = enqueue_openrgb_payload(
             &self.frame_tx,
             &self.active,

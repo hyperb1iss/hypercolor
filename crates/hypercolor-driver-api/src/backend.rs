@@ -165,6 +165,12 @@ pub struct DeviceDeliveryAck {
     pub error: Option<String>,
 }
 
+/// Observer notified when a queue-qualified delivery begins transport I/O.
+pub trait DeviceDeliveryObserver: Send + Sync {
+    /// Record that the matching transport attempt has started.
+    fn transport_started(&self, id: DeviceDeliveryId);
+}
+
 impl DeviceDeliveryAck {
     /// Build an acknowledgement from a legacy synchronous lane result.
     #[must_use]
@@ -354,6 +360,20 @@ pub trait DeviceFrameSink: Send + Sync {
         let started_at = std::time::Instant::now();
         let result = self.write_colors_shared_outcome(colors).await;
         DeviceDeliveryAck::from_write_result(id, payload_bytes, started_at.elapsed(), result)
+    }
+
+    /// Deliver a queue-qualified payload with live transport-start observation.
+    ///
+    /// Actor-backed drivers override this method and notify `observer` at the
+    /// precise point their transport I/O begins. The default preserves legacy
+    /// terminal acknowledgement behavior for synchronous sinks.
+    async fn deliver_colors_shared_observed(
+        &self,
+        id: DeviceDeliveryId,
+        colors: Arc<Vec<[u8; 3]>>,
+        _observer: Arc<dyn DeviceDeliveryObserver>,
+    ) -> DeviceDeliveryAck {
+        self.deliver_colors_shared(id, colors).await
     }
 }
 

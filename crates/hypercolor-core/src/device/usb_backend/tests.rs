@@ -426,6 +426,108 @@ async fn parallel_actor_survives_transient_timeout_frame_failure() {
     assert_transient_frame_failure_survival(true, InjectedPrimaryFailure::Timeout).await;
 }
 
+#[tokio::test]
+async fn actor_shutdown_rejects_pending_tracked_frame() {
+    let (frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
+    let (_display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
+    let (command_tx, command_rx) = mpsc::unbounded_channel();
+    let delivery_id = DeviceDeliveryId {
+        queue_generation: 17,
+        sequence: 3,
+    };
+    let (frame, delivery_rx) =
+        UsbFramePayload::tracked(delivery_id, Arc::new(vec![[0x11, 0x22, 0x33]]));
+    frame_tx.send_replace(Some(Arc::new(frame)));
+
+    let (response_tx, response_rx) = oneshot::channel();
+    command_tx
+        .send(UsbDeviceCommand::Shutdown {
+            led_count: 0,
+            response_tx,
+        })
+        .expect("shutdown command should queue before actor start");
+
+    let actor = UsbBackend::spawn_device_actor(
+        DeviceId::new(),
+        "pending-shutdown-test-device",
+        Arc::new(FairnessProtocol),
+        Arc::new(RecordingTransport::default()),
+        frame_tx,
+        frame_rx,
+        display_rx,
+        command_rx,
+        Arc::new(Mutex::new(None)),
+    );
+
+    response_rx
+        .await
+        .expect("shutdown response should arrive")
+        .expect("shutdown should succeed");
+    let ack = timeout(Duration::from_secs(1), delivery_rx)
+        .await
+        .expect("pending delivery should be rejected without hanging")
+        .expect("delivery acknowledgement channel should stay open");
+    assert_eq!(ack.id, delivery_id);
+    assert_eq!(ack.status, DeviceDeliveryStatus::Failed);
+    assert!(!ack.transport_started);
+    actor.await.expect("actor wrapper should join");
+}
+
+#[tokio::test]
+async fn fatal_control_exit_rejects_pending_tracked_frame() {
+    let (frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
+    let (_display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
+    let (command_tx, command_rx) = mpsc::unbounded_channel();
+    let delivery_id = DeviceDeliveryId {
+        queue_generation: 23,
+        sequence: 9,
+    };
+    let (frame, delivery_rx) =
+        UsbFramePayload::tracked(delivery_id, Arc::new(vec![[0x44, 0x55, 0x66]]));
+    frame_tx.send_replace(Some(Arc::new(frame)));
+
+    let (response_tx, response_rx) = oneshot::channel();
+    command_tx
+        .send(UsbDeviceCommand::SetBrightness {
+            brightness: 128,
+            response_tx,
+        })
+        .expect("unsupported brightness command should queue before actor start");
+    let last_async_error = Arc::new(Mutex::new(None));
+    let actor = UsbBackend::spawn_device_actor(
+        DeviceId::new(),
+        "pending-control-failure-test-device",
+        Arc::new(FairnessProtocol),
+        Arc::new(RecordingTransport::default()),
+        frame_tx,
+        frame_rx,
+        display_rx,
+        command_rx,
+        Arc::clone(&last_async_error),
+    );
+
+    let control_error = response_rx
+        .await
+        .expect("control response should arrive")
+        .expect_err("unsupported brightness should fail the actor");
+    assert!(control_error.contains("does not support brightness"));
+    let ack = timeout(Duration::from_secs(1), delivery_rx)
+        .await
+        .expect("pending delivery should be rejected without hanging")
+        .expect("delivery acknowledgement channel should stay open");
+    assert_eq!(ack.id, delivery_id);
+    assert_eq!(ack.status, DeviceDeliveryStatus::Failed);
+    assert!(!ack.transport_started);
+    actor.await.expect("actor wrapper should join");
+    assert!(
+        last_async_error
+            .lock()
+            .expect("async error lock should remain available")
+            .as_deref()
+            .is_some_and(|error| error.contains("does not support brightness"))
+    );
+}
+
 async fn assert_transient_frame_failure_survival(
     parallel_transfer_lanes: bool,
     failure: InjectedPrimaryFailure,

@@ -12,8 +12,8 @@ use tokio::task::JoinHandle;
 use tracing::{trace, warn};
 
 use super::traits::{
-    DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryStatus, DeviceFrameSink,
-    OutputCadence,
+    DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver,
+    DeviceDeliveryStatus, DeviceFrameSink, OutputCadence,
 };
 
 type BackendHandle = Arc<Mutex<Box<dyn DeviceBackend>>>;
@@ -53,6 +53,7 @@ impl OutputLane {
         &self,
         id: DeviceDeliveryId,
         colors: Arc<Vec<[u8; 3]>>,
+        observer: Arc<dyn DeviceDeliveryObserver>,
     ) -> DeviceDeliveryAck {
         match self {
             Self::Backend { backend, device_id } => {
@@ -67,7 +68,11 @@ impl OutputLane {
                     result,
                 )
             }
-            Self::FrameSink { frame_sink } => frame_sink.deliver_colors_shared(id, colors).await,
+            Self::FrameSink { frame_sink } => {
+                frame_sink
+                    .deliver_colors_shared_observed(id, colors, observer)
+                    .await
+            }
         }
     }
 }
@@ -420,6 +425,7 @@ struct OutputQueueMetrics {
     last_sent_offset_us: AtomicU64,
     last_sequence: AtomicU64,
     last_transport_started_sequence: AtomicU64,
+    last_handled_sequence: AtomicU64,
     last_success_sequence: AtomicU64,
     last_error_sequence: AtomicU64,
     last_error: StdMutex<Option<String>>,
@@ -449,6 +455,7 @@ impl OutputQueueMetrics {
             last_sent_offset_us: AtomicU64::new(0),
             last_sequence: AtomicU64::new(0),
             last_transport_started_sequence: AtomicU64::new(0),
+            last_handled_sequence: AtomicU64::new(0),
             last_success_sequence: AtomicU64::new(0),
             last_error_sequence: AtomicU64::new(0),
             last_error: StdMutex::new(None),
@@ -457,6 +464,15 @@ impl OutputQueueMetrics {
 
     fn activate_generation(&self, generation: u64) {
         self.active_generation.store(generation, Ordering::Release);
+        self.last_sequence.store(0, Ordering::Relaxed);
+        self.last_transport_started_sequence
+            .store(0, Ordering::Relaxed);
+        self.last_handled_sequence.store(0, Ordering::Relaxed);
+        self.last_success_sequence.store(0, Ordering::Relaxed);
+        self.last_error_sequence.store(0, Ordering::Relaxed);
+        if let Ok(mut last_error) = self.last_error.lock() {
+            *last_error = None;
+        }
     }
 
     fn is_current(&self, id: DeviceDeliveryId) -> bool {
@@ -517,6 +533,8 @@ impl OutputQueueMetrics {
         );
         self.last_success_sequence
             .store(id.sequence, Ordering::Relaxed);
+        self.last_handled_sequence
+            .store(id.sequence, Ordering::Relaxed);
     }
 
     fn record_write_suppressed(&self, id: DeviceDeliveryId, sent_at: Instant) {
@@ -528,7 +546,7 @@ impl OutputQueueMetrics {
             duration_micros(sent_at.saturating_duration_since(self.started_at)),
             Ordering::Relaxed,
         );
-        self.last_success_sequence
+        self.last_handled_sequence
             .store(id.sequence, Ordering::Relaxed);
     }
 
@@ -566,9 +584,7 @@ impl OutputQueueMetrics {
             return;
         }
         if ack.transport_started {
-            self.transport_started.fetch_add(1, Ordering::Relaxed);
-            self.last_transport_started_sequence
-                .store(ack.id.sequence, Ordering::Relaxed);
+            self.record_transport_started(ack.id);
         }
 
         match ack.status {
@@ -590,6 +606,18 @@ impl OutputQueueMetrics {
                     .clone()
                     .unwrap_or_else(|| "device delivery failed without an error".to_owned()),
             ),
+        }
+    }
+
+    fn record_transport_started(&self, id: DeviceDeliveryId) {
+        if !self.is_current(id) {
+            return;
+        }
+        let previous = self
+            .last_transport_started_sequence
+            .fetch_max(id.sequence, Ordering::AcqRel);
+        if previous < id.sequence {
+            self.transport_started.fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -643,7 +671,7 @@ impl OutputQueueMetrics {
             u64::try_from(ms).unwrap_or(u64::MAX)
         });
         let last_error = (self.last_error_sequence.load(Ordering::Relaxed)
-            > self.last_success_sequence.load(Ordering::Relaxed))
+            > self.last_handled_sequence.load(Ordering::Relaxed))
         .then(|| self.last_error.lock().ok().and_then(|guard| guard.clone()))
         .flatten();
 
@@ -689,9 +717,15 @@ impl OutputQueueMetrics {
 
     fn last_error(&self) -> Option<String> {
         (self.last_error_sequence.load(Ordering::Relaxed)
-            > self.last_success_sequence.load(Ordering::Relaxed))
+            > self.last_handled_sequence.load(Ordering::Relaxed))
         .then(|| self.last_error.lock().ok().and_then(|guard| guard.clone()))
         .flatten()
+    }
+}
+
+impl DeviceDeliveryObserver for OutputQueueMetrics {
+    fn transport_started(&self, id: DeviceDeliveryId) {
+        self.record_transport_started(id);
     }
 }
 
@@ -865,7 +899,11 @@ impl OutputQueue {
                 phase_for_task.store(WORKER_PHASE_TRANSPORT, Ordering::Release);
                 active_sequence_for_task.store(frame.id.sequence, Ordering::Release);
                 let ack = lane
-                    .deliver_colors_shared(frame.id, Arc::clone(&frame.colors))
+                    .deliver_colors_shared(
+                        frame.id,
+                        Arc::clone(&frame.colors),
+                        metrics_for_task.clone(),
+                    )
                     .await;
                 let send_completed = Instant::now();
                 active_sequence_for_task.store(0, Ordering::Release);
@@ -967,8 +1005,8 @@ impl OutputQueue {
 
     fn latest_unconfirmed_payload(&self) -> Option<Arc<FramePayload>> {
         let payload = self.tx.borrow().clone()?;
-        let last_success_sequence = self.metrics.last_success_sequence.load(Ordering::Relaxed);
-        (payload.id.sequence > last_success_sequence).then_some(payload)
+        let last_handled_sequence = self.metrics.last_handled_sequence.load(Ordering::Relaxed);
+        (payload.id.sequence > last_handled_sequence).then_some(payload)
     }
 
     pub(super) fn worker_finished(&self) -> bool {
@@ -981,11 +1019,7 @@ impl OutputQueue {
 
     /// Push the latest payload for this device.
     pub(super) fn push(&mut self, colors: Vec<[u8; 3]>) -> Option<Vec<[u8; 3]>> {
-        self.next_sequence = self.next_sequence.saturating_add(1);
-        let id = DeviceDeliveryId {
-            queue_generation: self.generation,
-            sequence: self.next_sequence,
-        };
+        let id = self.next_delivery_id();
         self.metrics.record_accepted(id);
 
         if self.should_suppress_duplicate(&colors) {
@@ -1003,7 +1037,7 @@ impl OutputQueue {
                 let active_sequence = self.active_sequence.load(Ordering::Acquire);
                 let last_terminal_sequence = self
                     .metrics
-                    .last_success_sequence
+                    .last_handled_sequence
                     .load(Ordering::Relaxed)
                     .max(self.metrics.last_error_sequence.load(Ordering::Relaxed));
                 if previous.id.sequence != active_sequence
@@ -1052,17 +1086,17 @@ impl OutputQueue {
             return false;
         }
 
-        let last_success_sequence = self.metrics.last_success_sequence.load(Ordering::Relaxed);
+        let last_handled_sequence = self.metrics.last_handled_sequence.load(Ordering::Relaxed);
         let last_error_sequence = self.metrics.last_error_sequence.load(Ordering::Relaxed);
 
-        if payload.id.sequence == last_error_sequence && last_error_sequence > last_success_sequence
+        if payload.id.sequence == last_error_sequence && last_error_sequence > last_handled_sequence
         {
             return false;
         }
 
-        payload.id.sequence > last_success_sequence
-            || payload.id.sequence == last_success_sequence
-                && last_success_sequence >= last_error_sequence
+        payload.id.sequence > last_handled_sequence
+            || payload.id.sequence == last_handled_sequence
+                && last_handled_sequence >= last_error_sequence
     }
 
     pub(super) fn retry_latest_after_error(&mut self) -> Option<usize> {
@@ -1071,21 +1105,17 @@ impl OutputQueue {
             return None;
         };
 
-        let last_success_sequence = self.metrics.last_success_sequence.load(Ordering::Relaxed);
+        let last_handled_sequence = self.metrics.last_handled_sequence.load(Ordering::Relaxed);
         let last_error_sequence = self.metrics.last_error_sequence.load(Ordering::Relaxed);
         if payload.id.sequence != last_error_sequence
-            || last_error_sequence <= last_success_sequence
+            || last_error_sequence <= last_handled_sequence
         {
             return None;
         }
 
         let led_count = payload.colors.len();
         drop(current);
-        self.next_sequence = self.next_sequence.saturating_add(1);
-        let id = DeviceDeliveryId {
-            queue_generation: self.generation,
-            sequence: self.next_sequence,
-        };
+        let id = self.next_delivery_id();
         let produced_at = Instant::now();
         self.metrics.record_accepted(id);
         self.metrics.record_received(id);
@@ -1108,6 +1138,21 @@ impl OutputQueue {
             }));
         });
         Some(led_count)
+    }
+
+    fn next_delivery_id(&mut self) -> DeviceDeliveryId {
+        if let Some(sequence) = self.next_sequence.checked_add(1) {
+            self.next_sequence = sequence;
+        } else {
+            self.generation = next_queue_generation();
+            self.next_sequence = 1;
+            self.metrics.activate_generation(self.generation);
+            let _ = self.tx.send_replace(None);
+        }
+        DeviceDeliveryId {
+            queue_generation: self.generation,
+            sequence: self.next_sequence,
+        }
     }
 
     pub(super) fn statistics(
@@ -1155,7 +1200,11 @@ fn duration_micros(duration: Duration) -> u64 {
 }
 
 fn next_queue_generation() -> u64 {
-    NEXT_QUEUE_GENERATION.fetch_add(1, Ordering::Relaxed).max(1)
+    NEXT_QUEUE_GENERATION
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |generation| {
+            (generation != 0).then(|| generation.checked_add(1).unwrap_or(0))
+        })
+        .expect("device output queue generation space exhausted")
 }
 
 fn advance_deadline(previous_deadline: Instant, interval: Duration, now: Instant) -> Instant {
