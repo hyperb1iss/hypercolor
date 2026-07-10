@@ -228,7 +228,7 @@ fn encode_frame_to_webp(frame: &CanvasFrame) -> Result<String, JsValue> {
 
 /// Kebab-case slug for an effect name. Mirrors the capture tool's slugify so
 /// the UI and `effects/screenshots/curated/<slug>/` stay aligned.
-fn slugify(value: &str) -> String {
+pub fn slugify(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     let mut prev_dash = true;
     for ch in value.chars() {
@@ -247,7 +247,8 @@ fn slugify(value: &str) -> String {
     out
 }
 
-fn curated_screenshot_url(slug: &str) -> String {
+/// Daemon URL for an effect's curated card artwork.
+pub fn curated_screenshot_url(slug: &str) -> String {
     format!("/api/v1/effects/screenshots/{slug}/default.webp")
 }
 

@@ -185,10 +185,11 @@ pub(super) fn DisplayFacePickerModal(
     }
 }
 
-/// Visual card used inside the face gallery. Shows a thumbnail captured
-/// from the `ThumbnailStore` when the face has rendered before, plus a
-/// gradient fallback, name/author, and an "Assigned" pill for the
-/// currently-active face.
+/// Visual card used inside the face gallery. Artwork cascades like the
+/// effect cards: a curated screenshot served by the daemon paints on top
+/// when it exists, over a `ThumbnailStore` capture, over a deterministic
+/// gradient. Faces never render to the LED canvas, so the curated layer
+/// is what actually lights these cards up.
 fn render_face_gallery_card(
     effect: api::EffectSummary,
     current_face_id: Signal<Option<String>>,
@@ -215,6 +216,9 @@ fn render_face_gallery_card(
     // Deterministic gradient fallback derived from the effect name so
     // each face still has a distinct visual even without a thumbnail.
     let gradient_fallback = face_gradient_fallback(&effect.name);
+    let curated_url =
+        crate::thumbnails::curated_screenshot_url(&crate::thumbnails::slugify(&effect.name));
+    let (curated_hidden, set_curated_hidden) = signal(false);
 
     let name = effect.name;
     let author = effect.author;
@@ -244,6 +248,25 @@ fn render_face_gallery_card(
                     )
                 }
             >
+                // Curated screenshot paints over the background layers when
+                // the daemon serves one; `onerror` hides it so a missing file
+                // falls through to the thumbnail/gradient. No `loading="lazy"`
+                // — Chrome's visibility math breaks on absolutely-positioned
+                // images and rows below the fold never load.
+                <img
+                    class=move || {
+                        if curated_hidden.get() {
+                            "hidden"
+                        } else {
+                            "absolute inset-0 h-full w-full object-cover"
+                        }
+                    }
+                    src=curated_url
+                    alt=""
+                    decoding="async"
+                    fetchpriority="low"
+                    on:error=move |_| set_curated_hidden.set(true)
+                />
                 <Show when=move || is_current.get() fallback=|| ()>
                     <span class="absolute right-1.5 top-1.5 rounded-full border border-coral/60 bg-coral/25 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-white backdrop-blur-sm">
                         "Assigned"
