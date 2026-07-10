@@ -18,6 +18,7 @@
         "build:faces": "bun run hypercolor build --all --workspace-root . --entry-root src/faces --out ../effects/hypercolor --sdk-alias-path packages/core/src/index.ts",
         "capture:screenshots": "bun scripts/capture-screenshots.ts",
         "capture:faces": "bun scripts/capture-faces.ts",
+        "capture:browse": "bun scripts/browse-drafts.ts",
         "capture:promote": "bun scripts/capture-screenshots.ts --promote"
     },
     "devDependencies": {

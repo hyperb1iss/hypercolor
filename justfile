@@ -731,6 +731,10 @@ capture-screenshots *FLAGS:
 capture-faces *FLAGS:
     cd sdk && bun run capture:faces {{ FLAGS }}
 
+# Generate the drafts approval gallery (drafts-browser.html at repo root)
+browse-drafts:
+    cd sdk && bun run capture:browse
+
 # Promote draft rank-1 frames into effects/screenshots/curated/ as WebP q=0.92
 promote-screenshots:
     cd sdk && bun run capture:promote
