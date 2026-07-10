@@ -1217,7 +1217,7 @@ mod tests {
             let mut performance = state.performance.write().await;
             performance.record_effect_error();
             performance.record_effect_fallback_applied();
-            performance.record_frame(&LatestFrameMetrics {
+            let frame = LatestFrameMetrics {
                 timestamp_ms: 40,
                 input_us: 100,
                 producer_us: 500,
@@ -1309,7 +1309,11 @@ mod tests {
                     publish_done_us: 1_400,
                     frame_done_us: 1_450,
                 },
-            });
+            };
+            performance.record_frame(&frame);
+            drop(performance);
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            state.performance.write().await.record_frame(&frame);
         }
 
         let response = get_status(State(state)).await;
@@ -1322,7 +1326,11 @@ mod tests {
         assert_eq!(json["data"]["render_loop"]["target_fps"], 60);
         assert_eq!(json["data"]["render_loop"]["ceiling_fps"], 60);
         assert_eq!(json["data"]["render_loop"]["capacity_fps"], 60.0);
-        assert_eq!(json["data"]["render_loop"]["delivered_fps"], 0.0);
+        let delivered_fps = json["data"]["render_loop"]["delivered_fps"]
+            .as_f64()
+            .expect("delivered_fps should be numeric");
+        assert!(delivered_fps > 0.0);
+        assert!(delivered_fps < 60.0);
         assert_eq!(json["data"]["render_loop"]["actual_fps"], 60.0);
         assert_eq!(
             json["data"]["compositor_acceleration"]["requested_mode"],
@@ -1454,7 +1462,7 @@ mod tests {
         assert_eq!(json["data"]["effect_health"]["fallbacks_applied_total"], 1);
         assert_eq!(
             json["data"]["effect_health"]["producer_gpu_readback_failures_total"],
-            1
+            2
         );
         assert_eq!(
             json["data"]["effect_health"]["servo_soft_stalls_total"],

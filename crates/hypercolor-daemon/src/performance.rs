@@ -350,7 +350,11 @@ impl PerformanceTracker {
             latest_frame: self.latest_frame,
             frame_count: u32::try_from(self.frame_times_us.len()).unwrap_or(u32::MAX),
             frame_time: summarize_frame_times(&self.frame_times_us),
-            delivered_fps: delivered_fps(&self.frame_intervals_us),
+            delivered_fps: delivered_fps(
+                &self.frame_intervals_us,
+                self.last_frame_recorded_at
+                    .map(|recorded_at| recorded_at.elapsed()),
+            ),
             pacing: summarize_pacing(
                 &self.jitter_us,
                 &self.wake_delay_us,
@@ -654,22 +658,25 @@ fn micros_to_ms(micros: u64) -> f64 {
     f64::from(clamped) / 1000.0
 }
 
-fn delivered_fps(frame_intervals_us: &VecDeque<u64>) -> f64 {
+fn delivered_fps(
+    frame_intervals_us: &VecDeque<u64>,
+    since_last_completion: Option<Duration>,
+) -> f64 {
     if frame_intervals_us.is_empty() {
         return 0.0;
     }
 
     let total_us = frame_intervals_us
         .iter()
-        .fold(0_u64, |total, interval| total.saturating_add(*interval));
+        .fold(0_u64, |total, interval| total.saturating_add(*interval))
+        .saturating_add(since_last_completion.map_or(0, duration_micros_u64));
     let sample_count = u64::try_from(frame_intervals_us.len())
         .unwrap_or(u64::MAX)
         .max(1);
-    let average_us = total_us.checked_div(sample_count).unwrap_or_default();
-    if average_us == 0 {
+    if total_us == 0 {
         0.0
     } else {
-        1_000_000.0 / average_us as f64
+        sample_count as f64 * 1_000_000.0 / total_us as f64
     }
 }
 
