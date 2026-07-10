@@ -880,6 +880,18 @@ where
     })
 }
 
+#[cfg(feature = "wgpu")]
+fn frame_has_zone_colors(frame: &FrameData, left: [u8; 3], right: [u8; 3]) -> bool {
+    let zone_color = |zone_id: &str| {
+        frame
+            .zones
+            .iter()
+            .find(|zone| zone.zone_id == zone_id)
+            .and_then(|zone| zone.colors.first().copied())
+    };
+    zone_color("zone_left") == Some(left) && zone_color("zone_right") == Some(right)
+}
+
 async fn wait_for_next_canvas_frame(
     rx: &mut watch::Receiver<CanvasFrame>,
     previous_frame_number: u32,
@@ -3217,12 +3229,10 @@ async fn pipeline_gpu_retained_screen_preview_advances_frame_watch_when_input_st
 
     let mut rt = RenderThread::spawn(state.clone());
 
-    tokio::time::timeout(Duration::from_secs(2), frame_rx.changed())
-        .await
-        .expect("expected initial sampled GPU frame within 2 seconds")
-        .expect("frame sender should remain connected");
-
-    let initial_frame = frame_rx.borrow().clone();
+    let initial_frame = wait_for_frame_where(&mut frame_rx, |frame| {
+        frame_has_zone_colors(frame, [255, 0, 0], [0, 255, 0])
+    })
+    .await;
     let retained_frame = wait_for_next_frame_with_watchdog(
         &mut frame_rx,
         initial_frame.frame_number,
@@ -3346,12 +3356,10 @@ async fn pipeline_gpu_fresh_screen_preview_does_not_publish_stale_colors_while_s
 
     let mut rt = RenderThread::spawn(state.clone());
 
-    tokio::time::timeout(Duration::from_secs(2), frame_rx.changed())
-        .await
-        .expect("expected initial sampled GPU frame within 2 seconds")
-        .expect("frame sender should remain connected");
-
-    let initial_frame = frame_rx.borrow().clone();
+    let initial_frame = wait_for_frame_where(&mut frame_rx, |frame| {
+        frame_has_zone_colors(frame, [255, 0, 0], [0, 255, 0])
+    })
+    .await;
     let loop_frame_number = wait_for_render_loop_frame_number(&state, 2).await;
     let current_frame = frame_rx.borrow().clone();
 
@@ -3447,12 +3455,10 @@ async fn pipeline_gpu_fresh_screen_preview_publishes_latest_colors_after_deferre
 
     let mut rt = RenderThread::spawn(state.clone());
 
-    tokio::time::timeout(Duration::from_secs(2), frame_rx.changed())
-        .await
-        .expect("expected initial sampled GPU frame within 2 seconds")
-        .expect("frame sender should remain connected");
-
-    let initial_frame = frame_rx.borrow().clone();
+    let initial_frame = wait_for_frame_where(&mut frame_rx, |frame| {
+        frame_has_zone_colors(frame, [255, 0, 0], [0, 255, 0])
+    })
+    .await;
     wait_for_render_loop_frame_number(&state, 3).await;
     let expected_left = [0, 255, 255];
     let expected_right = [255, 0, 255];
@@ -3594,12 +3600,10 @@ async fn pipeline_gpu_fresh_screen_preview_keeps_latest_wins_under_sustained_upd
 
     let mut rt = RenderThread::spawn(state.clone());
 
-    tokio::time::timeout(Duration::from_secs(2), frame_rx.changed())
-        .await
-        .expect("expected initial sampled GPU frame within 2 seconds")
-        .expect("frame sender should remain connected");
-
-    let initial_frame = frame_rx.borrow().clone();
+    let initial_frame = wait_for_frame_where(&mut frame_rx, |frame| {
+        frame_has_zone_colors(frame, [255, 0, 0], [0, 255, 0])
+    })
+    .await;
     wait_for_render_loop_frame_number(&state, 6).await;
     let expected_left = [255, 255, 255];
     let expected_right = [16, 32, 48];
