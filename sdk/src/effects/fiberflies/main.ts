@@ -610,6 +610,22 @@ export default canvas.stateful(
                 description: 'Purple and cyan spirits dance through twilight, a garden where neon meets the occult.',
                 name: 'Violet Hour',
             },
+            {
+                controls: {
+                    baseColor: '#ff06b5',
+                    bgColor: '#29005d',
+                    colorMode: 'Custom',
+                    count: 25,
+                    glow: 0,
+                    scene: 'Swarm',
+                    size: 4.47,
+                    speed: 5,
+                    wander: 42,
+                },
+                description:
+                    'Hot-pink fiberflies swarm through ultraviolet dusk with no halo to soften them. Crisp bodies, restless motion, pure blacklight energy.',
+                name: 'Ultraviolet Fly',
+            },
         ],
     },
 )

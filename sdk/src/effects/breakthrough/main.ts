@@ -195,6 +195,35 @@ export default effect(
                     'The tunnel at rest. Magenta and cyan facets turn in unhurried symmetry, every edge clean, every color exactly where it belongs.',
                 name: 'Silk Meditation',
             },
+            {
+                controls: {
+                    flow: 0,
+                    palette: 'Vaporwave',
+                    pulse: 55,
+                    segments: 7,
+                    speed: 5,
+                    style: 'Fractal',
+                    twist: 0,
+                    warp: 0,
+                },
+                description:
+                    'Seven vaporwave facets hold a clean recursive geometry while the tunnel machinery falls away. All symmetry, no drag.',
+                name: 'NPMZ',
+            },
+            {
+                controls: {
+                    palette: 'Electric',
+                    pulse: 95,
+                    segments: 8,
+                    speed: 3.5,
+                    style: 'Glitch',
+                    twist: 0,
+                    warp: 0,
+                },
+                description:
+                    'Eight electric irises stare through corrupted signal bands. Nearly maximum pulse makes every blink hit hard.',
+                name: 'Cyber Eyes',
+            },
         ],
     },
 )

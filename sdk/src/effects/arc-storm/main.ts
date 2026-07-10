@@ -166,6 +166,20 @@ export default effect(
                     'Radioactive discharge cascades through a ruptured cooling tower. Acid-green arcs stutter and snap across contaminated steel.',
                 name: 'Chernobyl Fireflies',
             },
+            {
+                controls: {
+                    branches: 15,
+                    density: 10,
+                    flicker: 8,
+                    intensity: 32,
+                    palette: 'Electric',
+                    prismatic: 98,
+                    speed: 1.5,
+                },
+                description:
+                    'Sparse electric strands hang in deep space, splitting almost completely into spectral color. Quiet voltage with a razor prism edge.',
+                name: 'Hyperstrands',
+            },
         ],
     },
 )

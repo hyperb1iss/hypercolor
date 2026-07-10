@@ -942,6 +942,19 @@ export default canvas.stateful(
                     'Molten geometry spins relentlessly through the dark. Every beat hammers another pressure wave across the pinwheel of burning bands.',
                 name: 'Forge Hammer',
             },
+            {
+                controls: {
+                    decay: 96.54,
+                    intensity: 78,
+                    palette: 'Cyberpunk',
+                    ringCount: 2,
+                    scene: 'Cascade',
+                    speed: 6,
+                },
+                description:
+                    'Two cyberpunk pressure rings linger almost forever, feeding a clean cascading pulse with long neon afterimages.',
+                name: 'Nipz',
+            },
         ],
     },
 )

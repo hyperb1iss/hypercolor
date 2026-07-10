@@ -406,6 +406,22 @@ export default effect(
                     'Full-throttle thrust through a cathedral of neon girders. Magenta and cyan shear past as the drop carves curves through space.',
                 name: 'Dopamine Collider',
             },
+            {
+                controls: {
+                    colorScheme: 'Cyberpunk',
+                    colorSpeed: 0,
+                    curvature: 49.96,
+                    flow: 6.98,
+                    glowIntensity: 44.44,
+                    sensitivity: 24.99,
+                    speed: 55.81,
+                    thrust: 90.46,
+                    visualStyle: 'Particle Field',
+                },
+                description:
+                    'A frozen cyberpunk spectrum rides a fast, gently curved particle corridor. Low sensitivity keeps the geometry silky while the thrust stays deliciously high.',
+                name: 'Prizma',
+            },
         ],
 
         setup: (ctx) => {

@@ -144,5 +144,37 @@ export default effect('Bubble Garden', shader, controls, {
                 'Particle accelerator collision event. A hundred luminous fragments scatter from the impact point in cyan, magenta, and ultraviolet.',
             name: 'Hadron Splash',
         },
+        {
+            controls: {
+                bgColor: '#170085',
+                color: '#08f7fe',
+                color2: '#ff06b5',
+                color3: '#6f2dff',
+                colorMode: 'Palette Blend',
+                count: 31.84,
+                size: 4.97,
+                speed: 12,
+                theme: 'Cyber Pop',
+            },
+            description:
+                'A candy-rave cloud of cyan, hot pink, and ultraviolet bubbles floats through deep blue syrup. Sweet enough to glow in the dark.',
+            name: 'Hyperkandi',
+        },
+        {
+            controls: {
+                bgColor: '#000000',
+                color: '#ff1352',
+                color2: '#37ffd1',
+                color3: '#2806ff',
+                colorMode: 'Palette Blend',
+                count: 30,
+                size: 5,
+                speed: 10,
+                theme: 'Cyber Pop',
+            },
+            description:
+                'Glossy candy bubbles tumble through pitch black in cherry red, mint cyan, and hard blue. A whole sweet shop under ultraviolet light.',
+            name: 'Candy Bubblez',
+        },
     ],
 })

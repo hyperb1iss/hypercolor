@@ -398,6 +398,48 @@ export default canvas.stateful(
                     'Spectral orbs ascend through a cathedral of black glass. Indigo and ultraviolet halos marking each vanished soul.',
                 name: 'Ghost Lantern Procession',
             },
+            {
+                controls: {
+                    bgColor: '#3e01a1',
+                    color1: '#6000fc',
+                    color2: '#b300ff',
+                    color3: '#42ff6e',
+                    ringCount: 2,
+                    speedRaw: 14,
+                    theme: 'Custom',
+                },
+                description:
+                    'Violet portals loop through an electric dreamscape while acid-green sparks mark the seams between worlds.',
+                name: 'Loopworld',
+            },
+            {
+                controls: {
+                    bgColor: '#360061',
+                    color1: '#cc00ff',
+                    color2: '#af00ff',
+                    color3: '#00c234',
+                    ringCount: 1,
+                    speedRaw: 10.24,
+                    theme: 'Custom',
+                },
+                description:
+                    'Juicy ultraviolet rings rise one at a time through grape-dark syrup, chased by a sharp green candy finish.',
+                name: 'Tasty Ringz',
+            },
+            {
+                controls: {
+                    bgColor: '#130032',
+                    color1: '#00d100',
+                    color2: '#ff00b5',
+                    color3: '#4300fc',
+                    ringCount: 2,
+                    speedRaw: 8.67,
+                    theme: 'Custom',
+                },
+                description:
+                    'Watermelon green, hot pink, and blue-violet rings drift through a dark candy shell. Pure wearable-sugar energy.',
+                name: 'Ring Pop',
+            },
         ],
     },
 )
