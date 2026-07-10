@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use hypercolor_core::types::canvas::{
-    BYTES_PER_PIXEL, PublishedSurface, RenderSurfacePool, SurfaceDescriptor,
+    BYTES_PER_PIXEL, PublishedSurface, RenderSurfacePool, SurfaceDescriptor, SurfaceStateCounts,
 };
 
 use super::super::{ComposedFrameSet, PreviewSurfaceRequest};
@@ -575,6 +575,17 @@ impl GpuSparkleFlinger {
 }
 
 impl GpuPreviewSurfaceSet {
+    pub(super) fn surface_pool_counts(&mut self) -> SurfaceStateCounts {
+        let mut counts = self.readback_surfaces.slot_counts();
+        for cached in &mut self.cached_readback_surfaces {
+            let cached_counts = cached.surfaces.slot_counts();
+            counts.free = counts.free.saturating_add(cached_counts.free);
+            counts.dequeued = counts.dequeued.saturating_add(cached_counts.dequeued);
+            counts.published = counts.published.saturating_add(cached_counts.published);
+        }
+        counts
+    }
+
     pub(super) fn new(
         device: &wgpu::Device,
         pipeline: &GpuCompositorPipeline,

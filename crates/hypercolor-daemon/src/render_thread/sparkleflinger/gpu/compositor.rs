@@ -2,7 +2,9 @@ use std::sync::mpsc::{self, TryRecvError};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use hypercolor_core::types::canvas::{PublishedSurface, RenderSurfacePool, SurfaceDescriptor};
+use hypercolor_core::types::canvas::{
+    PublishedSurface, RenderSurfacePool, SurfaceDescriptor, SurfaceStateCounts,
+};
 
 use super::super::{
     ComposedFrameSet, CompositionLayer, CompositionMode, CompositionPlan, PreviewSurfaceRequest,
@@ -80,6 +82,16 @@ impl SamplingReadbackBuffers {
                 SAMPLING_READBACK_SURFACE_SLOTS,
             ),
         }
+    }
+}
+
+impl SamplingReadbackLatch {
+    pub(super) fn surface_pool_counts(&mut self) -> SurfaceStateCounts {
+        self.buffers
+            .as_mut()
+            .map_or_else(SurfaceStateCounts::default, |buffers| {
+                buffers.surfaces.slot_counts()
+            })
     }
 }
 

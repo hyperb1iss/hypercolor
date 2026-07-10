@@ -5,9 +5,14 @@ use anyhow::Result;
 #[cfg(test)]
 use hypercolor_core::bus::DisplayYuv420Frame;
 use hypercolor_core::spatial::PreparedZonePlan;
-use hypercolor_core::types::canvas::{BYTES_PER_PIXEL, Canvas, PublishedSurface};
+use hypercolor_core::types::canvas::{
+    BYTES_PER_PIXEL, Canvas, PublishedSurface, SurfaceStateCounts,
+};
 
-use super::{CompositionPlan, DisplayFinalizeCacheKey, MediaTextureSourceKey};
+use super::{
+    CompositionPlan, DisplayFinalizeCacheKey, MediaTextureSourceKey,
+    SparkleFlingerSurfacePoolCounts,
+};
 use crate::render_thread::gpu_device::{GpuRenderDevice, texture_format_name};
 use crate::render_thread::producer_queue::{GpuTextureFrame, GpuTextureFrameOrigin};
 use crate::render_thread::sparkleflinger::gpu_sampling::{GpuSamplingPlan, GpuSpatialSampler};
@@ -346,6 +351,21 @@ enum GpuCompositorOutputSurface {
 }
 
 impl GpuSparkleFlinger {
+    pub(crate) fn surface_pool_counts(&mut self) -> SparkleFlingerSurfacePoolCounts {
+        let preview = self.preview_surfaces.as_mut().map_or_else(
+            SurfaceStateCounts::default,
+            GpuPreviewSurfaceSet::surface_pool_counts,
+        );
+        let mut compositor = self.sampling_latch.surface_pool_counts();
+        for surfaces in self.display_finalize_surfaces.values_mut() {
+            compositor = merge_surface_state_counts(compositor, surfaces.surface_pool_counts());
+        }
+        SparkleFlingerSurfacePoolCounts {
+            preview,
+            compositor,
+        }
+    }
+
     pub(crate) fn new() -> Result<Self> {
         Self::with_render_device(GpuRenderDevice::new_with_backend_preference(
             "SparkleFlinger GPU compositor",
@@ -608,6 +628,16 @@ impl GpuSparkleFlinger {
             .as_ref()
             .map(GpuCompositorSurfaceSet::snapshot)
     }
+}
+
+fn merge_surface_state_counts(
+    mut total: SurfaceStateCounts,
+    counts: SurfaceStateCounts,
+) -> SurfaceStateCounts {
+    total.free = total.free.saturating_add(counts.free);
+    total.dequeued = total.dequeued.saturating_add(counts.dequeued);
+    total.published = total.published.saturating_add(counts.published);
+    total
 }
 
 #[allow(

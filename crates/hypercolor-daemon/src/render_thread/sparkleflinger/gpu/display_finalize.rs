@@ -5,7 +5,9 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use hypercolor_core::bus::DisplayYuv420Frame;
-use hypercolor_core::types::canvas::{PublishedSurface, RenderSurfacePool, SurfaceDescriptor};
+use hypercolor_core::types::canvas::{
+    PublishedSurface, RenderSurfacePool, SurfaceDescriptor, SurfaceStateCounts,
+};
 use hypercolor_types::scene::DisplayFaceBlendMode;
 use hypercolor_types::scene::ZoneId;
 use hypercolor_types::spatial::EdgeBehavior;
@@ -185,6 +187,10 @@ impl DisplayYuv420Layout {
 }
 
 impl GpuDisplayFinalizeSurfaceSet {
+    pub(super) fn surface_pool_counts(&mut self) -> SurfaceStateCounts {
+        self.readback_surfaces.slot_counts()
+    }
+
     pub(super) fn new(device: &wgpu::Device, generation: u64, width: u32, height: u32) -> Self {
         let padded_bytes_per_row = super::padded_bytes_per_row(width);
         let yuv_layout = DisplayYuv420Layout::new(width, height);

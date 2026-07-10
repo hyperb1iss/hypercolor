@@ -877,6 +877,8 @@ fn gpu_compositor_latches_sampling_canvas_for_animated_gpu_plans() {
         composed.sampling_surface.is_some(),
         "the latched frame should also expose a published sampling surface",
     );
+    let counts = compositor.surface_pool_counts().compositor;
+    assert_eq!(counts.free + counts.published + counts.dequeued, 3);
 }
 
 #[test]
@@ -1181,6 +1183,8 @@ fn gpu_scaled_preview_reuses_readback_surface_pools_across_size_flips() {
         .as_ref()
         .expect("scaled preview should keep preview surfaces allocated");
     assert_eq!(preview_surfaces.readback_surface_pool_allocation_count, 2);
+    let counts = compositor.surface_pool_counts().preview;
+    assert_eq!(counts.free + counts.published + counts.dequeued, 6);
 }
 
 #[test]

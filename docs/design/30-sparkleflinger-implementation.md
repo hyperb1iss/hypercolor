@@ -74,7 +74,7 @@ render_thread/
 ├── frame_executor.rs          — execute_frame: the frame lifecycle in one place
 ├── frame_composer.rs          — compose_frame: chooses single-effect vs
 │                                 render-group path, drives SparkleFlinger,
-│                                 manages render_surface_pool expansion
+│                                 snapshots actual surface-pool state
 ├── composition_planner.rs     — CompositionPlanner: compiles layered plans,
 │                                 caches last_stable_frame, crossfades
 ├── sparkleflinger.rs          — the compositor itself (see above)
@@ -102,9 +102,9 @@ scene_transactions.rs          — SceneTransaction enum, SceneTransactionQueue,
 ```
 
 The root `render_thread.rs` holds the spawn machinery, the `RenderThreadState`
-struct that is injected from `AppState`, the render-surface pool sizing
-heuristic (`desired_render_surface_slots`), and tests for the helper modules
-(`frame_pacing`, `frame_throttle`, `frame_io::screen_data_to_canvas`).
+struct that is injected from `AppState`, shared canvas dimensions, and tests
+for the helper modules (`frame_pacing`, `frame_throttle`,
+`frame_io::screen_data_to_canvas`).
 
 `RenderThreadState` owns two keys that matter for composition: the shared
 `Arc<RwLock<SpatialEngine>>` that API handlers read, and a dedicated
@@ -444,7 +444,7 @@ render_scene_state    build_frame_scene   maybe_sleep_throttle      sample_input
             │                                          │              │
    latch effect_queue OR                   RenderGroupRuntime          │
    render new effect                       .render_scene or            │
-   (render_surface_pool)                   .reuse_scene (cached)       │
+   (fresh ProducerFrame)                   .reuse_scene (cached)       │
             │                                         │               │
             │                                         ▼               │
             │                             RenderGroupResult           │
@@ -488,14 +488,12 @@ its own `SpatialEngine` clone in `RenderSceneState`, which the
 shared engine must also push a `SceneTransaction` (see `apply_layout_update`)
 or the render thread will keep running against stale layout data.
 
-**Producers never mutate published surfaces.** `PublishedSurface` (from Spec 36) is immutable post-submit. `render_surface_pool` recycles slots through
-the watch channel so long as there are no extra references outstanding.
-Under retention pressure the pool grows from `DEFAULT_RENDER_SURFACE_SLOTS`
-(8) up to `MAX_RENDER_SURFACE_SLOTS` (12), biased toward
-`desired_render_surface_slots(canvas_receiver_count)`, and then falls back
-to owned-canvas publishes that cost a full-frame copy.
-`RenderGroupRuntime` maintains a separate `preview_surface_pool` for the
-group preview compose stage.
+**Producers never mutate published surfaces.** `PublishedSurface` (from Spec
+36) is immutable post-submit. `ZoneRuntime` owns an elastic scene pool that
+starts at eight slots and grows to 64, plus bounded per-direct-group pools.
+SparkleFlinger owns separate preview and compositor pools, including GPU
+preview, sampling, and display-finalize readback surfaces. Telemetry reports
+each role directly; there is no global render pool sized from receiver count.
 
 **Composition is cheap to skip.** A single-layer `Replace` plan with
 `opacity >= 1.0` takes the bypass fast path in `SparkleFlinger::compose`
@@ -599,10 +597,9 @@ render thread into owned-canvas publishes can never keep the full tier.
 
 **Wave 6 daemon preview runtime — partial.** `preview_runtime.rs`
 introduces the `PreviewRuntime` seam: it wraps the event-bus canvas and
-screen-canvas watches, maintains atomic receiver counters so the render
-thread can size `render_surface_pool` without touching the bus internals,
-records published frame counts and latest frame numbers, and is the thing
-the API/WS layers snapshot for telemetry. What is still ahead is the
+screen-canvas watches, maintains atomic receiver counters and demand-shaped
+cadence, records published frame counts and latest frame numbers, and is the
+thing the API/WS layers snapshot for telemetry. What is still ahead is the
 formal presentation-resolution boundary described in Sections 6.1 and 9.8
 of the design doc — the runtime still publishes raw canvas bytes to the
 same `event_bus.canvas_sender()` path, no offscreen-canvas translation,

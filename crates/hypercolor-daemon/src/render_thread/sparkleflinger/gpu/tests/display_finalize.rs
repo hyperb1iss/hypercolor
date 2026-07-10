@@ -20,6 +20,8 @@ fn gpu_display_finalize_applies_replace_brightness_and_circular_mask() {
         &rgba[((2 * 4 + 2) * 4)..((2 * 4 + 2) * 4 + 4)],
         &[128, 0, 0, 255]
     );
+    let counts = compositor.surface_pool_counts().compositor;
+    assert_eq!(counts.free + counts.published + counts.dequeued, 3);
 }
 
 #[test]

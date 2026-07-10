@@ -447,6 +447,13 @@ pub(crate) struct SparkleFlingerSurfacePoolCounts {
     pub(crate) compositor: SurfaceStateCounts,
 }
 
+impl SparkleFlingerSurfacePoolCounts {
+    pub(crate) fn merge(&mut self, other: Self) {
+        self.preview = merge_surface_state_counts(self.preview, other.preview);
+        self.compositor = merge_surface_state_counts(self.compositor, other.compositor);
+    }
+}
+
 #[cfg_attr(not(feature = "wgpu"), allow(dead_code))]
 pub(crate) enum ZoneSamplingDispatch {
     Unsupported,
@@ -481,10 +488,15 @@ impl SparkleFlinger {
         let preview = self.preview_surface_pool.slot_counts();
         let composition = self.composition_surface_pool.slot_counts();
         let face_overlay = self.face_overlay_surface_pool.slot_counts();
-        SparkleFlingerSurfacePoolCounts {
+        let mut counts = SparkleFlingerSurfacePoolCounts {
             preview,
             compositor: merge_surface_state_counts(composition, face_overlay),
+        };
+        #[cfg(feature = "wgpu")]
+        if let SparkleFlingerBackend::Gpu { gpu, .. } = &mut self.backend {
+            counts.merge(gpu.surface_pool_counts());
         }
+        counts
     }
 
     pub fn cpu() -> Self {

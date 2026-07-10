@@ -1282,7 +1282,9 @@ impl RenderCaches {
     ) -> RenderSurfaceSnapshot {
         let scene_counts = self.render_group_runtime.scene_surface_pool_state_counts();
         let direct_counts = self.render_group_runtime.direct_surface_pool_state_counts();
-        let sparkleflinger_counts = self.sparkleflinger.surface_pool_counts();
+        let mut sparkleflinger_counts = self.sparkleflinger.surface_pool_counts();
+        #[cfg(feature = "wgpu")]
+        sparkleflinger_counts.merge(self.display_sparkleflinger.surface_pool_counts());
         let count = |value| u32::try_from(value).unwrap_or(u32::MAX);
         let scene_slot_count = count(
             scene_counts
@@ -1530,10 +1532,14 @@ mod tests {
         assert_eq!(snapshot.scene_pool_slot_count, 8);
         assert_eq!(snapshot.scene_pool_free_slots, 8);
         assert_eq!(snapshot.direct_pool_slot_count, 0);
-        assert_eq!(snapshot.preview_pool_slot_count, 2);
-        assert_eq!(snapshot.preview_pool_free_slots, 2);
-        assert_eq!(snapshot.compositor_pool_slot_count, 4);
-        assert_eq!(snapshot.compositor_pool_free_slots, 4);
+        #[cfg(not(feature = "wgpu"))]
+        let (preview_slots, compositor_slots) = (2, 4);
+        #[cfg(feature = "wgpu")]
+        let (preview_slots, compositor_slots) = (4, 8);
+        assert_eq!(snapshot.preview_pool_slot_count, preview_slots);
+        assert_eq!(snapshot.preview_pool_free_slots, preview_slots);
+        assert_eq!(snapshot.compositor_pool_slot_count, compositor_slots);
+        assert_eq!(snapshot.compositor_pool_free_slots, compositor_slots);
     }
 
     #[test]
