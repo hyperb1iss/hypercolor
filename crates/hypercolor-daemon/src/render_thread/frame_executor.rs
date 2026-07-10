@@ -1,7 +1,4 @@
-use std::future::{Future, poll_fn};
-use std::pin::Pin;
 use std::sync::Arc;
-use std::task::Poll;
 use std::time::Instant;
 
 use tracing::{info, warn};
@@ -31,35 +28,6 @@ use super::unassigned_output::{UnassignedOutputPlanner, unassigned_behavior_gene
 use super::{RenderThreadState, micros_between, micros_u32, u64_to_u32};
 use crate::discovery::handle_async_write_failures;
 use crate::performance::OutputFrameSourceKind;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BackendManagerLockReservation {
-    ReacquireWhenNeeded,
-    AwaitReservedQueueSlot,
-}
-
-impl BackendManagerLockReservation {
-    const fn should_await_reserved_slot(self) -> bool {
-        matches!(self, Self::AwaitReservedQueueSlot)
-    }
-}
-
-// Poll once so a contended lock keeps its Tokio mutex queue slot while render work runs.
-async fn prime_backend_manager_lock<F>(
-    mut manager_lock: Pin<&mut F>,
-) -> BackendManagerLockReservation
-where
-    F: Future,
-{
-    poll_fn(|cx| match manager_lock.as_mut().poll(cx) {
-        Poll::Ready(manager) => {
-            drop(manager);
-            Poll::Ready(BackendManagerLockReservation::ReacquireWhenNeeded)
-        }
-        Poll::Pending => Poll::Ready(BackendManagerLockReservation::AwaitReservedQueueSlot),
-    })
-    .await
-}
 
 #[expect(
     clippy::too_many_lines,
@@ -219,9 +187,6 @@ pub(crate) async fn execute_frame(
         state.preview_runtime.screen_canvas_receiver_count(),
         state.preview_runtime.screen_canvas_demand().max_fps,
     );
-    let manager_lock = state.backend_manager.lock();
-    tokio::pin!(manager_lock);
-    let backend_manager_lock_reservation = prime_backend_manager_lock(manager_lock.as_mut()).await;
     let _ = refresh_effect_scene_snapshot(
         state,
         &mut scene.snapshot_cache,
@@ -281,11 +246,7 @@ pub(crate) async fn execute_frame(
     let global_brightness = output_power.effective_brightness();
     let global_brightness_bits = global_brightness.to_bits();
     let (write_stats, async_failures, output_frame_source, output_reuse_key) = {
-        let mut manager = if backend_manager_lock_reservation.should_await_reserved_slot() {
-            manager_lock.await
-        } else {
-            state.backend_manager.lock().await
-        };
+        let mut manager = state.backend_manager.lock().await;
         let latest_output_power = *state.power_state.borrow();
         if should_switch_to_late_sleep_frame(output_power, latest_output_power) {
             scene_snapshot.output_power = latest_output_power;
@@ -680,8 +641,6 @@ mod tests {
     use hypercolor_types::spatial::{
         EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     };
-    use tokio::sync::Mutex;
-
     use crate::performance::CompositorBackendKind;
     use crate::render_thread::frame_composer::RenderStageStats;
     use crate::render_thread::frame_sampling::LedSamplingStrategy;
@@ -760,40 +719,6 @@ mod tests {
     fn gpu_preview_advances_when_requested_and_unresolved() {
         let render_stage = render_stage(CompositorBackendKind::Gpu, true, false);
         assert!(needs_gpu_preview_advance(&render_stage));
-    }
-
-    #[tokio::test]
-    async fn backend_lock_reservation_releases_immediate_lock() {
-        let lock = Mutex::new(());
-        let manager_lock = lock.lock();
-        tokio::pin!(manager_lock);
-
-        let reservation = super::prime_backend_manager_lock(manager_lock.as_mut()).await;
-
-        assert_eq!(
-            reservation,
-            super::BackendManagerLockReservation::ReacquireWhenNeeded
-        );
-        assert!(lock.try_lock().is_ok());
-    }
-
-    #[tokio::test]
-    async fn backend_lock_reservation_keeps_contended_queue_slot() {
-        let lock = Mutex::new(());
-        let held = lock.lock().await;
-        let manager_lock = lock.lock();
-        tokio::pin!(manager_lock);
-
-        let reservation = super::prime_backend_manager_lock(manager_lock.as_mut()).await;
-        drop(held);
-        let queued = manager_lock.await;
-
-        assert_eq!(
-            reservation,
-            super::BackendManagerLockReservation::AwaitReservedQueueSlot
-        );
-        drop(queued);
-        assert!(lock.try_lock().is_ok());
     }
 
     #[test]
