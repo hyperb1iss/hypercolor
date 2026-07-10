@@ -633,14 +633,6 @@ fn measured_sampling_us(
 
 #[cfg(test)]
 mod tests {
-    use hypercolor_core::spatial::SpatialEngine;
-    use hypercolor_core::types::canvas::{Canvas, PublishedSurface};
-    use hypercolor_core::types::event::{FrameData, ZoneColors};
-    use hypercolor_types::scene::{ColorInterpolation, SceneId};
-    use hypercolor_types::session::OffOutputBehavior;
-    use hypercolor_types::spatial::{
-        EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
-    };
     use crate::performance::CompositorBackendKind;
     use crate::render_thread::frame_composer::RenderStageStats;
     use crate::render_thread::frame_sampling::LedSamplingStrategy;
@@ -653,6 +645,14 @@ mod tests {
     use crate::render_thread::pipeline_runtime::needs_gpu_preview_advance;
     use crate::render_thread::sparkleflinger::ComposedFrameSet;
     use crate::session::OutputPowerState;
+    use hypercolor_core::spatial::SpatialEngine;
+    use hypercolor_core::types::canvas::{Canvas, PublishedSurface};
+    use hypercolor_core::types::event::{FrameData, ZoneColors};
+    use hypercolor_types::scene::{ColorInterpolation, SceneId};
+    use hypercolor_types::session::OffOutputBehavior;
+    use hypercolor_types::spatial::{
+        EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
+    };
 
     fn render_stage(
         backend: CompositorBackendKind,
