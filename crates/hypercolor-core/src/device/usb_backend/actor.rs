@@ -66,10 +66,11 @@ impl UsbBackend {
                 .await
             };
 
-            let rejection = actor_result.as_ref().map_or_else(
-                |error| error.to_string(),
-                |_| "USB device actor stopped before transport started".to_owned(),
-            );
+            let rejection = actor_result
+                .as_ref()
+                .map_or_else(ToString::to_string, |()| {
+                    "USB device actor stopped before transport started".to_owned()
+                });
             if let Some(pending) = frame_tx.send_replace(None) {
                 pending.reject_pending(rejection);
             }
