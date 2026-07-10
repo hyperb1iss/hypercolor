@@ -1282,9 +1282,10 @@ impl RenderCaches {
     ) -> RenderSurfaceSnapshot {
         let scene_counts = self.render_group_runtime.scene_surface_pool_state_counts();
         let direct_counts = self.render_group_runtime.direct_surface_pool_state_counts();
-        let mut sparkleflinger_counts = self.sparkleflinger.surface_pool_counts();
+        let sparkleflinger_counts = self.sparkleflinger.surface_pool_counts();
         #[cfg(feature = "wgpu")]
-        sparkleflinger_counts.merge(self.display_sparkleflinger.surface_pool_counts());
+        let sparkleflinger_counts =
+            sparkleflinger_counts.merged(self.display_sparkleflinger.surface_pool_counts());
         let count = |value| u32::try_from(value).unwrap_or(u32::MAX);
         let scene_slot_count = count(
             scene_counts
