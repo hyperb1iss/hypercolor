@@ -238,14 +238,14 @@ Call the `diagnose` tool. Omit `device_id` for a full-system pass, or pass it to
     "consecutive_misses": 2,
     "device_output": {
       "items": [
-        { "id": "dev_wled_a4cf21", "fps_sent": 0, "fps_queued": 60, "frames_dropped": 184, "errors_total": 41 }
+        { "id": "dev_wled_a4cf21", "delivered_fps": 0, "accepted_fps": 60, "coalesced_backend_overrun": 184, "transport_failed": 41 }
       ]
     }
   }
 }
 ```
 
-The `metrics.device_output.items[]` block is the signal: `fps_queued` of 60 against `fps_sent` of 0, with a climbing `frames_dropped` and `errors_total`, means the render loop is producing frames the transport cannot deliver. That is a connectivity failure, not a rendering one.
+The `metrics.device_output.items[]` block is the signal: `accepted_fps` of 60 against `delivered_fps` of 0, with climbing backend-overrun coalescing and transport failures, means the render loop is producing frames the transport cannot deliver. That is a connectivity failure, not a rendering one.
 
 The CLI equivalent runs named checks and can write a full report file for a bug report:
 
@@ -256,7 +256,7 @@ hypercolor diagnose --report ./hypercolor-report.json --system
 
 ### 4. Interpret and act
 
-Read the findings before acting. A network device that drops to `fps_sent: 0` with rising errors is almost always off the network: powered down, on a different VLAN, or behind AP isolation. The fix lives in [Network devices](@/hardware/_index.md), not in Hypercolor. A device that is connected but rendering wrong colors is a different class of problem, covered in [Color science for LEDs](@/effects/color-science.md). Distinguishing the two is exactly what the metrics let an agent do.
+Read the findings before acting. A network device that drops to `delivered_fps: 0` with rising transport failures is almost always off the network: powered down, on a different VLAN, or behind AP isolation. The fix lives in [Network devices](@/hardware/_index.md), not in Hypercolor. A device that is connected but rendering wrong colors is a different class of problem, covered in [Color science for LEDs](@/effects/color-science.md). Distinguishing the two is exactly what the metrics let an agent do.
 
 {% callout(type="success") %}
 The pattern repeats across all three workflows: orient on shared state, narrow with a filtered query, act with a structured call, and verify by reading state back. An agent that follows it never operates blind.

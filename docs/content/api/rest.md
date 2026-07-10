@@ -146,7 +146,9 @@ availability, global brightness, and live render-loop timing.
     "render_loop": {
       "state": "running",
       "target_fps": 60,
-      "actual_fps": 59.8
+      "capacity_fps": 60.0,
+      "delivered_fps": 59.8,
+      "actual_fps": 60.0
     }
   },
   "meta": {

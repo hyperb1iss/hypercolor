@@ -549,7 +549,7 @@ surface; the only workspace opt-outs are audited platform interop crates.
 Every frame records a `LatestFrameMetrics` and a `FrameTimeline` to the
 `PerformanceTracker`. The tracker keeps a rolling 120-frame history
 (`FRAME_HISTORY_CAPACITY`) for frame-time, jitter, and wake-delay samples,
-plus a reuse history for aggregate counts.
+plus frame-completion intervals and a reuse history for aggregate counts.
 
 Three surfaces read from the tracker:
 
@@ -558,14 +558,16 @@ token, total ms, wake late ms, frame age ms, logical layer count, render
 group count, copy stats, and a `render_surfaces` sub-object with slot state
 
 - canvas receiver count. The `render_loop` object reports `target_fps`,
-  `ceiling_fps` (from the admission gate), `actual_fps`, `consecutive_misses`,
-  `total_frames`, `fps_tier`, and `state`. A dedicated `preview_runtime`
+  `ceiling_fps` (from the admission gate), theoretical `capacity_fps`, measured
+  completion-cadence `delivered_fps`, the v1 `actual_fps` capacity alias,
+  `consecutive_misses`, `total_frames`, `fps_tier`, and `state`. A dedicated `preview_runtime`
   sub-object exposes `canvas_receivers`, `screen_canvas_receivers`,
   `canvas_frames_published`, `screen_canvas_frames_published`, and the
   latest canvas/screen frame numbers.
 
 **WebSocket metrics (`MetricsPayload`)** — same data, richer. Top-level
-groups are `fps` (target, ceiling, actual, dropped), `frame_time`
+groups are `fps` (target, ceiling, capacity, delivered, the legacy actual alias,
+dropped), `frame_time`
 (avg/p95/p99/max), `stages` (input_sampling, producer_rendering,
 composition, effect_rendering, spatial_sampling, device_output,
 preview_postprocess, event_bus, coordination_overhead), `pacing`

@@ -86,9 +86,9 @@ display output encoder counters, and per-device queue state. Inspect it with:
 curl -s -X POST http://localhost:9420/api/v1/diagnose | jq '.data.snapshot'
 ```
 
-The per-device items under `snapshot.device_output.items` include `avg_write_ms`, `fps_sent`,
-`fps_queued`, `frames_dropped`, and `last_error` — useful when a specific device is lagging or
-dropping frames.
+The per-device items under `snapshot.device_output.items` include accepted and delivered FPS,
+target-cadence versus backend-overrun coalescing, actual transport latency, terminal counters,
+and `last_error`. That split distinguishes healthy latest-wins pacing from a lagging device.
 
 ### Servo memory diagnostics
 

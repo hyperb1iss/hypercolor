@@ -99,11 +99,11 @@ The `devices` category includes two checks relevant to USB-bus and output latenc
 output_queues   queues=6, usb_queues=4, lagging=1, worker_finished=0, dropped_total=0, errors_total=0
 ```
 
-- `lagging` — queues where `fps_sent` is significantly behind `fps_queued`. This is the primary indicator of USB-bus saturation: the daemon is producing frames faster than the USB subsystem can flush them.
+- `lagging` — queues where completed `delivered_fps` is significantly behind the queued cadence. Use the coalescing split below to distinguish an expected device cap from transport pressure.
 - `worker_finished` — a worker thread exited unexpectedly. Any non-zero value is a hard failure and appears as `fail` status.
-- `dropped_total` — cumulative frame drops across all device queues.
+- `dropped_total` — legacy sum of coalesced frames across all device queues.
 
-For the detailed per-device breakdown, use `-j` and inspect `snapshot.device_output.items`. Each item includes `fps_sent`, `fps_queued`, `fps_target`, `avg_write_ms`, `avg_queue_wait_ms`, and `last_error`.
+For the detailed per-device breakdown, use `-j` and inspect `snapshot.device_output.items`. Compare `delivered_fps` with `accepted_fps` and `fps_target`. Rising `coalesced_target_cadence` is expected pacing; rising `coalesced_backend_overrun`, transport latency, or failures identifies real pressure.
 
 ### `usb_actor_display_lane`
 

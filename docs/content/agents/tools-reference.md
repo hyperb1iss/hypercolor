@@ -287,7 +287,7 @@ Run live diagnostics on the whole system or a specific device: connectivity, fra
 { "name": "diagnose", "arguments": {} }
 ```
 
-The response carries `overall_status` (`healthy` or `warning`), a `findings` array (each with a `severity` and `message`), and a deep `metrics` object: `fps`, `target_fps`, `consecutive_misses`, `avg_render_time_ms`, a per-frame `latest_frame` block, a `render_window` block, a `device_output` block (per-queue `fps_sent` vs `fps_queued`, `frames_dropped`, `errors_total`), and a `usb_actor` block. This is the backbone of the diagnose flow in [agent workflows](@/agents/workflows.md).
+The response carries `overall_status` (`healthy` or `warning`), a `findings` array (each with a `severity` and `message`), and a deep `metrics` object: capacity and delivered FPS, frame timing, a per-frame `latest_frame` block, a `render_window` block, a `device_output` block with accepted and delivered rates, coalescing reasons, transport terminal counters, and actor latency, plus a `usb_actor` block. This is the backbone of the diagnose flow in [agent workflows](@/agents/workflows.md).
 
 ---
 

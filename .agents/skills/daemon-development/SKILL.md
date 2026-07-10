@@ -146,16 +146,16 @@ Key LED-frame fields:
 
 Key device-output fields:
 
-- Per queue: `backend_id`, `mapped_layout_ids`, `uses_frame_sink`, `worker_finished`, `fps_sent`, `fps_queued`, `frames_dropped`, `avg_queue_wait_ms`, `avg_write_ms`, `last_sent_ago_ms`, `last_sequence`
+- Per queue: `backend_id`, `mapped_layout_ids`, `uses_frame_sink`, `worker_finished`, `delivered_fps`, `accepted_fps`, `coalesced_target_cadence`, `coalesced_backend_overrun`, `transport_started`, `transport_completed`, `transport_failed`, `avg_queue_wait_ms`, `avg_transport_latency_ms`, `queue_generation`, and delivery sequence watermarks
 - USB actor: `display_frames_delayed_for_led_total`, `display_led_priority_wait_avg_ms`, `display_led_priority_wait_max_ms`
 
 Jank triage:
 
 - Displays smooth but LEDs jank: inspect `output_frame_source` and GPU stale/deferred flags before touching USB.
 - All USB LEDs jank in unison: suspect shared LED sample/output freshness or shared queue pressure before per-device protocol bugs.
-- One device/family janks: compare `fps_sent` vs `fps_queued`, `frames_dropped`, queue wait, write time, and `last_error`.
+- One device/family janks: compare `delivered_fps` with the target, split target-cadence coalescing from backend-overrun coalescing, then inspect queue wait, transport latency, and `last_error`.
 - `output_frame_source=current_frame`, high `gpu_sample_retry_hit`, low sample/push times, and `wake_late` warnings point at host scheduler pressure rather than the LED pipeline. On Windows, check for active `cargo.exe`/`rustc.exe`/`link.exe`/`cl.exe` jobs before tuning render code; direct repo-local Cargo builds can steal enough CPU to wake the render thread several milliseconds late.
-- Per-queue `frames_dropped` can be expected latest-frame replacement when a device has a lower target FPS than the render loop (for example WLED at 15 FPS or a display-face LED lane at 30 FPS). Treat drops as suspicious only when paired with high write/queue latency, errors, old `last_sent_ago_ms`, or visible divergence from the device's configured target.
+- `coalesced_target_cadence` is expected latest-frame replacement when a device has a lower target FPS than the render loop. Treat `coalesced_backend_overrun` as pressure: correlate it with queue wait, transport latency, failures, and delivered cadence.
 - Never reduce canvas resolution, FPS ceilings, or performance caps to hide telemetry symptoms. Fix the root cause.
 
 ## Device Lifecycle State Machine
