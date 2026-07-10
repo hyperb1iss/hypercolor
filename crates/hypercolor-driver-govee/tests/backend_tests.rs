@@ -1,6 +1,9 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-use hypercolor_driver_api::{DeviceBackend, DeviceWriteOutcome};
+use hypercolor_driver_api::{
+    DeviceBackend, DeviceDeliveryId, DeviceDeliveryObserver, DeviceDeliveryStatus,
+};
 use hypercolor_driver_govee::backend::GoveeBackend;
 use hypercolor_driver_govee::cloud::{CloudClient, V1Device};
 use hypercolor_driver_govee::{GoveeLanDevice, build_cloud_discovered_device, build_device_info};
@@ -9,6 +12,14 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::net::UdpSocket;
 use tokio::time::{Duration, timeout};
+
+struct CountingDeliveryObserver(Arc<AtomicUsize>);
+
+impl DeviceDeliveryObserver for CountingDeliveryObserver {
+    fn transport_started(&self, _id: DeviceDeliveryId) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
+}
 
 #[tokio::test]
 async fn write_colors_dedups_and_paces_lan_state_frames() {
@@ -171,17 +182,35 @@ async fn cloud_only_write_reports_duplicate_suppression_without_counting_a_send(
     backend.remember_cloud_device(cloud_device);
 
     let colors = Arc::new(vec![[255, 0, 0], [0, 0, 255]]);
+    let starts = Arc::new(AtomicUsize::new(0));
+    let observer: Arc<dyn DeviceDeliveryObserver> =
+        Arc::new(CountingDeliveryObserver(Arc::clone(&starts)));
     let first = backend
-        .write_colors_shared_outcome(&device_id, Arc::clone(&colors))
-        .await
-        .expect("first cloud frame should send");
+        .deliver_colors_shared_observed(
+            &device_id,
+            DeviceDeliveryId {
+                queue_generation: 43,
+                sequence: 1,
+            },
+            Arc::clone(&colors),
+            Arc::clone(&observer),
+        )
+        .await;
     let duplicate = backend
-        .write_colors_shared_outcome(&device_id, colors)
-        .await
-        .expect("duplicate cloud frame should be accepted but suppressed");
+        .deliver_colors_shared_observed(
+            &device_id,
+            DeviceDeliveryId {
+                queue_generation: 43,
+                sequence: 2,
+            },
+            colors,
+            observer,
+        )
+        .await;
 
-    assert_eq!(first, DeviceWriteOutcome::Sent);
-    assert_eq!(duplicate, DeviceWriteOutcome::SuppressedDuplicate);
+    assert_eq!(first.status, DeviceDeliveryStatus::Completed);
+    assert_eq!(duplicate.status, DeviceDeliveryStatus::SuppressedDuplicate);
+    assert_eq!(starts.load(Ordering::Relaxed), 1);
     assert_eq!(requests.await.expect("server task should join").len(), 1);
 }
 

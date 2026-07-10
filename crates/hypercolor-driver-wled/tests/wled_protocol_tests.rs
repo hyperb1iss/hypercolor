@@ -6,11 +6,13 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Once, OnceLock};
 use std::time::{Duration, Instant};
 
 use hypercolor_driver_api::{
-    DeviceBackend, DeviceWriteOutcome, DiscoveryConnectBehavior, TransportScanner,
+    DeviceBackend, DeviceDeliveryId, DeviceDeliveryObserver, DeviceDeliveryStatus,
+    DeviceWriteOutcome, DiscoveryConnectBehavior, TransportScanner,
 };
 use hypercolor_driver_wled::{
     DdpPacket, DdpSequence, E131Packet, E131SequenceTracker, WledBackend, WledColorFormat,
@@ -31,6 +33,14 @@ const DDP_FLAG_PUSH: u8 = 0x01;
 const DDP_DTYPE_RGB8: u8 = 0x0B;
 const DDP_DTYPE_RGBW8: u8 = 0x1B;
 const DDP_ID_DEFAULT: u8 = 0x01;
+
+struct CountingDeliveryObserver(Arc<AtomicUsize>);
+
+impl DeviceDeliveryObserver for CountingDeliveryObserver {
+    fn transport_started(&self, _id: DeviceDeliveryId) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
+}
 
 // ── DDP Header Layout Tests ────────────────────────────────────────────
 
@@ -1227,11 +1237,21 @@ async fn frame_sink_reports_wled_dedup_as_suppressed() {
         .frame_sink(&device_id)
         .expect("connected WLED device should expose a frame sink");
     let colors = Arc::new(vec![[7, 8, 9], [1, 2, 3]]);
-    let first_outcome = sink
-        .write_colors_shared_outcome(Arc::clone(&colors))
-        .await
-        .expect("first sink write should succeed");
-    assert_eq!(first_outcome, DeviceWriteOutcome::Sent);
+    let starts = Arc::new(AtomicUsize::new(0));
+    let observer: Arc<dyn DeviceDeliveryObserver> =
+        Arc::new(CountingDeliveryObserver(Arc::clone(&starts)));
+    let first_ack = sink
+        .deliver_colors_shared_observed(
+            DeviceDeliveryId {
+                queue_generation: 41,
+                sequence: 1,
+            },
+            Arc::clone(&colors),
+            Arc::clone(&observer),
+        )
+        .await;
+    assert_eq!(first_ack.status, DeviceDeliveryStatus::Completed);
+    assert_eq!(starts.load(Ordering::Relaxed), 1);
 
     let mut packet = [0_u8; 64];
     timeout(Duration::from_millis(200), receiver.recv_from(&mut packet))
@@ -1239,11 +1259,21 @@ async fn frame_sink_reports_wled_dedup_as_suppressed() {
         .expect("expected first DDP frame")
         .expect("recv first DDP frame");
 
-    let duplicate_outcome = sink
-        .write_colors_shared_outcome(colors)
-        .await
-        .expect("duplicate sink write should be accepted but suppressed");
-    assert_eq!(duplicate_outcome, DeviceWriteOutcome::SuppressedDuplicate);
+    let duplicate_ack = sink
+        .deliver_colors_shared_observed(
+            DeviceDeliveryId {
+                queue_generation: 41,
+                sequence: 2,
+            },
+            colors,
+            observer,
+        )
+        .await;
+    assert_eq!(
+        duplicate_ack.status,
+        DeviceDeliveryStatus::SuppressedDuplicate
+    );
+    assert_eq!(starts.load(Ordering::Relaxed), 1);
 
     assert!(
         timeout(Duration::from_millis(150), receiver.recv_from(&mut packet))
