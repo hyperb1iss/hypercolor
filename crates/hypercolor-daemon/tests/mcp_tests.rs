@@ -389,7 +389,9 @@ async fn mcp_http_initialize_returns_json_in_stateless_mode() {
     );
 
     let result = payload.get("result").expect("initialize result");
-    assert_eq!(result["protocolVersion"], "2025-06-18");
+    let latest_protocol = serde_json::to_value(rmcp::model::ProtocolVersion::LATEST)
+        .expect("serialize protocol version");
+    assert_eq!(result["protocolVersion"], latest_protocol);
     assert!(result["capabilities"]["tools"].is_object());
     assert!(result["capabilities"]["resources"].is_object());
     assert!(result["capabilities"]["prompts"].is_object());
