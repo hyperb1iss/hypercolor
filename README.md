@@ -270,8 +270,9 @@ installs a systemd user service, sets up udev rules for USB device access, and p
 
 ### Install on Windows
 
-Download the installer from the
-[GitHub releases page](https://github.com/hyperb1iss/hypercolor/releases) and run it.
+The Windows installer ships with the v0.1.0 release — watch the
+[GitHub releases page](https://github.com/hyperb1iss/hypercolor/releases). Until it lands,
+Windows runs from a source build (`just setup` in PowerShell, see the docs).
 Per-user install (no UAC unless you opt into motherboard/RAM RGB hardware support, which
 installs the [PawnIO](https://github.com/namazso/PawnIO) kernel driver via a one-click
 flow). Tested on Windows 10 22H2 and Windows 11 23H2/24H2, x64.
@@ -282,9 +283,10 @@ optional PawnIO install — Hypercolor prompts you only if compatible hardware i
 
 ### Install on macOS
 
-Download `Hypercolor-<version>-arm64.dmg` (Apple Silicon) or `-x86_64.dmg` (Intel)
-from the [GitHub releases page](https://github.com/hyperb1iss/hypercolor/releases),
-drag the app into `/Applications`, and launch. Minimum macOS 11 (Big Sur).
+The macOS DMGs — `Hypercolor-<version>-arm64.dmg` (Apple Silicon) and `-x86_64.dmg`
+(Intel) — ship with the v0.1.0 release on the
+[GitHub releases page](https://github.com/hyperb1iss/hypercolor/releases). Drag the app
+into `/Applications` and launch. Minimum macOS 11 (Big Sur).
 
 Or via Homebrew Cask once the tap is published:
 

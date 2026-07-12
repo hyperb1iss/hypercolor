@@ -141,14 +141,14 @@ cp packaging/systemd/user/hypercolor.service.system "${DIST_DIR}/lib/systemd/sys
 
 ### 3.3 Three drifting installer scripts
 
-`scripts/install.sh` (380 lines, local-build install), `scripts/install-release.sh` (696 lines, prebuilt tarball install), and `scripts/get-hypercolor.sh` (342 lines, hosted at `install.hypercolor.dev`) do largely overlapping work with subtle differences:
+`scripts/install.sh` (380 lines, local-build install), `scripts/install-release.sh` (696 lines, prebuilt tarball install), and `scripts/get-hypercolor.sh` (342 lines, intended as the hosted one-liner) do largely overlapping work with subtle differences:
 
 - **Different binary lists.** `install-release.sh` iterates over the binary list including `hypercolor-tui`; `install.sh` lists each `install -Dm755` call explicitly.
 - **Different launchd content.** `install-release.sh` is wrong (see §2.2); `get-hypercolor.sh` doesn't generate launchd inline at all (just copies from the release payload).
 - **Different completion-path cleanup.** `install-release.sh:660-663` and others reference legacy `hyper`/`_hyper`/`hyper.fish` paths from before the binary rename.
 - **Two of them write systemd unit content inline** (`install-release.sh:317-342`, `get-hypercolor.sh:217-231`) instead of copying from the tarball.
 
-The two end-user-facing installers (`install-release.sh`, `get-hypercolor.sh`) need to be unified — only one is actually published at `https://install.hypercolor.dev`.
+The two end-user-facing installers (`install-release.sh`, `get-hypercolor.sh`) need to be unified — only one should remain the published curl-able entry point (served from the repository raw URL).
 
 **Fix:**
 
@@ -332,7 +332,7 @@ For each wave, the validation is:
 
 **Wave 3:**
 
-- `curl -fsSL https://install.hypercolor.dev | bash` against a clean Linux VM and a clean macOS box; confirm idempotent install + uninstall cycle.
+- `curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/install-release.sh | bash` against a clean Linux VM and a clean macOS box; confirm idempotent install + uninstall cycle.
 
 **Wave 4:**
 

@@ -11,19 +11,26 @@ notes:
 
 [Open Hypercolor releases](https://github.com/hyperb1iss/hypercolor/releases)
 
+{% callout(type="warning") %}
+**Pre-release:** the first tagged release (v0.1.0) has not shipped yet. The
+release downloads and installer commands below go live with that tag. Until
+then, [install from source](@/guide/installation.md) — it works on Linux,
+Windows, and macOS.
+{% end %}
+
 ## Linux
 
 The release installer downloads the matching tarball for your architecture and
 verifies its SHA256 checksum before installing:
 
 ```bash
-curl -fsSL https://install.hypercolor.dev | bash
+curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/install-release.sh | bash
 ```
 
 Pin a specific tagged release with `--version`:
 
 ```bash
-curl -fsSL https://install.hypercolor.dev | bash -s -- --version v0.1.0
+curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/install-release.sh | bash -s -- --version v0.1.0
 ```
 
 The installer sets up the systemd user service by default. USB and SMBus system

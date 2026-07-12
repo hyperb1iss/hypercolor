@@ -92,7 +92,7 @@ This is the first public release. Everything below shipped as a cohesive whole; 
 The following are in progress or queued for the patch series after the initial release. This list is not a commitment.
 
 - AUR automated checksum update job (`update-aur` CI, currently a manual release-time step).
-- Unified end-user installer consolidating `install-release.sh` and `get-hypercolor.sh` (only one is published at `install.hypercolor.dev`).
+- Unified end-user installer consolidating `install-release.sh` and `get-hypercolor.sh` (only one should remain the published entry point).
 - Govee Cloud API path: LAN UDP ships at launch; the cloud fallback is in the driver codebase but gated pending access credential handling.
 - Additional driver families from the researched backlog.
 

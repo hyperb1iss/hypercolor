@@ -9,6 +9,13 @@ Most users should install a prebuilt package — no Rust toolchain required. Sou
 
 Not sure which path fits? Read [Choose your install](@/guide/choose-your-install.md) first.
 
+{% callout(type="warning") %}
+**Pre-release:** the first tagged release (v0.1.0) has not shipped yet, so the
+prebuilt paths on this page go live with that tag. Until then, use the
+[source build](#developer-install-build-from-source) below — it works on
+Linux, Windows, and macOS.
+{% end %}
+
 ## Linux — prebuilt installer
 
 The fastest path on any Linux distribution. The script downloads a release
@@ -17,19 +24,19 @@ to `~/.local/bin`, sets up a systemd user service, and prompts before applying
 udev rules and `i2c-dev` setup for USB and SMBus device access.
 
 ```bash
-curl -fsSL https://install.hypercolor.dev | bash
+curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/install-release.sh | bash
 ```
 
 The installer is idempotent: re-running it upgrades an existing install. To pin a specific version:
 
 ```bash
-curl -fsSL https://install.hypercolor.dev | bash -s -- --version v0.1.0
+curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/install-release.sh | bash -s -- --version v0.1.0
 ```
 
 To install to a different prefix instead of `~/.local`:
 
 ```bash
-curl -fsSL https://install.hypercolor.dev | HYPERCOLOR_INSTALL_PREFIX=/opt/hypercolor bash
+curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/install-release.sh | HYPERCOLOR_INSTALL_PREFIX=/opt/hypercolor bash
 ```
 
 {% callout(type="warning") %}
