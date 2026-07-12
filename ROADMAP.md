@@ -45,7 +45,7 @@ If you own hardware in the `researched` column of the [compatibility matrix](doc
 
 ### SDK + Effect Ecosystem
 
-- Publish `@hypercolor/sdk` and `@hypercolor/create-effect` to npm so authoring works without a local checkout
+- Publish `hypercolor` and `create-hypercolor` to npm so authoring works without a local checkout
 - `hypercolor install <effect>` — install community effects from the CLI
 - Wasmtime-based plugin system for community-authored backends, enabling drivers without a daemon rebuild
 - Face SDK for LCD display panels: TypeScript gauge components, sensor formatters, and the `face()` declarative API mirroring the existing `effect()` pattern

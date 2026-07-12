@@ -343,7 +343,7 @@ files that the engine renders at 60fps. Audio data, control values, and canvas c
 all injected automatically.
 
 ```typescript
-import { effect } from "@hypercolor/sdk";
+import { effect } from "hypercolor";
 import shader from "./fragment.glsl";
 
 export default effect(

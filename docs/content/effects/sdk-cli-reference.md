@@ -5,7 +5,7 @@ weight = 140
 template = "page.html"
 +++
 
-The authoring CLI ships inside `@hypercolor/sdk` and runs from a scaffolded effect workspace. It compiles your TypeScript and GLSL into self-contained HTML artifacts, validates them, and installs them so the daemon can pick them up. This page is the exhaustive reference for every command, flag, exit code, and environment variable.
+The authoring CLI ships inside `hypercolor` and runs from a scaffolded effect workspace. It compiles your TypeScript and GLSL into self-contained HTML artifacts, validates them, and installs them so the daemon can pick them up. This page is the exhaustive reference for every command, flag, exit code, and environment variable.
 
 {% callout(type="warning") %}
 This is the **authoring** CLI — `hypercolor` resolved from your effect workspace, used to build and ship effects. It is a different binary from the **system** CLI (`hypercolor`, installed alongside the daemon) that talks to the running daemon to list devices, apply effects, and manage scenes. The system CLI lives in [its own reference](@/api/cli.md). When this page says `bunx hypercolor build`, it means the workspace tool, never the daemon client.
@@ -19,14 +19,14 @@ Inside a scaffolded workspace the CLI is wired three ways, all equivalent:
 # Through the package script (the scaffold defines these)
 bun run build
 
-# Through bunx, resolving the @hypercolor/sdk bin
+# Through bunx, resolving the hypercolor bin
 bunx hypercolor build
 
 # Directly against the source entrypoint (what build:effects uses in-repo)
 bun run packages/core/src/cli.ts build
 ```
 
-The bin name is `hypercolor` and resolves through the workspace's `@hypercolor/sdk` dependency. The companion scaffolder is a separate package, `@hypercolor/create-effect`, invoked as `create-hypercolor-effect` — covered in its own section below.
+The bin name is `hypercolor` and resolves through the workspace's `hypercolor` dependency. The companion scaffolder is a separate package, `create-hypercolor`, invoked as `create-hypercolor-effect` — covered in its own section below.
 
 Run with no command, `--help`, or `help` to print usage:
 
@@ -78,7 +78,7 @@ With no positional path and no `--all`, the CLI builds all discovered entrypoint
 | `--out` | `<dir>` | `dist` | Output directory for HTML artifacts, resolved against the cwd. |
 | `--entry-root` | `<dir>` | `effects` | Root to scan for `<id>/main.ts`. Repeatable — pass once per root. |
 | `--workspace-root` | `<dir>` | `.` | Root that `--all` discovery walks from. |
-| `--sdk-alias-path` | `<file>` | (none) | Alias the `@hypercolor/sdk` import to a source file. Used in-repo to point at `packages/core/src/index.ts`. |
+| `--sdk-alias-path` | `<file>` | (none) | Alias the `hypercolor` import to a source file. Used in-repo to point at `packages/core/src/index.ts`. |
 | `--minify` | — | off | Minify the bundled JS. |
 | `--watch` | — | off | Rebuild on `.ts` / `.glsl` changes. `Ctrl-C` (SIGINT) stops the watchers. |
 
@@ -259,12 +259,12 @@ Every command returns a process exit code you can rely on in scripts and CI.
 | Variable | Used by | Default | Effect |
 |---|---|---|---|
 | `HYPERCOLOR_DAEMON_URL` | `install --daemon` | `http://127.0.0.1:9420` | Daemon base URL for daemon installs. `--daemon-url` overrides it. |
-| `HYPERCOLOR_SDK_PACKAGE_SPEC` | `create-hypercolor-effect` | (none) | The `@hypercolor/sdk` dependency spec for new workspaces while the SDK is pre-release. `--sdk-spec` overrides it. |
+| `HYPERCOLOR_SDK_PACKAGE_SPEC` | `create-hypercolor-effect` | (none) | The `hypercolor` dependency spec for new workspaces while the SDK is pre-release. `--sdk-spec` overrides it. |
 | `VISUAL` / `EDITOR` | `add` | (none) | Editor opened on the new entrypoint. `VISUAL` wins when both are set. |
 
 ## The scaffolder: `create-hypercolor-effect`
 
-Bootstrapping a brand-new workspace is a separate package, `@hypercolor/create-effect`, exposed as the `create-hypercolor-effect` bin. The authoring `hypercolor add` command reuses it internally to add effects to an existing workspace.
+Bootstrapping a brand-new workspace is a separate package, `create-hypercolor`, exposed as the `create-hypercolor-effect` bin. The authoring `hypercolor add` command reuses it internally to add effects to an existing workspace.
 
 ```bash
 bunx create-hypercolor-effect my-effects --template canvas \
@@ -280,11 +280,11 @@ Options:
   --audio                 Include audio-reactive starter boilerplate
   --no-git                Skip git init
   --no-install            Skip bun install
-  --sdk-spec <spec>       Required while @hypercolor/sdk is pre-release.
+  --sdk-spec <spec>       Required while hypercolor is pre-release.
 ```
 
 {% callout(type="info") %}
-**The SDK is pre-release and not on npm.** Every new workspace must point its `@hypercolor/sdk` dependency at a local checkout, either through `--sdk-spec file:../hypercolor/sdk/packages/core` or the `HYPERCOLOR_SDK_PACKAGE_SPEC` environment variable. Without one of those, the scaffolder refuses to run. Bun's `link:` is not a drop-in for a relative path here — use `file:`. Once the SDK publishes to a registry this requirement goes away and a plain version spec will work.
+**The SDK is pre-release and not on npm.** Every new workspace must point its `hypercolor` dependency at a local checkout, either through `--sdk-spec file:../hypercolor/sdk/packages/core` or the `HYPERCOLOR_SDK_PACKAGE_SPEC` environment variable. Without one of those, the scaffolder refuses to run. Bun's `link:` is not a drop-in for a relative path here — use `file:`. Once the SDK publishes to a registry this requirement goes away and a plain version spec will work.
 {% end %}
 
 The scaffolder runs interactively when the workspace name or template is missing, otherwise it builds the workspace directly. It initializes git and runs `bun install` by default; `--no-git` and `--no-install` opt out. When finished it prints the next command — `bun run build` for code templates, `bun run validate` for the raw `html` template.

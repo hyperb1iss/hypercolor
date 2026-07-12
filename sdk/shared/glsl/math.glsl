@@ -25,7 +25,7 @@ float remap(float value, float inMin, float inMax, float outMin, float outMax) {
 // ── Exponential smoothing ───────────────────────────────────────────────
 //
 // Frame-rate-independent lowpass — same formula used by the TypeScript
-// `smoothApproach` helper in `@hypercolor/sdk/math`. `lambda` is the
+// `smoothApproach` helper in `hypercolor/math`. `lambda` is the
 // inverse time constant (higher → faster convergence).
 float smoothApproach(float current, float target, float lambda, float dt) {
     if (lambda <= 0.0) return target;

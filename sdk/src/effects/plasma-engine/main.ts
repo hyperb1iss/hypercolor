@@ -1,4 +1,4 @@
-import { color, combo, effect, num } from '@hypercolor/sdk'
+import { color, combo, effect, num } from 'hypercolor'
 import shader from './fragment.glsl'
 
 export default effect(

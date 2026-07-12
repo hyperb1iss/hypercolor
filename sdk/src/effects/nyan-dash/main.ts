@@ -1,5 +1,5 @@
-import type { DrawFn } from '@hypercolor/sdk'
-import { canvas, combo, normalizeSpeed, num, scaleContext } from '@hypercolor/sdk'
+import type { DrawFn } from 'hypercolor'
+import { canvas, combo, normalizeSpeed, num, scaleContext } from 'hypercolor'
 
 const NYAN_DESIGN_BASIS = { height: 200, width: 320 } as const
 

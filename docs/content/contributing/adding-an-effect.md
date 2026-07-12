@@ -180,7 +180,7 @@ Tests go in a `tests/` directory, not inline `#[cfg(test)]` blocks. The whole wo
 SDK effects live under `sdk/src/effects/<name>/`. The build pipeline compiles them to self-contained HTML files that the daemon renders via Servo's WebGL2 context.
 
 {% callout(type="warning") %}
-`@hypercolor/sdk` is pre-release and not yet on npm. The monorepo wires it via a `file:` dependency. The `bun create @hypercolor/effect` scaffold flow described in [spec 31](@/effects/creating-effects.md) is the post-publish target, not yet available externally.
+`hypercolor` is pre-release and not yet on npm. The monorepo wires it via a `file:` dependency. The `bun create hypercolor` scaffold flow described in [spec 31](@/effects/creating-effects.md) is the post-publish target, not yet available externally.
 {% end %}
 
 ### Build an effect in the monorepo
@@ -212,7 +212,7 @@ Display faces (`face()` declarations for HUDs, clocks, and sensor readouts) live
 ### Canvas effect starter
 
 ```typescript
-import { canvas, num, combo } from "@hypercolor/sdk";
+import { canvas, num, combo } from "hypercolor";
 
 export default canvas(
   "Your Effect",
@@ -245,7 +245,7 @@ export default canvas(
 GLSL effects run inside Servo's WebGL2 renderer. Import the shader as a string via the `.glsl` text loader (configured in `bunfig.toml`):
 
 ```typescript
-import { effect, num } from "@hypercolor/sdk";
+import { effect, num } from "hypercolor";
 import shader from "./fragment.glsl";
 
 export default effect(
@@ -311,7 +311,7 @@ The effect-reviewer agent (`.agents/agents/effect-reviewer/`) runs this checklis
 
 ### Technical: HTML effects
 
-- **Canvas resolution.** Effects must read `ctx.canvas.width` and `ctx.canvas.height` every frame. Effects ported from the legacy 320x200 SDK grid must use `scaleContext(ctx.canvas, { width: 320, height: 200 })` from `@hypercolor/sdk`. The daemon renders at 640x480 by default.
+- **Canvas resolution.** Effects must read `ctx.canvas.width` and `ctx.canvas.height` every frame. Effects ported from the legacy 320x200 SDK grid must use `scaleContext(ctx.canvas, { width: 320, height: 200 })` from `hypercolor`. The daemon renders at 640x480 by default.
 - **Control meta tags.** Every control must have `id`, `label`, `type`, `default`, and appropriate `min`/`max`.
 - **Preset control IDs.** JSON in `preset-controls` attributes must match actual declared control IDs.
 - **No blocking.** No synchronous operations or heavy allocations in the draw loop.

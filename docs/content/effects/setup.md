@@ -5,15 +5,15 @@ weight = 10
 template = "page.html"
 +++
 
-Every Hypercolor effect lives in a Bun workspace that depends on `@hypercolor/sdk`. This page gets that workspace running: install Bun, get the SDK source, scaffold a project, and wire the `file:` spec that connects the two. Once `bun install` finishes, you're ready to author.
+Every Hypercolor effect lives in a Bun workspace that depends on `hypercolor`. This page gets that workspace running: install Bun, get the SDK source, scaffold a project, and wire the `file:` spec that connects the two. Once `bun install` finishes, you're ready to author.
 
 ![The Hypercolor effects browser, the surface your built effects land in](/img/ui/effects.webp)
 <!-- No setup-specific UI shot exists; the effects browser shows what authored effects become once shipped. -->
 
-The endpoint of this page is a workspace where `bun install` has succeeded and `@hypercolor/sdk` resolves from a local checkout. If that is true, you can author. The next page, [Creating effects](@/effects/creating-effects.md), writes the first one.
+The endpoint of this page is a workspace where `bun install` has succeeded and `hypercolor` resolves from a local checkout. If that is true, you can author. The next page, [Creating effects](@/effects/creating-effects.md), writes the first one.
 
 {% callout(type="warning", title="The SDK is pre-release and not on npm") %}
-`@hypercolor/sdk` has not been published yet. Workspaces depend on it through a local `file:` spec that points at a Hypercolor checkout, **not** through npm and **not** through Bun's `link:`. The scaffolder hard-fails if you don't supply that spec, and a `package.json` copied from a tutorial that lists `"@hypercolor/sdk": "^0.1.0"` will fail `bun install`. Always pass `--sdk-spec file:../hypercolor/sdk/packages/core` (or set `HYPERCOLOR_SDK_PACKAGE_SPEC`).
+`hypercolor` has not been published yet. Workspaces depend on it through a local `file:` spec that points at a Hypercolor checkout, **not** through npm and **not** through Bun's `link:`. The scaffolder hard-fails if you don't supply that spec, and a `package.json` copied from a tutorial that lists `"hypercolor": "^0.1.0"` will fail `bun install`. Always pass `--sdk-spec file:../hypercolor/sdk/packages/core` (or set `HYPERCOLOR_SDK_PACKAGE_SPEC`).
 {% end %}
 
 ## Install Bun
@@ -60,7 +60,7 @@ bun ./hypercolor/sdk/packages/create-effect/bin/create-hypercolor-effect.js my-e
 
 That creates `my-effects/`, drops in one starter effect named `aurora`, runs `git init`, and runs `bun install`. The CLI prints the next command to run when it finishes.
 
-Omit the workspace name or `--template` and the scaffolder switches to interactive prompts for the workspace name, the template, the first effect name, and an "Audio reactive?" toggle. Keep `--sdk-spec` regardless. Without it the scaffolder exits with code 1 and the message `@hypercolor/sdk is not published yet. Pass --sdk-spec file:../hypercolor/sdk/packages/core or set HYPERCOLOR_SDK_PACKAGE_SPEC.`.
+Omit the workspace name or `--template` and the scaffolder switches to interactive prompts for the workspace name, the template, the first effect name, and an "Audio reactive?" toggle. Keep `--sdk-spec` regardless. Without it the scaffolder exits with code 1 and the message `hypercolor is not published yet. Pass --sdk-spec file:../hypercolor/sdk/packages/core or set HYPERCOLOR_SDK_PACKAGE_SPEC.`.
 
 ### Flags
 
@@ -102,7 +102,7 @@ my-effects/
   effects/
     aurora/
       main.ts          # one folder per effect, main.ts is the entry
-  package.json         # @hypercolor/sdk via the file: spec
+  package.json         # hypercolor via the file: spec
   bunfig.toml          # loads .glsl as text, hardlinks installs
   biome.jsonc          # formatter + linter config
   tsconfig.json
@@ -150,7 +150,7 @@ The scaffolder substitutes whatever you pass to `--sdk-spec` into the workspace 
 ```json
 {
   "devDependencies": {
-    "@hypercolor/sdk": "file:../hypercolor/sdk/packages/core"
+    "hypercolor": "file:../hypercolor/sdk/packages/core"
   }
 }
 ```
@@ -175,11 +175,11 @@ All of these run the same Bun authoring core a standalone workspace uses.
 
 ### After the SDK publishes
 
-Once `@hypercolor/sdk` lands on npm, the `--sdk-spec` flag becomes optional and the scaffolder can default to a version range. Existing workspaces migrate with a one-line edit:
+Once `hypercolor` lands on npm, the `--sdk-spec` flag becomes optional and the scaffolder can default to a version range. Existing workspaces migrate with a one-line edit:
 
 ```diff
-- "@hypercolor/sdk": "file:../hypercolor/sdk/packages/core"
-+ "@hypercolor/sdk": "^0.1.0"
+- "hypercolor": "file:../hypercolor/sdk/packages/core"
++ "hypercolor": "^0.1.0"
 ```
 
 ## What next

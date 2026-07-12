@@ -9,7 +9,7 @@
         "ship:daemon": "hypercolor install effects/*.html --daemon"
     },
     "devDependencies": {
-        "@hypercolor/sdk": "__SDK_PACKAGE_SPEC__"
+        "hypercolor": "__SDK_PACKAGE_SPEC__"
     },
     "engines": {
         "bun": ">=1.2.0",

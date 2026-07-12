@@ -14,7 +14,7 @@
 **Date:** 2026-05-15
 **Updated:** 2026-05-17
 **Crates:** `hypercolor-types`, `hypercolor-core`, `hypercolor-daemon`, `hypercolor-ui`
-**SDK:** `@hypercolor/sdk` (additive)
+**SDK:** `hypercolor` (additive)
 **Depends on:** Display Faces (42), Face SDK (43), Web Viewport Effect (44),
 Canonical Render Pipeline (48), Screen Capture (14)
 **Related:** SparkleFlinger (design/30), Render Pipeline Modernization (design/28),

@@ -8,7 +8,7 @@
 **Status:** Implemented — `WebViewportRenderer` fully implemented in `hypercolor-core`
 **Author:** Nova
 **Date:** 2026-04-12
-**Packages:** `hypercolor-types`, `hypercolor-core`, `hypercolor-ui`, `@hypercolor/sdk`
+**Packages:** `hypercolor-types`, `hypercolor-core`, `hypercolor-ui`, `hypercolor`
 **Depends on:** Servo HTML Effects (WEB_ENGINE_DECISION), Screen Capture (14)
 **Related:** Render Pipeline Modernization (design/28), Spatial Engine (06)
 

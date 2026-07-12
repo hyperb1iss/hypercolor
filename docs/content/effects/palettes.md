@@ -14,7 +14,7 @@ Twenty-eight palettes ship in the registry today, all tuned for LED hardware: hi
 Every palette is keyed by its `name` (not its `id`). Fetch the full list at runtime instead of hardcoding:
 
 ```typescript
-import { paletteNames } from "@hypercolor/sdk";
+import { paletteNames } from "hypercolor";
 
 console.log(paletteNames());
 // ['SilkCircuit', 'Cyberpunk', 'Vaporwave', 'Synthwave', ...]
@@ -23,7 +23,7 @@ console.log(paletteNames());
 Inspect a single entry — stops, mood, accent, background — with `getPalette()`:
 
 ```typescript
-import { getPalette } from "@hypercolor/sdk";
+import { getPalette } from "hypercolor";
 
 const p = getPalette("SilkCircuit");
 console.log(p?.stops);      // ['#e135ff', '#80ffea', '#ff6ac1', '#f1fa8c', '#50fa7b']
@@ -75,7 +75,7 @@ There is exactly one thing to internalize about palettes, and it decides everyth
 A bare string array is inferred as a plain combobox, and `combo()` is a plain combobox too. Neither sets the flag, so neither gets the palette treatment:
 
 ```typescript
-import { combo, paletteControl } from "@hypercolor/sdk";
+import { combo, paletteControl } from "hypercolor";
 
 // ✅ Palette-aware. Canvas → PaletteFn, shader → index uniform.
 palette: paletteControl("Palette", ["SilkCircuit", "Aurora", "Fire"]);
@@ -96,8 +96,8 @@ The key name `palette` is **not** magic. Naming a control `palette` does nothing
 For a `canvas()` effect, a `paletteControl` resolves to a `PaletteFn`: a function that takes `t ∈ [0, 1]` and an optional alpha, and returns a ready-to-use CSS color string.
 
 ```typescript
-import { canvas, paletteControl } from "@hypercolor/sdk";
-import type { PaletteFn } from "@hypercolor/sdk";
+import { canvas, paletteControl } from "hypercolor";
+import type { PaletteFn } from "hypercolor";
 
 export default canvas(
   "Ribbon",
@@ -117,8 +117,8 @@ export default canvas(
 When you need a function bound to a fixed palette outside the control flow — a hardcoded background ramp, a secondary accent — build one with `createPaletteFn()`:
 
 ```typescript
-import { createPaletteFn } from "@hypercolor/sdk";
-import type { PaletteFn } from "@hypercolor/sdk";
+import { createPaletteFn } from "hypercolor";
+import type { PaletteFn } from "hypercolor";
 
 const accent: PaletteFn = createPaletteFn("Ember");
 ctx.strokeStyle = accent(0.85);
@@ -129,7 +129,7 @@ Calling `createPaletteFn` inside the draw loop is cheap: the underlying LUT is m
 For raw numbers instead of CSS strings, sample directly:
 
 ```typescript
-import { samplePalette, samplePaletteCSS } from "@hypercolor/sdk";
+import { samplePalette, samplePaletteCSS } from "hypercolor";
 
 const [r, g, b] = samplePalette("SilkCircuit", 0.5);   // each in 0..1
 const css = samplePaletteCSS("SilkCircuit", 0.5, 0.4); // 'rgba(...)'
@@ -142,7 +142,7 @@ An unknown palette name resolves to magenta (`[1, 0, 1]`) so a typo lights up lo
 GLSL can't hold a JavaScript closure, so a `paletteControl` inside a shader-backed `effect()` resolves differently: it becomes an **integer uniform** carrying the selected index, named with the standard `i`-prefix convention (`palette` → `iPalette`). The selected name maps to its position in the values array.
 
 ```typescript
-import { effect, paletteControl } from "@hypercolor/sdk";
+import { effect, paletteControl } from "hypercolor";
 
 export default effect("My Shader", shader, {
   palette: paletteControl("Palette", ["Aurora", "Fire", "Ocean"]),
@@ -214,8 +214,8 @@ Custom palettes live in `sdk/shared/palettes.json` (monorepo workspaces only for
 A common idiom is the dark-floor pattern: sample a low position for the background and a high one for the foreground, so the entire effect stays inside one palette's mood.
 
 ```typescript
-import { canvas, paletteControl } from "@hypercolor/sdk";
-import type { PaletteFn } from "@hypercolor/sdk";
+import { canvas, paletteControl } from "hypercolor";
+import type { PaletteFn } from "hypercolor";
 
 export default canvas(
   "Glow",

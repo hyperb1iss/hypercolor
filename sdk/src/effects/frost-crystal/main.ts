@@ -1,4 +1,4 @@
-import { canvas, clamp, combo, num } from '@hypercolor/sdk'
+import { canvas, clamp, combo, num } from 'hypercolor'
 
 // ── Types ────────────────────────────────────────────────────────────────
 

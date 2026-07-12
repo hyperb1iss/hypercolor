@@ -1,4 +1,4 @@
-import { canvas, color, combo, num } from '@hypercolor/sdk'
+import { canvas, color, combo, num } from 'hypercolor'
 
 import { hexToRgb } from '../_builtin/common'
 

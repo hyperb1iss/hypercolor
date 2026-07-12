@@ -1,4 +1,4 @@
-import { canvas, color, combo, num, scaleContext } from '@hypercolor/sdk'
+import { canvas, color, combo, num, scaleContext } from 'hypercolor'
 
 import { BUILTIN_DESIGN_BASIS, clamp01, hexToRgb, mixRgb, rgbToCss, scaleRgb } from '../_builtin/common'
 

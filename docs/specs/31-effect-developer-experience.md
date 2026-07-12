@@ -8,8 +8,8 @@
 **Runtime:** Bun (primary); Node.js 24 LTS (minimum for library consumers)
 
 **Launch status:** The npm package flow in this spec is the post-publish
-target. For the v0.1 launch, `@hypercolor/sdk` and
-`@hypercolor/create-effect` are source-only from this repository; public effect
+target. For the v0.1 launch, `hypercolor` and
+`create-hypercolor` are source-only from this repository; public effect
 authoring docs use a local Hypercolor checkout plus a `file:` SDK dependency
 until the packages are published.
 
@@ -23,8 +23,8 @@ until the packages are published.
   - [1.3 Non-Goals](#13-non-goals-for-this-spec)
 - [2. Architecture](#2-architecture)
 - [3. The HTML Effect Contract](#3-the-html-effect-contract)
-- [4. Package: `@hypercolor/sdk`](#4-package-hypercolorsdk)
-- [5. Package: `@hypercolor/create-effect`](#5-package-hypercolorcreate-effect)
+- [4. Package: `hypercolor`](#4-package-hypercolor)
+- [5. Package: `create-hypercolor`](#5-package-create-hypercolor)
 - [6. CLI: `hypercolor` (SDK bin)](#6-cli-hypercolor-sdk-bin)
 - [7. Dev Server: `hypercolor dev`](#7-dev-server-hypercolor-dev)
 - [8. Build Tool: `hypercolor build`](#8-build-tool-hypercolor-build)
@@ -59,12 +59,12 @@ conforms to the effect contract (section 3).
 
 1. **HTML is the universal format.** The SDK is one way to produce it, not the
    only way.
-2. **Two packages, not three.** `@hypercolor/sdk` is both the library and the
-   CLI. `@hypercolor/create-effect` is the scaffolder. After npm publish,
+2. **Two packages, not three.** `hypercolor` is both the library and the
+   CLI. `create-hypercolor` is the scaffolder. After npm publish,
    nothing else is required beyond those packages.
 3. **Bun-native tooling, Node 24 library compat.** The `hypercolor` CLI runs on
    Bun (uses `Bun.build`, `Bun.serve`, native TypeScript, `.glsl` text loader).
-   Scaffolded projects are Bun projects. Once published, the `@hypercolor/sdk`
+   Scaffolded projects are Bun projects. Once published, the `hypercolor`
    library is plain ESM and consumable from Node 24+ toolchains (Vite, Next,
    etc.) for authors who need to embed effects elsewhere, but effect
    development itself assumes Bun.
@@ -100,10 +100,10 @@ conforms to the effect contract (section 3).
 
 ```mermaid
 graph TD
-    Scaffold["@hypercolor/create-effect<br/>(bun create scaffolder)"]
+    Scaffold["create-hypercolor<br/>(bun create scaffolder)"]
 
     subgraph Project["Effect Project"]
-        Sources["effects/&lt;name&gt;/main.ts<br/>effects/&lt;name&gt;/fragment.glsl<br/>package.json<br/>(depends on @hypercolor/sdk)"]
+        Sources["effects/&lt;name&gt;/main.ts<br/>effects/&lt;name&gt;/fragment.glsl<br/>package.json<br/>(depends on hypercolor)"]
         Build["hypercolor build"]
         Dev["hypercolor dev"]
         Dist["dist/my-effect.html"]
@@ -173,7 +173,7 @@ or warn on unsupported versions.
   the SDK auto-resizes the canvas every frame. Read `ctx.canvas.width/height`
   inside your draw function — never hardcode. For effects ported from the
   legacy legacy 320 by 200 SDK grid, use `scaleContext(ctx.canvas, { width: 320, height: 200 })`
-  from `@hypercolor/sdk` to translate design-space coordinates.
+  from `hypercolor` to translate design-space coordinates.
 - Background: black (`#000000`)
 
 ### 3.3 Title and Description
@@ -375,16 +375,17 @@ Drop this file into `~/.local/share/hypercolor/effects/user/` and it works.
 
 ---
 
-## 4. Package: `@hypercolor/sdk`
+## 4. Package: `hypercolor`
 
-Published to npm under the `@hypercolor` scope. Contains both the importable
+Published to npm as the unscoped `hypercolor` package (the `@hypercolor`
+scope belongs to an unrelated party). Contains both the importable
 library and the `hypercolor` CLI binary.
 
 ### 4.1 Package Structure
 
 ```json
 {
-  "name": "@hypercolor/sdk",
+  "name": "hypercolor",
   "version": "0.1.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -553,7 +554,7 @@ shape:
 ### 4.4 Publishing
 
 The published artifact has two parts: the library (`dist/`) and the CLI
-(`bin/`). Both ship in a single tarball under `@hypercolor/sdk`.
+(`bin/`). Both ship in a single tarball under `hypercolor`.
 
 **Library build (ESM + `.d.ts`):**
 
@@ -588,7 +589,7 @@ bun publish --access public
 
 **Versioning:**
 
-- `@hypercolor/sdk` follows semver against its public library API.
+- `hypercolor` follows semver against its public library API.
 - The HTML format version (`hypercolor-version` meta tag) is a separate integer
   versioned independently (see §4.5).
 - The CLI version matches the SDK version — they ship together.
@@ -607,7 +608,7 @@ SDK 0.x → format version 1. SDK 1.0 release locks format version 1 as stable.
 
 ---
 
-## 5. Package: `@hypercolor/create-effect`
+## 5. Package: `create-hypercolor`
 
 A `bun create` initializer. Scaffolds a new effect _workspace_ — a directory
 structured to hold one or many effects. The first effect is generated from the
@@ -617,25 +618,25 @@ chosen template; adding more is `hypercolor add <name>` (see §6.5).
 
 ```bash
 # Interactive — Bun's native initializer
-bun create @hypercolor/effect my-effects
+bun create hypercolor my-effects
 
 # Non-interactive
-bun create @hypercolor/effect my-effects --template shader --first aurora
+bun create hypercolor my-effects --template shader --first aurora
 
 # Also works via npm-style initializers (Bun is still required at runtime):
-npm init @hypercolor/effect my-effects
-pnpm create @hypercolor/effect my-effects
+npm init hypercolor my-effects
+pnpm create hypercolor my-effects
 ```
 
 ### 5.2 CLI Arguments
 
-After npm publish, the scaffolder binary (`@hypercolor/create-effect`) is
-invoked via `bun create @hypercolor/effect`. Bun's `create` resolves
+After npm publish, the scaffolder binary (`create-hypercolor`) is
+invoked via `bun create hypercolor`. Bun's `create` resolves
 `@scope/foo` to the `@scope/create-foo` package, so the package name and the
 invocation command are related by that convention, not identity.
 
 ```
-bun create @hypercolor/effect [name] [options]
+bun create hypercolor [name] [options]
 
 Arguments:
   name                    Workspace directory name (prompted if omitted)
@@ -713,7 +714,7 @@ all by scanning for `effects/*/main.ts`.
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.0",
-    "@hypercolor/sdk": "^0.1.0",
+    "hypercolor": "^0.1.0",
     "typescript": "^5.9.0"
   },
   "engines": {
@@ -782,7 +783,7 @@ built filename. The display name inside `canvas()` / `effect()` / `face()`
 is user-facing metadata shown in the UI and can differ.
 
 ```typescript
-import { canvas, num, combo } from "@hypercolor/sdk";
+import { canvas, num, combo } from "hypercolor";
 
 export default canvas(
   "Aurora",
@@ -833,7 +834,7 @@ effects/aurora/
 **`effects/aurora/main.ts`:**
 
 ```typescript
-import { effect, num, combo } from "@hypercolor/sdk";
+import { effect, num, combo } from "hypercolor";
 import shader from "./fragment.glsl";
 
 export default effect(
@@ -924,7 +925,7 @@ my-effects/
     "ship:daemon": "hypercolor install effects/*.html --daemon"
   },
   "devDependencies": {
-    "@hypercolor/sdk": "^0.1.0"
+    "hypercolor": "^0.1.0"
   }
 }
 ```
@@ -946,7 +947,7 @@ template. No edits to `package.json` required — the build tool auto-discovers.
 
 ### 5.6 Implementation
 
-`@hypercolor/create-effect` is a small Bun package. Templates live in
+`create-hypercolor` is a small Bun package. Templates live in
 `templates/` as real files (not inlined strings) so contributors can iterate
 on them in the monorepo without a build step. The scaffolder copies and
 variable-substitutes them into the target directory.
@@ -962,7 +963,7 @@ then prints a "Next steps" block pointing the user at `bun dev`.
 
 ## 6. CLI: `hypercolor` (SDK workspace bin)
 
-The `hypercolor` command is a bin entry in `@hypercolor/sdk`. It provides
+The `hypercolor` command is a bin entry in `hypercolor`. It provides
 five commands for effect authoring: `dev`, `build`, `validate`, `install`,
 and `add`. The shebang is `#!/usr/bin/env bun`; invoking under Node exits
 with a clear "please use Bun" message plus install instructions. In this spec,
@@ -1215,7 +1216,7 @@ const result = await Bun.build({
 const jsBundle = await result.outputs[0].text();
 ```
 
-`@hypercolor/sdk` resolves from the workspace's `node_modules` via the usual
+`hypercolor` resolves from the workspace's `node_modules` via the usual
 resolution chain. No path alias is required in the external-project case —
 the alias the monorepo currently sets is only needed when building the
 monorepo's own effects against the in-tree source.
@@ -1647,17 +1648,17 @@ ship the scaffolder.
 
 | Task | Scope      | Description                                                                                                                                                                                              |
 | ---- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1.1  | SDK        | Port `sdk/scripts/build-effect.ts` to a workspace-aware `Bun.build` pipeline that lives inside `@hypercolor/sdk` (shared by the CLI and the monorepo), and emit `hypercolor-version=1` in generated HTML |
+| 1.1  | SDK        | Port `sdk/scripts/build-effect.ts` to a workspace-aware `Bun.build` pipeline that lives inside `hypercolor` (shared by the CLI and the monorepo), and emit `hypercolor-version=1` in generated HTML |
 | 1.2  | SDK        | Add `bin/hypercolor.js` (Bun shebang) with `build`, `validate`, `install`, `add` subcommands                                                                                                             |
 | 1.3  | SDK        | Implement `hypercolor validate` (section 9)                                                                                                                                                              |
 | 1.4  | SDK        | Implement `hypercolor install` — file copy to user effects dir, preserving the artifact stem as the installed filename                                                                                   |
-| 1.5  | SDK        | Flip `@hypercolor/sdk` off `"private": true`; add `bin`, `exports`, `files`, `engines` fields                                                                                                            |
+| 1.5  | SDK        | Flip `hypercolor` off `"private": true`; add `bin`, `exports`, `files`, `engines` fields                                                                                                            |
 | 1.6  | SDK        | Dogfood: switch `just effects-build` / `just effect-build` recipes to call `hypercolor build` against the monorepo's `sdk/src/effects/` layout                                                           |
-| 1.7  | SDK        | Register `@hypercolor` scope on npm, publish `@hypercolor/sdk@0.1.0`                                                                                                                                     |
-| 1.8  | Scaffolder | Implement `@hypercolor/create-effect` with canvas, shader, face, html templates — all producing the multi-effect workspace layout                                                                        |
-| 1.9  | Scaffolder | Publish `@hypercolor/create-effect@0.1.0`                                                                                                                                                                |
+| 1.7  | SDK        | Claim the unscoped `hypercolor` package name on npm, publish `hypercolor@0.1.0`                                                                                                                     |
+| 1.8  | Scaffolder | Implement `create-hypercolor` with canvas, shader, face, html templates — all producing the multi-effect workspace layout                                                                        |
+| 1.9  | Scaffolder | Publish `create-hypercolor@0.1.0`                                                                                                                                                                |
 
-**Verify after npm publish:** `bun create @hypercolor/effect test-effects --template canvas --first aurora && cd test-effects && bun run build` produces `dist/aurora.html`, which passes `hypercolor validate` without warnings.
+**Verify after npm publish:** `bun create hypercolor test-effects --template canvas --first aurora && cd test-effects && bun run build` produces `dist/aurora.html`, which passes `hypercolor validate` without warnings.
 
 **Dogfood check:** `just effects-build` in the monorepo produces byte-identical output to the old `sdk/scripts/build-effect.ts --all`. If any diffs exist, they must be justified by the new tool or the old tool is updated first.
 
@@ -1675,7 +1676,7 @@ Build the live development experience on `Bun.serve`.
 | 2.6  | SDK   | File watcher (`fs.watch` on `effects/`, 150ms debounce) → `Bun.build` → WebSocket reload                                 |
 | 2.7  | SDK   | Effect picker: when started with no entry, list workspace effects and let the shell switch without restarting the server |
 
-**Verify after npm publish:** `bun create @hypercolor/effect test && cd test && bun dev` opens a browser with live-updating effect preview and working controls. Editing a control's default in source rebuilds in under 300ms.
+**Verify after npm publish:** `bun create hypercolor test && cd test && bun dev` opens a browser with live-updating effect preview and working controls. Editing a control's default in source rebuilds in under 300ms.
 
 ### Phase 3: Daemon Integration
 

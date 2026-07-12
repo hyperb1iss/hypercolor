@@ -1,4 +1,4 @@
-import { combo, effect, num } from '@hypercolor/sdk'
+import { combo, effect, num } from 'hypercolor'
 import shader from './fragment.glsl'
 
 function clamp(value: number, min: number, max: number): number {

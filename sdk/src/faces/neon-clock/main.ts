@@ -1,5 +1,5 @@
-import type { FaceContext } from '@hypercolor/sdk'
-import { color, combo, easeOutCubic, face, font, num, palette, toggle, withAlpha } from '@hypercolor/sdk'
+import type { FaceContext } from 'hypercolor'
+import { color, combo, easeOutCubic, face, font, num, palette, toggle, withAlpha } from 'hypercolor'
 
 import {
     atmosphereVisible,

@@ -178,7 +178,7 @@ async function runInstall(args: string[], context: CliContext): Promise<number> 
 }
 
 async function runAdd(args: string[], context: CliContext): Promise<number> {
-    const { addEffect, promptAddEffectOptions } = await import('@hypercolor/create-effect')
+    const { addEffect, promptAddEffectOptions } = await import('create-hypercolor')
     const [name] = positionalArgs(args)
     const templateArg = optionValue(args, '--template')
     const prompted =

@@ -7,7 +7,7 @@
  *
  * @example
  * ```typescript
- * import { face, sensor, color, arcGauge, palette } from '@hypercolor/sdk'
+ * import { face, sensor, color, arcGauge, palette } from 'hypercolor'
  *
  * export default face('System Monitor', {
  *     cpuSensor: sensor('CPU Sensor', 'cpu_temp'),

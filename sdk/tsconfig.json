@@ -27,10 +27,10 @@
 
         /* Path aliases */
         "paths": {
-            "@hypercolor/create-effect": ["./packages/create-effect/src"],
-            "@hypercolor/create-effect/*": ["./packages/create-effect/src/*"],
-            "@hypercolor/sdk": ["./packages/core/src"],
-            "@hypercolor/sdk/*": ["./packages/core/src/*"]
+            "create-hypercolor": ["./packages/create-effect/src"],
+            "create-hypercolor/*": ["./packages/create-effect/src/*"],
+            "hypercolor": ["./packages/core/src"],
+            "hypercolor/*": ["./packages/core/src/*"]
         }
     },
     "include": ["src/**/*.ts", "src/**/*.d.ts"],

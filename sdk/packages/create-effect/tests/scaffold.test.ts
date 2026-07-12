@@ -24,10 +24,10 @@ async function runCommand(cmd: string[], cwd: string, env: Record<string, string
 }
 
 beforeAll(async () => {
-    await runCommand(['bun', 'run', '--filter', '@hypercolor/sdk', 'build'], SDK_ROOT)
+    await runCommand(['bun', 'run', '--filter', 'hypercolor', 'build'], SDK_ROOT)
 })
 
-describe('@hypercolor/create-effect', () => {
+describe('create-hypercolor', () => {
     test('requires an SDK package spec while the SDK is unpublished', async () => {
         const previousSpec = process.env.HYPERCOLOR_SDK_PACKAGE_SPEC
         delete process.env.HYPERCOLOR_SDK_PACKAGE_SPEC

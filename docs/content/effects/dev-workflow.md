@@ -16,7 +16,7 @@ bun run ship             # install locally (filesystem copy)
 bun run ship:daemon      # install through the running daemon API
 ```
 
-Each `bun run` script is a thin alias over the authoring CLI that ships inside `@hypercolor/sdk`. The underlying commands work anywhere in the workspace:
+Each `bun run` script is a thin alias over the authoring CLI that ships inside `hypercolor`. The underlying commands work anywhere in the workspace:
 
 ```bash
 bunx hypercolor build --all
@@ -26,7 +26,7 @@ bunx hypercolor install dist/*.html --daemon
 ```
 
 {% callout(type="info") %}
-This is the **authoring** CLI: `bunx hypercolor`, run inside a workspace, resolved through the `@hypercolor/sdk` dependency. It builds and installs artifacts. Do not confuse it with the **system** CLI (`hypercolor`, installed alongside the daemon) that talks to the running daemon to list, activate, and patch effects. Both are covered below.
+This is the **authoring** CLI: `bunx hypercolor`, run inside a workspace, resolved through the `hypercolor` dependency. It builds and installs artifacts. Do not confuse it with the **system** CLI (`hypercolor`, installed alongside the daemon) that talks to the running daemon to list, activate, and patch effects. Both are covered below.
 {% end %}
 
 ## The real iteration loop

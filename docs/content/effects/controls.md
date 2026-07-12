@@ -56,7 +56,7 @@ Shorthand is great for throwaway effects and prototypes. Upgrade to factories th
 
 ## Factory functions
 
-Import the factories you need from `@hypercolor/sdk`:
+Import the factories you need from `hypercolor`:
 
 ```typescript
 import {
@@ -71,7 +71,7 @@ import {
   sensor,
   text,
   toggle,
-} from "@hypercolor/sdk";
+} from "hypercolor";
 ```
 
 ### `num(label, [min, max], default, options?)`
@@ -179,7 +179,7 @@ Options:
 Sensor picker. The user chooses from the live system sensors the daemon exposes (CPU temperature, GPU load, network throughput, and so on). The runtime value is the **sensor label string**, not a reading — pass it to the engine's sensor API to get the current value each frame.
 
 ```typescript
-import { face, sensor } from "@hypercolor/sdk";
+import { face, sensor } from "hypercolor";
 
 export default face("Temperature", {
   target: sensor("Sensor", "cpu_temp"),

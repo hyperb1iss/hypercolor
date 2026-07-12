@@ -1,4 +1,4 @@
-import { canvas, color, combo, num } from '@hypercolor/sdk'
+import { canvas, color, combo, num } from 'hypercolor'
 
 const TAU = Math.PI * 2
 

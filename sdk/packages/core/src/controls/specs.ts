@@ -224,7 +224,7 @@ export interface SensorOptions {
  *
  *  @example
  *  ```typescript
- *  import { face, sensor } from '@hypercolor/sdk'
+ *  import { face, sensor } from 'hypercolor'
  *  export default face('Temp', {
  *      target: sensor('Sensor', 'cpu_temp'),
  *  }, ...)

@@ -7,7 +7,7 @@
  * strobing.
  */
 
-import { easeOutCubic, lerpColor, toggle, withAlpha } from '@hypercolor/sdk'
+import { easeOutCubic, lerpColor, toggle, withAlpha } from 'hypercolor'
 import { clamp01 } from './dom'
 
 /**

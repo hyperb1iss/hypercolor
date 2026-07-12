@@ -9,7 +9,7 @@
  * ## Usage: declarative effects
  *
  * ```ts
- * import { canvas, scaleContext } from '@hypercolor/sdk'
+ * import { canvas, scaleContext } from 'hypercolor'
  *
  * canvas('Bubble Garden', controls, (ctx, time, controls) => {
  *     const s = scaleContext(ctx.canvas, { width: 320, height: 200 })

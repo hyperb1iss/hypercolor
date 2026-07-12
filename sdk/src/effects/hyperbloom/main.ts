@@ -13,8 +13,8 @@
  * canvas never pays for a per-frame blur.
  */
 
-import type { DrawFn } from '@hypercolor/sdk'
-import { audio, canvas, num } from '@hypercolor/sdk'
+import type { DrawFn } from 'hypercolor'
+import { audio, canvas, num } from 'hypercolor'
 import { HYPERCOLOR_MARK } from './logo'
 
 const VOID = '#0a0612'

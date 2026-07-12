@@ -10,7 +10,7 @@
  *
  * @example
  * ```typescript
- * import { canvas, paletteControl, scaleContext } from '@hypercolor/sdk'
+ * import { canvas, paletteControl, scaleContext } from 'hypercolor'
  *
  * // Pure-adaptive: read canvas size directly
  * export default canvas('Particles', {

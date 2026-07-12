@@ -1,10 +1,10 @@
 /**
- * @hypercolor/sdk
+ * hypercolor
  *
  * TypeScript SDK for creating Hypercolor RGB lighting effects.
  *
  * ```typescript
- * import { effect, paletteControl } from '@hypercolor/sdk'
+ * import { effect, paletteControl } from 'hypercolor'
  * import shader from './fragment.glsl'
  *
  * export default effect('Meteor Storm', shader, {

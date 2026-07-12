@@ -18,7 +18,7 @@ Pair this with the live engine. If you have the [MCP server](@/api/mcp.md) conne
 Fill in the angle-bracket fields and paste this into Claude, GPT, or your model of choice.
 
 ```text
-Write a Hypercolor effect for @hypercolor/sdk.
+Write a Hypercolor effect for hypercolor.
 
 Target:
 - Effect name: <display name>
@@ -31,7 +31,7 @@ Output requirements:
 - If renderer=shader, also return effects/<id>/fragment.glsl
 - Each effect module calls canvas(...) or effect(...) and `export default`s
   the result (the call registers the effect; the default export is void)
-- Use only @hypercolor/sdk helpers; no external dependencies
+- Use only hypercolor helpers; no external dependencies
 - The code must build clean with `bunx hypercolor build`
 
 Creative direction:
@@ -108,7 +108,7 @@ Stateful canvas effects like `lava-lamp` and `fiberflies` are good seeds: they s
 ## A worked example
 
 ```text
-Write a Hypercolor effect for @hypercolor/sdk.
+Write a Hypercolor effect for hypercolor.
 
 Target:
 - Effect name: Ember Halo
@@ -119,7 +119,7 @@ Target:
 Output requirements:
 - Return code for effects/ember-halo/main.ts
 - Each effect module calls canvas(...) and `export default`s the result
-- Use only @hypercolor/sdk helpers
+- Use only hypercolor helpers
 - The code must build clean with `bunx hypercolor build`
 
 Creative direction:

@@ -1,4 +1,4 @@
-import { canvas, combo, num, toggle } from '@hypercolor/sdk'
+import { canvas, combo, num, toggle } from 'hypercolor'
 
 type Silhouette = 'flat' | 'stepped' | 'spire' | 'dome'
 

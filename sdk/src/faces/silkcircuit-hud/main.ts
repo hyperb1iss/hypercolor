@@ -1,4 +1,4 @@
-import type { FaceContext } from '@hypercolor/sdk'
+import type { FaceContext } from 'hypercolor'
 import {
     color,
     combo,
@@ -12,7 +12,7 @@ import {
     sensor,
     toggle,
     withAlpha,
-} from '@hypercolor/sdk'
+} from 'hypercolor'
 import {
     atmosphereVisible,
     drawNebulaField,
@@ -540,7 +540,7 @@ function buildHud(ctx: FaceContext, wide: boolean) {
         const morphRam = createValueMorph(ramValueEl)
         let lastTime = Number.NaN
 
-        return (time: number, controls: Record<string, unknown>, sensors: import('@hypercolor/sdk').SensorAccessor) => {
+        return (time: number, controls: Record<string, unknown>, sensors: import('hypercolor').SensorAccessor) => {
             const dt = Number.isNaN(lastTime) ? 1 / 30 : Math.max(time - lastTime, 0)
             lastTime = time
             if (Number.isNaN(bootAt)) bootAt = time

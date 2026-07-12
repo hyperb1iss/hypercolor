@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 if (!process.versions.bun) {
-    console.error('The @hypercolor/sdk CLI requires Bun. Try `bunx hypercolor ...` instead.')
+    console.error('The hypercolor CLI requires Bun. Try `bunx hypercolor ...` instead.')
     process.exit(1)
 }
 

@@ -1,4 +1,4 @@
-import type { FaceContext } from '@hypercolor/sdk'
+import type { FaceContext } from 'hypercolor'
 import {
     color,
     combo,
@@ -13,7 +13,7 @@ import {
     toggle,
     ValueHistory,
     withAlpha,
-} from '@hypercolor/sdk'
+} from 'hypercolor'
 
 import {
     atmosphereVisible,
@@ -307,7 +307,7 @@ function buildSensorGrid(ctx: FaceContext, wide: boolean) {
     let bootAt = Number.NaN
     let lastTime = Number.NaN
 
-    return (time: number, controls: Record<string, unknown>, sensors: import('@hypercolor/sdk').SensorAccessor) => {
+    return (time: number, controls: Record<string, unknown>, sensors: import('hypercolor').SensorAccessor) => {
         if (Number.isNaN(bootAt)) bootAt = time
         const boot = time - bootAt
         const dt = Number.isNaN(lastTime) ? 1 / 30 : Math.max(time - lastTime, 0)

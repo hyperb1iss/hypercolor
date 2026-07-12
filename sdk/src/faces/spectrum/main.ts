@@ -1,5 +1,5 @@
-import type { FaceContext } from '@hypercolor/sdk'
-import { color, combo, face, num, palette, Smoothed, withAlpha } from '@hypercolor/sdk'
+import type { FaceContext } from 'hypercolor'
+import { color, combo, face, num, palette, Smoothed, withAlpha } from 'hypercolor'
 import { atmosphereVisible, drawNebulaField, transparentBackgroundControl } from '../shared/atmosphere'
 import { clamp01, createFaceRoot, SmoothedColor } from '../shared/dom'
 
@@ -182,8 +182,8 @@ function buildSpectrum(ctx: FaceContext, wide: boolean) {
     return (
         time: number,
         controls: Record<string, unknown>,
-        _sensors: import('@hypercolor/sdk').SensorAccessor,
-        audio: import('@hypercolor/sdk').AudioAccessor,
+        _sensors: import('hypercolor').SensorAccessor,
+        audio: import('hypercolor').AudioAccessor,
     ) => {
         const dt = Number.isNaN(lastTime) ? 1 / 30 : Math.max(time - lastTime, 0)
         lastTime = time

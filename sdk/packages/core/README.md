@@ -1,4 +1,4 @@
-# @hypercolor/sdk
+# hypercolor
 
 TypeScript SDK for authoring [Hypercolor](https://github.com/hyperb1iss/hypercolor) RGB lighting effects.
 
@@ -25,7 +25,7 @@ That gives you an effect to edit and the full build/validate/install loop.
 Write an effect:
 
 ```typescript
-import { audio, canvas, num } from "@hypercolor/sdk";
+import { audio, canvas, num } from "hypercolor";
 
 export default canvas(
   "Pulse",
@@ -106,7 +106,7 @@ Pre-release. The SDK is not yet published to npm. Standalone workspaces should p
 ```json
 {
   "devDependencies": {
-    "@hypercolor/sdk": "file:../hypercolor/sdk/packages/core"
+    "hypercolor": "file:../hypercolor/sdk/packages/core"
   }
 }
 ```

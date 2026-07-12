@@ -1,4 +1,4 @@
-import { canvas, combo, getScreenZoneData, hslToRgb, num, rect } from '@hypercolor/sdk'
+import { canvas, combo, getScreenZoneData, hslToRgb, num, rect } from 'hypercolor'
 
 import { wrapHue } from '../_builtin/common'
 

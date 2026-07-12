@@ -133,7 +133,7 @@ Hypercolor supports two rendering paths, both producing an RGBA `Canvas` that fe
 
 ### Servo path (HTML/Canvas/WebGL)
 
-The primary authoring surface. An embedded Servo browser engine runs headlessly on a dedicated worker thread, keeping the `EffectRenderer` trait `Send` while Servo itself stays pinned to one OS thread. Effects are `.html` files that use Canvas 2D, WebGL2, and the `@hypercolor/sdk` JavaScript API.
+The primary authoring surface. An embedded Servo browser engine runs headlessly on a dedicated worker thread, keeping the `EffectRenderer` trait `Send` while Servo itself stays pinned to one OS thread. Effects are `.html` files that use Canvas 2D, WebGL2, and the `hypercolor` JavaScript API.
 
 **Startup cost:** The Servo worker initializes once per daemon session, not per effect load. Initial startup takes a few seconds — subsequent effect loads into the running worker are fast. The circuit breaker tracks consecutive failures with exponential cooldown so transient faults cannot poison the shared worker. A separate `ServoSessionHandle` manages `Idle → Loading → Running` state transitions.
 

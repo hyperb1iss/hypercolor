@@ -1,4 +1,4 @@
-import type { FaceContext } from '@hypercolor/sdk'
+import type { FaceContext } from 'hypercolor'
 import {
     color,
     combo,
@@ -12,7 +12,7 @@ import {
     toggle,
     ValueHistory,
     withAlpha,
-} from '@hypercolor/sdk'
+} from 'hypercolor'
 import { atmosphereVisible, transparentBackgroundControl } from '../shared/atmosphere'
 import {
     clamp01,
@@ -262,7 +262,7 @@ function buildPulseTemp(ctx: FaceContext, wide: boolean) {
 
     const scaleBasis = Math.min(ctx.width, ctx.height) / (wide ? 230 : 480)
 
-    return (time: number, controls: Record<string, unknown>, sensors: import('@hypercolor/sdk').SensorAccessor) => {
+    return (time: number, controls: Record<string, unknown>, sensors: import('hypercolor').SensorAccessor) => {
         const dt = Number.isNaN(lastTime) ? 1 / 30 : Math.max(time - lastTime, 0)
         lastTime = time
 

@@ -8,7 +8,7 @@
 **Status:** Draft (v1)
 **Author:** Nova
 **Date:** 2026-04-12
-**Packages:** `@hypercolor/sdk` (extends existing)
+**Packages:** `hypercolor` (extends existing)
 **Depends on:** Display Faces (42), LightScript Runtime
 **Related:** Effect SDK (`sdk/packages/core/src/effects/`)
 
@@ -54,7 +54,7 @@ canvas with procedural visuals. They don't provide:
 - A `sensor` control type for meter picker UI
 
 This spec adds a `face()` API and supporting primitives to the existing
-`@hypercolor/sdk` package. Faces are authored in `sdk/src/faces/`, built
+`hypercolor` package. Faces are authored in `sdk/src/faces/`, built
 to `effects/hypercolor/` via the existing esbuild pipeline, and discovered
 by the daemon alongside regular effects. The `EffectCategory::Display`
 metadata distinguishes them.
@@ -132,7 +132,7 @@ or per-device layout adaptation.
 ### 4.1 Signature
 
 ```typescript
-import { face, sensor, color, num, combo, toggle, font } from "@hypercolor/sdk";
+import { face, sensor, color, num, combo, toggle, font } from "hypercolor";
 
 export default face(
   "System Monitor",
@@ -499,10 +499,10 @@ function grid(
 
 ### 7.3 Scale Context
 
-Reuses the existing `scaleContext()` from `@hypercolor/sdk/math`:
+Reuses the existing `scaleContext()` from `hypercolor/math`:
 
 ```typescript
-import { scaleContext } from "@hypercolor/sdk";
+import { scaleContext } from "hypercolor";
 
 const s = scaleContext(canvas, { width: 480, height: 480 });
 // s.dx(100) → scaled x position

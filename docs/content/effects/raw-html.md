@@ -187,7 +187,7 @@ There is no runnable native GPU shader lane today. The engine's `EffectSource::S
 
 ## Validating raw HTML
 
-The SDK validator runs against a standalone file from any workspace that depends on the local `@hypercolor/sdk` package:
+The SDK validator runs against a standalone file from any workspace that depends on the local `hypercolor` package:
 
 ```bash
 bunx hypercolor validate ./my-effect.html

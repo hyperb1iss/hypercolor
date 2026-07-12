@@ -7,7 +7,7 @@
  * Adapted from Shadertoy: https://www.shadertoy.com/view/wdfGW4
  */
 
-import { combo, effect, num } from '@hypercolor/sdk'
+import { combo, effect, num } from 'hypercolor'
 import shader from './fragment.glsl'
 
 const CITY_STYLES = ['Fast Descent', 'Neon', 'Standard'] as const

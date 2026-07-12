@@ -1,5 +1,5 @@
-import type { FaceContext, FaceDataSources, MediaInfo } from '@hypercolor/sdk'
-import { arcGauge, clamp, color, face, font, lerpColor, palette, Smoothed, toggle, withAlpha } from '@hypercolor/sdk'
+import type { FaceContext, FaceDataSources, MediaInfo } from 'hypercolor'
+import { arcGauge, clamp, color, face, font, lerpColor, palette, Smoothed, toggle, withAlpha } from 'hypercolor'
 import { atmosphereVisible, drawNebulaField, transparentBackgroundControl } from '../shared/atmosphere'
 import {
     clamp01,
@@ -395,8 +395,8 @@ function buildNowPlaying(ctx: FaceContext, wide: boolean) {
     return (
         time: number,
         controls: Record<string, unknown>,
-        _sensors: import('@hypercolor/sdk').SensorAccessor,
-        _audio: import('@hypercolor/sdk').AudioAccessor,
+        _sensors: import('hypercolor').SensorAccessor,
+        _audio: import('hypercolor').AudioAccessor,
         data: FaceDataSources,
     ) => {
         const dt = Number.isNaN(lastTime) ? 1 / 30 : Math.max(time - lastTime, 0)

@@ -1,11 +1,11 @@
 # Spec 21 -- SDK Effect Authoring API
 
-> Delightful effect authoring for `@hypercolor/sdk` -- write a shader or a draw function, declare controls once, ship.
+> Delightful effect authoring for `hypercolor` -- write a shader or a draw function, declare controls once, ship.
 
 **Status:** Implemented — declarative API (`effect()`, `canvas()`, `face()`,
 shape-is-type controls) shipped in `sdk/packages/core/`. All in-tree effects
 under `sdk/src/effects/` use this API. Spec is retained as reference.
-**Package:** `@hypercolor/sdk` (`sdk/packages/core/`)
+**Package:** `hypercolor` (`sdk/packages/core/`)
 **Supersedes:** Earlier decorator-based pattern (reflect-metadata + manual
 5-method override) — now removed.
 
@@ -128,7 +128,7 @@ Both paths converge to the same HTML output. Both paths have the same progressiv
 ### 4.1 Tier 1 — Minimal (Covers 95% of Effects)
 
 ```typescript
-import { effect } from "@hypercolor/sdk";
+import { effect } from "hypercolor";
 import shader from "./fragment.glsl";
 
 const PALETTES = ["SilkCircuit", "Fire", "Ice", "Aurora", "Cyberpunk"];
@@ -162,7 +162,7 @@ The `speed` key is magic — it auto-applies `normalizeSpeed()`. The control nam
 ### 4.2 Tier 2 — Explicit Factories (When You Need Custom Labels)
 
 ```typescript
-import { effect, num, combo, toggle } from "@hypercolor/sdk";
+import { effect, num, combo, toggle } from "hypercolor";
 import shader from "./fragment.glsl";
 
 export default effect("Voronoi Glass", shader, {
@@ -232,7 +232,7 @@ function effect(
 ### 5.1 Tier 1 — Stateless Draw (Most Canvas Effects)
 
 ```typescript
-import { canvas } from "@hypercolor/sdk";
+import { canvas } from "hypercolor";
 
 export default canvas(
   "Glow Particles",
@@ -329,7 +329,7 @@ This is the p5.js `setup/draw` split — but it's just functions. No classes, no
 ### 5.3 Audio-Reactive Canvas
 
 ```typescript
-import { canvas, audio } from "@hypercolor/sdk";
+import { canvas, audio } from "hypercolor";
 
 export default canvas(
   "Waveform",
@@ -682,7 +682,7 @@ Each palette name maps to a set of color stops defined in the shared palette reg
 
 ```typescript
 // Available to both canvas and shader effects
-import { palettes } from "@hypercolor/sdk";
+import { palettes } from "hypercolor";
 
 palettes.names(); // ['SilkCircuit', 'Fire', 'Ice', ...]
 palettes.get("SilkCircuit"); // { stops: [...], iq: {...}, accent: '#e135ff' }
@@ -708,7 +708,7 @@ export default effect('Cyber Descent', shader, {
 Audio data is accessed by calling `audio()` — no configuration needed:
 
 ```typescript
-import { canvas, audio } from "@hypercolor/sdk";
+import { canvas, audio } from "hypercolor";
 
 export default canvas(
   "Spectrum",
@@ -1096,7 +1096,7 @@ import {
   getControlValue,
   initializeEffect,
   normalizeSpeed,
-} from "@hypercolor/sdk";
+} from "hypercolor";
 import fragmentShader from "./fragment.glsl";
 
 interface MeteorControls {
@@ -1202,7 +1202,7 @@ initializeEffect(() => effect.initialize(), { instance: effect });
 ### 15.2 Meteor Storm — After (11 Lines)
 
 ```typescript
-import { effect } from "@hypercolor/sdk";
+import { effect } from "hypercolor";
 import shader from "./fragment.glsl";
 
 export default effect("Meteor Storm", shader, {
@@ -1288,4 +1288,4 @@ Edge cases requiring manual intervention:
 
 5. **Shader validation at build time.** Should the build tool compile the shader (via headless WebGL or ANGLE) and report errors with control-aware diagnostics? e.g., "Uniform `iSpped` declared in shader but no control named `spped` — did you mean `speed`?"
 
-6. **Should we ship a `noise()` function for canvas effects?** Canvas effects don't have GPU noise. A JS Simplex implementation would make canvas effects much more expressive. But it's scope creep — `@hypercolor/sdk/noise` as an opt-in import?
+6. **Should we ship a `noise()` function for canvas effects?** Canvas effects don't have GPU noise. A JS Simplex implementation would make canvas effects much more expressive. But it's scope creep — `hypercolor/noise` as an opt-in import?

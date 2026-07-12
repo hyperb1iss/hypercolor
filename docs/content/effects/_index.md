@@ -26,7 +26,7 @@ Design for broad strokes. The maximum detail a strip can resolve is roughly `1 /
 Four paths, one canvas contract. The first two are the SDK's TypeScript surface, the third compiles into the daemon as Rust, and the fourth targets LCD display surfaces. There is a fifth escape hatch below for one-file ports.
 
 {% callout(type="info") %}
-The TypeScript SDK (`@hypercolor/sdk`) is pre-release and not published to npm yet. Workspaces depend on a local checkout through a `file:` spec until it ships, so the spec instructions in [setup](@/effects/setup.md) stay local-checkout-first until the package goes public.
+The TypeScript SDK (`hypercolor`) is pre-release and not published to npm yet. Workspaces depend on a local checkout through a `file:` spec until it ships, so the spec instructions in [setup](@/effects/setup.md) stay local-checkout-first until the package goes public.
 {% end %}
 
 ### TypeScript canvas effects
@@ -93,7 +93,7 @@ Once you've picked a path, pair it with the deeper pages.
 - [Palettes](@/effects/palettes.md): the registry, Oklab-interpolated sampling, the shorthand-only `palette` gotcha, and the shader index path.
 - [Audio](@/effects/audio.md): the full audio surface, which field matters for which mood, and the shader uniform subset.
 - [Color science](@/effects/color-science.md): why LED lighting differs from screens, and how to make colors look great.
-- [SDK API reference](@/effects/sdk-api-reference.md): every export from `@hypercolor/sdk`, grouped by module.
+- [SDK API reference](@/effects/sdk-api-reference.md): every export from `hypercolor`, grouped by module.
 - [SDK CLI reference](@/effects/sdk-cli-reference.md): the `bunx hypercolor` authoring CLI, its flags, and environment variables.
 - [Performance](@/effects/performance.md) and [troubleshooting](@/effects/troubleshooting.md): keeping inside the frame budget and the build-time failure modes.
 - [AI prompt template](@/effects/ai-prompt-template.md): a drop-in prompt for asking a model to write an effect that fits the SDK and the hardware.

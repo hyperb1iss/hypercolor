@@ -1,5 +1,5 @@
-import type { AudioData } from '@hypercolor/sdk'
-import { audio, canvas, combo, num } from '@hypercolor/sdk'
+import type { AudioData } from 'hypercolor'
+import { audio, canvas, combo, num } from 'hypercolor'
 
 type SceneName = (typeof SCENES)[number]
 type PaletteName = (typeof PALETTE_NAMES)[number]

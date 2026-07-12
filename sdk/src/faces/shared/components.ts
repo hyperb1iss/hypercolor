@@ -9,8 +9,8 @@
  * consumer outside the bundled faces appears.
  */
 
-import type { Rect, SparklineBand } from '@hypercolor/sdk'
-import { palette, Smoothed, sparkline, ValueHistory, withAlpha } from '@hypercolor/sdk'
+import type { Rect, SparklineBand } from 'hypercolor'
+import { palette, Smoothed, sparkline, ValueHistory, withAlpha } from 'hypercolor'
 
 // ── Shared plumbing ─────────────────────────────────────────────────────
 

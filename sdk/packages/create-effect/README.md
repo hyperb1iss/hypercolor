@@ -1,8 +1,8 @@
-# @hypercolor/create-effect
+# create-hypercolor
 
 Scaffolder for [Hypercolor](https://github.com/hyperb1iss/hypercolor) effect workspaces.
 
-One command gives you a ready-to-run Bun workspace with `@hypercolor/sdk` wired up, a starter effect, and the full authoring loop for build, validate, and install.
+One command gives you a ready-to-run Bun workspace with `hypercolor` wired up, a starter effect, and the full authoring loop for build, validate, and install.
 
 ## Quick start
 
@@ -55,7 +55,7 @@ create-hypercolor-effect [name] [options]
   --audio                 Include audio-reactive starter boilerplate
   --no-git                Skip git init
   --no-install            Skip bun install
-  --sdk-spec <spec>       Required while @hypercolor/sdk is pre-release.
+  --sdk-spec <spec>       Required while hypercolor is pre-release.
                           Point at a local checkout:
                           file:../hypercolor/sdk/packages/core
                           (HYPERCOLOR_SDK_PACKAGE_SPEC env var also works).

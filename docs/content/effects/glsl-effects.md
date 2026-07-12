@@ -20,7 +20,7 @@ GLSL effects render as WebGL2 in Servo, not on a native GPU pipeline. The daemon
 An effect is a TypeScript module that imports a GLSL string and hands it to `effect()`:
 
 ```typescript
-import { effect, num } from "@hypercolor/sdk";
+import { effect, num } from "hypercolor";
 import shader from "./fragment.glsl";
 
 export default effect(
@@ -51,7 +51,7 @@ effect(name, shader, controls, options?)
 Shader source is imported as a string. Scaffolded workspaces declare `.glsl` as a text import in `bunfig.toml`, so `import shader from './fragment.glsl'` works in `bun run build` with no extra wiring.
 
 {% callout(type="info") %}
-The SDK is pre-release and not on npm yet. Scaffolded workspaces pin it with a `file:` spec pointing at your local checkout. The import line stays `@hypercolor/sdk` either way. See [Setup & workspace](@/effects/setup.md) for how the spec resolves.
+The SDK is pre-release and not on npm yet. Scaffolded workspaces pin it with a `file:` spec pointing at your local checkout. The import line stays `hypercolor` either way. See [Setup & workspace](@/effects/setup.md) for how the spec resolves.
 {% end %}
 
 ## Built-in uniforms
@@ -202,7 +202,7 @@ void main() {
 Paired with the TypeScript stub:
 
 ```typescript
-import { effect } from "@hypercolor/sdk";
+import { effect } from "hypercolor";
 import shader from "./fragment.glsl";
 
 export default effect(

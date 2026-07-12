@@ -16,7 +16,7 @@ There are two `AudioData` shapes, and they do not share field names. TypeScript 
 Canvas effects pull with `audio()` (a re-exported alias of `getAudioData()`, declared as `export { getAudioData as audio }`):
 
 ```typescript
-import { audio, canvas } from "@hypercolor/sdk";
+import { audio, canvas } from "hypercolor";
 
 export default canvas(
   "Pulse",
@@ -232,7 +232,7 @@ import {
   normalizeAudioLevel,
   normalizeFrequencyBin,
   smoothValue,
-} from "@hypercolor/sdk";
+} from "hypercolor";
 ```
 
 `getBassLevel`, `getMidLevel`, and `getTrebleLevel` take the `frequency` array and average fixed bin ranges (0-10, 10-80, 80-200). `getFrequencyRange(frequency, start, end)` averages an arbitrary bin range when the default three bands aren't what you need. `getMelRange(audio, startBand, endBand)` does the same against `melBandsNormalized`. `smoothValue(current, previous, smoothing)` is an exponential smoother for damping a jittery field (default smoothing `0.5`). `normalizeFrequencyBin(value, max)` clamps a single raw bin to 0-1 (default `max` of 128).

@@ -1,4 +1,4 @@
-import { audio, canvas, combo, num } from '@hypercolor/sdk'
+import { audio, canvas, combo, num } from 'hypercolor'
 
 export default canvas(
     '__DISPLAY_NAME__',

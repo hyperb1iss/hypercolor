@@ -1,4 +1,4 @@
-import { clamp, combo, effect, num, smoothApproach, smoothAsymmetric } from '@hypercolor/sdk'
+import { clamp, combo, effect, num, smoothApproach, smoothAsymmetric } from 'hypercolor'
 import shader from './fragment.glsl'
 
 function springStep(

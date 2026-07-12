@@ -1,19 +1,19 @@
 +++
 title = "SDK API reference"
-description = "Flat export-by-export reference for @hypercolor/sdk: effects, controls, audio, palettes, math, layout, motion, gauges, faces."
+description = "Flat export-by-export reference for hypercolor: effects, controls, audio, palettes, math, layout, motion, gauges, faces."
 weight = 130
 template = "page.html"
 +++
 
-This is the complete export surface of `@hypercolor/sdk`, generated directly from
+This is the complete export surface of `hypercolor`, generated directly from
 `sdk/packages/core/src/index.ts`. Every name below is exported from the package
 root, so a single import line reaches all of it:
 
 ```typescript
-import { canvas, effect, face, num, paletteControl, audio, lerp } from '@hypercolor/sdk'
+import { canvas, effect, face, num, paletteControl, audio, lerp } from 'hypercolor'
 ```
 
-The package is `@hypercolor/sdk` version `0.1.0`. It is pre-release and **not yet
+The package is `hypercolor` version `0.1.0`. It is pre-release and **not yet
 published to npm** — scaffolded workspaces resolve it through a local `file:` spec
 pointing at this checkout. See [Setup](@/effects/setup.md) for how that wires up.
 
@@ -233,7 +233,7 @@ Exported control-definition types (the resolved shapes the runtime consumes):
 ## Audio
 
 ```typescript
-import { audio } from '@hypercolor/sdk'
+import { audio } from 'hypercolor'
 // `audio` is getAudioData re-exported. Both names work.
 
 function getAudioData(): AudioData          // pull model — call inside draw, every frame
@@ -456,7 +456,7 @@ type LightingAccessor; type SensorAccessor
 type MediaInfo; type NetInfo; type LightingInfo; type SensorReading
 type FaceDataSources
 
-// Token kit (from @hypercolor/sdk, sourced from faces/tokens)
+// Token kit (from hypercolor, sourced from faces/tokens)
 const palette        // named face color ramps
 const spacing
 const radius

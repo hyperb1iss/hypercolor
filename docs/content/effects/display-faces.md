@@ -33,7 +33,7 @@ The context (`ctx`) carries the display truth; the update arguments carry
 the live data.
 
 ```typescript
-import { face, color, sensor, palette } from '@hypercolor/sdk'
+import { face, color, sensor, palette } from 'hypercolor'
 
 export default face('My Face', {
     accent: color('Accent', palette.neonCyan),

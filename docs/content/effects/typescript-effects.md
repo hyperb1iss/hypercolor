@@ -10,7 +10,7 @@ TypeScript canvas effects are the default authoring path. You write a draw funct
 An effect is a single module that calls `canvas()` and exports the result as its default:
 
 ```typescript
-import { canvas, num } from "@hypercolor/sdk";
+import { canvas, num } from "hypercolor";
 
 export default canvas(
   "Gradient Sweep",
@@ -65,7 +65,7 @@ type DrawFn = (
 - `controls` is the resolved map of current control values. The SDK handles speed normalization, palette resolution, and combobox mapping before your function sees it.
 
 {% callout(type="tip") %}
-Every exported name in your effect must match `@hypercolor/sdk` verbatim. The effect entry points are `canvas`, `canvas.stateful`, `effect` (GLSL, see [GLSL effects](@/effects/glsl-effects.md)), and `face` (display faces). There is no `createCanvasEffect` or `defineEffect`.
+Every exported name in your effect must match `hypercolor` verbatim. The effect entry points are `canvas`, `canvas.stateful`, `effect` (GLSL, see [GLSL effects](@/effects/glsl-effects.md)), and `face` (display faces). There is no `createCanvasEffect` or `defineEffect`.
 {% end %}
 
 ## Stateless vs stateful
@@ -147,7 +147,7 @@ Sizing in fractions of `width`, `height`, or `Math.min(width, height)` keeps an 
 Some effects are easier to author against a fixed coordinate space, most commonly the legacy 320x200 LightScript grid. Pass a `designBasis` and use `scaleContext()` to translate design coordinates into live pixels:
 
 ```typescript
-import { canvas, scaleContext } from "@hypercolor/sdk";
+import { canvas, scaleContext } from "hypercolor";
 
 export default canvas(
   "Legacy",
@@ -179,7 +179,7 @@ Omit `designBasis` and the scale becomes the identity: `sx` and `sy` are 1 and t
 The `rect()` control gives users an interactive viewport rectangle they can drag and resize, which is how a screen-reactive effect lets someone pick the capture region. It returns a `RectValue` with normalized `[0,1]` coordinates:
 
 ```typescript
-import { canvas, rect } from "@hypercolor/sdk";
+import { canvas, rect } from "hypercolor";
 
 export default canvas(
   "Screen Sampler",
@@ -209,7 +209,7 @@ The `preview` option (`"screen"`, `"web"`, or `"canvas"`) tells the control whic
 Declare a palette control with the `paletteControl()` factory and the SDK auto-converts the value to a palette function before your draw sees it. Call it with `t` in `[0, 1]` to get a CSS color string; Oklab interpolation keeps gradients perceptually smooth.
 
 ```typescript
-import { canvas, paletteControl } from "@hypercolor/sdk";
+import { canvas, paletteControl } from "hypercolor";
 
 export default canvas(
   "Ribbon",
@@ -229,7 +229,7 @@ The auto-conversion only fires for `paletteControl()`, which sets the internal `
 {% end %}
 
 ```typescript
-import { canvas, combo, createPaletteFn } from "@hypercolor/sdk";
+import { canvas, combo, createPaletteFn } from "hypercolor";
 
 export default canvas.stateful(
   "Ribbon",
@@ -261,7 +261,7 @@ See [Palettes](@/effects/palettes.md) for the full registry and the Oklab intern
 Canvas effects pull audio with `audio()`, which is the `getAudioData` export under a shorter alias. Call it inside your draw function each frame to get a fresh `AudioData` snapshot.
 
 ```typescript
-import { audio, canvas } from "@hypercolor/sdk";
+import { audio, canvas } from "hypercolor";
 
 export default canvas(
   "Pulse",

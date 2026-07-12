@@ -1,5 +1,5 @@
 {
-    "name": "@hypercolor/create-effect",
+    "name": "create-hypercolor",
     "version": "0.1.0",
     "description": "Bun create scaffolder for Hypercolor effect workspaces",
     "type": "module",

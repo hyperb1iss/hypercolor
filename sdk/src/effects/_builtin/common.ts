@@ -1,4 +1,4 @@
-import { hslToRgb } from '@hypercolor/sdk'
+import { hslToRgb } from 'hypercolor'
 
 export const BUILTIN_DESIGN_BASIS = { height: 200, width: 320 } as const
 

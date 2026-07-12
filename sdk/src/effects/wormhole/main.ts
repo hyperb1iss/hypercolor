@@ -1,4 +1,4 @@
-import { canvas, color, combo, num } from '@hypercolor/sdk'
+import { canvas, color, combo, num } from 'hypercolor'
 
 interface Point {
     x: number

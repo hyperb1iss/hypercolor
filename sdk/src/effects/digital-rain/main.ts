@@ -1,4 +1,4 @@
-import { canvas, clamp, color, combo, num, scaleContext, toggle } from '@hypercolor/sdk'
+import { canvas, clamp, color, combo, num, scaleContext, toggle } from 'hypercolor'
 
 const RAIN_DESIGN_BASIS = { height: 200, width: 320 } as const
 

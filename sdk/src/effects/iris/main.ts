@@ -5,7 +5,7 @@
  * geometric waves with Circle of Fifths harmonic color mapping.
  */
 
-import { combo, effect, num } from '@hypercolor/sdk'
+import { combo, effect, num } from 'hypercolor'
 import shader from './fragment.glsl'
 
 // ── Helpers ─────────────────────────────────────────────────────

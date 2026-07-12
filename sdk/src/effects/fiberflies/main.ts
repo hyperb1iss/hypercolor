@@ -1,4 +1,4 @@
-import { canvas, clamp, color, combo, num } from '@hypercolor/sdk'
+import { canvas, clamp, color, combo, num } from 'hypercolor'
 
 interface Firefly {
     x: number

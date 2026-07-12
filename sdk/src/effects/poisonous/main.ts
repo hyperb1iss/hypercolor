@@ -1,4 +1,4 @@
-import { canvas, color, combo, num, scaleContext } from '@hypercolor/sdk'
+import { canvas, color, combo, num, scaleContext } from 'hypercolor'
 
 const POISONOUS_DESIGN_BASIS = { height: 200, width: 320 } as const
 

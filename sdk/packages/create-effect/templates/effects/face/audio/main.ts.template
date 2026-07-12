@@ -1,4 +1,4 @@
-import { face, num } from '@hypercolor/sdk'
+import { face, num } from 'hypercolor'
 
 const styleId = 'hc-face-__EFFECT_ID__'
 

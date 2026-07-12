@@ -38,7 +38,7 @@ required to author them. That is the path below.
 
 {% callout(type="warning") %}
 The SDK is pre-release and **not published to npm yet**. Every workspace points at a
-local checkout of `@hypercolor/sdk` through a `file:` spec. The commands below pass
+local checkout of `hypercolor` through a `file:` spec. The commands below pass
 `--sdk-spec file:../hypercolor/sdk/packages/core`; adjust the relative path to wherever
 you cloned the repo, or set the `HYPERCOLOR_SDK_PACKAGE_SPEC` environment variable. When
 the package ships to npm this requirement goes away. Full prerequisites live in
@@ -109,7 +109,7 @@ controls inline and write a draw function that runs every frame.
 The `canvas` template scaffolds this:
 
 ```typescript
-import { canvas, combo, num } from '@hypercolor/sdk'
+import { canvas, combo, num } from 'hypercolor'
 
 export default canvas(
     'Aurora',
@@ -176,7 +176,7 @@ an LED canvas. Its shape is different: `face()` takes `(name, controls, options,
 and the setup function builds the DOM **once** and returns the per-frame update function.
 
 ```typescript
-import { face, num } from '@hypercolor/sdk'
+import { face, num } from 'hypercolor'
 
 export default face(
     'Aurora Face',

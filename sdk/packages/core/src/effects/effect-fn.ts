@@ -6,7 +6,7 @@
  *
  * @example
  * ```typescript
- * import { effect, paletteControl } from '@hypercolor/sdk'
+ * import { effect, paletteControl } from 'hypercolor'
  * import shader from './fragment.glsl'
  *
  * export default effect('Meteor Storm', shader, {

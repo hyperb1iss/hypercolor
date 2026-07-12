@@ -1,5 +1,5 @@
-import type { FaceContext } from '@hypercolor/sdk'
-import { lerpColor, palette, parseHex, Smoothed, withAlpha } from '@hypercolor/sdk'
+import type { FaceContext } from 'hypercolor'
+import { lerpColor, palette, parseHex, Smoothed, withAlpha } from 'hypercolor'
 
 export const DISPLAY_FONT_FAMILIES = [
     'Orbitron',

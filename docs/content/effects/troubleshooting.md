@@ -30,7 +30,7 @@ This is almost always one of three mistakes:
 The fix is to make sure the top level of your module unconditionally calls `canvas`, `effect`, or `face`:
 
 ```ts
-import { canvas } from '@hypercolor/sdk'
+import { canvas } from 'hypercolor'
 
 canvas('Aurora', { hue: [0, 360, 200] }, (ctx, controls) => {
   // draw
@@ -56,7 +56,7 @@ audio(        ctx.audio        getAudioData(        engine.audio
 The fix is to set the flag in the options object:
 
 ```ts
-import { canvas, audio } from '@hypercolor/sdk'
+import { canvas, audio } from 'hypercolor'
 
 canvas('Pulse', { sensitivity: [0, 1, 0.6] }, { audio: true }, (ctx, controls) => {
   const a = audio()
@@ -114,7 +114,7 @@ It does **not** fire if you:
 When the magic does not fire, the value reaches your draw function as a raw string. The recovery is to rebuild the sampler yourself inside the draw:
 
 ```ts
-import { createPaletteFn } from '@hypercolor/sdk'
+import { createPaletteFn } from 'hypercolor'
 
 const palette = createPaletteFn(controls.colors) // controls.colors is a palette name string
 const color = palette(0.5)

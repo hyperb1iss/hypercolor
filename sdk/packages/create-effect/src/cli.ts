@@ -38,7 +38,7 @@ Options:
   --audio                 Include audio-reactive starter boilerplate
   --no-git                Skip git init
   --no-install            Skip bun install
-  --sdk-spec <spec>       Required while @hypercolor/sdk is pre-release.
+  --sdk-spec <spec>       Required while hypercolor is pre-release.
                           Point at a local checkout:
                           file:../hypercolor/sdk/packages/core
                           (HYPERCOLOR_SDK_PACKAGE_SPEC env var also works).
@@ -62,7 +62,7 @@ export async function main(
 
     if (!sdkSpec) {
         context.stdout.error(
-            '@hypercolor/sdk is not published yet. Pass --sdk-spec file:../hypercolor/sdk/packages/core or set HYPERCOLOR_SDK_PACKAGE_SPEC.',
+            'hypercolor is not published yet. Pass --sdk-spec file:../hypercolor/sdk/packages/core or set HYPERCOLOR_SDK_PACKAGE_SPEC.',
         )
         return 1
     }

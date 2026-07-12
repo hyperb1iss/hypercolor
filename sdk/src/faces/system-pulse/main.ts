@@ -1,5 +1,5 @@
-import type { FaceContext, FaceDataSources } from '@hypercolor/sdk'
-import { color, combo, face, font, palette, sensor, sparkline, toggle, ValueHistory, withAlpha } from '@hypercolor/sdk'
+import type { FaceContext, FaceDataSources } from 'hypercolor'
+import { color, combo, face, font, palette, sensor, sparkline, toggle, ValueHistory, withAlpha } from 'hypercolor'
 import {
     atmosphereVisible,
     drawNebulaField,
@@ -414,8 +414,8 @@ function buildSystemPulse(ctx: FaceContext, wide: boolean) {
     return (
         time: number,
         controls: Record<string, unknown>,
-        sensors: import('@hypercolor/sdk').SensorAccessor,
-        _audio: import('@hypercolor/sdk').AudioAccessor,
+        sensors: import('hypercolor').SensorAccessor,
+        _audio: import('hypercolor').AudioAccessor,
         data: FaceDataSources,
     ) => {
         const dt = Number.isNaN(lastTime) ? 1 / 30 : Math.max(time - lastTime, 0)
