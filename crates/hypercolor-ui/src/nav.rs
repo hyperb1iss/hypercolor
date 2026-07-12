@@ -78,7 +78,7 @@ fn core_nav(studio_ui: bool) -> Vec<NavEntry> {
             dashboard,
             effects,
             NavEntry::core("/studio", "Studio", LuLayoutTemplate),
-            NavEntry::core("/media", "Media", LuFolder),
+            NavEntry::core("/media", "Media", LuImages),
             devices,
             settings,
         ]

@@ -5,11 +5,16 @@
 //! per-item detail panel. Composition lives in Studio; this page only
 //! manages the library. The shared [`MediaGrid`] is also embedded as the
 //! Add-layer picker's Media tab.
+//!
+//! The whole page is a drop target: dragging files in raises a purple
+//! drop veil, and an empty library renders a drop-zone hero instead of a
+//! bare placeholder. Uploads accept multiple files in one gesture.
 
 use hypercolor_leptos_ext::events::{Change, Input};
 use leptos::html;
 use leptos::prelude::*;
 use leptos_icons::Icon;
+use wasm_bindgen::JsValue;
 
 use crate::api;
 use crate::components::empty_state::EmptyState;
@@ -25,12 +30,26 @@ use crate::style_utils::filter_chips;
 use crate::toasts;
 
 const MEDIA_FILTERS: &[(&str, &str)] = &[
-    ("all", "255, 106, 193"),
+    ("all", "255, 153, 255"),
     ("image", "128, 255, 234"),
     ("gif", "255, 106, 193"),
     ("video", "130, 170, 255"),
     ("lottie", "80, 250, 123"),
 ];
+
+/// Whether a drag carries OS files (as opposed to text or in-page drags).
+fn drag_has_files(ev: &web_sys::DragEvent) -> bool {
+    ev.data_transfer()
+        .is_some_and(|dt| dt.types().includes(&JsValue::from_str("Files"), 0))
+}
+
+/// All files attached to a drop, oldest-first.
+fn dropped_files(ev: &web_sys::DragEvent) -> Vec<web_sys::File> {
+    let Some(list) = ev.data_transfer().and_then(|dt| dt.files()) else {
+        return Vec::new();
+    };
+    (0..list.length()).filter_map(|i| list.get(i)).collect()
+}
 
 #[component]
 pub fn MediaPage() -> impl IntoView {
@@ -39,6 +58,10 @@ pub fn MediaPage() -> impl IntoView {
     let (refresh_tick, set_refresh_tick) = signal(0_u64);
     let (selected_id, set_selected_id) = signal(None::<String>);
     let (uploading, set_uploading) = signal(false);
+    // Nested dragenter/dragleave pairs from child elements balance out; the
+    // veil shows while the depth is positive.
+    let (drag_depth, set_drag_depth) = signal(0_i32);
+    let is_dragging = Memo::new(move |_| drag_depth.get() > 0);
     let input_ref = NodeRef::<html::Input>::new();
 
     let media_resource = LocalResource::new(move || {
@@ -96,39 +119,73 @@ pub fn MediaPage() -> impl IntoView {
             .unwrap_or_default()
     });
 
-    let open_file_picker = Callback::new(move |_| {
+    // The detail rail earns its width only once the library has content;
+    // while loading it stays up so the layout does not jump on settle.
+    let show_rail = Memo::new(move |_| match media_resource.get() {
+        None => true,
+        Some(Ok(response)) => response.total > 0,
+        Some(Err(_)) => false,
+    });
+
+    let open_file_picker = Callback::new(move |_: ()| {
         if let Some(input) = input_ref.get() {
             input.click();
         }
     });
 
-    let on_upload_change = move |ev: web_sys::Event| {
-        let Some(file) = Change::from_event(ev)
-            .files()
-            .and_then(|files| files.get(0))
-        else {
+    // Shared by the file picker and the page-wide drop target. Uploads run
+    // sequentially; one refresh + selection move at the end keeps the grid
+    // from churning mid-batch.
+    let upload_files = move |files: Vec<web_sys::File>| {
+        if files.is_empty() || uploading.get_untracked() {
             return;
-        };
+        }
         set_uploading.set(true);
         leptos::task::spawn_local(async move {
-            match api::upload_asset(file).await {
-                Ok(response) => {
-                    let name = response.record.name.clone();
-                    set_selected_id.set(Some(response.record.id));
-                    set_refresh_tick.update(|tick| *tick = tick.wrapping_add(1));
-                    if let Some(input) = input_ref.get() {
-                        input.set_value("");
+            let total = files.len();
+            let mut uploaded = 0_usize;
+            let mut last: Option<(String, String, bool)> = None;
+            for file in files {
+                let file_name = file.name();
+                match api::upload_asset(file).await {
+                    Ok(response) => {
+                        uploaded += 1;
+                        last = Some((response.record.id, response.record.name, response.duplicate));
                     }
-                    if response.duplicate {
-                        toasts::toast_success(&format!("Selected existing media: {name}"));
-                    } else {
-                        toasts::toast_success(&format!("Uploaded media: {name}"));
+                    Err(error) => {
+                        toasts::toast_error(&format!("Upload failed for {file_name}: {error}"));
                     }
                 }
-                Err(error) => toasts::toast_error(&format!("Media upload failed: {error}")),
+            }
+            if let Some((id, name, duplicate)) = last {
+                set_selected_id.set(Some(id));
+                set_refresh_tick.update(|tick| *tick = tick.wrapping_add(1));
+                if total == 1 && duplicate {
+                    toasts::toast_success(&format!("Selected existing media: {name}"));
+                } else if total == 1 {
+                    toasts::toast_success(&format!("Uploaded media: {name}"));
+                } else {
+                    toasts::toast_success(&format!("Uploaded {uploaded} of {total} files"));
+                }
+            }
+            if let Some(input) = input_ref.get() {
+                input.set_value("");
             }
             set_uploading.set(false);
         });
+    };
+
+    let on_upload_change = move |ev: web_sys::Event| {
+        let Some(list) = Change::from_event(ev).files() else {
+            return;
+        };
+        let files: Vec<_> = (0..list.length()).filter_map(|i| list.get(i)).collect();
+        upload_files(files);
+    };
+
+    let clear_filters = move |_| {
+        set_search.set(String::new());
+        set_kind_filter.set("all".to_owned());
     };
 
     let on_changed = Callback::new(move |()| {
@@ -136,12 +193,33 @@ pub fn MediaPage() -> impl IntoView {
     });
 
     view! {
-        <div class="flex h-full flex-col">
+        <div
+            class="relative flex h-full flex-col"
+            on:dragenter=move |ev: web_sys::DragEvent| {
+                if drag_has_files(&ev) {
+                    ev.prevent_default();
+                    set_drag_depth.update(|depth| *depth += 1);
+                }
+            }
+            on:dragover=move |ev: web_sys::DragEvent| {
+                if drag_has_files(&ev) {
+                    ev.prevent_default();
+                }
+            }
+            on:dragleave=move |_| {
+                set_drag_depth.update(|depth| *depth = (*depth - 1).max(0));
+            }
+            on:drop=move |ev: web_sys::DragEvent| {
+                ev.prevent_default();
+                set_drag_depth.set(0);
+                upload_files(dropped_files(&ev));
+            }
+        >
             <PageHeader
-                icon=LuFolder
+                icon=LuImages
                 title="Media"
-                tagline="Upload and organize composition media"
-                accent=PageAccent::Coral
+                tagline="Stills, loops, and clips for Studio compositions"
+                accent=PageAccent::Pink
             >
                 <HeaderTrailing slot>
                     <span class="shrink-0 text-[11px] font-mono text-fg-tertiary/55 tabular-nums">
@@ -183,6 +261,7 @@ pub fn MediaPage() -> impl IntoView {
 
             <input
                 type="file"
+                multiple
                 class="hidden"
                 accept="image/*,video/*,application/json,.gif,.webp,.png,.jpg,.jpeg,.json"
                 node_ref=input_ref
@@ -196,16 +275,36 @@ pub fn MediaPage() -> impl IntoView {
                             {move || match media_resource.get() {
                                 None => view! { <MediaLoadingSkeleton /> }.into_any(),
                                 Some(Err(error)) => view! {
-                                    <EmptyState icon=LuFolder title="Media library unavailable" hint=error />
+                                    <EmptyState
+                                        icon=LuTriangleAlert
+                                        title="Media library unavailable"
+                                        hint=error
+                                    />
                                 }.into_any(),
                                 Some(Ok(_)) => {
-                                    if filtered_media.get().is_empty() {
+                                    if total_count.get() == 0 {
+                                        view! {
+                                            <MediaEmptyHero
+                                                dragging=is_dragging
+                                                uploading=uploading
+                                                on_browse=open_file_picker
+                                            />
+                                        }.into_any()
+                                    } else if filtered_media.get().is_empty() {
                                         view! {
                                             <EmptyState
-                                                icon=LuFolder
+                                                icon=LuSearchX
                                                 title="No matching media"
-                                                hint="Upload a file or adjust the current filter."
-                                            />
+                                                hint="Nothing in your library matches this search or filter."
+                                            >
+                                                <button
+                                                    type="button"
+                                                    class="rounded-lg border border-edge-subtle bg-surface-overlay/70 px-3 py-1.5 text-[11px] font-medium text-fg-primary transition-all hover:border-accent-muted hover:bg-surface-overlay btn-press glow-ring"
+                                                    on:click=clear_filters
+                                                >
+                                                    "Clear filters"
+                                                </button>
+                                            </EmptyState>
                                         }.into_any()
                                     } else {
                                         view! {
@@ -221,9 +320,119 @@ pub fn MediaPage() -> impl IntoView {
                         </Suspense>
                     </main>
 
-                    <aside class="w-[380px] shrink-0 overflow-y-auto border-l border-edge-subtle/70 bg-surface-sunken/35 px-4 pb-6 pt-4 scrollbar-none">
-                        <MediaDetail asset=selected_asset on_changed=on_changed />
-                    </aside>
+                    <Show when=move || show_rail.get()>
+                        <aside class="w-[380px] shrink-0 overflow-y-auto border-l border-edge-subtle/70 bg-surface-sunken/35 px-4 pb-6 pt-4 scrollbar-none">
+                            <MediaDetail asset=selected_asset on_changed=on_changed />
+                        </aside>
+                    </Show>
+                </div>
+            </div>
+
+            <Show when=move || is_dragging.get()>
+                <div class="pointer-events-none absolute inset-0 z-40 accent-purple">
+                    <div
+                        class="absolute inset-0"
+                        style="background: rgba(var(--glow-rgb), 0.05)"
+                    ></div>
+                    <div
+                        class="absolute inset-4 flex items-center justify-center rounded-xl border-2 border-dashed border-accent-muted/70"
+                        style="background: rgba(var(--glow-rgb), 0.06); box-shadow: inset 0 0 70px rgba(var(--glow-rgb), 0.10)"
+                    >
+                        <div class="flex flex-col items-center gap-3 text-center animate-enter-scale">
+                            <div
+                                class="flex h-14 w-14 items-center justify-center rounded-xl border border-accent-muted/50 bg-surface-overlay/85 text-accent"
+                                style="box-shadow: 0 0 30px rgba(var(--glow-rgb), 0.25)"
+                            >
+                                <Icon icon=LuUpload width="24px" height="24px" />
+                            </div>
+                            <div class="text-sm font-semibold text-fg-primary">"Drop to upload"</div>
+                            <div class="text-xs text-fg-tertiary">
+                                "Images, GIFs, video, and Lottie JSON"
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </Show>
+        </div>
+    }
+}
+
+/// Full-width invitation shown when the library holds no media at all: a
+/// dashed drop-zone hero with kind-tinted tiles, an upload CTA, and format
+/// hints. The kind tiles wear category accents (§4.1 — identity, never
+/// chrome); the CTA and drag highlight stay on purple.
+#[component]
+fn MediaEmptyHero(
+    #[prop(into)] dragging: Signal<bool>,
+    #[prop(into)] uploading: Signal<bool>,
+    on_browse: Callback<()>,
+) -> impl IntoView {
+    let kind_tile = |kind: &'static str, tilt: &'static str| {
+        let rgb = kind_accent(kind);
+        view! {
+            <div
+                class=format!(
+                    "flex h-11 w-11 items-center justify-center rounded-xl border {tilt}"
+                )
+                style=format!(
+                    "background: rgba({rgb}, 0.10); border-color: rgba({rgb}, 0.30); \
+                     box-shadow: 0 0 20px rgba({rgb}, 0.14); color: rgba({rgb}, 0.9)"
+                )
+            >
+                <Icon icon=kind_icon(kind) width="18px" height="18px" />
+            </div>
+        }
+    };
+
+    view! {
+        <div class=move || {
+            let state = if dragging.get() {
+                "border-accent-muted bg-accent/5"
+            } else {
+                "border-edge-default/70 bg-surface-overlay/25"
+            };
+            format!(
+                "relative mx-auto mt-6 max-w-2xl overflow-hidden rounded-xl border border-dashed \
+                 transition-all duration-300 accent-purple animate-enter-up {state}"
+            )
+        }>
+            <div
+                class="pointer-events-none absolute inset-0"
+                style="background: radial-gradient(90% 65% at 50% 0%, rgba(var(--glow-rgb), 0.07), transparent 70%)"
+            ></div>
+            <div class="relative flex flex-col items-center px-8 py-14 text-center">
+                <div class="flex items-end gap-3">
+                    {kind_tile("video", "-rotate-6 mb-0.5")}
+                    <div
+                        class="flex h-14 w-14 items-center justify-center rounded-xl border bg-surface-overlay/70 accent-pink"
+                        style="box-shadow: 0 0 26px rgba(var(--glow-rgb), 0.16); color: rgba(var(--glow-rgb), 0.9); border-color: rgba(var(--glow-rgb), 0.35)"
+                    >
+                        <Icon icon=LuImages width="24px" height="24px" />
+                    </div>
+                    {kind_tile("lottie", "rotate-6 mb-0.5")}
+                </div>
+                <h2 class="mt-6 text-base font-semibold text-fg-primary">
+                    "Your media library is empty"
+                </h2>
+                <p class="mt-1.5 max-w-sm text-xs leading-relaxed text-fg-tertiary">
+                    "Drop files anywhere on this page, or browse from your computer. "
+                    "Everything here becomes a layer you can composite in Studio."
+                </p>
+                <button
+                    type="button"
+                    class="mt-6 inline-flex items-center gap-2 rounded-lg border border-accent-muted/40 bg-accent/15 px-4 py-2 text-xs font-semibold text-accent transition-colors hover:bg-accent/25 btn-press glow-ring disabled:opacity-60"
+                    prop:disabled=move || uploading.get()
+                    on:click=move |_| on_browse.run(())
+                >
+                    <span class=move || {
+                        if uploading.get() { "inline-flex animate-pulse" } else { "inline-flex" }
+                    }>
+                        <Icon icon=LuUpload width="14px" height="14px" />
+                    </span>
+                    {move || if uploading.get() { "Uploading..." } else { "Upload media" }}
+                </button>
+                <div class="mt-6 font-mono text-[10px] uppercase tracking-wider text-fg-tertiary/60">
+                    "PNG · JPEG · GIF · WebP · MP4 · Lottie JSON"
                 </div>
             </div>
         </div>
@@ -421,9 +630,16 @@ fn MediaDetail(
                     .into_any()
                 }
                 None => view! {
-                    <div class="flex flex-col items-center justify-center gap-2 px-4 py-10 text-center">
-                        <Icon icon=LuFolder width="28px" height="28px" style="color: rgba(139, 133, 160, 0.35)" />
-                        <div class="text-xs text-fg-tertiary/70">"No media selected"</div>
+                    <div class="flex flex-col items-center gap-3 px-4 py-12 text-center">
+                        <div class="flex h-11 w-11 items-center justify-center rounded-xl border border-edge-subtle/70 bg-surface-sunken/60 text-fg-tertiary/60">
+                            <Icon icon=LuImages width="18px" height="18px" />
+                        </div>
+                        <div>
+                            <div class="text-xs font-semibold text-fg-secondary">"Nothing selected"</div>
+                            <div class="mx-auto mt-1 max-w-[24ch] text-[11px] leading-relaxed text-fg-tertiary/75">
+                                "Choose an item from the grid to preview it and edit its details."
+                            </div>
+                        </div>
                     </div>
                 }.into_any(),
             }}

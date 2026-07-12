@@ -97,10 +97,13 @@ fn AssetCard(
                 .into_any()
             } else {
                 view! {
+                    // The solid dark base keeps the card cinematic in light
+                    // theme too — the tint stops are translucent, and without
+                    // it the white page bleeds through under the black scrim.
                     <div
                         class="absolute inset-0"
                         style=format!(
-                            "background: radial-gradient(125% 95% at 50% 22%, rgba({accent}, 0.24), rgba({accent}, 0.05) 55%, rgba(10, 8, 18, 1) 82%)"
+                            "background: radial-gradient(125% 95% at 50% 22%, rgba({accent}, 0.24), rgba({accent}, 0.05) 55%, rgba(10, 8, 18, 1) 82%), rgb(10, 8, 18)"
                         )
                     ></div>
                     <div class="absolute inset-0 flex items-center justify-center pb-6">

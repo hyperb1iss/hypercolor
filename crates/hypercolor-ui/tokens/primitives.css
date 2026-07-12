@@ -59,13 +59,6 @@
     --radius-lg:  6px;
     --radius-xl:  8px;
 
-    /* ── Spacing ── */
-    --spacing-xs: 4px;
-    --spacing-sm: 8px;
-    --spacing-md: 16px;
-    --spacing-lg: 24px;
-    --spacing-xl: 32px;
-
     /* ── Semantic surface aliases (resolve to CSS vars set per theme) ── */
     --color-surface-base:    var(--surface-base);
     --color-surface-raised:  var(--surface-raised);
@@ -106,4 +99,18 @@
     --color-fg:      var(--text-primary);
     --color-fg-muted: var(--text-secondary);
     --color-fg-dim:  var(--text-tertiary);
+}
+
+/* ── Spacing ramp ─────────────────────────────────────────────────────────
+   Plain :root vars, deliberately OUTSIDE @theme: Tailwind v4 resolves the
+   named suffixes of width utilities (max-w-xs, max-w-sm, …) against the
+   --spacing-* theme namespace before --container-*, so registering these in
+   @theme silently collapsed every named max-width to 4–32px. Handwritten CSS
+   still consumes them via var(--spacing-*). */
+:root {
+    --spacing-xs: 4px;
+    --spacing-sm: 8px;
+    --spacing-md: 16px;
+    --spacing-lg: 24px;
+    --spacing-xl: 32px;
 }

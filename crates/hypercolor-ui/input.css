@@ -891,6 +891,7 @@ input[type="range"].slider-silk::-moz-range-track {
 .accent-yellow { --glow-rgb: 241, 250, 140; } /* warnings / timestamps */
 .accent-green  { --glow-rgb: 80, 250, 123; }  /* success states */
 .accent-red    { --glow-rgb: 255, 99, 99; }   /* errors */
+.accent-pink   { --glow-rgb: 255, 153, 255; } /* media library identity */
 
 /* Filter chips — the pill filters on Effects/Devices/Media. Color rides
    `--glow-rgb` (set inline per chip) so the active/hover tints stay on the

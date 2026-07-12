@@ -8,7 +8,7 @@
 //! row is always rendered; callers fill it with search, tabs, or a context
 //! strip.
 //!
-//! Accents are chosen from a fixed palette of five SilkCircuit tokens plus a
+//! Accents are chosen from a fixed palette of six SilkCircuit tokens plus a
 //! spectrum gradient for the Dashboard; each page gets a distinct identity.
 
 use icondata_core::Icon as IconData;
@@ -24,6 +24,8 @@ pub enum PageAccent {
     Cyan,
     /// Coral — spatial/design (Layout).
     Coral,
+    /// Soft pink — the media library (Media).
+    Pink,
     /// Success green — live rendering output (Displays).
     Green,
     /// Electric yellow — configuration/caution (Settings).
@@ -38,6 +40,7 @@ impl PageAccent {
             PageAccent::Purple => "225, 53, 255",
             PageAccent::Cyan | PageAccent::Spectrum => "128, 255, 234",
             PageAccent::Coral => "255, 106, 193",
+            PageAccent::Pink => "255, 153, 255",
             PageAccent::Green => "80, 250, 123",
             PageAccent::Yellow => "241, 250, 140",
         }
@@ -48,6 +51,7 @@ impl PageAccent {
             PageAccent::Purple => "linear-gradient(105deg,#80ffea 0%,#c8d4ff 48%,#e135ff 100%)",
             PageAccent::Cyan => "linear-gradient(105deg,#80ffea 0%,#e8f4ff 55%,#80ffea 100%)",
             PageAccent::Coral => "linear-gradient(105deg,#80ffea 0%,#e8d4ff 50%,#ff6ac1 100%)",
+            PageAccent::Pink => "linear-gradient(105deg,#80ffea 0%,#ecd9ff 50%,#ff99ff 100%)",
             PageAccent::Green => "linear-gradient(105deg,#80ffea 0%,#d4eaff 50%,#50fa7b 100%)",
             PageAccent::Yellow => "linear-gradient(105deg,#80ffea 0%,#e8f0ff 50%,#f1fa8c 100%)",
             PageAccent::Spectrum => "linear-gradient(105deg,#80ffea 0%,#e135ff 52%,#50fa7b 100%)",
