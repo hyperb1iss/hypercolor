@@ -117,4 +117,7 @@ cool stuff together.
 ## License
 
 By contributing, you agree that your contributions will be licensed under Apache-2.0, the same
-license as the project.
+license as the project. Inbound = outbound: there is **no Contributor License Agreement** and you
+keep your copyright. By submitting a pull request you represent that you have the right to submit
+the contribution under these terms, consistent with the
+[Developer Certificate of Origin](https://developercertificate.org/).
