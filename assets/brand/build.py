@@ -828,7 +828,7 @@ def build_social() -> None:
 
 
 def build_web() -> None:
-    """Web-optimized small variants for hypercolor.lighting consumption.
+    """Web-optimized small variants for marketing-site consumption.
 
     Masters are >1 MB at 1145+ px; the marketing site only ever displays
     them at <500 px. Without these, `next/image` (which the site runs with

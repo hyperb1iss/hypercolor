@@ -20,7 +20,7 @@ and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Native wgpu render path and SparkleFlinger frame compositor.
 - Web UI, terminal UI, CLI, tray applet, and unified Tauri desktop app.
 - TypeScript effect SDK with built-in HTML effect packs.
-- Hardware support for 175 devices across 11 driver families.
+- Hardware support for 179 devices across 12 driver families.
 - Network drivers for Hue, Nanoleaf, and WLED.
 - Release tarballs with shell completions, systemd/launchd assets, udev rules,
   bundled UI assets, bundled effects, and checksum verification.

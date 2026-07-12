@@ -611,9 +611,10 @@ just lint                           # Clippy with -D warnings
 ```
 
 {% callout(type="info") %}
-`unsafe_code` is `forbid` across the entire workspace. If a situation seems to require
-`unsafe`, it almost certainly does not: `zerocopy` provides everything needed for safe
-type-punning of wire-format buffers.
+`unsafe_code` is `forbid` in every driver crate (the only workspace exceptions are the
+audited platform-interop crates, which deny undocumented unsafe blocks). If a driver
+situation seems to require `unsafe`, it almost certainly does not: `zerocopy` provides
+everything needed for safe type-punning of wire-format buffers.
 {% end %}
 
 `just verify` must pass clean before submitting. A failing `just lint` is a blocker.

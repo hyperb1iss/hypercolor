@@ -228,7 +228,7 @@ without the runtime cliffs of unoptimized Servo.
 
 - **Edition 2024**, Rust 1.94+
 - **Tests in `tests/` directory** — NOT inline `#[cfg(test)]` blocks. Named `{feature}_tests.rs`.
-- **`unsafe_code` is forbidden** across the entire workspace
+- **`unsafe_code` is forbidden** in application, driver, and domain crates; the only exceptions are the audited platform-interop crates (`linux-gpu-interop`, `windows-pawnio`), which deny undocumented unsafe blocks
 - **Clippy pedantic** at deny level — see `Cargo.toml` for allowed exceptions
 - **`unwrap()` is forbidden** — use `?`, `.ok()`, `expect("reason")`, or handle errors properly
 - **`thiserror`** for library errors, **`anyhow`** for application errors

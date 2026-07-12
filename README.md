@@ -443,15 +443,17 @@ for Windows service/process boundaries. Both deny undocumented unsafe blocks. Ed
 ## 📡 Status
 
 Hypercolor is in active development (v0.1.0). The core engine, effect SDK, web UI, TUI, and
-11 shipping driver families all work today on Linux. macOS arm64 release artifacts and
+12 shipping driver families all work today on Linux. macOS arm64 release artifacts and
 Windows source builds are experimental until their installer and runtime gates match Linux.
 Every screenshot in this README was captured from a live instance running on real hardware.
 
 Known launch limitations:
 
 - Linux is the only fully supported install and runtime path for v0.1.0.
-- SDK packages are pre-release and use local checkout or `file:` dependencies until npm publish.
-- The Python client is source-only for launch and is not published to PyPI yet.
+- The `hypercolor` and `create-hypercolor` npm packages are pre-release; the monorepo uses
+  local `file:` dependencies until npm publish.
+- The Python client is published to PyPI as [`hypercolor`](https://pypi.org/project/hypercolor/)
+  (alpha).
 - Windows hardware service setup remains experimental.
 
 **Coming soon:** effect marketplace, Wasmtime plugin system for community backends, Wooting

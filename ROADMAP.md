@@ -13,7 +13,7 @@ The foundation is working on Linux today.
 - Core render pipeline: SparkleFlinger compositor, spatial sampler, adaptive FPS (10–60)
 - Effect system: Servo HTML renderer, wgpu native shaders, 44 built-in effects
 - Effect SDK: TypeScript + GLSL authoring, hot-reload dev server, bundled HTML output
-- Hardware: 175 supported devices across 11 driver families (Razer, Corsair, ASUS, Lian Li, Nollie, QMK, Ableton Push 2, Hue, Nanoleaf, WLED, Govee, and more)
+- Hardware: 179 supported devices across 12 driver families (Razer, Corsair, ASUS, Lian Li, Nollie, PrismRGB, QMK, Ableton Push 2, Hue, Nanoleaf, WLED, Govee)
 - Web UI: effects browser, live canvas preview, spatial layout editor, scene management
 - Terminal UI (TUI): true-color LED preview, audio spectrum, fullscreen mode
 - Audio pipeline: FFT, beat detection, mel bands, chromagram
