@@ -17,8 +17,8 @@
 **Depends on:** Spatial Layout Engine (06), Scenes & Automation (13),
 Render Groups (27), Dynamic Driver Control Surfaces (52), Multi-Zone
 Scenes (64), Component Designer (66)
-**Related:** Studio Composition UI (65), RFC 53 productization (cloud
-template registry, deferred), brainstorm `1359138d-f0b7-49a3-95d2-7e96c8f7c820`
+**Related:** Studio Composition UI (65), the planned cloud template
+registry (deferred), brainstorm `1359138d-f0b7-49a3-95d2-7e96c8f7c820`
 
 ---
 
@@ -185,8 +185,8 @@ agent reinvents the flow and most get it wrong.
 
 - **Vision/photo-based placement.** A user photographing their rig and a
   vision model proposing the layout is a sick follow-up, not this spec.
-- **Cloud template registry.** Community template sharing through
-  hypercolor.lighting belongs to RFC 53's timeline. The TOML schema here
+- **Cloud template registry.** Community template sharing belongs to the
+  planned registry's own timeline. The TOML schema here
   is designed so those templates sync down later without migration.
 - **New engine capability.** No render-pipeline, sampling, or device
   protocol changes. (The preview renderer in §5.5 is a read-side
@@ -591,8 +591,8 @@ The schema turns web research into a durable artifact:
    validation errors/warnings come back structured (mounts outside
    `[0,1]`, overlapping fan mounts, missing sources) → agent fixes.
 4. Template persists in the user rigs dir; `place_outputs` can now snap
-   to its mounts; the *next* session — or the next user, once RFC 53's
-   registry exists — skips steps 2–3.
+   to its mounts; the *next* session — or the next user, once the
+   community template registry exists — skips steps 2–3.
 
 Example seed template (illustrative geometry):
 
@@ -847,7 +847,7 @@ Per workspace convention: tests in `tests/`, named `{feature}_tests.rs`.
    `RoomDimensions` exist but are unused. Room-kind rig templates can
    target a flat canvas now and adopt spaces when that subsystem wakes
    up — confirm we're happy deferring.
-3. **Template versioning across sync.** When RFC 53's registry lands,
+3. **Template versioning across sync.** When the community template registry lands,
    id collisions between local user templates and community templates
    need a precedence rule. Proposal: local always wins, registry pulls
    are explicit.

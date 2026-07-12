@@ -3,7 +3,7 @@
 //!
 //! The request-file authorization protocol, threat model, and verb allowlist
 //! are specified in the Windows experience execution roadmap §7.4
-//! (`hypercolor.lighting/docs/internal/windows-experience-roadmap.md`).
+//! (internal planning document).
 //!
 //! This crate is **only buildable on Windows**. On other platforms `main`
 //! prints a diagnostic and exits non-zero so build tooling that compiles the

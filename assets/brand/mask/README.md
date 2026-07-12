@@ -224,7 +224,7 @@ fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
 One texture lookup, three independent tints, additive at the trinity center
 where petals meet. Set the uniforms from the same daemon event stream.
 
-## React / Next.js (hypercolor.lighting site)
+## React / Next.js (marketing site)
 
 Same CSS classes work in React. For the marketing site, the killer move is
 syncing the hero logo's tri-color to a slow ambient cycle:

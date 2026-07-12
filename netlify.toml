@@ -1,6 +1,5 @@
 # Netlify deploy for the Hypercolor documentation site (Zola).
 # Connect a Netlify site to this repo; `base` scopes the build to docs/.
-# Point the custom domain docs.hypercolor.lighting at this site.
 
 [build]
   base = "docs"
