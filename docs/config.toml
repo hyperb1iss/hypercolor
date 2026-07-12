@@ -12,6 +12,11 @@ include_description = true
 include_path = true
 include_content = true
 
+# evga.com serves 503 to non-browser user agents, so `zola check` cannot
+# verify it even though the link works in a browser.
+[link_checker]
+skip_prefixes = ["https://www.evga.com"]
+
 [markdown]
 smart_punctuation = true
 insert_anchor_links = "left"

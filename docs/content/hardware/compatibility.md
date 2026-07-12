@@ -764,7 +764,7 @@ _Source: [`data/drivers/vendors/dygma.toml`](../../../data/drivers/vendors/dygma
 
 ### EVGA {#evga}
 
-[evga.com](https://evga.com) · VID 0x3842
+[evga.com](https://www.evga.com) · VID 0x3842
 
 **Devices tracked:** 7 known
 
