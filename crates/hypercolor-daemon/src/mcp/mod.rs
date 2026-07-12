@@ -55,14 +55,15 @@ pub fn build_router(state: Arc<AppState>, config: &McpConfig) -> Router<Arc<AppS
 }
 
 fn http_config(config: &McpConfig) -> StreamableHttpServerConfig {
-    StreamableHttpServerConfig {
-        sse_keep_alive: (config.sse_keep_alive_secs > 0)
-            .then_some(Duration::from_secs(config.sse_keep_alive_secs)),
-        stateful_mode: config.stateful_mode,
-        json_response: config.json_response,
-        cancellation_token: CancellationToken::new(),
-        ..Default::default()
-    }
+    // `StreamableHttpServerConfig` is #[non_exhaustive]; mutate a default
+    // instead of using a struct expression.
+    let mut http = StreamableHttpServerConfig::default();
+    http.sse_keep_alive =
+        (config.sse_keep_alive_secs > 0).then_some(Duration::from_secs(config.sse_keep_alive_secs));
+    http.stateful_mode = config.stateful_mode;
+    http.json_response = config.json_response;
+    http.cancellation_token = CancellationToken::new();
+    http
 }
 
 fn normalize_base_path(path: &str) -> String {
