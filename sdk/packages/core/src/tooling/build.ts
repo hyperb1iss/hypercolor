@@ -161,7 +161,7 @@ async function bundleEntry(entryPath: string, sdkAliasPath: string | undefined, 
         alias?: Record<string, string>
     }
     if (sdkAliasPath) {
-        buildConfig.alias = { 'hypercolor': sdkAliasPath }
+        buildConfig.alias = { hypercolor: sdkAliasPath }
     }
 
     const result = await Bun.build(buildConfig)
