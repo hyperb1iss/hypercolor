@@ -1,6 +1,6 @@
 {
     "name": "hypercolor",
-    "version": "0.1.1",
+    "version": "0.1.2",
     "description": "TypeScript SDK for creating Hypercolor RGB lighting effects",
     "type": "module",
     "main": "./src/index.ts",

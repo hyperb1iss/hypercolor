@@ -5,7 +5,11 @@
  * Uses Oklab interpolation for perceptually uniform gradients.
  */
 
-import palettesData from '../../../../shared/palettes.json'
+// Vendored copy of sdk/shared/palettes.json (the cross-language source of
+// truth, also embedded by the Rust engine). The npm tarball cannot reach
+// outside the package, so build-package.ts re-syncs the copy and
+// palettes-sync.test.ts guards against drift.
+import palettesData from './palettes.gen.json'
 
 // ── Types ────────────────────────────────────────────────────────────────
 
