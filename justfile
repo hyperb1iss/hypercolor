@@ -168,6 +168,14 @@ compat *args='':
 compat-check:
     bun scripts/gen-compat.ts --check
 
+# Stamp a release version across every version-bearing file (see RELEASING.md)
+set-version version:
+    bun scripts/set-version.ts {{ version }}
+
+# Verify every version-bearing file carries the given version
+set-version-check version:
+    bun scripts/set-version.ts {{ version }} --verify
+
 # Observe an already-running daemon for graphics pipeline soak regressions
 graphics-soak *args='':
     bun scripts/graphics-pipeline-soak.ts {{ args }}

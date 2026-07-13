@@ -569,11 +569,16 @@ jobs:
         with:
           python-version-file: python/.python-version
 
-      - name: Patch package version from tag
+      - name: Verify package version matches the tag
         run: |
+          # The atomic release commit stamps pyproject.toml; a mismatch
+          # means this tag was not cut through release.yml.
           version="${GITHUB_REF_NAME#v}"
-          sed -i "s/^version = \".*\"/version = \"${version}\"/" pyproject.toml
-          grep '^version = ' pyproject.toml
+          grep -Fx "version = \"${version}\"" pyproject.toml || {
+            echo "pyproject.toml version does not match tag ${GITHUB_REF_NAME}" >&2
+            grep '^version = ' pyproject.toml >&2
+            exit 1
+          }
 
       - name: Build package
         run: uv build
@@ -1346,14 +1351,21 @@ jobs:
           if-no-files-found: error
 
   # ── Create GitHub Release ──────────────────────────────────────
+  # Accepts workflow_dispatch as well as push: release.yml pushes tags
+  # with GITHUB_TOKEN (which never fires `on: push`) and then dispatches
+  # this workflow on the tag ref.
   create-release:
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    if: >-
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      startsWith(github.ref, 'refs/tags/')
     needs: [build-release, build-native-app]
     runs-on: ubuntu-latest
     permissions:
       contents: write
       actions: read
     steps:
+      - uses: actions/checkout@v6
+
       - uses: actions/download-artifact@v8
         with:
           pattern: hypercolor-*
@@ -1374,19 +1386,105 @@ jobs:
           args=(
             "${GITHUB_REF_NAME}"
             --title "Hypercolor ${GITHUB_REF_NAME#v}"
-            --generate-notes
             --verify-tag
           )
+          # The release commit carries git-iris notes for this tag; fall
+          # back to GitHub's generated notes if the file is missing.
+          notes_file=".github/release-notes/${GITHUB_REF_NAME}.md"
+          if [[ -s "${notes_file}" ]]; then
+            args+=(--notes-file "${notes_file}")
+          else
+            args+=(--generate-notes)
+          fi
           if [[ "${GITHUB_REF_NAME}" == *-* ]]; then
             args+=(--prerelease)
           fi
 
           gh release create "${args[@]}" "${files[@]}"
 
+  # ── Publish npm Packages ───────────────────────────────────────
+  publish-npm:
+    if: >-
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      startsWith(github.ref, 'refs/tags/')
+    needs: [sdk, create-release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # npm provenance
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: oven-sh/setup-bun@v2
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: Guard npm token
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "${NODE_AUTH_TOKEN}" ]; then
+            echo "NPM_TOKEN secret is not configured; cannot publish npm packages." >&2
+            exit 1
+          fi
+
+      - name: Install and build SDK
+        working-directory: sdk
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile
+          (cd packages/core && bun run build)
+
+      - name: Publish packages
+        working-directory: sdk
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          dist_tag="latest"
+          if [[ "${GITHUB_REF_NAME}" == *-* ]]; then
+            dist_tag="next"
+          fi
+          for dir in packages/core packages/create-effect; do
+            name="$(jq -r .name "${dir}/package.json")"
+            version="$(jq -r .version "${dir}/package.json")"
+            if npm view "${name}@${version}" version >/dev/null 2>&1; then
+              echo "${name}@${version} already published; skipping"
+              continue
+            fi
+            echo "Publishing ${name}@${version} (tag: ${dist_tag})"
+            (cd "${dir}" && npm publish --provenance --access public --tag "${dist_tag}")
+          done
+
+  # ── Publish PyPI Package ───────────────────────────────────────
+  # Requires a PyPI trusted publisher configured for this repo + workflow.
+  publish-pypi:
+    if: >-
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      startsWith(github.ref, 'refs/tags/') &&
+      !contains(github.ref_name, '-')
+    needs: [python-build, create-release]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # PyPI trusted publishing
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: python-dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+
   # ── Update Homebrew Tap ────────────────────────────────────────
   update-homebrew:
     if: >-
-      github.event_name == 'push' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       startsWith(github.ref, 'refs/tags/') &&
       !contains(github.ref_name, '-')
     needs: create-release
@@ -1482,7 +1580,7 @@ jobs:
   # ── Update AUR Package ────────────────────────────────────────
   update-aur:
     if: >-
-      github.event_name == 'push' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       startsWith(github.ref, 'refs/tags/') &&
       !contains(github.ref_name, '-')
     needs: create-release

@@ -1,48 +1,52 @@
 name: Release
 
+# Fully automated release cut. Given a version, this workflow:
+#   1. validates it (semver, monotonic, not already tagged or published),
+#   2. stamps every version-bearing file (scripts/set-version.ts),
+#   3. refreshes Cargo/bun/uv lockfiles,
+#   4. generates the changelog entry and release notes with git-iris,
+#   5. makes one atomic release commit on main and tags it,
+#   6. pushes and dispatches ci.yml on the tag to build and publish.
+#
+# The tag is dispatched explicitly because pushes made with GITHUB_TOKEN
+# never trigger `on: push` workflows — ci.yml's tag lane accepts both the
+# push and workflow_dispatch events for that reason.
+#
+# Required secrets: ANTHROPIC_API_KEY (git-iris release notes).
+# Optional repo variable: GIT_IRIS_MODEL to override the default model.
+
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version or RC version to tag, without leading v"
+        description: "Release version, without leading v (e.g. 0.2.0 or 0.2.0-rc.1)"
         required: true
-        default: "0.1.0"
       dry_run:
-        description: "Validate the release tag without pushing it"
+        description: "Prepare the release commit and notes without pushing anything"
         required: false
         type: boolean
         default: true
 
 permissions:
   contents: write
+  actions: write
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   RUST_TOOLCHAIN: "1.95.0"
+  GIT_IRIS_VERSION: "2.1.0"
 
 jobs:
-  prepare:
-    name: Prepare Release Tag
+  release:
+    name: Cut Release
     runs-on: ubuntu-latest
-    outputs:
-      tag: ${{ steps.version.outputs.tag }}
-      version: ${{ steps.version.outputs.version }}
-      prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v6
         with:
+          ref: main
           fetch-depth: 0
 
-      - name: Install release tooling
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y jq
-
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-
-      - name: Resolve release version
+      - name: Validate release version
         id: version
         env:
           INPUT_VERSION: ${{ inputs.version }}
@@ -54,33 +58,179 @@ jobs:
             exit 1
           fi
 
-          cargo_version="$(cargo metadata --format-version 1 --no-deps \
-            | jq -r '.packages[] | select(.name == "hypercolor-daemon") | .version')"
-          base_version="${version%%-*}"
-          if [[ "${base_version}" != "${cargo_version}" ]]; then
-            echo "Tag version ${version} does not match Cargo version ${cargo_version}" >&2
-            echo "Update the workspace version before cutting this release." >&2
-            exit 1
-          fi
-
           tag="v${version}"
           if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
             echo "Tag ${tag} already exists" >&2
             exit 1
           fi
 
-          prerelease=false
+          last_tag="$(git tag --list 'v*' --sort=-v:refname | head -n1)"
+          if [[ -n "${last_tag}" ]]; then
+            highest="$(printf '%s\n%s\n' "${last_tag#v}" "${version}" | sort -V | tail -n1)"
+            if [[ "${highest}" != "${version}" || "${last_tag#v}" == "${version}" ]]; then
+              echo "Version ${version} is not above the latest tag ${last_tag}" >&2
+              exit 1
+            fi
+          fi
+
+          # Registries refuse republished versions; fail before touching
+          # anything if either ecosystem already carries this version.
+          if curl -fsSL "https://registry.npmjs.org/hypercolor/${version}" >/dev/null 2>&1; then
+            echo "hypercolor@${version} already exists on npm" >&2
+            exit 1
+          fi
+          base="${version%%-*}"
+          pep440="${base}"
           if [[ "${version}" == *-* ]]; then
-            prerelease=true
+            pre="${version#*-}"
+            case "${pre}" in
+              alpha.*) pep440="${base}a${pre#alpha.}" ;;
+              beta.*) pep440="${base}b${pre#beta.}" ;;
+              rc.*) pep440="${base}rc${pre#rc.}" ;;
+              *)
+                echo "Prerelease '${pre}' has no PEP 440 mapping (use alpha.N, beta.N, or rc.N)" >&2
+                exit 1
+                ;;
+            esac
+          fi
+          if curl -fsSL "https://pypi.org/pypi/hypercolor/json" 2>/dev/null \
+            | jq -e --arg v "${pep440}" '.releases | has($v)' >/dev/null; then
+            echo "hypercolor ${pep440} already exists on PyPI" >&2
+            exit 1
+          fi
+
+          prerelease=false
+          [[ "${version}" == *-* ]] && prerelease=true
+          from_ref="${last_tag}"
+          if [[ -z "${from_ref}" ]]; then
+            from_ref="$(git rev-list --max-parents=0 HEAD | tail -n1)"
           fi
 
           {
             echo "version=${version}"
             echo "tag=${tag}"
             echo "prerelease=${prerelease}"
+            echo "from_ref=${from_ref}"
           } >>"$GITHUB_OUTPUT"
 
-      - name: Summarize release plan
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Install git-iris
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-binstall
+
+      - name: Install git-iris binary
+        run: |
+          set -euo pipefail
+          cargo binstall -y "git-iris@${GIT_IRIS_VERSION}" \
+            || cargo install --locked "git-iris@${GIT_IRIS_VERSION}"
+          git-iris --version
+
+      - name: Stamp release version
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          bun scripts/set-version.ts "${VERSION}"
+
+      - name: Refresh lockfiles
+        run: |
+          set -euo pipefail
+          cargo update --workspace
+          (cd sdk && bun install)
+          (cd python && uv lock)
+
+      - name: Verify version alignment
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: bun scripts/set-version.ts "${VERSION}" --verify
+
+      - name: Generate changelog and release notes with git-iris
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GIT_IRIS_MODEL: ${{ vars.GIT_IRIS_MODEL }}
+          VERSION: ${{ steps.version.outputs.version }}
+          FROM_REF: ${{ steps.version.outputs.from_ref }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${ANTHROPIC_API_KEY}" ]]; then
+            echo "ANTHROPIC_API_KEY secret is required to generate release notes" >&2
+            exit 1
+          fi
+          git-iris config --provider anthropic --api-key "${ANTHROPIC_API_KEY}"
+          if [[ -n "${GIT_IRIS_MODEL}" ]]; then
+            git-iris config --provider anthropic --model "${GIT_IRIS_MODEL}"
+          fi
+
+          mkdir -p .github/release-notes
+          git-iris release-notes --quiet \
+            --from "${FROM_REF}" \
+            --version-name "${VERSION}" \
+            --update --file ".github/release-notes/v${VERSION}.md"
+          if [[ ! -s ".github/release-notes/v${VERSION}.md" ]]; then
+            echo "git-iris produced empty release notes" >&2
+            exit 1
+          fi
+
+          git-iris changelog --quiet \
+            --from "${FROM_REF}" \
+            --version-name "${VERSION}" \
+            --update --file CHANGELOG.md
+
+      - name: Create atomic release commit and tag
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit \
+            -m "release: ${TAG}" \
+            -m "Automated release commit: version stamps, lockfiles, changelog, and release notes."
+          git tag -a "${TAG}" -m "Hypercolor ${TAG}"
+          git show --stat HEAD
+
+      - name: Upload release preview
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-preview-${{ steps.version.outputs.tag }}
+          path: |
+            .github/release-notes/${{ steps.version.outputs.tag }}.md
+            CHANGELOG.md
+          if-no-files-found: error
+
+      - name: Push release commit and tag
+        if: inputs.dry_run == false
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git push origin HEAD:main
+          git push origin "${TAG}"
+
+      - name: Dispatch build and publish
+        if: inputs.dry_run == false
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # Tags pushed with GITHUB_TOKEN do not fire `on: push`, so launch
+          # the CI tag lane explicitly on the tag ref.
+          gh workflow run ci.yml --ref "${TAG}"
+          echo "Dispatched ci.yml on ${TAG}"
+
+      - name: Summarize
         env:
           VERSION: ${{ steps.version.outputs.version }}
           TAG: ${{ steps.version.outputs.tag }}
@@ -88,24 +238,20 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run }}
         run: |
           {
-            echo "## Release plan"
+            echo "## Release ${TAG}"
             echo
             echo "- Version: ${VERSION}"
-            echo "- Tag: ${TAG}"
             echo "- Prerelease: ${PRERELEASE}"
             echo "- Dry run: ${DRY_RUN}"
             echo
-            echo "Pushing the tag triggers ci.yml to build artifacts and publish the release."
-            echo "For artifact rehearsal without a tag, dispatch CI/CD with release_artifacts=smoke or full."
+            if [[ "${DRY_RUN}" == "true" ]]; then
+              echo "Dry run: the release commit, tag, and notes were prepared but NOT pushed."
+              echo "Download the release-preview artifact to review the notes and changelog."
+            else
+              echo "Release commit and tag pushed; ci.yml dispatched on ${TAG} to build and publish."
+            fi
+            echo
+            echo "### Release notes"
+            echo
+            cat ".github/release-notes/${TAG}.md"
           } >>"$GITHUB_STEP_SUMMARY"
-
-      - name: Create and push tag
-        if: inputs.dry_run == false
-        env:
-          TAG: ${{ steps.version.outputs.tag }}
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "${TAG}" -m "Release ${TAG}"
-          git push origin "${TAG}"
