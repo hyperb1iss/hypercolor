@@ -18,7 +18,9 @@ What the Release workflow does, in order:
    not already tagged, and not already published on npm or PyPI.
 2. **Stamps** every version-bearing file via `scripts/set-version.ts`
    (`just set-version <v>` locally):
-   - `Cargo.toml` `[workspace.package]` — every crate inherits it
+   - `Cargo.toml` `[workspace.package]` — every workspace crate inherits it
+   - `crates/hypercolor-ui/Cargo.toml` — workspace-excluded (standalone WASM
+     build), so it carries its own stamped version
    - `crates/hypercolor-app/tauri.conf.json`
    - `python/pyproject.toml` (semver prerelease translated to PEP 440:
      `-alpha.N` → `aN`, `-beta.N` → `bN`, `-rc.N` → `rcN`)

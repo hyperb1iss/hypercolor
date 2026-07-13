@@ -77,6 +77,14 @@ const TARGETS: Target[] = [
         expected: (v) => v,
     },
     {
+        // Excluded from the root workspace (standalone trunk/WASM build), so
+        // it cannot inherit [workspace.package] and needs its own stamp.
+        path: 'crates/hypercolor-ui/Cargo.toml',
+        stamp: lineReplace(/^version = "[^"]+"$/m, (v) => `version = "${v}"`),
+        current: (c) => /^version = "([^"]+)"$/m.exec(c)?.[1] ?? null,
+        expected: (v) => v,
+    },
+    {
         path: 'crates/hypercolor-app/tauri.conf.json',
         stamp: lineReplace(/"version": "[^"]+"/, (v) => `"version": "${v}"`),
         current: (c) => /"version": "([^"]+)"/.exec(c)?.[1] ?? null,
