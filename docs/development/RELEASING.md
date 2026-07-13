@@ -44,7 +44,7 @@ the Homebrew tap and AUR metadata (stable only).
 | What | Where | Used for |
 | --- | --- | --- |
 | `ANTHROPIC_API_KEY` | repo secret | git-iris release notes + changelog (required) |
-| `NPM_TOKEN` | repo secret | npm publishes; use a granular automation token so no OTP is needed |
+| npm trusted publishers | npmjs.com package settings | `publish-npm` uses OIDC (no token, automatic provenance); register repo `hyperb1iss/hypercolor`, workflow `ci.yml` on **both** `hypercolor` and `create-hypercolor` |
 | PyPI trusted publisher | pypi.org project settings | `publish-pypi` uses OIDC; register repo `hyperb1iss/hypercolor`, workflow `ci.yml` |
 | `HOMEBREW_TAP_TOKEN` | repo secret | tap pushes (already configured) |
 | `GIT_IRIS_MODEL` | repo variable, optional | override git-iris's default Anthropic model |

@@ -1403,6 +1403,9 @@ jobs:
           gh release create "${args[@]}" "${files[@]}"
 
   # ── Publish npm Packages ───────────────────────────────────────
+  # Uses npm trusted publishing (OIDC): no token, and provenance is
+  # generated automatically. Both packages must have this repo +
+  # workflow registered as a trusted publisher on npmjs.com.
   publish-npm:
     if: >-
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
@@ -1411,7 +1414,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write # npm provenance
+      id-token: write # npm trusted publishing / provenance
     steps:
       - uses: actions/checkout@v6
 
@@ -1420,16 +1423,13 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 24
-          registry-url: https://registry.npmjs.org
 
-      - name: Guard npm token
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Ensure npm supports trusted publishing
         run: |
-          if [ -z "${NODE_AUTH_TOKEN}" ]; then
-            echo "NPM_TOKEN secret is not configured; cannot publish npm packages." >&2
-            exit 1
-          fi
+          set -euo pipefail
+          # OIDC publish needs npm >= 11.5.1.
+          npm install -g npm@latest
+          npm --version
 
       - name: Install and build SDK
         working-directory: sdk
@@ -1440,8 +1440,6 @@ jobs:
 
       - name: Publish packages
         working-directory: sdk
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
           dist_tag="latest"
@@ -1456,7 +1454,7 @@ jobs:
               continue
             fi
             echo "Publishing ${name}@${version} (tag: ${dist_tag})"
-            (cd "${dir}" && npm publish --provenance --access public --tag "${dist_tag}")
+            (cd "${dir}" && npm publish --access public --tag "${dist_tag}")
           done
 
   # ── Publish PyPI Package ───────────────────────────────────────
