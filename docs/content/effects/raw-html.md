@@ -198,7 +198,7 @@ bunx hypercolor validate ./my-effect.html --json      # machine-readable output
 It checks the render surface, title, and script (hard errors), then reports warnings for a missing version tag, missing description or publisher, out-of-range control defaults, and external script or link tags that would break self-containment. Keep everything inline; a reference to an outside CDN raises `EXTERNAL_ASSET_REFERENCE`.
 
 {% callout(type="info") %}
-The SDK is pre-release and not yet published to npm. Workspaces depend on it through a local `file:` spec rather than a registry version. The `bunx hypercolor` commands run inside a scaffolded workspace; see [Setup & workspace](@/effects/setup.md) for the current install story.
+The `bunx hypercolor` commands run inside a scaffolded workspace, resolving the SDK from npm by default (or a local `file:` override); see [Setup & workspace](@/effects/setup.md) for the install story.
 {% end %}
 
 ## Installing raw HTML

@@ -26,7 +26,7 @@ Design for broad strokes. The maximum detail a strip can resolve is roughly `1 /
 Four paths, one canvas contract. The first two are the SDK's TypeScript surface, the third compiles into the daemon as Rust, and the fourth targets LCD display surfaces. There is a fifth escape hatch below for one-file ports.
 
 {% callout(type="info") %}
-The TypeScript SDK (`hypercolor`) is pre-release and not published to npm yet. Workspaces depend on a local checkout through a `file:` spec until it ships, so the spec instructions in [setup](@/effects/setup.md) stay local-checkout-first until the package goes public.
+The TypeScript SDK is published to npm as [`hypercolor`](https://www.npmjs.com/package/hypercolor) (early 0.1.x release). Scaffold a workspace with `bun create hypercolor` — [setup](@/effects/setup.md) covers the details, including developing against a local engine checkout.
 {% end %}
 
 ### TypeScript canvas effects

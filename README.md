@@ -450,8 +450,9 @@ Every screenshot in this README was captured from a live instance running on rea
 Known launch limitations:
 
 - Linux is the only fully supported install and runtime path for v0.1.0.
-- The `hypercolor` and `create-hypercolor` npm packages are pre-release; the monorepo uses
-  local `file:` dependencies until npm publish.
+- The [`hypercolor`](https://www.npmjs.com/package/hypercolor) SDK and
+  [`create-hypercolor`](https://www.npmjs.com/package/create-hypercolor) scaffolder are on npm
+  (early 0.1.x); scaffold an effect workspace with `bun create hypercolor`.
 - The Python client is published to PyPI as [`hypercolor`](https://pypi.org/project/hypercolor/)
   (alpha).
 - Windows hardware service setup remains experimental.

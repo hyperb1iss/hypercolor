@@ -259,7 +259,7 @@ Every command returns a process exit code you can rely on in scripts and CI.
 | Variable | Used by | Default | Effect |
 |---|---|---|---|
 | `HYPERCOLOR_DAEMON_URL` | `install --daemon` | `http://127.0.0.1:9420` | Daemon base URL for daemon installs. `--daemon-url` overrides it. |
-| `HYPERCOLOR_SDK_PACKAGE_SPEC` | `create-hypercolor-effect` | (none) | The `hypercolor` dependency spec for new workspaces while the SDK is pre-release. `--sdk-spec` overrides it. |
+| `HYPERCOLOR_SDK_PACKAGE_SPEC` | `create-hypercolor-effect` | published caret range | Overrides the `hypercolor` dependency spec for new workspaces (e.g. a `file:` path to a local checkout). `--sdk-spec` overrides it. |
 | `VISUAL` / `EDITOR` | `add` | (none) | Editor opened on the new entrypoint. `VISUAL` wins when both are set. |
 
 ## The scaffolder: `create-hypercolor-effect`
@@ -267,8 +267,7 @@ Every command returns a process exit code you can rely on in scripts and CI.
 Bootstrapping a brand-new workspace is a separate package, `create-hypercolor`, exposed as the `create-hypercolor-effect` bin. The authoring `hypercolor add` command reuses it internally to add effects to an existing workspace.
 
 ```bash
-bunx create-hypercolor-effect my-effects --template canvas \
-  --sdk-spec file:../hypercolor/sdk/packages/core
+bun create hypercolor my-effects --template canvas
 ```
 
 ```
@@ -280,11 +279,12 @@ Options:
   --audio                 Include audio-reactive starter boilerplate
   --no-git                Skip git init
   --no-install            Skip bun install
-  --sdk-spec <spec>       Required while hypercolor is pre-release.
+  --sdk-spec <spec>       Override the hypercolor dependency spec.
+                          Defaults to the published caret range.
 ```
 
 {% callout(type="info") %}
-**The SDK is pre-release and not on npm.** Every new workspace must point its `hypercolor` dependency at a local checkout, either through `--sdk-spec file:../hypercolor/sdk/packages/core` or the `HYPERCOLOR_SDK_PACKAGE_SPEC` environment variable. Without one of those, the scaffolder refuses to run. Bun's `link:` is not a drop-in for a relative path here — use `file:`. Once the SDK publishes to a registry this requirement goes away and a plain version spec will work.
+New workspaces depend on the published `hypercolor` package by default. To author against a local engine checkout, pass `--sdk-spec file:../hypercolor/sdk/packages/core` or set the `HYPERCOLOR_SDK_PACKAGE_SPEC` environment variable. Bun's `link:` is not a drop-in for a relative path here — use `file:`.
 {% end %}
 
 The scaffolder runs interactively when the workspace name or template is missing, otherwise it builds the workspace directly. It initializes git and runs `bun install` by default; `--no-git` and `--no-install` opt out. When finished it prints the next command — `bun run build` for code templates, `bun run validate` for the raw `html` template.

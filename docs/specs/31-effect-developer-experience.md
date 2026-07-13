@@ -7,11 +7,10 @@
 **Date:** 2026-04-16
 **Runtime:** Bun (primary); Node.js 24 LTS (minimum for library consumers)
 
-**Launch status:** The npm package flow in this spec is the post-publish
-target. For the v0.1 launch, `hypercolor` and
-`create-hypercolor` are source-only from this repository; public effect
-authoring docs use a local Hypercolor checkout plus a `file:` SDK dependency
-until the packages are published.
+**Launch status:** `hypercolor` and `create-hypercolor` are published to npm
+(0.1.x, since 2026-07-12). The scaffolder defaults new workspaces to the
+published caret range; a local Hypercolor checkout plus a `file:` SDK
+dependency remains the flow for developing against the engine itself.
 
 ---
 

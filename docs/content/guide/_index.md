@@ -120,7 +120,7 @@ If you own hardware that is not yet supported, see [contributing a driver](@/con
 
 Hypercolor renders effects through an embedded Servo browser (HTML Canvas and WebGL2 / GLSL) and a set of native Rust built-ins compiled directly into the engine. Browse the full library in the [effect catalog](@/effects/catalog.md), or head to the [effects section](@/effects/_index.md) to learn how to write your own.
 
-The TypeScript SDK is pre-release and uses local `file:` dependencies — it is not yet published to npm. See [effects setup](@/effects/setup.md) for the local checkout workflow.
+The TypeScript SDK is published to npm as [`hypercolor`](https://www.npmjs.com/package/hypercolor) (early 0.1.x release). Scaffold a workspace with `bun create hypercolor` — see [effects setup](@/effects/setup.md).
 
 ![The Hypercolor effects browser](/img/ui/effects.webp)
 

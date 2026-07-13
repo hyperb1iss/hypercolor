@@ -36,27 +36,21 @@ accessible one end to end.
 The TypeScript and GLSL lanes both ship through the SDK, so a Rust compiler is never
 required to author them. That is the path below.
 
-{% callout(type="warning") %}
-The SDK is pre-release and **not published to npm yet**. Every workspace points at a
-local checkout of `hypercolor` through a `file:` spec. The commands below pass
-`--sdk-spec file:../hypercolor/sdk/packages/core`; adjust the relative path to wherever
-you cloned the repo, or set the `HYPERCOLOR_SDK_PACKAGE_SPEC` environment variable. When
-the package ships to npm this requirement goes away. Full prerequisites live in
+{% callout(type="info") %}
+The SDK is an early release (0.1.x) published to npm as
+[`hypercolor`](https://www.npmjs.com/package/hypercolor). Workspaces pull it from the
+registry by default; to author against a local engine checkout instead, pass
+`--sdk-spec file:../hypercolor/sdk/packages/core` or set the
+`HYPERCOLOR_SDK_PACKAGE_SPEC` environment variable. Full prerequisites live in
 [setup](@/effects/setup.md).
 {% end %}
 
 ## Scaffold a workspace
 
-Clone the repo, install the SDK workspace once, then scaffold a project beside it:
+One command, no checkout required:
 
 ```bash
-git clone https://github.com/hyperb1iss/hypercolor.git
-cd hypercolor/sdk && bun install && cd ../..
-
-bunx create-hypercolor-effect aurora-lab \
-    --template canvas \
-    --first aurora \
-    --sdk-spec file:../hypercolor/sdk/packages/core
+bun create hypercolor aurora-lab --template canvas --first aurora
 cd aurora-lab
 ```
 

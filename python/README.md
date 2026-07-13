@@ -10,15 +10,17 @@ Generation details live in `../docs/development/CLIENT_GENERATION.md`.
 
 ## Install
 
-```bash
-uv sync
-```
-
-The package is source-only for the v0.1 launch and is not published to PyPI yet.
-Once it is published, apps should depend on it normally:
+The client is published to PyPI as [`hypercolor`](https://pypi.org/project/hypercolor/)
+(alpha):
 
 ```bash
 uv add hypercolor
+```
+
+For development inside this repository:
+
+```bash
+uv sync
 ```
 
 ## Quick Start

@@ -26,7 +26,7 @@ Hypercolor uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html): `MAJ
 
 Because the project is pre-1.0, the minor version (`0.x`) carries breaking-change weight. A bump from `0.1` to `0.2` may change the REST API envelope, the config file schema, or the effect SDK surface without a deprecation window. Patch releases (`0.1.x`) are safe to apply: they are bug fixes and security hardening only.
 
-The TypeScript effect SDK (`sdk/`) and the Python client are **pre-release** and are not yet published to npm or PyPI. Until they are, consume them directly from source. Breaking SDK changes will be called out explicitly in the release notes below.
+The TypeScript effect SDK is published to npm as [`hypercolor`](https://www.npmjs.com/package/hypercolor) (scaffolder: [`create-hypercolor`](https://www.npmjs.com/package/create-hypercolor)), and the Python client to PyPI as [`hypercolor`](https://pypi.org/project/hypercolor/). All are early 0.x releases; breaking SDK changes will be called out explicitly in the release notes below.
 
 ## Releases
 

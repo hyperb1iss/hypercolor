@@ -62,9 +62,9 @@ That includes Ruff, Ruff format, ty, WebSocket protocol drift, and pytest.
 Generated OpenAPI drift runs in the separate `Python Generated Client` job
 because it compiles the Rust daemon exporter.
 
-The Python client is source-only for the v0.1 launch. Stable release tags build
-sdist and wheel artifacts for inspection, but CI does not publish them to PyPI
-until the package name and trusted publishing are ready.
+The Python client is published to PyPI as `hypercolor` (alpha). Stable release
+tags build sdist and wheel artifacts; registry publishes are still a manual
+release-time step.
 
 ## TypeScript Client Path
 

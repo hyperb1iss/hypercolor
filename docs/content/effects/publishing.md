@@ -10,7 +10,7 @@ You have a finished effect. Publishing means turning that source into a self-con
 If you have not built or installed an effect yet, start with [the dev workflow](@/effects/dev-workflow.md) for the edit-build-ship loop, then come back here for the publishing details.
 
 {% callout(type="info") %}
-The `hypercolor` package is pre-release and not on npm yet. Workspaces point at a local checkout through a `file:` dependency spec, so every command below runs through `bunx hypercolor` inside your workspace. When the SDK publishes, the `file:` spec in your scaffolded `package.json` is the one line that changes.
+Every command below runs through `bunx hypercolor` inside your workspace, resolving the [`hypercolor`](https://www.npmjs.com/package/hypercolor) dependency from npm (or your local `file:` override).
 {% end %}
 
 ## What ships: the artifact contract

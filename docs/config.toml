@@ -12,10 +12,11 @@ include_description = true
 include_path = true
 include_content = true
 
-# evga.com serves 503 to non-browser user agents, so `zola check` cannot
-# verify it even though the link works in a browser.
+# evga.com serves 503 to non-browser user agents and lian-li.com drops
+# non-browser connections outright, so `zola check` cannot verify either
+# even though both work in a browser.
 [link_checker]
-skip_prefixes = ["https://www.evga.com"]
+skip_prefixes = ["https://www.evga.com", "https://lian-li.com"]
 
 [markdown]
 smart_punctuation = true

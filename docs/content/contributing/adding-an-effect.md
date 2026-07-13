@@ -179,8 +179,8 @@ Tests go in a `tests/` directory, not inline `#[cfg(test)]` blocks. The whole wo
 
 SDK effects live under `sdk/src/effects/<name>/`. The build pipeline compiles them to self-contained HTML files that the daemon renders via Servo's WebGL2 context.
 
-{% callout(type="warning") %}
-`hypercolor` is pre-release and not yet on npm. The monorepo wires it via a `file:` dependency. The `bun create hypercolor` scaffold flow described in [spec 31](@/effects/creating-effects.md) is the post-publish target, not yet available externally.
+{% callout(type="info") %}
+`hypercolor` is published to npm (early 0.1.x release). External contributors can scaffold a standalone workspace with `bun create hypercolor` — see [creating effects](@/effects/creating-effects.md). Inside the monorepo, effects resolve the SDK through the Bun workspace instead.
 {% end %}
 
 ### Build an effect in the monorepo

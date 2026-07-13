@@ -236,7 +236,7 @@ hypercolor effects rescan
 hypercolor effects activate aurora
 ```
 
-The SDK is pre-release and not yet on npm, so the exact `bunx hypercolor` invocation depends on the workspace's local `file:` spec until it is published. See [effects setup](@/effects/setup.md) for the authoring side.
+`bunx hypercolor` resolves the workspace's `hypercolor` dependency — the npm release by default, or a local `file:` build in engine-development workspaces. See [effects setup](@/effects/setup.md) for the authoring side.
 
 ## Where to go next
 

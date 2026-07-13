@@ -51,7 +51,7 @@ effect(name, shader, controls, options?)
 Shader source is imported as a string. Scaffolded workspaces declare `.glsl` as a text import in `bunfig.toml`, so `import shader from './fragment.glsl'` works in `bun run build` with no extra wiring.
 
 {% callout(type="info") %}
-The SDK is pre-release and not on npm yet. Scaffolded workspaces pin it with a `file:` spec pointing at your local checkout. The import line stays `hypercolor` either way. See [Setup & workspace](@/effects/setup.md) for how the spec resolves.
+Scaffolded workspaces pull `hypercolor` from npm by default; engine-development workspaces pin it with a `file:` spec instead. The import line stays `hypercolor` either way. See [Setup & workspace](@/effects/setup.md) for how the spec resolves.
 {% end %}
 
 ## Built-in uniforms

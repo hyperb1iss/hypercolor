@@ -121,8 +121,8 @@ Note the CLI surface differs from the MCP tool. The activate verb uses `--speed`
 
 This is the playbook that crosses both CLIs. You author an HTML effect with the SDK, install it into the daemon, then apply it. There is no MCP tool to install or rescan effects, so this path has to cross from the authoring CLI to the daemon CLI or an MCP `set_effect` call.
 
-{% callout(type="warning") %}
-The SDK is pre-release and not published to npm yet. Inside a scaffolded effect workspace it is wired in through a `file:` dependency, so `bunx hypercolor` resolves to the local build of the authoring CLI rather than a registry version. These instructions assume you are in such a workspace.
+{% callout(type="info") %}
+Inside a scaffolded effect workspace, `bunx hypercolor` resolves the workspace's `hypercolor` dependency — the npm release by default, or a local build when the workspace was scaffolded with a `file:` SDK spec. These instructions assume you are in such a workspace.
 {% end %}
 
 ### 1. Build in the SDK workspace

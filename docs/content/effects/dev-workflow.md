@@ -209,5 +209,5 @@ just face-dev system-pulse   # the face authoring loop described above
 Everything else in this guide works identically inside and outside the monorepo, because both routes call the same `build` / `validate` / `install` core.
 
 {% callout(type="info") %}
-The SDK is pre-release and not published to npm. Scaffolded workspaces point at a local checkout through a `file:` spec (set via `--sdk-spec` or `HYPERCOLOR_SDK_PACKAGE_SPEC`); Bun's `link:` is not a drop-in substitute. Those `file:` instructions will change once the package publishes. See the setup guide in this section for the current pinning rules.
+Scaffolded workspaces pull `hypercolor` from npm by default. When developing against a local engine checkout, the workspace uses a `file:` spec instead (set via `--sdk-spec` or `HYPERCOLOR_SDK_PACKAGE_SPEC`); Bun's `link:` is not a drop-in substitute. See the setup guide in this section for the pinning rules.
 {% end %}

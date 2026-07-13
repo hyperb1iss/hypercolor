@@ -1,19 +1,19 @@
 +++
 title = "Setup & workspace"
-description = "Bun, the scaffold, and the file: SDK spec. The SDK is pre-release, so workspaces point at a local checkout, not npm."
+description = "Bun, the scaffold, and the SDK dependency. One bun create command gives you a ready-to-author workspace."
 weight = 10
 template = "page.html"
 +++
 
-Every Hypercolor effect lives in a Bun workspace that depends on `hypercolor`. This page gets that workspace running: install Bun, get the SDK source, scaffold a project, and wire the `file:` spec that connects the two. Once `bun install` finishes, you're ready to author.
+Every Hypercolor effect lives in a Bun workspace that depends on [`hypercolor`](https://www.npmjs.com/package/hypercolor). This page gets that workspace running: install Bun, scaffold a project, and let `bun install` pull the SDK from npm. Once it finishes, you're ready to author.
 
 ![The Hypercolor effects browser, the surface your built effects land in](/img/ui/effects.webp)
 <!-- No setup-specific UI shot exists; the effects browser shows what authored effects become once shipped. -->
 
-The endpoint of this page is a workspace where `bun install` has succeeded and `hypercolor` resolves from a local checkout. If that is true, you can author. The next page, [Creating effects](@/effects/creating-effects.md), writes the first one.
+The endpoint of this page is a workspace where `bun install` has succeeded and `hypercolor` resolves. If that is true, you can author. The next page, [Creating effects](@/effects/creating-effects.md), writes the first one.
 
-{% callout(type="warning", title="The SDK is pre-release and not on npm") %}
-`hypercolor` has not been published yet. Workspaces depend on it through a local `file:` spec that points at a Hypercolor checkout, **not** through npm and **not** through Bun's `link:`. The scaffolder hard-fails if you don't supply that spec, and a `package.json` copied from a tutorial that lists `"hypercolor": "^0.1.0"` will fail `bun install`. Always pass `--sdk-spec file:../hypercolor/sdk/packages/core` (or set `HYPERCOLOR_SDK_PACKAGE_SPEC`).
+{% callout(type="info", title="Early release") %}
+The SDK is 0.1.x: the API tracks the engine and may change between minor versions. If you are hacking on the engine itself, you can point a workspace at a local checkout instead of npm — see [Developing against a local engine checkout](#developing-against-a-local-engine-checkout).
 {% end %}
 
 ## Install Bun
@@ -32,35 +32,17 @@ bun --version
 
 Node is not required to author effects. The scaffolder, the build, and the CLI all run on Bun directly. The workspace declares `node >=24.0.0` only so the same `package.json` stays valid if you ever run the published bin through a Node shim.
 
-## Get the SDK source
-
-Because the SDK is unpublished, clone Hypercolor next to wherever you want your workspace to live, then install its own dependencies once:
-
-```bash
-mkdir -p ~/dev
-cd ~/dev
-git clone https://github.com/hyperb1iss/hypercolor.git
-cd hypercolor/sdk
-bun install
-cd ../..
-```
-
-After this you have `~/dev/hypercolor/sdk/packages/core` on disk. That directory is the target your workspace's `file:` spec resolves to.
-
 ## Scaffold a workspace
 
-From the directory that contains your `hypercolor/` clone, run the scaffolder:
+One command, anywhere you like:
 
 ```bash
-bun ./hypercolor/sdk/packages/create-effect/bin/create-hypercolor-effect.js my-effects \
-    --template canvas \
-    --first aurora \
-    --sdk-spec "file:../hypercolor/sdk/packages/core"
+bun create hypercolor my-effects --template canvas --first aurora
 ```
 
-That creates `my-effects/`, drops in one starter effect named `aurora`, runs `git init`, and runs `bun install`. The CLI prints the next command to run when it finishes.
+That creates `my-effects/`, wires `hypercolor` from npm, drops in one starter effect named `aurora`, runs `git init`, and runs `bun install`. The CLI prints the next command to run when it finishes.
 
-Omit the workspace name or `--template` and the scaffolder switches to interactive prompts for the workspace name, the template, the first effect name, and an "Audio reactive?" toggle. Keep `--sdk-spec` regardless. Without it the scaffolder exits with code 1 and the message `hypercolor is not published yet. Pass --sdk-spec file:../hypercolor/sdk/packages/core or set HYPERCOLOR_SDK_PACKAGE_SPEC.`.
+Omit the workspace name or `--template` and the scaffolder switches to interactive prompts for the workspace name, the template, the first effect name, and an "Audio reactive?" toggle.
 
 ### Flags
 
@@ -69,15 +51,15 @@ Omit the workspace name or `--template` and the scaffolder switches to interacti
 | `--template <type>` | Starter template: `canvas`, `shader`, `face`, or `html`. |
 | `--first <name>` | Name of the first effect. Defaults to `my-effect`. |
 | `--audio` | Include audio-reactive starter boilerplate. |
-| `--sdk-spec <spec>` | The SDK dependency spec. Required while pre-release. |
+| `--sdk-spec <spec>` | Override the `hypercolor` dependency spec. Defaults to the published caret range; use a `file:` path to develop against a local engine checkout. |
 | `--no-git` | Skip `git init`. |
 | `--no-install` | Skip `bun install`. |
 
-`--sdk-spec` falls back to the `HYPERCOLOR_SDK_PACKAGE_SPEC` environment variable, so you can export it once instead of repeating the flag:
+`--sdk-spec` falls back to the `HYPERCOLOR_SDK_PACKAGE_SPEC` environment variable, so you can export an override once instead of repeating the flag:
 
 ```bash
 export HYPERCOLOR_SDK_PACKAGE_SPEC="file:../hypercolor/sdk/packages/core"
-bun ./hypercolor/sdk/packages/create-effect/bin/create-hypercolor-effect.js my-effects --template canvas
+bun create hypercolor my-effects --template canvas
 ```
 
 ## The four templates
@@ -102,7 +84,7 @@ my-effects/
   effects/
     aurora/
       main.ts          # one folder per effect, main.ts is the entry
-  package.json         # hypercolor via the file: spec
+  package.json         # hypercolor from npm (or your --sdk-spec override)
   bunfig.toml          # loads .glsl as text, hardlinks installs
   biome.jsonc          # formatter + linter config
   tsconfig.json
@@ -143,7 +125,20 @@ The scaffolded `package.json` wraps the authoring CLI in named scripts so you ra
 
 The `html` workspace skips `build` and points `validate` and `ship` straight at `effects/*.html`. The full meaning of each command, both install paths, and the difference between this authoring CLI and the system `hypercolor` CLI all live in [Dev workflow](@/effects/dev-workflow.md).
 
-## How the file: spec resolves
+## Developing against a local engine checkout
+
+By default the scaffolder writes the published caret range into the workspace `package.json` and npm serves the SDK. If you are working on the SDK or engine itself, point the workspace at your checkout instead. Clone Hypercolor next to where your workspace will live and install its dependencies once:
+
+```bash
+mkdir -p ~/dev
+cd ~/dev
+git clone https://github.com/hyperb1iss/hypercolor.git
+cd hypercolor/sdk
+bun install
+cd ../..
+bun create hypercolor my-effects --template canvas \
+    --sdk-spec "file:../hypercolor/sdk/packages/core"
+```
 
 The scaffolder substitutes whatever you pass to `--sdk-spec` into the workspace `package.json`:
 
@@ -158,7 +153,7 @@ The scaffolder substitutes whatever you pass to `--sdk-spec` into the workspace 
 That relative path is resolved from the workspace root, so it assumes your workspace is a sibling of the `hypercolor/` clone (for example `~/dev/my-effects` next to `~/dev/hypercolor`). If your layout differs, adjust the relative path or use an absolute one.
 
 {% callout(type="warning", title="Use file:, not link:") %}
-Bun's `link:` spec is not a drop-in relative path the way yarn's is. It requires a prior `bun link` registration of the package and resolves through Bun's global link store, so a copied `link:` spec breaks `bun install` with no obvious cause. Stick with `file:` until the SDK ships to npm.
+Bun's `link:` spec is not a drop-in relative path the way yarn's is. It requires a prior `bun link` registration of the package and resolves through Bun's global link store, so a copied `link:` spec breaks `bun install` with no obvious cause. Stick with `file:` for local checkouts.
 {% end %}
 
 ### Inside the Hypercolor monorepo
@@ -173,13 +168,13 @@ just effect-build NAME
 
 All of these run the same Bun authoring core a standalone workspace uses.
 
-### After the SDK publishes
+### Migrating a pre-publish workspace
 
-Once `hypercolor` lands on npm, the `--sdk-spec` flag becomes optional and the scaffolder can default to a version range. Existing workspaces migrate with a one-line edit:
+Workspaces scaffolded before the SDK shipped to npm point at a local checkout. Move them to the registry with a one-line edit, then re-run `bun install`:
 
 ```diff
 - "hypercolor": "file:../hypercolor/sdk/packages/core"
-+ "hypercolor": "^0.1.0"
++ "hypercolor": "^0.1.1"
 ```
 
 ## What next

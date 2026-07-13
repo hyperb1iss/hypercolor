@@ -20,9 +20,9 @@ shared atmosphere and component kit. Read those for finished,
 gate-passing examples.
 
 {% callout(type="info") %}
-The SDK is pre-release and not published to npm yet. New effect and face
-workspaces depend on it through a local `file:` spec until it ships. See
-[Setup & workspace](@/effects/setup.md) for the current install path.
+The SDK is published to npm as `hypercolor` (early 0.1.x release). New effect
+and face workspaces pull it from the registry by default. See
+[Setup & workspace](@/effects/setup.md) for the install path.
 {% end %}
 
 ## The face contract
