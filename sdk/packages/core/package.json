@@ -1,13 +1,13 @@
 {
     "name": "hypercolor",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "description": "TypeScript SDK for creating Hypercolor RGB lighting effects",
     "type": "module",
     "main": "./src/index.ts",
     "module": "./src/index.ts",
     "types": "./src/index.ts",
     "bin": {
-        "hypercolor": "./bin/hypercolor.js"
+        "hypercolor": "bin/hypercolor.js"
     },
     "exports": {
         ".": {
@@ -26,7 +26,6 @@
         "dev": "bun --watch ./build-package.ts",
         "typecheck": "tsc --noEmit"
     },
-    "dependencies": {},
     "devDependencies": {
         "@types/node": "^25.9.1",
         "bun-types": "^1.3.14",
@@ -51,7 +50,7 @@
     "license": "Apache-2.0",
     "repository": {
         "type": "git",
-        "url": "https://github.com/hyperb1iss/hypercolor",
+        "url": "git+https://github.com/hyperb1iss/hypercolor.git",
         "directory": "sdk/packages/core"
     }
 }

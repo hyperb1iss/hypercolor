@@ -6,27 +6,15 @@ One command gives you a ready-to-run Bun workspace with `hypercolor` wired up, a
 
 ## Quick start
 
-The package is pre-release and not on npm yet. From a directory that contains a
-`hypercolor/` checkout:
-
 ```bash
-cd hypercolor/sdk
-bun install
-cd ../..
-bun ./hypercolor/sdk/packages/create-effect/bin/create-hypercolor-effect.js my-effects \
-    --template canvas \
-    --sdk-spec "file:../hypercolor/sdk/packages/core"
+bun create hypercolor my-effects --template canvas
 ```
 
 The scaffolder prompts you for any omitted template or first-effect option. For
 audio-reactive starter boilerplate:
 
 ```bash
-bun ./hypercolor/sdk/packages/create-effect/bin/create-hypercolor-effect.js my-effects \
-    --template canvas \
-    --first aurora \
-    --audio \
-    --sdk-spec "file:../hypercolor/sdk/packages/core"
+bun create hypercolor my-effects --template canvas --first aurora --audio
 ```
 
 Then:
@@ -34,6 +22,14 @@ Then:
 ```bash
 cd my-effects
 bun run build
+```
+
+To develop against a local Hypercolor engine checkout instead of the published
+SDK, point the workspace's `hypercolor` dependency at it:
+
+```bash
+bun create hypercolor my-effects --template canvas \
+    --sdk-spec "file:../hypercolor/sdk/packages/core"
 ```
 
 ## Templates
@@ -55,9 +51,10 @@ create-hypercolor-effect [name] [options]
   --audio                 Include audio-reactive starter boilerplate
   --no-git                Skip git init
   --no-install            Skip bun install
-  --sdk-spec <spec>       Required while hypercolor is pre-release.
-                          Point at a local checkout:
-                          file:../hypercolor/sdk/packages/core
+  --sdk-spec <spec>       Override the workspace's hypercolor dependency spec.
+                          Defaults to the published caret range (^<version>).
+                          Use file:../hypercolor/sdk/packages/core to develop
+                          against a local engine checkout.
                           (HYPERCOLOR_SDK_PACKAGE_SPEC env var also works).
 ```
 

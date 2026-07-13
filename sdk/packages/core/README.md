@@ -6,16 +6,10 @@ One declarative function call turns your idea into a shippable artifact. The SDK
 
 ## Quick start
 
-Scaffold a fresh workspace with the companion package:
+Scaffold a fresh workspace with the companion [`create-hypercolor`](https://www.npmjs.com/package/create-hypercolor) package:
 
 ```bash
-cd /path/that/contains/hypercolor
-cd hypercolor/sdk
-bun install
-cd ../..
-bun ./hypercolor/sdk/packages/create-effect/bin/create-hypercolor-effect.js my-effects \
-    --template canvas \
-    --sdk-spec "file:../hypercolor/sdk/packages/core"
+bun create hypercolor my-effects --template canvas
 cd my-effects
 bun run build
 ```
@@ -101,7 +95,15 @@ Full docs live at [the Hypercolor documentation site](https://github.com/hyperb1
 
 ## Status
 
-Pre-release. The SDK is not yet published to npm. Standalone workspaces should point at a local checkout via a `file:` spec:
+Early release (0.1.x): the API tracks the Hypercolor engine and may change between minor
+versions. Install straight from npm:
+
+```bash
+bun add -d hypercolor
+```
+
+To develop against a local Hypercolor engine checkout instead, point the dependency at it
+with a `file:` spec:
 
 ```json
 {

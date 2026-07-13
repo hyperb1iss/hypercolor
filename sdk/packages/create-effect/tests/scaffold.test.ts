@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { main as scaffoldCli } from '../src/cli'
+import { defaultSdkPackageSpec } from '../src/scaffold'
 
 const SDK_ROOT = resolve(import.meta.dirname, '../../..')
 const CORE_PACKAGE_DIR = resolve(SDK_ROOT, 'packages/core')
@@ -28,22 +29,30 @@ beforeAll(async () => {
 })
 
 describe('create-hypercolor', () => {
-    test('requires an SDK package spec while the SDK is unpublished', async () => {
+    test('defaults the SDK spec to the published caret range', () => {
         const previousSpec = process.env.HYPERCOLOR_SDK_PACKAGE_SPEC
         delete process.env.HYPERCOLOR_SDK_PACKAGE_SPEC
 
-        const errors: string[] = []
         try {
-            const exitCode = await scaffoldCli(['test-effects', '--template', 'canvas', '--no-git', '--no-install'], {
-                cwd: tmpdir(),
-                stdout: {
-                    error: (message: string) => errors.push(message),
-                    log: () => {},
-                },
-            })
+            const manifest = JSON.parse(readFileSync(resolve(import.meta.dirname, '../package.json'), 'utf8')) as {
+                version: string
+            }
+            expect(defaultSdkPackageSpec()).toBe(`^${manifest.version}`)
+        } finally {
+            if (previousSpec === undefined) {
+                delete process.env.HYPERCOLOR_SDK_PACKAGE_SPEC
+            } else {
+                process.env.HYPERCOLOR_SDK_PACKAGE_SPEC = previousSpec
+            }
+        }
+    })
 
-            expect(exitCode).toBe(1)
-            expect(errors.join('\n')).toContain('--sdk-spec')
+    test('honors the HYPERCOLOR_SDK_PACKAGE_SPEC override', () => {
+        const previousSpec = process.env.HYPERCOLOR_SDK_PACKAGE_SPEC
+        process.env.HYPERCOLOR_SDK_PACKAGE_SPEC = 'file:/tmp/local-sdk'
+
+        try {
+            expect(defaultSdkPackageSpec()).toBe('file:/tmp/local-sdk')
         } finally {
             if (previousSpec === undefined) {
                 delete process.env.HYPERCOLOR_SDK_PACKAGE_SPEC

@@ -1,5 +1,6 @@
-import { existsSync, readdirSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { normalizeEffectId, normalizeWorkspaceName } from './naming'
 import { createEffectFiles, createWorkspaceFiles } from './templates'
@@ -104,8 +105,14 @@ export async function scaffoldWorkspace(options: ScaffoldWorkspaceOptions): Prom
     }
 }
 
-export function defaultSdkPackageSpec(): string | undefined {
-    return process.env.HYPERCOLOR_SDK_PACKAGE_SPEC
+export function defaultSdkPackageSpec(): string {
+    return process.env.HYPERCOLOR_SDK_PACKAGE_SPEC ?? `^${scaffolderVersion()}`
+}
+
+function scaffolderVersion(): string {
+    const manifestPath = fileURLToPath(new URL('../package.json', import.meta.url))
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as { version: string }
+    return manifest.version
 }
 
 export function resolveWorkspaceTarget(cwd: string, workspaceName: string): string {

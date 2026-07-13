@@ -38,9 +38,10 @@ Options:
   --audio                 Include audio-reactive starter boilerplate
   --no-git                Skip git init
   --no-install            Skip bun install
-  --sdk-spec <spec>       Required while hypercolor is pre-release.
-                          Point at a local checkout:
-                          file:../hypercolor/sdk/packages/core
+  --sdk-spec <spec>       Override the workspace's hypercolor dependency spec.
+                          Defaults to the published caret range (^<version>).
+                          Use file:../hypercolor/sdk/packages/core to develop
+                          against a local engine checkout.
                           (HYPERCOLOR_SDK_PACKAGE_SPEC env var also works).
 `)
 }
@@ -59,13 +60,6 @@ export async function main(
     const templateCandidate = templateArg
     const firstArg = optionValue(argv, '--first')
     const sdkSpec = optionValue(argv, '--sdk-spec') ?? defaultSdkPackageSpec()
-
-    if (!sdkSpec) {
-        context.stdout.error(
-            'hypercolor is not published yet. Pass --sdk-spec file:../hypercolor/sdk/packages/core or set HYPERCOLOR_SDK_PACKAGE_SPEC.',
-        )
-        return 1
-    }
 
     const interactive = !workspaceArg || !templateArg
     const prompted = interactive

@@ -1,13 +1,13 @@
 {
     "name": "create-hypercolor",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "description": "Bun create scaffolder for Hypercolor effect workspaces",
     "type": "module",
     "main": "./src/index.ts",
     "module": "./src/index.ts",
     "types": "./src/index.ts",
     "bin": {
-        "create-hypercolor-effect": "./bin/create-hypercolor-effect.js"
+        "create-hypercolor-effect": "bin/create-hypercolor-effect.js"
     },
     "exports": {
         ".": {
@@ -48,7 +48,7 @@
     "license": "Apache-2.0",
     "repository": {
         "type": "git",
-        "url": "https://github.com/hyperb1iss/hypercolor",
+        "url": "git+https://github.com/hyperb1iss/hypercolor.git",
         "directory": "sdk/packages/create-effect"
     }
 }
