@@ -322,32 +322,17 @@ jobs:
           cargo test --doc --locked -p hypercolor-daemon --no-default-features
           --features builtin-drivers
 
-  # Clippy and tests run in one job per Servo shape so the saved cache entry
-  # holds the union of check and build artifacts. Splitting them across jobs
-  # with a shared key means only the first save wins and the other job
-  # rebuilds its artifacts on every run.
+  # Bare core Servo and daemon-default Servo stay as separate commands so
+  # feature unification cannot hide CPU fallback coverage. They share one job,
+  # target, and cache because the daemon graph contains the core graph.
   rust-test-servo:
-    name: Rust Servo / ${{ matrix.label }}
+    name: Rust Servo + E2E Build
     needs: changes
-    if: >-
-      needs.changes.outputs.rust == 'true' &&
-      needs.changes.outputs.full == 'true'
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 75
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - suite: core-servo
-            label: Core
-            shared_key: servo-core
-            target_dir: .cache/hypercolor/target/servo-core
-          - suite: daemon-servo
-            label: Daemon
-            shared_key: servo-daemon
-            target_dir: .cache/hypercolor/target/servo-daemon
     env:
-      CARGO_TARGET_DIR: ${{ github.workspace }}/${{ matrix.target_dir }}
+      CARGO_TARGET_DIR: ${{ github.workspace }}/.cache/hypercolor/target/servo
     steps:
       - uses: actions/checkout@v6
 
@@ -372,52 +357,73 @@ jobs:
 
       - uses: ./.github/actions/rust-build-cache
         with:
-          shared-key: ${{ matrix.shared_key }}
-          workspaces: . -> ${{ matrix.target_dir }}
+          shared-key: servo
+          workspaces: . -> .cache/hypercolor/target/servo
+          cache-workspace-crates: "true"
+          cache-directories: |
+            .cache/hypercolor/mozbuild
+            .cache/hypercolor/toolchain
+            .cache/hypercolor/ccache
           cache-on-failure: "false"
 
-      - name: Install nextest
-        uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912 # v2.81.10
-        with:
-          tool: cargo-nextest
+      - name: Build Servo e2e binaries
+        run: >-
+          ./scripts/cargo-cache-build.sh
+          cargo build --locked -p hypercolor-daemon -p hypercolor-cli
 
       - name: Clippy core with Servo
-        if: matrix.suite == 'core-servo'
+        if: needs.changes.outputs.full == 'true'
         run: >-
           ./scripts/cargo-cache-build.sh
           cargo clippy --locked -p hypercolor-core --features servo --lib --tests
           -- -D warnings
 
       - name: Clippy daemon with Servo
-        if: matrix.suite == 'daemon-servo'
+        if: needs.changes.outputs.full == 'true'
         run: >-
           ./scripts/cargo-cache-build.sh
           cargo clippy --locked -p hypercolor-daemon --lib --bin hypercolor-daemon --tests
           -- -D warnings
 
       - name: Run core Servo tests
-        if: matrix.suite == 'core-servo'
+        if: needs.changes.outputs.full == 'true'
         run: |
           ./scripts/cargo-cache-build.sh cargo test --locked -p hypercolor-core --features servo --test effect_factory_tests
           ./scripts/cargo-cache-build.sh cargo test --locked -p hypercolor-core --features servo --test builtin_effect_tests
 
       - name: Run core Servo doc tests
-        if: matrix.suite == 'core-servo'
+        if: needs.changes.outputs.full == 'true'
         run: >-
           ./scripts/cargo-cache-build.sh
           cargo test --doc --locked -p hypercolor-core --features servo
 
       - name: Run daemon Servo tests
-        if: matrix.suite == 'daemon-servo'
+        if: needs.changes.outputs.full == 'true'
         run: |
           ./scripts/cargo-cache-build.sh cargo test --locked -p hypercolor-daemon --lib -- --test-threads=1
           ./scripts/cargo-cache-build.sh cargo test --locked -p hypercolor-daemon --bin hypercolor-daemon -- --test-threads=1
 
       - name: Run daemon Servo doc tests
-        if: matrix.suite == 'daemon-servo'
+        if: needs.changes.outputs.full == 'true'
         run: >-
           ./scripts/cargo-cache-build.sh
           cargo test --doc --locked -p hypercolor-daemon
+
+      - name: Stage Servo e2e binaries
+        run: |
+          mkdir -p e2e-binaries
+          install -m755 "${CARGO_TARGET_DIR}/debug/hypercolor-daemon" \
+            e2e-binaries/hypercolor-daemon
+          install -m755 "${CARGO_TARGET_DIR}/debug/hypercolor" \
+            e2e-binaries/hypercolor
+
+      - name: Upload Servo e2e binaries
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-binaries-servo
+          path: e2e-binaries
+          if-no-files-found: error
+          retention-days: 1
 
   # ── Cargo Deny ─────────────────────────────────────────────────
   rust-deny:
@@ -617,6 +623,7 @@ jobs:
     name: UI
     needs: changes
     if: >-
+      needs.changes.outputs.rust == 'true' ||
       needs.changes.outputs.full == 'true' ||
       needs.changes.outputs.ui == 'true'
     runs-on: ubuntu-latest
@@ -643,32 +650,23 @@ jobs:
           tool: trunk@0.21.14
       - run: env -u NO_COLOR trunk build --release
 
+      - name: Upload e2e UI build
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-ui-dist
+          path: crates/hypercolor-ui/dist
+          if-no-files-found: error
+          retention-days: 1
+
   # ── End-to-End (Playwright) ──────────────────────────────────
-  e2e-build:
-    name: E2E Build / ${{ matrix.label }}
+  e2e-build-cpu:
+    name: E2E Build / CPU Smoke
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 75
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # Both suites restore the matching test job's cache shape and never
-          # save, so e2e builds reuse warm dependency artifacts without adding
-          # entries to the cache quota.
-          - suite: servo
-            label: Servo
-            build_recipe: e2e-build
-            shared_key: servo-daemon
-            target_dir: .cache/hypercolor/target/servo-daemon
-          - suite: cpu
-            label: CPU Smoke
-            build_recipe: e2e-build-cpu
-            shared_key: rust-test-daemon
-            target_dir: .cache/hypercolor/target/rust-test-daemon
     env:
-      CARGO_TARGET_DIR: ${{ github.workspace }}/${{ matrix.target_dir }}
+      CARGO_TARGET_DIR: ${{ github.workspace }}/.cache/hypercolor/target/rust-test-daemon
     steps:
       - uses: actions/checkout@v6
 
@@ -686,56 +684,67 @@ jobs:
             -o Acquire::https::Timeout="$APT_HTTP_TIMEOUT" \
             install -y --no-install-recommends ${{ env.LINUX_RUST_DEPS }}
 
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 24
-
-      - uses: ./.github/actions/bun-cache
-        with:
-          key: e2e-${{ hashFiles('sdk/bun.lock', 'crates/hypercolor-ui/bun.lock') }}
-
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
-          targets: wasm32-unknown-unknown
 
       - uses: ./.github/actions/rust-build-cache
         with:
-          shared-key: ${{ matrix.shared_key }}
-          workspaces: . -> ${{ matrix.target_dir }}
+          shared-key: rust-test-daemon
+          workspaces: . -> .cache/hypercolor/target/rust-test-daemon
           save-if: "false"
 
-      - name: Install just
-        uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912 # v2.81.10
-        with:
-          tool: just
-
-      - name: Install Trunk
-        uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912 # v2.81.10
-        with:
-          tool: trunk@0.21.14
-
-      - name: Install SDK dependencies
-        working-directory: sdk
-        run: bun install --frozen-lockfile
-
-      - name: Install UI dependencies
-        working-directory: crates/hypercolor-ui
-        run: bun install --frozen-lockfile
-
-      - name: Build e2e stack
-        run: just ${{ matrix.build_recipe }}
-
-      - name: Stage e2e stack
+      - name: Build CPU e2e binaries
         run: |
-          rm -rf e2e-stack
-          mkdir -p e2e-stack/bin e2e-stack/effects e2e-stack/ui
+          ./scripts/cargo-cache-build.sh cargo build --locked -p hypercolor-daemon --no-default-features --features builtin-drivers
+          ./scripts/cargo-cache-build.sh cargo build --locked -p hypercolor-cli
+
+      - name: Stage CPU e2e binaries
+        run: |
+          mkdir -p e2e-binaries
           install -m755 "${CARGO_TARGET_DIR}/debug/hypercolor-daemon" \
-            e2e-stack/bin/hypercolor-daemon
+            e2e-binaries/hypercolor-daemon
           install -m755 "${CARGO_TARGET_DIR}/debug/hypercolor" \
-            e2e-stack/bin/hypercolor
-          cp -R crates/hypercolor-ui/dist/. e2e-stack/ui/
-          cp -R effects/hypercolor/. e2e-stack/effects/
+            e2e-binaries/hypercolor
+
+      - name: Upload CPU e2e binaries
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-binaries-cpu
+          path: e2e-binaries
+          if-no-files-found: error
+          retention-days: 1
+
+  e2e-assemble:
+    name: E2E Assemble / ${{ matrix.label }}
+    needs: [rust-test-servo, e2e-build-cpu, generated-effects, ui]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: servo
+            label: Servo
+          - suite: cpu
+            label: CPU Smoke
+    steps:
+      - name: Download e2e binaries
+        uses: actions/download-artifact@v8
+        with:
+          name: e2e-binaries-${{ matrix.suite }}
+          path: e2e-stack/bin
+
+      - name: Download generated effects
+        uses: actions/download-artifact@v8
+        with:
+          name: generated-effects
+          path: e2e-stack/effects
+
+      - name: Download UI build
+        uses: actions/download-artifact@v8
+        with:
+          name: e2e-ui-dist
+          path: e2e-stack/ui
 
       - name: Upload e2e stack
         uses: actions/upload-artifact@v7
@@ -747,12 +756,12 @@ jobs:
 
   e2e:
     name: E2E / ${{ matrix.label }}
-    needs: [rust-check-shared, e2e-build]
+    needs: [rust-check-shared, e2e-assemble]
     if: >-
       always() &&
       (needs.rust-check-shared.result == 'success' ||
       needs.rust-check-shared.result == 'skipped') &&
-      needs.e2e-build.result == 'success'
+      needs.e2e-assemble.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:

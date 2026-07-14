@@ -29,6 +29,10 @@ inputs:
     description: Cache workspace crate artifacts as well as dependencies.
     required: false
     default: "false"
+  cache-directories:
+    description: Additional build-state directories owned by this cache shape.
+    required: false
+    default: ""
   cache-on-failure:
     description: Whether to save Rust cache entries after failed jobs.
     required: false
@@ -57,10 +61,7 @@ runs:
         shared-key: ${{ inputs.shared-key }}
         key: ${{ inputs.key }}
         workspaces: ${{ inputs.workspaces }}
-        cache-directories: |
-          .cache/hypercolor/mozbuild
-          .cache/hypercolor/toolchain
-          .cache/hypercolor/ccache
+        cache-directories: ${{ inputs.cache-directories }}
         cache-all-crates: ${{ inputs.cache-all-crates }}
         cache-workspace-crates: ${{ inputs.cache-workspace-crates }}
         cache-on-failure: ${{ inputs.cache-on-failure }}
