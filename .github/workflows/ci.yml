@@ -1042,9 +1042,11 @@ jobs:
         run: |
           # A pwsh step only fails on the LAST command's exit code, so a
           # failed daemon build sails through if a later build succeeds —
-          # check every invocation explicitly.
+          # check every invocation explicitly. Splatting needs a variable
+          # (@rest); an inline @(...) collapses into a single argument.
           function Invoke-Checked {
-            & $args[0] @($args[1..($args.Count - 1)])
+            $cmd, $rest = $args
+            & $cmd @rest
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
 
