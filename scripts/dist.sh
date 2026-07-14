@@ -300,14 +300,14 @@ fi
 sed "s|@BIN_DIR@|/usr/bin|g" packaging/desktop/hypercolor.desktop.in \
   > "${DIST_DIR}/share/applications/hypercolor.desktop"
 
-cp packaging/icons/hypercolor.svg "${DIST_DIR}/share/icons/hicolor/scalable/apps/hypercolor.svg"
-if command -v rsvg-convert >/dev/null 2>&1; then
-  for size in 48 128 256; do
-    rsvg-convert -w "${size}" -h "${size}" packaging/icons/hypercolor.svg \
-      -o "${DIST_DIR}/share/icons/hicolor/${size}x${size}/apps/hypercolor.png"
-  done
-else
-  warn "rsvg-convert not found — skipping PNG icon generation"
+# The brand mark ships as pre-rendered PNGs; the traced SVG is still TBD
+# (e1bd5c14) and is bundled only once it exists.
+for size in 48 128 256; do
+  install -m644 "packaging/icons/hypercolor-${size}.png" \
+    "${DIST_DIR}/share/icons/hicolor/${size}x${size}/apps/hypercolor.png"
+done
+if [[ -f packaging/icons/hypercolor.svg ]]; then
+  cp packaging/icons/hypercolor.svg "${DIST_DIR}/share/icons/hicolor/scalable/apps/hypercolor.svg"
 fi
 
 if [[ ${#TARGET_FLAG[@]} -eq 0 ]]; then

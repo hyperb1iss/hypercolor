@@ -1033,18 +1033,30 @@ jobs:
           $config.version = "${{ steps.version.outputs.version }}"
           $config | ConvertTo-Json -Depth 100 | Set-Content -NoNewline $configPath
 
+      - name: Install nasm
+        if: matrix.target == 'macos-x64'
+        run: brew install nasm
+
       - name: Build native sidecar binaries
         shell: pwsh
         run: |
+          # A pwsh step only fails on the LAST command's exit code, so a
+          # failed daemon build sails through if a later build succeeds —
+          # check every invocation explicitly.
+          function Invoke-Checked {
+            & $args[0] @($args[1..($args.Count - 1)])
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
           if ($env:RUNNER_OS -eq "Windows") {
-            ./scripts/cargo-cache-build.ps1 cargo build --release --locked -p hypercolor-daemon --features servo
-            ./scripts/cargo-cache-build.ps1 cargo build --release --locked -p hypercolor-cli
+            Invoke-Checked ./scripts/cargo-cache-build.ps1 cargo build --release --locked -p hypercolor-daemon --features servo
+            Invoke-Checked ./scripts/cargo-cache-build.ps1 cargo build --release --locked -p hypercolor-cli
           } else {
-            bash ./scripts/cargo-cache-build.sh cargo build --release --locked -p hypercolor-daemon --features servo
-            bash ./scripts/cargo-cache-build.sh cargo build --release --locked -p hypercolor-cli
+            Invoke-Checked bash ./scripts/cargo-cache-build.sh cargo build --release --locked -p hypercolor-daemon --features servo
+            Invoke-Checked bash ./scripts/cargo-cache-build.sh cargo build --release --locked -p hypercolor-cli
           }
           if ($env:RUNNER_OS -eq "Windows") {
-            ./scripts/cargo-cache-build.ps1 cargo build --release --locked -p hypercolor-windows-pawnio --bin hypercolor-smbus-service
+            Invoke-Checked ./scripts/cargo-cache-build.ps1 cargo build --release --locked -p hypercolor-windows-pawnio --bin hypercolor-smbus-service
           }
 
       - name: Stage downloaded web assets

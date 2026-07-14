@@ -193,21 +193,21 @@ build_binaries() {
 install_icons() {
   local svg_src="${ROOT_DIR}/packaging/icons/hypercolor.svg"
   local icon_base="${PREFIX}/share/icons/hicolor"
+  local png_src size
 
-  if [[ ! -f "${svg_src}" ]]; then
-    warn "no icon SVG found at ${svg_src}"
-    return
-  fi
-
-  install -d "${icon_base}/scalable/apps"
-  install -Dm644 "${svg_src}" "${icon_base}/scalable/apps/hypercolor.svg"
-
-  if command -v rsvg-convert &>/dev/null; then
-    for size in 48 128 256; do
+  # The brand mark ships as pre-rendered PNGs; the traced SVG is still TBD
+  # (e1bd5c14) and is installed only once it exists.
+  for size in 48 128 256; do
+    png_src="${ROOT_DIR}/packaging/icons/hypercolor-${size}.png"
+    if [[ -f "${png_src}" ]]; then
       install -d "${icon_base}/${size}x${size}/apps"
-      rsvg-convert -w "${size}" -h "${size}" "${svg_src}" \
-        -o "${icon_base}/${size}x${size}/apps/hypercolor.png"
-    done
+      install -m644 "${png_src}" "${icon_base}/${size}x${size}/apps/hypercolor.png"
+    fi
+  done
+
+  if [[ -f "${svg_src}" ]]; then
+    install -d "${icon_base}/scalable/apps"
+    install -Dm644 "${svg_src}" "${icon_base}/scalable/apps/hypercolor.svg"
   fi
 
   if command -v gtk-update-icon-cache &>/dev/null; then

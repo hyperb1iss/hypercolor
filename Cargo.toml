@@ -107,7 +107,12 @@ dirs = "6.0"
 notify = "7.0"
 sysinfo = "0.38.4"
 nvml-wrapper = "0.12.1"
-wmi = "0.18.4"
+# Pinned exactly: wmi 0.18.2+ declares open ranges (windows/windows-core
+# ">=0.59, <0.63"), and with tao/wry holding windows-core at 0.61 the resolver
+# pairs wmi with windows 0.62 + windows-core 0.61 — which doesn't compile
+# (E0277 trait mismatches). 0.18.1 requires ^0.62 for both, forcing the
+# consistent pair. Re-check the resolved pairing before unpinning.
+wmi = "=0.18.1"
 
 # Servo embedder boundary
 base = { package = "servo-base", version = "0.3.0" }
