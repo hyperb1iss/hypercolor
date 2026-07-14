@@ -1168,11 +1168,15 @@ jobs:
           echo "dist_name=hypercolor-${version}-linux-amd64" >> "$GITHUB_OUTPUT"
 
       - name: Assemble distribution
-        run: >-
-          ./scripts/dist.sh --ci --skip-docs
-          --web-assets web-assets
-          --target linux-amd64
-          --version "${{ steps.version.outputs.version }}"
+        run: |
+          set -euo pipefail
+          ./scripts/dist.sh --ci --skip-docs \
+            --web-assets web-assets \
+            --target linux-amd64 \
+            --version "${{ steps.version.outputs.version }}"
+          # macOS bash 3.2 exits 0 after a fatal set -u abort inside the
+          # script; trust the artifact, not the exit status.
+          test -f "dist/${{ steps.version.outputs.dist_name }}.tar.gz"
 
       - name: Generate release checksum
         run: |
@@ -1288,11 +1292,15 @@ jobs:
           echo "dist_name=hypercolor-${VERSION}-${{ matrix.target }}" >> "$GITHUB_OUTPUT"
 
       - name: Assemble distribution
-        run: >-
-          ./scripts/dist.sh --ci --skip-docs
-          --web-assets web-assets
-          --target ${{ matrix.target }}
-          --version "${{ steps.version.outputs.version }}"
+        run: |
+          set -euo pipefail
+          ./scripts/dist.sh --ci --skip-docs \
+            --web-assets web-assets \
+            --target ${{ matrix.target }} \
+            --version "${{ steps.version.outputs.version }}"
+          # macOS bash 3.2 exits 0 after a fatal set -u abort inside the
+          # script; trust the artifact, not the exit status.
+          test -f "dist/${{ steps.version.outputs.dist_name }}.tar.gz"
 
       - name: Generate release checksum
         run: |

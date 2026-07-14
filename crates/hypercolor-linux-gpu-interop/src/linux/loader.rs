@@ -1,4 +1,4 @@
-use std::ffi::{CStr, c_void};
+use std::ffi::{CStr, c_char, c_void};
 use std::sync::OnceLock;
 
 static PROCESS_GL_LOADER: OnceLock<Option<ProcessGlLoader>> = OnceLock::new();
@@ -11,8 +11,11 @@ struct ProcessGlLoader {
     egl_get_proc_address: Option<EglGetProcAddress>,
 }
 
+// glXGetProcAddress takes `const GLubyte *` (unsigned char), eglGetProcAddress
+// takes `const char *` — c_char, whose signedness differs per arch (i8 on
+// x86_64, u8 on aarch64), so it must never be hardcoded.
 type GlxGetProcAddress = unsafe extern "C" fn(*const u8) -> *const c_void;
-type EglGetProcAddress = unsafe extern "C" fn(*const i8) -> *const c_void;
+type EglGetProcAddress = unsafe extern "C" fn(*const c_char) -> *const c_void;
 
 impl ProcessGlLoader {
     fn load() -> Option<Self> {

@@ -167,12 +167,14 @@ if [[ -n "${BIN_DIR}" ]]; then
   info "Using pre-built binaries from ${BIN_DIR}"
 else
   info "Building release binaries"
+  # The ${arr[@]+...} guard keeps macOS bash 3.2 from treating an empty
+  # array expansion as an unbound-variable error under set -u.
   ./scripts/cargo-cache-build.sh cargo build --release --locked \
     -p hypercolor-daemon --bin hypercolor-daemon \
     -p hypercolor-cli --bin hypercolor \
     -p hypercolor-tray --bin hypercolor-tray \
     -p hypercolor-app --bin hypercolor-app \
-    "${TARGET_FLAG[@]}"
+    ${TARGET_FLAG[@]+"${TARGET_FLAG[@]}"}
 fi
 
 if [[ "${CI_MODE}" -eq 1 ]]; then
