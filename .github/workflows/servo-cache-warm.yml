@@ -28,22 +28,10 @@ permissions:
 
 jobs:
   warm-servo:
-    name: Servo Cache / ${{ matrix.label }}
+    name: Servo Cache
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - suite: core-servo
-            label: Core
-            shared_key: servo-core
-            target_dir: .cache/hypercolor/target/servo-core
-          - suite: daemon-servo
-            label: Daemon
-            shared_key: servo-daemon
-            target_dir: .cache/hypercolor/target/servo-daemon
     env:
-      CARGO_TARGET_DIR: ${{ github.workspace }}/${{ matrix.target_dir }}
+      CARGO_TARGET_DIR: ${{ github.workspace }}/.cache/hypercolor/target/servo
     steps:
       - uses: actions/checkout@v6
 
@@ -68,43 +56,37 @@ jobs:
 
       - uses: ./.github/actions/rust-build-cache
         with:
-          shared-key: ${{ matrix.shared_key }}
-          workspaces: . -> ${{ matrix.target_dir }}
+          shared-key: servo
+          workspaces: . -> .cache/hypercolor/target/servo
+          cache-workspace-crates: "true"
+          cache-directories: |
+            .cache/hypercolor/mozbuild
+            .cache/hypercolor/toolchain
+            .cache/hypercolor/ccache
           cache-on-failure: "false"
 
-      - name: Warm core Servo check artifacts
-        if: matrix.suite == 'core-servo'
+      - name: Warm Servo e2e binaries
         run: >-
           ./scripts/cargo-cache-build.sh
-          cargo check --locked -p hypercolor-core --features servo --lib --tests
+          cargo build --locked -p hypercolor-daemon -p hypercolor-cli
 
       - name: Warm core Servo test artifacts
-        if: matrix.suite == 'core-servo'
-        run: >-
-          ./scripts/cargo-cache-build.sh
-          cargo test --locked --no-run -p hypercolor-core --features servo
+        run: |
+          ./scripts/cargo-cache-build.sh cargo test --locked --no-run -p hypercolor-core --features servo --test effect_factory_tests
+          ./scripts/cargo-cache-build.sh cargo test --locked --no-run -p hypercolor-core --features servo --test builtin_effect_tests
 
       - name: Warm core Servo clippy artifacts
-        if: matrix.suite == 'core-servo'
         run: >-
           ./scripts/cargo-cache-build.sh
           cargo clippy --locked -p hypercolor-core --features servo --lib --tests
           -- -D warnings
 
-      - name: Warm daemon Servo check artifacts
-        if: matrix.suite == 'daemon-servo'
-        run: >-
-          ./scripts/cargo-cache-build.sh
-          cargo check --locked -p hypercolor-daemon --lib --bin hypercolor-daemon --tests
-
       - name: Warm daemon Servo test artifacts
-        if: matrix.suite == 'daemon-servo'
-        run: >-
-          ./scripts/cargo-cache-build.sh
-          cargo test --locked --no-run -p hypercolor-daemon
+        run: |
+          ./scripts/cargo-cache-build.sh cargo test --locked --no-run -p hypercolor-daemon --lib
+          ./scripts/cargo-cache-build.sh cargo test --locked --no-run -p hypercolor-daemon --bin hypercolor-daemon
 
       - name: Warm daemon Servo clippy artifacts
-        if: matrix.suite == 'daemon-servo'
         run: >-
           ./scripts/cargo-cache-build.sh
           cargo clippy --locked -p hypercolor-daemon --lib --bin hypercolor-daemon --tests
