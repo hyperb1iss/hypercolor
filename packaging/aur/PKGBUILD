@@ -63,9 +63,11 @@ package() {
   install -Dm644 share/applications/hypercolor.desktop \
     "${pkgdir}/usr/share/applications/hypercolor.desktop"
 
-  # Icons
-  install -Dm644 share/icons/hicolor/scalable/apps/hypercolor.svg \
-    "${pkgdir}/usr/share/icons/hicolor/scalable/apps/hypercolor.svg"
+  # Icons (the scalable SVG ships once the traced vector lands; see e1bd5c14)
+  if [[ -f share/icons/hicolor/scalable/apps/hypercolor.svg ]]; then
+    install -Dm644 share/icons/hicolor/scalable/apps/hypercolor.svg \
+      "${pkgdir}/usr/share/icons/hicolor/scalable/apps/hypercolor.svg"
+  fi
   for size in 48 128 256; do
     if [[ -f "share/icons/hicolor/${size}x${size}/apps/hypercolor.png" ]]; then
       install -Dm644 "share/icons/hicolor/${size}x${size}/apps/hypercolor.png" \

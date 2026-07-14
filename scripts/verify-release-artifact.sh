@@ -95,13 +95,17 @@ manifest="${root_dir}/manifest.json"
   exit 1
 }
 
+# Icons ship as pre-rendered PNGs; the scalable SVG returns to this list
+# once the traced vector lands (e1bd5c14).
 required_files=(
   LICENSE
   NOTICE
   README.md
   manifest.json
   share/applications/hypercolor.desktop
-  share/icons/hicolor/scalable/apps/hypercolor.svg
+  share/icons/hicolor/48x48/apps/hypercolor.png
+  share/icons/hicolor/128x128/apps/hypercolor.png
+  share/icons/hicolor/256x256/apps/hypercolor.png
 )
 for file in "${required_files[@]}"; do
   [[ -f "${root_dir}/${file}" ]] || {
