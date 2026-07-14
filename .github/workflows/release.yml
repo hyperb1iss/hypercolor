@@ -123,15 +123,15 @@ jobs:
         uses: astral-sh/setup-uv@v7
 
       - name: Install git-iris
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-binstall
-
-      - name: Install git-iris binary
         run: |
           set -euo pipefail
-          cargo binstall -y "git-iris@${GIT_IRIS_VERSION}" \
-            || cargo install --locked "git-iris@${GIT_IRIS_VERSION}"
+          # git-iris ships prebuilt release binaries, but their asset names
+          # (git-iris-linux-amd64) don't match cargo-binstall's target-triple
+          # conventions and the crate has no binstall metadata, so binstall
+          # silently falls back to a multi-minute source build. Fetch directly.
+          curl -fsSL --retry 3 -o "${RUNNER_TEMP}/git-iris" \
+            "https://github.com/hyperb1iss/git-iris/releases/download/v${GIT_IRIS_VERSION}/git-iris-linux-amd64"
+          sudo install -m 0755 "${RUNNER_TEMP}/git-iris" /usr/local/bin/git-iris
           git-iris --version
 
       - name: Stamp release version
