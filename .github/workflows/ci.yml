@@ -1114,6 +1114,12 @@ jobs:
         shell: pwsh
         env:
           TAURI_BUNDLES: ${{ matrix.bundles }}
+          # Ad-hoc bundle signing. --no-sign leaves only linker signatures
+          # with no resource seal, which Gatekeeper reports as "damaged"
+          # on quarantined downloads — right-click→Open can't bypass that.
+          # A valid ad-hoc signature downgrades the verdict to
+          # "unidentified developer", which right-click→Open accepts.
+          APPLE_SIGNING_IDENTITY: "-"
         run: |
           $configArgs = @()
           if (Test-Path "tauri.bundle.conf.json") {
@@ -1122,7 +1128,12 @@ jobs:
           if ($env:RUNNER_OS -eq "Windows" -and (Test-Path "tauri.windows.bundle.conf.json")) {
             $configArgs += @("--config", "tauri.windows.bundle.conf.json")
           }
-          cargo tauri build --ci --no-sign --bundles $env:TAURI_BUNDLES @configArgs
+          $buildArgs = @("--ci", "--bundles", $env:TAURI_BUNDLES)
+          if ($env:RUNNER_OS -eq "Windows") {
+            # No signtool identity on Windows runners yet.
+            $buildArgs += "--no-sign"
+          }
+          cargo tauri build @buildArgs @configArgs
 
       - name: Normalize macOS DMG artifact name
         if: matrix.cask_arch != ''
