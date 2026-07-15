@@ -270,9 +270,8 @@ installs a systemd user service, sets up udev rules for USB device access, and p
 
 ### Install on Windows
 
-The Windows installer ships with the v0.1.0 release — watch the
-[GitHub releases page](https://github.com/hyperb1iss/hypercolor/releases). Until it lands,
-Windows runs from a source build (`just setup` in PowerShell, see the docs).
+Grab `Hypercolor_<version>_x64-setup.exe` from the
+[GitHub releases page](https://github.com/hyperb1iss/hypercolor/releases).
 Per-user install (no UAC unless you opt into motherboard/RAM RGB hardware support, which
 installs the [PawnIO](https://github.com/namazso/PawnIO) kernel driver via a one-click
 flow). Tested on Windows 10 22H2 and Windows 11 23H2/24H2, x64.
@@ -284,11 +283,11 @@ optional PawnIO install — Hypercolor prompts you only if compatible hardware i
 ### Install on macOS
 
 The macOS DMGs — `Hypercolor-<version>-arm64.dmg` (Apple Silicon) and `-x86_64.dmg`
-(Intel) — ship with the v0.1.0 release on the
+(Intel) — are on the
 [GitHub releases page](https://github.com/hyperb1iss/hypercolor/releases). Drag the app
 into `/Applications` and launch. Minimum macOS 11 (Big Sur).
 
-Or via Homebrew Cask once the tap is published:
+Or via Homebrew Cask:
 
 ```bash
 brew install --cask hyperb1iss/tap/hypercolor-app
@@ -442,19 +441,19 @@ for Windows service/process boundaries. Both deny undocumented unsafe blocks. Ed
 
 ## 📡 Status
 
-Hypercolor is in active development (v0.1.0). The core engine, effect SDK, web UI, TUI, and
-12 shipping driver families all work today on Linux. macOS arm64 release artifacts and
-Windows source builds are experimental until their installer and runtime gates match Linux.
+Hypercolor is in active development (v0.2.1). The core engine, effect SDK, web UI, TUI, and
+12 shipping driver families all work today on Linux. The macOS DMGs and Windows installer
+ship with every release but stay experimental until their runtime gates match Linux.
 Every screenshot in this README was captured from a live instance running on real hardware.
 
 Known launch limitations:
 
-- Linux is the only fully supported install and runtime path for v0.1.0.
+- Linux is the only fully supported install and runtime path today.
 - The [`hypercolor`](https://www.npmjs.com/package/hypercolor) SDK and
-  [`create-hypercolor`](https://www.npmjs.com/package/create-hypercolor) scaffolder are on npm
-  (early 0.1.x); scaffold an effect workspace with `bun create hypercolor`.
-- The Python client is published to PyPI as [`hypercolor`](https://pypi.org/project/hypercolor/)
-  (alpha).
+  [`create-hypercolor`](https://www.npmjs.com/package/create-hypercolor) scaffolder are on npm;
+  scaffold an effect workspace with `bun create hypercolor`.
+- The Python client is published to PyPI as
+  [`hypercolor`](https://pypi.org/project/hypercolor/).
 - Windows hardware service setup remains experimental.
 
 **Coming soon:** effect marketplace, Wasmtime plugin system for community backends, Wooting
