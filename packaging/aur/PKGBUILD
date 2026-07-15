@@ -2,7 +2,7 @@
 # https://github.com/hyperb1iss/hypercolor
 
 pkgname=hypercolor-bin
-pkgver=0.2.0
+pkgver=0.2.1
 pkgrel=1
 pkgdesc='Open-source RGB lighting orchestration engine for Linux'
 arch=('x86_64' 'aarch64')

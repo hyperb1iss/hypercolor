@@ -4,7 +4,7 @@ description = "Leptos CSR web frontend for the Hypercolor lighting engine"
 # This crate is excluded from the root workspace (standalone trunk/WASM
 # build), so it cannot inherit workspace.package fields. scripts/set-version.ts
 # stamps the version here explicitly.
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 authors = ["Stefanie Jane <stef@hyperbliss.tech>"]
 license = "Apache-2.0"
