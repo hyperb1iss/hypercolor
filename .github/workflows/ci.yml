@@ -1000,7 +1000,12 @@ jobs:
         # tauri-cli publishes prebuilt binaries with binstall metadata — a
         # seconds-long download instead of a from-source build. Fall back
         # to compiling only if binary resolution ever breaks.
-        run: cargo binstall -y "tauri-cli@^2.0.0" || cargo install tauri-cli --version "^2.0.0" --locked
+        #
+        # --targets must be pinned: on Apple Silicon, binstall's Rosetta
+        # fallback happily grabs the x86_64 cargo-tauri, and Tauri then
+        # derives sidecar names for the wrong architecture ("resource path
+        # hypercolor-daemon-x86_64-apple-darwin doesn't exist").
+        run: cargo binstall -y --targets "${{ matrix.rust-target }}" "tauri-cli@^2.0.0" || cargo install tauri-cli --version "^2.0.0" --locked
 
       - name: Download web assets
         uses: actions/download-artifact@v8
