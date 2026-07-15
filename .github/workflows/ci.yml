@@ -1075,6 +1075,7 @@ jobs:
           }
           if ($env:RUNNER_OS -eq "Windows") {
             Invoke-Checked ./scripts/cargo-cache-build.ps1 cargo build --release --locked -p hypercolor-windows-pawnio --bin hypercolor-smbus-service
+            Invoke-Checked ./scripts/cargo-cache-build.ps1 cargo build --release --locked -p hypercolor-windows-helper --bin hypercolor-windows-helper
           }
 
       - name: Stage downloaded web assets
