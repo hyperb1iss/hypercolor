@@ -1421,7 +1421,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          mapfile -t files < <(find release-artifacts -type f | sort)
+          # Only the end-user distributables. The native-app artifacts also
+          # carry the raw .app bundle tree; an unfiltered find flattens its
+          # hundreds of internal files into individual release assets.
+          mapfile -t files < <(find release-artifacts -type f \
+            \( -name '*.tar.gz' -o -name '*.tar.gz.sha256' \
+               -o -name '*.dmg' -o -name '*.deb' -o -name '*-setup.exe' \) | sort)
           if [ "${#files[@]}" -eq 0 ]; then
             echo "No release artifacts found" >&2
             exit 1
