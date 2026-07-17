@@ -205,6 +205,16 @@ and design spatial layouts from any browser.
       <sub>Device management</sub>
     </td>
   </tr>
+  <tr>
+    <td align="center">
+      <img src="docs/images/canvas-fullscreen-bubbles.png" alt="Bubble Garden on the fullscreen canvas" width="400"><br>
+      <sub>Fullscreen canvas — Bubble Garden</sub>
+    </td>
+    <td align="center">
+      <img src="docs/images/canvas-fullscreen-cymatics.png" alt="Cymatics on the fullscreen canvas" width="400"><br>
+      <sub>Fullscreen canvas — Cymatics, audio-reactive</sub>
+    </td>
+  </tr>
 </table>
 
 - **Effects browser:** search, filter by category, favorites, audio-reactive tags
@@ -229,16 +239,6 @@ Runs wherever you have a terminal.
     <td align="center">
       <img src="docs/images/tui-effects.png" alt="TUI Effects Browser" width="400"><br>
       <sub>Effects browser with control sliders</sub>
-    </td>
-  </tr>
-  <tr>
-    <td align="center">
-      <img src="docs/images/tui-fullscreen-bubbles.png" alt="Bubble Garden fullscreen" width="400"><br>
-      <sub>Bubble Garden fullscreen</sub>
-    </td>
-    <td align="center">
-      <img src="docs/images/tui-fullscreen-cymatics.png" alt="Cymatics fullscreen" width="400"><br>
-      <sub>Cymatics fullscreen</sub>
     </td>
   </tr>
 </table>
