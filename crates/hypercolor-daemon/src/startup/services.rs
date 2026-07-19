@@ -25,12 +25,14 @@ use hypercolor_core::effect::{EffectRegistry, default_effect_search_paths, regis
 use hypercolor_core::engine::{FpsTier, RenderLoop};
 #[cfg(target_os = "linux")]
 use hypercolor_core::input::EvdevKeyboardInput;
+#[cfg(not(target_os = "linux"))]
+use hypercolor_core::input::InteractionInput;
 use hypercolor_core::input::audio::AudioInput;
 #[cfg(target_os = "linux")]
 use hypercolor_core::input::screen::CaptureConfig as ScreenCaptureConfig;
 #[cfg(target_os = "linux")]
 use hypercolor_core::input::screen::WaylandScreenCaptureInput;
-use hypercolor_core::input::{InputManager, InteractionInput, SensorPoller};
+use hypercolor_core::input::{InputManager, SensorPoller};
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_driver_api::CredentialStore;
@@ -565,11 +567,14 @@ pub(crate) fn build_input_manager(
     let _ = config_manager;
     let mut input_manager = InputManager::new();
     input_manager.set_sensor_poller(SensorPoller::new());
-    input_manager.add_source(Box::new(InteractionInput::new()));
+    // Host input capture is consent-gated and evdev-only on Linux: the
+    // device_query bridge is X11-era and never constructed here. Capture
+    // stays closed until an interactive effect creates demand.
+    if let Some(source) = build_interaction_source(&config.input) {
+        input_manager.add_source(source);
+    }
     input_manager.add_source(Box::new(hypercolor_core::input::MediaSource::new()));
     input_manager.add_source(Box::new(hypercolor_core::input::NetSource::new()));
-    #[cfg(target_os = "linux")]
-    input_manager.add_source(Box::new(EvdevKeyboardInput::new()));
 
     if config.audio.enabled {
         let audio_pipeline_config = AudioPipelineConfig {
@@ -594,6 +599,34 @@ pub(crate) fn build_input_manager(
     }
 
     input_manager
+}
+
+/// Build the platform host-input capture source, when config allows one.
+///
+/// Linux is evdev-only (keyboard until the pointer backend lands); other
+/// platforms use the device_query bridge until their native backends ship.
+/// Returns `None` when input capture is disabled or the platform has no
+/// enabled source kind.
+pub(crate) fn build_interaction_source(
+    input: &hypercolor_types::config::InputConfig,
+) -> Option<Box<dyn hypercolor_core::input::InputSource>> {
+    if !input.enabled {
+        return None;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        input.keyboard.then(|| {
+            Box::new(EvdevKeyboardInput::new()) as Box<dyn hypercolor_core::input::InputSource>
+        })
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        (input.keyboard || input.mouse).then(|| {
+            Box::new(InteractionInput::new()) as Box<dyn hypercolor_core::input::InputSource>
+        })
+    }
 }
 
 /// Build the Wayland screen capture source with a restore-token sink that

@@ -81,6 +81,7 @@ pub(crate) struct EffectDemand {
     pub(crate) effect_running: bool,
     pub(crate) audio_capture_active: bool,
     pub(crate) screen_capture_active: bool,
+    pub(crate) interaction_capture_active: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -547,6 +548,7 @@ async fn current_effect_scene_snapshot(
     let mut effect_running = false;
     let mut audio_capture_active = false;
     let mut screen_capture_active = false;
+    let mut interaction_capture_active = false;
 
     for group in scene_runtime.active_render_groups.iter() {
         if !group.enabled {
@@ -564,6 +566,7 @@ async fn current_effect_scene_snapshot(
                     if let Some(entry) = registry.get(&effect_id) {
                         audio_capture_active |= entry.metadata.audio_reactive;
                         screen_capture_active |= entry.metadata.screen_reactive;
+                        interaction_capture_active |= entry.metadata.requires_interaction();
                     }
                 }
                 LayerSource::ScreenRegion { .. } => {
@@ -584,6 +587,7 @@ async fn current_effect_scene_snapshot(
         effect_running,
         audio_capture_active,
         screen_capture_active,
+        interaction_capture_active,
     };
     scene_snapshot_cache.cache_effect_demand(dependency_key, screen_capture_configured, demand);
 
@@ -701,6 +705,7 @@ mod tests {
             effect_running: true,
             audio_capture_active: true,
             screen_capture_active: false,
+            interaction_capture_active: false,
         };
 
         assert!(
@@ -761,6 +766,7 @@ mod tests {
                 presets: Vec::new(),
                 audio_reactive,
                 screen_reactive,
+                input_reactive: false,
                 source: EffectSource::Native {
                     path: PathBuf::from("native/test-effect.wgsl"),
                 },
@@ -1120,6 +1126,39 @@ mod tests {
         assert!(snapshot.demand.effect_running);
         assert!(!snapshot.demand.audio_capture_active);
         assert!(snapshot.demand.screen_capture_active);
+    }
+
+    #[tokio::test]
+    async fn interactive_effect_creates_interaction_capture_demand() {
+        let effect_id = EffectId::from(Uuid::now_v7());
+        let mut entry = sample_entry(effect_id, false, false);
+        entry.metadata.input_reactive = true;
+        let mut registry = EffectRegistry::default();
+        registry.register(entry);
+        let state = minimal_render_thread_state(registry);
+        let scene_runtime = SceneRuntimeSnapshot {
+            active_scene_id: None,
+            active_scene_name: None,
+            active_transition: None,
+            active_render_groups: vec![sample_group(effect_id)].into(),
+            active_render_groups_revision: 7,
+            zone_layout_preview_generation: 0,
+            active_render_group_count: 1,
+            active_display_group_target_fps: HashMap::new(),
+            active_display_group_output_routes: HashMap::new(),
+            active_display_group_descriptors: HashMap::new(),
+            unassigned_behavior: UnassignedBehavior::default(),
+            device_registry_generation: 0,
+        };
+        let mut scene_snapshot_cache = SceneSnapshotCache::new();
+
+        let snapshot =
+            current_effect_scene_snapshot(&state, &mut scene_snapshot_cache, &scene_runtime, false)
+                .await;
+
+        assert!(snapshot.demand.effect_running);
+        assert!(snapshot.demand.interaction_capture_active);
+        assert!(!snapshot.demand.audio_capture_active);
     }
 
     #[tokio::test]

@@ -117,6 +117,7 @@ fn sample_metadata() -> EffectMetadata {
         presets: Vec::new(),
         audio_reactive: false,
         screen_reactive: false,
+        input_reactive: false,
         source: EffectSource::Native {
             path: PathBuf::from("native/test-aurora.wgsl"),
         },
@@ -194,6 +195,7 @@ fn builtin_metadata(name: &str) -> EffectMetadata {
         presets: Vec::new(),
         audio_reactive: false,
         screen_reactive: false,
+        input_reactive: false,
         source: EffectSource::Native {
             path: PathBuf::from(format!("builtin/{name}")),
         },
@@ -215,6 +217,7 @@ fn sample_entry(name: &str, category: EffectCategory, tags: Vec<&str>) -> Effect
             presets: Vec::new(),
             audio_reactive: false,
             screen_reactive: false,
+            input_reactive: false,
             source: EffectSource::Native {
                 path: PathBuf::from(format!("native/{name}.wgsl")),
             },
@@ -753,6 +756,7 @@ fn engine_activate_metadata_html_requires_servo_feature() {
         presets: Vec::new(),
         audio_reactive: false,
         screen_reactive: false,
+        input_reactive: false,
         source: EffectSource::Html {
             path: PathBuf::from("community/test.html"),
         },
@@ -813,6 +817,7 @@ fn registry_register_replaces_existing() {
             presets: Vec::new(),
             audio_reactive: false,
             screen_reactive: false,
+            input_reactive: false,
             source: EffectSource::Native {
                 path: PathBuf::from("native/aurora.wgsl"),
             },
@@ -836,6 +841,7 @@ fn registry_register_replaces_existing() {
             presets: Vec::new(),
             audio_reactive: false,
             screen_reactive: false,
+            input_reactive: false,
             source: EffectSource::Native {
                 path: PathBuf::from("native/aurora.wgsl"),
             },

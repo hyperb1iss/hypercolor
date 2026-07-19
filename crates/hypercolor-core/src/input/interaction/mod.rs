@@ -24,10 +24,19 @@ struct SharedInteractionState {
 }
 
 /// Global host input source for `LightScript` keyboard and mouse helpers.
+///
+/// Interim bridge backend for platforms without a native event backend
+/// (Windows/macOS). Never constructed on Linux — evdev owns host input
+/// there. Capture is demand-driven: the worker thread only runs while
+/// [`set_interaction_capture_active`](InputSource::set_interaction_capture_active)
+/// is on.
 pub struct InteractionInput {
     name: String,
     running: bool,
+    capture_active: bool,
     recent_key_limit: usize,
+    generation: u64,
+    last_held: Option<(Vec<String>, MouseData)>,
     shared: Arc<Mutex<SharedInteractionState>>,
     stop_flag: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
@@ -40,7 +49,10 @@ impl InteractionInput {
         Self {
             name: "HostInput".to_owned(),
             running: false,
+            capture_active: false,
             recent_key_limit: DEFAULT_RECENT_KEY_LIMIT,
+            generation: 0,
+            last_held: None,
             shared: Arc::new(Mutex::new(SharedInteractionState::default())),
             stop_flag: Arc::new(AtomicBool::new(false)),
             worker: None,
@@ -52,16 +64,14 @@ impl InteractionInput {
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
-    }
-}
-
-impl InputSource for InteractionInput {
-    fn name(&self) -> &str {
-        &self.name
+        if let Ok(mut guard) = self.shared.lock() {
+            guard.interaction = InteractionData::default();
+        }
+        self.last_held = None;
     }
 
-    fn start(&mut self) -> anyhow::Result<()> {
-        if self.running {
+    fn spawn_worker(&mut self) -> anyhow::Result<()> {
+        if self.worker.is_some() {
             return Ok(());
         }
 
@@ -131,24 +141,38 @@ impl InputSource for InteractionInput {
         }
 
         self.worker = Some(worker);
+        Ok(())
+    }
+}
+
+impl InputSource for InteractionInput {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        if self.running {
+            return Ok(());
+        }
+
         self.running = true;
+        if self.capture_active {
+            self.spawn_worker()?;
+        }
         Ok(())
     }
 
     fn stop(&mut self) {
         self.stop_worker();
-        if let Ok(mut guard) = self.shared.lock() {
-            guard.interaction = InteractionData::default();
-        }
         self.running = false;
     }
 
     fn sample(&mut self) -> anyhow::Result<InputData> {
-        if !self.running {
+        if !self.running || self.worker.is_none() {
             return Ok(InputData::None);
         }
 
-        let snapshot = if let Ok(mut guard) = self.shared.lock() {
+        let mut snapshot = if let Ok(mut guard) = self.shared.lock() {
             let mut snapshot = guard.interaction.clone();
             snapshot.keyboard.recent_keys =
                 std::mem::take(&mut guard.interaction.keyboard.recent_keys);
@@ -157,11 +181,43 @@ impl InputSource for InteractionInput {
             InteractionData::default()
         };
 
+        let held = (
+            snapshot.keyboard.pressed_keys.clone(),
+            snapshot.mouse.clone(),
+        );
+        if self.last_held.as_ref() != Some(&held) || !snapshot.keyboard.recent_keys.is_empty() {
+            self.generation = self.generation.wrapping_add(1);
+            self.last_held = Some(held);
+        }
+        snapshot.generation = self.generation;
+
         Ok(InputData::Interaction(snapshot))
     }
 
     fn is_running(&self) -> bool {
         self.running
+    }
+
+    fn is_interaction_source(&self) -> bool {
+        true
+    }
+
+    fn set_interaction_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
+        if self.capture_active == active {
+            return Ok(());
+        }
+
+        self.capture_active = active;
+        if !self.running {
+            return Ok(());
+        }
+
+        if active {
+            self.spawn_worker()?;
+        } else {
+            self.stop_worker();
+        }
+        Ok(())
     }
 }
 
@@ -193,11 +249,16 @@ fn mouse_data_from_state(mouse_state: &device_query::MouseState) -> MouseData {
         .map(|(idx, _)| mouse_button_name(idx))
         .collect::<Vec<String>>();
     let (x, y) = mouse_state.coords;
+    // device_query reports desktop pixels without screen geometry, so the
+    // normalized fields stay unavailable until the native backends land.
     MouseData {
         x,
         y,
         down: !buttons.is_empty(),
         buttons,
+        norm_x: 0.0,
+        norm_y: 0.0,
+        mode: crate::input::traits::PointerMode::None,
     }
 }
 

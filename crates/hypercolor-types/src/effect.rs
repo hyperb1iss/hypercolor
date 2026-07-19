@@ -631,6 +631,9 @@ pub struct EffectMetadata {
     /// Indicates whether the effect expects screen capture payload injection.
     #[serde(default)]
     pub screen_reactive: bool,
+    /// Indicates whether the effect expects host input payload injection.
+    #[serde(default)]
+    pub input_reactive: bool,
     /// How this effect is rendered. Determines the renderer path.
     pub source: EffectSource,
     /// SPDX license identifier (e.g. `"MIT"`, `"Apache-2.0"`).
@@ -639,6 +642,23 @@ pub struct EffectMetadata {
 }
 
 impl EffectMetadata {
+    /// Whether this effect wants host keyboard/mouse data injected.
+    ///
+    /// Single predicate shared by renderer payload injection and capture
+    /// demand: the explicit `input_reactive` capability, the `Interactive`
+    /// category, or one of the legacy opt-in tags.
+    #[must_use]
+    pub fn requires_interaction(&self) -> bool {
+        self.input_reactive
+            || self.category == EffectCategory::Interactive
+            || self.tags.iter().any(|tag| {
+                tag.eq_ignore_ascii_case("interactive")
+                    || tag.eq_ignore_ascii_case("input")
+                    || tag.eq_ignore_ascii_case("mouse")
+                    || tag.eq_ignore_ascii_case("keyboard")
+            })
+    }
+
     /// Look up a control definition by id (case-insensitive).
     #[must_use]
     pub fn control_by_id(&self, id: &str) -> Option<&ControlDefinition> {

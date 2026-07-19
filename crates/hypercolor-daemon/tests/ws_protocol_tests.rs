@@ -83,6 +83,7 @@ async fn insert_test_effect(state: &Arc<AppState>, name: &str) -> EffectMetadata
         presets: Vec::new(),
         audio_reactive: false,
         screen_reactive: false,
+        input_reactive: false,
         source: EffectSource::Native {
             path: format!("builtin/{name}").into(),
         },

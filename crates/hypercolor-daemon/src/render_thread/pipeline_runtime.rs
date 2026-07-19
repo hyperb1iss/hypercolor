@@ -19,6 +19,7 @@ use hypercolor_core::types::event::{FrameData, HypercolorEvent};
 use hypercolor_types::config::RenderAccelerationMode;
 #[cfg(feature = "wgpu")]
 use hypercolor_types::device::DisplayFrameFormat;
+use hypercolor_types::event::InputEvent;
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::scene::SceneId;
 #[cfg(feature = "wgpu")]
@@ -50,6 +51,13 @@ use super::{RenderThreadState, micros_u32};
 const AUDIO_LEVEL_EVENT_INTERVAL_MS: u64 = 100;
 const DEFAULT_SCREEN_SURFACE_WIDTH: u32 = 1;
 const DEFAULT_SCREEN_SURFACE_HEIGHT: u32 = 1;
+
+/// Strictly increasing delivery order for input events across all frames.
+fn next_input_event_seq() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(1);
+    SEQ.fetch_add(1, Ordering::Relaxed)
+}
 
 pub(crate) struct FrameInputs {
     pub(crate) audio: AudioData,
@@ -134,6 +142,10 @@ impl InputReuseState {
             if self.cached_inputs.net.is_none() {
                 self.cached_inputs.net = carried_net;
             }
+        } else {
+            // Reused frames must not re-deliver the previous frame's
+            // transient input batch; held state stays valid.
+            self.cached_inputs.interaction.batch = Default::default();
         }
 
         &mut self.cached_inputs
@@ -146,19 +158,13 @@ impl FrameInputs {
         delta_secs: f32,
         screen_surface_pool: RenderSurfacePool,
     ) -> Self {
-        let (samples, events) = {
+        let (samples, mut events) = {
             let mut input_manager = state.input_manager.lock().await;
             (
                 input_manager.sample_all_with_delta_secs(delta_secs),
                 input_manager.drain_events(),
             )
         };
-
-        for event in events {
-            state
-                .event_bus
-                .publish(HypercolorEvent::InputEventReceived { event });
-        }
 
         let mut audio = AudioData::silence();
         let mut interaction = InteractionData::default();
@@ -177,6 +183,23 @@ impl FrameInputs {
                 InputData::None => {}
             }
         }
+
+        // Single fan-out point: drained events feed the bus (automation,
+        // authorized WS subscribers) and this frame's interaction batch, so
+        // nothing is consumed twice or lost between the two paths.
+        for event in &mut events {
+            event.seq = next_input_event_seq();
+            if let InputEvent::MouseWheel { delta_hi_res, .. } = event.event {
+                interaction.batch.wheel_hi_res =
+                    interaction.batch.wheel_hi_res.saturating_add(delta_hi_res);
+            }
+            state
+                .event_bus
+                .publish(HypercolorEvent::InputEventReceived {
+                    event: event.event.clone(),
+                });
+        }
+        interaction.batch.events = events;
 
         Self {
             audio,

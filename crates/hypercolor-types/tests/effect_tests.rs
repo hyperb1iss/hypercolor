@@ -242,6 +242,7 @@ fn effect_metadata_matches_display_name_and_native_source_alias() {
         presets: Vec::new(),
         audio_reactive: false,
         screen_reactive: false,
+        input_reactive: false,
         source: EffectSource::Native {
             path: PathBuf::from("builtin/solid_color"),
         },
@@ -269,6 +270,7 @@ fn effect_metadata_lookup_treats_html_and_native_slugs_equivalently() {
         presets: Vec::new(),
         audio_reactive: true,
         screen_reactive: false,
+        input_reactive: false,
         source: EffectSource::Html {
             path: PathBuf::from("effects/hypercolor/audio-pulse.html"),
         },
@@ -730,6 +732,7 @@ fn sample_metadata() -> EffectMetadata {
         presets: Vec::new(),
         audio_reactive: true,
         screen_reactive: false,
+        input_reactive: false,
         source: EffectSource::Native {
             path: PathBuf::from("native/aurora.wgsl"),
         },
@@ -804,4 +807,41 @@ fn effect_metadata_empty_tags_default() {
     let meta: EffectMetadata = serde_json::from_str(json).expect("deserialize");
     assert!(meta.tags.is_empty());
     assert!(meta.license.is_none());
+}
+
+#[test]
+fn requires_interaction_covers_flag_category_and_legacy_tags() {
+    let mut metadata = sample_metadata();
+    metadata.tags = vec!["ambient".into()];
+    assert!(!metadata.requires_interaction());
+
+    metadata.input_reactive = true;
+    assert!(metadata.requires_interaction());
+
+    metadata.input_reactive = false;
+    metadata.category = EffectCategory::Interactive;
+    assert!(metadata.requires_interaction());
+
+    metadata.category = EffectCategory::Ambient;
+    for tag in ["interactive", "input", "Mouse", "KEYBOARD"] {
+        metadata.tags = vec![tag.into()];
+        assert!(
+            metadata.requires_interaction(),
+            "tag {tag} should opt into interaction"
+        );
+    }
+}
+
+#[test]
+fn input_reactive_defaults_to_false_when_absent_from_json() {
+    let json = serde_json::to_value(sample_metadata()).expect("serialize metadata");
+    let mut trimmed = json.clone();
+    trimmed
+        .as_object_mut()
+        .expect("metadata serializes to an object")
+        .remove("input_reactive");
+
+    let restored: EffectMetadata =
+        serde_json::from_value(trimmed).expect("deserialize without input_reactive");
+    assert!(!restored.input_reactive);
 }

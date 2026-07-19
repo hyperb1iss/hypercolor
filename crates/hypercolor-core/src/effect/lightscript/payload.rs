@@ -632,7 +632,9 @@ mod tests {
                 y: 24,
                 buttons: vec!["left".to_owned()],
                 down: true,
+                ..Default::default()
             },
+            ..Default::default()
         });
 
         assert!(payload.keyboard.keys.contains(&"A".to_owned()));

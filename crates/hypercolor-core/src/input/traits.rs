@@ -6,7 +6,7 @@
 
 use crate::types::audio::{AudioData, AudioPipelineConfig};
 use crate::types::canvas::PublishedSurface;
-use crate::types::event::{InputEvent, ZoneColors};
+use crate::types::event::{TimedInputEvent, ZoneColors};
 use hypercolor_types::sensor::SystemSnapshot;
 use std::sync::Arc;
 
@@ -37,12 +37,29 @@ pub enum InputData {
 // ── InteractionData ────────────────────────────────────────────────────────
 
 /// Snapshot of host keyboard and mouse state for one frame.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+///
+/// Splits into stable held-state (`keyboard`, `mouse`, versioned by
+/// `generation`) and a transient per-frame event `batch`. Renderer dirty
+/// checks compare `generation` and batch emptiness rather than deep
+/// equality, so noisy per-frame values never defeat idle skipping.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct InteractionData {
     /// Keyboard state including currently pressed keys and edge-triggered presses.
     pub keyboard: KeyboardData,
     /// Mouse position and pressed buttons.
     pub mouse: MouseData,
+    /// Ordered, timestamped input edges captured since the previous frame.
+    pub batch: InteractionBatch,
+    /// Bumps whenever `keyboard` or `mouse` held-state actually changes.
+    pub generation: u64,
+}
+
+impl InteractionData {
+    /// Whether a renderer consuming this snapshot has anything new to see.
+    #[must_use]
+    pub fn is_dirty_against(&self, last_generation: Option<u64>) -> bool {
+        last_generation != Some(self.generation) || !self.batch.is_empty()
+    }
 }
 
 /// Keyboard snapshot for one frame.
@@ -54,17 +71,74 @@ pub struct KeyboardData {
     pub recent_keys: Vec<String>,
 }
 
+/// How a pointer position in [`MouseData`] should be interpreted.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PointerMode {
+    /// No pointer source is available; position fields are meaningless.
+    #[default]
+    None,
+    /// Position is a real cursor location reported by the platform.
+    Absolute,
+    /// Position is a virtual cursor accumulated from relative motion.
+    Virtual,
+}
+
 /// Mouse snapshot for one frame.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct MouseData {
-    /// Global X position in pixels.
+    /// Global X position in pixels (meaning depends on `mode`).
     pub x: i32,
-    /// Global Y position in pixels.
+    /// Global Y position in pixels (meaning depends on `mode`).
     pub y: i32,
     /// Buttons currently held down.
     pub buttons: Vec<String>,
     /// Whether any button is currently pressed.
     pub down: bool,
+    /// Normalized position in `[0, 1]²`, valid unless `mode` is `None`.
+    pub norm_x: f32,
+    /// Normalized position in `[0, 1]²`, valid unless `mode` is `None`.
+    pub norm_y: f32,
+    /// How the position fields were produced.
+    pub mode: PointerMode,
+}
+
+/// Transient per-frame input edges and aggregates.
+///
+/// Contents are consumed by the frame that carries them and never persist
+/// across frames. Pointer motion is aggregated here rather than queued
+/// per hardware event.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct InteractionBatch {
+    /// Ordered key/button/wheel edges, capture-timestamped and sequenced.
+    pub events: Vec<TimedInputEvent>,
+    /// Accumulated wheel travel since last frame, in 1/120-notch units.
+    pub wheel_hi_res: i32,
+    /// Aggregate pointer motion since last frame.
+    pub motion: MotionAggregate,
+    /// Events discarded due to queue bounds since last frame.
+    pub dropped_events: u32,
+}
+
+impl InteractionBatch {
+    /// Whether this batch carries anything a renderer could react to.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.events.is_empty()
+            && self.wheel_hi_res == 0
+            && self.motion == MotionAggregate::default()
+            && self.dropped_events == 0
+    }
+}
+
+/// Summed pointer motion for one frame, in normalized canvas units.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct MotionAggregate {
+    /// Net horizontal travel.
+    pub dx: f32,
+    /// Net vertical travel.
+    pub dy: f32,
+    /// Total path length (always ≥ the net displacement).
+    pub distance: f32,
 }
 
 // ── ScreenData ─────────────────────────────────────────────────────────────
@@ -159,9 +233,10 @@ pub trait InputSource: Send {
 
     /// Drain any discrete input events captured since the last frame.
     ///
-    /// Sources that only expose sampled state can keep the default empty
-    /// implementation.
-    fn drain_events(&mut self) -> Vec<InputEvent> {
+    /// Events are capture-timestamped by the source; delivery sequence
+    /// numbers are assigned at the frame fan-out point. Sources that only
+    /// expose sampled state can keep the default empty implementation.
+    fn drain_events(&mut self) -> Vec<TimedInputEvent> {
         Vec::new()
     }
 
@@ -173,6 +248,23 @@ pub trait InputSource: Send {
     /// Whether this source supports runtime screen capture demand control.
     fn is_screen_source(&self) -> bool {
         false
+    }
+
+    /// Whether this source captures host keyboard/mouse interaction.
+    fn is_interaction_source(&self) -> bool {
+        false
+    }
+
+    /// Toggle whether an interaction source should actively capture host input.
+    ///
+    /// Interaction sources close their device handles and clear all held
+    /// state when capture goes inactive, so no keys or buttons stay stuck.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the source cannot update its capture state.
+    fn set_interaction_capture_active(&mut self, _active: bool) -> anyhow::Result<()> {
+        Ok(())
     }
 
     /// Reconfigure a running audio source without rebuilding the full input manager.

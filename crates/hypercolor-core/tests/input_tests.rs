@@ -7,7 +7,7 @@ use hypercolor_core::input::screen::CaptureConfig as ScreenCaptureConfig;
 use hypercolor_core::input::screen::{CaptureConfig, WaylandScreenCaptureInput};
 use hypercolor_core::input::{InputData, InputManager, InputSource, ScreenData};
 use hypercolor_core::types::audio::{AudioData, AudioPipelineConfig, AudioSourceType};
-use hypercolor_core::types::event::{InputButtonState, InputEvent, ZoneColors};
+use hypercolor_core::types::event::{InputButtonState, InputEvent, TimedInputEvent, ZoneColors};
 #[cfg(target_os = "linux")]
 use std::fs;
 use std::sync::{Arc, Mutex};
@@ -268,14 +268,21 @@ impl InputSource for FaultySampleSource {
 
 struct EventfulSource {
     running: bool,
-    events: Vec<InputEvent>,
+    events: Vec<TimedInputEvent>,
 }
 
 impl EventfulSource {
     fn new(events: Vec<InputEvent>) -> Self {
         Self {
             running: false,
-            events,
+            events: events
+                .into_iter()
+                .map(|event| TimedInputEvent {
+                    event,
+                    at_ms: 0,
+                    seq: 0,
+                })
+                .collect(),
         }
     }
 }
@@ -302,7 +309,7 @@ impl InputSource for EventfulSource {
         self.running
     }
 
-    fn drain_events(&mut self) -> Vec<InputEvent> {
+    fn drain_events(&mut self) -> Vec<TimedInputEvent> {
         std::mem::take(&mut self.events)
     }
 }
@@ -978,4 +985,129 @@ fn input_manager_removes_screen_sources() {
         manager.source_names().contains(&"MockAudio".to_owned()),
         "non-screen sources must survive removal"
     );
+}
+
+// ── Interaction capture demand ─────────────────────────────────────────────
+
+struct CaptureTrackingInteractionSource {
+    running: bool,
+    capture_active: bool,
+    transitions: std::sync::Arc<std::sync::Mutex<Vec<bool>>>,
+}
+
+impl CaptureTrackingInteractionSource {
+    fn new(transitions: std::sync::Arc<std::sync::Mutex<Vec<bool>>>) -> Self {
+        Self {
+            running: false,
+            capture_active: false,
+            transitions,
+        }
+    }
+}
+
+impl InputSource for CaptureTrackingInteractionSource {
+    fn name(&self) -> &'static str {
+        "CaptureTrackingInteraction"
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        self.running = true;
+        Ok(())
+    }
+
+    fn stop(&mut self) {
+        self.running = false;
+        self.capture_active = false;
+    }
+
+    fn sample(&mut self) -> anyhow::Result<InputData> {
+        Ok(InputData::None)
+    }
+
+    fn is_running(&self) -> bool {
+        self.running
+    }
+
+    fn is_interaction_source(&self) -> bool {
+        true
+    }
+
+    fn set_interaction_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
+        if self.capture_active != active {
+            self.transitions
+                .lock()
+                .expect("transitions lock")
+                .push(active);
+        }
+        self.capture_active = active;
+        Ok(())
+    }
+}
+
+#[test]
+fn manager_routes_interaction_capture_demand_to_interaction_sources_only() {
+    let transitions = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut mgr = InputManager::new();
+    mgr.add_source(Box::new(CaptureTrackingInteractionSource::new(
+        std::sync::Arc::clone(&transitions),
+    )));
+    mgr.add_source(Box::new(MockAudioSource::new(0.5)));
+
+    mgr.set_interaction_capture_active(true)
+        .expect("activate interaction capture");
+    mgr.set_interaction_capture_active(true)
+        .expect("repeat activation is a no-op");
+    mgr.set_interaction_capture_active(false)
+        .expect("deactivate interaction capture");
+
+    assert_eq!(
+        *transitions.lock().expect("transitions lock"),
+        vec![true, false]
+    );
+}
+
+#[test]
+fn manager_tracks_and_removes_interaction_sources() {
+    let transitions = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut mgr = InputManager::new();
+    assert!(!mgr.has_interaction_source());
+
+    mgr.add_source(Box::new(CaptureTrackingInteractionSource::new(transitions)));
+    mgr.add_source(Box::new(MockAudioSource::new(0.5)));
+    assert!(mgr.has_interaction_source());
+    assert_eq!(mgr.source_count(), 2);
+
+    mgr.remove_interaction_sources();
+    assert!(!mgr.has_interaction_source());
+    assert_eq!(mgr.source_count(), 1, "non-interaction sources survive");
+}
+
+#[test]
+fn interaction_dirty_check_tracks_generation_and_batch() {
+    use hypercolor_core::input::{InteractionBatch, InteractionData};
+    use hypercolor_core::types::event::{InputButtonState, TimedInputEvent};
+
+    let mut data = InteractionData::default();
+    assert!(data.is_dirty_against(None), "first sight is always dirty");
+    assert!(!data.is_dirty_against(Some(0)), "idle frames skip");
+
+    data.generation = 1;
+    assert!(data.is_dirty_against(Some(0)), "state change marks dirty");
+
+    data.generation = 0;
+    data.batch.events.push(TimedInputEvent {
+        event: InputEvent::Key {
+            source_id: "test".into(),
+            key: "a".into(),
+            state: InputButtonState::Pressed,
+        },
+        at_ms: 1,
+        seq: 1,
+    });
+    assert!(data.is_dirty_against(Some(0)), "events mark dirty");
+
+    let mut batch = InteractionBatch::default();
+    assert!(batch.is_empty());
+    batch.wheel_hi_res = 120;
+    assert!(!batch.is_empty(), "wheel travel is renderer-visible");
 }

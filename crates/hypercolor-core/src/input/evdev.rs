@@ -16,8 +16,9 @@ use anyhow::Context;
 use evdev::{Device, EventSummary, InputEvent as EvdevInputEvent, KeyCode, enumerate};
 use tracing::{debug, trace, warn};
 
+use crate::input::input_mono_ms;
 use crate::input::traits::{InputData, InputSource};
-use crate::types::event::{InputButtonState, InputEvent};
+use crate::types::event::{InputButtonState, InputEvent, TimedInputEvent};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(8);
 const READY_TIMEOUT: Duration = Duration::from_secs(1);
@@ -25,7 +26,8 @@ const DEFAULT_EVENT_LIMIT: usize = 256;
 
 #[derive(Default)]
 struct SharedState {
-    events: Vec<InputEvent>,
+    events: Vec<TimedInputEvent>,
+    dropped: u32,
 }
 
 struct KeyboardDevice {
@@ -35,9 +37,14 @@ struct KeyboardDevice {
 }
 
 /// Linux host keyboard event source backed by `evdev`.
+///
+/// Capture is demand-driven: devices are only opened while
+/// [`set_interaction_capture_active`](InputSource::set_interaction_capture_active)
+/// is on, and all queued events clear when capture stops.
 pub struct EvdevKeyboardInput {
     name: String,
     running: bool,
+    capture_active: bool,
     event_limit: usize,
     shared: Arc<Mutex<SharedState>>,
     stop_flag: Arc<AtomicBool>,
@@ -51,6 +58,7 @@ impl EvdevKeyboardInput {
         Self {
             name: "EvdevKeyboard".to_owned(),
             running: false,
+            capture_active: false,
             event_limit: DEFAULT_EVENT_LIMIT,
             shared: Arc::new(Mutex::new(SharedState::default())),
             stop_flag: Arc::new(AtomicBool::new(false)),
@@ -63,16 +71,14 @@ impl EvdevKeyboardInput {
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
-    }
-}
-
-impl InputSource for EvdevKeyboardInput {
-    fn name(&self) -> &str {
-        &self.name
+        if let Ok(mut guard) = self.shared.lock() {
+            guard.events.clear();
+            guard.dropped = 0;
+        }
     }
 
-    fn start(&mut self) -> anyhow::Result<()> {
-        if self.running {
+    fn spawn_worker(&mut self) -> anyhow::Result<()> {
+        if self.worker.is_some() {
             return Ok(());
         }
 
@@ -108,8 +114,11 @@ impl InputSource for EvdevKeyboardInput {
                     for (idx, device) in devices.iter_mut().enumerate() {
                         match device.device.fetch_events() {
                             Ok(events) => {
+                                let at_ms = input_mono_ms();
                                 pending_events.extend(
-                                    events.filter_map(|event| map_keyboard_event(&device.source_id, event)),
+                                    events
+                                        .filter_map(|event| map_keyboard_event(&device.source_id, event))
+                                        .map(|event| TimedInputEvent { event, at_ms, seq: 0 }),
                                 );
                             }
                             Err(error) if error.kind() == ErrorKind::WouldBlock => {}
@@ -132,7 +141,8 @@ impl InputSource for EvdevKeyboardInput {
                     if !pending_events.is_empty()
                         && let Ok(mut guard) = shared.lock()
                     {
-                        extend_events(&mut guard.events, pending_events, event_limit);
+                        let dropped = extend_events(&mut guard.events, pending_events, event_limit);
+                        guard.dropped = guard.dropped.saturating_add(dropped);
                     }
 
                     thread::sleep(POLL_INTERVAL);
@@ -145,15 +155,29 @@ impl InputSource for EvdevKeyboardInput {
             .context("timed out waiting for evdev keyboard worker readiness")?;
 
         self.worker = Some(worker);
+        Ok(())
+    }
+}
+
+impl InputSource for EvdevKeyboardInput {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        if self.running {
+            return Ok(());
+        }
+
         self.running = true;
+        if self.capture_active {
+            self.spawn_worker()?;
+        }
         Ok(())
     }
 
     fn stop(&mut self) {
         self.stop_worker();
-        if let Ok(mut guard) = self.shared.lock() {
-            guard.events.clear();
-        }
         self.running = false;
     }
 
@@ -165,7 +189,29 @@ impl InputSource for EvdevKeyboardInput {
         self.running
     }
 
-    fn drain_events(&mut self) -> Vec<InputEvent> {
+    fn is_interaction_source(&self) -> bool {
+        true
+    }
+
+    fn set_interaction_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
+        if self.capture_active == active {
+            return Ok(());
+        }
+
+        self.capture_active = active;
+        if !self.running {
+            return Ok(());
+        }
+
+        if active {
+            self.spawn_worker()?;
+        } else {
+            self.stop_worker();
+        }
+        Ok(())
+    }
+
+    fn drain_events(&mut self) -> Vec<TimedInputEvent> {
         if let Ok(mut guard) = self.shared.lock() {
             return std::mem::take(&mut guard.events);
         }
@@ -252,12 +298,18 @@ fn map_keyboard_event(source_id: &str, event: EvdevInputEvent) -> Option<InputEv
     })
 }
 
-fn extend_events(target: &mut Vec<InputEvent>, mut recent: Vec<InputEvent>, limit: usize) {
+fn extend_events(
+    target: &mut Vec<TimedInputEvent>,
+    mut recent: Vec<TimedInputEvent>,
+    limit: usize,
+) -> u32 {
     target.append(&mut recent);
     if target.len() > limit {
         let overflow = target.len() - limit;
         target.drain(..overflow);
+        return u32::try_from(overflow).unwrap_or(u32::MAX);
     }
+    0
 }
 
 fn canonical_evdev_key_name(code: KeyCode) -> String {

@@ -51,6 +51,7 @@ fn html_metadata(path: PathBuf) -> EffectMetadata {
         presets: Vec::new(),
         audio_reactive: false,
         screen_reactive: false,
+        input_reactive: false,
         source: EffectSource::Html { path },
         license: None,
     }

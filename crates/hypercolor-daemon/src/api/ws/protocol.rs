@@ -33,10 +33,11 @@ pub(super) enum WsChannel {
     DeviceMetrics,
     Sensors,
     DisplayPreview,
+    InputEvents,
 }
 
 impl WsChannel {
-    pub(super) const SUPPORTED: [Self; 13] = [
+    pub(super) const SUPPORTED: [Self; 14] = [
         Self::Frames,
         Self::Spectrum,
         Self::Events,
@@ -50,6 +51,7 @@ impl WsChannel {
         Self::DeviceMetrics,
         Self::Sensors,
         Self::DisplayPreview,
+        Self::InputEvents,
     ];
 
     pub(super) const fn as_str(self) -> &'static str {
@@ -67,6 +69,7 @@ impl WsChannel {
             Self::DeviceMetrics => "device_metrics",
             Self::Sensors => "sensors",
             Self::DisplayPreview => "display_preview",
+            Self::InputEvents => "input_events",
         }
     }
 
@@ -85,6 +88,7 @@ impl WsChannel {
             "device_metrics" => Some(Self::DeviceMetrics),
             "sensors" => Some(Self::Sensors),
             "display_preview" => Some(Self::DisplayPreview),
+            "input_events" => Some(Self::InputEvents),
             _ => None,
         }
     }
@@ -94,7 +98,10 @@ impl WsChannel {
     }
 
     pub(super) const fn requires_control_subscription(self) -> bool {
-        matches!(self, Self::ScreenCanvas | Self::ScreenZones)
+        matches!(
+            self,
+            Self::ScreenCanvas | Self::ScreenZones | Self::InputEvents
+        )
     }
 
     const fn bit(self) -> u16 {
@@ -112,6 +119,7 @@ impl WsChannel {
             Self::DeviceMetrics => 1 << 9,
             Self::Sensors => 1 << 10,
             Self::DisplayPreview => 1 << 11,
+            Self::InputEvents => 1 << 13,
         }
     }
 }
@@ -400,7 +408,8 @@ impl ChannelConfig {
                 WsChannel::Events
                 | WsChannel::FrameEvents
                 | WsChannel::Sensors
-                | WsChannel::ScreenZones => continue,
+                | WsChannel::ScreenZones
+                | WsChannel::InputEvents => continue,
             };
 
             if let Ok(json_value) = value {
@@ -1352,6 +1361,16 @@ pub(super) fn should_relay_event(
         hypercolor_types::event::HypercolorEvent::FrameRendered { .. }
     ) {
         return channels.contains(WsChannel::FrameEvents);
+    }
+
+    // Host input events carry keystroke data and never ride the default
+    // events channel: they need the control-authorized input_events
+    // subscription, mirroring the screen-capture channels.
+    if matches!(
+        event,
+        hypercolor_types::event::HypercolorEvent::InputEventReceived { .. }
+    ) {
+        return channels.contains(WsChannel::InputEvents);
     }
 
     channels.contains(WsChannel::Events)

@@ -399,6 +399,7 @@ pub(super) fn metadata() -> EffectMetadata {
         presets: presets(),
         audio_reactive: true,
         screen_reactive: false,
+        input_reactive: false,
         source: EffectSource::Native {
             path: PathBuf::from("builtin/audio_pulse"),
         },

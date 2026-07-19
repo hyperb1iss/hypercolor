@@ -764,6 +764,7 @@ pub(super) fn metadata() -> EffectMetadata {
         presets: presets(),
         audio_reactive: false,
         screen_reactive: false,
+        input_reactive: false,
         source: EffectSource::Native {
             path: PathBuf::from("builtin/color_zones"),
         },

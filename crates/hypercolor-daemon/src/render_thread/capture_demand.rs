@@ -28,11 +28,14 @@ impl CaptureDemandState {
             (!sleeping && effect_demand.screen_capture_active) || preview_active,
         )
         .await;
+        self.reconcile_interaction(state, !sleeping && effect_demand.interaction_capture_active)
+            .await;
     }
 
     pub(crate) async fn clear(&mut self, state: &RenderThreadState) {
         self.reconcile_audio(state, false).await;
         self.reconcile_screen(state, false).await;
+        self.reconcile_interaction(state, false).await;
     }
 
     pub(crate) async fn reconcile_audio(
@@ -94,6 +97,29 @@ impl CaptureDemandState {
                     "Failed to update screen capture demand"
                 );
             }
+        }
+    }
+
+    /// Deliberately uncached: interaction sources can be added or removed
+    /// live via config, and a cached last-value here would leave a freshly
+    /// added source inactive while an interactive effect is already running.
+    /// Sources no-op internally when the state is unchanged.
+    pub(crate) async fn reconcile_interaction(
+        &mut self,
+        state: &RenderThreadState,
+        desired_active: bool,
+    ) {
+        let result = {
+            let mut input_manager = state.input_manager.lock().await;
+            input_manager.set_interaction_capture_active(desired_active)
+        };
+
+        if let Err(error) = result {
+            warn!(
+                desired_active,
+                %error,
+                "Failed to update interaction capture demand"
+            );
         }
     }
 }

@@ -915,6 +915,7 @@ mod tests {
             presets: Vec::new(),
             audio_reactive: false,
             screen_reactive: false,
+            input_reactive: false,
             source: EffectSource::Native {
                 path: "mock/destroy-spy.wgsl".into(),
             },

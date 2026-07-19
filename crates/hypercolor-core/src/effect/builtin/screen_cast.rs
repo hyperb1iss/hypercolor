@@ -151,6 +151,7 @@ pub(super) fn metadata() -> EffectMetadata {
         presets: Vec::new(),
         audio_reactive: false,
         screen_reactive: true,
+        input_reactive: false,
         source: EffectSource::Native {
             path: PathBuf::from("builtin/screen_cast"),
         },

@@ -151,7 +151,9 @@ pub async fn set_config_value(
         maybe_apply_audio_config_change(&state, Some(&key), body.live.unwrap_or(false)).await;
     let render_live_applied = maybe_apply_render_config_change(&state, Some(&key)).await;
     let capture_live_applied = maybe_apply_capture_config_change(&state, Some(&key)).await;
-    let live_applied = audio_live_applied || render_live_applied || capture_live_applied;
+    let input_live_applied = maybe_apply_input_config_change(&state, Some(&key)).await;
+    let live_applied =
+        audio_live_applied || render_live_applied || capture_live_applied || input_live_applied;
 
     ApiResponse::ok(serde_json::json!({
         "key": key,
@@ -243,7 +245,10 @@ pub async fn reset_config_value(
         maybe_apply_render_config_change(&state, normalized_key.as_deref()).await;
     let capture_live_applied =
         maybe_apply_capture_config_change(&state, normalized_key.as_deref()).await;
-    let live_applied = audio_live_applied || render_live_applied || capture_live_applied;
+    let input_live_applied =
+        maybe_apply_input_config_change(&state, normalized_key.as_deref()).await;
+    let live_applied =
+        audio_live_applied || render_live_applied || capture_live_applied || input_live_applied;
 
     ApiResponse::ok(serde_json::json!({
         "key": normalized_key,
@@ -546,6 +551,49 @@ async fn maybe_apply_capture_config_change(state: &Arc<AppState>, key: Option<&s
         }
 
         applied
+    }
+}
+
+fn should_reconfigure_input(key: Option<&str>) -> bool {
+    key.is_none_or(|value| value == "input" || value.starts_with("input."))
+}
+
+/// Apply host-input config changes live.
+///
+/// Enable/disable adds or removes the interaction source on the running
+/// input manager. Activation converges on the next frame through the
+/// uncached interaction demand reconcile, so a source added while an
+/// interactive effect is already running starts capturing immediately.
+async fn maybe_apply_input_config_change(state: &Arc<AppState>, key: Option<&str>) -> bool {
+    if !should_reconfigure_input(key) {
+        return false;
+    }
+
+    let Some(manager) = state.config_manager.as_ref() else {
+        return false;
+    };
+
+    let input = manager.get().input.clone();
+    let mut input_manager = state.input_manager.lock().await;
+    let had_source = input_manager.has_interaction_source();
+    let replacement = crate::startup::services::build_interaction_source(&input);
+
+    match (had_source, replacement) {
+        (false, Some(mut source)) => {
+            if let Err(error) = source.start() {
+                warn!(%error, "Failed to start live interaction source");
+                return false;
+            }
+            input_manager.add_source(source);
+            info!("Enabled host input capture live");
+            true
+        }
+        (true, None) => {
+            input_manager.remove_interaction_sources();
+            info!("Disabled host input capture live");
+            true
+        }
+        _ => false,
     }
 }
 

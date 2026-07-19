@@ -72,6 +72,7 @@ async fn register_face_effect(state: &Arc<AppState>, name: &str) -> EffectId {
         presets: Vec::new(),
         audio_reactive: false,
         screen_reactive: false,
+        input_reactive: false,
         source: EffectSource::Html {
             path: format!("/tmp/{name}.html").into(),
         },

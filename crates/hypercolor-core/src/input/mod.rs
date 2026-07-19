@@ -20,16 +20,34 @@ pub use interaction::InteractionInput;
 pub use media::MediaSource;
 pub use net::NetSource;
 pub use sensor::SensorPoller;
-pub use traits::{InputData, InputSource, InteractionData, KeyboardData, MouseData, ScreenData};
+pub use traits::{
+    InputData, InputSource, InteractionBatch, InteractionData, KeyboardData, MotionAggregate,
+    MouseData, PointerMode, ScreenData,
+};
 
 use crate::input::audio::AudioInput;
 use crate::types::audio::AudioPipelineConfig;
-use crate::types::event::InputEvent;
+use crate::types::event::TimedInputEvent;
 use hypercolor_types::sensor::SystemSnapshot;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
+use std::time::Instant;
 use tokio::sync::watch;
 
 use tracing::{error, info};
+
+/// Milliseconds on a process-wide monotonic clock, for input capture stamps.
+///
+/// Only differences between stamps are meaningful; the epoch is the first
+/// call in this process.
+#[must_use]
+pub fn input_mono_ms() -> u64 {
+    static EPOCH: LazyLock<Instant> = LazyLock::new(Instant::now);
+    let elapsed = EPOCH.elapsed();
+    // Process uptime in ms won't exceed u64.
+    #[expect(clippy::cast_possible_truncation, clippy::as_conversions)]
+    let ms = elapsed.as_millis() as u64;
+    ms
+}
 
 // ── InputManager ───────────────────────────────────────────────────────────
 
@@ -146,11 +164,33 @@ impl InputManager {
 
     /// Drain discrete input events from every registered source.
     #[must_use]
-    pub fn drain_events(&mut self) -> Vec<InputEvent> {
+    pub fn drain_events(&mut self) -> Vec<TimedInputEvent> {
         self.sources
             .iter_mut()
             .flat_map(|source| source.drain_events())
             .collect()
+    }
+
+    /// Toggle live host-input capture for any registered interaction sources.
+    ///
+    /// Mirrors the audio/screen demand model: sources stay registered but
+    /// close their device handles and clear held state while inactive.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if an interaction source cannot update its capture state.
+    pub fn set_interaction_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
+        for source in &mut self.sources {
+            if source.is_interaction_source() {
+                source.set_interaction_capture_active(active)?;
+                info!(
+                    source = source.name(),
+                    active, "Updated interaction capture demand"
+                );
+            }
+        }
+
+        Ok(())
     }
 
     /// Start all registered sources.
@@ -300,6 +340,27 @@ impl InputManager {
     #[must_use]
     pub fn has_screen_source(&self) -> bool {
         self.sources.iter().any(|source| source.is_screen_source())
+    }
+
+    /// Whether any registered source captures host interaction.
+    #[must_use]
+    pub fn has_interaction_source(&self) -> bool {
+        self.sources
+            .iter()
+            .any(|source| source.is_interaction_source())
+    }
+
+    /// Stop and remove all registered interaction sources.
+    pub fn remove_interaction_sources(&mut self) {
+        self.sources.retain_mut(|source| {
+            if source.is_interaction_source() {
+                source.stop();
+                info!(source = source.name(), "Removed interaction source");
+                false
+            } else {
+                true
+            }
+        });
     }
 
     /// Stop and remove all registered screen sources.

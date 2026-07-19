@@ -347,16 +347,6 @@ fn scoped_sensor_control_ids(metadata: &EffectMetadata) -> Vec<String> {
         .collect()
 }
 
-fn effect_uses_interaction_data(metadata: &EffectMetadata) -> bool {
-    metadata.category == EffectCategory::Interactive
-        || metadata.tags.iter().any(|tag| {
-            tag.eq_ignore_ascii_case("interactive")
-                || tag.eq_ignore_ascii_case("input")
-                || tag.eq_ignore_ascii_case("mouse")
-                || tag.eq_ignore_ascii_case("keyboard")
-        })
-}
-
 fn effect_uses_media_data(metadata: &EffectMetadata) -> bool {
     effect_has_tag(metadata, "media")
 }

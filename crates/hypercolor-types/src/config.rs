@@ -214,6 +214,9 @@ pub struct HypercolorConfig {
     pub capture: CaptureConfig,
 
     #[serde(default)]
+    pub input: InputConfig,
+
+    #[serde(default)]
     pub display: DisplayConfig,
 
     #[serde(default)]
@@ -254,6 +257,7 @@ impl Default for HypercolorConfig {
             media: MediaConfig::default(),
             audio: AudioConfig::default(),
             capture: CaptureConfig::default(),
+            input: InputConfig::default(),
             display: DisplayConfig::default(),
             discovery: DiscoveryConfig::default(),
             network: NetworkConfig::default(),
@@ -707,6 +711,37 @@ impl Default for CaptureConfig {
             brightness: defaults::unit_scale(),
             gamma: defaults::unit_scale(),
             restore_token: None,
+        }
+    }
+}
+
+// ─── Input ───────────────────────────────────────────────────────────────────
+
+/// Host keyboard/mouse capture for interactive effects.
+///
+/// Capture is consent-gated: `enabled` defaults to `false` and nothing opens
+/// an input device until the user turns it on. Even when enabled, backends
+/// only capture while an active effect declares input reactivity.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InputConfig {
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Capture host keyboard state and events.
+    #[serde(default = "defaults::bool_true")]
+    pub keyboard: bool,
+
+    /// Capture host pointer state and events.
+    #[serde(default = "defaults::bool_true")]
+    pub mouse: bool,
+}
+
+impl Default for InputConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            keyboard: defaults::bool_true(),
+            mouse: defaults::bool_true(),
         }
     }
 }

@@ -1991,6 +1991,45 @@ fn frame_rendered_events_pass_through_for_frame_event_clients() {
     assert!(should_relay_event(&event, channels));
 }
 
+fn sample_input_event() -> HypercolorEvent {
+    HypercolorEvent::InputEventReceived {
+        event: hypercolor_types::event::InputEvent::Key {
+            source_id: "host:/dev/input/event3".into(),
+            key: "a".into(),
+            state: hypercolor_types::event::InputButtonState::Pressed,
+        },
+    }
+}
+
+#[test]
+fn input_events_never_relay_on_the_default_events_channel() {
+    let channels = ChannelSet::from_channels(&[WsChannel::Events]);
+    assert!(!should_relay_event(&sample_input_event(), channels));
+}
+
+#[test]
+fn input_events_relay_only_on_the_input_events_channel() {
+    let channels = ChannelSet::from_channels(&[WsChannel::InputEvents]);
+    assert!(should_relay_event(&sample_input_event(), channels));
+}
+
+#[test]
+fn input_events_channel_requires_control_subscription() {
+    assert!(WsChannel::InputEvents.requires_control_subscription());
+    assert_eq!(
+        WsChannel::parse("input_events"),
+        Some(WsChannel::InputEvents)
+    );
+    assert_eq!(WsChannel::InputEvents.as_str(), "input_events");
+}
+
+#[test]
+fn default_subscription_excludes_input_events() {
+    let default_channels = SubscriptionState::default().channels;
+    assert!(default_channels.contains(WsChannel::Events));
+    assert!(!default_channels.contains(WsChannel::InputEvents));
+}
+
 #[test]
 fn ws_capabilities_include_commands() {
     let capabilities = ws_capabilities();

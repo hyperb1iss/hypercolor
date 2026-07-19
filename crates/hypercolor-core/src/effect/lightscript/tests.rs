@@ -386,7 +386,9 @@ fn interaction_payload_populates_keyboard_and_mouse_state_on_change() {
             y: 24,
             buttons: vec!["left".to_owned()],
             down: true,
+            ..Default::default()
         },
+        ..Default::default()
     };
     let options = LightScriptFrameUpdateOptions {
         include_audio: false,

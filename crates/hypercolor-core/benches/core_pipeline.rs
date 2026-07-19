@@ -134,6 +134,7 @@ fn ambient_metadata(name: &str) -> EffectMetadata {
         presets: Vec::new(),
         audio_reactive: false,
         screen_reactive: false,
+        input_reactive: false,
         source: EffectSource::Native {
             path: PathBuf::from(format!("builtin/{name}")),
         },

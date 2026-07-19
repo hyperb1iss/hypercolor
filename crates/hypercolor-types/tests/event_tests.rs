@@ -1162,3 +1162,41 @@ fn frame_data_is_clone_and_debug() {
     let debug_str = format!("{cloned:?}");
     assert!(debug_str.contains("42"));
 }
+
+#[test]
+fn mouse_input_events_round_trip_through_json() {
+    use hypercolor_types::event::TimedInputEvent;
+
+    let timed = TimedInputEvent {
+        event: InputEvent::MouseButton {
+            source_id: "host:/dev/input/event4".into(),
+            button: "left".into(),
+            state: InputButtonState::Pressed,
+        },
+        at_ms: 12_345,
+        seq: 7,
+    };
+
+    let json = serde_json::to_string(&timed).expect("serialize timed event");
+    let restored: TimedInputEvent = serde_json::from_str(&json).expect("deserialize timed event");
+    assert_eq!(restored, timed);
+
+    let wheel = InputEvent::MouseWheel {
+        source_id: "host:/dev/input/event4".into(),
+        delta_hi_res: -240,
+    };
+    let json = serde_json::to_string(&wheel).expect("serialize wheel");
+    assert!(json.contains("\"kind\":\"mouse_wheel\""));
+    let restored: InputEvent = serde_json::from_str(&json).expect("deserialize wheel");
+    assert_eq!(restored, wheel);
+    assert_eq!(restored.source_id(), "host:/dev/input/event4");
+}
+
+#[test]
+fn timed_input_event_seq_defaults_to_zero_when_absent() {
+    use hypercolor_types::event::TimedInputEvent;
+
+    let json = r#"{"event":{"kind":"key","source_id":"s","key":"a","state":"pressed"},"at_ms":5}"#;
+    let restored: TimedInputEvent = serde_json::from_str(json).expect("deserialize without seq");
+    assert_eq!(restored.seq, 0);
+}

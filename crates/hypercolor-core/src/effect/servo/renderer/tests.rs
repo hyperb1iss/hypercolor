@@ -61,6 +61,7 @@ fn custom_interaction(
             recent_keys: recent_keys.iter().map(ToString::to_string).collect(),
         },
         mouse: crate::input::MouseData::default(),
+        ..Default::default()
     }
 }
 
@@ -122,6 +123,7 @@ fn html_metadata(path: PathBuf) -> EffectMetadata {
         presets: Vec::new(),
         audio_reactive: false,
         screen_reactive: false,
+        input_reactive: false,
         source: EffectSource::Html { path },
         license: None,
     }
@@ -418,14 +420,14 @@ fn sensor_updates_are_limited_to_sensor_aware_metadata() {
 fn interaction_updates_are_limited_to_interaction_aware_metadata() {
     let mut ambient = html_metadata(PathBuf::from("ambient.html"));
     ambient.category = EffectCategory::Ambient;
-    assert!(!effect_uses_interaction_data(&ambient));
+    assert!(!ambient.requires_interaction());
 
     let interactive = html_metadata(PathBuf::from("interactive.html"));
-    assert!(effect_uses_interaction_data(&interactive));
+    assert!(interactive.requires_interaction());
 
     let mut tagged = ambient.clone();
     tagged.tags.push("mouse".to_owned());
-    assert!(effect_uses_interaction_data(&tagged));
+    assert!(tagged.requires_interaction());
 }
 
 #[test]

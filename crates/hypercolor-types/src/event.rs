@@ -216,6 +216,19 @@ pub enum InputEvent {
         state: InputButtonState,
     },
 
+    /// A host pointer button changed state.
+    MouseButton {
+        source_id: String,
+        button: String,
+        state: InputButtonState,
+    },
+
+    /// A host pointer wheel moved, in 1/120-notch hi-res units.
+    MouseWheel {
+        source_id: String,
+        delta_hi_res: i32,
+    },
+
     /// A MIDI note changed state.
     MidiNote {
         source_id: String,
@@ -245,6 +258,36 @@ pub enum InputEvent {
         source_id: String,
         message: MidiRealtimeMessage,
     },
+}
+
+impl InputEvent {
+    /// The capture source that produced this event.
+    #[must_use]
+    pub fn source_id(&self) -> &str {
+        match self {
+            Self::Key { source_id, .. }
+            | Self::MouseButton { source_id, .. }
+            | Self::MouseWheel { source_id, .. }
+            | Self::MidiNote { source_id, .. }
+            | Self::MidiControlChange { source_id, .. }
+            | Self::MidiPitchBend { source_id, .. }
+            | Self::MidiRealtime { source_id, .. } => source_id,
+        }
+    }
+}
+
+/// An [`InputEvent`] stamped with capture time and delivery order.
+///
+/// `at_ms` is milliseconds on the daemon's monotonic clock at capture time,
+/// so effects can spread a burst of events delivered in one frame across
+/// their real arrival times. `seq` is assigned at the frame fan-out point
+/// and is strictly increasing across frames.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TimedInputEvent {
+    pub event: InputEvent,
+    pub at_ms: u64,
+    #[serde(default)]
+    pub seq: u64,
 }
 
 /// Context dimensions for automation triggers.

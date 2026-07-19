@@ -3,9 +3,9 @@
 use hypercolor_types::config::{
     AudioConfig, CaptureConfig, DaemonConfig, DbusConfig, DiscoveryConfig, DisplayConfig,
     EffectEngineConfig, EffectErrorFallbackPolicy, FeatureFlags, GoveeConfig, HypercolorConfig,
-    LogLevel, McpConfig, MediaConfig, NetworkAccessMode, NetworkClientScope, NetworkConfig,
-    RenderAccelerationMode, RenderingConfig, ServoGpuImportConfig, ServoGpuImportMode,
-    ShutdownBehavior, TuiConfig, WebConfig, default_driver_configs,
+    InputConfig, LogLevel, McpConfig, MediaConfig, NetworkAccessMode, NetworkClientScope,
+    NetworkConfig, RenderAccelerationMode, RenderingConfig, ServoGpuImportConfig,
+    ServoGpuImportMode, ShutdownBehavior, TuiConfig, WebConfig, default_driver_configs,
 };
 use hypercolor_types::session::{OffOutputBehavior, SessionConfig};
 
@@ -239,6 +239,7 @@ fn full_config_toml_roundtrip() {
         media: MediaConfig::default(),
         audio: AudioConfig::default(),
         capture: CaptureConfig::default(),
+        input: InputConfig::default(),
         display: DisplayConfig::default(),
         discovery: DiscoveryConfig::default(),
         network: NetworkConfig::default(),
@@ -544,4 +545,20 @@ shutdown_behavior = "off"
     let restored: DaemonConfig = toml::from_str(&reserialized).expect("re-deserialize");
     assert_eq!(restored.log_level, LogLevel::Warn);
     assert_eq!(restored.shutdown_behavior, ShutdownBehavior::Off);
+}
+
+#[test]
+fn input_config_defaults_to_disabled_with_both_kinds_on() {
+    let config = InputConfig::default();
+    assert!(!config.enabled, "input capture must be opt-in");
+    assert!(config.keyboard);
+    assert!(config.mouse);
+
+    let parsed: InputConfig = toml::from_str("").expect("empty input config parses");
+    assert!(!parsed.enabled);
+    assert!(parsed.keyboard);
+    assert!(parsed.mouse);
+
+    let full: HypercolorConfig = toml::from_str("schema_version = 4").expect("minimal config");
+    assert!(!full.input.enabled);
 }

@@ -36,7 +36,7 @@ use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceState};
 use hypercolor_types::effect::{ControlValue, EffectId, EffectMetadata};
 use hypercolor_types::event::{
-    FrameData, HypercolorEvent, InputButtonState, InputEvent, ZoneColors,
+    FrameData, HypercolorEvent, InputButtonState, InputEvent, TimedInputEvent, ZoneColors,
 };
 use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::{DisplayFaceTarget, UnassignedBehavior, Zone, ZoneId, ZoneRole};
@@ -696,14 +696,21 @@ impl InputSource for DemandGatedMockScreenSource {
 
 struct EventOnlySource {
     running: bool,
-    events: Vec<InputEvent>,
+    events: Vec<TimedInputEvent>,
 }
 
 impl EventOnlySource {
     fn new(events: Vec<InputEvent>) -> Self {
         Self {
             running: false,
-            events,
+            events: events
+                .into_iter()
+                .map(|event| TimedInputEvent {
+                    event,
+                    at_ms: 0,
+                    seq: 0,
+                })
+                .collect(),
         }
     }
 }
@@ -730,7 +737,7 @@ impl InputSource for EventOnlySource {
         self.running
     }
 
-    fn drain_events(&mut self) -> Vec<InputEvent> {
+    fn drain_events(&mut self) -> Vec<TimedInputEvent> {
         std::mem::take(&mut self.events)
     }
 }
