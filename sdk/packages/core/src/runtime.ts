@@ -6,6 +6,8 @@
  * and the host environment.
  */
 
+import type { EngineKeyboard, EngineMouse } from './input/types'
+
 /**
  * Audio analysis data from the Hypercolor audio pipeline.
  */
@@ -74,6 +76,16 @@ interface HypercolorEngine {
     /** Programmatically set a sensor value (for testing/custom meters). */
     setSensorValue(name: string, value: number, min: number, max: number, unit: string): void
 
+    // ── Interactive input ──────────────────────────────────────────
+    // Injected per frame when the effect declares input reactivity.
+
+    /** Keyboard state, recent presses, and ordered key events. */
+    keyboard?: EngineKeyboard
+    /** Mouse/pointer state and ordered button/wheel events. */
+    mouse?: EngineMouse
+    /** Count of input events dropped this frame due to overflow. */
+    inputDropped?: number
+
     // ── Canvas dimensions ──────────────────────────────────────────
     // Set by the daemon to match the render canvas or display resolution.
 
@@ -127,5 +139,3 @@ declare global {
         [controlId: string]: unknown
     }
 }
-
-export {}

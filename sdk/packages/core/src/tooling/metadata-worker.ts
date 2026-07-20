@@ -2,8 +2,9 @@ import { resolve } from 'node:path'
 
 import type { ArtifactKind, BuildControlDef, ExtractedArtifactMetadata, RegisteredArtifactDef } from './types'
 
-const BUILTIN_UNIFORMS = new Set(['iTime', 'iResolution', 'iMouse'])
+const BUILTIN_UNIFORMS = new Set(['iTime', 'iResolution', 'iMouse', 'iMouseDown', 'iWheel'])
 const AUDIO_USAGE_PATTERNS = [/\baudio\s*\(/, /\bctx\.audio\b/, /\bgetAudioData\s*\(/, /\bengine\.audio\b/]
+const INPUT_USAGE_PATTERNS = [/\bgetInputData\s*\(/, /\bengine\.keyboard\b/, /\bengine\.mouse\b/]
 
 function toBuildControls(def: RegisteredArtifactDef): BuildControlDef[] {
     return def.resolvedControls.map((ctrl) => {
@@ -80,6 +81,12 @@ async function validateExplicitReactivityOptIns(entryPath: string, def: Register
             `Audio reactivity validation failed for ${entryPath}: effect uses audio helpers but is missing audio: true`,
         )
     }
+
+    if (def.input !== true && INPUT_USAGE_PATTERNS.some((pattern) => pattern.test(source))) {
+        throw new Error(
+            `Input reactivity validation failed for ${entryPath}: effect uses input helpers but is missing input: true`,
+        )
+    }
 }
 
 function runtimeGlobals() {
@@ -142,6 +149,7 @@ async function loadMetadata(entryPath: string): Promise<ExtractedArtifactMetadat
             controls: toBuildControls(def),
             dataSources: dataSourcesFromDef(def),
             description: def.description ?? '',
+            inputReactive: def.input ?? false,
             kind: kindFromType(def.type),
             name: def.name,
             presets: def.presets ?? [],

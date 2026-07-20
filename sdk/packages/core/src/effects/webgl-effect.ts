@@ -6,12 +6,14 @@
  */
 
 import { AudioData, getAudioData } from '../audio'
+import { getInputData } from '../input'
 import { BaseEffect, EffectConfig } from './base-effect'
 
 export interface WebGLEffectConfig extends EffectConfig {
     fragmentShader: string
     vertexShader?: string
     audioReactive?: boolean
+    inputReactive?: boolean
     preserveDrawingBuffer?: boolean
 }
 
@@ -42,15 +44,18 @@ export abstract class WebGLEffect<T> extends BaseEffect<T> {
     protected fragmentShader: string
     protected vertexShader: string
     protected audioReactive: boolean
+    protected inputReactive: boolean
     protected preserveDrawingBuffer: boolean
     protected currentAudioData: AudioData | null = null
     protected captureMode: boolean
+    private wheelTotal = 0
 
     constructor(config: WebGLEffectConfig) {
         super(config)
         this.fragmentShader = config.fragmentShader
         this.vertexShader = config.vertexShader ?? DEFAULT_VERTEX_SHADER
         this.audioReactive = config.audioReactive ?? false
+        this.inputReactive = config.inputReactive ?? false
         this.captureMode =
             (typeof window !== 'undefined'
                 ? (window as { __hypercolorCaptureMode?: boolean }).__hypercolorCaptureMode
@@ -87,6 +92,12 @@ export abstract class WebGLEffect<T> extends BaseEffect<T> {
             this.registerAudioUniforms()
         }
 
+        // Register input uniforms if reactive
+        if (this.inputReactive) {
+            this.registerUniform('iMouseDown', 0)
+            this.registerUniform('iWheel', 0)
+        }
+
         // Let subclass register custom uniforms
         this.createUniforms()
 
@@ -105,6 +116,10 @@ export abstract class WebGLEffect<T> extends BaseEffect<T> {
         if (this.audioReactive) {
             this.currentAudioData = getAudioData()
             this.pushAudioUniforms(this.currentAudioData)
+        }
+
+        if (this.inputReactive) {
+            this.pushInputUniforms()
         }
 
         this.gl.drawArrays(this.gl.TRIANGLE_STRIP, 0, 4)
@@ -330,6 +345,14 @@ export abstract class WebGLEffect<T> extends BaseEffect<T> {
         this.setUniform('iAudioSwell', audio.swell)
         this.setUniform('iAudioTempo', audio.tempo)
         this.setUniform('iAudioFluxBands', Array.from(audio.spectralFluxBands))
+    }
+
+    private pushInputUniforms(): void {
+        const input = getInputData()
+        this.wheelTotal += input.mouse.wheel
+        this.setUniform('iMouse', [input.mouse.nx, input.mouse.ny])
+        this.setUniform('iMouseDown', input.mouse.down ? 1 : 0)
+        this.setUniform('iWheel', this.wheelTotal)
     }
 
     /** Register custom uniforms. Called during initialization. */

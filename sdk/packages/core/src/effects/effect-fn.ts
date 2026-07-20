@@ -55,6 +55,7 @@ export interface EffectFnOptions {
     author?: string
     audio?: boolean
     screen?: boolean
+    input?: boolean
     category?: string
     builtinId?: string
     /** Effect-defined presets — named control snapshots bundled with the effect. */
@@ -135,6 +136,7 @@ class GeneratedWebGLEffect extends WebGLEffect<Record<string, unknown>> {
             audioReactive: options.audio ?? false,
             fragmentShader: shader,
             id: name.toLowerCase().replace(/\s+/g, '-'),
+            inputReactive: options.input ?? false,
             name,
             preserveDrawingBuffer: options.preserveDrawingBuffer,
             vertexShader: options.vertexShader,
@@ -279,6 +281,7 @@ interface EffectDef {
     author?: string
     audio?: boolean
     screen?: boolean
+    input?: boolean
     category?: string
     builtinId?: string
     presets?: PresetDef[]
@@ -319,6 +322,7 @@ export function effect(name: string, shader: string, controls: ControlMap, optio
             category: opts.category,
             controls,
             description: opts.description,
+            input: opts.input,
             name,
             presets: opts.presets,
             resolvedControls: resolved,

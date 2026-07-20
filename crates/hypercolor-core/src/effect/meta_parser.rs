@@ -85,6 +85,7 @@ pub struct ParsedHtmlEffectMetadata {
     pub builtin_id: Option<String>,
     pub audio_reactive: bool,
     pub screen_reactive: bool,
+    pub input_reactive: bool,
     pub uses_canvas2d: bool,
     pub uses_webgl: bool,
     pub uses_three_js: bool,
@@ -179,6 +180,7 @@ pub fn parse_html_effect_metadata(html: &str) -> ParsedHtmlEffectMetadata {
 
     let audio_reactive = detect_audio_meta_tag(&sanitized).unwrap_or(false);
     let screen_reactive = detect_screen_meta_tag(&sanitized).unwrap_or(false);
+    let input_reactive = detect_input_meta_tag(&sanitized).unwrap_or(false);
     let data_sources = detect_data_sources_meta_tag(&sanitized);
     let renderer_hint = detect_renderer_meta_tag(&sanitized);
     let builtin_id = detect_builtin_id_meta_tag(&sanitized);
@@ -205,6 +207,7 @@ pub fn parse_html_effect_metadata(html: &str) -> ParsedHtmlEffectMetadata {
         category,
         audio_reactive,
         screen_reactive,
+        input_reactive,
         uses_canvas2d,
         uses_webgl,
         uses_three_js,
@@ -221,6 +224,7 @@ pub fn parse_html_effect_metadata(html: &str) -> ParsedHtmlEffectMetadata {
         builtin_id,
         audio_reactive,
         screen_reactive,
+        input_reactive,
         uses_canvas2d,
         uses_webgl,
         uses_three_js,
@@ -495,6 +499,12 @@ fn detect_screen_meta_tag(html: &str) -> Option<bool> {
     detect_boolean_meta_tag(html, "screen-reactive")
 }
 
+/// Check for an explicit `<meta input-reactive="true"/>` tag (emitted by the SDK build script).
+/// Returns `Some(true/false)` if found, `None` if absent.
+fn detect_input_meta_tag(html: &str) -> Option<bool> {
+    detect_boolean_meta_tag(html, "input-reactive")
+}
+
 const KNOWN_DATA_SOURCES: [&str; 3] = ["media", "net", "lighting"];
 
 /// Parse `<meta data-sources="media,net,lighting"/>` (emitted by the SDK
@@ -711,6 +721,7 @@ fn build_tags(
     category: EffectCategory,
     audio_reactive: bool,
     screen_reactive: bool,
+    input_reactive: bool,
     uses_canvas2d: bool,
     uses_webgl: bool,
     uses_three_js: bool,
@@ -738,6 +749,9 @@ fn build_tags(
     if screen_reactive {
         tags.insert("screen".to_owned());
         tags.insert("screen-reactive".to_owned());
+    }
+    if input_reactive {
+        tags.insert("input-reactive".to_owned());
     }
 
     if controls
@@ -1016,5 +1030,42 @@ mod tests {
 "#;
         let parsed = parse_html_effect_metadata(html_clean);
         assert!(!parsed.audio_reactive);
+    }
+
+    #[test]
+    fn input_reactivity_requires_explicit_meta_tag() {
+        let html_input = r#"
+<head>
+  <title>Keystrike</title>
+  <meta description="Key presses spawn chromatic ripples" />
+  <meta input-reactive="true"/>
+</head>
+<script>engine.keyboard.keys;</script>
+"#;
+        let parsed = parse_html_effect_metadata(html_input);
+        assert!(parsed.input_reactive);
+        assert!(parsed.tags.contains(&"input-reactive".to_owned()));
+
+        let html_false = r#"
+<head>
+  <title>Calm Drift</title>
+  <meta input-reactive="false"/>
+</head>
+<script>engine.mouse.nx;</script>
+"#;
+        let parsed = parse_html_effect_metadata(html_false);
+        assert!(!parsed.input_reactive);
+        assert!(!parsed.tags.contains(&"input-reactive".to_owned()));
+
+        let html_clean = r#"
+<head>
+  <title>Plain Effect</title>
+  <meta description="No input declaration" />
+</head>
+<script>engine.keyboard.keys; engine.mouse.down;</script>
+"#;
+        let parsed = parse_html_effect_metadata(html_clean);
+        assert!(!parsed.input_reactive);
+        assert!(!parsed.tags.contains(&"input-reactive".to_owned()));
     }
 }

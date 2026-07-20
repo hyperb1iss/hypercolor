@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 
 import { asset, combo, paletteControl } from '../src/controls/specs'
-import { __testing } from '../src/effects/effect-fn'
+import { __testing, effect } from '../src/effects/effect-fn'
 
 const originalWindow = (globalThis as { window?: Record<string, unknown> }).window
 
@@ -59,5 +59,37 @@ describe('effect palette control resolution', () => {
         expect(controls[0]?.spec.__type).toBe('asset')
         expect(controls[0]?.spec.meta.mediaKind).toBe('image')
         expect(values.logo).toBe('asset_01JZ')
+    })
+})
+
+describe('effect input opt-in', () => {
+    function withMetadataOnly(run: () => void): unknown[] {
+        Reflect.set(globalThis, '__HYPERCOLOR_METADATA_ONLY__', true)
+        Reflect.deleteProperty(globalThis, '__hypercolorEffectDefs__')
+        try {
+            run()
+            return (Reflect.get(globalThis, '__hypercolorEffectDefs__') as unknown[]) ?? []
+        } finally {
+            Reflect.deleteProperty(globalThis, '__HYPERCOLOR_METADATA_ONLY__')
+            Reflect.deleteProperty(globalThis, '__hypercolorEffectDefs__')
+        }
+    }
+
+    test('input: true is carried into registered metadata', () => {
+        const defs = withMetadataOnly(() => {
+            effect('Input Probe', 'void main() {}', {}, { input: true })
+        })
+
+        expect(defs).toHaveLength(1)
+        expect((defs[0] as { input?: boolean }).input).toBe(true)
+    })
+
+    test('input stays unset when not requested', () => {
+        const defs = withMetadataOnly(() => {
+            effect('Calm Probe', 'void main() {}', {})
+        })
+
+        expect(defs).toHaveLength(1)
+        expect((defs[0] as { input?: boolean }).input).toBeUndefined()
     })
 })

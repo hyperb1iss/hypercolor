@@ -99,6 +99,31 @@ export {
     smoothValue,
 } from './audio'
 
+// ── Input ───────────────────────────────────────────────────────────────
+
+export type {
+    EngineKeyboard,
+    EngineMouse,
+    InputData,
+    KeyboardInputState,
+    KeyEventState,
+    KeyInputEvent,
+    MouseInputEvent,
+    MouseInputState,
+    MouseMode,
+    PressEnvelopeOptions,
+    TypingRateOptions,
+} from './input'
+export {
+    getInputData,
+    keyToGridPosition,
+    PressEnvelope,
+    pressEnvelope,
+    TypingRate,
+    typingRate,
+    wasdVector,
+} from './input'
+
 // ── Utilities ───────────────────────────────────────────────────────────
 
 export type { HSLColor, RGBColor, UpdateFunction } from './utils'

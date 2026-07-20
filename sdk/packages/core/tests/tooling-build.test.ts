@@ -280,6 +280,82 @@ export default effect('Media Mask', shader, {
         }
     })
 
+    test('emits the input-reactive meta from the input opt-in', async () => {
+        const tempRoot = mkdtempSync(join(tmpdir(), 'hypercolor-input-optin-'))
+        const outDir = join(tempRoot, 'dist')
+        try {
+            const writeEffect = (slug: string, options: string) => {
+                const entryDir = join(tempRoot, slug)
+                mkdirSync(entryDir, { recursive: true })
+                const entryPath = join(entryDir, 'main.ts')
+                writeFileSync(
+                    entryPath,
+                    `import { canvas } from ${JSON.stringify(SDK_ALIAS)}
+
+export default canvas.stateful('${slug}', {}, () => {
+    return (ctx) => {
+        void ctx.canvas.width
+    }
+}${options})
+`,
+                )
+                return entryPath
+            }
+
+            const [withInput] = await buildArtifacts({
+                entryPaths: [writeEffect('input-probe', ', { input: true }')],
+                outDir,
+                sdkAliasPath: SDK_ALIAS,
+            })
+            expect(withInput.metadata.inputReactive).toBeTrue()
+            expect(readFileSync(withInput.outputPath, 'utf8')).toContain('<meta input-reactive="true" />')
+
+            const [inert] = await buildArtifacts({
+                entryPaths: [writeEffect('inert-probe', '')],
+                outDir,
+                sdkAliasPath: SDK_ALIAS,
+            })
+            expect(inert.metadata.inputReactive).toBeFalse()
+            expect(readFileSync(inert.outputPath, 'utf8')).toContain('<meta input-reactive="false" />')
+        } finally {
+            rmSync(tempRoot, { force: true, recursive: true })
+        }
+    })
+
+    test('fails fast when an effect uses input helpers without input: true', async () => {
+        const tempRoot = mkdtempSync(join(tmpdir(), 'hypercolor-input-lint-'))
+        const entryDir = join(tempRoot, 'missing-input-optin')
+        const entryPath = join(entryDir, 'main.ts')
+        const outDir = join(tempRoot, 'dist')
+
+        mkdirSync(entryDir, { recursive: true })
+        writeFileSync(
+            entryPath,
+            `
+import { canvas, getInputData } from ${JSON.stringify(SDK_ALIAS)}
+
+export default canvas.stateful('Missing Input Opt-In', {}, () => {
+    return () => {
+        const data = getInputData()
+        void data.available
+    }
+})
+`,
+        )
+
+        try {
+            await expect(
+                buildArtifacts({
+                    entryPaths: [entryPath],
+                    outDir,
+                    sdkAliasPath: SDK_ALIAS,
+                }),
+            ).rejects.toThrow('missing input: true')
+        } finally {
+            rmSync(tempRoot, { force: true, recursive: true })
+        }
+    })
+
     test('fails fast when an effect uses audio helpers without audio: true', async () => {
         const tempRoot = mkdtempSync(join(tmpdir(), 'hypercolor-audio-optin-'))
         const entryDir = join(tempRoot, 'missing-audio-optin')

@@ -59,6 +59,7 @@ export interface CanvasFnOptions {
     author?: string
     audio?: boolean
     screen?: boolean
+    input?: boolean
     category?: string
     builtinId?: string
     /**
@@ -218,6 +219,7 @@ interface CanvasDef {
     resolvedControls: ResolvedCanvasControl[]
     audio?: boolean
     screen?: boolean
+    input?: boolean
     category?: string
     builtinId?: string
     description?: string
@@ -261,6 +263,7 @@ export function canvas(
             controls,
             description: opts.description,
             designBasis: opts.designBasis,
+            input: opts.input,
             name,
             presets: opts.presets,
             resolvedControls: resolved,
@@ -293,6 +296,7 @@ canvas.stateful = function stateful(
             controls,
             description: opts.description,
             designBasis: opts.designBasis,
+            input: opts.input,
             name,
             presets: opts.presets,
             resolvedControls: resolved,

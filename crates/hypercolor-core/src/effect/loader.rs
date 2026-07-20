@@ -195,7 +195,7 @@ pub fn load_html_effect_file(file: &Path) -> Result<Option<EffectEntry>, HtmlDis
         presets,
         audio_reactive: parsed.audio_reactive,
         screen_reactive: parsed.screen_reactive,
-        input_reactive: false,
+        input_reactive: parsed.input_reactive,
         source: EffectSource::Html {
             path: source_path.clone(),
         },

@@ -32,6 +32,7 @@ export interface RegisteredArtifactDef {
     net?: boolean
     lighting?: boolean
     screen?: boolean
+    input?: boolean
     category?: string
     builtinId?: string
     presets?: PresetDef[]
@@ -64,6 +65,7 @@ export interface ExtractedArtifactMetadata {
     author: string
     audioReactive: boolean
     screenReactive: boolean
+    inputReactive: boolean
     /** Typed data sources the artifact opted into (`media`, `net`, `lighting`). */
     dataSources: string[]
     category?: string

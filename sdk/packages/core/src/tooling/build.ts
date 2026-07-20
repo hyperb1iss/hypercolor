@@ -73,6 +73,7 @@ function effectHtml(args: {
     presets: string[]
     renderer?: string
     audioReactive: boolean
+    inputReactive: boolean
     screenReactive: boolean
 }): string {
     const presetBlock = args.presets.length > 0 ? `\n${args.presets.join('\n')}` : ''
@@ -90,6 +91,7 @@ function effectHtml(args: {
     <meta description="${escapeAttr(args.description)}" />
     <meta publisher="${escapeAttr(args.author)}" />
     <meta audio-reactive="${args.audioReactive}" />
+    <meta input-reactive="${args.inputReactive}" />
     <meta screen-reactive="${args.screenReactive}" />${categoryTag}${builtinTag}${rendererTag}
 ${args.controlMetas.join('\n')}${presetBlock}
   </head>
@@ -210,6 +212,7 @@ export async function buildArtifactDocument(options: {
                   category: metadata.category,
                   controlMetas,
                   description: metadata.description,
+                  inputReactive: metadata.inputReactive,
                   jsBundle,
                   name: metadata.name,
                   presets: presetMetas,
