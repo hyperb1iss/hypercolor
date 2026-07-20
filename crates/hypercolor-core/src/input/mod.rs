@@ -5,6 +5,7 @@
 //! `sample_all()` each frame to collect fresh data from every active source.
 
 pub mod audio;
+pub mod browser;
 #[cfg(target_os = "linux")]
 pub mod evdev;
 pub mod interaction;
@@ -14,6 +15,7 @@ pub mod screen;
 pub mod sensor;
 mod traits;
 
+pub use browser::{BrowserInputEdge, BrowserInputHandle, BrowserInputSource};
 #[cfg(target_os = "linux")]
 pub use evdev::{DeviceOpenState, DeviceOpenStatus, EvdevHostInput};
 pub use interaction::InteractionInput;

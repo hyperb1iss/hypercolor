@@ -248,7 +248,8 @@ impl DaemonState {
         info!("Device lifecycle manager created");
 
         // ── Input Manager ───────────────────────────────────────────────
-        let input_manager = Arc::new(Mutex::new(build_input_manager(config, &config_manager)));
+        let (built_input_manager, browser_input) = build_input_manager(config, &config_manager);
+        let input_manager = Arc::new(Mutex::new(built_input_manager));
         info!(
             audio_enabled = config.audio.enabled,
             capture_enabled = config.capture.enabled,
@@ -524,6 +525,7 @@ impl DaemonState {
             lifecycle_manager,
             reconnect_tasks,
             input_manager,
+            browser_input,
             logical_devices,
             logical_devices_path,
             attachment_registry,
@@ -562,7 +564,7 @@ impl DaemonState {
 pub(crate) fn build_input_manager(
     config: &HypercolorConfig,
     config_manager: &Arc<ConfigManager>,
-) -> InputManager {
+) -> (InputManager, hypercolor_core::input::BrowserInputHandle) {
     #[cfg(not(target_os = "linux"))]
     let _ = config_manager;
     let mut input_manager = InputManager::new();
@@ -573,6 +575,12 @@ pub(crate) fn build_input_manager(
     if let Some(source) = build_interaction_source(&config.input) {
         input_manager.add_source(source);
     }
+    // Browser-preview injection is always registered: it has no hardware and
+    // no privacy surface (the user drives their own browser), and its edges
+    // only reach effects that declare input reactivity.
+    let browser_source = hypercolor_core::input::BrowserInputSource::new();
+    let browser_input = browser_source.handle();
+    input_manager.add_source(Box::new(browser_source));
     input_manager.add_source(Box::new(hypercolor_core::input::MediaSource::new()));
     input_manager.add_source(Box::new(hypercolor_core::input::NetSource::new()));
 
@@ -598,7 +606,7 @@ pub(crate) fn build_input_manager(
         ));
     }
 
-    input_manager
+    (input_manager, browser_input)
 }
 
 /// Build the platform host-input capture source, when config allows one.

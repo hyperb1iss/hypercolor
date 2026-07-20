@@ -26,9 +26,9 @@ use hypercolor_types::spatial::SpatialLayout;
 use super::cache::{WS_BUFFER_SIZE, WsClientGuard, track_ws_bytes_sent};
 use super::command::dispatch_command;
 use super::protocol::{
-    ClientMessage, HelloFps, HelloState, NameRef, SceneRef, ServerMessage, SubscriptionState,
-    WsChannel, WsProtocolError, parse_channels, sorted_channel_names, unique_sorted_channel_names,
-    ws_capabilities,
+    BrowserInputEdgeWire, ClientMessage, HelloFps, HelloState, NameRef, SceneRef, ServerMessage,
+    SubscriptionState, WsChannel, WsProtocolError, parse_channels, sorted_channel_names,
+    unique_sorted_channel_names, ws_capabilities,
 };
 use super::relays::{
     publish_subscriptions, relay_canvas, relay_device_metrics, relay_display_preview, relay_events,
@@ -229,6 +229,7 @@ async fn handle_socket(
     let mut awaiting_pong = false;
     let mut ping_sent_at = Instant::now();
     let mut zone_layout_preview_keys = HashSet::<(SceneId, ZoneId)>::new();
+    let input_source_id = next_browser_input_source_id();
 
     // Main loop: multiplex between incoming client messages and outbound events.
     loop {
@@ -288,6 +289,7 @@ async fn handle_socket(
                             &mut subscriptions,
                             &subscriptions_tx,
                             &mut zone_layout_preview_keys,
+                            &input_source_id,
                             &mut socket,
                         )
                         .await;
@@ -330,7 +332,17 @@ async fn handle_socket(
         .zone_layout_previews
         .clear_many(zone_layout_preview_keys)
         .await;
+    // Synthesize releases for anything this preview left held so no key or
+    // button sticks after the socket closes.
+    state.browser_input.release_source(&input_source_id);
     debug!("WebSocket client disconnected");
+}
+
+/// A stable per-connection identity for browser input injection.
+fn next_browser_input_source_id() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(1);
+    format!("browser:{}", COUNTER.fetch_add(1, Ordering::Relaxed))
 }
 
 pub(super) fn authorize_subscription_channels(
@@ -366,6 +378,7 @@ async fn handle_client_message(
     subscriptions: &mut SubscriptionState,
     subscriptions_tx: &watch::Sender<SubscriptionState>,
     zone_layout_preview_keys: &mut HashSet<(SceneId, ZoneId)>,
+    input_source_id: &str,
     socket: &mut WebSocket,
 ) {
     let msg = match serde_json::from_str::<ClientMessage>(text) {
@@ -482,6 +495,17 @@ async fn handle_client_message(
             {
                 let _ = send_json(socket, &error.into_message()).await;
             }
+        }
+        ClientMessage::InputInject { events } => {
+            if let Err(error) = ensure_control_tier(auth_context) {
+                let _ = send_json(socket, &error.into_message()).await;
+                return;
+            }
+
+            state.browser_input.inject(
+                input_source_id,
+                events.into_iter().map(BrowserInputEdgeWire::into_edge),
+            );
         }
     }
 }

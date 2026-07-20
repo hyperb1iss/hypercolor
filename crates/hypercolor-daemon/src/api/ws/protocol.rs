@@ -599,6 +599,69 @@ pub(super) enum ClientMessage {
     },
     /// Clear one transient per-zone layout preview.
     ZoneLayoutPreviewClear { scene_id: String, zone_id: String },
+    /// Inject browser-preview input edges into the running effect.
+    ///
+    /// Control-authorized. Edges carry no `source_id`: the session stamps a
+    /// per-connection identity so browser pointers never merge implicitly.
+    InputInject { events: Vec<BrowserInputEdgeWire> },
+}
+
+/// Wire form of one injected input edge from a browser preview.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(super) enum BrowserInputEdgeWire {
+    Key {
+        key: String,
+        state: InputButtonStateWire,
+    },
+    Button {
+        button: String,
+        state: InputButtonStateWire,
+    },
+    Move {
+        nx: f32,
+        ny: f32,
+    },
+    Wheel {
+        delta_hi_res: i32,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum InputButtonStateWire {
+    Pressed,
+    Released,
+    Repeated,
+}
+
+impl BrowserInputEdgeWire {
+    pub(super) fn into_edge(self) -> hypercolor_core::input::BrowserInputEdge {
+        use hypercolor_core::input::BrowserInputEdge;
+        use hypercolor_types::event::InputButtonState;
+
+        let map_state = |state: InputButtonStateWire| match state {
+            InputButtonStateWire::Pressed => InputButtonState::Pressed,
+            InputButtonStateWire::Released => InputButtonState::Released,
+            InputButtonStateWire::Repeated => InputButtonState::Repeated,
+        };
+
+        match self {
+            Self::Key { key, state } => BrowserInputEdge::Key {
+                key,
+                state: map_state(state),
+            },
+            Self::Button { button, state } => BrowserInputEdge::Button {
+                button,
+                state: map_state(state),
+            },
+            Self::Move { nx, ny } => BrowserInputEdge::Move {
+                norm_x: nx,
+                norm_y: ny,
+            },
+            Self::Wheel { delta_hi_res } => BrowserInputEdge::Wheel { delta_hi_res },
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Default)]

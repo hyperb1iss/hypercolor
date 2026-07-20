@@ -160,6 +160,9 @@ pub struct DaemonState {
     /// Input orchestrator — audio and screen capture sampling sources.
     pub input_manager: Arc<Mutex<InputManager>>,
 
+    /// Push handle for browser-preview input injection over WebSocket.
+    pub browser_input: hypercolor_core::input::BrowserInputHandle,
+
     /// Logical device segmentation store.
     pub logical_devices: Arc<RwLock<HashMap<String, LogicalDevice>>>,
 

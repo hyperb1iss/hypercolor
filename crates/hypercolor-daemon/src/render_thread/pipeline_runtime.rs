@@ -9,7 +9,7 @@ use hypercolor_core::asset::AssetLibrary;
 use hypercolor_core::bus::DisplayGroupOutputRoute;
 use hypercolor_core::effect::EffectRegistry;
 use hypercolor_core::engine::FpsTier;
-use hypercolor_core::input::{InputData, InteractionData, ScreenData};
+use hypercolor_core::input::{InputData, InteractionBatch, InteractionData, ScreenData};
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_core::types::audio::AudioData;
 use hypercolor_core::types::canvas::{
@@ -145,7 +145,7 @@ impl InputReuseState {
         } else {
             // Reused frames must not re-deliver the previous frame's
             // transient input batch; held state stays valid.
-            self.cached_inputs.interaction.batch = Default::default();
+            self.cached_inputs.interaction.batch = InteractionBatch::default();
         }
 
         &mut self.cached_inputs

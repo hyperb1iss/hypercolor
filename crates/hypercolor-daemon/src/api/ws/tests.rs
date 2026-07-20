@@ -41,10 +41,10 @@ use super::preview_encode::{
     encode_canvas_jpeg_payload_scaled_stateless,
 };
 use super::protocol::{
-    ActiveFramesConfig, CanvasFormat, ChannelConfig, ChannelConfigPatch, ChannelSet, ClientMessage,
-    FrameFormat, FrameZoneSelection, FramesConfig, ServerMessage, SubscriptionState, WsChannel,
-    event_message_parts, parse_channels, should_relay_event, to_snake_case,
-    unique_sorted_channel_names, ws_capabilities,
+    ActiveFramesConfig, BrowserInputEdgeWire, CanvasFormat, ChannelConfig, ChannelConfigPatch,
+    ChannelSet, ClientMessage, FrameFormat, FrameZoneSelection, FramesConfig, ServerMessage,
+    SubscriptionState, WsChannel, event_message_parts, parse_channels, should_relay_event,
+    to_snake_case, unique_sorted_channel_names, ws_capabilities,
 };
 use super::relays::{
     build_device_metrics_message, build_metrics_message, publish_subscriptions, relay_canvas,
@@ -2028,6 +2028,56 @@ fn default_subscription_excludes_input_events() {
     let default_channels = SubscriptionState::default().channels;
     assert!(default_channels.contains(WsChannel::Events));
     assert!(!default_channels.contains(WsChannel::InputEvents));
+}
+
+#[test]
+fn input_inject_message_parses_all_edge_kinds() {
+    use hypercolor_core::input::BrowserInputEdge;
+    use hypercolor_types::event::InputButtonState;
+
+    let raw = r#"{
+        "type": "input_inject",
+        "events": [
+            {"kind": "key", "key": "a", "state": "pressed"},
+            {"kind": "button", "button": "left", "state": "released"},
+            {"kind": "move", "nx": 0.5, "ny": 0.25},
+            {"kind": "wheel", "delta_hi_res": -240}
+        ]
+    }"#;
+
+    let ClientMessage::InputInject { events } =
+        serde_json::from_str::<ClientMessage>(raw).expect("input_inject parses")
+    else {
+        panic!("expected InputInject");
+    };
+    assert_eq!(events.len(), 4);
+
+    let edges: Vec<BrowserInputEdge> = events
+        .into_iter()
+        .map(BrowserInputEdgeWire::into_edge)
+        .collect();
+    assert_eq!(
+        edges[0],
+        BrowserInputEdge::Key {
+            key: "a".into(),
+            state: InputButtonState::Pressed,
+        }
+    );
+    assert_eq!(
+        edges[1],
+        BrowserInputEdge::Button {
+            button: "left".into(),
+            state: InputButtonState::Released,
+        }
+    );
+    assert_eq!(
+        edges[2],
+        BrowserInputEdge::Move {
+            norm_x: 0.5,
+            norm_y: 0.25,
+        }
+    );
+    assert_eq!(edges[3], BrowserInputEdge::Wheel { delta_hi_res: -240 });
 }
 
 #[test]

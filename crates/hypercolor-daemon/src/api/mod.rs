@@ -184,6 +184,9 @@ pub struct AppState {
     /// Live input graph shared with the daemon render thread.
     pub input_manager: Arc<Mutex<InputManager>>,
 
+    /// Push handle for browser-preview input injection over WebSocket.
+    pub browser_input: hypercolor_core::input::BrowserInputHandle,
+
     /// Global discovery scan lock flag shared across startup/API entrypoints.
     pub discovery_in_progress: Arc<AtomicBool>,
 
@@ -448,7 +451,11 @@ impl AppState {
         let device_metrics = Arc::new(ArcSwap::from_pointee(DeviceMetricsSnapshot::default()));
         let lifecycle_manager = Arc::new(Mutex::new(DeviceLifecycleManager::new()));
         let reconnect_tasks = Arc::new(StdMutex::new(HashMap::new()));
-        let input_manager = Arc::new(Mutex::new(InputManager::new()));
+        let browser_input_source = hypercolor_core::input::BrowserInputSource::new();
+        let browser_input = browser_input_source.handle();
+        let mut standalone_input_manager = InputManager::new();
+        standalone_input_manager.add_source(Box::new(browser_input_source));
+        let input_manager = Arc::new(Mutex::new(standalone_input_manager));
         let discovery_in_progress = Arc::new(AtomicBool::new(false));
         let attachment_registry = Arc::new(RwLock::new(attachment_registry));
         let attachment_profiles = Arc::new(RwLock::new(attachment_profiles));
@@ -534,6 +541,7 @@ impl AppState {
             extensions: ExtensionRegistry::default(),
             api_extensions: Vec::new(),
             input_manager,
+            browser_input,
             discovery_in_progress,
             profiles: Arc::new(RwLock::new(profiles)),
             attachment_registry,
@@ -627,6 +635,7 @@ impl AppState {
             extensions: daemon.extensions.clone(),
             api_extensions: daemon.api_extensions.clone(),
             input_manager: Arc::clone(&daemon.input_manager),
+            browser_input: daemon.browser_input.clone(),
             discovery_in_progress: Arc::clone(&daemon.discovery_in_progress),
             profiles: Arc::new(RwLock::new(profiles)),
             attachment_registry: Arc::clone(&daemon.attachment_registry),

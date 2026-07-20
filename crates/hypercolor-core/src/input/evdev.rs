@@ -460,10 +460,8 @@ fn poll_devices(
         let at_ms = input_mono_ms();
         // Collect first: the fetch iterator holds a mutable borrow of the
         // device, and folding needs the rest of the OpenDevice immutably.
-        let fetched: Result<Vec<EvdevInputEvent>, std::io::Error> = open
-            .device
-            .fetch_events()
-            .map(|events| events.collect::<Vec<_>>());
+        let fetched: Result<Vec<EvdevInputEvent>, std::io::Error> =
+            open.device.fetch_events().map(Iterator::collect);
         match fetched {
             Ok(events) => {
                 let Ok(mut guard) = shared.lock() else {
