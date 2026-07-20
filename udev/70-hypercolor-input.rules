@@ -1,0 +1,34 @@
+# Hypercolor host-input access for interactive lighting effects.
+#
+# The daemon reads /dev/input/event* nodes of supported RGB keyboards,
+# keypads, and mice so effects can react to keystrokes and pointer motion.
+#
+# CRITICAL — this file MUST sort before systemd's 73-seat-late.rules.
+# `TAG+="uaccess"` only grants the per-user ACL if the tag is set before
+# 73-seat-late.rules runs `RUN{builtin}+="uaccess"`. A rule numbered 99
+# tags the node too late: the builtin has already evaluated `TAG=="uaccess"`
+# as false, so the ACL is never applied and the node stays root-only. The
+# `70-` prefix keeps these rules ahead of seat assignment.
+#
+# Access is uaccess ONLY: deliberately NO GROUP= fallback on input nodes.
+# A group-readable event node hands every member of that group a live
+# keystroke feed — a keylogging grant. Vendors are limited to families that
+# ship keyboards, keypads, or mice. Install with `just udev-install`.
+
+# Razer
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{idVendor}=="1532", TAG+="uaccess", MODE="0640"
+
+# Corsair
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{idVendor}=="1b1c", TAG+="uaccess", MODE="0640"
+
+# Dygma
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{idVendor}=="35ef", TAG+="uaccess", MODE="0640"
+
+# ASUS (ROG keyboards)
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{idVendor}=="0b05", TAG+="uaccess", MODE="0640"
+
+# QMK community implementation keyboards: Keychron, ZSA, Drop/OLKB, Glorious
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{idVendor}=="3434", TAG+="uaccess", MODE="0640"
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{idVendor}=="3297", TAG+="uaccess", MODE="0640"
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{idVendor}=="feed", TAG+="uaccess", MODE="0640"
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{idVendor}=="320f", TAG+="uaccess", MODE="0640"

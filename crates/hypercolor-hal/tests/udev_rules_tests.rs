@@ -4,7 +4,8 @@ use hypercolor_hal::database::ProtocolDatabase;
 use hypercolor_hal::registry::TransportType;
 
 const UDEV_RULES: &str = include_str!("../../../udev/99-hypercolor.rules");
-const UDEV_INPUT_ALL_RULES: &str = include_str!("../../../udev/99-hypercolor-input-all.rules");
+const UDEV_INPUT_RULES: &str = include_str!("../../../udev/70-hypercolor-input.rules");
+const UDEV_INPUT_ALL_RULES: &str = include_str!("../../../udev/70-hypercolor-input-all.rules");
 const I2C_UDEV_RULE: &str = "SUBSYSTEM==\"i2c-dev\", KERNEL==\"i2c-[0-9]*\", MODE=\"0660\", GROUP=\"users\", TAG+=\"uaccess\"";
 
 fn input_rule_lines(rules: &str) -> Vec<&str> {
@@ -143,7 +144,7 @@ fn udev_rules_include_i2c_access_for_smbus_devices() {
 
 #[test]
 fn udev_rules_grant_uaccess_on_input_event_nodes() {
-    let input_rules = input_rule_lines(UDEV_RULES);
+    let input_rules = input_rule_lines(UDEV_INPUT_RULES);
     assert!(
         !input_rules.is_empty(),
         "expected at least one SUBSYSTEM==\"input\" rule for supported input vendors"
@@ -162,7 +163,7 @@ fn udev_rules_grant_uaccess_on_input_event_nodes() {
 
 #[test]
 fn udev_input_rules_never_carry_group_assignments() {
-    for rule in input_rule_lines(UDEV_RULES)
+    for rule in input_rule_lines(UDEV_INPUT_RULES)
         .into_iter()
         .chain(input_rule_lines(UDEV_INPUT_ALL_RULES))
     {
@@ -190,4 +191,24 @@ fn optional_input_all_rules_guard_by_input_class() {
             .any(|line| line.contains("SUBSYSTEM==\"input\"") && line.contains(mouse_guard)),
         "input-all rules must scope mouse access with {mouse_guard}"
     );
+}
+
+#[test]
+fn input_uaccess_rules_sort_before_systemd_seat_late() {
+    // `TAG+="uaccess"` only grants the per-user ACL when it is set before
+    // systemd's 73-seat-late.rules runs the uaccess builtin. A file numbered
+    // at or above 73 tags the node too late and the ACL is silently skipped,
+    // leaving supported keyboards root-only. Guard the prefix so a rename can
+    // never regress host input capture.
+    for name in ["70-hypercolor-input.rules", "70-hypercolor-input-all.rules"] {
+        let prefix: u32 = name
+            .split('-')
+            .next()
+            .and_then(|value| value.parse().ok())
+            .expect("input rules file must start with a numeric priority");
+        assert!(
+            prefix < 73,
+            "{name} must sort before systemd 73-seat-late.rules for uaccess to apply"
+        );
+    }
 }

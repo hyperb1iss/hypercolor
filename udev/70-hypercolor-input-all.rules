@@ -10,12 +10,15 @@
 # It exists for capturing input from devices Hypercolor does not drive:
 # laptop-internal keyboards/touchpads, Bluetooth keyboards, and generic mice.
 # If your input devices are supported RGB gear, the vendor-scoped input rules
-# in 99-hypercolor.rules already cover them and this file is unnecessary.
+# in 70-hypercolor-input.rules already cover them and this file is unnecessary.
 #
 # `just udev-install` deliberately does NOT install this file. To opt in:
-#   sudo cp udev/99-hypercolor-input-all.rules /etc/udev/rules.d/
+#   sudo cp udev/70-hypercolor-input-all.rules /etc/udev/rules.d/
 #   sudo udevadm control --reload-rules
 #   sudo udevadm trigger --action=add --subsystem-match=input
+#
+# The 70- prefix keeps these rules ahead of systemd 73-seat-late.rules so
+# `uaccess` actually applies the ACL (a 99- prefix would tag the node too late).
 #
 # uaccess ONLY — no GROUP= fallback, same rationale as the vendor-scoped input
 # rules: a group-readable event node is a keystroke grant to every member.

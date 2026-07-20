@@ -791,6 +791,7 @@ uninstall *args='':
 # Install udev rules for USB device access (requires sudo)
 udev-install:
     sudo cp udev/99-hypercolor.rules /etc/udev/rules.d/
+    sudo cp udev/70-hypercolor-input.rules /etc/udev/rules.d/
     sudo udevadm control --reload-rules
     sudo udevadm trigger --action=add --subsystem-match=hidraw
     sudo udevadm trigger --action=add --subsystem-match=usb
