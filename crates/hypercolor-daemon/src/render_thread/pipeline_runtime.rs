@@ -160,14 +160,12 @@ impl FrameInputs {
     ) -> Self {
         let (samples, mut events) = {
             let mut input_manager = state.input_manager.lock().await;
-            (
-                input_manager.sample_all_with_delta_secs(delta_secs),
-                input_manager.drain_events(),
-            )
+            input_manager.sample_and_drain_with_delta_secs(delta_secs)
         };
 
         let mut audio = AudioData::silence();
         let mut interaction = InteractionData::default();
+        let mut interaction_seen = false;
         let mut screen_data: Option<ScreenData> = None;
         let mut sensors = Arc::new(SystemSnapshot::empty());
         let mut media = None;
@@ -175,7 +173,17 @@ impl FrameInputs {
         for sample in samples {
             match sample {
                 InputData::Audio(snapshot) => audio = snapshot,
-                InputData::Interaction(snapshot) => interaction = snapshot,
+                // Merge, don't overwrite: host capture and browser injection
+                // both emit interaction snapshots, and last-writer-wins would
+                // let an idle source blank the other's held state.
+                InputData::Interaction(snapshot) => {
+                    if interaction_seen {
+                        interaction.merge_from(snapshot);
+                    } else {
+                        interaction = snapshot;
+                        interaction_seen = true;
+                    }
+                }
                 InputData::Screen(snapshot) => screen_data = Some(snapshot),
                 InputData::Sensors(snapshot) => sensors = snapshot,
                 InputData::Media(snapshot) => media = Some(snapshot),
@@ -186,7 +194,9 @@ impl FrameInputs {
 
         // Single fan-out point: drained events feed the bus (automation,
         // authorized WS subscribers) and this frame's interaction batch, so
-        // nothing is consumed twice or lost between the two paths.
+        // nothing is consumed twice or lost between the two paths. Sort by
+        // capture time first so cross-source events sequence in real order.
+        events.sort_by_key(|event| event.at_ms);
         for event in &mut events {
             event.seq = next_input_event_seq();
             if let InputEvent::MouseWheel { delta_hi_res, .. } = event.event {
@@ -200,6 +210,7 @@ impl FrameInputs {
                 });
         }
         interaction.batch.events = events;
+        interaction.batch.window_secs = delta_secs.max(0.0);
 
         Self {
             audio,

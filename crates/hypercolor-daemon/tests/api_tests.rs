@@ -1156,7 +1156,11 @@ async fn config_set_audio_device_persists_without_live_rebuild_by_default() {
 
     {
         let input_manager = state.input_manager.lock().await;
-        assert_eq!(input_manager.source_count(), 0);
+        assert_eq!(
+            input_manager.source_count(),
+            1,
+            "only the always-registered browser injection source remains"
+        );
     }
 
     let config_raw = fs::read_to_string(&config_path).expect("config file should be written");
@@ -1323,7 +1327,11 @@ async fn config_set_audio_device_rebuilds_live_input_manager_when_requested() {
 
     {
         let input_manager = state.input_manager.lock().await;
-        assert_eq!(input_manager.source_count(), 1);
+        assert_eq!(
+            input_manager.source_count(),
+            2,
+            "browser injection source plus the rebuilt audio source"
+        );
         assert!(
             input_manager
                 .source_names()
@@ -1424,7 +1432,11 @@ async fn config_set_legacy_audio_alias_skips_live_rebuild_when_already_canonical
 
     {
         let input_manager = state.input_manager.lock().await;
-        assert_eq!(input_manager.source_count(), 0);
+        assert_eq!(
+            input_manager.source_count(),
+            1,
+            "only the always-registered browser injection source remains"
+        );
     }
 
     assert!(
@@ -1468,7 +1480,11 @@ async fn config_set_identical_audio_value_skips_live_rebuild() {
 
     {
         let input_manager = state.input_manager.lock().await;
-        assert_eq!(input_manager.source_count(), 0);
+        assert_eq!(
+            input_manager.source_count(),
+            1,
+            "only the always-registered browser injection source remains"
+        );
     }
 
     assert!(

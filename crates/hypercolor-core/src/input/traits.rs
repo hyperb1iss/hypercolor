@@ -56,9 +56,58 @@ pub struct InteractionData {
 
 impl InteractionData {
     /// Whether a renderer consuming this snapshot has anything new to see.
+    ///
+    /// Producers uphold two invariants that make this sound: `recent_keys`
+    /// drain on every sample (the same press edge never repeats across
+    /// frames), and the generation bumps whenever held state changed or
+    /// recents were delivered.
     #[must_use]
     pub fn is_dirty_against(&self, last_generation: Option<u64>) -> bool {
         last_generation != Some(self.generation) || !self.batch.is_empty()
+    }
+
+    /// Fold another source's snapshot into this one.
+    ///
+    /// Multiple interaction sources (host capture plus browser injection)
+    /// each produce a full snapshot per frame; the pipeline merges them so
+    /// no source's held state clobbers another's. Held keys and buttons
+    /// union, recent keys concatenate, motion sums, and generations add so
+    /// the combined counter advances whenever any source changes. Pointer
+    /// position is taken from the first source that actually has one
+    /// (`mode != None`), so an idle source never blanks an active pointer.
+    pub fn merge_from(&mut self, other: InteractionData) {
+        for key in other.keyboard.pressed_keys {
+            if !self.keyboard.pressed_keys.contains(&key) {
+                self.keyboard.pressed_keys.push(key);
+            }
+        }
+        self.keyboard.recent_keys.extend(other.keyboard.recent_keys);
+        for button in other.mouse.buttons {
+            if !self.mouse.buttons.contains(&button) {
+                self.mouse.buttons.push(button);
+            }
+        }
+        self.mouse.down = self.mouse.down || other.mouse.down;
+        if self.mouse.mode == PointerMode::None && other.mouse.mode != PointerMode::None {
+            self.mouse.x = other.mouse.x;
+            self.mouse.y = other.mouse.y;
+            self.mouse.norm_x = other.mouse.norm_x;
+            self.mouse.norm_y = other.mouse.norm_y;
+            self.mouse.mode = other.mouse.mode;
+        }
+        self.batch.wheel_hi_res = self
+            .batch
+            .wheel_hi_res
+            .saturating_add(other.batch.wheel_hi_res);
+        self.batch.motion.dx += other.batch.motion.dx;
+        self.batch.motion.dy += other.batch.motion.dy;
+        self.batch.motion.distance += other.batch.motion.distance;
+        self.batch.window_secs = self.batch.window_secs.max(other.batch.window_secs);
+        self.batch.dropped_events = self
+            .batch
+            .dropped_events
+            .saturating_add(other.batch.dropped_events);
+        self.generation = self.generation.wrapping_add(other.generation);
     }
 }
 
@@ -115,6 +164,12 @@ pub struct InteractionBatch {
     pub wheel_hi_res: i32,
     /// Aggregate pointer motion since last frame.
     pub motion: MotionAggregate,
+    /// Wall-clock span the motion aggregate covers, in seconds.
+    ///
+    /// Grows when superseded frames coalesce, so velocity derived from
+    /// `motion.distance` stays honest instead of dividing several frames
+    /// of travel by a single frame's delta. Not part of emptiness.
+    pub window_secs: f32,
     /// Events discarded due to queue bounds since last frame.
     pub dropped_events: u32,
 }
@@ -144,6 +199,7 @@ impl InteractionBatch {
 
         prior.events.append(&mut self.events);
         self.events = prior.events;
+        self.window_secs += prior.window_secs;
         if self.events.len() > Self::MAX_EVENTS {
             let overflow = self.events.len() - Self::MAX_EVENTS;
             self.events.drain(..overflow);
@@ -270,6 +326,21 @@ pub trait InputSource: Send {
         Vec::new()
     }
 
+    /// Sample and drain in one step.
+    ///
+    /// Sources that produce both a snapshot and events override this to do
+    /// both under one internal lock, so an edge arriving between the two
+    /// can never appear in the frame's batch while missing from its held
+    /// state. The default composes the two calls for single-role sources.
+    fn sample_and_drain_with_delta_secs(
+        &mut self,
+        delta_secs: f32,
+    ) -> (anyhow::Result<InputData>, Vec<TimedInputEvent>) {
+        let sample = self.sample_with_delta_secs(delta_secs);
+        let events = self.drain_events();
+        (sample, events)
+    }
+
     /// Whether this source supports runtime audio reconfiguration.
     fn is_audio_source(&self) -> bool {
         false
@@ -282,6 +353,16 @@ pub trait InputSource: Send {
 
     /// Whether this source captures host keyboard/mouse interaction.
     fn is_interaction_source(&self) -> bool {
+        false
+    }
+
+    /// Whether this source captures from host input hardware (evdev, OS
+    /// event tap) rather than an injected feed like the browser preview.
+    ///
+    /// Consent config only governs host capture; the browser source is
+    /// always registered and is not a host source, so live enable/disable
+    /// of host input must not add or remove it.
+    fn is_host_capture_source(&self) -> bool {
         false
     }
 

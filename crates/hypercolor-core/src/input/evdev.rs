@@ -45,6 +45,10 @@ pub enum DeviceOpenState {
     Failed(String),
 }
 
+/// Fingerprint of the held-state visible to effects, used to decide when
+/// the snapshot generation must advance.
+type HeldStateKey = (Vec<String>, Vec<String>, i32, i32, bool);
+
 /// Per-node open result for diagnostics.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceOpenStatus {
@@ -124,7 +128,7 @@ pub struct EvdevHostInput {
     capture_pointer: bool,
     event_limit: usize,
     generation: u64,
-    last_state_key: Option<(Vec<String>, Vec<String>, i32, i32)>,
+    last_state_key: Option<HeldStateKey>,
     shared: Arc<Mutex<SharedState>>,
     stop_flag: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
@@ -156,6 +160,48 @@ impl EvdevHostInput {
             .lock()
             .map(|guard| guard.device_status.clone())
             .unwrap_or_default()
+    }
+
+    fn build_snapshot(&mut self, guard: &mut SharedState) -> InteractionData {
+        let mut data = InteractionData::default();
+        data.keyboard.pressed_keys = guard.union_pressed();
+        data.keyboard.recent_keys = std::mem::take(&mut guard.recent_keys);
+        data.mouse.buttons = guard.union_buttons();
+        data.mouse.down = !data.mouse.buttons.is_empty();
+        let pointer_present = guard.pointer_present;
+        if pointer_present {
+            data.mouse.mode = PointerMode::Virtual;
+            data.mouse.norm_x = guard.cursor_x;
+            data.mouse.norm_y = guard.cursor_y;
+        }
+        data.batch.motion = std::mem::take(&mut guard.motion);
+        data.batch.dropped_events = std::mem::take(&mut guard.dropped);
+
+        // Coarse fixed-point cursor key so idle jitter below one part in
+        // 10⁴ never bumps the generation.
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::as_conversions,
+            reason = "values are clamped to [0,1] before scaling"
+        )]
+        let cursor_key = (
+            (data.mouse.norm_x * 10_000.0) as i32,
+            (data.mouse.norm_y * 10_000.0) as i32,
+        );
+        let state_key: HeldStateKey = (
+            data.keyboard.pressed_keys.clone(),
+            data.mouse.buttons.clone(),
+            cursor_key.0,
+            cursor_key.1,
+            pointer_present,
+        );
+        if self.last_state_key.as_ref() != Some(&state_key) || !data.keyboard.recent_keys.is_empty()
+        {
+            self.generation = self.generation.wrapping_add(1);
+            self.last_state_key = Some(state_key);
+        }
+        data.generation = self.generation;
+        data
     }
 
     fn stop_worker(&mut self) {
@@ -192,6 +238,7 @@ impl EvdevHostInput {
                     &shared,
                     capture_keyboard,
                     capture_pointer,
+                    event_limit,
                     &source_name,
                 );
                 let _ = ready_tx.send(());
@@ -206,6 +253,7 @@ impl EvdevHostInput {
                             &shared,
                             capture_keyboard,
                             capture_pointer,
+                            event_limit,
                             &source_name,
                         );
                     }
@@ -252,48 +300,31 @@ impl InputSource for EvdevHostInput {
             return Ok(InputData::None);
         }
 
-        let Ok(mut guard) = self.shared.lock() else {
+        let shared = Arc::clone(&self.shared);
+        let Ok(mut guard) = shared.lock() else {
             return Ok(InputData::None);
         };
+        let snapshot = self.build_snapshot(&mut guard);
+        Ok(InputData::Interaction(snapshot))
+    }
 
-        let mut data = InteractionData::default();
-        data.keyboard.pressed_keys = guard.union_pressed();
-        data.keyboard.recent_keys = std::mem::take(&mut guard.recent_keys);
-        data.mouse.buttons = guard.union_buttons();
-        data.mouse.down = !data.mouse.buttons.is_empty();
-        if guard.pointer_present {
-            data.mouse.mode = PointerMode::Virtual;
-            data.mouse.norm_x = guard.cursor_x;
-            data.mouse.norm_y = guard.cursor_y;
+    fn sample_and_drain_with_delta_secs(
+        &mut self,
+        _delta_secs: f32,
+    ) -> (anyhow::Result<InputData>, Vec<TimedInputEvent>) {
+        if !self.running || self.worker.is_none() {
+            return (Ok(InputData::None), Vec::new());
         }
-        data.batch.motion = std::mem::take(&mut guard.motion);
-        drop(guard);
 
-        // Coarse fixed-point cursor key so idle jitter below one part in
-        // 10⁴ never bumps the generation.
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::as_conversions,
-            reason = "values are clamped to [0,1] before scaling"
-        )]
-        let cursor_key = (
-            (data.mouse.norm_x * 10_000.0) as i32,
-            (data.mouse.norm_y * 10_000.0) as i32,
-        );
-        let state_key = (
-            data.keyboard.pressed_keys.clone(),
-            data.mouse.buttons.clone(),
-            cursor_key.0,
-            cursor_key.1,
-        );
-        if self.last_state_key.as_ref() != Some(&state_key) || !data.keyboard.recent_keys.is_empty()
-        {
-            self.generation = self.generation.wrapping_add(1);
-            self.last_state_key = Some(state_key);
-        }
-        data.generation = self.generation;
-
-        Ok(InputData::Interaction(data))
+        let shared = Arc::clone(&self.shared);
+        let Ok(mut guard) = shared.lock() else {
+            return (Ok(InputData::None), Vec::new());
+        };
+        // One lock for both: an edge can never land in the frame's event
+        // batch while missing from the same frame's held-state snapshot.
+        let events = std::mem::take(&mut guard.events);
+        let snapshot = self.build_snapshot(&mut guard);
+        (Ok(InputData::Interaction(snapshot)), events)
     }
 
     fn is_running(&self) -> bool {
@@ -301,6 +332,10 @@ impl InputSource for EvdevHostInput {
     }
 
     fn is_interaction_source(&self) -> bool {
+        true
+    }
+
+    fn is_host_capture_source(&self) -> bool {
         true
     }
 
@@ -338,6 +373,7 @@ fn rescan_devices(
     shared: &Arc<Mutex<SharedState>>,
     capture_keyboard: bool,
     capture_pointer: bool,
+    event_limit: usize,
     source_name: &str,
 ) {
     let mut status = Vec::new();
@@ -426,7 +462,7 @@ fn rescan_devices(
         for path in &removed {
             if let Some(open) = devices.remove(path) {
                 debug!(source = %source_name, device = %open.label, "Evdev input device removed");
-                synthesize_releases(&mut guard, &open.source_id);
+                synthesize_releases(&mut guard, &open.source_id, event_limit);
             }
         }
     }
@@ -489,7 +525,7 @@ fn poll_devices(
     {
         for path in stale {
             if let Some(open) = devices.remove(&path) {
-                synthesize_releases(&mut guard, &open.source_id);
+                synthesize_releases(&mut guard, &open.source_id, event_limit);
             }
         }
         guard.pointer_present = devices.values().any(|device| device.caps.pointer);
@@ -667,32 +703,40 @@ fn update_held(
 }
 
 /// Emit synthetic release edges for everything a vanished device held.
-fn synthesize_releases(state: &mut SharedState, source_id: &str) {
+fn synthesize_releases(state: &mut SharedState, source_id: &str, event_limit: usize) {
     let at_ms = input_mono_ms();
     if let Some(keys) = state.pressed_keys.remove(source_id) {
         for key in keys {
-            state.events.push(TimedInputEvent {
-                event: InputEvent::Key {
-                    source_id: source_id.to_owned(),
-                    key,
-                    state: InputButtonState::Released,
+            push_event(
+                state,
+                TimedInputEvent {
+                    event: InputEvent::Key {
+                        source_id: source_id.to_owned(),
+                        key,
+                        state: InputButtonState::Released,
+                    },
+                    at_ms,
+                    seq: 0,
                 },
-                at_ms,
-                seq: 0,
-            });
+                event_limit,
+            );
         }
     }
     if let Some(buttons) = state.held_buttons.remove(source_id) {
         for button in buttons {
-            state.events.push(TimedInputEvent {
-                event: InputEvent::MouseButton {
-                    source_id: source_id.to_owned(),
-                    button,
-                    state: InputButtonState::Released,
+            push_event(
+                state,
+                TimedInputEvent {
+                    event: InputEvent::MouseButton {
+                        source_id: source_id.to_owned(),
+                        button,
+                        state: InputButtonState::Released,
+                    },
+                    at_ms,
+                    seq: 0,
                 },
-                at_ms,
-                seq: 0,
-            });
+                event_limit,
+            );
         }
     }
 }
@@ -762,10 +806,13 @@ fn pointer_button_name(code: KeyCode) -> Option<&'static str> {
     }
 }
 
-/// Non-keyboard key codes (the BTN_* range used by pointers, joysticks,
-/// and touch devices) that must not enter the pressed-keys set.
+/// Non-keyboard key codes that must not enter the pressed-keys set: the
+/// `BTN_*` ranges Linux uses for pointers, joysticks, gamepads (`0x100..0x160`),
+/// D-pads (`BTN_DPAD_*`, `0x220..0x228`), and the trigger-happy programmable
+/// button block (`0x2c0..0x2e0`).
 fn is_non_keyboard_key(code: KeyCode) -> bool {
-    (0x100..0x160).contains(&code.0)
+    let c = code.0;
+    (0x100..0x160).contains(&c) || (0x220..0x228).contains(&c) || (0x2c0..0x2e0).contains(&c)
 }
 
 fn canonical_evdev_key_name(code: KeyCode) -> String {
@@ -898,7 +945,7 @@ mod tests {
             .or_default()
             .insert("left".to_owned());
 
-        synthesize_releases(&mut state, "kbd");
+        synthesize_releases(&mut state, "kbd", DEFAULT_EVENT_LIMIT);
 
         assert!(state.union_pressed().is_empty());
         assert!(state.union_buttons().is_empty());

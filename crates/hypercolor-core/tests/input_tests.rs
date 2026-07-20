@@ -1032,6 +1032,10 @@ impl InputSource for CaptureTrackingInteractionSource {
         true
     }
 
+    fn is_host_capture_source(&self) -> bool {
+        true
+    }
+
     fn set_interaction_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
         if self.capture_active != active {
             self.transitions
@@ -1067,19 +1071,25 @@ fn manager_routes_interaction_capture_demand_to_interaction_sources_only() {
 }
 
 #[test]
-fn manager_tracks_and_removes_interaction_sources() {
+fn manager_tracks_and_removes_host_capture_sources() {
     let transitions = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let mut mgr = InputManager::new();
-    assert!(!mgr.has_interaction_source());
+    assert!(!mgr.has_host_capture_source());
 
     mgr.add_source(Box::new(CaptureTrackingInteractionSource::new(transitions)));
+    mgr.add_source(Box::new(hypercolor_core::input::BrowserInputSource::new()));
     mgr.add_source(Box::new(MockAudioSource::new(0.5)));
+    assert!(mgr.has_host_capture_source());
     assert!(mgr.has_interaction_source());
-    assert_eq!(mgr.source_count(), 2);
+    assert_eq!(mgr.source_count(), 3);
 
-    mgr.remove_interaction_sources();
-    assert!(!mgr.has_interaction_source());
-    assert_eq!(mgr.source_count(), 1, "non-interaction sources survive");
+    mgr.remove_host_capture_sources();
+    assert!(!mgr.has_host_capture_source());
+    assert!(
+        mgr.has_interaction_source(),
+        "browser injection survives host removal"
+    );
+    assert_eq!(mgr.source_count(), 2, "browser + audio survive");
 }
 
 #[test]

@@ -337,7 +337,14 @@ impl QueuedFrameInput {
         clone_optional_demanded_from(&mut self.lighting, input.sources.lighting, demand.lighting);
         if let Some(interaction) = self.interaction.as_mut() {
             let interaction = Arc::make_mut(interaction);
-            merge_unique_strings(&mut interaction.keyboard.recent_keys, prior_recent_keys);
+            // Prior presses stay ahead of newer ones so the legacy recent
+            // list keeps press order across coalesced frames.
+            let mut merged_recent = prior_recent_keys;
+            merge_unique_strings(
+                &mut merged_recent,
+                std::mem::take(&mut interaction.keyboard.recent_keys),
+            );
+            interaction.keyboard.recent_keys = merged_recent;
             // Superseded frames must not lose their input edges: fold the
             // replaced frame's batch in ahead of the new one.
             interaction.batch.absorb_prior(prior_batch);

@@ -129,8 +129,9 @@ pub(super) struct LightScriptInteractionPayload {
 
 impl LightScriptInteractionPayload {
     pub(super) fn from_interaction(interaction: &InteractionData, delta_secs: f32) -> Self {
-        let motion_per_sec = if delta_secs > f32::EPSILON {
-            interaction.batch.motion.distance / delta_secs
+        let window = interaction.batch.window_secs.max(delta_secs);
+        let motion_per_sec = if window > f32::EPSILON {
+            interaction.batch.motion.distance / window
         } else {
             0.0
         };

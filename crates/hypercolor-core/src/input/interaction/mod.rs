@@ -202,6 +202,10 @@ impl InputSource for InteractionInput {
         true
     }
 
+    fn is_host_capture_source(&self) -> bool {
+        true
+    }
+
     fn set_interaction_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
         if self.capture_active == active {
             return Ok(());

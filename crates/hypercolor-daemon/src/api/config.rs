@@ -575,26 +575,28 @@ async fn maybe_apply_input_config_change(state: &Arc<AppState>, key: Option<&str
 
     let input = manager.get().input.clone();
     let mut input_manager = state.input_manager.lock().await;
-    let had_source = input_manager.has_interaction_source();
+    // Only the host hardware source is consent-gated; the browser injection
+    // source is always registered and must survive enable/disable toggles.
+    let had_source = input_manager.has_host_capture_source();
     let replacement = crate::startup::services::build_interaction_source(&input);
 
-    match (had_source, replacement) {
-        (false, Some(mut source)) => {
-            if let Err(error) = source.start() {
-                warn!(%error, "Failed to start live interaction source");
-                return false;
-            }
-            input_manager.add_source(source);
-            info!("Enabled host input capture live");
-            true
-        }
-        (true, None) => {
-            input_manager.remove_interaction_sources();
+    // Rebuild on any change so keyboard/mouse toggles apply, not just enable
+    // and disable.
+    input_manager.remove_host_capture_sources();
+    let Some(mut source) = replacement else {
+        if had_source {
             info!("Disabled host input capture live");
-            true
         }
-        _ => false,
+        return had_source;
+    };
+
+    if let Err(error) = source.start() {
+        warn!(%error, "Failed to start live host input source");
+        return had_source;
     }
+    input_manager.add_source(source);
+    info!("Applied live host input capture config");
+    true
 }
 
 fn should_reconfigure_render(key: Option<&str>) -> bool {

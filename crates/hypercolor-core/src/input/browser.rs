@@ -45,6 +45,9 @@ struct SharedState {
     held_buttons: BTreeMap<String, BTreeSet<String>>,
     recent_keys: Vec<String>,
     cursor: BTreeMap<String, (f32, f32)>,
+    /// Source id of the most recently moved pointer, so the primary pointer
+    /// tracks real activity rather than lexical source order.
+    active_pointer: Option<String>,
     motion: MotionAggregate,
     generation_dirty: bool,
 }
@@ -67,11 +70,13 @@ impl SharedState {
     }
 
     fn primary_cursor(&self) -> Option<(f32, f32)> {
-        // Most-recently-updated pointer wins; BTreeMap keeps a stable order
-        // and injection updates rewrite the entry, so the last inserted key
-        // is not tracked separately — any deterministic pick is fine here
-        // because previews are single-pointer in practice.
-        self.cursor.values().next_back().copied()
+        // The pointer that moved most recently, falling back to any known
+        // cursor so a still-but-present pointer still reports a position.
+        self.active_pointer
+            .as_ref()
+            .and_then(|source| self.cursor.get(source))
+            .or_else(|| self.cursor.values().next_back())
+            .copied()
     }
 }
 
@@ -144,6 +149,9 @@ impl BrowserInputHandle {
             }
         }
         guard.cursor.remove(source_id);
+        if guard.active_pointer.as_deref() == Some(source_id) {
+            guard.active_pointer = guard.cursor.keys().next_back().cloned();
+        }
         guard.generation_dirty = true;
     }
 
@@ -224,6 +232,7 @@ impl BrowserInputHandle {
                     state.motion.distance += dx.hypot(dy);
                 }
                 state.cursor.insert(source_id.to_owned(), (nx, ny));
+                state.active_pointer = Some(source_id.to_owned());
                 state.generation_dirty = true;
             }
             BrowserInputEdge::Wheel { delta_hi_res } => {
@@ -266,6 +275,28 @@ impl BrowserInputSource {
         }
     }
 
+    fn build_snapshot(&mut self, guard: &mut SharedState) -> InteractionData {
+        let mut data = InteractionData::default();
+        data.keyboard.pressed_keys = guard.union_pressed();
+        data.keyboard.recent_keys = std::mem::take(&mut guard.recent_keys);
+        data.mouse.buttons = guard.union_buttons();
+        data.mouse.down = !data.mouse.buttons.is_empty();
+        if let Some((nx, ny)) = guard.primary_cursor() {
+            data.mouse.mode = PointerMode::Absolute;
+            data.mouse.norm_x = nx;
+            data.mouse.norm_y = ny;
+        }
+        data.batch.motion = std::mem::take(&mut guard.motion);
+        data.batch.dropped_events = std::mem::take(&mut guard.dropped);
+
+        if guard.generation_dirty || !data.keyboard.recent_keys.is_empty() {
+            self.generation = self.generation.wrapping_add(1);
+            guard.generation_dirty = false;
+        }
+        data.generation = self.generation;
+        data
+    }
+
     /// A cloneable handle for the WebSocket layer to push edges through.
     #[must_use]
     pub fn handle(&self) -> BrowserInputHandle {
@@ -304,30 +335,30 @@ impl InputSource for BrowserInputSource {
             return Ok(InputData::None);
         }
 
-        let Ok(mut guard) = self.shared.lock() else {
+        let shared = Arc::clone(&self.shared);
+        let Ok(mut guard) = shared.lock() else {
             return Ok(InputData::None);
         };
+        let snapshot = self.build_snapshot(&mut guard);
+        Ok(InputData::Interaction(snapshot))
+    }
 
-        let mut data = InteractionData::default();
-        data.keyboard.pressed_keys = guard.union_pressed();
-        data.keyboard.recent_keys = std::mem::take(&mut guard.recent_keys);
-        data.mouse.buttons = guard.union_buttons();
-        data.mouse.down = !data.mouse.buttons.is_empty();
-        if let Some((nx, ny)) = guard.primary_cursor() {
-            data.mouse.mode = PointerMode::Absolute;
-            data.mouse.norm_x = nx;
-            data.mouse.norm_y = ny;
+    fn sample_and_drain_with_delta_secs(
+        &mut self,
+        _delta_secs: f32,
+    ) -> (anyhow::Result<InputData>, Vec<TimedInputEvent>) {
+        if !self.running {
+            return (Ok(InputData::None), Vec::new());
         }
-        data.batch.motion = std::mem::take(&mut guard.motion);
 
-        if guard.generation_dirty || !data.keyboard.recent_keys.is_empty() {
-            self.generation = self.generation.wrapping_add(1);
-            guard.generation_dirty = false;
-        }
-        data.generation = self.generation;
-        drop(guard);
-
-        Ok(InputData::Interaction(data))
+        let shared = Arc::clone(&self.shared);
+        let Ok(mut guard) = shared.lock() else {
+            return (Ok(InputData::None), Vec::new());
+        };
+        // One lock for both halves so batch and held state stay coherent.
+        let events = std::mem::take(&mut guard.events);
+        let snapshot = self.build_snapshot(&mut guard);
+        (Ok(InputData::Interaction(snapshot)), events)
     }
 
     fn is_running(&self) -> bool {

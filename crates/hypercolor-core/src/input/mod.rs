@@ -173,6 +173,33 @@ impl InputManager {
             .collect()
     }
 
+    /// Sample every source and drain its events in one pass.
+    ///
+    /// Each source's snapshot and events come from one internal lock
+    /// acquisition, so a frame can never carry an event edge whose held
+    /// state is missing from the same frame's snapshot.
+    pub fn sample_and_drain_with_delta_secs(
+        &mut self,
+        delta_secs: f32,
+    ) -> (Vec<InputData>, Vec<TimedInputEvent>) {
+        let mut samples = Vec::with_capacity(self.sources.len() + 1);
+        let mut events = Vec::new();
+        for source in &mut self.sources {
+            let (sample, mut source_events) = source.sample_and_drain_with_delta_secs(delta_secs);
+            samples.push(sample.unwrap_or_else(|err| {
+                error!(source = source.name(), %err, "Input sample failed");
+                InputData::None
+            }));
+            events.append(&mut source_events);
+        }
+
+        if let Some(snapshot) = self.latest_sensor_snapshot() {
+            samples.push(InputData::Sensors(snapshot));
+        }
+
+        (samples, events)
+    }
+
     /// Toggle live host-input capture for any registered interaction sources.
     ///
     /// Mirrors the audio/screen demand model: sources stay registered but
@@ -182,13 +209,13 @@ impl InputManager {
     ///
     /// Returns an error if an interaction source cannot update its capture state.
     pub fn set_interaction_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
+        // Called every frame by the render loop's uncached demand reconcile,
+        // so this stays quiet: sources no-op internally when unchanged and
+        // log their own real transitions (device open/close). Logging here
+        // would spam once per source per frame.
         for source in &mut self.sources {
             if source.is_interaction_source() {
                 source.set_interaction_capture_active(active)?;
-                info!(
-                    source = source.name(),
-                    active, "Updated interaction capture demand"
-                );
             }
         }
 
@@ -352,12 +379,26 @@ impl InputManager {
             .any(|source| source.is_interaction_source())
     }
 
-    /// Stop and remove all registered interaction sources.
-    pub fn remove_interaction_sources(&mut self) {
+    /// Whether any registered source captures from host input hardware.
+    ///
+    /// Excludes the always-present browser injection source, so consent
+    /// config can tell whether host capture is actually wired up.
+    #[must_use]
+    pub fn has_host_capture_source(&self) -> bool {
+        self.sources
+            .iter()
+            .any(|source| source.is_host_capture_source())
+    }
+
+    /// Stop and remove only host hardware capture sources.
+    ///
+    /// Leaves the browser injection source in place so disabling host
+    /// consent never breaks browser-preview input.
+    pub fn remove_host_capture_sources(&mut self) {
         self.sources.retain_mut(|source| {
-            if source.is_interaction_source() {
+            if source.is_host_capture_source() {
                 source.stop();
-                info!(source = source.name(), "Removed interaction source");
+                info!(source = source.name(), "Removed host capture source");
                 false
             } else {
                 true

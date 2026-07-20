@@ -230,6 +230,12 @@ async fn handle_socket(
     let mut ping_sent_at = Instant::now();
     let mut zone_layout_preview_keys = HashSet::<(SceneId, ZoneId)>::new();
     let input_source_id = next_browser_input_source_id();
+    // Drop guard, not tail code: if this connection future is aborted or
+    // dropped mid-select, injected keys and buttons still release.
+    let _input_release_guard = BrowserInputReleaseGuard {
+        browser_input: state.browser_input.clone(),
+        source_id: input_source_id.clone(),
+    };
 
     // Main loop: multiplex between incoming client messages and outbound events.
     loop {
@@ -332,10 +338,19 @@ async fn handle_socket(
         .zone_layout_previews
         .clear_many(zone_layout_preview_keys)
         .await;
-    // Synthesize releases for anything this preview left held so no key or
-    // button sticks after the socket closes.
-    state.browser_input.release_source(&input_source_id);
     debug!("WebSocket client disconnected");
+}
+
+/// Releases a connection's injected input state even on future abort.
+struct BrowserInputReleaseGuard {
+    browser_input: hypercolor_core::input::BrowserInputHandle,
+    source_id: String,
+}
+
+impl Drop for BrowserInputReleaseGuard {
+    fn drop(&mut self) {
+        self.browser_input.release_source(&self.source_id);
+    }
 }
 
 /// A stable per-connection identity for browser input injection.

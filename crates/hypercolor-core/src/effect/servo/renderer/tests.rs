@@ -55,12 +55,18 @@ fn custom_interaction(
     recent_keys: &[&str],
     pressed_keys: &[&str],
 ) -> crate::input::InteractionData {
+    // Mirror producer behavior: distinct content gets a distinct generation
+    // (real sources bump on every held-state change or delivered press).
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::hash::DefaultHasher::new();
+    (recent_keys, pressed_keys).hash(&mut hasher);
     crate::input::InteractionData {
         keyboard: crate::input::KeyboardData {
             pressed_keys: pressed_keys.iter().map(ToString::to_string).collect(),
             recent_keys: recent_keys.iter().map(ToString::to_string).collect(),
         },
         mouse: crate::input::MouseData::default(),
+        generation: hasher.finish(),
         ..Default::default()
     }
 }
@@ -1254,7 +1260,7 @@ fn queued_frames_merge_recent_keys_from_superseded_inputs() {
     let queued = renderer.queued_frame.as_ref().expect("queued frame");
     let interaction = queued.queued_interaction().expect("demanded interaction");
     assert_eq!(interaction.keyboard.pressed_keys, ["c"]);
-    assert_eq!(interaction.keyboard.recent_keys, ["b", "c", "a"]);
+    assert_eq!(interaction.keyboard.recent_keys, ["a", "b", "c"]);
 }
 
 #[test]

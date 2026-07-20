@@ -1,5 +1,5 @@
 import type { DrawFn } from 'hypercolor'
-import { canvas, combo, getInputData, keyToGridPosition, num, pressEnvelope, samplePalette } from 'hypercolor'
+import { canvas, combo, getInputData, keyToGridPosition, num, samplePalette } from 'hypercolor'
 
 const PALETTES = ['SilkCircuit', 'Aurora', 'Cyberpunk', 'Vaporwave', 'Fire', 'Ice', 'Ocean', 'Sunset']
 
@@ -24,15 +24,10 @@ const MAX_RIPPLES = 96
 const MAX_SHOCKWAVES = 24
 
 /**
- * LED-safe additive plot: accumulate light into the canvas without letting
- * any channel wash to pure white. Colors keep their chroma because we cap
- * the added luminance rather than clamping post-sum.
- */
-/**
  * Reserve real additive headroom: a single splat tops out at HEADROOM, not
  * 1, so several overlapping light sources under `lighter` compositing can
  * sum toward full brightness without any one of them clipping to white on
- * its own.
+ * its own — keeping chroma instead of washing to white on real LEDs.
  */
 const HEADROOM = 0.62
 
@@ -90,15 +85,25 @@ export default canvas(
     () => {
         const ripples: Ripple[] = []
         const shockwaves: Shockwave[] = []
-        const GLOW_DECAY_MS = 420
-        const envelope = pressEnvelope({ attackMs: 18, decayMs: GLOW_DECAY_MS })
-        // Keys whose per-cell glow is still decaying after release, so the
-        // envelope's decay tail is drawn instead of cut off the moment the
-        // key leaves the held set.
-        const glowKeys = new Set<string>()
+        // Per-key attack/decay glow keyed on the render clock (`time`, in
+        // seconds), not the daemon event timestamps: event `atMs` only arrives
+        // on frames that carry events, so an envelope keyed on it freezes its
+        // decay exactly when a released key should be fading. `time` advances
+        // every frame, so the tail always plays out.
+        const GLOW_ATTACK_S = 0.018
+        const GLOW_DECAY_S = 0.42
+        const glow = new Map<string, { pressedAt: number; releasedAt: number | null }>()
         let hueOffset = 0
         let trail = 0
         let lastTime = 0
+
+        const glowValue = (entry: { pressedAt: number; releasedAt: number | null }, time: number): number => {
+            const attackEnd = Math.min(time, entry.releasedAt ?? time)
+            const attack =
+                GLOW_ATTACK_S <= 0 ? 1 : Math.max(0, Math.min(1, (attackEnd - entry.pressedAt) / GLOW_ATTACK_S))
+            if (entry.releasedAt === null) return attack
+            return attack * Math.max(0, 1 - (time - entry.releasedAt) / GLOW_DECAY_S)
+        }
 
         const draw: DrawFn = (ctx, time, controls) => {
             const dt = Math.max(0, Math.min(0.25, time - lastTime))
@@ -115,9 +120,15 @@ export default canvas(
             const brightness = (controls.brightness as number) / 100 // [10,100] → [0.1,1]
 
             const input = getInputData()
-            envelope.feed(input.keyboard.events, performanceNow(input))
+            // Track per-key glow on the render clock so decay plays out on
+            // frames that carry no events (see GLOW_* note above).
             for (const event of input.keyboard.events) {
-                if (event.state === 'pressed') glowKeys.add(event.key)
+                if (event.state === 'pressed' || event.state === 'repeated') {
+                    glow.set(event.key, { pressedAt: time, releasedAt: null })
+                } else if (event.state === 'released') {
+                    const entry = glow.get(event.key)
+                    if (entry && entry.releasedAt === null) entry.releasedAt = time
+                }
             }
 
             // Wheel rotates the palette phase so scrolling recolors the rig.
@@ -225,17 +236,17 @@ export default canvas(
             }
 
             // ── Per-key press glow: struck keys pulse and fade at their cell.
-            // Iterate the envelope's own keys, not the held set, so the decay
-            // tail draws after release instead of cutting off. ───────────────
-            for (const key of glowKeys) {
-                const value = envelope.value(key)
-                if (value <= 0.01) {
-                    glowKeys.delete(key)
+            // Iterate the glow map (held OR still-decaying) so the release
+            // tail draws instead of cutting off the moment the key lifts. ────
+            for (const [key, entry] of glow) {
+                const value = glowValue(entry, time)
+                if (value <= 0.01 && entry.releasedAt !== null) {
+                    glow.delete(key)
                     continue
                 }
                 const grid = keyToGridPosition(key)
                 if (!grid) {
-                    glowKeys.delete(key)
+                    glow.delete(key)
                     continue
                 }
                 const rgb = samplePalette(paletteName, (hueOffset + grid.x * 0.4) % 1)
@@ -284,12 +295,6 @@ export default canvas(
         ],
     },
 )
-
-/** Milliseconds on the input capture clock, for envelope decay on quiet frames. */
-function performanceNow(input: ReturnType<typeof getInputData>): number | undefined {
-    const last = input.keyboard.events.at(-1) ?? input.mouse.events.at(-1)
-    return last?.atMs
-}
 
 function pruneExpired(items: { born: number }[], time: number, life: number): void {
     for (let i = items.length - 1; i >= 0; i--) {
