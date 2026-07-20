@@ -291,3 +291,24 @@ but a clean rewrite in SDK idiom is the plan anyway).
    event `DeviceId` + keycode → LED position → canvas coords through the
    existing spatial layout, making Keystrike ripples physically exact on mapped
    keyboards.
+
+## Post-validation follow-ups (codex adversarial pass, 2026-07-19)
+
+The full-branch validation confirmed the pipeline shippable after the
+fix wave, with three findings deliberately deferred as scoped follow-ups:
+
+1. **Managed-device / active-seat scoping (evdev).** v1 opens every
+   readable keyboard/pointer node and uses the devnode path as
+   `source_id`. Follow-up: resolve nodes to HAL device fingerprints
+   (udev USB-parent walk), prefer managed devices, apply an active-seat
+   policy, and use stable identifiers. Pairs with the phase-2 key-to-LED
+   work, which needs the same association.
+2. **Degraded-health surface.** `EvdevHostInput::device_status()` exists
+   but has no path through the `InputSource` trait into `system/status`,
+   MCP diagnose, or the SDK's `available` semantics. Follow-up: a
+   diagnostics channel on the trait + API/MCP/UI wiring (the spec's D6
+   remediation UX depends on it).
+3. **Timed metadata on the bus.** `InputEventReceived` relays the raw
+   event; `at_ms`/`seq` are frame-batch-only, so WS automation clients
+   cannot reconstruct capture order. Follow-up: carry `TimedInputEvent`
+   on the bus event (breaking change for event consumers — coordinate).
