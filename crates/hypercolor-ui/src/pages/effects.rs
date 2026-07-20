@@ -13,6 +13,7 @@ use crate::components::effect_card::EffectCard;
 use crate::components::install_effect_panel::InstallEffectPanel;
 use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, PageHeader};
 use crate::components::page_search_bar::PageSearchBar;
+use crate::components::input_access_banner::InputAccessBanner;
 use crate::components::preview_cabinet::PreviewCabinet;
 use crate::components::resize_handle::ResizeHandle;
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
@@ -883,6 +884,12 @@ pub fn EffectsPage() -> impl IntoView {
                                 class="shrink-0 flex flex-col min-h-0 animate-enter-right"
                                 style=move || format!("width: {}px", detail_width.get())
                             >
+                                // Input-access remediation — renders only when the active
+                                // effect is interactive and host input is off or blocked.
+                                <div class="shrink-0">
+                                    <InputAccessBanner />
+                                </div>
+
                                 // Unified cinematic cabinet — canvas + preset strip, shared
                                 // with the dashboard. The effects page owns no telemetry
                                 // reporting, so `report_telemetry` stays at its default

@@ -14,6 +14,7 @@ pub mod device_pairing_modal;
 pub mod display_preview_surface;
 pub mod effect_card;
 pub mod empty_state;
+pub mod input_access_banner;
 pub mod install_effect_panel;
 pub mod layer_panel;
 pub mod layout_builder;

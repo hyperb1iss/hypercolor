@@ -70,6 +70,8 @@ fn applies_live(key: &str) -> bool {
         || key.starts_with("audio.")
         || key == "capture"
         || key.starts_with("capture.")
+        || key == "input"
+        || key.starts_with("input.")
         || matches!(
             key,
             "daemon.target_fps" | "daemon.canvas_width" | "daemon.canvas_height"
@@ -98,5 +100,11 @@ mod tests {
         assert!(applies_live("capture.enabled"));
         assert!(applies_live("capture.saturation"));
         assert!(applies_live("capture.capture_fps"));
+    }
+
+    #[test]
+    fn input_keys_apply_live() {
+        assert!(applies_live("input"));
+        assert!(applies_live("input.enabled"));
     }
 }

@@ -32,6 +32,26 @@ pub struct SystemStatus {
     /// `scene-unassigned-behavior-write`.
     #[serde(default)]
     pub capabilities: Vec<String>,
+    /// Host input capture health — consent gate plus device-node
+    /// open/denied counts. Defaults tolerate daemons predating the field.
+    #[serde(default)]
+    pub input: InputStatus,
+}
+
+/// Host keyboard/mouse capture health from the daemon status payload.
+///
+/// `enabled` is the consent config gate (`input.enabled`). `devices_denied`
+/// counts input nodes that exist but are unreadable (udev rules missing) —
+/// the signal that separates "input is off" from "input is on but blocked".
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct InputStatus {
+    pub enabled: bool,
+    pub host_capture_registered: bool,
+    pub host_capturing: bool,
+    pub devices_opened: usize,
+    pub devices_denied: usize,
+    pub backends: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
