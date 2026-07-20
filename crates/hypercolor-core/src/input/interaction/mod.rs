@@ -206,6 +206,16 @@ impl InputSource for InteractionInput {
         true
     }
 
+    fn interaction_diagnostics(&self) -> Option<crate::input::InteractionDiagnostics> {
+        Some(crate::input::InteractionDiagnostics {
+            backend: "device_query",
+            host_capture: true,
+            capturing: self.capture_active && self.worker.is_some(),
+            devices_opened: usize::from(self.worker.is_some()),
+            devices_denied: 0,
+        })
+    }
+
     fn set_interaction_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
         if self.capture_active == active {
             return Ok(());

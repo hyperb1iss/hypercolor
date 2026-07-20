@@ -243,23 +243,43 @@ pub(super) async fn handle_get_status_with_state(state: &AppState) -> Result<Val
         .map(|device| u64::from(device.info.total_led_count()))
         .sum();
 
-    let (audio_status, screen_status) = if let Some(config_manager) = state.config_manager.as_ref()
-    {
-        let config = config_manager.get();
-        (
-            if config.audio.enabled {
-                "enabled"
-            } else {
-                "disabled"
-            },
-            if config.capture.enabled {
-                "enabled"
-            } else {
-                "disabled"
-            },
-        )
+    let (audio_status, screen_status, input_enabled) =
+        if let Some(config_manager) = state.config_manager.as_ref() {
+            let config = config_manager.get();
+            (
+                if config.audio.enabled {
+                    "enabled"
+                } else {
+                    "disabled"
+                },
+                if config.capture.enabled {
+                    "enabled"
+                } else {
+                    "disabled"
+                },
+                config.input.enabled,
+            )
+        } else {
+            ("unknown", "unknown", false)
+        };
+
+    let input_diagnostics = state.input_manager.lock().await.interaction_diagnostics();
+    let input_devices_denied: usize = input_diagnostics
+        .iter()
+        .filter(|entry| entry.host_capture)
+        .map(|entry| entry.devices_denied)
+        .sum();
+    let input_devices_opened: usize = input_diagnostics
+        .iter()
+        .filter(|entry| entry.host_capture)
+        .map(|entry| entry.devices_opened)
+        .sum();
+    let input_status = if !input_enabled {
+        "disabled"
+    } else if input_devices_denied > 0 && input_devices_opened == 0 {
+        "blocked_permissions"
     } else {
-        ("unknown", "unknown")
+        "enabled"
     };
 
     Ok(json!({
@@ -285,7 +305,10 @@ pub(super) async fn handle_get_status_with_state(state: &AppState) -> Result<Val
         },
         "inputs": {
             "audio": audio_status,
-            "screen": screen_status
+            "screen": screen_status,
+            "input": input_status,
+            "input_devices_opened": input_devices_opened,
+            "input_devices_denied": input_devices_denied
         },
         "uptime_seconds": state.start_time.elapsed().as_secs(),
         "version": env!("CARGO_PKG_VERSION")

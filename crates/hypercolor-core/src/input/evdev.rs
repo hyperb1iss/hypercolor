@@ -339,6 +339,25 @@ impl InputSource for EvdevHostInput {
         true
     }
 
+    fn interaction_diagnostics(&self) -> Option<crate::input::InteractionDiagnostics> {
+        let status = self.device_status();
+        let devices_opened = status
+            .iter()
+            .filter(|entry| entry.state == DeviceOpenState::Opened)
+            .count();
+        let devices_denied = status
+            .iter()
+            .filter(|entry| entry.state == DeviceOpenState::PermissionDenied)
+            .count();
+        Some(crate::input::InteractionDiagnostics {
+            backend: "evdev",
+            host_capture: true,
+            capturing: self.capture_active && self.worker.is_some(),
+            devices_opened,
+            devices_denied,
+        })
+    }
+
     fn set_interaction_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
         if self.capture_active == active {
             return Ok(());

@@ -369,6 +369,16 @@ impl InputSource for BrowserInputSource {
         true
     }
 
+    fn interaction_diagnostics(&self) -> Option<crate::input::InteractionDiagnostics> {
+        Some(crate::input::InteractionDiagnostics {
+            backend: "browser",
+            host_capture: false,
+            capturing: self.running,
+            devices_opened: 0,
+            devices_denied: 0,
+        })
+    }
+
     fn drain_events(&mut self) -> Vec<TimedInputEvent> {
         if let Ok(mut guard) = self.shared.lock() {
             return std::mem::take(&mut guard.events);

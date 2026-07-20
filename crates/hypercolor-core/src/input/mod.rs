@@ -23,8 +23,8 @@ pub use media::MediaSource;
 pub use net::NetSource;
 pub use sensor::SensorPoller;
 pub use traits::{
-    InputData, InputSource, InteractionBatch, InteractionData, KeyboardData, MotionAggregate,
-    MouseData, PointerMode, ScreenData,
+    InputData, InputSource, InteractionBatch, InteractionData, InteractionDiagnostics,
+    KeyboardData, MotionAggregate, MouseData, PointerMode, ScreenData,
 };
 
 use crate::input::audio::AudioInput;
@@ -377,6 +377,15 @@ impl InputManager {
         self.sources
             .iter()
             .any(|source| source.is_interaction_source())
+    }
+
+    /// Collect health snapshots from every interaction source.
+    #[must_use]
+    pub fn interaction_diagnostics(&self) -> Vec<InteractionDiagnostics> {
+        self.sources
+            .iter()
+            .filter_map(|source| source.interaction_diagnostics())
+            .collect()
     }
 
     /// Whether any registered source captures from host input hardware.

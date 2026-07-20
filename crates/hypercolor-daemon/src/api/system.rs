@@ -54,6 +54,7 @@ pub struct SystemStatus {
     pub global_brightness: u8,
     pub audio_available: bool,
     pub capture_available: bool,
+    pub input: InputStatus,
     pub compositor_acceleration: RenderAccelerationStatus,
     pub render_loop: RenderLoopStatus,
     pub latest_frame: Option<LatestFrameStatus>,
@@ -61,6 +62,22 @@ pub struct SystemStatus {
     pub preview_runtime: PreviewRuntimeStatus,
     pub event_bus_subscribers: usize,
     pub capabilities: Vec<String>,
+}
+
+/// Host keyboard/mouse capture health, for consent and remediation UX.
+///
+/// `enabled` is the consent config gate. `host_capturing` is true when a
+/// host backend is actively reading device nodes. `devices_denied` counts
+/// input nodes present but unreadable (udev rules missing) — the signal
+/// that distinguishes "input is off" from "input is on but blocked".
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct InputStatus {
+    pub enabled: bool,
+    pub host_capture_registered: bool,
+    pub host_capturing: bool,
+    pub devices_opened: usize,
+    pub devices_denied: usize,
+    pub backends: Vec<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -496,6 +513,26 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
     };
     let preview_runtime = preview_runtime_status(&state.preview_runtime);
 
+    let input_status = {
+        let input_enabled = state
+            .config_manager
+            .as_ref()
+            .is_some_and(|manager| manager.get().input.enabled);
+        let diagnostics = state.input_manager.lock().await.interaction_diagnostics();
+        let host = diagnostics.iter().filter(|entry| entry.host_capture);
+        InputStatus {
+            enabled: input_enabled,
+            host_capture_registered: host.clone().count() > 0,
+            host_capturing: host.clone().any(|entry| entry.capturing),
+            devices_opened: host.clone().map(|entry| entry.devices_opened).sum(),
+            devices_denied: host.map(|entry| entry.devices_denied).sum(),
+            backends: diagnostics
+                .iter()
+                .map(|entry| entry.backend.to_owned())
+                .collect(),
+        }
+    };
+
     let uptime_seconds = state.start_time.elapsed().as_secs();
     let config_path = config_path(&state).display().to_string();
     let data_dir = ConfigManager::data_dir().display().to_string();
@@ -518,6 +555,7 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
         global_brightness: brightness_percent(current_global_brightness(&state.power_state)),
         audio_available: settings::audio_input_available(),
         capture_available: settings::capture_input_available(),
+        input: input_status,
         compositor_acceleration: render_acceleration_status(&state.render_acceleration),
         render_loop: render_loop_status,
         latest_frame,

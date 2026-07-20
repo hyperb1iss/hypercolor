@@ -111,6 +111,21 @@ impl InteractionData {
     }
 }
 
+/// Health snapshot for one interaction source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InteractionDiagnostics {
+    /// Backend identifier: `"evdev"`, `"device_query"`, or `"browser"`.
+    pub backend: &'static str,
+    /// Whether this source captures from host hardware (vs injected input).
+    pub host_capture: bool,
+    /// Whether the source is currently capturing.
+    pub capturing: bool,
+    /// Device nodes opened and streaming (host backends only).
+    pub devices_opened: usize,
+    /// Device nodes present but unreadable — udev rules missing.
+    pub devices_denied: usize,
+}
+
 /// Keyboard snapshot for one frame.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct KeyboardData {
@@ -354,6 +369,16 @@ pub trait InputSource: Send {
     /// Whether this source captures host keyboard/mouse interaction.
     fn is_interaction_source(&self) -> bool {
         false
+    }
+
+    /// Health snapshot for interaction sources, for status and remediation UX.
+    ///
+    /// Non-interaction sources return `None`. Interaction sources report
+    /// their backend and, for host hardware, how many device nodes opened
+    /// versus were denied — so the UI can tell "input is off" apart from
+    /// "input is on but the udev rules are missing".
+    fn interaction_diagnostics(&self) -> Option<InteractionDiagnostics> {
+        None
     }
 
     /// Whether this source captures from host input hardware (evdev, OS
