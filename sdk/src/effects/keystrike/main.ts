@@ -28,10 +28,18 @@ const MAX_SHOCKWAVES = 24
  * any channel wash to pure white. Colors keep their chroma because we cap
  * the added luminance rather than clamping post-sum.
  */
+/**
+ * Reserve real additive headroom: a single splat tops out at HEADROOM, not
+ * 1, so several overlapping light sources under `lighter` compositing can
+ * sum toward full brightness without any one of them clipping to white on
+ * its own.
+ */
+const HEADROOM = 0.62
+
 function ledColor(rgb: [number, number, number], intensity: number, brightness: number): string {
     const gain = Math.max(0, Math.min(1, intensity)) * brightness
     // Gamma-lift so low-intensity tails still register on real LEDs.
-    const lifted = gain ** 0.75
+    const lifted = Math.min(HEADROOM, gain ** 0.75)
     const r = Math.round(rgb[0] * 255 * lifted)
     const g = Math.round(rgb[1] * 255 * lifted)
     const b = Math.round(rgb[2] * 255 * lifted)
@@ -82,11 +90,19 @@ export default canvas(
     () => {
         const ripples: Ripple[] = []
         const shockwaves: Shockwave[] = []
-        const envelope = pressEnvelope({ attackMs: 18, decayMs: 420 })
+        const GLOW_DECAY_MS = 420
+        const envelope = pressEnvelope({ attackMs: 18, decayMs: GLOW_DECAY_MS })
+        // Keys whose per-cell glow is still decaying after release, so the
+        // envelope's decay tail is drawn instead of cut off the moment the
+        // key leaves the held set.
+        const glowKeys = new Set<string>()
         let hueOffset = 0
         let trail = 0
+        let lastTime = 0
 
         const draw: DrawFn = (ctx, time, controls) => {
+            const dt = Math.max(0, Math.min(0.25, time - lastTime))
+            lastTime = time
             const W = ctx.canvas.width
             const H = ctx.canvas.height
             const paletteName = controls.palette as string
@@ -100,6 +116,9 @@ export default canvas(
 
             const input = getInputData()
             envelope.feed(input.keyboard.events, performanceNow(input))
+            for (const event of input.keyboard.events) {
+                if (event.state === 'pressed') glowKeys.add(event.key)
+            }
 
             // Wheel rotates the palette phase so scrolling recolors the rig.
             hueOffset = (hueOffset + input.mouse.wheel * 0.04) % 1
@@ -137,14 +156,16 @@ export default canvas(
                 if (shockwaves.length > MAX_SHOCKWAVES) shockwaves.shift()
             }
 
-            // Motion energy feeds a persistent pointer trail glow.
-            trail = Math.max(trail * 0.9, Math.min(1, input.mouse.velocity * 0.6))
+            // Motion energy feeds a persistent pointer trail glow that fades
+            // on wall-clock time so its duration is stable across FPS tiers.
+            const trailDecay = Math.exp(-dt / 0.35)
+            trail = Math.max(trail * trailDecay, Math.min(1, input.mouse.velocity * 0.6))
 
             const maxRadius = Math.hypot(W, H)
 
             // ── Base wash: dark, with a slow idle breath so the rig is never
             // fully black while an interactive effect is selected. ──────────
-            const breath = 0.5 + 0.5 * Math.sin(time * 1.4)
+            const breath = 0.5 + 0.5 * Math.sin(time * 2.0)
             const idle = (idleGlow / 60) * breath
             const idleColor = samplePalette(paletteName, hueOffset)
             ctx.globalCompositeOperation = 'source-over'
@@ -158,6 +179,7 @@ export default canvas(
                 const age = (time - ripple.born) / lifeSeconds
                 if (age >= 1) continue
                 const radius = maxRadius * ringSpeed * (time - ripple.born)
+                if (radius > maxRadius * 1.05) continue
                 const fade = 1 - easeOutQuint(age)
                 const rgb = samplePalette(paletteName, (ripple.hue + hueOffset) % 1)
                 ctx.strokeStyle = ledColor(rgb, fade * ripple.strength, brightness)
@@ -202,12 +224,20 @@ export default canvas(
                 ctx.fill()
             }
 
-            // ── Per-key press glow: recently struck keys pulse at their cell ─
-            for (const key of Object.keys(input.keyboard.keys)) {
+            // ── Per-key press glow: struck keys pulse and fade at their cell.
+            // Iterate the envelope's own keys, not the held set, so the decay
+            // tail draws after release instead of cutting off. ───────────────
+            for (const key of glowKeys) {
                 const value = envelope.value(key)
-                if (value <= 0.01) continue
+                if (value <= 0.01) {
+                    glowKeys.delete(key)
+                    continue
+                }
                 const grid = keyToGridPosition(key)
-                if (!grid) continue
+                if (!grid) {
+                    glowKeys.delete(key)
+                    continue
+                }
                 const rgb = samplePalette(paletteName, (hueOffset + grid.x * 0.4) % 1)
                 const radius = Math.max(W, H) * 0.06 * (0.6 + value)
                 const gradient = ctx.createRadialGradient(grid.x * W, grid.y * H, 0, grid.x * W, grid.y * H, radius)
