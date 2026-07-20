@@ -120,6 +120,9 @@ pub struct InteractionBatch {
 }
 
 impl InteractionBatch {
+    /// Upper bound on events carried by one frame batch after coalescing.
+    pub const MAX_EVENTS: usize = 256;
+
     /// Whether this batch carries anything a renderer could react to.
     #[must_use]
     pub fn is_empty(&self) -> bool {
@@ -127,6 +130,33 @@ impl InteractionBatch {
             && self.wheel_hi_res == 0
             && self.motion == MotionAggregate::default()
             && self.dropped_events == 0
+    }
+
+    /// Fold a superseded frame's batch into this one, oldest events first.
+    ///
+    /// Renderers that coalesce queued frames use this so no input edge is
+    /// lost when a frame is replaced before rendering. Ordering and
+    /// timestamps survive; overflow drops the oldest events and counts them.
+    pub fn absorb_prior(&mut self, mut prior: Self) {
+        if prior.is_empty() {
+            return;
+        }
+
+        prior.events.append(&mut self.events);
+        self.events = prior.events;
+        if self.events.len() > Self::MAX_EVENTS {
+            let overflow = self.events.len() - Self::MAX_EVENTS;
+            self.events.drain(..overflow);
+            self.dropped_events = self
+                .dropped_events
+                .saturating_add(u32::try_from(overflow).unwrap_or(u32::MAX));
+        }
+
+        self.wheel_hi_res = self.wheel_hi_res.saturating_add(prior.wheel_hi_res);
+        self.motion.dx += prior.motion.dx;
+        self.motion.dy += prior.motion.dy;
+        self.motion.distance += prior.motion.distance;
+        self.dropped_events = self.dropped_events.saturating_add(prior.dropped_events);
     }
 }
 

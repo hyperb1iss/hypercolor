@@ -12,8 +12,6 @@ use hypercolor_types::media::MediaState;
 use hypercolor_types::net::NetStats;
 use hypercolor_types::sensor::{SensorReading, SystemSnapshot};
 
-use crate::input::InteractionData;
-
 mod payload;
 
 use super::traits::FrameInput;
@@ -95,7 +93,7 @@ pub struct LightscriptRuntime {
     width: u32,
     height: u32,
     last_controls: HashMap<String, ControlValue>,
-    last_interaction: Option<InteractionData>,
+    last_interaction_generation: Option<u64>,
     last_sensor_readings: Option<Vec<SensorReading>>,
     last_sensor_labels: Option<Vec<String>>,
     last_media: Option<MediaState>,
@@ -115,7 +113,7 @@ impl LightscriptRuntime {
             width,
             height,
             last_controls: HashMap::new(),
-            last_interaction: None,
+            last_interaction_generation: None,
             last_sensor_readings: None,
             last_sensor_labels: None,
             last_media: None,
@@ -523,10 +521,12 @@ impl LightscriptRuntime {
             .flatten();
         let controls = self.changed_control_payload(controls);
         let interaction = (options.include_interaction
-            && self.last_interaction.as_ref() != Some(input.interaction))
+            && input
+                .interaction
+                .is_dirty_against(self.last_interaction_generation))
         .then(|| {
-            self.last_interaction = Some(input.interaction.clone());
-            LightScriptInteractionPayload::from_interaction(input.interaction)
+            self.last_interaction_generation = Some(input.interaction.generation);
+            LightScriptInteractionPayload::from_interaction(input.interaction, input.delta_secs)
         });
 
         let should_emit = canvas_changed

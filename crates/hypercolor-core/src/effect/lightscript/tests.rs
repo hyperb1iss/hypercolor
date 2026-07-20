@@ -1,5 +1,5 @@
 use super::*;
-use crate::input::ScreenData;
+use crate::input::{InteractionData, ScreenData};
 
 fn default_options() -> LightScriptFrameUpdateOptions<'static> {
     LightScriptFrameUpdateOptions {

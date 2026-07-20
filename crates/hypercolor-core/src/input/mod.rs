@@ -15,7 +15,7 @@ pub mod sensor;
 mod traits;
 
 #[cfg(target_os = "linux")]
-pub use evdev::EvdevKeyboardInput;
+pub use evdev::{DeviceOpenState, DeviceOpenStatus, EvdevHostInput};
 pub use interaction::InteractionInput;
 pub use media::MediaSource;
 pub use net::NetSource;

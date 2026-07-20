@@ -1,0 +1,23 @@
+# Hypercolor OPTIONAL input capture rules — NOT installed by default.
+#
+# SECURITY: installing this file grants every process running in the active
+# logged-in session read access to ALL keyboard and mouse event nodes via
+# systemd-logind uaccess ACLs. Any program running as the seated user can then
+# observe every keystroke and pointer movement on the machine — this is
+# equivalent to permitting session-wide keylogging. Understand that trade-off
+# before installing.
+#
+# It exists for capturing input from devices Hypercolor does not drive:
+# laptop-internal keyboards/touchpads, Bluetooth keyboards, and generic mice.
+# If your input devices are supported RGB gear, the vendor-scoped input rules
+# in 99-hypercolor.rules already cover them and this file is unnecessary.
+#
+# `just udev-install` deliberately does NOT install this file. To opt in:
+#   sudo cp udev/99-hypercolor-input-all.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules
+#   sudo udevadm trigger --action=add --subsystem-match=input
+#
+# uaccess ONLY — no GROUP= fallback, same rationale as the vendor-scoped input
+# rules: a group-readable event node is a keystroke grant to every member.
+SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_KEYBOARD}=="1", TAG+="uaccess", MODE="0640"
+SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_MOUSE}=="1", TAG+="uaccess", MODE="0640"

@@ -121,10 +121,19 @@ pub(super) struct LightScriptAudioPayload {
 pub(super) struct LightScriptInteractionPayload {
     pub(super) keyboard: LightScriptKeyboardPayload,
     pub(super) mouse: LightScriptMousePayload,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(super) events: Vec<LightScriptInputEventPayload>,
+    #[serde(skip_serializing_if = "is_zero_u32")]
+    pub(super) dropped: u32,
 }
 
 impl LightScriptInteractionPayload {
-    pub(super) fn from_interaction(interaction: &InteractionData) -> Self {
+    pub(super) fn from_interaction(interaction: &InteractionData, delta_secs: f32) -> Self {
+        let motion_per_sec = if delta_secs > f32::EPSILON {
+            interaction.batch.motion.distance / delta_secs
+        } else {
+            0.0
+        };
         Self {
             keyboard: LightScriptKeyboardPayload {
                 keys: keyboard_lookup_keys(&interaction.keyboard.pressed_keys),
@@ -135,7 +144,23 @@ impl LightScriptInteractionPayload {
                 y: interaction.mouse.y,
                 down: interaction.mouse.down,
                 buttons: mouse_lookup_keys(&interaction.mouse.buttons),
+                nx: sanitize_norm(interaction.mouse.norm_x),
+                ny: sanitize_norm(interaction.mouse.norm_y),
+                mode: pointer_mode_name(interaction.mouse.mode),
+                wheel: interaction.batch.wheel_hi_res,
+                velocity: if motion_per_sec.is_finite() {
+                    motion_per_sec
+                } else {
+                    0.0
+                },
             },
+            events: interaction
+                .batch
+                .events
+                .iter()
+                .filter_map(LightScriptInputEventPayload::from_timed)
+                .collect(),
+            dropped: interaction.batch.dropped_events,
         }
     }
 }
@@ -146,12 +171,129 @@ pub(super) struct LightScriptKeyboardPayload {
     pub(super) recent: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub(super) struct LightScriptMousePayload {
     pub(super) x: i32,
     pub(super) y: i32,
     pub(super) down: bool,
     pub(super) buttons: Vec<String>,
+    pub(super) nx: f32,
+    pub(super) ny: f32,
+    pub(super) mode: &'static str,
+    #[serde(skip_serializing_if = "is_zero_i32")]
+    pub(super) wheel: i32,
+    pub(super) velocity: f32,
+}
+
+/// One ordered input edge for the frame, flattened for JS ergonomics.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct LightScriptInputEventPayload {
+    pub(super) kind: &'static str,
+    pub(super) source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) button: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) state: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) delta: Option<i32>,
+    pub(super) at_ms: u64,
+    pub(super) seq: u64,
+}
+
+impl LightScriptInputEventPayload {
+    fn from_timed(timed: &hypercolor_types::event::TimedInputEvent) -> Option<Self> {
+        use hypercolor_types::event::InputEvent;
+
+        let (kind, source, key, button, state, delta) = match &timed.event {
+            InputEvent::Key {
+                source_id,
+                key,
+                state,
+            } => (
+                "key",
+                source_id.clone(),
+                Some(key.clone()),
+                None,
+                Some(button_state_name(*state)),
+                None,
+            ),
+            InputEvent::MouseButton {
+                source_id,
+                button,
+                state,
+            } => (
+                "button",
+                source_id.clone(),
+                None,
+                Some(button.clone()),
+                Some(button_state_name(*state)),
+                None,
+            ),
+            InputEvent::MouseWheel {
+                source_id,
+                delta_hi_res,
+            } => (
+                "wheel",
+                source_id.clone(),
+                None,
+                None,
+                None,
+                Some(*delta_hi_res),
+            ),
+            // MIDI edges stay on the event bus; they are not part of the
+            // effect-facing interaction contract yet.
+            InputEvent::MidiNote { .. }
+            | InputEvent::MidiControlChange { .. }
+            | InputEvent::MidiPitchBend { .. }
+            | InputEvent::MidiRealtime { .. } => return None,
+        };
+
+        Some(Self {
+            kind,
+            source,
+            key,
+            button,
+            state,
+            delta,
+            at_ms: timed.at_ms,
+            seq: timed.seq,
+        })
+    }
+}
+
+fn button_state_name(state: hypercolor_types::event::InputButtonState) -> &'static str {
+    match state {
+        hypercolor_types::event::InputButtonState::Pressed => "pressed",
+        hypercolor_types::event::InputButtonState::Released => "released",
+        hypercolor_types::event::InputButtonState::Repeated => "repeated",
+    }
+}
+
+fn pointer_mode_name(mode: crate::input::PointerMode) -> &'static str {
+    match mode {
+        crate::input::PointerMode::None => "none",
+        crate::input::PointerMode::Absolute => "absolute",
+        crate::input::PointerMode::Virtual => "virtual",
+    }
+}
+
+fn sanitize_norm(value: f32) -> f32 {
+    if value.is_finite() {
+        value.clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
+}
+
+fn is_zero_i32(value: &i32) -> bool {
+    *value == 0
+}
+
+fn is_zero_u32(value: &u32) -> bool {
+    *value == 0
 }
 
 /// Album-art delta for one media payload: omitted from the JSON entirely
@@ -549,7 +691,14 @@ mod tests {
                     y: 12,
                     down: true,
                     buttons: vec!["left".to_owned()],
+                    nx: 0.25,
+                    ny: 0.75,
+                    mode: "virtual",
+                    wheel: 120,
+                    velocity: 0.5,
                 },
+                events: Vec::new(),
+                dropped: 0,
             }),
             render_host_frame: true,
         };
@@ -622,20 +771,23 @@ mod tests {
 
     #[test]
     fn interaction_payload_uses_lookup_key_arrays() {
-        let payload = LightScriptInteractionPayload::from_interaction(&InteractionData {
-            keyboard: crate::input::KeyboardData {
-                pressed_keys: vec!["a".to_owned(), "Space".to_owned()],
-                recent_keys: vec!["a".to_owned()],
-            },
-            mouse: crate::input::MouseData {
-                x: 42,
-                y: 24,
-                buttons: vec!["left".to_owned()],
-                down: true,
+        let payload = LightScriptInteractionPayload::from_interaction(
+            &InteractionData {
+                keyboard: crate::input::KeyboardData {
+                    pressed_keys: vec!["a".to_owned(), "Space".to_owned()],
+                    recent_keys: vec!["a".to_owned()],
+                },
+                mouse: crate::input::MouseData {
+                    x: 42,
+                    y: 24,
+                    buttons: vec!["left".to_owned()],
+                    down: true,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
-            ..Default::default()
-        });
+            1.0 / 30.0,
+        );
 
         assert!(payload.keyboard.keys.contains(&"A".to_owned()));
         assert!(payload.keyboard.keys.contains(&"KeyA".to_owned()));
@@ -652,5 +804,85 @@ mod tests {
         assert_eq!(payload.hue, vec![0_i16; DEFAULT_ZONE_SAMPLES]);
         assert_eq!(payload.saturation, vec![0_i8; DEFAULT_ZONE_SAMPLES]);
         assert_eq!(payload.lightness, vec![0_i8; DEFAULT_ZONE_SAMPLES]);
+    }
+}
+
+#[cfg(test)]
+mod interaction_payload_v2_tests {
+    use super::*;
+    use crate::input::{InteractionData, MotionAggregate, PointerMode};
+    use hypercolor_types::event::{InputButtonState, InputEvent, TimedInputEvent};
+
+    #[test]
+    fn interaction_payload_carries_events_wheel_and_velocity() {
+        let mut interaction = InteractionData::default();
+        interaction.mouse.norm_x = 0.5;
+        interaction.mouse.norm_y = 2.0; // clamped
+        interaction.mouse.mode = PointerMode::Virtual;
+        interaction.batch.wheel_hi_res = -240;
+        interaction.batch.motion = MotionAggregate {
+            dx: 0.1,
+            dy: 0.0,
+            distance: 0.3,
+        };
+        interaction.batch.dropped_events = 2;
+        interaction.batch.events = vec![
+            TimedInputEvent {
+                event: InputEvent::Key {
+                    source_id: "kbd".into(),
+                    key: "a".into(),
+                    state: InputButtonState::Pressed,
+                },
+                at_ms: 100,
+                seq: 9,
+            },
+            TimedInputEvent {
+                event: InputEvent::MouseWheel {
+                    source_id: "ptr".into(),
+                    delta_hi_res: -240,
+                },
+                at_ms: 105,
+                seq: 10,
+            },
+            TimedInputEvent {
+                event: InputEvent::MidiRealtime {
+                    source_id: "midi".into(),
+                    message: hypercolor_types::event::MidiRealtimeMessage::Clock,
+                },
+                at_ms: 106,
+                seq: 11,
+            },
+        ];
+
+        let payload = LightScriptInteractionPayload::from_interaction(&interaction, 1.0 / 30.0);
+        let value = serde_json::to_value(&payload).expect("payload serializes");
+
+        assert_eq!(value["mouse"]["nx"], serde_json::json!(0.5));
+        assert_eq!(value["mouse"]["ny"], serde_json::json!(1.0));
+        assert_eq!(value["mouse"]["mode"], serde_json::json!("virtual"));
+        assert_eq!(value["mouse"]["wheel"], serde_json::json!(-240));
+        assert!(value["mouse"]["velocity"].as_f64().expect("velocity") > 8.9);
+        assert_eq!(value["dropped"], serde_json::json!(2));
+
+        let events = value["events"].as_array().expect("events array");
+        assert_eq!(events.len(), 2, "MIDI edges stay off the effect contract");
+        assert_eq!(events[0]["kind"], serde_json::json!("key"));
+        assert_eq!(events[0]["key"], serde_json::json!("a"));
+        assert_eq!(events[0]["state"], serde_json::json!("pressed"));
+        assert_eq!(events[0]["atMs"], serde_json::json!(100));
+        assert_eq!(events[0]["seq"], serde_json::json!(9));
+        assert_eq!(events[1]["kind"], serde_json::json!("wheel"));
+        assert_eq!(events[1]["delta"], serde_json::json!(-240));
+    }
+
+    #[test]
+    fn idle_interaction_payload_omits_transient_fields() {
+        let payload =
+            LightScriptInteractionPayload::from_interaction(&InteractionData::default(), 0.0);
+        let value = serde_json::to_value(&payload).expect("payload serializes");
+        assert!(value.get("events").is_none());
+        assert!(value.get("dropped").is_none());
+        assert!(value["mouse"].get("wheel").is_none());
+        assert_eq!(value["mouse"]["mode"], serde_json::json!("none"));
     }
 }

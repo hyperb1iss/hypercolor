@@ -4,7 +4,16 @@ use hypercolor_hal::database::ProtocolDatabase;
 use hypercolor_hal::registry::TransportType;
 
 const UDEV_RULES: &str = include_str!("../../../udev/99-hypercolor.rules");
+const UDEV_INPUT_ALL_RULES: &str = include_str!("../../../udev/99-hypercolor-input-all.rules");
 const I2C_UDEV_RULE: &str = "SUBSYSTEM==\"i2c-dev\", KERNEL==\"i2c-[0-9]*\", MODE=\"0660\", GROUP=\"users\", TAG+=\"uaccess\"";
+
+fn input_rule_lines(rules: &str) -> Vec<&str> {
+    rules
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.starts_with('#') && line.contains("SUBSYSTEM==\"input\""))
+        .collect()
+}
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum RequiredSubsystem {
@@ -129,5 +138,56 @@ fn udev_rules_include_i2c_access_for_smbus_devices() {
     assert!(
         UDEV_RULES.contains(I2C_UDEV_RULE),
         "missing SMBus i2c-dev udev rule: {I2C_UDEV_RULE}"
+    );
+}
+
+#[test]
+fn udev_rules_grant_uaccess_on_input_event_nodes() {
+    let input_rules = input_rule_lines(UDEV_RULES);
+    assert!(
+        !input_rules.is_empty(),
+        "expected at least one SUBSYSTEM==\"input\" rule for supported input vendors"
+    );
+    for rule in input_rules {
+        assert!(
+            rule.contains("KERNEL==\"event*\""),
+            "input rule must scope to event nodes: {rule}"
+        );
+        assert!(
+            rule.contains("TAG+=\"uaccess\""),
+            "input rule must grant uaccess: {rule}"
+        );
+    }
+}
+
+#[test]
+fn udev_input_rules_never_carry_group_assignments() {
+    for rule in input_rule_lines(UDEV_RULES)
+        .into_iter()
+        .chain(input_rule_lines(UDEV_INPUT_ALL_RULES))
+    {
+        assert!(
+            !rule.contains("GROUP="),
+            "input event rules must be uaccess-only; a group-readable event node \
+             grants keystroke access to every group member: {rule}"
+        );
+    }
+}
+
+#[test]
+fn optional_input_all_rules_guard_by_input_class() {
+    let keyboard_guard = "ENV{ID_INPUT_KEYBOARD}==\"1\"";
+    let mouse_guard = "ENV{ID_INPUT_MOUSE}==\"1\"";
+    assert!(
+        UDEV_INPUT_ALL_RULES
+            .lines()
+            .any(|line| line.contains("SUBSYSTEM==\"input\"") && line.contains(keyboard_guard)),
+        "input-all rules must scope keyboard access with {keyboard_guard}"
+    );
+    assert!(
+        UDEV_INPUT_ALL_RULES
+            .lines()
+            .any(|line| line.contains("SUBSYSTEM==\"input\"") && line.contains(mouse_guard)),
+        "input-all rules must scope mouse access with {mouse_guard}"
     );
 }

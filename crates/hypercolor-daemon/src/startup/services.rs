@@ -24,7 +24,7 @@ use hypercolor_core::effect::builtin::register_builtin_effects;
 use hypercolor_core::effect::{EffectRegistry, default_effect_search_paths, register_html_effects};
 use hypercolor_core::engine::{FpsTier, RenderLoop};
 #[cfg(target_os = "linux")]
-use hypercolor_core::input::EvdevKeyboardInput;
+use hypercolor_core::input::EvdevHostInput;
 #[cfg(not(target_os = "linux"))]
 use hypercolor_core::input::InteractionInput;
 use hypercolor_core::input::audio::AudioInput;
@@ -616,8 +616,9 @@ pub(crate) fn build_interaction_source(
 
     #[cfg(target_os = "linux")]
     {
-        input.keyboard.then(|| {
-            Box::new(EvdevKeyboardInput::new()) as Box<dyn hypercolor_core::input::InputSource>
+        (input.keyboard || input.mouse).then(|| {
+            Box::new(EvdevHostInput::new(input.keyboard, input.mouse))
+                as Box<dyn hypercolor_core::input::InputSource>
         })
     }
 

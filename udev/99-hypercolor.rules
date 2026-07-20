@@ -122,5 +122,31 @@ SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="feed", MODE="0660
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="320f", MODE="0660", GROUP="users", TAG+="uaccess"
 SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="320f", MODE="0660", GROUP="users", TAG+="uaccess"
 
+# ─── Input event nodes ────────────────────────────────────────────────────────
+# The daemon reads /dev/input/event* nodes of supported RGB keyboards, keypads,
+# and mice to drive interactive lighting effects. Access is uaccess ONLY:
+# deliberately NO GROUP= fallback on input nodes. A group-readable event node
+# hands every member of that group a live keystroke feed — a keylogging grant —
+# so the conservative hidraw fallback rationale above does not transfer here.
+# Vendors are limited to families that ship keyboards, keypads, or mice.
+
+# Razer
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{idVendor}=="1532", TAG+="uaccess", MODE="0640"
+
+# Corsair
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{idVendor}=="1b1c", TAG+="uaccess", MODE="0640"
+
+# Dygma
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{idVendor}=="35ef", TAG+="uaccess", MODE="0640"
+
+# ASUS (ROG keyboards)
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{idVendor}=="0b05", TAG+="uaccess", MODE="0640"
+
+# QMK community implementation keyboards: Keychron, ZSA, Drop/OLKB, Glorious
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{idVendor}=="3434", TAG+="uaccess", MODE="0640"
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{idVendor}=="3297", TAG+="uaccess", MODE="0640"
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{idVendor}=="feed", TAG+="uaccess", MODE="0640"
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{idVendor}=="320f", TAG+="uaccess", MODE="0640"
+
 # ─── SMBus / I2C ──────────────────────────────────────────────────────────────
 SUBSYSTEM=="i2c-dev", KERNEL=="i2c-[0-9]*", MODE="0660", GROUP="users", TAG+="uaccess"

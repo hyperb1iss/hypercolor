@@ -156,6 +156,39 @@
       engine.mouse.y = finiteNumber(mouse.y, 0);
       engine.mouse.down = mouse.down === true;
       engine.mouse.buttons = trueObject(mouse.buttons);
+      engine.mouse.nx = finiteNumber(mouse.nx, 0);
+      engine.mouse.ny = finiteNumber(mouse.ny, 0);
+      engine.mouse.mode = typeof mouse.mode === 'string' ? mouse.mode : 'none';
+      engine.mouse.available = engine.mouse.mode !== 'none';
+      engine.mouse.wheel = finiteNumber(mouse.wheel, 0) / 120;
+      engine.mouse.velocity = finiteNumber(mouse.velocity, 0);
+      const events = Array.isArray(interaction.events) ? interaction.events : [];
+      const keyEvents = [];
+      const mouseEvents = [];
+      for (let index = 0; index < events.length; index += 1) {
+        const event = events[index];
+        if (typeof event !== 'object' || event === null) { continue; }
+        const entry = {
+          kind: typeof event.kind === 'string' ? event.kind : '',
+          source: typeof event.source === 'string' ? event.source : '',
+          state: typeof event.state === 'string' ? event.state : null,
+          atMs: finiteNumber(event.atMs, 0),
+          seq: finiteNumber(event.seq, 0),
+        };
+        if (entry.kind === 'key') {
+          entry.key = typeof event.key === 'string' ? event.key : '';
+          keyEvents.push(entry);
+        } else if (entry.kind === 'button') {
+          entry.button = typeof event.button === 'string' ? event.button : '';
+          mouseEvents.push(entry);
+        } else if (entry.kind === 'wheel') {
+          entry.delta = finiteNumber(event.delta, 0) / 120;
+          mouseEvents.push(entry);
+        }
+      }
+      engine.keyboard.events = keyEvents;
+      engine.mouse.events = mouseEvents;
+      engine.inputDropped = finiteNumber(interaction.dropped, 0);
     };
     const applyTimingAndCanvas = function(engine, timing, canvas) {
       engine.time = finiteNumber(timing.timeSecs, engine.time || 0);

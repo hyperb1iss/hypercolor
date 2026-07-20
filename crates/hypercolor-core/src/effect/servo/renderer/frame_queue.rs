@@ -314,10 +314,16 @@ impl QueuedFrameInput {
     }
 
     fn merge_from_input(&mut self, input: &FrameInput<'_>, demand: QueuedFrameDemand) {
-        let prior_recent_keys = self
+        let (prior_recent_keys, prior_batch) = self
             .interaction
             .as_mut()
-            .map(|interaction| std::mem::take(&mut Arc::make_mut(interaction).keyboard.recent_keys))
+            .map(|interaction| {
+                let interaction = Arc::make_mut(interaction);
+                (
+                    std::mem::take(&mut interaction.keyboard.recent_keys),
+                    std::mem::take(&mut interaction.batch),
+                )
+            })
             .unwrap_or_default();
         self.time_secs = input.time_secs;
         self.delta_secs = input.delta_secs;
@@ -330,10 +336,11 @@ impl QueuedFrameInput {
         clone_optional_demanded_from(&mut self.net, input.sources.net, demand.net);
         clone_optional_demanded_from(&mut self.lighting, input.sources.lighting, demand.lighting);
         if let Some(interaction) = self.interaction.as_mut() {
-            merge_unique_strings(
-                &mut Arc::make_mut(interaction).keyboard.recent_keys,
-                prior_recent_keys,
-            );
+            let interaction = Arc::make_mut(interaction);
+            merge_unique_strings(&mut interaction.keyboard.recent_keys, prior_recent_keys);
+            // Superseded frames must not lose their input edges: fold the
+            // replaced frame's batch in ahead of the new one.
+            interaction.batch.absorb_prior(prior_batch);
         }
         self.canvas_width = input.canvas_width;
         self.canvas_height = input.canvas_height;

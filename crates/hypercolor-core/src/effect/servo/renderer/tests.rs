@@ -1258,6 +1258,54 @@ fn queued_frames_merge_recent_keys_from_superseded_inputs() {
 }
 
 #[test]
+fn queued_frames_append_event_batches_from_superseded_inputs() {
+    use hypercolor_types::event::{InputButtonState, InputEvent, TimedInputEvent};
+
+    fn timed_key(key: &str, state: InputButtonState, seq: u64) -> TimedInputEvent {
+        TimedInputEvent {
+            event: InputEvent::Key {
+                source_id: "test".into(),
+                key: key.into(),
+                state,
+            },
+            at_ms: seq * 10,
+            seq,
+        }
+    }
+
+    let audio = custom_audio(0.0);
+    let mut first_interaction = custom_interaction(&[], &[]);
+    first_interaction.batch.events = vec![
+        timed_key("a", InputButtonState::Pressed, 1),
+        timed_key("a", InputButtonState::Released, 2),
+    ];
+    first_interaction.batch.wheel_hi_res = 120;
+    let mut second_interaction = custom_interaction(&[], &[]);
+    second_interaction.batch.events = vec![timed_key("b", InputButtonState::Pressed, 3)];
+    second_interaction.batch.wheel_hi_res = -240;
+
+    let first = frame_input_with(1.0 / 30.0, 1, &audio, &first_interaction, 320, 200);
+    let second = frame_input_with(1.0 / 30.0, 2, &audio, &second_interaction, 320, 200);
+    let mut renderer = ServoRenderer::new();
+    renderer.include_audio_updates = false;
+    renderer.include_interaction_updates = true;
+
+    renderer.queue_frame(&first);
+    renderer.queue_frame(&second);
+
+    let queued = renderer.queued_frame.as_ref().expect("queued frame");
+    let interaction = queued.queued_interaction().expect("demanded interaction");
+    let seqs = interaction
+        .batch
+        .events
+        .iter()
+        .map(|event| event.seq)
+        .collect::<Vec<_>>();
+    assert_eq!(seqs, [1, 2, 3], "ordering survives coalescing");
+    assert_eq!(interaction.batch.wheel_hi_res, -120, "wheel travel sums");
+}
+
+#[test]
 fn queue_saturation_preserves_runtime_deltas_until_admission() {
     let (worker, render_rx, result_tx, delivered_rx, _unload_rx, stopped) =
         spawn_render_test_worker();
