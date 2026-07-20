@@ -90,12 +90,13 @@ export default canvas(
             const W = ctx.canvas.width
             const H = ctx.canvas.height
             const paletteName = controls.palette as string
-            // num() percentages arrive normalized [0,1]; rescale to authoring units.
-            const rippleSpeed = (controls.rippleSpeed as number) * 10
-            const rippleWidth = (controls.rippleWidth as number) * 12
-            const decay = (controls.decay as number) * 100
-            const idleGlow = (controls.idleGlow as number) * 60
-            const brightness = (controls.brightness as number) * 100
+            // num() controls arrive as raw authoring values (only a control
+            // named exactly "speed" gets magic-normalized), so read them raw.
+            const rippleSpeed = controls.rippleSpeed as number // [1, 10]
+            const rippleWidth = controls.rippleWidth as number // [1, 12] px
+            const decay = controls.decay as number // [10, 100]
+            const idleGlow = controls.idleGlow as number // [0, 60]
+            const brightness = (controls.brightness as number) / 100 // [10,100] → [0.1,1]
 
             const input = getInputData()
             envelope.feed(input.keyboard.events, performanceNow(input))
@@ -105,7 +106,7 @@ export default canvas(
             if (hueOffset < 0) hueOffset += 1
 
             const lifeSeconds = 0.6 + (decay / 100) * 2.4
-            const ringSpeed = 0.12 + (rippleSpeed / 100) * 0.9
+            const ringSpeed = 0.12 + (rippleSpeed / 10) * 0.9
 
             // Spawn a ripple per key press, positioned by its QWERTY cell so
             // keyboards read as spatially correct and strips still shimmer.
@@ -144,10 +145,10 @@ export default canvas(
             // ── Base wash: dark, with a slow idle breath so the rig is never
             // fully black while an interactive effect is selected. ──────────
             const breath = 0.5 + 0.5 * Math.sin(time * 1.4)
-            const idle = (idleGlow / 100) * breath
+            const idle = (idleGlow / 60) * breath
             const idleColor = samplePalette(paletteName, hueOffset)
             ctx.globalCompositeOperation = 'source-over'
-            ctx.fillStyle = ledColor(idleColor, idle * 0.35, brightness / 100)
+            ctx.fillStyle = ledColor(idleColor, idle * 0.35, brightness)
             ctx.fillRect(0, 0, W, H)
 
             ctx.globalCompositeOperation = 'lighter'
@@ -159,7 +160,7 @@ export default canvas(
                 const radius = maxRadius * ringSpeed * (time - ripple.born)
                 const fade = 1 - easeOutQuint(age)
                 const rgb = samplePalette(paletteName, (ripple.hue + hueOffset) % 1)
-                ctx.strokeStyle = ledColor(rgb, fade * ripple.strength, brightness / 100)
+                ctx.strokeStyle = ledColor(rgb, fade * ripple.strength, brightness)
                 ctx.lineWidth = rippleWidth * (0.5 + fade)
                 ctx.beginPath()
                 ctx.arc(ripple.x, ripple.y, Math.max(1, radius), 0, Math.PI * 2)
@@ -175,9 +176,9 @@ export default canvas(
                 const fade = 1 - age
                 const rgb = samplePalette(paletteName, (wave.hue + hueOffset) % 1)
                 const gradient = ctx.createRadialGradient(wave.x, wave.y, radius * 0.6, wave.x, wave.y, radius)
-                gradient.addColorStop(0, ledColor(rgb, 0, brightness / 100))
-                gradient.addColorStop(0.8, ledColor(rgb, fade * 0.8, brightness / 100))
-                gradient.addColorStop(1, ledColor(rgb, 0, brightness / 100))
+                gradient.addColorStop(0, ledColor(rgb, 0, brightness))
+                gradient.addColorStop(0.8, ledColor(rgb, fade * 0.8, brightness))
+                gradient.addColorStop(1, ledColor(rgb, 0, brightness))
                 ctx.fillStyle = gradient
                 ctx.beginPath()
                 ctx.arc(wave.x, wave.y, radius, 0, Math.PI * 2)
@@ -193,8 +194,8 @@ export default canvas(
                 const radius = Math.max(W, H) * (0.08 + trail * 0.12)
                 const rgb = samplePalette(paletteName, (hueOffset + 0.15) % 1)
                 const gradient = ctx.createRadialGradient(px, py, 0, px, py, radius)
-                gradient.addColorStop(0, ledColor(rgb, glow, brightness / 100))
-                gradient.addColorStop(1, ledColor(rgb, 0, brightness / 100))
+                gradient.addColorStop(0, ledColor(rgb, glow, brightness))
+                gradient.addColorStop(1, ledColor(rgb, 0, brightness))
                 ctx.fillStyle = gradient
                 ctx.beginPath()
                 ctx.arc(px, py, radius, 0, Math.PI * 2)
@@ -210,8 +211,8 @@ export default canvas(
                 const rgb = samplePalette(paletteName, (hueOffset + grid.x * 0.4) % 1)
                 const radius = Math.max(W, H) * 0.06 * (0.6 + value)
                 const gradient = ctx.createRadialGradient(grid.x * W, grid.y * H, 0, grid.x * W, grid.y * H, radius)
-                gradient.addColorStop(0, ledColor(rgb, value, brightness / 100))
-                gradient.addColorStop(1, ledColor(rgb, 0, brightness / 100))
+                gradient.addColorStop(0, ledColor(rgb, value, brightness))
+                gradient.addColorStop(1, ledColor(rgb, 0, brightness))
                 ctx.fillStyle = gradient
                 ctx.beginPath()
                 ctx.arc(grid.x * W, grid.y * H, radius, 0, Math.PI * 2)
