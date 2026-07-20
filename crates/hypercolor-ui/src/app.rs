@@ -46,8 +46,8 @@ use crate::toasts;
 use crate::ws::messages::scene_event_affects_active_effect;
 use crate::ws::{
     AudioLevel, BackpressureNotice, CanvasFrame, ControlSurfaceEventHint, DeviceEventHint,
-    EffectErrorHint, ExtensionEventHint, PerformanceMetrics, SceneEventHint, ScreenZonesFrame,
-    WsManager,
+    EffectErrorHint, ExtensionEventHint, InputInjectEdge, PerformanceMetrics, SceneEventHint,
+    ScreenZonesFrame, WsManager,
 };
 
 mod effect_state;
@@ -112,6 +112,10 @@ pub struct WsContext {
     pub audio_level: ReadSignal<AudioLevel>,
     pub send_zone_layout_preview: Callback<(String, String, SpatialLayout)>,
     pub clear_zone_layout_preview: Callback<(String, String)>,
+    /// Send browser-preview input edges as one control-authorized
+    /// `input_inject` message (spec 71 W4). No-op while disconnected;
+    /// read-only sockets get a daemon-side `forbidden` error.
+    pub send_input_inject: Callback<Vec<InputInjectEdge>>,
 }
 
 #[derive(Clone, Copy)]
@@ -528,6 +532,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         audio_level: ws.audio_level,
         send_zone_layout_preview: ws.send_zone_layout_preview,
         clear_zone_layout_preview: ws.clear_zone_layout_preview,
+        send_input_inject: ws.send_input_inject,
     };
     provide_context(ws_ctx);
     provide_context(crate::device_metrics::install_device_metrics_store(ws_ctx));

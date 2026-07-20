@@ -23,6 +23,7 @@ use leptos::prelude::*;
 use wasm_bindgen::{JsCast, JsValue};
 use web_sys::MessageEvent;
 
+use super::input::InputInjectEdge;
 use super::messages::{
     AudioLevel, BackpressureNotice, CanvasFrame, ConnectionState, ControlSurfaceEventHint,
     DeviceEventHint, EffectErrorHint, ExtensionEventHint, PerformanceMetrics, PreviewFrameChannel,
@@ -112,6 +113,9 @@ pub struct WsManager {
     pub set_display_preview_device: WriteSignal<Option<String>>,
     pub send_zone_layout_preview: Callback<(String, String, SpatialLayout)>,
     pub clear_zone_layout_preview: Callback<(String, String)>,
+    /// Send browser-preview input edges as one `input_inject` message.
+    /// Control-tier authorized daemon-side; a no-op while disconnected.
+    pub send_input_inject: Callback<Vec<InputInjectEdge>>,
 }
 
 impl Default for WsManager {
@@ -640,6 +644,11 @@ impl WsManager {
                     super::preview::send_zone_layout_preview_clear(&ws, &scene_id, &zone_id);
                 }
             });
+        let send_input_inject = Callback::new(move |events: Vec<InputInjectEdge>| {
+            if let Some(ws) = ws_handle.get_value() {
+                super::input::send_input_inject(&ws, &events);
+            }
+        });
 
         Self {
             canvas_frame,
@@ -672,6 +681,7 @@ impl WsManager {
             set_display_preview_device,
             send_zone_layout_preview,
             clear_zone_layout_preview,
+            send_input_inject,
         }
     }
 }

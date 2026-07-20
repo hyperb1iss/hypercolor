@@ -3,10 +3,12 @@
 //! Handles both JSON events and binary preview frames.
 
 mod connection;
+pub mod input;
 pub mod messages;
 mod preview;
 
 pub use connection::WsManager;
+pub use input::{InputEdgeButton, InputEdgeState, InputInjectEdge};
 pub use messages::{
     AudioLevel, BackpressureNotice, CanvasFrame, CanvasPixelFormat, ControlSurfaceEventHint,
     DeviceEventHint, EffectErrorHint, ExtensionEventHint, PerformanceMetrics, SceneEventHint,
