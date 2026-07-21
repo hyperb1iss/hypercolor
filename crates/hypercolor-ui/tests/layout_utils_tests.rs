@@ -46,9 +46,7 @@ fn sample_zone_summary(id: &str, name: &str, led_count: u32) -> api::ZoneSummary
         name: name.to_owned(),
         led_count,
         topology: "ring".to_owned(),
-        topology_hint: Some(api::ZoneTopologySummary::Ring {
-            count: u32::try_from(led_count).unwrap_or(u32::MAX),
-        }),
+        topology_hint: Some(api::ZoneTopologySummary::Ring { count: led_count }),
     }
 }
 

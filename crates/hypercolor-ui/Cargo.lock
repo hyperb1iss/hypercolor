@@ -770,7 +770,7 @@ dependencies = [
 
 [[package]]
 name = "hypercolor-leptos-ext"
-version = "0.1.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -791,7 +791,7 @@ dependencies = [
 
 [[package]]
 name = "hypercolor-leptos-ext-macros"
-version = "0.1.0"
+version = "0.2.1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -800,7 +800,7 @@ dependencies = [
 
 [[package]]
 name = "hypercolor-types"
-version = "0.1.0"
+version = "0.2.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -812,7 +812,7 @@ dependencies = [
 
 [[package]]
 name = "hypercolor-ui"
-version = "0.1.0"
+version = "0.2.1"
 dependencies = [
  "codee",
  "console_error_panic_hook",
