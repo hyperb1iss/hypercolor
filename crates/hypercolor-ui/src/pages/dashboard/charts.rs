@@ -11,7 +11,7 @@ use crate::components::perf_charts::{DistributionBar, Sparkline, StackSegment, S
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::icons::*;
 use crate::style_utils::category_style;
-use crate::thumbnails::{Thumbnail, ThumbnailStore};
+use crate::thumbnails::{Thumbnail, ThumbnailStore, curated_screenshot_url, slugify};
 use crate::ws::PerformanceMetrics;
 
 // ── Pipeline breakdown ───────────────────────────────────────────────
@@ -410,6 +410,8 @@ fn FavoriteCinemaCard(effect: EffectSummary, index: usize) -> impl IntoView {
     let thumb_id = effect.id.clone();
     let thumb_version = effect.version.clone();
     let name = effect.name.clone();
+    let curated_url = curated_screenshot_url(&slugify(&name));
+    let (curated_hidden, set_curated_hidden) = signal(false);
     let category = effect.category.clone();
     let audio_reactive = effect.audio_reactive;
 
@@ -488,7 +490,10 @@ fn FavoriteCinemaCard(effect: EffectSummary, index: usize) -> impl IntoView {
                     (count >= 2).then(|| format!("Running in {count} zones"))
                 }
             >
-                // ── Background: thumbnail when captured, category gradient otherwise.
+                // ── Background layers, bottom to top: category gradient or
+                // opportunistic thumbnail, then the curated screenshot when
+                // the daemon serves one. `onerror` hides the curated <img> so
+                // a missing screenshot falls through the stack naturally.
                 {move || thumbnail.get().map_or_else(
                     || {
                         let bg = format!(
@@ -520,6 +525,21 @@ fn FavoriteCinemaCard(effect: EffectSummary, index: usize) -> impl IntoView {
                         }.into_any()
                     },
                 )}
+
+                <img
+                    class=move || {
+                        let base = "absolute inset-0 w-full h-full object-cover \
+                                    pointer-events-none scale-[1.04] \
+                                    transition-transform duration-500 ease-out \
+                                    group-hover:scale-[1.1]";
+                        if curated_hidden.get() { "hidden" } else { base }
+                    }
+                    src=curated_url
+                    alt=""
+                    decoding="async"
+                    fetchpriority="low"
+                    on:error=move |_| set_curated_hidden.set(true)
+                />
 
                 // ── Legibility scrim: heavier on the left where text lives.
                 <div
