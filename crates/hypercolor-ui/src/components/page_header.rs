@@ -46,15 +46,18 @@ impl PageAccent {
         }
     }
 
-    fn title_gradient(self) -> &'static str {
+    /// CSS class carrying the accent's title gradient + glow. The gradient
+    /// definitions live in `input.css` (`.page-title-*`) so the light theme
+    /// can re-mix them without component logic.
+    fn title_class(self) -> &'static str {
         match self {
-            PageAccent::Purple => "linear-gradient(105deg,#80ffea 0%,#c8d4ff 48%,#e135ff 100%)",
-            PageAccent::Cyan => "linear-gradient(105deg,#80ffea 0%,#e8f4ff 55%,#80ffea 100%)",
-            PageAccent::Coral => "linear-gradient(105deg,#80ffea 0%,#e8d4ff 50%,#ff6ac1 100%)",
-            PageAccent::Pink => "linear-gradient(105deg,#80ffea 0%,#ecd9ff 50%,#ff99ff 100%)",
-            PageAccent::Green => "linear-gradient(105deg,#80ffea 0%,#d4eaff 50%,#50fa7b 100%)",
-            PageAccent::Yellow => "linear-gradient(105deg,#80ffea 0%,#e8f0ff 50%,#f1fa8c 100%)",
-            PageAccent::Spectrum => "linear-gradient(105deg,#80ffea 0%,#e135ff 52%,#50fa7b 100%)",
+            PageAccent::Purple => "page-title-purple",
+            PageAccent::Cyan => "page-title-cyan",
+            PageAccent::Coral => "page-title-coral",
+            PageAccent::Pink => "page-title-pink",
+            PageAccent::Green => "page-title-green",
+            PageAccent::Yellow => "page-title-yellow",
+            PageAccent::Spectrum => "page-title-spectrum",
         }
     }
 }
@@ -84,14 +87,9 @@ pub fn PageHeader(
     #[prop(optional)] header_toolbar: Option<HeaderToolbar>,
 ) -> impl IntoView {
     let icon_rgb = accent.icon_rgb();
-    let gradient = accent.title_gradient();
     let icon_style =
         format!("color: rgb({icon_rgb}); filter: drop-shadow(0 0 10px rgba({icon_rgb}, 0.55))");
-    let title_style = format!(
-        "font-family:'Sora','Satoshi',system-ui,sans-serif; font-weight:500; \
-         font-size:21px; letter-spacing:0.02em; line-height:1; \
-         background-image:{gradient}"
-    );
+    let title_class = format!("page-title {}", accent.title_class());
 
     view! {
         <header class="page-header sticky top-0 z-30 shrink-0 glass-subtle page-header-elevation">
@@ -101,7 +99,7 @@ pub fn PageHeader(
                         <Icon icon=icon width="20px" height="20px" />
                     </span>
                     <div class="min-w-0 flex flex-col gap-1.5">
-                        <h1 class="logo-gradient-text" style=title_style>
+                        <h1 class=title_class>
                             {title}
                         </h1>
                         <p class="text-[11.5px] leading-none text-fg-tertiary/72 truncate max-w-2xl">

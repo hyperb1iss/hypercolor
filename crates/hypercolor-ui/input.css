@@ -864,6 +864,139 @@ input[type="range"].slider-silk::-moz-range-track {
                 0 3px 8px -3px rgba(0, 0, 0, 0.08);
 }
 
+/* ── Page Title Treatment ──────────────────────────────────────────────
+   Accent-forward gradient titles for PageHeader. Each page's title leads
+   with a bright tint of its accent, saturates through the full accent by
+   mid-word, and lands on an adjacent-hue tail for depth, with a soft
+   glyph-shaped glow. Light theme re-mixes the same accents toward ink so
+   titles stay saturated and legible; the neon halo is dark-only. */
+.page-title {
+    font-family: 'Sora', 'Satoshi', system-ui, sans-serif;
+    font-weight: 500;
+    font-size: 21px;
+    letter-spacing: 0.02em;
+    line-height: 1;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+
+.page-title-purple {
+    background-image: linear-gradient(100deg,
+        color-mix(in oklch, var(--color-electric-purple) 30%, white) 0%,
+        color-mix(in oklch, var(--color-electric-purple) 72%, white) 38%,
+        var(--color-electric-purple) 72%,
+        color-mix(in oklch, var(--color-electric-purple) 55%, var(--color-coral)) 100%);
+    filter: drop-shadow(0 0 14px color-mix(in srgb, var(--color-electric-purple) 32%, transparent));
+}
+
+.page-title-cyan {
+    background-image: linear-gradient(100deg,
+        color-mix(in oklch, var(--color-neon-cyan) 34%, white) 0%,
+        color-mix(in oklch, var(--color-neon-cyan) 78%, white) 38%,
+        var(--color-neon-cyan) 70%,
+        color-mix(in oklch, var(--color-neon-cyan) 45%, var(--color-info-blue)) 100%);
+    filter: drop-shadow(0 0 14px color-mix(in srgb, var(--color-neon-cyan) 30%, transparent));
+}
+
+.page-title-coral {
+    background-image: linear-gradient(100deg,
+        color-mix(in oklch, var(--color-coral) 30%, white) 0%,
+        color-mix(in oklch, var(--color-coral) 72%, white) 38%,
+        var(--color-coral) 70%,
+        color-mix(in oklch, var(--color-coral) 50%, var(--color-electric-purple)) 100%);
+    filter: drop-shadow(0 0 14px color-mix(in srgb, var(--color-coral) 32%, transparent));
+}
+
+.page-title-pink {
+    background-image: linear-gradient(100deg,
+        color-mix(in oklch, var(--color-pink-soft) 34%, white) 0%,
+        color-mix(in oklch, var(--color-pink-soft) 76%, white) 38%,
+        var(--color-pink-soft) 70%,
+        color-mix(in oklch, var(--color-pink-soft) 45%, var(--color-coral)) 100%);
+    filter: drop-shadow(0 0 14px color-mix(in srgb, var(--color-pink-soft) 30%, transparent));
+}
+
+.page-title-green {
+    background-image: linear-gradient(100deg,
+        color-mix(in oklch, var(--color-success-green) 32%, white) 0%,
+        color-mix(in oklch, var(--color-success-green) 76%, white) 38%,
+        var(--color-success-green) 70%,
+        color-mix(in oklch, var(--color-success-green) 45%, var(--color-neon-cyan)) 100%);
+    filter: drop-shadow(0 0 14px color-mix(in srgb, var(--color-success-green) 30%, transparent));
+}
+
+.page-title-yellow {
+    background-image: linear-gradient(100deg,
+        color-mix(in oklch, var(--color-electric-yellow) 36%, white) 0%,
+        color-mix(in oklch, var(--color-electric-yellow) 80%, white) 38%,
+        var(--color-electric-yellow) 70%,
+        color-mix(in oklch, var(--color-electric-yellow) 55%, var(--color-coral)) 100%);
+    filter: drop-shadow(0 0 14px color-mix(in srgb, var(--color-electric-yellow) 28%, transparent));
+}
+
+/* The Dashboard sweep — the four brand hues in hue order, so every seam
+   interpolates through a clean neighbor instead of gray mud. */
+.page-title-spectrum {
+    background-image: linear-gradient(100deg,
+        var(--color-success-green) 0%,
+        var(--color-neon-cyan) 32%,
+        var(--color-electric-purple) 66%,
+        var(--color-coral) 100%);
+    filter: drop-shadow(0 0 14px color-mix(in srgb, var(--color-electric-purple) 28%, transparent));
+}
+
+[data-theme="light"] .page-title-purple {
+    background-image: linear-gradient(100deg,
+        color-mix(in oklch, var(--color-electric-purple) 72%, black) 0%,
+        color-mix(in oklch, var(--color-coral) 55%, black) 100%);
+    filter: none;
+}
+
+[data-theme="light"] .page-title-cyan {
+    background-image: linear-gradient(100deg,
+        color-mix(in oklch, var(--color-neon-cyan) 52%, black) 0%,
+        color-mix(in oklch, var(--color-info-blue) 60%, black) 100%);
+    filter: none;
+}
+
+[data-theme="light"] .page-title-coral {
+    background-image: linear-gradient(100deg,
+        color-mix(in oklch, var(--color-coral) 65%, black) 0%,
+        color-mix(in oklch, var(--color-electric-purple) 60%, black) 100%);
+    filter: none;
+}
+
+[data-theme="light"] .page-title-pink {
+    background-image: linear-gradient(100deg,
+        color-mix(in oklch, var(--color-pink-soft) 55%, black) 0%,
+        color-mix(in oklch, var(--color-coral) 55%, black) 100%);
+    filter: none;
+}
+
+[data-theme="light"] .page-title-green {
+    background-image: linear-gradient(100deg,
+        color-mix(in oklch, var(--color-success-green) 50%, black) 0%,
+        color-mix(in oklch, var(--color-neon-cyan) 45%, black) 100%);
+    filter: none;
+}
+
+[data-theme="light"] .page-title-yellow {
+    background-image: linear-gradient(100deg,
+        color-mix(in oklch, color-mix(in oklch, var(--color-electric-yellow) 60%, var(--color-error-red)) 65%, black) 0%,
+        color-mix(in oklch, var(--color-error-red) 55%, black) 100%);
+    filter: none;
+}
+
+[data-theme="light"] .page-title-spectrum {
+    background-image: linear-gradient(100deg,
+        color-mix(in oklch, var(--color-success-green) 50%, black) 0%,
+        color-mix(in oklch, var(--color-neon-cyan) 50%, black) 32%,
+        color-mix(in oklch, var(--color-electric-purple) 70%, black) 66%,
+        color-mix(in oklch, var(--color-coral) 60%, black) 100%);
+    filter: none;
+}
+
 .content-auto-card {
     content-visibility: auto;
     contain: layout paint style;
