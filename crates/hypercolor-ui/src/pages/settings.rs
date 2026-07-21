@@ -265,7 +265,7 @@ pub fn SettingsPage() -> impl IntoView {
             <PageHeader
                 icon=LuSettings2
                 title="Settings"
-                tagline="Tune the engine"
+                tagline="Dial in the daemon"
                 accent=PageAccent::Yellow
             >
                 <HeaderTrailing slot>

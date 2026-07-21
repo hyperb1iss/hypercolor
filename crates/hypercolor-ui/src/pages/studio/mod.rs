@@ -277,7 +277,7 @@ pub fn StudioPage() -> impl IntoView {
             <PageHeader
                 icon=LuLayoutTemplate
                 title="Studio"
-                tagline="Compose scenes across zones"
+                tagline="Compose scenes, zone by zone"
                 accent=PageAccent::Coral
             >
                 <HeaderTrailing slot>

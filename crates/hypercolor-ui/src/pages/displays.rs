@@ -337,7 +337,7 @@ pub fn DisplaysPage() -> impl IntoView {
             <PageHeader
                 icon=LuMonitor
                 title="Displays"
-                tagline="Assign faces to LCD screens"
+                tagline="Give every screen a face"
                 accent=PageAccent::Green
             />
             {move || snapshot_locked_warning.get().map(|scene_name| view! {

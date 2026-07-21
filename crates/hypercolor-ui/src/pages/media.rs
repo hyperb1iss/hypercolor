@@ -218,7 +218,7 @@ pub fn MediaPage() -> impl IntoView {
             <PageHeader
                 icon=LuImages
                 title="Media"
-                tagline="Stills, loops, and clips for Studio compositions"
+                tagline="Stills, loops, and clips for your scenes"
                 accent=PageAccent::Pink
             >
                 <HeaderTrailing slot>

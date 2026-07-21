@@ -537,7 +537,7 @@ pub fn EffectsPage() -> impl IntoView {
             <PageHeader
                 icon=LuZap
                 title="Effects"
-                tagline="Browse and tune effects"
+                tagline="Browse the library, tune the glow"
                 accent=PageAccent::Purple
             >
                 <HeaderTrailing slot>
