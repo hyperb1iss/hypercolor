@@ -10,7 +10,7 @@ use leptos_router::hooks::use_location;
 use leptos_use::use_throttle_fn_with_arg;
 
 use crate::api;
-use crate::app::{EffectsContext, FrameAnalysisContext, StudioFlag, WsContext};
+use crate::app::{EffectsContext, FrameAnalysisContext, WsContext};
 use crate::async_helpers::spawn_api_call;
 use crate::color::{self, CanvasPalette};
 use crate::components::canvas_preview::CanvasPreview;
@@ -39,7 +39,6 @@ pub fn Sidebar() -> impl IntoView {
 
     let location = use_location();
     let fx = expect_context::<EffectsContext>();
-    let studio_flag = expect_context::<StudioFlag>();
     // Extension-contributed nav items and footer widgets (both empty in the
     // standalone OSS app).
     let extension_nav = use_context::<NavExtensionItems>().unwrap_or_default();
@@ -259,9 +258,9 @@ pub fn Sidebar() -> impl IntoView {
                 </div>
             </div>
 
-            // Nav items — the set swaps with the studio_ui_beta flag (§5.1).
+            // Nav items (§5.1).
             <div class="flex-1 py-3 space-y-0.5 px-2">
-                {move || nav_model(studio_flag.enabled.get(), &extension_nav.0).into_iter().map(|item| {
+                {move || nav_model(&extension_nav.0).into_iter().map(|item| {
                     let is_active = {
                         let path = item.path;
                         Memo::new(move |_| {

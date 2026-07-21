@@ -2,7 +2,6 @@ use leptos::prelude::*;
 
 use hypercolor_types::config::HypercolorConfig;
 
-use crate::app::StudioFlag;
 use crate::components::settings_controls::*;
 use crate::icons::*;
 use crate::tauri_bridge;
@@ -60,7 +59,6 @@ pub fn DeveloperSection(
                 paths=extra_dirs
                 on_change=on_change
             />
-            <StudioBetaToggle />
             <ShowWelcomeAgainRow />
             <SectionReset section_label="Developer" on_reset=Callback::new(move |()| {
                 for key in &[
@@ -146,52 +144,5 @@ fn ShowWelcomeAgainRow() -> impl IntoView {
                 </button>
             </div>
         </Show>
-    }
-}
-
-/// Browser-local toggle for the Studio UI beta (Spec 65 §11.1).
-///
-/// Unlike every other Settings control, this writes no daemon config — it
-/// flips the `StudioFlag` context, which `app.rs` persists to localStorage.
-#[component]
-fn StudioBetaToggle() -> impl IntoView {
-    let flag = expect_context::<StudioFlag>();
-    view! {
-        <div class="flex items-start justify-between gap-4 py-3 setting-row">
-            <div class="flex-1 min-w-0">
-                <div class="flex items-center gap-2">
-                    <span class="text-sm text-fg-primary font-medium">"Studio UI (beta)"</span>
-                    <span
-                        class="text-[9px] font-mono px-1.5 py-0.5 rounded"
-                        style="color: rgba(128, 255, 234, 0.7); background: rgba(128, 255, 234, 0.08)"
-                    >
-                        "local"
-                    </span>
-                </div>
-                <div class="text-xs text-fg-tertiary/70 mt-0.5">
-                    "Switch to the new Studio composition workspace and Media catalog. Stored in this browser only."
-                </div>
-            </div>
-            <button
-                role="switch"
-                aria-checked=move || flag.enabled.get().to_string()
-                class="relative w-11 h-6 rounded-full transition-all duration-200 shrink-0 mt-0.5 cursor-pointer"
-                style=move || if flag.enabled.get() {
-                    "background: rgba(225, 53, 255, 0.5); box-shadow: 0 0 10px rgba(225, 53, 255, 0.25)"
-                } else {
-                    "background: rgba(139, 133, 160, 0.2)"
-                }
-                on:click=move |_| flag.set_enabled.update(|on| *on = !*on)
-            >
-                <span
-                    class="absolute left-0.5 top-0.5 w-5 h-5 rounded-full shadow-sm transition-transform duration-200"
-                    style=move || if flag.enabled.get() {
-                        "transform: translateX(22px); background: rgb(225, 53, 255)"
-                    } else {
-                        "transform: translateX(0); background: rgba(200, 200, 210, 0.6)"
-                    }
-                />
-            </button>
-        </div>
     }
 }

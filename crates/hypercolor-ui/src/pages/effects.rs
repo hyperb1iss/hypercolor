@@ -10,10 +10,10 @@ use crate::apply_target::ApplyTarget;
 use crate::components::calibration_guide::CalibrationGuide;
 use crate::components::control_panel::capture_group::CaptureSharedControls;
 use crate::components::effect_card::EffectCard;
+use crate::components::input_access_banner::InputAccessBanner;
 use crate::components::install_effect_panel::InstallEffectPanel;
 use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, PageHeader};
 use crate::components::page_search_bar::PageSearchBar;
-use crate::components::input_access_banner::InputAccessBanner;
 use crate::components::preview_cabinet::PreviewCabinet;
 use crate::components::resize_handle::ResizeHandle;
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
@@ -43,8 +43,8 @@ const MAX_CONTROLS_WIDTH: f64 = 800.0;
 /// Category filter chips — (label, accent RGB).
 ///
 /// `display` is deliberately absent here. Display faces are authored with
-/// the Face SDK and rendered on LCD devices; they live on the `/displays`
-/// page and never belong in the LED effects browser. The `filtered_effects`
+/// the Face SDK and rendered on LCD devices; they are assigned in Studio
+/// and never belong in the LED effects browser. The `filtered_effects`
 /// memo below also strips any stray `display`-category effect so a
 /// misclassified face can't leak into the gallery.
 const CATEGORY_CHIPS: &[(&str, &str)] = &[
@@ -250,8 +250,8 @@ pub fn EffectsPage() -> impl IntoView {
     });
 
     // Derive unique sorted author list from loaded effects.
-    // Skip display-face authors — they're only relevant on `/displays`
-    // and would pollute the effects-page author chip list.
+    // Skip display-face authors — they're only relevant to display
+    // faces and would pollute the effects-page author chip list.
     let authors = Memo::new(move |_| {
         let mut seen = std::collections::BTreeSet::new();
         fx.effects_index.with(|effects| {
@@ -391,8 +391,8 @@ pub fn EffectsPage() -> impl IntoView {
                 .filter(|entry| {
                     let effect = &entry.effect;
                     // Display faces are authored with the Face SDK and
-                    // assigned on the `/displays` page. They never
-                    // belong in the LED effects gallery, regardless of
+                    // assigned in Studio. They never belong in the
+                    // LED effects gallery, regardless of
                     // whether the user flipped some URL-state or old
                     // persisted filter to `display`.
                     if effect.category.eq_ignore_ascii_case("display") {

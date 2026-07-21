@@ -5,7 +5,6 @@ use leptos::tachys::view::iterators::StaticVec;
 use leptos_meta::*;
 use leptos_router::any_nested_route::AnyNestedRoute;
 use leptos_router::components::{Outlet, RouteChildren, Router, Routes, RoutesProps};
-use leptos_router::hooks::{use_navigate, use_query_map};
 use leptos_router::path;
 
 use hypercolor_leptos_ext::events::Input;
@@ -28,19 +27,15 @@ use crate::device_event_logic::should_refetch_devices_for_event;
 use crate::effect_search::IndexedEffect;
 use crate::extensions::{UiExtensions, parent_route, ui_route};
 use crate::nav::NavExtensionItems;
-use crate::pages::assets::AssetsPage;
 use crate::pages::dashboard::DashboardPage;
 use crate::pages::devices::DevicesPage;
 use crate::pages::display_preview::DisplayPreviewPage;
-use crate::pages::displays::DisplaysPage;
 use crate::pages::effects::EffectsPage;
-use crate::pages::layout::LayoutPage;
 use crate::pages::media::MediaPage;
 use crate::pages::settings::SettingsPage;
 use crate::pages::studio::StudioPage;
 use crate::preferences::PreferencesStore;
 use crate::preview_telemetry::{PreviewPresenterTelemetry, PreviewTelemetryContext};
-use crate::storage;
 use crate::thumbnails::{self, ThumbnailStore};
 use crate::toasts;
 use crate::ws::messages::scene_event_affects_active_effect;
@@ -121,16 +116,6 @@ pub struct WsContext {
 #[derive(Clone, Copy)]
 pub struct FrameAnalysisContext {
     pub live_canvas: ReadSignal<Option<CanvasFrameAnalysis>>,
-}
-
-/// Browser-local `studio_ui_beta` flag (Spec 65 §11.1). Gates the new
-/// Studio and Media pages plus the §5.1 nav set. Persisted to
-/// `localStorage` under `hc-studio-ui-beta` — never daemon config, so it
-/// flips against a live daemon without a rebuild.
-#[derive(Clone, Copy)]
-pub struct StudioFlag {
-    pub enabled: ReadSignal<bool>,
-    pub set_enabled: WriteSignal<bool>,
 }
 
 /// Named daemon capabilities (Spec 65 §9.6). Multi-zone Studio affordances
@@ -546,19 +531,6 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
     });
     provide_context(FrameAnalysisContext {
         live_canvas: live_canvas_analysis,
-    });
-
-    // Studio UI beta flag. Defaults on since the Wave 7 cutover (§11.4); a
-    // browser that toggled it off in Settings keeps that choice, which is
-    // the rollback path. Seeded from localStorage, persisted on change.
-    let (studio_ui_beta, set_studio_ui_beta) =
-        signal(storage::get_parsed::<bool>("hc-studio-ui-beta").unwrap_or(true));
-    Effect::new(move |_| {
-        storage::set("hc-studio-ui-beta", &studio_ui_beta.get().to_string());
-    });
-    provide_context(StudioFlag {
-        enabled: studio_ui_beta,
-        set_enabled: set_studio_ui_beta,
     });
 
     // Daemon capability advertisement (§9.6). Fetched once — the set is
@@ -993,12 +965,9 @@ fn route_defs(extra: Vec<AnyNestedRoute>) -> StaticVec<AnyNestedRoute> {
         ui_route(path!("/"), DashboardPage),
         ui_route(path!("/effects"), EffectsPage),
         ui_route(path!("/effects/:id"), EffectsPage),
-        ui_route(path!("/assets"), AssetsPage),
-        ui_route(path!("/studio"), StudioRoute),
-        ui_route(path!("/media"), MediaRoute),
-        ui_route(path!("/layout"), LayoutPage),
+        ui_route(path!("/studio"), StudioPage),
+        ui_route(path!("/media"), MediaPage),
         ui_route(path!("/devices"), DevicesPage),
-        ui_route(path!("/displays"), DisplaysPage),
         ui_route(path!("/settings"), SettingsPage),
     ];
     shell.extend(extra);
@@ -1038,42 +1007,4 @@ fn NotFoundPage() -> impl IntoView {
             </a>
         </div>
     }
-}
-
-/// Whether the Studio UI beta surfaces are reachable: the `studio_ui_beta`
-/// flag is on, or a `?dev` query override is present. The override lets a
-/// developer preview a half-built beta page without flipping the global
-/// flag (Spec 65 §11.2).
-fn studio_beta_allowed() -> Memo<bool> {
-    let flag = expect_context::<StudioFlag>();
-    let query = use_query_map();
-    Memo::new(move |_| flag.enabled.get() || query.with(|params| params.get("dev").is_some()))
-}
-
-/// `/studio` route guard. Off-flag without a `?dev` override, redirects to
-/// `/assets` so the beta page is never reached by accident.
-#[component]
-fn StudioRoute() -> impl IntoView {
-    let allowed = studio_beta_allowed();
-    let navigate = use_navigate();
-    Effect::new(move |_| {
-        if !allowed.get() {
-            navigate("/assets", Default::default());
-        }
-    });
-    move || allowed.get().then(|| view! { <StudioPage /> })
-}
-
-/// `/media` route guard. Off-flag without a `?dev` override, redirects to
-/// `/assets`.
-#[component]
-fn MediaRoute() -> impl IntoView {
-    let allowed = studio_beta_allowed();
-    let navigate = use_navigate();
-    Effect::new(move |_| {
-        if !allowed.get() {
-            navigate("/assets", Default::default());
-        }
-    });
-    move || allowed.get().then(|| view! { <MediaPage /> })
 }

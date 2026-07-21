@@ -1,15 +1,10 @@
 use hypercolor_types::canvas::srgb_to_linear;
 use hypercolor_types::effect::{ControlDefinition, ControlKind, ControlType, ControlValue};
-use hypercolor_ui::api::{
-    ComponentBindingRequest, DisplaySummary, PairDeviceRequest, SetDisplayFaceRequest,
-    UpdateSimulatedDisplayRequest,
-};
+use hypercolor_ui::api::{ComponentBindingRequest, PairDeviceRequest, SetDisplayFaceRequest};
 use hypercolor_ui::control_value_json::{
     controls_to_json, hex_to_rgba, hex_to_rgba_json, json_to_control_value,
 };
-use hypercolor_ui::display_utils::{
-    display_preview_shell_url, is_simulator_display, parse_simulator_dimension,
-};
+use hypercolor_ui::display_utils::display_preview_shell_url;
 use hypercolor_ui::optimistic_controls::{
     apply_raw_control_updates, merge_control_values, raw_control_updates_payload,
 };
@@ -66,77 +61,6 @@ fn color_control(id: &str) -> ControlDefinition {
         preview_source: None,
         binding: None,
     }
-}
-
-fn display_summary(family: &str) -> DisplaySummary {
-    DisplaySummary {
-        id: "display-1".to_owned(),
-        name: "Preview LCD".to_owned(),
-        vendor: "Hypercolor".to_owned(),
-        family: family.to_owned(),
-        width: 480,
-        height: 480,
-        circular: true,
-    }
-}
-
-#[test]
-fn simulator_detection_is_case_insensitive() {
-    assert!(is_simulator_display(&display_summary("simulator")));
-    assert!(is_simulator_display(&display_summary("Simulator")));
-    assert!(is_simulator_display(&display_summary("SIMULATOR")));
-}
-
-#[test]
-fn simulator_detection_rejects_other_families() {
-    assert!(!is_simulator_display(&display_summary("corsair")));
-    assert!(!is_simulator_display(&display_summary("custom")));
-}
-
-#[test]
-fn parse_simulator_dimension_accepts_trimmed_positive_values() {
-    assert_eq!(parse_simulator_dimension(" 480 ", "Width"), Ok(480));
-    assert_eq!(parse_simulator_dimension("1", "Height"), Ok(1));
-}
-
-#[test]
-fn parse_simulator_dimension_rejects_invalid_values() {
-    assert_eq!(
-        parse_simulator_dimension("0", "Width"),
-        Err("Width must be a positive number.".to_owned())
-    );
-    assert_eq!(
-        parse_simulator_dimension("abc", "Height"),
-        Err("Height must be a positive number.".to_owned())
-    );
-}
-
-#[test]
-fn update_simulated_display_request_skips_absent_fields() {
-    let payload = serde_json::to_value(UpdateSimulatedDisplayRequest::default())
-        .expect("default simulator update request should serialize");
-    assert_eq!(payload, serde_json::json!({}));
-}
-
-#[test]
-fn update_simulated_display_request_serializes_only_present_fields() {
-    let payload = serde_json::to_value(UpdateSimulatedDisplayRequest {
-        name: Some("Desk LCD".to_owned()),
-        width: Some(600),
-        height: None,
-        circular: Some(false),
-        enabled: None,
-    })
-    .expect("partial simulator update request should serialize");
-
-    assert_eq!(
-        payload,
-        serde_json::json!({
-            "name": "Desk LCD",
-            "width": 600,
-            "circular": false
-        })
-    );
 }
 
 #[test]

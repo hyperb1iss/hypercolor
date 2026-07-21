@@ -62,37 +62,19 @@ impl NavEntry {
 #[derive(Clone, Default)]
 pub struct NavExtensionItems(pub Vec<UiNavItem>);
 
-/// The core nav set. With the `studio_ui_beta` flag on, Studio and Media
-/// replace Assets, Layout, and Displays (Spec 65 §5.1); with it off, the nav is
-/// the pre-redesign set. `Settings` always sits last with a divider above it.
-fn core_nav(studio_ui: bool) -> Vec<NavEntry> {
+/// The core nav set (Spec 65 §5.1). `Settings` always sits last with a
+/// divider above it.
+fn core_nav() -> Vec<NavEntry> {
     use crate::icons::*;
 
-    let dashboard = NavEntry::core("/", "Dashboard", LuLayoutDashboard);
-    let effects = NavEntry::core("/effects", "Effects", LuLayers);
-    let devices = NavEntry::core("/devices", "Devices", LuCpu);
-    let settings = NavEntry::core("/settings", "Settings", LuSettings).with_divider();
-
-    if studio_ui {
-        vec![
-            dashboard,
-            effects,
-            NavEntry::core("/studio", "Studio", LuLayoutTemplate),
-            NavEntry::core("/media", "Media", LuImages),
-            devices,
-            settings,
-        ]
-    } else {
-        vec![
-            dashboard,
-            effects,
-            NavEntry::core("/assets", "Assets", LuFolder),
-            NavEntry::core("/layout", "Layout", LuLayoutTemplate),
-            devices,
-            NavEntry::core("/displays", "Displays", LuMonitor),
-            settings,
-        ]
-    }
+    vec![
+        NavEntry::core("/", "Dashboard", LuLayoutDashboard),
+        NavEntry::core("/effects", "Effects", LuLayers),
+        NavEntry::core("/studio", "Studio", LuLayoutTemplate),
+        NavEntry::core("/media", "Media", LuImages),
+        NavEntry::core("/devices", "Devices", LuCpu),
+        NavEntry::core("/settings", "Settings", LuSettings).with_divider(),
+    ]
 }
 
 /// The full nav set: core items followed by any extension-contributed items.
@@ -100,8 +82,8 @@ fn core_nav(studio_ui: bool) -> Vec<NavEntry> {
 /// `extra` is the extension nav list (from [`NavExtensionItems`]); pass an empty
 /// slice for the OSS default to reproduce the core nav exactly.
 #[must_use]
-pub fn nav_model(studio_ui: bool, extra: &[UiNavItem]) -> Vec<NavEntry> {
-    let mut entries = core_nav(studio_ui);
+pub fn nav_model(extra: &[UiNavItem]) -> Vec<NavEntry> {
+    let mut entries = core_nav();
     entries.extend(extra.iter().cloned().map(NavEntry::from_extension));
     entries
 }
@@ -113,12 +95,12 @@ pub fn nav_model(studio_ui: bool, extra: &[UiNavItem]) -> Vec<NavEntry> {
 /// the core numbering. Returns `None` for a non-digit key or an out-of-range
 /// slot.
 #[must_use]
-pub fn nav_shortcut_path(studio_ui: bool, extra: &[UiNavItem], key: &str) -> Option<String> {
+pub fn nav_shortcut_path(extra: &[UiNavItem], key: &str) -> Option<String> {
     let digit = key.parse::<usize>().ok()?;
     if digit == 0 {
         return None;
     }
-    nav_model(studio_ui, extra)
+    nav_model(extra)
         .into_iter()
         .filter(|entry| entry.shortcut)
         .nth(digit - 1)
@@ -133,29 +115,9 @@ mod tests {
 
     #[test]
     fn core_nav_is_unchanged_with_no_extensions() {
-        let base: Vec<&str> = nav_model(false, &[])
-            .into_iter()
-            .map(|entry| entry.path)
-            .collect();
+        let base: Vec<&str> = nav_model(&[]).into_iter().map(|entry| entry.path).collect();
         assert_eq!(
             base,
-            [
-                "/",
-                "/effects",
-                "/assets",
-                "/layout",
-                "/devices",
-                "/displays",
-                "/settings",
-            ]
-        );
-
-        let studio: Vec<&str> = nav_model(true, &[])
-            .into_iter()
-            .map(|entry| entry.path)
-            .collect();
-        assert_eq!(
-            studio,
             [
                 "/",
                 "/effects",
@@ -168,55 +130,30 @@ mod tests {
     }
 
     #[test]
-    fn base_shortcuts_match_sidebar_order() {
-        assert_eq!(nav_shortcut_path(false, &[], "1").as_deref(), Some("/"));
-        assert_eq!(
-            nav_shortcut_path(false, &[], "3").as_deref(),
-            Some("/assets")
-        );
-        assert_eq!(
-            nav_shortcut_path(false, &[], "7").as_deref(),
-            Some("/settings")
-        );
-        assert_eq!(nav_shortcut_path(false, &[], "8"), None);
-        assert_eq!(nav_shortcut_path(false, &[], "0"), None);
-        assert_eq!(nav_shortcut_path(false, &[], "x"), None);
-    }
-
-    #[test]
-    fn studio_shortcuts_match_sidebar_order() {
-        assert_eq!(
-            nav_shortcut_path(true, &[], "3").as_deref(),
-            Some("/studio")
-        );
-        assert_eq!(
-            nav_shortcut_path(true, &[], "6").as_deref(),
-            Some("/settings")
-        );
-        assert_eq!(nav_shortcut_path(true, &[], "7"), None);
+    fn shortcuts_match_sidebar_order() {
+        assert_eq!(nav_shortcut_path(&[], "1").as_deref(), Some("/"));
+        assert_eq!(nav_shortcut_path(&[], "3").as_deref(), Some("/studio"));
+        assert_eq!(nav_shortcut_path(&[], "6").as_deref(), Some("/settings"));
+        assert_eq!(nav_shortcut_path(&[], "7"), None);
+        assert_eq!(nav_shortcut_path(&[], "0"), None);
+        assert_eq!(nav_shortcut_path(&[], "x"), None);
     }
 
     #[test]
     fn extension_item_with_shortcut_gets_the_next_slot() {
         let extra = vec![UiNavItem::new("/account", "Account", LuKeyRound)];
-        let model = nav_model(false, &extra);
+        let model = nav_model(&extra);
         assert_eq!(model.last().map(|entry| entry.path), Some("/account"));
-        assert_eq!(
-            nav_shortcut_path(false, &extra, "8").as_deref(),
-            Some("/account")
-        );
+        assert_eq!(nav_shortcut_path(&extra, "7").as_deref(), Some("/account"));
     }
 
     #[test]
     fn click_only_extension_item_does_not_take_a_shortcut_slot() {
         let extra = vec![UiNavItem::new("/account", "Account", LuKeyRound).without_shortcut()];
-        let model = nav_model(false, &extra);
+        let model = nav_model(&extra);
         assert_eq!(model.last().map(|entry| entry.path), Some("/account"));
         // Core numbering is undisturbed; the extension item is click-only.
-        assert_eq!(nav_shortcut_path(false, &extra, "8"), None);
-        assert_eq!(
-            nav_shortcut_path(false, &extra, "7").as_deref(),
-            Some("/settings")
-        );
+        assert_eq!(nav_shortcut_path(&extra, "7"), None);
+        assert_eq!(nav_shortcut_path(&extra, "6").as_deref(), Some("/settings"));
     }
 }

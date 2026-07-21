@@ -4,13 +4,12 @@ use hypercolor_leptos_ext::events::Input;
 use hypercolor_leptos_ext::events::document as browser_document;
 use leptos::prelude::*;
 use leptos_icons::Icon;
-use leptos_router::hooks::use_location;
 use leptos_router::hooks::use_navigate;
 use wasm_bindgen::JsCast;
 
 use hypercolor_types::scene::SceneMutationMode;
 
-use crate::app::{EffectsContext, FrameAnalysisContext, StudioFlag};
+use crate::app::{EffectsContext, FrameAnalysisContext};
 use crate::components::page_search_bar::PAGE_SEARCH_INPUT_ID;
 use crate::components::scene_switcher::active_saved_scene_id;
 use crate::components::sidebar::Sidebar;
@@ -45,8 +44,6 @@ fn focus_page_search() {
 #[component]
 pub fn Shell(children: Children) -> impl IntoView {
     let (palette_open, set_palette_open) = signal(false);
-    let location = use_location();
-    let is_layout_route = Memo::new(move |_| location.pathname.get() == "/layout");
 
     // Ambient hue extraction — driven by the shared frame-analysis pass in
     // app context. The hue is written to `:root` (not the shell div):
@@ -81,7 +78,6 @@ pub fn Shell(children: Children) -> impl IntoView {
 
     // Global keyboard shortcuts
     let navigate = use_navigate();
-    let studio_flag = expect_context::<StudioFlag>();
     // Extension-contributed nav items (empty in the standalone OSS app).
     let extension_nav = use_context::<NavExtensionItems>().unwrap_or_default();
     let keydown_handler = move |ev: leptos::ev::KeyboardEvent| {
@@ -100,10 +96,7 @@ pub fn Shell(children: Children) -> impl IntoView {
         }
 
         // Ctrl/Cmd+1..7 jump straight to a nav page in sidebar order.
-        if ctrl_or_meta
-            && let Some(path) =
-                nav_shortcut_path(studio_flag.enabled.get_untracked(), &extension_nav.0, &key)
-        {
+        if ctrl_or_meta && let Some(path) = nav_shortcut_path(&extension_nav.0, &key) {
             ev.prevent_default();
             navigate(&path, Default::default());
             return;
@@ -124,13 +117,7 @@ pub fn Shell(children: Children) -> impl IntoView {
             tabindex="-1"
         >
             <Sidebar />
-            <main class=move || {
-                if is_layout_route.get() {
-                    "flex-1 min-h-0 min-w-0 overflow-hidden"
-                } else {
-                    "flex-1 min-h-0 min-w-0 overflow-auto"
-                }
-            }>
+            <main class="flex-1 min-h-0 min-w-0 overflow-auto">
                 {children()}
             </main>
 
