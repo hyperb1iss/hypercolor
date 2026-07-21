@@ -244,7 +244,6 @@ fn LayoutBuilderHeader() -> impl IntoView {
         <PageHeader
             icon=LuLayoutTemplate
             title="Layout"
-            tagline="Arrange devices on the canvas"
             accent=PageAccent::Coral
         >
             <HeaderTrailing slot>

@@ -3,10 +3,9 @@
 //! Every top-level route uses `<PageHeader>`. The shape is identical across
 //! pages so content below never shifts Y when the user navigates: 60px title
 //! row + 44px toolbar row. Elevation comes from a soft downward drop shadow
-//! rather than a hairline border. The title row holds the icon, title,
-//! tagline, and an optional trailing slot for page-level actions. The toolbar
-//! row is always rendered; callers fill it with search, tabs, or a context
-//! strip.
+//! rather than a hairline border. The title row holds the icon, title, and an
+//! optional trailing slot for page-level actions. The toolbar row is always
+//! rendered; callers fill it with search, tabs, or a context strip.
 //!
 //! Accents are chosen from a fixed palette of six SilkCircuit tokens plus a
 //! spectrum gradient for the Dashboard; each page gets a distinct identity.
@@ -81,7 +80,6 @@ pub struct HeaderToolbar {
 pub fn PageHeader(
     icon: IconData,
     #[prop(into)] title: String,
-    #[prop(into)] tagline: String,
     accent: PageAccent,
     #[prop(optional)] header_trailing: Option<HeaderTrailing>,
     #[prop(optional)] header_toolbar: Option<HeaderToolbar>,
@@ -98,13 +96,10 @@ pub fn PageHeader(
                     <span class="shrink-0" style=icon_style>
                         <Icon icon=icon width="20px" height="20px" />
                     </span>
-                    <div class="min-w-0 flex flex-col gap-1.5">
+                    <div class="min-w-0 flex flex-col">
                         <h1 class=title_class>
                             {title}
                         </h1>
-                        <p class="text-[11.5px] leading-none text-fg-tertiary/72 truncate max-w-2xl">
-                            {tagline}
-                        </p>
                     </div>
                 </div>
                 <div class="flex items-center gap-3 shrink-0">

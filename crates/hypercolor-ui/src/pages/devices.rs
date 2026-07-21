@@ -329,7 +329,6 @@ pub fn DevicesPage() -> impl IntoView {
             <PageHeader
                 icon=LuCpu
                 title="Devices"
-                tagline="Bring your hardware online"
                 accent=PageAccent::Cyan
             >
                 <HeaderTrailing slot>

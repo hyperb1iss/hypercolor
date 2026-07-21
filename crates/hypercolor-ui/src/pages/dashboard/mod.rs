@@ -402,7 +402,6 @@ pub fn DashboardPage() -> impl IntoView {
             <PageHeader
                 icon=LuActivity
                 title="Dashboard"
-                tagline="The whole rig, live"
                 accent=PageAccent::Spectrum
             >
                 <HeaderTrailing slot>
