@@ -10,6 +10,7 @@ from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
     from ..models.effect_health_status import EffectHealthStatus
+    from ..models.input_status import InputStatus
     from ..models.latest_frame_status import LatestFrameStatus
     from ..models.preview_runtime_status import PreviewRuntimeStatus
     from ..models.render_acceleration_status import RenderAccelerationStatus
@@ -37,6 +38,12 @@ class ApiResponseSystemStatusData:
         effect_health (EffectHealthStatus):
         event_bus_subscribers (int):
         global_brightness (int):
+        input_ (InputStatus): Host keyboard/mouse capture health, for consent and remediation UX.
+
+            `enabled` is the consent config gate. `host_capturing` is true when a
+            host backend is actively reading device nodes. `devices_denied` counts
+            input nodes present but unreadable (udev rules missing) — the signal
+            that distinguishes "input is off" from "input is on but blocked".
         preview_runtime (PreviewRuntimeStatus):
         render_loop (RenderLoopStatus):
         running (bool):
@@ -62,6 +69,7 @@ class ApiResponseSystemStatusData:
     effect_health: EffectHealthStatus
     event_bus_subscribers: int
     global_brightness: int
+    input_: InputStatus
     preview_runtime: PreviewRuntimeStatus
     render_loop: RenderLoopStatus
     running: bool
@@ -102,6 +110,8 @@ class ApiResponseSystemStatusData:
         event_bus_subscribers = self.event_bus_subscribers
 
         global_brightness = self.global_brightness
+
+        input_ = self.input_.to_dict()
 
         preview_runtime = self.preview_runtime.to_dict()
 
@@ -154,6 +164,7 @@ class ApiResponseSystemStatusData:
                 "effect_health": effect_health,
                 "event_bus_subscribers": event_bus_subscribers,
                 "global_brightness": global_brightness,
+                "input": input_,
                 "preview_runtime": preview_runtime,
                 "render_loop": render_loop,
                 "running": running,
@@ -175,6 +186,7 @@ class ApiResponseSystemStatusData:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.effect_health_status import EffectHealthStatus
+        from ..models.input_status import InputStatus
         from ..models.latest_frame_status import LatestFrameStatus
         from ..models.preview_runtime_status import PreviewRuntimeStatus
         from ..models.render_acceleration_status import RenderAccelerationStatus
@@ -209,6 +221,8 @@ class ApiResponseSystemStatusData:
         event_bus_subscribers = d.pop("event_bus_subscribers")
 
         global_brightness = d.pop("global_brightness")
+
+        input_ = InputStatus.from_dict(d.pop("input"))
 
         preview_runtime = PreviewRuntimeStatus.from_dict(d.pop("preview_runtime"))
 
@@ -273,6 +287,7 @@ class ApiResponseSystemStatusData:
             effect_health=effect_health,
             event_bus_subscribers=event_bus_subscribers,
             global_brightness=global_brightness,
+            input_=input_,
             preview_runtime=preview_runtime,
             render_loop=render_loop,
             running=running,
