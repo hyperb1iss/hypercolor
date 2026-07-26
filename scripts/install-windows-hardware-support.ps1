@@ -83,32 +83,32 @@ foreach ($path in @($pawnIoInstaller, $serviceInstaller, $BrokerExe)) {
     }
 }
 
-$pawnIoArgs = @(
-    "-AssetRoot",
-    $AssetRoot,
-    "-ModuleDestination",
-    $ModuleDestination
-)
+# Hashtable splatting, not array splatting. Splatting an array into a
+# PowerShell script binds every element positionally, so "-AssetRoot" lands
+# in $AssetRoot as a literal value and switches never bind at all. Only
+# native executables parse "-Name value" pairs out of a splatted array.
+$pawnIoArgs = @{
+    AssetRoot         = $AssetRoot
+    ModuleDestination = $ModuleDestination
+}
 if ($ForcePawnIo) {
-    $pawnIoArgs += "-Force"
+    $pawnIoArgs["Force"] = $true
 }
 if ($Silent) {
-    $pawnIoArgs += "-Silent"
+    $pawnIoArgs["Silent"] = $true
 }
 & $pawnIoInstaller @pawnIoArgs
 $pawnIoExit = $LASTEXITCODE
 
-$serviceArgs = @(
-    "-BrokerExe",
-    $BrokerExe,
-    "-StartupType",
-    "Automatic"
-)
+$serviceArgs = @{
+    BrokerExe   = $BrokerExe
+    StartupType = "Automatic"
+}
 if ($ReinstallService) {
-    $serviceArgs += "-Reinstall"
+    $serviceArgs["Reinstall"] = $true
 }
 if (-not $NoStartService) {
-    $serviceArgs += "-Start"
+    $serviceArgs["Start"] = $true
 }
 & $serviceInstaller @serviceArgs
 
