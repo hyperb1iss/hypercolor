@@ -19,6 +19,7 @@ const PACKAGE_DEB_SH: &str = include_str!("../../../scripts/package-deb.sh");
 const VERIFY_DEB_SH: &str = include_str!("../../../scripts/verify-deb-package.sh");
 const STAGE_APP_BUNDLE_PS1: &str = include_str!("../../../scripts/stage-app-bundle-assets.ps1");
 const STAGE_APP_BUNDLE_SH: &str = include_str!("../../../scripts/stage-app-bundle-assets.sh");
+const INSTALLER_HOOKS_NSH: &str = include_str!("../installer-hooks.nsh");
 
 const WINDOWS_TOOL_SCRIPTS: &[&str] = &[
     "install-windows-service.ps1",
@@ -128,6 +129,51 @@ fn app_bundle_staging_includes_pawnio_runtime_payloads() {
             );
         }
     }
+}
+
+/// 0.2.1 shipped PawnIO without the broker that loads its modules, so CPU
+/// package temperature and motherboard SMBus lighting were dead on every
+/// Windows install with nothing prompting for the rights to fix it.
+#[test]
+fn installer_hook_provisions_the_whole_hardware_access_stack() {
+    assert!(
+        INSTALLER_HOOKS_NSH.contains("install-windows-hardware-support.ps1"),
+        "postinstall must run the orchestrator that installs PawnIO *and* the SMBus broker"
+    );
+    assert!(
+        INSTALLER_HOOKS_NSH
+            .contains(r#"-BrokerExe "$INSTDIR\tools\hypercolor-smbus-service.exe""#),
+        "the broker must be registered from its Program Files path"
+    );
+    assert!(
+        INSTALLER_HOOKS_NSH.contains("-ReinstallService"),
+        "upgrades must not trip the broker installer's existing-registration guard"
+    );
+}
+
+/// The broker installer rejects service binaries and PawnIO directories under
+/// per-user profile paths, since a LocalSystem service must not load code the
+/// user can rewrite. Everything the hook hands it therefore lives in $INSTDIR.
+#[test]
+fn installer_hook_keeps_privileged_paths_administrator_owned() {
+    for flag in ["-AssetRoot", "-BrokerExe", "-ModuleDestination"] {
+        let value = INSTALLER_HOOKS_NSH
+            .split_once(&format!("{flag} \""))
+            .map(|(_, rest)| rest)
+            .and_then(|rest| rest.split_once('"'))
+            .map(|(value, _)| value)
+            .unwrap_or_else(|| panic!("installer hook should pass {flag}"));
+        assert!(
+            value.starts_with("$INSTDIR\\"),
+            "{flag} must stay under $INSTDIR, got {value}"
+        );
+    }
+}
+
+#[test]
+fn installer_hook_cleans_up_the_broker_on_uninstall() {
+    assert!(INSTALLER_HOOKS_NSH.contains("sc.exe stop HypercolorSmBus"));
+    assert!(INSTALLER_HOOKS_NSH.contains("sc.exe delete HypercolorSmBus"));
 }
 
 #[test]
