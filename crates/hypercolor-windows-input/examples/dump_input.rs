@@ -82,23 +82,28 @@ fn windows_main() {
             for event in batch.events {
                 match event {
                     RawInputEvent::Key {
+                        source_id,
                         make_code,
                         prefix,
                         vkey,
                         pressed,
-                        ..
                     } => println!(
-                        "{:>8} key   make={make_code:#06X} prefix={prefix:?} vk={vkey:#06X} {}",
+                        "{:>8} #{batch_no:<5} key   make={make_code:#06X} prefix={prefix:?} \
+                         vk={vkey:#06X} {:4} {}",
                         batch.at_ms,
-                        if *pressed { "down" } else { "up" }
+                        if *pressed { "down" } else { "up" },
+                        short_id(source_id)
                     ),
                     RawInputEvent::Button {
-                        button, pressed, ..
+                        source_id,
+                        button,
+                        pressed,
                     } => println!(
-                        "{:>8} btn   {} {}",
+                        "{:>8} #{batch_no:<5} btn   {} {:4} {}",
                         batch.at_ms,
                         button.canonical_name(),
-                        if *pressed { "down" } else { "up" }
+                        if *pressed { "down" } else { "up" },
+                        short_id(source_id)
                     ),
                     RawInputEvent::Wheel {
                         source_id,

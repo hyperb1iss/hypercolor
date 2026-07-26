@@ -247,3 +247,66 @@ pub enum RawInputError {
 }
 
 pub type RawInputResult<T> = Result<T, RawInputError>;
+
+/// The events waiting to be handed to the sink, and the rule that delivering
+/// them clears them.
+///
+/// This exists as its own type because the rule was once spread across two
+/// call sites and one of them forgot. The drain cleared at the *start* of a
+/// slice rather than after delivering, so whatever the last slice produced was
+/// still buffered when the worker flushed, and every key edge, button edge and
+/// motion delta reached core twice. Both halves were individually correct; the
+/// composition was not, and no test could see it because the buffer discipline
+/// lived inside a loop that only runs on Windows against real hardware.
+///
+/// Owning the buffer here puts that discipline on a type that compiles and
+/// tests everywhere.
+#[derive(Debug, Default)]
+pub struct PendingEvents {
+    events: Vec<RawInputEvent>,
+}
+
+impl PendingEvents {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self { events: Vec::new() }
+    }
+
+    pub fn push(&mut self, event: RawInputEvent) {
+        self.events.push(event);
+    }
+
+    pub fn extend(&mut self, events: impl IntoIterator<Item = RawInputEvent>) {
+        self.events.extend(events);
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.events.is_empty()
+    }
+
+    /// Hand the pending events to `sink` and clear them.
+    ///
+    /// Returns whether anything was delivered, so a caller can tell an empty
+    /// buffer from a delivered one. Delivering twice without pushing in
+    /// between cannot repeat a batch: the second call finds nothing.
+    pub fn deliver(
+        &mut self,
+        at_ms: u64,
+        epoch: u64,
+        cursor: Option<RawCursor>,
+        sink: &mut impl FnMut(RawInputBatch<'_>),
+    ) -> bool {
+        if self.events.is_empty() {
+            return false;
+        }
+        sink(RawInputBatch {
+            events: &self.events,
+            cursor,
+            at_ms,
+            epoch,
+        });
+        self.events.clear();
+        true
+    }
+}

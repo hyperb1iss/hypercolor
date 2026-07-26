@@ -46,7 +46,8 @@ use crate::decode::{
 use crate::devices::{DeviceCache, enumerate_devices, seed_cache};
 use crate::metrics::{pin_dpi_context, primary_screen_rect, sample_cursor, virtual_screen_rect};
 use crate::shared::{
-    RawCursor, RawInputBatch, RawInputConfig, RawInputError, RawInputEvent, RawInputResult,
+    PendingEvents, RawCursor, RawInputBatch, RawInputConfig, RawInputError, RawInputEvent,
+    RawInputResult,
 };
 
 /// Window class shared by every session in this process.
@@ -91,7 +92,7 @@ pub struct Pump {
     /// Reused across drains so `DefRawInputProc` costs no allocation on the
     /// hot path. Only ever holds addresses into `buffer`, rebuilt each slice.
     record_pointers: Vec<*const RAWINPUT>,
-    events: Vec<RawInputEvent>,
+    events: PendingEvents,
     last_cursor: Option<RawCursor>,
     virtual_screen: ScreenRect,
     primary_screen: ScreenRect,
@@ -129,7 +130,7 @@ impl Pump {
             cache: DeviceCache::new(),
             buffer: vec![0u64; INITIAL_BUFFER_QWORDS],
             record_pointers: Vec::new(),
-            events: Vec::new(),
+            events: PendingEvents::new(),
             last_cursor: None,
             virtual_screen: virtual_screen_rect(),
             primary_screen: primary_screen_rect(),
@@ -356,14 +357,10 @@ impl Pump {
         if self.events.is_empty() {
             return;
         }
+        // Sampled only when something will actually be delivered, so an idle
+        // wake does not cost a `GetCursorPos` syscall.
         let cursor = self.sample_pointer();
-        sink(RawInputBatch {
-            events: &self.events,
-            cursor,
-            at_ms,
-            epoch: self.config.epoch,
-        });
-        self.events.clear();
+        self.events.deliver(at_ms, self.config.epoch, cursor, sink);
     }
 
     /// Fill `self.buffer`, growing it when the API says it is too small.
