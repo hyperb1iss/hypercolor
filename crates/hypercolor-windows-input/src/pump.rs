@@ -333,22 +333,37 @@ impl Pump {
             return false;
         }
 
-        self.events.clear();
+        // Appends to whatever the last control pass queued, so a device
+        // arrival ordered before this slice's input stays ordered before it.
         self.decode_records(count);
         self.notify_raw_input_handled(count);
+        self.emit(at_ms, sink);
+        true
+    }
 
-        let cursor = self.sample_pointer();
+    /// Deliver the pending events and clear them.
+    ///
+    /// The only place a batch is ever emitted, and it always clears. That is
+    /// deliberate rather than tidy: when the drain cleared at the *start* of a
+    /// slice instead of after delivering, whatever the last slice produced was
+    /// still sitting in `events` when the worker called `flush_pending`, and
+    /// every key, button, and motion delta was delivered to core twice. Unit
+    /// tests could not see it — they drive core's fold directly and never run
+    /// this loop — and it took a dump against real hardware to surface.
+    /// Routing every emission through one function that clears makes the
+    /// duplicate unrepresentable rather than merely fixed.
+    fn emit(&mut self, at_ms: u64, sink: &mut impl FnMut(RawInputBatch<'_>)) {
         if self.events.is_empty() {
-            return true;
+            return;
         }
-
+        let cursor = self.sample_pointer();
         sink(RawInputBatch {
             events: &self.events,
             cursor,
             at_ms,
             epoch: self.config.epoch,
         });
-        true
+        self.events.clear();
     }
 
     /// Fill `self.buffer`, growing it when the API says it is too small.
@@ -732,19 +747,11 @@ impl Pump {
     }
 
     /// Deliver any events the control pass produced outside a drain slice.
+    ///
+    /// After a slice this is a no-op, because `emit` already cleared.
     pub fn flush_pending(&mut self, sink: &mut impl FnMut(RawInputBatch<'_>)) {
-        if self.events.is_empty() {
-            return;
-        }
         let at_ms = (self.config.clock)();
-        let cursor = self.sample_pointer();
-        sink(RawInputBatch {
-            events: &self.events,
-            cursor,
-            at_ms,
-            epoch: self.config.epoch,
-        });
-        self.events.clear();
+        self.emit(at_ms, sink);
     }
 }
 

@@ -24,6 +24,24 @@ fn main() {
     windows_main();
 }
 
+/// Numbers each delivered batch.
+///
+/// An event appearing twice has two very different causes, and the acceptance
+/// pass has to be able to tell them apart: the same batch number twice is a
+/// delivery bug, while two batch numbers with different devices is two HID
+/// collections of one physical keyboard legitimately reporting the same key.
+#[cfg(target_os = "windows")]
+static NEXT_BATCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Tail of a device path — enough to tell two collections of the same physical
+/// device apart, without a full interface path on every line.
+#[cfg(target_os = "windows")]
+fn short_id(source_id: &str) -> String {
+    let trimmed = source_id.trim_end_matches('}');
+    let tail: String = trimmed.chars().rev().take(12).collect();
+    tail.chars().rev().collect()
+}
+
 #[cfg(target_os = "windows")]
 fn windows_main() {
     use std::sync::Arc;
@@ -55,6 +73,12 @@ fn windows_main() {
             epoch: 1,
         },
         |batch| {
+            // Batches are numbered and events carry their device, so the two
+            // ways an event can appear twice stay distinguishable: the same
+            // batch number twice means a delivery bug, two batch numbers with
+            // different devices means two HID collections legitimately
+            // reporting the same physical key.
+            let batch_no = NEXT_BATCH.fetch_add(1, Ordering::Relaxed);
             for event in batch.events {
                 match event {
                     RawInputEvent::Key {
@@ -76,29 +100,54 @@ fn windows_main() {
                         button.canonical_name(),
                         if *pressed { "down" } else { "up" }
                     ),
-                    RawInputEvent::Wheel { delta_hi_res, .. } => {
-                        println!("{:>8} wheel {delta_hi_res:+}", batch.at_ms);
-                    }
-                    RawInputEvent::MotionRelative { dx, dy, .. } => {
-                        println!("{:>8} move  {dx:+} {dy:+}", batch.at_ms);
-                    }
-                    RawInputEvent::MotionAbsolute { norm_x, norm_y, .. } => {
-                        println!("{:>8} abs   {norm_x:.4} {norm_y:.4}", batch.at_ms);
-                    }
-                    RawInputEvent::DeviceArrived { label, kind, .. } => {
-                        println!("{:>8} +dev  {label} ({kind:?})", batch.at_ms);
-                    }
-                    RawInputEvent::DeviceRemoved { source_id } => {
-                        println!("{:>8} -dev  {source_id}", batch.at_ms);
-                    }
-                    RawInputEvent::StateGap { source_id } => {
-                        println!("{:>8} GAP   rollover overrun on {source_id}", batch.at_ms);
-                    }
+                    RawInputEvent::Wheel {
+                        source_id,
+                        delta_hi_res,
+                    } => println!(
+                        "{:>8} #{batch_no:<5} wheel {delta_hi_res:+} {}",
+                        batch.at_ms,
+                        short_id(source_id)
+                    ),
+                    RawInputEvent::MotionRelative { source_id, dx, dy } => println!(
+                        "{:>8} #{batch_no:<5} move  {dx:+} {dy:+} {}",
+                        batch.at_ms,
+                        short_id(source_id)
+                    ),
+                    RawInputEvent::MotionAbsolute {
+                        source_id,
+                        norm_x,
+                        norm_y,
+                        virtual_desktop,
+                    } => println!(
+                        "{:>8} #{batch_no:<5} abs   {norm_x:.4} {norm_y:.4} {} {}",
+                        batch.at_ms,
+                        if *virtual_desktop { "vdesk" } else { "primary" },
+                        short_id(source_id)
+                    ),
+                    RawInputEvent::DeviceArrived {
+                        source_id,
+                        label,
+                        kind,
+                    } => println!(
+                        "{:>8} #{batch_no:<5} +dev  {label} ({kind:?}) {}",
+                        batch.at_ms,
+                        short_id(source_id)
+                    ),
+                    RawInputEvent::DeviceRemoved { source_id } => println!(
+                        "{:>8} #{batch_no:<5} -dev  {}",
+                        batch.at_ms,
+                        short_id(source_id)
+                    ),
+                    RawInputEvent::StateGap { source_id } => println!(
+                        "{:>8} #{batch_no:<5} GAP   rollover overrun on {}",
+                        batch.at_ms,
+                        short_id(source_id)
+                    ),
                 }
             }
             if let Some(cursor) = batch.cursor {
                 println!(
-                    "{:>8} cur   {},{} ({:.4},{:.4})",
+                    "{:>8} #{batch_no:<5} cur   {},{} ({:.4},{:.4})",
                     batch.at_ms, cursor.x, cursor.y, cursor.norm_x, cursor.norm_y
                 );
             }
