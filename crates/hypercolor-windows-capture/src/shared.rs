@@ -43,6 +43,10 @@ pub enum CaptureError {
     },
 }
 
+// Only the cfg(windows) duplication module builds this variant, so the
+// constructor must be gated with it: on Linux it would have no callers and
+// the workspace's -D warnings turns dead code into a build failure.
+#[cfg(target_os = "windows")]
 impl CaptureError {
     /// Build a [`CaptureError::Windows`] from anything printable.
     pub(crate) fn windows(context: &'static str, message: impl std::fmt::Display) -> Self {
