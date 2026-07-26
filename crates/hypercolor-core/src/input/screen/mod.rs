@@ -20,12 +20,16 @@ pub mod smooth;
 pub mod tune;
 #[cfg(target_os = "linux")]
 pub mod wayland;
+#[cfg(target_os = "windows")]
+pub mod windows;
 
 pub use sector::{LetterboxBars, SectorGrid};
 pub use smooth::TemporalSmoother;
 pub use tune::ColorTuning;
 #[cfg(target_os = "linux")]
 pub use wayland::WaylandScreenCaptureInput;
+#[cfg(target_os = "windows")]
+pub use windows::WindowsScreenCaptureInput;
 
 use crate::input::traits::{InputData, InputSource, ScreenData};
 use crate::types::canvas::{
@@ -68,6 +72,11 @@ pub struct CaptureConfig {
 
     /// XDG portal restore token from a previous session, if any.
     pub restore_token: Option<String>,
+
+    /// Zero-based display output to capture, for backends that address
+    /// monitors directly. The XDG portal picks its own source, so this is
+    /// only consulted on Windows.
+    pub monitor: usize,
 }
 
 impl Default for CaptureConfig {
@@ -82,8 +91,28 @@ impl Default for CaptureConfig {
             letterbox_enabled: true,
             tuning: ColorTuning::default(),
             restore_token: None,
+            monitor: 0,
         }
     }
+}
+
+/// Parse a configured capture source into a zero-based monitor index.
+///
+/// `capture.source` is a free-form string shared across backends. The XDG
+/// portal picks its own source and leaves the value at "auto", so this only
+/// matters on Windows, which addresses display outputs directly. Accepts
+/// "monitor:N", "display:N", or a bare number; anything else, "auto"
+/// included, means the primary display.
+#[must_use]
+pub fn monitor_index_from_source(source: &str) -> usize {
+    let trimmed = source.trim();
+    trimmed
+        .strip_prefix("monitor:")
+        .or_else(|| trimmed.strip_prefix("display:"))
+        .unwrap_or(trimmed)
+        .trim()
+        .parse::<usize>()
+        .unwrap_or(0)
 }
 
 // ── ScreenCaptureInput ────────────────────────────────────────────────────

@@ -901,3 +901,37 @@ fn disabling_letterbox_live_clears_stale_bars() {
         "full uncropped grid should be reported once letterbox is off"
     );
 }
+
+// ─── Monitor selection ───────────────────────────────────────────────────────
+
+#[test]
+fn monitor_source_accepts_prefixed_and_bare_indices() {
+    for (source, expected) in [
+        ("monitor:0", 0),
+        ("monitor:1", 1),
+        ("monitor:11", 11),
+        ("display:2", 2),
+        ("3", 3),
+        ("  monitor: 2  ", 2),
+    ] {
+        assert_eq!(
+            hypercolor_core::input::screen::monitor_index_from_source(source),
+            expected,
+            "source {source:?} should select monitor {expected}"
+        );
+    }
+}
+
+/// Anything unparseable means the primary display. The field is shared with
+/// the Wayland backend, where the portal owns source selection and the value
+/// stays "auto", so unknown strings must never be an error.
+#[test]
+fn unknown_monitor_sources_fall_back_to_the_primary_display() {
+    for source in ["auto", "", "pipewire", "monitor:", "monitor:-1", "HDMI-1"] {
+        assert_eq!(
+            hypercolor_core::input::screen::monitor_index_from_source(source),
+            0,
+            "source {source:?} should fall back to the primary display"
+        );
+    }
+}
