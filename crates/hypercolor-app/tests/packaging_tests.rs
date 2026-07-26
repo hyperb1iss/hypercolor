@@ -143,8 +143,7 @@ fn installer_hook_provisions_the_whole_hardware_access_stack() {
         "postinstall must run the orchestrator that installs PawnIO *and* the SMBus broker"
     );
     assert!(
-        INSTALLER_HOOKS_NSH
-            .contains(r#"-BrokerExe "$INSTDIR\tools\hypercolor-smbus-service.exe""#),
+        INSTALLER_HOOKS_NSH.contains(r#"-BrokerExe "$INSTDIR\tools\hypercolor-smbus-service.exe""#),
         "the broker must be registered from its Program Files path"
     );
     assert!(
