@@ -5125,6 +5125,7 @@ dependencies = [
 name = "hypercolor-windows-capture"
 version = "0.2.1"
 dependencies = [
+ "image",
  "thiserror 2.0.18",
  "tracing",
  "windows 0.62.2",
