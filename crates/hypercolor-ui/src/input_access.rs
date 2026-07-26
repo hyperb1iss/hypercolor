@@ -6,6 +6,12 @@
 //! device nodes are expected and not worth surfacing. Browser-preview
 //! injection works regardless of host capture, so a healthy-but-idle host
 //! pipeline (`devices_opened == 0`, nothing denied) stays silent too.
+//!
+//! The counters alone could only ever describe Linux. A Windows daemon with no
+//! visible window station has zero denied nodes and zero opened ones, which
+//! reads as healthy-but-idle — so the typed degradation code is consulted
+//! first, and it is what keeps the banner from offering a udev command to a
+//! Windows user.
 
 use crate::api::InputStatus;
 
@@ -17,7 +23,15 @@ pub enum InputAccessRemedy {
     /// Consent is on but every present input node is unreadable — the
     /// udev-rules / permissions case. Show the install command.
     InstallRules,
+    /// The daemon has no interactive desktop to observe. Nothing the user can
+    /// fix from here, and no command to run: Raw Input cannot cross a session
+    /// boundary, so the answer is to run the foreground daemon in their own
+    /// session rather than as a service.
+    RunInUserSession,
 }
+
+/// Degradation code for a daemon with no visible window station.
+const NO_INTERACTIVE_SESSION: &str = "no_interactive_session";
 
 /// Decide the banner state for the active effect.
 ///
@@ -33,6 +47,12 @@ pub fn input_access_remedy(
     }
     if !input.enabled {
         return Some(InputAccessRemedy::EnableConsent);
+    }
+    // Checked before the counter heuristic: on Windows there are no denied
+    // nodes to count, so the udev rule would never fire and the user would be
+    // left with an interactive effect that silently does nothing.
+    if input.degraded.as_deref() == Some(NO_INTERACTIVE_SESSION) {
+        return Some(InputAccessRemedy::RunInUserSession);
     }
     if input.devices_denied > 0 && input.devices_opened == 0 {
         return Some(InputAccessRemedy::InstallRules);

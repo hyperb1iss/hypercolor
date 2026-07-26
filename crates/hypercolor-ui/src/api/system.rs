@@ -51,6 +51,9 @@ pub struct InputStatus {
     pub host_capturing: bool,
     pub devices_opened: usize,
     pub devices_denied: usize,
+    /// Session-level failure code the counters cannot express, e.g. a Windows
+    /// daemon running without a visible window station.
+    pub degraded: Option<String>,
     pub backends: Vec<String>,
 }
 

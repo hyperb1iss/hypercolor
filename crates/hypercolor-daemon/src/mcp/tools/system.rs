@@ -274,12 +274,27 @@ pub(super) async fn handle_get_status_with_state(state: &AppState) -> Result<Val
         .filter(|entry| entry.host_capture)
         .map(|entry| entry.devices_opened)
         .sum();
-    let input_status = if !input_enabled {
-        "disabled"
-    } else if input_devices_denied > 0 && input_devices_opened == 0 {
-        "blocked_permissions"
+    // Read the backend's own verdict rather than re-deriving one from the
+    // counters. The `denied > 0 && opened == 0` rule only ever described
+    // Linux, and on Windows — where there is no per-device denial to count —
+    // it would report a structurally deaf daemon as healthy.
+    let input_degradation = input_diagnostics
+        .iter()
+        .filter(|entry| entry.host_capture)
+        .find_map(|entry| entry.degraded.as_ref());
+    let input_status = if input_enabled {
+        match input_degradation {
+            Some(hypercolor_core::input::InteractionDegradation::AccessDenied) => {
+                "blocked_permissions"
+            }
+            Some(hypercolor_core::input::InteractionDegradation::NoInteractiveSession) => {
+                "no_interactive_session"
+            }
+            Some(hypercolor_core::input::InteractionDegradation::Unavailable(_)) => "unavailable",
+            None => "enabled",
+        }
     } else {
-        "enabled"
+        "disabled"
     };
 
     Ok(json!({
@@ -308,7 +323,8 @@ pub(super) async fn handle_get_status_with_state(state: &AppState) -> Result<Val
             "screen": screen_status,
             "input": input_status,
             "input_devices_opened": input_devices_opened,
-            "input_devices_denied": input_devices_denied
+            "input_devices_denied": input_devices_denied,
+            "input_degraded": input_degradation.map(hypercolor_core::input::InteractionDegradation::code)
         },
         "uptime_seconds": state.start_time.elapsed().as_secs(),
         "version": env!("CARGO_PKG_VERSION")

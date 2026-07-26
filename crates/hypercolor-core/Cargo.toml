@@ -68,7 +68,6 @@ nusb = { workspace = true }
 realfft = { workspace = true }
 rustfft = { workspace = true }
 cpal = { workspace = true }
-device_query = { workspace = true }
 tokio-util = { workspace = true }
 zerocopy = { workspace = true }
 image = { workspace = true }
@@ -116,3 +115,9 @@ pollster = { workspace = true }
 [[bench]]
 name = "core_pipeline"
 harness = false
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# The last consumer of the device_query polling bridge. Linux has evdev and
+# Windows has Raw Input, so neither should compile or ship a keylogging-capable
+# crate it no longer uses; the macOS backend spec deletes the rest.
+device_query = { workspace = true }

@@ -26,7 +26,10 @@ use hypercolor_core::engine::{FpsTier, RenderLoop};
 #[cfg(target_os = "linux")]
 use hypercolor_core::input::EvdevHostInput;
 #[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
 use hypercolor_core::input::InteractionInput;
+#[cfg(target_os = "windows")]
+use hypercolor_core::input::WindowsHostInput;
 use hypercolor_core::input::audio::AudioInput;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use hypercolor_core::input::screen::CaptureConfig as ScreenCaptureConfig;
@@ -571,9 +574,10 @@ pub(crate) fn build_input_manager(
     let _ = config_manager;
     let mut input_manager = InputManager::new();
     input_manager.set_sensor_poller(SensorPoller::new());
-    // Host input capture is consent-gated and evdev-only on Linux: the
-    // device_query bridge is X11-era and never constructed here. Capture
-    // stays closed until an interactive effect creates demand.
+    // Host input capture is consent-gated and platform-native: evdev on Linux,
+    // Raw Input on Windows. Capture stays closed until an interactive effect
+    // creates demand, so no window is created and no registration is taken
+    // while nothing is listening.
     if let Some(source) = build_interaction_source(&config.input) {
         input_manager.add_source(source);
     }
@@ -623,10 +627,10 @@ pub(crate) fn build_input_manager(
 
 /// Build the platform host-input capture source, when config allows one.
 ///
-/// Linux is evdev-only (keyboard until the pointer backend lands); other
-/// platforms use the device_query bridge until their native backends ship.
-/// Returns `None` when input capture is disabled or the platform has no
-/// enabled source kind.
+/// Linux uses evdev and Windows uses Raw Input, both event-driven and both
+/// reporting physical key positions. macOS is still on the device_query
+/// polling bridge until its CGEventTap backend ships. Returns `None` when
+/// input capture is disabled or no source kind is enabled.
 pub(crate) fn build_interaction_source(
     input: &hypercolor_types::config::InputConfig,
 ) -> Option<Box<dyn hypercolor_core::input::InputSource>> {
@@ -642,11 +646,28 @@ pub(crate) fn build_interaction_source(
         })
     }
 
-    #[cfg(not(target_os = "linux"))]
+    // Consent is per-kind: declining the mouse means the process is never
+    // registered for the mouse usage at all, so no pointer position can reach
+    // the daemon even by accident.
+    #[cfg(target_os = "windows")]
+    {
+        (input.keyboard || input.mouse).then(|| {
+            Box::new(WindowsHostInput::new(input.keyboard, input.mouse))
+                as Box<dyn hypercolor_core::input::InputSource>
+        })
+    }
+
+    #[cfg(target_os = "macos")]
     {
         (input.keyboard || input.mouse).then(|| {
             Box::new(InteractionInput::new()) as Box<dyn hypercolor_core::input::InputSource>
         })
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+    {
+        let _ = input;
+        None
     }
 }
 

@@ -70,6 +70,11 @@ pub struct SystemStatus {
 /// host backend is actively reading device nodes. `devices_denied` counts
 /// input nodes present but unreadable (udev rules missing) — the signal
 /// that distinguishes "input is off" from "input is on but blocked".
+///
+/// `degraded` carries the failures the counters cannot express. Windows has no
+/// per-device denial to count: either the process has a visible window station
+/// and sees input, or it does not, and that is a session-level fact rather than
+/// a per-node one.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct InputStatus {
     pub enabled: bool,
@@ -77,6 +82,8 @@ pub struct InputStatus {
     pub host_capturing: bool,
     pub devices_opened: usize,
     pub devices_denied: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub degraded: Option<String>,
     pub backends: Vec<String>,
 }
 
@@ -520,12 +527,22 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
             .is_some_and(|manager| manager.get().input.enabled);
         let diagnostics = state.input_manager.lock().await.interaction_diagnostics();
         let host = diagnostics.iter().filter(|entry| entry.host_capture);
+        let host_denied: usize = diagnostics
+            .iter()
+            .filter(|entry| entry.host_capture)
+            .map(|entry| entry.devices_denied)
+            .sum();
         InputStatus {
             enabled: input_enabled,
             host_capture_registered: host.clone().count() > 0,
             host_capturing: host.clone().any(|entry| entry.capturing),
             devices_opened: host.clone().map(|entry| entry.devices_opened).sum(),
-            devices_denied: host.map(|entry| entry.devices_denied).sum(),
+            devices_denied: host_denied,
+            degraded: diagnostics
+                .iter()
+                .filter(|entry| entry.host_capture)
+                .find_map(|entry| entry.degraded.as_ref())
+                .map(|degradation| degradation.code().to_owned()),
             backends: diagnostics
                 .iter()
                 .map(|entry| entry.backend.to_owned())

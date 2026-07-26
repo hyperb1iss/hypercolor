@@ -1,10 +1,11 @@
 //! Input-access remediation banner — shown above the active effect's
 //! preview/controls when an interactive effect can't receive host input.
 //!
-//! Two states, decided by [`crate::input_access::input_access_remedy`]:
-//! consent off (offer the one-click `input.enabled` toggle) and consent on
-//! but every input node denied (show the udev install command). Interactive
-//! detection reuses [`effect_wants_interaction`], the same predicate that
+//! Three states, decided by [`crate::input_access::input_access_remedy`]:
+//! consent off (offer the one-click `input.enabled` toggle), consent on but
+//! every input node denied (show the udev install command), and no interactive
+//! desktop at all (explain it, and offer no action — no command fixes a
+//! session boundary). Interactive detection reuses [`effect_wants_interaction`], the same predicate that
 //! gates the browser-preview injection toggle.
 //!
 //! Freshness rides signals, never timers: the status `LocalResource`
@@ -111,6 +112,7 @@ pub fn InputAccessBanner() -> impl IntoView {
     view! {
         {move || visible_remedy.get().map(|kind| {
             let is_consent = kind == InputAccessRemedy::EnableConsent;
+            let is_session = kind == InputAccessRemedy::RunInUserSession;
             view! {
                 <div
                     class="glass-subtle rounded-xl border border-edge-subtle px-4 py-3 mb-3"
@@ -126,6 +128,15 @@ pub fn InputAccessBanner() -> impl IntoView {
                                     <span>
                                         "This effect reacts to your keyboard and mouse. \
                                          Turn on Input Access to let it respond."
+                                    </span>
+                                }.into_any()
+                            } else if is_session {
+                                view! {
+                                    <span>
+                                        "Hypercolor is running without an interactive desktop, \
+                                         so it can't see your keyboard or mouse. Run the \
+                                         Hypercolor daemon in your own session instead of as \
+                                         a Windows service."
                                     </span>
                                 }.into_any()
                             } else {

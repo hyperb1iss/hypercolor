@@ -8,6 +8,7 @@ fn input(enabled: bool, opened: usize, denied: usize) -> InputStatus {
         host_capturing: enabled && opened > 0,
         devices_opened: opened,
         devices_denied: denied,
+        degraded: None,
         backends: vec!["evdev".to_owned(), "browser".to_owned()],
     }
 }
@@ -110,4 +111,44 @@ fn udev_command_is_the_documented_remediation() {
         hypercolor_ui::components::input_access_banner::UDEV_INSTALL_COMMAND,
         "sudo just udev-install"
     );
+}
+
+#[test]
+fn no_interactive_session_asks_for_a_user_session_not_udev_rules() {
+    // A Windows daemon running as a service has zero denied nodes and zero
+    // opened ones, which the counter heuristic alone reads as healthy-but-idle.
+    // Offering `sudo just udev-install` to a Windows user would be worse than
+    // saying nothing.
+    let mut status = input(true, 0, 0);
+    status.degraded = Some("no_interactive_session".to_owned());
+    assert_eq!(
+        input_access_remedy(true, &status),
+        Some(InputAccessRemedy::RunInUserSession)
+    );
+}
+
+#[test]
+fn consent_still_outranks_a_session_failure() {
+    // Until the user has opted in, a backend that could not have captured
+    // anything anyway is not worth a banner about.
+    let mut status = input(false, 0, 0);
+    status.degraded = Some("no_interactive_session".to_owned());
+    assert_eq!(
+        input_access_remedy(true, &status),
+        Some(InputAccessRemedy::EnableConsent)
+    );
+}
+
+#[test]
+fn a_non_interactive_effect_never_banners_about_the_session() {
+    let mut status = input(true, 0, 0);
+    status.degraded = Some("no_interactive_session".to_owned());
+    assert_eq!(input_access_remedy(false, &status), None);
+}
+
+#[test]
+fn an_unrecognized_degradation_code_does_not_invent_a_remedy() {
+    let mut status = input(true, 2, 0);
+    status.degraded = Some("something_new".to_owned());
+    assert_eq!(input_access_remedy(true, &status), None);
 }

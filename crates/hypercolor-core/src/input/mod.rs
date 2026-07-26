@@ -8,6 +8,7 @@ pub mod audio;
 pub mod browser;
 #[cfg(target_os = "linux")]
 pub mod evdev;
+#[cfg(target_os = "macos")]
 pub mod interaction;
 pub mod keymap;
 pub mod media;
@@ -20,6 +21,7 @@ pub mod windows;
 pub use browser::{BrowserInputEdge, BrowserInputHandle, BrowserInputSource};
 #[cfg(target_os = "linux")]
 pub use evdev::{DeviceOpenState, DeviceOpenStatus, EvdevHostInput};
+#[cfg(target_os = "macos")]
 pub use interaction::InteractionInput;
 pub use media::MediaSource;
 pub use net::NetSource;
