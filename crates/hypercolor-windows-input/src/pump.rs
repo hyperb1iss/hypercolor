@@ -29,6 +29,7 @@ use windows::Win32::UI::Input::{
     RAWINPUTDEVICE_FLAGS, RAWINPUTHEADER, RID_DEVICE_INFO_TYPE, RIDEV_DEVNOTIFY, RIDEV_INPUTSINK,
     RIDEV_REMOVE, RIM_TYPEKEYBOARD, RIM_TYPEMOUSE, RegisterRawInputDevices,
 };
+use windows::Win32::UI::Input::{RAWKEYBOARD, RAWMOUSE};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GIDC_ARRIVAL, GIDC_REMOVAL, HWND_MESSAGE, MSG,
     MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW, QS_ALLINPUT,
@@ -364,27 +365,40 @@ impl Pump {
     }
 
     /// Walk the records the last read produced.
+    ///
+    /// Deliberately never materializes a `&RAWINPUT`. A record's `dwSize` is
+    /// only as large as the union arm the device actually filled, so a
+    /// keyboard record near the end of the buffer can be genuinely smaller
+    /// than `size_of::<RAWINPUT>()` — and a reference to a `RAWINPUT` whose
+    /// tail lies past the allocation would be undefined behaviour before a
+    /// single field was read. So the header is read first, `dwSize` is
+    /// validated against the remaining capacity, and only the union arm the
+    /// header's type selects is read, bounds-checked to that arm's own size.
     fn decode_records(&mut self, count: u32) {
         let capacity = self.buffer.len() * size_of::<u64>();
-        let min_size = size_of::<RAWINPUTHEADER>();
+        let header_size = size_of::<RAWINPUTHEADER>();
         let base = self.buffer.as_ptr().cast::<u8>();
         let mut offset = 0usize;
 
         for _ in 0..count {
-            if offset + min_size > capacity {
+            if offset.saturating_add(header_size) > capacity {
                 break;
             }
-            // SAFETY: `offset` stays within the buffer's byte capacity (checked
-            // above and by `next_record` below), the base is QWORD-aligned by
-            // the `Vec<u64>` backing, and the API wrote `count` well-formed
-            // records starting at the base.
-            let record = unsafe { &*base.add(offset).cast::<RAWINPUT>() };
-            let dw_size = record.header.dwSize;
-            self.decode_one(record);
+            // SAFETY: the header fits within the buffer (checked immediately
+            // above), the base came from a live `Vec<u64>` we still own, and
+            // `read_unaligned` imposes no alignment requirement of its own.
+            let header = unsafe { base.add(offset).cast::<RAWINPUTHEADER>().read_unaligned() };
+            let dw_size = header.dwSize;
 
-            match next_record(offset, dw_size, capacity, min_size) {
-                RecordStep::Next(next) => offset = next,
-                RecordStep::End => break,
+            match next_record(offset, dw_size, capacity, header_size) {
+                RecordStep::Next(next) => {
+                    self.decode_record_at(base, offset, &header, capacity);
+                    offset = next;
+                }
+                RecordStep::End => {
+                    self.decode_record_at(base, offset, &header, capacity);
+                    break;
+                }
                 RecordStep::Malformed => {
                     tracing::warn!(dw_size, offset, "malformed raw input record; ending batch");
                     break;
@@ -393,9 +407,20 @@ impl Pump {
         }
     }
 
-    /// Decode one record into zero or more events.
-    fn decode_one(&mut self, record: &RAWINPUT) {
-        let handle = record.header.hDevice;
+    /// Read one record's payload, if the type is one we registered for.
+    ///
+    /// `next_record` has already established that `offset + dwSize` lies
+    /// within `capacity`; this additionally checks the specific union arm
+    /// fits, because `dwSize` is device-reported and a short one must not let
+    /// a `RAWMOUSE` read run past the record it belongs to.
+    fn decode_record_at(
+        &mut self,
+        base: *const u8,
+        offset: usize,
+        header: &RAWINPUTHEADER,
+        capacity: usize,
+    ) {
+        let handle = header.hDevice;
         let source_id = match self.cache.resolve(handle) {
             Some(identity) => identity.source_id,
             // A null handle is legitimate — precision touchpads and some
@@ -406,26 +431,32 @@ impl Pump {
             None => return,
         };
 
-        match RID_DEVICE_INFO_TYPE(record.header.dwType) {
+        let payload = offset + std::mem::offset_of!(RAWINPUT, data);
+
+        match RID_DEVICE_INFO_TYPE(header.dwType) {
             RIM_TYPEKEYBOARD if self.config.keyboard => {
-                // SAFETY: the union discriminant is `header.dwType`, which the
-                // arm above matched as `RIM_TYPEKEYBOARD`.
-                let keyboard = unsafe { &record.data.keyboard };
+                if payload.saturating_add(size_of::<RAWKEYBOARD>()) > capacity {
+                    return;
+                }
+                // SAFETY: the payload fits within the buffer (checked above),
+                // `dwType` selected this union arm, and `read_unaligned`
+                // imposes no alignment requirement.
+                let keyboard = unsafe { base.add(payload).cast::<RAWKEYBOARD>().read_unaligned() };
                 self.decode_keyboard(&source_id, keyboard.MakeCode, keyboard.Flags, keyboard.VKey);
             }
             RIM_TYPEMOUSE if self.config.mouse => {
-                // SAFETY: the union discriminant is `header.dwType`, which the
-                // arm above matched as `RIM_TYPEMOUSE`.
-                let mouse = unsafe { &record.data.mouse };
-                let button_flags = {
-                    // SAFETY: `Anonymous`/`Anonymous` is the documented layout
-                    // for the button fields; both union arms alias the same
-                    // `DWORD` and this reads the split form.
-                    unsafe { mouse.Anonymous.Anonymous.usButtonFlags }
-                };
-                let button_data = {
-                    // SAFETY: as above.
-                    unsafe { mouse.Anonymous.Anonymous.usButtonData }
+                if payload.saturating_add(size_of::<RAWMOUSE>()) > capacity {
+                    return;
+                }
+                // SAFETY: as above, for the mouse arm.
+                let mouse = unsafe { base.add(payload).cast::<RAWMOUSE>().read_unaligned() };
+                // SAFETY: `Anonymous`/`Anonymous` is the documented split form
+                // of the button field; both union arms alias the same `DWORD`.
+                let (button_flags, button_data) = unsafe {
+                    (
+                        mouse.Anonymous.Anonymous.usButtonFlags,
+                        mouse.Anonymous.Anonymous.usButtonData,
+                    )
                 };
                 self.decode_mouse(
                     &source_id,
