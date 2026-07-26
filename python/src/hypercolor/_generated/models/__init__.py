@@ -215,6 +215,7 @@ from .gradient_stop import GradientStop
 from .health_checks import HealthChecks
 from .health_response import HealthResponse
 from .identify_request import IdentifyRequest
+from .input_status import InputStatus
 from .invoke_control_action_request import InvokeControlActionRequest
 from .latest_frame_status import LatestFrameStatus
 from .layer_order_request import LayerOrderRequest
@@ -493,6 +494,7 @@ __all__ = (
     "HealthChecks",
     "HealthResponse",
     "IdentifyRequest",
+    "InputStatus",
     "InvokeControlActionRequest",
     "LatestFrameStatus",
     "LayerOrderRequest",
