@@ -77,7 +77,12 @@ use hypercolor_types::config::RenderAccelerationMode;
 
 const RENDER_RUNTIME_WORKERS: usize = 2;
 const RENDER_RUNTIME_MAX_BLOCKING_THREADS: usize = 4;
-const RENDER_RUNTIME_THREAD_KEEP_ALIVE: Duration = Duration::from_secs(2);
+/// Blocking threads outlive the gaps between display-output frame encodes.
+///
+/// Encodes arrive irregularly, seconds apart. A keep-alive shorter than that
+/// gap retires the pool between every encode and pays a fresh thread spawn
+/// for the next one.
+const RENDER_RUNTIME_THREAD_KEEP_ALIVE: Duration = Duration::from_secs(30);
 
 pub(crate) fn producer_frame_counts() -> producer_queue::ProducerFrameCounts {
     producer_queue::producer_frame_counts()
@@ -283,7 +288,7 @@ impl RenderThread {
         let join_handle = std::thread::Builder::new()
             .name("hypercolor-render".to_owned())
             .spawn(move || {
-                configure_render_thread_priority("render_thread");
+                configure_render_thread_priority();
                 let runtime = match build_runtime() {
                     Ok(runtime) => runtime,
                     Err(error) => {
@@ -339,27 +344,34 @@ impl RenderThread {
     }
 }
 
+/// Build the render runtime.
+///
+/// Deliberately no `on_thread_start` priority hook. Tokio launches its worker
+/// threads through the blocking pool, so the hook fires for both roles and
+/// cannot tell them apart. It therefore raised every transient frame-encode
+/// thread to the same elevated priority as the render thread, leaving
+/// throughput work competing with the frame loop it was meant to protect.
+/// The frame loop runs on the `hypercolor-render` thread, which sets its own
+/// priority before entering `block_on`.
 fn build_render_runtime() -> Result<tokio::runtime::Runtime> {
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(RENDER_RUNTIME_WORKERS)
         .max_blocking_threads(RENDER_RUNTIME_MAX_BLOCKING_THREADS)
         .thread_keep_alive(RENDER_RUNTIME_THREAD_KEEP_ALIVE)
         .thread_name("hypercolor-render-rt")
-        .on_thread_start(|| configure_render_thread_priority("render_runtime_worker"))
         .enable_all()
         .build()
         .context("failed to initialize render thread runtime")
 }
 
 #[cfg(target_os = "windows")]
-fn configure_render_thread_priority(role: &'static str) {
+fn configure_render_thread_priority() {
     use thread_priority::{ThreadPriority, WinAPIThreadPriority, set_current_thread_priority};
 
     let priority = ThreadPriority::Os(WinAPIThreadPriority::AboveNormal.into());
     match set_current_thread_priority(priority) {
-        Ok(()) => tracing::debug!(role, "configured Windows render thread priority"),
+        Ok(()) => tracing::debug!("configured Windows render thread priority"),
         Err(error) => tracing::warn!(
-            role,
             error = %error,
             "failed to configure Windows render thread priority"
         ),
@@ -367,7 +379,7 @@ fn configure_render_thread_priority(role: &'static str) {
 }
 
 #[cfg(not(target_os = "windows"))]
-fn configure_render_thread_priority(_role: &'static str) {}
+fn configure_render_thread_priority() {}
 
 // ── Pipeline ────────────────────────────────────────────────────────────────
 
