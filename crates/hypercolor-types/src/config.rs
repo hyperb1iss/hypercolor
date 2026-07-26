@@ -88,6 +88,20 @@ mod defaults {
     pub fn capture_source() -> String {
         "auto".into()
     }
+    /// Whether screen capture is allowed without the user opting in.
+    ///
+    /// Windows Desktop Duplication needs no permission grant, shows no
+    /// source picker, and draws no capture indicator, so there is nothing
+    /// for a user to consent to and an ambient effect can simply work. The
+    /// XDG portal on Linux opens a picker the user must answer, and macOS
+    /// gates capture behind a TCC prompt; forcing either at daemon start
+    /// would be an ambush, so those stay opt-in.
+    ///
+    /// Enabling this only grants permission. Capture opens on demand and
+    /// stays closed until a screen-reactive effect actually asks for it.
+    pub fn capture_enabled() -> bool {
+        cfg!(target_os = "windows")
+    }
     pub fn capture_fps() -> u32 {
         30
     }
@@ -645,7 +659,7 @@ impl Default for AudioConfig {
 /// picker; `restore_token` persists that choice across daemon restarts.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaptureConfig {
-    #[serde(default)]
+    #[serde(default = "defaults::capture_enabled")]
     pub enabled: bool,
 
     #[serde(default = "defaults::capture_source")]
@@ -698,7 +712,7 @@ pub struct CaptureConfig {
 impl Default for CaptureConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: defaults::capture_enabled(),
             source: defaults::capture_source(),
             capture_fps: defaults::capture_fps(),
             grid_cols: defaults::capture_grid_cols(),

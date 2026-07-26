@@ -85,10 +85,18 @@ fn audio_defaults_match_spec() {
     assert!((a.beat_sensitivity - 0.6).abs() < f32::EPSILON);
 }
 
+/// Screen capture is allowed by default only where turning it on cannot
+/// ambush the user. Windows Desktop Duplication has no permission prompt and
+/// no picker; the XDG portal and macOS TCC both do, so those stay opt-in.
+#[test]
+fn capture_is_enabled_by_default_only_where_it_needs_no_consent() {
+    let c = CaptureConfig::default();
+    assert_eq!(c.enabled, cfg!(target_os = "windows"));
+}
+
 #[test]
 fn capture_defaults_match_spec() {
     let c = CaptureConfig::default();
-    assert!(!c.enabled);
     assert_eq!(c.source, "auto");
     assert_eq!(c.capture_fps, 30);
     assert_eq!(c.grid_cols, 8);
@@ -258,7 +266,7 @@ fn full_config_toml_roundtrip() {
     assert!(restored.web.enabled);
     assert_eq!(restored.mcp.base_path, "/mcp");
     assert_eq!(restored.audio.fft_size, 1024);
-    assert!(!restored.capture.enabled);
+    assert_eq!(restored.capture.enabled, cfg!(target_os = "windows"));
     assert_eq!(
         restored.effect_engine.compositor_acceleration_mode,
         RenderAccelerationMode::Auto
@@ -290,7 +298,7 @@ fn minimal_toml_fills_defaults() {
     assert!(config.web.enabled);
     assert_eq!(config.mcp.base_path, "/mcp");
     assert_eq!(config.audio.device, "default");
-    assert!(!config.capture.enabled);
+    assert_eq!(config.capture.enabled, cfg!(target_os = "windows"));
     assert_eq!(
         config.effect_engine.compositor_acceleration_mode,
         RenderAccelerationMode::Auto

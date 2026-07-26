@@ -1591,53 +1591,69 @@ At every tier, the ambient lighting quality remains perceptually good. The human
 
 ## 10. Cross-Platform Strategy
 
-Hypercolor is a Linux-first project, but screen capture should work on Windows (for development) and eventually macOS.
+Hypercolor is a Linux-first project. Windows capture shipped as a first-class
+backend; macOS is still unimplemented.
+
+The `xcap` fallback this section originally specified was never built. Windows
+uses a purpose-built DXGI Desktop Duplication backend instead, in the
+`hypercolor-windows-capture` crate: it avoids pulling a cross-platform capture
+dependency into a tree that already vendors its own thin Windows FFI crates,
+and it lets the readback subsample during the copy rather than after it.
 
 ### Platform Matrix
 
-| Capability            | Linux (Wayland)               | Linux (X11)           | Windows              | macOS                       |
-| --------------------- | ----------------------------- | --------------------- | -------------------- | --------------------------- |
-| **Primary backend**   | PipeWire + Portal             | XShm                  | xcap (DXGI/WGC)      | xcap (SCKit)                |
-| **DMA-BUF zero-copy** | Yes                           | No                    | No                   | No                          |
-| **Streaming mode**    | Yes (PipeWire)                | No                    | No                   | No                          |
-| **Permission model**  | Portal dialog + restore token | None (open access)    | App capability       | Screen Recording permission |
-| **Multi-monitor**     | Portal multi-select           | Root window spans all | Per-monitor via xcap | Per-monitor via xcap        |
-| **GPU downsample**    | Yes (wgpu + DMA-BUF)          | No (CPU only)         | Possible (wgpu)      | Possible (wgpu)             |
-| **Feature gate**      | `screen-pipewire`             | `screen-x11`          | Default (xcap)       | Default (xcap)              |
-| **Performance**       | Excellent (<1% CPU)           | Good (2-5% CPU)       | Moderate (3-7% CPU)  | Moderate (3-7% CPU)         |
+| Capability            | Linux (Wayland)               | Linux (X11)           | Windows                        | macOS           |
+| --------------------- | ----------------------------- | --------------------- | ------------------------------ | --------------- |
+| **Primary backend**   | PipeWire + Portal             | XShm (unimplemented)  | DXGI Desktop Duplication       | Unimplemented   |
+| **DMA-BUF zero-copy** | Yes                           | No                    | No (staging readback)          | n/a             |
+| **Streaming mode**    | Yes (PipeWire)                | No                    | Yes (duplication is a stream)  | n/a             |
+| **Permission model**  | Portal dialog + restore token | None (open access)    | None required                  | Screen Recording|
+| **Multi-monitor**     | Portal multi-select           | Root window spans all | `capture.source = "monitor:N"` | n/a             |
+| **Enabled by default**| No (portal picker is consent) | No                    | Yes (nothing to consent to)    | No (TCC prompt) |
 
-### What Works on Windows (Development)
+### Windows
 
-Windows developers can work on the full capture pipeline using the `xcap` backend:
+`DesktopDuplicator` owns a D3D11 device, the duplication interface, and a
+staging texture, and hands out RGBA frames. Everything downstream — sector
+grid, letterbox detection, temporal smoothing — is the same
+platform-independent code the Wayland path feeds.
 
-- `XcapCapture` works out of the box on Windows via DXGI desktop duplication or Windows Graphics Capture.
-- `SectorGrid`, `RegionMapper`, `ColorProcessor`, `TemporalSmoother` are all pure Rust, platform-independent.
-- `ScreenData` output type is identical across platforms.
-- WLED DDP output works over the network (no USB dependencies).
+Three properties drove the design:
 
-**What doesn't work on Windows:**
+- **No consent surface.** Windows has no portal handshake and no TCC prompt,
+  and Desktop Duplication draws no border and shows no picker. Nothing exists
+  for the user to approve, which is why `capture.enabled` defaults to `true`
+  on Windows alone. Permission to capture is not the same as capturing: the
+  session opens only when a screen-reactive effect creates demand.
+- **Subsample during readback.** Frames are point-sampled by an integer stride
+  to roughly 1280px wide while being copied out of mapped staging memory,
+  which matches what PipeWire is asked to deliver on Linux. Sampling after a
+  full-resolution copy would move 33 MB per frame on a 4K desktop for a result
+  the sector grid cannot distinguish.
+- **Recoverable by construction.** Mode changes, full-screen takeover, and the
+  UAC secure desktop all raise `DXGI_ERROR_ACCESS_LOST`; the session rebuilds
+  in place. Only one process may duplicate an output at a time, so the
+  interface is released whenever capture goes idle and reacquired on a backoff
+  when another application holds it.
 
-- PipeWire backend (`#[cfg(target_os = "linux")]`).
-- XShm backend (`#[cfg(target_os = "linux")]`).
-- Portal restore tokens (Linux-specific D-Bus).
-- DMA-BUF GPU zero-copy path.
+### macOS
+
+Unimplemented. ScreenCaptureKit is the intended backend, and unlike Windows it
+does have a consent surface (the TCC Screen Recording prompt), so it will need
+a demand-driven request flow rather than a default-on config.
 
 ### Conditional Compilation
 
 ```rust
-// In the backend module:
+// crates/hypercolor-core/src/input/screen/mod.rs
 #[cfg(target_os = "linux")]
-mod pipewire;
-
-#[cfg(target_os = "linux")]
-mod xshm;
-
-// Always available:
-mod xcap_backend;
-
-// Re-export the auto-detection function (handles cfg internally)
-pub use auto_detect::auto_detect_backend;
+pub mod wayland;
+#[cfg(target_os = "windows")]
+pub mod windows;
 ```
+
+Registration lives in the daemon's `build_input_manager`, which adds the
+matching source when `capture.enabled` is set.
 
 ### Build Profiles
 

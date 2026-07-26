@@ -28,10 +28,12 @@ use hypercolor_core::input::EvdevHostInput;
 #[cfg(not(target_os = "linux"))]
 use hypercolor_core::input::InteractionInput;
 use hypercolor_core::input::audio::AudioInput;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 use hypercolor_core::input::screen::CaptureConfig as ScreenCaptureConfig;
 #[cfg(target_os = "linux")]
 use hypercolor_core::input::screen::WaylandScreenCaptureInput;
+#[cfg(target_os = "windows")]
+use hypercolor_core::input::screen::WindowsScreenCaptureInput;
 use hypercolor_core::input::{InputManager, SensorPoller};
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
@@ -606,6 +608,16 @@ pub(crate) fn build_input_manager(
         ));
     }
 
+    // Desktop Duplication needs no picker and no consent, so the Windows
+    // source is registered outright. It stays idle until an effect creates
+    // capture demand, exactly like the Wayland source.
+    #[cfg(target_os = "windows")]
+    if config.capture.enabled {
+        input_manager.add_source(Box::new(WindowsScreenCaptureInput::new(
+            screen_capture_config_from(&config.capture),
+        )));
+    }
+
     (input_manager, browser_input)
 }
 
@@ -661,7 +673,7 @@ pub(crate) fn build_screen_capture_source(
     Box::new(WaylandScreenCaptureInput::new(capture_config).with_restore_token_sink(sink))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 pub(crate) fn screen_capture_config_from(
     capture: &hypercolor_types::config::CaptureConfig,
 ) -> ScreenCaptureConfig {
@@ -680,9 +692,9 @@ pub(crate) fn screen_capture_config_from(
         }
         .clamped(),
         restore_token: capture.restore_token.clone(),
+        monitor: hypercolor_core::input::screen::monitor_index_from_source(&capture.source),
     }
 }
-
 fn audio_source_from_device(device: &str) -> AudioSourceType {
     let normalized = device.trim();
     if normalized.eq_ignore_ascii_case("none") {
