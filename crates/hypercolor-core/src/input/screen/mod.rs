@@ -64,7 +64,10 @@ pub struct CaptureConfig {
     /// Luminance threshold for letterbox detection (0.0 - 1.0). Default: 0.02.
     pub letterbox_threshold: f32,
 
-    /// Whether letterbox detection is enabled. Default: true.
+    /// Whether letterbox detection is enabled. Default: false, matching
+    /// `config::CaptureConfig` — ambient lighting mirrors desktops far more
+    /// often than letterboxed film, and dark desktop content trips the
+    /// detector into cropping real picture away.
     pub letterbox_enabled: bool,
 
     /// Color tuning applied to zone colors after smoothing.
@@ -88,11 +91,43 @@ impl Default for CaptureConfig {
             smoothing_alpha: 0.3,
             scene_cut_threshold: 100.0,
             letterbox_threshold: 0.02,
-            letterbox_enabled: true,
+            letterbox_enabled: false,
             tuning: ColorTuning::default(),
             restore_token: None,
             monitor: 0,
         }
+    }
+}
+
+/// Largest size within `max_width` x `max_height` that keeps `width` x
+/// `height`'s aspect ratio.
+///
+/// The screen downscale used to target the canvas bounds directly, which
+/// squashed a 16:9 desktop into 4:3 — a 1.33x vertical stretch that no
+/// downstream fit mode can undo, because the distortion is already baked
+/// into the published surface. Circles came out as ellipses on every
+/// screen-mirroring effect.
+#[must_use]
+pub fn fit_within(width: u32, height: u32, max_width: u32, max_height: u32) -> (u32, u32) {
+    if width == 0 || height == 0 || max_width == 0 || max_height == 0 {
+        return (max_width.max(1), max_height.max(1));
+    }
+
+    // Integer comparison of width/height against max_width/max_height,
+    // cross-multiplied to avoid floating point entirely.
+    let source_is_wider =
+        u64::from(width) * u64::from(max_height) >= u64::from(height) * u64::from(max_width);
+
+    if source_is_wider {
+        let scaled_height = (u64::from(height) * u64::from(max_width) / u64::from(width))
+            .try_into()
+            .unwrap_or(max_height);
+        (max_width, u32::max(scaled_height, 1))
+    } else {
+        let scaled_width = (u64::from(width) * u64::from(max_height) / u64::from(height))
+            .try_into()
+            .unwrap_or(max_width);
+        (u32::max(scaled_width, 1), max_height)
     }
 }
 
@@ -200,12 +235,14 @@ impl ScreenCaptureInput {
     pub fn push_frame(&mut self, frame: &[u8], width: u32, height: u32) {
         self.frame_width = width;
         self.frame_height = height;
+        let (downscale_width, downscale_height) =
+            fit_within(width, height, DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT);
         self.latest_canvas_downscale = downscale_frame(
             frame,
             width,
             height,
-            DEFAULT_CANVAS_WIDTH,
-            DEFAULT_CANVAS_HEIGHT,
+            downscale_width,
+            downscale_height,
             &mut self.downscale_pool,
         );
 
