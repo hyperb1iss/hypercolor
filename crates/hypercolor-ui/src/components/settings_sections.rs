@@ -5,6 +5,7 @@ use std::net::IpAddr;
 use hypercolor_types::config::{HypercolorConfig, NetworkAccessMode, NetworkClientScope};
 use hypercolor_types::session::{OffOutputBehavior, SleepBehavior};
 use leptos::prelude::*;
+use leptos_icons::Icon;
 
 use crate::components::settings_controls::*;
 use crate::icons::*;
@@ -142,10 +143,36 @@ pub fn CaptureSection(
         Signal::derive(move || read_config(config, |cfg| f64::from(cfg.capture.brightness)));
     let gamma = Signal::derive(move || read_config(config, |cfg| f64::from(cfg.capture.gamma)));
 
-    let source_options = vec![
-        ("auto".to_string(), "Auto".to_string()),
-        ("pipewire".to_string(), "PipeWire".to_string()),
-    ];
+    // Monitor picker data. Empty means the platform's backend owns source
+    // selection (the XDG portal on Linux), so the portal button renders
+    // instead of a dropdown.
+    let monitors_resource = LocalResource::new(crate::api::fetch_capture_monitors);
+    let monitors = Signal::derive(move || {
+        monitors_resource
+            .get()
+            .and_then(Result::ok)
+            .unwrap_or_default()
+    });
+    let has_monitor_picker = Signal::derive(move || !monitors.get().is_empty());
+    let monitor_options = Signal::derive(move || {
+        let mut options = vec![("auto".to_owned(), "Primary monitor".to_owned())];
+        for monitor in monitors.get() {
+            let primary = if monitor.primary { " · primary" } else { "" };
+            options.push((
+                monitor.value.clone(),
+                format!(
+                    "Monitor {} · {}\u{d7}{}{}",
+                    monitor.index + 1,
+                    monitor.width,
+                    monitor.height,
+                    primary
+                ),
+            ));
+        }
+        options
+    });
+
+    let (show_advanced, set_show_advanced) = signal(false);
 
     let (picking, set_picking) = signal(false);
     let pick_source = move |_| {
@@ -165,123 +192,148 @@ pub fn CaptureSection(
         <section id="section-capture" class="pt-5 pb-3 space-y-0">
             <SectionHeader title="Screen Capture" icon=LuMonitor />
             <SettingToggle
-                label="Enabled"
-                description="Capture the screen for ambient lighting effects"
+                label="Screen capture"
+                description="Let effects like Ambilight and Screen Cast mirror what's on your screen"
                 key="capture.enabled"
                 value=enabled
                 on_change=on_change
             />
-            <SettingDropdown
-                label="Source"
-                description="Screen capture backend"
-                key="capture.source"
-                value=source
-                options=Signal::stored(source_options)
-                on_change=on_change
-            />
-            <div class="flex items-center justify-between gap-4 py-3 border-b border-edge-subtle/40">
-                <div class="min-w-0">
-                    <div class="text-[13px] text-fg-primary">"Capture source"</div>
-                    <div class="text-xs text-fg-tertiary">
-                        "Re-open the system picker to capture a different screen; the choice persists across restarts"
+            <Show when=move || has_monitor_picker.get()>
+                <SettingDropdown
+                    label="Monitor"
+                    description="Which display to mirror"
+                    key="capture.source"
+                    value=source
+                    options=monitor_options
+                    on_change=on_change
+                />
+            </Show>
+            <Show when=move || !has_monitor_picker.get()>
+                <div class="flex items-center justify-between gap-4 py-3 border-b border-edge-subtle/40">
+                    <div class="min-w-0">
+                        <div class="text-[13px] text-fg-primary">"Capture source"</div>
+                        <div class="text-xs text-fg-tertiary">
+                            "Pick which screen or window to mirror; the choice persists across restarts"
+                        </div>
                     </div>
+                    <button
+                        type="button"
+                        class="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-edge-subtle bg-surface-overlay px-2.5 py-1.5 text-xs text-fg-primary hover:bg-surface-overlay/80 disabled:opacity-50"
+                        disabled=move || !enabled.get() || picking.get()
+                        on:click=pick_source
+                    >
+                        {move || if picking.get() { "Opening picker\u{2026}" } else { "Choose source" }}
+                    </button>
                 </div>
-                <button
-                    type="button"
-                    class="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-edge-subtle bg-surface-overlay px-2.5 py-1.5 text-xs text-fg-primary hover:bg-surface-overlay/80 disabled:opacity-50"
-                    disabled=move || !enabled.get() || picking.get()
-                    on:click=pick_source
-                >
-                    {move || if picking.get() { "Opening picker\u{2026}" } else { "Choose source" }}
-                </button>
-            </div>
-            <SettingSlider
-                label="Capture FPS"
-                description="Screen capture frame rate"
-                key="capture.capture_fps"
-                value=capture_fps
-                on_change=on_change
-                min=1.0 max=60.0 step=1.0
-                decimals=0
-                integer=true
-            />
-            <SettingSlider
-                label="Grid columns"
-                description="Horizontal zones sampled from the screen"
-                key="capture.grid_cols"
-                value=grid_cols
-                on_change=on_change
-                min=2.0 max=32.0 step=1.0
-                decimals=0
-                integer=true
-            />
-            <SettingSlider
-                label="Grid rows"
-                description="Vertical zones sampled from the screen"
-                key="capture.grid_rows"
-                value=grid_rows
-                on_change=on_change
-                min=2.0 max=32.0 step=1.0
-                decimals=0
-                integer=true
-            />
-            <SettingSlider
-                label="Smoothing"
-                description="Temporal response: low is cinematic, high is twitchy"
-                key="capture.smoothing"
-                value=smoothing
-                on_change=on_change
-                min=0.05 max=1.0 step=0.05
-            />
-            <SettingSlider
-                label="Scene cut threshold"
-                description="Frame-change level that snaps colors instantly instead of smoothing"
-                key="capture.scene_cut_threshold"
-                value=scene_cut
-                on_change=on_change
-                min=0.0 max=500.0 step=10.0
-                decimals=0
-            />
-            <SettingToggle
-                label="Letterbox crop"
-                description="Detect and crop black letterbox or pillarbox bars"
-                key="capture.letterbox"
-                value=letterbox
-                on_change=on_change
-            />
-            <SettingSlider
-                label="Letterbox threshold"
-                description="Luminance below this counts as a black bar"
-                key="capture.letterbox_threshold"
-                value=letterbox_threshold
-                on_change=on_change
-                min=0.0 max=0.2 step=0.005
-                decimals=3
-            />
-            <SettingSlider
-                label="Saturation"
-                description="Chroma boost on extracted zone colors"
-                key="capture.saturation"
-                value=saturation
-                on_change=on_change
-                min=0.0 max=2.5 step=0.05
-            />
-            <SettingSlider
-                label="Brightness"
-                description="Brightness multiplier on extracted zone colors"
-                key="capture.brightness"
-                value=brightness
-                on_change=on_change
-                min=0.0 max=2.0 step=0.05
-            />
-            <SettingSlider
-                label="Gamma"
-                description="Midtone shaping: above 1.0 deepens darks"
-                key="capture.gamma"
-                value=gamma
-                on_change=on_change
-                min=0.4 max=2.5 step=0.05
-            />
+            </Show>
+
+            // Everything below is tuning most users never need: video-era
+            // features (letterbox crop, scene cuts), sampling resolution
+            // that layouts depend on, and color shaping. Collapsed so the
+            // section reads as two decisions — on, and which monitor.
+            <button
+                type="button"
+                class="flex w-full items-center gap-1.5 py-3 text-left text-[12px] font-medium text-fg-tertiary hover:text-fg-secondary transition-colors"
+                on:click=move |_| set_show_advanced.update(|open| *open = !*open)
+            >
+                <Icon
+                    icon=Signal::derive(move || {
+                        if show_advanced.get() { LuChevronDown } else { LuChevronRight }
+                    })
+                    width="14px"
+                    height="14px"
+                />
+                {move || if show_advanced.get() { "Hide advanced tuning" } else { "Advanced tuning" }}
+            </button>
+            <Show when=move || show_advanced.get()>
+                <SettingSlider
+                    label="Capture FPS"
+                    description="How often the screen is sampled per second"
+                    key="capture.capture_fps"
+                    value=capture_fps
+                    on_change=on_change
+                    min=1.0 max=60.0 step=1.0
+                    decimals=0
+                    integer=true
+                />
+                <SettingSlider
+                    label="Color response"
+                    description="How quickly LED colors follow the screen \u{2014} lower glides, higher snaps"
+                    key="capture.smoothing"
+                    value=smoothing
+                    on_change=on_change
+                    min=0.05 max=1.0 step=0.05
+                />
+                <SettingSlider
+                    label="Saturation"
+                    description="Color intensity of the extracted lighting"
+                    key="capture.saturation"
+                    value=saturation
+                    on_change=on_change
+                    min=0.0 max=2.5 step=0.05
+                />
+                <SettingSlider
+                    label="Brightness"
+                    description="Brightness of the extracted lighting"
+                    key="capture.brightness"
+                    value=brightness
+                    on_change=on_change
+                    min=0.0 max=2.0 step=0.05
+                />
+                <SettingSlider
+                    label="Gamma"
+                    description="Midtone shaping \u{2014} above 1.0 deepens darks"
+                    key="capture.gamma"
+                    value=gamma
+                    on_change=on_change
+                    min=0.4 max=2.5 step=0.05
+                />
+                <SettingSlider
+                    label="Sampling columns"
+                    description="Ambient color regions across the screen. Layouts reference these zones \u{2014} changing this remaps them"
+                    key="capture.grid_cols"
+                    value=grid_cols
+                    on_change=on_change
+                    min=2.0 max=32.0 step=1.0
+                    decimals=0
+                    integer=true
+                />
+                <SettingSlider
+                    label="Sampling rows"
+                    description="Ambient color regions down the screen. Layouts reference these zones \u{2014} changing this remaps them"
+                    key="capture.grid_rows"
+                    value=grid_rows
+                    on_change=on_change
+                    min=2.0 max=32.0 step=1.0
+                    decimals=0
+                    integer=true
+                />
+                <SettingToggle
+                    label="Crop video letterbox"
+                    description="Ignore the black bars around letterboxed video. Leave off for desktop mirroring \u{2014} dark scenes can be mistaken for bars"
+                    key="capture.letterbox"
+                    value=letterbox
+                    on_change=on_change
+                />
+                <SettingSlider
+                    label="Letterbox threshold"
+                    description="How dark a row must be to count as a bar"
+                    key="capture.letterbox_threshold"
+                    value=letterbox_threshold
+                    on_change=on_change
+                    min=0.0 max=0.2 step=0.005
+                    decimals=3
+                />
+                <SettingSlider
+                    label="Scene cut threshold"
+                    description="Hard video cuts above this level snap colors instantly instead of gliding"
+                    key="capture.scene_cut_threshold"
+                    value=scene_cut
+                    on_change=on_change
+                    min=0.0 max=500.0 step=10.0
+                    decimals=0
+                />
+            </Show>
             <SectionReset section_label="Capture" on_reset=Callback::new(move |()| on_reset.run("capture".to_string())) />
         </section>
     }

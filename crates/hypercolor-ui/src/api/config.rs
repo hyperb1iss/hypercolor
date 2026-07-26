@@ -51,6 +51,26 @@ pub async fn reset_config_key(key: &str) -> Result<(), String> {
         .map_err(Into::into)
 }
 
+/// One display output capture can address, from `/api/v1/capture/monitors`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+pub struct CaptureMonitor {
+    pub index: usize,
+    pub name: String,
+    pub width: u32,
+    pub height: u32,
+    pub primary: bool,
+    /// Ready-to-store `capture.source` value selecting this output.
+    pub value: String,
+}
+
+/// Display outputs the capture backend can address. Empty on portal
+/// platforms, which is the UI's cue to show the picker button instead.
+pub async fn fetch_capture_monitors() -> Result<Vec<CaptureMonitor>, String> {
+    client::fetch_json("/api/v1/capture/monitors")
+        .await
+        .map_err(Into::into)
+}
+
 /// Enumerate available audio devices.
 pub async fn fetch_audio_devices() -> Result<AudioDevicesData, String> {
     client::fetch_json("/api/v1/audio/devices")
