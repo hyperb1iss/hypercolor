@@ -552,8 +552,11 @@ fn screen_capture_input_produces_screen_data() {
                 .canvas_downscale
                 .as_ref()
                 .expect("screen data should include downscaled canvas");
-            assert_eq!(downscale.width(), DEFAULT_CANVAS_WIDTH);
+            // A square source publishes a square surface: the downscale fits
+            // within the canvas bounds rather than stretching to fill them.
+            assert_eq!(downscale.width(), DEFAULT_CANVAS_HEIGHT);
             assert_eq!(downscale.height(), DEFAULT_CANVAS_HEIGHT);
+            assert!(downscale.width() <= DEFAULT_CANVAS_WIDTH);
             assert_eq!(
                 downscale.get_pixel(0, 0),
                 hypercolor_core::types::canvas::Rgba::new(200, 100, 50, 255)
@@ -1009,4 +1012,60 @@ fn genuine_letterbox_bars_are_still_detected() {
         "real bars must leave content behind"
     );
     assert_eq!((bars.left, bars.right), (0, 0), "no pillarboxing here");
+}
+
+// ─── Aspect preservation ─────────────────────────────────────────────────────
+
+/// The published surface must carry the source's aspect ratio. Targeting the
+/// canvas bounds directly squashed 16:9 into 4:3, and no downstream fit mode
+/// can undo distortion already baked into the pixels.
+#[test]
+fn downscale_target_preserves_source_aspect() {
+    use hypercolor_core::input::screen::fit_within;
+
+    // 16:9 into a 4:3 box fits by width.
+    assert_eq!(fit_within(1920, 1080, 640, 480), (640, 360));
+    assert_eq!(fit_within(3840, 2160, 640, 480), (640, 360));
+    // 4:3 source fills the box exactly.
+    assert_eq!(fit_within(1600, 1200, 640, 480), (640, 480));
+    // A portrait source fits by height instead.
+    assert_eq!(fit_within(1080, 1920, 640, 480), (270, 480));
+    // Ultrawide.
+    assert_eq!(fit_within(3440, 1440, 640, 480), (640, 267));
+}
+
+#[test]
+fn downscale_target_never_returns_a_zero_dimension() {
+    use hypercolor_core::input::screen::fit_within;
+
+    assert_eq!(fit_within(0, 0, 640, 480), (640, 480));
+    assert_eq!(fit_within(1920, 1080, 0, 0), (1, 1));
+    // Extreme ratios still round up to a usable pixel.
+    let (w, h) = fit_within(100_000, 1, 640, 480);
+    assert!(w >= 1 && h >= 1, "got {w}x{h}");
+}
+
+#[test]
+fn pushed_frames_publish_an_aspect_correct_surface() {
+    let mut input = ScreenCaptureInput::new(CaptureConfig::default());
+    input.start().expect("start should succeed");
+
+    // A 16:9 frame must not come back as 4:3.
+    let frame = solid_frame(320, 180, 90, 40, 200);
+    input.push_frame(&frame, 320, 180);
+
+    let InputData::Screen(data) = input.sample().expect("sample succeeds") else {
+        panic!("expected screen data");
+    };
+    let surface = data
+        .canvas_downscale
+        .as_ref()
+        .expect("a downscaled surface should be published");
+    let descriptor = surface.descriptor();
+
+    assert_eq!(
+        (descriptor.width, descriptor.height),
+        (640, 360),
+        "16:9 input must publish a 16:9 surface"
+    );
 }
