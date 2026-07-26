@@ -20,6 +20,8 @@ const VERIFY_DEB_SH: &str = include_str!("../../../scripts/verify-deb-package.sh
 const STAGE_APP_BUNDLE_PS1: &str = include_str!("../../../scripts/stage-app-bundle-assets.ps1");
 const STAGE_APP_BUNDLE_SH: &str = include_str!("../../../scripts/stage-app-bundle-assets.sh");
 const INSTALLER_HOOKS_NSH: &str = include_str!("../installer-hooks.nsh");
+const INSTALL_WINDOWS_HARDWARE_SUPPORT_PS1: &str =
+    include_str!("../../../scripts/install-windows-hardware-support.ps1");
 
 const WINDOWS_TOOL_SCRIPTS: &[&str] = &[
     "install-windows-service.ps1",
@@ -166,6 +168,27 @@ fn installer_hook_keeps_privileged_paths_administrator_owned() {
         assert!(
             value.starts_with("$INSTDIR\\"),
             "{flag} must stay under $INSTDIR, got {value}"
+        );
+    }
+}
+
+/// Splatting an array into a PowerShell *script* binds every element
+/// positionally, so `@("-AssetRoot", $path)` puts the literal string
+/// "-AssetRoot" in the child's first parameter and drops every switch on the
+/// floor. Only native executables parse "-Name value" pairs out of a splatted
+/// array; scripts need a hashtable. This silently broke both the installer
+/// path and the app's "Install support" button.
+#[test]
+fn hardware_support_orchestrator_splats_by_hashtable_not_array() {
+    for splat in ["$pawnIoArgs", "$serviceArgs"] {
+        let opener = format!("{splat} = @");
+        let (_, rest) = INSTALL_WINDOWS_HARDWARE_SUPPORT_PS1
+            .split_once(opener.as_str())
+            .unwrap_or_else(|| panic!("orchestrator should build {splat}"));
+        assert!(
+            rest.starts_with('{'),
+            "{splat} must be a hashtable; an array splat binds positionally \
+             and silently mis-assigns every named parameter"
         );
     }
 }
