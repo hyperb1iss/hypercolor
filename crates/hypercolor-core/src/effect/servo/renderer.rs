@@ -11,9 +11,7 @@
 use anyhow::{Result, bail};
 use hypercolor_types::canvas::{Canvas, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, Rgba};
 use hypercolor_types::display::DisplayDescriptor;
-use hypercolor_types::effect::{
-    ControlKind, ControlValue, EffectCategory, EffectMetadata, EffectSource,
-};
+use hypercolor_types::effect::{ControlKind, ControlValue, EffectMetadata, EffectSource};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -374,7 +372,9 @@ fn host_driven_animation(metadata: &EffectMetadata) -> bool {
 
 #[cfg(feature = "servo-gpu-import")]
 fn should_reuse_cached_gpu_frame_on_no_ready(metadata: &EffectMetadata) -> bool {
-    metadata.category == EffectCategory::Display
+    // Qualified so the import doesn't go dead when servo builds without
+    // servo-gpu-import — this function is the only consumer.
+    metadata.category == hypercolor_types::effect::EffectCategory::Display
 }
 
 mod frame_poll;
