@@ -411,13 +411,17 @@ impl Pump {
             let header = unsafe { base.add(offset).cast::<RAWINPUTHEADER>().read_unaligned() };
             let dw_size = header.dwSize;
 
+            // The record's own declared end, not the buffer's — a short record
+            // must not be able to read into the one after it.
+            let record_end = offset.saturating_add(dw_size as usize);
+
             match next_record(offset, dw_size, capacity, header_size) {
                 RecordStep::Next(next) => {
-                    self.decode_record_at(base, offset, &header, capacity);
+                    self.decode_record_at(base, offset, &header, record_end);
                     offset = next;
                 }
                 RecordStep::End => {
-                    self.decode_record_at(base, offset, &header, capacity);
+                    self.decode_record_at(base, offset, &header, record_end);
                     break;
                 }
                 RecordStep::Malformed => {
@@ -430,16 +434,18 @@ impl Pump {
 
     /// Read one record's payload, if the type is one we registered for.
     ///
-    /// `next_record` has already established that `offset + dwSize` lies
-    /// within `capacity`; this additionally checks the specific union arm
-    /// fits, because `dwSize` is device-reported and a short one must not let
-    /// a `RAWMOUSE` read run past the record it belongs to.
+    /// `record_end` is the record's own declared end (`offset + dwSize`), which
+    /// `next_record` has already established lies within the buffer. Bounding
+    /// the union arm against *that* rather than against the buffer is what
+    /// stops a short record from reading into the record after it: staying
+    /// inside the allocation would keep it memory-safe while still decoding
+    /// the next device's bytes as this one's key or button state.
     fn decode_record_at(
         &mut self,
         base: *const u8,
         offset: usize,
         header: &RAWINPUTHEADER,
-        capacity: usize,
+        record_end: usize,
     ) {
         let handle = header.hDevice;
         let source_id = match self.cache.resolve(handle) {
@@ -456,17 +462,20 @@ impl Pump {
 
         match RID_DEVICE_INFO_TYPE(header.dwType) {
             RIM_TYPEKEYBOARD if self.config.keyboard => {
-                if payload.saturating_add(size_of::<RAWKEYBOARD>()) > capacity {
+                if payload.saturating_add(size_of::<RAWKEYBOARD>()) > record_end {
+                    tracing::warn!("raw input keyboard record is shorter than its payload");
                     return;
                 }
-                // SAFETY: the payload fits within the buffer (checked above),
-                // `dwType` selected this union arm, and `read_unaligned`
-                // imposes no alignment requirement.
+                // SAFETY: the payload lies wholly inside this record (checked
+                // above, and the record inside the buffer), `dwType` selected
+                // this union arm, and `read_unaligned` imposes no alignment
+                // requirement.
                 let keyboard = unsafe { base.add(payload).cast::<RAWKEYBOARD>().read_unaligned() };
                 self.decode_keyboard(&source_id, keyboard.MakeCode, keyboard.Flags, keyboard.VKey);
             }
             RIM_TYPEMOUSE if self.config.mouse => {
-                if payload.saturating_add(size_of::<RAWMOUSE>()) > capacity {
+                if payload.saturating_add(size_of::<RAWMOUSE>()) > record_end {
+                    tracing::warn!("raw input mouse record is shorter than its payload");
                     return;
                 }
                 // SAFETY: as above, for the mouse arm.

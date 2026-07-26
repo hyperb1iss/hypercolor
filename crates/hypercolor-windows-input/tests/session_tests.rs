@@ -24,6 +24,27 @@ use hypercolor_windows_input::{
 /// would show up as daemon shutdown latency.
 const STOP_BUDGET: Duration = Duration::from_millis(1500);
 
+/// Serializes every test in this file.
+///
+/// Raw Input registration is process-global per usage, so two tests running
+/// concurrently in the same binary contend for the one thing these tests are
+/// about: a session started by test A makes test B's registration check see a
+/// stolen registration, and B fails for a reason that has nothing to do with
+/// what it asserts. Cargo runs tests in parallel by default, so this is the
+/// difference between a real gate and a flaky one.
+static EXCLUSIVE: Mutex<()> = Mutex::new(());
+
+/// Claim the process-global registration for one test.
+///
+/// A panicking test poisons the lock; recovering from that is correct here,
+/// because the guarded resource is the OS registration rather than any data
+/// structure a panic could have left inconsistent.
+fn exclusive() -> std::sync::MutexGuard<'static, ()> {
+    EXCLUSIVE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn test_config(keyboard: bool, mouse: bool) -> RawInputConfig {
     RawInputConfig {
         keyboard,
@@ -35,6 +56,7 @@ fn test_config(keyboard: bool, mouse: bool) -> RawInputConfig {
 
 #[test]
 fn a_normal_test_process_has_an_interactive_window_station() {
+    let _exclusive = exclusive();
     // If this fails, every other test here is meaningless — and so is the
     // daemon, which is exactly what the probe exists to report.
     assert_eq!(interactive_session_state(), SessionState::Interactive);
@@ -42,6 +64,7 @@ fn a_normal_test_process_has_an_interactive_window_station() {
 
 #[test]
 fn a_session_starts_registers_and_stops_cleanly() {
+    let _exclusive = exclusive();
     let mut session =
         RawInputSession::start(test_config(true, true), |_| {}).expect("session starts");
     assert_eq!(session.worker_state(), WorkerState::Running);
@@ -57,6 +80,7 @@ fn a_session_starts_registers_and_stops_cleanly() {
 
 #[test]
 fn repeated_start_stop_cycles_survive_class_already_exists() {
+    let _exclusive = exclusive();
     // Capture toggles with effect demand, so the worker really is created and
     // destroyed repeatedly in one process lifetime. A second RegisterClassW
     // fails with ERROR_CLASS_ALREADY_EXISTS, and treating that as fatal would
@@ -70,6 +94,7 @@ fn repeated_start_stop_cycles_survive_class_already_exists() {
 
 #[test]
 fn stop_is_idempotent() {
+    let _exclusive = exclusive();
     let mut session =
         RawInputSession::start(test_config(true, false), |_| {}).expect("session starts");
     session.stop();
@@ -79,6 +104,7 @@ fn stop_is_idempotent() {
 
 #[test]
 fn dropping_without_stopping_still_tears_down() {
+    let _exclusive = exclusive();
     // Drop must reach the same teardown, or a dropped session would leave the
     // process registered against a destroyed window.
     {
@@ -93,6 +119,7 @@ fn dropping_without_stopping_still_tears_down() {
 
 #[test]
 fn declining_both_kinds_is_an_error_rather_than_a_silent_no_op() {
+    let _exclusive = exclusive();
     let error = RawInputSession::start(test_config(false, false), |_| {})
         .err()
         .expect("a session with nothing to capture cannot start");
@@ -101,6 +128,7 @@ fn declining_both_kinds_is_an_error_rather_than_a_silent_no_op() {
 
 #[test]
 fn keyboard_only_capture_registers_without_the_mouse_usage() {
+    let _exclusive = exclusive();
     // Declining pointer capture means the process is never registered for
     // mouse input at all, rather than filtering after the fact. If the mouse
     // usage were registered anyway, this would still start — so the assertion
@@ -113,6 +141,7 @@ fn keyboard_only_capture_registers_without_the_mouse_usage() {
 
 #[test]
 fn arrivals_for_already_attached_devices_land_before_readiness() {
+    let _exclusive = exclusive();
     // RIDEV_DEVNOTIFY fires only on *change*, so an already-attached keyboard
     // produces no GIDC_ARRIVAL. Without the startup enumeration core would
     // have no devices at all until the user touched one.
@@ -146,6 +175,7 @@ fn arrivals_for_already_attached_devices_land_before_readiness() {
 
 #[test]
 fn a_panicking_sink_is_contained_and_reported() {
+    let _exclusive = exclusive();
     // A panic while folding must not take the process with it, and must not
     // leave core believing a dead source is live. The panic is only reachable
     // if a batch is delivered, which the startup arrivals guarantee.
@@ -179,6 +209,7 @@ fn a_panicking_sink_is_contained_and_reported() {
 
 #[test]
 fn two_sessions_do_not_leave_the_registration_orphaned() {
+    let _exclusive = exclusive();
     // Registration is process-global, so a second session steals the first's.
     // What must not happen is the first session's teardown then deregistering
     // the second — the claim is what prevents that, and the observable
@@ -198,6 +229,7 @@ fn two_sessions_do_not_leave_the_registration_orphaned() {
 
 #[test]
 fn the_clock_callback_is_only_read_on_the_pump() {
+    let _exclusive = exclusive();
     // Timestamps are core's clock read immediately before each drain, not at
     // sink entry: a stamp taken while folding would record when folding
     // happened rather than when input was captured.
@@ -228,4 +260,59 @@ fn the_clock_callback_is_only_read_on_the_pump() {
             assert_eq!(*epoch, 42, "every batch echoes the epoch core allocated");
         }
     }
+}
+
+#[test]
+fn rapid_start_stop_cycles_never_orphan_the_registration() {
+    let _exclusive = exclusive();
+    // The claim lifecycle's failure mode is silent: an orphaned or stolen
+    // registration leaves a session that looks healthy and receives nothing.
+    // What can be asserted from outside is that the process stays able to
+    // register, cycle after cycle.
+    for cycle in 0..8 {
+        let mut session = RawInputSession::start(test_config(true, true), |_| {})
+            .unwrap_or_else(|error| panic!("cycle {cycle} could not register: {error}"));
+        session.stop();
+    }
+
+    let mut last = RawInputSession::start(test_config(true, true), |_| {})
+        .expect("registration survives repeated cycles");
+    assert_eq!(last.worker_state(), WorkerState::Running);
+    last.stop();
+}
+
+#[test]
+fn overlapping_sessions_leave_the_process_registerable() {
+    let _exclusive = exclusive();
+    // Two live sessions means the second stole the first's process-global
+    // registration. Once both are gone, a third must still be able to take it
+    // — which fails if either teardown removed the wrong one or skipped its
+    // own.
+    {
+        let _first =
+            RawInputSession::start(test_config(true, true), |_| {}).expect("first session starts");
+        let _second =
+            RawInputSession::start(test_config(true, true), |_| {}).expect("second session starts");
+    }
+
+    let mut third =
+        RawInputSession::start(test_config(true, true), |_| {}).expect("third session starts");
+    assert_eq!(third.worker_state(), WorkerState::Running);
+    third.stop();
+}
+
+#[test]
+fn a_stopped_session_can_be_dropped_without_posting_to_a_dead_window() {
+    let _exclusive = exclusive();
+    // Drop after an explicit stop must not post the private nudge to a window
+    // the worker already destroyed — Windows can reissue that handle to an
+    // unrelated window, which would then receive our WM_APP message.
+    let mut session =
+        RawInputSession::start(test_config(true, true), |_| {}).expect("session starts");
+    session.stop();
+    drop(session);
+
+    let mut next = RawInputSession::start(test_config(true, true), |_| {})
+        .expect("the next session starts cleanly");
+    next.stop();
 }
