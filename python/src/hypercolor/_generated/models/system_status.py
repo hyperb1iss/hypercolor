@@ -44,6 +44,11 @@ class SystemStatus:
             host backend is actively reading device nodes. `devices_denied` counts
             input nodes present but unreadable (udev rules missing) — the signal
             that distinguishes "input is off" from "input is on but blocked".
+
+            `degraded` carries the failures the counters cannot express. Windows has no
+            per-device denial to count: either the process has a visible window station
+            and sees input, or it does not, and that is a session-level fact rather than
+            a per-node one.
         preview_runtime (PreviewRuntimeStatus):
         render_loop (RenderLoopStatus):
         running (bool):

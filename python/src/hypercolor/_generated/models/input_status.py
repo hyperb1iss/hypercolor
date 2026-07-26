@@ -6,6 +6,8 @@ from typing import Any, TypeVar, cast
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
+from ..types import UNSET, Unset
+
 T = TypeVar("T", bound="InputStatus")
 
 
@@ -18,6 +20,11 @@ class InputStatus:
     input nodes present but unreadable (udev rules missing) — the signal
     that distinguishes "input is off" from "input is on but blocked".
 
+    `degraded` carries the failures the counters cannot express. Windows has no
+    per-device denial to count: either the process has a visible window station
+    and sees input, or it does not, and that is a session-level fact rather than
+    a per-node one.
+
         Attributes:
             backends (list[str]):
             devices_denied (int):
@@ -25,6 +32,7 @@ class InputStatus:
             enabled (bool):
             host_capture_registered (bool):
             host_capturing (bool):
+            degraded (None | str | Unset):
     """
 
     backends: list[str]
@@ -33,6 +41,7 @@ class InputStatus:
     enabled: bool
     host_capture_registered: bool
     host_capturing: bool
+    degraded: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -48,6 +57,12 @@ class InputStatus:
 
         host_capturing = self.host_capturing
 
+        degraded: None | str | Unset
+        if isinstance(self.degraded, Unset):
+            degraded = UNSET
+        else:
+            degraded = self.degraded
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -60,6 +75,8 @@ class InputStatus:
                 "host_capturing": host_capturing,
             }
         )
+        if degraded is not UNSET:
+            field_dict["degraded"] = degraded
 
         return field_dict
 
@@ -78,6 +95,15 @@ class InputStatus:
 
         host_capturing = d.pop("host_capturing")
 
+        def _parse_degraded(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        degraded = _parse_degraded(d.pop("degraded", UNSET))
+
         input_status = cls(
             backends=backends,
             devices_denied=devices_denied,
@@ -85,6 +111,7 @@ class InputStatus:
             enabled=enabled,
             host_capture_registered=host_capture_registered,
             host_capturing=host_capturing,
+            degraded=degraded,
         )
 
         input_status.additional_properties = d
