@@ -238,7 +238,16 @@ impl DesktopDuplicator {
         Ok(extent)
     }
 
-    /// Subsample BGRA staging rows into the packed RGBA output buffer.
+    /// Box-filter BGRA staging rows into the packed RGBA output buffer.
+    ///
+    /// Every source pixel in each stride x stride block is averaged rather
+    /// than one being picked. Point sampling is tempting here — the ambilight
+    /// sector grid averages the result anyway — but the same buffer is
+    /// published as `canvas_downscale` and consumed as an actual image by
+    /// screen-reactive effects, then downscaled a second time. Two successive
+    /// point samplings of a 4K desktop shred thin text into aliased noise. The
+    /// Wayland path never had this problem because PipeWire hands over an
+    /// already-filtered frame.
     fn copy_mapped_rows(
         &mut self,
         mapped: &D3D11_MAPPED_SUBRESOURCE,
@@ -260,16 +269,43 @@ impl DesktopDuplicator {
         // bytes for this subresource, and it stays valid until Unmap.
         let source = unsafe { std::slice::from_raw_parts(mapped.pData.cast::<u8>(), source_len) };
 
+        let stride = stride as usize;
+        let width = width as usize;
+        let height = height as usize;
+
         for out_y in 0..out_height as usize {
-            let src_row_start = (out_y * stride as usize) * row_pitch;
             let dst_row_start = out_y * out_width as usize * BYTES_PER_PIXEL;
+            // Blocks on the right and bottom edges are clipped when the
+            // desktop does not divide evenly by the stride.
+            let src_y0 = out_y * stride;
+            let src_y1 = (src_y0 + stride).min(height);
+
             for out_x in 0..out_width as usize {
-                let src = src_row_start + (out_x * stride as usize) * BYTES_PER_PIXEL;
+                let src_x0 = out_x * stride;
+                let src_x1 = (src_x0 + stride).min(width);
+
+                let mut blue = 0_u32;
+                let mut green = 0_u32;
+                let mut red = 0_u32;
+                let mut samples = 0_u32;
+
+                for src_y in src_y0..src_y1 {
+                    let row = src_y * row_pitch;
+                    for src_x in src_x0..src_x1 {
+                        let src = row + src_x * BYTES_PER_PIXEL;
+                        // Desktop Duplication hands back BGRA.
+                        blue += u32::from(source[src]);
+                        green += u32::from(source[src + 1]);
+                        red += u32::from(source[src + 2]);
+                        samples += 1;
+                    }
+                }
+
+                let samples = samples.max(1);
                 let dst = dst_row_start + out_x * BYTES_PER_PIXEL;
-                // Desktop Duplication hands back BGRA; the pipeline wants RGBA.
-                self.rgba[dst] = source[src + 2];
-                self.rgba[dst + 1] = source[src + 1];
-                self.rgba[dst + 2] = source[src];
+                self.rgba[dst] = (red / samples) as u8;
+                self.rgba[dst + 1] = (green / samples) as u8;
+                self.rgba[dst + 2] = (blue / samples) as u8;
                 self.rgba[dst + 3] = 0xFF;
             }
         }
