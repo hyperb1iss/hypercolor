@@ -355,6 +355,11 @@ impl InputSource for EvdevHostInput {
             capturing: self.capture_active && self.worker.is_some(),
             devices_opened,
             devices_denied,
+            // The counters already express Linux's only failure mode; the
+            // typed field carries it so consumers can stop reimplementing the
+            // `denied > 0 && opened == 0` heuristic for themselves.
+            degraded: (devices_denied > 0 && devices_opened == 0)
+                .then_some(crate::input::InteractionDegradation::AccessDenied),
         })
     }
 
@@ -832,74 +837,15 @@ fn is_non_keyboard_key(code: KeyCode) -> bool {
     (0x100..0x160).contains(&c) || (0x220..0x228).contains(&c) || (0x2c0..0x2e0).contains(&c)
 }
 
+/// Canonical name for an evdev keycode, from the shared inventory.
+///
+/// The table lives in [`crate::input::keymap`] because Windows has to produce
+/// the same names from set-1 scan codes, and two hand-maintained tables drift
+/// the moment someone adds a key to one of them. Codes outside the inventory
+/// keep their debug name so an unmapped key is visible rather than dropped.
 fn canonical_evdev_key_name(code: KeyCode) -> String {
-    match code {
-        KeyCode::KEY_0 => "0".to_owned(),
-        KeyCode::KEY_1 => "1".to_owned(),
-        KeyCode::KEY_2 => "2".to_owned(),
-        KeyCode::KEY_3 => "3".to_owned(),
-        KeyCode::KEY_4 => "4".to_owned(),
-        KeyCode::KEY_5 => "5".to_owned(),
-        KeyCode::KEY_6 => "6".to_owned(),
-        KeyCode::KEY_7 => "7".to_owned(),
-        KeyCode::KEY_8 => "8".to_owned(),
-        KeyCode::KEY_9 => "9".to_owned(),
-        KeyCode::KEY_A => "a".to_owned(),
-        KeyCode::KEY_B => "b".to_owned(),
-        KeyCode::KEY_C => "c".to_owned(),
-        KeyCode::KEY_D => "d".to_owned(),
-        KeyCode::KEY_E => "e".to_owned(),
-        KeyCode::KEY_F => "f".to_owned(),
-        KeyCode::KEY_G => "g".to_owned(),
-        KeyCode::KEY_H => "h".to_owned(),
-        KeyCode::KEY_I => "i".to_owned(),
-        KeyCode::KEY_J => "j".to_owned(),
-        KeyCode::KEY_K => "k".to_owned(),
-        KeyCode::KEY_L => "l".to_owned(),
-        KeyCode::KEY_M => "m".to_owned(),
-        KeyCode::KEY_N => "n".to_owned(),
-        KeyCode::KEY_O => "o".to_owned(),
-        KeyCode::KEY_P => "p".to_owned(),
-        KeyCode::KEY_Q => "q".to_owned(),
-        KeyCode::KEY_R => "r".to_owned(),
-        KeyCode::KEY_S => "s".to_owned(),
-        KeyCode::KEY_T => "t".to_owned(),
-        KeyCode::KEY_U => "u".to_owned(),
-        KeyCode::KEY_V => "v".to_owned(),
-        KeyCode::KEY_W => "w".to_owned(),
-        KeyCode::KEY_X => "x".to_owned(),
-        KeyCode::KEY_Y => "y".to_owned(),
-        KeyCode::KEY_Z => "z".to_owned(),
-        KeyCode::KEY_UP => "ArrowUp".to_owned(),
-        KeyCode::KEY_DOWN => "ArrowDown".to_owned(),
-        KeyCode::KEY_LEFT => "ArrowLeft".to_owned(),
-        KeyCode::KEY_RIGHT => "ArrowRight".to_owned(),
-        KeyCode::KEY_LEFTCTRL => "ControlLeft".to_owned(),
-        KeyCode::KEY_RIGHTCTRL => "ControlRight".to_owned(),
-        KeyCode::KEY_LEFTSHIFT => "ShiftLeft".to_owned(),
-        KeyCode::KEY_RIGHTSHIFT => "ShiftRight".to_owned(),
-        KeyCode::KEY_LEFTALT => "AltLeft".to_owned(),
-        KeyCode::KEY_RIGHTALT => "AltRight".to_owned(),
-        KeyCode::KEY_LEFTMETA => "MetaLeft".to_owned(),
-        KeyCode::KEY_RIGHTMETA => "MetaRight".to_owned(),
-        KeyCode::KEY_SPACE => "Space".to_owned(),
-        KeyCode::KEY_ENTER => "Enter".to_owned(),
-        KeyCode::KEY_ESC => "Escape".to_owned(),
-        KeyCode::KEY_TAB => "Tab".to_owned(),
-        KeyCode::KEY_BACKSPACE => "Backspace".to_owned(),
-        KeyCode::KEY_MINUS => "-".to_owned(),
-        KeyCode::KEY_EQUAL => "=".to_owned(),
-        KeyCode::KEY_LEFTBRACE => "[".to_owned(),
-        KeyCode::KEY_RIGHTBRACE => "]".to_owned(),
-        KeyCode::KEY_BACKSLASH => "\\".to_owned(),
-        KeyCode::KEY_SEMICOLON => ";".to_owned(),
-        KeyCode::KEY_APOSTROPHE => "'".to_owned(),
-        KeyCode::KEY_GRAVE => "`".to_owned(),
-        KeyCode::KEY_COMMA => ",".to_owned(),
-        KeyCode::KEY_DOT => ".".to_owned(),
-        KeyCode::KEY_SLASH => "/".to_owned(),
-        other => format!("{other:?}"),
-    }
+    crate::input::keymap::evdev_key_name(code.0)
+        .map_or_else(|| format!("{code:?}"), ToOwned::to_owned)
 }
 
 #[cfg(test)]

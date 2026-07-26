@@ -285,6 +285,11 @@ impl BrowserInputSource {
             data.mouse.mode = PointerMode::Absolute;
             data.mouse.norm_x = nx;
             data.mouse.norm_y = ny;
+            // The user is driving this pointer over the preview canvas, so it
+            // outranks the host cursor in `merge_from`. Without the flag, host
+            // capture — which registers first — would shadow it and an
+            // interactive effect previewed in the UI would track the desktop.
+            data.mouse.injected = true;
         }
         data.batch.motion = std::mem::take(&mut guard.motion);
         data.batch.dropped_events = std::mem::take(&mut guard.dropped);
@@ -376,6 +381,7 @@ impl InputSource for BrowserInputSource {
             capturing: self.running,
             devices_opened: 0,
             devices_denied: 0,
+            degraded: None,
         })
     }
 

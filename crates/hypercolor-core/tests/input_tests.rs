@@ -1171,3 +1171,89 @@ fn batch_absorb_prior_preserves_order_and_sums() {
     );
     assert_eq!(overflowing.events.first().map(|e| e.seq), Some(44));
 }
+
+// ── Pointer merge precedence ───────────────────────────────────────────────
+
+/// Build a snapshot carrying only a pointer, at the given position.
+fn pointer_snapshot(norm_x: f32, injected: bool) -> hypercolor_core::input::InteractionData {
+    use hypercolor_core::input::{InteractionData, PointerMode};
+    let mut data = InteractionData::default();
+    data.mouse.mode = PointerMode::Absolute;
+    data.mouse.norm_x = norm_x;
+    data.mouse.injected = injected;
+    data
+}
+
+#[test]
+fn an_injected_pointer_wins_over_a_host_pointer_regardless_of_order() {
+    // Host capture registers before the browser source, and first-non-None
+    // alone would therefore let the desktop cursor shadow the preview canvas
+    // — visibly wrong the moment the host pointer is a real desktop cursor
+    // rather than a virtual one nobody cross-checks.
+    let mut host_first = pointer_snapshot(0.1, false);
+    host_first.merge_from(pointer_snapshot(0.9, true));
+    assert!(
+        (host_first.mouse.norm_x - 0.9).abs() < 1e-6,
+        "the injected pointer must win when it merges second"
+    );
+    assert!(host_first.mouse.injected);
+
+    let mut browser_first = pointer_snapshot(0.9, true);
+    browser_first.merge_from(pointer_snapshot(0.1, false));
+    assert!(
+        (browser_first.mouse.norm_x - 0.9).abs() < 1e-6,
+        "and when it merges first"
+    );
+}
+
+#[test]
+fn two_host_pointers_still_resolve_first_wins() {
+    let mut first = pointer_snapshot(0.2, false);
+    first.merge_from(pointer_snapshot(0.8, false));
+    assert!(
+        (first.mouse.norm_x - 0.2).abs() < 1e-6,
+        "unchanged behaviour where no source is injected"
+    );
+}
+
+#[test]
+fn an_idle_source_never_blanks_an_active_pointer() {
+    use hypercolor_core::input::{InteractionData, PointerMode};
+    let mut active = pointer_snapshot(0.4, true);
+    active.merge_from(InteractionData::default());
+    assert_eq!(active.mouse.mode, PointerMode::Absolute);
+    assert!((active.mouse.norm_x - 0.4).abs() < 1e-6);
+}
+
+#[test]
+fn merging_preserves_recent_key_order_and_unions_held_state() {
+    // Registration order is load-bearing for more than the pointer: recent
+    // keys concatenate in source order, so fixing pointer precedence by
+    // reordering sources would have traded a visible bug for a subtle one.
+    use hypercolor_core::input::InteractionData;
+
+    let mut first = InteractionData::default();
+    first.keyboard.recent_keys = vec!["a".to_owned(), "b".to_owned()];
+    first.keyboard.pressed_keys = vec!["a".to_owned()];
+    first.mouse.buttons = vec!["left".to_owned()];
+
+    let mut second = InteractionData::default();
+    second.keyboard.recent_keys = vec!["c".to_owned()];
+    second.keyboard.pressed_keys = vec!["z".to_owned()];
+    second.mouse.buttons = vec!["right".to_owned()];
+
+    first.merge_from(second);
+
+    assert_eq!(
+        first.keyboard.recent_keys,
+        vec!["a".to_owned(), "b".to_owned(), "c".to_owned()]
+    );
+    assert_eq!(
+        first.keyboard.pressed_keys,
+        vec!["a".to_owned(), "z".to_owned()]
+    );
+    assert_eq!(
+        first.mouse.buttons,
+        vec!["left".to_owned(), "right".to_owned()]
+    );
+}

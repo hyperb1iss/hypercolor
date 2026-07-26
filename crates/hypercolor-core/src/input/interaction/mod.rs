@@ -213,6 +213,7 @@ impl InputSource for InteractionInput {
             capturing: self.capture_active && self.worker.is_some(),
             devices_opened: usize::from(self.worker.is_some()),
             devices_denied: 0,
+            degraded: None,
         })
     }
 
@@ -273,6 +274,7 @@ fn mouse_data_from_state(mouse_state: &device_query::MouseState) -> MouseData {
         norm_x: 0.0,
         norm_y: 0.0,
         mode: crate::input::traits::PointerMode::None,
+        injected: false,
     }
 }
 

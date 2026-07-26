@@ -72,9 +72,17 @@ impl InteractionData {
     /// each produce a full snapshot per frame; the pipeline merges them so
     /// no source's held state clobbers another's. Held keys and buttons
     /// union, recent keys concatenate, motion sums, and generations add so
-    /// the combined counter advances whenever any source changes. Pointer
-    /// position is taken from the first source that actually has one
-    /// (`mode != None`), so an idle source never blanks an active pointer.
+    /// the combined counter advances whenever any source changes.
+    ///
+    /// Pointer position takes an injected pointer over a host one, then falls
+    /// back to the first source that actually has one (`mode != None`), so an
+    /// idle source never blanks an active pointer. The injected preference
+    /// exists because host capture registers before the browser source, and
+    /// first-wins alone would make previewing an interactive effect in the UI
+    /// track the desktop cursor instead of the canvas. Fixing that by
+    /// reordering registration would be worse: `recent_keys` concatenates in
+    /// source order right above, so permuting sources would reorder the key
+    /// stream an effect sees.
     pub fn merge_from(&mut self, other: InteractionData) {
         for key in other.keyboard.pressed_keys {
             if !self.keyboard.pressed_keys.contains(&key) {
@@ -82,18 +90,21 @@ impl InteractionData {
             }
         }
         self.keyboard.recent_keys.extend(other.keyboard.recent_keys);
+        // Decided before `buttons` is moved out of `other.mouse`.
+        let take_pointer = takes_pointer_from(&self.mouse, &other.mouse);
         for button in other.mouse.buttons {
             if !self.mouse.buttons.contains(&button) {
                 self.mouse.buttons.push(button);
             }
         }
         self.mouse.down = self.mouse.down || other.mouse.down;
-        if self.mouse.mode == PointerMode::None && other.mouse.mode != PointerMode::None {
+        if take_pointer {
             self.mouse.x = other.mouse.x;
             self.mouse.y = other.mouse.y;
             self.mouse.norm_x = other.mouse.norm_x;
             self.mouse.norm_y = other.mouse.norm_y;
             self.mouse.mode = other.mouse.mode;
+            self.mouse.injected = other.mouse.injected;
         }
         self.batch.wheel_hi_res = self
             .batch
@@ -124,6 +135,40 @@ pub struct InteractionDiagnostics {
     pub devices_opened: usize,
     /// Device nodes present but unreadable — udev rules missing.
     pub devices_denied: usize,
+    /// Why input is not flowing, when the counters alone cannot say.
+    pub degraded: Option<InteractionDegradation>,
+}
+
+/// Why an interaction source cannot deliver input.
+///
+/// `devices_opened`/`devices_denied` could express Linux's failure mode
+/// (nodes present but unreadable) and nothing else. On Windows there is no
+/// per-device denial and no udev, so the counter shape could only ever produce
+/// wrong advice — a remedy banner telling a Windows user to run
+/// `sudo just udev-install`. This gives the session-level failure its own typed
+/// field instead of smuggling it through a counter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InteractionDegradation {
+    /// Process has no visible window station — a Windows service, or a
+    /// scheduled task running without an interactive desktop. Raw Input
+    /// registers happily in that state and simply never delivers a message.
+    NoInteractiveSession,
+    /// Device nodes present but unreadable — Linux udev rules missing.
+    AccessDenied,
+    /// The backend could not initialize, or its worker died.
+    Unavailable(String),
+}
+
+impl InteractionDegradation {
+    /// Stable snake_case code for the API and UI surfaces.
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::NoInteractiveSession => "no_interactive_session",
+            Self::AccessDenied => "access_denied",
+            Self::Unavailable(_) => "unavailable",
+        }
+    }
 }
 
 /// Keyboard snapshot for one frame.
@@ -164,6 +209,27 @@ pub struct MouseData {
     pub norm_y: f32,
     /// How the position fields were produced.
     pub mode: PointerMode,
+    /// Whether this pointer was injected by a preview surface rather than read
+    /// from host hardware.
+    ///
+    /// The producer declares its own priority here because the merge point has
+    /// no source identity to key on: the render pipeline merges bare
+    /// [`InteractionData`] values pulled from `sample_and_drain_with_delta_secs`.
+    pub injected: bool,
+}
+
+/// Whether `incoming` should supply the merged pointer position.
+///
+/// An injected pointer outranks a host one; otherwise the first source with a
+/// pointer at all wins, which is the behaviour every other case already had.
+fn takes_pointer_from(current: &MouseData, incoming: &MouseData) -> bool {
+    if incoming.mode == PointerMode::None {
+        return false;
+    }
+    if current.mode == PointerMode::None {
+        return true;
+    }
+    incoming.injected && !current.injected
 }
 
 /// Transient per-frame input edges and aggregates.

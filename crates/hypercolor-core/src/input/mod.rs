@@ -9,11 +9,13 @@ pub mod browser;
 #[cfg(target_os = "linux")]
 pub mod evdev;
 pub mod interaction;
+pub mod keymap;
 pub mod media;
 pub mod net;
 pub mod screen;
 pub mod sensor;
 mod traits;
+pub mod windows;
 
 pub use browser::{BrowserInputEdge, BrowserInputHandle, BrowserInputSource};
 #[cfg(target_os = "linux")]
@@ -23,9 +25,10 @@ pub use media::MediaSource;
 pub use net::NetSource;
 pub use sensor::SensorPoller;
 pub use traits::{
-    InputData, InputSource, InteractionBatch, InteractionData, InteractionDiagnostics,
-    KeyboardData, MotionAggregate, MouseData, PointerMode, ScreenData,
+    InputData, InputSource, InteractionBatch, InteractionData, InteractionDegradation,
+    InteractionDiagnostics, KeyboardData, MotionAggregate, MouseData, PointerMode, ScreenData,
 };
+pub use windows::WindowsHostInput;
 
 use crate::input::audio::AudioInput;
 use crate::types::audio::AudioPipelineConfig;

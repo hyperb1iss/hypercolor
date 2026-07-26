@@ -36,6 +36,9 @@ servo-gpu-import = [
 
 [dependencies]
 hypercolor-types = { workspace = true }
+# Unconditional: the shared event vocabulary and the decoding arithmetic
+# compile everywhere, which is what lets Linux CI test the Windows key tables.
+hypercolor-windows-input = { path = "../hypercolor-windows-input" }
 hypercolor-driver-api = { workspace = true }
 hypercolor-hal = { workspace = true }
 hypercolor-linux-gpu-interop = { workspace = true, optional = true }
