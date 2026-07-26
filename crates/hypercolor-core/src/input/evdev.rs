@@ -664,23 +664,21 @@ fn fold_event(
                         event_limit,
                     );
                 }
-                RelativeAxisCode::REL_WHEEL => {
-                    // Devices with hi-res wheels report both; keep only the
-                    // hi-res stream to avoid double counting.
-                    if !open.caps.hi_res_wheel {
-                        push_event(
-                            state,
-                            TimedInputEvent {
-                                event: InputEvent::MouseWheel {
-                                    source_id: open.source_id.clone(),
-                                    delta_hi_res: value.saturating_mul(120),
-                                },
-                                at_ms,
-                                seq: 0,
+                // Devices with hi-res wheels report both; keep only the
+                // hi-res stream to avoid double counting.
+                RelativeAxisCode::REL_WHEEL if !open.caps.hi_res_wheel => {
+                    push_event(
+                        state,
+                        TimedInputEvent {
+                            event: InputEvent::MouseWheel {
+                                source_id: open.source_id.clone(),
+                                delta_hi_res: value.saturating_mul(120),
                             },
-                            event_limit,
-                        );
-                    }
+                            at_ms,
+                            seq: 0,
+                        },
+                        event_limit,
+                    );
                 }
                 _ => {}
             }
