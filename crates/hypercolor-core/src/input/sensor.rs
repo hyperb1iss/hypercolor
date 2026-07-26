@@ -17,6 +17,13 @@ use sysinfo::{
 const DEFAULT_SENSOR_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const BYTES_PER_MEGABYTE: f64 = 1_000_000.0;
 
+/// Backoff between attempts to open the Windows PawnIO CPU temperature
+/// reader while it is unavailable. Long enough that a permanently
+/// PawnIO-less host pays almost nothing, short enough that installing
+/// hardware support feels immediate rather than requiring a restart.
+#[cfg(target_os = "windows")]
+const CPU_TEMP_REPROBE_INTERVAL: Duration = Duration::from_secs(20);
+
 /// Background poller that publishes latest-value system telemetry snapshots.
 pub struct SensorPoller {
     interval: Duration,
@@ -143,7 +150,7 @@ struct SystemSampler {
     components: Components,
     nvidia: Option<NvidiaTelemetry>,
     #[cfg(target_os = "windows")]
-    windows: Option<WindowsSensorExtras>,
+    windows: WindowsSensorExtras,
 }
 
 impl SystemSampler {
@@ -208,9 +215,7 @@ impl SystemSampler {
         }
 
         #[cfg(target_os = "windows")]
-        if let Some(windows) = self.windows.as_mut() {
-            windows.merge_snapshot(&mut snapshot);
-        }
+        self.windows.merge_snapshot(&mut snapshot);
 
         snapshot
     }
@@ -361,6 +366,8 @@ struct WindowsSensorExtras {
     /// Set after we've emitted at least one warn about a PawnIO CPU temp
     /// failure, so the per-poll error doesn't spam the log every 2 seconds.
     cpu_temp_logged_error: bool,
+    /// When to next attempt opening the PawnIO reader, while it is absent.
+    cpu_temp_next_probe: Option<std::time::Instant>,
     libre_hardware: Option<wmi::WMIConnection>,
     open_hardware: Option<wmi::WMIConnection>,
     acpi_zones: Option<wmi::WMIConnection>,
@@ -369,7 +376,7 @@ struct WindowsSensorExtras {
 
 #[cfg(target_os = "windows")]
 impl WindowsSensorExtras {
-    fn new() -> Option<Self> {
+    fn new() -> Self {
         // First-class CPU temp source: PawnIO MSR/SMN reads. Fails cleanly
         // if PawnIO isn't installed yet — the user will see CPU temp once
         // they accept the hardware-support prompt (which they need for
@@ -410,25 +417,60 @@ impl WindowsSensorExtras {
             .map_err(|err| debug!("ROOT\\WMI namespace not present for ACPI thermal zones: {err}"))
             .ok();
 
-        if cpu_temp.is_none()
-            && libre_hardware.is_none()
-            && open_hardware.is_none()
-            && acpi_zones.is_none()
-        {
-            return None;
-        }
+        // Deliberately no early return when every source is absent: the
+        // PawnIO reader is re-probed from merge_snapshot, and bailing here
+        // would make that unreachable on the exact hosts that need it.
+        let cpu_temp_next_probe = cpu_temp
+            .is_none()
+            .then(|| std::time::Instant::now() + CPU_TEMP_REPROBE_INTERVAL);
 
-        Some(Self {
+        Self {
             cpu_temp,
             cpu_temp_logged_error: false,
+            cpu_temp_next_probe,
             libre_hardware,
             open_hardware,
             acpi_zones,
             acpi_zones_enabled: true,
-        })
+        }
+    }
+
+    /// Retry opening the PawnIO reader once the backoff expires.
+    ///
+    /// The broker routinely arrives after the daemon does: the installer
+    /// registers it while an upgrade's daemon is already running, PawnIO's
+    /// kernel driver can need a reboot to bind to SCM, and Settings can
+    /// install hardware support at any point. Probing once at startup left
+    /// CPU temperature dead until someone thought to restart the daemon.
+    fn reprobe_cpu_temp_if_due(&mut self) {
+        let Some(next_probe) = self.cpu_temp_next_probe else {
+            return;
+        };
+        if std::time::Instant::now() < next_probe {
+            return;
+        }
+
+        match hypercolor_windows_pawnio::CpuTempReader::new() {
+            Ok(reader) => {
+                tracing::info!(
+                    vendor = ?reader.vendor(),
+                    "PawnIO CPU temperature reader came online"
+                );
+                self.cpu_temp = Some(reader);
+                self.cpu_temp_logged_error = false;
+                self.cpu_temp_next_probe = None;
+            }
+            Err(err) => {
+                debug!("PawnIO CPU temperature reader still unavailable ({err})");
+                self.cpu_temp_next_probe =
+                    Some(std::time::Instant::now() + CPU_TEMP_REPROBE_INTERVAL);
+            }
+        }
     }
 
     fn merge_snapshot(&mut self, snapshot: &mut SystemSnapshot) {
+        self.reprobe_cpu_temp_if_due();
+
         // 1. PawnIO MSR/SMN — first-class CPU temp source. Authoritative
         //    when it works; we won't override it with the WMI fallbacks below.
         if let Some(reader) = self.cpu_temp.as_mut() {
@@ -459,6 +501,13 @@ impl WindowsSensorExtras {
                         tracing::warn!("PawnIO CPU temp read failed: {err}");
                         self.cpu_temp_logged_error = true;
                     }
+                    // Drop the reader so the re-probe path can rebuild it.
+                    // A stopped or crashed broker is otherwise permanent for
+                    // the daemon's lifetime, and SCM restarting the broker
+                    // underneath us should heal on its own.
+                    self.cpu_temp = None;
+                    self.cpu_temp_next_probe =
+                        Some(std::time::Instant::now() + CPU_TEMP_REPROBE_INTERVAL);
                 }
             }
         }
