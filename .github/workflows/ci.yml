@@ -425,6 +425,53 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  # ── Rust Windows ───────────────────────────────────────────────
+  # Every #[cfg(target_os = "windows")] assertion in the shared crates is only
+  # a gate because this job exists. Windows previously ran in build-native-app
+  # alone, which is tag-gated, so Windows-only code paths reached main without
+  # ever having been compiled by CI. Scope matches rust-check-shared: the
+  # daemon and native app are excluded so this stays off the Servo build path.
+  rust-windows:
+    name: Rust Windows
+    needs: [changes, generated-effects]
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/.cache/hypercolor/target/rust-windows
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy
+
+      - uses: ./.github/actions/rust-build-cache
+        with:
+          shared-key: rust-windows
+          workspaces: . -> .cache/hypercolor/target/rust-windows
+          cache-on-failure: "false"
+
+      - name: Download generated effects
+        uses: actions/download-artifact@v8
+        with:
+          name: generated-effects
+          path: effects/hypercolor
+
+      - name: Install nextest
+        uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912 # v2.81.10
+        with:
+          tool: cargo-nextest
+
+      - name: Clippy shared crates
+        run: >-
+          cargo clippy --locked ${{ env.RUST_SHARED_WORKSPACE_ARGS }} --all-targets
+          -- -D warnings
+
+      - name: Run shared crate tests
+        run: cargo nextest run --locked ${{ env.RUST_SHARED_WORKSPACE_ARGS }}
+
   # ── Cargo Deny ─────────────────────────────────────────────────
   rust-deny:
     name: Cargo Deny
