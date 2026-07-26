@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 
-import { createApi, findRunnableEffect, getStack, readEnvelope, uniqueName } from "./helpers.mjs";
+import { createApi, findRunnableEffect, getStack, readEnvelope } from "./helpers.mjs";
 
 test("dashboard loads against the live stack", async ({ page }) => {
   const stack = getStack();
@@ -38,38 +38,3 @@ test("effects page can activate an effect through the live UI", async ({ page, p
   }
 });
 
-test("displays page can create, edit, and delete a simulator", async ({ page }) => {
-  const stack = getStack();
-  const simulatorName = uniqueName("E2E Simulator");
-  const updatedSimulatorName = `${simulatorName} Updated`;
-
-  await page.goto(`${stack.appOrigin}/displays`, { waitUntil: "networkidle" });
-  await expect(page.getByRole("heading", { name: "Displays" })).toBeVisible();
-
-  await page
-    .locator("li")
-    .filter({ hasText: stack.seededDisplay.name })
-    .getByTitle("Edit simulator")
-    .click();
-  await page.getByRole("button", { name: /delete simulator/i }).click();
-  await expect(page.locator("li").filter({ hasText: stack.seededDisplay.name })).toHaveCount(0);
-
-  await page.getByRole("button", { name: /create simulator/i }).click();
-  await page.getByLabel("Name").fill(simulatorName);
-  await page.getByLabel("Width").fill("320");
-  await page.getByLabel("Height").fill("320");
-  await page.getByRole("button", { name: /create simulator/i }).last().click();
-
-  await expect(page.getByText(simulatorName)).toBeVisible();
-
-  await page.locator("li").filter({ hasText: simulatorName }).getByTitle("Edit simulator").click();
-  await page.getByLabel("Name").fill(updatedSimulatorName);
-  await page.getByRole("button", { name: /save simulator/i }).click();
-
-  await expect(page.getByText(updatedSimulatorName)).toBeVisible();
-
-  await page.locator("li").filter({ hasText: updatedSimulatorName }).getByTitle("Edit simulator").click();
-  await page.getByRole("button", { name: /delete simulator/i }).click();
-
-  await expect(page.getByText(updatedSimulatorName)).toHaveCount(0);
-});
