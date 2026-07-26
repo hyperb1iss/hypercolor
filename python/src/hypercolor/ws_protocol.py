@@ -23,6 +23,7 @@ WS_CHANNELS: Final = (
     "device_metrics",
     "sensors",
     "display_preview",
+    "input_events",
 )
 WS_CAPABILITIES: Final = (
     "frames",
@@ -38,6 +39,7 @@ WS_CAPABILITIES: Final = (
     "device_metrics",
     "sensors",
     "display_preview",
+    "input_events",
     "commands",
     "canvas_format_jpeg",
 )
