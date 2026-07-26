@@ -2,9 +2,9 @@
 ;
 ; Tauri's templated NSIS installer handles the file/registry steps,
 ; but it has no knowledge of our hardware access stack (PawnIO kernel
-; driver + Windows Firewall exception), and no concept of cleaning that
-; stack up on uninstall. These hooks fill that gap while keeping
-; privileged SMBus broker setup as an explicit administrator action.
+; driver + SMBus broker service + Windows Firewall exception), and no
+; concept of cleaning that stack up on uninstall. These hooks fill
+; that gap.
 ;
 ; Wired in via bundle.windows.nsis.installerHooks in
 ; tauri.windows.bundle.conf.json. The installer runs elevated
@@ -12,23 +12,45 @@
 ; all inherit the rights they need.
 
 !macro NSIS_HOOK_POSTINSTALL
-  ; PawnIO kernel driver — silent install of the bundled installer.
-  ; Skips if PawnIO is already present (the script's Resolve-PawnIoHome
-  ; short-circuits the setup.exe run). Modules are copied into PawnIO's
-  ; install dir so the broker can find them via pawnio_module_dirs().
+  ; Hardware access stack: PawnIO kernel driver plus the HypercolorSmBus
+  ; broker, installed in one elevated pass. The orchestrator installs
+  ; PawnIO (short-circuiting when already present), copies the verified
+  ; module blobs into PawnIO's install dir, then registers and starts the
+  ; broker.
+  ;
+  ; Both halves are load-bearing. The broker is what loads PawnIO modules
+  ; on behalf of the unelevated daemon, so skipping it leaves CPU package
+  ; temperature and motherboard/DRAM SMBus lighting permanently dark with
+  ; no error the user can act on.
+  ;
+  ; Install time is the only moment Hypercolor holds administrator rights.
+  ; An unelevated app cannot register a LocalSystem service, so deferring
+  ; this means either an out-of-nowhere UAC prompt later or — as shipped in
+  ; 0.2.1 — silently broken hardware. Every path handed to the orchestrator
+  ; sits under $INSTDIR (Program Files under perMachine), which satisfies
+  ; the broker installer's own rejection of user-writable service paths.
+  ;
+  ; -ReinstallService keeps upgrades idempotent: the broker installer
+  ; refuses to clobber an existing registration without it.
   ;
   ; The bundled script propagates Windows installer exit code 3010
   ; ("reboot required") when the kernel driver needs a restart to finish
   ; binding to SCM. We stash that into $R0 so we can prompt the user to
   ; restart at the end of postinstall.
-  DetailPrint "Installing PawnIO hardware access (this may take a moment)..."
-  nsExec::ExecToLog 'powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\tools\install-bundled-pawnio.ps1" -AssetRoot "$INSTDIR\tools\pawnio" -Silent'
+  DetailPrint "Installing Hypercolor hardware access (this may take a moment)..."
+  nsExec::ExecToLog 'powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\tools\install-windows-hardware-support.ps1" -AssetRoot "$INSTDIR\tools\pawnio" -BrokerExe "$INSTDIR\tools\hypercolor-smbus-service.exe" -ModuleDestination "$INSTDIR\tools\pawnio\modules" -Silent -ReinstallService'
   Pop $R0
-  DetailPrint "  PawnIO install exit code: $R0"
+  DetailPrint "  Hardware access exit code: $R0"
 
-  ; HypercolorSmBus broker service is no longer auto-installed by default.
-  ; Installing and starting a privileged broker remains an explicit
-  ; administrator action outside the main installer.
+  ; A failed hardware-access pass must not fail the install — Hypercolor
+  ; still drives every USB and network device without it. Say so plainly
+  ; in the details log so a support request has something to quote.
+  ${If} $R0 <> 0
+  ${AndIf} $R0 <> 3010
+    DetailPrint "  Hardware access setup did not complete. USB and network"
+    DetailPrint "  lighting still work; motherboard SMBus lighting and CPU"
+    DetailPrint "  temperature need Settings > Discovery > Hardware Support."
+  ${EndIf}
 
   ; Windows Firewall — pre-grant the daemon so mDNS discovery and any
   ; future inbound traffic don't trigger the "Allow on public networks?"
@@ -51,7 +73,7 @@
   ; of letting them launch Hypercolor into a broken hardware-access
   ; state.
   ${If} $R0 = 3010
-    MessageBox MB_YESNO|MB_ICONQUESTION "Hypercolor installed successfully, but the PawnIO kernel driver needs a Windows restart before hardware lighting can come online. Restart now?" IDNO no_reboot_now
+    MessageBox MB_YESNO|MB_ICONQUESTION "Hypercolor installed successfully, but the PawnIO kernel driver needs a Windows restart before motherboard lighting and CPU temperature can come online. Restart now?" IDNO no_reboot_now
       Reboot
     no_reboot_now:
   ${EndIf}
