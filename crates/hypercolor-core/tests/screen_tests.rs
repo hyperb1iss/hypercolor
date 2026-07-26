@@ -299,18 +299,38 @@ fn letterbox_crop_removes_black_bars() {
     }
 }
 
+/// An all-black frame is not letterboxed, it is black. Detection used to
+/// report bars from every edge here, which cropped the picture out of
+/// existence and strobed as content changed; it now reports none.
 #[test]
-fn letterbox_all_black_returns_no_bars_on_crop() {
-    // Entire frame is black — degenerate case.
+fn letterbox_all_black_frame_reports_no_bars() {
     let frame = solid_frame(80, 60, 0, 0, 0);
     let grid = SectorGrid::compute(&frame, 80, 60, 4, 3);
     let bars = grid.detect_letterbox(0.05);
 
-    // All rows/cols are black, so bars consume the entire grid.
-    let cropped = grid.crop_letterbox(&bars);
+    assert!(!bars.has_bars(), "an all-black frame has no letterbox bars");
     assert!(
-        cropped.is_none(),
-        "all-black frame should yield no content after crop"
+        grid.crop_letterbox(&bars).is_some(),
+        "with no bars the grid survives cropping intact"
+    );
+}
+
+/// `crop_letterbox` still has to refuse bars that would leave nothing behind,
+/// since callers can hand it any bars they like.
+#[test]
+fn letterbox_crop_refuses_bars_that_consume_the_grid() {
+    let frame = solid_frame(80, 60, 10, 10, 10);
+    let grid = SectorGrid::compute(&frame, 80, 60, 4, 3);
+
+    let devouring = LetterboxBars {
+        top: 2,
+        bottom: 1,
+        left: 0,
+        right: 0,
+    };
+    assert!(
+        grid.crop_letterbox(&devouring).is_none(),
+        "bars covering every row must yield no croppable grid"
     );
 }
 
@@ -934,4 +954,59 @@ fn unknown_monitor_sources_fall_back_to_the_primary_display() {
             "source {source:?} should fall back to the primary display"
         );
     }
+}
+
+// ─── Letterbox degeneracy ────────────────────────────────────────────────────
+
+/// A uniformly dark frame is not letterboxed, it is just dark. Reporting bars
+/// from every edge at once made `crop_letterbox` throw the whole picture away,
+/// and because the verdict flips with ordinary content changes it strobed.
+/// Linear luminance makes this easy to hit: sRGB 30/255 is only 0.013 linear,
+/// so a dark-themed desktop reads as black from every edge.
+#[test]
+fn uniformly_dark_frames_report_no_letterbox_bars() {
+    let dark = vec![12_u8; 64 * 48 * 4];
+    let grid = SectorGrid::compute(&dark, 64, 48, 8, 6);
+    let bars = grid.detect_letterbox(0.02);
+
+    assert_eq!(
+        (bars.top, bars.bottom, bars.left, bars.right),
+        (0, 0, 0, 0),
+        "an all-dark frame must not be treated as entirely letterbox"
+    );
+    assert!(!bars.has_bars());
+    assert!(
+        grid.crop_letterbox(&bars).is_some(),
+        "a non-degenerate crop must still be possible"
+    );
+}
+
+/// The guard must not disarm real letterboxing, which always leaves content
+/// between the bars.
+#[test]
+fn genuine_letterbox_bars_are_still_detected() {
+    let width = 64_u32;
+    let height = 48_u32;
+    let mut frame = vec![0_u8; (width * height * 4) as usize];
+    // Bright band across the middle third, black bars above and below.
+    for y in 16..32 {
+        for x in 0..width {
+            let px = ((y * width + x) * 4) as usize;
+            frame[px] = 220;
+            frame[px + 1] = 220;
+            frame[px + 2] = 220;
+            frame[px + 3] = 255;
+        }
+    }
+
+    let grid = SectorGrid::compute(&frame, width, height, 8, 6);
+    let bars = grid.detect_letterbox(0.02);
+
+    assert!(bars.top > 0, "top bar should be detected");
+    assert!(bars.bottom > 0, "bottom bar should be detected");
+    assert!(
+        bars.top + bars.bottom < 6,
+        "real bars must leave content behind"
+    );
+    assert_eq!((bars.left, bars.right), (0, 0), "no pillarboxing here");
 }

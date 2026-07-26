@@ -74,6 +74,11 @@ fn main() {
                 data.source_width,
                 data.source_height
             );
+            println!(
+                "letterbox bars (grid units, t/b/l/r): {:?} of a {}x{} grid",
+                data.letterbox, data.grid_width, data.grid_height
+            );
+            println!("zone colors published: {}", data.zone_colors.len());
 
             let Some(buffer) =
                 image::RgbaImage::from_raw(descriptor.width, descriptor.height, bytes)

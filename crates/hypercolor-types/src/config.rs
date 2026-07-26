@@ -685,7 +685,12 @@ pub struct CaptureConfig {
     pub scene_cut_threshold: f32,
 
     /// Auto-detect and crop black letterbox/pillarbox bars.
-    #[serde(default = "defaults::bool_true")]
+    ///
+    /// Off by default: ambient lighting almost always mirrors a desktop, not
+    /// a letterboxed film, and dark desktop content trips the detector into
+    /// cropping real picture away. Turn it on when mirroring video that
+    /// genuinely has bars.
+    #[serde(default)]
     pub letterbox: bool,
 
     /// Luminance threshold for letterbox detection (0.0 - 1.0).
@@ -719,7 +724,7 @@ impl Default for CaptureConfig {
             grid_rows: defaults::capture_grid_rows(),
             smoothing: defaults::capture_smoothing(),
             scene_cut_threshold: defaults::capture_scene_cut_threshold(),
-            letterbox: defaults::bool_true(),
+            letterbox: false,
             letterbox_threshold: defaults::capture_letterbox_threshold(),
             saturation: defaults::unit_scale(),
             brightness: defaults::unit_scale(),
