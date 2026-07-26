@@ -5121,6 +5121,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hypercolor-windows-capture"
+version = "0.2.1"
+dependencies = [
+ "thiserror 2.0.18",
+ "tracing",
+ "windows 0.62.2",
+]
+
+[[package]]
 name = "hypercolor-windows-gpu-interop"
 version = "0.2.1"
 dependencies = [
