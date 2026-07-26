@@ -1339,6 +1339,10 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             "/capture/source/pick",
             axum::routing::post(capture::pick_capture_source),
         )
+        .route(
+            "/capture/monitors",
+            axum::routing::get(capture::list_capture_monitors),
+        )
         // ── Config ───────────────────────────────────────────────────
         .route("/config", axum::routing::get(config::show_config))
         .route("/config/get", axum::routing::get(config::get_config_value))

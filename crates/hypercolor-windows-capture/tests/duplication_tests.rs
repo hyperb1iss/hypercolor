@@ -135,3 +135,35 @@ fn alpha_is_opaque_across_repeated_acquisitions() {
         eprintln!("desktop was static; only {checked} frame(s) verified");
     }
 }
+
+#[test]
+fn monitor_listing_matches_the_count_and_carries_real_geometry() {
+    use hypercolor_windows_capture::list_monitors;
+
+    let monitors = list_monitors();
+    assert_eq!(
+        monitors.len(),
+        monitor_count(),
+        "listing and count must agree"
+    );
+
+    if monitors.is_empty() {
+        eprintln!("skipping: no display outputs attached");
+        return;
+    }
+
+    for monitor in &monitors {
+        assert!(
+            monitor.width > 0 && monitor.height > 0,
+            "monitor {} ({}) reported a zero extent",
+            monitor.index,
+            monitor.name
+        );
+        assert!(!monitor.name.is_empty(), "monitor names must not be empty");
+    }
+    assert!(
+        monitors.iter().any(|monitor| monitor.primary),
+        "one output should anchor the virtual desktop origin"
+    );
+    eprintln!("monitors: {monitors:?}");
+}

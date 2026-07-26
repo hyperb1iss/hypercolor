@@ -131,6 +131,48 @@ pub fn fit_within(width: u32, height: u32, max_width: u32, max_height: u32) -> (
     }
 }
 
+/// One display output the capture backend can address directly.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScreenMonitor {
+    /// Zero-based capture index — the `N` in `capture.source = "monitor:N"`.
+    pub index: usize,
+    /// OS device name, e.g. `\\.\DISPLAY1`.
+    pub name: String,
+    /// Desktop width in pixels.
+    pub width: u32,
+    /// Desktop height in pixels.
+    pub height: u32,
+    /// Whether this output anchors the virtual desktop origin.
+    pub primary: bool,
+}
+
+/// Display outputs the capture backend can address by index.
+///
+/// Empty where the backend owns source selection instead (the XDG portal
+/// on Linux) or no backend exists. Emptiness is the capability signal: a
+/// UI with monitors shows a picker, a UI without falls back to whatever
+/// selection flow the platform provides.
+#[must_use]
+pub fn available_monitors() -> Vec<ScreenMonitor> {
+    #[cfg(target_os = "windows")]
+    {
+        hypercolor_windows_capture::list_monitors()
+            .into_iter()
+            .map(|monitor| ScreenMonitor {
+                index: monitor.index,
+                name: monitor.name,
+                width: monitor.width,
+                height: monitor.height,
+                primary: monitor.primary,
+            })
+            .collect()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Vec::new()
+    }
+}
+
 /// Parse a configured capture source into a zero-based monitor index.
 ///
 /// `capture.source` is a free-form string shared across backends. The XDG
