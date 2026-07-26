@@ -68,6 +68,20 @@ impl ZonesContext {
         })
     }
 
+    /// Scene id plus the zone writes target, for control PATCHes.
+    ///
+    /// A zone's controls live on its synthetic legacy layer, whose group and
+    /// layer ids are both the zone id, so this pair is everything
+    /// `patch_layer_controls` needs. `None` means no zone scene is active and
+    /// the caller should fall back to the legacy global endpoint.
+    pub fn scene_scoped_target(&self) -> Option<(String, String)> {
+        let scene_id = self
+            .active_scene
+            .with_untracked(|scene| scene.as_ref().map(|scene| scene.id.clone()))?;
+        let zone = self.target_zone()?;
+        Some((scene_id, zone.id))
+    }
+
     /// Untracked focused-zone id, validated against the current scene.
     /// `None` when unset, stale, or pointing at a Screen.
     pub fn focused_zone_id_untracked(&self) -> Option<String> {

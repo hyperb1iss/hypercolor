@@ -246,8 +246,29 @@ pub fn PresetToolbar(
                     set_selected_id.set(Some(val));
                     set_mode.set(ToolbarMode::Idle);
                     let on_applied = on_preset_applied;
+                    // Bundled presets write the same controls a manual edit
+                    // does, so they must take the same route: the zone's
+                    // synthetic legacy layer, keyed by the zone id. The old
+                    // global endpoint 404s whenever no legacy "current
+                    // effect" exists, which is always in a zone scene — and
+                    // the failure branch below then snapped the dropdown
+                    // back, so bundled presets looked like they refused to
+                    // stick.
+                    let scoped = zones_ctx.scene_scoped_target();
                     leptos::task::spawn_local(async move {
-                        match api::update_controls(&controls_json).await {
+                        let result = match scoped {
+                            Some((scene_id, zone_id)) => api::patch_layer_controls(
+                                &scene_id,
+                                &zone_id,
+                                &zone_id,
+                                &controls_json,
+                                None,
+                            )
+                            .await
+                            .map(|_| ()),
+                            None => api::update_controls(&controls_json).await,
+                        };
+                        match result {
                             Ok(()) => on_applied.run(()),
                             Err(error) => {
                                 set_selected_id.set(previous_selection);
