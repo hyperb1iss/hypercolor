@@ -1115,3 +1115,37 @@ same answers, and the reasoning is recorded so W1 does not reopen them.
   and owner-check-plus-removal as whole critical sections, with the
   interleavings driven directly in tests through an injectable registration
   call rather than raced.
+
+### Implementation review
+
+The spec review above settled the design. The code then went through its own
+three rounds, and the findings were a different class entirely — every one was
+a Win32 lifetime or lifecycle defect that no amount of spec review would have
+surfaced, which is the argument for reviewing both.
+
+- **Round 1** — three blockers, three majors, all accepted. Two were the same
+  memory-safety mistake in two places: a bounds check that admitted a
+  `RAWINPUTHEADER` and then materialized a `&RAWINPUT`, whose tail can lie
+  past the buffer because `dwSize` covers only the union arm the device
+  filled. The sharpest was a lifecycle race the claim was supposed to prevent
+  and did not: a worker that missed its readiness deadline is abandoned with
+  the stop flag set, but it is still alive and still heading for
+  `RegisterRawInputDevices`, so it could register and publish its claim
+  *after* a replacement already had — taking ownership and then deregistering
+  the live session on teardown. The flag is now checked inside the claim's
+  critical section, which makes a cancelled worker unable to register at all.
+  Also fixed: `stop()` posting to a destroyed window, a device-path query that
+  dropped a device rather than retrying a size change, and `MotionAbsolute`
+  discarding its coordinate space so core differenced across a
+  `MOUSE_VIRTUAL_DESKTOP` flip and invented a pointer jump.
+- **Round 2** — all six confirmed fixed, one new major: the payload bounds
+  check used the buffer's capacity rather than the record's own declared end,
+  so a short record could read into the record after it. That stays inside the
+  allocation, which is what makes it worse than a crash — it silently decodes
+  one device's bytes as another's key state.
+- **Round 3** — `PASS`, including on the skeptical question the brief asked
+  directly: whether serializing the session tests masked a real defect rather
+  than fixing a flaky one. It does not. Registration is process-global, so
+  unrelated tests were contending for the exact resource under test;
+  deliberate concurrent-session behaviour is still exercised inside the two
+  tests that assert on it.
