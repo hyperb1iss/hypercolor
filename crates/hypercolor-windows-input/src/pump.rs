@@ -628,6 +628,11 @@ impl Pump {
                 u32::try_from(header_size).unwrap_or(u32::MAX),
             );
         }
+        // Dropped immediately rather than left for the next drain's `clear()`.
+        // The next `read_buffer` may grow the buffer and move it, and a
+        // dangling pointer that nothing dereferences is still a loaded gun
+        // pointed at whoever edits this next.
+        self.record_pointers.clear();
     }
 
     /// Sample the cursor, holding the previous value when it is unreadable.
