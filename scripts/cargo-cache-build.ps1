@@ -34,6 +34,35 @@ function Enter-HypercolorVsDevShell {
     Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64' | Out-Null
 }
 
+function Assert-HypercolorRustToolchain {
+    # A second Rust on PATH is the worst kind of broken: it fails late and
+    # selectively. Cached crates check fine, so a build looks healthy right up
+    # until something needs a fresh link and dies inside a dependency's build
+    # script, or hits E0514 rustc-mismatch errors against artifacts the pinned
+    # toolchain left in target/. Chocolatey's `rust` package is the usual
+    # culprit on Windows: it installs a GNU-host toolchain under
+    # C:\ProgramData\chocolatey\bin, which is in the *system* PATH and
+    # therefore beats ~\.cargo\bin in the user PATH. Fail here, with the
+    # actual resolved paths, instead of 200 lines into a mingw linker error.
+    $rustc = Get-Command rustc -ErrorAction SilentlyContinue
+    if (-not $rustc) {
+        throw 'rustc not found on PATH. Install Rust with rustup: https://rustup.rs/'
+    }
+
+    $version = & rustc -vV
+    $host_ = ($version | Select-String '^host: (.+)$').Matches.Groups[1].Value
+
+    if ($host_ -ne 'x86_64-pc-windows-msvc') {
+        throw @"
+Wrong Rust host toolchain: $host_ (expected x86_64-pc-windows-msvc)
+  rustc resolves to: $($rustc.Source)
+Hypercolor builds against MSVC. A GNU-host Rust ahead of rustup on PATH is
+almost always Chocolatey's `rust` package; remove it so rustup wins:
+  choco uninstall rust -y
+"@
+    }
+}
+
 function Initialize-HypercolorCargoCache {
     $cacheRoot = if ($env:HYPERCOLOR_CACHE_DIR) {
         $env:HYPERCOLOR_CACHE_DIR
@@ -116,6 +145,7 @@ function Invoke-HypercolorCargoCommand {
 }
 
 Enter-HypercolorVsDevShell
+Assert-HypercolorRustToolchain
 Initialize-HypercolorNativeTools
 Initialize-HypercolorCargoCache
 Invoke-HypercolorCargoCommand
