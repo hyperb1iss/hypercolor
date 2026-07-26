@@ -15,7 +15,7 @@
 //! worker from deregistering its replacement.
 
 use std::panic::AssertUnwindSafe;
-use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -44,10 +44,18 @@ const JOIN_TIMEOUT: Duration = Duration::from_secs(2);
 /// thread-affine to the worker and stays there.
 pub struct RawInputSession {
     stop: Arc<AtomicBool>,
-    /// The pump's window, as a raw address so it can cross threads. Only ever
-    /// used for `PostMessageW`, which is documented as callable from any
-    /// thread; nothing here touches the window itself.
-    window: Arc<AtomicIsize>,
+    /// The pump's window, as a raw address so it can cross threads, guarded by
+    /// a lock rather than an atomic.
+    ///
+    /// The lock is what makes posting safe against teardown. `PostMessageW`
+    /// is callable from any thread, but the worker destroys this window on its
+    /// own thread, and an address read just before destruction could be posted
+    /// to just after — to a handle Windows may have already reissued to an
+    /// unrelated window. The worker clears this slot *under the lock* before
+    /// destroying the window, so a nudge either holds the lock and posts to a
+    /// window that cannot be destroyed until it releases, or sees zero and
+    /// posts nothing.
+    window: Arc<Mutex<isize>>,
     device_count: Arc<AtomicUsize>,
     state: Arc<Mutex<WorkerState>>,
     finished: mpsc::Receiver<()>,
@@ -77,7 +85,7 @@ impl RawInputSession {
 
         let generation = next_generation();
         let stop = Arc::new(AtomicBool::new(false));
-        let window = Arc::new(AtomicIsize::new(0));
+        let window = Arc::new(Mutex::new(0isize));
         let device_count = Arc::new(AtomicUsize::new(0));
         let state = Arc::new(Mutex::new(WorkerState::Running));
         let (ready_tx, ready_rx) = mpsc::sync_channel::<RawInputResult<()>>(1);
@@ -152,12 +160,14 @@ impl RawInputSession {
     /// not finish inside the join timeout it is detached rather than waited on
     /// forever; the epoch and the registration claim make that safe.
     pub fn stop(&mut self) {
-        self.stop.store(true, Ordering::Release);
-        self.nudge();
-
+        // Taken before nudging: a second `stop()`, or `Drop` after an explicit
+        // one, must not post to a window the worker already destroyed.
         let Some(worker) = self.worker.take() else {
             return;
         };
+        self.stop.store(true, Ordering::Release);
+        self.nudge();
+
         match self.finished.recv_timeout(JOIN_TIMEOUT) {
             Ok(()) => {
                 let _ = worker.join();
@@ -176,12 +186,17 @@ impl RawInputSession {
     }
 
     /// Wake the pump out of its wait so it observes the stop flag now.
+    ///
+    /// Posts while holding the window lock, so the worker cannot clear the
+    /// slot and destroy the window underneath an in-flight post.
     fn nudge(&self) {
-        let handle = self.window.load(Ordering::Acquire);
-        if handle == 0 {
+        let Ok(guard) = self.window.lock() else {
+            return;
+        };
+        if *guard == 0 {
             return;
         }
-        let window = HWND(std::ptr::without_provenance_mut(handle.cast_unsigned()));
+        let window = HWND(std::ptr::without_provenance_mut(guard.cast_unsigned()));
         // SAFETY: `PostMessageW` is documented as callable from any thread; it
         // queues the message rather than touching window state. A window
         // already destroyed makes this fail cleanly, which the `let _` accepts.
@@ -206,12 +221,12 @@ fn run_worker(
     generation: u64,
     mut sink: impl FnMut(RawInputBatch<'_>),
     stop: &AtomicBool,
-    window: &AtomicIsize,
+    window: &Mutex<isize>,
     device_count: &AtomicUsize,
     state: &Mutex<WorkerState>,
     ready_tx: &mpsc::SyncSender<RawInputResult<()>>,
 ) {
-    let mut pump = match Pump::create(config, generation) {
+    let mut pump = match Pump::create(config, generation, stop) {
         Ok(pump) => pump,
         Err(error) => {
             let _ = ready_tx.send(Err(error));
@@ -219,7 +234,9 @@ fn run_worker(
         }
     };
 
-    window.store(pump.window().0.addr().cast_signed(), Ordering::Release);
+    if let Ok(mut slot) = window.lock() {
+        *slot = pump.window().0.addr().cast_signed();
+    }
     device_count.store(pump.device_count(), Ordering::Release);
 
     // Devices attached before registration produce no arrival notification, so
@@ -252,4 +269,13 @@ fn run_worker(
         }
         device_count.store(pump.device_count(), Ordering::Release);
     }
+
+    // Clear the slot before the pump's `Drop` destroys the window, so no
+    // later nudge can post to a handle Windows may reissue. Held under the
+    // lock, which any in-flight nudge also holds, so the destroy strictly
+    // follows every post that had already begun.
+    if let Ok(mut slot) = window.lock() {
+        *slot = 0;
+    }
+    drop(pump);
 }

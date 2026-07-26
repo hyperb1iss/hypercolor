@@ -96,6 +96,15 @@ pub enum RawInputEvent {
         source_id: Arc<str>,
         norm_x: f32,
         norm_y: f32,
+        /// Which rect the device's raw range covered, from
+        /// `MOUSE_VIRTUAL_DESKTOP`.
+        ///
+        /// Carried through rather than consumed at normalization time because
+        /// a device can switch spaces mid-session, and the two normalizations
+        /// are not comparable: differencing a primary-monitor position against
+        /// a virtual-desktop one invents a jump the pointer never made. Core
+        /// resets its baseline when this changes.
+        virtual_desktop: bool,
     },
     DeviceArrived {
         source_id: Arc<str>,
@@ -233,6 +242,8 @@ pub enum RawInputError {
     Registration(String),
     #[error("another window in this process owns the Raw Input registration")]
     RegistrationStolen,
+    #[error("the session was stopped before it finished starting")]
+    Cancelled,
 }
 
 pub type RawInputResult<T> = Result<T, RawInputError>;

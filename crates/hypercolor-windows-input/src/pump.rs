@@ -40,8 +40,8 @@ use windows::core::{PCWSTR, w};
 
 use crate::claim::PROCESS_CLAIM;
 use crate::decode::{
-    KeyReport, MotionKind, RecordStep, ScreenRect, button_edges, classify_key, is_horizontal_wheel,
-    motion_kind, next_record, normalize_absolute, wheel_delta,
+    AbsoluteSpace, KeyReport, MotionKind, RecordStep, ScreenRect, button_edges, classify_key,
+    is_horizontal_wheel, motion_kind, next_record, normalize_absolute, wheel_delta,
 };
 use crate::devices::{DeviceCache, enumerate_devices, seed_cache};
 use crate::metrics::{pin_dpi_context, primary_screen_rect, sample_cursor, virtual_screen_rect};
@@ -88,6 +88,9 @@ pub struct Pump {
     config: RawInputConfig,
     cache: DeviceCache,
     buffer: Vec<u64>,
+    /// Reused across drains so `DefRawInputProc` costs no allocation on the
+    /// hot path. Only ever holds addresses into `buffer`, rebuilt each slice.
+    record_pointers: Vec<*const RAWINPUT>,
     events: Vec<RawInputEvent>,
     last_cursor: Option<RawCursor>,
     virtual_screen: ScreenRect,
@@ -100,7 +103,11 @@ impl Pump {
     ///
     /// Runs entirely on the worker thread: the `HWND` is thread-affine and
     /// must never leave it.
-    pub fn create(config: RawInputConfig, generation: u64) -> RawInputResult<Self> {
+    pub fn create(
+        config: RawInputConfig,
+        generation: u64,
+        stop: &AtomicBool,
+    ) -> RawInputResult<Self> {
         if !config.keyboard && !config.mouse {
             return Err(RawInputError::NothingToCapture);
         }
@@ -121,6 +128,7 @@ impl Pump {
             config,
             cache: DeviceCache::new(),
             buffer: vec![0u64; INITIAL_BUFFER_QWORDS],
+            record_pointers: Vec::new(),
             events: Vec::new(),
             last_cursor: None,
             virtual_screen: virtual_screen_rect(),
@@ -128,7 +136,7 @@ impl Pump {
             registered: false,
         };
 
-        pump.register()?;
+        pump.register(stop)?;
         pump.registered = true;
         pump.seed_devices();
         Ok(pump)
@@ -147,10 +155,23 @@ impl Pump {
     /// Register for the enabled usages, publishing the ownership claim in the
     /// same critical section so a stale teardown cannot remove what we just
     /// installed.
-    fn register(&self) -> RawInputResult<()> {
+    ///
+    /// The stop flag is checked *inside* that critical section, and the
+    /// placement is the whole point. A worker slow enough to miss its
+    /// readiness deadline is abandoned by `start()`, which sets the flag and
+    /// returns — but the worker is still alive and still heading for this
+    /// call. Checking the flag anywhere outside the claim lock leaves a window
+    /// where it registers its own window and publishes its claim *after* a
+    /// replacement session already did, which hands the stale worker ownership
+    /// and lets its teardown deregister the live session. Inside the lock, a
+    /// cancelled worker cannot register at all.
+    fn register(&self, stop: &AtomicBool) -> RawInputResult<()> {
         let entries =
             self.registration_entries(RIDEV_INPUTSINK | RIDEV_DEVNOTIFY, Some(self.window));
         PROCESS_CLAIM.acquire(self.generation, || {
+            if stop.load(Ordering::Acquire) {
+                return Err(RawInputError::Cancelled);
+            }
             // SAFETY: `entries` is a live slice of correctly initialized
             // `RAWINPUTDEVICE` values owned by this frame, and the size
             // argument is the caller-ABI element size the API requires.
@@ -545,6 +566,7 @@ impl Pump {
                     source_id: Arc::clone(source_id),
                     norm_x,
                     norm_y,
+                    virtual_desktop: space == AbsoluteSpace::VirtualDesktop,
                 });
             }
         }
@@ -554,40 +576,47 @@ impl Pump {
     ///
     /// The buffered path has no window procedure to fall through to, so this
     /// is the only place that cleanup can happen.
+    ///
+    /// Like `decode_records`, this never materializes a `&RAWINPUT`: `dwSize`
+    /// covers only the union arm the device filled, so a reference to a full
+    /// `RAWINPUT` at the buffer's tail would extend past the allocation. The
+    /// API only wants addresses, and addresses are all this computes — the
+    /// header is read solely for its stride.
     fn notify_raw_input_handled(&mut self, count: u32) {
-        let base = self.buffer.as_mut_ptr().cast::<RAWINPUT>();
-        let pointers: Vec<*const RAWINPUT> = (0..count as usize)
-            .scan(0usize, |offset, _| {
-                let capacity = self.buffer.len() * size_of::<u64>();
-                if *offset + size_of::<RAWINPUTHEADER>() > capacity {
-                    return None;
-                }
-                // SAFETY: `*offset` stays within the buffer's byte capacity,
-                // checked immediately above and advanced only by
-                // `next_record`, which validates each step.
-                let record = unsafe { &*base.cast::<u8>().add(*offset).cast::<RAWINPUT>() };
-                let current = record as *const RAWINPUT;
-                match next_record(
-                    *offset,
-                    record.header.dwSize,
-                    capacity,
-                    size_of::<RAWINPUTHEADER>(),
-                ) {
-                    RecordStep::Next(next) => {
-                        *offset = next;
-                        Some(Some(current))
-                    }
-                    RecordStep::End => {
-                        *offset = capacity;
-                        Some(Some(current))
-                    }
-                    RecordStep::Malformed => None,
-                }
-            })
-            .flatten()
-            .collect();
+        let capacity = self.buffer.len() * size_of::<u64>();
+        let header_size = size_of::<RAWINPUTHEADER>();
+        let base = self.buffer.as_mut_ptr().cast::<u8>();
 
-        if pointers.is_empty() {
+        self.record_pointers.clear();
+        let mut offset = 0usize;
+        for _ in 0..count {
+            if offset.saturating_add(header_size) > capacity {
+                break;
+            }
+            // SAFETY: the header fits within the buffer (checked immediately
+            // above), the base came from a live `Vec<u64>` we still own, and
+            // `read_unaligned` imposes no alignment requirement of its own.
+            let dw_size = unsafe {
+                base.add(offset)
+                    .cast::<RAWINPUTHEADER>()
+                    .read_unaligned()
+                    .dwSize
+            };
+            let step = next_record(offset, dw_size, capacity, header_size);
+            if step == RecordStep::Malformed {
+                break;
+            }
+            // SAFETY: `offset` addresses a record start inside the buffer;
+            // this only forms the address, it never dereferences it.
+            self.record_pointers
+                .push(unsafe { base.add(offset) }.cast::<RAWINPUT>().cast_const());
+            match step {
+                RecordStep::Next(next) => offset = next,
+                RecordStep::End | RecordStep::Malformed => break,
+            }
+        }
+
+        if self.record_pointers.is_empty() {
             return;
         }
         // SAFETY: every pointer addresses a record inside the buffer we still
@@ -595,8 +624,8 @@ impl Pump {
         // caller-ABI header size the API requires.
         unsafe {
             DefRawInputProc(
-                &pointers,
-                u32::try_from(size_of::<RAWINPUTHEADER>()).unwrap_or(u32::MAX),
+                &self.record_pointers,
+                u32::try_from(header_size).unwrap_or(u32::MAX),
             );
         }
     }

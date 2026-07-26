@@ -34,6 +34,15 @@ fn key(id: &str, make_code: u16, pressed: bool) -> RawInputEvent {
     }
 }
 
+fn absolute(id: &str, norm_x: f32, norm_y: f32) -> RawInputEvent {
+    RawInputEvent::MotionAbsolute {
+        source_id: source(id),
+        norm_x,
+        norm_y,
+        virtual_desktop: true,
+    }
+}
+
 fn arrived(id: &str, kind: RawDeviceKind) -> RawInputEvent {
     RawInputEvent::DeviceArrived {
         source_id: source(id),
@@ -411,14 +420,7 @@ fn relative_motion_sums_and_accumulates_path_length() {
 fn the_first_absolute_report_after_a_reset_emits_no_delta() {
     // A tablet appearing at the far corner has not swept across the desk.
     let mut input = WindowsHostInput::new(true, true);
-    let (data, _) = fold(
-        &mut input,
-        &[RawInputEvent::MotionAbsolute {
-            source_id: source(MOUSE),
-            norm_x: 0.9,
-            norm_y: 0.9,
-        }],
-    );
+    let (data, _) = fold(&mut input, &[absolute(MOUSE, 0.9, 0.9)]);
     assert!(data.batch.motion.dx.abs() < 1e-6);
     assert!(data.batch.motion.dy.abs() < 1e-6);
 }
@@ -426,22 +428,8 @@ fn the_first_absolute_report_after_a_reset_emits_no_delta() {
 #[test]
 fn absolute_motion_differences_successive_positions() {
     let mut input = WindowsHostInput::new(true, true);
-    fold(
-        &mut input,
-        &[RawInputEvent::MotionAbsolute {
-            source_id: source(MOUSE),
-            norm_x: 0.25,
-            norm_y: 0.25,
-        }],
-    );
-    let (data, _) = fold(
-        &mut input,
-        &[RawInputEvent::MotionAbsolute {
-            source_id: source(MOUSE),
-            norm_x: 0.75,
-            norm_y: 0.25,
-        }],
-    );
+    fold(&mut input, &[absolute(MOUSE, 0.25, 0.25)]);
+    let (data, _) = fold(&mut input, &[absolute(MOUSE, 0.75, 0.25)]);
     assert!((data.batch.motion.dx - 0.5).abs() < 1e-6);
     assert!(data.batch.motion.dy.abs() < 1e-6);
 }
@@ -451,23 +439,12 @@ fn a_device_arriving_resets_its_absolute_baseline() {
     // Handles are recycled, so the source id can outlive the device that owned
     // it. A new device's first report must not be a delta from its predecessor.
     let mut input = WindowsHostInput::new(true, true);
-    fold(
-        &mut input,
-        &[RawInputEvent::MotionAbsolute {
-            source_id: source(MOUSE),
-            norm_x: 0.1,
-            norm_y: 0.1,
-        }],
-    );
+    fold(&mut input, &[absolute(MOUSE, 0.1, 0.1)]);
     let (data, _) = fold(
         &mut input,
         &[
             arrived(MOUSE, RawDeviceKind::Mouse),
-            RawInputEvent::MotionAbsolute {
-                source_id: source(MOUSE),
-                norm_x: 0.9,
-                norm_y: 0.9,
-            },
+            absolute(MOUSE, 0.9, 0.9),
         ],
     );
     assert!(
@@ -584,4 +561,44 @@ fn the_event_queue_drops_oldest_and_counts_what_it_dropped() {
         data.batch.dropped_events > 0,
         "and the loss is reported rather than hidden"
     );
+}
+
+#[test]
+fn a_coordinate_space_change_resets_the_absolute_baseline() {
+    // MOUSE_VIRTUAL_DESKTOP can flip mid-session. The two normalizations are
+    // measured against different rects, so differencing across the boundary
+    // would invent a jump the pointer never made — the same reason an arrival
+    // resets the baseline.
+    let mut input = WindowsHostInput::new(true, true);
+    fold(
+        &mut input,
+        &[RawInputEvent::MotionAbsolute {
+            source_id: source(MOUSE),
+            norm_x: 0.1,
+            norm_y: 0.1,
+            virtual_desktop: false,
+        }],
+    );
+    let (data, _) = fold(
+        &mut input,
+        &[RawInputEvent::MotionAbsolute {
+            source_id: source(MOUSE),
+            norm_x: 0.9,
+            norm_y: 0.9,
+            virtual_desktop: true,
+        }],
+    );
+    assert!(
+        data.batch.motion.distance < 1e-6,
+        "a space change emits no delta, got {}",
+        data.batch.motion.distance
+    );
+}
+
+#[test]
+fn motion_still_accumulates_while_the_space_is_stable() {
+    let mut input = WindowsHostInput::new(true, true);
+    fold(&mut input, &[absolute(MOUSE, 0.25, 0.25)]);
+    let (data, _) = fold(&mut input, &[absolute(MOUSE, 0.75, 0.25)]);
+    assert!((data.batch.motion.dx - 0.5).abs() < 1e-6);
 }

@@ -65,6 +65,8 @@ type HeldStateKey = (Vec<String>, Vec<String>, i32, i32, i32, i32, bool);
 struct AbsoluteBaseline {
     norm_x: f32,
     norm_y: f32,
+    /// Which rect the device's raw range covered when this baseline was taken.
+    virtual_desktop: bool,
 }
 
 #[derive(Default)]
@@ -545,7 +547,8 @@ fn fold_event(state: &mut SharedState, event: &RawInputEvent, at_ms: u64, event_
             source_id,
             norm_x,
             norm_y,
-        } => fold_absolute(state, source_id, *norm_x, *norm_y),
+            virtual_desktop,
+        } => fold_absolute(state, source_id, *norm_x, *norm_y, *virtual_desktop),
         RawInputEvent::DeviceArrived {
             source_id,
             label,
@@ -693,16 +696,33 @@ fn fold_button(
 ///
 /// Dividing raw 0..65535 counts by the relative backend's 1200 would be
 /// meaningless: the two unit systems are unrelated.
-fn fold_absolute(state: &mut SharedState, source_id: &str, norm_x: f32, norm_y: f32) {
-    let next = AbsoluteBaseline { norm_x, norm_y };
-    if let Some(previous) = state.absolute_baselines.insert(source_id.to_owned(), next) {
+fn fold_absolute(
+    state: &mut SharedState,
+    source_id: &str,
+    norm_x: f32,
+    norm_y: f32,
+    virtual_desktop: bool,
+) {
+    let next = AbsoluteBaseline {
+        norm_x,
+        norm_y,
+        virtual_desktop,
+    };
+    let previous = state.absolute_baselines.insert(source_id.to_owned(), next);
+    // A device that switched coordinate spaces mid-session has a baseline
+    // measured against a different rect. Differencing across that boundary
+    // would invent a jump the pointer never made, so the change resets the
+    // baseline exactly as an arrival does.
+    if let Some(previous) = previous
+        && previous.virtual_desktop == virtual_desktop
+    {
         let delta_x = norm_x - previous.norm_x;
         let delta_y = norm_y - previous.norm_y;
         state.motion.dx += delta_x;
         state.motion.dy += delta_y;
         state.motion.distance += delta_x.abs() + delta_y.abs();
     }
-    // No previous baseline: the first report after a reset emits no delta.
+    // No previous baseline, or a changed space: emit no delta.
 }
 
 fn push_event(state: &mut SharedState, event: TimedInputEvent, limit: usize) {

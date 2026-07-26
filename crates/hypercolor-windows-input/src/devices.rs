@@ -164,27 +164,50 @@ fn query_device_path(handle: HANDLE) -> Option<String> {
         return None;
     }
 
-    let mut buffer = vec![0u16; chars as usize];
-    let mut capacity = chars;
-    // SAFETY: `buffer` holds `capacity` UTF-16 units and outlives the call;
-    // `capacity` describes exactly that allocation in characters, which is the
-    // unit this API sizes in.
-    let written = unsafe {
-        GetRawInputDeviceInfoW(
-            Some(handle),
-            RIDI_DEVICENAME,
-            Some(buffer.as_mut_ptr().cast()),
-            &raw mut capacity,
-        )
-    };
-    if written == u32::MAX || written == 0 {
-        return None;
+    // The two-call pattern has a real gap: the path can grow between the
+    // sizing call and the fetch, and the API then fails rather than
+    // truncating. Giving up there would drop the device entirely — it would go
+    // on producing input that never resolves to a source id — so a size change
+    // is retried with the count the failed call reported. The attempt bound
+    // only stops a pathologically racing driver from spinning us forever.
+    const MAX_ATTEMPTS: usize = 4;
+
+    for _ in 0..MAX_ATTEMPTS {
+        let mut buffer = vec![0u16; chars as usize];
+        let mut capacity = chars;
+        // SAFETY: `buffer` holds `capacity` UTF-16 units and outlives the call;
+        // `capacity` describes exactly that allocation in characters, which is
+        // the unit this API sizes in.
+        let written = unsafe {
+            GetRawInputDeviceInfoW(
+                Some(handle),
+                RIDI_DEVICENAME,
+                Some(buffer.as_mut_ptr().cast()),
+                &raw mut capacity,
+            )
+        };
+
+        if written == u32::MAX {
+            // A sizing failure writes the required count back into `capacity`.
+            // Anything else, or no growth, is terminal.
+            if capacity > chars {
+                chars = capacity;
+                continue;
+            }
+            return None;
+        }
+        if written == 0 {
+            return None;
+        }
+
+        let len = (written as usize).min(buffer.len());
+        let text: String = String::from_utf16_lossy(&buffer[..len]);
+        let trimmed = text.trim_end_matches('\0').to_owned();
+        return (!trimmed.is_empty()).then_some(trimmed);
     }
 
-    let len = (written as usize).min(buffer.len());
-    let text: String = String::from_utf16_lossy(&buffer[..len]);
-    let trimmed = text.trim_end_matches('\0').to_owned();
-    (!trimmed.is_empty()).then_some(trimmed)
+    tracing::debug!("raw input device path kept changing size; giving up on this device");
+    None
 }
 
 /// Build a diagnostic label from the interface path.
