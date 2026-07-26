@@ -58,6 +58,16 @@ env:
     --exclude hypercolor-daemon
     --exclude hypercolor-app
     --exclude hypercolor-tray
+  # Windows scope additionally drops the CLI, which depends on the daemon and
+  # so drags in Servo and mozangle. Those need a Visual Studio developer
+  # environment a bare runner does not have, and building them would tell us
+  # nothing about the Windows-only code this job exists to gate.
+  RUST_WINDOWS_WORKSPACE_ARGS: >-
+    --workspace
+    --exclude hypercolor-daemon
+    --exclude hypercolor-app
+    --exclude hypercolor-tray
+    --exclude hypercolor-cli
   HYPERCOLOR_CACHE_DIR: ${{ github.workspace }}/.cache/hypercolor
   CARGO_TARGET_DIR: ${{ github.workspace }}/.cache/hypercolor/target
   MOZBUILD_STATE_PATH: ${{ github.workspace }}/.cache/hypercolor/mozbuild
@@ -429,8 +439,7 @@ jobs:
   # Every #[cfg(target_os = "windows")] assertion in the shared crates is only
   # a gate because this job exists. Windows previously ran in build-native-app
   # alone, which is tag-gated, so Windows-only code paths reached main without
-  # ever having been compiled by CI. Scope matches rust-check-shared: the
-  # daemon and native app are excluded so this stays off the Servo build path.
+  # ever having been compiled by CI.
   rust-windows:
     name: Rust Windows
     needs: [changes, generated-effects]
@@ -466,11 +475,11 @@ jobs:
 
       - name: Clippy shared crates
         run: >-
-          cargo clippy --locked ${{ env.RUST_SHARED_WORKSPACE_ARGS }} --all-targets
+          cargo clippy --locked ${{ env.RUST_WINDOWS_WORKSPACE_ARGS }} --all-targets
           -- -D warnings
 
       - name: Run shared crate tests
-        run: cargo nextest run --locked ${{ env.RUST_SHARED_WORKSPACE_ARGS }}
+        run: cargo nextest run --locked ${{ env.RUST_WINDOWS_WORKSPACE_ARGS }}
 
   # ── Cargo Deny ─────────────────────────────────────────────────
   rust-deny:
