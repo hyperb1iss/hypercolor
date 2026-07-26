@@ -80,6 +80,41 @@ pub fn monitor_count() -> usize {
     }
 }
 
+/// One attached display output, in capture index order.
+///
+/// `index` is the value a [`crate::DesktopDuplicator`] accepts as its
+/// `monitor` argument, so a UI can enumerate here and open what it showed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MonitorInfo {
+    /// Zero-based capture index (adapter-then-output enumeration order).
+    pub index: usize,
+    /// OS device name, e.g. `\\.\DISPLAY1`.
+    pub name: String,
+    /// Desktop width in pixels.
+    pub width: u32,
+    /// Desktop height in pixels.
+    pub height: u32,
+    /// Whether this output hosts the origin of the virtual desktop.
+    pub primary: bool,
+}
+
+/// Describe every attached display output.
+///
+/// Empty when capture is unavailable (non-Windows, headless, RDP), so
+/// callers can use emptiness itself as "this platform has no monitor
+/// picker" rather than needing a separate capability probe.
+#[must_use]
+pub fn list_monitors() -> Vec<MonitorInfo> {
+    #[cfg(target_os = "windows")]
+    {
+        crate::duplication::describe_outputs().unwrap_or_default()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Vec::new()
+    }
+}
+
 /// Integer subsample stride that brings `source` at or under `target`.
 ///
 /// Ambient lighting reduces the frame to a coarse sector grid, so point

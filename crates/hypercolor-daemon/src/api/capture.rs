@@ -40,3 +40,41 @@ pub async fn pick_capture_source(State(state): State<Arc<AppState>>) -> Response
     info!("Screen capture source picker requested");
     ApiResponse::ok(serde_json::json!({ "picking": true }))
 }
+
+/// One display output the capture backend can address, for monitor pickers.
+#[derive(Debug, serde::Serialize)]
+pub struct CaptureMonitor {
+    /// Zero-based capture index.
+    pub index: usize,
+    /// OS device name, e.g. `\\.\DISPLAY1`.
+    pub name: String,
+    /// Desktop width in pixels.
+    pub width: u32,
+    /// Desktop height in pixels.
+    pub height: u32,
+    /// Whether this output anchors the virtual desktop origin.
+    pub primary: bool,
+    /// Ready-to-store `capture.source` value selecting this output.
+    pub value: String,
+}
+
+/// `GET /api/v1/capture/monitors` — Display outputs capture can address.
+///
+/// Empty on platforms where the backend picks its own source (the XDG
+/// portal on Linux); the UI uses emptiness to decide between a monitor
+/// dropdown and the portal picker button.
+pub async fn list_capture_monitors() -> Response {
+    let monitors: Vec<CaptureMonitor> = hypercolor_core::input::screen::available_monitors()
+        .into_iter()
+        .map(|monitor| CaptureMonitor {
+            value: format!("monitor:{}", monitor.index),
+            index: monitor.index,
+            name: monitor.name,
+            width: monitor.width,
+            height: monitor.height,
+            primary: monitor.primary,
+        })
+        .collect();
+
+    ApiResponse::ok(monitors)
+}

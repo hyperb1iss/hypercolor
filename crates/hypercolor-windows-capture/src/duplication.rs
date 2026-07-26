@@ -61,6 +61,44 @@ pub(crate) fn output_count() -> CaptureResult<usize> {
     enumerate_outputs().map(|outputs| outputs.len())
 }
 
+/// Describe every attached output for monitor pickers.
+pub(crate) fn describe_outputs() -> CaptureResult<Vec<crate::shared::MonitorInfo>> {
+    let outputs = enumerate_outputs()?;
+    let mut monitors = Vec::with_capacity(outputs.len());
+
+    for (index, (_, output)) in outputs.into_iter().enumerate() {
+        // SAFETY: GetDesc fills a caller-owned struct from the live output.
+        let desc = match unsafe { output.GetDesc() } {
+            Ok(desc) => desc,
+            Err(source) => {
+                return Err(CaptureError::windows("describe DXGI output", source));
+            }
+        };
+
+        let name_len = desc
+            .DeviceName
+            .iter()
+            .position(|&c| c == 0)
+            .unwrap_or(desc.DeviceName.len());
+        let name = String::from_utf16_lossy(&desc.DeviceName[..name_len]);
+
+        let bounds = desc.DesktopCoordinates;
+        let width = u32::try_from(i64::from(bounds.right) - i64::from(bounds.left)).unwrap_or(0);
+        let height = u32::try_from(i64::from(bounds.bottom) - i64::from(bounds.top)).unwrap_or(0);
+
+        monitors.push(crate::shared::MonitorInfo {
+            index,
+            name,
+            width,
+            height,
+            // The primary output anchors the virtual desktop at the origin.
+            primary: bounds.left == 0 && bounds.top == 0,
+        });
+    }
+
+    Ok(monitors)
+}
+
 /// A live Desktop Duplication session for one display output.
 pub struct DesktopDuplicator {
     monitor: usize,
