@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 
 import { HYPERCOLOR_FORMAT_VERSION } from './constants'
 import { faceFontFaceCss } from './fonts'
@@ -25,6 +25,38 @@ export function discoverWorkspaceEntries(workspaceRoot: string, roots: string[])
 
 function escapeAttr(value: string): string {
     return value.replaceAll('&', '&amp;').replaceAll('"', '&quot;')
+}
+
+/** Cover artwork filename discovered alongside an artifact's `main.ts`. */
+const COVER_FILE_NAME = 'cover.webp'
+
+/**
+ * Covers ride inline in every built artifact, so an oversized source image
+ * inflates the HTML for each daemon metadata scan. Warn rather than fail so a
+ * local build still completes with placeholder art.
+ */
+const COVER_WARN_BYTES = 128 * 1024
+
+/**
+ * Read `cover.webp` sitting beside the entrypoint and return it as a data URI.
+ *
+ * Colocating the image with the source keeps artwork versioned next to the
+ * effect it belongs to, and embedding at build time means a rebuild can never
+ * drop it the way hand-editing the emitted HTML would.
+ */
+function coverDataUri(entryPath: string): string | undefined {
+    const coverPath = join(dirname(entryPath), COVER_FILE_NAME)
+    if (!existsSync(coverPath)) return undefined
+
+    const bytes = readFileSync(coverPath)
+    if (bytes.byteLength > COVER_WARN_BYTES) {
+        console.warn(
+            `⚠️  ${coverPath} is ${(bytes.byteLength / 1024).toFixed(0)}KB; ` +
+                `covers embed inline, so keep them under ${COVER_WARN_BYTES / 1024}KB`,
+        )
+    }
+
+    return `data:image/webp;base64,${bytes.toString('base64')}`
 }
 
 function stringifyDefaultValue(value: unknown): string {
@@ -67,6 +99,7 @@ function effectHtml(args: {
     builtinId?: string
     category?: string
     controlMetas: string[]
+    cover?: string
     description: string
     jsBundle: string
     name: string
@@ -80,6 +113,7 @@ function effectHtml(args: {
     const categoryTag = args.category ? `\n    <meta category="${escapeAttr(args.category)}" />` : ''
     const builtinTag = args.builtinId ? `\n    <meta builtin-id="${escapeAttr(args.builtinId)}" />` : ''
     const rendererTag = args.renderer ? `\n    <meta renderer="${escapeAttr(args.renderer)}" />` : ''
+    const coverTag = args.cover ? `\n    <meta cover="${escapeAttr(args.cover)}" />` : ''
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -92,7 +126,7 @@ function effectHtml(args: {
     <meta publisher="${escapeAttr(args.author)}" />
     <meta audio-reactive="${args.audioReactive}" />
     <meta input-reactive="${args.inputReactive}" />
-    <meta screen-reactive="${args.screenReactive}" />${categoryTag}${builtinTag}${rendererTag}
+    <meta screen-reactive="${args.screenReactive}" />${categoryTag}${builtinTag}${rendererTag}${coverTag}
 ${args.controlMetas.join('\n')}${presetBlock}
   </head>
   <body style="margin:0;overflow:hidden;background:#000;">
@@ -110,6 +144,7 @@ ${args.jsBundle}
 function faceHtml(args: {
     author: string
     controlMetas: string[]
+    cover?: string
     description: string
     fontFaceCss: string
     jsBundle: string
@@ -122,6 +157,7 @@ function faceHtml(args: {
     const dataSourcesTag =
         args.dataSources.length > 0 ? `\n    <meta data-sources="${escapeAttr(args.dataSources.join(','))}" />` : ''
     const fontBlock = args.fontFaceCss ? `\n    <style>\n${args.fontFaceCss}\n    </style>` : ''
+    const coverTag = args.cover ? `\n    <meta cover="${escapeAttr(args.cover)}" />` : ''
 
     return `<!DOCTYPE html>
 <html lang="en" style="width:100%;height:100%;background:transparent;">
@@ -133,7 +169,7 @@ function faceHtml(args: {
     <meta description="${escapeAttr(args.description)}" />
     <meta publisher="${escapeAttr(args.author)}" />
     <meta audio-reactive="${args.audioReactive}" />${dataSourcesTag}
-    <meta category="display" />
+    <meta category="display" />${coverTag}
 ${args.controlMetas.join('\n')}${presetBlock}${fontBlock}
   </head>
   <body style="margin:0;width:100%;height:100%;overflow:hidden;background:transparent;-webkit-user-select:none;user-select:none;">
@@ -192,12 +228,14 @@ export async function buildArtifactDocument(options: {
     const jsBundle = await bundleEntry(options.entryPath, options.sdkAliasPath, options.minify ?? false)
     const controlMetas = metadata.controls.map(controlToMeta)
     const presetMetas = metadata.presets.map(presetToMeta)
+    const cover = coverDataUri(options.entryPath)
     const html =
         metadata.kind === 'face'
             ? faceHtml({
                   audioReactive: metadata.audioReactive,
                   author: metadata.author,
                   controlMetas,
+                  cover,
                   dataSources: metadata.dataSources,
                   description: metadata.description,
                   fontFaceCss: faceFontFaceCss(metadata.controls, options.fontAssetsDir),
@@ -211,6 +249,7 @@ export async function buildArtifactDocument(options: {
                   builtinId: metadata.builtinId,
                   category: metadata.category,
                   controlMetas,
+                  cover,
                   description: metadata.description,
                   inputReactive: metadata.inputReactive,
                   jsBundle,

@@ -121,6 +121,7 @@ export interface ParsedHtmlArtifact {
     canvasHeight?: number
     canvasWidth?: number
     controls: HtmlControlMetadata[]
+    cover?: string
     hasExternalAssets: boolean
     hasRenderSurface: boolean
     hasScript: boolean

@@ -117,6 +117,7 @@ export function parseHtmlArtifact(html: string): ParsedHtmlArtifact {
     let publisher: string | undefined
     let version: string | undefined
     let audioReactive: string | undefined
+    let cover: string | undefined
 
     for (const tag of metaTags) {
         const attrs = parseTagAttributes(tag)
@@ -140,6 +141,7 @@ export function parseHtmlArtifact(html: string): ParsedHtmlArtifact {
             (attr(attrs, 'name') === 'hypercolor-version' ? attr(attrs, 'content') : undefined) ??
             attr(attrs, 'hypercolor-version')
         audioReactive ??= attr(attrs, 'audio-reactive')
+        cover ??= attr(attrs, 'cover')
     }
 
     const hasExCanvas = /<canvas\b[^>]*id=["']exCanvas["'][^>]*>/i.test(sanitized)
@@ -151,6 +153,7 @@ export function parseHtmlArtifact(html: string): ParsedHtmlArtifact {
         canvasHeight: height,
         canvasWidth: width,
         controls,
+        cover,
         description,
         hasExternalAssets:
             scripts.some((tag) => Boolean(attr(parseTagAttributes(tag), 'src'))) ||
