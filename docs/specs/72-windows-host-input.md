@@ -1,6 +1,6 @@
 # 72 - Windows Host Input (Raw Input)
 
-**Status:** PROPOSED
+**Status:** IMPLEMENTED (W0-W3); W4 hardware acceptance outstanding
 **Author:** Nova
 **Date:** 2026-07-25
 **Crates:** `hypercolor-windows-input` (new), `hypercolor-core`, `hypercolor-daemon`, `hypercolor-ui`
@@ -1000,20 +1000,41 @@ above precisely because eyeballing a dump would never catch them.
 
 ## Waves
 
+Waves W0 through W3 are built. W4 is the only one outstanding, and it cannot
+be done from a CI runner or an agent session: it needs a human at a real
+keyboard. See the status notes on each wave.
+
 - **W0** — `windows-latest` clippy + test job in CI. Everything Windows-only
-  below is only a gate because of this.
+  below is only a gate because of this. **Done** (`ci.yml`, `rust-windows`).
 - **W1** — `hypercolor-windows-input` crate: window, registration ownership,
   bounded buffered drain and direct batch sink, device enumeration and
-  identity, hotplug, cursor sampling, stubs, example binary.
+  identity, hotplug, cursor sampling, stubs, example binary. **Done.** The
+  decoding arithmetic ended up in a module that compiles on every target, so
+  the wheel-sign, button-edge, record-walk, and normalization tests run on
+  Linux CI rather than only on Windows.
 - **W2** — `WindowsHostInput` in core: key tables, repeat derivation, state
-  folding, pointer model, diagnostics. Full pure-test suite.
+  folding, pointer model, diagnostics. Full pure-test suite. **Done.** Two
+  refinements against the plan. The canonical key inventory became a single
+  table both backends derive from, which extended Linux's coverage: keys that
+  previously fell through to a debug name (`KEY_F1`, `KEY_HOME`, `KEY_KP0`)
+  now carry proper names on both platforms. And `WindowsHostInput` compiles
+  everywhere rather than behind a `cfg`, so the fold — repeat classification,
+  held-state union, release synthesis, absolute baselines, epoch rejection —
+  is covered by Linux CI too.
 - **W3** — Wiring: `build_interaction_source` on Windows, `MouseData::injected`
   plus the `merge_from` pointer-precedence rule and its test (source
   registration order in `services.rs:577-585` is left **unchanged**),
   degraded-health types through `InteractionDiagnostics` → `InputStatus` →
   MCP diagnose (`system.rs:279`) → UI remedy, device_query narrowed to macOS.
+  **Done.** `InputStatus.degraded` is additive and optional, so the vendored
+  Python client regenerated without an API break.
 - **W4** — Hardware acceptance pass, parity check against the Linux daemon,
-  docs (permissions/session-model page), cross-model review.
+  docs (permissions/session-model page), cross-model review. **Docs done**
+  (`docs/content/guide/input-capture.md`). The acceptance pass itself is
+  outstanding and deliberately so: it requires typing on real hardware,
+  unplugging a keyboard mid-hold, and comparing names against a running Linux
+  daemon. `cargo run -p hypercolor-windows-input --example dump_input` is the
+  harness for it.
 
 ## Resolved decisions
 
