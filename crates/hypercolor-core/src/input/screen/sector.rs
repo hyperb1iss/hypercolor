@@ -154,12 +154,30 @@ impl SectorGrid {
     ///
     /// Returns `(top_rows, bottom_rows, left_cols, right_cols)` — the number
     /// of consecutive black rows/columns from each edge.
+    ///
+    /// An axis whose bars would swallow the whole grid reports no bars at
+    /// all. `pixel_luminance` is *linear*, where dark content sits far lower
+    /// than its sRGB value suggests — sRGB 30/255 is only 0.013 linear — so a
+    /// dark desktop or a night-time scene can read as black from every edge
+    /// at once. Cropping on that removes the entire picture, and because the
+    /// verdict flips with ordinary content changes it strobes frame to frame.
+    /// Real letterboxing always leaves something in the middle.
     #[must_use]
     pub fn detect_letterbox(&self, black_threshold: f32) -> LetterboxBars {
-        let top = self.count_black_rows_from_top(black_threshold);
-        let bottom = self.count_black_rows_from_bottom(black_threshold);
-        let left = self.count_black_cols_from_left(black_threshold);
-        let right = self.count_black_cols_from_right(black_threshold);
+        let mut top = self.count_black_rows_from_top(black_threshold);
+        let mut bottom = self.count_black_rows_from_bottom(black_threshold);
+        let mut left = self.count_black_cols_from_left(black_threshold);
+        let mut right = self.count_black_cols_from_right(black_threshold);
+
+        if top.saturating_add(bottom) >= self.rows {
+            top = 0;
+            bottom = 0;
+        }
+        if left.saturating_add(right) >= self.cols {
+            left = 0;
+            right = 0;
+        }
+
         LetterboxBars {
             top,
             bottom,

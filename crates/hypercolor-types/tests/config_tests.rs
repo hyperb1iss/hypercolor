@@ -103,7 +103,9 @@ fn capture_defaults_match_spec() {
     assert_eq!(c.grid_rows, 6);
     assert!((c.smoothing - 0.3).abs() < f32::EPSILON);
     assert!((c.scene_cut_threshold - 100.0).abs() < f32::EPSILON);
-    assert!(c.letterbox);
+    // Off by default: desktops are not letterboxed, and dark desktop content
+    // trips the detector into cropping real picture away.
+    assert!(!c.letterbox);
     assert!((c.letterbox_threshold - 0.02).abs() < f32::EPSILON);
     assert!((c.saturation - 1.0).abs() < f32::EPSILON);
     assert!((c.brightness - 1.0).abs() < f32::EPSILON);
