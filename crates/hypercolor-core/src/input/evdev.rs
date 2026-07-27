@@ -7,7 +7,7 @@
 //! rescans for hotplug and retries permission-denied nodes, so installing
 //! the udev rules heals a running daemon without a restart.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, mpsc};
@@ -15,7 +15,10 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use anyhow::Context;
-use evdev::{Device, EventSummary, InputEvent as EvdevInputEvent, KeyCode, RelativeAxisCode};
+use evdev::{
+    Device, EventSummary, InputEvent as EvdevInputEvent, KeyCode, RelativeAxisCode,
+    SynchronizationCode,
+};
 use tracing::{debug, info, trace, warn};
 
 use crate::input::input_mono_ms;
@@ -70,18 +73,81 @@ struct DeviceCaps {
 }
 
 struct OpenDevice {
+    event_state: DeviceEventState,
+    device: Device,
+}
+
+struct DeviceEventState {
     source_id: String,
     label: String,
     caps: DeviceCaps,
-    device: Device,
+    relative_motion: RelativeMotionFrame,
+    discard_until_report: bool,
+}
+
+#[derive(Debug, Default)]
+struct RelativeMotionFrame {
+    dx_counts: i32,
+    dy_counts: i32,
+}
+
+impl RelativeMotionFrame {
+    fn accumulate(&mut self, axis: RelativeAxisCode, value: i32) {
+        match axis {
+            RelativeAxisCode::REL_X => {
+                self.dx_counts = self.dx_counts.saturating_add(value);
+            }
+            RelativeAxisCode::REL_Y => {
+                self.dy_counts = self.dy_counts.saturating_add(value);
+            }
+            _ => {}
+        }
+    }
+
+    fn flush_into(&mut self, state: &mut SharedState) {
+        let dx_counts = std::mem::take(&mut self.dx_counts);
+        let dy_counts = std::mem::take(&mut self.dy_counts);
+        if dx_counts == 0 && dy_counts == 0 {
+            return;
+        }
+
+        #[expect(
+            clippy::cast_precision_loss,
+            clippy::as_conversions,
+            reason = "relative counts are small integers"
+        )]
+        let dx = dx_counts as f32 / CURSOR_COUNTS_PER_UNIT;
+        #[expect(
+            clippy::cast_precision_loss,
+            clippy::as_conversions,
+            reason = "relative counts are small integers"
+        )]
+        let dy = dy_counts as f32 / CURSOR_COUNTS_PER_UNIT;
+        state.cursor_x = (state.cursor_x + dx).clamp(0.0, 1.0);
+        state.cursor_y = (state.cursor_y + dy).clamp(0.0, 1.0);
+        state.motion.dx += dx;
+        state.motion.dy += dy;
+        state.motion.distance += dx.hypot(dy);
+    }
+
+    fn finish_sync(&mut self, code: SynchronizationCode, state: &mut SharedState) {
+        match code {
+            SynchronizationCode::SYN_REPORT => self.flush_into(state),
+            SynchronizationCode::SYN_DROPPED => {
+                self.dx_counts = 0;
+                self.dy_counts = 0;
+            }
+            _ => {}
+        }
+    }
 }
 
 #[derive(Default)]
 struct SharedState {
-    events: Vec<TimedInputEvent>,
+    events: VecDeque<TimedInputEvent>,
     dropped: u32,
     pressed_keys: BTreeMap<String, BTreeSet<String>>,
-    recent_keys: Vec<String>,
+    recent_keys: VecDeque<String>,
     held_buttons: BTreeMap<String, BTreeSet<String>>,
     cursor_x: f32,
     cursor_y: f32,
@@ -183,7 +249,7 @@ impl EvdevHostInput {
     fn build_snapshot(&mut self, guard: &mut SharedState) -> InteractionData {
         let mut data = InteractionData::default();
         data.keyboard.pressed_keys = guard.union_pressed();
-        data.keyboard.recent_keys = std::mem::take(&mut guard.recent_keys);
+        data.keyboard.recent_keys = guard.recent_keys.drain(..).collect();
         data.mouse.buttons = guard.union_buttons();
         data.mouse.down = !data.mouse.buttons.is_empty();
         let pointer_present = guard.pointer_present;
@@ -420,7 +486,7 @@ impl InputSource for EvdevHostInput {
         };
         // One lock for both: an edge can never land in the frame's event
         // batch while missing from the same frame's held-state snapshot.
-        let events = std::mem::take(&mut guard.events);
+        let events = drain_events(&mut guard.events);
         let snapshot = self.build_snapshot(&mut guard);
         (Ok(InputData::Interaction(snapshot)), events)
     }
@@ -498,7 +564,7 @@ impl InputSource for EvdevHostInput {
 
     fn drain_events(&mut self) -> Vec<TimedInputEvent> {
         if let Ok(mut guard) = self.shared.lock() {
-            return std::mem::take(&mut guard.events);
+            return drain_events(&mut guard.events);
         }
 
         Vec::new()
@@ -523,7 +589,7 @@ fn rescan_devices(
         if let Some(open) = devices.get(&path) {
             status.push(DeviceOpenStatus {
                 path,
-                label: open.label.clone(),
+                label: open.event_state.label.clone(),
                 state: DeviceOpenState::Opened,
             });
             continue;
@@ -564,9 +630,13 @@ fn rescan_devices(
                 devices.insert(
                     path.clone(),
                     OpenDevice {
-                        source_id: path.display().to_string(),
-                        label,
-                        caps,
+                        event_state: DeviceEventState {
+                            source_id: path.display().to_string(),
+                            label,
+                            caps,
+                            relative_motion: RelativeMotionFrame::default(),
+                            discard_until_report: false,
+                        },
                         device,
                     },
                 );
@@ -600,8 +670,8 @@ fn rescan_devices(
     {
         for path in &removed {
             if let Some(open) = devices.remove(path) {
-                debug!(source = %source_name, device = %open.label, "Evdev input device removed");
-                synthesize_releases(&mut guard, &open.source_id, event_limit);
+                debug!(source = %source_name, device = %open.event_state.label, "Evdev input device removed");
+                synthesize_releases(&mut guard, &open.event_state.source_id, event_limit);
             }
         }
     }
@@ -626,7 +696,9 @@ fn rescan_devices(
                 "Some input nodes are unreadable; run `just udev-install` and replug (or re-login)"
             );
         }
-        guard.pointer_present = devices.values().any(|device| device.caps.pointer);
+        guard.pointer_present = devices
+            .values()
+            .any(|device| device.event_state.caps.pointer);
         guard.device_status = status;
     }
     classify_source_resource_scan(opened, denied, failed)
@@ -652,14 +724,14 @@ fn poll_devices(
                     continue;
                 };
                 for event in events {
-                    fold_event(&mut guard, open, event, at_ms, event_limit);
+                    fold_event(&mut guard, &mut open.event_state, event, at_ms, event_limit);
                 }
             }
             Err(error) if error.kind() == ErrorKind::WouldBlock => {}
             Err(error) => {
                 warn!(
                     source = %source_name,
-                    device = %open.label,
+                    device = %open.event_state.label,
                     %error,
                     "Evdev input device stopped producing events"
                 );
@@ -673,34 +745,56 @@ fn poll_devices(
     {
         for path in stale {
             if let Some(open) = devices.remove(&path) {
-                synthesize_releases(&mut guard, &open.source_id, event_limit);
+                synthesize_releases(&mut guard, &open.event_state.source_id, event_limit);
             }
         }
-        guard.pointer_present = devices.values().any(|device| device.caps.pointer);
+        guard.pointer_present = devices
+            .values()
+            .any(|device| device.event_state.caps.pointer);
     }
 }
 
 fn fold_event(
     state: &mut SharedState,
-    open: &OpenDevice,
+    device: &mut DeviceEventState,
     event: EvdevInputEvent,
     at_ms: u64,
     event_limit: usize,
 ) {
-    match event.destructure() {
+    let summary = event.destructure();
+    if device.discard_until_report {
+        if matches!(
+            &summary,
+            EventSummary::Synchronization(_, SynchronizationCode::SYN_REPORT, _)
+        ) {
+            device.discard_until_report = false;
+        }
+        return;
+    }
+    if matches!(
+        &summary,
+        EventSummary::Synchronization(_, SynchronizationCode::SYN_DROPPED, _)
+    ) {
+        device.relative_motion = RelativeMotionFrame::default();
+        device.discard_until_report = true;
+        synthesize_releases_at(state, &device.source_id, event_limit, at_ms);
+        return;
+    }
+
+    match summary {
         EventSummary::Key(_, code, value) => {
             let Some(button_state) = button_state_from_value(value) else {
-                trace!(device = %open.label, code = ?code, value, "Ignoring evdev key value");
+                trace!(device = %device.label, code = ?code, value, "Ignoring evdev key value");
                 return;
             };
 
             if let Some(button) = pointer_button_name(code) {
-                if !open.caps.pointer {
+                if !device.caps.pointer {
                     return;
                 }
                 update_held(
                     &mut state.held_buttons,
-                    &open.source_id,
+                    &device.source_id,
                     button,
                     button_state,
                 );
@@ -708,7 +802,7 @@ fn fold_event(
                     state,
                     TimedInputEvent {
                         event: InputEvent::MouseButton {
-                            source_id: open.source_id.clone(),
+                            source_id: device.source_id.clone(),
                             button: button.to_owned(),
                             state: button_state,
                         },
@@ -722,7 +816,7 @@ fn fold_event(
                 return;
             }
 
-            if !open.caps.keyboard || is_non_keyboard_key(code) {
+            if !device.caps.keyboard || is_non_keyboard_key(code) {
                 return;
             }
             let key = canonical_evdev_key_name(code);
@@ -730,17 +824,14 @@ fn fold_event(
                 InputButtonState::Pressed => {
                     state
                         .pressed_keys
-                        .entry(open.source_id.clone())
+                        .entry(device.source_id.clone())
                         .or_default()
                         .insert(key.clone());
-                    state.recent_keys.push(key.clone());
-                    if state.recent_keys.len() > event_limit {
-                        let overflow = state.recent_keys.len() - event_limit;
-                        state.recent_keys.drain(..overflow);
-                    }
+                    state.recent_keys.push_back(key.clone());
+                    cap_recent(&mut state.recent_keys, event_limit);
                 }
                 InputButtonState::Released => {
-                    if let Some(held) = state.pressed_keys.get_mut(&open.source_id) {
+                    if let Some(held) = state.pressed_keys.get_mut(&device.source_id) {
                         held.remove(&key);
                     }
                 }
@@ -750,7 +841,7 @@ fn fold_event(
                 state,
                 TimedInputEvent {
                     event: InputEvent::Key {
-                        source_id: open.source_id.clone(),
+                        source_id: device.source_id.clone(),
                         key,
                         state: button_state,
                     },
@@ -763,32 +854,19 @@ fn fold_event(
             );
         }
         EventSummary::RelativeAxis(_, axis, value) => {
-            if !open.caps.pointer {
+            if !device.caps.pointer {
                 return;
             }
             match axis {
                 RelativeAxisCode::REL_X | RelativeAxisCode::REL_Y => {
-                    #[expect(
-                        clippy::cast_precision_loss,
-                        clippy::as_conversions,
-                        reason = "relative counts are small integers"
-                    )]
-                    let delta = value as f32 / CURSOR_COUNTS_PER_UNIT;
-                    if axis == RelativeAxisCode::REL_X {
-                        state.cursor_x = (state.cursor_x + delta).clamp(0.0, 1.0);
-                        state.motion.dx += delta;
-                    } else {
-                        state.cursor_y = (state.cursor_y + delta).clamp(0.0, 1.0);
-                        state.motion.dy += delta;
-                    }
-                    state.motion.distance += delta.abs();
+                    device.relative_motion.accumulate(axis, value);
                 }
                 RelativeAxisCode::REL_WHEEL_HI_RES => {
                     push_event(
                         state,
                         TimedInputEvent {
                             event: InputEvent::MouseWheel {
-                                source_id: open.source_id.clone(),
+                                source_id: device.source_id.clone(),
                                 delta_hi_res: value,
                             },
                             at_ms,
@@ -801,12 +879,12 @@ fn fold_event(
                 }
                 // Devices with hi-res wheels report both; keep only the
                 // hi-res stream to avoid double counting.
-                RelativeAxisCode::REL_WHEEL if !open.caps.hi_res_wheel => {
+                RelativeAxisCode::REL_WHEEL if !device.caps.hi_res_wheel => {
                     push_event(
                         state,
                         TimedInputEvent {
                             event: InputEvent::MouseWheel {
-                                source_id: open.source_id.clone(),
+                                source_id: device.source_id.clone(),
                                 delta_hi_res: value.saturating_mul(120),
                             },
                             at_ms,
@@ -820,19 +898,37 @@ fn fold_event(
                 _ => {}
             }
         }
+        EventSummary::Synchronization(_, code, _) => {
+            device.relative_motion.finish_sync(code, state);
+        }
         _ => {}
     }
 }
 
 fn push_event(state: &mut SharedState, event: TimedInputEvent, limit: usize) {
-    state.events.push(event);
-    if state.events.len() > limit {
-        let overflow = state.events.len() - limit;
-        state.events.drain(..overflow);
+    if limit == 0 {
         state.dropped = state
             .dropped
-            .saturating_add(u32::try_from(overflow).unwrap_or(u32::MAX));
+            .saturating_add(u32::try_from(state.events.len()).unwrap_or(u32::MAX))
+            .saturating_add(1);
+        state.events.clear();
+        return;
     }
+    while state.events.len() >= limit {
+        state.events.pop_front();
+        state.dropped = state.dropped.saturating_add(1);
+    }
+    state.events.push_back(event);
+}
+
+fn cap_recent(recent: &mut VecDeque<String>, limit: usize) {
+    while recent.len() > limit {
+        recent.pop_front();
+    }
+}
+
+fn drain_events(events: &mut VecDeque<TimedInputEvent>) -> Vec<TimedInputEvent> {
+    events.drain(..).collect()
 }
 
 fn update_held(
@@ -858,7 +954,15 @@ fn update_held(
 
 /// Emit synthetic release edges for everything a vanished device held.
 fn synthesize_releases(state: &mut SharedState, source_id: &str, event_limit: usize) {
-    let at_ms = input_mono_ms();
+    synthesize_releases_at(state, source_id, event_limit, input_mono_ms());
+}
+
+fn synthesize_releases_at(
+    state: &mut SharedState,
+    source_id: &str,
+    event_limit: usize,
+    at_ms: u64,
+) {
     if let Some(keys) = state.pressed_keys.remove(source_id) {
         for key in keys {
             push_event(
@@ -987,6 +1091,33 @@ fn canonical_evdev_key_name(code: KeyCode) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use evdev::EventType;
+
+    fn event_state(source_id: &str, keyboard: bool, pointer: bool) -> DeviceEventState {
+        DeviceEventState {
+            source_id: source_id.to_owned(),
+            label: source_id.to_owned(),
+            caps: DeviceCaps {
+                keyboard,
+                pointer,
+                hi_res_wheel: false,
+            },
+            relative_motion: RelativeMotionFrame::default(),
+            discard_until_report: false,
+        }
+    }
+
+    fn relative_event(axis: RelativeAxisCode, value: i32) -> EvdevInputEvent {
+        EvdevInputEvent::new(EventType::RELATIVE.0, axis.0, value)
+    }
+
+    fn key_event(key: KeyCode, value: i32) -> EvdevInputEvent {
+        EvdevInputEvent::new(EventType::KEY.0, key.0, value)
+    }
+
+    fn sync_event(code: SynchronizationCode) -> EvdevInputEvent {
+        EvdevInputEvent::new(EventType::SYNCHRONIZATION.0, code.0, 0)
+    }
 
     #[test]
     fn canonical_key_names_follow_browser_style() {
@@ -1083,6 +1214,171 @@ mod tests {
         }
         assert_eq!(state.events.len(), 4);
         assert_eq!(state.dropped, 6);
-        assert_eq!(state.events.first().map(|event| event.at_ms), Some(6));
+        assert_eq!(state.events.front().map(|event| event.at_ms), Some(6));
+    }
+
+    #[test]
+    fn event_queue_enforces_a_lowered_or_zero_limit() {
+        let mut state = SharedState::default();
+        for seq in 0..4 {
+            push_event(
+                &mut state,
+                TimedInputEvent {
+                    event: InputEvent::Key {
+                        source_id: "kbd".to_owned(),
+                        key: "a".to_owned(),
+                        state: InputButtonState::Pressed,
+                    },
+                    at_ms: seq,
+                    seq,
+                    physical_code: None,
+                    repeat_count: 1,
+                },
+                4,
+            );
+        }
+
+        let next = state.events.back().cloned().expect("queued event");
+        push_event(&mut state, next.clone(), 2);
+        assert_eq!(state.events.len(), 2);
+        assert_eq!(state.dropped, 3);
+
+        push_event(&mut state, next, 0);
+        assert!(state.events.is_empty());
+        assert_eq!(state.dropped, 6);
+    }
+
+    #[test]
+    fn fold_event_flushes_motion_per_device_on_its_syn_report() {
+        let mut first = event_state("mouse-a", false, true);
+        let mut second = event_state("mouse-b", false, true);
+        let mut state = SharedState::default();
+
+        fold_event(
+            &mut state,
+            &mut first,
+            relative_event(RelativeAxisCode::REL_X, 3),
+            1,
+            DEFAULT_EVENT_LIMIT,
+        );
+        fold_event(
+            &mut state,
+            &mut second,
+            relative_event(RelativeAxisCode::REL_X, 12),
+            1,
+            DEFAULT_EVENT_LIMIT,
+        );
+        fold_event(
+            &mut state,
+            &mut first,
+            relative_event(RelativeAxisCode::REL_Y, 4),
+            1,
+            DEFAULT_EVENT_LIMIT,
+        );
+        assert_eq!(state.motion, MotionAggregate::default());
+
+        fold_event(
+            &mut state,
+            &mut first,
+            sync_event(SynchronizationCode::SYN_REPORT),
+            1,
+            DEFAULT_EVENT_LIMIT,
+        );
+
+        assert!((state.motion.dx - 3.0 / CURSOR_COUNTS_PER_UNIT).abs() < f32::EPSILON);
+        assert!((state.motion.dy - 4.0 / CURSOR_COUNTS_PER_UNIT).abs() < f32::EPSILON);
+        assert!((state.motion.distance - 5.0 / CURSOR_COUNTS_PER_UNIT).abs() < f32::EPSILON);
+
+        fold_event(
+            &mut state,
+            &mut second,
+            relative_event(RelativeAxisCode::REL_Y, 5),
+            1,
+            DEFAULT_EVENT_LIMIT,
+        );
+        fold_event(
+            &mut state,
+            &mut second,
+            sync_event(SynchronizationCode::SYN_REPORT),
+            1,
+            DEFAULT_EVENT_LIMIT,
+        );
+        assert!((state.motion.distance - 18.0 / CURSOR_COUNTS_PER_UNIT).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn syn_dropped_releases_state_and_discards_until_the_next_report() {
+        let mut device = event_state("combo", true, true);
+        let mut state = SharedState::default();
+
+        fold_event(
+            &mut state,
+            &mut device,
+            key_event(KeyCode::KEY_A, 1),
+            1,
+            DEFAULT_EVENT_LIMIT,
+        );
+        fold_event(
+            &mut state,
+            &mut device,
+            relative_event(RelativeAxisCode::REL_X, 300),
+            1,
+            DEFAULT_EVENT_LIMIT,
+        );
+        fold_event(
+            &mut state,
+            &mut device,
+            sync_event(SynchronizationCode::SYN_DROPPED),
+            2,
+            DEFAULT_EVENT_LIMIT,
+        );
+        fold_event(
+            &mut state,
+            &mut device,
+            relative_event(RelativeAxisCode::REL_Y, 400),
+            2,
+            DEFAULT_EVENT_LIMIT,
+        );
+        fold_event(
+            &mut state,
+            &mut device,
+            key_event(KeyCode::KEY_B, 1),
+            2,
+            DEFAULT_EVENT_LIMIT,
+        );
+        fold_event(
+            &mut state,
+            &mut device,
+            sync_event(SynchronizationCode::SYN_REPORT),
+            2,
+            DEFAULT_EVENT_LIMIT,
+        );
+
+        assert_eq!(state.motion, MotionAggregate::default());
+        assert!(state.union_pressed().is_empty());
+        assert!(matches!(
+            state.events.back().map(|event| &event.event),
+            Some(InputEvent::Key {
+                key,
+                state: InputButtonState::Released,
+                ..
+            }) if key == "a"
+        ));
+
+        fold_event(
+            &mut state,
+            &mut device,
+            relative_event(RelativeAxisCode::REL_X, 12),
+            3,
+            DEFAULT_EVENT_LIMIT,
+        );
+        fold_event(
+            &mut state,
+            &mut device,
+            sync_event(SynchronizationCode::SYN_REPORT),
+            3,
+            DEFAULT_EVENT_LIMIT,
+        );
+        assert!((state.motion.dx - 12.0 / CURSOR_COUNTS_PER_UNIT).abs() < f32::EPSILON);
     }
 }

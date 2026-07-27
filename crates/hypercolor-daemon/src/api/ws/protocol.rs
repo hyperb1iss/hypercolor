@@ -4,10 +4,12 @@
 //! no network I/O, no caches, no runtime state.
 
 use std::collections::HashSet;
+use std::fmt;
 use std::hash::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-use serde::{Deserialize, Serialize};
+use serde::de::{self, IgnoredAny, SeqAccess, Visitor};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::json;
 
 use hypercolor_types::sensor::SystemSnapshot;
@@ -571,6 +573,17 @@ pub(super) enum CanvasFormat {
     Jpeg,
 }
 
+/// Hard transport ceiling for one complete WebSocket message or frame.
+pub(super) const MAX_WS_MESSAGE_BYTES: usize = 1024 * 1024;
+/// Maximum number of edges accepted in one browser-input batch.
+pub(super) const MAX_INPUT_INJECT_EVENTS: usize = 256;
+/// Maximum UTF-8 byte length of an injected key or button name.
+pub(super) const MAX_INPUT_NAME_BYTES: usize = 128;
+/// Maximum UTF-8 byte length of a server-generated input source id.
+pub(super) const MAX_INPUT_SOURCE_ID_BYTES: usize = 128;
+/// Largest accepted browser wheel delta, equivalent to 100 notches.
+pub(super) const MAX_INPUT_WHEEL_DELTA: i32 = 120 * 100;
+
 /// Client-to-server subscription messages.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -603,7 +616,10 @@ pub(super) enum ClientMessage {
     ///
     /// Control-authorized. Edges carry no `source_id`: the session stamps a
     /// per-connection identity so browser pointers never merge implicitly.
-    InputInject { events: Vec<BrowserInputEdgeWire> },
+    InputInject {
+        #[serde(deserialize_with = "deserialize_input_edges")]
+        events: Vec<BrowserInputEdgeWire>,
+    },
 }
 
 /// Wire form of one injected input edge from a browser preview.
@@ -611,18 +627,23 @@ pub(super) enum ClientMessage {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(super) enum BrowserInputEdgeWire {
     Key {
+        #[serde(deserialize_with = "deserialize_input_name")]
         key: String,
         state: InputButtonStateWire,
     },
     Button {
+        #[serde(deserialize_with = "deserialize_input_button")]
         button: String,
         state: InputButtonStateWire,
     },
     Move {
+        #[serde(deserialize_with = "deserialize_finite_coordinate")]
         nx: f32,
+        #[serde(deserialize_with = "deserialize_finite_coordinate")]
         ny: f32,
     },
     Wheel {
+        #[serde(deserialize_with = "deserialize_wheel_delta")]
         delta_hi_res: i32,
     },
 }
@@ -661,6 +682,166 @@ impl BrowserInputEdgeWire {
             },
             Self::Wheel { delta_hi_res } => BrowserInputEdge::Wheel { delta_hi_res },
         }
+    }
+}
+
+pub(super) fn validate_browser_input_source_id(source_id: &str) -> Result<(), WsProtocolError> {
+    if source_id.is_empty()
+        || source_id.len() > MAX_INPUT_SOURCE_ID_BYTES
+        || !source_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b':' | b'.' | b'_' | b'-'))
+    {
+        return Err(WsProtocolError::invalid_request(
+            "Browser input source id is invalid",
+        ));
+    }
+    Ok(())
+}
+
+fn deserialize_input_edges<'de, D>(deserializer: D) -> Result<Vec<BrowserInputEdgeWire>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct InputEdgeBatchVisitor;
+
+    impl<'de> Visitor<'de> for InputEdgeBatchVisitor {
+        type Value = Vec<BrowserInputEdgeWire>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(
+                formatter,
+                "at most {MAX_INPUT_INJECT_EVENTS} browser input edges"
+            )
+        }
+
+        fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+        where
+            A: SeqAccess<'de>,
+        {
+            if sequence
+                .size_hint()
+                .is_some_and(|count| count > MAX_INPUT_INJECT_EVENTS)
+            {
+                return Err(de::Error::invalid_length(
+                    sequence.size_hint().unwrap_or_default(),
+                    &self,
+                ));
+            }
+
+            let initial_capacity = sequence
+                .size_hint()
+                .unwrap_or_default()
+                .min(MAX_INPUT_INJECT_EVENTS);
+            let mut edges = Vec::with_capacity(initial_capacity);
+            loop {
+                if edges.len() == MAX_INPUT_INJECT_EVENTS {
+                    return match sequence.next_element::<IgnoredAny>()? {
+                        Some(_) => Err(de::Error::invalid_length(
+                            MAX_INPUT_INJECT_EVENTS.saturating_add(1),
+                            &self,
+                        )),
+                        None => Ok(edges),
+                    };
+                }
+                match sequence.next_element()? {
+                    Some(edge) => edges.push(edge),
+                    None => return Ok(edges),
+                }
+            }
+        }
+    }
+
+    deserializer.deserialize_seq(InputEdgeBatchVisitor)
+}
+
+fn deserialize_input_name<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct InputNameVisitor;
+
+    impl Visitor<'_> for InputNameVisitor {
+        type Value = String;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(
+                formatter,
+                "a non-empty browser input name no longer than {MAX_INPUT_NAME_BYTES} bytes"
+            )
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            validate_input_name(value, &self)?;
+            Ok(value.to_owned())
+        }
+
+        fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            validate_input_name(&value, &self)?;
+            Ok(value)
+        }
+    }
+
+    deserializer.deserialize_string(InputNameVisitor)
+}
+
+fn validate_input_name<E>(value: &str, expected: &dyn de::Expected) -> Result<(), E>
+where
+    E: de::Error,
+{
+    if value.is_empty() || value.len() > MAX_INPUT_NAME_BYTES || value.chars().any(char::is_control)
+    {
+        return Err(E::invalid_length(value.len(), expected));
+    }
+    Ok(())
+}
+
+fn deserialize_input_button<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = deserialize_input_name(deserializer)?;
+    if matches!(value.as_str(), "left" | "right" | "middle") {
+        Ok(value)
+    } else {
+        Err(de::Error::unknown_variant(
+            &value,
+            &["left", "right", "middle"],
+        ))
+    }
+}
+
+fn deserialize_wheel_delta<'de, D>(deserializer: D) -> Result<i32, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = i32::deserialize(deserializer)?;
+    if value.unsigned_abs() <= MAX_INPUT_WHEEL_DELTA.unsigned_abs() {
+        Ok(value)
+    } else {
+        Err(de::Error::custom(format_args!(
+            "browser input wheel delta must be within ±{MAX_INPUT_WHEEL_DELTA}"
+        )))
+    }
+}
+
+pub(super) fn deserialize_finite_coordinate<'de, D>(deserializer: D) -> Result<f32, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = f32::deserialize(deserializer)?;
+    if value.is_finite() && (0.0..=1.0).contains(&value) {
+        Ok(value)
+    } else {
+        Err(de::Error::custom(
+            "browser input coordinates must be finite and normalized to [0, 1]",
+        ))
     }
 }
 

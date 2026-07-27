@@ -26,9 +26,10 @@ use hypercolor_types::spatial::SpatialLayout;
 use super::cache::{WS_BUFFER_SIZE, WsClientGuard, track_ws_bytes_sent};
 use super::command::dispatch_command;
 use super::protocol::{
-    BrowserInputEdgeWire, ClientMessage, HelloFps, HelloState, NameRef, SceneRef, ServerMessage,
-    SubscriptionState, WsChannel, WsProtocolError, parse_channels, sorted_channel_names,
-    unique_sorted_channel_names, ws_capabilities,
+    BrowserInputEdgeWire, ClientMessage, HelloFps, HelloState, MAX_WS_MESSAGE_BYTES, NameRef,
+    SceneRef, ServerMessage, SubscriptionState, WsChannel, WsProtocolError, parse_channels,
+    sorted_channel_names, unique_sorted_channel_names, validate_browser_input_source_id,
+    ws_capabilities,
 };
 use super::relays::{
     publish_subscriptions, relay_canvas, relay_device_metrics, relay_display_preview, relay_events,
@@ -58,6 +59,9 @@ pub(crate) async fn ws_handler(
 
     let auth_context =
         auth_context.map_or_else(RequestAuthContext::unsecured, |Extension(context)| context);
+    let ws = ws
+        .max_message_size(MAX_WS_MESSAGE_BYTES)
+        .max_frame_size(MAX_WS_MESSAGE_BYTES);
     upgrade_handler(ws, move |socket| handle_socket(socket, state, auth_context))
 }
 
@@ -126,6 +130,11 @@ async fn handle_socket(
     auth_context: RequestAuthContext,
 ) {
     let _client_guard = WsClientGuard::register();
+    let input_source_id = next_browser_input_source_id();
+    if let Err(error) = validate_browser_input_source_id(&input_source_id) {
+        warn!(message = %error.message, "Generated an invalid browser input source id");
+        return;
+    }
 
     let initial_subscriptions = SubscriptionState::default();
     let (subscriptions_tx, subscriptions_rx) = watch::channel(initial_subscriptions.clone());
@@ -229,7 +238,6 @@ async fn handle_socket(
     let mut awaiting_pong = false;
     let mut ping_sent_at = Instant::now();
     let mut zone_layout_preview_keys = HashSet::<(SceneId, ZoneId)>::new();
-    let input_source_id = next_browser_input_source_id();
     // Drop guard, not tail code: if this connection future is aborted or
     // dropped mid-select, injected keys and buttons still release.
     let _input_release_guard = BrowserInputReleaseGuard {

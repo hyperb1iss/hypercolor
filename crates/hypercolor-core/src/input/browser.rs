@@ -9,7 +9,7 @@
 //! `source_id` per socket so browser pointers never implicitly merge with
 //! each other or with host input.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use crate::input::input_mono_ms;
@@ -18,6 +18,8 @@ use crate::input::{SourceKind, SourceStatusHandle, SourceStatusReporter};
 use crate::types::event::{InputButtonState, InputEvent, TimedInputEvent};
 
 const DEFAULT_EVENT_LIMIT: usize = 256;
+const MAX_HELD_KEYS_PER_SOURCE: usize = 128;
+const MAX_HELD_BUTTONS_PER_SOURCE: usize = 16;
 
 /// One injected edge from a browser preview, already normalized.
 #[derive(Debug, Clone, PartialEq)]
@@ -40,11 +42,11 @@ pub enum BrowserInputEdge {
 
 #[derive(Default)]
 struct SharedState {
-    events: Vec<TimedInputEvent>,
+    events: VecDeque<TimedInputEvent>,
     dropped: u32,
     pressed_keys: BTreeMap<String, BTreeSet<String>>,
     held_buttons: BTreeMap<String, BTreeSet<String>>,
-    recent_keys: Vec<String>,
+    recent_keys: VecDeque<String>,
     cursor: BTreeMap<String, (f32, f32)>,
     /// Source id of the most recently moved pointer, so the primary pointer
     /// tracks real activity rather than lexical source order.
@@ -165,12 +167,16 @@ impl BrowserInputHandle {
             BrowserInputEdge::Key { key, state: st } => {
                 match st {
                     InputButtonState::Pressed => {
-                        state
-                            .pressed_keys
-                            .entry(source_id.to_owned())
-                            .or_default()
-                            .insert(key.clone());
-                        state.recent_keys.push(key.clone());
+                        if !try_press(
+                            &mut state.pressed_keys,
+                            source_id,
+                            &key,
+                            MAX_HELD_KEYS_PER_SOURCE,
+                        ) {
+                            state.dropped = state.dropped.saturating_add(1);
+                            return;
+                        }
+                        state.recent_keys.push_back(key.clone());
                         cap_recent(&mut state.recent_keys, self.event_limit);
                     }
                     InputButtonState::Released => {
@@ -200,11 +206,15 @@ impl BrowserInputHandle {
             BrowserInputEdge::Button { button, state: st } => {
                 match st {
                     InputButtonState::Pressed => {
-                        state
-                            .held_buttons
-                            .entry(source_id.to_owned())
-                            .or_default()
-                            .insert(button.clone());
+                        if !try_press(
+                            &mut state.held_buttons,
+                            source_id,
+                            &button,
+                            MAX_HELD_BUTTONS_PER_SOURCE,
+                        ) {
+                            state.dropped = state.dropped.saturating_add(1);
+                            return;
+                        }
                     }
                     InputButtonState::Released => {
                         if let Some(held) = state.held_buttons.get_mut(source_id) {
@@ -298,7 +308,7 @@ impl BrowserInputSource {
     fn build_snapshot(&mut self, guard: &mut SharedState) -> InteractionData {
         let mut data = InteractionData::default();
         data.keyboard.pressed_keys = guard.union_pressed();
-        data.keyboard.recent_keys = std::mem::take(&mut guard.recent_keys);
+        data.keyboard.recent_keys = guard.recent_keys.drain(..).collect();
         data.mouse.buttons = guard.union_buttons();
         data.mouse.down = !data.mouse.buttons.is_empty();
         if let Some((nx, ny)) = guard.primary_cursor() {
@@ -388,7 +398,7 @@ impl InputSource for BrowserInputSource {
             return (Ok(InputData::None), Vec::new());
         };
         // One lock for both halves so batch and held state stay coherent.
-        let events = std::mem::take(&mut guard.events);
+        let events = drain_events(&mut guard.events);
         let snapshot = self.build_snapshot(&mut guard);
         (Ok(InputData::Interaction(snapshot)), events)
     }
@@ -422,28 +432,46 @@ impl InputSource for BrowserInputSource {
 
     fn drain_events(&mut self) -> Vec<TimedInputEvent> {
         if let Ok(mut guard) = self.shared.lock() {
-            return std::mem::take(&mut guard.events);
+            return drain_events(&mut guard.events);
         }
         Vec::new()
     }
 }
 
 fn push_event(state: &mut SharedState, event: TimedInputEvent, limit: usize) {
-    state.events.push(event);
-    if state.events.len() > limit {
-        let overflow = state.events.len() - limit;
-        state.events.drain(..overflow);
+    if limit == 0 {
         state.dropped = state
             .dropped
-            .saturating_add(u32::try_from(overflow).unwrap_or(u32::MAX));
+            .saturating_add(u32::try_from(state.events.len()).unwrap_or(u32::MAX))
+            .saturating_add(1);
+        state.events.clear();
+        return;
+    }
+    while state.events.len() >= limit {
+        state.events.pop_front();
+        state.dropped = state.dropped.saturating_add(1);
+    }
+    state.events.push_back(event);
+}
+
+fn try_press(
+    held: &mut BTreeMap<String, BTreeSet<String>>,
+    source_id: &str,
+    name: &str,
+    limit: usize,
+) -> bool {
+    let entries = held.entry(source_id.to_owned()).or_default();
+    entries.contains(name) || (entries.len() < limit && entries.insert(name.to_owned()))
+}
+
+fn cap_recent(recent: &mut VecDeque<String>, limit: usize) {
+    while recent.len() > limit {
+        recent.pop_front();
     }
 }
 
-fn cap_recent(recent: &mut Vec<String>, limit: usize) {
-    if recent.len() > limit {
-        let overflow = recent.len() - limit;
-        recent.drain(..overflow);
-    }
+fn drain_events(events: &mut VecDeque<TimedInputEvent>) -> Vec<TimedInputEvent> {
+    events.drain(..).collect()
 }
 
 fn sanitize_unit(value: f32) -> f32 {
@@ -573,6 +601,87 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn bounded_rings_keep_newest_events_in_order_and_report_overflow() {
+        let mut source = BrowserInputSource::new();
+        source.event_limit = 4;
+        source.start().expect("start");
+        let handle = source.handle();
+
+        handle.inject(
+            "browser-1",
+            (0..10).map(|delta_hi_res| BrowserInputEdge::Wheel { delta_hi_res }),
+        );
+
+        let (data, events) = source.sample_and_drain_with_delta_secs(0.0);
+        let InputData::Interaction(data) = data.expect("sample") else {
+            panic!("expected interaction data");
+        };
+        let deltas = events
+            .into_iter()
+            .map(|timed| match timed.event {
+                InputEvent::MouseWheel { delta_hi_res, .. } => delta_hi_res,
+                other => panic!("expected wheel event, got {other:?}"),
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(deltas, vec![6, 7, 8, 9]);
+        assert_eq!(data.batch.dropped_events, 6);
+
+        let next = drain_snapshot(&mut source);
+        assert_eq!(next.batch.dropped_events, 0);
+    }
+
+    #[test]
+    fn event_ring_enforces_a_lowered_or_zero_limit() {
+        let mut state = SharedState::default();
+        let event = TimedInputEvent {
+            event: InputEvent::MouseWheel {
+                source_id: "browser-1".to_owned(),
+                delta_hi_res: 120,
+            },
+            at_ms: 1,
+            seq: 0,
+            physical_code: None,
+            repeat_count: 1,
+        };
+        for _ in 0..4 {
+            push_event(&mut state, event.clone(), 4);
+        }
+
+        push_event(&mut state, event.clone(), 2);
+        assert_eq!(state.events.len(), 2);
+        assert_eq!(state.dropped, 3);
+
+        push_event(&mut state, event, 0);
+        assert!(state.events.is_empty());
+        assert_eq!(state.dropped, 6);
+    }
+
+    #[test]
+    fn held_state_cardinality_is_bounded_per_source() {
+        let mut source = BrowserInputSource::new();
+        source.start().expect("start");
+        let handle = source.handle();
+
+        handle.inject(
+            "browser-1",
+            (0..=MAX_HELD_KEYS_PER_SOURCE).map(|index| BrowserInputEdge::Key {
+                key: format!("key-{index}"),
+                state: InputButtonState::Pressed,
+            }),
+        );
+
+        let (data, events) = source.sample_and_drain_with_delta_secs(0.0);
+        let InputData::Interaction(data) = data.expect("sample") else {
+            panic!("expected interaction data");
+        };
+        assert_eq!(data.keyboard.pressed_keys.len(), MAX_HELD_KEYS_PER_SOURCE);
+        assert_eq!(data.keyboard.recent_keys.len(), MAX_HELD_KEYS_PER_SOURCE);
+        assert_eq!(events.len(), MAX_HELD_KEYS_PER_SOURCE);
+        assert_eq!(data.batch.dropped_events, 1);
     }
 
     #[test]

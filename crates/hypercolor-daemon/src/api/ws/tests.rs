@@ -49,9 +49,11 @@ use super::preview_encode::{
 };
 use super::protocol::{
     ActiveFramesConfig, BrowserInputEdgeWire, CanvasFormat, ChannelConfig, ChannelConfigPatch,
-    ChannelSet, ClientMessage, FrameFormat, FrameZoneSelection, FramesConfig, ServerMessage,
-    SubscriptionState, WsChannel, event_message_parts, parse_channels, should_relay_event,
-    to_snake_case, unique_sorted_channel_names, ws_capabilities,
+    ChannelSet, ClientMessage, FrameFormat, FrameZoneSelection, FramesConfig,
+    MAX_INPUT_INJECT_EVENTS, MAX_INPUT_NAME_BYTES, MAX_INPUT_WHEEL_DELTA, ServerMessage,
+    SubscriptionState, WsChannel, deserialize_finite_coordinate, event_message_parts,
+    parse_channels, should_relay_event, to_snake_case, unique_sorted_channel_names,
+    validate_browser_input_source_id, ws_capabilities,
 };
 use super::relays::{
     build_device_metrics_message, build_metrics_message, publish_subscriptions, relay_canvas,
@@ -2428,6 +2430,123 @@ fn input_inject_message_parses_all_edge_kinds() {
         }
     );
     assert_eq!(edges[3], BrowserInputEdge::Wheel { delta_hi_res: -240 });
+}
+
+#[test]
+fn input_inject_rejects_batches_before_the_bounded_vector_can_grow() {
+    let events = std::iter::repeat_n(
+        r#"{"kind":"wheel","delta_hi_res":1}"#,
+        MAX_INPUT_INJECT_EVENTS + 1,
+    )
+    .collect::<Vec<_>>()
+    .join(",");
+    let raw = format!(r#"{{"type":"input_inject","events":[{events}]}}"#);
+
+    let error = serde_json::from_str::<ClientMessage>(&raw)
+        .expect_err("oversized input batch must be rejected");
+
+    assert!(error.to_string().contains("at most"));
+
+    let exact_events = std::iter::repeat_n(
+        r#"{"kind":"wheel","delta_hi_res":1}"#,
+        MAX_INPUT_INJECT_EVENTS,
+    )
+    .collect::<Vec<_>>()
+    .join(",");
+    let exact = format!(r#"{{"type":"input_inject","events":[{exact_events}]}}"#);
+    let ClientMessage::InputInject { events } =
+        serde_json::from_str::<ClientMessage>(&exact).expect("maximum input batch must parse")
+    else {
+        panic!("expected InputInject");
+    };
+    assert_eq!(events.len(), MAX_INPUT_INJECT_EVENTS);
+}
+
+#[test]
+fn input_inject_rejects_invalid_names_buttons_coordinates_and_wheel_deltas() {
+    use serde::de::value::{Error as ValueError, F32Deserializer};
+
+    let long_name = "a".repeat(MAX_INPUT_NAME_BYTES + 1);
+    let oversized = serde_json::json!({
+        "type": "input_inject",
+        "events": [{"kind": "key", "key": long_name, "state": "pressed"}]
+    });
+    assert!(
+        serde_json::from_value::<ClientMessage>(oversized).is_err(),
+        "oversized key name must be rejected"
+    );
+
+    for key in ["", "line\nbreak", "escape\u{1b}"] {
+        let payload = serde_json::json!({
+            "type": "input_inject",
+            "events": [{"kind": "key", "key": key, "state": "pressed"}]
+        });
+        assert!(
+            serde_json::from_value::<ClientMessage>(payload).is_err(),
+            "empty and control-bearing key names must be rejected"
+        );
+    }
+
+    let invalid_button = serde_json::json!({
+        "type": "input_inject",
+        "events": [{"kind": "button", "button": "side", "state": "pressed"}]
+    });
+    assert!(
+        serde_json::from_value::<ClientMessage>(invalid_button).is_err(),
+        "unknown pointer buttons must be rejected"
+    );
+
+    for coordinate in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        assert!(
+            deserialize_finite_coordinate(F32Deserializer::<ValueError>::new(coordinate)).is_err(),
+            "non-finite coordinate must be rejected"
+        );
+    }
+
+    for coordinate in ["NaN", "Infinity", "1e999", "-1e999"] {
+        let raw = format!(
+            r#"{{"type":"input_inject","events":[{{"kind":"move","nx":{coordinate},"ny":0.5}}]}}"#
+        );
+        assert!(
+            serde_json::from_str::<ClientMessage>(&raw).is_err(),
+            "adversarial coordinate {coordinate} must be rejected"
+        );
+    }
+
+    for coordinate in [-0.01, 1.01] {
+        let payload = serde_json::json!({
+            "type": "input_inject",
+            "events": [{"kind": "move", "nx": coordinate, "ny": 0.5}]
+        });
+        assert!(
+            serde_json::from_value::<ClientMessage>(payload).is_err(),
+            "out-of-range normalized coordinate must be rejected"
+        );
+    }
+
+    for delta in [
+        MAX_INPUT_WHEEL_DELTA.saturating_add(1),
+        MAX_INPUT_WHEEL_DELTA.saturating_neg().saturating_sub(1),
+    ] {
+        let payload = serde_json::json!({
+            "type": "input_inject",
+            "events": [{"kind": "wheel", "delta_hi_res": delta}]
+        });
+        assert!(
+            serde_json::from_value::<ClientMessage>(payload).is_err(),
+            "amplified wheel delta must be rejected"
+        );
+    }
+}
+
+#[test]
+fn browser_input_source_id_validation_rejects_invalid_identifiers() {
+    for source_id in ["", "browser input", "browser/1"] {
+        let source_error = validate_browser_input_source_id(source_id)
+            .expect_err("invalid source id must be rejected");
+        assert_eq!(source_error.message, "Browser input source id is invalid");
+    }
+    validate_browser_input_source_id("browser:42").expect("generated source id must be valid");
 }
 
 #[test]
