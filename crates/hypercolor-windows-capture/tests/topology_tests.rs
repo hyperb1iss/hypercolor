@@ -50,6 +50,32 @@ fn stable_id_survives_enumeration_reorder() {
 }
 
 #[test]
+fn legacy_index_canonicalizes_across_restart_and_reorder() {
+    let before_restart = [
+        monitor(0, "left", -2560, false),
+        monitor(1, "main", 0, true),
+    ];
+    let legacy = MonitorSelector::parse("monitor:1");
+    let selected = legacy
+        .resolve(&before_restart)
+        .expect("legacy selector resolves before restart");
+    let persisted = legacy
+        .canonical_source(&selected.id)
+        .expect("legacy index produces a stable source");
+
+    let after_restart = [
+        monitor(0, "main", 0, true),
+        monitor(1, "left", -2560, false),
+    ];
+    let restored = MonitorSelector::parse(&persisted)
+        .resolve(&after_restart)
+        .expect("stable source survives restart and reorder");
+
+    assert_eq!(restored.id, "main");
+    assert_eq!(restored.index, 0);
+}
+
+#[test]
 fn disappeared_stable_source_is_not_rebound_to_an_index_neighbor() {
     let monitors = [monitor(0, "main", 0, true)];
 

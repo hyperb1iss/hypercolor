@@ -102,6 +102,8 @@ fn dxgi_failure_classes_publish_distinct_issue_codes() {
             "windows_session_unavailable",
         ),
         (CaptureError::DeviceLost, "windows_capture_device_lost"),
+        (CaptureError::AccessLost, "windows_desktop_access_lost"),
+        (CaptureError::Timeout, "windows_capture_timeout"),
         (
             CaptureError::SourceNotFound {
                 requested: "display:missing".to_owned(),

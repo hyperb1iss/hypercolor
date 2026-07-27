@@ -57,6 +57,18 @@ const WORKER_STOP_TIMEOUT: Duration = Duration::from_secs(1);
 /// user cannot act on.
 const REOPEN_BACKOFF: Duration = Duration::from_secs(2);
 
+/// Persists a legacy monitor selector after its stable output id is known.
+pub type CaptureSourceSink = Arc<dyn Fn(ResolvedCaptureSource) + Send + Sync>;
+
+/// A successfully opened legacy source and the stable value it resolved to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedCaptureSource {
+    /// Exact configured value used to open the capture session.
+    pub configured_source: String,
+    /// Stable source value suitable for persistence.
+    pub stable_source: String,
+}
+
 /// Settings shared between the input source handle and the capture worker.
 struct SharedSettings {
     config: Mutex<CaptureConfig>,
@@ -81,6 +93,7 @@ pub struct WindowsScreenCaptureInput {
     worker: Option<CaptureWorker>,
     status: SourceStatusReporter,
     status_session: SourceSessionSlot,
+    source_sink: Option<CaptureSourceSink>,
 }
 
 struct CaptureWorker {
@@ -134,7 +147,15 @@ impl WindowsScreenCaptureInput {
                 false,
             ),
             status_session: SourceSessionSlot::new(),
+            source_sink: None,
         }
+    }
+
+    /// Attach a callback that persists resolved legacy monitor selections.
+    #[must_use]
+    pub fn with_capture_source_sink(mut self, sink: CaptureSourceSink) -> Self {
+        self.source_sink = Some(sink);
+        self
     }
 
     fn spawn_worker(&mut self) -> anyhow::Result<()> {
@@ -151,6 +172,7 @@ impl WindowsScreenCaptureInput {
         let cancel = Arc::new(AtomicBool::new(false));
         let worker_cancel = Arc::clone(&cancel);
         let status_session = self.status_session.clone();
+        let source_sink = self.source_sink.clone();
         let session_generation = self
             .settings
             .session_generation
@@ -168,6 +190,7 @@ impl WindowsScreenCaptureInput {
                     &worker_cancel,
                     status_session,
                     session_generation,
+                    source_sink,
                 );
                 let _ = exit_tx.send(());
             },
@@ -451,6 +474,7 @@ fn run_worker(
     cancel: &Arc<AtomicBool>,
     status_session: SourceSessionSlot,
     session_generation: u64,
+    source_sink: Option<CaptureSourceSink>,
 ) {
     let mut config = settings.snapshot();
     let mut generation = settings.generation.load(Ordering::Acquire);
@@ -496,13 +520,22 @@ fn run_worker(
             }
         }
 
-        let session = match duplicator.as_mut() {
-            Some(session) => session,
-            None => match DesktopDuplicator::open(
-                super::monitor_selector_from_source(&config.source),
-                CAPTURE_TARGET_WIDTH,
-            ) {
+        let session = if let Some(session) = duplicator.as_mut() {
+            session
+        } else {
+            let configured_source = config.source.clone();
+            let selector = super::monitor_selector_from_source(&configured_source);
+            match DesktopDuplicator::open(selector.clone(), CAPTURE_TARGET_WIDTH) {
                 Ok(session) => {
+                    if let Some(source) = selector.canonical_source(session.source_id()) {
+                        if let Some(sink) = source_sink.as_ref() {
+                            sink(ResolvedCaptureSource {
+                                configured_source,
+                                stable_source: source.clone(),
+                            });
+                        }
+                        config.source = source;
+                    }
                     let (width, height) = session.native_extent();
                     info!(
                         source = session.source_id(),
@@ -528,7 +561,7 @@ fn run_worker(
                     }
                     continue;
                 }
-            },
+            }
         };
 
         match session.next_frame(FRAME_WAIT) {
@@ -725,7 +758,10 @@ fn log_open_failure(error: &CaptureError) {
         CaptureError::AlreadyDuplicating => {
             info!("desktop duplication has no free client slot; retrying in the background");
         }
-        CaptureError::AccessDenied | CaptureError::SessionUnavailable => {
+        CaptureError::AccessDenied
+        | CaptureError::SessionUnavailable
+        | CaptureError::AccessLost
+        | CaptureError::Timeout => {
             debug!(%error, "Windows desktop temporarily unavailable; retrying");
         }
         other => warn!(%other, "failed to open Windows screen capture"),
@@ -749,6 +785,13 @@ fn capture_issue(error: &CaptureError) -> SourceIssue {
         CaptureError::DeviceLost => {
             SourceIssue::new("windows_capture_device_lost", error.to_string(), true)
                 .with_remediation("wait for the display driver to recover")
+        }
+        CaptureError::AccessLost => {
+            SourceIssue::new("windows_desktop_access_lost", error.to_string(), true)
+                .with_remediation("wait for the desktop transition to finish")
+        }
+        CaptureError::Timeout => {
+            SourceIssue::new("windows_capture_timeout", error.to_string(), true)
         }
         CaptureError::MonitorNotFound { .. } | CaptureError::SourceNotFound { .. } => {
             SourceIssue::new("windows_capture_source_missing", error.to_string(), true)

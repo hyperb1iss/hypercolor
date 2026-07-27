@@ -36,7 +36,9 @@ use hypercolor_core::input::screen::CaptureConfig as ScreenCaptureConfig;
 #[cfg(target_os = "linux")]
 use hypercolor_core::input::screen::WaylandScreenCaptureInput;
 #[cfg(target_os = "windows")]
-use hypercolor_core::input::screen::WindowsScreenCaptureInput;
+use hypercolor_core::input::screen::{
+    CaptureSourceSink, ResolvedCaptureSource, WindowsScreenCaptureInput,
+};
 use hypercolor_core::input::{InputManager, SensorPoller};
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
@@ -620,12 +622,40 @@ pub(crate) fn build_input_manager(
     // capture demand, exactly like the Wayland source.
     #[cfg(target_os = "windows")]
     if config.capture.enabled {
-        input_manager.add_source(Box::new(WindowsScreenCaptureInput::new(
-            screen_capture_config_from(&config.capture),
-        )));
+        input_manager.add_source(build_windows_screen_capture_source(
+            &config.capture,
+            Arc::clone(config_manager),
+        ));
     }
 
     (input_manager, browser_input)
+}
+
+#[cfg(target_os = "windows")]
+fn windows_capture_source_sink(config_manager: Arc<ConfigManager>) -> CaptureSourceSink {
+    Arc::new(move |resolved: ResolvedCaptureSource| {
+        let mut changed = false;
+        config_manager.modify(|config| {
+            if config.capture.source == resolved.configured_source {
+                config.capture.source.clone_from(&resolved.stable_source);
+                changed = true;
+            }
+        });
+        if changed && let Err(error) = config_manager.save() {
+            warn!(%error, "Failed to persist resolved Windows capture source");
+        }
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn build_windows_screen_capture_source(
+    capture: &hypercolor_types::config::CaptureConfig,
+    config_manager: Arc<ConfigManager>,
+) -> Box<dyn hypercolor_core::input::InputSource> {
+    Box::new(
+        WindowsScreenCaptureInput::new(screen_capture_config_from(capture))
+            .with_capture_source_sink(windows_capture_source_sink(config_manager)),
+    )
 }
 
 /// Build the platform host-input capture source, when config allows one.
@@ -736,3 +766,6 @@ fn noise_gate_to_db(noise_gate: f32) -> f32 {
     let linear = noise_gate.clamp(0.000_001, 1.0);
     20.0 * linear.log10()
 }
+
+#[cfg(all(test, target_os = "windows"))]
+mod tests;

@@ -38,7 +38,7 @@ pub use tune::ColorTuning;
 #[cfg(target_os = "linux")]
 pub use wayland::WaylandScreenCaptureInput;
 #[cfg(target_os = "windows")]
-pub use windows::WindowsScreenCaptureInput;
+pub use windows::{CaptureSourceSink, ResolvedCaptureSource, WindowsScreenCaptureInput};
 
 use crate::input::traits::{InputData, InputSource, ScreenData};
 use crate::input::{SourceKind, SourceStatusHandle, SourceStatusReporter};
@@ -228,9 +228,9 @@ pub fn available_monitors() -> Vec<ScreenMonitor> {
 ///
 /// `capture.source` is a free-form string shared across backends. The XDG
 /// portal picks its own source and leaves the value at "auto", so this only
-/// matters on Windows, which addresses display outputs directly. Accepts
-/// Stable ids are preserved across adapter/output enumeration reorder. Numeric
-/// values remain accepted for configuration compatibility.
+/// matters on Windows, which addresses display outputs directly. Stable ids
+/// survive adapter/output enumeration reorder; numeric values remain accepted
+/// for configuration compatibility.
 #[must_use]
 pub fn monitor_selector_from_source(source: &str) -> hypercolor_windows_capture::MonitorSelector {
     hypercolor_windows_capture::MonitorSelector::parse(source)

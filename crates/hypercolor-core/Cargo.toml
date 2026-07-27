@@ -40,6 +40,9 @@ hypercolor-types = { workspace = true }
 # Unconditional: the shared event vocabulary and the decoding arithmetic
 # compile everywhere, which is what lets Linux CI test the Windows key tables.
 hypercolor-windows-input = { path = "../hypercolor-windows-input" }
+# Unconditional: monitor selector parsing and persistence are platform-neutral;
+# the capture crate supplies stubs when DXGI is unavailable.
+hypercolor-windows-capture = { path = "../hypercolor-windows-capture" }
 hypercolor-driver-api = { workspace = true }
 hypercolor-hal = { workspace = true }
 hypercolor-linux-gpu-interop = { workspace = true, optional = true }
@@ -107,7 +110,6 @@ raw-window-handle = { version = "0.6", optional = true }
 tao = { version = "0.34", default-features = false, features = ["rwh_06"], optional = true }
 wmi = { workspace = true }
 hypercolor-windows-pawnio = { path = "../hypercolor-windows-pawnio" }
-hypercolor-windows-capture = { path = "../hypercolor-windows-capture" }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

@@ -24,8 +24,7 @@ use windows::Win32::Graphics::Dxgi::{
     IDXGIAdapter1, IDXGIFactory1, IDXGIOutput, IDXGIOutput1, IDXGIOutputDuplication, IDXGIResource,
 };
 use windows::Win32::Graphics::Gdi::{DISPLAY_DEVICEW, EnumDisplayDevicesW};
-use windows::core::Interface;
-use windows::core::PCWSTR;
+use windows::core::{HRESULT, Interface, PCWSTR};
 
 use crate::shared::{
     CaptureError, CaptureResult, CursorInfo, DisplayRotation, Frame, MonitorInfo, MonitorSelector,
@@ -36,6 +35,51 @@ use crate::shared::{
 const BYTES_PER_PIXEL: usize = 4;
 const TOPOLOGY_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 const MAX_POINTER_SHAPE_BYTES: usize = 16 * 1024 * 1024;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DesktopFrameSource {
+    AcquiredResource,
+    RetainedStaging,
+}
+
+#[derive(Clone, Copy)]
+struct BgraRows<'a> {
+    bytes: &'a [u8],
+    row_pitch: usize,
+    width: u32,
+    height: u32,
+}
+
+const fn desktop_frame_source(
+    desktop_updated: bool,
+    staging_available: bool,
+) -> DesktopFrameSource {
+    if desktop_updated || !staging_available {
+        DesktopFrameSource::AcquiredResource
+    } else {
+        DesktopFrameSource::RetainedStaging
+    }
+}
+
+fn classify_hresult(
+    context: &'static str,
+    code: HRESULT,
+    message: impl std::fmt::Display,
+) -> CaptureError {
+    match code {
+        DXGI_ERROR_WAIT_TIMEOUT => CaptureError::Timeout,
+        DXGI_ERROR_ACCESS_LOST => CaptureError::AccessLost,
+        E_ACCESSDENIED => CaptureError::AccessDenied,
+        DXGI_ERROR_NOT_CURRENTLY_AVAILABLE => CaptureError::AlreadyDuplicating,
+        DXGI_ERROR_SESSION_DISCONNECTED => CaptureError::SessionUnavailable,
+        DXGI_ERROR_DEVICE_REMOVED | DXGI_ERROR_DEVICE_RESET => CaptureError::DeviceLost,
+        _ => CaptureError::windows(context, message),
+    }
+}
+
+fn classify_windows_error(context: &'static str, source: windows::core::Error) -> CaptureError {
+    classify_hresult(context, source.code(), source)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PointerShapeKind {
@@ -708,7 +752,7 @@ impl DesktopDuplicator {
                 &mut info,
             )
         }
-        .map_err(|source| CaptureError::windows("read desktop pointer shape", source))?;
+        .map_err(|source| classify_windows_error("read desktop pointer shape", source))?;
         let required = required as usize;
         if required > bytes.len() {
             return Err(CaptureError::windows(
@@ -797,9 +841,9 @@ impl DesktopDuplicator {
         };
 
         if let Err(error) = acquire {
-            return match error.code() {
-                DXGI_ERROR_WAIT_TIMEOUT => Ok(None),
-                DXGI_ERROR_ACCESS_LOST => {
+            return match classify_windows_error("acquire duplicated frame", error) {
+                CaptureError::Timeout => Ok(None),
+                CaptureError::AccessLost => {
                     // Mode change, a full-screen app taking over, or the
                     // secure desktop during a UAC prompt. All are transient
                     // and all are fixed by re-duplicating the output.
@@ -807,12 +851,7 @@ impl DesktopDuplicator {
                     self.rebuild()?;
                     Ok(None)
                 }
-                E_ACCESSDENIED => Err(CaptureError::AccessDenied),
-                DXGI_ERROR_SESSION_DISCONNECTED => Err(CaptureError::SessionUnavailable),
-                DXGI_ERROR_DEVICE_REMOVED | DXGI_ERROR_DEVICE_RESET => {
-                    Err(CaptureError::DeviceLost)
-                }
-                _ => Err(CaptureError::windows("acquire duplicated frame", error)),
+                error => Err(error),
             };
         }
         self.frame_held = true;
@@ -839,6 +878,14 @@ impl DesktopDuplicator {
 
         let pointer_updated = match self.update_pointer(&frame_info) {
             Ok(updated) => updated,
+            Err(CaptureError::AccessLost) => {
+                debug!(
+                    operation = "pointer update",
+                    "desktop duplication access lost; rebuilding session"
+                );
+                self.rebuild()?;
+                return Ok(None);
+            }
             Err(error) => {
                 self.release_frame();
                 return Err(error);
@@ -850,20 +897,21 @@ impl DesktopDuplicator {
             return Ok(None);
         }
 
-        let texture = if desktop_updated {
-            let Some(resource) = resource else {
-                self.release_frame();
-                return Ok(None);
-            };
-            match resource.cast::<ID3D11Texture2D>() {
-                Ok(texture) => Some(texture),
-                Err(source) => {
+        let texture = match desktop_frame_source(desktop_updated, self.staging.is_some()) {
+            DesktopFrameSource::AcquiredResource => {
+                let Some(resource) = resource else {
                     self.release_frame();
-                    return Err(CaptureError::windows("query duplicated texture", source));
+                    return Ok(None);
+                };
+                match resource.cast::<ID3D11Texture2D>() {
+                    Ok(texture) => Some(texture),
+                    Err(source) => {
+                        self.release_frame();
+                        return Err(CaptureError::windows("query duplicated texture", source));
+                    }
                 }
             }
-        } else {
-            None
+            DesktopFrameSource::RetainedStaging => None,
         };
 
         let mut rgba = self
@@ -874,6 +922,14 @@ impl DesktopDuplicator {
             .unwrap_or_default();
         let result = self.read_back(texture.as_ref(), &mut rgba);
         self.release_frame();
+        if matches!(result, Err(CaptureError::AccessLost)) {
+            debug!(
+                operation = "desktop readback",
+                "desktop duplication access lost; rebuilding session"
+            );
+            self.rebuild()?;
+            return Ok(None);
+        }
         let Some((width, height, native_width, native_height)) = result? else {
             return Ok(None);
         };
@@ -924,12 +980,20 @@ impl DesktopDuplicator {
             self.context
                 .Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
         }
-        .map_err(|source| CaptureError::windows("map staging texture", source))?;
+        .map_err(|source| classify_windows_error("map staging texture", source))?;
 
-        let (width, height) = Self::copy_mapped_rows(
-            &mapped,
-            native_width,
-            native_height,
+        let row_pitch = mapped.RowPitch as usize;
+        let source_len = row_pitch * native_height as usize;
+        // SAFETY: Map returned at least RowPitch * Height live bytes for this
+        // subresource, and the slice is consumed before the paired Unmap.
+        let source = unsafe { std::slice::from_raw_parts(mapped.pData.cast::<u8>(), source_len) };
+        let dimensions = Self::copy_bgra_rows(
+            BgraRows {
+                bytes: source,
+                row_pitch,
+                width: native_width,
+                height: native_height,
+            },
             rgba,
             self.max_width,
             &self.pointer,
@@ -938,6 +1002,10 @@ impl DesktopDuplicator {
 
         // SAFETY: pairs with the Map above on the same subresource.
         unsafe { self.context.Unmap(&staging, 0) };
+
+        let Some((width, height)) = dimensions else {
+            return Ok(None);
+        };
 
         Ok(Some((width, height, native_width, native_height)))
     }
@@ -952,29 +1020,31 @@ impl DesktopDuplicator {
     /// point samplings of a 4K desktop shred thin text into aliased noise. The
     /// Wayland path never had this problem because PipeWire hands over an
     /// already-filtered frame.
-    fn copy_mapped_rows(
-        mapped: &D3D11_MAPPED_SUBRESOURCE,
-        width: u32,
-        height: u32,
+    fn copy_bgra_rows(
+        rows: BgraRows<'_>,
         rgba: &mut Vec<u8>,
         max_width: u32,
         pointer: &PointerState,
         rotation: DisplayRotation,
-    ) -> (u32, u32) {
+    ) -> Option<(u32, u32)> {
+        let BgraRows {
+            bytes: source,
+            row_pitch,
+            width,
+            height,
+        } = rows;
+        let minimum_row_bytes = width as usize * BYTES_PER_PIXEL;
+        let source_len = row_pitch.checked_mul(height as usize);
+        if row_pitch < minimum_row_bytes || source_len.is_none_or(|len| source.len() < len) {
+            return None;
+        }
         let stride = subsample_stride(width, max_width);
         let out_width = subsampled_extent(width, stride);
         let out_height = subsampled_extent(height, stride);
-        let row_pitch = mapped.RowPitch as usize;
-        let source_len = row_pitch * height as usize;
-
         rgba.resize(
             out_width as usize * out_height as usize * BYTES_PER_PIXEL,
             0,
         );
-
-        // SAFETY: Map handed back a buffer of at least RowPitch * Height
-        // bytes for this subresource, and it stays valid until Unmap.
-        let source = unsafe { std::slice::from_raw_parts(mapped.pData.cast::<u8>(), source_len) };
 
         let stride = stride as usize;
         let width = width as usize;
@@ -1029,7 +1099,7 @@ impl DesktopDuplicator {
             }
         }
 
-        (out_width, out_height)
+        Some((out_width, out_height))
     }
 
     /// Return a staging texture matching `desc`, rebuilding on size change.
@@ -1059,7 +1129,7 @@ impl DesktopDuplicator {
                 self.device
                     .CreateTexture2D(&staging_desc, None, Some(&mut texture))
             }
-            .map_err(|source| CaptureError::windows("create staging texture", source))?;
+            .map_err(|source| classify_windows_error("create staging texture", source))?;
 
             let texture = texture.ok_or_else(|| {
                 CaptureError::windows(
@@ -1205,17 +1275,13 @@ fn duplicate_output(
     device: &ID3D11Device,
 ) -> CaptureResult<IDXGIOutputDuplication> {
     // SAFETY: both interfaces outlive the call.
-    unsafe { output.DuplicateOutput(device) }.map_err(|source| match source.code() {
-        E_ACCESSDENIED => CaptureError::AccessDenied,
-        DXGI_ERROR_NOT_CURRENTLY_AVAILABLE => CaptureError::AlreadyDuplicating,
-        DXGI_ERROR_SESSION_DISCONNECTED => CaptureError::SessionUnavailable,
-        DXGI_ERROR_DEVICE_REMOVED | DXGI_ERROR_DEVICE_RESET => CaptureError::DeviceLost,
-        // Raised on hybrid-graphics hosts when the desktop is not on this
-        // adapter's output. Callers surface it as "capture unavailable".
-        DXGI_ERROR_UNSUPPORTED => {
-            CaptureError::windows("duplicate output (desktop is not on this adapter)", source)
-        }
-        _ => CaptureError::windows("duplicate output", source),
+    unsafe { output.DuplicateOutput(device) }.map_err(|source| {
+        let context = if source.code() == DXGI_ERROR_UNSUPPORTED {
+            "duplicate output (desktop is not on this adapter)"
+        } else {
+            "duplicate output"
+        };
+        classify_windows_error(context, source)
     })
 }
 

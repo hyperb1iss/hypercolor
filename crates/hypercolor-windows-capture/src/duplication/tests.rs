@@ -1,8 +1,14 @@
 use super::{
-    PointerShape, PointerShapeKind, PointerState, TopologyEntry, TopologyState, average_channel,
-    logical_to_scanout, pointer_scanout_geometry, scanout_to_logical,
+    DesktopFrameSource, PointerShape, PointerShapeKind, PointerState, TopologyEntry, TopologyState,
+    average_channel, classify_hresult, desktop_frame_source, logical_to_scanout,
+    pointer_scanout_geometry, scanout_to_logical,
 };
-use crate::DisplayRotation;
+use crate::{CaptureError, DisplayRotation};
+use windows::Win32::Foundation::{E_ACCESSDENIED, E_FAIL};
+use windows::Win32::Graphics::Dxgi::{
+    DXGI_ERROR_ACCESS_LOST, DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET,
+    DXGI_ERROR_NOT_CURRENTLY_AVAILABLE, DXGI_ERROR_SESSION_DISCONNECTED, DXGI_ERROR_WAIT_TIMEOUT,
+};
 
 fn topology_entry(id: &str, origin_x: i32) -> TopologyEntry {
     TopologyEntry {
@@ -40,6 +46,115 @@ fn pointer(kind: PointerShapeKind, bytes: Vec<u8>) -> PointerState {
         }),
         shape_generation: 1,
     }
+}
+
+#[test]
+fn cursor_only_frame_seeds_staging_once_then_reuses_it() {
+    assert_eq!(
+        desktop_frame_source(false, false),
+        DesktopFrameSource::AcquiredResource
+    );
+    assert_eq!(
+        desktop_frame_source(false, true),
+        DesktopFrameSource::RetainedStaging
+    );
+    assert_eq!(
+        desktop_frame_source(true, true),
+        DesktopFrameSource::AcquiredResource
+    );
+}
+
+#[test]
+fn retained_clean_staging_recomposes_a_moving_pointer_without_residue() {
+    let desktop = [10_u8, 20, 30, 255, 40, 50, 60, 255];
+    let mut pointer = pointer(PointerShapeKind::Color, vec![200, 100, 50, 255]);
+    let mut rgba = Vec::new();
+
+    super::DesktopDuplicator::copy_bgra_rows(
+        super::BgraRows {
+            bytes: &desktop,
+            row_pitch: 8,
+            width: 2,
+            height: 1,
+        },
+        &mut rgba,
+        2,
+        &pointer,
+        DisplayRotation::Identity,
+    )
+    .expect("valid desktop rows are reduced");
+    assert_eq!(rgba, [50, 100, 200, 255, 60, 50, 40, 255]);
+
+    pointer.position_x = 1;
+    super::DesktopDuplicator::copy_bgra_rows(
+        super::BgraRows {
+            bytes: &desktop,
+            row_pitch: 8,
+            width: 2,
+            height: 1,
+        },
+        &mut rgba,
+        2,
+        &pointer,
+        DisplayRotation::Identity,
+    )
+    .expect("valid desktop rows are reduced");
+    assert_eq!(rgba, [30, 20, 10, 255, 50, 100, 200, 255]);
+}
+
+#[test]
+fn bgra_rows_reject_a_pitch_narrower_than_the_pixel_width() {
+    let pointer = PointerState::default();
+    let mut rgba = Vec::new();
+
+    let dimensions = super::DesktopDuplicator::copy_bgra_rows(
+        super::BgraRows {
+            bytes: &[0; 4],
+            row_pitch: 3,
+            width: 1,
+            height: 1,
+        },
+        &mut rgba,
+        1,
+        &pointer,
+        DisplayRotation::Identity,
+    );
+
+    assert_eq!(dimensions, None);
+    assert!(rgba.is_empty());
+}
+
+#[test]
+fn dxgi_hresult_classifier_preserves_recovery_classes() {
+    for (code, expected) in [
+        (DXGI_ERROR_WAIT_TIMEOUT, CaptureError::Timeout),
+        (DXGI_ERROR_ACCESS_LOST, CaptureError::AccessLost),
+        (E_ACCESSDENIED, CaptureError::AccessDenied),
+        (
+            DXGI_ERROR_NOT_CURRENTLY_AVAILABLE,
+            CaptureError::AlreadyDuplicating,
+        ),
+        (
+            DXGI_ERROR_SESSION_DISCONNECTED,
+            CaptureError::SessionUnavailable,
+        ),
+        (DXGI_ERROR_DEVICE_REMOVED, CaptureError::DeviceLost),
+        (DXGI_ERROR_DEVICE_RESET, CaptureError::DeviceLost),
+    ] {
+        let classified = classify_hresult("synthetic operation", code, "synthetic failure");
+        assert_eq!(
+            std::mem::discriminant(&classified),
+            std::mem::discriminant(&expected)
+        );
+    }
+
+    assert!(matches!(
+        classify_hresult("synthetic operation", E_FAIL, "synthetic failure"),
+        CaptureError::Windows {
+            context: "synthetic operation",
+            ..
+        }
+    ));
 }
 
 #[test]

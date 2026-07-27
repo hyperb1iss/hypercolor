@@ -48,6 +48,14 @@ pub enum CaptureError {
     #[error("the capture graphics device was removed or reset")]
     DeviceLost,
 
+    /// The duplicated desktop changed and the capture session must reopen it.
+    #[error("desktop duplication access was lost during a display transition")]
+    AccessLost,
+
+    /// A Windows capture operation exceeded its wait budget.
+    #[error("the Windows capture operation timed out")]
+    Timeout,
+
     /// A Windows API call failed.
     ///
     /// Carries a rendered message rather than the `windows` error type: with
@@ -271,6 +279,12 @@ impl MonitorSelector {
         source
             .parse::<usize>()
             .map_or_else(|_| Self::StableId(source.to_owned()), Self::Index)
+    }
+
+    /// Convert a resolved legacy index into its stable persisted form.
+    #[must_use]
+    pub fn canonical_source(&self, resolved_source_id: &str) -> Option<String> {
+        matches!(self, Self::Index(_)).then(|| format!("monitor:{resolved_source_id}"))
     }
 
     /// Resolve this selection against one topology snapshot.
