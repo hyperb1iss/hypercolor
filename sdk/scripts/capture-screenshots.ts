@@ -28,8 +28,14 @@ const DEFAULT_CAPTURE_MS = 6000
 const DEFAULT_KEEP = 3
 const MAX_PRESETS_PER_EFFECT = 3
 
-/** Effect slugs we skip entirely — utility/diagnostic tools, not visual effects. */
-const SKIP_SLUGS = new Set(['calibration', 'screen-cast', 'sensor-grid', 'solid-color', 'web-viewport'])
+/**
+ * Effect slugs we skip entirely — utility/diagnostic tools, not visual effects.
+ *
+ * `ambilight`, `screen-cast` and `web-viewport` render host screen content, so
+ * a capture would bake whatever was on the operator's monitor into artwork that
+ * ships publicly. Never capture these.
+ */
+const SKIP_SLUGS = new Set(['ambilight', 'calibration', 'screen-cast', 'sensor-grid', 'solid-color', 'web-viewport'])
 
 /** Effect tags that mark utility effects. */
 const SKIP_TAGS = new Set(['utility', 'calibration'])
