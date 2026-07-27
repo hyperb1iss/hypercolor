@@ -294,20 +294,6 @@ impl WindowsHostInput {
         epoch
     }
 
-    /// Build and fence a failed-session epoch for lifecycle contract tests.
-    #[doc(hidden)]
-    pub fn test_failed_session_epoch(&mut self) -> u64 {
-        let failed_epoch = self.rotate_epoch_and_clear();
-        self.rotate_epoch_and_clear();
-        failed_epoch
-    }
-
-    /// Fold a worker batch without consuming the public event drain.
-    #[doc(hidden)]
-    pub fn test_fold_worker_batch(&self, batch: RawInputBatch<'_>) {
-        fold_batch(&self.shared, batch, self.event_limit);
-    }
-
     /// Infallible by design.
     ///
     /// Every way host capture can fail on Windows — no visible window station,
@@ -909,3 +895,6 @@ fn windows_key_physical_code(
     };
     Some(format!("windows:set1:{prefix}:{make_code:02x}"))
 }
+
+#[cfg(test)]
+mod tests;

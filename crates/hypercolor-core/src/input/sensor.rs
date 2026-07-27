@@ -1,7 +1,7 @@
 //! Background system sensor polling for the render pipeline.
 
 use std::sync::Arc;
-use std::sync::mpsc::{self, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -14,9 +14,10 @@ use sysinfo::{
     Components, CpuRefreshKind, MINIMUM_CPU_UPDATE_INTERVAL, MemoryRefreshKind, RefreshKind, System,
 };
 
-use crate::input::worker_retention::spawn_input_worker;
+use crate::input::worker_retention::{retain_input_worker, spawn_input_worker};
 
 const DEFAULT_SENSOR_POLL_INTERVAL: Duration = Duration::from_secs(2);
+const SENSOR_STOP_TIMEOUT: Duration = Duration::from_secs(1);
 const BYTES_PER_MEGABYTE: f64 = 1_000_000.0;
 
 /// Backoff between attempts to open the Windows PawnIO CPU temperature
@@ -37,6 +38,7 @@ pub struct SensorPoller {
 
 struct SensorPollerThread {
     stop_tx: Sender<()>,
+    exit_rx: Receiver<()>,
     join_handle: JoinHandle<()>,
 }
 
@@ -79,6 +81,7 @@ impl SensorPoller {
         let interval = self.interval;
         let tx = self.tx.clone();
         let (stop_tx, stop_rx) = mpsc::channel();
+        let (exit_tx, exit_rx) = mpsc::sync_channel(1);
         #[cfg(test)]
         let mut sampler = self.sampler.take();
         let join_handle = spawn_input_worker(
@@ -93,6 +96,7 @@ impl SensorPoller {
                             Err(RecvTimeoutError::Timeout) => {}
                         }
                     }
+                    let _ = exit_tx.send(());
                     return;
                 }
 
@@ -104,12 +108,14 @@ impl SensorPoller {
                         Err(RecvTimeoutError::Timeout) => {}
                     }
                 }
+                let _ = exit_tx.send(());
             },
         )
         .context("failed to spawn sensor poller thread")?;
 
         self.thread = Some(SensorPollerThread {
             stop_tx,
+            exit_rx,
             join_handle,
         });
         Ok(())
@@ -117,14 +123,24 @@ impl SensorPoller {
 
     /// Stop the poller thread if it is running.
     pub fn stop(&mut self) {
+        self.stop_with_timeout(SENSOR_STOP_TIMEOUT);
+    }
+
+    fn stop_with_timeout(&mut self, timeout: Duration) {
         let Some(thread) = self.thread.take() else {
             return;
         };
 
         let _ = thread.stop_tx.send(());
-        if let Err(error) = thread.join_handle.join() {
-            debug!("sensor poller thread join failed: {error:?}");
+        let _ = thread.exit_rx.recv_timeout(timeout);
+        if thread.join_handle.is_finished() {
+            if let Err(error) = thread.join_handle.join() {
+                debug!("sensor poller thread join failed: {error:?}");
+            }
+            return;
         }
+        tracing::warn!("sensor poller did not stop before the deadline; retaining its join handle");
+        retain_input_worker(thread.join_handle, "sensor poller");
     }
 
     #[cfg(test)]
@@ -743,7 +759,8 @@ mod tests {
     use hypercolor_types::sensor::SystemSnapshot;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::Duration;
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn poller_publishes_updated_snapshots() {
@@ -775,6 +792,35 @@ mod tests {
 
         assert!(second > first);
         poller.stop();
+    }
+
+    #[test]
+    fn blocked_sampler_does_not_make_stop_unbounded() {
+        let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+        let (release_tx, release_rx) = mpsc::sync_channel(1);
+        let mut poller = SensorPoller::with_interval(Duration::from_millis(20));
+        poller.set_test_sampler(move || {
+            let _ = entered_tx.send(());
+            let _ = release_rx.recv();
+            SystemSnapshot::empty()
+        });
+        poller.start().expect("blocked sensor poller should start");
+        entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("test sampler should enter its blocking call");
+
+        let started = Instant::now();
+        poller.stop_with_timeout(Duration::from_millis(5));
+
+        assert!(
+            started.elapsed() < Duration::from_millis(100),
+            "bounded sensor stop took {:?}",
+            started.elapsed()
+        );
+        poller.stop();
+        release_tx
+            .send(())
+            .expect("blocked test sampler should be releasable");
     }
 
     #[cfg(target_os = "windows")]

@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use hypercolor_core::input::{InputSource, PointerMode, WindowsHostInput};
+use hypercolor_core::input::{PointerMode, WindowsHostInput};
 use hypercolor_core::types::event::{InputButtonState, InputEvent};
 use hypercolor_windows_input::{
     RawButton, RawCursor, RawDeviceKind, RawInputBatch, RawInputEvent, RawKeyPrefix,
@@ -552,26 +552,6 @@ fn a_batch_from_a_retired_session_is_inert() {
         "a stale batch must not touch held state"
     );
     assert!(drained.is_empty(), "and must not reach the event bus");
-}
-
-#[test]
-fn a_failed_start_fences_every_late_initial_batch_from_the_event_drain() {
-    let mut input = WindowsHostInput::new(true, true);
-    let failed_epoch = input.test_failed_session_epoch();
-    assert_ne!(input.epoch(), failed_epoch);
-
-    let events = [key(KBD_A, 0x1E, true)];
-    input.test_fold_worker_batch(RawInputBatch {
-        events: &events,
-        cursor: None,
-        at_ms: 1,
-        epoch: failed_epoch,
-    });
-
-    assert!(
-        input.drain_events().is_empty(),
-        "a late initial batch from a failed session must never reach consumers"
-    );
 }
 
 #[test]
