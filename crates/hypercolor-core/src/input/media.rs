@@ -1016,9 +1016,20 @@ enum MediaPublicationKind {
     BackendFailure,
 }
 
-#[derive(Default)]
 struct MediaPublicationState {
+    latest_generation: u64,
+    active_generation: Option<u64>,
     artwork_key: Option<String>,
+}
+
+impl MediaPublicationState {
+    fn initial() -> Self {
+        Self {
+            latest_generation: 1,
+            active_generation: Some(1),
+            artwork_key: None,
+        }
+    }
 }
 
 /// Publication seam shared by providers, enrichment, and the input source.
@@ -1027,13 +1038,17 @@ pub struct MediaPollPublisher {
     state_tx: watch::Sender<Arc<MediaState>>,
     poll_tx: watch::Sender<Option<Arc<CompletedMediaPoll>>>,
     publication: Arc<Mutex<MediaPublicationState>>,
+    generation: u64,
 }
 
 impl MediaPollPublisher {
     /// Publish one successfully completed backend poll.
-    pub fn publish_completed(&self, state: MediaState, completed_at: Instant) {
+    ///
+    /// Returns `false` after this publisher's source generation is retired.
+    #[must_use]
+    pub fn publish_completed(&self, state: MediaState, completed_at: Instant) -> bool {
         let key = state.available.then(|| state.track_key());
-        self.publish_metadata(state, key, completed_at);
+        self.publish_metadata(state, key, completed_at)
     }
 
     fn publish_metadata(
@@ -1041,11 +1056,14 @@ impl MediaPollPublisher {
         mut state: MediaState,
         artwork_key: Option<String>,
         completed_at: Instant,
-    ) {
+    ) -> bool {
         let mut publication = self
             .publication
             .lock()
             .expect("media publication lock is not poisoned");
+        if publication.active_generation != Some(self.generation) {
+            return false;
+        }
         if publication.artwork_key == artwork_key {
             state
                 .art_data_url
@@ -1055,13 +1073,17 @@ impl MediaPollPublisher {
         }
         self.publish(state, completed_at, MediaPublicationKind::BackendSuccess);
         drop(publication);
+        true
     }
 
-    fn publish_unavailable(&self, completed_at: Instant) {
+    fn publish_unavailable(&self, completed_at: Instant) -> bool {
         let mut publication = self
             .publication
             .lock()
             .expect("media publication lock is not poisoned");
+        if publication.active_generation != Some(self.generation) {
+            return false;
+        }
         publication.artwork_key = None;
         self.publish(
             MediaState::unavailable(),
@@ -1069,6 +1091,7 @@ impl MediaPollPublisher {
             MediaPublicationKind::BackendFailure,
         );
         drop(publication);
+        true
     }
 
     fn publish_enrichment(&self, key: &str, data_url: String) {
@@ -1076,7 +1099,9 @@ impl MediaPollPublisher {
             .publication
             .lock()
             .expect("media publication lock is not poisoned");
-        if publication.artwork_key.as_deref() != Some(key) {
+        if publication.active_generation != Some(self.generation)
+            || publication.artwork_key.as_deref() != Some(key)
+        {
             return;
         }
         let mut state = self.state_tx.borrow().as_ref().clone();
@@ -1104,16 +1129,51 @@ impl MediaPollPublisher {
         })));
     }
 
-    fn reset(&self) {
+    fn begin_successor(&self) -> Self {
         let mut publication = self
             .publication
             .lock()
             .expect("media publication lock is not poisoned");
+        let generation = publication
+            .latest_generation
+            .checked_add(1)
+            .expect("media publication generation exhausted");
+        publication.latest_generation = generation;
+        publication.active_generation = Some(generation);
         publication.artwork_key = None;
         self.state_tx
             .send_replace(Arc::new(MediaState::unavailable()));
         self.poll_tx.send_replace(None);
         drop(publication);
+        Self {
+            state_tx: self.state_tx.clone(),
+            poll_tx: self.poll_tx.clone(),
+            publication: Arc::clone(&self.publication),
+            generation,
+        }
+    }
+
+    fn retire(&self) {
+        let mut publication = self
+            .publication
+            .lock()
+            .expect("media publication lock is not poisoned");
+        if publication.active_generation != Some(self.generation) {
+            return;
+        }
+        publication.active_generation = None;
+        publication.artwork_key = None;
+        self.state_tx
+            .send_replace(Arc::new(MediaState::unavailable()));
+        self.poll_tx.send_replace(None);
+    }
+
+    fn is_active(&self) -> bool {
+        self.publication
+            .lock()
+            .expect("media publication lock is not poisoned")
+            .active_generation
+            == Some(self.generation)
     }
 }
 
@@ -1233,7 +1293,8 @@ impl MediaSource {
             publisher: MediaPollPublisher {
                 state_tx,
                 poll_tx,
-                publication: Arc::new(Mutex::new(MediaPublicationState::default())),
+                publication: Arc::new(Mutex::new(MediaPublicationState::initial())),
+                generation: 1,
             },
             state_rx,
             poll_rx,
@@ -1263,6 +1324,22 @@ impl MediaSource {
     pub fn publisher(&self) -> MediaPollPublisher {
         self.publisher.clone()
     }
+
+    /// Apply the terminal state transition for an exited poller.
+    #[doc(hidden)]
+    pub fn report_poller_exit(&mut self, reason: impl Into<String>) {
+        self.publisher.retire();
+        self.running = false;
+        self.last_poll = None;
+        self.last_sampled = None;
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        {
+            self.poller = None;
+        }
+        if let Some(status) = self.status.session() {
+            status.failed(SourceIssue::new("media_poller_exited", reason.into(), true));
+        }
+    }
 }
 
 impl Default for MediaSource {
@@ -1290,10 +1367,10 @@ impl InputSource for MediaSource {
             }
         }
 
-        self.publisher.reset();
+        let status = self.status.begin_session()?;
+        self.publisher = self.publisher.begin_successor();
         self.last_poll = None;
         self.last_sampled = None;
-        let status = self.status.begin_session()?;
 
         #[cfg(any(target_os = "linux", target_os = "windows"))]
         {
@@ -1308,7 +1385,7 @@ impl InputSource for MediaSource {
                         ));
                     }
                     self.status.stop();
-                    self.publisher.reset();
+                    self.publisher.retire();
                     return Err(error);
                 }
             };
@@ -1335,6 +1412,10 @@ impl InputSource for MediaSource {
     }
 
     fn stop(&mut self) {
+        self.publisher.retire();
+        self.running = false;
+        self.last_poll = None;
+        self.last_sampled = None;
         self.status.stop();
         #[cfg(any(target_os = "linux", target_os = "windows"))]
         if let Some(poller) = self.poller.as_mut()
@@ -1342,25 +1423,19 @@ impl InputSource for MediaSource {
         {
             self.poller = None;
         }
-        self.running = false;
-        self.last_poll = None;
-        self.last_sampled = None;
     }
 
     fn sample(&mut self) -> Result<InputData> {
+        if !self.publisher.is_active() {
+            return Ok(InputData::None);
+        }
         #[cfg(any(target_os = "linux", target_os = "windows"))]
         if let Some(reason) = self
             .poller
             .as_mut()
             .and_then(worker::MediaPollerThread::observe_exit)
         {
-            self.poller = None;
-            self.publisher.reset();
-            self.last_poll = None;
-            self.last_sampled = None;
-            if let Some(status) = self.status.session() {
-                status.failed(SourceIssue::new("media_poller_exited", reason, true));
-            }
+            self.report_poller_exit(reason);
             return Ok(InputData::None);
         }
         let Some(poll) = self.poll_rx.borrow().clone() else {
@@ -1613,7 +1688,11 @@ mod worker {
                     match poll {
                         Ok(Ok(metadata)) => {
                             let key = metadata.artwork.as_ref().map(|request| request.key.clone());
-                            publisher.publish_metadata(metadata.state, key, std::time::Instant::now());
+                            let _ = publisher.publish_metadata(
+                                metadata.state,
+                                key,
+                                std::time::Instant::now(),
+                            );
                             if metadata.artwork != last_artwork {
                                 last_artwork.clone_from(&metadata.artwork);
                                 art_tx.send_replace(metadata.artwork.map(Arc::new));
@@ -1630,7 +1709,7 @@ mod worker {
                                     .with_remediation(native_remediation()),
                                 );
                             }
-                            publisher.publish_unavailable(std::time::Instant::now());
+                            let _ = publisher.publish_unavailable(std::time::Instant::now());
                             if last_artwork.take().is_some() {
                                 art_tx.send_replace(None);
                             }
@@ -1643,7 +1722,7 @@ mod worker {
                                     true,
                                 ));
                             }
-                            publisher.publish_unavailable(std::time::Instant::now());
+                            let _ = publisher.publish_unavailable(std::time::Instant::now());
                             if last_artwork.take().is_some() {
                                 art_tx.send_replace(None);
                             }
@@ -1661,7 +1740,7 @@ mod worker {
                                     true,
                                 ));
                             }
-                            publisher.publish_unavailable(std::time::Instant::now());
+                            let _ = publisher.publish_unavailable(std::time::Instant::now());
                             if last_artwork.take().is_some() {
                                 art_tx.send_replace(None);
                             }

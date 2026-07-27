@@ -539,6 +539,37 @@ impl ArtworkBlockingBackend for ReplacementBlockingBackend {
     }
 }
 
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+struct ImmediateArtworkBackend {
+    starts: AtomicUsize,
+    released: AtomicBool,
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+impl ArtworkBlockingBackend for ImmediateArtworkBackend {
+    fn read_file(
+        &self,
+        _path: &Path,
+        _limit: usize,
+        _cancel: &CancellationToken,
+    ) -> std::result::Result<Vec<u8>, ArtworkError> {
+        Ok(vec![1])
+    }
+
+    fn encode(
+        &self,
+        _bytes: &[u8],
+        _policy: ArtworkPolicy,
+        _cancel: &CancellationToken,
+    ) -> std::result::Result<String, ArtworkError> {
+        self.starts.fetch_add(1, Ordering::SeqCst);
+        while !self.released.load(Ordering::SeqCst) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        Ok("data:image/jpeg;base64,stale".to_owned())
+    }
+}
+
 async fn wait_for_attempts(attempts: &AtomicUsize, expected: usize) {
     tokio::time::timeout(Duration::from_secs(2), async {
         while attempts.load(Ordering::SeqCst) < expected {
@@ -1004,6 +1035,217 @@ fn initial_unavailable_payload_is_not_a_successful_poll_or_live_status() {
 }
 
 #[test]
+fn stopping_media_clears_existing_state_from_the_receiver() {
+    let mut source = MediaSource::new();
+    let publisher = source.publisher();
+    let receiver = source.receiver();
+    let snapshot = player(
+        "org.mpris.MediaPlayer2.test",
+        PlaybackStatus::Playing,
+        "before-stop",
+    );
+
+    assert!(publisher.publish_completed(
+        media_state_from_player(Some(&snapshot), None),
+        Instant::now(),
+    ));
+    assert!(receiver.borrow().available);
+
+    source.stop();
+
+    assert!(!receiver.borrow().available);
+}
+
+#[test]
+fn retained_media_publisher_cannot_publish_after_stop() {
+    let mut source = MediaSource::new();
+    let publisher = source.publisher();
+    let receiver = source.receiver();
+    source.stop();
+    let snapshot = player(
+        "org.mpris.MediaPlayer2.test",
+        PlaybackStatus::Playing,
+        "after-stop",
+    );
+
+    assert!(!publisher.publish_completed(
+        media_state_from_player(Some(&snapshot), None),
+        Instant::now(),
+    ));
+    assert!(!receiver.borrow().available);
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[test]
+fn old_media_generation_cannot_overwrite_a_restarted_successor() {
+    let mut source = MediaSource::new();
+    let stale = source.publisher();
+    let receiver = source.receiver();
+    source.start().expect("media source should start");
+    let successor = source.publisher();
+    let current = player(
+        "org.mpris.MediaPlayer2.test",
+        PlaybackStatus::Playing,
+        "successor",
+    );
+    let stale_state = player(
+        "org.mpris.MediaPlayer2.test",
+        PlaybackStatus::Playing,
+        "stale-generation",
+    );
+
+    assert!(successor.publish_completed(
+        media_state_from_player(Some(&current), None),
+        Instant::now(),
+    ));
+    assert!(!stale.publish_completed(
+        media_state_from_player(Some(&stale_state), None),
+        Instant::now(),
+    ));
+    assert_ne!(receiver.borrow().track, "stale-generation");
+
+    source.stop();
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[tokio::test]
+async fn old_media_generation_cannot_enrich_the_same_track_after_restart() {
+    let mut source = MediaSource::new();
+    let stale = source.publisher();
+    let receiver = source.receiver();
+    let snapshot = player(
+        "org.mpris.MediaPlayer2.test",
+        PlaybackStatus::Playing,
+        "same-track",
+    );
+    let state = media_state_from_player(Some(&snapshot), None);
+    let key = state.track_key();
+    assert!(stale.publish_completed(state.clone(), Instant::now()));
+
+    source.start().expect("media source should start");
+    assert!(
+        source
+            .publisher()
+            .publish_completed(state.clone(), Instant::now())
+    );
+
+    let backend = Arc::new(ImmediateArtworkBackend {
+        starts: AtomicUsize::new(0),
+        released: AtomicBool::new(false),
+    });
+    let mut policy = artwork_policy(64);
+    policy.fetch_timeout = Duration::from_secs(5);
+    let fetcher = ArtworkFetcher::with_blocking_backend(policy, backend.clone())
+        .expect("test backend builds");
+    let (art_tx, art_rx) = tokio::sync::watch::channel(Some(Arc::new(ArtworkRequest {
+        key,
+        source: ArtworkSource::Url("file:///C:/stale-art".to_owned()),
+    })));
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    let worker = run_artwork_loop(fetcher, stale, art_rx, stop_rx);
+    let current = source.publisher();
+    let drive = async {
+        wait_for_attempts(&backend.starts, 1).await;
+        assert!(current.publish_completed(state.clone(), Instant::now()));
+        backend.released.store(true, Ordering::SeqCst);
+        let stale_art_landed = tokio::time::timeout(Duration::from_millis(250), async {
+            loop {
+                assert!(current.publish_completed(state.clone(), Instant::now()));
+                if receiver.borrow().art_data_url.as_deref() == Some("data:image/jpeg;base64,stale")
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .is_ok();
+        stop_tx.send_replace(true);
+        stale_art_landed
+    };
+
+    let ((), stale_art_landed) = tokio::time::timeout(Duration::from_secs(4), async {
+        tokio::join!(worker, drive)
+    })
+    .await
+    .expect("stale artwork worker stops before deadline");
+
+    drop(art_tx);
+    assert_eq!(backend.starts.load(Ordering::SeqCst), 1);
+    assert!(!stale_art_landed);
+    assert!(receiver.borrow().art_data_url.is_none());
+    source.stop();
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[test]
+fn exited_media_poller_marks_the_source_restartable() {
+    let mut source = MediaSource::new();
+    source.start().expect("media source should start");
+
+    source.report_poller_exit("injected worker exit");
+
+    assert!(!source.is_running());
+    source.start().expect("media source should restart");
+    assert!(source.is_running());
+    source.stop();
+}
+
+#[test]
+fn stopped_media_source_samples_none_even_after_a_retained_write_attempt() {
+    let mut source = MediaSource::new();
+    let publisher = source.publisher();
+    source.stop();
+    let snapshot = player(
+        "org.mpris.MediaPlayer2.test",
+        PlaybackStatus::Playing,
+        "never-sampled",
+    );
+
+    assert!(!publisher.publish_completed(
+        media_state_from_player(Some(&snapshot), None),
+        Instant::now(),
+    ));
+    assert!(matches!(
+        source.sample().expect("stopped sample should succeed"),
+        InputData::None
+    ));
+}
+
+#[test]
+fn stop_racing_media_publication_always_finishes_unavailable() {
+    for round in 0..64 {
+        let mut source = MediaSource::new();
+        let publisher = source.publisher();
+        let receiver = source.receiver();
+        let barrier = Arc::new(Barrier::new(2));
+        let snapshot = player(
+            "org.mpris.MediaPlayer2.test",
+            PlaybackStatus::Playing,
+            &format!("racing-{round}"),
+        );
+        let state = media_state_from_player(Some(&snapshot), None);
+        let completed_at = Instant::now();
+
+        std::thread::scope(|scope| {
+            let worker_barrier = Arc::clone(&barrier);
+            let publisher = publisher.clone();
+            let publish = scope.spawn(move || {
+                worker_barrier.wait();
+                publisher.publish_completed(state, completed_at)
+            });
+            barrier.wait();
+            source.stop();
+            publish
+                .join()
+                .expect("racing media publisher should finish");
+        });
+
+        assert!(!receiver.borrow().available, "failed in round {round}");
+    }
+}
+
+#[test]
 fn successful_media_poll_heartbeat_advances_when_payload_is_unchanged() {
     let mut source = MediaSource::new();
     let handle = source
@@ -1023,7 +1265,7 @@ fn successful_media_poll_heartbeat_advances_when_payload_is_unchanged() {
     );
     let state = media_state_from_player(Some(&snapshot), None);
     let first_completed_at = Instant::now();
-    publisher.publish_completed(state.clone(), first_completed_at);
+    assert!(publisher.publish_completed(state.clone(), first_completed_at));
     std::thread::sleep(Duration::from_millis(20));
     assert!(matches!(
         source.sample().expect("first completed poll samples"),
@@ -1032,7 +1274,7 @@ fn successful_media_poll_heartbeat_advances_when_payload_is_unchanged() {
     assert_eq!(handle.snapshot().last_sample_at, Some(first_completed_at));
 
     let second_completed_at = Instant::now();
-    publisher.publish_completed(state, second_completed_at);
+    assert!(publisher.publish_completed(state, second_completed_at));
     assert!(matches!(
         source.sample().expect("unchanged heartbeat samples"),
         InputData::None
@@ -1066,10 +1308,10 @@ fn concurrent_media_publishers_keep_state_and_poll_coherent() {
                             PlaybackStatus::Playing,
                             &format!("round-{round}-update-{update}"),
                         );
-                        publisher.publish_completed(
+                        assert!(publisher.publish_completed(
                             media_state_from_player(Some(&snapshot), None),
                             Instant::now(),
-                        );
+                        ));
                     }
                 });
             }
