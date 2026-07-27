@@ -1247,8 +1247,8 @@ fn queued_frames_do_not_retain_undemanded_input_domains() {
 #[test]
 fn queued_frames_merge_recent_keys_from_superseded_inputs() {
     let audio = custom_audio(0.0);
-    let first_interaction = custom_interaction(&["a", "b"], &["a"]);
-    let second_interaction = custom_interaction(&["b", "c"], &["c"]);
+    let first_interaction = custom_interaction(&["a", "b"], &["a", "b"]);
+    let second_interaction = custom_interaction(&["b", "c"], &["a", "c"]);
     let first = frame_input_with(1.0 / 30.0, 1, &audio, &first_interaction, 320, 200);
     let second = frame_input_with(1.0 / 30.0, 2, &audio, &second_interaction, 320, 200);
     let mut renderer = ServoRenderer::new();
@@ -1261,14 +1261,19 @@ fn queued_frames_merge_recent_keys_from_superseded_inputs() {
     let queued = renderer.queued_frame.as_ref().expect("queued frame");
     let interaction = queued.queued_interaction().expect("demanded interaction");
     assert_eq!(interaction.keyboard.pressed_keys, ["c"]);
-    assert_eq!(interaction.keyboard.recent_keys, ["a", "b", "c"]);
+    assert_eq!(interaction.keyboard.recent_keys, ["a", "b", "a", "c"]);
 }
 
 #[test]
 fn queued_frames_append_event_batches_from_superseded_inputs() {
     use hypercolor_types::event::{InputButtonState, InputEvent, TimedInputEvent};
 
-    fn timed_key(key: &str, state: InputButtonState, seq: u64) -> TimedInputEvent {
+    fn timed_key(
+        key: &str,
+        state: InputButtonState,
+        seq: u64,
+        repeat_count: u32,
+    ) -> TimedInputEvent {
         TimedInputEvent {
             event: InputEvent::Key {
                 source_id: "test".into(),
@@ -1278,19 +1283,19 @@ fn queued_frames_append_event_batches_from_superseded_inputs() {
             at_ms: seq * 10,
             seq,
             physical_code: None,
-            repeat_count: 1,
+            repeat_count,
         }
     }
 
     let audio = custom_audio(0.0);
     let mut first_interaction = custom_interaction(&[], &[]);
     first_interaction.batch.events = vec![
-        timed_key("a", InputButtonState::Pressed, 1),
-        timed_key("a", InputButtonState::Released, 2),
+        timed_key("a", InputButtonState::Pressed, 1, 2),
+        timed_key("a", InputButtonState::Released, 2, 1),
     ];
     first_interaction.batch.wheel_hi_res = 120;
     let mut second_interaction = custom_interaction(&[], &[]);
-    second_interaction.batch.events = vec![timed_key("b", InputButtonState::Pressed, 3)];
+    second_interaction.batch.events = vec![timed_key("a", InputButtonState::Pressed, 3, 4)];
     second_interaction.batch.wheel_hi_res = -240;
 
     let first = frame_input_with(1.0 / 30.0, 1, &audio, &first_interaction, 320, 200);
@@ -1311,6 +1316,16 @@ fn queued_frames_append_event_batches_from_superseded_inputs() {
         .map(|event| event.seq)
         .collect::<Vec<_>>();
     assert_eq!(seqs, [1, 2, 3], "ordering survives coalescing");
+    assert_eq!(
+        interaction
+            .batch
+            .events
+            .iter()
+            .map(|event| event.repeat_count)
+            .collect::<Vec<_>>(),
+        [2, 1, 4],
+        "repeat multiplicity survives coalescing"
+    );
     assert_eq!(interaction.batch.wheel_hi_res, -120, "wheel travel sums");
 }
 

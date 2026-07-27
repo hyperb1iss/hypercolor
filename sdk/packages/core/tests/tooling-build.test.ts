@@ -141,6 +141,25 @@ describe('tooling build', () => {
         }
     })
 
+    test('keeps the Canvas2D screen cast distinct from the native builtin', async () => {
+        const outDir = mkdtempSync(join(tmpdir(), 'hypercolor-screen-cast-build-'))
+        try {
+            const [result] = await buildArtifacts({
+                entryPaths: [resolve(SDK_ROOT, 'src/effects/screen-cast/main.ts')],
+                outDir,
+                sdkAliasPath: SDK_ALIAS,
+            })
+
+            expect(result.metadata.builtinId).toBe('screen_cast_canvas2d')
+            expect(result.metadata.name).toBe('Screen Cast Canvas2D')
+            const html = readFileSync(result.outputPath, 'utf8')
+            expect(html).toContain('<meta builtin-id="screen_cast_canvas2d" />')
+            expect(html).not.toContain('<meta builtin-id="screen_cast" />')
+        } finally {
+            rmSync(outDir, { force: true, recursive: true })
+        }
+    })
+
     test('faces emit the audio-reactive meta from the audio opt-in', async () => {
         const tempRoot = mkdtempSync(join(tmpdir(), 'hypercolor-face-audio-'))
         const outDir = join(tempRoot, 'dist')

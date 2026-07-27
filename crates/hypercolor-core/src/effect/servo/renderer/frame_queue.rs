@@ -341,12 +341,9 @@ impl QueuedFrameInput {
         if let Some(interaction) = self.interaction.as_mut() {
             let interaction = Arc::make_mut(interaction);
             // Prior presses stay ahead of newer ones so the legacy recent
-            // list keeps press order across coalesced frames.
+            // list keeps press order and multiplicity across coalesced frames.
             let mut merged_recent = prior_recent_keys;
-            merge_unique_strings(
-                &mut merged_recent,
-                std::mem::take(&mut interaction.keyboard.recent_keys),
-            );
+            merged_recent.append(&mut interaction.keyboard.recent_keys);
             interaction.keyboard.recent_keys = merged_recent;
             // Superseded frames must not lose their input edges: fold the
             // replaced frame's batch in ahead of the new one.
@@ -417,15 +414,6 @@ fn clone_optional_demanded_from<T: Clone>(
         (Some(current), Some(next)) => Arc::make_mut(current).clone_from(next),
         (None, Some(next)) => *slot = Some(Arc::new(next.clone())),
         (_, None) => *slot = None,
-    }
-}
-
-fn merge_unique_strings(destination: &mut Vec<String>, values: impl IntoIterator<Item = String>) {
-    for value in values {
-        if destination.iter().any(|existing| existing == &value) {
-            continue;
-        }
-        destination.push(value);
     }
 }
 

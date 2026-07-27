@@ -50,7 +50,7 @@ function fitRect(
 }
 
 export default canvas.stateful(
-    'Screen Cast',
+    'Screen Cast Canvas2D',
     {
         viewport: rect(
             'Viewport',
@@ -117,9 +117,9 @@ export default canvas.stateful(
     },
     {
         author: 'Hypercolor',
-        builtinId: 'screen_cast',
+        builtinId: 'screen_cast_canvas2d',
         category: 'utility',
-        description: 'Live screen crop with contain, cover, and stretch fit modes.',
+        description: 'Canvas2D screen-grid projection with contain, cover, and stretch fit modes.',
         presets: [
             {
                 controls: {
