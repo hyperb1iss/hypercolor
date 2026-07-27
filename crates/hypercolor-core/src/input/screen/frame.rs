@@ -910,8 +910,28 @@ impl CaptureFrame<RawCaptureSurface> {
         storage: CaptureStorage,
         damage: CaptureDamage,
     ) -> Result<CaptureFrame<ProcessedCaptureSurface>, CaptureFrameError> {
+        let cursor = self.metadata.cursor.clone();
+        self.into_processed_with_cursor(geometry, storage, damage, cursor)
+    }
+
+    /// Consume a raw frame and publish canonical geometry and cursor metadata.
+    ///
+    /// This is the geometry processor's transition seam when crop or rotation
+    /// changes cursor coordinates alongside the stored pixels.
+    ///
+    /// # Errors
+    ///
+    /// Applies the same processed-stage validation as [`Self::into_processed`].
+    pub fn into_processed_with_cursor(
+        self,
+        geometry: CaptureGeometry,
+        storage: CaptureStorage,
+        damage: CaptureDamage,
+        cursor: CaptureCursor,
+    ) -> Result<CaptureFrame<ProcessedCaptureSurface>, CaptureFrameError> {
         let mut metadata = self.metadata;
         metadata.geometry = geometry;
+        metadata.cursor = cursor;
         CaptureFrame::from_parts(metadata, storage, damage)
     }
 }
@@ -1102,6 +1122,12 @@ pub enum CaptureFrameError {
     /// A processed surface cannot retain a pending native crop.
     #[error("processed capture surface still has pending crop {0:?}")]
     ProcessedCropPending(PixelRect),
+    /// GPU geometry needs the owning platform's native interop processor.
+    #[error("GPU capture geometry requires platform-native processing")]
+    GpuGeometryProcessingRequired,
+    /// Canonical cursor coordinates exceeded the shared signed representation.
+    #[error("canonical cursor coordinate exceeds the supported range")]
+    CursorCoordinateOverflow,
     /// Dirty region escaped the native scanout extent.
     #[error("dirty region {0:?} is outside the capture extent")]
     DamageOutOfBounds(PixelRect),

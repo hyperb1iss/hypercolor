@@ -16,6 +16,7 @@
 //! backend-agnostic and testable with synthetic data.
 
 mod frame;
+mod process;
 pub mod sector;
 pub mod smooth;
 pub mod tune;
@@ -32,6 +33,7 @@ pub use frame::{
     PlatformGpuSurface, PooledCapturePlane, ProcessedCaptureSurface, RawCaptureSurface,
     SourceScale,
 };
+pub use process::CaptureFrameProcessor;
 pub use sector::{LetterboxBars, SectorGrid};
 pub use smooth::TemporalSmoother;
 pub use tune::ColorTuning;
@@ -51,12 +53,12 @@ use std::time::{Duration, Instant};
 
 #[derive(Clone)]
 pub(crate) struct LegacyScreenSnapshot {
-    frame: CaptureFrame<RawCaptureSurface>,
+    frame: CaptureFrame<ProcessedCaptureSurface>,
     data: ScreenData,
 }
 
 impl LegacyScreenSnapshot {
-    pub(crate) const fn frame(&self) -> &CaptureFrame<RawCaptureSurface> {
+    pub(crate) const fn frame(&self) -> &CaptureFrame<ProcessedCaptureSurface> {
         &self.frame
     }
 
@@ -69,10 +71,9 @@ pub(crate) fn analyze_legacy_screen_frame(
     analyzer: &mut ScreenCaptureInput,
     frame: CaptureFrame<RawCaptureSurface>,
 ) -> anyhow::Result<LegacyScreenSnapshot> {
+    let captured_at = frame.metadata().captured_at;
+    let frame = analyzer.capture_processor.process(frame)?;
     let geometry = &frame.metadata().geometry;
-    if geometry.rotation() != CaptureRotation::Identity || geometry.crop().is_some() {
-        anyhow::bail!("legacy screen analysis requires canonical geometry");
-    }
     let CaptureStorage::Cpu(storage) = frame.storage() else {
         anyhow::bail!("legacy screen analysis requires CPU storage");
     };
@@ -80,7 +81,7 @@ pub(crate) fn analyze_legacy_screen_frame(
     let pixels = storage
         .tightly_packed_rgba8(extent)
         .ok_or_else(|| anyhow::anyhow!("legacy screen analysis requires tightly packed RGBA8"))?;
-    analyzer.push_frame(pixels, extent.width(), extent.height());
+    analyzer.push_frame_at(pixels, extent.width(), extent.height(), captured_at);
     let InputData::Screen(data) = analyzer.sample()? else {
         anyhow::bail!("legacy screen analysis did not produce a snapshot");
     };
@@ -263,6 +264,8 @@ pub struct ScreenCaptureInput {
     /// Temporal smoother for flicker reduction.
     smoother: TemporalSmoother,
 
+    capture_processor: CaptureFrameProcessor,
+
     /// Latest processed zone colors (after grid + smoothing).
     latest_colors: Option<Vec<[u8; 3]>>,
 
@@ -302,6 +305,7 @@ impl ScreenCaptureInput {
         Self {
             config,
             smoother,
+            capture_processor: CaptureFrameProcessor::default(),
             latest_colors: None,
             latest_zone_ids: Vec::new(),
             latest_grid_width: 0,
@@ -340,7 +344,10 @@ impl ScreenCaptureInput {
     /// * `width` — Frame width in pixels.
     /// * `height` — Frame height in pixels.
     pub fn push_frame(&mut self, frame: &[u8], width: u32, height: u32) {
-        let acquired_at = Instant::now();
+        self.push_frame_at(frame, width, height, Instant::now());
+    }
+
+    fn push_frame_at(&mut self, frame: &[u8], width: u32, height: u32, acquired_at: Instant) {
         self.frame_generation = self.frame_generation.wrapping_add(1);
         self.frame_width = width;
         self.frame_height = height;
