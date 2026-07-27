@@ -7,12 +7,8 @@ import type { ResolvedTemplates, TemplateKind } from './types'
 const PACKAGE_ROOT = resolve(import.meta.dirname, '..')
 const TEMPLATES_ROOT = join(PACKAGE_ROOT, 'templates')
 
-function renderTemplate(content: string, variables: Record<string, string>): string {
-    let rendered = content
-    for (const [key, value] of Object.entries(variables)) {
-        rendered = rendered.replaceAll(`__${key}__`, value)
-    }
-    return rendered
+export function renderTemplate(content: string, variables: Record<string, string>): string {
+    return content.replace(/__([A-Za-z0-9_]+?)__/g, (token, key: string) => variables[key] ?? token)
 }
 
 function copyTemplateTree(
@@ -109,8 +105,9 @@ export function createWorkspaceFiles(args: {
         workspaceTemplateDir(template),
         workspaceDir,
         {
-            SDK_PACKAGE_SPEC: sdkPackageSpec,
+            SDK_PACKAGE_SPEC_JSON: JSON.stringify(sdkPackageSpec),
             WORKSPACE_NAME: workspaceName,
+            WORKSPACE_NAME_JSON: JSON.stringify(workspaceName),
         },
         createdPaths,
     )

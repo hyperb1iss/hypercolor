@@ -1,5 +1,5 @@
 {
-    "name": "__WORKSPACE_NAME__",
+    "name": __WORKSPACE_NAME_JSON__,
     "version": "0.1.0",
     "private": true,
     "type": "module",
@@ -9,7 +9,7 @@
         "ship:daemon": "hypercolor install effects/*.html --daemon"
     },
     "devDependencies": {
-        "hypercolor": "__SDK_PACKAGE_SPEC__"
+        "hypercolor": __SDK_PACKAGE_SPEC_JSON__
     },
     "engines": {
         "bun": ">=1.2.0",

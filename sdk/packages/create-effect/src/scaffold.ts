@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { resolve, win32 } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { normalizeEffectId, normalizeWorkspaceName } from './naming'
@@ -124,5 +124,5 @@ export function resolveEditor(): string | undefined {
 }
 
 export function workspaceNameFromTarget(target: string): string {
-    return normalizeWorkspaceName(target.split('/').at(-1) ?? target)
+    return normalizeWorkspaceName(win32.basename(target))
 }
