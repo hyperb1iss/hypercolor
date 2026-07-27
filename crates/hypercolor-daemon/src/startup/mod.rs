@@ -47,7 +47,7 @@ use crate::logical_devices::LogicalDevice;
 use crate::network::DaemonDriverHost;
 use crate::performance::PerformanceTracker;
 use crate::preview_runtime::PreviewRuntime;
-use crate::render_thread::{ConfiguredFpsTier, RenderThread};
+use crate::render_thread::{ConfiguredFpsTier, InputPublicationDemandHandle, RenderThread};
 use crate::scene_store::SceneStore;
 use crate::scene_transactions::SceneTransactionQueue;
 use crate::session::{OutputPowerState, SessionController};
@@ -262,6 +262,13 @@ impl DaemonState {
     /// Lock-free via `arc_swap` — cheap to call from any context.
     pub fn config(&self) -> Arc<HypercolorConfig> {
         Arc::clone(&self.config_manager.get())
+    }
+
+    /// Clone the live input-publication demand handle after subsystem startup.
+    pub fn input_publication_demands(&self) -> Option<InputPublicationDemandHandle> {
+        self.render_thread
+            .as_ref()
+            .map(RenderThread::input_publication_demands)
     }
 
     pub(super) fn discovery_runtime(&self) -> discovery::DiscoveryRuntime {

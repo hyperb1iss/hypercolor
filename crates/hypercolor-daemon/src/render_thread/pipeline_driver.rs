@@ -54,6 +54,7 @@ async fn handle_inactive_render_loop(
     };
 
     clear_capture_demand(state, runtime).await;
+    runtime.frame_loop.clear_input_demands();
     clear_inactive_render_groups(state, runtime).await;
     runtime.frame_policy.inactive_loop_execution(loop_state)
 }

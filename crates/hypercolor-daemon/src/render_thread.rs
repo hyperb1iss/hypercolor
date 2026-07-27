@@ -4,9 +4,12 @@
 //! render loop:
 //!
 //! ```text
+//! input publication pump              // samples sources at max live demand
+//!     -> immutable input graph slots  // latest values + bounded events
+//!
 //! loop {
 //!     RenderLoop::tick()                 // timing gate + FPS control
-//!     InputManager::sample_all()         // shared frame inputs
+//!     read immutable input graph         // shared frame inputs
 //!     render active scene groups         // Servo/native/media producers
 //!     SparkleFlinger::compose_frame()    // canonical scene canvas
 //!     sample LED output                  // CPU or prepared GPU sampler
@@ -33,6 +36,7 @@ mod frame_throttle;
 #[cfg(feature = "wgpu")]
 #[doc(hidden)]
 pub mod gpu_device;
+mod input_publication;
 mod layer_runtime;
 mod lighting_feed;
 mod pipeline_driver;
@@ -55,8 +59,14 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 use tokio::sync::{Mutex, RwLock, watch};
+use tokio_util::sync::CancellationToken;
 use tracing::info;
 
+pub use self::input_publication::{
+    InputPublicationConsumer, InputPublicationDemand, InputPublicationDemandHandle,
+    InputPublicationDemandRegistration, InputPublicationStatus,
+};
+use self::input_publication::{InputPublicationMonitor, InputPublicationPump};
 use self::pipeline_driver::run_pipeline;
 use crate::device_settings::DeviceSettingsStore;
 use crate::discovery::DiscoveryRuntime;
@@ -170,7 +180,10 @@ const fn u8_to_fps_tier(value: u8) -> FpsTier {
 /// The render loop must be stopped first (via `RenderLoop::stop()`) — the
 /// thread will exit on the next `tick()` returning `false`.
 pub struct RenderThread {
-    join_handle: Option<std::thread::JoinHandle<()>>,
+    join_handle: Option<std::thread::JoinHandle<Result<()>>>,
+    cancel: CancellationToken,
+    input_publication_demands: InputPublicationDemandHandle,
+    input_publication_monitor: InputPublicationMonitor,
 }
 
 /// All shared state the render thread needs.
@@ -216,7 +229,7 @@ pub struct RenderThreadState {
     /// Active scene stack and transition runtime.
     pub scene_manager: Arc<RwLock<SceneManager>>,
 
-    /// Input orchestrator for audio and screen capture sampling.
+    /// Input orchestrator owned by the dedicated publication pump and demand control.
     pub input_manager: Arc<Mutex<InputManager>>,
 
     /// Session policy output state (brightness scale + sleep flag).
@@ -284,27 +297,67 @@ impl RenderThread {
     where
         F: FnOnce() -> Result<tokio::runtime::Runtime> + Send + 'static,
     {
-        let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<()>>(1);
+        let input_publication_demands = InputPublicationDemandHandle::new();
+        let pump_demands = input_publication_demands.clone();
+        let pipeline_demands = input_publication_demands.clone();
+        let cancel = CancellationToken::new();
+        let worker_cancel = cancel.clone();
+        let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<InputPublicationMonitor>>(1);
         let join_handle = std::thread::Builder::new()
             .name("hypercolor-render".to_owned())
-            .spawn(move || {
+            .spawn(move || -> Result<()> {
                 configure_render_thread_priority();
                 let runtime = match build_runtime() {
                     Ok(runtime) => runtime,
                     Err(error) => {
                         let _ = ready_tx.send(Err(error));
-                        return;
+                        return Ok(());
                     }
                 };
-                let pipeline =
-                    runtime.block_on(pipeline_runtime::PipelineRuntime::from_state(&state));
-                match pipeline {
-                    Ok(runtime_state) => {
-                        let _ = ready_tx.send(Ok(()));
-                        runtime.block_on(run_pipeline(state, runtime_state));
-                    }
+                let mut input_pump = match runtime.block_on(InputPublicationPump::start(
+                    Arc::clone(&state.input_manager),
+                    pump_demands,
+                )) {
+                    Ok(pump) => pump,
                     Err(error) => {
                         let _ = ready_tx.send(Err(error));
+                        return Ok(());
+                    }
+                };
+                let pipeline = runtime.block_on(pipeline_runtime::PipelineRuntime::from_state(
+                    &state,
+                    input_pump.reader(),
+                    pipeline_demands,
+                ));
+                match pipeline {
+                    Ok(runtime_state) => {
+                        let monitor = input_pump.monitor();
+                        if ready_tx.send(Ok(monitor.clone())).is_err() {
+                            return runtime.block_on(input_pump.shutdown());
+                        }
+                        let pipeline_result = runtime.block_on(async {
+                            tokio::select! {
+                                () = run_pipeline(state.clone(), runtime_state) => Ok(()),
+                                status = monitor.wait_for_terminal() => {
+                                    tracing::error!(?status, "input publication pump terminated while rendering");
+                                    state.render_loop.write().await.stop();
+                                    Err(anyhow!("input publication pump terminated: {status:?}"))
+                                }
+                                () = worker_cancel.cancelled() => {
+                                    state.render_loop.write().await.stop();
+                                    Ok(())
+                                }
+                            }
+                        });
+                        let shutdown_result = runtime.block_on(input_pump.shutdown());
+                        pipeline_result.and(shutdown_result)
+                    }
+                    Err(error) => {
+                        if let Err(shutdown_error) = runtime.block_on(input_pump.shutdown()) {
+                            tracing::warn!(%shutdown_error, "input publication cleanup failed after render startup error");
+                        }
+                        let _ = ready_tx.send(Err(error));
+                        Ok(())
                     }
                 }
             })
@@ -312,14 +365,30 @@ impl RenderThread {
         let ready = ready_rx
             .recv()
             .context("render thread exited before startup completed")?;
-        if let Err(error) = ready {
-            let _ = join_handle.join();
-            return Err(error);
-        }
+        let input_publication_monitor = match ready {
+            Ok(monitor) => monitor,
+            Err(error) => {
+                let _ = join_handle.join();
+                return Err(error);
+            }
+        };
         info!("render thread spawned");
         Ok(Self {
             join_handle: Some(join_handle),
+            cancel,
+            input_publication_demands,
+            input_publication_monitor,
         })
+    }
+
+    /// Clone the lock-free demand publication used by input consumers.
+    pub fn input_publication_demands(&self) -> InputPublicationDemandHandle {
+        self.input_publication_demands.clone()
+    }
+
+    /// Read the input-publication worker lifecycle state without blocking.
+    pub fn input_publication_status(&self) -> InputPublicationStatus {
+        self.input_publication_monitor.status()
     }
 
     /// Wait for the render thread to exit.
@@ -327,20 +396,27 @@ impl RenderThread {
     /// The caller must stop the render loop first — this method
     /// just awaits the task's completion.
     pub async fn shutdown(&mut self) -> Result<()> {
+        self.cancel.cancel();
         if let Some(handle) = self.join_handle.take() {
-            tokio::task::spawn_blocking(move || {
+            tokio::task::spawn_blocking(move || -> Result<()> {
                 handle.join().map_err(|panic| {
                     anyhow!(
                         "render thread panicked: {}",
                         panic_payload_message(panic.as_ref())
                     )
-                })
+                })?
             })
             .await
             .context("failed to join render thread")??;
             info!("render thread stopped");
         }
         Ok(())
+    }
+}
+
+impl Drop for RenderThread {
+    fn drop(&mut self) {
+        self.cancel.cancel();
     }
 }
 

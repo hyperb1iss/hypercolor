@@ -10,8 +10,8 @@ use hypercolor_core::bus::DisplayGroupOutputRoute;
 use hypercolor_core::effect::{EffectRegistry, InputSourceAvailability};
 use hypercolor_core::engine::FpsTier;
 use hypercolor_core::input::{
-    InputData, InputGraphHandle, InputGraphSnapshot, InputSourceSlot, InteractionData,
-    MotionAggregate, PointerMode, SourceFreshness, SourceKind, SourceState, SourceStatusHandle,
+    InputData, InputGraphSnapshot, InputSourceSlot, InteractionData, MotionAggregate, PointerMode,
+    SourceFreshness, SourceKind, SourceState, SourceStatusHandle,
 };
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_core::types::canvas::{
@@ -40,10 +40,14 @@ use super::frame_policy::FramePolicy;
 use super::frame_policy::SkipDecision;
 #[cfg(feature = "wgpu")]
 use super::gpu_device::GpuRenderDevice;
+use super::input_publication::{
+    InputPublicationConsumer, InputPublicationDemand, InputPublicationDemandHandle,
+    InputPublicationReader, OwnedInputPublicationDemand,
+};
 use super::producer_queue::ProducerQueue;
 use super::render_groups::{RenderSceneContext, ZoneFrameInputs, ZoneResult, ZoneRuntime};
 use super::scene_dependency::SceneDependencyKey;
-use super::scene_snapshot::{FrameSceneSnapshot, SceneSnapshotCache};
+use super::scene_snapshot::{EffectDemand, FrameSceneSnapshot, SceneSnapshotCache};
 use super::scene_state::RenderSceneState;
 use super::screen_canvas::screen_data_to_surface;
 #[cfg(feature = "wgpu")]
@@ -118,17 +122,15 @@ pub(crate) struct InputReuseState {
     routes: InputRouteCache,
 }
 
-impl Default for InputReuseState {
-    fn default() -> Self {
+impl InputReuseState {
+    fn new(reader: InputPublicationReader) -> Self {
         Self {
             cached_inputs: FrameInputs::silence(),
-            routes: InputRouteCache::default(),
+            routes: InputRouteCache::new(reader),
         }
     }
-}
 
-impl InputReuseState {
-    pub(crate) async fn inputs_for_frame<'a>(
+    pub(crate) fn inputs_for_frame<'a>(
         &'a mut self,
         state: &RenderThreadState,
         skip_decision: SkipDecision,
@@ -136,12 +138,10 @@ impl InputReuseState {
     ) -> &'a mut FrameInputs {
         if matches!(skip_decision, SkipDecision::None) {
             self.routes
-                .sample_into(state, delta_secs, &mut self.cached_inputs)
-                .await;
+                .read_into(state, delta_secs, &mut self.cached_inputs);
         } else {
             self.cached_inputs.clear_transient_interaction();
-            self.cached_inputs.input_availability =
-                self.routes.refresh_interaction_availability(state).await;
+            self.cached_inputs.input_availability = self.routes.refresh_interaction_availability();
         }
 
         &mut self.cached_inputs
@@ -155,9 +155,8 @@ struct CachedInputRoute {
     interaction_generation: Option<u64>,
 }
 
-#[derive(Default)]
 struct InputRouteCache {
-    graph: Option<InputGraphHandle>,
+    reader: InputPublicationReader,
     graph_generation: Option<u64>,
     routes: Vec<CachedInputRoute>,
     audio_routes: Vec<usize>,
@@ -169,27 +168,32 @@ struct InputRouteCache {
     aggregate_interaction_generation: u64,
 }
 
-impl InputRouteCache {
-    async fn sample_into(
-        &mut self,
-        state: &RenderThreadState,
-        delta_secs: f32,
-        inputs: &mut FrameInputs,
-    ) {
-        let sensors = {
-            let mut input_manager = state.input_manager.lock().await;
-            if self.graph.is_none() {
-                self.graph = Some(input_manager.input_graph_handle());
-            }
-            input_manager.sample_sources(delta_secs);
-            input_manager.latest_sensor_snapshot()
-        };
+#[cfg(test)]
+impl Default for InputRouteCache {
+    fn default() -> Self {
+        Self::new(InputPublicationReader::empty())
+    }
+}
 
-        let graph = self
-            .graph
-            .as_ref()
-            .expect("input graph handle is initialized before sampling")
-            .snapshot();
+impl InputRouteCache {
+    fn new(reader: InputPublicationReader) -> Self {
+        Self {
+            reader,
+            graph_generation: None,
+            routes: Vec::new(),
+            audio_routes: Vec::new(),
+            screen_routes: Vec::new(),
+            interaction_routes: Vec::new(),
+            media_routes: Vec::new(),
+            network_routes: Vec::new(),
+            untyped_routes: Vec::new(),
+            aggregate_interaction_generation: 0,
+        }
+    }
+
+    fn read_into(&mut self, state: &RenderThreadState, delta_secs: f32, inputs: &mut FrameInputs) {
+        let sensors = self.reader.latest_sensor_snapshot();
+        let graph = self.reader.graph_snapshot();
         if self.graph_generation != Some(graph.generation()) {
             self.rebuild_routes(&graph);
         }
@@ -221,18 +225,8 @@ impl InputRouteCache {
         inputs.interaction.batch.window_secs = delta_secs.max(0.0);
     }
 
-    async fn refresh_interaction_availability(
-        &mut self,
-        state: &RenderThreadState,
-    ) -> InputSourceAvailability {
-        if self.graph.is_none() {
-            self.graph = Some(state.input_manager.lock().await.input_graph_handle());
-        }
-        let graph = self
-            .graph
-            .as_ref()
-            .expect("input graph handle is initialized before status refresh")
-            .snapshot();
+    fn refresh_interaction_availability(&mut self) -> InputSourceAvailability {
+        let graph = self.reader.graph_snapshot();
         if self.graph_generation != Some(graph.generation()) {
             self.rebuild_routes(&graph);
         }
@@ -1061,6 +1055,44 @@ pub(crate) struct FrameLoopState {
     pub(crate) capture_demand: CaptureDemandState,
     pub(crate) output_reuse: OutputReuseState,
     pub(crate) lighting_feed: super::lighting_feed::LightingFeedState,
+    pub(crate) authoritative_input_demand: OwnedInputPublicationDemand,
+    pub(crate) passive_input_demand: OwnedInputPublicationDemand,
+}
+
+impl FrameLoopState {
+    pub(crate) fn publish_input_demands(
+        &mut self,
+        effect_demand: EffectDemand,
+        sleeping: bool,
+        passive_screen: bool,
+        requested_hz: u32,
+    ) {
+        let mut authoritative = InputPublicationDemand::default();
+        if !sleeping {
+            if effect_demand.audio_capture_active {
+                authoritative = authoritative.with_source(SourceKind::Audio, requested_hz);
+            }
+            if effect_demand.screen_capture_active {
+                authoritative = authoritative.with_source(SourceKind::Screen, requested_hz);
+            }
+            if effect_demand.interaction_capture_active {
+                authoritative = authoritative.with_source(SourceKind::Interaction, requested_hz);
+            }
+        }
+        self.authoritative_input_demand.publish(authoritative);
+
+        let passive = if passive_screen {
+            InputPublicationDemand::default().with_source(SourceKind::Screen, requested_hz)
+        } else {
+            InputPublicationDemand::default()
+        };
+        self.passive_input_demand.publish(passive);
+    }
+
+    pub(crate) fn clear_input_demands(&mut self) {
+        self.authoritative_input_demand.clear();
+        self.passive_input_demand.clear();
+    }
 }
 
 pub(crate) struct RenderCaches {
@@ -1645,7 +1677,11 @@ pub(crate) struct PipelineRuntime {
 }
 
 impl PipelineRuntime {
-    pub(crate) async fn from_state(state: &RenderThreadState) -> Result<Self> {
+    pub(crate) async fn from_state(
+        state: &RenderThreadState,
+        input_reader: InputPublicationReader,
+        input_demands: InputPublicationDemandHandle,
+    ) -> Result<Self> {
         let initial_spatial_engine = state.spatial_engine.read().await.clone();
         Self::new_with_gpu_device(
             state.canvas_dims.width(),
@@ -1657,6 +1693,8 @@ impl PipelineRuntime {
             state.render_gpu_device.clone(),
             Some(Arc::clone(&state.asset_library)),
             state.configured_max_fps_tier.get(),
+            input_reader,
+            input_demands,
         )
     }
 
@@ -1669,6 +1707,7 @@ impl PipelineRuntime {
         render_acceleration_mode: RenderAccelerationMode,
         configured_max_fps_tier: FpsTier,
     ) -> Result<Self> {
+        let input_demands = InputPublicationDemandHandle::new();
         Self::new_with_gpu_device(
             canvas_width,
             canvas_height,
@@ -1679,6 +1718,8 @@ impl PipelineRuntime {
             None,
             None,
             configured_max_fps_tier,
+            InputPublicationReader::empty(),
+            input_demands,
         )
     }
 
@@ -1691,17 +1732,27 @@ impl PipelineRuntime {
         #[cfg(feature = "wgpu")] render_gpu_device: Option<GpuRenderDevice>,
         asset_library: Option<Arc<RwLock<AssetLibrary>>>,
         configured_max_fps_tier: FpsTier,
+        input_reader: InputPublicationReader,
+        input_demands: InputPublicationDemandHandle,
     ) -> Result<Self> {
         Ok(Self {
             scene: SceneSnapshotState::new(initial_spatial_engine, screen_capture_configured),
             frame_loop: FrameLoopState {
                 clock: FrameClockState::default(),
-                inputs: InputReuseState::default(),
+                inputs: InputReuseState::new(input_reader),
                 throttle: ThrottleState::default(),
                 publication_cadence: PublicationCadenceState::default(),
                 capture_demand: CaptureDemandState::default(),
                 output_reuse: OutputReuseState::default(),
                 lighting_feed: super::lighting_feed::LightingFeedState::default(),
+                authoritative_input_demand: OwnedInputPublicationDemand::new(
+                    &input_demands,
+                    InputPublicationConsumer::Authoritative,
+                ),
+                passive_input_demand: OwnedInputPublicationDemand::new(
+                    &input_demands,
+                    InputPublicationConsumer::PassiveStream,
+                ),
             },
             render: RenderCaches {
                 screen_queue: ProducerQueue::new(),
