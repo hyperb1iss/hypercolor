@@ -8,6 +8,8 @@ use axum::Json;
 use axum::extract::{Multipart, Path, State};
 use axum::http::{HeaderMap, HeaderValue, header};
 use axum::response::{IntoResponse, Response};
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use serde::{Deserialize, Serialize};
 use tokio::fs;
 use tracing::{debug, info, warn};
@@ -1884,35 +1886,18 @@ async fn effect_cover_image_response(
     metadata: &EffectMetadata,
     cache: EffectCoverCache,
 ) -> Response {
-    let Some(path) = effect_cover_image_path(metadata) else {
+    let Some(cover) = effect_cover_image_bytes(metadata).await else {
         return ApiError::not_found(format!(
             "Cover image not found for effect: {}",
             metadata.name
         ));
     };
 
-    let bytes = match fs::read(&path).await {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                return ApiError::not_found(format!(
-                    "Cover image not found for effect: {}",
-                    metadata.name
-                ));
-            }
-            warn!(
-                path = %path.display(),
-                error = %error,
-                "Failed to read effect cover image"
-            );
-            return ApiError::internal("Failed to read effect cover image");
-        }
-    };
-
     let mut headers = HeaderMap::new();
     headers.insert(
         header::CONTENT_TYPE,
-        HeaderValue::from_static(EFFECT_COVER_CONTENT_TYPE),
+        HeaderValue::from_str(&cover.content_type)
+            .unwrap_or_else(|_| HeaderValue::from_static(EFFECT_COVER_CONTENT_TYPE)),
     );
     headers.insert(
         header::CACHE_CONTROL,
@@ -1921,12 +1906,74 @@ async fn effect_cover_image_response(
             EffectCoverCache::Catalog => HeaderValue::from_static("public, max-age=86400"),
         },
     );
-    (headers, bytes).into_response()
+    (headers, cover.bytes).into_response()
 }
 
 fn effect_cover_image_url(metadata: &EffectMetadata) -> Option<String> {
-    effect_cover_image_path(metadata)?;
+    if effect_cover_image_path(metadata).is_none() && html_effect_source_path(metadata).is_none() {
+        return None;
+    }
     Some(format!("/api/v1/effects/{}/cover", metadata.id))
+}
+
+struct EffectCover {
+    content_type: String,
+    bytes: Vec<u8>,
+}
+
+/// Resolve cover bytes, preferring curated artwork over whatever the effect
+/// ships inline so a locally curated image can override the bundled art.
+async fn effect_cover_image_bytes(metadata: &EffectMetadata) -> Option<EffectCover> {
+    if let Some(path) = effect_cover_image_path(metadata) {
+        match fs::read(&path).await {
+            Ok(bytes) => {
+                return Some(EffectCover {
+                    bytes,
+                    content_type: EFFECT_COVER_CONTENT_TYPE.to_owned(),
+                });
+            }
+            Err(error) => warn!(
+                path = %path.display(),
+                error = %error,
+                "Failed to read curated effect cover; falling back to inline cover"
+            ),
+        }
+    }
+
+    effect_inline_cover(metadata).await
+}
+
+/// Decode the `data:image/<type>;base64,` cover an HTML effect declares in its
+/// `<meta cover>` tag.
+async fn effect_inline_cover(metadata: &EffectMetadata) -> Option<EffectCover> {
+    let path = html_effect_source_path(metadata)?;
+    let html = fs::read_to_string(path).await.ok()?;
+    let cover = hypercolor_core::effect::parse_html_effect_metadata(&html).cover?;
+
+    let (declaration, payload) = cover.split_once(";base64,")?;
+    let content_type = declaration.strip_prefix("data:")?.to_owned();
+
+    match BASE64_STANDARD.decode(payload) {
+        Ok(bytes) => Some(EffectCover {
+            bytes,
+            content_type,
+        }),
+        Err(error) => {
+            warn!(
+                effect = %metadata.name,
+                error = %error,
+                "Effect declared an inline cover that is not valid base64"
+            );
+            None
+        }
+    }
+}
+
+fn html_effect_source_path(metadata: &EffectMetadata) -> Option<&PathBuf> {
+    match &metadata.source {
+        EffectSource::Html { path } => Some(path),
+        EffectSource::Native { .. } | EffectSource::Shader { .. } => None,
+    }
 }
 
 fn effect_cover_image_path(metadata: &EffectMetadata) -> Option<PathBuf> {

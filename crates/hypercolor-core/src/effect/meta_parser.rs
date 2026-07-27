@@ -9,6 +9,12 @@ use std::str::FromStr;
 
 use hypercolor_types::effect::{EffectCategory, PreviewSource};
 
+/// Upper bound on an inline cover data URI.
+///
+/// Every effect's metadata is parsed on each registry scan, so an oversized
+/// cover would be paid for repeatedly. The SDK build warns well below this.
+const MAX_COVER_DATA_URI_BYTES: usize = 1024 * 1024;
+
 /// Parsed control type from HTML `<meta property=... type=...>` declarations.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HtmlControlKind {
@@ -90,6 +96,8 @@ pub struct ParsedHtmlEffectMetadata {
     pub uses_webgl: bool,
     pub uses_three_js: bool,
     pub tags: Vec<String>,
+    /// Inline card artwork as a `data:image/...` URI, when the effect ships one.
+    pub cover: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,6 +118,7 @@ pub fn parse_html_effect_metadata(html: &str) -> ParsedHtmlEffectMetadata {
     let mut explicit_category = None;
     let mut controls = Vec::new();
     let mut presets = Vec::new();
+    let mut cover = None;
 
     for meta_tag in extract_start_tags(&sanitized, "meta") {
         let attrs = parse_tag_attributes(&meta_tag);
@@ -157,6 +166,10 @@ pub fn parse_html_effect_metadata(html: &str) -> ParsedHtmlEffectMetadata {
                     }
                 })
                 .and_then(parse_effect_category);
+        }
+
+        if cover.is_none() {
+            cover = attr_value(&attrs, "cover").and_then(parse_cover_data_uri);
         }
 
         if let Some(preset) = parse_preset_metadata(&attrs) {
@@ -229,6 +242,7 @@ pub fn parse_html_effect_metadata(html: &str) -> ParsedHtmlEffectMetadata {
         uses_webgl,
         uses_three_js,
         tags,
+        cover,
     }
 }
 
@@ -487,6 +501,25 @@ fn parse_preview_source_attr(attrs: &HashMap<String, String>, key: &str) -> Opti
         "canvas" | "effect_canvas" => Some(PreviewSource::EffectCanvas),
         _ => None,
     }
+}
+
+/// Accept a cover attribute only when it is a self-contained image data URI.
+///
+/// Effects are third-party content, so a remote URL here would let an effect
+/// beacon the viewer's address every time its card renders. Restricting to
+/// `data:image/` keeps cover art inert.
+fn parse_cover_data_uri(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.len() > MAX_COVER_DATA_URI_BYTES {
+        return None;
+    }
+
+    let lower = trimmed.to_ascii_lowercase();
+    if !lower.starts_with("data:image/") || !lower[..lower.find(',')?].contains(";base64") {
+        return None;
+    }
+
+    Some(trimmed.to_owned())
 }
 
 /// Check for an explicit `<meta audio-reactive="true"/>` tag (emitted by the SDK build script).

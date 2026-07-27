@@ -472,6 +472,66 @@ fn parse_html_effect_metadata_respects_explicit_renderer_meta() {
 }
 
 #[test]
+fn parse_html_effect_metadata_reads_inline_cover_data_uri() {
+    let html = r#"
+<head>
+  <title>Covered</title>
+  <meta cover="data:image/webp;base64,UklGRh4AAABXRUJQ" />
+</head>
+"#;
+
+    let parsed = parse_html_effect_metadata(html);
+
+    assert_eq!(
+        parsed.cover.as_deref(),
+        Some("data:image/webp;base64,UklGRh4AAABXRUJQ")
+    );
+}
+
+#[test]
+fn parse_html_effect_metadata_rejects_remote_cover_urls() {
+    for value in [
+        "https://example.com/cover.webp",
+        "http://example.com/cover.webp",
+        "//example.com/cover.webp",
+        "javascript:alert(1)",
+    ] {
+        let html = format!("<head><title>Beacon</title><meta cover=\"{value}\" /></head>");
+
+        let parsed = parse_html_effect_metadata(&html);
+
+        assert_eq!(parsed.cover, None, "should have rejected cover {value}");
+    }
+}
+
+#[test]
+fn parse_html_effect_metadata_rejects_non_base64_cover_payloads() {
+    let html = r#"
+<head>
+  <title>Plain</title>
+  <meta cover="data:image/svg+xml,<svg onload='alert(1)'/>" />
+</head>
+"#;
+
+    let parsed = parse_html_effect_metadata(html);
+
+    assert_eq!(parsed.cover, None);
+}
+
+#[test]
+fn parse_html_effect_metadata_has_no_cover_when_unspecified() {
+    let html = r#"
+<head>
+  <title>Bare</title>
+</head>
+"#;
+
+    let parsed = parse_html_effect_metadata(html);
+
+    assert_eq!(parsed.cover, None);
+}
+
+#[test]
 fn parse_html_effect_metadata_reads_builtin_and_screen_reactive_meta() {
     let html = r#"
 <head>
