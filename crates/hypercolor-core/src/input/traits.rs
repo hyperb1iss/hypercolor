@@ -4,6 +4,7 @@
 //! into the effect pipeline. Each source produces [`InputData`] snapshots that
 //! the render loop consumes per frame.
 
+use super::status::{SourceStatusError, SourceStatusHandle, SourceStatusReporter};
 use crate::types::audio::{AudioData, AudioPipelineConfig};
 use crate::types::canvas::PublishedSurface;
 use crate::types::event::{TimedInputEvent, ZoneColors};
@@ -366,6 +367,42 @@ impl ScreenData {
 pub trait InputSource: Send {
     /// Human-readable name for logging and UI display (e.g., `"PipeWire Monitor"`).
     fn name(&self) -> &str;
+
+    /// Clone the source's independent health handle, when it publishes one.
+    ///
+    /// The default keeps third-party implementations source-compatible. All
+    /// production Hypercolor sources override this seam; `None` explicitly
+    /// identifies an uninstrumented compatibility source.
+    fn source_status_handle(&self) -> Option<SourceStatusHandle> {
+        None
+    }
+
+    /// Borrow the source-owned lifecycle reporter, when implemented.
+    ///
+    /// The default `None` is the matching uninstrumented compatibility path.
+    fn source_status_reporter(&mut self) -> Option<&mut SourceStatusReporter> {
+        None
+    }
+
+    /// Bind future lifecycle publications to the manager-owned graph generation.
+    fn set_source_graph_generation(&mut self, source_graph_generation: u64) {
+        if let Some(status) = self.source_status_reporter() {
+            status.set_source_graph_generation(source_graph_generation);
+        }
+    }
+
+    /// Permanently retire this source's status at its removal generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed transition error if the source rejects retirement.
+    fn retire_source_status(
+        &mut self,
+        source_graph_generation: u64,
+    ) -> Result<(), SourceStatusError> {
+        self.source_status_reporter()
+            .map_or(Ok(()), |status| status.retire(source_graph_generation))
+    }
 
     /// Begin capturing. Opens hardware streams, allocates buffers.
     ///

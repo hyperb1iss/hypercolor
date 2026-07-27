@@ -13,6 +13,7 @@ use hypercolor_types::net::NetStats;
 use sysinfo::Networks;
 
 use super::traits::{InputData, InputSource};
+use super::{SourceIssue, SourceKind, SourceStatusHandle, SourceStatusReporter};
 
 const REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -22,6 +23,7 @@ pub struct NetSource {
     networks: Option<Networks>,
     last_refresh: Option<Instant>,
     last_iface: Option<String>,
+    status: SourceStatusReporter,
 }
 
 impl NetSource {
@@ -32,6 +34,14 @@ impl NetSource {
             networks: None,
             last_refresh: None,
             last_iface: None,
+            status: SourceStatusReporter::new(
+                "network",
+                SourceKind::Network,
+                "sysinfo",
+                true,
+                true,
+                true,
+            ),
         }
     }
 
@@ -77,6 +87,7 @@ impl InputSource for NetSource {
 
     fn start(&mut self) -> Result<()> {
         if self.networks.is_none() {
+            self.status.begin_session()?;
             self.networks = Some(Networks::new_with_refreshed_list());
             self.last_refresh = Some(Instant::now());
         }
@@ -87,6 +98,7 @@ impl InputSource for NetSource {
         self.networks = None;
         self.last_refresh = None;
         self.last_iface = None;
+        self.status.stop();
     }
 
     fn sample(&mut self) -> Result<InputData> {
@@ -99,14 +111,41 @@ impl InputSource for NetSource {
         }
 
         self.last_refresh = Some(Instant::now());
-        match self.refresh_stats(elapsed) {
-            Some(stats) => Ok(InputData::Net(Arc::new(stats))),
-            None => Ok(InputData::None),
+        if let Some(stats) = self.refresh_stats(elapsed) {
+            if let Some(status) = self.status.session() {
+                let sampled_at = Instant::now();
+                status.record_sample(
+                    sampled_at,
+                    sampled_at + REFRESH_INTERVAL + REFRESH_INTERVAL,
+                    1,
+                )?;
+            }
+            Ok(InputData::Net(Arc::new(stats)))
+        } else {
+            if let Some(status) = self.status.session() {
+                status.unavailable(
+                    SourceIssue::new(
+                        "network_interface_unavailable",
+                        "no eligible non-loopback network interface is available",
+                        true,
+                    )
+                    .with_remediation("connect or enable a network interface"),
+                );
+            }
+            Ok(InputData::None)
         }
     }
 
     fn is_running(&self) -> bool {
         self.networks.is_some()
+    }
+
+    fn source_status_handle(&self) -> Option<SourceStatusHandle> {
+        Some(self.status.handle())
+    }
+
+    fn source_status_reporter(&mut self) -> Option<&mut SourceStatusReporter> {
+        Some(&mut self.status)
     }
 }
 

@@ -32,11 +32,13 @@ pub use wayland::WaylandScreenCaptureInput;
 pub use windows::WindowsScreenCaptureInput;
 
 use crate::input::traits::{InputData, InputSource, ScreenData};
+use crate::input::{SourceKind, SourceStatusHandle, SourceStatusReporter};
 use crate::types::canvas::{
     DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, PublishedSurface, RenderSurfacePool,
     SurfaceDescriptor,
 };
 use crate::types::event::ZoneColors;
+use std::time::{Duration, Instant};
 
 // ── CaptureConfig ─────────────────────────────────────────────────────────
 
@@ -239,6 +241,10 @@ pub struct ScreenCaptureInput {
 
     /// Detected letterbox bars from the most recent frame.
     letterbox: LetterboxBars,
+    frame_generation: u64,
+    status_frame_generation: u64,
+    latest_acquired_at: Option<Instant>,
+    status: SourceStatusReporter,
 }
 
 impl ScreenCaptureInput {
@@ -261,6 +267,17 @@ impl ScreenCaptureInput {
             frame_width: 0,
             frame_height: 0,
             letterbox: LetterboxBars::default(),
+            frame_generation: 0,
+            status_frame_generation: 0,
+            latest_acquired_at: None,
+            status: SourceStatusReporter::new(
+                "screen_analysis",
+                SourceKind::Screen,
+                "in_process",
+                true,
+                true,
+                true,
+            ),
         }
     }
 
@@ -275,6 +292,8 @@ impl ScreenCaptureInput {
     /// * `width` — Frame width in pixels.
     /// * `height` — Frame height in pixels.
     pub fn push_frame(&mut self, frame: &[u8], width: u32, height: u32) {
+        let acquired_at = Instant::now();
+        self.frame_generation = self.frame_generation.wrapping_add(1);
         self.frame_width = width;
         self.frame_height = height;
         let (downscale_width, downscale_height) =
@@ -321,6 +340,7 @@ impl ScreenCaptureInput {
         self.config.tuning.apply(&mut colors);
 
         self.latest_colors = Some(colors);
+        self.latest_acquired_at = Some(acquired_at);
     }
 
     /// Current configuration.
@@ -364,10 +384,16 @@ impl InputSource for ScreenCaptureInput {
     }
 
     fn start(&mut self) -> anyhow::Result<()> {
+        if self.running {
+            return Ok(());
+        }
+        self.status.begin_session()?;
         self.running = true;
         self.smoother.reset();
         self.latest_colors = None;
         self.latest_canvas_downscale = None;
+        self.latest_acquired_at = None;
+        self.status_frame_generation = self.frame_generation;
         Ok(())
     }
 
@@ -375,7 +401,9 @@ impl InputSource for ScreenCaptureInput {
         self.running = false;
         self.latest_colors = None;
         self.latest_canvas_downscale = None;
+        self.latest_acquired_at = None;
         self.smoother.reset();
+        self.status.stop();
     }
 
     fn sample(&mut self) -> anyhow::Result<InputData> {
@@ -392,6 +420,17 @@ impl InputSource for ScreenCaptureInput {
                 colors: vec![*rgb],
             })
             .collect();
+
+        if self.status_frame_generation != self.frame_generation {
+            if let (Some(status), Some(acquired_at)) =
+                (self.status.session(), self.latest_acquired_at)
+            {
+                let frame_period =
+                    Duration::from_secs_f64(1.0 / f64::from(self.config.target_fps.max(1)));
+                status.record_sample(acquired_at, acquired_at + frame_period + frame_period, 1)?;
+            }
+            self.status_frame_generation = self.frame_generation;
+        }
 
         Ok(InputData::Screen(ScreenData {
             zone_colors,
@@ -411,6 +450,14 @@ impl InputSource for ScreenCaptureInput {
 
     fn is_running(&self) -> bool {
         self.running
+    }
+
+    fn source_status_handle(&self) -> Option<SourceStatusHandle> {
+        Some(self.status.handle())
+    }
+
+    fn source_status_reporter(&mut self) -> Option<&mut SourceStatusReporter> {
+        Some(&mut self.status)
     }
 }
 

@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::input::input_mono_ms;
 use crate::input::traits::{InputData, InputSource, InteractionData, MotionAggregate, PointerMode};
+use crate::input::{SourceKind, SourceStatusHandle, SourceStatusReporter};
 use crate::types::event::{InputButtonState, InputEvent, TimedInputEvent};
 
 const DEFAULT_EVENT_LIMIT: usize = 256;
@@ -260,6 +261,7 @@ pub struct BrowserInputSource {
     generation: u64,
     shared: Arc<Mutex<SharedState>>,
     event_limit: usize,
+    status: SourceStatusReporter,
 }
 
 impl BrowserInputSource {
@@ -272,6 +274,14 @@ impl BrowserInputSource {
             generation: 0,
             shared: Arc::new(Mutex::new(SharedState::default())),
             event_limit: DEFAULT_EVENT_LIMIT,
+            status: SourceStatusReporter::new(
+                "browser_input",
+                SourceKind::Interaction,
+                "browser",
+                true,
+                true,
+                true,
+            ),
         }
     }
 
@@ -324,7 +334,13 @@ impl InputSource for BrowserInputSource {
     }
 
     fn start(&mut self) -> anyhow::Result<()> {
+        if self.running {
+            return Ok(());
+        }
         self.running = true;
+        if let Some(status) = self.status.begin_session()? {
+            status.mark_event_driven_live_without_deadline(0);
+        }
         Ok(())
     }
 
@@ -333,6 +349,7 @@ impl InputSource for BrowserInputSource {
         if let Ok(mut guard) = self.shared.lock() {
             *guard = SharedState::default();
         }
+        self.status.stop();
     }
 
     fn sample(&mut self) -> anyhow::Result<InputData> {
@@ -368,6 +385,14 @@ impl InputSource for BrowserInputSource {
 
     fn is_running(&self) -> bool {
         self.running
+    }
+
+    fn source_status_handle(&self) -> Option<SourceStatusHandle> {
+        Some(self.status.handle())
+    }
+
+    fn source_status_reporter(&mut self) -> Option<&mut SourceStatusReporter> {
+        Some(&mut self.status)
     }
 
     fn is_interaction_source(&self) -> bool {

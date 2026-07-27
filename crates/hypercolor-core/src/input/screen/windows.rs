@@ -23,6 +23,9 @@ use tracing::{debug, info, warn};
 
 use crate::input::screen::{CaptureConfig, ScreenCaptureInput};
 use crate::input::traits::{InputData, InputSource, ScreenData};
+use crate::input::{
+    SourceIssue, SourceKind, SourceSessionSlot, SourceStatusHandle, SourceStatusReporter,
+};
 
 /// Width the capture backend subsamples to before analysis.
 ///
@@ -64,6 +67,8 @@ pub struct WindowsScreenCaptureInput {
     capture_active: bool,
     latest_snapshot: Arc<Mutex<Option<ScreenData>>>,
     worker: Option<CaptureWorker>,
+    status: SourceStatusReporter,
+    status_session: SourceSessionSlot,
 }
 
 struct CaptureWorker {
@@ -90,6 +95,15 @@ impl WindowsScreenCaptureInput {
             capture_active: false,
             latest_snapshot: Arc::new(Mutex::new(None)),
             worker: None,
+            status: SourceStatusReporter::new(
+                "windows_screen_capture",
+                SourceKind::Screen,
+                "dxgi_desktop_duplication",
+                true,
+                true,
+                false,
+            ),
+            status_session: SourceSessionSlot::new(),
         }
     }
 
@@ -103,11 +117,18 @@ impl WindowsScreenCaptureInput {
         let latest_snapshot = Arc::clone(&self.latest_snapshot);
         let cancel = Arc::new(AtomicBool::new(false));
         let worker_cancel = Arc::clone(&cancel);
+        let status_session = self.status_session.clone();
 
         let join_handle = thread::Builder::new()
             .name("hypercolor-screen-capture".to_owned())
             .spawn(move || {
-                run_worker(&settings, &latest_snapshot, &command_rx, &worker_cancel);
+                run_worker(
+                    &settings,
+                    &latest_snapshot,
+                    &command_rx,
+                    &worker_cancel,
+                    status_session,
+                );
             })
             .map_err(|error| anyhow!("failed to spawn screen capture worker: {error}"))?;
 
@@ -136,6 +157,9 @@ impl WindowsScreenCaptureInput {
             return Ok(());
         }
         self.capture_active = active;
+        if let Ok(mut latest) = self.latest_snapshot.lock() {
+            *latest = None;
+        }
 
         if !self.running {
             return Ok(());
@@ -147,10 +171,6 @@ impl WindowsScreenCaptureInput {
 
         if let Some(worker) = self.worker.as_ref() {
             let _ = worker.command_tx.send(WorkerCommand::SetActive(active));
-        }
-
-        if !active && let Ok(mut latest) = self.latest_snapshot.lock() {
-            *latest = None;
         }
 
         Ok(())
@@ -180,6 +200,9 @@ impl InputSource for WindowsScreenCaptureInput {
         self.running = true;
 
         if self.capture_active {
+            if let Some(session) = self.status.begin_session()? {
+                self.status_session.store(session);
+            }
             self.spawn_worker()?;
             if let Some(worker) = self.worker.as_ref() {
                 let _ = worker.command_tx.send(WorkerCommand::SetActive(true));
@@ -194,6 +217,8 @@ impl InputSource for WindowsScreenCaptureInput {
     }
 
     fn stop(&mut self) {
+        self.status_session.clear();
+        self.status.stop();
         self.running = false;
         self.capture_active = false;
         self.shutdown_worker();
@@ -220,11 +245,31 @@ impl InputSource for WindowsScreenCaptureInput {
         self.running
     }
 
+    fn source_status_handle(&self) -> Option<SourceStatusHandle> {
+        Some(self.status.handle())
+    }
+
+    fn source_status_reporter(&mut self) -> Option<&mut SourceStatusReporter> {
+        Some(&mut self.status)
+    }
+
     fn is_screen_source(&self) -> bool {
         true
     }
 
     fn set_screen_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
+        self.status.set_policy(true, true, active)?;
+        if self.capture_active != active {
+            if !active {
+                self.status_session.clear();
+            }
+            if active
+                && self.running
+                && let Some(session) = self.status.begin_session()?
+            {
+                self.status_session.store(session);
+            }
+        }
         self.set_capture_active_state(active)
     }
 
@@ -246,6 +291,7 @@ fn run_worker(
     latest_snapshot: &Arc<Mutex<Option<ScreenData>>>,
     command_rx: &mpsc::Receiver<WorkerCommand>,
     cancel: &Arc<AtomicBool>,
+    status_session: SourceSessionSlot,
 ) {
     let mut config = settings.snapshot();
     let mut generation = settings.generation.load(Ordering::Acquire);
@@ -304,6 +350,18 @@ fn run_worker(
                         log_open_failure(&error);
                         open_failure_logged = true;
                     }
+                    if let Some(status) = status_session.load() {
+                        status.unavailable(
+                            SourceIssue::new(
+                                "windows_desktop_duplication_unavailable",
+                                error.to_string(),
+                                true,
+                            )
+                            .with_remediation(
+                                "close other capture tools using this display and retry",
+                            ),
+                        );
+                    }
                     thread::sleep(REOPEN_BACKOFF);
                     continue;
                 }
@@ -312,11 +370,21 @@ fn run_worker(
 
         match session.next_frame(FRAME_WAIT) {
             Ok(Some(frame)) => {
+                let acquired_at = std::time::Instant::now();
                 analyzer.push_frame(frame.rgba, frame.width, frame.height);
                 if let Ok(InputData::Screen(snapshot)) = analyzer.sample()
                     && let Ok(mut latest) = latest_snapshot.lock()
                 {
                     *latest = Some(snapshot);
+                    if let Some(status) = status_session.load() {
+                        let frame_period =
+                            Duration::from_secs_f64(1.0 / f64::from(config.target_fps.max(1)));
+                        let _ = status.record_sample(
+                            acquired_at,
+                            acquired_at + frame_period + frame_period,
+                            1,
+                        );
+                    }
                 }
             }
             // Static desktop or pointer-only update: nothing new to analyze.

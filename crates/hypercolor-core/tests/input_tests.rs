@@ -2,12 +2,20 @@
 
 #[cfg(target_os = "linux")]
 use hypercolor_core::input::SensorPoller;
+#[cfg(target_os = "windows")]
+use hypercolor_core::input::WindowsHostInput;
+use hypercolor_core::input::audio::AudioInput;
 use hypercolor_core::input::screen::CaptureConfig as ScreenCaptureConfig;
+use hypercolor_core::input::screen::ScreenCaptureInput;
+#[cfg(target_os = "windows")]
+use hypercolor_core::input::screen::WindowsScreenCaptureInput;
 #[cfg(target_os = "linux")]
 use hypercolor_core::input::screen::{CaptureConfig, WaylandScreenCaptureInput};
 use hypercolor_core::input::{
-    InputData, InputManager, InputSource, ScreenData, SourceFreshness, SourceIssue, SourceKind,
-    SourceState, SourceStatusError, SourceStatusWriter, SourceTimestampField,
+    BrowserInputSource, InputData, InputManager, InputSource, MediaSource, NetSource, ScreenData,
+    SourceFreshness, SourceIssue, SourceKind, SourceResourceScanHealth, SourceSessionSlot,
+    SourceSessionWriter, SourceState, SourceStatusError, SourceStatusHandle, SourceStatusReporter,
+    SourceStatusWriter, SourceTimestampField, TerminalFailureLatch, classify_source_resource_scan,
 };
 use hypercolor_core::types::audio::{AudioData, AudioPipelineConfig, AudioSourceType};
 use hypercolor_core::types::event::{InputButtonState, InputEvent, TimedInputEvent, ZoneColors};
@@ -22,6 +30,238 @@ use std::time::{Duration, Instant};
 struct MockAudioSource {
     running: bool,
     rms_level: f32,
+}
+
+struct StatusAwareScreenSource {
+    running: bool,
+    status: SourceStatusReporter,
+    session_sink: Arc<Mutex<Option<SourceSessionWriter>>>,
+}
+
+impl StatusAwareScreenSource {
+    fn new(session_sink: Arc<Mutex<Option<SourceSessionWriter>>>) -> Self {
+        Self {
+            running: false,
+            status: SourceStatusReporter::new(
+                "status_aware_screen",
+                SourceKind::Screen,
+                "test",
+                true,
+                true,
+                true,
+            ),
+            session_sink,
+        }
+    }
+}
+
+impl InputSource for StatusAwareScreenSource {
+    fn name(&self) -> &'static str {
+        "StatusAwareScreen"
+    }
+
+    fn source_status_handle(&self) -> Option<SourceStatusHandle> {
+        Some(self.status.handle())
+    }
+
+    fn source_status_reporter(&mut self) -> Option<&mut SourceStatusReporter> {
+        Some(&mut self.status)
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        let session = self
+            .status
+            .begin_session()?
+            .expect("manager binds a graph generation before start");
+        session.mark_event_driven_live_without_deadline(1);
+        *self.session_sink.lock().expect("session sink lock") = Some(session);
+        self.running = true;
+        Ok(())
+    }
+
+    fn stop(&mut self) {
+        self.status.stop();
+        self.running = false;
+    }
+
+    fn sample(&mut self) -> anyhow::Result<InputData> {
+        Ok(InputData::None)
+    }
+
+    fn is_running(&self) -> bool {
+        self.running
+    }
+
+    fn is_screen_source(&self) -> bool {
+        true
+    }
+}
+
+#[derive(Default)]
+struct DemandTransitionState {
+    active: bool,
+    transitions: Vec<bool>,
+}
+
+struct FallibleStatusScreenSource {
+    name: &'static str,
+    running: bool,
+    fail_on: Option<bool>,
+    state: Arc<Mutex<DemandTransitionState>>,
+    status: SourceStatusReporter,
+}
+
+impl FallibleStatusScreenSource {
+    fn new(
+        name: &'static str,
+        fail_on: Option<bool>,
+        state: Arc<Mutex<DemandTransitionState>>,
+    ) -> Self {
+        Self {
+            name,
+            running: false,
+            fail_on,
+            state,
+            status: SourceStatusReporter::new(name, SourceKind::Screen, "test", true, true, false),
+        }
+    }
+}
+
+impl InputSource for FallibleStatusScreenSource {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn source_status_handle(&self) -> Option<SourceStatusHandle> {
+        Some(self.status.handle())
+    }
+
+    fn source_status_reporter(&mut self) -> Option<&mut SourceStatusReporter> {
+        Some(&mut self.status)
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        self.running = true;
+        Ok(())
+    }
+
+    fn stop(&mut self) {
+        self.status.stop();
+        self.running = false;
+    }
+
+    fn sample(&mut self) -> anyhow::Result<InputData> {
+        Ok(InputData::None)
+    }
+
+    fn is_running(&self) -> bool {
+        self.running
+    }
+
+    fn is_screen_source(&self) -> bool {
+        true
+    }
+
+    fn set_screen_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
+        self.status.set_policy(true, true, active)?;
+        {
+            let mut state = self.state.lock().expect("demand state lock");
+            state.active = active;
+            state.transitions.push(active);
+        }
+        if active && self.running {
+            self.status.begin_session()?;
+        }
+        if self.fail_on == Some(active) {
+            anyhow::bail!("injected demand transition failure");
+        }
+        Ok(())
+    }
+}
+
+struct RestartingStatusScreenSource {
+    running: bool,
+    target_fps: u32,
+    sessions: Arc<Mutex<Vec<u64>>>,
+    status: SourceStatusReporter,
+}
+
+impl RestartingStatusScreenSource {
+    fn new(sessions: Arc<Mutex<Vec<u64>>>) -> Self {
+        Self {
+            running: false,
+            target_fps: ScreenCaptureConfig::default().target_fps,
+            sessions,
+            status: SourceStatusReporter::new(
+                "restarting_status_screen",
+                SourceKind::Screen,
+                "test",
+                true,
+                true,
+                true,
+            ),
+        }
+    }
+
+    fn begin_status_session(&mut self) -> anyhow::Result<()> {
+        let session = self
+            .status
+            .begin_session()?
+            .expect("manager binds a graph generation");
+        self.sessions
+            .lock()
+            .expect("session log lock")
+            .push(session.session_generation());
+        Ok(())
+    }
+}
+
+impl InputSource for RestartingStatusScreenSource {
+    fn name(&self) -> &'static str {
+        "RestartingStatusScreen"
+    }
+
+    fn source_status_handle(&self) -> Option<SourceStatusHandle> {
+        Some(self.status.handle())
+    }
+
+    fn source_status_reporter(&mut self) -> Option<&mut SourceStatusReporter> {
+        Some(&mut self.status)
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        self.running = true;
+        self.begin_status_session()
+    }
+
+    fn stop(&mut self) {
+        self.status.stop();
+        self.running = false;
+    }
+
+    fn sample(&mut self) -> anyhow::Result<InputData> {
+        Ok(InputData::None)
+    }
+
+    fn is_running(&self) -> bool {
+        self.running
+    }
+
+    fn is_screen_source(&self) -> bool {
+        true
+    }
+
+    fn reconfigure_screen_capture(&mut self, config: &ScreenCaptureConfig) -> anyhow::Result<()> {
+        if self.target_fps != config.target_fps {
+            self.target_fps = config.target_fps;
+            self.begin_status_session()?;
+        }
+        Ok(())
+    }
+
+    fn reselect_screen_source(&mut self) -> anyhow::Result<()> {
+        self.begin_status_session()
+    }
 }
 
 impl MockAudioSource {
@@ -124,6 +364,83 @@ impl InputSource for ReconfigurableAudioSource {
 
     fn set_audio_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
         self.capture_active = active;
+        Ok(())
+    }
+}
+
+struct StatusReconfigurableAudioSource {
+    running: bool,
+    status: SourceStatusReporter,
+}
+
+impl StatusReconfigurableAudioSource {
+    fn new() -> Self {
+        Self {
+            running: false,
+            status: SourceStatusReporter::new(
+                "status_reconfigurable_audio",
+                SourceKind::Audio,
+                "test",
+                true,
+                true,
+                false,
+            ),
+        }
+    }
+}
+
+impl InputSource for StatusReconfigurableAudioSource {
+    fn name(&self) -> &'static str {
+        "StatusReconfigurableAudio"
+    }
+
+    fn source_status_handle(&self) -> Option<SourceStatusHandle> {
+        Some(self.status.handle())
+    }
+
+    fn source_status_reporter(&mut self) -> Option<&mut SourceStatusReporter> {
+        Some(&mut self.status)
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        self.running = true;
+        Ok(())
+    }
+
+    fn stop(&mut self) {
+        self.status.stop();
+        self.running = false;
+    }
+
+    fn sample(&mut self) -> anyhow::Result<InputData> {
+        Ok(InputData::None)
+    }
+
+    fn is_running(&self) -> bool {
+        self.running
+    }
+
+    fn is_audio_source(&self) -> bool {
+        true
+    }
+
+    fn reconfigure_audio(
+        &mut self,
+        config: &AudioPipelineConfig,
+        _name: &str,
+        capture_active: bool,
+    ) -> anyhow::Result<()> {
+        let configured = !matches!(config.source, AudioSourceType::None);
+        self.status
+            .set_policy(configured, true, configured && capture_active)?;
+        self.running = true;
+        if configured && capture_active {
+            let session = self
+                .status
+                .begin_session()?
+                .expect("manager binds audio reconfiguration generation");
+            session.mark_event_driven_live_without_deadline(1);
+        }
         Ok(())
     }
 }
@@ -507,6 +824,236 @@ fn manager_default_is_empty() {
 }
 
 #[test]
+fn status_registry_advances_while_manager_ownership_is_held() {
+    let session_sink = Arc::new(Mutex::new(None));
+    let mut manager = InputManager::new();
+    manager.add_source(Box::new(StatusAwareScreenSource::new(Arc::clone(
+        &session_sink,
+    ))));
+    manager.start_all().expect("status-aware source starts");
+    let registry = manager.source_status_registry();
+    let manager = Mutex::new(manager);
+    let manager_guard = manager.lock().expect("manager ownership lock");
+    let session = session_sink
+        .lock()
+        .expect("session sink lock")
+        .clone()
+        .expect("worker session was published");
+
+    assert!(session.degraded(SourceIssue::new(
+        "worker_degraded",
+        "worker can publish without borrowing the manager",
+        true,
+    )));
+    let snapshot = registry.snapshot();
+    let statuses = snapshot.statuses();
+    assert_eq!(statuses.len(), 1);
+    assert_eq!(statuses[0].state, SourceState::Degraded);
+    assert_eq!(
+        statuses[0].issue.as_ref().map(|issue| issue.code.as_ref()),
+        Some("worker_degraded")
+    );
+    drop(manager_guard);
+}
+
+#[test]
+fn manager_graph_generation_advances_and_removal_retires_status() {
+    let session_sink = Arc::new(Mutex::new(None));
+    let mut manager = InputManager::new();
+    manager.add_source(Box::new(StatusAwareScreenSource::new(session_sink)));
+    let registry = manager.source_status_registry();
+    let added = registry.snapshot();
+    assert_eq!(added.source_graph_generation(), 1);
+    let removed_handle = added.handles()[0].clone();
+
+    manager.start_all().expect("status-aware source starts");
+    let started_generation = manager.source_graph_generation();
+    assert!(started_generation > added.source_graph_generation());
+    manager.remove_screen_sources();
+
+    let removed = registry.snapshot();
+    assert!(removed.source_graph_generation() > started_generation);
+    assert!(removed.handles().is_empty());
+    let retired = removed_handle.snapshot();
+    assert!(retired.retired);
+    assert_eq!(
+        retired.source_graph_generation,
+        removed.source_graph_generation()
+    );
+}
+
+#[test]
+fn replacing_source_advances_graph_and_retires_previous_handle() {
+    let session_sink = Arc::new(Mutex::new(None));
+    let mut manager = InputManager::new();
+    manager.add_source(Box::new(StatusAwareScreenSource::new(session_sink)));
+    let registry = manager.source_status_registry();
+    let before = registry.snapshot();
+    let previous_handle = before.handles()[0].clone();
+
+    let replacement = manager.replace_source(0, Box::new(BrowserInputSource::new()));
+
+    assert!(replacement.is_ok());
+    let after = registry.snapshot();
+    assert!(after.source_graph_generation() > before.source_graph_generation());
+    assert_eq!(after.handles().len(), 1);
+    assert_eq!(
+        after.handles()[0].snapshot().source_id.as_ref(),
+        "browser_input"
+    );
+    let retired = previous_handle.snapshot();
+    assert!(retired.retired);
+    assert_eq!(
+        retired.source_graph_generation,
+        after.source_graph_generation()
+    );
+}
+
+#[test]
+fn manager_restart_uses_a_new_canonical_graph_generation() {
+    let mut manager = InputManager::new();
+    manager.add_source(Box::new(BrowserInputSource::new()));
+    let registry = manager.source_status_registry();
+
+    manager.start_all().expect("browser source starts");
+    let first = registry.snapshot().statuses()[0].clone();
+    assert_eq!(first.state, SourceState::Live);
+    manager.stop_all();
+    assert_eq!(
+        registry.snapshot().statuses()[0].state,
+        SourceState::Stopped
+    );
+
+    manager.start_all().expect("browser source restarts");
+    let second = registry.snapshot().statuses()[0].clone();
+    assert_eq!(second.state, SourceState::Live);
+    assert!(
+        second.source_graph_generation > first.source_graph_generation,
+        "manager restart must advance the canonical graph generation"
+    );
+    assert!(second.session_generation > first.session_generation);
+}
+
+#[test]
+fn removed_source_fences_worker_owned_session() {
+    let session_sink = Arc::new(Mutex::new(None));
+    let mut manager = InputManager::new();
+    manager.add_source(Box::new(StatusAwareScreenSource::new(Arc::clone(
+        &session_sink,
+    ))));
+    manager.start_all().expect("status-aware source starts");
+    let stale_worker = session_sink
+        .lock()
+        .expect("session sink lock")
+        .clone()
+        .expect("worker session was published");
+
+    manager.remove_screen_sources();
+
+    assert!(!stale_worker.failed(SourceIssue::new(
+        "late_worker_exit",
+        "retired workers cannot overwrite final status",
+        false,
+    )));
+}
+
+#[test]
+fn production_source_constructors_expose_status_handles() {
+    let config = AudioPipelineConfig::default();
+    let mut sources: Vec<Box<dyn InputSource>> = vec![
+        Box::new(AudioInput::new(&config)),
+        Box::new(BrowserInputSource::new()),
+        Box::new(MediaSource::new()),
+        Box::new(NetSource::new()),
+        Box::new(ScreenCaptureInput::new(ScreenCaptureConfig::default())),
+    ];
+    for source in &mut sources {
+        assert!(
+            source.source_status_handle().is_some(),
+            "{} omitted its production status handle",
+            source.name()
+        );
+        let source_name = source.name().to_owned();
+        assert!(
+            source.source_status_reporter().is_some(),
+            "{source_name} omitted its production status reporter"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let mut windows_sources: Vec<Box<dyn InputSource>> = vec![
+            Box::new(WindowsScreenCaptureInput::new(
+                ScreenCaptureConfig::default(),
+            )),
+            Box::new(WindowsHostInput::new(true, true)),
+        ];
+        for source in &mut windows_sources {
+            assert!(
+                source.source_status_handle().is_some(),
+                "{} omitted its production status handle",
+                source.name()
+            );
+            let source_name = source.name().to_owned();
+            assert!(
+                source.source_status_reporter().is_some(),
+                "{source_name} omitted its production status reporter"
+            );
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        use hypercolor_core::input::EvdevHostInput;
+
+        let mut linux_sources: Vec<Box<dyn InputSource>> = vec![
+            Box::new(EvdevHostInput::new(true, true)),
+            Box::new(WaylandScreenCaptureInput::new(CaptureConfig::default())),
+        ];
+        for source in &mut linux_sources {
+            assert!(
+                source.source_status_handle().is_some(),
+                "{} omitted its production status handle",
+                source.name()
+            );
+            let source_name = source.name().to_owned();
+            assert!(
+                source.source_status_reporter().is_some(),
+                "{source_name} omitted its production status reporter"
+            );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let mut source = hypercolor_core::input::InteractionInput::new();
+        assert!(source.source_status_handle().is_some());
+        assert!(source.source_status_reporter().is_some());
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn unsupported_media_platform_reports_structured_unavailable_status() {
+    let mut manager = InputManager::new();
+    manager.add_source(Box::new(MediaSource::new()));
+    let registry = manager.source_status_registry();
+    manager
+        .start_all()
+        .expect("unsupported media stub starts inertly");
+
+    let statuses = registry.snapshot().statuses();
+    assert_eq!(statuses.len(), 1);
+    assert_eq!(statuses[0].state, SourceState::Unavailable);
+    let issue = statuses[0]
+        .issue
+        .as_ref()
+        .expect("platform stub publishes a structured issue");
+    assert_eq!(issue.code.as_ref(), "media_backend_unsupported");
+    assert!(issue.remediation.is_some());
+}
+
+#[test]
 fn manager_samples_multiple_sources() {
     let mut mgr = InputManager::new();
     mgr.add_source(Box::new(MockAudioSource::new(0.5)));
@@ -846,6 +1393,59 @@ fn manager_reenables_existing_audio_source_after_live_disable() {
 }
 
 #[test]
+fn audio_runtime_reconfiguration_binds_each_status_session_to_a_new_graph_generation() {
+    let mut manager = InputManager::new();
+    manager.add_source(Box::new(StatusReconfigurableAudioSource::new()));
+    let registry = manager.source_status_registry();
+    let config_a = AudioPipelineConfig {
+        source: AudioSourceType::Named("source-a".to_owned()),
+        ..AudioPipelineConfig::default()
+    };
+
+    manager
+        .apply_audio_runtime_config(true, &config_a, "source-a", true)
+        .expect("first live audio source should bind");
+    let first = registry.snapshot().statuses()[0].clone();
+    assert_eq!(first.state, SourceState::Live);
+    assert_eq!(
+        first.source_graph_generation,
+        manager.source_graph_generation()
+    );
+
+    manager
+        .apply_audio_runtime_config(false, &config_a, "source-a", true)
+        .expect("audio disable should fence the active session");
+    let disabled = registry.snapshot().statuses()[0].clone();
+    assert_eq!(disabled.state, SourceState::Stopped);
+    assert!(!disabled.demanded);
+
+    manager
+        .apply_audio_runtime_config(true, &config_a, "source-a", true)
+        .expect("audio re-enable should start a successor session");
+    let reenabled = registry.snapshot().statuses()[0].clone();
+    assert!(
+        reenabled.source_graph_generation > first.source_graph_generation,
+        "disable -> re-enable must not reuse the old graph generation"
+    );
+    assert!(reenabled.session_generation > first.session_generation);
+
+    let config_b = AudioPipelineConfig {
+        source: AudioSourceType::Named("source-b".to_owned()),
+        ..config_a
+    };
+    manager
+        .apply_audio_runtime_config(true, &config_b, "source-b", true)
+        .expect("active source replacement should start a successor session");
+    let replaced = registry.snapshot().statuses()[0].clone();
+    assert!(replaced.source_graph_generation > reenabled.source_graph_generation);
+    assert!(replaced.session_generation > reenabled.session_generation);
+    assert_eq!(
+        replaced.source_graph_generation,
+        manager.source_graph_generation()
+    );
+}
+
+#[test]
 fn manager_updates_screen_capture_demand_for_screen_sources() {
     let mut mgr = InputManager::new();
     mgr.add_source(Box::new(CaptureTrackingScreenSource::new()));
@@ -865,6 +1465,151 @@ fn manager_updates_screen_capture_demand_for_screen_sources() {
 
     let samples = mgr.sample_all();
     assert!(matches!(&samples[0], InputData::None));
+}
+
+#[test]
+fn screen_capture_demand_rolls_back_every_source_and_publishes_one_completed_epoch() {
+    let states: Vec<_> = (0..3)
+        .map(|_| Arc::new(Mutex::new(DemandTransitionState::default())))
+        .collect();
+    let mut manager = InputManager::new();
+    manager.add_source(Box::new(FallibleStatusScreenSource::new(
+        "screen-first",
+        None,
+        Arc::clone(&states[0]),
+    )));
+    manager.add_source(Box::new(FallibleStatusScreenSource::new(
+        "screen-failing",
+        Some(true),
+        Arc::clone(&states[1]),
+    )));
+    manager.add_source(Box::new(FallibleStatusScreenSource::new(
+        "screen-unattempted",
+        None,
+        Arc::clone(&states[2]),
+    )));
+    manager
+        .start_all()
+        .expect("fallible screen sources start idle");
+    let registry = manager.source_status_registry();
+    let before = manager.source_graph_generation();
+
+    let error = manager
+        .set_screen_capture_active(true)
+        .expect_err("second source injects an activation failure");
+    assert!(
+        error
+            .to_string()
+            .contains("injected demand transition failure")
+    );
+    assert_eq!(manager.source_graph_generation(), before + 1);
+    assert_eq!(
+        registry.snapshot().source_graph_generation(),
+        manager.source_graph_generation()
+    );
+    for state in &states {
+        assert!(!state.lock().expect("demand state lock").active);
+    }
+    assert_eq!(
+        states[0].lock().expect("first state lock").transitions,
+        vec![true, false]
+    );
+    assert_eq!(
+        states[1].lock().expect("failing state lock").transitions,
+        vec![true, false]
+    );
+    assert_eq!(
+        states[2]
+            .lock()
+            .expect("unattempted state lock")
+            .transitions,
+        vec![false],
+        "rollback covers sources not reached before the failure"
+    );
+    assert!(
+        registry
+            .snapshot()
+            .statuses()
+            .iter()
+            .all(|status| !status.demanded && status.state == SourceState::Stopped)
+    );
+
+    manager
+        .set_screen_capture_active(false)
+        .expect("rolled-back demand cache remains false");
+    assert_eq!(
+        states[0].lock().expect("first state lock").transitions,
+        vec![true, false],
+        "a false -> false request must be a cache no-op"
+    );
+}
+
+#[test]
+fn screen_capture_deactivation_failure_restores_live_demand_and_cache() {
+    let states: Vec<_> = (0..3)
+        .map(|_| Arc::new(Mutex::new(DemandTransitionState::default())))
+        .collect();
+    let mut manager = InputManager::new();
+    manager.add_source(Box::new(FallibleStatusScreenSource::new(
+        "deactivate-first",
+        None,
+        Arc::clone(&states[0]),
+    )));
+    manager.add_source(Box::new(FallibleStatusScreenSource::new(
+        "deactivate-failing",
+        Some(false),
+        Arc::clone(&states[1]),
+    )));
+    manager.add_source(Box::new(FallibleStatusScreenSource::new(
+        "deactivate-unattempted",
+        None,
+        Arc::clone(&states[2]),
+    )));
+    manager.start_all().expect("screen sources start idle");
+    manager
+        .set_screen_capture_active(true)
+        .expect("initial activation succeeds");
+    let registry = manager.source_status_registry();
+
+    manager
+        .set_screen_capture_active(false)
+        .expect_err("second source injects a deactivation failure");
+    assert!(
+        states
+            .iter()
+            .all(|state| state.lock().expect("demand state lock").active)
+    );
+    assert_eq!(
+        states[0].lock().expect("first state lock").transitions,
+        vec![true, false, true]
+    );
+    assert_eq!(
+        states[1].lock().expect("failing state lock").transitions,
+        vec![true, false, true]
+    );
+    assert_eq!(
+        states[2]
+            .lock()
+            .expect("unattempted state lock")
+            .transitions,
+        vec![true, true]
+    );
+    assert!(
+        registry
+            .snapshot()
+            .statuses()
+            .iter()
+            .all(|status| status.demanded)
+    );
+
+    manager
+        .set_screen_capture_active(true)
+        .expect("rolled-back demand cache remains true");
+    assert_eq!(
+        states[0].lock().expect("first state lock").transitions,
+        vec![true, false, true],
+        "a true -> true request must be a cache no-op"
+    );
 }
 
 #[cfg(target_os = "linux")]
@@ -974,6 +1719,83 @@ fn input_manager_routes_screen_capture_reconfiguration() {
 }
 
 #[test]
+fn screen_restart_operations_start_sessions_under_the_bound_graph_generation() {
+    let sessions = Arc::new(Mutex::new(Vec::new()));
+    let mut manager = InputManager::new();
+    manager.add_source(Box::new(RestartingStatusScreenSource::new(Arc::clone(
+        &sessions,
+    ))));
+    let registry = manager.source_status_registry();
+    manager.start_all().expect("status screen source starts");
+    let started = registry.snapshot().statuses()[0].clone();
+    assert_eq!(sessions.lock().expect("session log lock").len(), 1);
+
+    let analysis_only = ScreenCaptureConfig {
+        grid_cols: 8,
+        ..ScreenCaptureConfig::default()
+    };
+    manager
+        .reconfigure_screen_capture(&analysis_only)
+        .expect("analysis-only settings apply without restart");
+    let unchanged_session = registry.snapshot().statuses()[0].clone();
+    assert_eq!(
+        unchanged_session.session_generation,
+        started.session_generation
+    );
+
+    let restart = ScreenCaptureConfig {
+        target_fps: analysis_only.target_fps + 1,
+        ..analysis_only
+    };
+    manager
+        .reconfigure_screen_capture(&restart)
+        .expect("FPS change restarts the source session");
+    let fps_session = registry.snapshot().statuses()[0].clone();
+    assert!(fps_session.session_generation > started.session_generation);
+    assert_eq!(
+        fps_session.source_graph_generation,
+        manager.source_graph_generation()
+    );
+
+    manager
+        .reselect_screen_source()
+        .expect("source reselect starts another session");
+    let reselected = registry.snapshot().statuses()[0].clone();
+    assert!(reselected.session_generation > fps_session.session_generation);
+    assert_eq!(
+        reselected.source_graph_generation,
+        manager.source_graph_generation()
+    );
+    assert_eq!(sessions.lock().expect("session log lock").len(), 3);
+}
+
+#[test]
+fn screen_status_uses_frame_acquisition_time_not_consumer_read_time() {
+    let mut input = ScreenCaptureInput::new(ScreenCaptureConfig::default());
+    let handle = input
+        .source_status_handle()
+        .expect("production screen source exposes status");
+    input.set_source_graph_generation(1);
+    input.start().expect("screen analysis starts");
+    let frame = vec![96_u8; 64 * 64 * 4];
+    let before_push = Instant::now();
+    input.push_frame(&frame, 64, 64);
+    let after_push = Instant::now();
+    std::thread::sleep(Duration::from_millis(100));
+
+    assert!(matches!(
+        input.sample().expect("delayed screen sample succeeds"),
+        InputData::Screen(_)
+    ));
+    let status = handle.snapshot();
+    let acquired_at = status
+        .last_sample_at
+        .expect("screen acquisition timestamp was recorded");
+    assert!(acquired_at >= before_push && acquired_at <= after_push);
+    assert_eq!(status.freshness, SourceFreshness::Stale);
+}
+
+#[test]
 fn input_manager_removes_screen_sources() {
     let log = Arc::new(Mutex::new(ScreenReconfigLog::default()));
     let mut manager = InputManager::new();
@@ -995,6 +1817,7 @@ struct CaptureTrackingInteractionSource {
     running: bool,
     capture_active: bool,
     transitions: std::sync::Arc<std::sync::Mutex<Vec<bool>>>,
+    status: SourceStatusReporter,
 }
 
 impl CaptureTrackingInteractionSource {
@@ -1003,6 +1826,14 @@ impl CaptureTrackingInteractionSource {
             running: false,
             capture_active: false,
             transitions,
+            status: SourceStatusReporter::new(
+                "capture_tracking_interaction",
+                SourceKind::Interaction,
+                "test",
+                true,
+                true,
+                false,
+            ),
         }
     }
 }
@@ -1012,14 +1843,25 @@ impl InputSource for CaptureTrackingInteractionSource {
         "CaptureTrackingInteraction"
     }
 
+    fn source_status_handle(&self) -> Option<SourceStatusHandle> {
+        Some(self.status.handle())
+    }
+
+    fn source_status_reporter(&mut self) -> Option<&mut SourceStatusReporter> {
+        Some(&mut self.status)
+    }
+
     fn start(&mut self) -> anyhow::Result<()> {
         self.running = true;
+        if self.capture_active {
+            self.status.begin_session()?;
+        }
         Ok(())
     }
 
     fn stop(&mut self) {
+        self.status.stop();
         self.running = false;
-        self.capture_active = false;
     }
 
     fn sample(&mut self) -> anyhow::Result<InputData> {
@@ -1046,6 +1888,10 @@ impl InputSource for CaptureTrackingInteractionSource {
                 .push(active);
         }
         self.capture_active = active;
+        self.status.set_policy(true, true, active)?;
+        if active && self.running {
+            self.status.begin_session()?;
+        }
         Ok(())
     }
 }
@@ -1070,6 +1916,87 @@ fn manager_routes_interaction_capture_demand_to_interaction_sources_only() {
         *transitions.lock().expect("transitions lock"),
         vec![true, false]
     );
+}
+
+#[test]
+fn interaction_demand_reconciles_false_after_stop_and_restart() {
+    let transitions = Arc::new(Mutex::new(Vec::new()));
+    let mut manager = InputManager::new();
+    manager.add_source(Box::new(CaptureTrackingInteractionSource::new(Arc::clone(
+        &transitions,
+    ))));
+    let registry = manager.source_status_registry();
+    manager.start_all().expect("interaction source starts");
+    manager
+        .set_interaction_capture_active(true)
+        .expect("host capture activates");
+
+    manager.stop_all();
+    manager.start_all().expect("interaction source restarts");
+    manager
+        .set_interaction_capture_active(false)
+        .expect("unknown demand cache reconciles false");
+
+    assert_eq!(
+        *transitions.lock().expect("transitions lock"),
+        vec![true, false]
+    );
+    let status = registry.snapshot().statuses()[0].clone();
+    assert!(!status.demanded);
+    assert_eq!(status.state, SourceState::Stopped);
+}
+
+#[test]
+fn production_audio_demand_reconciles_false_after_stop_and_restart() {
+    let config = AudioPipelineConfig {
+        source: AudioSourceType::Named("__hypercolor_demand_reconciliation_missing__".to_owned()),
+        ..AudioPipelineConfig::default()
+    };
+    let mut manager = InputManager::new();
+    manager.add_source(Box::new(AudioInput::new(&config)));
+    let registry = manager.source_status_registry();
+
+    manager.start_all().expect("audio source starts idle");
+    manager
+        .set_audio_capture_active(true)
+        .expect("missing capture degrades without rejecting demand");
+    assert!(registry.snapshot().statuses()[0].demanded);
+
+    manager.stop_all();
+    manager.start_all().expect("audio source restarts idle");
+    manager
+        .set_audio_capture_active(false)
+        .expect("unknown demand cache reconciles false");
+
+    let status = registry.snapshot().statuses()[0].clone();
+    assert!(!status.demanded);
+    assert_eq!(status.state, SourceState::Stopped);
+}
+
+#[test]
+fn adding_an_interaction_source_invalidates_and_reapplies_live_demand() {
+    let first = Arc::new(Mutex::new(Vec::new()));
+    let second = Arc::new(Mutex::new(Vec::new()));
+    let mut manager = InputManager::new();
+    manager.add_source(Box::new(CaptureTrackingInteractionSource::new(Arc::clone(
+        &first,
+    ))));
+    manager
+        .start_all()
+        .expect("first interaction source starts");
+    manager
+        .set_interaction_capture_active(true)
+        .expect("first interaction source activates");
+
+    manager.add_source(Box::new(CaptureTrackingInteractionSource::new(Arc::clone(
+        &second,
+    ))));
+    manager
+        .set_interaction_capture_active(true)
+        .expect("invalidated cache activates the added source");
+
+    assert_eq!(*first.lock().expect("first transitions lock"), vec![true]);
+    assert_eq!(*second.lock().expect("second transitions lock"), vec![true]);
 }
 
 #[test]
@@ -1269,6 +2196,167 @@ fn test_status_writer() -> (
 
 fn test_issue(code: &'static str) -> SourceIssue {
     SourceIssue::new(code, "test issue", true).with_remediation("retry the test source")
+}
+
+#[test]
+fn source_session_slot_hands_a_long_lived_worker_the_successor_session() {
+    let (writer, _handle) = test_status_writer();
+    let first = writer
+        .begin_session(1)
+        .expect("first source session should start");
+    let slot = SourceSessionSlot::new();
+    slot.store(first.clone());
+    assert_eq!(
+        slot.load().map(|session| session.session_generation()),
+        Some(first.session_generation())
+    );
+
+    writer.stop();
+    slot.clear();
+    assert!(slot.load().is_none());
+    let successor = writer
+        .begin_session(2)
+        .expect("successor source session should start");
+    slot.store(successor.clone());
+    assert_eq!(
+        slot.load().map(|session| session.session_generation()),
+        Some(successor.session_generation())
+    );
+    assert!(successor.session_generation() > first.session_generation());
+}
+
+#[test]
+fn source_resource_scan_health_maps_access_failure_and_recovery() {
+    assert_eq!(
+        classify_source_resource_scan(2, 0, 0),
+        SourceResourceScanHealth::Live { resource_count: 2 }
+    );
+
+    let SourceResourceScanHealth::Degraded {
+        resource_count,
+        issue: denied_partial,
+    } = classify_source_resource_scan(2, 1, 0)
+    else {
+        panic!("opened plus denied resources should be degraded");
+    };
+    assert_eq!(resource_count, 2);
+    assert_eq!(denied_partial.code.as_ref(), "access_denied");
+    assert_eq!(
+        denied_partial.remediation.as_deref(),
+        Some("run `just udev-install` and replug or re-login")
+    );
+
+    let SourceResourceScanHealth::Degraded {
+        resource_count,
+        issue: failed_partial,
+    } = classify_source_resource_scan(2, 0, 1)
+    else {
+        panic!("opened plus transient failures should be degraded");
+    };
+    assert_eq!(resource_count, 2);
+    assert_eq!(
+        failed_partial.code.as_ref(),
+        "input_resource_scan_partial_failure"
+    );
+
+    let SourceResourceScanHealth::Degraded {
+        resource_count,
+        issue: mixed_partial,
+    } = classify_source_resource_scan(2, 1, 1)
+    else {
+        panic!("mixed usable and failed resources should be degraded");
+    };
+    assert_eq!(resource_count, 2);
+    assert_eq!(mixed_partial.code.as_ref(), "access_denied");
+    assert!(mixed_partial.message.contains("1 failed to open"));
+    assert_eq!(
+        mixed_partial.remediation.as_deref(),
+        Some("run `just udev-install` and replug or re-login")
+    );
+
+    let SourceResourceScanHealth::Unavailable(denied) = classify_source_resource_scan(0, 3, 0)
+    else {
+        panic!("denied-only scan should be unavailable");
+    };
+    assert_eq!(denied.code.as_ref(), "access_denied");
+    assert_eq!(
+        denied.remediation.as_deref(),
+        Some("run `just udev-install` and replug or re-login")
+    );
+    let SourceResourceScanHealth::Unavailable(failed) = classify_source_resource_scan(0, 0, 2)
+    else {
+        panic!("transient scan failures should be structured");
+    };
+    assert_eq!(failed.code.as_ref(), "input_resource_scan_failed");
+    assert!(failed.retryable);
+
+    let (writer, handle) = test_status_writer();
+    let session = writer
+        .begin_session(1)
+        .expect("resource scan status session should start");
+    assert!(session.degraded_with_resources(mixed_partial, 2));
+    let degraded = handle.snapshot();
+    assert_eq!(degraded.state, SourceState::Degraded);
+    assert_eq!(degraded.resource_count, 2);
+    assert_eq!(
+        degraded.issue.as_ref().map(|issue| issue.code.as_ref()),
+        Some("access_denied")
+    );
+
+    assert!(session.mark_event_driven_live_without_deadline(3));
+    let recovered = handle.snapshot();
+    assert_eq!(recovered.state, SourceState::Live);
+    assert_eq!(recovered.resource_count, 3);
+    assert!(recovered.issue.is_none());
+}
+
+#[test]
+fn source_backend_updates_preserve_lifecycle_and_deduplicate() {
+    let (writer, handle) = test_status_writer();
+    let before = handle.snapshot();
+
+    writer
+        .set_backend("pipewire")
+        .expect("backend update should succeed");
+    let updated = handle.snapshot();
+    assert_eq!(updated.backend.as_ref(), "pipewire");
+    assert_eq!(updated.state, before.state);
+    assert_eq!(
+        updated.source_graph_generation,
+        before.source_graph_generation
+    );
+    assert_eq!(updated.session_generation, before.session_generation);
+
+    writer
+        .set_backend("pipewire")
+        .expect("same backend should be a no-op");
+    assert!(Arc::ptr_eq(&updated, &handle.snapshot()));
+}
+
+#[test]
+fn terminal_failure_latch_probes_once_per_worker_session() {
+    let mut latch = TerminalFailureLatch::default();
+    let probes = std::cell::Cell::new(0);
+
+    let first = latch.take(|| {
+        probes.set(probes.get() + 1);
+        Some(String::from("worker failed"))
+    });
+    let second = latch.take(|| {
+        probes.set(probes.get() + 1);
+        Some(String::from("must not allocate again"))
+    });
+
+    assert_eq!(first.as_deref(), Some("worker failed"));
+    assert!(second.is_none());
+    assert_eq!(probes.get(), 1);
+    assert!(latch.is_latched());
+
+    latch.reset();
+    assert_eq!(
+        latch.take(|| Some("successor session")),
+        Some("successor session")
+    );
 }
 
 async fn align_tokio_to_source_clock(
@@ -1756,6 +2844,25 @@ async fn stopping_an_already_stopped_source_publishes_nothing() {
         .await
         .expect("real start transition should publish");
     assert_eq!(starting.state, SourceState::Starting);
+}
+
+#[tokio::test]
+async fn identical_structural_health_does_not_publish_or_wake_twice() {
+    let (writer, handle) = test_status_writer();
+    let session = writer
+        .begin_session(1)
+        .expect("source session should start");
+    let issue = test_issue("backend_unavailable");
+    assert!(session.unavailable(issue.clone()));
+    let mut subscription = handle.subscribe();
+
+    assert!(session.unavailable(issue));
+    let mut duplicate = Box::pin(subscription.changed());
+    tokio::select! {
+        biased;
+        result = &mut duplicate => panic!("identical health republished: {result:?}"),
+        () = tokio::task::yield_now() => {}
+    }
 }
 
 #[tokio::test]

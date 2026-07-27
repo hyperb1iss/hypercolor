@@ -9,7 +9,7 @@
 //! policy stays pure and testable without a D-Bus session.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use tokio::sync::watch;
@@ -17,7 +17,10 @@ use tracing::{debug, info};
 
 use hypercolor_types::media::MediaState;
 
+#[cfg(target_os = "linux")]
+use super::SourceSessionWriter;
 use super::traits::{InputData, InputSource};
+use super::{SourceIssue, SourceKind, SourceStatusHandle, SourceStatusReporter};
 
 /// Poll cadence for player discovery, status, and position.
 pub const MEDIA_POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -152,6 +155,46 @@ pub fn media_state_from_player(
     }
 }
 
+#[derive(Clone)]
+struct CompletedMediaPoll {
+    state: Arc<MediaState>,
+    completed_at: Instant,
+}
+
+/// Publication seam shared by media backends and the status-aware source.
+///
+/// Every completed poll advances the heartbeat even when its media payload is
+/// unchanged. This keeps backend health independent from track-change dedup.
+#[derive(Clone)]
+pub struct MediaPollPublisher {
+    state_tx: watch::Sender<Arc<MediaState>>,
+    poll_tx: watch::Sender<Option<Arc<CompletedMediaPoll>>>,
+}
+
+impl MediaPollPublisher {
+    /// Publish one successfully completed backend poll.
+    pub fn publish_completed(&self, state: MediaState, completed_at: Instant) {
+        let state = Arc::new(state);
+        self.state_tx.send_if_modified(|current| {
+            if current.as_ref() == state.as_ref() {
+                return false;
+            }
+            *current = Arc::clone(&state);
+            true
+        });
+        self.poll_tx.send_replace(Some(Arc::new(CompletedMediaPoll {
+            state,
+            completed_at,
+        })));
+    }
+
+    fn reset(&self) {
+        self.state_tx
+            .send_replace(Arc::new(MediaState::unavailable()));
+        self.poll_tx.send_replace(None);
+    }
+}
+
 // ── Input source ───────────────────────────────────────────────────────────
 
 /// Now-playing input source backed by the session-bus MPRIS poller.
@@ -160,11 +203,14 @@ pub fn media_state_from_player(
 /// player, matching the other Linux-only inputs.
 pub struct MediaSource {
     name: String,
-    state_tx: watch::Sender<Arc<MediaState>>,
+    publisher: MediaPollPublisher,
     state_rx: watch::Receiver<Arc<MediaState>>,
+    poll_rx: watch::Receiver<Option<Arc<CompletedMediaPoll>>>,
+    last_poll: Option<Arc<CompletedMediaPoll>>,
     last_sampled: Option<Arc<MediaState>>,
     last_logged_track_key: Option<String>,
     running: bool,
+    status: SourceStatusReporter,
     #[cfg(target_os = "linux")]
     poller: Option<linux::MediaPollerThread>,
 }
@@ -173,13 +219,24 @@ impl MediaSource {
     #[must_use]
     pub fn new() -> Self {
         let (state_tx, state_rx) = watch::channel(Arc::new(MediaState::unavailable()));
+        let (poll_tx, poll_rx) = watch::channel(None);
         Self {
             name: "MPRIS Media".to_owned(),
-            state_tx,
+            publisher: MediaPollPublisher { state_tx, poll_tx },
             state_rx,
+            poll_rx,
+            last_poll: None,
             last_sampled: None,
             last_logged_track_key: None,
             running: false,
+            status: SourceStatusReporter::new(
+                "media",
+                SourceKind::Media,
+                "mpris",
+                true,
+                true,
+                true,
+            ),
             #[cfg(target_os = "linux")]
             poller: None,
         }
@@ -189,6 +246,12 @@ impl MediaSource {
     #[must_use]
     pub fn receiver(&self) -> watch::Receiver<Arc<MediaState>> {
         self.state_rx.clone()
+    }
+
+    /// Clone the backend publication seam.
+    #[must_use]
+    pub fn publisher(&self) -> MediaPollPublisher {
+        self.publisher.clone()
     }
 }
 
@@ -208,18 +271,45 @@ impl InputSource for MediaSource {
             return Ok(());
         }
 
+        self.publisher.reset();
+        self.last_poll = None;
+        self.last_sampled = None;
+        let status = self.status.begin_session()?;
+
         #[cfg(target_os = "linux")]
         {
-            self.poller = Some(linux::MediaPollerThread::spawn(self.state_tx.clone())?);
+            self.poller = match linux::MediaPollerThread::spawn(self.publisher.clone(), status) {
+                Ok(poller) => Some(poller),
+                Err(error) => {
+                    if let Some(status) = self.status.session() {
+                        status.failed(SourceIssue::new(
+                            "media_poller_start_failed",
+                            error.to_string(),
+                            true,
+                        ));
+                    }
+                    return Err(error);
+                }
+            };
             self.running = true;
             Ok(())
         }
 
         #[cfg(not(target_os = "linux"))]
         {
-            let _ = &self.state_tx;
+            let _ = &self.publisher;
             info!("media input source is unavailable on this platform");
             self.running = true;
+            if let Some(status) = status {
+                status.unavailable(
+                    SourceIssue::new(
+                        "media_backend_unsupported",
+                        "MPRIS media input is unavailable on this platform",
+                        false,
+                    )
+                    .with_remediation("run Hypercolor on Linux to use MPRIS media input"),
+                );
+            }
             Ok(())
         }
     }
@@ -230,10 +320,33 @@ impl InputSource for MediaSource {
             poller.stop();
         }
         self.running = false;
+        self.last_poll = None;
+        self.last_sampled = None;
+        self.status.stop();
     }
 
     fn sample(&mut self) -> Result<InputData> {
-        let latest = Arc::clone(&self.state_rx.borrow());
+        let Some(poll) = self.poll_rx.borrow().clone() else {
+            return Ok(InputData::None);
+        };
+        if self
+            .last_poll
+            .as_ref()
+            .is_some_and(|previous| Arc::ptr_eq(previous, &poll))
+        {
+            return Ok(InputData::None);
+        }
+        self.last_poll = Some(Arc::clone(&poll));
+
+        if let Some(status) = self.status.session() {
+            status.record_sample(
+                poll.completed_at,
+                poll.completed_at + MEDIA_POLL_INTERVAL + MEDIA_POLL_INTERVAL,
+                usize::from(poll.state.available),
+            )?;
+        }
+
+        let latest = Arc::clone(&poll.state);
         if self.last_sampled.as_ref() == Some(&latest) {
             return Ok(InputData::None);
         }
@@ -261,6 +374,14 @@ impl InputSource for MediaSource {
     fn is_running(&self) -> bool {
         self.running
     }
+
+    fn source_status_handle(&self) -> Option<SourceStatusHandle> {
+        Some(self.status.handle())
+    }
+
+    fn source_status_reporter(&mut self) -> Option<&mut SourceStatusReporter> {
+        Some(&mut self.status)
+    }
 }
 
 // ── Linux poller ───────────────────────────────────────────────────────────
@@ -275,15 +396,15 @@ mod linux {
 
     use anyhow::{Context, Result};
     use base64::Engine as _;
-    use tokio::sync::watch;
     use tracing::{debug, warn};
     use zbus::zvariant::OwnedValue;
 
     use hypercolor_types::media::MediaState;
 
     use super::{
-        ART_JPEG_QUALITY, ArtCache, MAX_ART_DIMENSION, MEDIA_POLL_INTERVAL, PlaybackStatus,
-        PlayerSnapshot, media_state_from_player, pick_active_player,
+        ART_JPEG_QUALITY, ArtCache, MAX_ART_DIMENSION, MEDIA_POLL_INTERVAL, MediaPollPublisher,
+        PlaybackStatus, PlayerSnapshot, SourceIssue, SourceSessionWriter, media_state_from_player,
+        pick_active_player,
     };
 
     const MPRIS_PREFIX: &str = "org.mpris.MediaPlayer2.";
@@ -298,7 +419,10 @@ mod linux {
     }
 
     impl MediaPollerThread {
-        pub(super) fn spawn(state_tx: watch::Sender<Arc<MediaState>>) -> Result<Self> {
+        pub(super) fn spawn(
+            publisher: MediaPollPublisher,
+            status: Option<SourceSessionWriter>,
+        ) -> Result<Self> {
             let (stop_tx, stop_rx) = mpsc::channel();
             let join_handle = std::thread::Builder::new()
                 .name("hypercolor-media".to_owned())
@@ -310,6 +434,13 @@ mod linux {
                         Ok(runtime) => runtime,
                         Err(error) => {
                             warn!(%error, "media poller could not build a runtime");
+                            if let Some(status) = &status {
+                                status.failed(SourceIssue::new(
+                                    "media_runtime_start_failed",
+                                    error.to_string(),
+                                    true,
+                                ));
+                            }
                             return;
                         }
                     };
@@ -319,6 +450,18 @@ mod linux {
                         Ok(connection) => connection,
                         Err(error) => {
                             debug!(%error, "media poller has no session bus; staying idle");
+                            if let Some(status) = &status {
+                                status.unavailable(
+                                    SourceIssue::new(
+                                        "media_session_bus_unavailable",
+                                        error.to_string(),
+                                        true,
+                                    )
+                                    .with_remediation(
+                                        "run Hypercolor inside a desktop login session with D-Bus",
+                                    ),
+                                );
+                            }
                             return;
                         }
                     };
@@ -326,7 +469,22 @@ mod linux {
                     let mut art_cache = ArtCache::new();
                     let mut active_player: Option<String> = None;
                     loop {
-                        let players = runtime.block_on(poll_players(&connection));
+                        let players = match runtime.block_on(poll_players(&connection)) {
+                            Ok(players) => players,
+                            Err(error) => {
+                                if let Some(status) = &status {
+                                    status.degraded(SourceIssue::new(
+                                        "media_poll_failed",
+                                        error.to_string(),
+                                        true,
+                                    ));
+                                }
+                                match stop_rx.recv_timeout(MEDIA_POLL_INTERVAL) {
+                                    Ok(()) | Err(RecvTimeoutError::Disconnected) => break,
+                                    Err(RecvTimeoutError::Timeout) => continue,
+                                }
+                            }
+                        };
                         let picked = pick_active_player(&players, active_player.as_deref());
                         active_player = picked.map(|player| player.bus_name.clone());
                         let art = picked.and_then(|player| {
@@ -334,13 +492,7 @@ mod linux {
                                 .resolve(player, |url| runtime.block_on(fetch_art_data_url(url)))
                         });
                         let state = media_state_from_player(picked, art);
-                        state_tx.send_if_modified(|current| {
-                            if current.as_ref() == &state {
-                                return false;
-                            }
-                            *current = Arc::new(state);
-                            true
-                        });
+                        publisher.publish_completed(state, std::time::Instant::now());
 
                         match stop_rx.recv_timeout(MEDIA_POLL_INTERVAL) {
                             Ok(()) | Err(RecvTimeoutError::Disconnected) => break,
@@ -364,13 +516,14 @@ mod linux {
         }
     }
 
-    async fn poll_players(connection: &zbus::Connection) -> Vec<PlayerSnapshot> {
-        let Ok(dbus) = zbus::fdo::DBusProxy::new(connection).await else {
-            return Vec::new();
-        };
-        let Ok(names) = dbus.list_names().await else {
-            return Vec::new();
-        };
+    async fn poll_players(connection: &zbus::Connection) -> Result<Vec<PlayerSnapshot>> {
+        let dbus = zbus::fdo::DBusProxy::new(connection)
+            .await
+            .context("failed to create D-Bus proxy")?;
+        let names = dbus
+            .list_names()
+            .await
+            .context("failed to list D-Bus names")?;
 
         let mut players = Vec::new();
         for name in names {
@@ -382,7 +535,7 @@ mod linux {
                 players.push(snapshot);
             }
         }
-        players
+        Ok(players)
     }
 
     async fn snapshot_player(

@@ -3,6 +3,8 @@ use hypercolor_core::input::media::{
     pick_active_player,
 };
 use hypercolor_core::input::{InputData, InputSource};
+use hypercolor_core::input::{SourceFreshness, SourceState};
+use std::time::{Duration, Instant};
 
 fn player(bus_name: &str, status: PlaybackStatus, track: &str) -> PlayerSnapshot {
     PlayerSnapshot {
@@ -187,14 +189,70 @@ fn paused_player_state_is_available_but_not_playing() {
 }
 
 #[test]
-fn media_source_samples_none_until_state_changes() {
+fn initial_unavailable_payload_is_not_a_successful_poll_or_live_status() {
     let mut source = MediaSource::new();
+    let handle = source
+        .source_status_handle()
+        .expect("production media source exposes status");
+    source.set_source_graph_generation(1);
+    source
+        .source_status_reporter()
+        .expect("production media source exposes reporter")
+        .begin_session()
+        .expect("media status session starts");
 
-    // Initial unavailable state is emitted once, then deduped.
     let first = source.sample().expect("sample should succeed");
-    assert!(matches!(first, InputData::Media(state) if !state.available));
+    assert!(matches!(first, InputData::None));
     let second = source.sample().expect("sample should succeed");
     assert!(matches!(second, InputData::None));
+    let status = handle.snapshot();
+    assert_eq!(status.state, SourceState::Starting);
+    assert_eq!(status.freshness, SourceFreshness::AwaitingSample);
+}
+
+#[test]
+fn successful_media_poll_heartbeat_advances_when_payload_is_unchanged() {
+    let mut source = MediaSource::new();
+    let handle = source
+        .source_status_handle()
+        .expect("production media source exposes status");
+    source.set_source_graph_generation(1);
+    source
+        .source_status_reporter()
+        .expect("production media source exposes reporter")
+        .begin_session()
+        .expect("media status session starts");
+    let publisher = source.publisher();
+    let snapshot = player(
+        "org.mpris.MediaPlayer2.test",
+        PlaybackStatus::Playing,
+        "heartbeat",
+    );
+    let state = media_state_from_player(Some(&snapshot), None);
+    let first_completed_at = Instant::now();
+    publisher.publish_completed(state.clone(), first_completed_at);
+    std::thread::sleep(Duration::from_millis(20));
+    assert!(matches!(
+        source.sample().expect("first completed poll samples"),
+        InputData::Media(_)
+    ));
+    assert_eq!(handle.snapshot().last_sample_at, Some(first_completed_at));
+
+    let second_completed_at = Instant::now();
+    publisher.publish_completed(state, second_completed_at);
+    assert!(matches!(
+        source.sample().expect("unchanged heartbeat samples"),
+        InputData::None
+    ));
+    let refreshed = handle.snapshot();
+    assert_eq!(refreshed.last_sample_at, Some(second_completed_at));
+    assert_eq!(refreshed.freshness, SourceFreshness::Fresh);
+    assert_eq!(
+        handle
+            .snapshot_at(second_completed_at + Duration::from_secs(2))
+            .freshness,
+        SourceFreshness::Stale
+    );
 }
 
 /// Lifecycle smoke test against the real session bus. Asserts only on

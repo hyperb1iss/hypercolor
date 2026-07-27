@@ -28,9 +28,11 @@ pub use media::MediaSource;
 pub use net::NetSource;
 pub use sensor::SensorPoller;
 pub use status::{
-    SourceFreshness, SourceIssue, SourceKind, SourceSessionWriter, SourceState, SourceStatus,
-    SourceStatusError, SourceStatusHandle, SourceStatusSubscription, SourceStatusWriter,
-    SourceTimestampField,
+    SourceFreshness, SourceIssue, SourceKind, SourceResourceScanHealth, SourceSessionSlot,
+    SourceSessionWriter, SourceState, SourceStatus, SourceStatusError, SourceStatusHandle,
+    SourceStatusRegistry, SourceStatusRegistrySnapshot, SourceStatusReporter,
+    SourceStatusSubscription, SourceStatusWriter, SourceTimestampField, TerminalFailureLatch,
+    classify_source_resource_scan,
 };
 pub use traits::{
     InputData, InputSource, InteractionBatch, InteractionData, InteractionDegradation,
@@ -85,8 +87,38 @@ pub fn input_mono_ms() -> u64 {
 /// ```
 pub struct InputManager {
     sources: Vec<Box<dyn InputSource>>,
+    source_graph_generation: u64,
+    source_status_registry: SourceStatusRegistry,
+    audio_capture_active: Option<bool>,
+    screen_capture_active: Option<bool>,
+    interaction_capture_active: Option<bool>,
     sensor_poller: Option<SensorPoller>,
     sensor_snapshot_rx: Option<watch::Receiver<Arc<SystemSnapshot>>>,
+}
+
+#[derive(Clone, Copy)]
+enum CaptureDomain {
+    Audio,
+    Screen,
+    Interaction,
+}
+
+impl CaptureDomain {
+    fn matches(self, source: &dyn InputSource) -> bool {
+        match self {
+            Self::Audio => source.is_audio_source(),
+            Self::Screen => source.is_screen_source(),
+            Self::Interaction => source.is_interaction_source(),
+        }
+    }
+
+    fn transition(self, source: &mut dyn InputSource, active: bool) -> anyhow::Result<()> {
+        match self {
+            Self::Audio => source.set_audio_capture_active(active),
+            Self::Screen => source.set_screen_capture_active(active),
+            Self::Interaction => source.set_interaction_capture_active(active),
+        }
+    }
 }
 
 impl InputManager {
@@ -95,6 +127,11 @@ impl InputManager {
     pub fn new() -> Self {
         Self {
             sources: Vec::new(),
+            source_graph_generation: 0,
+            source_status_registry: SourceStatusRegistry::new(),
+            audio_capture_active: None,
+            screen_capture_active: None,
+            interaction_capture_active: None,
             sensor_poller: None,
             sensor_snapshot_rx: None,
         }
@@ -104,9 +141,68 @@ impl InputManager {
     ///
     /// Sources are sampled in registration order. Adding a source does not
     /// start it — call [`start_all`] or start sources individually.
-    pub fn add_source(&mut self, source: Box<dyn InputSource>) {
+    pub fn add_source(&mut self, mut source: Box<dyn InputSource>) {
+        let domains = (
+            source.is_audio_source(),
+            source.is_screen_source(),
+            source.is_interaction_source(),
+        );
+        let source_graph_generation = self.bump_source_graph_generation();
+        source.set_source_graph_generation(source_graph_generation);
         info!(source = source.name(), "Registered input source");
         self.sources.push(source);
+        self.invalidate_capture_domains(domains);
+        self.publish_source_status_registry();
+    }
+
+    /// Replace one source without changing registration order.
+    ///
+    /// Returns the retired previous source, or the supplied source unchanged if
+    /// `index` is outside the current graph.
+    pub fn replace_source(
+        &mut self,
+        index: usize,
+        mut source: Box<dyn InputSource>,
+    ) -> Result<Box<dyn InputSource>, Box<dyn InputSource>> {
+        if index >= self.sources.len() {
+            return Err(source);
+        }
+        let source_graph_generation = self.bump_source_graph_generation();
+        let previous_domains = (
+            self.sources[index].is_audio_source(),
+            self.sources[index].is_screen_source(),
+            self.sources[index].is_interaction_source(),
+        );
+        let replacement_domains = (
+            source.is_audio_source(),
+            source.is_screen_source(),
+            source.is_interaction_source(),
+        );
+        source.set_source_graph_generation(source_graph_generation);
+        let mut previous = std::mem::replace(&mut self.sources[index], source);
+        previous.stop();
+        if let Err(error) = previous.retire_source_status(source_graph_generation) {
+            error!(source = previous.name(), %error, "Failed to retire replaced input source status");
+        }
+        self.invalidate_capture_domains((
+            previous_domains.0 || replacement_domains.0,
+            previous_domains.1 || replacement_domains.1,
+            previous_domains.2 || replacement_domains.2,
+        ));
+        self.publish_source_status_registry();
+        Ok(previous)
+    }
+
+    /// Clone the lock-free source-status registry retained outside the manager.
+    #[must_use]
+    pub fn source_status_registry(&self) -> SourceStatusRegistry {
+        self.source_status_registry.clone()
+    }
+
+    /// Current canonical input graph generation.
+    #[must_use]
+    pub fn source_graph_generation(&self) -> u64 {
+        self.source_graph_generation
     }
 
     /// Attach a background system-sensor poller to this input graph.
@@ -220,17 +316,7 @@ impl InputManager {
     ///
     /// Returns an error if an interaction source cannot update its capture state.
     pub fn set_interaction_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
-        // Called every frame by the render loop's uncached demand reconcile,
-        // so this stays quiet: sources no-op internally when unchanged and
-        // log their own real transitions (device open/close). Logging here
-        // would spam once per source per frame.
-        for source in &mut self.sources {
-            if source.is_interaction_source() {
-                source.set_interaction_capture_active(active)?;
-            }
-        }
-
-        Ok(())
+        self.transition_capture_demand(CaptureDomain::Interaction, active)
     }
 
     /// Start all registered sources.
@@ -242,6 +328,13 @@ impl InputManager {
     ///
     /// Returns the first error encountered during startup.
     pub fn start_all(&mut self) -> anyhow::Result<()> {
+        self.invalidate_capture_domains((true, true, true));
+        let source_graph_generation = self.bump_source_graph_generation();
+        for source in &mut self.sources {
+            source.set_source_graph_generation(source_graph_generation);
+        }
+        self.publish_source_status_registry();
+
         if let Some(sensor_poller) = self.sensor_poller.as_mut() {
             sensor_poller.start()?;
         }
@@ -249,6 +342,16 @@ impl InputManager {
         for (idx, source) in self.sources.iter_mut().enumerate() {
             if let Err(err) = source.start() {
                 error!(source = source.name(), %err, "Failed to start input source");
+                if let Some(status) = source
+                    .source_status_reporter()
+                    .and_then(|status| status.session())
+                {
+                    status.failed(SourceIssue::new(
+                        "source_start_failed",
+                        err.to_string(),
+                        true,
+                    ));
+                }
                 if let Some(sensor_poller) = self.sensor_poller.as_mut() {
                     sensor_poller.stop();
                 }
@@ -272,6 +375,7 @@ impl InputManager {
         if let Some(sensor_poller) = self.sensor_poller.as_mut() {
             sensor_poller.stop();
         }
+        self.invalidate_capture_domains((true, true, true));
     }
 
     /// Apply a live audio config change without rebuilding unrelated sources.
@@ -299,36 +403,62 @@ impl InputManager {
             disabled
         };
 
-        for source in &mut self.sources {
-            if source.is_audio_source() {
-                source.reconfigure_audio(
-                    &effective_config,
-                    display_name,
-                    effective_capture_active,
-                )?;
+        if let Some(index) = self
+            .sources
+            .iter()
+            .position(|source| source.is_audio_source())
+        {
+            let source_graph_generation = self.bump_source_graph_generation();
+            let result = {
+                let source = &mut self.sources[index];
+                source.set_source_graph_generation(source_graph_generation);
+                source.reconfigure_audio(&effective_config, display_name, effective_capture_active)
+            };
+            if result.is_ok() {
                 info!(
                     source = display_name,
                     enabled,
                     capture_active = effective_capture_active,
                     "Reconfigured live audio input source"
                 );
-                return Ok(());
+                self.audio_capture_active = Some(effective_capture_active);
             }
+            self.publish_source_status_registry();
+            return result;
         }
 
         if !enabled {
+            self.audio_capture_active = Some(false);
             return Ok(());
         }
 
         let mut audio_input = AudioInput::new(&effective_config).with_name(display_name.to_owned());
         audio_input.set_capture_active(effective_capture_active)?;
-        audio_input.start()?;
         self.add_source(Box::new(audio_input));
+        let start_result = self
+            .sources
+            .last_mut()
+            .expect("audio source was just registered")
+            .start();
+        if let Err(error) = start_result {
+            let mut failed = self
+                .sources
+                .pop()
+                .expect("audio source was just registered");
+            failed.stop();
+            let removal_generation = self.bump_source_graph_generation();
+            if let Err(status_error) = failed.retire_source_status(removal_generation) {
+                error!(source = failed.name(), %status_error, "Failed to retire rejected audio source status");
+            }
+            self.publish_source_status_registry();
+            return Err(error);
+        }
         info!(
             source = display_name,
             capture_active = effective_capture_active,
             "Added live audio input source"
         );
+        self.audio_capture_active = Some(effective_capture_active);
         Ok(())
     }
 
@@ -341,17 +471,7 @@ impl InputManager {
     ///
     /// Returns an error if an audio source cannot update its capture state.
     pub fn set_audio_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
-        for source in &mut self.sources {
-            if source.is_audio_source() {
-                source.set_audio_capture_active(active)?;
-                info!(
-                    source = source.name(),
-                    active, "Updated audio capture demand"
-                );
-            }
-        }
-
-        Ok(())
+        self.transition_capture_demand(CaptureDomain::Audio, active)
     }
 
     /// Toggle live screen capture for any registered screen sources.
@@ -363,17 +483,7 @@ impl InputManager {
     ///
     /// Returns an error if a screen source cannot update its capture state.
     pub fn set_screen_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
-        for source in &mut self.sources {
-            if source.is_screen_source() {
-                source.set_screen_capture_active(active)?;
-                info!(
-                    source = source.name(),
-                    active, "Updated screen capture demand"
-                );
-            }
-        }
-
-        Ok(())
+        self.transition_capture_demand(CaptureDomain::Screen, active)
     }
 
     /// Whether any registered source handles screen capture.
@@ -415,28 +525,50 @@ impl InputManager {
     /// Leaves the browser injection source in place so disabling host
     /// consent never breaks browser-preview input.
     pub fn remove_host_capture_sources(&mut self) {
+        if !self
+            .sources
+            .iter()
+            .any(|source| source.is_host_capture_source())
+        {
+            return;
+        }
+        let source_graph_generation = self.bump_source_graph_generation();
         self.sources.retain_mut(|source| {
             if source.is_host_capture_source() {
                 source.stop();
+                if let Err(error) = source.retire_source_status(source_graph_generation) {
+                    error!(source = source.name(), %error, "Failed to retire host input source status");
+                }
                 info!(source = source.name(), "Removed host capture source");
                 false
             } else {
                 true
             }
         });
+        self.interaction_capture_active = None;
+        self.publish_source_status_registry();
     }
 
     /// Stop and remove all registered screen sources.
     pub fn remove_screen_sources(&mut self) {
+        if !self.sources.iter().any(|source| source.is_screen_source()) {
+            return;
+        }
+        let source_graph_generation = self.bump_source_graph_generation();
         self.sources.retain_mut(|source| {
             if source.is_screen_source() {
                 source.stop();
+                if let Err(error) = source.retire_source_status(source_graph_generation) {
+                    error!(source = source.name(), %error, "Failed to retire screen input source status");
+                }
                 info!(source = source.name(), "Removed screen capture source");
                 false
             } else {
                 true
             }
         });
+        self.screen_capture_active = None;
+        self.publish_source_status_registry();
     }
 
     /// Apply new capture settings to any registered screen sources.
@@ -448,17 +580,30 @@ impl InputManager {
         &mut self,
         config: &screen::CaptureConfig,
     ) -> anyhow::Result<()> {
+        if !self.sources.iter().any(|source| source.is_screen_source()) {
+            return Ok(());
+        }
+        let source_graph_generation = self.bump_source_graph_generation();
         for source in &mut self.sources {
             if source.is_screen_source() {
-                source.reconfigure_screen_capture(config)?;
+                source.set_source_graph_generation(source_graph_generation);
+            }
+        }
+        let mut result = Ok(());
+        for source in &mut self.sources {
+            if source.is_screen_source() {
+                if let Err(error) = source.reconfigure_screen_capture(config) {
+                    result = Err(error);
+                    break;
+                }
                 info!(
                     source = source.name(),
                     "Applied live screen capture settings"
                 );
             }
         }
-
-        Ok(())
+        self.publish_source_status_registry();
+        result
     }
 
     /// Ask screen sources to discard their persisted selection and re-prompt.
@@ -467,14 +612,27 @@ impl InputManager {
     ///
     /// Returns an error if a screen source cannot restart its session.
     pub fn reselect_screen_source(&mut self) -> anyhow::Result<()> {
+        if !self.sources.iter().any(|source| source.is_screen_source()) {
+            return Ok(());
+        }
+        let source_graph_generation = self.bump_source_graph_generation();
         for source in &mut self.sources {
             if source.is_screen_source() {
-                source.reselect_screen_source()?;
+                source.set_source_graph_generation(source_graph_generation);
+            }
+        }
+        let mut result = Ok(());
+        for source in &mut self.sources {
+            if source.is_screen_source() {
+                if let Err(error) = source.reselect_screen_source() {
+                    result = Err(error);
+                    break;
+                }
                 info!(source = source.name(), "Re-opened screen source picker");
             }
         }
-
-        Ok(())
+        self.publish_source_status_registry();
+        result
     }
 
     /// Return the latest system sensor snapshot, if one is configured.
@@ -483,6 +641,115 @@ impl InputManager {
         self.sensor_snapshot_rx
             .as_ref()
             .map(|receiver| Arc::clone(&receiver.borrow()))
+    }
+
+    fn bump_source_graph_generation(&mut self) -> u64 {
+        self.source_graph_generation = self
+            .source_graph_generation
+            .checked_add(1)
+            .expect("input source graph generation exhausted");
+        self.source_graph_generation
+    }
+
+    fn transition_capture_demand(
+        &mut self,
+        domain: CaptureDomain,
+        active: bool,
+    ) -> anyhow::Result<()> {
+        let cached = match domain {
+            CaptureDomain::Audio => self.audio_capture_active,
+            CaptureDomain::Screen => self.screen_capture_active,
+            CaptureDomain::Interaction => self.interaction_capture_active,
+        };
+        if cached == Some(active) {
+            return Ok(());
+        }
+
+        let prior_demands = self
+            .sources
+            .iter()
+            .map(|source| {
+                domain.matches(source.as_ref()).then(|| {
+                    source.source_status_handle().map_or_else(
+                        || cached.unwrap_or(!active),
+                        |handle| handle.snapshot().demanded,
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let source_graph_generation = self.bump_source_graph_generation();
+        for source in &mut self.sources {
+            if domain.matches(source.as_ref()) {
+                source.set_source_graph_generation(source_graph_generation);
+            }
+        }
+
+        for source_index in 0..self.sources.len() {
+            if !domain.matches(self.sources[source_index].as_ref()) {
+                continue;
+            }
+            if let Err(error) = domain.transition(self.sources[source_index].as_mut(), active) {
+                let mut rollback_succeeded = true;
+                for (rollback, previous) in self.sources.iter_mut().zip(&prior_demands) {
+                    if let Some(previous) = previous
+                        && let Err(rollback_error) = domain.transition(rollback.as_mut(), *previous)
+                    {
+                        rollback_succeeded = false;
+                        error!(
+                            source = rollback.name(),
+                            %rollback_error,
+                            "Failed to roll back input capture demand"
+                        );
+                    }
+                }
+                let restored_cache = if rollback_succeeded {
+                    let mut restored_demands = prior_demands.iter().flatten().copied();
+                    restored_demands
+                        .next()
+                        .filter(|first| restored_demands.all(|demand| demand == *first))
+                } else {
+                    None
+                };
+                self.set_capture_demand_cache(domain, restored_cache);
+                self.publish_source_status_registry();
+                return Err(error);
+            }
+        }
+
+        self.set_capture_demand_cache(domain, Some(active));
+        self.publish_source_status_registry();
+        Ok(())
+    }
+
+    fn set_capture_demand_cache(&mut self, domain: CaptureDomain, demand: Option<bool>) {
+        match domain {
+            CaptureDomain::Audio => self.audio_capture_active = demand,
+            CaptureDomain::Screen => self.screen_capture_active = demand,
+            CaptureDomain::Interaction => self.interaction_capture_active = demand,
+        }
+    }
+
+    fn invalidate_capture_domains(&mut self, domains: (bool, bool, bool)) {
+        if domains.0 {
+            self.audio_capture_active = None;
+        }
+        if domains.1 {
+            self.screen_capture_active = None;
+        }
+        if domains.2 {
+            self.interaction_capture_active = None;
+        }
+    }
+
+    fn publish_source_status_registry(&self) {
+        let handles = self
+            .sources
+            .iter()
+            .filter_map(|source| source.source_status_handle())
+            .collect();
+        self.source_status_registry
+            .publish(self.source_graph_generation, handles);
     }
 }
 

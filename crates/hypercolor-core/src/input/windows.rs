@@ -36,6 +36,9 @@ use crate::input::keymap::{KeyNameResult, scancode_key_name};
 use crate::input::traits::{
     InputData, InputSource, InteractionData, InteractionDegradation, MotionAggregate, PointerMode,
 };
+use crate::input::{
+    SourceIssue, SourceKind, SourceStatusHandle, SourceStatusReporter, TerminalFailureLatch,
+};
 use crate::types::event::{InputButtonState, InputEvent, TimedInputEvent};
 
 const DEFAULT_EVENT_LIMIT: usize = 256;
@@ -148,7 +151,9 @@ pub struct WindowsHostInput {
     last_state_key: Option<HeldStateKey>,
     shared: Arc<Mutex<SharedState>>,
     session: Option<RawInputSession>,
+    worker_failure: TerminalFailureLatch,
     degraded: Option<InteractionDegradation>,
+    status: SourceStatusReporter,
 }
 
 impl WindowsHostInput {
@@ -166,7 +171,16 @@ impl WindowsHostInput {
             last_state_key: None,
             shared: Arc::new(Mutex::new(SharedState::default())),
             session: None,
+            worker_failure: TerminalFailureLatch::default(),
             degraded: None,
+            status: SourceStatusReporter::new(
+                "windows_host_input",
+                SourceKind::Interaction,
+                "raw_input",
+                true,
+                true,
+                false,
+            ),
         }
     }
 
@@ -278,6 +292,7 @@ impl WindowsHostInput {
         if self.session.is_some() {
             return;
         }
+        self.worker_failure.reset();
 
         // A failed probe is a degraded backend state, never a start error:
         // start errors roll back the entire input graph, and a daemon running
@@ -289,6 +304,18 @@ impl WindowsHostInput {
                  Run the foreground daemon in your own desktop session."
             );
             self.degraded = Some(InteractionDegradation::NoInteractiveSession);
+            if let Some(status) = self.status.session() {
+                status.unavailable(
+                    SourceIssue::new(
+                        "windows_no_interactive_session",
+                        "Raw Input requires an interactive desktop session",
+                        true,
+                    )
+                    .with_remediation(
+                        "run the foreground daemon inside the signed-in desktop session",
+                    ),
+                );
+            }
             return;
         }
 
@@ -323,13 +350,30 @@ impl WindowsHostInput {
                 );
                 self.degraded = None;
                 self.session = Some(session);
+                if let Some(status) = self.status.session() {
+                    status.mark_event_driven_live_without_deadline(self.device_count());
+                }
             }
             Err(RawInputError::NoInteractiveSession) => {
                 self.degraded = Some(InteractionDegradation::NoInteractiveSession);
+                if let Some(status) = self.status.session() {
+                    status.unavailable(SourceIssue::new(
+                        "windows_no_interactive_session",
+                        "Raw Input requires an interactive desktop session",
+                        true,
+                    ));
+                }
             }
             Err(error) => {
                 warn!(source = %self.name, %error, "Windows Raw Input capture unavailable");
                 self.degraded = Some(InteractionDegradation::Unavailable(error.to_string()));
+                if let Some(status) = self.status.session() {
+                    status.unavailable(SourceIssue::new(
+                        "windows_raw_input_unavailable",
+                        error.to_string(),
+                        true,
+                    ));
+                }
             }
         }
     }
@@ -346,6 +390,33 @@ impl WindowsHostInput {
             guard.epoch = NEXT_EPOCH.fetch_add(1, Ordering::Relaxed);
         }
         self.last_state_key = None;
+        self.worker_failure.reset();
+    }
+
+    fn publish_worker_failure_once(&mut self) -> bool {
+        if self.worker_failure.is_latched() {
+            return true;
+        }
+        let failure = self.worker_failure.take(|| {
+            self.session
+                .as_ref()
+                .and_then(|session| match session.worker_state() {
+                    WorkerState::Running => None,
+                    WorkerState::Failed(reason) => Some(reason),
+                })
+        });
+        let Some(reason) = failure else {
+            return false;
+        };
+        self.degraded = Some(InteractionDegradation::Unavailable(reason.clone()));
+        if let Some(status) = self.status.session() {
+            status.failed(SourceIssue::new(
+                "windows_raw_input_worker_failed",
+                reason,
+                true,
+            ));
+        }
+        true
     }
 }
 
@@ -360,17 +431,22 @@ impl InputSource for WindowsHostInput {
         }
         self.running = true;
         if self.capture_active {
+            self.status.begin_session()?;
             self.start_session();
         }
         Ok(())
     }
 
     fn stop(&mut self) {
+        self.status.stop();
         self.stop_session();
         self.running = false;
     }
 
     fn sample(&mut self) -> anyhow::Result<InputData> {
+        if self.publish_worker_failure_once() {
+            return Ok(InputData::None);
+        }
         if !self.running || self.session.is_none() {
             return Ok(InputData::None);
         }
@@ -386,6 +462,9 @@ impl InputSource for WindowsHostInput {
         &mut self,
         _delta_secs: f32,
     ) -> (anyhow::Result<InputData>, Vec<TimedInputEvent>) {
+        if self.publish_worker_failure_once() {
+            return (Ok(InputData::None), Vec::new());
+        }
         if !self.running || self.session.is_none() {
             return (Ok(InputData::None), Vec::new());
         }
@@ -402,6 +481,14 @@ impl InputSource for WindowsHostInput {
 
     fn is_running(&self) -> bool {
         self.running
+    }
+
+    fn source_status_handle(&self) -> Option<SourceStatusHandle> {
+        Some(self.status.handle())
+    }
+
+    fn source_status_reporter(&mut self) -> Option<&mut SourceStatusReporter> {
+        Some(&mut self.status)
     }
 
     fn is_interaction_source(&self) -> bool {
@@ -436,6 +523,7 @@ impl InputSource for WindowsHostInput {
     }
 
     fn set_interaction_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
+        self.status.set_policy(true, true, active)?;
         if self.capture_active == active {
             return Ok(());
         }
@@ -444,6 +532,7 @@ impl InputSource for WindowsHostInput {
             return Ok(());
         }
         if active {
+            self.status.begin_session()?;
             self.start_session();
         } else {
             self.stop_session();

@@ -10,6 +10,7 @@ use std::os::fd::OwnedFd;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Instant;
 
 use anyhow::{Context, anyhow};
 use ashpd::desktop::{
@@ -26,6 +27,9 @@ use tracing::{debug, info, warn};
 
 use crate::input::screen::{CaptureConfig, ScreenCaptureInput};
 use crate::input::traits::{InputData, InputSource, ScreenData};
+use crate::input::{
+    SourceIssue, SourceKind, SourceSessionSlot, SourceStatusHandle, SourceStatusReporter,
+};
 
 const DEFAULT_CAPTURE_WIDTH: u32 = 1280;
 const DEFAULT_CAPTURE_HEIGHT: u32 = 720;
@@ -43,6 +47,14 @@ pub type RestoreTokenSink = Arc<dyn Fn(Option<String>) + Send + Sync>;
 struct SharedSettings {
     config: Mutex<CaptureConfig>,
     generation: AtomicU64,
+    frame_generation: AtomicU64,
+}
+
+#[derive(Clone)]
+struct CapturedScreenSnapshot {
+    data: ScreenData,
+    acquired_at: Instant,
+    generation: u64,
 }
 
 impl SharedSettings {
@@ -59,9 +71,12 @@ pub struct WaylandScreenCaptureInput {
     settings: Arc<SharedSettings>,
     running: bool,
     capture_active: bool,
-    latest_snapshot: Arc<Mutex<Option<ScreenData>>>,
+    latest_snapshot: Arc<Mutex<Option<CapturedScreenSnapshot>>>,
+    status_snapshot_generation: u64,
     worker: Option<WaylandCaptureWorker>,
     token_sink: Option<RestoreTokenSink>,
+    status: SourceStatusReporter,
+    status_session: SourceSessionSlot,
 }
 
 impl WaylandScreenCaptureInput {
@@ -72,12 +87,23 @@ impl WaylandScreenCaptureInput {
             settings: Arc::new(SharedSettings {
                 config: Mutex::new(config),
                 generation: AtomicU64::new(0),
+                frame_generation: AtomicU64::new(0),
             }),
             running: false,
             capture_active: false,
             latest_snapshot: Arc::new(Mutex::new(None)),
+            status_snapshot_generation: 0,
             worker: None,
             token_sink: None,
+            status: SourceStatusReporter::new(
+                "wayland_screen_capture",
+                SourceKind::Screen,
+                "pipewire",
+                true,
+                true,
+                false,
+            ),
+            status_session: SourceSessionSlot::new(),
         }
     }
 
@@ -162,6 +188,12 @@ impl WaylandScreenCaptureInput {
 
     fn restart_worker(&mut self) -> anyhow::Result<()> {
         self.shutdown_worker();
+        if self.running
+            && self.capture_active
+            && let Some(session) = self.status.begin_session()?
+        {
+            self.status_session.store(session);
+        }
         self.spawn_worker()?;
         let active = self.capture_active;
         self.send_worker_command(WorkerCommand::SetActive(active))
@@ -176,6 +208,9 @@ impl WaylandScreenCaptureInput {
         }
 
         self.capture_active = active;
+        if let Ok(mut latest) = self.latest_snapshot.lock() {
+            *latest = None;
+        }
 
         if !self.running {
             return Ok(());
@@ -209,6 +244,7 @@ impl WaylandScreenCaptureInput {
             portal_pending: Arc::clone(&portal_pending),
         };
         let (command_tx, command_rx) = pw::channel::channel();
+        let status_session = self.status_session.clone();
         let join_handle = thread::Builder::new()
             .name("hypercolor-screen-capture".to_owned())
             .spawn(move || {
@@ -218,6 +254,7 @@ impl WaylandScreenCaptureInput {
                     command_rx,
                     token_sink,
                     worker_flags,
+                    status_session,
                 );
             })
             .context("failed to spawn Wayland screen capture worker")?;
@@ -297,6 +334,9 @@ impl InputSource for WaylandScreenCaptureInput {
 
         self.running = true;
         if self.capture_active {
+            if let Some(session) = self.status.begin_session()? {
+                self.status_session.store(session);
+            }
             self.spawn_worker()?;
             self.send_worker_command(WorkerCommand::SetActive(true))?;
         } else {
@@ -309,6 +349,8 @@ impl InputSource for WaylandScreenCaptureInput {
     }
 
     fn stop(&mut self) {
+        self.status_session.clear();
+        self.status.stop();
         self.running = false;
         self.capture_active = false;
         self.shutdown_worker();
@@ -328,11 +370,39 @@ impl InputSource for WaylandScreenCaptureInput {
             .lock()
             .map_err(|_| anyhow!("wayland screen capture snapshot mutex poisoned"))?;
 
-        Ok(latest.clone().map_or(InputData::None, InputData::Screen))
+        let snapshot = latest.clone();
+        let sample = snapshot.as_ref().map_or(InputData::None, |snapshot| {
+            InputData::Screen(snapshot.data.clone())
+        });
+        drop(latest);
+        if let Some(snapshot) = snapshot
+            && snapshot.generation != self.status_snapshot_generation
+        {
+            if let Some(status) = self.status.session() {
+                let frame_period = std::time::Duration::from_secs_f64(
+                    1.0 / f64::from(self.current_target_fps().max(1)),
+                );
+                status.record_sample(
+                    snapshot.acquired_at,
+                    snapshot.acquired_at + frame_period + frame_period,
+                    1,
+                )?;
+            }
+            self.status_snapshot_generation = snapshot.generation;
+        }
+        Ok(sample)
     }
 
     fn is_running(&self) -> bool {
         self.running
+    }
+
+    fn source_status_handle(&self) -> Option<SourceStatusHandle> {
+        Some(self.status.handle())
+    }
+
+    fn source_status_reporter(&mut self) -> Option<&mut SourceStatusReporter> {
+        Some(&mut self.status)
     }
 
     fn is_screen_source(&self) -> bool {
@@ -340,6 +410,17 @@ impl InputSource for WaylandScreenCaptureInput {
     }
 
     fn set_screen_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
+        self.status.set_policy(true, true, active)?;
+        if self.capture_active != active {
+            if !active {
+                self.status_session.clear();
+            }
+            if active && self.running {
+                if let Some(session) = self.status.begin_session()? {
+                    self.status_session.store(session);
+                }
+            }
+        }
         self.set_capture_active_state(active)
     }
 
@@ -384,14 +465,17 @@ struct PortalCaptureSession {
 struct WaylandCaptureUserData {
     analyzer: ScreenCaptureInput,
     format: spa::param::video::VideoInfoRaw,
-    latest_snapshot: Arc<Mutex<Option<ScreenData>>>,
+    latest_snapshot: Arc<Mutex<Option<CapturedScreenSnapshot>>>,
     rgba_frame: Vec<u8>,
     settings: Arc<SharedSettings>,
     applied_generation: u64,
 }
 
 impl WaylandCaptureUserData {
-    fn new(settings: Arc<SharedSettings>, latest_snapshot: Arc<Mutex<Option<ScreenData>>>) -> Self {
+    fn new(
+        settings: Arc<SharedSettings>,
+        latest_snapshot: Arc<Mutex<Option<CapturedScreenSnapshot>>>,
+    ) -> Self {
         let applied_generation = settings.generation.load(Ordering::Acquire);
         let mut analyzer = ScreenCaptureInput::new(settings.snapshot());
         let _ = analyzer.start();
@@ -419,10 +503,11 @@ impl WaylandCaptureUserData {
 
 fn run_capture_worker(
     settings: Arc<SharedSettings>,
-    latest_snapshot: Arc<Mutex<Option<ScreenData>>>,
+    latest_snapshot: Arc<Mutex<Option<CapturedScreenSnapshot>>>,
     command_rx: pw::channel::Receiver<WorkerCommand>,
     token_sink: Option<RestoreTokenSink>,
     flags: WorkerFlags,
+    status_session: SourceSessionSlot,
 ) {
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -431,6 +516,13 @@ fn run_capture_worker(
         Ok(runtime) => runtime,
         Err(error) => {
             warn!(%error, "Failed to create Wayland capture runtime");
+            if let Some(status) = status_session.load() {
+                status.failed(SourceIssue::new(
+                    "wayland_runtime_start_failed",
+                    error.to_string(),
+                    true,
+                ));
+            }
             return;
         }
     };
@@ -448,6 +540,14 @@ fn run_capture_worker(
         Ok(portal) => portal,
         Err(error) => {
             warn!(%error, "Failed to establish Wayland screencast session");
+            if !flags.cancel.load(Ordering::SeqCst)
+                && let Some(status) = status_session.load()
+            {
+                status.unavailable(
+                    SourceIssue::new("wayland_portal_unavailable", error.to_string(), true)
+                        .with_remediation("grant screen-sharing permission in the desktop portal"),
+                );
+            }
             return;
         }
     };
@@ -481,6 +581,15 @@ fn run_capture_worker(
         Ok(session) => session,
         Err(error) => {
             warn!(%error, "Wayland screen capture loop exited with an error");
+            if !flags.cancel.load(Ordering::SeqCst)
+                && let Some(status) = status_session.load()
+            {
+                status.failed(SourceIssue::new(
+                    "wayland_capture_worker_failed",
+                    error.to_string(),
+                    true,
+                ));
+            }
             return;
         }
     };
@@ -553,7 +662,7 @@ async fn open_portal_session(
 fn run_pipewire_loop(
     config: &CaptureConfig,
     settings: Arc<SharedSettings>,
-    latest_snapshot: Arc<Mutex<Option<ScreenData>>>,
+    latest_snapshot: Arc<Mutex<Option<CapturedScreenSnapshot>>>,
     portal: PortalCaptureSession,
     command_rx: pw::channel::Receiver<WorkerCommand>,
 ) -> anyhow::Result<Session<Screencast>> {
@@ -642,6 +751,7 @@ fn run_pipewire_loop(
             if !supports_video_format(format) {
                 return;
             }
+            let acquired_at = Instant::now();
 
             if !copy_frame_to_rgba(
                 data,
@@ -660,9 +770,18 @@ fn run_pipewire_loop(
             let Ok(InputData::Screen(snapshot)) = user_data.analyzer.sample() else {
                 return;
             };
+            let generation = user_data
+                .settings
+                .frame_generation
+                .fetch_add(1, Ordering::Release)
+                .wrapping_add(1);
 
             if let Ok(mut latest) = user_data.latest_snapshot.lock() {
-                *latest = Some(snapshot);
+                *latest = Some(CapturedScreenSnapshot {
+                    data: snapshot,
+                    acquired_at,
+                    generation,
+                });
             }
         })
         .register()

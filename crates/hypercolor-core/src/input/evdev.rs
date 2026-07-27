@@ -21,6 +21,10 @@ use tracing::{debug, info, trace, warn};
 
 use crate::input::input_mono_ms;
 use crate::input::traits::{InputData, InputSource, InteractionData, MotionAggregate, PointerMode};
+use crate::input::{
+    SourceKind, SourceResourceScanHealth, SourceSessionWriter, SourceStatusHandle,
+    SourceStatusReporter, classify_source_resource_scan,
+};
 use crate::types::event::{InputButtonState, InputEvent, TimedInputEvent};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(8);
@@ -132,6 +136,7 @@ pub struct EvdevHostInput {
     shared: Arc<Mutex<SharedState>>,
     stop_flag: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
+    status: SourceStatusReporter,
 }
 
 impl EvdevHostInput {
@@ -150,6 +155,14 @@ impl EvdevHostInput {
             shared: Arc::new(Mutex::new(SharedState::default())),
             stop_flag: Arc::new(AtomicBool::new(false)),
             worker: None,
+            status: SourceStatusReporter::new(
+                "evdev_host_input",
+                SourceKind::Interaction,
+                "evdev",
+                true,
+                true,
+                false,
+            ),
         }
     }
 
@@ -227,13 +240,14 @@ impl EvdevHostInput {
         let source_name = self.name.clone();
         let capture_keyboard = self.capture_keyboard;
         let capture_pointer = self.capture_pointer;
+        let status = self.status.session();
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
 
         let worker = thread::Builder::new()
             .name("hypercolor-evdev-input".to_owned())
             .spawn(move || {
                 let mut devices: BTreeMap<PathBuf, OpenDevice> = BTreeMap::new();
-                rescan_devices(
+                let health = rescan_devices(
                     &mut devices,
                     &shared,
                     capture_keyboard,
@@ -241,6 +255,9 @@ impl EvdevHostInput {
                     event_limit,
                     &source_name,
                 );
+                if let Some(status) = &status {
+                    publish_scan_health(status, health);
+                }
                 let _ = ready_tx.send(());
 
                 let mut ticks_since_rescan: u32 = 0;
@@ -248,7 +265,7 @@ impl EvdevHostInput {
                     ticks_since_rescan += 1;
                     if ticks_since_rescan >= RESCAN_TICKS {
                         ticks_since_rescan = 0;
-                        rescan_devices(
+                        let health = rescan_devices(
                             &mut devices,
                             &shared,
                             capture_keyboard,
@@ -256,6 +273,9 @@ impl EvdevHostInput {
                             event_limit,
                             &source_name,
                         );
+                        if let Some(status) = &status {
+                            publish_scan_health(status, health);
+                        }
                     }
 
                     poll_devices(&mut devices, &shared, event_limit, &source_name);
@@ -285,12 +305,14 @@ impl InputSource for EvdevHostInput {
 
         self.running = true;
         if self.capture_active {
+            self.status.begin_session()?;
             self.spawn_worker()?;
         }
         Ok(())
     }
 
     fn stop(&mut self) {
+        self.status.stop();
         self.stop_worker();
         self.running = false;
     }
@@ -331,6 +353,14 @@ impl InputSource for EvdevHostInput {
         self.running
     }
 
+    fn source_status_handle(&self) -> Option<SourceStatusHandle> {
+        Some(self.status.handle())
+    }
+
+    fn source_status_reporter(&mut self) -> Option<&mut SourceStatusReporter> {
+        Some(&mut self.status)
+    }
+
     fn is_interaction_source(&self) -> bool {
         true
     }
@@ -364,6 +394,7 @@ impl InputSource for EvdevHostInput {
     }
 
     fn set_interaction_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
+        self.status.set_policy(true, true, active)?;
         if self.capture_active == active {
             return Ok(());
         }
@@ -374,6 +405,7 @@ impl InputSource for EvdevHostInput {
         }
 
         if active {
+            self.status.begin_session()?;
             self.spawn_worker()?;
         } else {
             self.stop_worker();
@@ -399,7 +431,7 @@ fn rescan_devices(
     capture_pointer: bool,
     event_limit: usize,
     source_name: &str,
-) {
+) -> SourceResourceScanHealth {
     let mut status = Vec::new();
     let mut present = BTreeSet::new();
 
@@ -491,11 +523,19 @@ fn rescan_devices(
         }
     }
 
+    let opened = status
+        .iter()
+        .filter(|entry| entry.state == DeviceOpenState::Opened)
+        .count();
+    let denied = status
+        .iter()
+        .filter(|entry| entry.state == DeviceOpenState::PermissionDenied)
+        .count();
+    let failed = status
+        .iter()
+        .filter(|entry| matches!(&entry.state, DeviceOpenState::Failed(_)))
+        .count();
     if let Ok(mut guard) = shared.lock() {
-        let denied = status
-            .iter()
-            .filter(|entry| entry.state == DeviceOpenState::PermissionDenied)
-            .count();
         if denied > 0 && guard.device_status.is_empty() {
             warn!(
                 source = %source_name,
@@ -505,6 +545,24 @@ fn rescan_devices(
         }
         guard.pointer_present = devices.values().any(|device| device.caps.pointer);
         guard.device_status = status;
+    }
+    classify_source_resource_scan(opened, denied, failed)
+}
+
+fn publish_scan_health(status: &SourceSessionWriter, health: SourceResourceScanHealth) {
+    match health {
+        SourceResourceScanHealth::Live { resource_count } => {
+            status.mark_event_driven_live_without_deadline(resource_count);
+        }
+        SourceResourceScanHealth::Degraded {
+            resource_count,
+            issue,
+        } => {
+            status.degraded_with_resources(issue, resource_count);
+        }
+        SourceResourceScanHealth::Unavailable(issue) => {
+            status.unavailable(issue);
+        }
     }
 }
 

@@ -1,6 +1,6 @@
 //! Non-blocking latest-value reads for source health and sample freshness.
 
-use arc_swap::ArcSwap;
+use arc_swap::{ArcSwap, ArcSwapOption};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering, fence};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -98,6 +98,120 @@ impl SourceIssue {
     pub fn with_remediation(mut self, remediation: impl Into<Arc<str>>) -> Self {
         self.remediation = Some(remediation.into());
         self
+    }
+}
+
+/// Platform-neutral health result for a backend resource scan.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SourceResourceScanHealth {
+    /// At least one eligible resource is open and usable.
+    Live {
+        /// Number of open resources.
+        resource_count: usize,
+    },
+    /// Some eligible resources are usable while others failed to open.
+    Degraded {
+        /// Number of open resources that remain usable.
+        resource_count: usize,
+        /// Structured details for the partial failure.
+        issue: SourceIssue,
+    },
+    /// No eligible resource can currently produce input.
+    Unavailable(SourceIssue),
+}
+
+/// Classify backend resource counts without depending on platform APIs.
+#[must_use]
+pub fn classify_source_resource_scan(
+    opened: usize,
+    access_denied: usize,
+    transient_failures: usize,
+) -> SourceResourceScanHealth {
+    if opened > 0 && access_denied > 0 {
+        let failure_suffix = if transient_failures == 0 {
+            String::new()
+        } else {
+            format!("; {transient_failures} failed to open")
+        };
+        return SourceResourceScanHealth::Degraded {
+            resource_count: opened,
+            issue: SourceIssue::new(
+                "access_denied",
+                format!(
+                    "{opened} input resource(s) are usable; {access_denied} are unreadable{failure_suffix}"
+                ),
+                true,
+            )
+            .with_remediation("run `just udev-install` and replug or re-login"),
+        };
+    }
+    if opened > 0 && transient_failures > 0 {
+        return SourceResourceScanHealth::Degraded {
+            resource_count: opened,
+            issue: SourceIssue::new(
+                "input_resource_scan_partial_failure",
+                format!(
+                    "{opened} input resource(s) are usable; {transient_failures} failed to open"
+                ),
+                true,
+            ),
+        };
+    }
+    if opened > 0 {
+        return SourceResourceScanHealth::Live {
+            resource_count: opened,
+        };
+    }
+    if access_denied > 0 {
+        return SourceResourceScanHealth::Unavailable(
+            SourceIssue::new(
+                "access_denied",
+                format!("{access_denied} input resource(s) are unreadable"),
+                true,
+            )
+            .with_remediation("run `just udev-install` and replug or re-login"),
+        );
+    }
+    if transient_failures > 0 {
+        return SourceResourceScanHealth::Unavailable(SourceIssue::new(
+            "input_resource_scan_failed",
+            format!("{transient_failures} input resource(s) failed to open"),
+            true,
+        ));
+    }
+    SourceResourceScanHealth::Unavailable(SourceIssue::new(
+        "input_resources_unavailable",
+        "no eligible input resources are available",
+        true,
+    ))
+}
+
+/// One-shot guard for terminal worker failure probes.
+#[derive(Default)]
+pub struct TerminalFailureLatch {
+    latched: bool,
+}
+
+impl TerminalFailureLatch {
+    /// Probe until the first terminal failure, then skip every later probe.
+    pub fn take<T>(&mut self, probe: impl FnOnce() -> Option<T>) -> Option<T> {
+        if self.latched {
+            return None;
+        }
+        let failure = probe()?;
+        self.latched = true;
+        Some(failure)
+    }
+
+    /// Re-arm the latch for a newly created worker session.
+    pub fn reset(&mut self) {
+        self.latched = false;
+    }
+
+    /// Whether a terminal failure has already been observed for this session.
+    #[must_use]
+    pub const fn is_latched(&self) -> bool {
+        self.latched
     }
 }
 
@@ -471,6 +585,76 @@ impl SourceStatusHandle {
     }
 }
 
+/// Cloneable lock-free view of every status-aware source in an input graph.
+///
+/// The registry owns only read-only status handles. It never retains source
+/// objects, captured samples, backend resources, or the manager itself.
+#[derive(Clone)]
+pub struct SourceStatusRegistry {
+    latest: Arc<ArcSwap<SourceStatusRegistrySnapshot>>,
+}
+
+impl SourceStatusRegistry {
+    /// Create an empty generation-zero registry.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            latest: Arc::new(ArcSwap::from_pointee(SourceStatusRegistrySnapshot {
+                source_graph_generation: 0,
+                handles: Vec::new(),
+            })),
+        }
+    }
+
+    /// Load the latest immutable registry snapshot without locking the manager.
+    #[must_use]
+    pub fn snapshot(&self) -> Arc<SourceStatusRegistrySnapshot> {
+        self.latest.load_full()
+    }
+
+    pub(crate) fn publish(&self, source_graph_generation: u64, handles: Vec<SourceStatusHandle>) {
+        self.latest.store(Arc::new(SourceStatusRegistrySnapshot {
+            source_graph_generation,
+            handles,
+        }));
+    }
+}
+
+impl Default for SourceStatusRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Immutable source-status registry generation.
+pub struct SourceStatusRegistrySnapshot {
+    source_graph_generation: u64,
+    handles: Vec<SourceStatusHandle>,
+}
+
+impl SourceStatusRegistrySnapshot {
+    /// Canonical manager-owned generation represented by this snapshot.
+    #[must_use]
+    pub fn source_graph_generation(&self) -> u64 {
+        self.source_graph_generation
+    }
+
+    /// Read-only source handles in manager registration order.
+    #[must_use]
+    pub fn handles(&self) -> &[SourceStatusHandle] {
+        &self.handles
+    }
+
+    /// Resolve every handle into its current effective status.
+    #[must_use]
+    pub fn statuses(&self) -> Vec<Arc<SourceStatus>> {
+        self.handles
+            .iter()
+            .map(SourceStatusHandle::snapshot)
+            .collect()
+    }
+}
+
 /// Control-plane publisher for one source's status.
 ///
 /// The constructor always creates the canonical stopped, generation-zero
@@ -559,6 +743,23 @@ impl SourceStatusWriter {
         if !(configured && consented && demanded) {
             self.shared.samples.tombstone();
         }
+        Ok(())
+    }
+
+    /// Publish the committed backend identity without disturbing lifecycle state.
+    pub fn set_backend(&self, backend: impl Into<Arc<str>>) -> Result<(), SourceStatusError> {
+        let backend = backend.into();
+        let _control = lock_control(&self.shared);
+        let current = self.shared.latest.load_full();
+        if current.retired {
+            return Err(SourceStatusError::Retired);
+        }
+        if current.backend == backend {
+            return Ok(());
+        }
+        let mut status = (*current).clone();
+        status.backend = backend;
+        publish_structural(&self.shared, status);
         Ok(())
     }
 
@@ -652,6 +853,141 @@ impl SourceStatusWriter {
         status.retired = true;
         publish_structural(&self.shared, status);
         self.shared.samples.tombstone();
+        Ok(())
+    }
+}
+
+/// Source-owned lifecycle seam connecting a production input to its status.
+///
+/// The manager supplies the canonical graph generation. Worker and control
+/// paths may clone the current [`SourceSessionWriter`] to publish outcomes
+/// without borrowing the `Send`-only source object or the manager.
+pub struct SourceStatusReporter {
+    writer: SourceStatusWriter,
+    handle: SourceStatusHandle,
+    source_graph_generation: u64,
+    session: Option<SourceSessionWriter>,
+}
+
+/// Lock-free handoff of the active fenced status writer to a long-lived worker.
+///
+/// Screen workers survive demand-off periods, so capturing one session at
+/// thread creation would strand the successor after off -> on. Workers load
+/// this slot only when publishing status; capture data never flows through it.
+#[derive(Clone, Default)]
+pub struct SourceSessionSlot {
+    latest: Arc<ArcSwapOption<SourceSessionWriter>>,
+}
+
+impl SourceSessionSlot {
+    /// Create an empty session handoff slot.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Install the current manager-bound source session.
+    pub fn store(&self, session: SourceSessionWriter) {
+        self.latest.store(Some(Arc::new(session)));
+    }
+
+    /// Clear the slot before fencing or stopping capture.
+    pub fn clear(&self) {
+        self.latest.store(None);
+    }
+
+    /// Clone the latest session writer without locking the worker or manager.
+    #[must_use]
+    pub fn load(&self) -> Option<SourceSessionWriter> {
+        self.latest.load_full().as_deref().cloned()
+    }
+}
+
+impl SourceStatusReporter {
+    /// Create a source-owned reporter and its independent read handle.
+    #[must_use]
+    pub fn new(
+        source_id: impl Into<Arc<str>>,
+        kind: SourceKind,
+        backend: impl Into<Arc<str>>,
+        configured: bool,
+        consented: bool,
+        demanded: bool,
+    ) -> Self {
+        let (writer, handle) =
+            SourceStatusWriter::new(source_id, kind, backend, configured, consented, demanded);
+        Self {
+            writer,
+            handle,
+            source_graph_generation: 0,
+            session: None,
+        }
+    }
+
+    /// Clone the source's lock-free read handle.
+    #[must_use]
+    pub fn handle(&self) -> SourceStatusHandle {
+        self.handle.clone()
+    }
+
+    /// Bind the next source session to a canonical manager-owned generation.
+    pub fn set_source_graph_generation(&mut self, source_graph_generation: u64) {
+        assert!(
+            source_graph_generation >= self.source_graph_generation,
+            "source graph generation must never regress"
+        );
+        self.source_graph_generation = source_graph_generation;
+    }
+
+    /// Begin a generation-fenced session when the source belongs to a manager.
+    ///
+    /// Standalone sources remain backwards compatible: without a manager-bound
+    /// generation their capture behavior is unchanged and status stays stopped.
+    pub fn begin_session(&mut self) -> Result<Option<SourceSessionWriter>, SourceStatusError> {
+        if self.source_graph_generation == 0 {
+            return Ok(None);
+        }
+        let session = self.writer.begin_session(self.source_graph_generation)?;
+        self.session = Some(session.clone());
+        Ok(Some(session))
+    }
+
+    /// Clone the active fenced writer for a worker or safe sample path.
+    #[must_use]
+    pub fn session(&self) -> Option<SourceSessionWriter> {
+        self.session.clone()
+    }
+
+    /// Update source eligibility and fence the session on revocation.
+    pub fn set_policy(
+        &mut self,
+        configured: bool,
+        consented: bool,
+        demanded: bool,
+    ) -> Result<(), SourceStatusError> {
+        self.writer.set_policy(configured, consented, demanded)?;
+        if !(configured && consented && demanded) {
+            self.session = None;
+        }
+        Ok(())
+    }
+
+    /// Publish the backend selected by a successfully committed configuration.
+    pub fn set_backend(&mut self, backend: impl Into<Arc<str>>) -> Result<(), SourceStatusError> {
+        self.writer.set_backend(backend)
+    }
+
+    /// Stop and fence the current source session.
+    pub fn stop(&mut self) {
+        self.session = None;
+        self.writer.stop();
+    }
+
+    /// Permanently retire the source at the manager's removal generation.
+    pub fn retire(&mut self, source_graph_generation: u64) -> Result<(), SourceStatusError> {
+        self.writer.retire(source_graph_generation)?;
+        self.source_graph_generation = source_graph_generation;
+        self.session = None;
         Ok(())
     }
 }
@@ -790,6 +1126,15 @@ impl SourceSessionWriter {
         })
     }
 
+    /// Publish partial backend health with its usable resource count atomically.
+    pub fn degraded_with_resources(&self, issue: SourceIssue, resource_count: usize) -> bool {
+        self.publish(|status| {
+            status.state = SourceState::Degraded;
+            status.resource_count = resource_count;
+            status.issue = Some(issue);
+        })
+    }
+
     /// Publish unavailable health if this session is still active.
     pub fn unavailable(&self, issue: SourceIssue) -> bool {
         self.publish(|status| {
@@ -822,8 +1167,12 @@ impl SourceSessionWriter {
             return false;
         }
 
-        let mut status = (*self.shared.latest.load_full()).clone();
+        let current = self.shared.latest.load_full();
+        let mut status = (*current).clone();
         update(&mut status);
+        if status == *current {
+            return true;
+        }
         publish_structural(&self.shared, status);
         true
     }

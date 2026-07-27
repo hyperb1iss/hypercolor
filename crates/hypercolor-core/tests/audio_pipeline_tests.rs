@@ -5,8 +5,8 @@
 //! full `AudioInput` → `InputSource` pipeline.
 
 use std::f32::consts::PI;
+use std::time::{Duration, Instant};
 
-use hypercolor_core::input::audio::AudioInput;
 use hypercolor_core::input::audio::beat::{
     BeatDetector, BeatFrame, BeatPulse, EnergyOnsetDetector, SpectralFluxDetector, TempoTracker,
 };
@@ -15,6 +15,9 @@ use hypercolor_core::input::audio::features::{
     compute_rms, spectral_centroid,
 };
 use hypercolor_core::input::audio::fft::{FftPipeline, RingBuffer, precompute_hann, spectral_flux};
+use hypercolor_core::input::audio::{
+    AudioCaptureBackend, AudioInput, classify_audio_capture_backend,
+};
 use hypercolor_core::input::{InputData, InputSource};
 use hypercolor_types::audio::{
     AudioData, AudioPipelineConfig, AudioSourceType, CHROMA_BINS, MEL_BANDS, SPECTRUM_BINS,
@@ -680,6 +683,92 @@ fn ring_buffer_partial_read() {
 // ── AudioInput Integration Tests ─────────────────────────────────────────
 
 #[test]
+fn audio_capture_backend_classification_is_platform_neutral() {
+    assert_eq!(
+        classify_audio_capture_backend(
+            &AudioSourceType::None,
+            Some(AudioCaptureBackend::PulseAudio)
+        ),
+        AudioCaptureBackend::Disabled
+    );
+    assert_eq!(
+        classify_audio_capture_backend(&AudioSourceType::Microphone, None),
+        AudioCaptureBackend::Cpal
+    );
+    assert_eq!(
+        classify_audio_capture_backend(&AudioSourceType::SystemMonitor, None),
+        AudioCaptureBackend::Auto
+    );
+    assert_eq!(
+        classify_audio_capture_backend(
+            &AudioSourceType::Named("monitor".to_owned()),
+            Some(AudioCaptureBackend::PulseAudio)
+        ),
+        AudioCaptureBackend::PulseAudio
+    );
+    assert_eq!(AudioCaptureBackend::Auto.status_id(), "auto");
+    assert_eq!(AudioCaptureBackend::Cpal.status_id(), "cpal");
+    assert_eq!(AudioCaptureBackend::PulseAudio.status_id(), "pulse_audio");
+    assert_eq!(AudioCaptureBackend::Disabled.status_id(), "disabled");
+}
+
+#[test]
+fn audio_status_backend_tracks_committed_configuration() {
+    let disabled = AudioInput::new(&manual_input_config());
+    assert_eq!(
+        disabled
+            .source_status_handle()
+            .expect("audio status should exist")
+            .snapshot()
+            .backend
+            .as_ref(),
+        "disabled"
+    );
+
+    let config = AudioPipelineConfig {
+        source: AudioSourceType::Named("monitor".to_owned()),
+        ..AudioPipelineConfig::default()
+    };
+    let input = AudioInput::new(&config);
+    assert_eq!(
+        input
+            .source_status_handle()
+            .expect("audio status should exist")
+            .snapshot()
+            .backend
+            .as_ref(),
+        "auto"
+    );
+}
+
+#[test]
+fn failed_audio_reconfiguration_preserves_committed_backend() {
+    let initial = AudioPipelineConfig {
+        source: AudioSourceType::Microphone,
+        ..AudioPipelineConfig::default()
+    };
+    let mut input = AudioInput::new(&initial);
+    let handle = input
+        .source_status_handle()
+        .expect("audio status should exist");
+    assert_eq!(handle.snapshot().backend.as_ref(), "cpal");
+
+    let replacement = AudioPipelineConfig {
+        source: AudioSourceType::Named(
+            "__hypercolor_transactional_backend_missing_device__".to_owned(),
+        ),
+        ..initial
+    };
+    let error = input
+        .reconfigure_live(&replacement, "replacement", true)
+        .expect_err("a nonexistent device should reject the staged reconfiguration");
+
+    assert!(error.to_string().contains("not found"));
+    assert_eq!(handle.snapshot().backend.as_ref(), "cpal");
+    assert_eq!(input.name(), "AudioInput");
+}
+
+#[test]
 fn audio_input_lifecycle() {
     let config = manual_input_config();
     let mut input = AudioInput::new(&config);
@@ -763,6 +852,46 @@ fn audio_input_reuses_latest_snapshot_between_samples() {
     assert_eq!(first.chromagram, second.chromagram);
     assert_eq!(first.beat_detected, second.beat_detected);
     assert!((first.rms_level - second.rms_level).abs() < f32::EPSILON);
+}
+
+#[test]
+fn audio_status_uses_callback_acquisition_time_not_consumer_read_time() {
+    let config = AudioPipelineConfig {
+        source: AudioSourceType::Named("__hypercolor_status_timestamp_test__".to_owned()),
+        ..AudioPipelineConfig::default()
+    };
+    let mut input = AudioInput::new(&config);
+    let handle = input
+        .source_status_handle()
+        .expect("production audio source exposes status");
+    input.set_source_graph_generation(1);
+    input
+        .set_capture_active(true)
+        .expect("capture demand can be armed before start");
+    input
+        .start()
+        .expect("missing hardware degrades instead of failing startup");
+
+    let samples = sine_wave(440.0, 48_000, 2048);
+    let before_push = Instant::now();
+    input.push_samples(&samples);
+    let after_push = Instant::now();
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(matches!(
+        input.sample().expect("delayed audio sample succeeds"),
+        InputData::Audio(_)
+    ));
+
+    let status = handle.snapshot();
+    let acquired_at = status
+        .last_sample_at
+        .expect("audio acquisition timestamp was recorded");
+    assert!(acquired_at >= before_push && acquired_at <= after_push);
+    assert_eq!(
+        status.freshness,
+        hypercolor_core::input::SourceFreshness::Stale
+    );
+    input.stop();
 }
 
 #[test]

@@ -13,6 +13,7 @@ use device_query::{DeviceQuery, DeviceState, Keycode};
 use tracing::warn;
 
 use crate::input::traits::{InputData, InputSource, InteractionData, KeyboardData, MouseData};
+use crate::input::{SourceIssue, SourceKind, SourceStatusHandle, SourceStatusReporter};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 const READY_TIMEOUT: Duration = Duration::from_secs(1);
@@ -40,6 +41,7 @@ pub struct InteractionInput {
     shared: Arc<Mutex<SharedInteractionState>>,
     stop_flag: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
+    status: SourceStatusReporter,
 }
 
 impl InteractionInput {
@@ -56,6 +58,14 @@ impl InteractionInput {
             shared: Arc::new(Mutex::new(SharedInteractionState::default())),
             stop_flag: Arc::new(AtomicBool::new(false)),
             worker: None,
+            status: SourceStatusReporter::new(
+                "host_input",
+                SourceKind::Interaction,
+                "device_query",
+                true,
+                true,
+                false,
+            ),
         }
     }
 
@@ -80,6 +90,7 @@ impl InteractionInput {
         let stop_flag = Arc::clone(&self.stop_flag);
         let recent_key_limit = self.recent_key_limit;
         let source_name = self.name.clone();
+        let status = self.status.session();
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
 
         let worker = thread::Builder::new()
@@ -90,10 +101,25 @@ impl InteractionInput {
                         source = %source_name,
                         "Host input capture unavailable; interactive LightScript input will stay idle"
                     );
+                    if let Some(status) = &status {
+                        status.unavailable(
+                            SourceIssue::new(
+                                "host_input_backend_unavailable",
+                                "host input capture backend is unavailable",
+                                true,
+                            )
+                            .with_remediation(
+                                "run Hypercolor inside an interactive desktop session",
+                            ),
+                        );
+                    }
                     let _ = ready_tx.send(());
                     return;
                 };
 
+                if let Some(status) = &status {
+                    status.mark_event_driven_live_without_deadline(1);
+                }
                 let _ = ready_tx.send(());
                 let mut previous_keys: Vec<Keycode> = Vec::new();
 
@@ -157,12 +183,14 @@ impl InputSource for InteractionInput {
 
         self.running = true;
         if self.capture_active {
+            self.status.begin_session()?;
             self.spawn_worker()?;
         }
         Ok(())
     }
 
     fn stop(&mut self) {
+        self.status.stop();
         self.stop_worker();
         self.running = false;
     }
@@ -198,6 +226,14 @@ impl InputSource for InteractionInput {
         self.running
     }
 
+    fn source_status_handle(&self) -> Option<SourceStatusHandle> {
+        Some(self.status.handle())
+    }
+
+    fn source_status_reporter(&mut self) -> Option<&mut SourceStatusReporter> {
+        Some(&mut self.status)
+    }
+
     fn is_interaction_source(&self) -> bool {
         true
     }
@@ -218,6 +254,7 @@ impl InputSource for InteractionInput {
     }
 
     fn set_interaction_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
+        self.status.set_policy(true, true, active)?;
         if self.capture_active == active {
             return Ok(());
         }
@@ -228,6 +265,7 @@ impl InputSource for InteractionInput {
         }
 
         if active {
+            self.status.begin_session()?;
             self.spawn_worker()?;
         } else {
             self.stop_worker();

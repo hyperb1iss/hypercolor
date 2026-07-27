@@ -27,8 +27,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 #[cfg(target_os = "linux")]
 use std::thread;
-#[cfg(target_os = "linux")]
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, anyhow};
 use arc_swap::ArcSwapOption;
@@ -38,6 +37,7 @@ use cpal::{FromSample, Sample, SampleFormat, SizedSample, Stream, SupportedStrea
 use libpulse_binding as pulse;
 
 use crate::input::traits::{InputData, InputSource};
+use crate::input::{SourceIssue, SourceKind, SourceStatusHandle, SourceStatusReporter};
 use crate::types::audio::{AudioData, AudioPipelineConfig, AudioSourceType};
 
 use beat::{BeatDetector, BeatFrame};
@@ -255,6 +255,52 @@ impl AudioAnalyzer {
 
 // ── AudioInput (InputSource implementation) ──────────────────────────────
 
+struct CapturedAudioSnapshot {
+    data: AudioData,
+    captured_at: Instant,
+}
+
+/// Control-plane identity of the committed audio capture backend.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AudioCaptureBackend {
+    /// Backend selection is deferred until capture starts.
+    Auto,
+    /// Cross-platform capture through cpal.
+    Cpal,
+    /// Direct PulseAudio compatibility-protocol capture on Linux.
+    PulseAudio,
+    /// Audio capture is intentionally disabled.
+    Disabled,
+}
+
+impl AudioCaptureBackend {
+    /// Stable status identifier.
+    #[must_use]
+    pub const fn status_id(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Cpal => "cpal",
+            Self::PulseAudio => "pulse_audio",
+            Self::Disabled => "disabled",
+        }
+    }
+}
+
+/// Classify backend identity before or after native device selection.
+#[must_use]
+pub fn classify_audio_capture_backend(
+    source: &AudioSourceType,
+    selected: Option<AudioCaptureBackend>,
+) -> AudioCaptureBackend {
+    match source {
+        AudioSourceType::None => AudioCaptureBackend::Disabled,
+        AudioSourceType::Microphone => selected.unwrap_or(AudioCaptureBackend::Cpal),
+        AudioSourceType::SystemMonitor | AudioSourceType::Named(_) => {
+            selected.unwrap_or(AudioCaptureBackend::Auto)
+        }
+    }
+}
+
 /// Audio input source implementing [`InputSource`].
 ///
 /// Wraps [`AudioAnalyzer`] and provides the standard lifecycle methods.
@@ -268,16 +314,21 @@ pub struct AudioInput {
     capture_active: bool,
     config: AudioPipelineConfig,
     analyzer: Arc<Mutex<AudioAnalyzer>>,
-    latest_snapshot: Arc<ArcSwapOption<AudioData>>,
+    latest_snapshot: Arc<ArcSwapOption<CapturedAudioSnapshot>>,
+    last_status_snapshot: Option<Arc<CapturedAudioSnapshot>>,
     capture: Option<CaptureHandle>,
     parked_source: Option<AudioSourceType>,
+    parked_backend: Option<AudioCaptureBackend>,
     degraded_to_silence: bool,
+    capture_backend: AudioCaptureBackend,
+    status: SourceStatusReporter,
 }
 
 impl AudioInput {
     /// Create a new audio input with the given config.
     #[must_use]
     pub fn new(config: &AudioPipelineConfig) -> Self {
+        let capture_backend = classify_audio_capture_backend(&config.source, None);
         Self {
             host: cpal::default_host(),
             name: "AudioInput".to_owned(),
@@ -286,9 +337,20 @@ impl AudioInput {
             config: config.clone(),
             analyzer: Arc::new(Mutex::new(AudioAnalyzer::new(config))),
             latest_snapshot: Arc::new(ArcSwapOption::empty()),
+            last_status_snapshot: None,
             capture: None,
             parked_source: None,
+            parked_backend: None,
             degraded_to_silence: false,
+            capture_backend,
+            status: SourceStatusReporter::new(
+                "audio",
+                SourceKind::Audio,
+                capture_backend.status_id(),
+                !matches!(config.source, AudioSourceType::None),
+                true,
+                false,
+            ),
         }
     }
 
@@ -341,7 +403,21 @@ impl AudioInput {
         }
 
         if let Some(snapshot) = self.latest_snapshot.load_full() {
-            return Ok(InputData::Audio((*snapshot).clone()));
+            if self
+                .last_status_snapshot
+                .as_ref()
+                .is_none_or(|previous| !Arc::ptr_eq(previous, &snapshot))
+            {
+                if let Some(status) = self.status.session() {
+                    status.record_sample(
+                        snapshot.captured_at,
+                        snapshot.captured_at + Duration::from_millis(250),
+                        usize::from(self.capture.is_some()),
+                    )?;
+                }
+                self.last_status_snapshot = Some(Arc::clone(&snapshot));
+            }
+            return Ok(InputData::Audio(snapshot.data.clone()));
         }
 
         if self.degraded_to_silence || matches!(self.config.source, AudioSourceType::None) {
@@ -435,6 +511,7 @@ impl AudioInput {
             .unwrap_or_else(|| self.config.source.clone());
         let previous_capture = self.capture.take();
         self.parked_source = None;
+        self.parked_backend = None;
 
         if previous_capture.is_none() {
             tracing::debug!(
@@ -492,12 +569,16 @@ impl AudioInput {
             Arc::clone(&self.latest_snapshot),
         ) {
             Ok(capture) => {
+                let capture_backend =
+                    classify_audio_capture_backend(&self.config.source, Some(capture.backend()));
+                self.status.set_backend(capture_backend.status_id())?;
                 tracing::info!(
                     input = %self.name,
                     source = ?self.config.source,
                     "Audio capture stream started"
                 );
                 self.degraded_to_silence = false;
+                self.capture_backend = capture_backend;
                 self.capture = Some(capture);
             }
             Err(error) => {
@@ -515,6 +596,11 @@ impl AudioInput {
     }
 
     fn set_capture_active_state(&mut self, active: bool) -> anyhow::Result<()> {
+        self.status.set_policy(
+            !matches!(self.config.source, AudioSourceType::None),
+            true,
+            active,
+        )?;
         if self.capture_active == active {
             if active && self.running && self.capture.is_none() {
                 self.start_capture_stream()?;
@@ -529,7 +615,18 @@ impl AudioInput {
         }
 
         if active {
-            self.start_capture_stream()
+            let status = self.status.begin_session()?;
+            self.start_capture_stream()?;
+            if self.degraded_to_silence
+                && let Some(status) = status
+            {
+                status.degraded(SourceIssue::new(
+                    "audio_capture_unavailable",
+                    "audio capture is unavailable; producing silence",
+                    true,
+                ));
+            }
+            Ok(())
         } else {
             self.pause_capture_stream();
             Ok(())
@@ -558,11 +655,15 @@ impl AudioInput {
             capture_active && !matches!(config.source, AudioSourceType::None);
         let source_changed = previous_source != config.source;
 
-        self.name = next_name;
-        self.config = config.clone();
-        self.running = true;
-
         if !source_changed {
+            self.name = next_name;
+            self.config = config.clone();
+            self.running = true;
+            self.status.set_policy(
+                !matches!(config.source, AudioSourceType::None),
+                true,
+                effective_capture_active,
+            )?;
             self.degraded_to_silence = false;
             self.apply_analyzer_config(config);
             self.set_capture_active_state(effective_capture_active)?;
@@ -578,9 +679,18 @@ impl AudioInput {
         if matches!(config.source, AudioSourceType::None) {
             if !matches!(previous_source, AudioSourceType::None) && self.capture.is_some() {
                 self.parked_source = Some(previous_source.clone());
+                self.parked_backend = Some(self.capture_backend);
             }
+            let capture_backend = classify_audio_capture_backend(&config.source, None);
+            self.status.set_backend(capture_backend.status_id())?;
+            self.name = next_name;
+            self.config = config.clone();
+            self.running = true;
+            self.status.set_policy(false, true, false)?;
             self.set_capture_active_state(false)?;
             self.degraded_to_silence = false;
+            self.capture_backend = capture_backend;
+            self.last_status_snapshot = None;
             self.apply_analyzer_config(config);
             tracing::info!(
                 input = %self.name,
@@ -596,10 +706,34 @@ impl AudioInput {
             && self.capture.is_some()
             && self.parked_source.as_ref() == Some(&config.source)
         {
+            let capture_backend = self
+                .parked_backend
+                .as_ref()
+                .copied()
+                .unwrap_or_else(|| classify_audio_capture_backend(&config.source, None));
+            if effective_capture_active
+                && let Some(CaptureHandle::Cpal(stream)) = self.capture.as_ref()
+            {
+                stream
+                    .play()
+                    .context("failed to resume audio capture stream")?;
+            }
+            self.status.set_backend(capture_backend.status_id())?;
+            self.name = next_name;
+            self.config = config.clone();
+            self.running = true;
+            self.status
+                .set_policy(true, true, effective_capture_active)?;
             self.parked_source = None;
+            self.parked_backend = None;
+            self.capture_backend = capture_backend;
             self.degraded_to_silence = false;
+            self.last_status_snapshot = None;
             self.apply_analyzer_config(config);
-            self.set_capture_active_state(effective_capture_active)?;
+            self.capture_active = effective_capture_active;
+            if effective_capture_active {
+                self.status.begin_session()?;
+            }
             tracing::info!(
                 input = %self.name,
                 previous_source = ?previous_source,
@@ -610,23 +744,36 @@ impl AudioInput {
             return Ok(());
         }
 
-        if effective_capture_active {
-            let (next_analyzer, next_capture) = self.start_stream_for_config(config)?;
-            let previous_capture = self.capture.take();
-            self.parked_source = None;
-            self.analyzer = next_analyzer;
-            self.capture = next_capture;
-            self.degraded_to_silence = false;
-            drop(previous_capture);
+        let (next_analyzer, next_capture) = if effective_capture_active {
+            self.start_stream_for_config(config)?
         } else {
-            let previous_capture = self.capture.take();
-            self.parked_source = None;
-            self.analyzer = Arc::new(Mutex::new(AudioAnalyzer::new(config)));
-            self.degraded_to_silence = false;
-            drop(previous_capture);
-        }
+            (Arc::new(Mutex::new(AudioAnalyzer::new(config))), None)
+        };
+        let capture_backend = classify_audio_capture_backend(
+            &config.source,
+            next_capture.as_ref().map(CaptureHandle::backend),
+        );
 
-        self.set_capture_active_state(effective_capture_active)?;
+        self.status.set_backend(capture_backend.status_id())?;
+        self.name = next_name;
+        self.config = config.clone();
+        self.running = true;
+        self.status.stop();
+        self.status
+            .set_policy(true, true, effective_capture_active)?;
+        let previous_capture = self.capture.take();
+        self.parked_source = None;
+        self.parked_backend = None;
+        self.analyzer = next_analyzer;
+        self.capture = next_capture;
+        self.capture_active = effective_capture_active;
+        self.degraded_to_silence = false;
+        self.capture_backend = capture_backend;
+        self.last_status_snapshot = None;
+        drop(previous_capture);
+        if effective_capture_active {
+            self.status.begin_session()?;
+        }
 
         tracing::info!(
             input = %self.name,
@@ -653,6 +800,7 @@ impl InputSource for AudioInput {
         self.running = true;
         self.degraded_to_silence = false;
         self.capture = None;
+        self.last_status_snapshot = None;
 
         if matches!(self.config.source, AudioSourceType::None) {
             return Ok(());
@@ -667,7 +815,18 @@ impl InputSource for AudioInput {
             return Ok(());
         }
 
-        self.start_capture_stream()
+        let status = self.status.begin_session()?;
+        self.start_capture_stream()?;
+        if self.degraded_to_silence
+            && let Some(status) = status
+        {
+            status.degraded(SourceIssue::new(
+                "audio_capture_unavailable",
+                "audio capture is unavailable; producing silence",
+                true,
+            ));
+        }
+        Ok(())
     }
 
     fn stop(&mut self) {
@@ -675,7 +834,9 @@ impl InputSource for AudioInput {
         self.running = false;
         self.capture_active = false;
         self.degraded_to_silence = false;
+        self.last_status_snapshot = None;
         self.reset_analyzer();
+        self.status.stop();
     }
 
     fn sample(&mut self) -> anyhow::Result<InputData> {
@@ -688,6 +849,14 @@ impl InputSource for AudioInput {
 
     fn is_running(&self) -> bool {
         self.running
+    }
+
+    fn source_status_handle(&self) -> Option<SourceStatusHandle> {
+        Some(self.status.handle())
+    }
+
+    fn source_status_reporter(&mut self) -> Option<&mut SourceStatusReporter> {
+        Some(&mut self.status)
     }
 
     fn is_audio_source(&self) -> bool {
@@ -712,7 +881,7 @@ fn build_capture_stream(
     host: &cpal::Host,
     config: &AudioPipelineConfig,
     analyzer: Arc<Mutex<AudioAnalyzer>>,
-    latest_snapshot: Arc<ArcSwapOption<AudioData>>,
+    latest_snapshot: Arc<ArcSwapOption<CapturedAudioSnapshot>>,
 ) -> anyhow::Result<CaptureHandle> {
     let selected = select_input_device(host, &config.source)?;
     match selected {
@@ -1062,12 +1231,22 @@ enum CaptureHandle {
     LinuxPulse(LinuxPulseCapture),
 }
 
+impl CaptureHandle {
+    fn backend(&self) -> AudioCaptureBackend {
+        match self {
+            Self::Cpal(_) => AudioCaptureBackend::Cpal,
+            #[cfg(target_os = "linux")]
+            Self::LinuxPulse(_) => AudioCaptureBackend::PulseAudio,
+        }
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn build_linux_pulse_capture_stream(
     source_name: &str,
     display_name: &str,
     analyzer: Arc<Mutex<AudioAnalyzer>>,
-    latest_snapshot: Arc<ArcSwapOption<AudioData>>,
+    latest_snapshot: Arc<ArcSwapOption<CapturedAudioSnapshot>>,
     config: &AudioPipelineConfig,
 ) -> anyhow::Result<CaptureHandle> {
     const PULSE_CAPTURE_CHANNELS: usize = 2;
@@ -1139,7 +1318,7 @@ fn run_linux_pulse_capture(
     source_name: &str,
     display_name: &str,
     analyzer: Arc<Mutex<AudioAnalyzer>>,
-    latest_snapshot: Arc<ArcSwapOption<AudioData>>,
+    latest_snapshot: Arc<ArcSwapOption<CapturedAudioSnapshot>>,
     ready_tx: mpsc::SyncSender<Result<(), String>>,
     stop_rx: mpsc::Receiver<()>,
     channels: usize,
@@ -1446,7 +1625,7 @@ fn build_stream<T>(
     config: &cpal::StreamConfig,
     channels: usize,
     analyzer: Arc<Mutex<AudioAnalyzer>>,
-    latest_snapshot: Arc<ArcSwapOption<AudioData>>,
+    latest_snapshot: Arc<ArcSwapOption<CapturedAudioSnapshot>>,
     device_name: &str,
 ) -> anyhow::Result<Stream>
 where
@@ -1474,7 +1653,7 @@ fn push_input_samples<T>(
     input: &[T],
     channels: usize,
     analyzer: &Arc<Mutex<AudioAnalyzer>>,
-    latest_snapshot: &Arc<ArcSwapOption<AudioData>>,
+    latest_snapshot: &Arc<ArcSwapOption<CapturedAudioSnapshot>>,
 ) where
     T: Sample + Copy,
     f32: FromSample<T>,
@@ -1497,10 +1676,13 @@ fn push_input_samples<T>(
 fn publish_latest_snapshot(
     analyzer: &mut AudioAnalyzer,
     sample_count: usize,
-    latest_snapshot: &Arc<ArcSwapOption<AudioData>>,
+    latest_snapshot: &Arc<ArcSwapOption<CapturedAudioSnapshot>>,
 ) {
     match analyzer.analyze(analysis_dt_seconds(sample_count, analyzer.sample_rate_hz())) {
-        Ok(Some(snapshot)) => latest_snapshot.store(Some(Arc::new(snapshot))),
+        Ok(Some(snapshot)) => latest_snapshot.store(Some(Arc::new(CapturedAudioSnapshot {
+            data: snapshot,
+            captured_at: Instant::now(),
+        }))),
         Ok(None) => {}
         Err(error) => tracing::warn!(%error, "Audio snapshot analysis failed"),
     }
