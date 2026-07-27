@@ -40,9 +40,9 @@ pub const CAPTURE_STABLE_MS: f64 = 2500.0;
 /// lookup/probe work only needs to run about once a second — at frame rate
 /// it allocates megabytes per second for nothing.
 const CAPTURE_SCAN_INTERVAL_MS: f64 = 1000.0;
-/// Probe result cache for curated screenshots. Skips opportunistic capture
-/// when the daemon already serves authored artwork for this slug, so we don't
-/// burn localStorage quota on thumbnails that will be painted over anyway.
+/// Probe result cache for effect covers, keyed by effect id. Skips
+/// opportunistic capture when the daemon already serves authored artwork, so we
+/// don't burn localStorage quota on thumbnails that will be painted over anyway.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CuratedProbe {
     Pending,
@@ -226,43 +226,25 @@ fn encode_frame_to_webp(frame: &CanvasFrame) -> Result<String, JsValue> {
     canvas.to_data_url_with_type_and_encoder_options("image/webp", &JsValue::from_f64(WEBP_QUALITY))
 }
 
-/// Kebab-case slug for an effect name. Mirrors the capture tool's slugify so
-/// the UI and `effects/screenshots/curated/<slug>/` stay aligned.
-pub fn slugify(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    let mut prev_dash = true;
-    for ch in value.chars() {
-        let mapped = ch.to_ascii_lowercase();
-        if mapped.is_ascii_alphanumeric() {
-            out.push(mapped);
-            prev_dash = false;
-        } else if !prev_dash {
-            out.push('-');
-            prev_dash = true;
-        }
-    }
-    if out.ends_with('-') {
-        out.pop();
-    }
-    out
+/// Daemon URL for an effect's card artwork.
+///
+/// Keyed by effect id so the daemon owns cover resolution — it decides between
+/// a curated override and the cover the effect ships inline.
+pub fn effect_cover_url(effect_id: &str) -> String {
+    format!("/api/v1/effects/{effect_id}/cover")
 }
 
-/// Daemon URL for an effect's curated card artwork.
-pub fn curated_screenshot_url(slug: &str) -> String {
-    format!("/api/v1/effects/screenshots/{slug}/default.webp")
-}
-
-/// Kick off a HEAD probe for a curated screenshot and update `probe_cache`
-/// with the result. Idempotent — callers should check for an existing entry
-/// before spawning.
-fn spawn_curated_probe(slug: String, probe_cache: StoredValue<HashMap<String, CuratedProbe>>) {
-    let url = curated_screenshot_url(&slug);
+/// Kick off a HEAD probe for an effect's cover and update `probe_cache` with
+/// the result. Idempotent — callers should check for an existing entry before
+/// spawning.
+fn spawn_curated_probe(effect_id: String, probe_cache: StoredValue<HashMap<String, CuratedProbe>>) {
+    let url = effect_cover_url(&effect_id);
     wasm_bindgen_futures::spawn_local(async move {
         let request = match RequestBuilder::new(&url).method(Method::HEAD).build() {
             Ok(req) => req,
             Err(_) => {
                 probe_cache.update_value(|cache| {
-                    cache.insert(slug, CuratedProbe::Absent);
+                    cache.insert(effect_id, CuratedProbe::Absent);
                 });
                 return;
             }
@@ -272,7 +254,7 @@ fn spawn_curated_probe(slug: String, probe_cache: StoredValue<HashMap<String, Cu
             _ => CuratedProbe::Absent,
         };
         probe_cache.update_value(|cache| {
-            cache.insert(slug, state);
+            cache.insert(effect_id, state);
         });
     });
 }
@@ -283,10 +265,10 @@ fn spawn_curated_probe(slug: String, probe_cache: StoredValue<HashMap<String, Cu
 /// has been playing for at least `CAPTURE_STABLE_MS` and no valid thumbnail
 /// exists for the current version, captures one frame and stores it.
 ///
-/// The `effect_lookup` closure maps an effect ID to `(slug, version)`. The
-/// slug is used to probe the daemon's curated screenshot endpoint; when a
-/// curated image exists we skip opportunistic capture entirely, since the
-/// effect card will paint the authored artwork on top anyway.
+/// The `effect_lookup` closure maps an effect ID to `(name, version)`. The
+/// daemon's cover endpoint is probed by id; when the effect already has cover
+/// artwork we skip opportunistic capture entirely, since the effect card will
+/// paint the authored artwork on top anyway.
 pub fn install_auto_capture<F>(
     store: ThumbnailStore,
     active_effect_id: ReadSignal<Option<String>>,
@@ -333,7 +315,7 @@ pub fn install_auto_capture<F>(
         }
 
         // Check if we already have a fresh thumbnail for this version.
-        let Some((name, version)) = effect_lookup(&effect_id) else {
+        let Some((_, version)) = effect_lookup(&effect_id) else {
             return;
         };
         if store.has_fresh(&effect_id, &version) {
@@ -345,17 +327,16 @@ pub fn install_auto_capture<F>(
             return;
         }
 
-        let slug = slugify(&name);
-        let probe_state = curated_probes.with_value(|cache| cache.get(&slug).copied());
+        let probe_state = curated_probes.with_value(|cache| cache.get(&effect_id).copied());
         match probe_state {
             Some(CuratedProbe::Present) => return,
             Some(CuratedProbe::Pending) => return,
             Some(CuratedProbe::Absent) => {}
             None => {
                 curated_probes.update_value(|cache| {
-                    cache.insert(slug.clone(), CuratedProbe::Pending);
+                    cache.insert(effect_id.clone(), CuratedProbe::Pending);
                 });
-                spawn_curated_probe(slug, curated_probes);
+                spawn_curated_probe(effect_id, curated_probes);
                 return;
             }
         }
@@ -381,17 +362,4 @@ pub fn install_auto_capture<F>(
             });
         });
     });
-}
-
-#[cfg(test)]
-mod slug_tests {
-    use super::slugify;
-
-    #[test]
-    fn slugify_converts_effect_names() {
-        assert_eq!(slugify("Color Wave"), "color-wave");
-        assert_eq!(slugify("ADHD Hyperfocus"), "adhd-hyperfocus");
-        assert_eq!(slugify("  Spaced  Out  "), "spaced-out");
-        assert_eq!(slugify("Nyan Dash!"), "nyan-dash");
-    }
 }
