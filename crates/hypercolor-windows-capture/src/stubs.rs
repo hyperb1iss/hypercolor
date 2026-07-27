@@ -1,8 +1,11 @@
 //! Non-Windows stand-in so downstream crates compile unconditionally.
 
+use std::sync::Arc;
 use std::time::Duration;
 
-use crate::shared::{CaptureError, CaptureResult, Frame, MonitorSelector, ReductionTelemetry};
+use crate::shared::{
+    CaptureError, CaptureRegion, CaptureResult, Frame, MonitorSelector, ReductionTelemetry,
+};
 
 /// Desktop Duplication placeholder for platforms without the API.
 pub struct DesktopDuplicator {
@@ -67,11 +70,22 @@ impl DesktopDuplicator {
     /// Change the subsample target for subsequent frames.
     pub const fn set_max_width(&mut self, _max_width: u32) {}
 
+    /// Always fails: no native capture extent exists on this platform.
+    ///
+    /// # Errors
+    ///
+    /// Always returns [`CaptureError::UnsupportedPlatform`].
+    pub const fn set_region(&mut self, _region: Option<CaptureRegion>) -> CaptureResult<()> {
+        Err(CaptureError::UnsupportedPlatform)
+    }
+
     /// CPU fallback telemetry for the unsupported platform stub.
     #[must_use]
     pub fn reduction_telemetry(&self) -> ReductionTelemetry {
         ReductionTelemetry {
-            issue: Some("desktop screen capture is only available on Windows".to_owned()),
+            issue: Some(Arc::from(
+                "desktop screen capture is only available on Windows",
+            )),
             ..ReductionTelemetry::default()
         }
     }

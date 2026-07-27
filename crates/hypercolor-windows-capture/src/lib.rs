@@ -21,14 +21,16 @@ pub use duplication::DesktopDuplicator;
 
 #[cfg(all(target_os = "windows", feature = "capture-bench"))]
 #[doc(hidden)]
-pub use duplication::gpu_reduction::{CaptureReductionBenchmark, ReductionBenchmarkSample};
+pub use duplication::gpu_reduction::{
+    CaptureCadenceReport, CaptureReductionBenchmark, ReductionBenchmarkSample,
+};
 
 mod shared;
 
 pub use shared::{
-    CaptureError, CaptureResult, CursorInfo, DisplayRotation, Frame, MonitorInfo, MonitorSelector,
-    ReductionPath, ReductionTelemetry, list_monitors, monitor_count, subsample_stride,
-    subsampled_extent,
+    CaptureError, CaptureRegion, CaptureResult, CursorInfo, DisplayRotation, Frame, MonitorInfo,
+    MonitorSelector, ReductionPath, ReductionTelemetry, list_monitors, monitor_count,
+    subsample_stride, subsampled_extent,
 };
 
 #[cfg(not(target_os = "windows"))]

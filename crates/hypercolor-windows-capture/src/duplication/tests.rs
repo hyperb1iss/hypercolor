@@ -1,11 +1,14 @@
 use super::{
-    DesktopFrameSource, PointerShape, PointerShapeKind, PointerState, TopologyEntry, TopologyState,
-    average_channel, classify_hresult, desktop_frame_source, logical_to_scanout,
-    native_scanout_extent, pointer_scanout_geometry, reacquire_duplication, scanout_to_logical,
+    CaptureMetadata, DesktopFrameSource, PointerShape, PointerShapeKind, PointerState,
+    TopologyEntry, TopologyState, average_channel, capture_region_origin, classify_hresult,
+    desktop_frame_source, logical_to_scanout, native_scanout_extent, pointer_scanout_geometry,
+    reacquire_duplication, scanout_to_logical,
 };
-use crate::{CaptureError, DisplayRotation, ReductionPath};
+use crate::{CaptureError, CaptureRegion, DisplayRotation, ReductionPath};
 use std::cell::Cell;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::time::Instant;
 use windows::Win32::Foundation::{E_ACCESSDENIED, E_FAIL};
 use windows::Win32::Graphics::Dxgi::{
     DXGI_ERROR_ACCESS_LOST, DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET,
@@ -67,6 +70,27 @@ fn cpu_reduce(
     pointer: &PointerState,
     rotation: DisplayRotation,
 ) -> Vec<u8> {
+    cpu_reduce_region(
+        bgra,
+        width,
+        height,
+        max_width,
+        pointer,
+        rotation,
+        CaptureRegion::full(width, height),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cpu_reduce_region(
+    bgra: &[u8],
+    width: u32,
+    height: u32,
+    max_width: u32,
+    pointer: &PointerState,
+    rotation: DisplayRotation,
+    region: CaptureRegion,
+) -> Vec<u8> {
     let mut rgba = Vec::new();
     super::DesktopDuplicator::copy_bgra_rows(
         super::BgraRows {
@@ -79,6 +103,7 @@ fn cpu_reduce(
         max_width,
         pointer,
         rotation,
+        region,
     )
     .expect("fixture rows are valid");
     rgba
@@ -132,6 +157,69 @@ fn gpu_readback_ring_coalesces_pressure_at_fixed_capacity() {
 }
 
 #[test]
+fn busy_ring_keeps_pending_and_latest_clean_metadata_distinct() {
+    let (pending_sequence, clean_sequence, region) =
+        super::gpu_reduction::ring_busy_keeps_latest_clean_metadata_for_test()
+            .expect("WARP ring metadata fixture succeeds");
+
+    assert_eq!(pending_sequence, 1);
+    assert_eq!(clean_sequence, 4);
+    assert_eq!(region, CaptureRegion::full(1, 1));
+}
+
+#[test]
+fn production_query_polling_progresses_without_manual_flush() {
+    let bgra = [10, 20, 30, 0xFF].repeat(6);
+    let reduced = super::gpu_reduction::reduce_fixture(
+        &bgra,
+        3,
+        2,
+        2,
+        &PointerState::default(),
+        DisplayRotation::Identity,
+    )
+    .expect("flags-zero first poll advances WARP without a manual flush");
+
+    assert!(!reduced.is_empty());
+}
+
+#[test]
+fn first_static_frame_query_failure_preserves_cpu_fallback_state() {
+    let (sequence, region) = super::gpu_reduction::poll_failure_preserves_clean_metadata_for_test(
+        super::gpu_reduction::InjectedPollFailure::Query,
+    )
+    .expect("query failure keeps the clean first frame");
+
+    assert_eq!(sequence, 41);
+    assert_eq!(
+        region,
+        CaptureRegion::new(1, 1, 4, 2).expect("valid region")
+    );
+}
+
+#[test]
+fn first_static_frame_map_failure_preserves_cpu_fallback_state() {
+    let (sequence, region) = super::gpu_reduction::poll_failure_preserves_clean_metadata_for_test(
+        super::gpu_reduction::InjectedPollFailure::Map,
+    )
+    .expect("map failure keeps the clean first frame");
+
+    assert_eq!(sequence, 41);
+    assert_eq!(
+        region,
+        CaptureRegion::new(1, 1, 4, 2).expect("valid region")
+    );
+}
+
+#[test]
+fn unsupported_duplication_format_selects_fallback_fixture() {
+    assert!(
+        super::gpu_reduction::unsupported_source_format_is_rejected_for_test()
+            .expect("WARP format-support query succeeds")
+    );
+}
+
+#[test]
 fn pointer_upload_normalizes_color_and_monochrome_shapes() {
     let color = pointer(PointerShapeKind::Color, vec![10, 20, 30, 40]);
     assert_eq!(
@@ -172,6 +260,79 @@ fn gpu_reduction_matches_cpu_for_odd_extents_and_clipped_edge_boxes() {
         &PointerState::default(),
         DisplayRotation::Identity,
     );
+}
+
+#[test]
+fn gpu_crop_matches_cpu_at_odd_offsets_and_rotated_edges() {
+    let width = 7;
+    let height = 5;
+    let region = CaptureRegion::new(3, 1, 4, 4).expect("edge crop is valid");
+    let bgra = (0..width * height)
+        .flat_map(|index| {
+            let value = u8::try_from(index * 7).unwrap_or(u8::MAX);
+            [value, value.wrapping_add(23), value.wrapping_add(61), 0xFF]
+        })
+        .collect::<Vec<_>>();
+    let mut pointer = pointer(PointerShapeKind::Color, vec![200, 100, 50, 192]);
+    pointer.position_x = 3;
+    pointer.position_y = 2;
+
+    for rotation in [
+        DisplayRotation::Identity,
+        DisplayRotation::Clockwise90,
+        DisplayRotation::Clockwise180,
+        DisplayRotation::Clockwise270,
+    ] {
+        let cpu = cpu_reduce_region(&bgra, width, height, 3, &pointer, rotation, region);
+        let gpu = super::gpu_reduction::reduce_region_fixture(
+            &bgra, width, height, 3, &pointer, rotation, region,
+        )
+        .expect("cropped WARP reduction succeeds");
+        assert_eq!(gpu.len(), cpu.len());
+        for (index, (gpu, cpu)) in gpu.iter().zip(&cpu).enumerate() {
+            assert!(
+                gpu.abs_diff(*cpu) <= 1,
+                "rotation {rotation:?} channel {index} differs: GPU={gpu}, CPU={cpu}"
+            );
+        }
+    }
+}
+
+#[test]
+fn capture_region_is_part_of_gpu_resource_identity() {
+    assert!(
+        super::gpu_reduction::region_changes_resource_identity_for_test()
+            .expect("resource keys are valid")
+    );
+}
+
+#[test]
+fn cropped_frame_origin_tracks_scanout_region_across_rotations() {
+    let region = CaptureRegion::new(3, 1, 4, 4).expect("edge crop is valid");
+    for (rotation, expected) in [
+        (DisplayRotation::Identity, (-7, 21)),
+        (DisplayRotation::Clockwise90, (-10, 23)),
+        (DisplayRotation::Clockwise180, (-10, 20)),
+        (DisplayRotation::Clockwise270, (-9, 20)),
+    ] {
+        let pointer = Arc::new(PointerState::default());
+        let metadata = CaptureMetadata {
+            source_id: Arc::from("synthetic"),
+            topology_generation: 1,
+            sequence: 1,
+            captured_at: Instant::now(),
+            cursor: pointer.cursor_info(7, 5, rotation),
+            pointer,
+            source_width: 7,
+            source_height: 5,
+            origin_x: -10,
+            origin_y: 20,
+            rotation,
+            region,
+        };
+
+        assert_eq!(capture_region_origin(&metadata), expected);
+    }
 }
 
 #[test]
@@ -298,6 +459,7 @@ fn retained_clean_staging_recomposes_a_moving_pointer_without_residue() {
         2,
         &pointer,
         DisplayRotation::Identity,
+        CaptureRegion::full(2, 1),
     )
     .expect("valid desktop rows are reduced");
     assert_eq!(rgba, [50, 100, 200, 255, 60, 50, 40, 255]);
@@ -314,6 +476,7 @@ fn retained_clean_staging_recomposes_a_moving_pointer_without_residue() {
         2,
         &pointer,
         DisplayRotation::Identity,
+        CaptureRegion::full(2, 1),
     )
     .expect("valid desktop rows are reduced");
     assert_eq!(rgba, [30, 20, 10, 255, 50, 100, 200, 255]);
@@ -335,6 +498,7 @@ fn bgra_rows_reject_a_pitch_narrower_than_the_pixel_width() {
         1,
         &pointer,
         DisplayRotation::Identity,
+        CaptureRegion::full(1, 1),
     );
 
     assert_eq!(dimensions, None);

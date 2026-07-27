@@ -3,11 +3,14 @@ use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use hypercolor_windows_capture::{CaptureError, DisplayRotation};
+use hypercolor_windows_capture::{
+    CaptureError, DisplayRotation, ReductionPath, ReductionTelemetry,
+};
 
 use super::{
     ActiveCaptureEpoch, CapturePublication, CaptureWorker, WindowsScreenCaptureInput,
-    WorkerCommand, capture_epoch, capture_geometry, capture_issue, settle_inactive_capture,
+    WorkerCommand, capture_epoch, capture_geometry, capture_issue, record_capture_health,
+    settle_inactive_capture,
 };
 use crate::input::screen::{
     CaptureColorSpace, CaptureConfig, CaptureCursor, CaptureDamage, CaptureFrame,
@@ -15,6 +18,56 @@ use crate::input::screen::{
     CaptureTransferFunction, CpuCaptureStorage, PhysicalOrigin, PixelExtent, RawCaptureSurface,
 };
 use crate::input::traits::InputSource;
+use crate::input::{SourceKind, SourceState, SourceStatusReporter};
+
+#[test]
+fn gpu_reduction_degradation_survives_successful_sample_recording() {
+    let mut reporter = SourceStatusReporter::new(
+        "windows_screen_capture",
+        SourceKind::Screen,
+        "dxgi_desktop_duplication",
+        true,
+        true,
+        true,
+    );
+    reporter.set_source_graph_generation(1);
+    let status = reporter
+        .begin_session()
+        .expect("status session starts")
+        .expect("configured reporter yields a writer");
+    let now = Instant::now();
+    let telemetry = ReductionTelemetry {
+        path: ReductionPath::CpuFallback,
+        gpu_completed: 7,
+        cpu_completed: 2,
+        ring_busy: 3,
+        readback_bytes: 4096,
+        gpu_failures: 1,
+        issue: Some(Arc::from("injected map failure")),
+        ..ReductionTelemetry::default()
+    };
+
+    record_capture_health(&status, now, now + Duration::from_millis(50), &telemetry);
+    record_capture_health(
+        &status,
+        now + Duration::from_millis(10),
+        now + Duration::from_millis(60),
+        &telemetry,
+    );
+
+    let snapshot = reporter.handle().snapshot();
+    assert_eq!(snapshot.state, SourceState::Degraded);
+    let issue = snapshot
+        .issue
+        .as_ref()
+        .expect("degradation remains visible");
+    assert_eq!(
+        issue.code.as_ref(),
+        "windows_capture_gpu_reduction_degraded"
+    );
+    assert!(issue.message.contains("ring_busy=3"));
+    assert!(issue.message.contains("readback_bytes=4096"));
+}
 
 fn extent(width: u32, height: u32) -> PixelExtent {
     PixelExtent::new(width, height).expect("test extent is valid")

@@ -15,11 +15,12 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::anyhow;
 use hypercolor_windows_capture::{
     CaptureError, DesktopDuplicator, DisplayRotation, Frame as NativeCaptureFrame,
+    ReductionTelemetry,
 };
 use tracing::{debug, info, warn};
 
@@ -33,7 +34,8 @@ use crate::input::screen::{
 use crate::input::traits::{InputData, InputSource};
 use crate::input::worker_retention::{retain_input_worker, spawn_input_worker};
 use crate::input::{
-    SourceIssue, SourceKind, SourceSessionSlot, SourceStatusHandle, SourceStatusReporter,
+    SourceIssue, SourceKind, SourceSessionSlot, SourceSessionWriter, SourceStatusHandle,
+    SourceStatusReporter,
 };
 
 /// Width the capture backend subsamples to before analysis.
@@ -648,7 +650,6 @@ fn run_worker(
     let mut active = false;
     let mut activity_generation = 0_u64;
     let mut open_failure_logged = false;
-    let mut sequence = 0_u64;
 
     loop {
         if cancel.load(Ordering::Acquire) {
@@ -772,6 +773,7 @@ fn run_worker(
         }
 
         let frame_result = session.next_frame(FRAME_WAIT);
+        let reduction_telemetry = session.reduction_telemetry();
         let current_epoch = if frame_result.is_ok() {
             match active_capture_epoch(
                 session,
@@ -802,17 +804,10 @@ fn run_worker(
                     duplicator = None;
                     continue;
                 };
-                let acquired_at = Instant::now();
+                let captured_at = frame.captured_at;
                 let frame_period =
                     Duration::from_secs_f64(1.0 / f64::from(config.target_fps.max(1)));
-                sequence = sequence.wrapping_add(1).max(1);
-                let raw_frame = build_capture_frame(
-                    frame,
-                    session_generation,
-                    sequence,
-                    acquired_at,
-                    frame_period,
-                );
+                let raw_frame = build_capture_frame(frame, session_generation, frame_period);
                 let snapshot = raw_frame.and_then(|frame| {
                     frame.validate_epoch(&current_epoch.epoch)?;
                     analyze_legacy_screen_frame(&mut analyzer, frame)
@@ -826,10 +821,11 @@ fn run_worker(
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .publish(&current_epoch, snapshot);
                 if published && let Some(status) = status_session.load() {
-                    let _ = status.record_sample(
-                        acquired_at,
-                        acquired_at + frame_period + frame_period,
-                        1,
+                    record_capture_health(
+                        &status,
+                        captured_at,
+                        captured_at + frame_period + frame_period,
+                        &reduction_telemetry,
                     );
                 }
             }
@@ -879,12 +875,9 @@ fn capture_epoch(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 fn build_capture_frame(
     frame: NativeCaptureFrame,
     session_generation: u64,
-    sequence: u64,
-    captured_at: Instant,
     frame_period: Duration,
 ) -> anyhow::Result<CaptureFrame<RawCaptureSurface>> {
     let source_id = capture_source_id(&frame.source_id)?;
@@ -925,9 +918,9 @@ fn build_capture_frame(
             source_id,
             topology_generation,
             session_generation,
-            sequence,
-            captured_at,
-            fresh_until: captured_at + frame_period + frame_period,
+            sequence: frame.sequence,
+            captured_at: frame.captured_at,
+            fresh_until: frame.captured_at + frame_period + frame_period,
             geometry,
             color_space: CaptureColorSpace::Unknown,
             transfer_function: CaptureTransferFunction::Unknown,
@@ -1047,6 +1040,37 @@ fn capture_issue(error: &CaptureError) -> SourceIssue {
             error.to_string(),
             true,
         ),
+    }
+}
+
+fn reduction_issue(telemetry: &ReductionTelemetry) -> Option<SourceIssue> {
+    telemetry.issue.as_ref().map(|issue| {
+        SourceIssue::new(
+            "windows_capture_gpu_reduction_degraded",
+            format!(
+                "path={:?}; {issue}; gpu_failures={}, gpu_completed={}, cpu_completed={}, ring_busy={}, readback_bytes={}",
+                telemetry.path,
+                telemetry.gpu_failures,
+                telemetry.gpu_completed,
+                telemetry.cpu_completed,
+                telemetry.ring_busy,
+                telemetry.readback_bytes,
+            ),
+            true,
+        )
+        .with_remediation("update the display driver or restart the capture session")
+    })
+}
+
+fn record_capture_health(
+    status: &SourceSessionWriter,
+    captured_at: std::time::Instant,
+    freshness_deadline: std::time::Instant,
+    telemetry: &ReductionTelemetry,
+) {
+    let _ = status.record_sample(captured_at, freshness_deadline, 1);
+    if let Some(issue) = reduction_issue(telemetry) {
+        status.degraded(issue);
     }
 }
 

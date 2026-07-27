@@ -61,38 +61,27 @@ fn percentile(samples: &mut [Duration], percentile: f64) -> Duration {
 fn report_deadlines(width: u32, height: u32) {
     let mut harness = CaptureReductionBenchmark::new(width, height, ANALYSIS_WIDTH)
         .expect("hardware D3D11 benchmark fixture opens");
-    let samples = (0..120)
-        .map(|_| harness.sample().expect("cadence sample succeeds"))
-        .collect::<Vec<_>>();
-    let mut acquisition = samples
-        .iter()
-        .map(|sample| sample.acquisition)
-        .collect::<Vec<_>>();
-    let mut analysis = samples
-        .iter()
-        .step_by(2)
-        .map(|sample| sample.gpu_reduction + sample.wait + sample.map)
-        .collect::<Vec<_>>();
-    let acquisition_misses = acquisition
-        .iter()
-        .filter(|duration| **duration > Duration::from_secs_f64(1.0 / 120.0))
-        .count();
-    let analysis_misses = analysis
-        .iter()
-        .filter(|duration| **duration > Duration::from_secs_f64(1.0 / 60.0))
-        .count();
-    let sample = samples[0];
+    let report = harness
+        .run_cadence(120)
+        .expect("real-time cadence sample succeeds");
+    let mut acquisition = report.acquisition_enqueue;
+    let mut analysis = report.analysis_latency;
     eprintln!(
-        "{width}x{height}: acquisition p50={:?} p95={:?}, analysis p50={:?} \
-         p95={:?}, acquisition_missed={acquisition_misses}/120, \
-         analysis_missed={analysis_misses}/60, source_bytes={}, \
-         readback_bytes={}",
+        "{width}x{height}: acquisition_enqueue p50={:?} p95={:?} p99={:?}, \
+         analysis_latency p50={:?} p95={:?} p99={:?}, \
+         acquisition_missed={}/120, analysis_missed={}/60, ring_busy={}, \
+         source_bytes={}, readback_bytes={}",
         percentile(&mut acquisition, 0.50),
         percentile(&mut acquisition, 0.95),
+        percentile(&mut acquisition, 0.99),
         percentile(&mut analysis, 0.50),
         percentile(&mut analysis, 0.95),
-        sample.source_bytes,
-        sample.readback_bytes,
+        percentile(&mut analysis, 0.99),
+        report.acquisition_misses,
+        report.analysis_misses,
+        report.ring_busy,
+        report.source_bytes,
+        report.readback_bytes,
     );
 }
 
@@ -107,18 +96,20 @@ fn capture_reduction(criterion: &mut Criterion) {
         let mut group = criterion.benchmark_group(format!("windows_capture/{id}"));
         group.throughput(Throughput::Bytes(probe.readback_bytes));
 
-        let mut acquisition = CaptureReductionBenchmark::new(width, height, ANALYSIS_WIDTH)
+        let mut acquisition_enqueue = CaptureReductionBenchmark::new(width, height, ANALYSIS_WIDTH)
             .expect("hardware D3D11 benchmark fixture opens");
-        group.bench_function(BenchmarkId::new("acquisition", &id), |benchmark| {
+        group.bench_function(BenchmarkId::new("acquisition_enqueue", &id), |benchmark| {
             benchmark.iter_custom(|iterations| {
-                summed_samples(&mut acquisition, iterations, |sample| sample.acquisition)
+                summed_samples(&mut acquisition_enqueue, iterations, |sample| {
+                    sample.acquisition_enqueue
+                })
             });
         });
         let mut gpu = CaptureReductionBenchmark::new(width, height, ANALYSIS_WIDTH)
             .expect("hardware D3D11 benchmark fixture opens");
-        group.bench_function(BenchmarkId::new("gpu_reduction", &id), |benchmark| {
+        group.bench_function(BenchmarkId::new("analysis_enqueue", &id), |benchmark| {
             benchmark.iter_custom(|iterations| {
-                summed_samples(&mut gpu, iterations, |sample| sample.gpu_reduction)
+                summed_samples(&mut gpu, iterations, |sample| sample.analysis_enqueue)
             });
         });
         let mut wait = CaptureReductionBenchmark::new(width, height, ANALYSIS_WIDTH)

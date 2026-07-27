@@ -16,40 +16,43 @@ cbuffer ReductionParams : register(b0)
     int PointerY;
     uint PointerWidth;
     uint PointerHeight;
+    uint RegionX;
+    uint RegionY;
+    uint RegionWidth;
+    uint RegionHeight;
 };
 
-int2 logical_to_scanout(int2 logical)
+int2 scanout_to_logical(int2 scanout)
 {
     if (Rotation == 1) {
-        return int2(logical.y, int(SourceHeight) - 1 - logical.x);
+        return int2(int(SourceHeight) - 1 - scanout.y, scanout.x);
     }
     if (Rotation == 2) {
-        return int2(int(SourceWidth) - 1 - logical.x,
-                    int(SourceHeight) - 1 - logical.y);
+        return int2(int(SourceWidth) - 1 - scanout.x,
+                    int(SourceHeight) - 1 - scanout.y);
     }
     if (Rotation == 3) {
-        return int2(int(SourceWidth) - 1 - logical.y, logical.x);
+        return int2(scanout.y, int(SourceWidth) - 1 - scanout.x);
     }
-    return logical;
+    return scanout;
 }
 
-[numthreads(8, 8, 1)]
-void composite_cursor(uint3 thread_id : SV_DispatchThreadID)
+float4 compose_cursor(uint2 scanout, float4 desktop_sample)
 {
-    if (PointerVisible == 0 || thread_id.x >= PointerWidth ||
-        thread_id.y >= PointerHeight) {
-        return;
+    if (PointerVisible == 0) {
+        return desktop_sample;
     }
 
-    int2 scanout = logical_to_scanout(
-        int2(PointerX + int(thread_id.x), PointerY + int(thread_id.y)));
-    if (scanout.x < 0 || scanout.y < 0 ||
-        scanout.x >= int(SourceWidth) || scanout.y >= int(SourceHeight)) {
-        return;
+    int2 logical = scanout_to_logical(int2(scanout));
+    int2 pointer_position = logical - int2(PointerX, PointerY);
+    if (pointer_position.x < 0 || pointer_position.y < 0 ||
+        pointer_position.x >= int(PointerWidth) ||
+        pointer_position.y >= int(PointerHeight)) {
+        return desktop_sample;
     }
 
-    uint4 desktop = uint4(round(saturate(Desktop.Load(int3(scanout, 0))) * 255.0));
-    uint4 pointer = Pointer.Load(int3(thread_id.xy, 0));
+    uint4 desktop = uint4(round(saturate(desktop_sample) * 255.0));
+    uint4 pointer = Pointer.Load(int3(pointer_position, 0));
     uint3 color;
 
     if (PointerKind == 0) {
@@ -63,7 +66,7 @@ void composite_cursor(uint3 thread_id : SV_DispatchThreadID)
         color = (desktop.rgb & and_mask) ^ xor_mask;
     }
 
-    Target[scanout] = float4(float3(color) / 255.0, 1.0);
+    return float4(float3(color) / 255.0, 1.0);
 }
 
 [numthreads(8, 8, 1)]
@@ -73,13 +76,16 @@ void reduce_desktop(uint3 thread_id : SV_DispatchThreadID)
         return;
     }
 
-    uint2 begin = thread_id.xy * Stride;
-    uint2 end = min(begin + Stride, uint2(SourceWidth, SourceHeight));
+    uint2 region_begin = uint2(RegionX, RegionY);
+    uint2 region_end = region_begin + uint2(RegionWidth, RegionHeight);
+    uint2 begin = region_begin + thread_id.xy * Stride;
+    uint2 end = min(begin + Stride, region_end);
     float3 sum = 0.0;
     uint samples = 0;
     for (uint y = begin.y; y < end.y; ++y) {
         for (uint x = begin.x; x < end.x; ++x) {
-            sum += Desktop.Load(int3(x, y, 0)).rgb;
+            float4 desktop = Desktop.Load(int3(x, y, 0));
+            sum += compose_cursor(uint2(x, y), desktop).rgb;
             ++samples;
         }
     }

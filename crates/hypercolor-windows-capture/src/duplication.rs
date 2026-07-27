@@ -27,8 +27,8 @@ use windows::Win32::Graphics::Gdi::{DISPLAY_DEVICEW, EnumDisplayDevicesW};
 use windows::core::{HRESULT, Interface, PCWSTR};
 
 use crate::shared::{
-    CaptureError, CaptureResult, CursorInfo, DisplayRotation, Frame, MonitorInfo, MonitorSelector,
-    ReductionPath, ReductionTelemetry, subsample_stride, subsampled_extent,
+    CaptureError, CaptureRegion, CaptureResult, CursorInfo, DisplayRotation, Frame, MonitorInfo,
+    MonitorSelector, ReductionPath, ReductionTelemetry, subsample_stride, subsampled_extent,
 };
 
 pub(crate) mod gpu_reduction;
@@ -52,6 +52,27 @@ struct BgraRows<'a> {
     row_pitch: usize,
     width: u32,
     height: u32,
+}
+
+#[derive(Clone)]
+struct CaptureMetadata {
+    source_id: Arc<str>,
+    topology_generation: u64,
+    sequence: u64,
+    captured_at: Instant,
+    cursor: CursorInfo,
+    pointer: Arc<PointerState>,
+    source_width: u32,
+    source_height: u32,
+    origin_x: i32,
+    origin_y: i32,
+    rotation: DisplayRotation,
+    region: CaptureRegion,
+}
+
+struct RetainedDesktop {
+    texture: ID3D11Texture2D,
+    metadata: CaptureMetadata,
 }
 
 fn reacquire_duplication<D, S, E>(
@@ -605,8 +626,8 @@ pub struct DesktopDuplicator {
     context: ID3D11DeviceContext,
     output: IDXGIOutput1,
     duplication: Option<IDXGIOutputDuplication>,
-    /// CPU-readable copy target, rebuilt when the desktop dimensions change.
-    staging: Option<(ID3D11Texture2D, u32, u32)>,
+    /// CPU-readable clean desktop paired with the acquisition that produced it.
+    staging: Option<RetainedDesktop>,
     /// RGBA allocations returned by frames after their last consumer drops.
     frame_pool: Arc<Mutex<Vec<Vec<u8>>>>,
     /// Set while a duplicated frame is held and must be released before the
@@ -619,7 +640,10 @@ pub struct DesktopDuplicator {
     origin_x: i32,
     origin_y: i32,
     rotation: DisplayRotation,
-    pointer: PointerState,
+    pointer: Arc<PointerState>,
+    region: Option<CaptureRegion>,
+    capture_sequence: u64,
+    latest_capture: Option<CaptureMetadata>,
     gpu_reducer: Option<GpuReducer>,
     reduction_telemetry: ReductionTelemetry,
     analysis_pending: bool,
@@ -706,7 +730,10 @@ impl DesktopDuplicator {
             origin_x,
             origin_y,
             rotation,
-            pointer: PointerState::default(),
+            pointer: Arc::new(PointerState::default()),
+            region: None,
+            capture_sequence: 0,
+            latest_capture: None,
             gpu_reducer,
             reduction_telemetry,
             analysis_pending: false,
@@ -750,8 +777,37 @@ impl DesktopDuplicator {
     }
 
     /// Change the subsample target for subsequent frames.
-    pub const fn set_max_width(&mut self, max_width: u32) {
+    pub fn set_max_width(&mut self, max_width: u32) {
+        if self.max_width == max_width {
+            return;
+        }
         self.max_width = max_width;
+        self.refresh_latest_capture();
+    }
+
+    /// Select a native scanout rectangle for subsequent reductions.
+    ///
+    /// Passing `None` restores full-output capture. A changed region is
+    /// re-reduced from the retained clean desktop even while the display is
+    /// static.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CaptureError::Windows`] when the region is outside the active
+    /// native scanout extent.
+    pub fn set_region(&mut self, region: Option<CaptureRegion>) -> CaptureResult<()> {
+        if region.is_some_and(|region| !region.fits_within(self.native_width, self.native_height)) {
+            return Err(CaptureError::windows(
+                "configure desktop capture region",
+                "capture region is outside the active scanout extent",
+            ));
+        }
+        if self.region == region {
+            return Ok(());
+        }
+        self.region = region;
+        self.refresh_latest_capture();
+        Ok(())
     }
 
     /// Current reduction implementation, health issue, and throughput totals.
@@ -760,14 +816,58 @@ impl DesktopDuplicator {
         self.reduction_telemetry.clone()
     }
 
+    fn effective_region(&self) -> CaptureRegion {
+        self.region
+            .unwrap_or_else(|| CaptureRegion::full(self.native_width, self.native_height))
+    }
+
+    fn new_capture_metadata(&mut self, captured_at: Instant) -> CaptureMetadata {
+        self.capture_sequence = self.capture_sequence.wrapping_add(1).max(1);
+        let cursor = self
+            .pointer
+            .cursor_info(self.native_width, self.native_height, self.rotation);
+        CaptureMetadata {
+            source_id: Arc::clone(&self.source_id),
+            topology_generation: self.topology_generation,
+            sequence: self.capture_sequence,
+            captured_at,
+            cursor,
+            pointer: Arc::clone(&self.pointer),
+            source_width: self.native_width,
+            source_height: self.native_height,
+            origin_x: self.origin_x,
+            origin_y: self.origin_y,
+            rotation: self.rotation,
+            region: self.effective_region(),
+        }
+    }
+
+    fn refresh_latest_capture(&mut self) {
+        let clean_available = self.staging.is_some()
+            || self
+                .gpu_reducer
+                .as_ref()
+                .is_some_and(GpuReducer::has_clean_desktop);
+        if !clean_available {
+            return;
+        }
+        let metadata = self.new_capture_metadata(Instant::now());
+        if let Some(staging) = self.staging.as_mut() {
+            staging.metadata = metadata.clone();
+        }
+        self.latest_capture = Some(metadata);
+        self.analysis_pending = true;
+    }
+
     fn update_pointer(&mut self, frame_info: &DXGI_OUTDUPL_FRAME_INFO) -> CaptureResult<bool> {
         if frame_info.LastMouseUpdateTime == 0 {
             return Ok(false);
         }
 
-        self.pointer.visible = frame_info.PointerPosition.Visible.as_bool();
-        self.pointer.position_x = frame_info.PointerPosition.Position.x;
-        self.pointer.position_y = frame_info.PointerPosition.Position.y;
+        let pointer = Arc::make_mut(&mut self.pointer);
+        pointer.visible = frame_info.PointerPosition.Visible.as_bool();
+        pointer.position_x = frame_info.PointerPosition.Position.x;
+        pointer.position_y = frame_info.PointerPosition.Position.y;
 
         if frame_info.PointerShapeBufferSize == 0 {
             return Ok(true);
@@ -840,8 +940,9 @@ impl DesktopDuplicator {
         shape
             .validate()
             .map_err(|message| CaptureError::windows("validate desktop pointer shape", message))?;
-        self.pointer.shape = Some(shape);
-        self.pointer.shape_generation = self.pointer.shape_generation.wrapping_add(1).max(1);
+        let pointer = Arc::make_mut(&mut self.pointer);
+        pointer.shape = Some(shape);
+        pointer.shape_generation = pointer.shape_generation.wrapping_add(1).max(1);
         Ok(true)
     }
 
@@ -859,11 +960,13 @@ impl DesktopDuplicator {
     pub fn next_frame(&mut self, timeout: Duration) -> CaptureResult<Option<Frame>> {
         self.release_frame();
 
-        let mut ready = self.poll_gpu_frame();
+        let mut ready = self.poll_gpu_frame()?;
         if self.analysis_pending && self.gpu_reducer.is_some() {
-            self.submit_gpu(None);
+            if let Some(metadata) = self.latest_capture.clone() {
+                self.submit_gpu(None, metadata)?;
+            }
             if ready.is_none() {
-                ready = self.poll_gpu_frame();
+                ready = self.poll_gpu_frame()?;
             }
         }
         if self.analysis_pending && self.gpu_reducer.is_none() {
@@ -929,6 +1032,7 @@ impl DesktopDuplicator {
             };
         }
         self.frame_held = true;
+        let captured_at = Instant::now();
 
         let (current_width, current_height, current_rotation) = duplication_geometry(
             self.duplication
@@ -973,6 +1077,8 @@ impl DesktopDuplicator {
             self.release_frame();
             return Ok(ready);
         }
+        let metadata = self.new_capture_metadata(captured_at);
+        self.latest_capture = Some(metadata.clone());
 
         let clean_available = self.staging.is_some()
             || self
@@ -999,14 +1105,16 @@ impl DesktopDuplicator {
         let mut retained = Ok(());
         if self.gpu_reducer.is_some() {
             self.analysis_pending = true;
-            self.submit_gpu(texture.as_ref());
+            self.submit_gpu(texture.as_ref(), metadata.clone())?;
             if self.gpu_reducer.is_none()
                 && let Some(texture) = texture.as_ref()
             {
-                retained = self.retain_desktop(texture);
+                retained = self.retain_desktop(texture, metadata.clone());
             }
         } else if let Some(texture) = texture.as_ref() {
-            retained = self.retain_desktop(texture);
+            retained = self.retain_desktop(texture, metadata.clone());
+        } else if let Some(staging) = self.staging.as_mut() {
+            staging.metadata = metadata;
         }
         self.release_frame();
         if matches!(retained, Err(CaptureError::AccessLost)) {
@@ -1024,16 +1132,20 @@ impl DesktopDuplicator {
             return self.cpu_frame_from_retained();
         }
         if ready.is_none() {
-            ready = self.poll_gpu_frame();
+            ready = self.poll_gpu_frame()?;
         }
         Ok(ready)
     }
 
-    fn submit_gpu(&mut self, texture: Option<&ID3D11Texture2D>) {
+    fn submit_gpu(
+        &mut self,
+        texture: Option<&ID3D11Texture2D>,
+        metadata: CaptureMetadata,
+    ) -> CaptureResult<()> {
         let Some(reducer) = self.gpu_reducer.as_mut() else {
-            return;
+            return Ok(());
         };
-        match reducer.submit(texture, self.max_width, &self.pointer, self.rotation) {
+        match reducer.submit(texture, self.max_width, metadata) {
             Ok(SubmitOutcome::Submitted) => {
                 self.reduction_telemetry.gpu_submitted =
                     self.reduction_telemetry.gpu_submitted.saturating_add(1);
@@ -1045,19 +1157,20 @@ impl DesktopDuplicator {
             }
             Err(error) => {
                 let clean = reducer.clean_desktop();
-                if texture.is_none()
-                    && let Some(clean) = clean.as_ref()
-                    && let Err(retain_error) = self.retain_desktop(clean)
-                {
-                    warn!(%retain_error, "could not preserve GPU clean desktop for fallback");
+                if let Some(clean) = clean {
+                    self.retain_desktop(&clean.texture, clean.metadata)?;
                 }
                 self.degrade_gpu(error.to_string());
+                self.analysis_pending = true;
             }
         }
+        Ok(())
     }
 
-    fn poll_gpu_frame(&mut self) -> Option<Frame> {
-        let reducer = self.gpu_reducer.as_mut()?;
+    fn poll_gpu_frame(&mut self) -> CaptureResult<Option<Frame>> {
+        let Some(reducer) = self.gpu_reducer.as_mut() else {
+            return Ok(None);
+        };
         let mut rgba = self
             .frame_pool
             .lock()
@@ -1073,22 +1186,23 @@ impl DesktopDuplicator {
                     .reduction_telemetry
                     .readback_bytes
                     .saturating_add(reduced.bytes as u64);
-                Some(self.frame_from_reduction(reduced, rgba))
+                Ok(Some(self.frame_from_reduction(reduced, rgba)))
             }
             Ok(None) => {
                 self.recycle_plane(rgba);
-                None
+                Ok(None)
             }
             Err(error) => {
                 let clean = reducer.clean_desktop();
                 self.recycle_plane(rgba);
-                if let Some(clean) = clean.as_ref()
-                    && let Err(retain_error) = self.retain_desktop(clean)
-                {
-                    warn!(%retain_error, "could not preserve GPU clean desktop for fallback");
+                if let Some(clean) = clean {
+                    self.retain_desktop(&clean.texture, clean.metadata)?;
                 }
                 self.degrade_gpu(error.to_string());
-                None
+                self.analysis_pending = true;
+                let frame = self.cpu_frame_from_retained()?;
+                self.analysis_pending = false;
+                Ok(frame)
             }
         }
     }
@@ -1100,42 +1214,43 @@ impl DesktopDuplicator {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .pop()
             .unwrap_or_default();
-        let Some((width, height, native_width, native_height)) = self.read_back(None, &mut rgba)?
-        else {
+        let Some((width, height, metadata)) = self.read_back(&mut rgba)? else {
             self.recycle_plane(rgba);
             return Ok(None);
         };
         self.reduction_telemetry.cpu_completed =
             self.reduction_telemetry.cpu_completed.saturating_add(1);
-        Ok(Some(Frame::new(
-            Arc::clone(&self.source_id),
-            self.topology_generation,
-            self.pointer
-                .cursor_info(native_width, native_height, self.rotation),
-            width,
-            height,
-            native_width,
-            native_height,
-            self.origin_x,
-            self.origin_y,
-            self.rotation,
-            rgba,
-            Arc::clone(&self.frame_pool),
-        )))
+        Ok(Some(
+            self.frame_from_metadata(metadata, width, height, rgba),
+        ))
     }
 
     fn frame_from_reduction(&self, reduced: ReducedFrame, rgba: Vec<u8>) -> Frame {
+        self.frame_from_metadata(reduced.metadata, reduced.width, reduced.height, rgba)
+    }
+
+    fn frame_from_metadata(
+        &self,
+        metadata: CaptureMetadata,
+        width: u32,
+        height: u32,
+        rgba: Vec<u8>,
+    ) -> Frame {
+        let (origin_x, origin_y) = capture_region_origin(&metadata);
+        let cursor = region_cursor(metadata.cursor, metadata.region);
         Frame::new(
-            Arc::clone(&self.source_id),
-            self.topology_generation,
-            reduced.cursor,
-            reduced.width,
-            reduced.height,
-            reduced.native_width,
-            reduced.native_height,
-            self.origin_x,
-            self.origin_y,
-            self.rotation,
+            metadata.source_id,
+            metadata.topology_generation,
+            metadata.sequence,
+            metadata.captured_at,
+            cursor,
+            width,
+            height,
+            metadata.region.width(),
+            metadata.region.height(),
+            origin_x,
+            origin_y,
+            metadata.rotation,
             rgba,
             Arc::clone(&self.frame_pool),
         )
@@ -1150,45 +1265,68 @@ impl DesktopDuplicator {
     }
 
     fn degrade_gpu(&mut self, issue: String) {
-        warn!(%issue, "GPU capture reduction unavailable; using CPU fallback");
         self.gpu_reducer = None;
         self.reduction_telemetry.path = ReductionPath::CpuFallback;
         self.reduction_telemetry.gpu_failures =
             self.reduction_telemetry.gpu_failures.saturating_add(1);
-        self.reduction_telemetry.issue = Some(issue);
+        self.reduction_telemetry.issue = Some(issue.into());
+        warn!(
+            reduction_path = ?self.reduction_telemetry.path,
+            gpu_submitted = self.reduction_telemetry.gpu_submitted,
+            gpu_completed = self.reduction_telemetry.gpu_completed,
+            cpu_completed = self.reduction_telemetry.cpu_completed,
+            ring_busy = self.reduction_telemetry.ring_busy,
+            readback_bytes = self.reduction_telemetry.readback_bytes,
+            gpu_failures = self.reduction_telemetry.gpu_failures,
+            issue = %self.reduction_telemetry.issue.as_deref().unwrap_or("unknown"),
+            "GPU capture reduction unavailable; using CPU fallback"
+        );
     }
 
-    fn retain_desktop(&mut self, texture: &ID3D11Texture2D) -> CaptureResult<()> {
+    fn retain_desktop(
+        &mut self,
+        texture: &ID3D11Texture2D,
+        metadata: CaptureMetadata,
+    ) -> CaptureResult<()> {
         let mut desc = D3D11_TEXTURE2D_DESC::default();
         // SAFETY: GetDesc fills a caller-owned struct and cannot fail.
         unsafe { texture.GetDesc(&mut desc) };
-        let staging = self.ensure_staging(&desc)?;
+        let staging = if let Some(retained) = self.staging.as_ref() {
+            let mut retained_desc = D3D11_TEXTURE2D_DESC::default();
+            // SAFETY: GetDesc fills a caller-owned struct and cannot fail.
+            unsafe { retained.texture.GetDesc(&mut retained_desc) };
+            if retained_desc.Width == desc.Width
+                && retained_desc.Height == desc.Height
+                && retained_desc.Format == desc.Format
+            {
+                retained.texture.clone()
+            } else {
+                create_staging_texture(&self.device, &desc)?
+            }
+        } else {
+            create_staging_texture(&self.device, &desc)?
+        };
         // SAFETY: both textures are same-desc 2D textures on this device.
         unsafe { self.context.CopyResource(&staging, texture) };
+        self.staging = Some(RetainedDesktop {
+            texture: staging,
+            metadata,
+        });
         Ok(())
     }
 
-    /// Copy the duplicated texture into staging, then subsample into `rgba`.
+    /// Map the retained clean desktop, then subsample its configured region.
     fn read_back(
         &mut self,
-        texture: Option<&ID3D11Texture2D>,
         rgba: &mut Vec<u8>,
-    ) -> CaptureResult<Option<(u32, u32, u32, u32)>> {
-        let (staging, native_width, native_height) = if let Some(texture) = texture {
-            let mut desc = D3D11_TEXTURE2D_DESC::default();
-            // SAFETY: GetDesc fills a caller-owned struct and cannot fail.
-            unsafe { texture.GetDesc(&mut desc) };
-            let staging = self.ensure_staging(&desc)?;
-            // SAFETY: both textures are same-desc 2D textures on this device;
-            // CopyResource is the documented duplication readback path.
-            unsafe { self.context.CopyResource(&staging, texture) };
-            (staging, desc.Width, desc.Height)
-        } else {
-            let Some((staging, width, height)) = self.staging.as_ref() else {
-                return Ok(None);
-            };
-            (staging.clone(), *width, *height)
+    ) -> CaptureResult<Option<(u32, u32, CaptureMetadata)>> {
+        let Some(retained) = self.staging.as_ref() else {
+            return Ok(None);
         };
+        let staging = retained.texture.clone();
+        let metadata = retained.metadata.clone();
+        let native_width = metadata.source_width;
+        let native_height = metadata.source_height;
 
         let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
         // SAFETY: staging was created USAGE_STAGING | CPU_ACCESS_READ, so
@@ -1213,8 +1351,9 @@ impl DesktopDuplicator {
             },
             rgba,
             self.max_width,
-            &self.pointer,
-            self.rotation,
+            &metadata.pointer,
+            metadata.rotation,
+            metadata.region,
         );
 
         // SAFETY: pairs with the Map above on the same subresource.
@@ -1224,7 +1363,7 @@ impl DesktopDuplicator {
             return Ok(None);
         };
 
-        Ok(Some((width, height, native_width, native_height)))
+        Ok(Some((width, height, metadata)))
     }
 
     /// Box-filter BGRA staging rows into the packed RGBA output buffer.
@@ -1243,6 +1382,7 @@ impl DesktopDuplicator {
         max_width: u32,
         pointer: &PointerState,
         rotation: DisplayRotation,
+        region: CaptureRegion,
     ) -> Option<(u32, u32)> {
         let BgraRows {
             bytes: source,
@@ -1255,9 +1395,12 @@ impl DesktopDuplicator {
         if row_pitch < minimum_row_bytes || source_len.is_none_or(|len| source.len() < len) {
             return None;
         }
-        let stride = subsample_stride(width, max_width);
-        let out_width = subsampled_extent(width, stride);
-        let out_height = subsampled_extent(height, stride);
+        if !region.fits_within(width, height) {
+            return None;
+        }
+        let stride = subsample_stride(region.width(), max_width);
+        let out_width = subsampled_extent(region.width(), stride);
+        let out_height = subsampled_extent(region.height(), stride);
         rgba.resize(
             out_width as usize * out_height as usize * BYTES_PER_PIXEL,
             0,
@@ -1271,12 +1414,12 @@ impl DesktopDuplicator {
             let dst_row_start = out_y * out_width as usize * BYTES_PER_PIXEL;
             // Blocks on the right and bottom edges are clipped when the
             // desktop does not divide evenly by the stride.
-            let src_y0 = out_y * stride;
-            let src_y1 = (src_y0 + stride).min(height);
+            let src_y0 = region.origin_y() as usize + out_y * stride;
+            let src_y1 = (src_y0 + stride).min((region.origin_y() + region.height()) as usize);
 
             for out_x in 0..out_width as usize {
-                let src_x0 = out_x * stride;
-                let src_x1 = (src_x0 + stride).min(width);
+                let src_x0 = region.origin_x() as usize + out_x * stride;
+                let src_x1 = (src_x0 + stride).min((region.origin_x() + region.width()) as usize);
 
                 let mut blue = 0_u64;
                 let mut green = 0_u64;
@@ -1319,57 +1462,6 @@ impl DesktopDuplicator {
         Some((out_width, out_height))
     }
 
-    /// Return a staging texture matching `desc`, rebuilding on size change.
-    ///
-    /// Hands back a clone rather than a borrow: COM interfaces are refcounted
-    /// so the clone is an AddRef, and it frees `self` for the copy and map
-    /// calls that immediately follow.
-    fn ensure_staging(&mut self, desc: &D3D11_TEXTURE2D_DESC) -> CaptureResult<ID3D11Texture2D> {
-        let matches = self
-            .staging
-            .as_ref()
-            .is_some_and(|(_, width, height)| *width == desc.Width && *height == desc.Height);
-
-        if !matches {
-            let staging_desc = D3D11_TEXTURE2D_DESC {
-                Usage: D3D11_USAGE_STAGING,
-                BindFlags: 0,
-                CPUAccessFlags: u32::try_from(D3D11_CPU_ACCESS_READ.0).unwrap_or_default(),
-                MiscFlags: 0,
-                ..*desc
-            };
-
-            let mut texture: Option<ID3D11Texture2D> = None;
-            // SAFETY: staging_desc is a valid staging description and the
-            // out-param outlives the call.
-            unsafe {
-                self.device
-                    .CreateTexture2D(&staging_desc, None, Some(&mut texture))
-            }
-            .map_err(|source| classify_windows_error("create staging texture", source))?;
-
-            let texture = texture.ok_or_else(|| {
-                CaptureError::windows(
-                    "create staging texture",
-                    "CreateTexture2D returned no texture",
-                )
-            })?;
-            self.staging = Some((texture, desc.Width, desc.Height));
-            self.native_width = desc.Width;
-            self.native_height = desc.Height;
-        }
-
-        self.staging
-            .as_ref()
-            .map(|(texture, _, _)| texture.clone())
-            .ok_or_else(|| {
-                CaptureError::windows(
-                    "resolve staging texture",
-                    "staging texture missing after creation",
-                )
-            })
-    }
-
     /// Drop the duplication interface and open a fresh one.
     fn rebuild(&mut self) -> CaptureResult<()> {
         self.release_frame();
@@ -1396,7 +1488,7 @@ impl DesktopDuplicator {
         let (origin_x, origin_y) = output_origin(&output)?;
 
         self.release_frame();
-        self.pointer = PointerState::default();
+        self.pointer = Arc::new(PointerState::default());
         reacquire_duplication(&mut self.duplication, &mut self.staging, || {
             duplicate_output(&output, &device)
         })?;
@@ -1407,6 +1499,12 @@ impl DesktopDuplicator {
         let (logical_width, logical_height, rotation) = duplication_geometry(duplication);
         let (native_width, native_height) =
             native_scanout_extent(logical_width, logical_height, rotation);
+        if self
+            .region
+            .is_some_and(|region| !region.fits_within(native_width, native_height))
+        {
+            self.region = None;
+        }
         let (gpu_reducer, reduction_status) = initialize_gpu_reduction(&device, &context);
 
         self.device = device;
@@ -1425,6 +1523,7 @@ impl DesktopDuplicator {
         self.origin_x = origin_x;
         self.origin_y = origin_y;
         self.rotation = rotation;
+        self.latest_capture = None;
         self.gpu_reducer = gpu_reducer;
         self.analysis_pending = false;
         self.reduction_telemetry.path = reduction_status.path;
@@ -1454,8 +1553,69 @@ impl DesktopDuplicator {
     }
 }
 
+fn create_staging_texture(
+    device: &ID3D11Device,
+    desc: &D3D11_TEXTURE2D_DESC,
+) -> CaptureResult<ID3D11Texture2D> {
+    let staging_desc = D3D11_TEXTURE2D_DESC {
+        Usage: D3D11_USAGE_STAGING,
+        BindFlags: 0,
+        CPUAccessFlags: u32::try_from(D3D11_CPU_ACCESS_READ.0).unwrap_or_default(),
+        MiscFlags: 0,
+        ..*desc
+    };
+    let mut texture = None;
+    // SAFETY: staging_desc is valid and the caller-owned out-param is live.
+    unsafe { device.CreateTexture2D(&staging_desc, None, Some(&mut texture)) }
+        .map_err(|source| classify_windows_error("create staging texture", source))?;
+    texture.ok_or_else(|| {
+        CaptureError::windows(
+            "create staging texture",
+            "CreateTexture2D returned no texture",
+        )
+    })
+}
+
 fn average_channel(sum: u64, samples: u64) -> u8 {
     (sum / samples.max(1)) as u8
+}
+
+fn capture_region_origin(metadata: &CaptureMetadata) -> (i32, i32) {
+    let region = metadata.region;
+    let x = i64::from(region.origin_x());
+    let y = i64::from(region.origin_y());
+    let right = x + i64::from(region.width());
+    let bottom = y + i64::from(region.height());
+    let source_width = i64::from(metadata.source_width);
+    let source_height = i64::from(metadata.source_height);
+    let (logical_x, logical_y) = match metadata.rotation {
+        DisplayRotation::Identity => (x, y),
+        DisplayRotation::Clockwise90 => (source_height - bottom, x),
+        DisplayRotation::Clockwise180 => (source_width - right, source_height - bottom),
+        DisplayRotation::Clockwise270 => (y, source_width - right),
+    };
+    (
+        saturating_i32(i64::from(metadata.origin_x) + logical_x),
+        saturating_i32(i64::from(metadata.origin_y) + logical_y),
+    )
+}
+
+fn region_cursor(mut cursor: CursorInfo, region: CaptureRegion) -> CursorInfo {
+    cursor.position_x = cursor
+        .position_x
+        .saturating_sub(i32::try_from(region.origin_x()).unwrap_or(i32::MAX));
+    cursor.position_y = cursor
+        .position_y
+        .saturating_sub(i32::try_from(region.origin_y()).unwrap_or(i32::MAX));
+    cursor
+}
+
+fn saturating_i32(value: i64) -> i32 {
+    value.try_into().unwrap_or(if value.is_negative() {
+        i32::MIN
+    } else {
+        i32::MAX
+    })
 }
 
 fn initialize_gpu_reduction(
@@ -1472,7 +1632,12 @@ fn initialize_gpu_reduction(
         ),
         Err(error) => {
             let issue = error.to_string();
-            warn!(%issue, "GPU capture reduction unavailable; using CPU fallback");
+            warn!(
+                reduction_path = ?ReductionPath::CpuFallback,
+                gpu_failures = 1,
+                %issue,
+                "GPU capture reduction unavailable; using CPU fallback"
+            );
             (None, fallback_reduction_telemetry(issue))
         }
     }
@@ -1481,7 +1646,7 @@ fn initialize_gpu_reduction(
 fn fallback_reduction_telemetry(issue: String) -> ReductionTelemetry {
     ReductionTelemetry {
         gpu_failures: 1,
-        issue: Some(issue),
+        issue: Some(issue.into()),
         ..ReductionTelemetry::default()
     }
 }

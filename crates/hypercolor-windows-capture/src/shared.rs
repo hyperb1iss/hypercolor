@@ -1,6 +1,7 @@
 //! Platform-neutral surface: errors, frame view, and the subsample math.
 
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use thiserror::Error;
 
@@ -35,7 +36,7 @@ pub struct ReductionTelemetry {
     /// GPU initialization or execution failures that selected fallback.
     pub gpu_failures: u64,
     /// Degraded-path reason, absent while GPU reduction is healthy.
-    pub issue: Option<String>,
+    pub issue: Option<Arc<str>>,
 }
 
 /// Screen capture failures.
@@ -129,6 +130,74 @@ pub enum DisplayRotation {
     Clockwise270,
 }
 
+/// Native scanout rectangle selected for capture reduction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CaptureRegion {
+    origin_x: u32,
+    origin_y: u32,
+    width: u32,
+    height: u32,
+}
+
+impl CaptureRegion {
+    /// Construct a non-empty native scanout rectangle.
+    #[must_use]
+    pub const fn new(origin_x: u32, origin_y: u32, width: u32, height: u32) -> Option<Self> {
+        if width == 0 || height == 0 {
+            return None;
+        }
+        Some(Self {
+            origin_x,
+            origin_y,
+            width,
+            height,
+        })
+    }
+
+    pub(crate) const fn full(width: u32, height: u32) -> Self {
+        Self {
+            origin_x: 0,
+            origin_y: 0,
+            width,
+            height,
+        }
+    }
+
+    /// Horizontal origin in native scanout coordinates.
+    #[must_use]
+    pub const fn origin_x(self) -> u32 {
+        self.origin_x
+    }
+
+    /// Vertical origin in native scanout coordinates.
+    #[must_use]
+    pub const fn origin_y(self) -> u32 {
+        self.origin_y
+    }
+
+    /// Selected width in native scanout pixels.
+    #[must_use]
+    pub const fn width(self) -> u32 {
+        self.width
+    }
+
+    /// Selected height in native scanout pixels.
+    #[must_use]
+    pub const fn height(self) -> u32 {
+        self.height
+    }
+
+    pub(crate) fn fits_within(self, width: u32, height: u32) -> bool {
+        self.origin_x
+            .checked_add(self.width)
+            .is_some_and(|right| right <= width)
+            && self
+                .origin_y
+                .checked_add(self.height)
+                .is_some_and(|bottom| bottom <= height)
+    }
+}
+
 /// Cursor metadata associated with an already-composited frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CursorInfo {
@@ -164,6 +233,10 @@ pub struct Frame {
     pub source_id: Arc<str>,
     /// Attached-output topology generation at acquisition.
     pub topology_generation: u64,
+    /// Monotonic capture sequence assigned when Desktop Duplication acquires the state.
+    pub sequence: u64,
+    /// Time Desktop Duplication acquired the state, before asynchronous reduction.
+    pub captured_at: Instant,
     /// Cursor state represented by this frame.
     pub cursor: CursorInfo,
     /// Frame width in pixels, after subsampling.
@@ -191,6 +264,8 @@ impl Frame {
     pub(crate) fn new(
         source_id: Arc<str>,
         topology_generation: u64,
+        sequence: u64,
+        captured_at: Instant,
         cursor: CursorInfo,
         width: u32,
         height: u32,
@@ -205,6 +280,8 @@ impl Frame {
         Self {
             source_id,
             topology_generation,
+            sequence,
+            captured_at,
             cursor,
             width,
             height,
@@ -390,4 +467,34 @@ pub const fn subsampled_extent(source: u32, stride: u32) -> u32 {
         return source;
     }
     source.div_ceil(stride)
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_frame_owns_acquisition_sequence_and_time() {
+        let captured_at = Instant::now();
+        let pool = Arc::new(Mutex::new(Vec::new()));
+        let frame = Frame::new(
+            Arc::from("display:test"),
+            3,
+            41,
+            captured_at,
+            CursorInfo::default(),
+            1,
+            1,
+            1,
+            1,
+            0,
+            0,
+            DisplayRotation::Identity,
+            vec![1, 2, 3, 0xFF],
+            pool,
+        );
+
+        assert_eq!(frame.sequence, 41);
+        assert_eq!(frame.captured_at, captured_at);
+    }
 }
