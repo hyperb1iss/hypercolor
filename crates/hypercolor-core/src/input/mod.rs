@@ -15,6 +15,7 @@ pub mod media;
 pub mod net;
 pub mod screen;
 pub mod sensor;
+mod status;
 mod traits;
 pub mod windows;
 
@@ -26,6 +27,11 @@ pub use interaction::InteractionInput;
 pub use media::MediaSource;
 pub use net::NetSource;
 pub use sensor::SensorPoller;
+pub use status::{
+    SourceFreshness, SourceIssue, SourceKind, SourceSessionWriter, SourceState, SourceStatus,
+    SourceStatusError, SourceStatusHandle, SourceStatusSubscription, SourceStatusWriter,
+    SourceTimestampField,
+};
 pub use traits::{
     InputData, InputSource, InteractionBatch, InteractionData, InteractionDegradation,
     InteractionDiagnostics, KeyboardData, MotionAggregate, MouseData, PointerMode, ScreenData,

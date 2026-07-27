@@ -5,14 +5,16 @@ use hypercolor_core::input::SensorPoller;
 use hypercolor_core::input::screen::CaptureConfig as ScreenCaptureConfig;
 #[cfg(target_os = "linux")]
 use hypercolor_core::input::screen::{CaptureConfig, WaylandScreenCaptureInput};
-use hypercolor_core::input::{InputData, InputManager, InputSource, ScreenData};
+use hypercolor_core::input::{
+    InputData, InputManager, InputSource, ScreenData, SourceFreshness, SourceIssue, SourceKind,
+    SourceState, SourceStatusError, SourceStatusWriter, SourceTimestampField,
+};
 use hypercolor_core::types::audio::{AudioData, AudioPipelineConfig, AudioSourceType};
 use hypercolor_core::types::event::{InputButtonState, InputEvent, TimedInputEvent, ZoneColors};
 #[cfg(target_os = "linux")]
 use std::fs;
 use std::sync::{Arc, Mutex};
-#[cfg(target_os = "linux")]
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 // ── Mock Sources ───────────────────────────────────────────────────────────
 
@@ -1256,4 +1258,969 @@ fn merging_preserves_recent_key_order_and_unions_held_state() {
         first.mouse.buttons,
         vec!["left".to_owned(), "right".to_owned()]
     );
+}
+
+fn test_status_writer() -> (
+    SourceStatusWriter,
+    hypercolor_core::input::SourceStatusHandle,
+) {
+    SourceStatusWriter::new("test-screen", SourceKind::Screen, "test", true, true, true)
+}
+
+fn test_issue(code: &'static str) -> SourceIssue {
+    SourceIssue::new(code, "test issue", true).with_remediation("retry the test source")
+}
+
+async fn align_tokio_to_source_clock(
+    session: &hypercolor_core::input::SourceSessionWriter,
+) -> Instant {
+    let runtime_now = tokio::time::Instant::now().into_std();
+    if let Some(delta) = session
+        .earliest_encodable_timestamp()
+        .checked_duration_since(runtime_now)
+    {
+        tokio::time::advance(delta).await;
+    }
+    tokio::time::Instant::now().into_std()
+}
+
+#[test]
+fn source_status_covers_stop_start_failure_and_restart_lifecycle() {
+    let (writer, handle) = test_status_writer();
+    let initial = handle.snapshot();
+    assert_eq!(initial.state, SourceState::Stopped);
+    assert_eq!(initial.source_graph_generation, 0);
+    assert_eq!(initial.session_generation, 0);
+
+    let session = writer
+        .begin_session(7)
+        .expect("eligible source session should start");
+    assert_eq!(session.session_generation(), 1);
+    assert_eq!(handle.snapshot().state, SourceState::Starting);
+
+    let sampled_at = Instant::now();
+    let deadline = sampled_at + Duration::from_secs(1);
+    assert_eq!(session.record_sample(sampled_at, deadline, 2), Ok(true));
+    let live = handle.snapshot_at(sampled_at);
+    assert_eq!(live.state, SourceState::Live);
+    assert_eq!(live.freshness, SourceFreshness::Fresh);
+
+    assert!(session.degraded(test_issue("degraded")));
+    let stale_degraded = handle.snapshot_at(deadline);
+    assert_eq!(stale_degraded.state, SourceState::Degraded);
+    assert_eq!(stale_degraded.freshness, SourceFreshness::Stale);
+    assert_eq!(
+        stale_degraded
+            .issue
+            .as_ref()
+            .map(|issue| issue.code.as_ref()),
+        Some("degraded")
+    );
+    assert_eq!(
+        stale_degraded
+            .freshness_issue
+            .as_ref()
+            .map(|issue| issue.code.as_ref()),
+        Some("stale_data")
+    );
+    assert!(session.unavailable(test_issue("unavailable")));
+    assert_eq!(handle.snapshot().state, SourceState::Unavailable);
+    assert!(session.failed(test_issue("failed")));
+    let failed = handle.snapshot_at(sampled_at);
+    assert_eq!(failed.state, SourceState::Failed);
+    assert_eq!(failed.freshness, SourceFreshness::Fresh);
+    assert_eq!(failed.resource_count, 0);
+    assert_eq!(failed.last_sample_at, Some(sampled_at));
+    let expired_failed = handle.snapshot_at(deadline);
+    assert_eq!(expired_failed.state, SourceState::Failed);
+    assert_eq!(expired_failed.freshness, SourceFreshness::Stale);
+    assert_eq!(
+        session.record_sample(Instant::now(), deadline, 1),
+        Ok(false)
+    );
+    assert!(!session.degraded(test_issue("late_degraded")));
+
+    writer.stop();
+    let stopped = handle.snapshot();
+    assert_eq!(stopped.state, SourceState::Stopped);
+    assert_eq!(stopped.resource_count, 0);
+    assert!(stopped.issue.is_none());
+
+    let restarted = writer
+        .begin_session(8)
+        .expect("stopped eligible source should restart");
+    assert_eq!(restarted.session_generation(), 2);
+    let status = handle.snapshot();
+    assert_eq!(status.state, SourceState::Starting);
+    assert_eq!(status.session_generation, 2);
+    assert_eq!(status.source_graph_generation, 8);
+}
+
+#[test]
+fn source_status_expires_live_data_exactly_at_its_deadline() {
+    let (writer, handle) = test_status_writer();
+    let session = writer
+        .begin_session(1)
+        .expect("eligible source session should start");
+    let sampled_at = Instant::now();
+    let deadline = sampled_at + Duration::from_secs(1);
+    assert_eq!(session.record_sample(sampled_at, deadline, 1), Ok(true));
+
+    let just_before_deadline = deadline
+        .checked_sub(Duration::from_nanos(1))
+        .expect("freshness deadline follows the sample time");
+    assert_eq!(
+        handle.snapshot_at(just_before_deadline).freshness,
+        SourceFreshness::Fresh
+    );
+    let expired = handle.snapshot_at(deadline);
+    assert_eq!(expired.state, SourceState::Live);
+    assert_eq!(expired.freshness, SourceFreshness::Stale);
+    assert_eq!(
+        expired
+            .freshness_issue
+            .as_ref()
+            .map(|issue| issue.code.as_ref()),
+        Some("stale_data")
+    );
+    assert!(expired.issue.is_none());
+}
+
+#[test]
+fn nonproducing_health_never_invents_sample_freshness_or_resources() {
+    let (writer, handle) = test_status_writer();
+    let unavailable_session = writer
+        .begin_session(1)
+        .expect("source session should start");
+    assert!(unavailable_session.unavailable(test_issue("not_present")));
+    let unavailable = handle.snapshot();
+    assert_eq!(unavailable.state, SourceState::Unavailable);
+    assert_eq!(unavailable.freshness, SourceFreshness::NotApplicable);
+    assert!(unavailable.last_sample_at.is_none());
+    assert!(unavailable.freshness_deadline.is_none());
+    assert_eq!(unavailable.resource_count, 0);
+
+    writer.stop();
+    let failed_session = writer
+        .begin_session(2)
+        .expect("newer source session should start");
+    assert!(failed_session.failed(test_issue("startup_failed")));
+    let failed = handle.snapshot();
+    assert_eq!(failed.state, SourceState::Failed);
+    assert_eq!(failed.freshness, SourceFreshness::NotApplicable);
+    assert!(failed.last_sample_at.is_none());
+    assert!(failed.freshness_deadline.is_none());
+    assert_eq!(failed.resource_count, 0);
+}
+
+#[test]
+fn stale_source_sessions_cannot_overwrite_successors_or_stops_under_race() {
+    let (writer, handle) = test_status_writer();
+    let stale = writer
+        .begin_session(1)
+        .expect("eligible source session should start");
+    let stale_worker_writer = stale.clone();
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let stale_worker = std::thread::spawn(move || {
+        ready_tx.send(()).expect("root still waits for readiness");
+        release_rx.recv().expect("root releases stale publisher");
+        let sampled_at = Instant::now();
+        stale_worker_writer.record_sample(sampled_at, sampled_at + Duration::from_secs(1), 1)
+    });
+
+    ready_rx
+        .recv()
+        .expect("stale publisher announces readiness");
+    let successor = writer
+        .begin_session(2)
+        .expect("successor session should start");
+    release_tx
+        .send(())
+        .expect("stale publisher still waits for release");
+    assert_eq!(
+        stale_worker
+            .join()
+            .expect("stale publisher thread panicked"),
+        Ok(false)
+    );
+    let status = handle.snapshot();
+    assert_eq!(status.state, SourceState::Starting);
+    assert_eq!(status.session_generation, successor.session_generation());
+    let sampled_at = Instant::now();
+    assert_eq!(
+        stale.record_sample(sampled_at, sampled_at + Duration::from_secs(1), 1),
+        Ok(false)
+    );
+    assert_eq!(stale.record_sample(sampled_at, sampled_at, 1), Ok(false));
+
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let successor_worker = std::thread::spawn(move || {
+        ready_tx.send(()).expect("root still waits for readiness");
+        release_rx
+            .recv()
+            .expect("root releases successor publisher");
+        let sampled_at = Instant::now();
+        successor.record_sample(sampled_at, sampled_at + Duration::from_secs(1), 1)
+    });
+    ready_rx
+        .recv()
+        .expect("successor publisher announces readiness");
+    writer.stop();
+    release_tx
+        .send(())
+        .expect("successor publisher still waits for release");
+    assert_eq!(
+        successor_worker
+            .join()
+            .expect("successor publisher thread panicked"),
+        Ok(false)
+    );
+    assert_eq!(handle.snapshot().state, SourceState::Stopped);
+}
+
+#[test]
+fn removing_source_demand_clears_runtime_state_and_fences_the_session() {
+    let (writer, handle) = test_status_writer();
+    let session = writer
+        .begin_session(1)
+        .expect("eligible source session should start");
+    let sampled_at = Instant::now();
+    let deadline = sampled_at + Duration::from_secs(1);
+    assert_eq!(session.record_sample(sampled_at, deadline, 3), Ok(true));
+    assert!(session.degraded(test_issue("backend_slow")));
+
+    writer
+        .set_policy(true, true, false)
+        .expect("active source policy should update");
+    let stopped = handle.snapshot();
+    assert!(!stopped.demanded);
+    assert_eq!(stopped.state, SourceState::Stopped);
+    assert!(stopped.last_sample_at.is_none());
+    assert!(stopped.freshness_deadline.is_none());
+    assert_eq!(stopped.resource_count, 0);
+    assert!(stopped.issue.is_none());
+    assert!(stopped.freshness_issue.is_none());
+    let sampled_at = Instant::now();
+    assert_eq!(
+        session.record_sample(sampled_at, sampled_at + Duration::from_secs(1), 1),
+        Ok(false)
+    );
+}
+
+#[test]
+fn configuration_and_consent_revocation_stop_and_fence_sessions() {
+    let (writer, handle) = SourceStatusWriter::new(
+        "policy-source",
+        SourceKind::Interaction,
+        "test",
+        false,
+        true,
+        true,
+    );
+    assert!(matches!(
+        writer.begin_session(1),
+        Err(SourceStatusError::Ineligible {
+            configured: false,
+            consented: true,
+            demanded: true,
+        })
+    ));
+
+    writer
+        .set_policy(true, true, true)
+        .expect("non-retired source policy should update");
+    let configured_session = writer
+        .begin_session(1)
+        .expect("eligible source session should start");
+    let sampled_at = Instant::now();
+    assert_eq!(
+        configured_session.record_sample(sampled_at, sampled_at + Duration::from_secs(1), 1),
+        Ok(true)
+    );
+    writer
+        .set_policy(false, true, true)
+        .expect("configuration revocation should publish");
+    let stopped = handle.snapshot();
+    assert_eq!(stopped.state, SourceState::Stopped);
+    assert_eq!(stopped.freshness, SourceFreshness::NotApplicable);
+    assert_eq!(stopped.resource_count, 0);
+    assert!(stopped.last_sample_at.is_none());
+    assert!(stopped.issue.is_none());
+    assert!(!configured_session.degraded(test_issue("late")));
+
+    writer
+        .set_policy(true, true, true)
+        .expect("configuration restore should publish");
+    let consented_session = writer
+        .begin_session(2)
+        .expect("restored source session should start");
+    writer
+        .set_policy(true, false, true)
+        .expect("consent revocation should publish");
+    assert_eq!(handle.snapshot().state, SourceState::Stopped);
+    assert!(!consented_session.unavailable(test_issue("late")));
+    assert!(matches!(
+        writer.begin_session(3),
+        Err(SourceStatusError::Ineligible {
+            configured: true,
+            consented: false,
+            demanded: true,
+        })
+    ));
+}
+
+#[test]
+fn source_graph_generation_never_regresses_across_restarts() {
+    let (writer, handle) = test_status_writer();
+    let first = writer
+        .begin_session(5)
+        .expect("initial graph generation should stamp");
+    assert_eq!(handle.snapshot().source_graph_generation, 5);
+    writer.stop();
+    assert!(matches!(
+        writer.begin_session(4),
+        Err(SourceStatusError::GraphGenerationNotAdvanced {
+            current: 5,
+            requested: 4,
+        })
+    ));
+    assert!(matches!(
+        writer.begin_session(5),
+        Err(SourceStatusError::GraphGenerationNotAdvanced {
+            current: 5,
+            requested: 5,
+        })
+    ));
+    let newer = writer
+        .begin_session(6)
+        .expect("newer graph generation should stamp");
+    assert!(newer.session_generation() > first.session_generation());
+    assert_eq!(handle.snapshot().source_graph_generation, 6);
+}
+
+#[test]
+fn event_driven_live_state_has_no_sample_freshness_contract() {
+    let (writer, handle) = test_status_writer();
+    let session = writer
+        .begin_session(1)
+        .expect("eligible event source should start");
+    assert!(session.mark_event_driven_live_without_deadline(1));
+    let status = handle.snapshot();
+    assert_eq!(status.state, SourceState::Live);
+    assert_eq!(status.freshness, SourceFreshness::NotApplicable);
+    assert!(status.last_sample_at.is_none());
+    assert!(status.freshness_deadline.is_none());
+}
+
+#[tokio::test(start_paused = true)]
+async fn source_status_subscription_wakes_on_publish_and_freshness_expiry() {
+    let (writer, handle) = test_status_writer();
+    let session = writer
+        .begin_session(1)
+        .expect("eligible source session should start");
+    let mut subscription = handle.subscribe();
+    let sampled_at = align_tokio_to_source_clock(&session).await;
+    let deadline = sampled_at + Duration::from_secs(5);
+
+    assert_eq!(session.record_sample(sampled_at, deadline, 1), Ok(true));
+    let published = subscription
+        .changed()
+        .await
+        .expect("live publication should arrive");
+    assert_eq!(published.state, SourceState::Live);
+
+    let expiry = tokio::spawn(async move {
+        let status = subscription.changed().await;
+        (subscription, status)
+    });
+    tokio::task::yield_now().await;
+    tokio::time::advance(Duration::from_millis(4_999)).await;
+    tokio::task::yield_now().await;
+    assert!(!expiry.is_finished());
+    tokio::time::advance(Duration::from_millis(1)).await;
+    let (mut subscription, expired) = expiry.await.expect("freshness subscriber task panicked");
+    let expired = expired.expect("freshness expiry should arrive");
+    assert_eq!(expired.state, SourceState::Live);
+    assert_eq!(expired.freshness, SourceFreshness::Stale);
+    assert_eq!(
+        expired
+            .freshness_issue
+            .as_ref()
+            .map(|issue| issue.code.as_ref()),
+        Some("stale_data")
+    );
+
+    let mut duplicate = Box::pin(subscription.changed());
+    tokio::select! {
+        biased;
+        result = &mut duplicate => panic!("duplicate expiry transition: {result:?}"),
+        () = tokio::task::yield_now() => {}
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn sample_refresh_reschedules_expiry_without_a_structural_wake() {
+    let (writer, handle) = test_status_writer();
+    let session = writer
+        .begin_session(1)
+        .expect("eligible source session should start");
+    let initial_sample = align_tokio_to_source_clock(&session).await;
+    assert_eq!(
+        session.record_sample(initial_sample, initial_sample + Duration::from_secs(5), 1),
+        Ok(true)
+    );
+    let mut subscription = handle.subscribe();
+    let expiry = tokio::spawn(async move {
+        let status = subscription.changed().await;
+        (subscription, status)
+    });
+    tokio::task::yield_now().await;
+
+    tokio::time::advance(Duration::from_secs(4)).await;
+    let refreshed_at = tokio::time::Instant::now().into_std();
+    assert_eq!(
+        session.record_sample(refreshed_at, refreshed_at + Duration::from_secs(6), 1),
+        Ok(true)
+    );
+    tokio::task::yield_now().await;
+    assert!(!expiry.is_finished());
+
+    tokio::time::advance(Duration::from_secs(1)).await;
+    tokio::task::yield_now().await;
+    assert!(!expiry.is_finished());
+    tokio::time::advance(Duration::from_secs(5)).await;
+    let (mut subscription, expired) = expiry.await.expect("freshness subscriber task panicked");
+    let expired = expired.expect("rescheduled freshness expiry should arrive");
+    assert_eq!(expired.freshness, SourceFreshness::Stale);
+    assert_eq!(
+        expired.freshness_deadline,
+        Some(refreshed_at + Duration::from_secs(6))
+    );
+
+    let recovered_at = tokio::time::Instant::now().into_std();
+    assert_eq!(
+        session.record_sample(recovered_at, recovered_at + Duration::from_secs(5), 1),
+        Ok(true)
+    );
+    let recovered = subscription
+        .changed()
+        .await
+        .expect("stale-to-fresh recovery should publish");
+    assert_eq!(recovered.freshness, SourceFreshness::Fresh);
+}
+
+#[tokio::test]
+async fn cancelled_status_wait_can_reenter_without_losing_a_publication() {
+    let (writer, handle) = test_status_writer();
+    let session = writer
+        .begin_session(1)
+        .expect("eligible source session should start");
+    let mut subscription = handle.subscribe();
+    let mut cancelled_wait = Box::pin(subscription.changed());
+    tokio::select! {
+        biased;
+        result = &mut cancelled_wait => panic!("status wait completed unexpectedly: {result:?}"),
+        () = tokio::task::yield_now() => {}
+    }
+    drop(cancelled_wait);
+
+    assert!(session.degraded(test_issue("after_cancel")));
+    let status = subscription
+        .changed()
+        .await
+        .expect("publication after cancellation should arrive");
+    assert_eq!(status.state, SourceState::Degraded);
+}
+
+#[tokio::test]
+async fn stopping_an_already_stopped_source_publishes_nothing() {
+    let (writer, handle) = test_status_writer();
+    let mut subscription = handle.subscribe();
+    writer.stop();
+
+    let mut duplicate = Box::pin(subscription.changed());
+    tokio::select! {
+        biased;
+        result = &mut duplicate => panic!("idempotent stop published: {result:?}"),
+        () = tokio::task::yield_now() => {}
+    }
+    drop(duplicate);
+
+    writer
+        .begin_session(1)
+        .expect("source remains startable after idempotent stop");
+    let starting = subscription
+        .changed()
+        .await
+        .expect("real start transition should publish");
+    assert_eq!(starting.state, SourceState::Starting);
+}
+
+#[tokio::test]
+async fn retiring_source_wakes_and_terminates_subscribers() {
+    let (writer, handle) = test_status_writer();
+    let _session = writer
+        .begin_session(1)
+        .expect("eligible source session should start");
+    let mut subscription = handle.subscribe();
+    assert!(matches!(
+        writer.retire(1),
+        Err(SourceStatusError::GraphGenerationNotAdvanced {
+            current: 1,
+            requested: 1,
+        })
+    ));
+    writer
+        .retire(2)
+        .expect("newer removal generation should retire source");
+
+    let retired = subscription
+        .changed()
+        .await
+        .expect("retirement publication should arrive");
+    assert!(retired.retired);
+    assert_eq!(retired.state, SourceState::Stopped);
+    assert_eq!(retired.source_graph_generation, 2);
+    assert!(subscription.changed().await.is_none());
+    let mut after_retirement = handle.subscribe();
+    assert!(after_retirement.snapshot().retired);
+    assert!(after_retirement.changed().await.is_none());
+    assert!(matches!(
+        writer.begin_session(2),
+        Err(SourceStatusError::Retired)
+    ));
+    assert_eq!(
+        writer.set_policy(true, true, true),
+        Err(SourceStatusError::Retired)
+    );
+}
+
+#[test]
+fn source_status_rejects_non_advancing_graph_zero_and_invalid_deadlines() {
+    let (writer, handle) = test_status_writer();
+    assert!(matches!(
+        writer.begin_session(0),
+        Err(SourceStatusError::GraphGenerationNotAdvanced {
+            current: 0,
+            requested: 0,
+        })
+    ));
+    let session = writer
+        .begin_session(1)
+        .expect("positive initial graph generation should start");
+    let sampled_at = Instant::now();
+    assert_eq!(
+        session.record_sample(sampled_at, sampled_at, 1),
+        Err(SourceStatusError::InvalidFreshnessDeadline {
+            sampled_at,
+            freshness_deadline: sampled_at,
+        })
+    );
+    let before_epoch = session
+        .earliest_encodable_timestamp()
+        .checked_sub(Duration::from_millis(1))
+        .expect("source timestamp epoch follows the monotonic clock origin");
+    let valid_deadline = session.earliest_encodable_timestamp() + Duration::from_secs(1);
+    assert_eq!(
+        session.record_sample(before_epoch, valid_deadline, 1),
+        Err(SourceStatusError::TimestampOutOfRange {
+            field: SourceTimestampField::SampledAt,
+            timestamp: before_epoch,
+        })
+    );
+    assert_eq!(handle.snapshot().state, SourceState::Starting);
+}
+
+#[test]
+fn sample_clock_never_splices_data_across_source_sessions() {
+    let (writer, handle) = test_status_writer();
+    let first = writer
+        .begin_session(1)
+        .expect("first source session should start");
+    let first_sample = Instant::now();
+    let first_deadline = first_sample + Duration::from_secs(10);
+    assert_eq!(
+        first.record_sample(first_sample, first_deadline, 11),
+        Ok(true)
+    );
+    let first_status = handle.snapshot_at(first_sample);
+    assert_eq!(first_status.last_sample_at, Some(first_sample));
+    assert_eq!(first_status.resource_count, 11);
+
+    let successor = writer
+        .begin_session(2)
+        .expect("successor source session should start");
+    let starting = handle.snapshot();
+    assert_eq!(starting.session_generation, successor.session_generation());
+    assert_eq!(starting.freshness, SourceFreshness::AwaitingSample);
+    assert!(starting.last_sample_at.is_none());
+    assert!(starting.freshness_deadline.is_none());
+    assert_eq!(starting.resource_count, 0);
+
+    let second_sample = first_sample + Duration::from_secs(1);
+    let second_deadline = second_sample + Duration::from_secs(20);
+    assert_eq!(
+        successor.record_sample(second_sample, second_deadline, 22),
+        Ok(true)
+    );
+    let second_status = handle.snapshot_at(second_sample);
+    assert_eq!(
+        second_status.session_generation,
+        successor.session_generation()
+    );
+    assert_eq!(second_status.last_sample_at, Some(second_sample));
+    assert_eq!(second_status.freshness_deadline, Some(second_deadline));
+    assert_eq!(second_status.resource_count, 22);
+}
+
+fn assert_status_sample_coherence(status: &hypercolor_core::input::SourceStatus) {
+    if matches!(
+        status.freshness,
+        SourceFreshness::Fresh | SourceFreshness::Stale
+    ) {
+        let sampled_at = status
+            .last_sample_at
+            .expect("fresh status carries its sample timestamp");
+        let deadline = status
+            .freshness_deadline
+            .expect("fresh status carries its deadline");
+        assert!(deadline > sampled_at);
+        assert_ne!(status.session_generation, 0);
+    }
+    if status.freshness == SourceFreshness::NotApplicable {
+        assert!(status.last_sample_at.is_none());
+        assert!(status.freshness_deadline.is_none());
+    }
+}
+
+fn assert_transition_never_splices_sample_plane(
+    transition: impl FnOnce(&SourceStatusWriter, &hypercolor_core::input::SourceSessionWriter),
+) {
+    let (writer, handle) = test_status_writer();
+    let session = writer
+        .begin_session(1)
+        .expect("source session should start");
+    let sampled_at = Instant::now();
+    assert_eq!(
+        session.record_sample(sampled_at, sampled_at + Duration::from_mins(1), 1),
+        Ok(true)
+    );
+    let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let reader_done = Arc::clone(&done);
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        ready_tx.send(()).expect("root waits for reader readiness");
+        release_rx.recv().expect("root releases coherence reader");
+        assert_status_sample_coherence(&handle.snapshot());
+        started_tx
+            .send(())
+            .expect("root waits for active coherence reader");
+        let mut tail = 0;
+        loop {
+            assert_status_sample_coherence(&handle.snapshot());
+            if reader_done.load(std::sync::atomic::Ordering::Acquire) {
+                tail += 1;
+                if tail == 1_024 {
+                    break;
+                }
+            }
+        }
+    });
+
+    ready_rx
+        .recv()
+        .expect("coherence reader announces readiness");
+    release_tx
+        .send(())
+        .expect("coherence reader waits for release");
+    started_rx.recv().expect("coherence reader is active");
+    transition(&writer, &session);
+    done.store(true, std::sync::atomic::Ordering::Release);
+    reader.join().expect("coherence reader thread panicked");
+}
+
+#[test]
+fn stop_revoke_retire_and_event_transitions_never_splice_sample_state() {
+    assert_transition_never_splices_sample_plane(|writer, _| writer.stop());
+    assert_transition_never_splices_sample_plane(|writer, _| {
+        writer
+            .set_policy(true, false, true)
+            .expect("consent revocation should publish");
+    });
+    assert_transition_never_splices_sample_plane(|writer, _| {
+        writer
+            .retire(2)
+            .expect("newer removal generation should retire");
+    });
+    assert_transition_never_splices_sample_plane(|_, session| {
+        assert!(session.mark_event_driven_live_without_deadline(1));
+    });
+}
+
+#[tokio::test(start_paused = true)]
+async fn shortened_sample_deadline_reschedules_without_false_transition() {
+    let (writer, handle) = test_status_writer();
+    let session = writer
+        .begin_session(1)
+        .expect("source session should start");
+    let initial = align_tokio_to_source_clock(&session).await;
+    assert_eq!(
+        session.record_sample(initial, initial + Duration::from_secs(10), 1),
+        Ok(true)
+    );
+    let mut subscription = handle.subscribe();
+    let expiry = tokio::spawn(async move { subscription.changed().await });
+    tokio::task::yield_now().await;
+
+    tokio::time::advance(Duration::from_secs(1)).await;
+    let shortened_sample = tokio::time::Instant::now().into_std();
+    let shortened_deadline = shortened_sample + Duration::from_secs(2);
+    assert_eq!(
+        session.record_sample(shortened_sample, shortened_deadline, 1),
+        Ok(true)
+    );
+    tokio::task::yield_now().await;
+    assert!(!expiry.is_finished());
+    tokio::time::advance(Duration::from_secs(1)).await;
+    tokio::task::yield_now().await;
+    assert!(!expiry.is_finished());
+    tokio::time::advance(Duration::from_secs(1)).await;
+    let expired = expiry
+        .await
+        .expect("freshness subscriber task panicked")
+        .expect("shortened deadline should expire");
+    assert_eq!(expired.freshness, SourceFreshness::Stale);
+    assert_eq!(expired.freshness_deadline, Some(shortened_deadline));
+}
+
+#[tokio::test(start_paused = true)]
+async fn observed_stale_data_recovers_even_with_a_delayed_sample_timestamp() {
+    let (writer, handle) = test_status_writer();
+    let session = writer
+        .begin_session(1)
+        .expect("source session should start");
+    let initial = align_tokio_to_source_clock(&session).await;
+    let initial_deadline = initial + Duration::from_secs(4);
+    assert_eq!(
+        session.record_sample(initial, initial_deadline, 1),
+        Ok(true)
+    );
+    let mut subscription = handle.subscribe();
+    tokio::time::advance(Duration::from_secs(4)).await;
+    let stale = subscription
+        .changed()
+        .await
+        .expect("freshness expiry should be observed");
+    assert_eq!(stale.freshness, SourceFreshness::Stale);
+
+    let mut readers = Vec::new();
+    let mut releases = Vec::new();
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    for _ in 0..8 {
+        let reader_handle = handle.clone();
+        let ready_tx = ready_tx.clone();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        releases.push(release_tx);
+        readers.push(std::thread::spawn(move || {
+            ready_tx.send(()).expect("root waits for stale reader");
+            release_rx.recv().expect("root releases stale reader");
+            assert_eq!(
+                reader_handle.snapshot_at(initial_deadline).freshness,
+                SourceFreshness::Stale
+            );
+        }));
+    }
+    for _ in 0..readers.len() {
+        ready_rx.recv().expect("stale reader announces readiness");
+    }
+    for release in releases {
+        release.send(()).expect("stale reader waits for release");
+    }
+    for reader in readers {
+        reader.join().expect("stale reader thread panicked");
+    }
+
+    let delayed_sample = initial + Duration::from_secs(3);
+    let recovered_deadline = initial + Duration::from_secs(8);
+    assert_eq!(
+        session.record_sample(delayed_sample, recovered_deadline, 1),
+        Ok(true)
+    );
+    let recovered = subscription
+        .changed()
+        .await
+        .expect("observed stale data should signal recovery");
+    assert_eq!(recovered.freshness, SourceFreshness::Fresh);
+    assert_eq!(recovered.last_sample_at, Some(delayed_sample));
+}
+
+#[tokio::test(start_paused = true)]
+async fn stale_projection_races_never_park_recovery_subscribers() {
+    let (writer, handle) = test_status_writer();
+    let session = writer
+        .begin_session(1)
+        .expect("source session should start");
+    let initial = align_tokio_to_source_clock(&session).await;
+    assert_eq!(
+        session.record_sample(initial, initial + Duration::from_secs(10), 1),
+        Ok(true)
+    );
+    let mut subscription = handle.subscribe();
+    let mut resource_count = 1;
+    let mut stale_first_races = 0;
+
+    for iteration in 0..32 {
+        let now = tokio::time::Instant::now().into_std();
+        let expiring_at = now + Duration::from_secs(1);
+        assert_eq!(
+            session.record_sample(now, expiring_at, resource_count),
+            Ok(true)
+        );
+
+        let mut wait = tokio::spawn(async move {
+            let status = subscription.changed().await;
+            (subscription, status)
+        });
+        tokio::task::yield_now().await;
+
+        let racing_writer = session.clone();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let writer_thread = std::thread::spawn(move || {
+            ready_tx.send(()).expect("root waits for racing writer");
+            release_rx.recv().expect("root releases racing writer");
+            racing_writer.record_sample(
+                expiring_at,
+                expiring_at + Duration::from_secs(10),
+                resource_count,
+            )
+        });
+        ready_rx.recv().expect("racing writer announces readiness");
+        if iteration == 0 {
+            tokio::time::advance(Duration::from_secs(1)).await;
+            let (returned, status) = wait.await.expect("status subscriber task panicked");
+            subscription = returned;
+            let status = status.expect("active status subscription should remain open");
+            assert_eq!(status.freshness, SourceFreshness::Stale);
+            stale_first_races += 1;
+
+            release_tx
+                .send(())
+                .expect("racing writer waits for release");
+            assert_eq!(
+                writer_thread.join().expect("racing writer panicked"),
+                Ok(true)
+            );
+            let recovered = tokio::time::timeout(Duration::from_millis(1), subscription.changed())
+                .await
+                .expect("stale recovery signal was lost")
+                .expect("active status subscription should remain open");
+            assert_eq!(recovered.freshness, SourceFreshness::Fresh);
+            continue;
+        }
+
+        release_tx
+            .send(())
+            .expect("racing writer waits for release");
+        tokio::time::advance(Duration::from_secs(1)).await;
+        assert_eq!(
+            writer_thread.join().expect("racing writer panicked"),
+            Ok(true)
+        );
+
+        if let Ok(joined) = tokio::time::timeout(Duration::from_millis(1), &mut wait).await {
+            let (returned, status) = joined.expect("status subscriber task panicked");
+            subscription = returned;
+            let status = status.expect("active status subscription should remain open");
+            if status.freshness == SourceFreshness::Stale {
+                stale_first_races += 1;
+                let recovered =
+                    tokio::time::timeout(Duration::from_millis(1), subscription.changed())
+                        .await
+                        .expect("stale recovery signal was lost")
+                        .expect("active status subscription should remain open");
+                assert_eq!(recovered.freshness, SourceFreshness::Fresh);
+            } else {
+                assert_eq!(status.freshness, SourceFreshness::Fresh);
+            }
+        } else {
+            resource_count = if resource_count == 1 { 2 } else { 1 };
+            let refreshed_at = tokio::time::Instant::now().into_std();
+            assert_eq!(
+                session.record_sample(
+                    refreshed_at,
+                    refreshed_at + Duration::from_secs(10),
+                    resource_count,
+                ),
+                Ok(true)
+            );
+            let (returned, status) = wait.await.expect("status subscriber task panicked");
+            subscription = returned;
+            let status = status.expect("active status subscription should remain open");
+            assert_eq!(status.freshness, SourceFreshness::Fresh);
+            assert_eq!(status.resource_count, resource_count);
+        }
+    }
+    assert!(
+        stale_first_races > 0,
+        "bounded race must exercise at least one observed stale recovery"
+    );
+}
+
+#[tokio::test]
+async fn structural_subscription_preserves_live_sample_fields_once() {
+    let (writer, handle) = test_status_writer();
+    let session = writer
+        .begin_session(1)
+        .expect("source session should start");
+    let sampled_at = Instant::now();
+    let deadline = sampled_at + Duration::from_mins(1);
+    assert_eq!(session.record_sample(sampled_at, deadline, 3), Ok(true));
+    let mut subscription = handle.subscribe();
+
+    assert!(session.degraded(test_issue("degraded_once")));
+    let degraded = subscription
+        .changed()
+        .await
+        .expect("degraded publication should arrive");
+    assert_eq!(degraded.state, SourceState::Degraded);
+    assert_eq!(degraded.freshness, SourceFreshness::Fresh);
+    assert_eq!(degraded.last_sample_at, Some(sampled_at));
+    assert_eq!(degraded.freshness_deadline, Some(deadline));
+    assert_eq!(degraded.resource_count, 3);
+    assert_eq!(
+        degraded.issue.as_ref().map(|issue| issue.code.as_ref()),
+        Some("degraded_once")
+    );
+    let mut duplicate = Box::pin(subscription.changed());
+    tokio::select! {
+        biased;
+        result = &mut duplicate => panic!("duplicate structural publication: {result:?}"),
+        () = tokio::task::yield_now() => {}
+    }
+    drop(duplicate);
+
+    assert!(session.unavailable(test_issue("unavailable_once")));
+    let unavailable = subscription
+        .changed()
+        .await
+        .expect("unavailable publication should arrive");
+    assert_eq!(unavailable.state, SourceState::Unavailable);
+    assert_eq!(unavailable.freshness, SourceFreshness::Fresh);
+    assert_eq!(unavailable.resource_count, 0);
+    assert_eq!(unavailable.last_sample_at, Some(sampled_at));
+}
+
+#[test]
+fn source_status_handles_and_publishers_are_send_and_sync() {
+    fn assert_send_sync<T: Send + Sync>() {}
+
+    assert_send_sync::<hypercolor_core::input::SourceStatusHandle>();
+    assert_send_sync::<hypercolor_core::input::SourceStatusWriter>();
+    assert_send_sync::<hypercolor_core::input::SourceSessionWriter>();
+    assert_send_sync::<hypercolor_core::input::SourceStatusSubscription>();
 }

@@ -3,8 +3,13 @@ compile_error!(
     "allocation-contract-tests owns the process allocator and cannot be combined with servo; run `just alloc-contracts`"
 );
 
-use std::{alloc::System, hint::black_box};
+use std::{
+    alloc::System,
+    hint::black_box,
+    time::{Duration, Instant},
+};
 
+use hypercolor_core::input::{SourceKind, SourceSessionWriter, SourceStatusWriter};
 use stats_alloc::{INSTRUMENTED_SYSTEM, Region, Stats, StatsAlloc};
 
 #[cfg_attr(not(feature = "servo"), global_allocator)]
@@ -32,6 +37,46 @@ fn preallocated_control(storage: &mut Vec<u8>) -> Stats {
     black_box(value);
 
     region.change()
+}
+
+fn sample_round(session: &SourceSessionWriter, base: Instant, first_offset: u64) -> Stats {
+    let mut region = Region::new(GLOBAL);
+    region.reset();
+    let mut all_accepted = true;
+
+    for offset in first_offset..first_offset + 128 {
+        let sampled_at = base + Duration::from_millis(offset);
+        let deadline = base + Duration::from_mins(2) + Duration::from_millis(offset);
+        all_accepted &= black_box(session.record_sample(sampled_at, deadline, 1)) == Ok(true);
+    }
+
+    let stats = region.change();
+    assert!(all_accepted);
+    stats
+}
+
+fn steady_source_sample_control() -> (Stats, Stats) {
+    let (writer, _) = SourceStatusWriter::new(
+        "allocation-source",
+        SourceKind::Screen,
+        "test",
+        true,
+        true,
+        true,
+    );
+    let session = writer
+        .begin_session(1)
+        .expect("allocation source session should start");
+    let base = Instant::now();
+    assert_eq!(
+        session.record_sample(base, base + Duration::from_mins(1), 1),
+        Ok(true)
+    );
+
+    (
+        sample_round(&session, base, 1),
+        sample_round(&session, base, 129),
+    )
 }
 
 #[test]
@@ -64,4 +109,8 @@ fn counting_allocator_is_active_and_scoped() {
 
     assert_eq!(first_preallocated, Stats::default());
     assert_eq!(second_preallocated, first_preallocated);
+
+    let (first_samples, second_samples) = steady_source_sample_control();
+    assert_eq!(first_samples, Stats::default());
+    assert_eq!(second_samples, Stats::default());
 }
