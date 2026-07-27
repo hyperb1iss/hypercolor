@@ -22,8 +22,8 @@ use tracing::{debug, info, trace, warn};
 use crate::input::input_mono_ms;
 use crate::input::traits::{InputData, InputSource, InteractionData, MotionAggregate, PointerMode};
 use crate::input::{
-    SourceKind, SourceResourceScanHealth, SourceSessionWriter, SourceStatusHandle,
-    SourceStatusReporter, classify_source_resource_scan,
+    SourceKind, SourceResourceScanHealth, SourceStatusHandle, SourceStatusReporter,
+    classify_source_resource_scan,
 };
 use crate::types::event::{InputButtonState, InputEvent, TimedInputEvent};
 
@@ -256,7 +256,7 @@ impl EvdevHostInput {
                     &source_name,
                 );
                 if let Some(status) = &status {
-                    publish_scan_health(status, health);
+                    status.publish_resource_scan_health(health);
                 }
                 let _ = ready_tx.send(());
 
@@ -274,7 +274,7 @@ impl EvdevHostInput {
                             &source_name,
                         );
                         if let Some(status) = &status {
-                            publish_scan_health(status, health);
+                            status.publish_resource_scan_health(health);
                         }
                     }
 
@@ -547,23 +547,6 @@ fn rescan_devices(
         guard.device_status = status;
     }
     classify_source_resource_scan(opened, denied, failed)
-}
-
-fn publish_scan_health(status: &SourceSessionWriter, health: SourceResourceScanHealth) {
-    match health {
-        SourceResourceScanHealth::Live { resource_count } => {
-            status.mark_event_driven_live_without_deadline(resource_count);
-        }
-        SourceResourceScanHealth::Degraded {
-            resource_count,
-            issue,
-        } => {
-            status.degraded_with_resources(issue, resource_count);
-        }
-        SourceResourceScanHealth::Unavailable(issue) => {
-            status.unavailable(issue);
-        }
-    }
 }
 
 fn poll_devices(

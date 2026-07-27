@@ -2229,17 +2229,22 @@ fn source_session_slot_hands_a_long_lived_worker_the_successor_session() {
 fn source_resource_scan_health_maps_access_failure_and_recovery() {
     assert_eq!(
         classify_source_resource_scan(2, 0, 0),
-        SourceResourceScanHealth::Live { resource_count: 2 }
+        SourceResourceScanHealth::Live {
+            resource_count: 2,
+            denied_resource_count: 0,
+        }
     );
 
     let SourceResourceScanHealth::Degraded {
         resource_count,
+        denied_resource_count,
         issue: denied_partial,
     } = classify_source_resource_scan(2, 1, 0)
     else {
         panic!("opened plus denied resources should be degraded");
     };
     assert_eq!(resource_count, 2);
+    assert_eq!(denied_resource_count, 1);
     assert_eq!(denied_partial.code.as_ref(), "access_denied");
     assert_eq!(
         denied_partial.remediation.as_deref(),
@@ -2248,25 +2253,30 @@ fn source_resource_scan_health_maps_access_failure_and_recovery() {
 
     let SourceResourceScanHealth::Degraded {
         resource_count,
+        denied_resource_count,
         issue: failed_partial,
     } = classify_source_resource_scan(2, 0, 1)
     else {
         panic!("opened plus transient failures should be degraded");
     };
     assert_eq!(resource_count, 2);
+    assert_eq!(denied_resource_count, 0);
     assert_eq!(
         failed_partial.code.as_ref(),
         "input_resource_scan_partial_failure"
     );
 
+    let mixed = classify_source_resource_scan(2, 1, 1);
     let SourceResourceScanHealth::Degraded {
         resource_count,
+        denied_resource_count,
         issue: mixed_partial,
-    } = classify_source_resource_scan(2, 1, 1)
+    } = &mixed
     else {
         panic!("mixed usable and failed resources should be degraded");
     };
-    assert_eq!(resource_count, 2);
+    assert_eq!(*resource_count, 2);
+    assert_eq!(*denied_resource_count, 1);
     assert_eq!(mixed_partial.code.as_ref(), "access_denied");
     assert!(mixed_partial.message.contains("1 failed to open"));
     assert_eq!(
@@ -2274,19 +2284,34 @@ fn source_resource_scan_health_maps_access_failure_and_recovery() {
         Some("run `just udev-install` and replug or re-login")
     );
 
-    let SourceResourceScanHealth::Unavailable(denied) = classify_source_resource_scan(0, 3, 0)
+    let denied_only = classify_source_resource_scan(0, 3, 0);
+    let SourceResourceScanHealth::Unavailable {
+        resource_count,
+        denied_resource_count,
+        issue: denied,
+    } = &denied_only
     else {
         panic!("denied-only scan should be unavailable");
     };
+    assert_eq!(*resource_count, 0);
+    assert_eq!(*denied_resource_count, 3);
     assert_eq!(denied.code.as_ref(), "access_denied");
     assert_eq!(
         denied.remediation.as_deref(),
         Some("run `just udev-install` and replug or re-login")
     );
-    let SourceResourceScanHealth::Unavailable(failed) = classify_source_resource_scan(0, 0, 2)
+
+    let failed_only = classify_source_resource_scan(0, 0, 2);
+    let SourceResourceScanHealth::Unavailable {
+        resource_count,
+        denied_resource_count,
+        issue: failed,
+    } = &failed_only
     else {
         panic!("transient scan failures should be structured");
     };
+    assert_eq!(*resource_count, 0);
+    assert_eq!(*denied_resource_count, 0);
     assert_eq!(failed.code.as_ref(), "input_resource_scan_failed");
     assert!(failed.retryable);
 
@@ -2294,20 +2319,56 @@ fn source_resource_scan_health_maps_access_failure_and_recovery() {
     let session = writer
         .begin_session(1)
         .expect("resource scan status session should start");
-    assert!(session.degraded_with_resources(mixed_partial, 2));
+    assert!(session.publish_resource_scan_health(mixed));
     let degraded = handle.snapshot();
     assert_eq!(degraded.state, SourceState::Degraded);
     assert_eq!(degraded.resource_count, 2);
+    assert_eq!(degraded.denied_resource_count, 1);
     assert_eq!(
         degraded.issue.as_ref().map(|issue| issue.code.as_ref()),
         Some("access_denied")
     );
 
-    assert!(session.mark_event_driven_live_without_deadline(3));
+    assert!(session.publish_resource_scan_health(denied_only));
+    let unavailable = handle.snapshot();
+    assert_eq!(unavailable.state, SourceState::Unavailable);
+    assert_eq!(unavailable.resource_count, 0);
+    assert_eq!(unavailable.denied_resource_count, 3);
+
+    assert!(session.publish_resource_scan_health(failed_only));
+    let failed = handle.snapshot();
+    assert_eq!(failed.state, SourceState::Unavailable);
+    assert_eq!(failed.resource_count, 0);
+    assert_eq!(failed.denied_resource_count, 0);
+
+    let healthy = classify_source_resource_scan(3, 0, 0);
+    assert!(session.publish_resource_scan_health(healthy.clone()));
     let recovered = handle.snapshot();
     assert_eq!(recovered.state, SourceState::Live);
     assert_eq!(recovered.resource_count, 3);
+    assert_eq!(recovered.denied_resource_count, 0);
     assert!(recovered.issue.is_none());
+
+    assert!(session.publish_resource_scan_health(healthy));
+    assert!(Arc::ptr_eq(&recovered, &handle.snapshot()));
+
+    writer.stop();
+    let stopped = handle.snapshot();
+    assert_eq!(stopped.resource_count, 0);
+    assert_eq!(stopped.denied_resource_count, 0);
+    let successor = writer
+        .begin_session(2)
+        .expect("successor resource scan session should start");
+    let starting = handle.snapshot();
+    assert_eq!(starting.resource_count, 0);
+    assert_eq!(starting.denied_resource_count, 0);
+    assert!(successor.publish_resource_scan_health(classify_source_resource_scan(0, 2, 0)));
+    assert_eq!(handle.snapshot().denied_resource_count, 2);
+    assert!(successor.failed(test_issue("scan_worker_failed")));
+    let failed = handle.snapshot();
+    assert_eq!(failed.state, SourceState::Failed);
+    assert_eq!(failed.resource_count, 0);
+    assert_eq!(failed.denied_resource_count, 0);
 }
 
 #[test]

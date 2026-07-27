@@ -108,16 +108,27 @@ pub enum SourceResourceScanHealth {
     Live {
         /// Number of open resources.
         resource_count: usize,
+        /// Number of eligible resources rejected for access denial.
+        denied_resource_count: usize,
     },
     /// Some eligible resources are usable while others failed to open.
     Degraded {
         /// Number of open resources that remain usable.
         resource_count: usize,
+        /// Number of eligible resources rejected for access denial.
+        denied_resource_count: usize,
         /// Structured details for the partial failure.
         issue: SourceIssue,
     },
     /// No eligible resource can currently produce input.
-    Unavailable(SourceIssue),
+    Unavailable {
+        /// Number of open resources, normally zero for unavailable health.
+        resource_count: usize,
+        /// Number of eligible resources rejected for access denial.
+        denied_resource_count: usize,
+        /// Structured details for the unavailable state.
+        issue: SourceIssue,
+    },
 }
 
 /// Classify backend resource counts without depending on platform APIs.
@@ -135,6 +146,7 @@ pub fn classify_source_resource_scan(
         };
         return SourceResourceScanHealth::Degraded {
             resource_count: opened,
+            denied_resource_count: access_denied,
             issue: SourceIssue::new(
                 "access_denied",
                 format!(
@@ -148,6 +160,7 @@ pub fn classify_source_resource_scan(
     if opened > 0 && transient_failures > 0 {
         return SourceResourceScanHealth::Degraded {
             resource_count: opened,
+            denied_resource_count: 0,
             issue: SourceIssue::new(
                 "input_resource_scan_partial_failure",
                 format!(
@@ -160,30 +173,46 @@ pub fn classify_source_resource_scan(
     if opened > 0 {
         return SourceResourceScanHealth::Live {
             resource_count: opened,
+            denied_resource_count: 0,
         };
     }
     if access_denied > 0 {
-        return SourceResourceScanHealth::Unavailable(
-            SourceIssue::new(
+        let failure_suffix = if transient_failures == 0 {
+            String::new()
+        } else {
+            format!("; {transient_failures} failed to open")
+        };
+        return SourceResourceScanHealth::Unavailable {
+            resource_count: 0,
+            denied_resource_count: access_denied,
+            issue: SourceIssue::new(
                 "access_denied",
-                format!("{access_denied} input resource(s) are unreadable"),
+                format!("{access_denied} input resource(s) are unreadable{failure_suffix}"),
                 true,
             )
             .with_remediation("run `just udev-install` and replug or re-login"),
-        );
+        };
     }
     if transient_failures > 0 {
-        return SourceResourceScanHealth::Unavailable(SourceIssue::new(
-            "input_resource_scan_failed",
-            format!("{transient_failures} input resource(s) failed to open"),
-            true,
-        ));
+        return SourceResourceScanHealth::Unavailable {
+            resource_count: 0,
+            denied_resource_count: 0,
+            issue: SourceIssue::new(
+                "input_resource_scan_failed",
+                format!("{transient_failures} input resource(s) failed to open"),
+                true,
+            ),
+        };
     }
-    SourceResourceScanHealth::Unavailable(SourceIssue::new(
-        "input_resources_unavailable",
-        "no eligible input resources are available",
-        true,
-    ))
+    SourceResourceScanHealth::Unavailable {
+        resource_count: 0,
+        denied_resource_count: 0,
+        issue: SourceIssue::new(
+            "input_resources_unavailable",
+            "no eligible input resources are available",
+            true,
+        ),
+    }
 }
 
 /// One-shot guard for terminal worker failure probes.
@@ -244,6 +273,8 @@ pub struct SourceStatus {
     pub freshness_deadline: Option<Instant>,
     /// Number of live backend resources owned by the source.
     pub resource_count: usize,
+    /// Number of eligible backend resources rejected for access denial.
+    pub denied_resource_count: usize,
     /// Structured lifecycle-health problem details.
     pub issue: Option<SourceIssue>,
     /// Structured freshness problem details.
@@ -275,6 +306,7 @@ impl SourceStatus {
             last_sample_at: None,
             freshness_deadline: None,
             resource_count: 0,
+            denied_resource_count: 0,
             issue: None,
             freshness_issue: None,
             retired: false,
@@ -802,6 +834,7 @@ impl SourceStatusWriter {
         status.last_sample_at = None;
         status.freshness_deadline = None;
         status.resource_count = 0;
+        status.denied_resource_count = 0;
         status.issue = None;
         status.freshness_issue = None;
         publish_structural(&self.shared, status);
@@ -1061,6 +1094,7 @@ impl SourceSessionWriter {
         let current = self.shared.latest.load_full();
         if current.state != SourceState::Live
             || current.freshness != SourceFreshness::Fresh
+            || current.denied_resource_count != 0
             || current.issue.is_some()
         {
             let mut status = (*current).clone();
@@ -1069,6 +1103,7 @@ impl SourceSessionWriter {
             status.last_sample_at = Some(sampled_at);
             status.freshness_deadline = Some(freshness_deadline);
             status.resource_count = resource_count;
+            status.denied_resource_count = 0;
             status.issue = None;
             status.freshness_issue = None;
             publish_structural(&self.shared, status);
@@ -1100,6 +1135,7 @@ impl SourceSessionWriter {
         if current.state == SourceState::Live
             && current.freshness == SourceFreshness::NotApplicable
             && current.resource_count == resource_count
+            && current.denied_resource_count == 0
             && current.issue.is_none()
         {
             return true;
@@ -1111,8 +1147,61 @@ impl SourceSessionWriter {
         status.last_sample_at = None;
         status.freshness_deadline = None;
         status.resource_count = resource_count;
+        status.denied_resource_count = 0;
         status.issue = None;
         status.freshness_issue = None;
+        publish_structural(&self.shared, status);
+        self.shared.samples.tombstone();
+        true
+    }
+
+    /// Publish one resource scan as a single coherent structural transition.
+    pub fn publish_resource_scan_health(&self, health: SourceResourceScanHealth) -> bool {
+        let control = lock_control(&self.shared);
+        if control.active_session != Some(self.session_generation) {
+            return false;
+        }
+
+        let current = self.shared.latest.load_full();
+        let mut status = (*current).clone();
+        status.freshness = SourceFreshness::NotApplicable;
+        status.last_sample_at = None;
+        status.freshness_deadline = None;
+        status.freshness_issue = None;
+        match health {
+            SourceResourceScanHealth::Live {
+                resource_count,
+                denied_resource_count,
+            } => {
+                status.state = SourceState::Live;
+                status.resource_count = resource_count;
+                status.denied_resource_count = denied_resource_count;
+                status.issue = None;
+            }
+            SourceResourceScanHealth::Degraded {
+                resource_count,
+                denied_resource_count,
+                issue,
+            } => {
+                status.state = SourceState::Degraded;
+                status.resource_count = resource_count;
+                status.denied_resource_count = denied_resource_count;
+                status.issue = Some(issue);
+            }
+            SourceResourceScanHealth::Unavailable {
+                resource_count,
+                denied_resource_count,
+                issue,
+            } => {
+                status.state = SourceState::Unavailable;
+                status.resource_count = resource_count;
+                status.denied_resource_count = denied_resource_count;
+                status.issue = Some(issue);
+            }
+        }
+        if status == *current {
+            return true;
+        }
         publish_structural(&self.shared, status);
         self.shared.samples.tombstone();
         true
@@ -1122,6 +1211,7 @@ impl SourceSessionWriter {
     pub fn degraded(&self, issue: SourceIssue) -> bool {
         self.publish(|status| {
             status.state = SourceState::Degraded;
+            status.denied_resource_count = 0;
             status.issue = Some(issue);
         })
     }
@@ -1131,6 +1221,7 @@ impl SourceSessionWriter {
         self.publish(|status| {
             status.state = SourceState::Degraded;
             status.resource_count = resource_count;
+            status.denied_resource_count = 0;
             status.issue = Some(issue);
         })
     }
@@ -1140,6 +1231,7 @@ impl SourceSessionWriter {
         self.publish(|status| {
             status.state = SourceState::Unavailable;
             status.resource_count = 0;
+            status.denied_resource_count = 0;
             status.issue = Some(issue);
             clear_unproduced_freshness(status);
         })
@@ -1155,6 +1247,7 @@ impl SourceSessionWriter {
         let mut status = (*self.shared.latest.load_full()).clone();
         status.state = SourceState::Failed;
         status.resource_count = 0;
+        status.denied_resource_count = 0;
         status.issue = Some(issue);
         clear_unproduced_freshness(&mut status);
         publish_structural(&self.shared, status);
@@ -1376,6 +1469,7 @@ fn clear_stopped_state(status: &mut SourceStatus) {
     status.last_sample_at = None;
     status.freshness_deadline = None;
     status.resource_count = 0;
+    status.denied_resource_count = 0;
     status.issue = None;
     status.freshness_issue = None;
 }
@@ -1395,6 +1489,7 @@ fn is_canonical_stopped(status: &SourceStatus) -> bool {
         && status.last_sample_at.is_none()
         && status.freshness_deadline.is_none()
         && status.resource_count == 0
+        && status.denied_resource_count == 0
         && status.issue.is_none()
         && status.freshness_issue.is_none()
 }
