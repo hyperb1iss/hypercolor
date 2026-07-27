@@ -1003,6 +1003,94 @@ fn wheel_is_reconstructed_from_retained_events_without_snapshot_double_counting(
 }
 
 #[test]
+fn reuse_key_advances_for_transients_when_source_generation_is_unchanged() {
+    let host_id = SourceIncarnation::host_slot(1);
+    let host = FakeSlot::with_capacity(4);
+    host.publish(7, &[], &[]);
+    let sources = vec![source(
+        host_id,
+        "host",
+        InteractionRouteSourceClass::Host,
+        1,
+        &host,
+    )];
+    let consumer = ConsumerIncarnation::new(1);
+    let mut router = InteractionRouter::default();
+    let baseline = router.resolve(
+        consumer,
+        InteractionRouteRequest::host(),
+        &sources,
+        context(0),
+    );
+
+    host.publish_motion(7, 0.25);
+    let motion = router.resolve(
+        consumer,
+        InteractionRouteRequest::host(),
+        &sources,
+        context(1),
+    );
+    host.push(wheel_event("host", 120, 2));
+    host.publish_wheel_snapshot(7, 120);
+    let wheel = router.resolve(
+        consumer,
+        InteractionRouteRequest::host(),
+        &sources,
+        context(2),
+    );
+
+    assert_eq!(baseline.reuse_key.sources, motion.reuse_key.sources);
+    assert_eq!(motion.reuse_key.sources, wheel.reuse_key.sources);
+    assert_eq!(
+        baseline.reuse_key.route_generation,
+        motion.reuse_key.route_generation
+    );
+    assert_eq!(
+        motion.reuse_key.route_generation,
+        wheel.reuse_key.route_generation
+    );
+    assert_ne!(baseline.reuse_key, motion.reuse_key);
+    assert_ne!(motion.reuse_key, wheel.reuse_key);
+    assert_eq!(motion.interaction.batch.motion.dx, 0.25);
+    assert_eq!(wheel.interaction.batch.wheel_hi_res, 120);
+}
+
+#[test]
+fn equal_timestamp_events_keep_selected_source_order() {
+    let host_id = SourceIncarnation::host_slot(1);
+    let browser_id = SourceIncarnation::browser_child(1);
+    let host = FakeSlot::with_capacity(4);
+    let browser = FakeSlot::with_capacity(4);
+    let sources = vec![
+        source(host_id, "host", InteractionRouteSourceClass::Host, 1, &host),
+        source(
+            browser_id,
+            "browser",
+            InteractionRouteSourceClass::Browser,
+            1,
+            &browser,
+        ),
+    ];
+    let consumer = ConsumerIncarnation::new(1);
+    let mut router = InteractionRouter::default();
+    let route = request(InteractionRoutePolicy::Merge, Some(browser_id));
+    let _ = router.resolve(consumer, route, &sources, context(0));
+
+    host.push(wheel_event("host", 120, 5));
+    browser.push(wheel_event("browser", -120, 5));
+    let resolved = router.resolve(consumer, route, &sources, context(5));
+    let source_ids = resolved
+        .interaction
+        .batch
+        .events
+        .iter()
+        .map(|event| event.event.source_id())
+        .collect::<Vec<_>>();
+
+    assert_eq!(source_ids, ["host", "browser"]);
+}
+
+#[test]
 fn producer_and_invalid_losses_remain_separate() {
     let host_id = SourceIncarnation::host_slot(1);
     let host = FakeSlot::with_capacity(4);

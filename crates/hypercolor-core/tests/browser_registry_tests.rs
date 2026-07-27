@@ -41,6 +41,52 @@ fn press(key: &str) -> BrowserInputEdge {
 }
 
 #[test]
+fn shared_sampling_reuses_browser_snapshot_pool_and_drains_directly() {
+    let (mut source, handle) = started_source();
+    let attachment = handle
+        .attach(child_key(1, "shared-sample"))
+        .expect("preview should attach");
+    attachment
+        .inject([BrowserInputEdge::Wheel { delta_hi_res: 120 }])
+        .expect("wheel should inject");
+    let mut events = Vec::with_capacity(4);
+
+    let first = source
+        .sample_shared_and_drain_into(1.0 / 60.0, &mut events)
+        .expect("shared sample should succeed")
+        .expect("running browser source should publish");
+    let first_ptr = Arc::as_ptr(&first);
+    assert_eq!(events.len(), 1);
+    drop(first);
+
+    events.clear();
+    let second = source
+        .sample_shared_and_drain_into(1.0 / 60.0, &mut events)
+        .expect("shared sample should succeed")
+        .expect("running browser source should publish");
+    assert!(events.is_empty());
+    drop(second);
+
+    attachment
+        .inject([BrowserInputEdge::Wheel { delta_hi_res: -30 }])
+        .expect("second wheel should inject");
+    let third = source
+        .sample_shared_and_drain_into(1.0 / 60.0, &mut events)
+        .expect("shared sample should succeed")
+        .expect("running browser source should publish");
+
+    assert_eq!(Arc::as_ptr(&third), first_ptr);
+    assert!(matches!(
+        events.as_slice(),
+        [event]
+            if matches!(
+                event.event,
+                InputEvent::MouseWheel { delta_hi_res: -30, .. }
+            )
+    ));
+}
+
+#[test]
 fn connections_and_previews_publish_independent_children() {
     let (_source, handle) = started_source();
     let first = handle

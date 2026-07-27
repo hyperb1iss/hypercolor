@@ -110,6 +110,20 @@ pub trait InteractionRouteSlot: Send + Sync {
         output: &mut Vec<TimedInputEvent>,
     ) -> InteractionRouteRead;
 
+    /// Read into retained storage and report the initialized event prefix.
+    fn read_interaction_reusing_since(
+        &self,
+        cursor: u64,
+        output: &mut Vec<TimedInputEvent>,
+    ) -> ReusedInteractionRouteRead {
+        output.clear();
+        let publication = self.read_interaction_since(cursor, output);
+        ReusedInteractionRouteRead {
+            publication,
+            event_count: output.len(),
+        }
+    }
+
     /// Health handle bound to this source lifetime, when one exists.
     fn status_handle(&self) -> Option<SourceStatusHandle> {
         None
@@ -121,6 +135,12 @@ pub struct InteractionRouteRead {
     pub snapshot: Option<InteractionRouteSnapshot>,
     pub events: InputEventRead,
     pub interaction_transients: InteractionTransientTotals,
+}
+
+/// One route publication plus the valid prefix in retained event storage.
+pub struct ReusedInteractionRouteRead {
+    pub publication: InteractionRouteRead,
+    pub event_count: usize,
 }
 
 impl InteractionRouteSlot for InputSourceSlot {
@@ -137,6 +157,25 @@ impl InteractionRouteSlot for InputSourceSlot {
             }),
             events: publication.events,
             interaction_transients: publication.interaction_transients,
+        }
+    }
+
+    fn read_interaction_reusing_since(
+        &self,
+        cursor: u64,
+        output: &mut Vec<TimedInputEvent>,
+    ) -> ReusedInteractionRouteRead {
+        let (publication, event_count) = self.read_publication_reusing_since(cursor, output, 0);
+        ReusedInteractionRouteRead {
+            publication: InteractionRouteRead {
+                snapshot: publication.sample.and_then(|sample| {
+                    matches!(sample.as_ref(), InputData::Interaction(_))
+                        .then_some(InteractionRouteSnapshot::InputData(sample))
+                }),
+                events: publication.events,
+                interaction_transients: publication.interaction_transients,
+            },
+            event_count,
         }
     }
 
@@ -253,6 +292,7 @@ pub struct InteractionRouteReuseSource {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InteractionRouteReuseKey {
     pub route_generation: u64,
+    pub output_generation: u64,
     pub sources: Vec<InteractionRouteReuseSource>,
 }
 
@@ -303,6 +343,7 @@ impl RoutedInteraction {
             interaction: InteractionData::default(),
             reuse_key: InteractionRouteReuseKey {
                 route_generation: 0,
+                output_generation: 0,
                 sources: Vec::new(),
             },
             diagnostics: Arc::new(InteractionRouteDiagnostics {
@@ -411,6 +452,7 @@ struct ConsumerRouteState {
     selection_scratch: Vec<SourceIncarnation>,
     removed_scratch: Vec<SourceIncarnation>,
     missing_scratch: Vec<InteractionControl>,
+    event_sort_scratch: Vec<(TimedInputEvent, usize)>,
     cached_diagnostics: Option<Arc<InteractionRouteDiagnostics>>,
 }
 
@@ -430,10 +472,11 @@ impl ConsumerRouteState {
         let route_changed =
             self.policy != Some(policy) || self.selected_order != self.selection_scratch;
         let mut events = std::mem::take(&mut output.interaction.batch.events);
-        events.clear();
+        events.extend(self.event_sort_scratch.drain(..).map(|(event, _)| event));
+        let mut event_count = 0;
         if route_changed {
             self.bump_route_generation();
-            self.transition_sources(selected, context.now_ms, &mut events);
+            self.transition_sources(selected, context.now_ms, &mut events, &mut event_count);
             self.policy = Some(policy);
             self.selected_order.clear();
             self.selected_order
@@ -445,17 +488,22 @@ impl ConsumerRouteState {
         let overwritten_before = self.overwritten_events;
         let producer_dropped_before = self.producer_dropped_events;
         let invalid_before = self.invalid_events;
-        let interaction_changed =
-            self.read_selected_publications(selected, context.now_ms, &mut events);
-        let snapshot_changed = self.reconcile_snapshots(selected, context.now_ms, &mut events);
-        if route_changed || interaction_changed || snapshot_changed || !events.is_empty() {
+        let interaction_changed = self.read_selected_publications(
+            selected,
+            context.now_ms,
+            &mut events,
+            &mut event_count,
+        );
+        let snapshot_changed =
+            self.reconcile_snapshots(selected, context.now_ms, &mut events, &mut event_count);
+        if route_changed || interaction_changed || snapshot_changed || event_count != 0 {
             self.output_generation = self
                 .output_generation
                 .checked_add(1)
                 .expect("routed interaction generation exhausted");
         }
 
-        events.sort_by_key(|event| (event.at_ms, event.seq));
+        stable_sort_events_reused(&mut events, event_count, &mut self.event_sort_scratch);
         self.build_interaction_into(selected, events, &mut output.interaction);
         output.interaction.generation = self.output_generation;
         output.interaction.batch.dropped_events = u32::try_from(
@@ -493,6 +541,7 @@ impl ConsumerRouteState {
         selected: &[InteractionRouteSource],
         now_ms: u64,
         events: &mut Vec<TimedInputEvent>,
+        event_count: &mut usize,
     ) {
         self.removed_scratch.clear();
         self.removed_scratch.extend(
@@ -504,7 +553,7 @@ impl ConsumerRouteState {
         for index in 0..self.removed_scratch.len() {
             let incarnation = self.removed_scratch[index];
             if let Some(source) = self.source_states.remove(&incarnation) {
-                self.synthesize_removed_source(source, now_ms, events);
+                self.synthesize_removed_source(source, now_ms, events, event_count);
             }
         }
         for source in selected {
@@ -534,24 +583,23 @@ impl ConsumerRouteState {
         selected: &[InteractionRouteSource],
         now_ms: u64,
         output: &mut Vec<TimedInputEvent>,
+        output_count: &mut usize,
     ) -> bool {
         let mut changed = false;
         for source in selected {
-            let (attaching, publication) = {
+            let (attaching, publication, captured_count) = {
                 let state = self
                     .source_states
                     .get_mut(&source.incarnation)
                     .expect("selected route source has consumer state");
                 state.transient_delta = InteractionTransientTotals::default();
-                let mut captured = std::mem::take(&mut state.captured);
-                captured.clear();
                 let attaching = state.cursor == u64::MAX;
-                let publication = state
+                let read = state
                     .slot
-                    .read_interaction_since(state.cursor, &mut captured);
+                    .read_interaction_reusing_since(state.cursor, &mut state.captured);
+                let publication = read.publication;
                 state.cursor = publication.events.next_cursor;
-                state.captured = captured;
-                (attaching, publication)
+                (attaching, publication, read.event_count)
             };
             if attaching {
                 let state = self
@@ -565,27 +613,24 @@ impl ConsumerRouteState {
                     .latest_snapshot
                     .as_ref()
                     .map(|snapshot| snapshot.as_interaction().generation);
-                debug_assert!(
-                    state.captured.is_empty(),
-                    "tail attach cannot replay events"
-                );
+                debug_assert!(captured_count == 0, "tail attach cannot replay events");
                 continue;
             }
             if publication.events.dropped > 0 {
                 self.overwritten_events = self
                     .overwritten_events
                     .saturating_add(publication.events.dropped);
-                let recovery = {
+                let (recovery, recovery_count) = {
                     let state = self
                         .source_states
                         .get_mut(&source.incarnation)
                         .expect("overflowed route source has consumer state");
-                    state.captured.clear();
-                    let recovery = state
+                    let read = state
                         .slot
-                        .read_interaction_since(u64::MAX, &mut state.captured);
+                        .read_interaction_reusing_since(u64::MAX, &mut state.captured);
+                    let recovery = read.publication;
                     state.cursor = recovery.events.next_cursor;
-                    recovery
+                    (recovery, read.event_count)
                 };
                 let transient_delta = {
                     let state = self
@@ -593,18 +638,18 @@ impl ConsumerRouteState {
                         .get_mut(&source.incarnation)
                         .expect("overflowed route source has consumer state");
                     debug_assert!(
-                        state.captured.is_empty(),
+                        recovery_count == 0,
                         "overflow recovery cannot replay events"
                     );
                     state.latest_snapshot = recovery.snapshot;
                     apply_interaction_transients(state, recovery.interaction_transients)
                 };
                 self.record_transient_delta(transient_delta);
-                self.reset_source_after_loss(source.incarnation, now_ms, output);
+                self.reset_source_after_loss(source.incarnation, now_ms, output, output_count);
                 changed = true;
                 continue;
             }
-            let (mut captured, transient_delta) = {
+            let (captured, transient_delta) = {
                 let state = self
                     .source_states
                     .get_mut(&source.incarnation)
@@ -615,8 +660,8 @@ impl ConsumerRouteState {
                 (std::mem::take(&mut state.captured), transient_delta)
             };
             changed |= self.record_transient_delta(transient_delta);
-            for event in captured.drain(..) {
-                changed |= self.route_event(source.incarnation, event, output);
+            for event in &captured[..captured_count] {
+                changed |= self.route_event(source.incarnation, event, output, output_count);
             }
             self.source_states
                 .get_mut(&source.incarnation)
@@ -639,6 +684,7 @@ impl ConsumerRouteState {
         incarnation: SourceIncarnation,
         now_ms: u64,
         output: &mut Vec<TimedInputEvent>,
+        output_count: &mut usize,
     ) {
         let Some(mut source) = self.source_states.remove(&incarnation) else {
             return;
@@ -646,7 +692,7 @@ impl ConsumerRouteState {
         let observed = std::mem::take(&mut source.observed);
         for (control, press) in observed {
             if !self.control_observed_elsewhere(&control) {
-                output.push(synthetic_release(&press, now_ms));
+                push_owned_event_reused(output, output_count, synthetic_release(&press, now_ms));
             }
         }
         replace_quarantine_from_snapshot(&mut source);
@@ -656,15 +702,16 @@ impl ConsumerRouteState {
     fn route_event(
         &mut self,
         incarnation: SourceIncarnation,
-        event: TimedInputEvent,
+        event: &TimedInputEvent,
         output: &mut Vec<TimedInputEvent>,
+        output_count: &mut usize,
     ) -> bool {
         if event.repeat_count == 0 {
             self.invalid_events = self.invalid_events.saturating_add(1);
             return false;
         }
         let Some((control, state)) = event_control(&event) else {
-            output.push(event);
+            push_event_reused(output, output_count, event);
             return true;
         };
         let source = self
@@ -680,12 +727,12 @@ impl ConsumerRouteState {
         match state {
             InputButtonState::Pressed => {
                 source.observed.insert(control, event.clone());
-                output.push(event);
+                push_event_reused(output, output_count, event);
                 true
             }
             InputButtonState::Repeated => {
                 if source.observed.contains_key(&control) {
-                    output.push(event);
+                    push_event_reused(output, output_count, event);
                     true
                 } else {
                     self.invalid_events = self.invalid_events.saturating_add(1);
@@ -698,7 +745,7 @@ impl ConsumerRouteState {
                     return false;
                 }
                 if !self.control_observed_elsewhere(&control) {
-                    output.push(event);
+                    push_event_reused(output, output_count, event);
                 }
                 true
             }
@@ -710,6 +757,7 @@ impl ConsumerRouteState {
         selected: &[InteractionRouteSource],
         now_ms: u64,
         output: &mut Vec<TimedInputEvent>,
+        output_count: &mut usize,
     ) -> bool {
         let mut changed = false;
         for source in selected {
@@ -739,7 +787,11 @@ impl ConsumerRouteState {
                     .and_then(|state| state.observed.remove(&control));
                 if let Some(press) = press {
                     if !self.control_observed_elsewhere(&control) {
-                        output.push(synthetic_release(&press, now_ms));
+                        push_owned_event_reused(
+                            output,
+                            output_count,
+                            synthetic_release(&press, now_ms),
+                        );
                     }
                     changed = true;
                 }
@@ -871,6 +923,7 @@ impl ConsumerRouteState {
         reuse_key: &mut InteractionRouteReuseKey,
     ) {
         reuse_key.route_generation = self.route_generation;
+        reuse_key.output_generation = self.output_generation;
         reuse_key.sources.clear();
         reuse_key.sources.extend(selected.iter().map(|source| {
             InteractionRouteReuseSource {
@@ -956,10 +1009,11 @@ impl ConsumerRouteState {
         source: ConsumerSourceState,
         now_ms: u64,
         output: &mut Vec<TimedInputEvent>,
+        output_count: &mut usize,
     ) {
         for (control, press) in source.observed {
             if !self.control_observed_elsewhere(&control) {
-                output.push(synthetic_release(&press, now_ms));
+                push_owned_event_reused(output, output_count, synthetic_release(&press, now_ms));
             }
         }
     }
@@ -1125,6 +1179,58 @@ fn push_reused(output: &mut Vec<String>, length: &mut usize, value: &str) {
         output.push(value.to_owned());
     }
     *length += 1;
+}
+
+fn push_event_reused(
+    output: &mut Vec<TimedInputEvent>,
+    length: &mut usize,
+    event: &TimedInputEvent,
+) {
+    if let Some(slot) = output.get_mut(*length) {
+        slot.clone_from(event);
+    } else {
+        output.push(event.clone());
+    }
+    *length += 1;
+}
+
+fn push_owned_event_reused(
+    output: &mut Vec<TimedInputEvent>,
+    length: &mut usize,
+    mut event: TimedInputEvent,
+) {
+    if let Some(slot) = output.get_mut(*length) {
+        std::mem::swap(slot, &mut event);
+    } else {
+        output.push(event);
+    }
+    *length += 1;
+}
+
+fn stable_sort_events_reused(
+    events: &mut Vec<TimedInputEvent>,
+    event_count: usize,
+    scratch: &mut Vec<(TimedInputEvent, usize)>,
+) {
+    if event_count == 0 {
+        scratch.extend(
+            events
+                .drain(..)
+                .enumerate()
+                .map(|(ordinal, event)| (event, ordinal)),
+        );
+        return;
+    }
+
+    events.truncate(event_count);
+    scratch.extend(
+        events
+            .drain(..)
+            .enumerate()
+            .map(|(ordinal, event)| (event, ordinal)),
+    );
+    scratch.sort_unstable_by_key(|(event, ordinal)| (event.at_ms, event.seq, *ordinal));
+    events.extend(scratch.drain(..).map(|(event, _)| event));
 }
 
 fn event_control(event: &TimedInputEvent) -> Option<(InteractionControl, InputButtonState)> {

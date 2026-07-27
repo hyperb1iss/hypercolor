@@ -19,12 +19,16 @@ use crate::input::graph::{
     InputEventRead, InputPublicationRead, InputPublicationSlot, InteractionTransientTotals,
 };
 use crate::input::input_mono_ms;
-use crate::input::routing::{InteractionRouteRead, InteractionRouteSlot, InteractionRouteSnapshot};
+use crate::input::routing::{
+    InteractionRouteRead, InteractionRouteSlot, InteractionRouteSnapshot,
+    ReusedInteractionRouteRead,
+};
 use crate::input::traits::{InputData, InputSource, InteractionData, MotionAggregate, PointerMode};
 use crate::input::{InteractionSourceOrigin, SourceKind, SourceStatusHandle, SourceStatusReporter};
 use crate::types::event::{InputButtonState, InputEvent, TimedInputEvent};
 
 const DEFAULT_EVENT_LIMIT: usize = 256;
+const SHARED_SAMPLE_POOL_CAPACITY: usize = 2;
 /// Maximum disconnected legacy children retained for compatibility releases.
 pub const BROWSER_RETIRED_LEGACY_CAPACITY: usize = 256;
 const MAX_HELD_KEYS_PER_SOURCE: usize = 128;
@@ -368,6 +372,28 @@ impl InteractionRouteSlot for BrowserInputChildSlot {
             }),
             events: publication.events,
             interaction_transients: publication.interaction_transients,
+        }
+    }
+
+    fn read_interaction_reusing_since(
+        &self,
+        cursor: u64,
+        output: &mut Vec<TimedInputEvent>,
+    ) -> ReusedInteractionRouteRead {
+        let (publication, event_count) = self
+            .inner
+            .publication
+            .read_publication_reusing_since(cursor, output, 0);
+        ReusedInteractionRouteRead {
+            publication: InteractionRouteRead {
+                snapshot: publication.sample.and_then(|sample| {
+                    matches!(sample.as_ref(), InputData::Interaction(_))
+                        .then_some(InteractionRouteSnapshot::InputData(sample))
+                }),
+                events: publication.events,
+                interaction_transients: publication.interaction_transients,
+            },
+            event_count,
         }
     }
 
@@ -799,6 +825,8 @@ pub struct BrowserInputSource {
     pending_aggregate_transients: InteractionTransientTotals,
     aggregate_latest_generations: BTreeMap<BrowserInputPublicationId, u64>,
     retained_legacy: Vec<BrowserInputChildSlot>,
+    shared_samples: Vec<Arc<InputData>>,
+    next_shared_sample: usize,
     event_limit: usize,
     status: SourceStatusReporter,
 }
@@ -826,6 +854,10 @@ impl BrowserInputSource {
             pending_aggregate_transients: InteractionTransientTotals::default(),
             aggregate_latest_generations: BTreeMap::new(),
             retained_legacy: Vec::new(),
+            shared_samples: (0..SHARED_SAMPLE_POOL_CAPACITY)
+                .map(|_| Arc::new(InputData::Interaction(InteractionData::default())))
+                .collect(),
+            next_shared_sample: 0,
             event_limit: DEFAULT_EVENT_LIMIT,
             status,
         }
@@ -884,7 +916,10 @@ impl BrowserInputSource {
         events
     }
 
-    fn sample_and_drain_aggregate(&mut self) -> (InteractionData, Vec<TimedInputEvent>) {
+    fn sample_and_drain_aggregate_into(
+        &mut self,
+        events: &mut Vec<TimedInputEvent>,
+    ) -> InteractionData {
         self.registry.take_retired_legacy(&mut self.retained_legacy);
         let registry = self.registry.snapshot();
         let mut retired_legacy = std::mem::take(&mut self.retained_legacy);
@@ -893,11 +928,11 @@ impl BrowserInputSource {
             &mut data,
             std::mem::take(&mut self.pending_aggregate_transients),
         );
-        let mut events = Vec::new();
+        let first_event = events.len();
         let mut dropped = 0_u32;
 
         for child in registry.children() {
-            let (publication, child_dropped) = self.read_aggregate_child(child, &mut events);
+            let (publication, child_dropped) = self.read_aggregate_child(child, events);
             dropped = dropped.saturating_add(child_dropped);
             let transients =
                 self.consume_aggregate_transients(child, publication.interaction_transients);
@@ -910,7 +945,7 @@ impl BrowserInputSource {
             );
         }
         for child in &retired_legacy {
-            let (publication, child_dropped) = self.read_aggregate_child(child, &mut events);
+            let (publication, child_dropped) = self.read_aggregate_child(child, events);
             dropped = dropped.saturating_add(child_dropped);
             let transients =
                 self.consume_aggregate_transients(child, publication.interaction_transients);
@@ -920,7 +955,7 @@ impl BrowserInputSource {
         self.retain_active_aggregate_cursors(&registry);
         retired_legacy.clear();
         self.retained_legacy = retired_legacy;
-        data.batch.wheel_hi_res = events.iter().fold(0_i32, |total, event| {
+        data.batch.wheel_hi_res = events[first_event..].iter().fold(0_i32, |total, event| {
             if let InputEvent::MouseWheel { delta_hi_res, .. } = &event.event {
                 total.saturating_add(*delta_hi_res)
             } else {
@@ -928,7 +963,7 @@ impl BrowserInputSource {
             }
         });
         data.batch.dropped_events = data.batch.dropped_events.saturating_add(dropped);
-        (self.finish_aggregate_snapshot(data, changed), events)
+        self.finish_aggregate_snapshot(data, changed)
     }
 
     fn begin_aggregate_snapshot(
@@ -1024,6 +1059,25 @@ impl BrowserInputSource {
             .retain(|publication_id, _| registry.contains_publication(*publication_id));
     }
 
+    fn retain_shared_sample(&mut self, snapshot: InteractionData) -> Arc<InputData> {
+        for offset in 0..self.shared_samples.len() {
+            let index = (self.next_shared_sample + offset) % self.shared_samples.len();
+            if Arc::strong_count(&self.shared_samples[index]) != 1 {
+                continue;
+            }
+            Arc::get_mut(&mut self.shared_samples[index])
+                .expect("exclusive shared browser sample")
+                .clone_from(&InputData::Interaction(snapshot));
+            self.next_shared_sample = (index + 1) % self.shared_samples.len();
+            return Arc::clone(&self.shared_samples[index]);
+        }
+
+        let sample = Arc::new(InputData::Interaction(snapshot));
+        self.shared_samples.push(Arc::clone(&sample));
+        self.next_shared_sample = 0;
+        sample
+    }
+
     /// A cloneable handle for WebSocket control and injection.
     #[must_use]
     pub fn handle(&self) -> BrowserInputHandle {
@@ -1083,8 +1137,21 @@ impl InputSource for BrowserInputSource {
         if !self.running {
             return (Ok(InputData::None), Vec::new());
         }
-        let (snapshot, events) = self.sample_and_drain_aggregate();
+        let mut events = Vec::new();
+        let snapshot = self.sample_and_drain_aggregate_into(&mut events);
         (Ok(InputData::Interaction(snapshot)), events)
+    }
+
+    fn sample_shared_and_drain_into(
+        &mut self,
+        _delta_secs: f32,
+        events: &mut Vec<TimedInputEvent>,
+    ) -> anyhow::Result<Option<Arc<InputData>>> {
+        if !self.running {
+            return Ok(None);
+        }
+        let snapshot = self.sample_and_drain_aggregate_into(events);
+        Ok(Some(self.retain_shared_sample(snapshot)))
     }
 
     fn is_running(&self) -> bool {

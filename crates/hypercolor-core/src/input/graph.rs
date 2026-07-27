@@ -43,7 +43,7 @@ pub(crate) struct InputPublicationSlot {
 
 struct InputPublicationSlotInner {
     latest: ArcSwapOption<InputData>,
-    event_slots: Box<[ArcSwapOption<InputEventEntry>]>,
+    event_slots: Box<[Mutex<Option<InputEventEntry>>]>,
     writer: Mutex<InputPublicationWriter>,
     revision: AtomicU64,
     next_cursor: AtomicU64,
@@ -183,6 +183,17 @@ impl InputSourceSlot {
             .read_publication_since(cursor, output)
     }
 
+    pub(crate) fn read_publication_reusing_since(
+        &self,
+        cursor: u64,
+        output: &mut Vec<TimedInputEvent>,
+        offset: usize,
+    ) -> (InputPublicationRead, usize) {
+        self.inner
+            .publication
+            .read_publication_reusing_since(cursor, output, offset)
+    }
+
     /// Append events newer than `cursor` and advance it monotonically.
     pub fn read_events_since(
         &self,
@@ -202,7 +213,7 @@ impl InputSourceSlot {
 impl InputPublicationSlot {
     pub(crate) fn new(event_capacity: usize) -> Self {
         let event_slots = (0..event_capacity)
-            .map(|_| ArcSwapOption::empty())
+            .map(|_| Mutex::new(None))
             .collect::<Vec<_>>()
             .into_boxed_slice();
         Self {
@@ -274,9 +285,14 @@ impl InputPublicationSlot {
             }
             let index = usize::try_from(cursor % capacity as u64)
                 .expect("input event slot index fits usize");
-            self.inner.event_slots[index].store(Some(Arc::new(InputEventEntry { cursor, event })));
+            let mut entry = lock_event_entry(&self.inner.event_slots[index]);
+            if let Some(entry) = entry.as_mut() {
+                entry.cursor = cursor;
+                entry.event.clone_from(&event);
+            } else {
+                *entry = Some(InputEventEntry { cursor, event });
+            }
         }
-
         self.inner
             .next_cursor
             .store(writer.next_cursor, Ordering::Release);
@@ -293,6 +309,19 @@ impl InputPublicationSlot {
         cursor: u64,
         output: &mut Vec<TimedInputEvent>,
     ) -> InputPublicationRead {
+        let original_len = output.len();
+        let (publication, event_count) =
+            self.read_publication_reusing_since(cursor, output, original_len);
+        output.truncate(original_len.saturating_add(event_count));
+        publication
+    }
+
+    pub(crate) fn read_publication_reusing_since(
+        &self,
+        cursor: u64,
+        output: &mut Vec<TimedInputEvent>,
+        offset: usize,
+    ) -> (InputPublicationRead, usize) {
         loop {
             let revision = self.inner.revision.load(Ordering::Acquire);
             if revision & 1 != 0 {
@@ -300,7 +329,6 @@ impl InputPublicationSlot {
                 continue;
             }
 
-            let original_len = output.len();
             let sample = self.inner.latest.load_full();
             let next_cursor = self.inner.next_cursor.load(Ordering::Acquire);
             let dropped_total = self.inner.dropped_total.load(Ordering::Acquire);
@@ -314,33 +342,39 @@ impl InputPublicationSlot {
             let oldest_cursor = next_cursor.saturating_sub(capacity.min(next_cursor));
             let dropped = oldest_cursor.saturating_sub(effective_cursor);
             let readable_cursor = effective_cursor.max(oldest_cursor);
+            let mut event_count = 0;
             let mut valid = true;
 
             for expected_cursor in readable_cursor..next_cursor {
                 let index = usize::try_from(expected_cursor % capacity)
                     .expect("input event slot index fits usize");
-                let entry = self.inner.event_slots[index].load_full();
-                let Some(entry) = entry.filter(|entry| entry.cursor == expected_cursor) else {
+                let entry = lock_event_entry(&self.inner.event_slots[index]);
+                let Some(entry) = entry
+                    .as_ref()
+                    .filter(|entry| entry.cursor == expected_cursor)
+                else {
                     valid = false;
                     break;
                 };
-                output.push(entry.event.clone());
+                clone_event_reused(output, offset.saturating_add(event_count), &entry.event);
+                event_count += 1;
             }
 
             let final_revision = self.inner.revision.load(Ordering::Acquire);
             if valid && revision == final_revision && final_revision & 1 == 0 {
-                return InputPublicationRead {
-                    sample,
-                    events: InputEventRead {
-                        next_cursor,
-                        dropped,
-                        dropped_total,
+                return (
+                    InputPublicationRead {
+                        sample,
+                        events: InputEventRead {
+                            next_cursor,
+                            dropped,
+                            dropped_total,
+                        },
+                        interaction_transients,
                     },
-                    interaction_transients,
-                };
+                    event_count,
+                );
             }
-
-            output.truncate(original_len);
             spin_loop();
         }
     }
@@ -494,5 +528,22 @@ fn lock_publication_writer(
     match writer.lock() {
         Ok(writer) => writer,
         Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+fn lock_event_entry(
+    entry: &Mutex<Option<InputEventEntry>>,
+) -> MutexGuard<'_, Option<InputEventEntry>> {
+    match entry.lock() {
+        Ok(entry) => entry,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+fn clone_event_reused(output: &mut Vec<TimedInputEvent>, index: usize, event: &TimedInputEvent) {
+    if let Some(slot) = output.get_mut(index) {
+        slot.clone_from(event);
+    } else {
+        output.push(event.clone());
     }
 }
