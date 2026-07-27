@@ -112,6 +112,18 @@ fn readiness_timeout_reaper_observes_late_worker_exit() {
 }
 
 #[test]
+fn readiness_timeout_blocks_every_late_initial_sink_call() {
+    let _exclusive = exclusive();
+    assert_eq!(
+        RawInputSession::test_readiness_timeout_blocks_initial_publication(
+            Duration::from_millis(40),
+            Duration::from_millis(5),
+        ),
+        0
+    );
+}
+
+#[test]
 fn reaper_spawn_failure_keeps_the_worker_reachable_until_later_reap() {
     let _exclusive = exclusive();
     assert!(RawInputSession::test_reaper_spawn_failure_is_reapable(

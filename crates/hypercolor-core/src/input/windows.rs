@@ -281,6 +281,33 @@ impl WindowsHostInput {
         data
     }
 
+    fn rotate_epoch_and_clear(&mut self) -> u64 {
+        let epoch = NEXT_EPOCH.fetch_add(1, Ordering::Relaxed);
+        let mut guard = self
+            .shared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.clear_live_state();
+        guard.epoch = epoch;
+        drop(guard);
+        self.last_state_key = None;
+        epoch
+    }
+
+    /// Build and fence a failed-session epoch for lifecycle contract tests.
+    #[doc(hidden)]
+    pub fn test_failed_session_epoch(&mut self) -> u64 {
+        let failed_epoch = self.rotate_epoch_and_clear();
+        self.rotate_epoch_and_clear();
+        failed_epoch
+    }
+
+    /// Fold a worker batch without consuming the public event drain.
+    #[doc(hidden)]
+    pub fn test_fold_worker_batch(&self, batch: RawInputBatch<'_>) {
+        fold_batch(&self.shared, batch, self.event_limit);
+    }
+
     /// Infallible by design.
     ///
     /// Every way host capture can fail on Windows — no visible window station,
@@ -319,14 +346,9 @@ impl WindowsHostInput {
             return;
         }
 
-        let epoch = NEXT_EPOCH.fetch_add(1, Ordering::Relaxed);
-        if let Ok(mut guard) = self.shared.lock() {
-            // Advanced atomically with clearing held state, so a batch still in
-            // flight from the previous session cannot repopulate what was just
-            // cleared.
-            guard.clear_live_state();
-            guard.epoch = epoch;
-        }
+        // Advanced atomically with clearing held state, so a batch still in
+        // flight from the previous session cannot repopulate what was cleared.
+        let epoch = self.rotate_epoch_and_clear();
 
         let shared = Arc::clone(&self.shared);
         let event_limit = self.event_limit;
@@ -354,25 +376,27 @@ impl WindowsHostInput {
                     status.mark_event_driven_live_without_deadline(self.device_count());
                 }
             }
-            Err(RawInputError::NoInteractiveSession) => {
-                self.degraded = Some(InteractionDegradation::NoInteractiveSession);
-                if let Some(status) = self.status.session() {
-                    status.unavailable(SourceIssue::new(
-                        InteractionDegradation::NoInteractiveSession.code(),
-                        "Raw Input requires an interactive desktop session",
-                        true,
-                    ));
-                }
-            }
             Err(error) => {
-                warn!(source = %self.name, %error, "Windows Raw Input capture unavailable");
-                self.degraded = Some(InteractionDegradation::Unavailable(error.to_string()));
-                if let Some(status) = self.status.session() {
-                    status.unavailable(SourceIssue::new(
-                        "windows_raw_input_unavailable",
-                        error.to_string(),
-                        true,
-                    ));
+                self.rotate_epoch_and_clear();
+                if matches!(&error, RawInputError::NoInteractiveSession) {
+                    self.degraded = Some(InteractionDegradation::NoInteractiveSession);
+                    if let Some(status) = self.status.session() {
+                        status.unavailable(SourceIssue::new(
+                            InteractionDegradation::NoInteractiveSession.code(),
+                            "Raw Input requires an interactive desktop session",
+                            true,
+                        ));
+                    }
+                } else {
+                    warn!(source = %self.name, %error, "Windows Raw Input capture unavailable");
+                    self.degraded = Some(InteractionDegradation::Unavailable(error.to_string()));
+                    if let Some(status) = self.status.session() {
+                        status.unavailable(SourceIssue::new(
+                            "windows_raw_input_unavailable",
+                            error.to_string(),
+                            true,
+                        ));
+                    }
                 }
             }
         }
@@ -382,14 +406,9 @@ impl WindowsHostInput {
         if let Some(mut session) = self.session.take() {
             session.stop();
         }
-        if let Ok(mut guard) = self.shared.lock() {
-            // Advancing the epoch here is what makes a detached pump inert: it
-            // may still be holding a batch, and it will find the epoch rotated
-            // when it finally acquires this lock.
-            guard.clear_live_state();
-            guard.epoch = NEXT_EPOCH.fetch_add(1, Ordering::Relaxed);
-        }
-        self.last_state_key = None;
+        // Advancing the epoch here is what makes a detached pump inert: it may
+        // still hold a batch and sees the rotated epoch at the shared lock.
+        self.rotate_epoch_and_clear();
         self.worker_failure.reset();
     }
 

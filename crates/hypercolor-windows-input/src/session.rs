@@ -255,6 +255,34 @@ impl RawInputSession {
             .is_ok()
     }
 
+    /// Prove delayed initialization cannot publish after readiness times out.
+    #[doc(hidden)]
+    pub fn test_readiness_timeout_blocks_initial_publication(
+        worker_delay: Duration,
+        ready_timeout: Duration,
+    ) -> usize {
+        let stop = Arc::new(AtomicBool::new(false));
+        let sink_calls = Arc::new(AtomicUsize::new(0));
+        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        let worker_stop = Arc::clone(&stop);
+        let worker_sink_calls = Arc::clone(&sink_calls);
+        let worker = thread::spawn(move || {
+            thread::sleep(worker_delay);
+            if run_initial_step(&worker_stop, || {})
+                && run_initial_step(&worker_stop, || {
+                    worker_sink_calls.fetch_add(1, Ordering::SeqCst);
+                })
+            {
+                let _ = ready_tx.send(());
+            }
+        });
+        if ready_rx.recv_timeout(ready_timeout).is_err() {
+            stop.store(true, Ordering::Release);
+        }
+        let _ = worker.join();
+        sink_calls.load(Ordering::SeqCst)
+    }
+
     /// Prove a failed reaper spawn leaves the worker owned and later reapable.
     #[doc(hidden)]
     pub fn test_reaper_spawn_failure_is_reapable(worker_delay: Duration) -> bool {
@@ -494,32 +522,34 @@ fn run_worker(
     // Devices attached before registration produce no arrival notification, so
     // their arrivals are delivered here — before readiness, so core never sees
     // input from a device it was never told about.
-    pump.queue_initial_arrivals();
-    pump.flush_pending(&mut sink);
+    let initial_publication_active = run_initial_step(stop, || pump.queue_initial_arrivals())
+        && run_initial_step(stop, || pump.flush_pending(&mut sink));
 
-    let _ = ready_tx.send(Ok(()));
+    if initial_publication_active {
+        let _ = ready_tx.send(Ok(()));
 
-    loop {
-        // A panic while folding must not take the process with it, and must
-        // not leave core believing a dead source is live.
-        let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
-            let keep_going = pump.run_once(stop, &mut sink);
-            pump.flush_pending(&mut sink);
-            keep_going
-        }));
+        loop {
+            // A panic while folding must not take the process with it, and must
+            // not leave core believing a dead source is live.
+            let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                let keep_going = pump.run_once(stop, &mut sink);
+                pump.flush_pending(&mut sink);
+                keep_going
+            }));
 
-        match outcome {
-            Ok(true) => {}
-            Ok(false) => break,
-            Err(_) => {
-                if let Ok(mut guard) = state.lock() {
-                    *guard = WorkerState::Failed("raw input fold panicked".to_owned());
+            match outcome {
+                Ok(true) => {}
+                Ok(false) => break,
+                Err(_) => {
+                    if let Ok(mut guard) = state.lock() {
+                        *guard = WorkerState::Failed("raw input fold panicked".to_owned());
+                    }
+                    tracing::error!("raw input fold panicked; stopping the pump");
+                    break;
                 }
-                tracing::error!("raw input fold panicked; stopping the pump");
-                break;
             }
+            device_count.store(pump.device_count(), Ordering::Release);
         }
-        device_count.store(pump.device_count(), Ordering::Release);
     }
 
     // Clear the slot before the pump's `Drop` destroys the window, so no
@@ -530,4 +560,12 @@ fn run_worker(
         *slot = 0;
     }
     drop(pump);
+}
+
+fn run_initial_step(stop: &AtomicBool, step: impl FnOnce()) -> bool {
+    if stop.load(Ordering::Acquire) {
+        return false;
+    }
+    step();
+    true
 }
