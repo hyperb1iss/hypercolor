@@ -64,18 +64,9 @@ fn has_preview_extent(frame: &CanvasFrame) -> bool {
     frame.width > 0 && frame.height > 0
 }
 
-/// Browser-side mirror of `EffectMetadata::requires_interaction` over the
-/// REST `EffectSummary` shape. `EffectSummary` does not carry the explicit
-/// `input_reactive` capability flag, so the category and legacy-tag legs
-/// are the whole gate here.
+/// Whether the effect explicitly declares interactive input demand.
 pub fn effect_wants_interaction(effect: &api::EffectSummary) -> bool {
-    effect.category.eq_ignore_ascii_case("interactive")
-        || effect.tags.iter().any(|tag| {
-            tag.eq_ignore_ascii_case("interactive")
-                || tag.eq_ignore_ascii_case("input")
-                || tag.eq_ignore_ascii_case("mouse")
-                || tag.eq_ignore_ascii_case("keyboard")
-        })
+    effect.input_reactive
 }
 
 /// Map a `KeyboardEvent.code` to the daemon's canonical browser-style key
@@ -274,7 +265,8 @@ pub fn CanvasPreview(
     /// offers a toggle that forwards pointer/keyboard/wheel input to the
     /// daemon as `input_inject` messages. Off for passive surfaces
     /// (sidebar mini-preview, pickers, layout ghosts).
-    #[prop(default = false)] allow_interactive: bool,
+    #[prop(default = false)]
+    allow_interactive: bool,
 ) -> impl IntoView {
     let canvas_ref = NodeRef::<Canvas>::new();
     let mounted_canvas = Rc::new(RefCell::new(None::<web_sys::HtmlCanvasElement>));

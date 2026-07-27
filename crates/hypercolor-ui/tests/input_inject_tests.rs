@@ -1,11 +1,11 @@
-use hypercolor_ui::api::EffectSummary;
+use hypercolor_ui::api::{EffectCapabilitySet, EffectSummary};
 use hypercolor_ui::components::canvas_preview::{
     canonical_injection_key, effect_wants_interaction, normalized_canvas_position,
     wheel_delta_hi_res,
 };
 use hypercolor_ui::ws::{InputEdgeButton, InputEdgeState, InputInjectEdge};
 
-fn summary(category: &str, tags: &[&str]) -> EffectSummary {
+fn summary(input_reactive: bool, category: &str, tags: &[&str]) -> EffectSummary {
     EffectSummary {
         id: "fx".to_owned(),
         name: "Fx".to_owned(),
@@ -17,6 +17,11 @@ fn summary(category: &str, tags: &[&str]) -> EffectSummary {
         tags: tags.iter().map(|tag| (*tag).to_owned()).collect(),
         version: "1.0.0".to_owned(),
         audio_reactive: false,
+        input_reactive,
+        capabilities: EffectCapabilitySet {
+            input_reactive,
+            ..EffectCapabilitySet::default()
+        },
         cover_image_url: None,
     }
 }
@@ -105,7 +110,10 @@ fn injection_keys_match_daemon_canonical_names() {
     assert_eq!(canonical_injection_key("Slash"), Some("/".to_owned()));
     // Unknown named keys pass through untouched.
     assert_eq!(canonical_injection_key("F1"), Some("F1".to_owned()));
-    assert_eq!(canonical_injection_key("Numpad1"), Some("Numpad1".to_owned()));
+    assert_eq!(
+        canonical_injection_key("Numpad1"),
+        Some("Numpad1".to_owned())
+    );
     assert_eq!(canonical_injection_key(""), None);
 }
 
@@ -145,19 +153,30 @@ fn normalized_positions_clamp_to_unit_square() {
 }
 
 #[test]
-fn interaction_gate_mirrors_requires_interaction() {
-    assert!(effect_wants_interaction(&summary("interactive", &[])));
-    assert!(effect_wants_interaction(&summary("Interactive", &[])));
-    assert!(effect_wants_interaction(&summary("generative", &["input"])));
-    assert!(effect_wants_interaction(&summary("generative", &["mouse"])));
-    assert!(effect_wants_interaction(&summary("generative", &["keyboard"])));
-    assert!(effect_wants_interaction(&summary(
-        "generative",
-        &["Interactive"]
-    )));
-    assert!(!effect_wants_interaction(&summary("generative", &[])));
+fn interaction_gate_uses_authoritative_capability() {
+    assert!(effect_wants_interaction(&summary(true, "ambient", &[])));
     assert!(!effect_wants_interaction(&summary(
-        "audio",
-        &["spectrum", "bars"]
+        false,
+        "interactive",
+        &["input", "mouse", "keyboard"]
     )));
+}
+
+#[test]
+fn effect_summary_defaults_new_capabilities_for_older_payloads() {
+    let summary: EffectSummary = serde_json::from_value(serde_json::json!({
+        "id": "legacy",
+        "name": "Legacy",
+        "description": "",
+        "author": "",
+        "category": "interactive",
+        "source": "html",
+        "runnable": true,
+        "tags": ["input"],
+        "version": "1.0.0"
+    }))
+    .expect("older effect summary payload should deserialize");
+
+    assert!(!summary.input_reactive);
+    assert_eq!(summary.capabilities, EffectCapabilitySet::default());
 }

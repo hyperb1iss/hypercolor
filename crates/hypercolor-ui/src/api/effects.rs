@@ -16,8 +16,8 @@ use super::client;
 // convenience shape derived from the shared wire response.
 use hypercolor_types::api::effects::ActiveEffectResponse as WireActiveEffectResponse;
 pub use hypercolor_types::api::effects::{
-    ApplyEffectRequest as ApplyEffectBody, EffectDetailResponse, EffectListResponse, EffectSummary,
-    InstalledEffectResponse,
+    ApplyEffectRequest as ApplyEffectBody, EffectCapabilitySet, EffectDetailResponse,
+    EffectListResponse, EffectSummary, InstalledEffectResponse,
 };
 
 /// Active effect response from `GET /api/v1/effects/active`.

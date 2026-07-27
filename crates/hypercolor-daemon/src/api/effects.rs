@@ -62,9 +62,9 @@ pub(crate) async fn invalidate_active_render_groups_after_effect_registry_update
 // web UI and the TUI.
 pub use hypercolor_types::api::effects::{
     ActiveEffectResponse, ApplyEffectRequest, ApplyEffectResponse, ApplyTransitionResponse,
-    EffectDetailResponse, EffectLayoutApplyResult, EffectListResponse, EffectRefSummary,
-    EffectSummary, InstalledEffectResponse, LayoutLinkSummary, ResetControlsRequest,
-    TransitionRequest, UpdateCurrentControlsRequest,
+    EffectCapabilitySet, EffectDetailResponse, EffectLayoutApplyResult, EffectListResponse,
+    EffectRefSummary, EffectSummary, InstalledEffectResponse, LayoutLinkSummary,
+    ResetControlsRequest, TransitionRequest, UpdateCurrentControlsRequest,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -399,6 +399,12 @@ pub async fn list_effects(State(state): State<Arc<AppState>>) -> Response {
                 tags: meta.tags.clone(),
                 version: meta.version.clone(),
                 audio_reactive: meta.audio_reactive,
+                input_reactive: meta.input_reactive,
+                capabilities: EffectCapabilitySet {
+                    audio_reactive: meta.audio_reactive,
+                    screen_reactive: meta.screen_reactive,
+                    input_reactive: meta.input_reactive,
+                },
                 cover_image_url: effect_cover_image_url(meta),
             }
         })

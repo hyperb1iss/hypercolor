@@ -85,10 +85,29 @@ export interface MouseInputState {
     events: MouseInputEvent[]
 }
 
-/** Typed per-frame input snapshot returned by `getInputData()`. */
-export interface InputData {
-    /** True when the mouse is available or any keyboard activity is present. */
+/** Input declaration, routing, and source lifecycle state. */
+export interface InputAvailability {
+    /** Whether the effect declares interactive input capability. */
+    declared: boolean
+    /** Whether an input source is routed to this effect. */
+    routed: boolean
+    /** Whether the routed source is operational. */
+    healthy: boolean
+    /** Whether the routed source data is inside its freshness contract. */
+    fresh: boolean
+    /** Whether the routed source is operating with reduced capability. */
+    degraded: boolean
+    /**
+     * Whether input is routed and healthy.
+     *
+     * @deprecated Read `routed && healthy` instead. This alias will be removed
+     * in version 0.4.0.
+     */
     available: boolean
+}
+
+/** Typed per-frame input snapshot returned by `getInputData()`. */
+export interface InputData extends InputAvailability {
     keyboard: KeyboardInputState
     mouse: MouseInputState
     /** Count of input events dropped this frame due to overflow. */

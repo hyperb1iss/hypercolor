@@ -1,4 +1,4 @@
-use hypercolor_ui::api::EffectSummary;
+use hypercolor_ui::api::{EffectCapabilitySet, EffectSummary};
 use hypercolor_ui::effect_search::IndexedEffect;
 
 fn effect(name: &str) -> EffectSummary {
@@ -13,6 +13,8 @@ fn effect(name: &str) -> EffectSummary {
         tags: vec!["cinematic".to_owned()],
         version: "1.0.0".to_owned(),
         audio_reactive: false,
+        input_reactive: false,
+        capabilities: EffectCapabilitySet::default(),
         cover_image_url: None,
     }
 }

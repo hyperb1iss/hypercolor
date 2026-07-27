@@ -6,26 +6,56 @@
  * provides typed access and silent fallbacks when running outside the daemon.
  */
 
-import { InputData, KeyboardInputState, KeyInputEvent, MouseInputEvent, MouseInputState, MouseMode } from './types'
+import {
+    InputAvailability,
+    InputData,
+    KeyboardInputState,
+    KeyInputEvent,
+    MouseInputEvent,
+    MouseInputState,
+    MouseMode,
+} from './types'
 
 /**
  * Get the interactive input snapshot from the Hypercolor runtime.
- * Returns an idle snapshot (`available: false`) when running outside the
- * daemon or when the effect has not declared `input: true`.
+ * Returns an idle, unavailable snapshot when running outside the daemon.
  */
 export function getInputData(): InputData {
     const hasEngine = typeof engine !== 'undefined' && engine !== null
     const raw = hasEngine ? (engine as any) : undefined
     const keyboard = readKeyboard(raw?.keyboard)
     const mouse = readMouse(raw?.mouse)
-    const keyboardActive =
-        Object.keys(keyboard.keys).length > 0 || keyboard.recent.length > 0 || keyboard.events.length > 0
+    const availability = readAvailability(raw?.inputAvailability)
 
     return {
-        available: mouse.available || keyboardActive,
+        ...availability,
         dropped: finiteNumber(raw?.inputDropped, 0),
         keyboard,
         mouse,
+    }
+}
+
+function readAvailability(raw: any): InputAvailability {
+    if (typeof raw !== 'object' || raw === null) {
+        return {
+            available: false,
+            declared: false,
+            degraded: false,
+            fresh: false,
+            healthy: false,
+            routed: false,
+        }
+    }
+
+    const routed = raw.routed === true
+    const healthy = raw.healthy === true
+    return {
+        available: routed && healthy,
+        declared: raw.declared === true,
+        degraded: raw.degraded === true,
+        fresh: raw.fresh === true,
+        healthy,
+        routed,
     }
 }
 

@@ -1982,6 +1982,19 @@ fn test_html_effect_metadata(name: &str) -> EffectMetadata {
     }
 }
 
+async fn insert_input_reactive_test_effect(state: &Arc<AppState>, name: &str) {
+    let mut metadata = test_html_effect_metadata(name);
+    metadata.tags = vec!["test".to_owned()];
+    metadata.input_reactive = true;
+    let entry = EffectEntry {
+        metadata,
+        source_path: format!("/tmp/{name}.html").into(),
+        modified: SystemTime::now(),
+        state: EffectState::Loading,
+    };
+    let _ = state.effect_registry.write().await.register(entry);
+}
+
 fn test_display_face_effect_metadata(name: &str) -> EffectMetadata {
     let mut metadata = test_html_effect_metadata(name);
     metadata.category = EffectCategory::Display;
@@ -4552,6 +4565,55 @@ async fn list_effects_returns_items_sorted_by_name() {
         .map(|item| item["name"].as_str().expect("name should be a string"))
         .collect();
     assert_eq!(names, vec!["Alpha", "beta", "zeta"]);
+}
+
+#[tokio::test]
+async fn list_effects_carries_authoritative_input_capabilities() {
+    let state = Arc::new(isolated_state());
+    insert_input_reactive_test_effect(&state, "Input Probe").await;
+
+    let response = test_app_with_state(Arc::clone(&state))
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/effects")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    let effect = &json["data"]["items"][0];
+    assert_eq!(effect["category"], "ambient");
+    assert_eq!(effect["tags"], serde_json::json!(["test"]));
+    assert_eq!(effect["input_reactive"], true);
+    assert_eq!(effect["capabilities"]["audio_reactive"], false);
+    assert_eq!(effect["capabilities"]["screen_reactive"], false);
+    assert_eq!(effect["capabilities"]["input_reactive"], true);
+}
+
+#[test]
+fn effect_summary_defaults_new_capabilities_for_older_payloads() {
+    let summary: hypercolor_types::api::effects::EffectSummary =
+        serde_json::from_value(serde_json::json!({
+            "id": "legacy",
+            "name": "Legacy",
+            "description": "",
+            "author": "",
+            "category": "ambient",
+            "source": "html",
+            "runnable": true,
+            "tags": [],
+            "version": "1.0.0"
+        }))
+        .expect("older effect summary payload should deserialize");
+
+    assert!(!summary.input_reactive);
+    assert_eq!(
+        summary.capabilities,
+        hypercolor_types::api::effects::EffectCapabilitySet::default()
+    );
 }
 
 #[tokio::test]

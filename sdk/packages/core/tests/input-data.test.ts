@@ -11,6 +11,11 @@ describe('input data contract', () => {
         const input = getInputData()
 
         expect(input.available).toBeFalse()
+        expect(input.declared).toBeFalse()
+        expect(input.routed).toBeFalse()
+        expect(input.healthy).toBeFalse()
+        expect(input.fresh).toBeFalse()
+        expect(input.degraded).toBeFalse()
         expect(input.dropped).toBe(0)
         expect(input.keyboard.keys).toEqual({})
         expect(input.keyboard.recent).toEqual([])
@@ -30,6 +35,13 @@ describe('input data contract', () => {
 
     test('maps injected engine state into the typed snapshot', () => {
         ;(globalThis as { engine?: unknown }).engine = {
+            inputAvailability: {
+                declared: true,
+                degraded: false,
+                fresh: true,
+                healthy: true,
+                routed: true,
+            },
             inputDropped: 3,
             keyboard: {
                 events: [
@@ -59,6 +71,11 @@ describe('input data contract', () => {
         const input = getInputData()
 
         expect(input.available).toBeTrue()
+        expect(input.declared).toBeTrue()
+        expect(input.routed).toBeTrue()
+        expect(input.healthy).toBeTrue()
+        expect(input.fresh).toBeTrue()
+        expect(input.degraded).toBeFalse()
         expect(input.dropped).toBe(3)
         expect(input.keyboard.keys).toEqual({ a: true, KeyA: true })
         expect(input.keyboard.recent).toEqual(['a', 'b'])
@@ -82,20 +99,75 @@ describe('input data contract', () => {
         ])
     })
 
-    test('flags availability from keyboard activity alone', () => {
+    test('keeps an idle healthy routed source available', () => {
+        ;(globalThis as { engine?: unknown }).engine = {
+            inputAvailability: {
+                declared: true,
+                degraded: false,
+                fresh: true,
+                healthy: true,
+                routed: true,
+            },
+            keyboard: { events: [], keys: {}, recent: [] },
+        }
+
+        const input = getInputData()
+
+        expect(input.available).toBeTrue()
+        expect(input.healthy).toBeTrue()
+        expect(input.fresh).toBeTrue()
+    })
+
+    test('does not infer availability from recent activity', () => {
         ;(globalThis as { engine?: unknown }).engine = {
             keyboard: { events: [], keys: { w: true }, recent: [] },
         }
 
         const input = getInputData()
 
-        expect(input.available).toBeTrue()
+        expect(input.available).toBeFalse()
         expect(input.mouse.available).toBeFalse()
         expect(input.mouse.mode).toBe('none')
     })
 
+    test('reports recently active failed sources as unhealthy and stale', () => {
+        ;(globalThis as { engine?: unknown }).engine = {
+            inputAvailability: {
+                declared: true,
+                degraded: true,
+                fresh: false,
+                healthy: false,
+                routed: true,
+            },
+            keyboard: {
+                events: [{ atMs: 1000, key: 'w', kind: 'key', seq: 1, source: 'kbd0', state: 'pressed' }],
+                keys: { w: true },
+                recent: ['w'],
+            },
+            mouse: { mode: 'virtual', nx: 0.5, ny: 0.5 },
+        }
+
+        const input = getInputData()
+
+        expect(input.available).toBeFalse()
+        expect(input.declared).toBeTrue()
+        expect(input.routed).toBeTrue()
+        expect(input.healthy).toBeFalse()
+        expect(input.fresh).toBeFalse()
+        expect(input.degraded).toBeTrue()
+        expect(input.keyboard.events).toHaveLength(1)
+        expect(input.mouse.available).toBeTrue()
+    })
+
     test('sanitizes malformed engine data', () => {
         ;(globalThis as { engine?: unknown }).engine = {
+            inputAvailability: {
+                declared: 'yes',
+                degraded: 1,
+                fresh: {},
+                healthy: 'yes',
+                routed: [],
+            },
             inputDropped: 'lots',
             keyboard: { events: {}, keys: null, recent: 'nope' },
             mouse: { mode: 'weird', nx: Number.NaN, x: 12.7 },
@@ -104,6 +176,11 @@ describe('input data contract', () => {
         const input = getInputData()
 
         expect(input.available).toBeFalse()
+        expect(input.declared).toBeFalse()
+        expect(input.routed).toBeFalse()
+        expect(input.healthy).toBeFalse()
+        expect(input.fresh).toBeFalse()
+        expect(input.degraded).toBeFalse()
         expect(input.dropped).toBe(0)
         expect(input.keyboard.keys).toEqual({})
         expect(input.keyboard.recent).toEqual([])

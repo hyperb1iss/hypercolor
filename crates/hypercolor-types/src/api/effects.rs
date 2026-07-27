@@ -29,8 +29,23 @@ pub struct EffectSummary {
     pub version: String,
     #[serde(default)]
     pub audio_reactive: bool,
+    #[serde(default)]
+    pub input_reactive: bool,
+    #[serde(default)]
+    pub capabilities: EffectCapabilitySet,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cover_image_url: Option<String>,
+}
+
+/// Typed source requirements declared by an effect.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct EffectCapabilitySet {
+    #[serde(default)]
+    pub audio_reactive: bool,
+    #[serde(default)]
+    pub screen_reactive: bool,
+    #[serde(default)]
+    pub input_reactive: bool,
 }
 
 /// Response for `GET /api/v1/effects/active` — the primary zone's

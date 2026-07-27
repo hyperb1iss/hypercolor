@@ -199,6 +199,7 @@ from .driver_transport_kind_type_5 import DriverTransportKindType5
 from .driver_transport_kind_type_6 import DriverTransportKindType6
 from .driver_transport_kind_type_7 import DriverTransportKindType7
 from .edge_behavior import EdgeBehavior
+from .effect_capability_set import EffectCapabilitySet
 from .effect_detail_response import EffectDetailResponse
 from .effect_detail_response_active_control_values_type_0 import (
     EffectDetailResponseActiveControlValuesType0,
@@ -482,6 +483,7 @@ __all__ = (
     "DriverTransportKindType6",
     "DriverTransportKindType7",
     "EdgeBehavior",
+    "EffectCapabilitySet",
     "EffectDetailResponse",
     "EffectDetailResponseActiveControlValuesType0",
     "EffectHealthStatus",

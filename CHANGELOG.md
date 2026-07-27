@@ -93,6 +93,18 @@ First public release of Hypercolor, a cross-platform RGB LED orchestration daemo
 
 - Launch hardening branch for v0.1.0 release readiness.
 
+### Changed
+
+- `getInputData()` now reports input declaration, routing, health, freshness,
+  and degradation independently. Recent keyboard or mouse activity no longer
+  implies source availability.
+
+### Deprecated
+
+- `InputData.available` now means `routed && healthy` and remains as a
+  compatibility alias through SDK 0.3.x. Read the explicit lifecycle fields
+  instead; the alias will be removed in SDK 0.4.0.
+
 ## [0.1.0] - Unreleased
 
 ### Added
