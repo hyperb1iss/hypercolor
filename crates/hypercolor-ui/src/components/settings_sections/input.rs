@@ -8,7 +8,10 @@ use crate::components::settings_controls::{
     SectionHeader, SectionReset, SettingDropdown, SettingToggle,
 };
 use crate::icons::LuKeyboard;
-use crate::input_access::{InputPipelineState, input_pipeline_state, input_status_remediation};
+use crate::input_access::{
+    InputPipelineState, input_pipeline_state, input_status_epoch, input_status_remediation,
+    primary_input_source_issue,
+};
 
 #[component]
 pub fn InputSection(
@@ -45,19 +48,11 @@ pub fn InputSection(
     let input_status = LocalResource::new(move || {
         let connection_generation = ws.connection_generation.get();
         let source_event = ws.last_input_source_status_event.get();
-        let config_epoch = config.with(|current| {
-            current.as_ref().map(|current| {
-                (
-                    current.input.enabled,
-                    current.input.keyboard,
-                    current.input.mouse,
-                    current.input.daemon_route,
-                    current.input.preview_route,
-                )
-            })
+        let epoch = config.with(|current| {
+            input_status_epoch(connection_generation, source_event, current.as_ref())
         });
         async move {
-            let _ = (connection_generation, source_event, config_epoch);
+            let _ = epoch;
             api::fetch_status().await.map(|status| status.input)
         }
     });
@@ -192,11 +187,7 @@ fn input_status_view(status: InputStatus) -> impl IntoView {
 }
 
 fn input_source_view(source: InputSourceStatus) -> impl IntoView {
-    let issue = source
-        .issue
-        .as_ref()
-        .or(source.lifecycle_issue.as_ref())
-        .or(source.freshness_issue.as_ref());
+    let issue = primary_input_source_issue(&source);
     let issue_message = issue.map(|issue| issue.message.clone());
     let source_remediation = issue.and_then(|issue| issue.remediation.clone());
     let state_class = if issue.is_some()

@@ -13,7 +13,38 @@
 //! first, and it is what keeps the banner from offering a udev command to a
 //! Windows user.
 
+use hypercolor_types::config::{HypercolorConfig, InteractionRoutePolicy};
+
 use crate::api::{InputSourceStatus, InputStatus};
+use crate::ws::InputSourceStatusEventHint;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InputStatusEpoch {
+    pub connection_generation: u64,
+    pub source_event: Option<InputSourceStatusEventHint>,
+    pub enabled: bool,
+    pub keyboard: bool,
+    pub mouse: bool,
+    pub daemon_route: InteractionRoutePolicy,
+    pub preview_route: InteractionRoutePolicy,
+}
+
+#[must_use]
+pub fn input_status_epoch(
+    connection_generation: u64,
+    source_event: Option<InputSourceStatusEventHint>,
+    config: Option<&HypercolorConfig>,
+) -> Option<InputStatusEpoch> {
+    config.map(|config| InputStatusEpoch {
+        connection_generation,
+        source_event,
+        enabled: config.input.enabled,
+        keyboard: config.input.keyboard,
+        mouse: config.input.mouse,
+        daemon_route: config.input.daemon_route,
+        preview_route: config.input.preview_route,
+    })
+}
 
 /// User-facing lifecycle state for the host input pipeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,12 +65,7 @@ pub fn input_pipeline_state(input: &InputStatus) -> InputPipelineState {
     if input.degraded.is_some() || input.sources.iter().any(source_is_degraded) {
         return InputPipelineState::Degraded;
     }
-    if input.host_capturing
-        || input
-            .sources
-            .iter()
-            .any(|source| source.demanded && matches!(source.state.as_str(), "live" | "degraded"))
-    {
+    if input.host_capturing {
         return InputPipelineState::Live;
     }
     if input.host_capture_registered
@@ -92,6 +118,25 @@ pub fn input_status_remediation(input: &InputStatus) -> Option<String> {
         })
 }
 
+#[must_use]
+pub fn primary_input_source_issue(
+    source: &InputSourceStatus,
+) -> Option<&crate::api::InputSourceIssueStatus> {
+    if matches!(source.state.as_str(), "failed" | "unavailable") {
+        source
+            .lifecycle_issue
+            .as_ref()
+            .or(source.issue.as_ref())
+            .or(source.freshness_issue.as_ref())
+    } else {
+        source
+            .freshness_issue
+            .as_ref()
+            .or(source.issue.as_ref())
+            .or(source.lifecycle_issue.as_ref())
+    }
+}
+
 fn source_is_degraded(source: &InputSourceStatus) -> bool {
     source_is_relevant(source)
         && (source.lifecycle_issue.is_some()
@@ -102,7 +147,7 @@ fn source_is_degraded(source: &InputSourceStatus) -> bool {
 }
 
 fn source_is_relevant(source: &InputSourceStatus) -> bool {
-    source.configured || source.demanded
+    source.backend != "browser" && (source.configured || source.demanded)
 }
 
 /// Which remediation the banner should offer, if any.

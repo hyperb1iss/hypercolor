@@ -33,6 +33,20 @@ The UI has a one-click version of the same switch. When an interactive effect is
 
 **Capture is also demand-gated.** Even with consent granted, Hypercolor only listens while an effect that declares input reactivity is running. Switch to a non-interactive effect and the devices close again.
 
+### Choose where interaction comes from
+
+Host capture and browser preview input are separate sources. Configure their routing in Settings under **Input Access**, or set it directly:
+
+```toml
+[input]
+daemon_route = "host"
+preview_route = "browser"
+```
+
+Each route accepts `host`, `browser`, or `merge`. `daemon_route` controls the input used for authoritative device output. `preview_route` controls each interactive browser preview. Browser input is addressed to the preview that opened it, so two tabs or preview panels do not accidentally drive each other. `merge` combines host and addressed browser state only when that behavior is intentional.
+
+The web UI opens an addressed preview before it sends pointer or key events. Older clients that send a source-less `input_inject` message are incompatible with this protocol and must add `preview_id` plus the matching `interactive_preview_open` and `interactive_preview_close` lifecycle.
+
 ---
 
 ## What gets captured

@@ -1,5 +1,7 @@
 //! Settings page — config management with horizontal tab nav and live editing.
 
+use std::sync::{Arc, Mutex};
+
 use leptos::prelude::*;
 use leptos_icons::Icon;
 use leptos_router::hooks::use_query_map;
@@ -9,7 +11,7 @@ use crate::api;
 use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, PageHeader};
 use crate::components::settings_controls::SectionHeader;
 use crate::components::settings_sections::*;
-use crate::config_state::{ConfigContext, apply_config_key};
+use crate::config_state::{ConfigApplyTracker, ConfigContext, apply_config_key, config_key_value};
 use crate::extensions::SettingsExtensionSections;
 use crate::icons::*;
 use crate::settings_audio_devices::{
@@ -129,18 +131,44 @@ pub fn SettingsPage() -> impl IntoView {
             .unwrap_or_default()
     });
 
-    // Change handler — optimistic update + persist
+    let config_applies = Arc::new(Mutex::new(ConfigApplyTracker::default()));
     let on_change = Callback::new(move |(key, value): (String, serde_json::Value)| {
+        let previous = config
+            .get_untracked()
+            .as_ref()
+            .and_then(|current| config_key_value(current, &key));
+        let generation = config_applies
+            .lock()
+            .expect("config apply tracker lock poisoned")
+            .begin(&key);
         set_config.update(|cfg| {
             if let Some(cfg) = cfg {
                 apply_config_key(cfg, &key, &value);
             }
         });
 
+        let config_applies = Arc::clone(&config_applies);
         leptos::task::spawn_local(async move {
             if let Err(e) = api::set_config_value(&key, &value).await {
                 leptos::logging::warn!("Config set failed: {e}");
+                if config_applies
+                    .lock()
+                    .expect("config apply tracker lock poisoned")
+                    .finish_if_current(&key, generation)
+                    && let Some(previous) = previous
+                {
+                    set_config.update(|cfg| {
+                        if let Some(cfg) = cfg {
+                            apply_config_key(cfg, &key, &previous);
+                        }
+                    });
+                }
                 config_ctx.refresh.run(());
+            } else {
+                config_applies
+                    .lock()
+                    .expect("config apply tracker lock poisoned")
+                    .finish_if_current(&key, generation);
             }
         });
     });

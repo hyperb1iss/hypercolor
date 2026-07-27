@@ -1,7 +1,7 @@
 use hypercolor_ui::api::{InputSourceIssueStatus, InputSourceStatus, InputStatus, SystemStatus};
 use hypercolor_ui::input_access::{
     InputAccessRemedy, InputPipelineState, input_access_remedy, input_pipeline_state,
-    input_status_remediation,
+    input_status_epoch, input_status_remediation, primary_input_source_issue,
 };
 use hypercolor_ui::ws::messages::extract_input_source_status_event_hint;
 
@@ -300,4 +300,61 @@ fn disabled_source_failures_do_not_degrade_the_active_pipeline() {
 
     assert_eq!(input_pipeline_state(&status), InputPipelineState::Ready);
     assert_eq!(input_status_remediation(&status), None);
+}
+
+#[test]
+fn permanently_live_browser_source_does_not_claim_host_capture() {
+    let mut status = input(true, 0, 0);
+    status.sources = vec![InputSourceStatus {
+        source_id: "browser".to_owned(),
+        kind: "interaction".to_owned(),
+        backend: "browser".to_owned(),
+        configured: true,
+        consented: true,
+        demanded: true,
+        state: "live".to_owned(),
+        freshness: "not_applicable".to_owned(),
+        ..InputSourceStatus::default()
+    }];
+
+    assert_eq!(input_pipeline_state(&status), InputPipelineState::Ready);
+}
+
+#[test]
+fn terminal_worker_failure_takes_precedence_over_stale_freshness() {
+    let lifecycle = InputSourceIssueStatus {
+        code: "capture_worker_exited".to_owned(),
+        message: "worker exited".to_owned(),
+        ..InputSourceIssueStatus::default()
+    };
+    let stale = InputSourceIssueStatus {
+        code: "stale_data".to_owned(),
+        message: "data is stale".to_owned(),
+        ..InputSourceIssueStatus::default()
+    };
+    let mut source = InputSourceStatus {
+        state: "failed".to_owned(),
+        issue: Some(stale.clone()),
+        lifecycle_issue: Some(lifecycle.clone()),
+        freshness_issue: Some(stale.clone()),
+        ..InputSourceStatus::default()
+    };
+
+    assert_eq!(primary_input_source_issue(&source), Some(&lifecycle));
+
+    source.state = "live".to_owned();
+    assert_eq!(primary_input_source_issue(&source), Some(&stale));
+}
+
+#[test]
+fn reconnect_and_route_changes_advance_the_status_epoch() {
+    let mut config = hypercolor_types::config::HypercolorConfig::default();
+    let initial = input_status_epoch(1, None, Some(&config)).expect("initial epoch");
+
+    let reconnect = input_status_epoch(2, None, Some(&config)).expect("reconnect epoch");
+    assert_ne!(initial, reconnect);
+
+    config.input.preview_route = hypercolor_types::config::InteractionRoutePolicy::Merge;
+    let rerouted = input_status_epoch(2, None, Some(&config)).expect("rerouted epoch");
+    assert_ne!(reconnect, rerouted);
 }
