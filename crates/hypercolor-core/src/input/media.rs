@@ -93,13 +93,28 @@ pub enum ArtworkSource {
     /// A bounded `file:`, `http:`, or `https:` resource.
     Url(String),
     /// The current GSMTC thumbnail for a Windows media session.
-    WindowsSession(String),
+    WindowsSession {
+        /// Application identity used to rediscover the session.
+        source_app_id: String,
+        /// Track title captured with the deferred request.
+        track: String,
+        /// Artist captured with the deferred request.
+        artist: String,
+        /// Album captured with the deferred request.
+        album: String,
+    },
 }
 
 impl ArtworkSource {
-    fn cache_key(&self) -> &str {
+    fn cache_key(&self) -> String {
         match self {
-            Self::Url(value) | Self::WindowsSession(value) => value,
+            Self::Url(value) => value.clone(),
+            Self::WindowsSession {
+                source_app_id,
+                track,
+                artist,
+                album,
+            } => format!("{source_app_id}\u{1f}{artist}\u{1f}{album}\u{1f}{track}"),
         }
     }
 }
@@ -141,14 +156,13 @@ pub fn pick_active_player<'a>(
 }
 
 fn artwork_key(player: &PlayerSnapshot) -> String {
+    let artwork_key = player
+        .artwork
+        .as_ref()
+        .map_or_else(String::new, ArtworkSource::cache_key);
     format!(
         "{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}",
-        player.bus_name,
-        player.artist,
-        player.album,
-        player.track,
-        player.duration_ms,
-        player.artwork.as_ref().map_or("", ArtworkSource::cache_key)
+        player.bus_name, player.artist, player.album, player.track, player.duration_ms, artwork_key
     )
 }
 
@@ -423,15 +437,26 @@ impl ArtworkFetcher {
         let load = async {
             let bytes = match source {
                 ArtworkSource::Url(url) => self.load_url(url).await?,
-                ArtworkSource::WindowsSession(session) => {
+                ArtworkSource::WindowsSession {
+                    source_app_id,
+                    track,
+                    artist,
+                    album,
+                } => {
                     #[cfg(target_os = "windows")]
                     {
-                        windows::fetch_thumbnail_bytes(session, self.policy.max_source_bytes)
-                            .await?
+                        windows::fetch_thumbnail_bytes(
+                            source_app_id,
+                            track,
+                            artist,
+                            album,
+                            self.policy.max_source_bytes,
+                        )
+                        .await?
                     }
                     #[cfg(not(target_os = "windows"))]
                     {
-                        let _ = session;
+                        let _ = (source_app_id, track, artist, album);
                         return Err(ArtworkError::UnsupportedSource);
                     }
                 }
@@ -1224,7 +1249,7 @@ mod worker {
         mut art_rx: tokio::sync::watch::Receiver<Option<Arc<ArtworkRequest>>>,
         mut stop_rx: tokio::sync::watch::Receiver<bool>,
     ) {
-        loop {
+        'artwork: loop {
             let Some(request) = art_rx.borrow().clone() else {
                 tokio::select! {
                     changed = art_rx.changed() => {
@@ -1241,25 +1266,51 @@ mod worker {
                 continue;
             };
 
-            tokio::select! {
-                result = fetcher.fetch_data_url(&request.source) => {
-                    match result {
-                        Ok(data_url) => publisher.publish_enrichment(&request.key, data_url),
-                        Err(error) => debug!(%error, "media artwork enrichment failed"),
-                    }
-                    tokio::select! {
-                        changed = art_rx.changed() => {
-                            if changed.is_err() {
-                                return;
-                            }
+            for attempt in 0..=1 {
+                let result = tokio::select! {
+                    result = fetcher.fetch_data_url(&request.source) => result,
+                    changed = art_rx.changed() => {
+                        if changed.is_err() {
+                            return;
                         }
-                        changed = stop_rx.changed() => {
-                            if changed.is_err() || *stop_rx.borrow() {
-                                return;
+                        continue 'artwork;
+                    }
+                    changed = stop_rx.changed() => {
+                        if changed.is_err() || *stop_rx.borrow() {
+                            return;
+                        }
+                        continue 'artwork;
+                    }
+                };
+                match result {
+                    Ok(data_url) => {
+                        publisher.publish_enrichment(&request.key, data_url);
+                        break;
+                    }
+                    Err(error) => {
+                        debug!(%error, attempt, "media artwork enrichment failed");
+                        if attempt == 0 {
+                            tokio::select! {
+                                () = tokio::time::sleep(MEDIA_POLL_INTERVAL) => {}
+                                changed = art_rx.changed() => {
+                                    if changed.is_err() {
+                                        return;
+                                    }
+                                    continue 'artwork;
+                                }
+                                changed = stop_rx.changed() => {
+                                    if changed.is_err() || *stop_rx.borrow() {
+                                        return;
+                                    }
+                                    continue 'artwork;
+                                }
                             }
                         }
                     }
                 }
+            }
+
+            tokio::select! {
                 changed = art_rx.changed() => {
                     if changed.is_err() {
                         return;
@@ -1440,6 +1491,7 @@ mod windows {
     use ::windows::Media::Control::{
         GlobalSystemMediaTransportControlsSession,
         GlobalSystemMediaTransportControlsSessionManager,
+        GlobalSystemMediaTransportControlsSessionMediaProperties,
         GlobalSystemMediaTransportControlsSessionPlaybackStatus,
     };
     use ::windows::Storage::Streams::DataReader;
@@ -1542,17 +1594,25 @@ mod windows {
         let start_ticks = timeline.StartTime().map_err(provider_error)?.Duration;
         let end_ticks = timeline.EndTime().map_err(provider_error)?.Duration;
         let duration_ms = ticks_to_millis(end_ticks.saturating_sub(start_ticks));
+        let track = properties.Title().map_err(provider_error)?.to_string();
+        let artist = properties.Artist().map_err(provider_error)?.to_string();
+        let album = properties.AlbumTitle().map_err(provider_error)?.to_string();
         let artwork = properties
             .Thumbnail()
             .is_ok()
-            .then(|| ArtworkSource::WindowsSession(bus_name.clone()));
+            .then(|| ArtworkSource::WindowsSession {
+                source_app_id: bus_name.clone(),
+                track: track.clone(),
+                artist: artist.clone(),
+                album: album.clone(),
+            });
 
         Ok(PlayerSnapshot {
             bus_name,
             status,
-            track: properties.Title().map_err(provider_error)?.to_string(),
-            artist: properties.Artist().map_err(provider_error)?.to_string(),
-            album: properties.AlbumTitle().map_err(provider_error)?.to_string(),
+            track,
+            artist,
+            album,
             artwork,
             position_ms,
             duration_ms,
@@ -1561,18 +1621,26 @@ mod windows {
 
     pub(super) async fn fetch_thumbnail_bytes(
         source_app_id: &str,
+        track: &str,
+        artist: &str,
+        album: &str,
         max_bytes: usize,
     ) -> std::result::Result<Vec<u8>, ArtworkError> {
         let manager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()
             .map_err(artwork_io)?
             .await
             .map_err(artwork_io)?;
-        let session = find_session(&manager, source_app_id)?;
+        let session = find_session(&manager, source_app_id, track, artist, album).await?;
         let properties = session
             .TryGetMediaPropertiesAsync()
             .map_err(artwork_io)?
             .await
             .map_err(artwork_io)?;
+        if !properties_match(&properties, track, artist, album)? {
+            return Err(ArtworkError::Io(format!(
+                "GSMTC session {source_app_id} changed tracks before thumbnail capture"
+            )));
+        }
         let stream = properties
             .Thumbnail()
             .map_err(artwork_io)?
@@ -1606,21 +1674,75 @@ mod windows {
         Ok(bytes)
     }
 
-    fn find_session(
+    async fn find_session(
         manager: &GlobalSystemMediaTransportControlsSessionManager,
         source_app_id: &str,
+        track: &str,
+        artist: &str,
+        album: &str,
     ) -> std::result::Result<GlobalSystemMediaTransportControlsSession, ArtworkError> {
         let sessions = manager.GetSessions().map_err(artwork_io)?;
+        let mut candidates = Vec::with_capacity(sessions.Size().map_err(artwork_io)? as usize);
         for index in 0..sessions.Size().map_err(artwork_io)? {
-            let session = sessions.GetAt(index).map_err(artwork_io)?;
-            let candidate = session.SourceAppUserModelId().map_err(artwork_io)?;
-            if candidate == source_app_id {
-                return Ok(session);
+            candidates.push(sessions.GetAt(index).map_err(artwork_io)?);
+        }
+        drop(sessions);
+
+        let mut matching_app_found = false;
+        let mut first_error = None;
+        for session in candidates {
+            let Ok(candidate) = session.SourceAppUserModelId().map_err(artwork_io) else {
+                continue;
+            };
+            let candidate = candidate.to_string();
+            if candidate != source_app_id {
+                continue;
+            }
+            matching_app_found = true;
+            let properties = match session.TryGetMediaPropertiesAsync().map_err(artwork_io) {
+                Ok(operation) => match operation.await.map_err(artwork_io) {
+                    Ok(properties) => properties,
+                    Err(error) => {
+                        first_error.get_or_insert(error);
+                        continue;
+                    }
+                },
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                    continue;
+                }
+            };
+            match properties_match(&properties, track, artist, album) {
+                Ok(true) => return Ok(session),
+                Ok(false) => {}
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                }
             }
         }
+        if let Some(error) = first_error {
+            return Err(error);
+        }
+        let reason = if matching_app_found {
+            "changed tracks before thumbnail capture"
+        } else {
+            "disappeared"
+        };
         Err(ArtworkError::Io(format!(
-            "GSMTC session {source_app_id} disappeared"
+            "GSMTC session {source_app_id} {reason}"
         )))
+    }
+
+    fn properties_match(
+        properties: &GlobalSystemMediaTransportControlsSessionMediaProperties,
+        track: &str,
+        artist: &str,
+        album: &str,
+    ) -> std::result::Result<bool, ArtworkError> {
+        let candidate_track = properties.Title().map_err(artwork_io)?.to_string();
+        let candidate_artist = properties.Artist().map_err(artwork_io)?.to_string();
+        let candidate_album = properties.AlbumTitle().map_err(artwork_io)?.to_string();
+        Ok(candidate_track == track && candidate_artist == artist && candidate_album == album)
     }
 
     fn ticks_to_millis(ticks: i64) -> u64 {

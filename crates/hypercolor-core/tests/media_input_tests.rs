@@ -147,7 +147,7 @@ fn art_cache_fetches_once_per_track() {
 fn artwork_url(source: &ArtworkSource) -> &str {
     match source {
         ArtworkSource::Url(url) => url,
-        ArtworkSource::WindowsSession(_) => panic!("test expected URL artwork"),
+        ArtworkSource::WindowsSession { .. } => panic!("test expected URL artwork"),
     }
 }
 
@@ -428,6 +428,46 @@ async fn provider_retries_an_initially_unavailable_session_bus() {
     );
     assert_eq!(connects.load(Ordering::Relaxed), 2);
     assert_eq!(disconnects.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn same_app_sessions_keep_distinct_deferred_artwork_identity() {
+    let artwork = |track: &str| ArtworkSource::WindowsSession {
+        source_app_id: "browser".to_owned(),
+        track: track.to_owned(),
+        artist: "Artist".to_owned(),
+        album: "Album".to_owned(),
+    };
+    let mut first = player("browser", PlaybackStatus::Playing, "first");
+    first.artwork = Some(artwork("first"));
+    let mut second = player("browser", PlaybackStatus::Playing, "second");
+    second.artwork = Some(artwork("second"));
+    let provider = ScriptedProvider {
+        connect_results: VecDeque::new(),
+        poll_results: VecDeque::from([Ok(vec![first]), Ok(vec![second])]),
+        connects: Arc::new(AtomicUsize::new(0)),
+        disconnects: Arc::new(AtomicUsize::new(0)),
+    };
+    let mut session = MediaProviderSession::new(Box::new(provider));
+
+    let first = session
+        .poll()
+        .await
+        .expect("first poll succeeds")
+        .artwork
+        .expect("first poll defers artwork")
+        .source;
+    let second = session
+        .poll()
+        .await
+        .expect("second poll succeeds")
+        .artwork
+        .expect("second poll defers artwork")
+        .source;
+
+    assert_eq!(first, artwork("first"));
+    assert_eq!(second, artwork("second"));
+    assert_ne!(first, second);
 }
 
 #[tokio::test]
