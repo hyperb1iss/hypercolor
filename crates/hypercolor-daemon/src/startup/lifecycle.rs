@@ -18,6 +18,9 @@ use crate::discovery::{self, DiscoveryTarget};
 use crate::display_output::{
     DEFAULT_STATIC_HOLD_REFRESH_INTERVAL, DisplayOutputState, DisplayOutputThread,
 };
+use crate::interactive_preview::{
+    InteractivePreviewAcceleration, InteractivePreviewContext, InteractivePreviewExecutor,
+};
 use crate::render_thread::{CanvasDims, RenderThread, RenderThreadState};
 use crate::runtime_state::{self, RuntimeSessionSnapshot};
 use crate::scene_transactions::apply_layout_update;
@@ -114,6 +117,39 @@ impl DaemonState {
             RenderThread::try_spawn(rt_state)
                 .context("failed to spawn render thread with resolved compositor mode")?,
         );
+        let (input_graph, sensor_snapshots) = {
+            let input_manager = self.input_manager.lock().await;
+            (
+                input_manager.input_graph_handle(),
+                input_manager.sensor_snapshot_receiver(),
+            )
+        };
+        let input_demands = self
+            .render_thread
+            .as_ref()
+            .expect("render thread was installed after successful spawn")
+            .input_publication_demands();
+        let interactive_preview = InteractivePreviewExecutor::start(InteractivePreviewContext {
+            scene_manager: Arc::clone(&self.scene_manager),
+            effect_registry: Arc::clone(&self.effect_registry),
+            asset_library: Some(Arc::clone(&self.asset_library)),
+            event_bus: Arc::clone(&self.event_bus),
+            input_graph,
+            sensor_snapshots,
+            interaction_routing: self.interaction_routing.clone(),
+            input_demands,
+            canvas_width: config.daemon.canvas_width,
+            canvas_height: config.daemon.canvas_height,
+            acceleration: InteractivePreviewAcceleration::from_authoritative(
+                self.render_acceleration.effective_mode,
+                #[cfg(feature = "wgpu")]
+                self.render_acceleration.gpu_render_device.clone(),
+            ),
+        })
+        .await
+        .context("failed to start interactive preview executor")?;
+        self.preview_runtime
+            .install_interactive_executor(Arc::new(interactive_preview));
         self.display_output_thread = Some(DisplayOutputThread::spawn(DisplayOutputState {
             backend_manager: Arc::clone(&self.backend_manager),
             device_registry: self.device_registry.clone(),
@@ -200,6 +236,8 @@ impl DaemonState {
                 );
             }
         }
+
+        self.preview_runtime.clear_interactive_executor();
 
         // 1. Stop render loop — next tick() will return false.
         {

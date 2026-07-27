@@ -123,6 +123,46 @@ impl GpuRenderDevice {
         })
     }
 
+    pub(crate) fn independent_device(&self, label: &'static str) -> Result<Self> {
+        let instance = self.inner._instance.clone();
+        let adapter = self.inner.adapter.clone();
+        let required_features = self.inner.device.features();
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some(label),
+            required_features,
+            required_limits: wgpu::Limits::default(),
+            experimental_features: wgpu::ExperimentalFeatures::disabled(),
+            memory_hints: wgpu::MemoryHints::Performance,
+            trace: wgpu::Trace::Off,
+        }))
+        .with_context(|| format!("failed to create an independent {label} wgpu device"))?;
+
+        let adapter_info = adapter.get_info();
+        let limits = device.limits();
+        let info = GpuRenderDeviceInfo {
+            adapter_name: adapter_info.name,
+            adapter_vendor_id: adapter_info.vendor,
+            adapter_device_id: adapter_info.device,
+            adapter_device_type: adapter_info.device_type,
+            backend: adapter_info.backend,
+            vulkan_external_memory_win32: device
+                .features()
+                .contains(wgpu::Features::VULKAN_EXTERNAL_MEMORY_WIN32),
+            max_texture_dimension_2d: limits.max_texture_dimension_2d,
+            max_storage_textures_per_shader_stage: limits.max_storage_textures_per_shader_stage,
+        };
+
+        Ok(Self {
+            inner: Arc::new(GpuRenderDeviceInner {
+                _instance: instance,
+                adapter,
+                device,
+                queue,
+                info,
+            }),
+        })
+    }
+
     pub(crate) fn device(&self) -> &wgpu::Device {
         &self.inner.device
     }
@@ -450,5 +490,19 @@ mod tests {
             ..hardware
         };
         assert!(llvmpipe.software_adapter_reason().is_some());
+    }
+
+    #[test]
+    fn independent_device_reuses_adapter_without_sharing_device_or_queue() {
+        let Ok(authoritative) = GpuRenderDevice::new("authoritative test device") else {
+            return;
+        };
+        let preview = authoritative
+            .independent_device("preview test device")
+            .expect("selected adapter should support a second logical device");
+
+        assert_eq!(preview.info(), authoritative.info());
+        assert!(!std::ptr::eq(preview.device(), authoritative.device()));
+        assert!(!std::ptr::eq(preview.queue(), authoritative.queue()));
     }
 }

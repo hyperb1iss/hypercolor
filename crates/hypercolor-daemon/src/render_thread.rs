@@ -68,6 +68,9 @@ pub use self::input_publication::{
 };
 use self::input_publication::{InputPublicationMonitor, InputPublicationPump};
 use self::pipeline_driver::run_pipeline;
+pub(crate) use self::producer_queue::ProducerFrame;
+pub(crate) use self::render_groups::{RenderSceneContext, ZoneFrameInputs};
+pub(crate) use self::scene_dependency::SceneDependencyKey;
 use crate::device_settings::DeviceSettingsStore;
 use crate::discovery::DiscoveryRuntime;
 use crate::interaction_routing::InteractionRoutingControl;
@@ -85,6 +88,45 @@ use hypercolor_core::input::InputManager;
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::config::RenderAccelerationMode;
+use hypercolor_types::event::ZoneColors;
+
+pub(crate) struct InteractivePreviewZoneRuntime(render_groups::ZoneRuntime);
+
+impl InteractivePreviewZoneRuntime {
+    pub(crate) fn new(scene_width: u32, scene_height: u32) -> Self {
+        Self(render_groups::ZoneRuntime::new_preview(
+            scene_width,
+            scene_height,
+        ))
+    }
+
+    pub(crate) fn with_asset_library(
+        scene_width: u32,
+        scene_height: u32,
+        asset_library: Arc<RwLock<AssetLibrary>>,
+    ) -> Self {
+        Self(render_groups::ZoneRuntime::with_asset_library_preview(
+            scene_width,
+            scene_height,
+            asset_library,
+        ))
+    }
+
+    pub(crate) fn resize_scene(&mut self, scene_width: u32, scene_height: u32) {
+        self.0.resize_scene(scene_width, scene_height);
+    }
+
+    pub(crate) fn render_scene(
+        &mut self,
+        context: RenderSceneContext<'_>,
+        sparkleflinger: &mut sparkleflinger::SparkleFlinger,
+        zones: &mut Vec<ZoneColors>,
+    ) -> anyhow::Result<ProducerFrame> {
+        self.0
+            .render_scene(context, sparkleflinger, zones)
+            .map(|rendered| rendered.scene_frame)
+    }
+}
 
 const RENDER_RUNTIME_WORKERS: usize = 2;
 const RENDER_RUNTIME_MAX_BLOCKING_THREADS: usize = 4;

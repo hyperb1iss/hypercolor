@@ -81,6 +81,8 @@ use projection::{
 /// stalls proportional to `canvas_width * canvas_height * 4` bytes.
 const SCENE_SURFACE_POOL_INITIAL_SLOTS: usize = 8;
 const SCENE_SURFACE_POOL_MAX_SLOTS: usize = 64;
+const PREVIEW_SCENE_SURFACE_POOL_INITIAL_SLOTS: usize = 2;
+const PREVIEW_SCENE_SURFACE_POOL_MAX_SLOTS: usize = 16;
 
 pub(crate) struct ZoneRuntime {
     asset_library: Option<Arc<RwLock<AssetLibrary>>>,
@@ -95,6 +97,8 @@ pub(crate) struct ZoneRuntime {
     effect_registry_snapshot: Option<Arc<EffectRegistry>>,
     static_layer_surface_cache: StaticLayerSurfaceCache,
     scene_surface_pool: RenderSurfacePool,
+    scene_surface_pool_initial_slots: usize,
+    scene_surface_pool_max_slots: usize,
     reconciled_dependency_key: Option<SceneDependencyKey>,
     retained_frame: Option<RetainedRenderGroupFrame>,
     last_effect_error: Option<ZoneEffectError>,
@@ -108,6 +112,29 @@ pub(crate) struct ZoneRuntime {
 
 impl ZoneRuntime {
     pub(crate) fn new(scene_width: u32, scene_height: u32) -> Self {
+        Self::with_scene_surface_pool(
+            scene_width,
+            scene_height,
+            SCENE_SURFACE_POOL_INITIAL_SLOTS,
+            SCENE_SURFACE_POOL_MAX_SLOTS,
+        )
+    }
+
+    pub(crate) fn new_preview(scene_width: u32, scene_height: u32) -> Self {
+        Self::with_scene_surface_pool(
+            scene_width,
+            scene_height,
+            PREVIEW_SCENE_SURFACE_POOL_INITIAL_SLOTS,
+            PREVIEW_SCENE_SURFACE_POOL_MAX_SLOTS,
+        )
+    }
+
+    fn with_scene_surface_pool(
+        scene_width: u32,
+        scene_height: u32,
+        initial_slots: usize,
+        max_slots: usize,
+    ) -> Self {
         let (combined_led_layout, combined_led_spatial_engine) =
             combined_led_state(empty_group_layout(scene_width, scene_height));
         Self {
@@ -128,9 +155,11 @@ impl ZoneRuntime {
             // into a larger working set instead of reallocating per frame.
             scene_surface_pool: RenderSurfacePool::with_slot_count_and_cap(
                 SurfaceDescriptor::rgba8888(scene_width, scene_height),
-                SCENE_SURFACE_POOL_INITIAL_SLOTS,
-                SCENE_SURFACE_POOL_MAX_SLOTS,
+                initial_slots,
+                max_slots,
             ),
+            scene_surface_pool_initial_slots: initial_slots,
+            scene_surface_pool_max_slots: max_slots,
             reconciled_dependency_key: None,
             retained_frame: None,
             last_effect_error: None,
@@ -143,12 +172,46 @@ impl ZoneRuntime {
         }
     }
 
+    pub(crate) fn resize_scene(&mut self, scene_width: u32, scene_height: u32) {
+        if self.scene_width == scene_width && self.scene_height == scene_height {
+            return;
+        }
+
+        self.scene_width = scene_width;
+        self.scene_height = scene_height;
+        self.target_canvases.clear();
+        self.scene_projection_cache.clear();
+        self.scene_surface_pool = RenderSurfacePool::with_slot_count_and_cap(
+            SurfaceDescriptor::rgba8888(scene_width, scene_height),
+            self.scene_surface_pool_initial_slots,
+            self.scene_surface_pool_max_slots,
+        );
+        self.retained_frame = None;
+        self.reconciled_dependency_key = None;
+        let (layout, engine) = combined_led_state(empty_group_layout(scene_width, scene_height));
+        self.combined_led_layout = layout;
+        self.combined_led_spatial_engine = engine;
+    }
+
     pub(crate) fn with_asset_library(
         scene_width: u32,
         scene_height: u32,
         asset_library: Arc<RwLock<AssetLibrary>>,
     ) -> Self {
         let mut runtime = Self::new(scene_width, scene_height);
+        runtime
+            .effect_pool
+            .set_asset_library(Arc::clone(&asset_library));
+        runtime.asset_library = Some(asset_library);
+        runtime
+    }
+
+    pub(crate) fn with_asset_library_preview(
+        scene_width: u32,
+        scene_height: u32,
+        asset_library: Arc<RwLock<AssetLibrary>>,
+    ) -> Self {
+        let mut runtime = Self::new_preview(scene_width, scene_height);
         runtime
             .effect_pool
             .set_asset_library(Arc::clone(&asset_library));

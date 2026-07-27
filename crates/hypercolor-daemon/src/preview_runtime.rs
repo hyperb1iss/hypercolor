@@ -2,9 +2,11 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-use arc_swap::ArcSwap;
+use arc_swap::{ArcSwap, ArcSwapOption};
 use hypercolor_core::bus::{CanvasFrame, HypercolorBus, ZonePreviewFrame};
 use tokio::sync::watch;
+
+use crate::interactive_preview::InteractivePreviewExecutor;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PreviewRuntimeSnapshot {
@@ -239,6 +241,7 @@ pub struct PreviewRuntime {
     event_bus: Arc<HypercolorBus>,
     telemetry: Arc<PreviewRuntimeTelemetry>,
     demand_state: Arc<PreviewRuntimeDemandState>,
+    interactive_executor: Arc<ArcSwapOption<InteractivePreviewExecutor>>,
 }
 
 impl PreviewRuntime {
@@ -256,7 +259,21 @@ impl PreviewRuntime {
                 ..PreviewRuntimeTelemetry::default()
             }),
             demand_state: Arc::new(PreviewRuntimeDemandState::default()),
+            interactive_executor: Arc::new(ArcSwapOption::empty()),
         }
+    }
+
+    pub fn install_interactive_executor(&self, executor: Arc<InteractivePreviewExecutor>) {
+        self.interactive_executor.store(Some(executor));
+    }
+
+    #[must_use]
+    pub fn interactive_executor(&self) -> Option<Arc<InteractivePreviewExecutor>> {
+        self.interactive_executor.load_full()
+    }
+
+    pub fn clear_interactive_executor(&self) {
+        self.interactive_executor.store(None);
     }
 
     pub fn note_canvas_frame(&self, frame_number: u32, timestamp_ms: u32) {

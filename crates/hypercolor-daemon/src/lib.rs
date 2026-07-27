@@ -14,6 +14,7 @@ pub mod display_preferences;
 pub mod effect_layouts;
 pub mod extensions;
 pub mod interaction_routing;
+pub mod interactive_preview;
 pub mod layout_auto_exclusions;
 pub mod layout_store;
 pub mod library;
