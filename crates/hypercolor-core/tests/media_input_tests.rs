@@ -8,8 +8,8 @@ use hypercolor_core::input::{SourceFreshness, SourceState};
 use std::collections::VecDeque;
 use std::io::{Cursor, Read as _, Write as _};
 use std::net::TcpListener;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Barrier};
 use std::time::{Duration, Instant};
 
 fn player(bus_name: &str, status: PlaybackStatus, track: &str) -> PlayerSnapshot {
@@ -591,6 +591,43 @@ fn successful_media_poll_heartbeat_advances_when_payload_is_unchanged() {
             .freshness,
         SourceFreshness::Stale
     );
+}
+
+#[test]
+fn concurrent_media_publishers_keep_state_and_poll_coherent() {
+    for round in 0..16 {
+        let mut source = MediaSource::new();
+        let publisher = source.publisher();
+        let barrier = Arc::new(Barrier::new(9));
+        std::thread::scope(|scope| {
+            for worker in 0..8 {
+                let publisher = publisher.clone();
+                let barrier = Arc::clone(&barrier);
+                scope.spawn(move || {
+                    barrier.wait();
+                    for update in 0..64 {
+                        let snapshot = player(
+                            &format!("publisher-{worker}"),
+                            PlaybackStatus::Playing,
+                            &format!("round-{round}-update-{update}"),
+                        );
+                        publisher.publish_completed(
+                            media_state_from_player(Some(&snapshot), None),
+                            Instant::now(),
+                        );
+                    }
+                });
+            }
+            barrier.wait();
+        });
+
+        let receiver = source.receiver();
+        let published = receiver.borrow().clone();
+        let InputData::Media(sampled) = source.sample().expect("latest poll should sample") else {
+            panic!("concurrent publishers must leave one completed media poll");
+        };
+        assert!(Arc::ptr_eq(&published, &sampled));
+    }
 }
 
 /// Lifecycle smoke test against the native provider. Asserts only on

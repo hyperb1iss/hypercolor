@@ -650,12 +650,17 @@ enum MediaPublicationKind {
     BackendFailure,
 }
 
+#[derive(Default)]
+struct MediaPublicationState {
+    artwork_key: Option<String>,
+}
+
 /// Publication seam shared by providers, enrichment, and the input source.
 #[derive(Clone)]
 pub struct MediaPollPublisher {
     state_tx: watch::Sender<Arc<MediaState>>,
     poll_tx: watch::Sender<Option<Arc<CompletedMediaPoll>>>,
-    artwork_key: Arc<Mutex<Option<String>>>,
+    publication: Arc<Mutex<MediaPublicationState>>,
 }
 
 impl MediaPollPublisher {
@@ -671,38 +676,41 @@ impl MediaPollPublisher {
         artwork_key: Option<String>,
         completed_at: Instant,
     ) {
-        let mut current_key = self
-            .artwork_key
+        let mut publication = self
+            .publication
             .lock()
-            .expect("media artwork-key lock is not poisoned");
-        if *current_key == artwork_key {
+            .expect("media publication lock is not poisoned");
+        if publication.artwork_key == artwork_key {
             state
                 .art_data_url
                 .clone_from(&self.state_tx.borrow().art_data_url);
         } else {
-            *current_key = artwork_key;
+            publication.artwork_key = artwork_key;
         }
         self.publish(state, completed_at, MediaPublicationKind::BackendSuccess);
+        drop(publication);
     }
 
     fn publish_unavailable(&self, completed_at: Instant) {
-        *self
-            .artwork_key
+        let mut publication = self
+            .publication
             .lock()
-            .expect("media artwork-key lock is not poisoned") = None;
+            .expect("media publication lock is not poisoned");
+        publication.artwork_key = None;
         self.publish(
             MediaState::unavailable(),
             completed_at,
             MediaPublicationKind::BackendFailure,
         );
+        drop(publication);
     }
 
     fn publish_enrichment(&self, key: &str, data_url: String) {
-        let current_key = self
-            .artwork_key
+        let publication = self
+            .publication
             .lock()
-            .expect("media artwork-key lock is not poisoned");
-        if current_key.as_deref() != Some(key) {
+            .expect("media publication lock is not poisoned");
+        if publication.artwork_key.as_deref() != Some(key) {
             return;
         }
         let mut state = self.state_tx.borrow().as_ref().clone();
@@ -711,6 +719,7 @@ impl MediaPollPublisher {
         }
         state.art_data_url = Some(data_url);
         self.publish(state, Instant::now(), MediaPublicationKind::StateUpdate);
+        drop(publication);
     }
 
     fn publish(&self, state: MediaState, completed_at: Instant, kind: MediaPublicationKind) {
@@ -730,13 +739,15 @@ impl MediaPollPublisher {
     }
 
     fn reset(&self) {
-        *self
-            .artwork_key
+        let mut publication = self
+            .publication
             .lock()
-            .expect("media artwork-key lock is not poisoned") = None;
+            .expect("media publication lock is not poisoned");
+        publication.artwork_key = None;
         self.state_tx
             .send_replace(Arc::new(MediaState::unavailable()));
         self.poll_tx.send_replace(None);
+        drop(publication);
     }
 }
 
@@ -765,7 +776,7 @@ impl MediaSource {
             publisher: MediaPollPublisher {
                 state_tx,
                 poll_tx,
-                artwork_key: Arc::new(Mutex::new(None)),
+                publication: Arc::new(Mutex::new(MediaPublicationState::default())),
             },
             state_rx,
             poll_rx,
