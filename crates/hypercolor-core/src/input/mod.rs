@@ -501,18 +501,27 @@ impl InputManager {
     /// graph consumers perform typed aggregation after releasing the manager.
     pub fn sample_sources(&mut self, delta_secs: f32) {
         for source in &mut self.sources {
-            self.event_scratch.clear();
-            let sample =
-                match source.sample_shared_and_drain_into(delta_secs, &mut self.event_scratch) {
-                    Ok(sample) => sample,
-                    Err(error) => {
-                        error!(source = source.name(), %error, "Input sample failed");
-                        None
-                    }
-                };
-            source
-                .slot
-                .publish_batch(sample, &mut self.event_scratch);
+            sample_managed_source(source, delta_secs, &mut self.event_scratch);
+        }
+    }
+
+    /// Sample only source kinds whose independent publication deadlines are due.
+    ///
+    /// Each entry carries the elapsed time for that source kind. The caller must
+    /// provide at most one entry per kind; an empty slice samples nothing.
+    pub fn sample_source_kinds(&mut self, due_sources: &[(SourceKind, f32)]) {
+        debug_assert!(due_sources.iter().enumerate().all(|(index, (kind, _))| {
+            !due_sources[..index]
+                .iter()
+                .any(|(previous, _)| previous == kind)
+        }));
+        for source in &mut self.sources {
+            let source_kind = source.slot.kind().unwrap_or(SourceKind::Interaction);
+            let Some((_, delta_secs)) = due_sources.iter().find(|(kind, _)| *kind == source_kind)
+            else {
+                continue;
+            };
+            sample_managed_source(source, *delta_secs, &mut self.event_scratch);
         }
     }
 
@@ -1164,6 +1173,22 @@ fn declared_source_kind(source: &dyn InputSource) -> Option<SourceKind> {
                 .is_interaction_source()
                 .then_some(SourceKind::Interaction)
         })
+}
+
+fn sample_managed_source(
+    source: &mut ManagedInputSource,
+    delta_secs: f32,
+    event_scratch: &mut Vec<TimedInputEvent>,
+) {
+    event_scratch.clear();
+    let sample = match source.sample_shared_and_drain_into(delta_secs, event_scratch) {
+        Ok(sample) => sample,
+        Err(error) => {
+            error!(source = source.name(), %error, "Input sample failed");
+            None
+        }
+    };
+    source.slot.publish_batch(sample, event_scratch);
 }
 
 impl Default for InputManager {
