@@ -1,6 +1,6 @@
 # 72 - Windows Host Input (Raw Input)
 
-**Status:** IMPLEMENTED (W0-W3); W4 hardware acceptance outstanding
+**Status:** IMPLEMENTED (W0-W3); W4 acceptance partially run
 **Author:** Nova
 **Date:** 2026-07-25
 **Crates:** `hypercolor-windows-input` (new), `hypercolor-core`, `hypercolor-daemon`, `hypercolor-ui`
@@ -1029,12 +1029,31 @@ keyboard. See the status notes on each wave.
   **Done.** `InputStatus.degraded` is additive and optional, so the vendored
   Python client regenerated without an API break.
 - **W4** — Hardware acceptance pass, parity check against the Linux daemon,
-  docs (permissions/session-model page), cross-model review. **Docs done**
-  (`docs/content/guide/input-capture.md`). The acceptance pass itself is
-  outstanding and deliberately so: it requires typing on real hardware,
-  unplugging a keyboard mid-hold, and comparing names against a running Linux
-  daemon. `cargo run -p hypercolor-windows-input --example dump_input` is the
-  harness for it.
+  docs (permissions/session-model page), cross-model review. **Docs and
+  review done**; acceptance partially run. `cargo run -p
+  hypercolor-windows-input --example dump_input` is the harness.
+
+  Covered so far: relative motion, button edges, cursor tracking, and single
+  delivery. Still to run: key names against a live Linux daemon, a held key
+  firing recents once, hi-res wheel notches, and unplugging a keyboard
+  mid-hold to see the held keys release.
+
+  The first run earned the wave outright. It found that **every event was
+  being delivered to core twice** — `drain_slice` cleared its buffer at the
+  start of a slice rather than after delivering, so whatever the last slice
+  produced was still queued when the worker flushed. Three rounds of
+  cross-model review and roughly 1,100 passing tests had all missed it,
+  because both halves were individually correct and the composition only runs
+  on Windows against real input. The tell was two batches with an identical
+  delta and timestamp but a different cursor.
+
+  Two things follow from that, and they are the reason this wave is not
+  optional. The buffer discipline now lives on a `PendingEvents` type that
+  compiles and tests on every platform, so the defect class is reachable from
+  CI rather than only from hardware. And the acceptance harness now prints a
+  batch number and per-event device id, because the output that hid this could
+  not distinguish a delivery bug from one physical keyboard exposing several
+  HID collections.
 
 ## Resolved decisions
 
