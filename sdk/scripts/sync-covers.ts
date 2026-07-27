@@ -24,8 +24,16 @@ const ENTRY_ROOTS = ['src/effects', 'src/faces']
 const DRAFTS_ROOT = resolve(REPO_ROOT, 'effects', 'screenshots', 'drafts')
 const DOCS_ART_ROOT = resolve(REPO_ROOT, 'docs', 'static', 'img', 'effects')
 
-const COVER_WIDTH = 640
-const COVER_QUALITY = 80
+/**
+ * Cards render around 300-400 CSS px and zoom to 1.06 on hover, so a 150%-scale
+ * display asks for roughly 600 device pixels. 960 leaves headroom above that
+ * without doubling what every artifact carries inline.
+ *
+ * Daemon captures top out at the 640x480 compositor canvas; `withoutEnlargement`
+ * keeps those at native rather than upscaling them into a bigger, blurrier file.
+ */
+const COVER_WIDTH = 960
+const COVER_QUALITY = 88
 
 interface CliOptions {
     effectFilter: string | null

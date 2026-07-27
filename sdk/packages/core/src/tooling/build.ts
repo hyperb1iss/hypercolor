@@ -35,7 +35,7 @@ const COVER_FILE_NAME = 'cover.webp'
  * inflates the HTML for each daemon metadata scan. Warn rather than fail so a
  * local build still completes with placeholder art.
  */
-const COVER_WARN_BYTES = 128 * 1024
+const COVER_WARN_BYTES = 256 * 1024
 
 /**
  * Read `cover.webp` sitting beside the entrypoint and return it as a data URI.
