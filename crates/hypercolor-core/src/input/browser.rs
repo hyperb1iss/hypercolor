@@ -1072,10 +1072,7 @@ impl BrowserInputSource {
             return Arc::clone(&self.shared_samples[index]);
         }
 
-        let sample = Arc::new(InputData::Interaction(snapshot));
-        self.shared_samples.push(Arc::clone(&sample));
-        self.next_shared_sample = 0;
-        sample
+        Arc::new(InputData::Interaction(snapshot))
     }
 
     /// A cloneable handle for WebSocket control and injection.

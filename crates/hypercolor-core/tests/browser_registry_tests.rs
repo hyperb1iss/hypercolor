@@ -87,6 +87,48 @@ fn shared_sampling_reuses_browser_snapshot_pool_and_drains_directly() {
 }
 
 #[test]
+fn shared_snapshot_pool_stays_bounded_under_retained_consumer_pressure() {
+    let (mut source, _handle) = started_source();
+    let mut events = Vec::new();
+    let first = source
+        .sample_shared_and_drain_into(1.0 / 60.0, &mut events)
+        .expect("first shared sample should succeed")
+        .expect("running browser source should publish");
+    let second = source
+        .sample_shared_and_drain_into(1.0 / 60.0, &mut events)
+        .expect("second shared sample should succeed")
+        .expect("running browser source should publish");
+    let pooled = [Arc::as_ptr(&first), Arc::as_ptr(&second)];
+    let pressured = (0..8)
+        .map(|_| {
+            source
+                .sample_shared_and_drain_into(1.0 / 60.0, &mut events)
+                .expect("pressure sample should succeed")
+                .expect("running browser source should publish")
+        })
+        .collect::<Vec<_>>();
+    let pressure_pointers = pressured.iter().map(Arc::as_ptr).collect::<Vec<_>>();
+    assert!(
+        pressure_pointers
+            .iter()
+            .all(|pointer| !pooled.contains(pointer))
+    );
+
+    drop(first);
+    drop(second);
+    drop(pressured);
+    for _ in 0..8 {
+        let sample = source
+            .sample_shared_and_drain_into(1.0 / 60.0, &mut events)
+            .expect("recovery sample should succeed")
+            .expect("running browser source should publish");
+        assert!(pooled.contains(&Arc::as_ptr(&sample)));
+        assert!(!pressure_pointers.contains(&Arc::as_ptr(&sample)));
+        drop(sample);
+    }
+}
+
+#[test]
 fn connections_and_previews_publish_independent_children() {
     let (_source, handle) = started_source();
     let first = handle
