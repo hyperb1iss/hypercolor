@@ -1,5 +1,8 @@
-use hypercolor_ui::api::{InputStatus, SystemStatus};
-use hypercolor_ui::input_access::{InputAccessRemedy, input_access_remedy};
+use hypercolor_ui::api::{InputSourceIssueStatus, InputSourceStatus, InputStatus, SystemStatus};
+use hypercolor_ui::input_access::{
+    InputAccessRemedy, InputPipelineState, input_access_remedy, input_pipeline_state,
+    input_status_remediation,
+};
 use hypercolor_ui::ws::messages::extract_input_source_status_event_hint;
 
 fn input(enabled: bool, opened: usize, denied: usize) -> InputStatus {
@@ -212,4 +215,89 @@ fn an_unrecognized_degradation_code_does_not_invent_a_remedy() {
     let mut status = input(true, 2, 0);
     status.degraded = Some("something_new".to_owned());
     assert_eq!(input_access_remedy(true, &status), None);
+}
+
+#[test]
+fn pipeline_state_distinguishes_consent_idle_live_and_unavailable() {
+    assert_eq!(
+        input_pipeline_state(&input(false, 0, 0)),
+        InputPipelineState::ConsentOff
+    );
+
+    let ready = input(true, 0, 0);
+    assert_eq!(input_pipeline_state(&ready), InputPipelineState::Ready);
+
+    let live = input(true, 1, 0);
+    assert_eq!(input_pipeline_state(&live), InputPipelineState::Live);
+
+    let mut unavailable = input(true, 0, 0);
+    unavailable.host_capture_registered = false;
+    assert_eq!(
+        input_pipeline_state(&unavailable),
+        InputPipelineState::Unavailable
+    );
+}
+
+#[test]
+fn worker_failure_and_stale_demand_are_degraded_until_recovery() {
+    let mut status = input(true, 1, 0);
+    status.sources = vec![InputSourceStatus {
+        source_id: "host-interaction".to_owned(),
+        configured: true,
+        consented: true,
+        demanded: true,
+        state: "failed".to_owned(),
+        freshness: "not_applicable".to_owned(),
+        lifecycle_issue: Some(InputSourceIssueStatus {
+            code: "worker_exited".to_owned(),
+            message: "worker exited unexpectedly".to_owned(),
+            remediation: Some("Restart the input backend.".to_owned()),
+            retryable: true,
+        }),
+        ..InputSourceStatus::default()
+    }];
+    assert_eq!(input_pipeline_state(&status), InputPipelineState::Degraded);
+    assert_eq!(
+        input_status_remediation(&status).as_deref(),
+        Some("Restart the input backend.")
+    );
+
+    status.sources[0].state = "live".to_owned();
+    status.sources[0].freshness = "stale".to_owned();
+    status.sources[0].lifecycle_issue = None;
+    assert_eq!(input_pipeline_state(&status), InputPipelineState::Degraded);
+
+    status.sources[0].freshness = "fresh".to_owned();
+    assert_eq!(input_pipeline_state(&status), InputPipelineState::Live);
+}
+
+#[test]
+fn platform_remediation_stays_specific() {
+    let linux = input(true, 0, 2);
+    assert!(input_status_remediation(&linux).is_some_and(|message| message.contains("udev")));
+
+    let mut windows = input(true, 0, 0);
+    windows.degraded = Some("no_interactive_session".to_owned());
+    let remediation = input_status_remediation(&windows).expect("Windows remedy");
+    assert!(remediation.contains("Windows session"));
+    assert!(!remediation.contains("udev"));
+}
+
+#[test]
+fn disabled_source_failures_do_not_degrade_the_active_pipeline() {
+    let mut status = input(true, 0, 0);
+    status.sources = vec![InputSourceStatus {
+        source_id: "disabled-source".to_owned(),
+        state: "failed".to_owned(),
+        issue: Some(InputSourceIssueStatus {
+            code: "worker_exited".to_owned(),
+            message: "disabled worker exited".to_owned(),
+            remediation: Some("Restart the disabled worker.".to_owned()),
+            retryable: true,
+        }),
+        ..InputSourceStatus::default()
+    }];
+
+    assert_eq!(input_pipeline_state(&status), InputPipelineState::Ready);
+    assert_eq!(input_status_remediation(&status), None);
 }

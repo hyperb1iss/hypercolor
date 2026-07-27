@@ -13,7 +13,97 @@
 //! first, and it is what keeps the banner from offering a udev command to a
 //! Windows user.
 
-use crate::api::InputStatus;
+use crate::api::{InputSourceStatus, InputStatus};
+
+/// User-facing lifecycle state for the host input pipeline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputPipelineState {
+    ConsentOff,
+    Live,
+    Ready,
+    Degraded,
+    Unavailable,
+}
+
+/// Reduce the structured daemon snapshot to one honest pipeline state.
+#[must_use]
+pub fn input_pipeline_state(input: &InputStatus) -> InputPipelineState {
+    if !input.enabled {
+        return InputPipelineState::ConsentOff;
+    }
+    if input.degraded.is_some() || input.sources.iter().any(source_is_degraded) {
+        return InputPipelineState::Degraded;
+    }
+    if input.host_capturing
+        || input
+            .sources
+            .iter()
+            .any(|source| source.demanded && matches!(source.state.as_str(), "live" | "degraded"))
+    {
+        return InputPipelineState::Live;
+    }
+    if input.host_capture_registered
+        || input
+            .sources
+            .iter()
+            .any(|source| source.configured && source.consented)
+    {
+        return InputPipelineState::Ready;
+    }
+    InputPipelineState::Unavailable
+}
+
+/// Best actionable remediation from the aggregate or a source-specific issue.
+#[must_use]
+pub fn input_status_remediation(input: &InputStatus) -> Option<String> {
+    match input_access_remedy(true, input) {
+        Some(InputAccessRemedy::EnableConsent) => {
+            return Some(
+                "Enable host input access to open keyboard or pointer backends.".to_owned(),
+            );
+        }
+        Some(InputAccessRemedy::InstallRules) => {
+            return Some(
+                "Install the Hypercolor udev rules, then reconnect the input devices.".to_owned(),
+            );
+        }
+        Some(InputAccessRemedy::RunInUserSession) => {
+            return Some(
+                "Run Hypercolor in your interactive Windows session instead of as a service."
+                    .to_owned(),
+            );
+        }
+        None => {}
+    }
+
+    input
+        .sources
+        .iter()
+        .filter(|source| source_is_relevant(source))
+        .find_map(|source| {
+            [
+                source.lifecycle_issue.as_ref(),
+                source.freshness_issue.as_ref(),
+                source.issue.as_ref(),
+            ]
+            .into_iter()
+            .flatten()
+            .find_map(|issue| issue.remediation.clone())
+        })
+}
+
+fn source_is_degraded(source: &InputSourceStatus) -> bool {
+    source_is_relevant(source)
+        && (source.lifecycle_issue.is_some()
+            || source.freshness_issue.is_some()
+            || source.issue.is_some()
+            || matches!(source.state.as_str(), "failed" | "degraded" | "unavailable")
+            || (source.demanded && source.freshness == "stale"))
+}
+
+fn source_is_relevant(source: &InputSourceStatus) -> bool {
+    source.configured || source.demanded
+}
 
 /// Which remediation the banner should offer, if any.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

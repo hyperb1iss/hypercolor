@@ -17,12 +17,14 @@ mod about;
 mod audio;
 mod developer;
 mod discovery;
+mod input;
 mod session;
 
 pub use about::AboutSection;
 pub use audio::AudioSection;
 pub use developer::DeveloperSection;
 pub use discovery::DiscoverySection;
+pub use input::InputSection;
 pub use session::SessionSection;
 
 fn read_config<T>(

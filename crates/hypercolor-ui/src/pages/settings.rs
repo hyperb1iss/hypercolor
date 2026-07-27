@@ -20,6 +20,7 @@ use hypercolor_leptos_ext::events::{document as browser_document, scroll_into_vi
 /// Section IDs for nav and scroll spy.
 const SECTION_IDS: &[&str] = &[
     "audio",
+    "input",
     "capture",
     "rendering",
     "network",
@@ -205,6 +206,12 @@ pub fn SettingsPage() -> impl IntoView {
             separator_before: false,
         },
         TabEntry {
+            id: "input",
+            label: "Input",
+            icon: LuKeyboard,
+            separator_before: false,
+        },
+        TabEntry {
             id: "capture",
             label: "Capture",
             icon: LuMonitor,
@@ -379,6 +386,7 @@ pub fn SettingsPage() -> impl IntoView {
                                 class="settings-card"
                                 style="animation: enter-fade 0.4s ease-out 0.1s both"
                             >
+                                <InputSection config=config on_change=on_change on_reset=on_reset />
                             </div>
                             <div
                                 class="settings-card"
