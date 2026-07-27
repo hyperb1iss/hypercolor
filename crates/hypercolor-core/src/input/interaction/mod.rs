@@ -12,6 +12,7 @@ use device_query::{DeviceQuery, DeviceState, Keycode};
 use tracing::warn;
 
 use crate::input::traits::{InputData, InputSource, InteractionData, KeyboardData, MouseData};
+use crate::input::worker_retention::retain_input_worker;
 use crate::input::{SourceIssue, SourceKind, SourceStatusHandle, SourceStatusReporter};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
@@ -232,21 +233,15 @@ impl Drop for InteractionInput {
             return;
         };
         let _ = worker.stop_tx.send(());
-        let source = self.name.clone();
         if worker.join_handle.is_finished() {
             let _ = worker.join_handle.join();
             return;
         }
-        if let Err(error) = thread::Builder::new()
-            .name("hypercolor-host-input-reaper".to_owned())
-            .spawn(move || {
-                if let Err(panic) = worker.join_handle.join() {
-                    warn!(source = %source, message = ?panic, "Host input reaper observed a panic");
-                }
-            })
-        {
-            warn!(source = %self.name, %error, "Failed to start host-input join reaper");
-        }
+        retain_input_worker(
+            worker.join_handle,
+            "hypercolor-host-input-reaper",
+            Arc::<str>::from(format!("host input source {}", self.name)),
+        );
     }
 }
 

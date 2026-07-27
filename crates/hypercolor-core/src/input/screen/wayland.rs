@@ -33,6 +33,7 @@ use crate::input::screen::{
     analyze_legacy_screen_frame,
 };
 use crate::input::traits::{InputData, InputSource};
+use crate::input::worker_retention::retain_input_worker;
 use crate::input::{
     SourceIssue, SourceKind, SourceSessionSlot, SourceStatusHandle, SourceStatusReporter,
 };
@@ -566,16 +567,11 @@ impl Drop for WaylandCaptureWorker {
             let _ = join_handle.join();
             return;
         }
-        if let Err(error) = thread::Builder::new()
-            .name("hypercolor-wayland-capture-reaper".to_owned())
-            .spawn(move || {
-                if let Err(panic) = join_handle.join() {
-                    warn!(?panic, "Wayland capture reaper observed a panic");
-                }
-            })
-        {
-            warn!(%error, "failed to start Wayland capture worker join reaper");
-        }
+        retain_input_worker(
+            join_handle,
+            "hypercolor-wayland-capture-reaper",
+            "Wayland capture worker",
+        );
     }
 }
 

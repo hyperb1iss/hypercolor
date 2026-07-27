@@ -39,6 +39,8 @@ use cpal::{FromSample, Sample, SampleFormat, SizedSample, Stream, SupportedStrea
 use libpulse_binding as pulse;
 
 use crate::input::traits::{InputData, InputSource};
+#[cfg(target_os = "linux")]
+use crate::input::worker_retention::retain_input_worker;
 use crate::input::{SourceIssue, SourceKind, SourceStatusHandle, SourceStatusReporter};
 use crate::types::audio::{AudioData, AudioPipelineConfig, AudioSourceType};
 
@@ -1307,16 +1309,11 @@ impl Drop for LinuxPulseCapture {
         let Some(worker) = self.worker.take() else {
             return;
         };
-        if let Err(error) = thread::Builder::new()
-            .name("hypercolor-pulse-reaper".to_owned())
-            .spawn(move || {
-                if let Err(panic) = worker.join() {
-                    tracing::warn!(?panic, "PulseAudio worker reaper observed a panic");
-                }
-            })
-        {
-            tracing::error!(%error, "failed to start PulseAudio worker join reaper");
-        }
+        retain_input_worker(
+            worker,
+            "hypercolor-pulse-reaper",
+            "PulseAudio capture worker",
+        );
     }
 }
 

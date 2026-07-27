@@ -20,6 +20,7 @@ use tracing::{debug, info, trace, warn};
 
 use crate::input::input_mono_ms;
 use crate::input::traits::{InputData, InputSource, InteractionData, MotionAggregate, PointerMode};
+use crate::input::worker_retention::retain_input_worker;
 use crate::input::{
     SourceKind, SourceResourceScanHealth, SourceStatusHandle, SourceStatusReporter,
     classify_source_resource_scan,
@@ -350,21 +351,15 @@ impl Drop for EvdevHostInput {
             return;
         };
         let _ = worker.stop_tx.send(());
-        let source = self.name.clone();
         if worker.join_handle.is_finished() {
             let _ = worker.join_handle.join();
             return;
         }
-        if let Err(error) = thread::Builder::new()
-            .name("hypercolor-evdev-reaper".to_owned())
-            .spawn(move || {
-                if let Err(panic) = worker.join_handle.join() {
-                    warn!(source = %source, message = ?panic, "Evdev input reaper observed a panic");
-                }
-            })
-        {
-            warn!(source = %self.name, %error, "Failed to start evdev join reaper");
-        }
+        retain_input_worker(
+            worker.join_handle,
+            "hypercolor-evdev-reaper",
+            Arc::<str>::from(format!("evdev input source {}", self.name)),
+        );
     }
 }
 

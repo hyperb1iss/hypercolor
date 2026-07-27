@@ -429,6 +429,8 @@ mod linux {
 
     use hypercolor_types::media::MediaState;
 
+    use crate::input::worker_retention::retain_input_worker;
+
     use super::{
         ART_JPEG_QUALITY, ArtCache, MAX_ART_DIMENSION, MEDIA_POLL_INTERVAL, MediaPollPublisher,
         PlaybackStatus, PlayerSnapshot, SourceIssue, SourceSessionWriter, media_state_from_player,
@@ -607,16 +609,7 @@ mod linux {
             let Some(join_handle) = self.join_handle.take() else {
                 return;
             };
-            if let Err(error) = std::thread::Builder::new()
-                .name("hypercolor-media-reaper".to_owned())
-                .spawn(move || {
-                    if let Err(panic) = join_handle.join() {
-                        warn!(?panic, "media poller reaper observed a panic");
-                    }
-                })
-            {
-                warn!(%error, "failed to start media poller join reaper");
-            }
+            retain_input_worker(join_handle, "hypercolor-media-reaper", "media poller");
         }
     }
 
