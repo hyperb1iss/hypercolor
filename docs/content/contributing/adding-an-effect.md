@@ -204,10 +204,27 @@ just sdk-dev
 sdk/src/effects/
 └── your-effect/
     ├── main.ts          # canvas() or effect() declaration
-    └── fragment.glsl    # GLSL-only effects; omit for canvas effects
+    ├── fragment.glsl    # GLSL-only effects; omit for canvas effects
+    └── cover.webp       # optional card artwork, embedded at build time
 ```
 
 Display faces (`face()` declarations for HUDs, clocks, and sensor readouts) live in their own tree under `sdk/src/faces/<name>/` and build via `just faces-build`.
+
+### Cover artwork
+
+A `cover.webp` sitting beside `main.ts` becomes the effect's card artwork in the browser grid. The build embeds it as a `data:image/webp;base64,` URI in the artifact's `<meta cover>` tag, so a built effect is self-contained: share the `.html` and the artwork goes with it.
+
+The image ships inside every copy of the effect and the daemon parses it on each registry scan, so keep it small. The convention is 640px wide WebP at quality 80, which lands between 2KB and 60KB; the build warns above 128KB and the daemon ignores anything over 1MB. Only `data:` URIs are accepted — a remote URL would let an effect track everyone whose card grid renders it.
+
+The easiest way to produce one is to let the capture tool do it. With the daemon running:
+
+```bash
+just capture-screenshots --effect your-effect   # writes ranked frames to drafts/
+just sync-covers --effect your-effect           # installs rank-1 as cover.webp
+just effects-build                              # embeds it
+```
+
+Effects without a cover fall back to a category-coloured gradient, so this is optional — but a good cover is what makes an effect legible in the grid.
 
 ### Canvas effect starter
 

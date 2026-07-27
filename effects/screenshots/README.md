@@ -1,21 +1,25 @@
 # Effect Screenshots
 
-Capture output for effect card artwork, served by the daemon at
-`/api/v1/effects/screenshots/<slug>/<variant>.webp` when curated assets are
-installed.
+Capture output for effect card artwork. This directory holds the **capture
+workflow's** working files; it is not where shipped artwork lives.
 
-For v0.1.0, Hypercolor does **not** ship curated effect screenshots. The UI
-probes this endpoint and falls back to opportunistic local thumbnails, then to a
-category-coloured gradient. That keeps the launch repository and release
-tarballs small while the screenshot set is still being curated.
+Shipped card art travels inside the effect that owns it. A `cover.webp` beside
+an effect's `main.ts` is embedded as a `data:image/webp;base64,` URI in the
+built artifact's `<meta cover>` tag, and the daemon decodes it on demand at
+`/api/v1/effects/<id>/cover`. That keeps artwork and effect in one file, so a
+shared `.html` carries its own card art and a rebuild can never drop it.
+
+Curated files under `curated/` still win when present, which is what makes this
+directory useful: it is the local override layer for reviewing replacement art
+without rebuilding an effect.
 
 ## Layout
 
 ```
 effects/screenshots/
-├── curated/              # Gitignored local review output for now
+├── curated/              # Gitignored override layer
 │   └── <slug>/
-│       ├── default.webp  # Default-controls capture
+│       ├── default.webp  # Overrides the effect's inline cover
 │       └── <preset>.webp # Named preset variants
 └── drafts/               # Gitignored, capture-tool output awaiting review
     └── <slug>/
@@ -26,26 +30,39 @@ effects/screenshots/
 ```
 
 `<slug>` is `kebab-case(effect.name)` — e.g. `color-wave`, `audio-pulse`.
-`<variant>` is `default` or `kebab-case(preset.name)` — e.g. `silk-sweep`, `aurora-drift`.
+`<variant>` is `default` or `kebab-case(preset.name)` — e.g. `silk-sweep`.
 
 ## Workflow
 
 1. Start the daemon (`just daemon`).
-2. Run the capture tool: `just capture-screenshots` (or target one effect with
-   `bun sdk/scripts/capture-screenshots.ts --effect color-wave`). Output lands in `drafts/`.
-3. Review `drafts/<slug>/<variant>/rank-{1,2,3}.png` — each rank comes from an HSV
-   score combining mean saturation and luminance variance. Rank 1 is usually the pick.
-4. Promote chosen frames to `curated/<slug>/<variant>.webp`. The tool ships with a
-   `--promote` flag that re-encodes the rank-1 frame of every variant as WebP q=0.92.
-5. Before publishing curated images, add an explicit asset policy and update
-   `.gitignore`/release packaging so only the reviewed, size-bounded set ships.
+2. Capture: `just capture-screenshots` (or one effect with
+   `just capture-screenshots --effect color-wave`). Output lands in `drafts/`.
+3. Review `drafts/<slug>/<variant>/rank-{1,2,3}.png` — each rank comes from an
+   HSV score combining mean saturation and luminance variance. Rank 1 is
+   usually the pick.
+4. Install the picks as effect covers with `just sync-covers`, which downscales
+   rank-1 to a 640px WebP and writes `sdk/src/effects/<id>/cover.webp`. Pass
+   `--force` to replace covers that already exist.
+5. Rebuild (`just effects-build`) so the new covers embed, then commit the
+   `cover.webp` files.
+
+`sync-covers` prefers a fresh draft over the docs-site imagery, so re-running
+the capture tool is what ships.
+
+## Sizing
+
+Covers embed in every built artifact and the daemon parses each one on a
+registry scan, so they are deliberately small: 640px wide WebP at q80, roughly
+2–60KB per effect. The build warns above 128KB and the parser refuses anything
+over 1MB. Full-resolution art for the documentation site lives in
+`docs/static/img/effects/`.
 
 ## UI contract
 
-`crates/hypercolor-ui/src/components/effect_card.rs` reads each effect's background as an
-`<img>` at `/api/v1/effects/screenshots/<slug>/default.webp`. A missing file surfaces
-as a 404 and the card falls back to the opportunistic localStorage thumbnail, then to
-a category-coloured radial gradient.
+`crates/hypercolor-ui/src/components/effect_card.rs` renders the
+`cover_image_url` the daemon advertises on each effect. Effects with no cover
+omit the field entirely, and the card falls back to an opportunistic
+localStorage thumbnail, then to a category-coloured radial gradient.
 
-Preset variants aren't shown on cards yet — they exist so we can expand card states
-or swap artwork when a preset is active in a future pass.
+Preset variants aren't shown on cards yet — they exist so we can expand card
+states or swap artwork when a preset is active in a future pass.

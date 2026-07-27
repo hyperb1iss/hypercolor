@@ -747,6 +747,10 @@ browse-drafts:
 promote-screenshots:
     cd sdk && bun run capture:promote
 
+# Install card artwork as sdk/src/<kind>/<id>/cover.webp so builds embed it inline
+sync-covers *FLAGS:
+    cd sdk && bun run covers:sync {{ FLAGS }}
+
 # ─── Site ─────────────────────────────────────────────────
 
 # Start marketing site dev server (:9440)
