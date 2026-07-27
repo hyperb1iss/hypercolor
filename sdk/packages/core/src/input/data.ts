@@ -143,7 +143,7 @@ function readMouseEvents(raw: unknown): MouseInputEvent[] {
                 repeatCount: positiveInteger(entry.repeatCount, 1),
                 seq: finiteNumber(entry.seq, 0),
                 source: typeof entry.source === 'string' ? entry.source : '',
-                state: entry.state === 'released' ? 'released' : 'pressed',
+                state: entry.state === 'released' || entry.state === 'repeated' ? entry.state : 'pressed',
             }
             if (typeof entry.physicalCode === 'string') event.physicalCode = entry.physicalCode
             events.push(event)

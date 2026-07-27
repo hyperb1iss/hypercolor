@@ -65,7 +65,8 @@ describe('input data contract', () => {
                 down: true,
                 events: [
                     { atMs: 1005, button: 'left', kind: 'button', seq: 3, source: 'mouse0', state: 'pressed' },
-                    { atMs: 1006, delta: 1.5, kind: 'wheel', seq: 4, source: 'mouse0' },
+                    { atMs: 1006, button: 'left', kind: 'button', seq: 4, source: 'mouse0', state: 'repeated' },
+                    { atMs: 1007, delta: 1.5, kind: 'wheel', seq: 5, source: 'mouse0' },
                 ],
                 mode: 'virtual',
                 nx: 0.25,
@@ -129,7 +130,16 @@ describe('input data contract', () => {
                 source: 'mouse0',
                 state: 'pressed',
             },
-            { atMs: 1006, delta: 1.5, kind: 'wheel', repeatCount: 1, seq: 4, source: 'mouse0' },
+            {
+                atMs: 1006,
+                button: 'left',
+                kind: 'button',
+                repeatCount: 1,
+                seq: 4,
+                source: 'mouse0',
+                state: 'repeated',
+            },
+            { atMs: 1007, delta: 1.5, kind: 'wheel', repeatCount: 1, seq: 5, source: 'mouse0' },
         ])
     })
 

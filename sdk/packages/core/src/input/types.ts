@@ -44,7 +44,7 @@ export interface MouseInputEvent {
     /** Button name (present for `kind: 'button'`). */
     button?: string
     /** Button lifecycle (present for `kind: 'button'`). */
-    state?: 'pressed' | 'released'
+    state?: KeyEventState
     /** Wheel delta in notches (present for `kind: 'wheel'`). */
     delta?: number
     /** Capture timestamp in monotonic milliseconds. */

@@ -109,6 +109,10 @@ impl InputSourceSlot {
 
         let mut writer = lock_event_writer(&self.inner.event_writer);
         for event in events.drain(..) {
+            if event.repeat_count == 0 {
+                writer.dropped_total = writer.dropped_total.saturating_add(1);
+                continue;
+            }
             if writer.entries.len() == INPUT_EVENT_RING_CAPACITY {
                 writer.entries.pop_front();
                 writer.dropped_total = writer.dropped_total.saturating_add(1);

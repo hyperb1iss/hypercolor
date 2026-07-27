@@ -1058,6 +1058,47 @@ fn input_graph_event_ring_bounds_history_and_advances_cursor_once() {
 }
 
 #[test]
+fn input_graph_rejects_zero_repeat_events_before_publication() {
+    let event = InputEvent::Key {
+        source_id: "invalid-repeat".into(),
+        key: "KeyA".into(),
+        state: InputButtonState::Pressed,
+    };
+    let mut manager = InputManager::new();
+    manager.add_source(Box::new(EventfulSource {
+        running: false,
+        events: vec![
+            TimedInputEvent {
+                event: event.clone(),
+                at_ms: 1,
+                seq: 1,
+                physical_code: None,
+                repeat_count: 0,
+            },
+            TimedInputEvent {
+                event,
+                at_ms: 2,
+                seq: 2,
+                physical_code: None,
+                repeat_count: 1,
+            },
+        ],
+    }));
+    manager.start_all().expect("event source should start");
+    manager.sample_sources(1.0 / 60.0);
+
+    let graph = manager.input_graph_handle().snapshot();
+    let mut delivered = Vec::new();
+    let read = graph.slots()[0].read_events_since(0, &mut delivered);
+
+    assert_eq!(delivered.len(), 1);
+    assert_eq!(delivered[0].seq, 2);
+    assert_eq!(read.next_cursor, 1);
+    assert_eq!(read.dropped, 0);
+    assert_eq!(read.dropped_total, 1);
+}
+
+#[test]
 fn input_graph_clears_absent_live_data_but_retains_change_only_snapshots() {
     let mut interaction = hypercolor_core::input::InteractionData::default();
     interaction.keyboard.pressed_keys.push("KeyA".to_owned());
