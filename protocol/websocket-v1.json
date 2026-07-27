@@ -143,6 +143,31 @@
         "repeat_count": 1
       },
       "description": "Canonical captured input edge. Missing timing and metadata fields decode with their listed defaults for compatibility with the prior event-only payload."
+    },
+    "input_source_status_changed_v1": {
+      "schema_version": 1,
+      "channel": "events",
+      "event": "input_source_status_changed",
+      "required_fields": [
+        "source_id",
+        "kind",
+        "backend",
+        "configured",
+        "consented",
+        "demanded",
+        "state",
+        "freshness",
+        "source_graph_generation",
+        "session_generation",
+        "resource_count",
+        "denied_resource_count",
+        "retired"
+      ],
+      "optional_fields": {
+        "lifecycle_issue_code": null,
+        "freshness_issue_code": null
+      },
+      "description": "Coalesced input-source lifecycle and freshness transition. Contains operational metadata only and never captured input contents."
     }
   },
   "binary_messages": [

@@ -440,6 +440,30 @@ pub struct ExtensionEventHint {
     pub payload: serde_json::Value,
 }
 
+/// Safe lifecycle metadata from `input_source_status_changed`.
+///
+/// The signal is a refetch hint, not a replacement for the canonical REST
+/// snapshot. Captured key, pointer, audio, and screen data are never present.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct InputSourceStatusEventHint {
+    pub source_id: String,
+    pub kind: String,
+    pub backend: String,
+    pub configured: bool,
+    pub consented: bool,
+    pub demanded: bool,
+    pub state: String,
+    pub freshness: String,
+    pub source_graph_generation: u64,
+    pub session_generation: u64,
+    pub resource_count: usize,
+    pub denied_resource_count: usize,
+    pub lifecycle_issue_code: Option<String>,
+    pub freshness_issue_code: Option<String>,
+    pub retired: bool,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ControlSurfaceEventHint {
     pub event_type: String,
@@ -517,6 +541,7 @@ pub(super) fn handle_json_message(
     set_last_effect_error: &WriteSignal<Option<EffectErrorHint>>,
     set_last_control_surface_event: &WriteSignal<Option<ControlSurfaceEventHint>>,
     set_last_extension_event: &WriteSignal<Option<ExtensionEventHint>>,
+    set_last_input_source_status_event: &WriteSignal<Option<InputSourceStatusEventHint>>,
     set_layer_health: &WriteSignal<HashMap<String, LayerHealth>>,
     set_audio_level: &WriteSignal<AudioLevel>,
     set_engine_preview_target: &WriteSignal<u32>,
@@ -670,6 +695,10 @@ pub(super) fn handle_json_message(
                                 .unwrap_or(serde_json::Value::Null),
                         }));
                     }
+                } else if event_type == "input_source_status_changed" {
+                    let data = msg.get("data").unwrap_or(&serde_json::Value::Null);
+                    set_last_input_source_status_event
+                        .set(extract_input_source_status_event_hint(data));
                 } else if DEVICE_LIFECYCLE_EVENTS.contains(&event_type)
                     && let Some(hint) = extract_device_event_hint(event_type, msg.get("data"))
                 {
@@ -686,6 +715,13 @@ pub(super) fn handle_json_message(
         }
         _ => {}
     }
+}
+
+pub fn extract_input_source_status_event_hint(
+    data: &serde_json::Value,
+) -> Option<InputSourceStatusEventHint> {
+    let hint = InputSourceStatusEventHint::deserialize(data).ok()?;
+    (!hint.source_id.is_empty()).then_some(hint)
 }
 
 pub fn extract_control_surface_event_hint(

@@ -7,6 +7,10 @@ use axum::response::IntoResponse;
 use tokio::sync::{RwLock, watch};
 
 use hypercolor_core::bus::{CanvasFrame, HypercolorBus, ZonePreviewFrame};
+use hypercolor_core::input::{
+    InputData, InputManager, InputSource, SourceIssue, SourceKind, SourceSessionSlot,
+    SourceStatusHandle, SourceStatusReporter,
+};
 use hypercolor_leptos_ext::ws::TimedInputEventPayload;
 use hypercolor_types::canvas::{
     Canvas, PublishedSurface, Rgba, linear_to_srgb_u8, srgb_u8_to_linear,
@@ -221,6 +225,84 @@ fn secured_state() -> Arc<AppState> {
     state.security_state =
         SecurityState::with_keys(Some("hc_ak_control_test"), Some("hc_ak_r_read_test"));
     Arc::new(state)
+}
+
+struct StatusEventTestSource {
+    status: SourceStatusReporter,
+    session_slot: SourceSessionSlot,
+    running: bool,
+}
+
+impl StatusEventTestSource {
+    fn new(session_slot: SourceSessionSlot) -> Self {
+        Self {
+            status: SourceStatusReporter::new(
+                "status-event-test",
+                SourceKind::Interaction,
+                "test_backend",
+                true,
+                true,
+                true,
+            ),
+            session_slot,
+            running: false,
+        }
+    }
+}
+
+impl InputSource for StatusEventTestSource {
+    fn name(&self) -> &str {
+        "Status Event Test"
+    }
+
+    fn source_status_handle(&self) -> Option<SourceStatusHandle> {
+        Some(self.status.handle())
+    }
+
+    fn source_status_reporter(&mut self) -> Option<&mut SourceStatusReporter> {
+        Some(&mut self.status)
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        if let Some(session) = self.status.begin_session()? {
+            self.session_slot.store(session);
+        }
+        self.running = true;
+        Ok(())
+    }
+
+    fn stop(&mut self) {
+        self.running = false;
+        self.session_slot.clear();
+        self.status.stop();
+    }
+
+    fn sample(&mut self) -> anyhow::Result<InputData> {
+        Ok(InputData::None)
+    }
+
+    fn is_running(&self) -> bool {
+        self.running
+    }
+
+    fn is_interaction_source(&self) -> bool {
+        true
+    }
+}
+
+fn status_event_state() -> (Arc<AppState>, SourceSessionSlot) {
+    let session_slot = SourceSessionSlot::new();
+    let mut input_manager = InputManager::new();
+    input_manager.add_source(Box::new(StatusEventTestSource::new(session_slot.clone())));
+    input_manager
+        .start_all()
+        .expect("status event test source should start");
+    let input_status = input_manager.source_status_registry();
+
+    let mut state = AppState::new();
+    state.input_manager = Arc::new(tokio::sync::Mutex::new(input_manager));
+    state.input_status = input_status;
+    (Arc::new(state), session_slot)
 }
 
 fn reset_ws_payload_caches() {
@@ -1927,6 +2009,25 @@ fn event_message_parts_serializes_active_scene_changed() {
 }
 
 #[test]
+fn event_message_parts_exposes_input_status_as_a_dedicated_safe_event() {
+    let event = HypercolorEvent::ExtensionStateChanged {
+        source: hypercolor_core::bus::INPUT_STATUS_EVENT_SOURCE.to_owned(),
+        kind: hypercolor_core::bus::INPUT_STATUS_EVENT_KIND.to_owned(),
+        payload: serde_json::json!({
+            "source_id": "host-interaction",
+            "state": "failed",
+            "session_generation": 9,
+        }),
+    };
+
+    let (event_name, event_data) = event_message_parts(&event);
+    assert_eq!(event_name, "input_source_status_changed");
+    assert_eq!(event_data["source_id"], "host-interaction");
+    assert_eq!(event_data["state"], "failed");
+    assert_eq!(event_data["session_generation"], 9);
+}
+
+#[test]
 fn frame_rendered_events_require_frame_events_even_with_metrics() {
     let channels = ChannelSet::from_channels(&[WsChannel::Events, WsChannel::Metrics]);
     let event = HypercolorEvent::FrameRendered {
@@ -2043,7 +2144,12 @@ async fn input_event_relay_preserves_equal_timestamps_and_sequence_gaps() {
     };
     let (_subscriptions_tx, subscriptions_rx) = watch::channel(subscriptions);
     let (json_tx, mut json_rx) = tokio::sync::mpsc::channel::<Utf8Bytes>(4);
-    let relay_handle = tokio::spawn(relay_events(event_rx, json_tx, subscriptions_rx));
+    let relay_handle = tokio::spawn(relay_events(
+        Arc::new(AppState::new()),
+        event_rx,
+        json_tx,
+        subscriptions_rx,
+    ));
 
     let first = sample_input_event();
     let mut second = sample_input_event();
@@ -2068,6 +2174,51 @@ async fn input_event_relay_preserves_equal_timestamps_and_sequence_gaps() {
         assert_eq!(decoded.seq, expected_seq);
         assert_eq!(decoded.repeat_count, expected_repeat_count);
     }
+
+    relay_handle.abort();
+    let _ = relay_handle.await;
+}
+
+#[tokio::test]
+async fn worker_failure_relay_invalidates_input_status_immediately() {
+    let (state, session_slot) = status_event_state();
+    let event_rx = state.event_bus.subscribe_all();
+    let (_subscriptions_tx, subscriptions_rx) = watch::channel(SubscriptionState::default());
+    let (json_tx, mut json_rx) = tokio::sync::mpsc::channel::<Utf8Bytes>(8);
+    let relay_handle = tokio::spawn(relay_events(
+        Arc::clone(&state),
+        event_rx,
+        json_tx,
+        subscriptions_rx,
+    ));
+
+    let initial = tokio::time::timeout(Duration::from_secs(1), json_rx.recv())
+        .await
+        .expect("initial source status should relay")
+        .expect("relay should remain open");
+    let initial: serde_json::Value =
+        serde_json::from_str(initial.as_str()).expect("initial relay JSON");
+    assert_eq!(initial["event"], "input_source_status_changed");
+    assert_eq!(initial["data"]["source_id"], "status-event-test");
+
+    let worker = session_slot
+        .load()
+        .expect("test worker should retain the active source session");
+    assert!(worker.failed(SourceIssue::new(
+        "worker_exited",
+        "worker exited unexpectedly",
+        true,
+    )));
+
+    let failure = tokio::time::timeout(Duration::from_secs(1), json_rx.recv())
+        .await
+        .expect("worker failure should invalidate without polling")
+        .expect("relay should remain open");
+    let failure: serde_json::Value =
+        serde_json::from_str(failure.as_str()).expect("failure relay JSON");
+    assert_eq!(failure["event"], "input_source_status_changed");
+    assert_eq!(failure["data"]["state"], "failed");
+    assert_eq!(failure["data"]["lifecycle_issue_code"], "worker_exited");
 
     relay_handle.abort();
     let _ = relay_handle.await;

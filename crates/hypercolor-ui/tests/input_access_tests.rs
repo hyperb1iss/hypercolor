@@ -1,5 +1,6 @@
 use hypercolor_ui::api::{InputStatus, SystemStatus};
 use hypercolor_ui::input_access::{InputAccessRemedy, input_access_remedy};
+use hypercolor_ui::ws::messages::extract_input_source_status_event_hint;
 
 fn input(enabled: bool, opened: usize, denied: usize) -> InputStatus {
     InputStatus {
@@ -10,6 +11,7 @@ fn input(enabled: bool, opened: usize, denied: usize) -> InputStatus {
         devices_denied: denied,
         degraded: None,
         backends: vec!["evdev".to_owned(), "browser".to_owned()],
+        ..InputStatus::default()
     }
 }
 
@@ -85,6 +87,65 @@ fn input_status_deserializes_frozen_contract() {
     assert_eq!(status.devices_opened, 0);
     assert_eq!(status.devices_denied, 2);
     assert_eq!(status.backends, vec!["evdev", "browser"]);
+}
+
+#[test]
+fn input_status_deserializes_source_health_snapshot() {
+    let status: InputStatus = serde_json::from_value(serde_json::json!({
+        "enabled": true,
+        "source_graph_generation": 12,
+        "sources": [{
+            "source_id": "host-interaction",
+            "kind": "interaction",
+            "backend": "raw_input",
+            "configured": true,
+            "consented": true,
+            "demanded": true,
+            "state": "failed",
+            "freshness": "not_applicable",
+            "source_graph_generation": 12,
+            "session_generation": 3,
+            "resource_count": 0,
+            "denied_resource_count": 0,
+            "lifecycle_issue": {
+                "code": "worker_exited",
+                "message": "worker exited unexpectedly",
+                "retryable": true
+            },
+            "retired": false
+        }]
+    }))
+    .expect("current input status payload should deserialize");
+
+    assert_eq!(status.source_graph_generation, 12);
+    assert_eq!(status.sources[0].session_generation, 3);
+    assert_eq!(
+        status.sources[0]
+            .lifecycle_issue
+            .as_ref()
+            .map(|issue| issue.code.as_str()),
+        Some("worker_exited")
+    );
+}
+
+#[test]
+fn input_source_status_event_decodes_as_a_refetch_hint() {
+    let hint = extract_input_source_status_event_hint(&serde_json::json!({
+        "source_id": "host-interaction",
+        "kind": "interaction",
+        "backend": "raw_input",
+        "state": "failed",
+        "freshness": "not_applicable",
+        "source_graph_generation": 12,
+        "session_generation": 3,
+        "lifecycle_issue_code": "worker_exited"
+    }))
+    .expect("status event should decode");
+
+    assert_eq!(hint.source_id, "host-interaction");
+    assert_eq!(hint.state, "failed");
+    assert_eq!(hint.session_generation, 3);
+    assert_eq!(hint.lifecycle_issue_code.as_deref(), Some("worker_exited"));
 }
 
 #[test]

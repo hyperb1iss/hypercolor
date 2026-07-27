@@ -26,9 +26,9 @@ use web_sys::MessageEvent;
 use super::input::InputInjectEdge;
 use super::messages::{
     AudioLevel, BackpressureNotice, CanvasFrame, ConnectionState, ControlSurfaceEventHint,
-    DeviceEventHint, EffectErrorHint, ExtensionEventHint, PerformanceMetrics, PreviewFrameChannel,
-    SceneEventHint, ScreenZonesFrame, decode_preview_frame, decode_screen_zones_frame,
-    handle_json_message,
+    DeviceEventHint, EffectErrorHint, ExtensionEventHint, InputSourceStatusEventHint,
+    PerformanceMetrics, PreviewFrameChannel, SceneEventHint, ScreenZonesFrame,
+    decode_preview_frame, decode_screen_zones_frame, handle_json_message,
 };
 use super::preview::{
     DEFAULT_PREVIEW_FPS_CAP, PreviewSubscriptionRequest, clear_preview_subscription,
@@ -88,6 +88,9 @@ pub struct WsManager {
     /// UI extensions filter on `source`/`kind` and refetch instead of
     /// polling.
     pub last_extension_event: ReadSignal<Option<ExtensionEventHint>>,
+    /// Latest safe input-source health transition. REST remains canonical;
+    /// consumers use this only to invalidate their status resources.
+    pub last_input_source_status_event: ReadSignal<Option<InputSourceStatusEventHint>>,
     /// Increments each time the daemon socket (re)opens. Bus events fired
     /// while the socket was down are not replayed, so resources mirroring
     /// daemon state over REST should fold this into their fetcher epochs
@@ -144,6 +147,8 @@ impl WsManager {
         let (active_effect, set_active_effect) = signal(None::<String>);
         let (last_device_event, set_last_device_event) = signal(None::<DeviceEventHint>);
         let (last_extension_event, set_last_extension_event) = signal(None::<ExtensionEventHint>);
+        let (last_input_source_status_event, set_last_input_source_status_event) =
+            signal(None::<InputSourceStatusEventHint>);
         let (last_scene_event, set_last_scene_event) = signal(None::<SceneEventHint>);
         let (last_effect_error, set_last_effect_error) = signal(None::<EffectErrorHint>);
         let (last_control_surface_event, set_last_control_surface_event) =
@@ -367,6 +372,7 @@ impl WsManager {
                         &set_last_effect_error,
                         &set_last_control_surface_event,
                         &set_last_extension_event,
+                        &set_last_input_source_status_event,
                         &set_layer_health,
                         &set_audio_level,
                         &set_engine_preview_target,
@@ -667,6 +673,7 @@ impl WsManager {
             last_effect_error,
             last_control_surface_event,
             last_extension_event,
+            last_input_source_status_event,
             connection_generation,
             layer_health,
             audio_level,

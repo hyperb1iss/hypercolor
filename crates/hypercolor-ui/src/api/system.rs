@@ -55,6 +55,42 @@ pub struct InputStatus {
     /// daemon running without a visible window station.
     pub degraded: Option<String>,
     pub backends: Vec<String>,
+    pub source_graph_generation: u64,
+    pub sources: Vec<InputSourceStatus>,
+}
+
+/// Structured source issue from the daemon's operational status snapshot.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct InputSourceIssueStatus {
+    pub code: String,
+    pub message: String,
+    pub remediation: Option<String>,
+    pub retryable: bool,
+}
+
+/// Lock-free lifecycle and freshness status for one input source.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct InputSourceStatus {
+    pub source_id: String,
+    pub kind: String,
+    pub backend: String,
+    pub configured: bool,
+    pub consented: bool,
+    pub demanded: bool,
+    pub state: String,
+    pub freshness: String,
+    pub source_graph_generation: u64,
+    pub session_generation: u64,
+    pub last_sample_age_ms: Option<u64>,
+    pub freshness_remaining_ms: Option<u64>,
+    pub resource_count: usize,
+    pub denied_resource_count: usize,
+    pub issue: Option<InputSourceIssueStatus>,
+    pub lifecycle_issue: Option<InputSourceIssueStatus>,
+    pub freshness_issue: Option<InputSourceIssueStatus>,
+    pub retired: bool,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]

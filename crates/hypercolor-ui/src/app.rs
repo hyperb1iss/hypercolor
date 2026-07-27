@@ -41,8 +41,8 @@ use crate::toasts;
 use crate::ws::messages::scene_event_affects_active_effect;
 use crate::ws::{
     AudioLevel, BackpressureNotice, CanvasFrame, ControlSurfaceEventHint, DeviceEventHint,
-    EffectErrorHint, ExtensionEventHint, InputInjectEdge, PerformanceMetrics, SceneEventHint,
-    ScreenZonesFrame, WsManager,
+    EffectErrorHint, ExtensionEventHint, InputInjectEdge, InputSourceStatusEventHint,
+    PerformanceMetrics, SceneEventHint, ScreenZonesFrame, WsManager,
 };
 
 mod effect_state;
@@ -95,6 +95,9 @@ pub struct WsContext {
     /// Latest daemon-extension state-change event. UI extensions filter on
     /// `source`/`kind` and refetch their REST state — never poll.
     pub last_extension_event: ReadSignal<Option<ExtensionEventHint>>,
+    /// Latest safe source-health transition, used only to invalidate the
+    /// canonical REST status snapshot.
+    pub last_input_source_status_event: ReadSignal<Option<InputSourceStatusEventHint>>,
     /// Increments each time the daemon socket (re)opens. Fold into fetcher
     /// epochs to refetch REST mirrors after a reconnect gap, since bus
     /// events are not replayed.
@@ -512,6 +515,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         last_effect_error: ws.last_effect_error,
         last_control_surface_event: ws.last_control_surface_event,
         last_extension_event: ws.last_extension_event,
+        last_input_source_status_event: ws.last_input_source_status_event,
         connection_generation: ws.connection_generation,
         layer_health: ws.layer_health,
         audio_level: ws.audio_level,

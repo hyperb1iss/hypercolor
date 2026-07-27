@@ -10,7 +10,8 @@
 //! - **Authoritative scene canvases** — latest full-scene display surface for non-preview consumers.
 //! - **Per-group canvases** — latest render-group canvases via per-group `tokio::sync::watch`.
 //!
-//! The bus is `Send + Sync`, cloneable, and entirely lock-free.
+//! The bus is `Send + Sync` and cloneable. Channel operations are lock-free;
+//! low-frequency status-event deduplication uses a short critical section.
 
 mod filter;
 
@@ -25,6 +26,7 @@ use std::time::{Instant, SystemTime};
 use serde::{Serialize, Serializer};
 use tokio::sync::{broadcast, watch};
 
+use crate::input::{SourceFreshness, SourceKind, SourceState, SourceStatus};
 use crate::types::canvas::{Canvas, PublishedSurface};
 use crate::types::device::{DeviceId, DisplayFrameFormat};
 use crate::types::event::{FrameData, HypercolorEvent, SpectrumData};
@@ -41,7 +43,59 @@ use crate::types::spatial::{EdgeBehavior, NormalizedPosition};
 /// ~8-25 seconds of runway for a stalled subscriber.
 const EVENT_CHANNEL_CAPACITY: usize = 256;
 
+/// Extension-event source used for input health transitions.
+pub const INPUT_STATUS_EVENT_SOURCE: &str = "input";
+
+/// Extension-event kind used for input health transitions.
+pub const INPUT_STATUS_EVENT_KIND: &str = "source_status_changed";
+
 static NEXT_DISPLAY_YUV420_STORAGE_ID: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+struct InputSourceStatusEvent {
+    source_id: String,
+    kind: &'static str,
+    backend: String,
+    configured: bool,
+    consented: bool,
+    demanded: bool,
+    state: &'static str,
+    freshness: &'static str,
+    source_graph_generation: u64,
+    session_generation: u64,
+    resource_count: usize,
+    denied_resource_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lifecycle_issue_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    freshness_issue_code: Option<String>,
+    retired: bool,
+}
+
+impl From<&SourceStatus> for InputSourceStatusEvent {
+    fn from(status: &SourceStatus) -> Self {
+        Self {
+            source_id: status.source_id.to_string(),
+            kind: source_kind_name(status.kind),
+            backend: status.backend.to_string(),
+            configured: status.configured,
+            consented: status.consented,
+            demanded: status.demanded,
+            state: source_state_name(status.state),
+            freshness: source_freshness_name(status.freshness),
+            source_graph_generation: status.source_graph_generation,
+            session_generation: status.session_generation,
+            resource_count: status.resource_count,
+            denied_resource_count: status.denied_resource_count,
+            lifecycle_issue_code: status.issue.as_ref().map(|issue| issue.code.to_string()),
+            freshness_issue_code: status
+                .freshness_issue
+                .as_ref()
+                .map(|issue| issue.code.to_string()),
+            retired: status.retired,
+        }
+    }
+}
 
 // ── TimestampedEvent ─────────────────────────────────────────────────────
 
@@ -474,6 +528,9 @@ pub struct HypercolorBus {
     /// Discrete events -- every subscriber sees every event.
     events: broadcast::Sender<TimestampedEvent>,
 
+    /// Last published input status per source, used to suppress duplicates.
+    input_status_events: Arc<Mutex<HashMap<String, InputSourceStatusEvent>>>,
+
     /// Latest LED color data for all zones.
     frame: watch::Sender<FrameData>,
 
@@ -525,6 +582,7 @@ impl HypercolorBus {
 
         Self {
             events,
+            input_status_events: Arc::new(Mutex::new(HashMap::new())),
             frame,
             spectrum,
             canvas,
@@ -555,6 +613,39 @@ impl HypercolorBus {
         };
         // Ignore send errors -- they mean no subscribers exist.
         let _ = self.events.send(timestamped);
+    }
+
+    /// Publish a source-health transition when its operational state changed.
+    ///
+    /// The payload contains lifecycle metadata only. Captured samples and input
+    /// events never cross this default-subscription channel.
+    #[must_use]
+    pub fn publish_input_source_status(&self, status: &SourceStatus) -> bool {
+        let transition = InputSourceStatusEvent::from(status);
+        let changed = {
+            let mut published = self
+                .input_status_events
+                .lock()
+                .expect("input status event coalescer should not be poisoned");
+            if published.get(&transition.source_id) == Some(&transition) {
+                false
+            } else {
+                published.insert(transition.source_id.clone(), transition.clone());
+                true
+            }
+        };
+        if !changed {
+            return false;
+        }
+
+        let payload = serde_json::to_value(transition)
+            .expect("input source status transition contains only JSON-safe fields");
+        self.publish(HypercolorEvent::ExtensionStateChanged {
+            source: INPUT_STATUS_EVENT_SOURCE.to_owned(),
+            kind: INPUT_STATUS_EVENT_KIND.to_owned(),
+            payload,
+        });
+        true
     }
 
     // ── Subscribing ──────────────────────────────────────────────────
@@ -1015,6 +1106,36 @@ fn epoch_to_utc(epoch_secs: u64) -> (u32, u32, u32, u32, u32, u32) {
     let y = if m <= 2 { y + 1 } else { y };
 
     (y as u32, m as u32, d as u32, hour, minute, second)
+}
+
+const fn source_kind_name(kind: SourceKind) -> &'static str {
+    match kind {
+        SourceKind::Audio => "audio",
+        SourceKind::Screen => "screen",
+        SourceKind::Interaction => "interaction",
+        SourceKind::Media => "media",
+        SourceKind::Network => "network",
+    }
+}
+
+const fn source_state_name(state: SourceState) -> &'static str {
+    match state {
+        SourceState::Stopped => "stopped",
+        SourceState::Starting => "starting",
+        SourceState::Live => "live",
+        SourceState::Degraded => "degraded",
+        SourceState::Unavailable => "unavailable",
+        SourceState::Failed => "failed",
+    }
+}
+
+const fn source_freshness_name(freshness: SourceFreshness) -> &'static str {
+    match freshness {
+        SourceFreshness::NotApplicable => "not_applicable",
+        SourceFreshness::AwaitingSample => "awaiting_sample",
+        SourceFreshness::Fresh => "fresh",
+        SourceFreshness::Stale => "stale",
+    }
 }
 
 // ── Re-exports for convenience ───────────────────────────────────────────

@@ -1377,6 +1377,17 @@ pub(super) fn ws_capabilities() -> Vec<String> {
 pub(super) fn event_message_parts(
     event: &hypercolor_types::event::HypercolorEvent,
 ) -> (String, serde_json::Value) {
+    if let hypercolor_types::event::HypercolorEvent::ExtensionStateChanged {
+        source,
+        kind,
+        payload,
+    } = event
+        && source == hypercolor_core::bus::INPUT_STATUS_EVENT_SOURCE
+        && kind == hypercolor_core::bus::INPUT_STATUS_EVENT_KIND
+    {
+        return ("input_source_status_changed".to_owned(), payload.clone());
+    }
+
     let serialized = serde_json::to_value(event).ok();
     let event_type = serialized
         .as_ref()

@@ -15,10 +15,12 @@ use axum::body::Bytes;
 use axum::extract::ws::Utf8Bytes;
 use hypercolor_core::device::usb_actor_metrics_snapshot;
 use hypercolor_core::engine::RenderLoopState;
+use hypercolor_core::input::{SourceStatus, SourceStatusRegistry};
 use hypercolor_types::canvas::PublishedSurfaceStorageIdentity;
 use hypercolor_types::sensor::SystemSnapshot;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{broadcast, watch};
+use tokio::task::JoinSet;
 use tracing::{debug, warn};
 
 use super::cache::{
@@ -43,6 +45,8 @@ use crate::preview_runtime::{PreviewDemandSummary, PreviewPixelFormat, PreviewSt
 use crate::session::OutputPowerState;
 
 const BACKPRESSURE_REPORT_INTERVAL: Duration = Duration::from_millis(500);
+const INPUT_STATUS_GRAPH_RECONCILE_INTERVAL: Duration = Duration::from_millis(250);
+const INPUT_STATUS_TRANSITION_BUFFER_SIZE: usize = 64;
 
 #[derive(Debug, Default)]
 struct BackpressureReporter {
@@ -79,39 +83,90 @@ impl BackpressureReporter {
 /// Relay events from the broadcast bus to a bounded mpsc channel.
 /// Drops events when the consumer is slow (backpressure).
 pub(super) async fn relay_events(
+    state: Arc<AppState>,
     mut event_rx: broadcast::Receiver<hypercolor_core::bus::TimestampedEvent>,
     json_tx: tokio::sync::mpsc::Sender<Utf8Bytes>,
     subscriptions: watch::Receiver<SubscriptionState>,
 ) {
+    let (status_tx, mut status_rx) =
+        tokio::sync::mpsc::channel::<Arc<SourceStatus>>(INPUT_STATUS_TRANSITION_BUFFER_SIZE);
+    let mut status_watchers = JoinSet::new();
+    let mut status_graph_generation =
+        rebuild_input_status_watchers(&state.input_status, &status_tx, &mut status_watchers);
+    let mut status_graph_reconcile = tokio::time::interval_at(
+        tokio::time::Instant::now() + INPUT_STATUS_GRAPH_RECONCILE_INTERVAL,
+        INPUT_STATUS_GRAPH_RECONCILE_INTERVAL,
+    );
+    status_graph_reconcile.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
     loop {
-        match event_rx.recv().await {
-            Ok(timestamped) => {
-                let should_relay = {
-                    let subs = subscriptions.borrow();
-                    should_relay_event(&timestamped.event, subs.channels)
-                };
-                if !should_relay {
-                    continue;
+        tokio::select! {
+            received = event_rx.recv() => match received {
+                Ok(timestamped) => {
+                    let should_relay = {
+                        let subs = subscriptions.borrow();
+                        should_relay_event(&timestamped.event, subs.channels)
+                    };
+                    if !should_relay {
+                        continue;
+                    }
+
+                    let (event_name, event_data) = event_message_parts(&timestamped.event);
+                    let msg = ServerMessage::Event {
+                        event: event_name,
+                        timestamp: timestamped.timestamp.to_string(),
+                        data: event_data,
+                    };
+                    let Ok(json) = serde_json::to_string(&msg) else {
+                        continue;
+                    };
+
+                    let _ = try_enqueue_json(&json_tx, json, "events");
                 }
-
-                let (event_name, event_data) = event_message_parts(&timestamped.event);
-                let msg = ServerMessage::Event {
-                    event: event_name,
-                    timestamp: timestamped.timestamp.to_string(),
-                    data: event_data,
-                };
-                let Ok(json) = serde_json::to_string(&msg) else {
-                    continue;
-                };
-
-                let _ = try_enqueue_json(&json_tx, json, "events");
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    warn!("WebSocket consumer lagged by {n} events");
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            },
+            Some(status) = status_rx.recv() => {
+                let _ = state.event_bus.publish_input_source_status(&status);
+            },
+            _ = status_graph_reconcile.tick() => {
+                let current_generation = state.input_status.snapshot().source_graph_generation();
+                if current_generation != status_graph_generation {
+                    status_graph_generation = rebuild_input_status_watchers(
+                        &state.input_status,
+                        &status_tx,
+                        &mut status_watchers,
+                    );
+                }
             }
-            Err(broadcast::error::RecvError::Lagged(n)) => {
-                warn!("WebSocket consumer lagged by {n} events");
-            }
-            Err(broadcast::error::RecvError::Closed) => break,
         }
     }
+}
+
+fn rebuild_input_status_watchers(
+    registry: &SourceStatusRegistry,
+    status_tx: &tokio::sync::mpsc::Sender<Arc<SourceStatus>>,
+    watchers: &mut JoinSet<()>,
+) -> u64 {
+    *watchers = JoinSet::new();
+    let snapshot = registry.snapshot();
+    for handle in snapshot.handles() {
+        let mut subscription = handle.subscribe();
+        let status_tx = status_tx.clone();
+        watchers.spawn(async move {
+            if status_tx.send(subscription.snapshot()).await.is_err() {
+                return;
+            }
+            while let Some(status) = subscription.changed().await {
+                if status_tx.send(status).await.is_err() {
+                    break;
+                }
+            }
+        });
+    }
+    snapshot.source_graph_generation()
 }
 
 /// Relay frame watch updates to the WebSocket client.

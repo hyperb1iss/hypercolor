@@ -154,6 +154,7 @@ async fn handle_socket(
 
     // Spawn event relay tasks — each watches immutable subscription snapshots.
     let relay_handle = tokio::spawn(relay_events(
+        Arc::clone(&state),
         event_rx,
         json_tx.clone(),
         subscriptions_rx.clone(),

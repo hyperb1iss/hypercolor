@@ -9,10 +9,10 @@
 //! gates the browser-preview injection toggle.
 //!
 //! Freshness rides signals, never timers: the status `LocalResource`
-//! refetches when the active effect changes, when the daemon socket
-//! reconnects (`connection_generation`), and after a successful Enable
-//! action bumps the manual epoch. Non-interactive effects skip the fetch
-//! entirely.
+//! refetches when the active effect changes, when source health changes, when
+//! the daemon socket reconnects (`connection_generation`), and after a
+//! successful Enable action bumps the manual epoch. Non-interactive effects
+//! skip the fetch entirely.
 
 use leptos::prelude::*;
 use leptos_icons::Icon;
@@ -51,11 +51,12 @@ pub fn InputAccessBanner() -> impl IntoView {
 
     let input_status = LocalResource::new(move || {
         let generation = ws.connection_generation.get();
+        let status_event = ws.last_input_source_status_event.get();
         let epoch = refetch_epoch.get();
         let active_id = fx.active_effect_id.get();
         let wants = wants_input.get();
         async move {
-            let _ = (generation, epoch, active_id);
+            let _ = (generation, status_event, epoch, active_id);
             if !wants {
                 return None;
             }

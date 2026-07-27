@@ -2,8 +2,9 @@
 
 use hypercolor_core::bus::{
     CanvasFrame, DisplayGroupFrame, DisplayGroupTarget, EventFilter, EventTimestamp, HypercolorBus,
-    TimestampedEvent,
+    INPUT_STATUS_EVENT_KIND, INPUT_STATUS_EVENT_SOURCE, TimestampedEvent,
 };
+use hypercolor_core::input::{SourceKind, SourceStatusReporter};
 use hypercolor_core::types::canvas::{Canvas, Rgba};
 use hypercolor_core::types::event::{
     ChangeTrigger, DisconnectReason, EffectRef, EventCategory, EventPriority, FrameData,
@@ -1049,5 +1050,82 @@ async fn concurrent_publishers() {
     assert_eq!(
         count, 20,
         "should receive all events from concurrent publishers"
+    );
+}
+
+#[tokio::test]
+async fn input_status_events_are_content_safe_coalesced_and_generation_aware() {
+    let bus = HypercolorBus::new();
+    let mut rx = bus.subscribe_all();
+    let mut reporter = SourceStatusReporter::new(
+        "host-interaction",
+        SourceKind::Interaction,
+        "raw_input",
+        true,
+        true,
+        true,
+    );
+    reporter.set_source_graph_generation(7);
+    let first_session = reporter
+        .begin_session()
+        .expect("first session should start")
+        .expect("manager-bound reporter should create a session");
+    let first = reporter.handle().snapshot();
+
+    assert!(bus.publish_input_source_status(&first));
+    assert!(!bus.publish_input_source_status(&first));
+
+    let published = recv_one(&mut rx)
+        .await
+        .expect("status event should publish");
+    let HypercolorEvent::ExtensionStateChanged {
+        source,
+        kind,
+        payload,
+    } = published.event
+    else {
+        panic!("expected input status extension event");
+    };
+    assert_eq!(source, INPUT_STATUS_EVENT_SOURCE);
+    assert_eq!(kind, INPUT_STATUS_EVENT_KIND);
+    assert_eq!(payload["source_id"], "host-interaction");
+    assert_eq!(payload["kind"], "interaction");
+    assert_eq!(payload["backend"], "raw_input");
+    assert_eq!(
+        payload["session_generation"],
+        first_session.session_generation()
+    );
+    assert!(
+        payload.get("event").is_none(),
+        "captured input must not leak"
+    );
+    assert!(matches!(
+        rx.try_recv(),
+        Err(broadcast::error::TryRecvError::Empty)
+    ));
+
+    reporter.stop();
+    reporter.set_source_graph_generation(8);
+    let second_session = reporter
+        .begin_session()
+        .expect("second session should start")
+        .expect("manager-bound reporter should create a successor session");
+    let second = reporter.handle().snapshot();
+    assert_ne!(
+        first_session.session_generation(),
+        second_session.session_generation()
+    );
+    assert!(bus.publish_input_source_status(&second));
+
+    let published = recv_one(&mut rx)
+        .await
+        .expect("successor session status should publish");
+    let HypercolorEvent::ExtensionStateChanged { payload, .. } = published.event else {
+        panic!("expected successor input status event");
+    };
+    assert_eq!(payload["source_graph_generation"], 8);
+    assert_eq!(
+        payload["session_generation"],
+        second_session.session_generation()
     );
 }

@@ -11,7 +11,7 @@ pub use connection::WsManager;
 pub use input::{InputEdgeButton, InputEdgeState, InputInjectEdge};
 pub use messages::{
     AudioLevel, BackpressureNotice, CanvasFrame, CanvasPixelFormat, ControlSurfaceEventHint,
-    DeviceEventHint, EffectErrorHint, ExtensionEventHint, PerformanceMetrics, SceneEventHint,
-    ScreenZonesFrame,
+    DeviceEventHint, EffectErrorHint, ExtensionEventHint, InputSourceStatusEventHint,
+    PerformanceMetrics, SceneEventHint, ScreenZonesFrame,
 };
 pub use preview::DEFAULT_PREVIEW_FPS_CAP;
