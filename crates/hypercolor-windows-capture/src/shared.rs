@@ -100,6 +100,7 @@ pub struct Frame {
     pool: FramePool,
 }
 
+#[cfg(target_os = "windows")]
 impl Frame {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(

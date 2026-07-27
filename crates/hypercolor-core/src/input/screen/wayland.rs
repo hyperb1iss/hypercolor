@@ -58,8 +58,28 @@ struct SharedSettings {
     generation: AtomicU64,
     frame_generation: AtomicU64,
     topology_generation: AtomicU64,
+    topology: Mutex<Option<WaylandTopologyState>>,
     session_generation: AtomicU64,
     expected_epoch: Mutex<Option<CaptureEpoch>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct WaylandTopologySignature {
+    source_id: CaptureSourceId,
+    origin: PhysicalOrigin,
+    logical_extent: Option<PixelExtent>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ResolvedWaylandTopology {
+    generation: u64,
+    native_extent: PixelExtent,
+}
+
+#[derive(Debug)]
+struct WaylandTopologyState {
+    signature: WaylandTopologySignature,
+    resolved: ResolvedWaylandTopology,
 }
 
 #[derive(Clone)]
@@ -83,15 +103,85 @@ impl SharedSettings {
             .clone()
     }
 
-    fn install_expected_epoch(&self, epoch: CaptureEpoch) -> bool {
+    fn begin_session(&self) -> u64 {
         let mut expected = self
             .expected_epoch
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if self.session_generation.load(Ordering::Acquire) != epoch.session_generation {
+        let session_generation = self
+            .session_generation
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1);
+        *expected = None;
+        session_generation
+    }
+
+    fn activate_topology(
+        &self,
+        signature: &WaylandTopologySignature,
+        native_extent: PixelExtent,
+        session_generation: u64,
+    ) -> Option<ResolvedWaylandTopology> {
+        let mut expected = self
+            .expected_epoch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.session_generation.load(Ordering::Acquire) != session_generation {
+            return None;
+        }
+
+        let mut topology = self
+            .topology
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let resolved = match topology.as_ref() {
+            Some(state) if state.signature == *signature => state.resolved,
+            _ => {
+                let resolved = ResolvedWaylandTopology {
+                    generation: self
+                        .topology_generation
+                        .fetch_add(1, Ordering::AcqRel)
+                        .wrapping_add(1),
+                    native_extent,
+                };
+                *topology = Some(WaylandTopologyState {
+                    signature: signature.clone(),
+                    resolved,
+                });
+                resolved
+            }
+        };
+        *expected = Some(CaptureEpoch {
+            source_id: signature.source_id.clone(),
+            topology_generation: resolved.generation,
+            session_generation,
+        });
+        Some(resolved)
+    }
+
+    fn publish_snapshot(
+        &self,
+        latest_snapshot: &Mutex<Option<CapturedScreenSnapshot>>,
+        legacy: LegacyScreenSnapshot,
+    ) -> bool {
+        let expected = self
+            .expected_epoch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(expected) = expected.as_ref() else {
+            return false;
+        };
+        if legacy.frame().validate_epoch(expected).is_err() {
             return false;
         }
-        *expected = Some(epoch);
+        let Ok(mut latest) = latest_snapshot.lock() else {
+            return false;
+        };
+        let generation = self
+            .frame_generation
+            .fetch_add(1, Ordering::Release)
+            .wrapping_add(1);
+        *latest = Some(CapturedScreenSnapshot { legacy, generation });
         true
     }
 
@@ -127,6 +217,7 @@ impl WaylandScreenCaptureInput {
                 generation: AtomicU64::new(0),
                 frame_generation: AtomicU64::new(0),
                 topology_generation: AtomicU64::new(0),
+                topology: Mutex::new(None),
                 session_generation: AtomicU64::new(0),
                 expected_epoch: Mutex::new(None),
             }),
@@ -291,11 +382,7 @@ impl WaylandScreenCaptureInput {
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let (exit_tx, exit_rx) = mpsc::sync_channel(1);
         let status_session = self.status_session.clone();
-        let session_generation = settings
-            .session_generation
-            .fetch_add(1, Ordering::AcqRel)
-            .wrapping_add(1);
-        settings.clear_expected_epoch();
+        let session_generation = settings.begin_session();
         let join_handle = spawn_input_worker(
             thread::Builder::new().name("hypercolor-screen-capture".to_owned()),
             move || {
@@ -623,12 +710,9 @@ struct PortalCaptureSession {
 
 #[derive(Clone)]
 struct WaylandSourceMetadata {
-    source_id: CaptureSourceId,
-    origin: PhysicalOrigin,
-    logical_width: Option<u32>,
+    signature: WaylandTopologySignature,
     session_generation: u64,
-    topology_generation: u64,
-    storage_extent: Option<PixelExtent>,
+    topology: Option<ResolvedWaylandTopology>,
 }
 
 impl WaylandSourceMetadata {
@@ -640,32 +724,29 @@ impl WaylandSourceMetadata {
         let source_id =
             CaptureSourceId::new(Arc::<str>::from(format!("wayland:portal:{source_name}")))?;
         let (x, y) = stream.position().unwrap_or_default();
-        let logical_width = stream
-            .size()
-            .and_then(|(width, _)| u32::try_from(width).ok())
-            .filter(|width| *width > 0);
+        let logical_extent = stream.size().and_then(|(width, height)| {
+            let width = u32::try_from(width).ok()?;
+            let height = u32::try_from(height).ok()?;
+            PixelExtent::new(width, height).ok()
+        });
         Ok(Self {
-            source_id,
-            origin: PhysicalOrigin { x, y },
-            logical_width,
+            signature: WaylandTopologySignature {
+                source_id,
+                origin: PhysicalOrigin { x, y },
+                logical_extent,
+            },
             session_generation,
-            topology_generation: 0,
-            storage_extent: None,
+            topology: None,
         })
     }
 
     fn source_scale(&self, physical_width: u32) -> SourceScale {
-        self.logical_width
-            .and_then(|logical_width| SourceScale::new(logical_width, physical_width).ok())
+        self.signature
+            .logical_extent
+            .and_then(|logical_extent| {
+                SourceScale::new(logical_extent.width(), physical_width).ok()
+            })
             .unwrap_or(SourceScale::ONE)
-    }
-
-    fn epoch(&self) -> CaptureEpoch {
-        CaptureEpoch {
-            source_id: self.source_id.clone(),
-            topology_generation: self.topology_generation,
-            session_generation: self.session_generation,
-        }
     }
 }
 
@@ -720,18 +801,23 @@ impl WaylandCaptureUserData {
         plane: PooledCapturePlane,
     ) -> anyhow::Result<CaptureFrame<RawCaptureSurface>> {
         self.sequence = self.sequence.wrapping_add(1).max(1);
-        let extent = PixelExtent::new(width, height)?;
-        if self.source.storage_extent != Some(extent) {
-            self.source.storage_extent = Some(extent);
-            self.source.topology_generation = self
+        let storage_extent = PixelExtent::new(width, height)?;
+        let topology = if let Some(topology) = self.source.topology {
+            topology
+        } else {
+            let topology = self
                 .settings
-                .topology_generation
-                .fetch_add(1, Ordering::AcqRel)
-                .wrapping_add(1);
-            if !self.settings.install_expected_epoch(self.source.epoch()) {
-                anyhow::bail!("Wayland capture session became stale during topology update");
-            }
-        }
+                .activate_topology(
+                    &self.source.signature,
+                    storage_extent,
+                    self.source.session_generation,
+                )
+                .ok_or_else(|| {
+                    anyhow!("Wayland capture session became stale during topology activation")
+                })?;
+            self.source.topology = Some(topology);
+            topology
+        };
         let row_stride = i64::from(width)
             .checked_mul(4)
             .ok_or_else(|| anyhow!("Wayland capture row stride overflow"))?;
@@ -739,19 +825,19 @@ impl WaylandCaptureUserData {
             Duration::from_secs_f64(1.0 / f64::from(self.analyzer.config().target_fps.max(1)));
         let frame = CaptureFrame::new(
             CaptureFrameMetadata {
-                source_id: self.source.source_id.clone(),
-                topology_generation: self.source.topology_generation,
+                source_id: self.source.signature.source_id.clone(),
+                topology_generation: topology.generation,
                 session_generation: self.source.session_generation,
                 sequence: self.sequence,
                 captured_at,
                 fresh_until: captured_at + frame_period + frame_period,
                 geometry: CaptureGeometry::new(
-                    self.source.origin,
-                    extent,
-                    extent,
+                    self.source.signature.origin,
+                    topology.native_extent,
+                    storage_extent,
                     CaptureRotation::Identity,
                     None,
-                    self.source.source_scale(width),
+                    self.source.source_scale(topology.native_extent.width()),
                 )?,
                 color_space: CaptureColorSpace::Unknown,
                 transfer_function: CaptureTransferFunction::Unknown,
@@ -1058,15 +1144,9 @@ fn run_pipewire_loop(
             let Ok(legacy) = analyze_legacy_screen_frame(&mut user_data.analyzer, frame) else {
                 return;
             };
-            let generation = user_data
+            user_data
                 .settings
-                .frame_generation
-                .fetch_add(1, Ordering::Release)
-                .wrapping_add(1);
-
-            if let Ok(mut latest) = user_data.latest_snapshot.lock() {
-                *latest = Some(CapturedScreenSnapshot { legacy, generation });
-            }
+                .publish_snapshot(&user_data.latest_snapshot, legacy);
         })
         .register()
         .context("failed to register PipeWire screen capture listener")?;

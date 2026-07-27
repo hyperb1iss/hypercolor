@@ -354,28 +354,28 @@ impl DesktopDuplicator {
                 let src_x0 = out_x * stride;
                 let src_x1 = (src_x0 + stride).min(width);
 
-                let mut blue = 0_u32;
-                let mut green = 0_u32;
-                let mut red = 0_u32;
-                let mut samples = 0_u32;
+                let mut blue = 0_u64;
+                let mut green = 0_u64;
+                let mut red = 0_u64;
+                let mut samples = 0_u64;
 
                 for src_y in src_y0..src_y1 {
                     let row = src_y * row_pitch;
                     for src_x in src_x0..src_x1 {
                         let src = row + src_x * BYTES_PER_PIXEL;
                         // Desktop Duplication hands back BGRA.
-                        blue += u32::from(source[src]);
-                        green += u32::from(source[src + 1]);
-                        red += u32::from(source[src + 2]);
+                        blue += u64::from(source[src]);
+                        green += u64::from(source[src + 1]);
+                        red += u64::from(source[src + 2]);
                         samples += 1;
                     }
                 }
 
                 let samples = samples.max(1);
                 let dst = dst_row_start + out_x * BYTES_PER_PIXEL;
-                rgba[dst] = (red / samples) as u8;
-                rgba[dst + 1] = (green / samples) as u8;
-                rgba[dst + 2] = (blue / samples) as u8;
+                rgba[dst] = average_channel(red, samples);
+                rgba[dst + 1] = average_channel(green, samples);
+                rgba[dst + 2] = average_channel(blue, samples);
                 rgba[dst + 3] = 0xFF;
             }
         }
@@ -469,6 +469,10 @@ impl DesktopDuplicator {
     }
 }
 
+fn average_channel(sum: u64, samples: u64) -> u8 {
+    (sum / samples.max(1)) as u8
+}
+
 impl Drop for DesktopDuplicator {
     fn drop(&mut self) {
         self.release_frame();
@@ -551,3 +555,6 @@ fn output_origin(output: &IDXGIOutput1) -> CaptureResult<(i32, i32)> {
         .map_err(|source| CaptureError::windows("describe DXGI output", source))?;
     Ok((desc.DesktopCoordinates.left, desc.DesktopCoordinates.top))
 }
+
+#[cfg(test)]
+mod tests;
