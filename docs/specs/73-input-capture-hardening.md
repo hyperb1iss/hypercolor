@@ -1,6 +1,7 @@
 # Spec 73: Input and Capture Hardening
 
-Status: APPROVED (Claude cross-model review PASS, round 6)
+Status: APPROVED (Claude cross-model review PASS, round 6; T11 amendment PASS,
+round 5 plus final delta)
 Author: Nova
 Date: 2026-07-26
 Depends on: spec 14, spec 71, spec 72
@@ -664,10 +665,30 @@ Verify:
 
 Files:
 
-- new routing module under `crates/hypercolor-core/src/input/`
+- `crates/hypercolor-types/src/config.rs` and config tests
+- `crates/hypercolor-core/src/config/mod.rs`
+- new `crates/hypercolor-core/src/input/routing.rs`
+- `crates/hypercolor-core/src/input/{mod,graph,traits,browser}.rs`
 - `crates/hypercolor-daemon/src/render_thread/pipeline_runtime.rs`
+- `crates/hypercolor-daemon/src/render_thread/capture_demand.rs`
+- new interactive-preview executor/render-lane module plus render-group input
+  ownership
+- new input-publication pump owned outside the authoritative frame executor
+- `crates/hypercolor-daemon/src/render_thread/{frame_executor,frame_policy,frame_io,scene_dependency}.rs`
+- `crates/hypercolor-daemon/src/render_thread/render_groups/model.rs`
+- `crates/hypercolor-daemon/src/render_thread/gpu_device.rs`
+- `crates/hypercolor-daemon/src/preview_runtime.rs`
+- `crates/hypercolor-daemon/src/api/ws/{session,protocol,relays,cache,tests}.rs`
+- `crates/hypercolor-daemon/src/api/mod.rs`
 - `crates/hypercolor-daemon/src/api/config.rs`
-- shared config types and tests
+- `crates/hypercolor-daemon/src/startup/{mod,services}.rs`
+- daemon status, diagnose, and MCP status surfaces
+- `crates/hypercolor-leptos-ext/src/ws/preview.rs` and WebSocket schema tests
+- `crates/hypercolor-ui/src/components/canvas_preview.rs`
+- `crates/hypercolor-ui/src/ws/{connection,input,messages,preview}.rs`
+- generated OpenAPI outputs under `python/src/hypercolor/_generated/`
+- generated WebSocket constants at `python/src/hypercolor/ws_protocol.py`
+- stock interactive effect conformance fixtures
 - user-facing input migration documentation
 - `CHANGELOG.md`
 
@@ -676,8 +697,85 @@ Parallel: no with T10 or T12; `api/config.rs` ownership passes T10 -> T11 -> T12
 
 Implementation:
 
-- Add per-consumer routes for host, browser, or explicit merge, with stable source
-  ids and documented pointer precedence.
+- Add `InteractionRoutePolicy::{Host, Browser, Merge}`, serialized as `host`,
+  `browser`, and `merge`. Persist separate daemon-effect and interactive-preview
+  policies, defaulting to `host` and `browser` respectively for new configs.
+  Bump the config schema and migrate an older config with no route fields to
+  daemon `merge` plus preview `browser` for one minor version; a freshly created
+  config uses the new defaults. All three variants remain valid for both consumer
+  classes.
+- Keep one manager-owned `BrowserInputSource`, but make it own an immutable,
+  lock-free connection registry instead of publishing only a union. An interactive
+  WebSocket attach creates a unique browser slot addressed by structured
+  `(server_connection_incarnation, client_preview_id)` identity. Its opaque source
+  incarnation is distinct from manager-local slot ids and from its diagnostic
+  string. Attach/detach must not mutate the manager's top-level source graph or put
+  `InputManager` on the WebSocket injection path.
+- Stop publishing a destructive union as the browser source's routable data plane.
+  The top-level source remains the registry lifecycle/status owner; addressable
+  child slots carry held state, motion, and independent bounded event histories.
+  Any compatibility aggregate is derived non-destructively with its own cursors
+  and can never drain or starve a child consumer.
+- Resolve source sets exactly: `host` selects every eligible non-browser
+  interaction slot; preview `browser` selects only that preview's child;
+  preview `merge` selects host plus that child. Daemon `browser` selects only an
+  explicitly claimed authoritative browser child; daemon `merge` selects host plus
+  that claimed child. No route implicitly selects every browser connection.
+- Model the authoritative browser child as a control-authorized single-owner lease
+  on `(server_connection_incarnation, client_preview_id)`. Claim and release are
+  explicit and idempotent; a conflicting claim returns an error rather than
+  stealing ownership. Disconnect or close synthesizes releases and leaves daemon
+  `browser` empty or daemon `merge` host-only until a new owner claims it. The
+  migrated UI claims from its main interactive preview so legacy browser-driven
+  hardware output has a deterministic successor instead of silently disappearing.
+- Add a real render-consumer boundary. The authoritative scene keeps its existing
+  render lane and resolves the daemon-effect route. Every active interactive
+  preview owns isolated interaction-consuming effect instances, route state,
+  event cursors, retained frames, compositor, composition planner, output
+  artifacts, effect delta clock, and any mutable transition or deferred-work state
+  used by its path. State within one lane may share that lane's immutable GPU device
+  handle, but preview lanes never share the authoritative device/queue,
+  `SparkleFlinger`, stateful interaction renderer, clock, retained-frame cache, or
+  route cursor. Filtering the current global `FrameInputs.interaction` after merge
+  is not sufficient.
+- Split interaction-invariant producers from per-consumer rendering. Media decode,
+  static assets, screen capture, and native/HTML layers whose typed metadata does
+  not require interaction run once at their own cadence and publish immutable
+  surfaces for every lane to latch. Only interaction-consuming effect state is
+  instantiated per consumer. Preview composition pools are demand-sized and reuse
+  full-resolution surfaces instead of copying the authoritative lane's eager
+  8-to-64-slot pool allocation into every preview.
+- Run interactive lanes on a preview executor outside the authoritative render
+  thread and hardware frame deadline. Each lane has its own monotonic clock and
+  sequential state ownership, while independent lanes execute concurrently.
+- Give preview rendering an independent `wgpu::Device`/`Queue` from the same
+  adapter when GPU composition is available; otherwise use the full-resolution CPU
+  compositor on the preview executor. A preview may never submit to or call
+  device-wide `poll(Wait)` on the authoritative device. Interaction-invariant
+  producers publish device-neutral immutable surfaces; a GPU-only producer may
+  cache one immutable device-specific view per device, never one decode/render per
+  lane. Capacity must scale to the supported concurrent preview load; do not lower
+  preview FPS, canvas resolution, or authoritative cadence to hide contention.
+- Move `InputManager::sample_sources` into a dedicated input-publication pump.
+  The pump runs whenever any authoritative, preview, passive-stream, or diagnostic
+  consumer resolves a live source, at the maximum requested/source cadence across
+  those consumers. It publishes slots independently of authoritative frame skip,
+  reuse, output sleep, or idle decisions. Render and preview lanes only read the
+  immutable graph; neither owns sampling nor drains backend queues.
+- Key interactive preview consumers by
+  `(server_connection_incarnation, client_preview_id)`, not
+  canvas subscription or canvas dimensions. Multiple previews on one connection
+  and multiple connections viewing the same canvas remain independent. Share only
+  immutable registry, scene, asset, and non-interaction input snapshots; never
+  share a stateful renderer or route cursor between consumers.
+- Extend the shared WebSocket codec with additive interactive-preview open, close,
+  input, authoritative-claim, acknowledgment, and addressed-frame contracts.
+  Preserve the existing passive `canvas` channel and frame layout for older
+  clients; the new binary tag/header carries the preview id. `input_inject` names a
+  preview id and is rejected unless that preview is active on the same connection.
+  Client ids are opaque within one connection and cannot address another session.
+  Disconnect, explicit close, authorization loss, or future cancellation drops a
+  guard that releases the route, lease, and render lane exactly once.
 - Default browser preview to its connection-scoped source and daemon effects to
   host input; never merge them implicitly.
 - Preserve a configurable legacy `merge` route for one minor version and document
@@ -685,15 +783,124 @@ Implementation:
   under the new preview default before that compatibility route can be removed.
 - If merge is requested, deduplicate only when physical identity and sequence
   provenance prove duplication. Do not heuristic-dedupe repeated keys.
-- Expose the selected route and suppressed sources in diagnostics.
+- Store one event cursor per `(consumer_id, source_incarnation)`. A new consumer,
+  newly selected source, or replacement slot starts at that slot's current tail; graph
+  rebuilds preserve cursors for unchanged slot ids. Each source retains a fixed
+  bounded history independently, reports overwritten events, and never waits for
+  all consumers to advance before reclaiming entries.
+- When a read reports overwritten events, synthesize releases for previously
+  observed controls from that source, clear its observed provenance, quarantine
+  controls present in its current held snapshot until their first release, advance
+  to the current tail, and add the loss to that consumer's drop total. Overflow can
+  never leave an effect logically stuck or invent a press.
+- Track observed press provenance per `(consumer_id, source_incarnation, control)`.
+  Suppress a release whose press that consumer never observed. Before removing a
+  source from a route, synthesize releases only for controls whose last routed,
+  observed provenance is disappearing; a control still held by another selected
+  source remains held. Newly selected sources quarantine preexisting key/button
+  holds: they do not expose them as down or replay presses, and suppress the first
+  matching release. Absolute pointer position may initialize immediately. A fresh
+  press after release establishes provenance. Route snapshots, event selection,
+  held provenance, and availability all use the same resolved source set.
+- Detach first marks the child nonaccepting and removes it from the registry, then
+  bumps affected routes. Consumers synthesize from their own provenance; teardown
+  never relies on a final release event being drained before the child retires.
+- Split route-only live config from keyboard/mouse capture consent changes. Route
+  updates never restart host hardware.
+- Add a prepared `ConfigManager` transaction under its existing single writer lock
+  and a dedicated input-control writer shared by every `InputManager` graph
+  mutation.
+  For a request that changes consent and routes together, capture the expected
+  config pointer, host-source incarnation, and routing snapshot; validate the
+  candidate; then stage the replacement host runtime and serialized temporary
+  config file off-lock. Lock order is fixed: acquire the async input-control writer,
+  then the async `InputManager` guard, then the synchronous `ConfigManager` writer
+  lock. Recheck those identities and compare the live config pointer with the
+  expected pointer; abort on mismatch. The synchronous commit section contains no
+  `.await`: atomically replace the config file as the last fallible step, move the
+  prepared host source into the graph, enqueue route-transition releases, install
+  the live config with a compare-and-swap, and publish the routing snapshot as the
+  visibility fence using only infallible moves after persistence. Every path that
+  needs more than one of these locks uses the same order.
+- Backend callbacks and restore-token sinks never mutate config while an
+  `InputManager` guard is held; they return deferred persistence work for the
+  caller to execute after releasing the guard. Source start, stop, restart, and
+  retirement also happen outside the guard, so its ordered commit section contains
+  only the staged file rename and in-memory graph moves. Every config mutation uses
+  the one `ConfigManager` writer lock. `replace_source` returns retirement
+  ownership rather than calling `stop()` inside the manager mutation. A route-only
+  request skips hardware preparation and never restarts host capture.
+- Give every consumer an independent monotonic route generation. Include that
+  generation, selected source incarnations and interaction generations, plus
+  selected availability revisions in its reuse key so same-boolean policy,
+  health, or source-identity changes invalidate only affected work. Use the global
+  graph generation only as a preparation fence and diagnostic field; unrelated
+  audio or screen graph changes do not invalidate interaction consumers. Route
+  changes do not manufacture capture demand. The sole demand model is the union,
+  across authoritative effects, interactive preview lanes, passive preview-stream
+  leases, and diagnostic leases, of typed audio, screen, and interaction
+  requirements. Preview demand is independent of output sleep. Screen-canvas and
+  screen-zone subscriptions become typed screen-consumer leases rather than a
+  separate subscriber-count rule; host-routed preview interaction and
+  audio-reactive preview scenes likewise keep their pipelines publishing while
+  hardware output is asleep.
+- Publish one generation-tagged immutable diagnostics snapshot containing each
+  consumer's policy, selected and suppressed stable source descriptors,
+  cursor-drop totals, availability handles/revisions, route generation, config
+  generation, source graph generation, and browser registry generation. Status,
+  diagnose, and MCP load it once, evaluate retained status handles at one `Instant`,
+  and never acquire `InputManager`; they cannot combine fields from different
+  route generations.
+- Make the routing publisher the sole author of that snapshot. Each lane owns a
+  lock-free metrics handle tagged with its current route generation; cursor
+  overflow and invalid-event drops update separate counters, and the publisher
+  folds only matching-generation values into a replacement snapshot.
+- Resize or retarget an existing preview lane in place. Preserve its identity,
+  route generation, cursors, held provenance, and effect state while rebuilding
+  only dimension-dependent composition resources.
 
 Verify:
 
 - The same physical action injected through host and preview is delivered once
   under each default route and twice only under explicit merge.
 - Route changes synthesize releases from the old route and invalidate demand.
+- Browser connections remain independently addressable through publication,
+  routing, reconnect, and disconnect; one connection cannot leak held state or
+  events into another preview.
+- Daemon effects continue to receive host input while one or more previews receive
+  their own browser sources in the same frame. The non-vacuous fixture injects a
+  host action and distinct browser actions for two simultaneous previews, asserts
+  three isolated snapshots and outputs, then closes one preview while the other two
+  continue unchanged.
+- Cursor tests cover tail-start attach, unchanged graph rebuild, slot replacement,
+  bounded-ring overflow, reconnect, and two consumers advancing at different rates.
+- Provenance tests cover route removal, a key held by two merged sources, release
+  without an observed press, detach while held, and add-source-while-held.
+- Mixed config tests prove prepare failure changes neither consent nor routes, a
+  successful combined update exposes one coherent post-commit snapshot, route-only
+  updates never restart hardware, and old-source retirement runs outside the lock.
+- A concurrent source-picker/restore-token update and combined consent/route update
+  complete without deadlock or lost writes while the publication pump continues to
+  advance. Lock instrumentation proves no backend callback, worker wait, or `.await`
+  occurs inside the synchronous ordered commit section.
+- Migration tests distinguish old-schema missing fields from new-config defaults,
+  and authoritative-lease tests cover claim, conflict, idempotence, disconnect,
+  browser-without-owner, merge-without-owner, and clean handoff.
+- Under the accepted concurrent-preview load, authoritative frame interval, output
+  latency, and drop counters remain inside the existing zero-preview performance
+  thresholds while every preview meets its requested cadence and resolution.
+  Instrumentation proves previews never submit or wait on the authoritative wgpu
+  device. Producer counters prove one media, screen, static, or non-interaction
+  render is fanned out rather than duplicated per preview.
+- Sampling-pump tests prove host events and held snapshots stay live during
+  authoritative reuse, idle, output sleep, and preview-only operation, without a
+  delayed event burst when hardware rendering resumes. Demand tests cover audio,
+  screen, and interaction preview consumers independently.
+- Status and MCP route diagnostics remain responsive while `InputManager` is held.
 - Conformance fixtures run every stock interactive effect through legacy merge and
   the new default preview route and compare canonical inputs and visible output.
+- Config tests cover omitted fields, every route spelling, invalid values, and
+  round trips. Generated clients and migration docs match the final schema.
 
 ### Wave 3: capture correctness and semantics
 
@@ -715,8 +922,10 @@ Parallel: yes, with T13 after route/cache contracts settle.
 
 Implementation:
 
-- Stop treating an idle scene as capture demand. Demand comes only from an active
-  screen consumer, preview subscription, or explicit diagnostic capture request.
+- Stop treating an idle scene as capture demand. Reuse T11's typed consumer union:
+  audio, screen, and interaction demand comes only from an authoritative effect,
+  interactive preview lane, passive preview-stream lease, or explicit diagnostic
+  lease that declares that domain.
 - Remove the Linux-only live-apply gate for capture settings where Windows has a
   real implementation. Reopen/reconfigure backends transactionally.
 - Replace the silent global `1..=240` FPS clamp with validated platform limits
