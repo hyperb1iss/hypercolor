@@ -71,16 +71,96 @@ pub struct ResolvedCaptureSource {
 
 /// Settings shared between the input source handle and the capture worker.
 struct SharedSettings {
-    config: Mutex<CaptureConfig>,
+    config: Mutex<VersionedCaptureConfig>,
     generation: AtomicU64,
     session_generation: AtomicU64,
+    activity_generation: AtomicU64,
+}
+
+struct VersionedCaptureConfig {
+    value: CaptureConfig,
+    source_generation: u64,
+}
+
+struct CaptureSettingsSnapshot {
+    config: CaptureConfig,
+    source_generation: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ActiveCaptureEpoch {
+    epoch: CaptureEpoch,
+    source_generation: u64,
+    activity_generation: u64,
+    duplication_generation: u64,
+}
+
+struct CapturePublication<T> {
+    source_generation: u64,
+    activity_generation: u64,
+    active: Option<ActiveCaptureEpoch>,
+    latest: Option<T>,
+}
+
+impl<T> Default for CapturePublication<T> {
+    fn default() -> Self {
+        Self {
+            source_generation: 0,
+            activity_generation: 0,
+            active: None,
+            latest: None,
+        }
+    }
+}
+
+impl<T> CapturePublication<T> {
+    fn activate(&mut self, active: ActiveCaptureEpoch) -> bool {
+        if active.source_generation != self.source_generation
+            || active.activity_generation != self.activity_generation
+        {
+            return false;
+        }
+        if self.active.as_ref() != Some(&active) {
+            self.latest = None;
+            self.active = Some(active);
+        }
+        true
+    }
+
+    fn fence_source(&mut self, source_generation: u64) {
+        self.source_generation = source_generation;
+        self.clear();
+    }
+
+    fn fence_activity(&mut self, activity_generation: u64) {
+        self.activity_generation = activity_generation;
+        self.clear();
+    }
+
+    fn clear(&mut self) {
+        self.active = None;
+        self.latest = None;
+    }
+
+    fn publish(&mut self, active: &ActiveCaptureEpoch, value: T) -> bool {
+        if self.active.as_ref() != Some(active) {
+            return false;
+        }
+        self.latest = Some(value);
+        true
+    }
 }
 
 impl SharedSettings {
-    fn snapshot(&self) -> CaptureConfig {
-        self.config
+    fn snapshot(&self) -> CaptureSettingsSnapshot {
+        let config = self
+            .config
             .lock()
-            .map_or_else(|_| CaptureConfig::default(), |config| config.clone())
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        CaptureSettingsSnapshot {
+            config: config.value.clone(),
+            source_generation: config.source_generation,
+        }
     }
 }
 
@@ -89,7 +169,7 @@ pub struct WindowsScreenCaptureInput {
     settings: Arc<SharedSettings>,
     running: bool,
     capture_active: bool,
-    latest_snapshot: Arc<Mutex<Option<LegacyScreenSnapshot>>>,
+    publication: Arc<Mutex<CapturePublication<LegacyScreenSnapshot>>>,
     worker: Option<CaptureWorker>,
     status: SourceStatusReporter,
     status_session: SourceSessionSlot,
@@ -101,6 +181,8 @@ struct CaptureWorker {
     exit_rx: mpsc::Receiver<()>,
     join_handle: Option<thread::JoinHandle<()>>,
     cancel: Arc<AtomicBool>,
+    #[cfg(test)]
+    processed_activity_generation: Arc<AtomicU64>,
 }
 
 impl Drop for CaptureWorker {
@@ -119,8 +201,12 @@ impl Drop for CaptureWorker {
     }
 }
 
+#[derive(Clone, Copy)]
 enum WorkerCommand {
-    SetActive(bool),
+    SetActive {
+        active: bool,
+        activity_generation: u64,
+    },
     Stop,
 }
 
@@ -130,13 +216,17 @@ impl WindowsScreenCaptureInput {
     pub fn new(config: CaptureConfig) -> Self {
         Self {
             settings: Arc::new(SharedSettings {
-                config: Mutex::new(config),
+                config: Mutex::new(VersionedCaptureConfig {
+                    value: config,
+                    source_generation: 0,
+                }),
                 generation: AtomicU64::new(0),
                 session_generation: AtomicU64::new(0),
+                activity_generation: AtomicU64::new(0),
             }),
             running: false,
             capture_active: false,
-            latest_snapshot: Arc::new(Mutex::new(None)),
+            publication: Arc::new(Mutex::new(CapturePublication::default())),
             worker: None,
             status: SourceStatusReporter::new(
                 "windows_screen_capture",
@@ -168,9 +258,12 @@ impl WindowsScreenCaptureInput {
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let (exit_tx, exit_rx) = mpsc::sync_channel(1);
         let settings = Arc::clone(&self.settings);
-        let latest_snapshot = Arc::clone(&self.latest_snapshot);
+        let publication = Arc::clone(&self.publication);
         let cancel = Arc::new(AtomicBool::new(false));
         let worker_cancel = Arc::clone(&cancel);
+        let worker_processed_activity_generation = Arc::new(AtomicU64::new(0));
+        #[cfg(test)]
+        let processed_activity_generation = Arc::clone(&worker_processed_activity_generation);
         let status_session = self.status_session.clone();
         let source_sink = self.source_sink.clone();
         let session_generation = self
@@ -185,9 +278,10 @@ impl WindowsScreenCaptureInput {
                 let _ = ready_tx.send(());
                 run_worker(
                     &settings,
-                    &latest_snapshot,
+                    &publication,
                     &command_rx,
                     &worker_cancel,
+                    &worker_processed_activity_generation,
                     status_session,
                     session_generation,
                     source_sink,
@@ -202,6 +296,8 @@ impl WindowsScreenCaptureInput {
             exit_rx,
             join_handle: Some(join_handle),
             cancel,
+            #[cfg(test)]
+            processed_activity_generation,
         });
         if let Err(error) = ready_rx.recv_timeout(WORKER_READY_TIMEOUT) {
             self.shutdown_worker();
@@ -220,12 +316,12 @@ impl WindowsScreenCaptureInput {
 
         worker.cancel.store(true, Ordering::Release);
         let _ = worker.command_tx.send(WorkerCommand::Stop);
-        let _ = worker.exit_rx.recv_timeout(WORKER_STOP_TIMEOUT);
+        let exit_observed = worker.exit_rx.recv_timeout(WORKER_STOP_TIMEOUT).is_ok();
         let Some(join_handle) = worker.join_handle.as_ref() else {
             self.worker = None;
             return;
         };
-        if !join_handle.is_finished() {
+        if !exit_observed && !join_handle.is_finished() {
             warn!(
                 "screen capture worker did not stop before the deadline; retaining its join handle"
             );
@@ -272,19 +368,57 @@ impl WindowsScreenCaptureInput {
                 true,
             ));
         }
-        if let Ok(mut latest) = self.latest_snapshot.lock() {
-            *latest = None;
-        }
+        clear_capture_publication(&self.publication);
         true
+    }
+
+    fn send_activity_command(&self, active: bool, activity_generation: u64) -> bool {
+        self.worker.as_ref().is_some_and(|worker| {
+            worker
+                .command_tx
+                .send(WorkerCommand::SetActive {
+                    active,
+                    activity_generation,
+                })
+                .is_ok()
+        })
+    }
+
+    fn activate_worker(&mut self, activity_generation: u64) -> anyhow::Result<()> {
+        self.observe_worker_exit(false);
+        if self.worker.is_none() {
+            self.spawn_worker()?;
+        }
+        if self.send_activity_command(true, activity_generation) {
+            return Ok(());
+        }
+
+        self.shutdown_worker();
+        if self.worker.is_some() {
+            anyhow::bail!("disconnected Windows screen capture worker could not be reaped");
+        }
+        self.spawn_worker()?;
+        if self.send_activity_command(true, activity_generation) {
+            return Ok(());
+        }
+
+        self.shutdown_worker();
+        anyhow::bail!("replacement Windows screen capture worker rejected activation")
     }
 
     fn set_capture_active_state(&mut self, active: bool) -> anyhow::Result<()> {
         if self.capture_active == active {
             return Ok(());
         }
-        if let Ok(mut latest) = self.latest_snapshot.lock() {
-            *latest = None;
-        }
+        let activity_generation = self
+            .settings
+            .activity_generation
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1);
+        self.publication
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .fence_activity(activity_generation);
 
         if !self.running {
             self.capture_active = active;
@@ -292,19 +426,9 @@ impl WindowsScreenCaptureInput {
         }
 
         if active {
-            self.spawn_worker()?;
-        }
-
-        if let Some(worker) = self.worker.as_ref()
-            && worker
-                .command_tx
-                .send(WorkerCommand::SetActive(active))
-                .is_err()
-        {
+            self.activate_worker(activity_generation)?;
+        } else if !self.send_activity_command(false, activity_generation) {
             self.shutdown_worker();
-            if active {
-                anyhow::bail!("Windows screen capture worker stopped before activation");
-            }
         }
 
         self.capture_active = active;
@@ -313,18 +437,31 @@ impl WindowsScreenCaptureInput {
 
     /// Publish new settings and bump the generation the worker polls.
     fn reconfigure(&mut self, config: CaptureConfig) {
-        let mut source_changed = false;
-        if let Ok(mut current) = self.settings.config.lock() {
-            if *current == config {
-                return;
-            }
-            source_changed = current.source != config.source;
-            *current = config;
+        let mut current = self
+            .settings
+            .config
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if current.value == config {
+            return;
         }
-        if source_changed && let Ok(mut latest) = self.latest_snapshot.lock() {
-            *latest = None;
+        let source_changed = current.value.source != config.source;
+        let mut publication = source_changed.then(|| {
+            self.publication
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        });
+        if source_changed {
+            current.source_generation = current.source_generation.wrapping_add(1).max(1);
         }
+        current.value = config;
         self.settings.generation.fetch_add(1, Ordering::Release);
+        if source_changed {
+            publication
+                .as_mut()
+                .expect("source changes lock the publication fence")
+                .fence_source(current.source_generation);
+        }
     }
 }
 
@@ -341,21 +478,8 @@ impl InputSource for WindowsScreenCaptureInput {
             if let Some(session) = self.status.begin_session()? {
                 self.status_session.store(session);
             }
-            if let Err(error) = self.spawn_worker().and_then(|()| {
-                self.worker.as_ref().map_or_else(
-                    || {
-                        Err(anyhow!(
-                            "Windows screen capture worker disappeared during startup"
-                        ))
-                    },
-                    |worker| {
-                        worker
-                            .command_tx
-                            .send(WorkerCommand::SetActive(true))
-                            .map_err(|_| anyhow!("Windows screen capture worker rejected startup"))
-                    },
-                )
-            }) {
+            let activity_generation = self.settings.activity_generation.load(Ordering::Acquire);
+            if let Err(error) = self.activate_worker(activity_generation) {
                 self.status_session.clear();
                 self.status.stop();
                 self.shutdown_worker();
@@ -378,9 +502,7 @@ impl InputSource for WindowsScreenCaptureInput {
         self.capture_active = false;
         self.shutdown_worker();
 
-        if let Ok(mut latest) = self.latest_snapshot.lock() {
-            *latest = None;
-        }
+        clear_capture_publication(&self.publication);
     }
 
     fn sample(&mut self) -> anyhow::Result<InputData> {
@@ -389,21 +511,17 @@ impl InputSource for WindowsScreenCaptureInput {
             return Ok(InputData::None);
         }
 
-        let latest = self
-            .latest_snapshot
+        let publication = self
+            .publication
             .lock()
-            .map_err(|_| anyhow!("windows screen capture snapshot mutex poisoned"))?;
-
-        let Some(snapshot) = latest.as_ref() else {
+            .map_err(|_| anyhow!("windows screen capture publication mutex poisoned"))?;
+        let Some(active) = publication.active.as_ref() else {
             return Ok(InputData::None);
         };
-        let metadata = snapshot.frame().metadata();
-        let expected = CaptureEpoch {
-            source_id: metadata.source_id.clone(),
-            topology_generation: metadata.topology_generation,
-            session_generation: self.settings.session_generation.load(Ordering::Acquire),
+        let Some(snapshot) = publication.latest.as_ref() else {
+            return Ok(InputData::None);
         };
-        if snapshot.frame().validate_epoch(&expected).is_err() {
+        if snapshot.frame().validate_epoch(&active.epoch).is_err() {
             return Ok(InputData::None);
         }
         Ok(InputData::Screen(snapshot.data().clone()))
@@ -466,21 +584,69 @@ impl Drop for WindowsScreenCaptureInput {
     }
 }
 
+fn active_capture_epoch(
+    session: &DesktopDuplicator,
+    session_generation: u64,
+    source_generation: u64,
+    activity_generation: u64,
+) -> anyhow::Result<ActiveCaptureEpoch> {
+    Ok(ActiveCaptureEpoch {
+        epoch: CaptureEpoch {
+            source_id: capture_source_id(session.source_id())?,
+            topology_generation: session.topology_generation(),
+            session_generation,
+        },
+        source_generation,
+        activity_generation,
+        duplication_generation: session.duplication_generation(),
+    })
+}
+
+fn activate_capture_epoch(
+    publication: &Mutex<CapturePublication<LegacyScreenSnapshot>>,
+    active: ActiveCaptureEpoch,
+) -> bool {
+    publication
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .activate(active)
+}
+
+fn clear_capture_publication(publication: &Mutex<CapturePublication<LegacyScreenSnapshot>>) {
+    publication
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clear();
+}
+
+fn settle_inactive_capture<T>(
+    resource: &mut Option<T>,
+    processed_activity_generation: &AtomicU64,
+    activity_generation: u64,
+) {
+    *resource = None;
+    processed_activity_generation.store(activity_generation, Ordering::Release);
+}
+
 /// Worker loop: own the duplication session, analyze frames, publish results.
 fn run_worker(
     settings: &Arc<SharedSettings>,
-    latest_snapshot: &Arc<Mutex<Option<LegacyScreenSnapshot>>>,
+    publication: &Arc<Mutex<CapturePublication<LegacyScreenSnapshot>>>,
     command_rx: &mpsc::Receiver<WorkerCommand>,
     cancel: &Arc<AtomicBool>,
+    processed_activity_generation: &AtomicU64,
     status_session: SourceSessionSlot,
     session_generation: u64,
     source_sink: Option<CaptureSourceSink>,
 ) {
-    let mut config = settings.snapshot();
+    let initial_settings = settings.snapshot();
+    let mut config = initial_settings.config;
+    let mut source_generation = initial_settings.source_generation;
     let mut generation = settings.generation.load(Ordering::Acquire);
     let mut analyzer = ScreenCaptureInput::new(config.clone());
     let mut duplicator: Option<DesktopDuplicator> = None;
     let mut active = false;
+    let mut activity_generation = 0_u64;
     let mut open_failure_logged = false;
     let mut sequence = 0_u64;
 
@@ -489,7 +655,7 @@ fn run_worker(
             break;
         }
 
-        match drain_commands(command_rx, &mut active) {
+        match drain_commands(command_rx, &mut active, &mut activity_generation) {
             ControlFlow::Stop => break,
             ControlFlow::Continue => {}
         }
@@ -497,24 +663,40 @@ fn run_worker(
         if !active {
             // Release the duplication interface so other applications can use
             // it while no screen-reactive effect is running.
-            duplicator = None;
+            settle_inactive_capture(
+                &mut duplicator,
+                processed_activity_generation,
+                activity_generation,
+            );
+            clear_capture_publication(publication);
             open_failure_logged = false;
             match command_rx.recv_timeout(FRAME_WAIT) {
-                Ok(WorkerCommand::SetActive(next)) => active = next,
+                Ok(WorkerCommand::SetActive {
+                    active: next,
+                    activity_generation: next_generation,
+                }) => {
+                    active = next;
+                    activity_generation = next_generation;
+                }
                 Ok(WorkerCommand::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
             }
             continue;
         }
 
+        processed_activity_generation.store(activity_generation, Ordering::Release);
+
         let latest_generation = settings.generation.load(Ordering::Acquire);
         if latest_generation != generation {
             generation = latest_generation;
             let previous_source = config.source.clone();
-            config = settings.snapshot();
+            let next_settings = settings.snapshot();
+            config = next_settings.config;
+            source_generation = next_settings.source_generation;
             analyzer = ScreenCaptureInput::new(config.clone());
             if previous_source != config.source {
                 duplicator = None;
+                clear_capture_publication(publication);
             } else if let Some(duplicator) = duplicator.as_mut() {
                 duplicator.set_max_width(CAPTURE_TARGET_WIDTH);
             }
@@ -545,6 +727,7 @@ fn run_worker(
                     duplicator.insert(session)
                 }
                 Err(error) => {
+                    clear_capture_publication(publication);
                     if !open_failure_logged {
                         log_open_failure(&error);
                         open_failure_logged = true;
@@ -553,7 +736,13 @@ fn run_worker(
                         status.unavailable(capture_issue(&error));
                     }
                     match command_rx.recv_timeout(REOPEN_BACKOFF) {
-                        Ok(WorkerCommand::SetActive(next)) => active = next,
+                        Ok(WorkerCommand::SetActive {
+                            active: next,
+                            activity_generation: next_generation,
+                        }) => {
+                            active = next;
+                            activity_generation = next_generation;
+                        }
                         Ok(WorkerCommand::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => {
                             break;
                         }
@@ -564,8 +753,55 @@ fn run_worker(
             }
         };
 
-        match session.next_frame(FRAME_WAIT) {
+        let active_epoch = match active_capture_epoch(
+            session,
+            session_generation,
+            source_generation,
+            activity_generation,
+        ) {
+            Ok(active_epoch) => active_epoch,
+            Err(error) => {
+                warn!(%error, "Windows screen capture identity is invalid; reopening session");
+                clear_capture_publication(publication);
+                duplicator = None;
+                continue;
+            }
+        };
+        if !activate_capture_epoch(publication, active_epoch) {
+            continue;
+        }
+
+        let frame_result = session.next_frame(FRAME_WAIT);
+        let current_epoch = if frame_result.is_ok() {
+            match active_capture_epoch(
+                session,
+                session_generation,
+                source_generation,
+                activity_generation,
+            ) {
+                Ok(current_epoch) => {
+                    if !activate_capture_epoch(publication, current_epoch.clone()) {
+                        continue;
+                    }
+                    Some(current_epoch)
+                }
+                Err(error) => {
+                    warn!(%error, "Windows screen capture identity became invalid");
+                    clear_capture_publication(publication);
+                    duplicator = None;
+                    continue;
+                }
+            }
+        } else {
+            None
+        };
+
+        match frame_result {
             Ok(Some(frame)) => {
+                let Some(current_epoch) = current_epoch else {
+                    duplicator = None;
+                    continue;
+                };
                 let acquired_at = Instant::now();
                 let frame_period =
                     Duration::from_secs_f64(1.0 / f64::from(config.target_fps.max(1)));
@@ -578,23 +814,17 @@ fn run_worker(
                     frame_period,
                 );
                 let snapshot = raw_frame.and_then(|frame| {
-                    let metadata = frame.metadata();
-                    frame.validate_epoch(&CaptureEpoch {
-                        source_id: metadata.source_id.clone(),
-                        topology_generation: metadata.topology_generation,
-                        session_generation: settings.session_generation.load(Ordering::Acquire),
-                    })?;
+                    frame.validate_epoch(&current_epoch.epoch)?;
                     analyze_legacy_screen_frame(&mut analyzer, frame)
                 });
                 let Ok(snapshot) = snapshot else {
+                    clear_capture_publication(publication);
                     continue;
                 };
-                let published = if let Ok(mut latest) = latest_snapshot.lock() {
-                    *latest = Some(snapshot);
-                    true
-                } else {
-                    false
-                };
+                let published = publication
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .publish(&current_epoch, snapshot);
                 if published && let Some(status) = status_session.load() {
                     let _ = status.record_sample(
                         acquired_at,
@@ -606,13 +836,20 @@ fn run_worker(
             // Static desktop or pointer-only update: nothing new to analyze.
             Ok(None) => {}
             Err(error) => {
+                clear_capture_publication(publication);
                 warn!(%error, "Windows screen capture frame failed; reopening session");
                 if let Some(status) = status_session.load() {
                     status.degraded(capture_issue(&error));
                 }
                 duplicator = None;
                 match command_rx.recv_timeout(REOPEN_BACKOFF) {
-                    Ok(WorkerCommand::SetActive(next)) => active = next,
+                    Ok(WorkerCommand::SetActive {
+                        active: next,
+                        activity_generation: next_generation,
+                    }) => {
+                        active = next;
+                        activity_generation = next_generation;
+                    }
                     Ok(WorkerCommand::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
                     Err(mpsc::RecvTimeoutError::Timeout) => {}
                 }
@@ -620,9 +857,7 @@ fn run_worker(
         }
     }
 
-    if let Ok(mut latest) = latest_snapshot.lock() {
-        *latest = None;
-    }
+    clear_capture_publication(publication);
     debug!("Windows screen capture worker stopped");
 }
 
@@ -740,10 +975,20 @@ enum ControlFlow {
 }
 
 /// Apply every queued command without blocking.
-fn drain_commands(command_rx: &mpsc::Receiver<WorkerCommand>, active: &mut bool) -> ControlFlow {
+fn drain_commands(
+    command_rx: &mpsc::Receiver<WorkerCommand>,
+    active: &mut bool,
+    activity_generation: &mut u64,
+) -> ControlFlow {
     loop {
         match command_rx.try_recv() {
-            Ok(WorkerCommand::SetActive(next)) => *active = next,
+            Ok(WorkerCommand::SetActive {
+                active: next,
+                activity_generation: next_generation,
+            }) => {
+                *active = next;
+                *activity_generation = next_generation;
+            }
             Ok(WorkerCommand::Stop) | Err(mpsc::TryRecvError::Disconnected) => {
                 return ControlFlow::Stop;
             }

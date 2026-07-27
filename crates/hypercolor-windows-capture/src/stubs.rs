@@ -52,6 +52,18 @@ impl DesktopDuplicator {
         (0, 0)
     }
 
+    /// Logical desktop dimensions.
+    #[must_use]
+    pub const fn logical_extent(&self) -> (u32, u32) {
+        (0, 0)
+    }
+
+    /// Zero because no duplication interface exists.
+    #[must_use]
+    pub const fn duplication_generation(&self) -> u64 {
+        0
+    }
+
     /// Change the subsample target for subsequent frames.
     pub const fn set_max_width(&mut self, _max_width: u32) {}
 

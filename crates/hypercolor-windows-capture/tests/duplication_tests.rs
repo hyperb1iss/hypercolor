@@ -3,35 +3,48 @@
 //! These drive the real API against whatever display the test host has. CI is
 //! Linux-only, and a headless or RDP session has no duplicatable output, so
 //! every test degrades to a skip rather than a failure when capture is
-//! unavailable. When a display *is* present they assert real pixel geometry,
-//! which is the part that catches a broken readback.
+//! unavailable for a known ambient reason. Once a duplicator opens, API errors
+//! are test failures. Attached outputs also have to open independently and
+//! report geometry consistent with their pending rotation.
 
 #![cfg(target_os = "windows")]
 
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
-use hypercolor_windows_capture::{CaptureError, DesktopDuplicator, monitor_count};
+use hypercolor_windows_capture::{
+    CaptureError, CaptureResult, DesktopDuplicator, DisplayRotation, list_monitors, monitor_count,
+};
 
 /// Subsample target used across the tests, matching the daemon's default.
 const MAX_WIDTH: u32 = 1280;
 
+fn capture_test_lock() -> MutexGuard<'static, ()> {
+    static CAPTURE_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    CAPTURE_TEST_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Open a duplicator, or return `None` when this host cannot capture.
-fn duplicator_or_skip() -> Option<DesktopDuplicator> {
+fn duplicator_or_skip(monitor: usize) -> Option<DesktopDuplicator> {
     if monitor_count() == 0 {
         eprintln!("skipping: no display outputs attached");
         return None;
     }
 
-    match DesktopDuplicator::new(0, MAX_WIDTH) {
+    match DesktopDuplicator::new(monitor, MAX_WIDTH) {
         Ok(duplicator) => Some(duplicator),
         Err(CaptureError::AlreadyDuplicating) => {
-            eprintln!("skipping: another process holds the duplication interface");
+            eprintln!("skipping monitor {monitor}: another process holds the duplication slot");
             None
         }
-        Err(error) => {
-            eprintln!("skipping: duplication unavailable ({error})");
+        Err(CaptureError::AccessDenied | CaptureError::SessionUnavailable) => {
+            eprintln!("skipping monitor {monitor}: interactive desktop is unavailable");
             None
         }
+        Err(error) => panic!("opening attached monitor {monitor} failed: {error}"),
     }
 }
 
@@ -40,19 +53,31 @@ fn duplicator_or_skip() -> Option<DesktopDuplicator> {
 fn wait_for_frame(
     duplicator: &mut DesktopDuplicator,
     budget: Duration,
-) -> Option<(u32, u32, usize)> {
+) -> CaptureResult<Option<(u32, u32, usize)>> {
     let deadline = Instant::now() + budget;
     while Instant::now() < deadline {
         match duplicator.next_frame(Duration::from_millis(120)) {
-            Ok(Some(frame)) => return Some((frame.width, frame.height, frame.rgba.len())),
+            Ok(Some(frame)) => return Ok(Some((frame.width, frame.height, frame.rgba.len()))),
             Ok(None) => {}
-            Err(error) => {
-                eprintln!("capture error while waiting for a frame: {error}");
-                return None;
-            }
+            Err(error) => return Err(error),
         }
     }
-    None
+    Ok(None)
+}
+
+const fn expected_native_extent(
+    logical_width: u32,
+    logical_height: u32,
+    rotation: DisplayRotation,
+) -> (u32, u32) {
+    match rotation {
+        DisplayRotation::Identity | DisplayRotation::Clockwise180 => {
+            (logical_width, logical_height)
+        }
+        DisplayRotation::Clockwise90 | DisplayRotation::Clockwise270 => {
+            (logical_height, logical_width)
+        }
+    }
 }
 
 #[test]
@@ -78,11 +103,14 @@ fn opening_a_missing_monitor_reports_not_found() {
 
 #[test]
 fn captures_a_frame_with_consistent_geometry() {
-    let Some(mut duplicator) = duplicator_or_skip() else {
+    let _capture_guard = capture_test_lock();
+    let Some(mut duplicator) = duplicator_or_skip(0) else {
         return;
     };
 
-    let Some((width, height, len)) = wait_for_frame(&mut duplicator, Duration::from_secs(3)) else {
+    let Some((width, height, len)) = wait_for_frame(&mut duplicator, Duration::from_secs(3))
+        .expect("capture must remain healthy after a successful open")
+    else {
         eprintln!("skipping assertions: desktop produced no frame within the budget");
         return;
     };
@@ -108,7 +136,8 @@ fn captures_a_frame_with_consistent_geometry() {
 
 #[test]
 fn alpha_is_opaque_across_repeated_acquisitions() {
-    let Some(mut duplicator) = duplicator_or_skip() else {
+    let _capture_guard = capture_test_lock();
+    let Some(mut duplicator) = duplicator_or_skip(0) else {
         return;
     };
 
@@ -138,7 +167,8 @@ fn alpha_is_opaque_across_repeated_acquisitions() {
 
 #[test]
 fn repeated_frames_reuse_the_owned_plane_allocation() {
-    let Some(mut duplicator) = duplicator_or_skip() else {
+    let _capture_guard = capture_test_lock();
+    let Some(mut duplicator) = duplicator_or_skip(0) else {
         return;
     };
 
@@ -170,8 +200,6 @@ fn repeated_frames_reuse_the_owned_plane_allocation() {
 
 #[test]
 fn monitor_listing_matches_the_count_and_carries_real_geometry() {
-    use hypercolor_windows_capture::list_monitors;
-
     let monitors = list_monitors();
     assert_eq!(
         monitors.len(),
@@ -208,4 +236,30 @@ fn monitor_listing_matches_the_count_and_carries_real_geometry() {
         "one output should anchor the virtual desktop origin"
     );
     eprintln!("monitors: {monitors:?}");
+}
+
+#[test]
+fn every_attached_monitor_opens_with_rotation_consistent_geometry() {
+    let _capture_guard = capture_test_lock();
+    let monitors = list_monitors();
+    for monitor in monitors {
+        let Some(duplicator) = duplicator_or_skip(monitor.index) else {
+            continue;
+        };
+
+        assert_eq!(
+            duplicator.logical_extent(),
+            (monitor.width, monitor.height),
+            "monitor {} logical mode must match its desktop bounds",
+            monitor.index
+        );
+        assert_eq!(
+            duplicator.native_extent(),
+            expected_native_extent(monitor.width, monitor.height, monitor.rotation),
+            "monitor {} native scanout must account for pending {:?} rotation",
+            monitor.index,
+            monitor.rotation
+        );
+        drop(duplicator);
+    }
 }

@@ -1,9 +1,11 @@
 use super::{
     DesktopFrameSource, PointerShape, PointerShapeKind, PointerState, TopologyEntry, TopologyState,
     average_channel, classify_hresult, desktop_frame_source, logical_to_scanout,
-    pointer_scanout_geometry, scanout_to_logical,
+    native_scanout_extent, pointer_scanout_geometry, reacquire_duplication, scanout_to_logical,
 };
 use crate::{CaptureError, DisplayRotation};
+use std::cell::Cell;
+use std::rc::Rc;
 use windows::Win32::Foundation::{E_ACCESSDENIED, E_FAIL};
 use windows::Win32::Graphics::Dxgi::{
     DXGI_ERROR_ACCESS_LOST, DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET,
@@ -19,6 +21,15 @@ fn topology_entry(id: &str, origin_x: i32) -> TopologyEntry {
         height: 1080,
         primary: origin_x == 0,
         rotation: DisplayRotation::Identity,
+    }
+}
+
+#[derive(Debug)]
+struct DropSignal(Rc<Cell<u32>>);
+
+impl Drop for DropSignal {
+    fn drop(&mut self) {
+        self.0.set(self.0.get() + 1);
     }
 }
 
@@ -62,6 +73,54 @@ fn cursor_only_frame_seeds_staging_once_then_reuses_it() {
         desktop_frame_source(true, true),
         DesktopFrameSource::AcquiredResource
     );
+}
+
+#[test]
+fn rotated_modes_keep_logical_and_native_scanout_extents_distinct() {
+    for (rotation, expected) in [
+        (DisplayRotation::Identity, (2160, 3840)),
+        (DisplayRotation::Clockwise90, (3840, 2160)),
+        (DisplayRotation::Clockwise180, (2160, 3840)),
+        (DisplayRotation::Clockwise270, (3840, 2160)),
+    ] {
+        assert_eq!(native_scanout_extent(2160, 3840, rotation), expected);
+    }
+}
+
+#[test]
+fn reacquisition_drops_old_duplication_and_staging_before_opening() {
+    let drops = Rc::new(Cell::new(0));
+    let mut duplication = Some(DropSignal(Rc::clone(&drops)));
+    let mut staging = Some(DropSignal(Rc::clone(&drops)));
+
+    reacquire_duplication(&mut duplication, &mut staging, || {
+        assert_eq!(drops.get(), 2);
+        Ok::<_, ()>(DropSignal(Rc::clone(&drops)))
+    })
+    .expect("reacquisition succeeds");
+
+    assert!(duplication.is_some());
+    assert!(staging.is_none());
+    assert_eq!(drops.get(), 2);
+}
+
+#[test]
+fn failed_reacquisition_leaves_no_stale_duplication_resources() {
+    let drops = Rc::new(Cell::new(0));
+    let mut duplication = Some(DropSignal(Rc::clone(&drops)));
+    let mut staging = Some(DropSignal(Rc::clone(&drops)));
+
+    let result = reacquire_duplication(&mut duplication, &mut staging, || {
+        Err::<DropSignal, _>("synthetic failure")
+    });
+
+    assert_eq!(
+        result.expect_err("reacquisition fails"),
+        "synthetic failure"
+    );
+    assert!(duplication.is_none());
+    assert!(staging.is_none());
+    assert_eq!(drops.get(), 2);
 }
 
 #[test]

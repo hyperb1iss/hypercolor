@@ -50,6 +50,17 @@ struct BgraRows<'a> {
     height: u32,
 }
 
+fn reacquire_duplication<D, S, E>(
+    duplication: &mut Option<D>,
+    staging: &mut Option<S>,
+    acquire: impl FnOnce() -> Result<D, E>,
+) -> Result<(), E> {
+    *staging = None;
+    *duplication = None;
+    *duplication = Some(acquire()?);
+    Ok(())
+}
+
 const fn desktop_frame_source(
     desktop_updated: bool,
     staging_available: bool,
@@ -487,10 +498,6 @@ fn persistent_display_id(device_name: &[u16; 32]) -> CaptureResult<String> {
 
 /// Enumerate every output across every adapter, in adapter-then-output order.
 fn enumerate_outputs() -> CaptureResult<Vec<EnumeratedOutput>> {
-    let topology_state = TOPOLOGY_STATE.get_or_init(|| Mutex::new(TopologyState::default()));
-    let mut topology_state = topology_state
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
     // SAFETY: CreateDXGIFactory1 is a plain COM factory call with no
     // preconditions; the returned interface is checked by `?`.
     let factory: IDXGIFactory1 = unsafe { CreateDXGIFactory1() }
@@ -558,7 +565,11 @@ fn enumerate_outputs() -> CaptureResult<Vec<EnumeratedOutput>> {
         .iter()
         .map(|entry| entry.monitor.clone())
         .collect::<Vec<_>>();
-    let generation = topology_state.observe(topology_entries(&monitors));
+    let generation = TOPOLOGY_STATE
+        .get_or_init(|| Mutex::new(TopologyState::default()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .observe(topology_entries(&monitors));
     for output in &mut outputs {
         output.monitor.topology_generation = generation;
     }
@@ -582,13 +593,14 @@ pub struct DesktopDuplicator {
     monitor: usize,
     source_id: Arc<str>,
     topology_generation: u64,
+    duplication_generation: u64,
     adapter_luid: (u32, i32),
     last_topology_check: Instant,
     max_width: u32,
     device: ID3D11Device,
     context: ID3D11DeviceContext,
     output: IDXGIOutput1,
-    duplication: IDXGIOutputDuplication,
+    duplication: Option<IDXGIOutputDuplication>,
     /// CPU-readable copy target, rebuilt when the desktop dimensions change.
     staging: Option<(ID3D11Texture2D, u32, u32)>,
     /// RGBA allocations returned by frames after their last consumer drops.
@@ -596,8 +608,10 @@ pub struct DesktopDuplicator {
     /// Set while a duplicated frame is held and must be released before the
     /// next acquire. DXGI rejects back-to-back acquires without a release.
     frame_held: bool,
-    output_width: u32,
-    output_height: u32,
+    logical_width: u32,
+    logical_height: u32,
+    native_width: u32,
+    native_height: u32,
     origin_x: i32,
     origin_y: i32,
     rotation: DisplayRotation,
@@ -656,7 +670,9 @@ impl DesktopDuplicator {
             .cast::<IDXGIOutput1>()
             .map_err(|source| CaptureError::windows("query IDXGIOutput1", source))?;
         let duplication = duplicate_output(&output, &device)?;
-        let (output_width, output_height, rotation) = duplication_geometry(&duplication);
+        let (logical_width, logical_height, rotation) = duplication_geometry(&duplication);
+        let (native_width, native_height) =
+            native_scanout_extent(logical_width, logical_height, rotation);
         let (origin_x, origin_y) = output_origin(&output)?;
 
         Ok(Self {
@@ -664,18 +680,21 @@ impl DesktopDuplicator {
             monitor: monitor.index,
             source_id: Arc::from(monitor.id),
             topology_generation: monitor.topology_generation,
+            duplication_generation: 1,
             adapter_luid,
             last_topology_check: Instant::now(),
             max_width,
             device,
             context,
             output,
-            duplication,
+            duplication: Some(duplication),
             staging: None,
             frame_pool: Arc::new(Mutex::new(Vec::new())),
             frame_held: false,
-            output_width,
-            output_height,
+            logical_width,
+            logical_height,
+            native_width,
+            native_height,
             origin_x,
             origin_y,
             rotation,
@@ -704,7 +723,19 @@ impl DesktopDuplicator {
     /// Native (pre-subsample) desktop dimensions.
     #[must_use]
     pub const fn native_extent(&self) -> (u32, u32) {
-        (self.output_width, self.output_height)
+        (self.native_width, self.native_height)
+    }
+
+    /// Logical desktop dimensions after applying the pending display rotation.
+    #[must_use]
+    pub const fn logical_extent(&self) -> (u32, u32) {
+        (self.logical_width, self.logical_height)
+    }
+
+    /// Monotonic generation of the live Desktop Duplication interface.
+    #[must_use]
+    pub const fn duplication_generation(&self) -> u64 {
+        self.duplication_generation
     }
 
     /// Change the subsample target for subsequent frames.
@@ -745,12 +776,15 @@ impl DesktopDuplicator {
         // SAFETY: bytes owns `buffer_size` writable bytes and both out-params
         // are live locals. The duplication interface is held by self.
         unsafe {
-            self.duplication.GetFramePointerShape(
-                frame_info.PointerShapeBufferSize,
-                bytes.as_mut_ptr().cast(),
-                &mut required,
-                &mut info,
-            )
+            self.duplication
+                .as_ref()
+                .expect("pointer updates require a live duplication interface")
+                .GetFramePointerShape(
+                    frame_info.PointerShapeBufferSize,
+                    bytes.as_mut_ptr().cast(),
+                    &mut required,
+                    &mut info,
+                )
         }
         .map_err(|source| classify_windows_error("read desktop pointer shape", source))?;
         let required = required as usize;
@@ -808,6 +842,11 @@ impl DesktopDuplicator {
     pub fn next_frame(&mut self, timeout: Duration) -> CaptureResult<Option<Frame>> {
         self.release_frame();
 
+        if self.duplication.is_none() {
+            self.rebuild()?;
+            return Ok(None);
+        }
+
         if self.last_topology_check.elapsed() >= TOPOLOGY_CHECK_INTERVAL {
             self.last_topology_check = Instant::now();
             let outputs = enumerate_outputs()?;
@@ -837,6 +876,8 @@ impl DesktopDuplicator {
         // the duplication interface is kept alive by `self`.
         let acquire = unsafe {
             self.duplication
+                .as_ref()
+                .expect("frame acquisition requires a live duplication interface")
                 .AcquireNextFrame(timeout_ms, &mut frame_info, &mut resource)
         };
 
@@ -856,8 +897,11 @@ impl DesktopDuplicator {
         }
         self.frame_held = true;
 
-        let (current_width, current_height, current_rotation) =
-            duplication_geometry(&self.duplication);
+        let (current_width, current_height, current_rotation) = duplication_geometry(
+            self.duplication
+                .as_ref()
+                .expect("geometry checks require a live duplication interface"),
+        );
         let (current_origin_x, current_origin_y) = match output_origin(&self.output) {
             Ok(origin) => origin,
             Err(error) => {
@@ -865,8 +909,8 @@ impl DesktopDuplicator {
                 return Err(error);
             }
         };
-        if current_width != self.output_width
-            || current_height != self.output_height
+        if current_width != self.logical_width
+            || current_height != self.logical_height
             || current_origin_x != self.origin_x
             || current_origin_y != self.origin_y
             || current_rotation != self.rotation
@@ -1138,13 +1182,8 @@ impl DesktopDuplicator {
                 )
             })?;
             self.staging = Some((texture, desc.Width, desc.Height));
-            self.output_width = desc.Width;
-            self.output_height = desc.Height;
-            let (_, _, rotation) = duplication_geometry(&self.duplication);
-            let (origin_x, origin_y) = output_origin(&self.output)?;
-            self.origin_x = origin_x;
-            self.origin_y = origin_y;
-            self.rotation = rotation;
+            self.native_width = desc.Width;
+            self.native_height = desc.Height;
         }
 
         self.staging
@@ -1181,23 +1220,34 @@ impl DesktopDuplicator {
             .output
             .cast::<IDXGIOutput1>()
             .map_err(|source| CaptureError::windows("query IDXGIOutput1", source))?;
-        let duplication = duplicate_output(&output, &device)?;
-        let (width, height, rotation) = duplication_geometry(&duplication);
         let (origin_x, origin_y) = output_origin(&output)?;
 
-        self.staging = None;
+        self.release_frame();
+        self.pointer = PointerState::default();
+        reacquire_duplication(&mut self.duplication, &mut self.staging, || {
+            duplicate_output(&output, &device)
+        })?;
+        let duplication = self
+            .duplication
+            .as_ref()
+            .expect("successful reacquisition installs a duplication interface");
+        let (logical_width, logical_height, rotation) = duplication_geometry(duplication);
+        let (native_width, native_height) =
+            native_scanout_extent(logical_width, logical_height, rotation);
+
         self.device = device;
         self.context = context;
         self.output = output;
-        self.duplication = duplication;
         self.monitor = entry.monitor.index;
         self.source_id = Arc::from(entry.monitor.id);
         self.topology_generation = entry.monitor.topology_generation;
+        self.duplication_generation = self.duplication_generation.wrapping_add(1).max(1);
         self.adapter_luid = adapter_luid;
         self.last_topology_check = Instant::now();
-        self.pointer = PointerState::default();
-        self.output_width = width;
-        self.output_height = height;
+        self.logical_width = logical_width;
+        self.logical_height = logical_height;
+        self.native_width = native_width;
+        self.native_height = native_height;
         self.origin_x = origin_x;
         self.origin_y = origin_y;
         self.rotation = rotation;
@@ -1210,8 +1260,11 @@ impl DesktopDuplicator {
             return;
         }
         self.frame_held = false;
+        let Some(duplication) = self.duplication.as_ref() else {
+            return;
+        };
         // SAFETY: paired with a successful AcquireNextFrame.
-        if let Err(error) = unsafe { self.duplication.ReleaseFrame() } {
+        if let Err(error) = unsafe { duplication.ReleaseFrame() } {
             // Access loss here is normal during mode changes and is repaired
             // on the next acquire, so this stays a debug line.
             debug!(%error, "releasing duplicated frame failed");
@@ -1302,6 +1355,21 @@ fn display_rotation(rotation: DXGI_MODE_ROTATION) -> DisplayRotation {
         DXGI_MODE_ROTATION_ROTATE180 => DisplayRotation::Clockwise180,
         DXGI_MODE_ROTATION_ROTATE270 => DisplayRotation::Clockwise270,
         _ => DisplayRotation::Identity,
+    }
+}
+
+const fn native_scanout_extent(
+    logical_width: u32,
+    logical_height: u32,
+    rotation: DisplayRotation,
+) -> (u32, u32) {
+    match rotation {
+        DisplayRotation::Identity | DisplayRotation::Clockwise180 => {
+            (logical_width, logical_height)
+        }
+        DisplayRotation::Clockwise90 | DisplayRotation::Clockwise270 => {
+            (logical_height, logical_width)
+        }
     }
 }
 
