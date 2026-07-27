@@ -97,6 +97,14 @@ impl From<&SourceStatus> for InputSourceStatusEvent {
     }
 }
 
+impl InputSourceStatusEvent {
+    fn generation_regresses_from(&self, published: &Self) -> bool {
+        self.source_graph_generation < published.source_graph_generation
+            || (self.source_graph_generation == published.source_graph_generation
+                && self.session_generation < published.session_generation)
+    }
+}
+
 // ── TimestampedEvent ─────────────────────────────────────────────────────
 
 /// An event wrapped with timing metadata.
@@ -622,24 +630,19 @@ impl HypercolorBus {
     #[must_use]
     pub fn publish_input_source_status(&self, status: &SourceStatus) -> bool {
         let transition = InputSourceStatusEvent::from(status);
-        let changed = {
-            let mut published = self
-                .input_status_events
-                .lock()
-                .expect("input status event coalescer should not be poisoned");
-            if published.get(&transition.source_id) == Some(&transition) {
-                false
-            } else {
-                published.insert(transition.source_id.clone(), transition.clone());
-                true
-            }
-        };
-        if !changed {
+        let payload = serde_json::to_value(&transition)
+            .expect("input source status transition contains only JSON-safe fields");
+        let mut published = self
+            .input_status_events
+            .lock()
+            .expect("input status event coalescer should not be poisoned");
+        if published.get(&transition.source_id).is_some_and(|current| {
+            current == &transition || transition.generation_regresses_from(current)
+        }) {
             return false;
         }
 
-        let payload = serde_json::to_value(transition)
-            .expect("input source status transition contains only JSON-safe fields");
+        published.insert(transition.source_id.clone(), transition);
         self.publish(HypercolorEvent::ExtensionStateChanged {
             source: INPUT_STATUS_EVENT_SOURCE.to_owned(),
             kind: INPUT_STATUS_EVENT_KIND.to_owned(),

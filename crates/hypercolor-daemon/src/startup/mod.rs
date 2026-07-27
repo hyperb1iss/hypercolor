@@ -58,6 +58,7 @@ mod acceleration;
 pub mod banner;
 mod config;
 mod discovery_worker;
+pub(crate) mod input_status_events;
 mod lifecycle;
 pub mod logging;
 pub(crate) mod services;
@@ -241,6 +242,9 @@ pub struct DaemonState {
 
     /// Periodic per-device metrics collector task.
     pub(super) device_metrics_collector_task: Option<tokio::task::JoinHandle<()>>,
+
+    /// Single daemon-owned source-status to event-bus publisher.
+    pub(super) input_status_event_publisher: Option<input_status_events::InputStatusEventPublisher>,
 
     /// Session/power-awareness watcher and policy controller.
     pub(super) session_controller: Option<SessionController>,

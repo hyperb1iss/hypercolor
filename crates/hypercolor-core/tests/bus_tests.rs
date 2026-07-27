@@ -1,10 +1,12 @@
 //! Comprehensive tests for the event bus.
 
+use std::sync::Arc;
+
 use hypercolor_core::bus::{
     CanvasFrame, DisplayGroupFrame, DisplayGroupTarget, EventFilter, EventTimestamp, HypercolorBus,
     INPUT_STATUS_EVENT_KIND, INPUT_STATUS_EVENT_SOURCE, TimestampedEvent,
 };
-use hypercolor_core::input::{SourceKind, SourceStatusReporter};
+use hypercolor_core::input::{SourceKind, SourceState, SourceStatusReporter};
 use hypercolor_core::types::canvas::{Canvas, Rgba};
 use hypercolor_core::types::event::{
     ChangeTrigger, DisconnectReason, EffectRef, EventCategory, EventPriority, FrameData,
@@ -1127,5 +1129,150 @@ async fn input_status_events_are_content_safe_coalesced_and_generation_aware() {
     assert_eq!(
         payload["session_generation"],
         second_session.session_generation()
+    );
+}
+
+#[tokio::test]
+async fn input_status_events_preserve_flapping_transitions_without_duplicate_noise() {
+    let bus = HypercolorBus::new();
+    let mut rx = bus.subscribe_all();
+    let reporter = SourceStatusReporter::new(
+        "flapping-source",
+        SourceKind::Screen,
+        "test",
+        true,
+        true,
+        true,
+    );
+    let mut live = reporter.handle().snapshot().as_ref().clone();
+    live.source_graph_generation = 4;
+    live.session_generation = 2;
+    live.state = SourceState::Live;
+    let mut failed = live.clone();
+    failed.state = SourceState::Failed;
+
+    assert!(bus.publish_input_source_status(&live));
+    assert!(!bus.publish_input_source_status(&live));
+    assert!(bus.publish_input_source_status(&failed));
+    assert!(!bus.publish_input_source_status(&failed));
+    assert!(bus.publish_input_source_status(&live));
+
+    for expected in ["live", "failed", "live"] {
+        let event = recv_one(&mut rx).await.expect("transition should publish");
+        let HypercolorEvent::ExtensionStateChanged { payload, .. } = event.event else {
+            panic!("expected input status extension event");
+        };
+        assert_eq!(payload["state"], expected);
+    }
+    assert!(matches!(
+        rx.try_recv(),
+        Err(broadcast::error::TryRecvError::Empty)
+    ));
+}
+
+#[tokio::test]
+async fn input_status_events_reject_regressive_graph_and_session_generations() {
+    let bus = HypercolorBus::new();
+    let mut rx = bus.subscribe_all();
+    let reporter = SourceStatusReporter::new(
+        "generation-source",
+        SourceKind::Audio,
+        "test",
+        true,
+        true,
+        true,
+    );
+    let mut current = reporter.handle().snapshot().as_ref().clone();
+    current.source_graph_generation = 8;
+    current.session_generation = 5;
+    assert!(bus.publish_input_source_status(&current));
+
+    let mut older_graph = current.clone();
+    older_graph.source_graph_generation = 7;
+    older_graph.session_generation = 99;
+    assert!(!bus.publish_input_source_status(&older_graph));
+
+    let mut older_session = current.clone();
+    older_session.session_generation = 4;
+    assert!(!bus.publish_input_source_status(&older_session));
+
+    let mut successor = current;
+    successor.session_generation = 6;
+    assert!(bus.publish_input_source_status(&successor));
+
+    let mut generations = Vec::new();
+    for _ in 0..2 {
+        let event = recv_one(&mut rx)
+            .await
+            .expect("accepted generation should publish");
+        let HypercolorEvent::ExtensionStateChanged { payload, .. } = event.event else {
+            panic!("expected input status extension event");
+        };
+        generations.push(payload["session_generation"].as_u64());
+    }
+    assert_eq!(generations, vec![Some(5), Some(6)]);
+    assert!(matches!(
+        rx.try_recv(),
+        Err(broadcast::error::TryRecvError::Empty)
+    ));
+}
+
+#[tokio::test]
+async fn concurrent_input_status_publications_are_generation_ordered() {
+    const PUBLISHERS: usize = 32;
+
+    let bus = Arc::new(HypercolorBus::new());
+    let mut rx = bus.subscribe_all();
+    let reporter = SourceStatusReporter::new(
+        "concurrent-source",
+        SourceKind::Interaction,
+        "test",
+        true,
+        true,
+        true,
+    );
+    let mut base = reporter.handle().snapshot().as_ref().clone();
+    base.source_graph_generation = 12;
+    let barrier = Arc::new(std::sync::Barrier::new(PUBLISHERS));
+
+    let accepted = std::thread::scope(|scope| {
+        let mut publishers = Vec::new();
+        for session_generation in 1..=PUBLISHERS {
+            let bus = Arc::clone(&bus);
+            let barrier = Arc::clone(&barrier);
+            let mut status = base.clone();
+            status.session_generation =
+                u64::try_from(session_generation).expect("publisher count should fit in u64");
+            publishers.push(scope.spawn(move || {
+                barrier.wait();
+                bus.publish_input_source_status(&status)
+            }));
+        }
+        publishers
+            .into_iter()
+            .map(|publisher| publisher.join().expect("publisher thread should finish"))
+            .filter(|published| *published)
+            .count()
+    });
+
+    let mut published_generations = Vec::with_capacity(accepted);
+    for _ in 0..accepted {
+        let event = recv_one(&mut rx)
+            .await
+            .expect("accepted generation should publish");
+        let HypercolorEvent::ExtensionStateChanged { payload, .. } = event.event else {
+            panic!("expected input status extension event");
+        };
+        published_generations.push(
+            payload["session_generation"]
+                .as_u64()
+                .expect("session generation should be an integer"),
+        );
+    }
+    assert!(!published_generations.is_empty());
+    assert!(
+        published_generations
+            .windows(2)
+            .all(|pair| pair[0] < pair[1])
     );
 }

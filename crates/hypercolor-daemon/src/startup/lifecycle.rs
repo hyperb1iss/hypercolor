@@ -26,6 +26,7 @@ use crate::simulators::activate_simulated_displays;
 
 use super::DaemonState;
 use super::discovery_worker::DiscoveryWorkerContext;
+use super::input_status_events::InputStatusEventPublisher;
 
 const USB_HOTPLUG_REMOVAL_RECOVERY_SCAN_DELAY: Duration = Duration::from_secs(2);
 
@@ -52,6 +53,12 @@ impl DaemonState {
             input_manager
                 .start_all()
                 .context("failed to start input sources")?;
+        }
+        if self.input_status_event_publisher.is_none() {
+            self.input_status_event_publisher = Some(InputStatusEventPublisher::start(
+                self.input_status.clone(),
+                Arc::clone(&self.event_bus),
+            ));
         }
 
         // Restore persisted scene state before the render loop begins producing frames.
@@ -257,6 +264,7 @@ impl DaemonState {
             input_manager.stop_all();
         }
         info!("Input sources stopped");
+        drop(self.input_status_event_publisher.take());
 
         // 5. Persist the current runtime session before scene cleanup.
         self.persist_runtime_session_snapshot().await;

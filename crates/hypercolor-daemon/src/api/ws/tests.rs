@@ -72,6 +72,7 @@ use crate::preview_runtime::{
     PreviewFrameReceiver, PreviewPixelFormat, PreviewRuntime, PreviewStreamDemand,
 };
 use crate::session::OutputPowerState;
+use crate::startup::input_status_events::InputStatusEventPublisher;
 
 static WS_CACHE_TEST_LOCK: LazyLock<StdMutex<()>> = LazyLock::new(|| StdMutex::new(()));
 
@@ -235,9 +236,13 @@ struct StatusEventTestSource {
 
 impl StatusEventTestSource {
     fn new(session_slot: SourceSessionSlot) -> Self {
+        Self::with_id("status-event-test", session_slot)
+    }
+
+    fn with_id(source_id: &'static str, session_slot: SourceSessionSlot) -> Self {
         Self {
             status: SourceStatusReporter::new(
-                "status-event-test",
+                source_id,
                 SourceKind::Interaction,
                 "test_backend",
                 true,
@@ -2144,12 +2149,7 @@ async fn input_event_relay_preserves_equal_timestamps_and_sequence_gaps() {
     };
     let (_subscriptions_tx, subscriptions_rx) = watch::channel(subscriptions);
     let (json_tx, mut json_rx) = tokio::sync::mpsc::channel::<Utf8Bytes>(4);
-    let relay_handle = tokio::spawn(relay_events(
-        Arc::new(AppState::new()),
-        event_rx,
-        json_tx,
-        subscriptions_rx,
-    ));
+    let relay_handle = tokio::spawn(relay_events(event_rx, json_tx, subscriptions_rx));
 
     let first = sample_input_event();
     let mut second = sample_input_event();
@@ -2183,14 +2183,11 @@ async fn input_event_relay_preserves_equal_timestamps_and_sequence_gaps() {
 async fn worker_failure_relay_invalidates_input_status_immediately() {
     let (state, session_slot) = status_event_state();
     let event_rx = state.event_bus.subscribe_all();
+    let _publisher =
+        InputStatusEventPublisher::start(state.input_status.clone(), Arc::clone(&state.event_bus));
     let (_subscriptions_tx, subscriptions_rx) = watch::channel(SubscriptionState::default());
     let (json_tx, mut json_rx) = tokio::sync::mpsc::channel::<Utf8Bytes>(8);
-    let relay_handle = tokio::spawn(relay_events(
-        Arc::clone(&state),
-        event_rx,
-        json_tx,
-        subscriptions_rx,
-    ));
+    let relay_handle = tokio::spawn(relay_events(event_rx, json_tx, subscriptions_rx));
 
     let initial = tokio::time::timeout(Duration::from_secs(1), json_rx.recv())
         .await
@@ -2222,6 +2219,136 @@ async fn worker_failure_relay_invalidates_input_status_immediately() {
 
     relay_handle.abort();
     let _ = relay_handle.await;
+}
+
+#[tokio::test]
+async fn input_status_publisher_runs_without_websocket_clients() {
+    let (state, session_slot) = status_event_state();
+    let mut event_rx = state.event_bus.subscribe_all();
+    let _publisher =
+        InputStatusEventPublisher::start(state.input_status.clone(), Arc::clone(&state.event_bus));
+
+    let initial = tokio::time::timeout(Duration::from_secs(1), event_rx.recv())
+        .await
+        .expect("publisher should emit the initial status without a websocket")
+        .expect("event bus should remain open");
+    let (_, initial) = event_message_parts(&initial.event);
+    assert_eq!(initial["source_id"], "status-event-test");
+
+    let worker = session_slot
+        .load()
+        .expect("test worker should retain the active source session");
+    assert!(worker.failed(SourceIssue::new(
+        "zero_client_failure",
+        "worker exited without a websocket client",
+        true,
+    )));
+
+    let failure = tokio::time::timeout(Duration::from_secs(1), event_rx.recv())
+        .await
+        .expect("publisher should emit the failure without a websocket")
+        .expect("event bus should remain open");
+    let (_, failure) = event_message_parts(&failure.event);
+    assert_eq!(failure["state"], "failed");
+    assert_eq!(failure["lifecycle_issue_code"], "zero_client_failure");
+}
+
+#[tokio::test]
+async fn one_input_status_publisher_fans_out_once_to_multiple_websocket_relays() {
+    let (state, session_slot) = status_event_state();
+    let first_event_rx = state.event_bus.subscribe_all();
+    let second_event_rx = state.event_bus.subscribe_all();
+    let (_, first_subscriptions) = watch::channel(SubscriptionState::default());
+    let (_, second_subscriptions) = watch::channel(SubscriptionState::default());
+    let (first_tx, mut first_rx) = tokio::sync::mpsc::channel::<Utf8Bytes>(8);
+    let (second_tx, mut second_rx) = tokio::sync::mpsc::channel::<Utf8Bytes>(8);
+    let first_relay = tokio::spawn(relay_events(first_event_rx, first_tx, first_subscriptions));
+    let second_relay = tokio::spawn(relay_events(
+        second_event_rx,
+        second_tx,
+        second_subscriptions,
+    ));
+    let _publisher =
+        InputStatusEventPublisher::start(state.input_status.clone(), Arc::clone(&state.event_bus));
+
+    for receiver in [&mut first_rx, &mut second_rx] {
+        let initial = tokio::time::timeout(Duration::from_secs(1), receiver.recv())
+            .await
+            .expect("each websocket relay should receive the initial status")
+            .expect("websocket relay should remain open");
+        let initial: serde_json::Value =
+            serde_json::from_str(initial.as_str()).expect("initial relay JSON");
+        assert_eq!(initial["event"], "input_source_status_changed");
+    }
+
+    let worker = session_slot
+        .load()
+        .expect("test worker should retain the active source session");
+    assert!(worker.failed(SourceIssue::new(
+        "multi_client_failure",
+        "worker exited with multiple websocket clients",
+        true,
+    )));
+
+    for receiver in [&mut first_rx, &mut second_rx] {
+        let failure = tokio::time::timeout(Duration::from_secs(1), receiver.recv())
+            .await
+            .expect("each websocket relay should receive the failure")
+            .expect("websocket relay should remain open");
+        let failure: serde_json::Value =
+            serde_json::from_str(failure.as_str()).expect("failure relay JSON");
+        assert_eq!(
+            failure["data"]["lifecycle_issue_code"],
+            "multi_client_failure"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), receiver.recv())
+                .await
+                .is_err(),
+            "one publisher must not duplicate a transition per client"
+        );
+    }
+
+    first_relay.abort();
+    second_relay.abort();
+}
+
+#[tokio::test]
+async fn input_status_publisher_rebuilds_watchers_after_graph_change() {
+    let (state, _) = status_event_state();
+    let mut event_rx = state.event_bus.subscribe_all();
+    let _publisher =
+        InputStatusEventPublisher::start(state.input_status.clone(), Arc::clone(&state.event_bus));
+    tokio::time::timeout(Duration::from_secs(1), event_rx.recv())
+        .await
+        .expect("initial status should publish")
+        .expect("event bus should remain open");
+
+    {
+        let mut manager = state.input_manager.lock().await;
+        manager.add_source(Box::new(StatusEventTestSource::with_id(
+            "status-event-added",
+            SourceSessionSlot::new(),
+        )));
+        manager
+            .start_all()
+            .expect("new status event source should start");
+    }
+
+    let added = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let event = event_rx.recv().await.expect("event bus should remain open");
+            let (event_name, payload) = event_message_parts(&event.event);
+            if event_name == "input_source_status_changed"
+                && payload["source_id"] == "status-event-added"
+            {
+                break payload;
+            }
+        }
+    })
+    .await
+    .expect("graph reconciliation should attach the added source watcher");
+    assert_eq!(added["state"], "starting");
 }
 
 #[test]
