@@ -173,7 +173,7 @@ impl BrowserInputHandle {
         match edge {
             BrowserInputEdge::Key { key, state: st } => {
                 match st {
-                    InputButtonState::Pressed => {
+                    InputButtonState::Pressed | InputButtonState::Repeated => {
                         if !try_press(
                             &mut state.pressed_keys,
                             source_id,
@@ -183,15 +183,16 @@ impl BrowserInputHandle {
                             state.dropped = state.dropped.saturating_add(1);
                             return;
                         }
-                        state.recent_keys.push_back(key.clone());
-                        cap_recent(&mut state.recent_keys, self.event_limit);
+                        if st == InputButtonState::Pressed {
+                            state.recent_keys.push_back(key.clone());
+                            cap_recent(&mut state.recent_keys, self.event_limit);
+                        }
                     }
                     InputButtonState::Released => {
                         if let Some(held) = state.pressed_keys.get_mut(source_id) {
                             held.remove(&key);
                         }
                     }
-                    InputButtonState::Repeated => {}
                 }
                 state.generation_dirty = true;
                 push_event(
@@ -702,6 +703,44 @@ mod tests {
         assert_eq!(data.keyboard.recent_keys.len(), MAX_HELD_KEYS_PER_SOURCE);
         assert_eq!(events.len(), MAX_HELD_KEYS_PER_SOURCE);
         assert_eq!(data.batch.dropped_events, 1);
+    }
+
+    #[test]
+    fn focus_beginning_on_repeat_establishes_held_state_without_a_recent_press() {
+        let mut source = BrowserInputSource::new();
+        source.start().expect("start");
+        let handle = source.handle();
+
+        handle.inject(
+            "browser-1",
+            [BrowserInputEdge::Key {
+                key: "a".into(),
+                state: InputButtonState::Repeated,
+            }],
+        );
+
+        let data = drain_snapshot(&mut source);
+        assert_eq!(data.keyboard.pressed_keys, vec!["a".to_owned()]);
+        assert!(data.keyboard.recent_keys.is_empty());
+        assert!(matches!(
+            &source.drain_events()[0].event,
+            InputEvent::Key {
+                key,
+                state: InputButtonState::Repeated,
+                ..
+            } if key == "a"
+        ));
+
+        handle.release_source("browser-1");
+        assert!(drain_snapshot(&mut source).keyboard.pressed_keys.is_empty());
+        assert!(matches!(
+            &source.drain_events()[0].event,
+            InputEvent::Key {
+                key,
+                state: InputButtonState::Released,
+                ..
+            } if key == "a"
+        ));
     }
 
     #[test]

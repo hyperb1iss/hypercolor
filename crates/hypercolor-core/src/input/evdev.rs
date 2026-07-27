@@ -16,8 +16,8 @@ use std::time::Duration;
 
 use anyhow::Context;
 use evdev::{
-    Device, EventSummary, InputEvent as EvdevInputEvent, KeyCode, RelativeAxisCode,
-    SynchronizationCode,
+    AttributeSetRef, Device, EventSummary, InputEvent as EvdevInputEvent, KeyCode,
+    RelativeAxisCode, SynchronizationCode,
 };
 use tracing::{debug, info, trace, warn};
 
@@ -832,21 +832,22 @@ fn fold_event(
             }
             let key = canonical_evdev_key_name(code);
             match button_state {
-                InputButtonState::Pressed => {
+                InputButtonState::Pressed | InputButtonState::Repeated => {
                     state
                         .pressed_keys
                         .entry(device.source_id.clone())
                         .or_default()
                         .insert(key.clone());
-                    state.recent_keys.push_back(key.clone());
-                    cap_recent(&mut state.recent_keys, event_limit);
+                    if button_state == InputButtonState::Pressed {
+                        state.recent_keys.push_back(key.clone());
+                        cap_recent(&mut state.recent_keys, event_limit);
+                    }
                 }
                 InputButtonState::Released => {
                     if let Some(held) = state.pressed_keys.get_mut(&device.source_id) {
                         held.remove(&key);
                     }
                 }
-                InputButtonState::Repeated => {}
             }
             push_event(
                 state,
@@ -1033,13 +1034,25 @@ fn enumerate_event_nodes() -> Vec<PathBuf> {
 
 fn classify_device(device: &Device, capture_keyboard: bool, capture_pointer: bool) -> DeviceCaps {
     let keys = device.supported_keys();
+    let axes = device.supported_relative_axes();
+    classify_capabilities(keys, axes, capture_keyboard, capture_pointer)
+}
+
+fn classify_capabilities(
+    keys: Option<&AttributeSetRef<KeyCode>>,
+    axes: Option<&AttributeSetRef<RelativeAxisCode>>,
+    capture_keyboard: bool,
+    capture_pointer: bool,
+) -> DeviceCaps {
     let looks_like_keyboard = keys.is_some_and(|keys| {
         keys.contains(KeyCode::KEY_A)
             || keys.contains(KeyCode::KEY_Z)
             || keys.contains(KeyCode::KEY_ENTER)
             || keys.contains(KeyCode::KEY_SPACE)
+            || crate::input::keymap::MEDIA_KEYS
+                .iter()
+                .any(|media_key| keys.contains(KeyCode(media_key.evdev_code)))
     });
-    let axes = device.supported_relative_axes();
     let looks_like_pointer = axes.is_some_and(|axes| {
         axes.contains(RelativeAxisCode::REL_X) && axes.contains(RelativeAxisCode::REL_Y)
     }) && keys.is_some_and(|keys| keys.contains(KeyCode::BTN_LEFT));
@@ -1102,7 +1115,7 @@ fn canonical_evdev_key_name(code: KeyCode) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use evdev::EventType;
+    use evdev::{AttributeSet, EventType};
 
     fn event_state(source_id: &str, keyboard: bool, pointer: bool) -> DeviceEventState {
         DeviceEventState {
@@ -1157,6 +1170,68 @@ mod tests {
     }
 
     #[test]
+    fn every_shared_media_key_classifies_a_media_only_node_as_a_keyboard() {
+        for media_key in crate::input::keymap::MEDIA_KEYS {
+            let keys = [KeyCode(media_key.evdev_code)]
+                .into_iter()
+                .collect::<AttributeSet<_>>();
+            let enabled = classify_capabilities(Some(&keys), None, true, true);
+            let disabled = classify_capabilities(Some(&keys), None, false, true);
+
+            assert_eq!(
+                enabled,
+                DeviceCaps {
+                    keyboard: true,
+                    pointer: false,
+                    hi_res_wheel: false,
+                },
+                "{} should make a media-only node eligible",
+                media_key.name
+            );
+            assert!(!disabled.keyboard);
+        }
+    }
+
+    #[test]
+    fn media_keys_fold_with_the_shared_canonical_vocabulary() {
+        let mut state = SharedState::default();
+        let mut device = event_state("consumer-control", true, false);
+
+        for media_key in crate::input::keymap::MEDIA_KEYS {
+            fold_event(
+                &mut state,
+                &mut device,
+                key_event(KeyCode(media_key.evdev_code), 1),
+                1,
+                DEFAULT_EVENT_LIMIT,
+            );
+        }
+
+        let expected = crate::input::keymap::MEDIA_KEYS
+            .iter()
+            .map(|media_key| media_key.name.to_owned())
+            .collect::<Vec<_>>();
+        let mut expected_held = expected.clone();
+        expected_held.sort();
+        assert_eq!(state.union_pressed(), expected_held);
+        assert_eq!(
+            state.recent_keys.iter().cloned().collect::<Vec<_>>(),
+            expected
+        );
+        assert_eq!(
+            state
+                .events
+                .iter()
+                .map(|timed| match &timed.event {
+                    InputEvent::Key { key, .. } => key.clone(),
+                    event => panic!("expected key event, got {event:?}"),
+                })
+                .collect::<Vec<_>>(),
+            expected
+        );
+    }
+
+    #[test]
     fn fold_event_tracks_pressed_and_released_keys_per_source() {
         let mut state = SharedState::default();
         let mut held = BTreeMap::new();
@@ -1201,6 +1276,42 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    #[test]
+    fn capture_beginning_on_repeat_establishes_held_state_and_synthesizes_release() {
+        let mut state = SharedState::default();
+        let mut device = event_state("kbd", true, false);
+
+        fold_event(
+            &mut state,
+            &mut device,
+            key_event(KeyCode::KEY_A, 2),
+            1,
+            DEFAULT_EVENT_LIMIT,
+        );
+
+        assert_eq!(state.union_pressed(), vec!["a".to_owned()]);
+        assert!(state.recent_keys.is_empty());
+        assert!(matches!(
+            &state.events[0].event,
+            InputEvent::Key {
+                key,
+                state: InputButtonState::Repeated,
+                ..
+            } if key == "a"
+        ));
+
+        synthesize_releases_at(&mut state, "kbd", DEFAULT_EVENT_LIMIT, 2);
+        assert!(state.union_pressed().is_empty());
+        assert!(matches!(
+            &state.events[1].event,
+            InputEvent::Key {
+                key,
+                state: InputButtonState::Released,
+                ..
+            } if key == "a"
+        ));
     }
 
     #[test]
