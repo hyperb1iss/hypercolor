@@ -269,6 +269,10 @@ pub struct ScreenCaptureInput {
     /// Latest zone IDs corresponding to `latest_colors`.
     latest_zone_ids: Vec<String>,
 
+    /// Effective sector dimensions after letterbox cropping.
+    latest_grid_width: u32,
+    latest_grid_height: u32,
+
     /// Latest downscaled capture frame for screen-reactive effects.
     latest_canvas_downscale: Option<PublishedSurface>,
 
@@ -300,6 +304,8 @@ impl ScreenCaptureInput {
             smoother,
             latest_colors: None,
             latest_zone_ids: Vec::new(),
+            latest_grid_width: 0,
+            latest_grid_height: 0,
             latest_canvas_downscale: None,
             downscale_pool: RenderSurfacePool::with_slot_count(
                 SurfaceDescriptor::rgba8888(DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT),
@@ -374,6 +380,8 @@ impl ScreenCaptureInput {
         };
 
         let zone_data = effective_grid.to_zone_colors();
+        self.latest_grid_width = effective_grid.cols();
+        self.latest_grid_height = effective_grid.rows();
         let mut colors: Vec<[u8; 3]> = zone_data.iter().map(|(_, c)| *c).collect();
         self.latest_zone_ids = zone_data.into_iter().map(|(id, _)| id).collect();
 
@@ -433,6 +441,8 @@ impl InputSource for ScreenCaptureInput {
         self.running = true;
         self.smoother.reset();
         self.latest_colors = None;
+        self.latest_grid_width = 0;
+        self.latest_grid_height = 0;
         self.latest_canvas_downscale = None;
         self.latest_acquired_at = None;
         self.status_frame_generation = self.frame_generation;
@@ -442,6 +452,8 @@ impl InputSource for ScreenCaptureInput {
     fn stop(&mut self) {
         self.running = false;
         self.latest_colors = None;
+        self.latest_grid_width = 0;
+        self.latest_grid_height = 0;
         self.latest_canvas_downscale = None;
         self.latest_acquired_at = None;
         self.smoother.reset();
@@ -476,8 +488,8 @@ impl InputSource for ScreenCaptureInput {
 
         Ok(InputData::Screen(ScreenData {
             zone_colors,
-            grid_width: self.config.grid_cols,
-            grid_height: self.config.grid_rows,
+            grid_width: self.latest_grid_width,
+            grid_height: self.latest_grid_height,
             canvas_downscale: self.latest_canvas_downscale.clone(),
             source_width: self.frame_width,
             source_height: self.frame_height,

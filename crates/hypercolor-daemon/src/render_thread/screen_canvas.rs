@@ -13,10 +13,7 @@ pub(crate) fn screen_data_to_surface(
     sector_grid: &mut Vec<[u8; 3]>,
     surface_pool: &mut RenderSurfacePool,
 ) -> Option<PublishedSurface> {
-    if let Some(surface) = &screen_data.canvas_downscale
-        && surface.width() == canvas_width
-        && surface.height() == canvas_height
-    {
+    if let Some(surface) = &screen_data.canvas_downscale {
         return Some(surface.clone());
     }
 
@@ -24,49 +21,26 @@ pub(crate) fn screen_data_to_surface(
         return None;
     }
 
-    let mut max_row = 0_u32;
-    let mut max_col = 0_u32;
-    let mut saw_sector = false;
-
-    for zone in &screen_data.zone_colors {
-        let Some((row, col)) = parse_sector_zone_id(&zone.zone_id) else {
-            continue;
-        };
-        let _color = zone.colors.first().copied().unwrap_or([0, 0, 0]);
-        max_row = max_row.max(row);
-        max_col = max_col.max(col);
-        saw_sector = true;
-    }
-
-    if !saw_sector {
+    let rows = screen_data.grid_height;
+    let cols = screen_data.grid_width;
+    if rows == 0 || cols == 0 {
         return None;
     }
-
-    let rows = max_row.saturating_add(1);
-    let cols = max_col.saturating_add(1);
     let cell_count = usize::try_from(rows).ok().and_then(|row_count| {
         usize::try_from(cols)
             .ok()
             .and_then(|col_count| row_count.checked_mul(col_count))
     })?;
 
-    if sector_grid.len() == cell_count {
-        sector_grid.fill([0, 0, 0]);
-    } else {
-        sector_grid.resize(cell_count, [0, 0, 0]);
+    if screen_data.zone_colors.len() != cell_count {
+        return None;
+    }
+    sector_grid.clear();
+    if sector_grid.capacity() < cell_count {
+        sector_grid.reserve(cell_count - sector_grid.capacity());
     }
     for zone in &screen_data.zone_colors {
-        let Some((row, col)) = parse_sector_zone_id(&zone.zone_id) else {
-            continue;
-        };
-        let color = zone.colors.first().copied().unwrap_or([0, 0, 0]);
-        let idx_u64 = u64::from(row)
-            .checked_mul(u64::from(cols))
-            .and_then(|base| base.checked_add(u64::from(col)))?;
-        let idx = usize::try_from(idx_u64).ok()?;
-        if let Some(cell) = sector_grid.get_mut(idx) {
-            *cell = color;
-        }
+        sector_grid.push(*zone.colors.first()?);
     }
 
     let descriptor = SurfaceDescriptor::rgba8888(canvas_width, canvas_height);
@@ -115,14 +89,6 @@ pub(crate) fn screen_data_to_surface(
     Some(lease.submit(0, 0))
 }
 
-pub(crate) fn parse_sector_zone_id(zone_id: &str) -> Option<(u32, u32)> {
-    let coords = zone_id.strip_prefix("screen:sector_")?;
-    let (row_raw, col_raw) = coords.split_once('_')?;
-    let row = row_raw.parse().ok()?;
-    let col = col_raw.parse().ok()?;
-    Some((row, col))
-}
-
 /// Publish the latest ambilight zone grid to the bus when anyone is watching.
 ///
 /// Redundant frames (identical zone content) are skipped so relays only wake
@@ -159,36 +125,21 @@ fn screen_zones_frame(
     frame_number: u32,
     timestamp_ms: u32,
 ) -> Option<ScreenZonesFrame> {
-    let mut max_row = 0_u32;
-    let mut max_col = 0_u32;
-    let mut saw_sector = false;
-    for zone in &screen_data.zone_colors {
-        let Some((row, col)) = parse_sector_zone_id(&zone.zone_id) else {
-            continue;
-        };
-        max_row = max_row.max(row);
-        max_col = max_col.max(col);
-        saw_sector = true;
-    }
-    if !saw_sector {
+    let rows = screen_data.grid_height;
+    let cols = screen_data.grid_width;
+    if rows == 0 || cols == 0 {
         return None;
     }
-
-    let rows = max_row.saturating_add(1);
-    let cols = max_col.saturating_add(1);
     let cell_count = usize::try_from(rows)
         .ok()
         .and_then(|row_count| usize::try_from(cols).ok()?.checked_mul(row_count))?;
 
-    let mut colors = vec![[0_u8; 3]; cell_count];
+    if screen_data.zone_colors.len() != cell_count {
+        return None;
+    }
+    let mut colors = Vec::with_capacity(cell_count);
     for zone in &screen_data.zone_colors {
-        let Some((row, col)) = parse_sector_zone_id(&zone.zone_id) else {
-            continue;
-        };
-        let idx = usize::try_from(u64::from(row) * u64::from(cols) + u64::from(col)).ok()?;
-        if let Some(cell) = colors.get_mut(idx) {
-            *cell = zone.colors.first().copied().unwrap_or([0, 0, 0]);
-        }
+        colors.push(*zone.colors.first()?);
     }
 
     Some(ScreenZonesFrame {

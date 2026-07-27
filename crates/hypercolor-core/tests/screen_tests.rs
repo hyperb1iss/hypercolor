@@ -905,6 +905,12 @@ fn disabling_letterbox_live_clears_stale_bars() {
         input.letterbox_bars().has_bars(),
         "letterbox should be detected while enabled"
     );
+    let InputData::Screen(cropped) = input.sample().expect("sample succeeds") else {
+        panic!("expected screen data");
+    };
+    assert_eq!(cropped.grid_width, 4);
+    assert_eq!(cropped.grid_height, 2);
+    assert_eq!(cropped.zone_colors.len(), 8);
 
     input.apply_settings(CaptureConfig {
         letterbox_enabled: false,

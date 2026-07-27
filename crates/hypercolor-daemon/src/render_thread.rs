@@ -507,11 +507,13 @@ mod tests {
 
     use hypercolor_core::engine::FpsTier;
     use hypercolor_core::input::ScreenData;
-    use hypercolor_core::types::canvas::{RenderSurfacePool, Rgba, SurfaceDescriptor};
+    use hypercolor_core::types::canvas::{
+        Canvas, PublishedSurface, RenderSurfacePool, Rgba, SurfaceDescriptor,
+    };
     use hypercolor_core::types::event::ZoneColors;
 
     use super::frame_policy::SkipDecision;
-    use super::screen_canvas::{parse_sector_zone_id, screen_data_to_surface};
+    use super::screen_canvas::screen_data_to_surface;
     use super::{micros_u32, millis_u64};
 
     fn frame_stats(
@@ -567,30 +569,23 @@ mod tests {
     }
 
     #[test]
-    fn parse_sector_zone_id_parses_valid_ids() {
-        assert_eq!(parse_sector_zone_id("screen:sector_0_0"), Some((0, 0)));
-        assert_eq!(parse_sector_zone_id("screen:sector_12_5"), Some((12, 5)));
-        assert_eq!(parse_sector_zone_id("zone_1"), None);
-    }
-
-    #[test]
-    fn screen_data_to_surface_maps_sector_colors() {
+    fn screen_data_to_surface_maps_declared_row_major_colors() {
         let screen_data = ScreenData::from_zones(
             vec![
                 ZoneColors {
-                    zone_id: "screen:sector_0_0".to_owned(),
+                    zone_id: "arbitrary-a".to_owned(),
                     colors: vec![[255, 0, 0]],
                 },
                 ZoneColors {
-                    zone_id: "screen:sector_0_1".to_owned(),
+                    zone_id: "arbitrary-b".to_owned(),
                     colors: vec![[0, 255, 0]],
                 },
                 ZoneColors {
-                    zone_id: "screen:sector_1_0".to_owned(),
+                    zone_id: "arbitrary-c".to_owned(),
                     colors: vec![[0, 0, 255]],
                 },
                 ZoneColors {
-                    zone_id: "screen:sector_1_1".to_owned(),
+                    zone_id: "arbitrary-d".to_owned(),
                     colors: vec![[255, 255, 255]],
                 },
             ],
@@ -608,6 +603,34 @@ mod tests {
         assert_eq!(surface.get_pixel(3, 0), Rgba::new(0, 255, 0, 255));
         assert_eq!(surface.get_pixel(0, 3), Rgba::new(0, 0, 255, 255));
         assert_eq!(surface.get_pixel(3, 3), Rgba::new(255, 255, 255, 255));
+    }
+
+    #[test]
+    fn screen_data_to_surface_preserves_downscale_geometry() {
+        let mut screen_data = ScreenData::from_zones(
+            vec![ZoneColors {
+                zone_id: "screen".to_owned(),
+                colors: vec![[255, 0, 0]],
+            }],
+            1,
+            1,
+        );
+        screen_data.canvas_downscale = Some(PublishedSurface::from_owned_canvas(
+            Canvas::new(16, 9),
+            1,
+            16,
+        ));
+
+        let mut sector_grid = Vec::new();
+        let mut surface_pool =
+            RenderSurfacePool::with_slot_count(SurfaceDescriptor::rgba8888(4, 4), 2);
+        let surface =
+            screen_data_to_surface(&screen_data, 4, 4, &mut sector_grid, &mut surface_pool)
+                .expect("downscale should pass through");
+
+        assert_eq!(surface.width(), 16);
+        assert_eq!(surface.height(), 9);
+        assert!(sector_grid.is_empty());
     }
 
     #[test]
