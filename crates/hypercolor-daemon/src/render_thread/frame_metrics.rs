@@ -461,6 +461,8 @@ mod tests {
                 audio_capture_active: false,
                 screen_capture_active: true,
                 interaction_capture_active: false,
+                media_input_active: false,
+                network_input_active: false,
             },
             effect_dependency_key: SceneDependencyKey::new(3, 7),
             scene_runtime: SceneRuntimeSnapshot {

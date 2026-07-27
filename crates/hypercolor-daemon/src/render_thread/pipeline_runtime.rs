@@ -62,6 +62,7 @@ use super::{RenderThreadState, micros_u32};
 use crate::interaction_routing::InteractionRoutingControl;
 
 const AUDIO_LEVEL_EVENT_INTERVAL_MS: u64 = 100;
+const BACKGROUND_INPUT_HZ: u32 = 1;
 const DEFAULT_SCREEN_SURFACE_WIDTH: u32 = 1;
 const DEFAULT_SCREEN_SURFACE_HEIGHT: u32 = 1;
 const AUTHORITATIVE_INPUT_CONSUMER: ConsumerIncarnation = ConsumerIncarnation::new(1);
@@ -1200,6 +1201,12 @@ fn authoritative_input_demand(
     }
     if effect_demand.interaction_capture_active {
         demand = demand.with_source(SourceKind::Interaction, requested_hz);
+    }
+    if effect_demand.media_input_active {
+        demand = demand.with_source(SourceKind::Media, BACKGROUND_INPUT_HZ);
+    }
+    if effect_demand.network_input_active {
+        demand = demand.with_source(SourceKind::Network, BACKGROUND_INPUT_HZ);
     }
     demand
 }
@@ -2458,13 +2465,17 @@ mod tests {
             audio_capture_active: true,
             screen_capture_active: true,
             interaction_capture_active: true,
+            media_input_active: true,
+            network_input_active: true,
         };
 
         let demand = authoritative_input_demand(effect_demand, 60);
         let expected = InputPublicationDemand::default()
             .with_source(SourceKind::Audio, 60)
             .with_source(SourceKind::Screen, 60)
-            .with_source(SourceKind::Interaction, 60);
+            .with_source(SourceKind::Interaction, 60)
+            .with_source(SourceKind::Media, 1)
+            .with_source(SourceKind::Network, 1);
 
         assert_eq!(demand, expected);
     }

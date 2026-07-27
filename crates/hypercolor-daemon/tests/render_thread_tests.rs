@@ -1363,6 +1363,60 @@ async fn render_thread_gates_audio_capture_to_audio_reactive_effects() {
     assert_eq!(transitions, vec![false, true, false]);
 }
 
+#[tokio::test]
+async fn output_sleep_keeps_reactive_input_capture_live() {
+    let mut state = make_render_state(
+        active_builtin_effect("audio_pulse", HashMap::new()),
+        SpatialEngine::new(test_layout(Vec::new())),
+        BackendManager::new(),
+    );
+    let (power_tx, power_state) = watch::channel(OutputPowerState::default());
+    state.power_state = power_state;
+
+    let transitions = Arc::new(StdMutex::new(Vec::new()));
+    {
+        let mut input_manager = state.input_manager.lock().await;
+        input_manager.add_source(Box::new(DemandGatedMockAudioSource::new(
+            AudioData::silence(),
+            Arc::clone(&transitions),
+        )));
+        input_manager
+            .start_all()
+            .expect("input manager should start");
+    }
+
+    {
+        let mut render_loop = state.render_loop.write().await;
+        render_loop.start();
+    }
+    let mut render_thread = RenderThread::spawn(state.clone());
+    wait_for_audio_capture_transition(&transitions, true).await;
+
+    power_tx.send_replace(OutputPowerState {
+        sleeping: true,
+        session_brightness: 0.0,
+        off_output_behavior: OffOutputBehavior::Release,
+        ..OutputPowerState::default()
+    });
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(
+        *transitions.lock().expect("transition log should lock"),
+        [true],
+        "output policy must not disable a live input consumer"
+    );
+
+    {
+        let mut render_loop = state.render_loop.write().await;
+        render_loop.stop();
+    }
+    render_thread.shutdown().await.expect("shutdown");
+
+    assert_eq!(
+        *transitions.lock().expect("transition log should lock"),
+        [true, false]
+    );
+}
+
 // ── Frame Pipeline Tests ────────────────────────────────────────────────────
 
 #[tokio::test]

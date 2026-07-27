@@ -80,7 +80,7 @@ pub(crate) async fn execute_frame(
     let output_power = scene_snapshot.output_power;
     frame_loop
         .capture_demand
-        .reconcile_effect_demand(state, output_power.sleeping, scene_snapshot.effect_demand)
+        .reconcile_effect_demand(state, scene_snapshot.effect_demand)
         .await;
     publish_input_demands(state, frame_loop, scene_snapshot.effect_demand);
     let scene_snapshot_done_us = micros_u32(frame_start.elapsed());
@@ -133,7 +133,7 @@ pub(crate) async fn execute_frame(
         let refreshed_demand = scene_snapshot.effect_demand;
         frame_loop
             .capture_demand
-            .reconcile_effect_demand(state, output_power.sleeping, refreshed_demand)
+            .reconcile_effect_demand(state, refreshed_demand)
             .await;
         publish_input_demands(state, frame_loop, refreshed_demand);
     }

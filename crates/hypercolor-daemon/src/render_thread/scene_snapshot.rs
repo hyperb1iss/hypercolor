@@ -82,6 +82,8 @@ pub(crate) struct EffectDemand {
     pub(crate) audio_capture_active: bool,
     pub(crate) screen_capture_active: bool,
     pub(crate) interaction_capture_active: bool,
+    pub(crate) media_input_active: bool,
+    pub(crate) network_input_active: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -549,6 +551,8 @@ async fn current_effect_scene_snapshot(
     let mut audio_capture_active = false;
     let mut screen_capture_active = false;
     let mut interaction_capture_active = false;
+    let mut media_input_active = false;
+    let mut network_input_active = false;
 
     for group in scene_runtime.active_render_groups.iter() {
         if !group.enabled {
@@ -567,6 +571,8 @@ async fn current_effect_scene_snapshot(
                         audio_capture_active |= entry.metadata.audio_reactive;
                         screen_capture_active |= entry.metadata.screen_reactive;
                         interaction_capture_active |= entry.metadata.requires_interaction();
+                        media_input_active |= effect_has_tag(&entry.metadata.tags, "media");
+                        network_input_active |= effect_has_tag(&entry.metadata.tags, "net");
                     }
                 }
                 LayerSource::ScreenRegion { .. } => {
@@ -588,6 +594,8 @@ async fn current_effect_scene_snapshot(
         audio_capture_active,
         screen_capture_active,
         interaction_capture_active,
+        media_input_active,
+        network_input_active,
     };
     scene_snapshot_cache.cache_effect_demand(dependency_key, screen_capture_configured, demand);
 
@@ -595,6 +603,10 @@ async fn current_effect_scene_snapshot(
         demand,
         dependency_key,
     }
+}
+
+fn effect_has_tag(tags: &[String], expected: &str) -> bool {
+    tags.iter().any(|tag| tag.eq_ignore_ascii_case(expected))
 }
 
 fn group_has_enabled_layer(group: &Zone) -> bool {
@@ -706,6 +718,8 @@ mod tests {
             audio_capture_active: true,
             screen_capture_active: false,
             interaction_capture_active: false,
+            media_input_active: false,
+            network_input_active: false,
         };
 
         assert!(
@@ -1130,10 +1144,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn interactive_effect_creates_interaction_capture_demand() {
+    async fn effect_metadata_creates_typed_input_demand() {
         let effect_id = EffectId::from(Uuid::now_v7());
         let mut entry = sample_entry(effect_id, false, false);
         entry.metadata.input_reactive = true;
+        entry.metadata.tags = vec!["MEDIA".to_owned(), "net".to_owned()];
         let mut registry = EffectRegistry::default();
         registry.register(entry);
         let state = minimal_render_thread_state(registry);
@@ -1159,6 +1174,8 @@ mod tests {
 
         assert!(snapshot.demand.effect_running);
         assert!(snapshot.demand.interaction_capture_active);
+        assert!(snapshot.demand.media_input_active);
+        assert!(snapshot.demand.network_input_active);
         assert!(!snapshot.demand.audio_capture_active);
     }
 

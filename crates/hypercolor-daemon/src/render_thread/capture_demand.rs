@@ -47,22 +47,18 @@ impl CaptureDemandState {
     pub(crate) async fn reconcile_effect_demand(
         &mut self,
         state: &RenderThreadState,
-        sleeping: bool,
         effect_demand: EffectDemand,
     ) {
-        self.reconcile_audio(state, !sleeping && effect_demand.audio_capture_active)
+        self.reconcile_audio(state, effect_demand.audio_capture_active)
             .await;
         // A live preview subscriber (e.g. the Capture page) keeps the screen
         // pipeline running even while no screen-reactive effect is active and
         // even when outputs sleep — tuning needs a picture to tune against.
         let preview_active = state.event_bus.screen_canvas_receiver_count() > 0
             || state.event_bus.screen_zones_receiver_count() > 0;
-        self.reconcile_screen(
-            state,
-            (!sleeping && effect_demand.screen_capture_active) || preview_active,
-        )
-        .await;
-        self.reconcile_interaction(state, !sleeping && effect_demand.interaction_capture_active)
+        self.reconcile_screen(state, effect_demand.screen_capture_active || preview_active)
+            .await;
+        self.reconcile_interaction(state, effect_demand.interaction_capture_active)
             .await;
     }
 
