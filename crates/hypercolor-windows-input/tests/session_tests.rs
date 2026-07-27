@@ -112,6 +112,14 @@ fn readiness_timeout_reaper_observes_late_worker_exit() {
 }
 
 #[test]
+fn reaper_spawn_failure_keeps_the_worker_reachable_until_later_reap() {
+    let _exclusive = exclusive();
+    assert!(RawInputSession::test_reaper_spawn_failure_is_reapable(
+        Duration::from_millis(40),
+    ));
+}
+
+#[test]
 fn join_timeout_retains_worker_until_a_later_stop_observes_exit() {
     let _exclusive = exclusive();
     let mut session = RawInputSession::test_stalled_worker(Duration::from_millis(40));
@@ -128,6 +136,30 @@ fn join_timeout_retains_worker_until_a_later_stop_observes_exit() {
         !session.test_retains_worker(),
         "a later stop must join a worker after observing its exit"
     );
+}
+
+#[test]
+fn drop_after_explicit_stop_timeout_does_not_wait_the_full_timeout_twice() {
+    let _exclusive = exclusive();
+    RawInputSession::test_reap_retained_workers();
+    let baseline = RawInputSession::test_retained_worker_count();
+    let mut session = RawInputSession::test_stalled_worker(Duration::from_millis(250));
+
+    session.test_stop_with_timeout(Duration::from_millis(5));
+    assert!(matches!(session.worker_state(), WorkerState::Failed(_)));
+
+    let started = Instant::now();
+    drop(session);
+    assert!(
+        started.elapsed() < Duration::from_millis(75),
+        "drop repeated a bounded join after explicit stop: {:?}",
+        started.elapsed()
+    );
+    assert_eq!(RawInputSession::test_retained_worker_count(), baseline + 1);
+
+    std::thread::sleep(Duration::from_millis(300));
+    RawInputSession::test_reap_retained_workers();
+    assert_eq!(RawInputSession::test_retained_worker_count(), baseline);
 }
 
 #[test]
