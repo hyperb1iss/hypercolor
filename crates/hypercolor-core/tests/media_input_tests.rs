@@ -1,16 +1,25 @@
 use hypercolor_core::input::media::{
-    ArtCache, ArtworkError, ArtworkFetcher, ArtworkPolicy, ArtworkSource, MediaMetadataProvider,
-    MediaProviderError, MediaProviderFailure, MediaProviderSession, MediaSource, PlaybackStatus,
-    PlayerSnapshot, media_state_from_player, pick_active_player,
+    ArtCache, ArtworkBlockingBackend, ArtworkError, ArtworkFetcher, ArtworkPolicy, ArtworkRequest,
+    ArtworkSource, MediaMetadataProvider, MediaProviderError, MediaProviderFailure,
+    MediaProviderSession, MediaSource, PlaybackStatus, PlayerSnapshot, collect_player_snapshots,
+    media_state_from_player, pick_active_player, run_artwork_loop,
 };
 use hypercolor_core::input::{InputData, InputSource};
 use hypercolor_core::input::{SourceFreshness, SourceState};
+use image::ImageEncoder as _;
+use stats_alloc::{INSTRUMENTED_SYSTEM, Region, StatsAlloc};
+use std::alloc::System;
 use std::collections::VecDeque;
 use std::io::{Cursor, Read as _, Write as _};
 use std::net::TcpListener;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier};
 use std::time::{Duration, Instant};
+use tokio_util::sync::CancellationToken;
+
+#[global_allocator]
+static GLOBAL: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
 
 fn player(bus_name: &str, status: PlaybackStatus, track: &str) -> PlayerSnapshot {
     PlayerSnapshot {
@@ -147,7 +156,7 @@ fn art_cache_fetches_once_per_track() {
 fn artwork_url(source: &ArtworkSource) -> &str {
     match source {
         ArtworkSource::Url(url) => url,
-        ArtworkSource::WindowsSession { .. } => panic!("test expected URL artwork"),
+        ArtworkSource::WindowsSession(_) => panic!("test expected URL artwork"),
     }
 }
 
@@ -172,6 +181,408 @@ fn custom_artwork_policy_cannot_expand_the_hard_safety_envelope() {
         ArtworkFetcher::new(policy),
         Err(ArtworkError::InvalidPolicy)
     ));
+}
+
+fn png_with_icc_profile(profile_bytes: usize) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    let mut encoder = image::codecs::png::PngEncoder::new(&mut bytes);
+    encoder
+        .set_icc_profile(vec![0; profile_bytes])
+        .expect("test ICC profile is accepted");
+    encoder
+        .write_image(&[0, 0, 0, 255], 1, 1, image::ExtendedColorType::Rgba8)
+        .expect("test PNG encodes");
+    bytes
+}
+
+#[test]
+fn compressed_png_metadata_obeys_the_decode_allocation_limit() {
+    const CHILD_ENV: &str = "HYPERCOLOR_MEDIA_ICC_ALLOCATION_CHILD";
+    if std::env::var_os(CHILD_ENV).is_none() {
+        let status = std::process::Command::new(std::env::current_exe().expect("test path exists"))
+            .args([
+                "--exact",
+                "compressed_png_metadata_obeys_the_decode_allocation_limit",
+                "--nocapture",
+            ])
+            .env(CHILD_ENV, "1")
+            .status()
+            .expect("allocation probe child starts");
+        assert!(status.success(), "allocation probe child failed");
+        return;
+    }
+
+    let bytes = png_with_icc_profile(64 * 1024 * 1024);
+    assert!(
+        bytes.len() < 256 * 1024,
+        "fixture must remain highly compressed"
+    );
+    let mut policy = artwork_policy(bytes.len());
+    policy.max_decode_bytes = 512 * 1024;
+    let fetcher = ArtworkFetcher::new(policy).expect("bounded policy builds");
+    let mut region = Region::new(GLOBAL);
+    region.reset();
+
+    let result = fetcher.encode_data_url(&bytes);
+    let allocated = region.change().bytes_allocated;
+
+    assert!(
+        result.is_ok(),
+        "oversized optional metadata is ignored safely"
+    );
+    assert!(
+        allocated < 16 * 1024 * 1024,
+        "dimension probing allocated {allocated} bytes for bounded ancillary metadata"
+    );
+}
+
+#[derive(Clone, Copy)]
+enum SnapshotOutcome {
+    Healthy(&'static str),
+    Failed,
+    Hung,
+}
+
+async fn scripted_snapshot(
+    outcome: SnapshotOutcome,
+) -> std::result::Result<PlayerSnapshot, MediaProviderError> {
+    match outcome {
+        SnapshotOutcome::Healthy(track) => {
+            Ok(player("native-player", PlaybackStatus::Playing, track))
+        }
+        SnapshotOutcome::Failed => Err(MediaProviderError::new("player failed")),
+        SnapshotOutcome::Hung => std::future::pending().await,
+    }
+}
+
+#[tokio::test]
+async fn unhealthy_native_players_do_not_starve_healthy_siblings() {
+    for outcomes in [
+        [
+            SnapshotOutcome::Hung,
+            SnapshotOutcome::Healthy("after-hang"),
+        ],
+        [
+            SnapshotOutcome::Healthy("before-hang"),
+            SnapshotOutcome::Hung,
+        ],
+        [
+            SnapshotOutcome::Failed,
+            SnapshotOutcome::Healthy("after-failure"),
+        ],
+        [
+            SnapshotOutcome::Healthy("before-failure"),
+            SnapshotOutcome::Failed,
+        ],
+    ] {
+        let started = Instant::now();
+        let players = collect_player_snapshots(
+            outcomes.into_iter().map(scripted_snapshot),
+            Duration::from_millis(20),
+        )
+        .await
+        .expect("one unhealthy player must not fail a healthy sibling");
+        assert_eq!(players.len(), 1);
+        assert!(players[0].track.contains("hang") || players[0].track.contains("failure"));
+        assert!(started.elapsed() < Duration::from_millis(250));
+    }
+
+    let outcomes = std::iter::repeat_n(SnapshotOutcome::Hung, 8)
+        .chain(std::iter::once(SnapshotOutcome::Healthy("survivor")));
+    let started = Instant::now();
+    let players =
+        collect_player_snapshots(outcomes.map(scripted_snapshot), Duration::from_millis(150))
+            .await
+            .expect("concurrent timeouts must preserve the healthy player");
+    assert_eq!(players.len(), 1);
+    assert_eq!(players[0].track, "survivor");
+    assert!(started.elapsed() < Duration::from_millis(400));
+
+    let error = collect_player_snapshots(
+        [SnapshotOutcome::Hung, SnapshotOutcome::Failed]
+            .into_iter()
+            .map(scripted_snapshot),
+        Duration::from_millis(20),
+    )
+    .await
+    .expect_err("every attempted player failed");
+    assert!(
+        error
+            .to_string()
+            .starts_with("native media player 0 exceeded"),
+        "lowest-indexed failure must win, got {error}"
+    );
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BlockingStage {
+    Read,
+    Encode,
+}
+
+struct CancelAwareBlockingBackend {
+    stage: BlockingStage,
+    active: AtomicUsize,
+    max_active: AtomicUsize,
+    starts: AtomicUsize,
+}
+
+impl CancelAwareBlockingBackend {
+    fn new(stage: BlockingStage) -> Self {
+        Self {
+            stage,
+            active: AtomicUsize::new(0),
+            max_active: AtomicUsize::new(0),
+            starts: AtomicUsize::new(0),
+        }
+    }
+
+    fn block_until_cancelled<T>(
+        &self,
+        cancel: &CancellationToken,
+    ) -> std::result::Result<T, ArtworkError> {
+        self.starts.fetch_add(1, Ordering::SeqCst);
+        let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+        self.max_active.fetch_max(active, Ordering::SeqCst);
+        while !cancel.is_cancelled() {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        self.active.fetch_sub(1, Ordering::SeqCst);
+        Err(ArtworkError::Cancelled)
+    }
+}
+
+impl ArtworkBlockingBackend for CancelAwareBlockingBackend {
+    fn read_file(
+        &self,
+        _path: &Path,
+        _limit: usize,
+        cancel: &CancellationToken,
+    ) -> std::result::Result<Vec<u8>, ArtworkError> {
+        if self.stage == BlockingStage::Read {
+            self.block_until_cancelled(cancel)
+        } else {
+            Ok(vec![1])
+        }
+    }
+
+    fn encode(
+        &self,
+        _bytes: &[u8],
+        _policy: ArtworkPolicy,
+        cancel: &CancellationToken,
+    ) -> std::result::Result<String, ArtworkError> {
+        if self.stage == BlockingStage::Encode {
+            self.block_until_cancelled(cancel)
+        } else {
+            Ok("data:image/jpeg;base64,test".to_owned())
+        }
+    }
+}
+
+#[tokio::test]
+async fn blocking_artwork_timeout_reaps_read_and_decode_jobs() {
+    for stage in [BlockingStage::Read, BlockingStage::Encode] {
+        let backend = Arc::new(CancelAwareBlockingBackend::new(stage));
+        let mut policy = artwork_policy(64);
+        policy.fetch_timeout = Duration::from_millis(20);
+        let fetcher = ArtworkFetcher::with_blocking_backend(policy, backend.clone())
+            .expect("test backend builds");
+        let source = ArtworkSource::Url("file:///C:/hypercolor-artwork-test".to_owned());
+
+        assert_eq!(
+            fetcher.fetch_data_url(&source).await,
+            Err(ArtworkError::Timeout)
+        );
+        assert_eq!(backend.active.load(Ordering::SeqCst), 0);
+        assert_eq!(backend.starts.load(Ordering::SeqCst), 1);
+        assert_eq!(backend.max_active.load(Ordering::SeqCst), 1);
+    }
+}
+
+#[tokio::test]
+async fn explicit_artwork_cancellation_reaps_the_blocking_job() {
+    let backend = Arc::new(CancelAwareBlockingBackend::new(BlockingStage::Encode));
+    let fetcher = ArtworkFetcher::with_blocking_backend(artwork_policy(64), backend.clone())
+        .expect("test backend builds");
+    let source = ArtworkSource::Url("file:///C:/hypercolor-artwork-test".to_owned());
+    let cancel = CancellationToken::new();
+    let cancel_after_start = async {
+        wait_for_attempts(&backend.starts, 1).await;
+        cancel.cancel();
+    };
+
+    let (result, ()) = tokio::join!(
+        fetcher.fetch_data_url_cancellable(&source, &cancel),
+        cancel_after_start,
+    );
+    assert_eq!(result, Err(ArtworkError::Cancelled));
+    assert_eq!(backend.active.load(Ordering::SeqCst), 0);
+    assert_eq!(backend.starts.load(Ordering::SeqCst), 1);
+    assert_eq!(backend.max_active.load(Ordering::SeqCst), 1);
+}
+
+struct UncancellableBlockingBackend {
+    released: AtomicBool,
+    active: AtomicUsize,
+    starts: AtomicUsize,
+}
+
+impl ArtworkBlockingBackend for UncancellableBlockingBackend {
+    fn read_file(
+        &self,
+        _path: &Path,
+        _limit: usize,
+        _cancel: &CancellationToken,
+    ) -> std::result::Result<Vec<u8>, ArtworkError> {
+        Ok(vec![1])
+    }
+
+    fn encode(
+        &self,
+        _bytes: &[u8],
+        _policy: ArtworkPolicy,
+        _cancel: &CancellationToken,
+    ) -> std::result::Result<String, ArtworkError> {
+        self.starts.fetch_add(1, Ordering::SeqCst);
+        self.active.fetch_add(1, Ordering::SeqCst);
+        while !self.released.load(Ordering::SeqCst) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        self.active.fetch_sub(1, Ordering::SeqCst);
+        Err(ArtworkError::Cancelled)
+    }
+}
+
+#[tokio::test]
+async fn uncooperative_artwork_job_is_quarantined_without_overlap() {
+    let backend = Arc::new(UncancellableBlockingBackend {
+        released: AtomicBool::new(false),
+        active: AtomicUsize::new(0),
+        starts: AtomicUsize::new(0),
+    });
+    let mut policy = artwork_policy(64);
+    policy.fetch_timeout = Duration::from_millis(20);
+    let fetcher = ArtworkFetcher::with_blocking_backend(policy, backend.clone())
+        .expect("test backend builds");
+    let source = ArtworkSource::Url("file:///C:/hypercolor-artwork-test".to_owned());
+
+    let started = Instant::now();
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(3), fetcher.fetch_data_url(&source))
+            .await
+            .expect("the quarantined job cannot wedge its caller"),
+        Err(ArtworkError::Timeout)
+    );
+    assert!(started.elapsed() < Duration::from_secs(2));
+    assert_eq!(backend.active.load(Ordering::SeqCst), 1);
+    assert_eq!(backend.starts.load(Ordering::SeqCst), 1);
+
+    assert_eq!(
+        fetcher.fetch_data_url(&source).await,
+        Err(ArtworkError::Timeout)
+    );
+    assert_eq!(backend.starts.load(Ordering::SeqCst), 1);
+    backend.released.store(true, Ordering::SeqCst);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while backend.active.load(Ordering::SeqCst) != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("quarantined artwork job eventually exits");
+}
+
+struct ReplacementBlockingBackend {
+    active: AtomicUsize,
+    max_active: AtomicUsize,
+    starts: AtomicUsize,
+}
+
+impl ReplacementBlockingBackend {
+    fn new() -> Self {
+        Self {
+            active: AtomicUsize::new(0),
+            max_active: AtomicUsize::new(0),
+            starts: AtomicUsize::new(0),
+        }
+    }
+}
+
+impl ArtworkBlockingBackend for ReplacementBlockingBackend {
+    fn read_file(
+        &self,
+        path: &Path,
+        _limit: usize,
+        _cancel: &CancellationToken,
+    ) -> std::result::Result<Vec<u8>, ArtworkError> {
+        Ok(path.to_string_lossy().as_bytes().to_vec())
+    }
+
+    fn encode(
+        &self,
+        _bytes: &[u8],
+        _policy: ArtworkPolicy,
+        cancel: &CancellationToken,
+    ) -> std::result::Result<String, ArtworkError> {
+        let attempt = self.starts.fetch_add(1, Ordering::SeqCst) + 1;
+        if attempt == 2 {
+            return Err(ArtworkError::Io("retry me".to_owned()));
+        }
+        let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+        self.max_active.fetch_max(active, Ordering::SeqCst);
+        while !cancel.is_cancelled() {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        self.active.fetch_sub(1, Ordering::SeqCst);
+        Err(ArtworkError::Cancelled)
+    }
+}
+
+async fn wait_for_attempts(attempts: &AtomicUsize, expected: usize) {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while attempts.load(Ordering::SeqCst) < expected {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("artwork attempt starts before deadline");
+}
+
+#[tokio::test]
+async fn replacement_retry_and_stop_keep_blocking_artwork_single_flight() {
+    let backend = Arc::new(ReplacementBlockingBackend::new());
+    let mut policy = artwork_policy(128);
+    policy.fetch_timeout = Duration::from_secs(5);
+    let fetcher = ArtworkFetcher::with_blocking_backend(policy, backend.clone())
+        .expect("test backend builds");
+    let source = MediaSource::new();
+    let (art_tx, art_rx) = tokio::sync::watch::channel(None);
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    let worker = run_artwork_loop(fetcher, source.publisher(), art_rx, stop_rx);
+    let drive = async {
+        art_tx.send_replace(Some(Arc::new(ArtworkRequest {
+            key: "old".to_owned(),
+            source: ArtworkSource::Url("file:///C:/old-art".to_owned()),
+        })));
+        wait_for_attempts(&backend.starts, 1).await;
+        art_tx.send_replace(Some(Arc::new(ArtworkRequest {
+            key: "new".to_owned(),
+            source: ArtworkSource::Url("file:///C:/new-art".to_owned()),
+        })));
+        wait_for_attempts(&backend.starts, 2).await;
+        wait_for_attempts(&backend.starts, 3).await;
+        stop_tx.send_replace(true);
+    };
+
+    tokio::time::timeout(Duration::from_secs(4), async {
+        tokio::join!(worker, drive);
+    })
+    .await
+    .expect("artwork worker stops before deadline");
+    assert_eq!(backend.active.load(Ordering::SeqCst), 0);
+    assert_eq!(backend.starts.load(Ordering::SeqCst), 3);
+    assert_eq!(backend.max_active.load(Ordering::SeqCst), 1);
 }
 
 fn spawn_http_response(headers: &str, body: Vec<u8>, delay: Duration) -> String {
@@ -286,6 +697,21 @@ async fn oversized_local_art_is_rejected_before_full_read() {
         .await
         .expect_err("oversized local artwork must be rejected");
     assert_eq!(error, ArtworkError::SourceTooLarge { limit: 64 });
+}
+
+#[tokio::test]
+async fn non_regular_local_art_is_rejected_before_open() {
+    let directory = tempfile::tempdir().expect("temporary artwork directory opens");
+    let url = url::Url::from_directory_path(directory.path())
+        .expect("temporary directory becomes a file URL")
+        .to_string();
+    let fetcher = ArtworkFetcher::new(artwork_policy(64)).expect("test policy builds");
+
+    let error = fetcher
+        .fetch_data_url(&ArtworkSource::Url(url))
+        .await
+        .expect_err("non-regular local artwork must be rejected");
+    assert_eq!(error, ArtworkError::UnsupportedSource);
 }
 
 #[test]
@@ -431,43 +857,32 @@ async fn provider_retries_an_initially_unavailable_session_bus() {
 }
 
 #[tokio::test]
-async fn same_app_sessions_keep_distinct_deferred_artwork_identity() {
-    let artwork = |track: &str| ArtworkSource::WindowsSession {
-        source_app_id: "browser".to_owned(),
-        track: track.to_owned(),
-        artist: "Artist".to_owned(),
-        album: "Album".to_owned(),
+async fn identical_same_app_sessions_keep_the_selected_artwork_identity() {
+    let artwork = |session: &str| {
+        ArtworkSource::windows_session_fixture(session, "browser", "same", "Artist", "Album")
     };
-    let mut first = player("browser", PlaybackStatus::Playing, "first");
-    first.artwork = Some(artwork("first"));
-    let mut second = player("browser", PlaybackStatus::Playing, "second");
-    second.artwork = Some(artwork("second"));
+    let mut stopped = player("browser", PlaybackStatus::Stopped, "same");
+    stopped.artwork = Some(artwork("stopped-session"));
+    let mut playing = player("browser", PlaybackStatus::Playing, "same");
+    playing.artwork = Some(artwork("playing-session"));
     let provider = ScriptedProvider {
         connect_results: VecDeque::new(),
-        poll_results: VecDeque::from([Ok(vec![first]), Ok(vec![second])]),
+        poll_results: VecDeque::from([Ok(vec![stopped, playing])]),
         connects: Arc::new(AtomicUsize::new(0)),
         disconnects: Arc::new(AtomicUsize::new(0)),
     };
     let mut session = MediaProviderSession::new(Box::new(provider));
 
-    let first = session
+    let selected = session
         .poll()
         .await
-        .expect("first poll succeeds")
+        .expect("poll succeeds")
         .artwork
-        .expect("first poll defers artwork")
-        .source;
-    let second = session
-        .poll()
-        .await
-        .expect("second poll succeeds")
-        .artwork
-        .expect("second poll defers artwork")
+        .expect("poll defers artwork")
         .source;
 
-    assert_eq!(first, artwork("first"));
-    assert_eq!(second, artwork("second"));
-    assert_ne!(first, second);
+    assert_eq!(selected, artwork("playing-session"));
+    assert_ne!(selected, artwork("stopped-session"));
 }
 
 #[tokio::test]

@@ -5,21 +5,26 @@
 //! are independent: a slow or hostile image can never delay the next player
 //! snapshot.
 
+use std::future::Future;
 use std::io::{Cursor, Read};
-use std::sync::{Arc, Mutex};
+use std::path::Path;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use async_trait::async_trait;
 use base64::Engine as _;
-use tokio::sync::watch;
-use tracing::{debug, info};
+use futures_util::stream::{FuturesUnordered, StreamExt as _};
+use tokio::sync::{Semaphore, watch};
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, info, warn};
 
 use hypercolor_types::media::MediaState;
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use super::SourceSessionWriter;
 use super::traits::{InputData, InputSource};
+use super::worker_retention::{retain_input_worker, spawn_input_worker};
 use super::{SourceIssue, SourceKind, SourceStatusHandle, SourceStatusReporter};
 
 /// Poll cadence for player discovery, status, and position.
@@ -28,8 +33,14 @@ pub const MEDIA_POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// Maximum time allowed for one provider connection or metadata poll.
 pub const MEDIA_PROVIDER_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Maximum time allowed for artwork I/O and decode work.
+/// Maximum time one native player may consume while producing a snapshot.
+pub const MEDIA_PLAYER_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Deadline after which artwork work is cancelled, reaped, or quarantined.
 pub const ART_FETCH_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Grace period for cooperative blocking artwork cancellation.
+const ART_REAP_GRACE: Duration = Duration::from_millis(250);
 
 /// Maximum compressed artwork bytes accepted from any source.
 pub const MAX_ART_SOURCE_BYTES: usize = 8 * 1024 * 1024;
@@ -93,28 +104,88 @@ pub enum ArtworkSource {
     /// A bounded `file:`, `http:`, or `https:` resource.
     Url(String),
     /// The current GSMTC thumbnail for a Windows media session.
-    WindowsSession {
-        /// Application identity used to rediscover the session.
-        source_app_id: String,
-        /// Track title captured with the deferred request.
-        track: String,
-        /// Artist captured with the deferred request.
-        artist: String,
-        /// Album captured with the deferred request.
-        album: String,
-    },
+    WindowsSession(WindowsArtworkSource),
+}
+
+/// Exact Windows media-session identity retained for deferred artwork reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WindowsArtworkSource {
+    source_app_id: String,
+    track: String,
+    artist: String,
+    album: String,
+    session: WindowsSessionReference,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum WindowsSessionReference {
+    #[cfg(target_os = "windows")]
+    Native(::windows::Media::Control::GlobalSystemMediaTransportControlsSession),
+    Fixture(String),
 }
 
 impl ArtworkSource {
+    /// Build an opaque Windows identity for deterministic provider conformance tests.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn windows_session_fixture(
+        session_key: impl Into<String>,
+        source_app_id: impl Into<String>,
+        track: impl Into<String>,
+        artist: impl Into<String>,
+        album: impl Into<String>,
+    ) -> Self {
+        Self::WindowsSession(WindowsArtworkSource {
+            source_app_id: source_app_id.into(),
+            track: track.into(),
+            artist: artist.into(),
+            album: album.into(),
+            session: WindowsSessionReference::Fixture(session_key.into()),
+        })
+    }
+
+    #[cfg(target_os = "windows")]
+    fn native_windows_session(
+        session: ::windows::Media::Control::GlobalSystemMediaTransportControlsSession,
+        source_app_id: String,
+        track: String,
+        artist: String,
+        album: String,
+    ) -> Self {
+        Self::WindowsSession(WindowsArtworkSource {
+            source_app_id,
+            track,
+            artist,
+            album,
+            session: WindowsSessionReference::Native(session),
+        })
+    }
+
     fn cache_key(&self) -> String {
         match self {
             Self::Url(value) => value.clone(),
-            Self::WindowsSession {
+            Self::WindowsSession(WindowsArtworkSource {
                 source_app_id,
                 track,
                 artist,
                 album,
-            } => format!("{source_app_id}\u{1f}{artist}\u{1f}{album}\u{1f}{track}"),
+                session,
+            }) => {
+                let session_key = match session {
+                    #[cfg(target_os = "windows")]
+                    WindowsSessionReference::Native(session) => {
+                        use ::windows::core::Interface as _;
+                        let identity = session
+                            .cast::<::windows::core::IUnknown>()
+                            .expect("every WinRT session exposes canonical IUnknown identity");
+                        format!("{:p}", identity.as_raw())
+                    }
+                    WindowsSessionReference::Fixture(session_key) => session_key.clone(),
+                };
+                format!(
+                    "{source_app_id}\u{1f}{session_key}\u{1f}{artist}\u{1f}{album}\u{1f}{track}"
+                )
+            }
         }
     }
 }
@@ -233,6 +304,58 @@ impl MediaProviderError {
             message: message.into(),
         }
     }
+}
+
+/// Resolve independent player snapshots concurrently while preserving scan order.
+///
+/// Failed players are skipped when any sibling succeeds. If every attempted
+/// player fails, the lowest-indexed failure is returned deterministically.
+pub async fn collect_player_snapshots<F>(
+    snapshots: impl IntoIterator<Item = F>,
+    timeout: Duration,
+) -> std::result::Result<Vec<PlayerSnapshot>, MediaProviderError>
+where
+    F: Future<Output = std::result::Result<PlayerSnapshot, MediaProviderError>>,
+{
+    let mut pending: FuturesUnordered<_> =
+        snapshots
+            .into_iter()
+            .enumerate()
+            .map(|(index, snapshot)| async move {
+                (index, tokio::time::timeout(timeout, snapshot).await)
+            })
+            .collect();
+    let attempted = pending.len();
+    let mut ordered = std::iter::repeat_with(|| None)
+        .take(attempted)
+        .collect::<Vec<_>>();
+    let mut failures = std::iter::repeat_with(|| None)
+        .take(attempted)
+        .collect::<Vec<_>>();
+
+    while let Some((index, result)) = pending.next().await {
+        match result {
+            Ok(Ok(snapshot)) => ordered[index] = Some(snapshot),
+            Ok(Err(error)) => {
+                failures[index] = Some(error);
+            }
+            Err(_) => {
+                failures[index] = Some(MediaProviderError::new(format!(
+                    "native media player {index} exceeded {timeout:?}"
+                )));
+            }
+        }
+    }
+
+    let players = ordered.into_iter().flatten().collect::<Vec<_>>();
+    let first_failure = failures.into_iter().flatten().next();
+    if players.is_empty() && attempted != 0 {
+        return Err(first_failure.expect("every attempted player recorded a failure"));
+    }
+    if let Some(error) = first_failure {
+        debug!(%error, healthy_players = players.len(), "Skipped unhealthy media player");
+    }
+    Ok(players)
 }
 
 /// Native metadata provider contract.
@@ -375,6 +498,8 @@ pub enum ArtworkError {
     UnsupportedSource,
     #[error("artwork operation timed out")]
     Timeout,
+    #[error("artwork operation was cancelled")]
+    Cancelled,
     #[error("artwork source exceeds {limit} bytes")]
     SourceTooLarge { limit: usize },
     #[error("artwork dimensions {width}x{height} exceed policy")]
@@ -392,11 +517,70 @@ pub enum ArtworkError {
 pub struct ArtworkFetcher {
     client: reqwest::Client,
     policy: ArtworkPolicy,
+    blocking: Arc<dyn ArtworkBlockingBackend>,
+    blocking_gate: Arc<Semaphore>,
+}
+
+/// Blocking artwork operations executed under managed cancellation.
+pub trait ArtworkBlockingBackend: Send + Sync {
+    /// Read one local file while observing cooperative cancellation.
+    fn read_file(
+        &self,
+        path: &Path,
+        limit: usize,
+        cancel: &CancellationToken,
+    ) -> std::result::Result<Vec<u8>, ArtworkError>;
+
+    /// Decode and encode one image while observing cooperative cancellation.
+    fn encode(
+        &self,
+        bytes: &[u8],
+        policy: ArtworkPolicy,
+        cancel: &CancellationToken,
+    ) -> std::result::Result<String, ArtworkError>;
+}
+
+struct NativeArtworkBlockingBackend;
+
+impl ArtworkBlockingBackend for NativeArtworkBlockingBackend {
+    fn read_file(
+        &self,
+        path: &Path,
+        limit: usize,
+        cancel: &CancellationToken,
+    ) -> std::result::Result<Vec<u8>, ArtworkError> {
+        read_bounded_file(path, limit, cancel)
+    }
+
+    fn encode(
+        &self,
+        bytes: &[u8],
+        policy: ArtworkPolicy,
+        cancel: &CancellationToken,
+    ) -> std::result::Result<String, ArtworkError> {
+        encode_art_jpeg(bytes, policy, cancel)
+    }
 }
 
 impl ArtworkFetcher {
     /// Build a fetcher with explicit redirect, time, and size policy.
     pub fn new(policy: ArtworkPolicy) -> std::result::Result<Self, ArtworkError> {
+        Self::with_blocking_backend(policy, Arc::new(NativeArtworkBlockingBackend))
+    }
+
+    /// Build a fetcher with an explicit blocking execution backend.
+    pub fn with_blocking_backend(
+        policy: ArtworkPolicy,
+        blocking: Arc<dyn ArtworkBlockingBackend>,
+    ) -> std::result::Result<Self, ArtworkError> {
+        Self::build(policy, blocking, Arc::new(Semaphore::new(1)))
+    }
+
+    fn build(
+        policy: ArtworkPolicy,
+        blocking: Arc<dyn ArtworkBlockingBackend>,
+        blocking_gate: Arc<Semaphore>,
+    ) -> std::result::Result<Self, ArtworkError> {
         if policy.fetch_timeout.is_zero()
             || policy.fetch_timeout > ART_FETCH_TIMEOUT
             || policy.max_source_bytes == 0
@@ -421,7 +605,12 @@ impl ArtworkFetcher {
             .redirect(reqwest::redirect::Policy::limited(policy.max_redirects))
             .build()
             .map_err(|error| ArtworkError::Io(error.to_string()))?;
-        Ok(Self { client, policy })
+        Ok(Self {
+            client,
+            policy,
+            blocking,
+            blocking_gate,
+        })
     }
 
     #[must_use]
@@ -434,45 +623,73 @@ impl ArtworkFetcher {
         &self,
         source: &ArtworkSource,
     ) -> std::result::Result<String, ArtworkError> {
-        let load = async {
+        self.fetch_data_url_cancellable(source, &CancellationToken::new())
+            .await
+    }
+
+    /// Resolve one source and reap its blocking work before cancellation returns.
+    pub async fn fetch_data_url_cancellable(
+        &self,
+        source: &ArtworkSource,
+        cancel: &CancellationToken,
+    ) -> std::result::Result<String, ArtworkError> {
+        let operation_cancel = cancel.child_token();
+        let work = async {
             let bytes = match source {
-                ArtworkSource::Url(url) => self.load_url(url).await?,
-                ArtworkSource::WindowsSession {
-                    source_app_id,
-                    track,
-                    artist,
-                    album,
-                } => {
+                ArtworkSource::Url(url) => self.load_url(url, &operation_cancel).await?,
+                ArtworkSource::WindowsSession(source) => {
                     #[cfg(target_os = "windows")]
                     {
+                        let WindowsSessionReference::Native(session) = &source.session else {
+                            return Err(ArtworkError::UnsupportedSource);
+                        };
                         windows::fetch_thumbnail_bytes(
-                            source_app_id,
-                            track,
-                            artist,
-                            album,
+                            session,
+                            source,
                             self.policy.max_source_bytes,
+                            &operation_cancel,
                         )
                         .await?
                     }
                     #[cfg(not(target_os = "windows"))]
                     {
-                        let _ = (source_app_id, track, artist, album);
+                        let _ = source;
                         return Err(ArtworkError::UnsupportedSource);
                     }
                 }
             };
             let policy = self.policy;
-            tokio::task::spawn_blocking(move || encode_art_jpeg(&bytes, policy))
-                .await
-                .map_err(|error| ArtworkError::Decode(error.to_string()))?
-        };
-
-        tokio::time::timeout(self.policy.fetch_timeout, load)
+            let blocking = Arc::clone(&self.blocking);
+            let blocking_cancel = operation_cancel.clone();
+            self.run_blocking("media artwork decoder", &operation_cancel, move || {
+                blocking.encode(&bytes, policy, &blocking_cancel)
+            })
             .await
-            .map_err(|_| ArtworkError::Timeout)?
+        };
+        tokio::pin!(work);
+        let deadline = tokio::time::sleep(self.policy.fetch_timeout);
+        tokio::pin!(deadline);
+        tokio::select! {
+            biased;
+            () = cancel.cancelled() => {
+                operation_cancel.cancel();
+                let _ = work.await;
+                Err(ArtworkError::Cancelled)
+            }
+            () = &mut deadline => {
+                operation_cancel.cancel();
+                let _ = work.await;
+                Err(ArtworkError::Timeout)
+            }
+            result = &mut work => result,
+        }
     }
 
-    async fn load_url(&self, value: &str) -> std::result::Result<Vec<u8>, ArtworkError> {
+    async fn load_url(
+        &self,
+        value: &str,
+        cancel: &CancellationToken,
+    ) -> std::result::Result<Vec<u8>, ArtworkError> {
         let url = url::Url::parse(value).map_err(|_| ArtworkError::UnsupportedSource)?;
         match url.scheme() {
             "file" => {
@@ -480,23 +697,32 @@ impl ArtworkFetcher {
                     .to_file_path()
                     .map_err(|()| ArtworkError::UnsupportedSource)?;
                 let limit = self.policy.max_source_bytes;
-                tokio::task::spawn_blocking(move || read_bounded_file(&path, limit))
-                    .await
-                    .map_err(|error| ArtworkError::Io(error.to_string()))?
+                let blocking = Arc::clone(&self.blocking);
+                let blocking_cancel = cancel.clone();
+                self.run_blocking("media artwork file reader", cancel, move || {
+                    blocking.read_file(&path, limit, &blocking_cancel)
+                })
+                .await
             }
-            "http" | "https" => self.load_http(url).await,
+            "http" | "https" => self.load_http(url, cancel).await,
             _ => Err(ArtworkError::UnsupportedSource),
         }
     }
 
-    async fn load_http(&self, url: url::Url) -> std::result::Result<Vec<u8>, ArtworkError> {
-        let mut response = self
-            .client
-            .get(url)
-            .send()
-            .await
-            .and_then(reqwest::Response::error_for_status)
-            .map_err(reqwest_artwork_error)?;
+    async fn load_http(
+        &self,
+        url: url::Url,
+        cancel: &CancellationToken,
+    ) -> std::result::Result<Vec<u8>, ArtworkError> {
+        let response = self.client.get(url).send();
+        tokio::pin!(response);
+        let mut response = tokio::select! {
+            biased;
+            () = cancel.cancelled() => return Err(ArtworkError::Cancelled),
+            response = &mut response => response,
+        }
+        .and_then(reqwest::Response::error_for_status)
+        .map_err(reqwest_artwork_error)?;
         if response
             .content_length()
             .is_some_and(|length| length > self.policy.max_source_bytes as u64)
@@ -512,7 +738,18 @@ impl ArtworkFetcher {
             .unwrap_or(0)
             .min(self.policy.max_source_bytes);
         let mut bytes = Vec::with_capacity(capacity);
-        while let Some(chunk) = response.chunk().await.map_err(reqwest_artwork_error)? {
+        loop {
+            let chunk = response.chunk();
+            tokio::pin!(chunk);
+            let chunk = tokio::select! {
+                biased;
+                () = cancel.cancelled() => return Err(ArtworkError::Cancelled),
+                chunk = &mut chunk => chunk,
+            }
+            .map_err(reqwest_artwork_error)?;
+            let Some(chunk) = chunk else {
+                break;
+            };
             let next_len =
                 bytes
                     .len()
@@ -535,7 +772,62 @@ impl ArtworkFetcher {
 
     /// Decode bytes directly under the same preallocation and output limits.
     pub fn encode_data_url(&self, bytes: &[u8]) -> std::result::Result<String, ArtworkError> {
-        encode_art_jpeg(bytes, self.policy)
+        self.blocking
+            .encode(bytes, self.policy, &CancellationToken::new())
+    }
+
+    async fn run_blocking<T, F>(
+        &self,
+        context: &'static str,
+        cancel: &CancellationToken,
+        operation: F,
+    ) -> std::result::Result<T, ArtworkError>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> std::result::Result<T, ArtworkError> + Send + 'static,
+    {
+        let gate = Arc::clone(&self.blocking_gate);
+        let permit = tokio::select! {
+            biased;
+            () = cancel.cancelled() => return Err(ArtworkError::Cancelled),
+            permit = gate.acquire_owned() => permit.map_err(|error| ArtworkError::Io(error.to_string()))?,
+        };
+        let (result_tx, mut result_rx) = tokio::sync::oneshot::channel();
+        let mut worker = Some(
+            spawn_input_worker(
+                std::thread::Builder::new().name("hypercolor-artwork".to_owned()),
+                move || {
+                    let result = operation();
+                    drop(permit);
+                    let _ = result_tx.send(result);
+                },
+            )
+            .map_err(|error| ArtworkError::Io(error.to_string()))?,
+        );
+
+        let result = tokio::select! {
+            biased;
+            () = cancel.cancelled() => {
+                if let Ok(result) = tokio::time::timeout(ART_REAP_GRACE, &mut result_rx).await {
+                    result
+                } else {
+                    warn!(worker = context, "artwork job ignored cancellation; quarantining it");
+                    retain_input_worker(
+                        worker.take().expect("running artwork worker remains owned"),
+                        context,
+                    );
+                    return Err(ArtworkError::Cancelled);
+                }
+            }
+            result = &mut result_rx => result,
+        };
+        let worker = worker
+            .take()
+            .expect("completed artwork worker remains owned");
+        if let Err(panic) = worker.join() {
+            return Err(ArtworkError::Io(format!("{context} panicked: {panic:?}")));
+        }
+        result.map_err(|_| ArtworkError::Io(format!("{context} exited without a result")))?
     }
 }
 
@@ -549,35 +841,61 @@ fn reqwest_artwork_error(error: reqwest::Error) -> ArtworkError {
 
 impl Default for ArtworkFetcher {
     fn default() -> Self {
-        Self::new(ArtworkPolicy::default()).expect("constant artwork policy builds a client")
+        Self::build(
+            ArtworkPolicy::default(),
+            Arc::new(NativeArtworkBlockingBackend),
+            process_artwork_gate(),
+        )
+        .expect("constant artwork policy builds a client")
     }
+}
+
+fn process_artwork_gate() -> Arc<Semaphore> {
+    static GATE: OnceLock<Arc<Semaphore>> = OnceLock::new();
+    Arc::clone(GATE.get_or_init(|| Arc::new(Semaphore::new(1))))
 }
 
 fn read_bounded_file(
     path: &std::path::Path,
     limit: usize,
+    cancel: &CancellationToken,
 ) -> std::result::Result<Vec<u8>, ArtworkError> {
-    let file = std::fs::File::open(path).map_err(|error| ArtworkError::Io(error.to_string()))?;
-    if file
-        .metadata()
-        .map_err(|error| ArtworkError::Io(error.to_string()))?
-        .len()
-        > limit as u64
-    {
+    check_artwork_cancelled(cancel)?;
+    let metadata = std::fs::metadata(path).map_err(|error| ArtworkError::Io(error.to_string()))?;
+    if !metadata.is_file() {
+        return Err(ArtworkError::UnsupportedSource);
+    }
+    if metadata.len() > limit as u64 {
         return Err(ArtworkError::SourceTooLarge { limit });
     }
-    read_bounded(file, limit)
+    check_artwork_cancelled(cancel)?;
+    let file = std::fs::File::open(path).map_err(|error| ArtworkError::Io(error.to_string()))?;
+    read_bounded(file, limit, cancel)
 }
 
-fn read_bounded(reader: impl Read, limit: usize) -> std::result::Result<Vec<u8>, ArtworkError> {
-    let take_limit = u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1);
-    let mut reader = reader.take(take_limit);
+fn read_bounded(
+    mut reader: impl Read,
+    limit: usize,
+    cancel: &CancellationToken,
+) -> std::result::Result<Vec<u8>, ArtworkError> {
     let mut bytes = Vec::with_capacity(limit.min(64 * 1024));
-    reader
-        .read_to_end(&mut bytes)
-        .map_err(|error| ArtworkError::Io(error.to_string()))?;
-    if bytes.len() > limit {
-        return Err(ArtworkError::SourceTooLarge { limit });
+    let mut chunk = [0; 16 * 1024];
+    loop {
+        check_artwork_cancelled(cancel)?;
+        let read = reader
+            .read(&mut chunk)
+            .map_err(|error| ArtworkError::Io(error.to_string()))?;
+        if read == 0 {
+            break;
+        }
+        let next_len = bytes
+            .len()
+            .checked_add(read)
+            .ok_or(ArtworkError::SourceTooLarge { limit })?;
+        if next_len > limit {
+            return Err(ArtworkError::SourceTooLarge { limit });
+        }
+        bytes.extend_from_slice(&chunk[..read]);
     }
     if bytes.is_empty() {
         return Err(ArtworkError::Io("artwork source was empty".to_owned()));
@@ -588,19 +906,20 @@ fn read_bounded(reader: impl Read, limit: usize) -> std::result::Result<Vec<u8>,
 fn encode_art_jpeg(
     bytes: &[u8],
     policy: ArtworkPolicy,
+    cancel: &CancellationToken,
 ) -> std::result::Result<String, ArtworkError> {
+    check_artwork_cancelled(cancel)?;
     if bytes.is_empty() || bytes.len() > policy.max_source_bytes {
         return Err(ArtworkError::SourceTooLarge {
             limit: policy.max_source_bytes,
         });
     }
 
-    let probe = image::ImageReader::new(Cursor::new(bytes))
-        .with_guessed_format()
-        .map_err(|error| ArtworkError::Decode(error.to_string()))?;
+    let probe = artwork_reader(bytes, policy, false)?;
     let (width, height) = probe
         .into_dimensions()
         .map_err(|error| ArtworkError::Decode(error.to_string()))?;
+    check_artwork_cancelled(cancel)?;
     let pixels = u64::from(width).saturating_mul(u64::from(height));
     if width > policy.max_source_dimension
         || height > policy.max_source_dimension
@@ -609,17 +928,12 @@ fn encode_art_jpeg(
         return Err(ArtworkError::DimensionsTooLarge { width, height });
     }
 
-    let mut reader = image::ImageReader::new(Cursor::new(bytes))
-        .with_guessed_format()
-        .map_err(|error| ArtworkError::Decode(error.to_string()))?;
-    let mut limits = image::Limits::default();
-    limits.max_image_width = Some(policy.max_source_dimension);
-    limits.max_image_height = Some(policy.max_source_dimension);
-    limits.max_alloc = Some(policy.max_decode_bytes);
-    reader.limits(limits);
+    let reader = artwork_reader(bytes, policy, true)?;
     let image = reader
         .decode()
         .map_err(|error| ArtworkError::Decode(error.to_string()))?;
+    check_artwork_cancelled(cancel)?;
+
     let image = if image.width() > policy.max_output_dimension
         || image.height() > policy.max_output_dimension
     {
@@ -633,6 +947,7 @@ fn encode_art_jpeg(
     };
 
     let mut jpeg = Vec::new();
+    check_artwork_cancelled(cancel)?;
     let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(
         Cursor::new(&mut jpeg),
         ART_JPEG_QUALITY,
@@ -659,6 +974,32 @@ fn encode_art_jpeg(
     data_url.push_str(PREFIX);
     base64::engine::general_purpose::STANDARD.encode_string(jpeg, &mut data_url);
     Ok(data_url)
+}
+
+fn check_artwork_cancelled(cancel: &CancellationToken) -> std::result::Result<(), ArtworkError> {
+    if cancel.is_cancelled() {
+        Err(ArtworkError::Cancelled)
+    } else {
+        Ok(())
+    }
+}
+
+fn artwork_reader(
+    bytes: &[u8],
+    policy: ArtworkPolicy,
+    enforce_dimensions: bool,
+) -> std::result::Result<image::ImageReader<Cursor<&[u8]>>, ArtworkError> {
+    let mut reader = image::ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|error| ArtworkError::Decode(error.to_string()))?;
+    let mut limits = image::Limits::default();
+    if enforce_dimensions {
+        limits.max_image_width = Some(policy.max_source_dimension);
+        limits.max_image_height = Some(policy.max_source_dimension);
+    }
+    limits.max_alloc = Some(policy.max_decode_bytes);
+    reader.limits(limits);
+    Ok(reader)
 }
 
 #[derive(Clone)]
@@ -773,6 +1114,97 @@ impl MediaPollPublisher {
             .send_replace(Arc::new(MediaState::unavailable()));
         self.poll_tx.send_replace(None);
         drop(publication);
+    }
+}
+
+/// Run latest-value artwork enrichment with one reaped attempt at a time.
+#[doc(hidden)]
+pub async fn run_artwork_loop(
+    fetcher: ArtworkFetcher,
+    publisher: MediaPollPublisher,
+    mut art_rx: tokio::sync::watch::Receiver<Option<Arc<ArtworkRequest>>>,
+    mut stop_rx: tokio::sync::watch::Receiver<bool>,
+) {
+    'artwork: loop {
+        let Some(request) = art_rx.borrow().clone() else {
+            tokio::select! {
+                changed = art_rx.changed() => {
+                    if changed.is_err() {
+                        return;
+                    }
+                }
+                changed = stop_rx.changed() => {
+                    if changed.is_err() || *stop_rx.borrow() {
+                        return;
+                    }
+                }
+            }
+            continue;
+        };
+
+        for attempt in 0..=1 {
+            let cancel = CancellationToken::new();
+            let fetch = fetcher.fetch_data_url_cancellable(&request.source, &cancel);
+            tokio::pin!(fetch);
+            let result = tokio::select! {
+                result = &mut fetch => result,
+                changed = art_rx.changed() => {
+                    cancel.cancel();
+                    let _ = fetch.await;
+                    if changed.is_err() {
+                        return;
+                    }
+                    continue 'artwork;
+                }
+                changed = stop_rx.changed() => {
+                    cancel.cancel();
+                    let _ = fetch.await;
+                    if changed.is_err() || *stop_rx.borrow() {
+                        return;
+                    }
+                    continue 'artwork;
+                }
+            };
+            match result {
+                Ok(data_url) => {
+                    publisher.publish_enrichment(&request.key, data_url);
+                    break;
+                }
+                Err(error) => {
+                    debug!(%error, attempt, "media artwork enrichment failed");
+                    if attempt == 0 {
+                        tokio::select! {
+                            () = tokio::time::sleep(MEDIA_POLL_INTERVAL) => {}
+                            changed = art_rx.changed() => {
+                                if changed.is_err() {
+                                    return;
+                                }
+                                continue 'artwork;
+                            }
+                            changed = stop_rx.changed() => {
+                                if changed.is_err() || *stop_rx.borrow() {
+                                    return;
+                                }
+                                continue 'artwork;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        tokio::select! {
+            changed = art_rx.changed() => {
+                if changed.is_err() {
+                    return;
+                }
+            }
+            changed = stop_rx.changed() => {
+                if changed.is_err() || *stop_rx.borrow() {
+                    return;
+                }
+            }
+        }
     }
 }
 
@@ -1032,7 +1464,7 @@ mod worker {
     use super::{
         ArtworkFetcher, ArtworkRequest, MEDIA_POLL_INTERVAL, MEDIA_PROVIDER_TIMEOUT,
         MediaPollPublisher, MediaProviderFailure, MediaProviderSession, SourceIssue,
-        SourceSessionWriter, WORKER_READY_TIMEOUT, WORKER_STOP_TIMEOUT,
+        SourceSessionWriter, WORKER_READY_TIMEOUT, WORKER_STOP_TIMEOUT, run_artwork_loop,
     };
 
     pub(super) struct MediaPollerThread {
@@ -1243,88 +1675,6 @@ mod worker {
         let _ = art_task.await;
     }
 
-    async fn run_artwork_loop(
-        fetcher: ArtworkFetcher,
-        publisher: MediaPollPublisher,
-        mut art_rx: tokio::sync::watch::Receiver<Option<Arc<ArtworkRequest>>>,
-        mut stop_rx: tokio::sync::watch::Receiver<bool>,
-    ) {
-        'artwork: loop {
-            let Some(request) = art_rx.borrow().clone() else {
-                tokio::select! {
-                    changed = art_rx.changed() => {
-                        if changed.is_err() {
-                            return;
-                        }
-                    }
-                    changed = stop_rx.changed() => {
-                        if changed.is_err() || *stop_rx.borrow() {
-                            return;
-                        }
-                    }
-                }
-                continue;
-            };
-
-            for attempt in 0..=1 {
-                let result = tokio::select! {
-                    result = fetcher.fetch_data_url(&request.source) => result,
-                    changed = art_rx.changed() => {
-                        if changed.is_err() {
-                            return;
-                        }
-                        continue 'artwork;
-                    }
-                    changed = stop_rx.changed() => {
-                        if changed.is_err() || *stop_rx.borrow() {
-                            return;
-                        }
-                        continue 'artwork;
-                    }
-                };
-                match result {
-                    Ok(data_url) => {
-                        publisher.publish_enrichment(&request.key, data_url);
-                        break;
-                    }
-                    Err(error) => {
-                        debug!(%error, attempt, "media artwork enrichment failed");
-                        if attempt == 0 {
-                            tokio::select! {
-                                () = tokio::time::sleep(MEDIA_POLL_INTERVAL) => {}
-                                changed = art_rx.changed() => {
-                                    if changed.is_err() {
-                                        return;
-                                    }
-                                    continue 'artwork;
-                                }
-                                changed = stop_rx.changed() => {
-                                    if changed.is_err() || *stop_rx.borrow() {
-                                        return;
-                                    }
-                                    continue 'artwork;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            tokio::select! {
-                changed = art_rx.changed() => {
-                    if changed.is_err() {
-                        return;
-                    }
-                }
-                changed = stop_rx.changed() => {
-                    if changed.is_err() || *stop_rx.borrow() {
-                        return;
-                    }
-                }
-            }
-        }
-    }
-
     const fn native_remediation() -> &'static str {
         #[cfg(target_os = "linux")]
         {
@@ -1355,7 +1705,8 @@ mod linux {
     use zbus::zvariant::OwnedValue;
 
     use super::{
-        ArtworkSource, MediaMetadataProvider, MediaProviderError, PlaybackStatus, PlayerSnapshot,
+        ArtworkSource, MEDIA_PLAYER_TIMEOUT, MediaMetadataProvider, MediaProviderError,
+        PlaybackStatus, PlayerSnapshot, collect_player_snapshots,
     };
 
     const MPRIS_PREFIX: &str = "org.mpris.MediaPlayer2.";
@@ -1413,32 +1764,32 @@ mod linux {
             .await
             .context("failed to list D-Bus names")?;
 
-        let mut players = Vec::new();
-        for name in names {
-            let name = name.as_str();
-            if !name.starts_with(MPRIS_PREFIX) {
-                continue;
-            }
-            if let Some(snapshot) = snapshot_player(connection, name).await {
-                players.push(snapshot);
-            }
-        }
-        Ok(players)
+        let snapshots = names
+            .into_iter()
+            .map(|name| name.to_string())
+            .filter(|name| name.starts_with(MPRIS_PREFIX))
+            .map(|name| async move { snapshot_player(connection, &name).await });
+        collect_player_snapshots(snapshots, MEDIA_PLAYER_TIMEOUT)
+            .await
+            .map_err(anyhow::Error::from)
     }
 
     async fn snapshot_player(
         connection: &zbus::Connection,
         bus_name: &str,
-    ) -> Option<PlayerSnapshot> {
+    ) -> std::result::Result<PlayerSnapshot, MediaProviderError> {
         let proxy = zbus::Proxy::new(connection, bus_name, MPRIS_PATH, PLAYER_INTERFACE)
             .await
-            .ok()?;
-        let status: String = proxy.get_property("PlaybackStatus").await.ok()?;
+            .map_err(|error| MediaProviderError::new(format!("{bus_name}: {error}")))?;
+        let status: String = proxy
+            .get_property("PlaybackStatus")
+            .await
+            .map_err(|error| MediaProviderError::new(format!("{bus_name}: {error}")))?;
         let metadata: std::collections::HashMap<String, OwnedValue> =
             proxy.get_property("Metadata").await.unwrap_or_default();
         let position_us: i64 = proxy.get_property("Position").await.unwrap_or(0);
 
-        Some(PlayerSnapshot {
+        Ok(PlayerSnapshot {
             bus_name: bus_name.to_owned(),
             status: PlaybackStatus::from_mpris(&status),
             track: metadata_string(&metadata, "xesam:title"),
@@ -1497,8 +1848,9 @@ mod windows {
     use ::windows::Storage::Streams::DataReader;
 
     use super::{
-        ArtworkError, ArtworkSource, MediaMetadataProvider, MediaProviderError, PlaybackStatus,
-        PlayerSnapshot,
+        ArtworkError, ArtworkSource, MEDIA_PLAYER_TIMEOUT, MediaMetadataProvider,
+        MediaProviderError, PlaybackStatus, PlayerSnapshot, WindowsArtworkSource,
+        collect_player_snapshots,
     };
 
     pub(super) struct GsmtcProvider {
@@ -1520,7 +1872,13 @@ mod windows {
         async fn connect(&mut self) -> std::result::Result<(), MediaProviderError> {
             let operation = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()
                 .map_err(provider_error)?;
-            self.manager = Some(operation.await.map_err(provider_error)?);
+            let cancellation = operation.clone();
+            self.manager = Some(
+                await_provider_operation(operation, move || {
+                    let _ = cancellation.Cancel();
+                })
+                .await?,
+            );
             Ok(())
         }
 
@@ -1547,24 +1905,10 @@ mod windows {
             .map(|index| sessions.GetAt(index).map_err(provider_error))
             .collect::<std::result::Result<Vec<_>, _>>()?;
         drop(sessions);
-        let session_count = session_handles.len();
-        let mut players = Vec::with_capacity(session_count);
-        let mut first_error = None;
-        for session in session_handles {
-            match snapshot_session(&session).await {
-                Ok(snapshot) => players.push(snapshot),
-                Err(error) => {
-                    first_error.get_or_insert(error);
-                }
-            }
-        }
-        if players.is_empty()
-            && session_count != 0
-            && let Some(error) = first_error
-        {
-            return Err(error);
-        }
-        Ok(players)
+        let snapshots = session_handles
+            .into_iter()
+            .map(|session| async move { snapshot_session(&session).await });
+        collect_player_snapshots(snapshots, MEDIA_PLAYER_TIMEOUT).await
     }
 
     async fn snapshot_session(
@@ -1584,11 +1928,14 @@ mod windows {
             }
             _ => PlaybackStatus::Stopped,
         };
-        let properties = session
+        let operation = session
             .TryGetMediaPropertiesAsync()
-            .map_err(provider_error)?
-            .await
             .map_err(provider_error)?;
+        let cancellation = operation.clone();
+        let properties = await_provider_operation(operation, move || {
+            let _ = cancellation.Cancel();
+        })
+        .await?;
         let timeline = session.GetTimelineProperties().map_err(provider_error)?;
         let position_ms = ticks_to_millis(timeline.Position().map_err(provider_error)?.Duration);
         let start_ticks = timeline.StartTime().map_err(provider_error)?.Duration;
@@ -1597,15 +1944,15 @@ mod windows {
         let track = properties.Title().map_err(provider_error)?.to_string();
         let artist = properties.Artist().map_err(provider_error)?.to_string();
         let album = properties.AlbumTitle().map_err(provider_error)?.to_string();
-        let artwork = properties
-            .Thumbnail()
-            .is_ok()
-            .then(|| ArtworkSource::WindowsSession {
-                source_app_id: bus_name.clone(),
-                track: track.clone(),
-                artist: artist.clone(),
-                album: album.clone(),
-            });
+        let artwork = properties.Thumbnail().is_ok().then(|| {
+            ArtworkSource::native_windows_session(
+                session.clone(),
+                bus_name.clone(),
+                track.clone(),
+                artist.clone(),
+                album.clone(),
+            )
+        });
 
         Ok(PlayerSnapshot {
             bus_name,
@@ -1620,34 +1967,41 @@ mod windows {
     }
 
     pub(super) async fn fetch_thumbnail_bytes(
-        source_app_id: &str,
-        track: &str,
-        artist: &str,
-        album: &str,
+        session: &GlobalSystemMediaTransportControlsSession,
+        source: &WindowsArtworkSource,
         max_bytes: usize,
+        cancel: &tokio_util::sync::CancellationToken,
     ) -> std::result::Result<Vec<u8>, ArtworkError> {
-        let manager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()
-            .map_err(artwork_io)?
-            .await
-            .map_err(artwork_io)?;
-        let session = find_session(&manager, source_app_id, track, artist, album).await?;
-        let properties = session
-            .TryGetMediaPropertiesAsync()
-            .map_err(artwork_io)?
-            .await
-            .map_err(artwork_io)?;
-        if !properties_match(&properties, track, artist, album)? {
+        let operation = session.TryGetMediaPropertiesAsync().map_err(artwork_io)?;
+        let cancellation = operation.clone();
+        let properties = await_artwork_operation(
+            operation,
+            move || {
+                let _ = cancellation.Cancel();
+            },
+            cancel,
+        )
+        .await?;
+        if !properties_match(&properties, &source.track, &source.artist, &source.album)? {
             return Err(ArtworkError::Io(format!(
-                "GSMTC session {source_app_id} changed tracks before thumbnail capture"
+                "GSMTC session {} changed tracks before thumbnail capture",
+                source.source_app_id
             )));
         }
-        let stream = properties
+        let operation = properties
             .Thumbnail()
             .map_err(artwork_io)?
             .OpenReadAsync()
-            .map_err(artwork_io)?
-            .await
             .map_err(artwork_io)?;
+        let cancellation = operation.clone();
+        let stream = await_artwork_operation(
+            operation,
+            move || {
+                let _ = cancellation.Cancel();
+            },
+            cancel,
+        )
+        .await?;
         let size = stream.Size().map_err(artwork_io)?;
         if size > max_bytes as u64 {
             return Err(ArtworkError::SourceTooLarge { limit: max_bytes });
@@ -1658,11 +2012,16 @@ mod windows {
         }
         let input = stream.GetInputStreamAt(0).map_err(artwork_io)?;
         let reader = DataReader::CreateDataReader(&input).map_err(artwork_io)?;
-        let loaded = reader
-            .LoadAsync(count)
-            .map_err(artwork_io)?
-            .await
-            .map_err(artwork_io)?;
+        let operation = reader.LoadAsync(count).map_err(artwork_io)?;
+        let cancellation = operation.clone();
+        let loaded = await_artwork_operation(
+            operation,
+            move || {
+                let _ = cancellation.Cancel();
+            },
+            cancel,
+        )
+        .await?;
         if loaded != count {
             return Err(ArtworkError::Io(format!(
                 "GSMTC thumbnail ended after {loaded} of {count} bytes"
@@ -1674,63 +2033,67 @@ mod windows {
         Ok(bytes)
     }
 
-    async fn find_session(
-        manager: &GlobalSystemMediaTransportControlsSessionManager,
-        source_app_id: &str,
-        track: &str,
-        artist: &str,
-        album: &str,
-    ) -> std::result::Result<GlobalSystemMediaTransportControlsSession, ArtworkError> {
-        let sessions = manager.GetSessions().map_err(artwork_io)?;
-        let mut candidates = Vec::with_capacity(sessions.Size().map_err(artwork_io)? as usize);
-        for index in 0..sessions.Size().map_err(artwork_io)? {
-            candidates.push(sessions.GetAt(index).map_err(artwork_io)?);
-        }
-        drop(sessions);
+    struct CancelWinRtOperation<C: FnOnce()>(Option<C>);
 
-        let mut matching_app_found = false;
-        let mut first_error = None;
-        for session in candidates {
-            let Ok(candidate) = session.SourceAppUserModelId().map_err(artwork_io) else {
-                continue;
-            };
-            let candidate = candidate.to_string();
-            if candidate != source_app_id {
-                continue;
-            }
-            matching_app_found = true;
-            let properties = match session.TryGetMediaPropertiesAsync().map_err(artwork_io) {
-                Ok(operation) => match operation.await.map_err(artwork_io) {
-                    Ok(properties) => properties,
-                    Err(error) => {
-                        first_error.get_or_insert(error);
-                        continue;
-                    }
-                },
-                Err(error) => {
-                    first_error.get_or_insert(error);
-                    continue;
-                }
-            };
-            match properties_match(&properties, track, artist, album) {
-                Ok(true) => return Ok(session),
-                Ok(false) => {}
-                Err(error) => {
-                    first_error.get_or_insert(error);
-                }
+    impl<C: FnOnce()> CancelWinRtOperation<C> {
+        const fn new(cancel: C) -> Self {
+            Self(Some(cancel))
+        }
+
+        fn disarm(&mut self) {
+            self.0.take();
+        }
+
+        fn cancel(&mut self) {
+            if let Some(cancel) = self.0.take() {
+                cancel();
             }
         }
-        if let Some(error) = first_error {
-            return Err(error);
+    }
+
+    impl<C: FnOnce()> Drop for CancelWinRtOperation<C> {
+        fn drop(&mut self) {
+            self.cancel();
         }
-        let reason = if matching_app_found {
-            "changed tracks before thumbnail capture"
-        } else {
-            "disappeared"
-        };
-        Err(ArtworkError::Io(format!(
-            "GSMTC session {source_app_id} {reason}"
-        )))
+    }
+
+    async fn await_provider_operation<T, O, C>(
+        operation: O,
+        cancel: C,
+    ) -> std::result::Result<T, MediaProviderError>
+    where
+        O: std::future::IntoFuture<Output = ::windows::core::Result<T>>,
+        C: FnOnce(),
+    {
+        let mut cancel_on_drop = CancelWinRtOperation::new(cancel);
+        let result = std::future::IntoFuture::into_future(operation).await;
+        cancel_on_drop.disarm();
+        result.map_err(provider_error)
+    }
+
+    async fn await_artwork_operation<T, O, C>(
+        operation: O,
+        cancel_operation: C,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> std::result::Result<T, ArtworkError>
+    where
+        O: std::future::IntoFuture<Output = ::windows::core::Result<T>>,
+        C: FnOnce(),
+    {
+        let mut cancel_on_drop = CancelWinRtOperation::new(cancel_operation);
+        let operation = std::future::IntoFuture::into_future(operation);
+        tokio::pin!(operation);
+        tokio::select! {
+            biased;
+            () = cancel.cancelled() => {
+                cancel_on_drop.cancel();
+                Err(ArtworkError::Cancelled)
+            },
+            result = &mut operation => {
+                cancel_on_drop.disarm();
+                result.map_err(artwork_io)
+            },
+        }
     }
 
     fn properties_match(
