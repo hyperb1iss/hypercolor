@@ -506,6 +506,19 @@ fn input_event_received_accepts_prior_event_only_payload() {
 }
 
 #[test]
+fn input_event_received_rejects_zero_repeat_count() {
+    let json = r#"{"type":"InputEventReceived","data":{"event":{"kind":"key","source_id":"host:test","key":"a","state":"repeated"},"repeat_count":0}}"#;
+    let error = serde_json::from_str::<HypercolorEvent>(json)
+        .expect_err("zero repeat multiplicity must be rejected");
+
+    assert!(
+        error
+            .to_string()
+            .contains("input event repeat_count must be greater than zero")
+    );
+}
+
+#[test]
 fn integration_events_have_integration_category() {
     let event = HypercolorEvent::WebhookReceived {
         webhook_id: "wh1".into(),

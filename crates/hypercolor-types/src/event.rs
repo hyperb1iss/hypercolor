@@ -296,6 +296,7 @@ pub struct TimedInputEvent {
     pub physical_code: Option<String>,
     #[serde(
         default = "default_input_event_repeat_count",
+        deserialize_with = "deserialize_input_event_repeat_count",
         skip_serializing_if = "input_event_repeat_count_is_one"
     )]
     pub repeat_count: u32,
@@ -307,6 +308,19 @@ const fn default_input_event_repeat_count() -> u32 {
 
 const fn input_event_repeat_count_is_one(value: &u32) -> bool {
     *value == 1
+}
+
+fn deserialize_input_event_repeat_count<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = u32::deserialize(deserializer)?;
+    if value == 0 {
+        return Err(serde::de::Error::custom(
+            "input event repeat_count must be greater than zero",
+        ));
+    }
+    Ok(value)
 }
 
 /// Context dimensions for automation triggers.
