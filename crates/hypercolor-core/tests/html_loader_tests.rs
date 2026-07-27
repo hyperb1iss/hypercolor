@@ -520,11 +520,11 @@ fn parse_html_effect_metadata_rejects_non_base64_cover_payloads() {
 
 #[test]
 fn parse_html_effect_metadata_has_no_cover_when_unspecified() {
-    let html = r#"
+    let html = "
 <head>
   <title>Bare</title>
 </head>
-"#;
+";
 
     let parsed = parse_html_effect_metadata(html);
 

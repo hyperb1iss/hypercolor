@@ -1928,8 +1928,8 @@ async fn effect_cover_image_bytes(metadata: &EffectMetadata) -> Option<EffectCov
         match fs::read(&path).await {
             Ok(bytes) => {
                 return Some(EffectCover {
-                    bytes,
                     content_type: EFFECT_COVER_CONTENT_TYPE.to_owned(),
+                    bytes,
                 });
             }
             Err(error) => warn!(
@@ -1955,8 +1955,8 @@ async fn effect_inline_cover(metadata: &EffectMetadata) -> Option<EffectCover> {
 
     match BASE64_STANDARD.decode(payload) {
         Ok(bytes) => Some(EffectCover {
-            bytes,
             content_type,
+            bytes,
         }),
         Err(error) => {
             warn!(
