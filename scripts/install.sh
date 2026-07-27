@@ -251,12 +251,9 @@ install_user_files() {
   install -d "${UI_DIR}"
   cp -R "${ROOT_DIR}/crates/hypercolor-ui/dist/." "${UI_DIR}/"
 
-  rm -rf "${EFFECTS_DIR}"
-  install -d "${EFFECTS_DIR}"
-  if [[ -d "${ROOT_DIR}/effects/hypercolor" ]]; then
-    cp -R "${ROOT_DIR}/effects/hypercolor/." "${EFFECTS_DIR}/"
-    info "installed bundled effects into ${EFFECTS_DIR}"
-  else
+  # Bundled effects stay where they are installed; the daemon resolves them
+  # from the install tree rather than from a copy in the data directory.
+  if [[ ! -d "${ROOT_DIR}/effects/hypercolor" ]]; then
     warn "no built effects found at effects/hypercolor/; run 'just effects-build' first"
   fi
 

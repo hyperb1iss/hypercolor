@@ -1,44 +1,111 @@
 //! Shared effect source path helpers.
 
 use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, PoisonError, RwLock};
 
 use anyhow::{Result, bail};
 
 use crate::config::paths::data_dir;
 
-/// Return the installed bundled effects directory.
-///
-/// Resolution order:
-/// 1. `$XDG_DATA_HOME/hypercolor/effects/bundled/` (installed location)
-/// 2. Repository `effects/` directory (development fallback via `CARGO_MANIFEST_DIR`)
-#[must_use]
-pub fn bundled_effects_root() -> PathBuf {
-    let installed = data_dir().join("effects").join("bundled");
-    if installed.is_dir() {
-        return installed;
-    }
+/// Environment variable naming the bundled effects directory outright.
+pub const EFFECTS_DIR_ENV: &str = "HYPERCOLOR_EFFECTS_DIR";
 
-    // Development fallback — resolves to repo root effects/ at compile time
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../effects")
+static EFFECTS_DIR_OVERRIDE: LazyLock<RwLock<Option<PathBuf>>> =
+    LazyLock::new(|| RwLock::new(None));
+
+/// Point bundled effect resolution at an explicit directory for this process.
+///
+/// The app supervisor calls this with the directory it staged inside the
+/// application bundle, which is why the daemon never needs a copy of the
+/// catalog in the user's data directory.
+pub fn set_bundled_effects_root(path: Option<PathBuf>) {
+    *EFFECTS_DIR_OVERRIDE
+        .write()
+        .unwrap_or_else(PoisonError::into_inner) = path;
 }
 
-/// Return the curated screenshot directory.
+/// Return the bundled effects directory.
 ///
-/// Layout is `<root>/<slug>/<variant>.webp` — e.g.
-/// `color-wave/default.webp`, `color-wave/silk-sweep.webp`. Resolution order:
-/// 1. `$XDG_DATA_HOME/hypercolor/effects/screenshots/curated/` (installed location)
-/// 2. Repository `effects/screenshots/curated/` (development fallback)
+/// Bundled effects are read-only program assets that ship with the
+/// application, so they are read where they are installed rather than unpacked
+/// into the user's data directory. Only [`user_effects_dir`] is mutable.
+///
+/// Resolution order:
+/// 1. an explicit override set by [`set_bundled_effects_root`] (the `--effects-dir` flag)
+/// 2. `$HYPERCOLOR_EFFECTS_DIR`
+/// 3. the install layouts next to the running executable
+///
+/// The final candidate is returned even when it does not exist, so failures
+/// name the directory the daemon actually expects.
 #[must_use]
-pub fn bundled_screenshots_root() -> PathBuf {
-    let installed = data_dir()
-        .join("effects")
-        .join("screenshots")
-        .join("curated");
-    if installed.is_dir() {
-        return installed;
+pub fn bundled_effects_root() -> PathBuf {
+    if let Some(override_path) = EFFECTS_DIR_OVERRIDE
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()
+    {
+        return override_path;
     }
 
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../effects/screenshots/curated")
+    if let Some(from_env) = std::env::var_os(EFFECTS_DIR_ENV) {
+        return PathBuf::from(from_env);
+    }
+
+    let candidates = installed_effects_candidates();
+    candidates
+        .iter()
+        .find(|path| path.is_dir())
+        .cloned()
+        .or_else(|| candidates.into_iter().next())
+        .unwrap_or_else(|| PathBuf::from("effects"))
+}
+
+/// Bundled effect directories for the layouts our packaging produces.
+fn installed_effects_candidates() -> Vec<PathBuf> {
+    let Ok(current_exe) = std::env::current_exe() else {
+        return Vec::new();
+    };
+    let Some(exe_dir) = current_exe.parent() else {
+        return Vec::new();
+    };
+
+    let mut candidates = vec![exe_dir.join("effects").join("bundled")];
+
+    // Tarball and distro layout: <prefix>/bin/<exe>, <prefix>/share/hypercolor/effects/bundled
+    if let Some(prefix) = exe_dir.parent() {
+        candidates.push(
+            prefix
+                .join("share")
+                .join("hypercolor")
+                .join("effects")
+                .join("bundled"),
+        );
+    }
+
+    // macOS bundle layout: <app>/Contents/MacOS/<exe>, <app>/Contents/Resources/effects/bundled
+    if exe_dir.file_name().and_then(|name| name.to_str()) == Some("MacOS")
+        && let Some(contents) = exe_dir.parent()
+    {
+        candidates.push(contents.join("Resources").join("effects").join("bundled"));
+    }
+
+    candidates
+}
+
+/// Return the curated screenshot override directory.
+///
+/// Unlike the bundled catalog these are user-authored overrides that win over
+/// the cover an effect ships inline, so they belong in the data directory
+/// alongside the user's own effects.
+///
+/// Layout is `<root>/<slug>/<variant>.webp` — e.g.
+/// `color-wave/default.webp`, `color-wave/silk-sweep.webp`.
+#[must_use]
+pub fn bundled_screenshots_root() -> PathBuf {
+    data_dir()
+        .join("effects")
+        .join("screenshots")
+        .join("curated")
 }
 
 /// Return the user effects directory.

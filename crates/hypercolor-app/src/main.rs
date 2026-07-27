@@ -5,7 +5,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use tauri::{Manager, WebviewUrl, webview::WebviewWindowBuilder};
+use tauri::{WebviewUrl, webview::WebviewWindowBuilder};
 
 fn maybe_open_devtools<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
     #[cfg(debug_assertions)]
@@ -82,23 +82,6 @@ fn main() -> anyhow::Result<()> {
 
             hypercolor_app::tray::register(app.handle())?;
             tracing::info!("tray icon registered");
-
-            let resource_dir = app.path().resource_dir().ok();
-            match hypercolor_app::resources::install_bundled_runtime_assets(resource_dir.as_deref())
-            {
-                Ok(Some(report)) => {
-                    tracing::info!(
-                        source = %report.source.display(),
-                        destination = %report.destination.display(),
-                        copied_files = report.copied_files,
-                        "installed bundled app resources"
-                    );
-                }
-                Ok(None) => tracing::debug!("no bundled app resources found to install"),
-                Err(error) => {
-                    tracing::warn!(%error, "failed to install bundled app resources");
-                }
-            }
 
             hypercolor_app::supervisor::start(app.handle(), url.clone())?;
             tracing::info!("daemon supervisor started");

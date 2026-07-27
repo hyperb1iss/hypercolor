@@ -287,6 +287,11 @@ try {
     Pop-Location
 }
 
+# Point the daemon at the tree we just built. Without this it resolves the
+# install layout next to the executable, which in a dev build is target/.
+$env:HYPERCOLOR_EFFECTS_DIR = Join-Path $RepoRoot 'effects\hypercolor'
+Write-Host "[dev] effects dir: $env:HYPERCOLOR_EFFECTS_DIR"
+
 if ([string]::IsNullOrWhiteSpace($env:HYPERCOLOR_COMPOSITOR_ACCELERATION_MODE)) {
     $compositorAccelerationMode = 'auto'
 } else {

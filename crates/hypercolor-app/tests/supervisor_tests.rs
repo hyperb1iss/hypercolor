@@ -161,25 +161,54 @@ fn candidates_include_macos_app_resources_from_contents_macos_exe() {
 }
 
 #[test]
-fn build_daemon_command_includes_bind_and_ui_dir() {
+fn build_daemon_command_includes_bind_ui_dir_and_effects_dir() {
     let command = build_daemon_command(
         Path::new("hypercolor-daemon"),
         DEFAULT_DAEMON_BIND,
         Some(Path::new("ui")),
+        Some(Path::new("effects")),
     );
 
     assert_eq!(command.program, Path::new("hypercolor-daemon"));
     assert_eq!(
         command.args,
-        vec!["--bind", DEFAULT_DAEMON_BIND, "--ui-dir", "ui"]
+        vec![
+            "--bind",
+            DEFAULT_DAEMON_BIND,
+            "--ui-dir",
+            "ui",
+            "--effects-dir",
+            "effects"
+        ]
     );
 }
 
 #[test]
-fn build_daemon_command_allows_missing_ui_dir() {
-    let command = build_daemon_command(Path::new("hypercolor-daemon"), DEFAULT_DAEMON_BIND, None);
+fn build_daemon_command_allows_missing_asset_dirs() {
+    let command = build_daemon_command(
+        Path::new("hypercolor-daemon"),
+        DEFAULT_DAEMON_BIND,
+        None,
+        None,
+    );
 
     assert_eq!(command.args, vec!["--bind", DEFAULT_DAEMON_BIND]);
+}
+
+#[test]
+fn effects_dir_candidates_cover_install_layouts() {
+    let current_exe = Path::new("/opt/hypercolor/bin/hypercolor-app");
+    let resource_dir = Path::new("/opt/hypercolor/resources");
+
+    let candidates =
+        hypercolor_app::supervisor::effects_dir_candidates(current_exe, Some(resource_dir));
+
+    assert!(candidates.contains(&Path::new("/opt/hypercolor/bin/effects/bundled").to_path_buf()));
+    assert!(
+        candidates
+            .contains(&Path::new("/opt/hypercolor/share/hypercolor/effects/bundled").to_path_buf())
+    );
+    assert!(candidates.contains(&resource_dir.join("effects").join("bundled")));
 }
 
 #[test]

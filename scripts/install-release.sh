@@ -298,12 +298,11 @@ install_release_payload() {
         success "Installed bundled UI to ${UI_DIR}"
     fi
 
-    if [[ -d "${RELEASE_DIR}/share/hypercolor/effects" ]]; then
-        rm -rf "${DATA_DIR}/effects"
-        mkdir -p "$(dirname "$EFFECTS_DIR")"
-        cp -R "${RELEASE_DIR}/share/hypercolor/effects/." "${DATA_DIR}/effects/"
-        success "Installed bundled effects to ${EFFECTS_DIR}"
-    fi
+    # Bundled effects are read-only assets served straight out of the install
+    # tree. Copying them into the data directory produced a second catalog that
+    # silently shadowed the shipped one, and the old rm -rf took the user's own
+    # effects with it.
+    mkdir -p "${DATA_DIR}/effects/user"
 
     install_desktop_entry
     install_icons

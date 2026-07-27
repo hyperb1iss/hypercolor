@@ -51,6 +51,10 @@ struct DaemonArgs {
     #[arg(long)]
     ui_dir: Option<PathBuf>,
 
+    /// Load bundled effects from this directory instead of the install layout.
+    #[arg(long, env = hypercolor_core::effect::EFFECTS_DIR_ENV)]
+    effects_dir: Option<PathBuf>,
+
     /// Run under the Windows Service Control Manager.
     #[cfg(target_os = "windows")]
     #[arg(long, hide = true)]
@@ -68,6 +72,7 @@ impl DaemonArgs {
             compositor_acceleration_mode: self.compositor_acceleration_mode.map(Into::into),
             servo_gpu_import_mode: self.servo_gpu_import_mode.map(Into::into),
             ui_dir: self.ui_dir,
+            effects_dir: self.effects_dir,
         }
     }
 }

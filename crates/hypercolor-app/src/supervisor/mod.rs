@@ -288,6 +288,47 @@ pub fn ui_dir_candidates(current_exe: &Path, resource_dir: Option<&Path>) -> Vec
     candidates
 }
 
+/// Resolve likely bundled effect directories for supported package layouts.
+///
+/// Mirrors [`ui_dir_candidates`]: the catalog is read where it was installed
+/// rather than copied into the user's data directory, so a stale copy cannot
+/// shadow the version that actually shipped.
+#[must_use]
+pub fn effects_dir_candidates(current_exe: &Path, resource_dir: Option<&Path>) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+
+    if let Some(install_dir) = current_exe.parent() {
+        push_unique_path(&mut candidates, install_dir.join("effects").join("bundled"));
+
+        if let Some(prefix_dir) = install_dir.parent() {
+            push_unique_path(
+                &mut candidates,
+                prefix_dir
+                    .join("share")
+                    .join("hypercolor")
+                    .join("effects")
+                    .join("bundled"),
+            );
+        }
+    }
+
+    if let Some(resource_dir) = resource_dir {
+        push_unique_path(
+            &mut candidates,
+            resource_dir.join("effects").join("bundled"),
+        );
+    }
+
+    if let Some(resource_dir) = macos_app_resource_dir(current_exe) {
+        push_unique_path(
+            &mut candidates,
+            resource_dir.join("effects").join("bundled"),
+        );
+    }
+
+    candidates
+}
+
 /// Resolve the macOS `.app` resource directory from a `Contents/MacOS` executable.
 #[must_use]
 pub fn macos_app_resource_dir(current_exe: &Path) -> Option<PathBuf> {
@@ -310,12 +351,18 @@ pub fn build_daemon_command(
     program: impl Into<PathBuf>,
     bind: &str,
     ui_dir: Option<&Path>,
+    effects_dir: Option<&Path>,
 ) -> DaemonCommand {
     let mut args = vec!["--bind".to_owned(), bind.to_owned()];
 
     if let Some(ui_dir) = ui_dir {
         args.push("--ui-dir".to_owned());
         args.push(ui_dir.display().to_string());
+    }
+
+    if let Some(effects_dir) = effects_dir {
+        args.push("--effects-dir".to_owned());
+        args.push(effects_dir.display().to_string());
     }
 
     DaemonCommand {
@@ -439,6 +486,9 @@ pub fn start<R: Runtime>(app: &AppHandle<R>, daemon_url: Url) -> Result<()> {
     let ui_dir = ui_dir_candidates(&current_exe, resource_dir.as_deref())
         .into_iter()
         .find(|path| path.join("index.html").exists());
+    let effects_dir = effects_dir_candidates(&current_exe, resource_dir.as_deref())
+        .into_iter()
+        .find(|path| path.is_dir());
     let bind = bind_from_daemon_url(&daemon_url).unwrap_or_else(|| DEFAULT_DAEMON_BIND.to_owned());
     let state = app.state::<SupervisorState>().inner().clone();
 
@@ -462,7 +512,16 @@ pub fn start<R: Runtime>(app: &AppHandle<R>, daemon_url: Url) -> Result<()> {
             return;
         }
 
-        run_watchdog_loop(client, daemon_url, daemon_path, bind, ui_dir, state).await;
+        run_watchdog_loop(
+            client,
+            daemon_url,
+            daemon_path,
+            bind,
+            ui_dir,
+            effects_dir,
+            state,
+        )
+        .await;
     });
 
     Ok(())
@@ -502,6 +561,7 @@ async fn run_watchdog_loop(
     daemon_path: PathBuf,
     bind: String,
     ui_dir: Option<PathBuf>,
+    effects_dir: Option<PathBuf>,
     state: SupervisorState,
 ) {
     let mut restart_count: u32 = 0;
@@ -526,7 +586,12 @@ async fn run_watchdog_loop(
             return;
         }
 
-        let command = build_daemon_command(&daemon_path, &bind, ui_dir.as_deref());
+        let command = build_daemon_command(
+            &daemon_path,
+            &bind,
+            ui_dir.as_deref(),
+            effects_dir.as_deref(),
+        );
         let daemon = match spawn_daemon(&command) {
             Ok(daemon) => daemon,
             Err(error) => {

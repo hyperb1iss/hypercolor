@@ -7,6 +7,10 @@ set positional-arguments := true
 workspace_args := "--workspace"
 daemon_bind := env_var_or_default("HYPERCOLOR_DAEMON_BIND", "127.0.0.1:9420")
 
+# Bundled effects live where they are installed, which for a dev build would be
+# next to the binary under target/. Point every recipe at the tree we build.
+export HYPERCOLOR_EFFECTS_DIR := env_var_or_default("HYPERCOLOR_EFFECTS_DIR", justfile_directory() / "effects" / "hypercolor")
+
 # Show available recipes (default when running `just` with no arguments)
 [private]
 default:

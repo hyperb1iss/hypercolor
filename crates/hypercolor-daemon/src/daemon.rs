@@ -46,6 +46,8 @@ pub struct DaemonRunOptions {
     pub servo_gpu_import_mode: Option<ServoGpuImportMode>,
     /// Static web UI directory.
     pub ui_dir: Option<PathBuf>,
+    /// Bundled effects directory, overriding the install layout.
+    pub effects_dir: Option<PathBuf>,
 }
 
 pub trait DaemonExtensionInstaller: Send + Sync {
@@ -93,6 +95,12 @@ pub async fn run_with_extensions(
     shutdown_rx: watch::Receiver<bool>,
     extension_installers: &[&dyn DaemonExtensionInstaller],
 ) -> Result<()> {
+    // Must land before any registry scan, which resolves the bundled catalog
+    // the first time it enumerates effects.
+    if options.effects_dir.is_some() {
+        hypercolor_core::effect::set_bundled_effects_root(options.effects_dir.clone());
+    }
+
     // Load configuration before tracing so we can honor config-driven log
     // levels when the CLI flag is omitted.
     let (mut config, config_path) = load_config(options.config.as_deref()).await?;

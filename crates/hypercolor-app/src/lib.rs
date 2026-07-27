@@ -11,7 +11,6 @@ pub mod linux_webkit;
 pub mod logging;
 pub mod power_events;
 pub mod process_ext;
-pub mod resources;
 pub mod state;
 pub mod supervisor;
 pub mod support;
