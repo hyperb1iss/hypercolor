@@ -850,6 +850,7 @@ mod tests {
             render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
             scene_manager: Arc::new(RwLock::new(SceneManager::new())),
             input_manager: Arc::new(Mutex::new(InputManager::new())),
+            interaction_routing: crate::interaction_routing::InteractionRoutingControl::default(),
             power_state,
             device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(
                 "device-settings.json",

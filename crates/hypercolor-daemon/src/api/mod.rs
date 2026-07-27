@@ -50,6 +50,7 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 use tracing::warn;
 
+use crate::interaction_routing::InteractionRoutingControl;
 use hypercolor_core::asset::AssetLibrary;
 use hypercolor_core::attachment::ComponentRegistry;
 use hypercolor_core::bus::HypercolorBus;
@@ -189,6 +190,9 @@ pub struct AppState {
 
     /// Push handle for browser-preview input injection over WebSocket.
     pub browser_input: hypercolor_core::input::BrowserInputHandle,
+
+    /// Coherent interaction policies and authoritative browser ownership.
+    pub interaction_routing: InteractionRoutingControl,
 
     /// Global discovery scan lock flag shared across startup/API entrypoints.
     pub discovery_in_progress: Arc<AtomicBool>,
@@ -456,6 +460,12 @@ impl AppState {
         let reconnect_tasks = Arc::new(StdMutex::new(HashMap::new()));
         let browser_input_source = hypercolor_core::input::BrowserInputSource::new();
         let browser_input = browser_input_source.handle();
+        let interaction_routing = InteractionRoutingControl::new(
+            browser_input.registry(),
+            1,
+            HypercolorConfig::default().input.daemon_route,
+            HypercolorConfig::default().input.preview_route,
+        );
         let mut standalone_input_manager = InputManager::new();
         standalone_input_manager.add_source(Box::new(browser_input_source));
         let input_status = standalone_input_manager.source_status_registry();
@@ -547,6 +557,7 @@ impl AppState {
             input_manager,
             input_status,
             browser_input,
+            interaction_routing,
             discovery_in_progress,
             profiles: Arc::new(RwLock::new(profiles)),
             attachment_registry,
@@ -642,6 +653,7 @@ impl AppState {
             input_manager: Arc::clone(&daemon.input_manager),
             input_status: daemon.input_status.clone(),
             browser_input: daemon.browser_input.clone(),
+            interaction_routing: daemon.interaction_routing.clone(),
             discovery_in_progress: Arc::clone(&daemon.discovery_in_progress),
             profiles: Arc::new(RwLock::new(profiles)),
             attachment_registry: Arc::clone(&daemon.attachment_registry),

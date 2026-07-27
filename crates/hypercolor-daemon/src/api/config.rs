@@ -615,6 +615,23 @@ async fn maybe_apply_input_config_change(state: &Arc<AppState>, key: Option<&str
     };
 
     let input = manager.get().input.clone();
+    let route_snapshot = state.interaction_routing.snapshot();
+    let route_changed = route_snapshot.daemon_policy != input.daemon_route
+        || route_snapshot.preview_policy != input.preview_route;
+    if route_changed {
+        state.interaction_routing.publish_policies(
+            route_snapshot
+                .config_generation
+                .checked_add(1)
+                .expect("interaction route config generation exhausted"),
+            input.daemon_route,
+            input.preview_route,
+        );
+    }
+    if matches!(key, Some("input.daemon_route" | "input.preview_route")) {
+        return route_changed;
+    }
+
     let mut input_manager = state.input_manager.lock().await;
     // Only the host hardware source is consent-gated; the browser injection
     // source is always registered and must survive enable/disable toggles.
@@ -628,12 +645,12 @@ async fn maybe_apply_input_config_change(state: &Arc<AppState>, key: Option<&str
         if had_source {
             info!("Disabled host input capture live");
         }
-        return had_source;
+        return had_source || route_changed;
     };
 
     if let Err(error) = source.start() {
         warn!(%error, "Failed to start live host input source");
-        return had_source;
+        return had_source || route_changed;
     }
     input_manager.add_source(source);
     info!("Applied live host input capture config");
@@ -752,12 +769,54 @@ async fn sync_active_layout_canvas_size(state: &Arc<AppState>, width: u32, heigh
 
 #[cfg(test)]
 mod tests {
-    use super::canvas_dimensions_differ;
+    use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use hypercolor_core::config::ConfigManager;
+    use hypercolor_types::config::InteractionRoutePolicy;
+
+    use super::{canvas_dimensions_differ, maybe_apply_input_config_change};
+    use crate::api::AppState;
 
     #[test]
     fn canvas_dimensions_differ_only_when_size_changes() {
         assert!(!canvas_dimensions_differ(800, 600, 800, 600));
         assert!(canvas_dimensions_differ(800, 600, 801, 600));
         assert!(canvas_dimensions_differ(800, 600, 800, 601));
+    }
+
+    #[tokio::test]
+    async fn route_only_input_config_changes_publish_without_rebuilding_sources() {
+        let mut state = AppState::new();
+        let config_path = std::env::temp_dir().join(format!(
+            "hypercolor-route-config-{}-{}.toml",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock should follow Unix epoch")
+                .as_nanos()
+        ));
+        let manager = Arc::new(
+            ConfigManager::new(config_path).expect("test config manager should initialize"),
+        );
+        state.config_manager = Some(Arc::clone(&manager));
+        let state = Arc::new(state);
+        let graph_generation = state.input_manager.lock().await.source_graph_generation();
+
+        manager.modify(|config| config.input.daemon_route = InteractionRoutePolicy::Merge);
+        assert!(maybe_apply_input_config_change(&state, Some("input.daemon_route")).await);
+        let first = state.interaction_routing.snapshot();
+        assert_eq!(first.daemon_policy, InteractionRoutePolicy::Merge);
+        assert_eq!(first.config_generation, 2);
+
+        manager.modify(|config| config.input.preview_route = InteractionRoutePolicy::Host);
+        assert!(maybe_apply_input_config_change(&state, Some("input.preview_route")).await);
+        let second = state.interaction_routing.snapshot();
+        assert_eq!(second.preview_policy, InteractionRoutePolicy::Host);
+        assert_eq!(second.config_generation, 3);
+        assert_eq!(
+            state.input_manager.lock().await.source_graph_generation(),
+            graph_generation
+        );
     }
 }

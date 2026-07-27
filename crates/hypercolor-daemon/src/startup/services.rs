@@ -52,6 +52,7 @@ use crate::device_metrics::DeviceMetricsSnapshot;
 use crate::device_settings::DeviceSettingsStore;
 use crate::effect_layouts;
 use crate::extensions::ExtensionRegistry;
+use crate::interaction_routing::InteractionRoutingControl;
 use crate::layout_auto_exclusions;
 use crate::network::{self, DaemonDriverHost};
 use crate::performance::PerformanceTracker;
@@ -256,6 +257,12 @@ impl DaemonState {
 
         // ── Input Manager ───────────────────────────────────────────────
         let (built_input_manager, browser_input) = build_input_manager(config, &config_manager);
+        let interaction_routing = InteractionRoutingControl::new(
+            browser_input.registry(),
+            1,
+            config.input.daemon_route,
+            config.input.preview_route,
+        );
         let input_status = built_input_manager.source_status_registry();
         let input_manager = Arc::new(Mutex::new(built_input_manager));
         info!(
@@ -535,6 +542,7 @@ impl DaemonState {
             input_manager,
             input_status,
             browser_input,
+            interaction_routing,
             logical_devices,
             logical_devices_path,
             attachment_registry,

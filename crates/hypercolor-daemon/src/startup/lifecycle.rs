@@ -98,6 +98,7 @@ impl DaemonState {
             render_loop: Arc::clone(&self.render_loop),
             scene_manager: Arc::clone(&self.scene_manager),
             input_manager: Arc::clone(&self.input_manager),
+            interaction_routing: self.interaction_routing.clone(),
             power_state: self.power_state.subscribe(),
             device_settings: Arc::clone(&self.device_settings),
             scene_transactions: self.scene_transactions.clone(),

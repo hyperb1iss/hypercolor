@@ -70,6 +70,7 @@ use self::input_publication::{InputPublicationMonitor, InputPublicationPump};
 use self::pipeline_driver::run_pipeline;
 use crate::device_settings::DeviceSettingsStore;
 use crate::discovery::DiscoveryRuntime;
+use crate::interaction_routing::InteractionRoutingControl;
 use crate::performance::PerformanceTracker;
 use crate::preview_runtime::PreviewRuntime;
 use crate::scene_transactions::SceneTransactionQueue;
@@ -231,6 +232,9 @@ pub struct RenderThreadState {
 
     /// Input orchestrator owned by the dedicated publication pump and demand control.
     pub input_manager: Arc<Mutex<InputManager>>,
+
+    /// Coherent route policy and authoritative browser-source selection.
+    pub interaction_routing: InteractionRoutingControl,
 
     /// Session policy output state (brightness scale + sleep flag).
     pub power_state: watch::Receiver<OutputPowerState>,

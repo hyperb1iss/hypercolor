@@ -82,12 +82,7 @@ pub(crate) async fn execute_frame(
         .capture_demand
         .reconcile_effect_demand(state, output_power.sleeping, scene_snapshot.effect_demand)
         .await;
-    publish_input_demands(
-        state,
-        frame_loop,
-        output_power.sleeping,
-        scene_snapshot.effect_demand,
-    );
+    publish_input_demands(state, frame_loop, scene_snapshot.effect_demand);
     let scene_snapshot_done_us = micros_u32(frame_start.elapsed());
     if output_power.sleeping {
         if output_power.off_output_behavior == OffOutputBehavior::Static
@@ -140,7 +135,7 @@ pub(crate) async fn execute_frame(
             .capture_demand
             .reconcile_effect_demand(state, output_power.sleeping, refreshed_demand)
             .await;
-        publish_input_demands(state, frame_loop, output_power.sleeping, refreshed_demand);
+        publish_input_demands(state, frame_loop, refreshed_demand);
     }
 
     if let Some(frame) = maybe_idle_throttle(
@@ -556,14 +551,12 @@ pub(crate) async fn execute_frame(
 fn publish_input_demands(
     state: &RenderThreadState,
     frame_loop: &mut super::pipeline_runtime::FrameLoopState,
-    sleeping: bool,
     effect_demand: super::scene_snapshot::EffectDemand,
 ) {
     let passive_screen = state.event_bus.screen_canvas_receiver_count() > 0
         || state.event_bus.screen_zones_receiver_count() > 0;
     frame_loop.publish_input_demands(
         effect_demand,
-        sleeping,
         passive_screen,
         state.configured_max_fps_tier.get().fps(),
     );

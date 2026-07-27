@@ -42,6 +42,7 @@ use crate::discovery;
 use crate::display_output::DisplayOutputThread;
 use crate::display_preferences::DisplayPreferencesStore;
 use crate::extensions::{ApiExtension, DaemonLifecycleExtension, ExtensionRegistry};
+use crate::interaction_routing::InteractionRoutingControl;
 use crate::layout_auto_exclusions;
 use crate::logical_devices::LogicalDevice;
 use crate::network::DaemonDriverHost;
@@ -166,6 +167,9 @@ pub struct DaemonState {
 
     /// Push handle for browser-preview input injection over WebSocket.
     pub browser_input: hypercolor_core::input::BrowserInputHandle,
+
+    /// Coherent interaction policies and authoritative browser ownership.
+    pub interaction_routing: InteractionRoutingControl,
 
     /// Logical device segmentation store.
     pub logical_devices: Arc<RwLock<HashMap<String, LogicalDevice>>>,

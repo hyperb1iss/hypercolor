@@ -1001,6 +1001,8 @@ fn make_render_state(
         render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
         scene_manager: Arc::new(RwLock::new(scene_manager)),
         input_manager: Arc::new(Mutex::new(InputManager::new())),
+        interaction_routing:
+            hypercolor_daemon::interaction_routing::InteractionRoutingControl::default(),
         power_state,
         device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(
             "device-settings.json",
@@ -2664,6 +2666,8 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
         render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
         scene_manager: Arc::new(RwLock::new(scene_manager)),
         input_manager: Arc::new(Mutex::new(InputManager::new())),
+        interaction_routing:
+            hypercolor_daemon::interaction_routing::InteractionRoutingControl::default(),
         power_state,
         device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(
             "device-settings.json",
@@ -4247,6 +4251,8 @@ async fn release_sleep_clears_published_frame_and_canvas_once() {
         render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
         scene_manager: Arc::new(RwLock::new(scene_manager)),
         input_manager: Arc::new(Mutex::new(InputManager::new())),
+        interaction_routing:
+            hypercolor_daemon::interaction_routing::InteractionRoutingControl::default(),
         power_state,
         device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(
             "device-settings.json",
