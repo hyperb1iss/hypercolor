@@ -5,9 +5,10 @@
 //! Linux CI rather than only by whoever last built on a Windows machine.
 
 use hypercolor_windows_input::decode::{
-    AbsoluteSpace, KEYBOARD_OVERRUN_MAKE_CODE, KeyReport, MotionKind, RecordStep, ScreenRect,
-    WHEEL_DELTA, button_edges, classify_key, is_horizontal_wheel, motion_kind, next_record,
-    normalize_absolute, unknown_key_name, wheel_delta,
+    AbsoluteSpace, CanonicalKeyReport, KEYBOARD_OVERRUN_MAKE_CODE, KeyCanonicalizer, KeyReport,
+    MotionKind, RecordStep, ScreenRect, WHEEL_DELTA, button_edges, classify_key,
+    is_horizontal_wheel, motion_kind, next_record, normalize_absolute, unknown_key_name,
+    wheel_delta,
 };
 use hypercolor_windows_input::{RawButton, RawKeyPrefix};
 
@@ -120,6 +121,198 @@ fn terminal_services_flags_carry_no_key_edge() {
         classify_key(KEYBOARD_OVERRUN_MAKE_CODE, RI_KEY_TERMSRV_SET_LED),
         KeyReport::Ignored
     );
+}
+
+#[test]
+fn pause_sequence_emits_one_canonical_edge_per_action() {
+    const VK_PAUSE: u16 = 0x13;
+    let mut canonicalizer = KeyCanonicalizer::default();
+
+    assert_eq!(
+        canonicalizer.canonicalize(0x1D, RI_KEY_E1, 0x11),
+        CanonicalKeyReport::Pending
+    );
+    assert_eq!(
+        canonicalizer.canonicalize(0x45, 0, VK_PAUSE),
+        CanonicalKeyReport::Edge {
+            make_code: 0x45,
+            prefix: RawKeyPrefix::E1,
+            vkey: VK_PAUSE,
+            pressed: true,
+        }
+    );
+
+    assert_eq!(
+        canonicalizer.canonicalize(0x1D, RI_KEY_E1 | RI_KEY_BREAK, 0x11),
+        CanonicalKeyReport::Pending
+    );
+    assert_eq!(
+        canonicalizer.canonicalize(0x45, RI_KEY_BREAK, VK_PAUSE),
+        CanonicalKeyReport::Edge {
+            make_code: 0x45,
+            prefix: RawKeyPrefix::E1,
+            vkey: VK_PAUSE,
+            pressed: false,
+        }
+    );
+}
+
+#[test]
+fn repeated_pause_sequences_preserve_each_logical_press() {
+    let mut canonicalizer = KeyCanonicalizer::default();
+    let mut reports = Vec::new();
+
+    for _ in 0..2 {
+        reports.push(canonicalizer.canonicalize(0x1D, RI_KEY_E1, 0x11));
+        reports.push(canonicalizer.canonicalize(0x45, 0, 0x13));
+    }
+
+    assert_eq!(
+        reports
+            .into_iter()
+            .filter(|report| matches!(report, CanonicalKeyReport::Edge { .. }))
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn print_screen_suppresses_only_its_fake_shift_records() {
+    let mut canonicalizer = KeyCanonicalizer::default();
+    let reports = [
+        canonicalizer.canonicalize(0x2A, RI_KEY_E0, 0x10),
+        canonicalizer.canonicalize(0x37, RI_KEY_E0, 0x2C),
+        canonicalizer.canonicalize(0x37, RI_KEY_E0 | RI_KEY_BREAK, 0x2C),
+        canonicalizer.canonicalize(0x2A, RI_KEY_E0 | RI_KEY_BREAK, 0x10),
+    ];
+
+    assert_eq!(reports[0], CanonicalKeyReport::Ignored);
+    assert_eq!(reports[3], CanonicalKeyReport::Ignored);
+    assert_eq!(
+        reports[1],
+        CanonicalKeyReport::Edge {
+            make_code: 0x37,
+            prefix: RawKeyPrefix::E0,
+            vkey: 0x2C,
+            pressed: true,
+        }
+    );
+    assert_eq!(
+        reports[2],
+        CanonicalKeyReport::Edge {
+            make_code: 0x37,
+            prefix: RawKeyPrefix::E0,
+            vkey: 0x2C,
+            pressed: false,
+        }
+    );
+}
+
+#[test]
+fn shifted_numpad_navigation_drops_fake_shift_without_dropping_arrow() {
+    let mut canonicalizer = KeyCanonicalizer::default();
+    let reports = [
+        canonicalizer.canonicalize(0x2A, RI_KEY_E0 | RI_KEY_BREAK, 0x10),
+        canonicalizer.canonicalize(0x48, RI_KEY_E0, 0x26),
+        canonicalizer.canonicalize(0x48, RI_KEY_E0 | RI_KEY_BREAK, 0x26),
+        canonicalizer.canonicalize(0x2A, RI_KEY_E0, 0x10),
+    ];
+
+    assert_eq!(reports[0], CanonicalKeyReport::Ignored);
+    assert_eq!(reports[3], CanonicalKeyReport::Ignored);
+    assert!(matches!(
+        reports[1],
+        CanonicalKeyReport::Edge {
+            make_code: 0x48,
+            prefix: RawKeyPrefix::E0,
+            pressed: true,
+            ..
+        }
+    ));
+    assert!(matches!(
+        reports[2],
+        CanonicalKeyReport::Edge {
+            make_code: 0x48,
+            prefix: RawKeyPrefix::E0,
+            pressed: false,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn genuine_shift_edges_and_non_fake_extended_shift_code_survive() {
+    let mut canonicalizer = KeyCanonicalizer::default();
+
+    assert!(matches!(
+        canonicalizer.canonicalize(0x2A, 0, 0xA0),
+        CanonicalKeyReport::Edge {
+            make_code: 0x2A,
+            prefix: RawKeyPrefix::None,
+            pressed: true,
+            ..
+        }
+    ));
+    assert!(matches!(
+        canonicalizer.canonicalize(0x36, RI_KEY_E0, 0xA1),
+        CanonicalKeyReport::Edge {
+            make_code: 0x36,
+            prefix: RawKeyPrefix::E0,
+            pressed: true,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn incomplete_e1_sequence_stays_prefix_qualified_and_resettable() {
+    let mut canonicalizer = KeyCanonicalizer::default();
+    assert_eq!(
+        canonicalizer.canonicalize(0x1D, RI_KEY_E1, 0x11),
+        CanonicalKeyReport::Pending
+    );
+    assert!(matches!(
+        canonicalizer.canonicalize(0x46, 0, 0x91),
+        CanonicalKeyReport::Edge {
+            make_code: 0x46,
+            prefix: RawKeyPrefix::E1,
+            ..
+        }
+    ));
+
+    assert_eq!(
+        canonicalizer.canonicalize(0x1D, RI_KEY_E1, 0x11),
+        CanonicalKeyReport::Pending
+    );
+    canonicalizer.reset();
+    assert!(matches!(
+        canonicalizer.canonicalize(0x1E, 0, 0x41),
+        CanonicalKeyReport::Edge {
+            make_code: 0x1E,
+            prefix: RawKeyPrefix::None,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn overrun_resets_an_incomplete_e1_sequence() {
+    let mut canonicalizer = KeyCanonicalizer::default();
+    assert_eq!(
+        canonicalizer.canonicalize(0x1D, RI_KEY_E1, 0x11),
+        CanonicalKeyReport::Pending
+    );
+    assert_eq!(
+        canonicalizer.canonicalize(KEYBOARD_OVERRUN_MAKE_CODE, 0, 0),
+        CanonicalKeyReport::Overrun
+    );
+    assert!(matches!(
+        canonicalizer.canonicalize(0x1E, 0, 0x41),
+        CanonicalKeyReport::Edge {
+            prefix: RawKeyPrefix::None,
+            ..
+        }
+    ));
 }
 
 // ── Buttons ────────────────────────────────────────────────────────────────

@@ -74,6 +74,79 @@ pub enum KeyReport {
     Ignored,
 }
 
+/// One canonical key action after composite Raw Input records are folded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CanonicalKeyReport {
+    /// A complete physical key edge.
+    Edge {
+        make_code: u16,
+        prefix: RawKeyPrefix,
+        vkey: u16,
+        pressed: bool,
+    },
+    /// The first record of an `E1` sequence was retained for the next record.
+    Pending,
+    /// Rollover overrun; downstream must release this device's held state.
+    Overrun,
+    /// Synthetic or bookkeeping input with no logical key action.
+    Ignored,
+}
+
+/// Per-keyboard canonicalizer for Raw Input's composite set-1 records.
+///
+/// Windows exposes the `E1` prefix as its own `RAWKEYBOARD` record and sends
+/// the rest of Pause/Break in the following record. PrintScreen and shifted
+/// numpad navigation also carry synthetic `E0 2A` records. This state must be
+/// scoped to one physical keyboard so interleaved devices cannot complete
+/// each other's sequences.
+#[derive(Debug, Default)]
+pub struct KeyCanonicalizer {
+    pending_e1: bool,
+}
+
+impl KeyCanonicalizer {
+    /// Fold one `RAWKEYBOARD` record into zero or one canonical action.
+    #[must_use]
+    pub fn canonicalize(&mut self, make_code: u16, flags: u16, vkey: u16) -> CanonicalKeyReport {
+        match classify_key(make_code, flags) {
+            KeyReport::Ignored => CanonicalKeyReport::Ignored,
+            KeyReport::Overrun => {
+                self.pending_e1 = false;
+                CanonicalKeyReport::Overrun
+            }
+            KeyReport::Edge {
+                prefix: RawKeyPrefix::E1,
+                ..
+            } => {
+                self.pending_e1 = true;
+                CanonicalKeyReport::Pending
+            }
+            KeyReport::Edge {
+                prefix: RawKeyPrefix::E0,
+                ..
+            } if make_code == 0x2A => CanonicalKeyReport::Ignored,
+            KeyReport::Edge { prefix, pressed } => {
+                let prefix = if std::mem::take(&mut self.pending_e1) {
+                    RawKeyPrefix::E1
+                } else {
+                    prefix
+                };
+                CanonicalKeyReport::Edge {
+                    make_code,
+                    prefix,
+                    vkey,
+                    pressed,
+                }
+            }
+        }
+    }
+
+    /// Forget an incomplete composite sequence after a device/state gap.
+    pub fn reset(&mut self) {
+        self.pending_e1 = false;
+    }
+}
+
 /// Classify one `RAWKEYBOARD` report from its make code and flags.
 #[must_use]
 pub const fn classify_key(make_code: u16, flags: u16) -> KeyReport {
