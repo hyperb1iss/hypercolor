@@ -6,6 +6,9 @@ pub const ZONE_PREVIEW_FRAME_HEADER_LEN: usize = 46;
 pub const ZONE_PREVIEW_FRAME_TAG: u8 = 0x08;
 pub const SCREEN_ZONES_FRAME_HEADER_LEN: usize = 19;
 pub const SCREEN_ZONES_FRAME_TAG: u8 = 0x09;
+pub const INTERACTIVE_PREVIEW_FRAME_TAG: u8 = 0x0A;
+pub const INTERACTIVE_PREVIEW_FRAME_PREFIX_LEN: usize = 15;
+pub const INTERACTIVE_PREVIEW_ID_MAX_BYTES: usize = 128;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -89,6 +92,17 @@ pub struct PreviewFrame {
 pub struct ZonePreviewFrame {
     pub scene_id: [u8; 16],
     pub zone_id: [u8; 16],
+    pub frame_number: u32,
+    pub timestamp_ms: u32,
+    pub width: u16,
+    pub height: u16,
+    pub format: PreviewPixelFormat,
+    pub payload: Bytes,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InteractivePreviewFrame {
+    pub preview_id: String,
     pub frame_number: u32,
     pub timestamp_ms: u32,
     pub width: u16,
@@ -202,6 +216,64 @@ impl ZonePreviewFrame {
             height: header.height,
             format: header.format,
             payload: input.slice(ZONE_PREVIEW_FRAME_HEADER_LEN..end),
+        })
+    }
+}
+
+impl InteractivePreviewFrame {
+    #[must_use]
+    pub fn encoded_len(&self) -> usize {
+        INTERACTIVE_PREVIEW_FRAME_PREFIX_LEN
+            .saturating_add(self.preview_id.len())
+            .saturating_add(self.payload.len())
+    }
+
+    pub fn encode(&self) -> Result<Bytes, PreviewFrameDecodeError> {
+        validate_interactive_preview_id(&self.preview_id)?;
+        let id_len = u8::try_from(self.preview_id.len()).map_err(|_| {
+            PreviewFrameDecodeError::PreviewIdTooLong {
+                maximum: INTERACTIVE_PREVIEW_ID_MAX_BYTES,
+                actual: self.preview_id.len(),
+            }
+        })?;
+        let mut out = BytesMut::with_capacity(self.encoded_len());
+        out.put_u8(INTERACTIVE_PREVIEW_FRAME_TAG);
+        out.put_u8(id_len);
+        out.put_u32_le(self.frame_number);
+        out.put_u32_le(self.timestamp_ms);
+        out.put_u16_le(self.width);
+        out.put_u16_le(self.height);
+        out.put_u8(self.format.tag());
+        out.extend_from_slice(self.preview_id.as_bytes());
+        out.extend_from_slice(&self.payload);
+        Ok(out.freeze())
+    }
+
+    pub fn decode(input: &[u8]) -> Result<Self, PreviewFrameDecodeError> {
+        let header = InteractivePreviewFrameHeader::decode(input)?;
+        let end = header.end_offset(input.len())?;
+        Ok(Self {
+            preview_id: header.preview_id,
+            frame_number: header.frame_number,
+            timestamp_ms: header.timestamp_ms,
+            width: header.width,
+            height: header.height,
+            format: header.format,
+            payload: Bytes::copy_from_slice(&input[header.payload_offset..end]),
+        })
+    }
+
+    pub fn decode_bytes(input: &Bytes) -> Result<Self, PreviewFrameDecodeError> {
+        let header = InteractivePreviewFrameHeader::decode(input)?;
+        let end = header.end_offset(input.len())?;
+        Ok(Self {
+            preview_id: header.preview_id,
+            frame_number: header.frame_number,
+            timestamp_ms: header.timestamp_ms,
+            width: header.width,
+            height: header.height,
+            format: header.format,
+            payload: input.slice(header.payload_offset..end),
         })
     }
 }
@@ -348,6 +420,17 @@ struct ZonePreviewFrameHeader {
     format: PreviewPixelFormat,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InteractivePreviewFrameHeader {
+    preview_id: String,
+    frame_number: u32,
+    timestamp_ms: u32,
+    width: u16,
+    height: u16,
+    format: PreviewPixelFormat,
+    payload_offset: usize,
+}
+
 impl PreviewFrameHeader {
     fn decode(input: &[u8]) -> Result<Self, PreviewFrameDecodeError> {
         if input.len() < PREVIEW_FRAME_HEADER_LEN {
@@ -426,6 +509,73 @@ impl ZonePreviewFrameHeader {
     }
 }
 
+impl InteractivePreviewFrameHeader {
+    fn decode(input: &[u8]) -> Result<Self, PreviewFrameDecodeError> {
+        if input.len() < INTERACTIVE_PREVIEW_FRAME_PREFIX_LEN {
+            return Err(PreviewFrameDecodeError::TooShort {
+                expected: INTERACTIVE_PREVIEW_FRAME_PREFIX_LEN,
+                actual: input.len(),
+            });
+        }
+        if input[0] != INTERACTIVE_PREVIEW_FRAME_TAG {
+            return Err(PreviewFrameDecodeError::UnknownChannel { actual: input[0] });
+        }
+
+        let id_len = usize::from(input[1]);
+        if id_len == 0 {
+            return Err(PreviewFrameDecodeError::EmptyPreviewId);
+        }
+        if id_len > INTERACTIVE_PREVIEW_ID_MAX_BYTES {
+            return Err(PreviewFrameDecodeError::PreviewIdTooLong {
+                maximum: INTERACTIVE_PREVIEW_ID_MAX_BYTES,
+                actual: id_len,
+            });
+        }
+        let payload_offset = INTERACTIVE_PREVIEW_FRAME_PREFIX_LEN
+            .checked_add(id_len)
+            .ok_or(PreviewFrameDecodeError::DimensionsOverflow)?;
+        if input.len() < payload_offset {
+            return Err(PreviewFrameDecodeError::TooShort {
+                expected: payload_offset,
+                actual: input.len(),
+            });
+        }
+        let preview_id =
+            std::str::from_utf8(&input[INTERACTIVE_PREVIEW_FRAME_PREFIX_LEN..payload_offset])
+                .map_err(|_| PreviewFrameDecodeError::InvalidPreviewIdUtf8)?
+                .to_owned();
+        validate_interactive_preview_id(&preview_id)?;
+
+        Ok(Self {
+            preview_id,
+            frame_number: u32::from_le_bytes(input[2..6].try_into().expect("slice has 4 bytes")),
+            timestamp_ms: u32::from_le_bytes(input[6..10].try_into().expect("slice has 4 bytes")),
+            width: u16::from_le_bytes(input[10..12].try_into().expect("slice has 2 bytes")),
+            height: u16::from_le_bytes(input[12..14].try_into().expect("slice has 2 bytes")),
+            format: PreviewPixelFormat::try_from(input[14])?,
+            payload_offset,
+        })
+    }
+
+    fn end_offset(&self, input_len: usize) -> Result<usize, PreviewFrameDecodeError> {
+        let payload_len = match self.format.bytes_per_pixel() {
+            Some(bytes_per_pixel) => raw_payload_len(self.width, self.height, bytes_per_pixel)?,
+            None => input_len.saturating_sub(self.payload_offset),
+        };
+        let end = self
+            .payload_offset
+            .checked_add(payload_len)
+            .ok_or(PreviewFrameDecodeError::DimensionsOverflow)?;
+        if input_len < end {
+            return Err(PreviewFrameDecodeError::PayloadTooShort {
+                expected: payload_len,
+                actual: input_len.saturating_sub(self.payload_offset),
+            });
+        }
+        Ok(end)
+    }
+}
+
 #[cfg(feature = "ws-client-wasm")]
 #[derive(Debug, Clone)]
 pub struct PreviewFrameView {
@@ -443,6 +593,18 @@ pub struct PreviewFrameView {
 pub struct ZonePreviewFrameView {
     pub scene_id: [u8; 16],
     pub zone_id: [u8; 16],
+    pub frame_number: u32,
+    pub timestamp_ms: u32,
+    pub width: u32,
+    pub height: u32,
+    pub format: PreviewPixelFormat,
+    pub payload: js_sys::Uint8Array,
+}
+
+#[cfg(feature = "ws-client-wasm")]
+#[derive(Debug, Clone)]
+pub struct InteractivePreviewFrameView {
+    pub preview_id: String,
     pub frame_number: u32,
     pub timestamp_ms: u32,
     pub width: u32,
@@ -576,6 +738,40 @@ impl ZonePreviewFrameView {
 }
 
 #[cfg(feature = "ws-client-wasm")]
+impl InteractivePreviewFrameView {
+    pub fn decode_array_buffer(
+        buffer: &js_sys::ArrayBuffer,
+    ) -> Result<Self, PreviewFrameDecodeError> {
+        let data = js_sys::Uint8Array::new(buffer);
+        let prefix = data
+            .subarray(0, INTERACTIVE_PREVIEW_FRAME_PREFIX_LEN as u32)
+            .to_vec();
+        if prefix.len() < INTERACTIVE_PREVIEW_FRAME_PREFIX_LEN {
+            return Err(PreviewFrameDecodeError::TooShort {
+                expected: INTERACTIVE_PREVIEW_FRAME_PREFIX_LEN,
+                actual: prefix.len(),
+            });
+        }
+        let header_len = INTERACTIVE_PREVIEW_FRAME_PREFIX_LEN
+            .checked_add(usize::from(prefix[1]))
+            .ok_or(PreviewFrameDecodeError::DimensionsOverflow)?;
+        let header_bytes = data.subarray(0, header_len as u32).to_vec();
+        let header = InteractivePreviewFrameHeader::decode(&header_bytes)?;
+        let end = header.end_offset(data.length() as usize)?;
+
+        Ok(Self {
+            preview_id: header.preview_id,
+            frame_number: header.frame_number,
+            timestamp_ms: header.timestamp_ms,
+            width: u32::from(header.width),
+            height: u32::from(header.height),
+            format: header.format,
+            payload: data.subarray(header.payload_offset as u32, end as u32),
+        })
+    }
+}
+
+#[cfg(feature = "ws-client-wasm")]
 impl ScreenZonesFrame {
     pub fn decode_array_buffer(
         buffer: &js_sys::ArrayBuffer,
@@ -597,6 +793,30 @@ pub enum PreviewFrameDecodeError {
     DimensionsOverflow,
     #[error("preview frame payload is too short: expected {expected} bytes, got {actual}")]
     PayloadTooShort { expected: usize, actual: usize },
+    #[error("interactive preview id cannot be empty")]
+    EmptyPreviewId,
+    #[error("interactive preview id exceeds {maximum} bytes: got {actual}")]
+    PreviewIdTooLong { maximum: usize, actual: usize },
+    #[error("interactive preview id is not valid UTF-8")]
+    InvalidPreviewIdUtf8,
+    #[error("interactive preview id contains a control character")]
+    InvalidPreviewIdCharacter,
+}
+
+fn validate_interactive_preview_id(id: &str) -> Result<(), PreviewFrameDecodeError> {
+    if id.is_empty() {
+        return Err(PreviewFrameDecodeError::EmptyPreviewId);
+    }
+    if id.len() > INTERACTIVE_PREVIEW_ID_MAX_BYTES {
+        return Err(PreviewFrameDecodeError::PreviewIdTooLong {
+            maximum: INTERACTIVE_PREVIEW_ID_MAX_BYTES,
+            actual: id.len(),
+        });
+    }
+    if id.chars().any(char::is_control) {
+        return Err(PreviewFrameDecodeError::InvalidPreviewIdCharacter);
+    }
+    Ok(())
 }
 
 fn raw_payload_len(

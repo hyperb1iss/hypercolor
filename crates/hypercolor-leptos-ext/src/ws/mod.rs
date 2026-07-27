@@ -24,12 +24,16 @@ pub use input_event::{
     INPUT_EVENT_PAYLOAD_SCHEMA, InputEventPayloadDecodeError, TimedInputEventPayload,
 };
 #[cfg(feature = "ws-client-wasm")]
+pub use preview::InteractivePreviewFrameView;
+#[cfg(feature = "ws-client-wasm")]
 pub use preview::PreviewFrameView;
 #[cfg(feature = "ws-client-wasm")]
 pub use preview::ZonePreviewFrameView;
 pub use preview::{
-    PREVIEW_FRAME_HEADER_LEN, PreviewFrame, PreviewFrameChannel, PreviewFrameDecodeError,
-    PreviewPixelFormat, SCREEN_ZONES_FRAME_HEADER_LEN, SCREEN_ZONES_FRAME_TAG, ScreenZonesFrame,
+    INTERACTIVE_PREVIEW_FRAME_PREFIX_LEN, INTERACTIVE_PREVIEW_FRAME_TAG,
+    INTERACTIVE_PREVIEW_ID_MAX_BYTES, InteractivePreviewFrame, PREVIEW_FRAME_HEADER_LEN,
+    PreviewFrame, PreviewFrameChannel, PreviewFrameDecodeError, PreviewPixelFormat,
+    SCREEN_ZONES_FRAME_HEADER_LEN, SCREEN_ZONES_FRAME_TAG, ScreenZonesFrame,
     ZONE_PREVIEW_FRAME_HEADER_LEN, ZONE_PREVIEW_FRAME_TAG, ZonePreviewFrame,
 };
 pub use reconnect::{

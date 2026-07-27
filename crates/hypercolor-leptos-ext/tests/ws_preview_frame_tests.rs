@@ -2,8 +2,10 @@
 
 use bytes::Bytes;
 use hypercolor_leptos_ext::ws::{
-    PREVIEW_FRAME_HEADER_LEN, PreviewFrame, PreviewFrameChannel, PreviewFrameDecodeError,
-    PreviewPixelFormat, SCREEN_ZONES_FRAME_HEADER_LEN, SCREEN_ZONES_FRAME_TAG, ScreenZonesFrame,
+    INTERACTIVE_PREVIEW_FRAME_PREFIX_LEN, INTERACTIVE_PREVIEW_FRAME_TAG,
+    INTERACTIVE_PREVIEW_ID_MAX_BYTES, InteractivePreviewFrame, PREVIEW_FRAME_HEADER_LEN,
+    PreviewFrame, PreviewFrameChannel, PreviewFrameDecodeError, PreviewPixelFormat,
+    SCREEN_ZONES_FRAME_HEADER_LEN, SCREEN_ZONES_FRAME_TAG, ScreenZonesFrame,
     ZONE_PREVIEW_FRAME_HEADER_LEN, ZONE_PREVIEW_FRAME_TAG, ZonePreviewFrame,
 };
 
@@ -144,6 +146,102 @@ fn zone_preview_frame_decode_bytes_matches_decode() {
     assert_eq!(
         ZonePreviewFrame::decode(&encoded).expect("slice decode"),
         ZonePreviewFrame::decode_bytes(&encoded).expect("bytes decode"),
+    );
+}
+
+#[test]
+fn interactive_preview_frame_roundtrips_address_and_payload() {
+    let frame = InteractivePreviewFrame {
+        preview_id: "main-preview".to_owned(),
+        frame_number: 44,
+        timestamp_ms: 1234,
+        width: 2,
+        height: 1,
+        format: PreviewPixelFormat::Rgba,
+        payload: Bytes::from_static(&[1, 2, 3, 4, 5, 6, 7, 8]),
+    };
+    let encoded = frame.encode().expect("interactive frame should encode");
+
+    assert_eq!(encoded[0], INTERACTIVE_PREVIEW_FRAME_TAG);
+    assert_eq!(
+        encoded.len(),
+        INTERACTIVE_PREVIEW_FRAME_PREFIX_LEN + frame.preview_id.len() + 8
+    );
+    assert_eq!(InteractivePreviewFrame::decode(&encoded), Ok(frame));
+}
+
+#[test]
+fn interactive_preview_decode_bytes_shares_payload_buffer() {
+    let frame = InteractivePreviewFrame {
+        preview_id: "preview-a".to_owned(),
+        frame_number: 1,
+        timestamp_ms: 2,
+        width: 1,
+        height: 1,
+        format: PreviewPixelFormat::Rgb,
+        payload: Bytes::from_static(&[9, 8, 7]),
+    };
+    let encoded = frame.encode().expect("interactive frame should encode");
+    let decoded = InteractivePreviewFrame::decode_bytes(&encoded).expect("frame should decode");
+    let payload_offset = INTERACTIVE_PREVIEW_FRAME_PREFIX_LEN + frame.preview_id.len();
+
+    assert_eq!(decoded, frame);
+    assert_eq!(
+        decoded.payload.as_ptr() as usize,
+        encoded.as_ptr() as usize + payload_offset,
+    );
+}
+
+#[test]
+fn interactive_preview_frame_rejects_invalid_ids() {
+    let empty = InteractivePreviewFrame {
+        preview_id: String::new(),
+        frame_number: 1,
+        timestamp_ms: 1,
+        width: 1,
+        height: 1,
+        format: PreviewPixelFormat::Rgb,
+        payload: Bytes::from_static(&[1, 2, 3]),
+    };
+    assert_eq!(empty.encode(), Err(PreviewFrameDecodeError::EmptyPreviewId));
+
+    let too_long = InteractivePreviewFrame {
+        preview_id: "x".repeat(INTERACTIVE_PREVIEW_ID_MAX_BYTES + 1),
+        ..empty
+    };
+    assert_eq!(
+        too_long.encode(),
+        Err(PreviewFrameDecodeError::PreviewIdTooLong {
+            maximum: INTERACTIVE_PREVIEW_ID_MAX_BYTES,
+            actual: INTERACTIVE_PREVIEW_ID_MAX_BYTES + 1,
+        })
+    );
+}
+
+#[test]
+fn interactive_preview_frame_rejects_truncated_id_and_payload() {
+    let frame = InteractivePreviewFrame {
+        preview_id: "preview-b".to_owned(),
+        frame_number: 1,
+        timestamp_ms: 2,
+        width: 2,
+        height: 1,
+        format: PreviewPixelFormat::Rgb,
+        payload: Bytes::from_static(&[1, 2, 3, 4, 5, 6]),
+    };
+    let encoded = frame.encode().expect("interactive frame should encode");
+    assert!(matches!(
+        InteractivePreviewFrame::decode(
+            &encoded[..INTERACTIVE_PREVIEW_FRAME_PREFIX_LEN + frame.preview_id.len() - 1]
+        ),
+        Err(PreviewFrameDecodeError::TooShort { .. })
+    ));
+    assert_eq!(
+        InteractivePreviewFrame::decode(&encoded[..encoded.len() - 1]),
+        Err(PreviewFrameDecodeError::PayloadTooShort {
+            expected: 6,
+            actual: 5,
+        })
     );
 }
 
