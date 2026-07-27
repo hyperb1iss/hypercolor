@@ -29,7 +29,7 @@ alias py := python-verify
 # ─── Core ─────────────────────────────────────────────────
 
 # Run all checks (boundary, format, lint, test)
-verify: oss-boundary-check-strict fmt-check lint test
+verify: oss-boundary-check-strict fmt-check lint test alloc-contracts
     @echo '✅ All checks passed'
 
 # Check OSS/internal boundary guard scaffolding without strict enforcement
@@ -141,6 +141,17 @@ test *args='':
 [windows]
 test *args='':
     powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo test {{ workspace_args }} {{ args }}
+
+# Run process-global allocation counters without concurrent test threads
+[unix]
+alloc-contracts:
+    ./scripts/cargo-cache-build.sh cargo test -p hypercolor-core --features allocation-contract-tests --test alloc_contract_tests -- --test-threads=1
+    ./scripts/cargo-cache-build.sh cargo test -p hypercolor-windows-input --test alloc_contract_tests -- --test-threads=1
+
+[windows]
+alloc-contracts:
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo test -p hypercolor-core --features allocation-contract-tests --test alloc_contract_tests -- --test-threads=1
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo test -p hypercolor-windows-input --test alloc_contract_tests -- --test-threads=1
 
 # Run tests for a specific crate (iteration-shaped: keeps incremental rebuilds)
 [unix]

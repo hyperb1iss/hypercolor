@@ -225,6 +225,7 @@ pollster = "0.4.0"
 # Testing
 tempfile = "3.14"
 criterion = { version = "0.8.2", features = ["html_reports"] }
+stats_alloc = "0.1.10"
 
 [profile.release]
 opt-level = 3

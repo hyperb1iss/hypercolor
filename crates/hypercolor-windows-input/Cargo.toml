@@ -19,6 +19,9 @@ unwrap_used = "deny"
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
+[dev-dependencies]
+stats_alloc = { workspace = true }
+
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.62", default-features = false, features = [
   "Win32_Foundation",

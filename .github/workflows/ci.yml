@@ -287,6 +287,19 @@ jobs:
           ./scripts/cargo-cache-build.sh
           cargo nextest run --locked ${{ env.RUST_SHARED_WORKSPACE_ARGS }}
 
+      - name: Run allocation contracts serially
+        if: matrix.suite == 'shared'
+        run: |
+          ./scripts/cargo-cache-build.sh cargo test --locked -p hypercolor-core --features allocation-contract-tests --test alloc_contract_tests -- --test-threads=1
+          ./scripts/cargo-cache-build.sh cargo test --locked -p hypercolor-windows-input --test alloc_contract_tests -- --test-threads=1
+
+      - name: Clippy allocation contract
+        if: matrix.suite == 'shared'
+        run: >-
+          ./scripts/cargo-cache-build.sh cargo clippy --locked -p hypercolor-core
+          --features allocation-contract-tests --test alloc_contract_tests
+          -- -D warnings
+
       - name: Run shared crate doc tests
         if: matrix.suite == 'shared'
         run: >-
@@ -480,6 +493,20 @@ jobs:
 
       - name: Run shared crate tests
         run: cargo nextest run --locked ${{ env.RUST_WINDOWS_WORKSPACE_ARGS }}
+
+      - name: Run allocation contracts serially
+        shell: pwsh
+        run: |
+          cargo test --locked -p hypercolor-core --features allocation-contract-tests --test alloc_contract_tests -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked -p hypercolor-windows-input --test alloc_contract_tests -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Clippy allocation contract
+        run: >-
+          cargo clippy --locked -p hypercolor-core
+          --features allocation-contract-tests --test alloc_contract_tests
+          -- -D warnings
 
   # ── Cargo Deny ─────────────────────────────────────────────────
   rust-deny:
