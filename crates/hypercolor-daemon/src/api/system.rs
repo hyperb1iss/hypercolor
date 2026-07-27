@@ -5,10 +5,12 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
 use hypercolor_core::engine::RenderLoopState;
+use hypercolor_core::input::{SourceFreshness, SourceIssue, SourceKind, SourceState, SourceStatus};
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::sensor::SystemSnapshot;
 use serde::Serialize;
@@ -85,6 +87,60 @@ pub struct InputStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub degraded: Option<String>,
     pub backends: Vec<String>,
+    #[serde(default)]
+    pub source_graph_generation: u64,
+    #[serde(default)]
+    pub sources: Vec<InputSourceStatus>,
+}
+
+/// Structured source issue safe for operational status surfaces.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct InputSourceIssueStatus {
+    pub code: String,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remediation: Option<String>,
+    pub retryable: bool,
+}
+
+/// Lock-free lifecycle and freshness status for one input source.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "source policy and lifecycle flags are independent diagnostics"
+)]
+pub struct InputSourceStatus {
+    pub source_id: String,
+    pub kind: String,
+    pub backend: String,
+    pub configured: bool,
+    pub consented: bool,
+    pub demanded: bool,
+    pub state: String,
+    pub freshness: String,
+    pub source_graph_generation: u64,
+    pub session_generation: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_sample_age_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub freshness_remaining_ms: Option<u64>,
+    pub resource_count: usize,
+    pub denied_resource_count: usize,
+    /// Effective issue, with freshness taking precedence while stale.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue: Option<InputSourceIssueStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifecycle_issue: Option<InputSourceIssueStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub freshness_issue: Option<InputSourceIssueStatus>,
+    pub retired: bool,
+}
+
+#[derive(Debug)]
+pub(crate) struct InputDiagnostic {
+    pub source_id: String,
+    pub status: &'static str,
+    pub detail: String,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -345,6 +401,195 @@ pub struct ServerInfo {
     pub auth_required: bool,
 }
 
+/// Build the canonical lock-free input health snapshot used by every status surface.
+#[must_use]
+pub(crate) fn input_status_snapshot(state: &AppState) -> InputStatus {
+    let now = Instant::now();
+    let registry = state.input_status.snapshot();
+    let statuses = registry
+        .handles()
+        .iter()
+        .map(|handle| handle.snapshot_at(now))
+        .collect::<Vec<_>>();
+    let host_sources = statuses
+        .iter()
+        .filter(|source| is_host_interaction_source(source));
+    let sources = statuses
+        .iter()
+        .map(|source| input_source_status(source, now))
+        .collect();
+
+    InputStatus {
+        enabled: state
+            .config_manager
+            .as_ref()
+            .is_some_and(|manager| manager.get().input.enabled),
+        host_capture_registered: host_sources.clone().next().is_some(),
+        host_capturing: host_sources
+            .clone()
+            .any(|source| matches!(source.state, SourceState::Live | SourceState::Degraded)),
+        devices_opened: host_sources
+            .clone()
+            .map(|source| source.resource_count)
+            .sum(),
+        devices_denied: host_sources
+            .clone()
+            .map(|source| source.denied_resource_count)
+            .sum(),
+        degraded: host_sources
+            .clone()
+            .find_map(|source| source.issue.as_ref())
+            .map(|issue| issue.code.to_string()),
+        backends: host_sources
+            .map(|source| source.backend.to_string())
+            .collect(),
+        source_graph_generation: registry.source_graph_generation(),
+        sources,
+    }
+}
+
+/// Return only source states that require operator attention.
+#[must_use]
+pub(crate) fn actionable_input_diagnostics(input: &InputStatus) -> Vec<InputDiagnostic> {
+    input
+        .sources
+        .iter()
+        .filter_map(|source| {
+            let (status, fallback, issue) =
+                if source.demanded && matches!(source.state.as_str(), "failed" | "unavailable") {
+                    (
+                        "fail",
+                        "demanded source is unavailable",
+                        source.lifecycle_issue.as_ref(),
+                    )
+                } else if source.demanded && source.state == "stopped" {
+                    (
+                        "warning",
+                        "demanded source is stopped",
+                        source.lifecycle_issue.as_ref(),
+                    )
+                } else if source.demanded
+                    && matches!(source.state.as_str(), "live" | "degraded")
+                    && source.freshness == "stale"
+                {
+                    (
+                        "warning",
+                        "demanded source data is stale",
+                        source.freshness_issue.as_ref(),
+                    )
+                } else if source.configured && source.state == "degraded" {
+                    (
+                        "warning",
+                        "configured source is degraded",
+                        source.lifecycle_issue.as_ref(),
+                    )
+                } else {
+                    return None;
+                };
+
+            Some(InputDiagnostic {
+                source_id: source.source_id.clone(),
+                status,
+                detail: format_input_diagnostic_detail(issue, fallback),
+            })
+        })
+        .collect()
+}
+
+fn input_source_status(source: &SourceStatus, now: Instant) -> InputSourceStatus {
+    let lifecycle_issue = source.issue.as_ref().map(input_source_issue_status);
+    let freshness_issue = source
+        .freshness_issue
+        .as_ref()
+        .map(input_source_issue_status);
+    let issue = freshness_issue.clone().or_else(|| lifecycle_issue.clone());
+
+    InputSourceStatus {
+        source_id: source.source_id.to_string(),
+        kind: source_kind_name(source.kind).to_owned(),
+        backend: source.backend.to_string(),
+        configured: source.configured,
+        consented: source.consented,
+        demanded: source.demanded,
+        state: source_state_name(source.state).to_owned(),
+        freshness: source_freshness_name(source.freshness).to_owned(),
+        source_graph_generation: source.source_graph_generation,
+        session_generation: source.session_generation,
+        last_sample_age_ms: source
+            .last_sample_at
+            .map(|sampled_at| duration_ms(now.saturating_duration_since(sampled_at))),
+        freshness_remaining_ms: source
+            .freshness_deadline
+            .map(|deadline| duration_ms(deadline.saturating_duration_since(now))),
+        resource_count: source.resource_count,
+        denied_resource_count: source.denied_resource_count,
+        issue,
+        lifecycle_issue,
+        freshness_issue,
+        retired: source.retired,
+    }
+}
+
+fn input_source_issue_status(issue: &SourceIssue) -> InputSourceIssueStatus {
+    InputSourceIssueStatus {
+        code: issue.code.to_string(),
+        message: issue.message.to_string(),
+        remediation: issue.remediation.as_ref().map(ToString::to_string),
+        retryable: issue.retryable,
+    }
+}
+
+fn format_input_diagnostic_detail(
+    issue: Option<&InputSourceIssueStatus>,
+    fallback: &str,
+) -> String {
+    let Some(issue) = issue else {
+        return fallback.to_owned();
+    };
+    issue.remediation.as_ref().map_or_else(
+        || format!("{}: {}", issue.code, issue.message),
+        |remediation| format!("{}: {}; {}", issue.code, issue.message, remediation),
+    )
+}
+
+fn is_host_interaction_source(source: &SourceStatus) -> bool {
+    source.kind == SourceKind::Interaction && source.backend.as_ref() != "browser"
+}
+
+const fn source_kind_name(kind: SourceKind) -> &'static str {
+    match kind {
+        SourceKind::Audio => "audio",
+        SourceKind::Screen => "screen",
+        SourceKind::Interaction => "interaction",
+        SourceKind::Media => "media",
+        SourceKind::Network => "network",
+    }
+}
+
+const fn source_state_name(state: SourceState) -> &'static str {
+    match state {
+        SourceState::Stopped => "stopped",
+        SourceState::Starting => "starting",
+        SourceState::Live => "live",
+        SourceState::Degraded => "degraded",
+        SourceState::Unavailable => "unavailable",
+        SourceState::Failed => "failed",
+    }
+}
+
+const fn source_freshness_name(freshness: SourceFreshness) -> &'static str {
+    match freshness {
+        SourceFreshness::NotApplicable => "not_applicable",
+        SourceFreshness::AwaitingSample => "awaiting_sample",
+        SourceFreshness::Fresh => "fresh",
+        SourceFreshness::Stale => "stale",
+    }
+}
+
+fn duration_ms(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
 // ── Handlers ─────────────────────────────────────────────────────────────
 
 /// `GET /api/v1/status` — Full system status overview.
@@ -520,35 +765,7 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
     };
     let preview_runtime = preview_runtime_status(&state.preview_runtime);
 
-    let input_status = {
-        let input_enabled = state
-            .config_manager
-            .as_ref()
-            .is_some_and(|manager| manager.get().input.enabled);
-        let diagnostics = state.input_manager.lock().await.interaction_diagnostics();
-        let host = diagnostics.iter().filter(|entry| entry.host_capture);
-        let host_denied: usize = diagnostics
-            .iter()
-            .filter(|entry| entry.host_capture)
-            .map(|entry| entry.devices_denied)
-            .sum();
-        InputStatus {
-            enabled: input_enabled,
-            host_capture_registered: host.clone().count() > 0,
-            host_capturing: host.clone().any(|entry| entry.capturing),
-            devices_opened: host.clone().map(|entry| entry.devices_opened).sum(),
-            devices_denied: host_denied,
-            degraded: diagnostics
-                .iter()
-                .filter(|entry| entry.host_capture)
-                .find_map(|entry| entry.degraded.as_ref())
-                .map(|degradation| degradation.code().to_owned()),
-            backends: diagnostics
-                .iter()
-                .map(|entry| entry.backend.to_owned())
-                .collect(),
-        }
-    };
+    let input_status = input_status_snapshot(&state);
 
     let uptime_seconds = state.start_time.elapsed().as_secs();
     let config_path = config_path(&state).display().to_string();

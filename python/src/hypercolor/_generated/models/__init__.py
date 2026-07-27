@@ -215,6 +215,8 @@ from .gradient_stop import GradientStop
 from .health_checks import HealthChecks
 from .health_response import HealthResponse
 from .identify_request import IdentifyRequest
+from .input_source_issue_status import InputSourceIssueStatus
+from .input_source_status import InputSourceStatus
 from .input_status import InputStatus
 from .invoke_control_action_request import InvokeControlActionRequest
 from .latest_frame_status import LatestFrameStatus
@@ -494,6 +496,8 @@ __all__ = (
     "HealthChecks",
     "HealthResponse",
     "IdentifyRequest",
+    "InputSourceIssueStatus",
+    "InputSourceStatus",
     "InputStatus",
     "InvokeControlActionRequest",
     "LatestFrameStatus",

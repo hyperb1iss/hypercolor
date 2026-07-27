@@ -7,6 +7,9 @@ use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 use hypercolor_core::config::ConfigManager;
+use hypercolor_core::input::{
+    InputData, InputSource, SourceIssue, SourceKind, SourceStatusHandle, SourceStatusReporter,
+};
 use hypercolor_core::scene::OutputPlacement;
 use hypercolor_daemon::api::{self, AppState};
 use hypercolor_daemon::mcp;
@@ -93,6 +96,68 @@ fn fresh_app_state() -> AppState {
     AppState::new()
 }
 
+struct FailedInputSource {
+    status: SourceStatusReporter,
+    running: bool,
+}
+
+impl FailedInputSource {
+    fn new() -> Self {
+        Self {
+            status: SourceStatusReporter::new(
+                "failed_mcp_audio",
+                SourceKind::Audio,
+                "test_capture",
+                true,
+                true,
+                true,
+            ),
+            running: false,
+        }
+    }
+}
+
+impl InputSource for FailedInputSource {
+    fn name(&self) -> &'static str {
+        "FailedInputSource"
+    }
+
+    fn source_status_handle(&self) -> Option<SourceStatusHandle> {
+        Some(self.status.handle())
+    }
+
+    fn source_status_reporter(&mut self) -> Option<&mut SourceStatusReporter> {
+        Some(&mut self.status)
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        let session = self
+            .status
+            .begin_session()?
+            .expect("manager-bound test source should create a status session");
+        assert!(session.failed(SourceIssue::new(
+            "capture_worker_exited",
+            "test worker exited",
+            true,
+        )));
+        self.running = true;
+        Ok(())
+    }
+
+    fn stop(&mut self) {
+        self.status.stop();
+        self.running = false;
+    }
+
+    fn sample(&mut self) -> anyhow::Result<InputData> {
+        Ok(InputData::None)
+    }
+
+    fn is_running(&self) -> bool {
+        self.running
+    }
+}
+
 #[tokio::test]
 async fn diagnose_exposes_capacity_and_delivered_fps_separately() {
     let state = fresh_app_state();
@@ -103,6 +168,84 @@ async fn diagnose_exposes_capacity_and_delivered_fps_separately() {
     assert_eq!(result["metrics"]["fps"], result["metrics"]["capacity_fps"]);
     assert!(result["metrics"]["capacity_fps"].is_number());
     assert!(result["metrics"]["delivered_fps"].is_number());
+}
+
+#[tokio::test]
+async fn diagnose_reports_demanded_input_failure_as_unhealthy() {
+    let state = fresh_app_state();
+    {
+        let mut manager = state.input_manager.lock().await;
+        manager.add_source(Box::new(FailedInputSource::new()));
+        manager.start_all().expect("test input graph should start");
+    }
+
+    let result = execute_tool_with_state("diagnose", &json!({}), &state)
+        .await
+        .expect("diagnose should succeed");
+
+    assert_eq!(result["overall_status"], "unhealthy");
+    assert!(result["findings"].as_array().is_some_and(|findings| {
+        findings.iter().any(|finding| {
+            finding["severity"] == "error"
+                && finding["source_id"] == "failed_mcp_audio"
+                && finding["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("capture_worker_exited"))
+        })
+    }));
+}
+
+#[tokio::test]
+async fn mcp_input_status_surfaces_do_not_wait_for_input_manager() {
+    let state = fresh_app_state();
+    state
+        .input_manager
+        .lock()
+        .await
+        .start_all()
+        .expect("browser input source should start");
+    let manager_guard = state.input_manager.lock().await;
+
+    let status = tokio::time::timeout(
+        Duration::from_secs(1),
+        execute_tool_with_state("get_status", &json!({}), &state),
+    )
+    .await
+    .expect("get_status must not wait for the input manager")
+    .expect("get_status should succeed");
+    assert_eq!(status["inputs"]["sources"][0]["source_id"], "browser_input");
+    assert!(status["inputs"]["source_graph_generation"].is_number());
+
+    let resource = tokio::time::timeout(
+        Duration::from_secs(1),
+        read_resource_with_state("hypercolor://state", &state),
+    )
+    .await
+    .expect("state resource must not wait for the input manager")
+    .expect("state resource should exist");
+    assert_eq!(
+        resource["inputs"]["input"]["sources"][0]["source_id"],
+        "browser_input"
+    );
+
+    let diagnose = tokio::time::timeout(
+        Duration::from_secs(1),
+        execute_tool_with_state("diagnose", &json!({}), &state),
+    )
+    .await
+    .expect("diagnose must not wait for the input manager")
+    .expect("diagnose should succeed");
+    drop(manager_guard);
+
+    assert_eq!(
+        diagnose["metrics"]["inputs"]["sources"][0]["source_id"],
+        "browser_input"
+    );
+    assert!(diagnose["findings"].as_array().is_some_and(|findings| {
+        findings
+            .iter()
+            .all(|finding| finding["source_id"] != "browser_input")
+    }));
 }
 
 async fn insert_test_display_device(state: &Arc<AppState>, name: &str) -> DeviceId {
@@ -1280,6 +1423,14 @@ fn tool_definitions_have_valid_schemas() {
     );
     assert!(tools.iter().all(|tool| tool.output_schema.is_object()));
     assert!(tools.iter().any(|tool| tool.name == "set_display_face"));
+    let diagnose = tools
+        .iter()
+        .find(|tool| tool.name == "diagnose")
+        .expect("diagnose tool should be registered");
+    assert_eq!(
+        diagnose.output_schema["properties"]["overall_status"]["enum"],
+        json!(["healthy", "warning", "unhealthy"])
+    );
 }
 
 #[test]

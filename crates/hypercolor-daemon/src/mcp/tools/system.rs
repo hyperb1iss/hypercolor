@@ -7,7 +7,9 @@ use super::{
 };
 use crate::api::AppState;
 use crate::api::effects::active_effect_metadata;
+use crate::api::system::{actionable_input_diagnostics, input_status_snapshot};
 use crate::session::current_global_brightness;
+use hypercolor_core::input::InteractionDegradation;
 use hypercolor_types::sensor::SystemSnapshot;
 use std::sync::Arc;
 
@@ -81,7 +83,33 @@ pub(super) fn build_diagnose() -> ToolDefinition {
                 }
             }
         }),
-        output_schema: default_output_schema(),
+        output_schema: json!({
+            "type": "object",
+            "properties": {
+                "overall_status": {
+                    "type": "string",
+                    "enum": ["healthy", "warning", "unhealthy"]
+                },
+                "findings": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "severity": {
+                                "type": "string",
+                                "enum": ["info", "warning", "error", "critical"]
+                            },
+                            "source_id": { "type": "string" },
+                            "message": { "type": "string" }
+                        },
+                        "required": ["severity", "message"]
+                    }
+                },
+                "metrics": { "type": "object" }
+            },
+            "required": ["overall_status", "findings", "metrics"],
+            "additionalProperties": false
+        }),
         read_only: true,
         idempotent: true,
     }
@@ -243,54 +271,34 @@ pub(super) async fn handle_get_status_with_state(state: &AppState) -> Result<Val
         .map(|device| u64::from(device.info.total_led_count()))
         .sum();
 
-    let (audio_status, screen_status, input_enabled) =
-        if let Some(config_manager) = state.config_manager.as_ref() {
-            let config = config_manager.get();
-            (
-                if config.audio.enabled {
-                    "enabled"
-                } else {
-                    "disabled"
-                },
-                if config.capture.enabled {
-                    "enabled"
-                } else {
-                    "disabled"
-                },
-                config.input.enabled,
-            )
-        } else {
-            ("unknown", "unknown", false)
-        };
-
-    let input_diagnostics = state.input_manager.lock().await.interaction_diagnostics();
-    let input_devices_denied: usize = input_diagnostics
-        .iter()
-        .filter(|entry| entry.host_capture)
-        .map(|entry| entry.devices_denied)
-        .sum();
-    let input_devices_opened: usize = input_diagnostics
-        .iter()
-        .filter(|entry| entry.host_capture)
-        .map(|entry| entry.devices_opened)
-        .sum();
-    // Read the backend's own verdict rather than re-deriving one from the
-    // counters. The `denied > 0 && opened == 0` rule only ever described
-    // Linux, and on Windows — where there is no per-device denial to count —
-    // it would report a structurally deaf daemon as healthy.
-    let input_degradation = input_diagnostics
-        .iter()
-        .filter(|entry| entry.host_capture)
-        .find_map(|entry| entry.degraded.as_ref());
-    let input_status = if input_enabled {
-        match input_degradation {
-            Some(hypercolor_core::input::InteractionDegradation::AccessDenied) => {
+    let (audio_status, screen_status) = if let Some(config_manager) = state.config_manager.as_ref()
+    {
+        let config = config_manager.get();
+        (
+            if config.audio.enabled {
+                "enabled"
+            } else {
+                "disabled"
+            },
+            if config.capture.enabled {
+                "enabled"
+            } else {
+                "disabled"
+            },
+        )
+    } else {
+        ("unknown", "unknown")
+    };
+    let input = input_status_snapshot(state);
+    let input_state = if input.enabled {
+        match input.degraded.as_deref() {
+            Some(code) if code == InteractionDegradation::AccessDenied.code() => {
                 "blocked_permissions"
             }
-            Some(hypercolor_core::input::InteractionDegradation::NoInteractiveSession) => {
+            Some(code) if code == InteractionDegradation::NoInteractiveSession.code() => {
                 "no_interactive_session"
             }
-            Some(hypercolor_core::input::InteractionDegradation::Unavailable(_)) => "unavailable",
+            Some(_) => "unavailable",
             None => "enabled",
         }
     } else {
@@ -321,10 +329,12 @@ pub(super) async fn handle_get_status_with_state(state: &AppState) -> Result<Val
         "inputs": {
             "audio": audio_status,
             "screen": screen_status,
-            "input": input_status,
-            "input_devices_opened": input_devices_opened,
-            "input_devices_denied": input_devices_denied,
-            "input_degraded": input_degradation.map(hypercolor_core::input::InteractionDegradation::code)
+            "input": input_state,
+            "input_devices_opened": input.devices_opened,
+            "input_devices_denied": input.devices_denied,
+            "input_degraded": input.degraded,
+            "source_graph_generation": input.source_graph_generation,
+            "sources": input.sources
         },
         "uptime_seconds": state.start_time.elapsed().as_secs(),
         "version": env!("CARGO_PKG_VERSION")
@@ -469,6 +479,8 @@ pub(super) async fn handle_diagnose_with_state(
         .items
         .iter()
         .fold(0_u64, |acc, item| acc.saturating_add(item.errors_total));
+    let input = input_status_snapshot(state);
+    let input_diagnostics = actionable_input_diagnostics(&input);
 
     let devices = state.device_registry.list().await;
     let device_count = devices.len();
@@ -521,7 +533,17 @@ pub(super) async fn handle_diagnose_with_state(
         }));
     }
 
-    let status = if findings.iter().any(|f| f["severity"] == "warning") {
+    for diagnostic in &input_diagnostics {
+        findings.push(json!({
+            "severity": if diagnostic.status == "fail" { "error" } else { "warning" },
+            "source_id": diagnostic.source_id,
+            "message": diagnostic.detail,
+        }));
+    }
+
+    let status = if findings.iter().any(|f| f["severity"] == "error") {
+        "unhealthy"
+    } else if findings.iter().any(|f| f["severity"] == "warning") {
         "warning"
     } else {
         "healthy"
@@ -540,6 +562,7 @@ pub(super) async fn handle_diagnose_with_state(
             "device_count": device_count,
             "connected_devices": connected_count,
             "uptime_seconds": state.start_time.elapsed().as_secs(),
+            "inputs": input,
             "latest_frame": latest_frame,
             "render_window": {
                 "frames": performance.frame_count,

@@ -86,6 +86,34 @@ async fn openapi_json_is_served_with_expected_paths() {
     assert!(body["components"]["schemas"]["ControlFieldDescriptor"].is_object());
     assert!(body["components"]["schemas"]["CreateZoneRequest"].is_object());
     assert!(body["components"]["schemas"]["AssignDevicesRequest"].is_object());
+    let input_status = &body["components"]["schemas"]["InputStatus"];
+    assert!(input_status.is_object());
+    for legacy_field in [
+        "enabled",
+        "host_capture_registered",
+        "host_capturing",
+        "devices_opened",
+        "devices_denied",
+        "degraded",
+        "backends",
+    ] {
+        assert!(
+            input_status["properties"][legacy_field].is_object(),
+            "missing legacy InputStatus field {legacy_field}"
+        );
+    }
+    assert_eq!(
+        input_status["properties"]["sources"]["items"]["$ref"],
+        "#/components/schemas/InputSourceStatus"
+    );
+    let source_status = &body["components"]["schemas"]["InputSourceStatus"];
+    assert_eq!(source_status["properties"]["freshness"]["type"], "string");
+    assert!(source_status["properties"]["source_graph_generation"].is_object());
+    assert!(source_status["properties"]["session_generation"].is_object());
+    assert!(source_status["properties"]["last_sample_age_ms"].is_object());
+    assert!(source_status["properties"]["freshness_remaining_ms"].is_object());
+    assert!(source_status["properties"]["denied_resource_count"].is_object());
+    assert!(body["components"]["schemas"]["InputSourceIssueStatus"].is_object());
 
     for route in ROUTES {
         let operation = &body["paths"][route.path][route.method];

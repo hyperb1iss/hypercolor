@@ -25,7 +25,7 @@ use hypercolor_core::device::{
 };
 use hypercolor_core::effect::EffectRegistry;
 use hypercolor_core::engine::RenderLoop;
-use hypercolor_core::input::InputManager;
+use hypercolor_core::input::{InputManager, SourceStatusRegistry};
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_driver_api::CredentialStore;
@@ -159,6 +159,9 @@ pub struct DaemonState {
 
     /// Input orchestrator — audio and screen capture sampling sources.
     pub input_manager: Arc<Mutex<InputManager>>,
+
+    /// Lock-free latest-value health for the live input graph.
+    pub input_status: SourceStatusRegistry,
 
     /// Push handle for browser-preview input injection over WebSocket.
     pub browser_input: hypercolor_core::input::BrowserInputHandle,

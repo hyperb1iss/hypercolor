@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::api::AppState;
 use crate::api::envelope::{ApiError, ApiResponse};
+use crate::api::system::{InputStatus, actionable_input_diagnostics, input_status_snapshot};
 use crate::device_metrics::{DeviceMetrics, DeviceMetricsSnapshot};
 use crate::display_frames::DisplayOutputMetricsSnapshot;
 use crate::performance::{LatestFrameMetrics, PerformanceSnapshot};
@@ -48,6 +49,7 @@ struct DiagnoseSummary {
 
 #[derive(Debug, Serialize)]
 struct DiagnoseSnapshot {
+    input: InputStatus,
     render: DiagnoseRenderSnapshot,
     usb: DiagnoseUsbActorSnapshot,
     display_output: DiagnoseDisplayOutputSnapshot,
@@ -221,6 +223,7 @@ pub async fn run_diagnostics(
                 "render".to_owned(),
                 "devices".to_owned(),
                 "config".to_owned(),
+                "input".to_owned(),
             ]
         });
 
@@ -231,7 +234,9 @@ pub async fn run_diagnostics(
     let usb_actor_metrics = usb_actor_metrics_snapshot();
     let display_output_metrics = state.display_frames.read().await.metrics_snapshot();
     let device_metrics = state.device_metrics.load_full();
+    let input = input_status_snapshot(&state);
     let snapshot = build_diagnose_snapshot(
+        input,
         &performance,
         render_elapsed_ms,
         usb_actor_metrics,
@@ -389,6 +394,28 @@ pub async fn run_diagnostics(
                     },
                 });
             }
+            "input" => {
+                let diagnostics = actionable_input_diagnostics(&snapshot.input);
+                if diagnostics.is_empty() {
+                    checks.push(DiagnoseCheck {
+                        category: "input".to_owned(),
+                        name: "source_health".to_owned(),
+                        status: "pass".to_owned(),
+                        detail: format!(
+                            "{} source(s), graph generation {}",
+                            snapshot.input.sources.len(),
+                            snapshot.input.source_graph_generation
+                        ),
+                    });
+                } else {
+                    checks.extend(diagnostics.into_iter().map(|diagnostic| DiagnoseCheck {
+                        category: "input".to_owned(),
+                        name: diagnostic.source_id,
+                        status: diagnostic.status.to_owned(),
+                        detail: diagnostic.detail,
+                    }));
+                }
+            }
             other => {
                 checks.push(DiagnoseCheck {
                     category: "custom".to_owned(),
@@ -499,6 +526,7 @@ fn render_led_freshness_status(
 }
 
 fn build_diagnose_snapshot(
+    input: InputStatus,
     performance: &PerformanceSnapshot,
     render_elapsed_ms: f64,
     usb_actor_metrics: UsbActorMetricsSnapshot,
@@ -506,6 +534,7 @@ fn build_diagnose_snapshot(
     device_metrics: &DeviceMetricsSnapshot,
 ) -> DiagnoseSnapshot {
     DiagnoseSnapshot {
+        input,
         render: build_render_snapshot(performance, render_elapsed_ms),
         usb: build_usb_actor_snapshot(usb_actor_metrics),
         display_output: build_display_output_snapshot(display_output_metrics),

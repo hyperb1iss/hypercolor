@@ -254,6 +254,7 @@ impl DaemonState {
 
         // ── Input Manager ───────────────────────────────────────────────
         let (built_input_manager, browser_input) = build_input_manager(config, &config_manager);
+        let input_status = built_input_manager.source_status_registry();
         let input_manager = Arc::new(Mutex::new(built_input_manager));
         info!(
             audio_enabled = config.audio.enabled,
@@ -530,6 +531,7 @@ impl DaemonState {
             lifecycle_manager,
             reconnect_tasks,
             input_manager,
+            input_status,
             browser_input,
             logical_devices,
             logical_devices_path,

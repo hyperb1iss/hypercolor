@@ -7,6 +7,7 @@ use serde_json::{Value, json};
 
 use crate::api::AppState;
 use crate::api::effects::active_effect_metadata;
+use crate::api::system::input_status_snapshot;
 use crate::session::current_global_brightness;
 
 /// Definition of a single MCP resource.
@@ -232,6 +233,7 @@ async fn read_state_with_state(state: &AppState) -> Value {
     } else {
         ("unknown", "unknown")
     };
+    let input = input_status_snapshot(state);
 
     json!({
         "running": matches!(render_stats.state, hypercolor_core::engine::RenderLoopState::Running),
@@ -251,7 +253,8 @@ async fn read_state_with_state(state: &AppState) -> Value {
         },
         "inputs": {
             "audio": audio_status,
-            "screen": screen_status
+            "screen": screen_status,
+            "input": input
         },
         "uptime_seconds": state.start_time.elapsed().as_secs(),
         "version": env!("CARGO_PKG_VERSION")

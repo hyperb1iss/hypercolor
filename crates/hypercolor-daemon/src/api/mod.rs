@@ -59,7 +59,7 @@ use hypercolor_core::device::{
 };
 use hypercolor_core::effect::EffectRegistry;
 use hypercolor_core::engine::{FpsTier, RenderLoop};
-use hypercolor_core::input::InputManager;
+use hypercolor_core::input::{InputManager, SourceStatusRegistry};
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_driver_api::CredentialStore;
@@ -183,6 +183,9 @@ pub struct AppState {
 
     /// Live input graph shared with the daemon render thread.
     pub input_manager: Arc<Mutex<InputManager>>,
+
+    /// Lock-free latest-value health for the live input graph.
+    pub input_status: SourceStatusRegistry,
 
     /// Push handle for browser-preview input injection over WebSocket.
     pub browser_input: hypercolor_core::input::BrowserInputHandle,
@@ -455,6 +458,7 @@ impl AppState {
         let browser_input = browser_input_source.handle();
         let mut standalone_input_manager = InputManager::new();
         standalone_input_manager.add_source(Box::new(browser_input_source));
+        let input_status = standalone_input_manager.source_status_registry();
         let input_manager = Arc::new(Mutex::new(standalone_input_manager));
         let discovery_in_progress = Arc::new(AtomicBool::new(false));
         let attachment_registry = Arc::new(RwLock::new(attachment_registry));
@@ -541,6 +545,7 @@ impl AppState {
             extensions: ExtensionRegistry::default(),
             api_extensions: Vec::new(),
             input_manager,
+            input_status,
             browser_input,
             discovery_in_progress,
             profiles: Arc::new(RwLock::new(profiles)),
@@ -635,6 +640,7 @@ impl AppState {
             extensions: daemon.extensions.clone(),
             api_extensions: daemon.api_extensions.clone(),
             input_manager: Arc::clone(&daemon.input_manager),
+            input_status: daemon.input_status.clone(),
             browser_input: daemon.browser_input.clone(),
             discovery_in_progress: Arc::clone(&daemon.discovery_in_progress),
             profiles: Arc::new(RwLock::new(profiles)),

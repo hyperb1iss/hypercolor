@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, LazyLock, Mutex as StdMutex};
 use std::time::{Duration, SystemTime};
 
 use anyhow::{Result, bail};
@@ -34,6 +34,11 @@ use hypercolor_core::bus::{CanvasFrame, DisplayGroupFrame, DisplayGroupTarget};
 use hypercolor_core::device::DeviceLifecycleManager;
 use hypercolor_core::effect::EffectEntry;
 use hypercolor_core::engine::RenderLoopState;
+use hypercolor_core::input::{
+    BrowserInputEdge, InputData, InputSource, SourceIssue, SourceKind, SourceSessionWriter,
+    SourceStatusHandle, SourceStatusReporter,
+};
+use hypercolor_core::types::event::InputButtonState;
 use hypercolor_daemon::api::{self, AppState};
 use hypercolor_daemon::profile_store::{Profile, ProfilePrimary};
 use hypercolor_daemon::runtime_state;
@@ -120,6 +125,81 @@ fn isolated_state_with_tempdir() -> (AppState, tempfile::TempDir) {
     std::fs::create_dir_all(&data_dir).expect("temp data dir should be created");
     let state = AppState::new_with_data_dir(data_dir);
     (state, tempdir)
+}
+
+struct ObservableInputSource {
+    status: SourceStatusReporter,
+    session: Arc<StdMutex<Option<SourceSessionWriter>>>,
+    freshness: Duration,
+    running: bool,
+}
+
+impl ObservableInputSource {
+    fn new(
+        source_id: &str,
+        demanded: bool,
+        freshness: Duration,
+    ) -> (Self, Arc<StdMutex<Option<SourceSessionWriter>>>) {
+        let session = Arc::new(StdMutex::new(None));
+        (
+            Self {
+                status: SourceStatusReporter::new(
+                    source_id,
+                    SourceKind::Audio,
+                    "test_capture",
+                    true,
+                    true,
+                    demanded,
+                ),
+                session: Arc::clone(&session),
+                freshness,
+                running: false,
+            },
+            session,
+        )
+    }
+}
+
+impl InputSource for ObservableInputSource {
+    fn name(&self) -> &'static str {
+        "ObservableInputSource"
+    }
+
+    fn source_status_handle(&self) -> Option<SourceStatusHandle> {
+        Some(self.status.handle())
+    }
+
+    fn source_status_reporter(&mut self) -> Option<&mut SourceStatusReporter> {
+        Some(&mut self.status)
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        let session = self
+            .status
+            .begin_session()?
+            .expect("manager-bound test source should create a status session");
+        let sampled_at = std::time::Instant::now();
+        session.record_sample(sampled_at, sampled_at + self.freshness, 1)?;
+        *self
+            .session
+            .lock()
+            .expect("test source session lock should not be poisoned") = Some(session);
+        self.running = true;
+        Ok(())
+    }
+
+    fn stop(&mut self) {
+        self.status.stop();
+        self.running = false;
+    }
+
+    fn sample(&mut self) -> anyhow::Result<InputData> {
+        Ok(InputData::None)
+    }
+
+    fn is_running(&self) -> bool {
+        self.running
+    }
 }
 
 struct CoverFixtureGuard {
@@ -891,6 +971,170 @@ async fn status_returns_200_with_envelope() {
             cfg!(target_os = "linux") && std::env::var_os("WAYLAND_DISPLAY").is_some()
         )
     );
+}
+
+#[tokio::test]
+async fn status_reports_stale_source_health_without_captured_contents() {
+    const PRIVACY_SENTINEL: &str = "capture_secret_73_do_not_expose";
+
+    let state = Arc::new(isolated_state());
+    state.browser_input.inject(
+        PRIVACY_SENTINEL,
+        [BrowserInputEdge::Key {
+            key: PRIVACY_SENTINEL.to_owned(),
+            state: InputButtonState::Pressed,
+        }],
+    );
+    let (source, _) =
+        ObservableInputSource::new("stale_test_audio", true, Duration::from_millis(1));
+    {
+        let mut manager = state.input_manager.lock().await;
+        manager.add_source(Box::new(source));
+        manager.start_all().expect("test input graph should start");
+    }
+    tokio::time::sleep(Duration::from_millis(25)).await;
+
+    let response = test_app_with_state(state)
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/status")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    let json = body_json(response).await;
+    let input = &json["data"]["input"];
+    let stale = input["sources"]
+        .as_array()
+        .expect("sources should be an array")
+        .iter()
+        .find(|source| source["source_id"] == "stale_test_audio")
+        .expect("test source should be exposed");
+
+    assert_eq!(stale["freshness"], "stale");
+    assert_eq!(stale["freshness_remaining_ms"], 0);
+    assert_eq!(stale["freshness_issue"]["code"], "stale_data");
+    assert_eq!(stale["issue"]["code"], "stale_data");
+    assert!(stale["last_sample_age_ms"].is_number());
+    assert!(input["source_graph_generation"].as_u64().is_some());
+    assert_eq!(input["backends"], serde_json::json!([]));
+    assert!(
+        !serde_json::to_string(input)
+            .expect("input status should serialize")
+            .contains(PRIVACY_SENTINEL)
+    );
+}
+
+#[tokio::test]
+async fn input_status_and_diagnose_observe_failure_while_manager_is_locked() {
+    let state = Arc::new(isolated_state());
+    let (source, session) =
+        ObservableInputSource::new("failed_test_audio", true, Duration::from_millis(1));
+    {
+        let mut manager = state.input_manager.lock().await;
+        manager.add_source(Box::new(source));
+        manager.start_all().expect("test input graph should start");
+    }
+
+    let mut manager_guard = state.input_manager.lock().await;
+    let (demanded_stopped, _) =
+        ObservableInputSource::new("demanded_stopped_audio", true, Duration::from_secs(30));
+    manager_guard.add_source(Box::new(demanded_stopped));
+    let (undemanded, _) =
+        ObservableInputSource::new("undemanded_stopped_audio", false, Duration::from_secs(30));
+    manager_guard.add_source(Box::new(undemanded));
+    let session = session
+        .lock()
+        .expect("test source session lock should not be poisoned")
+        .clone()
+        .expect("test source should publish its session");
+    tokio::time::sleep(Duration::from_millis(25)).await;
+    assert!(session.failed(SourceIssue::new(
+        "capture_worker_exited",
+        "test worker exited",
+        true,
+    )));
+
+    let app = test_app_with_state(Arc::clone(&state));
+    let response = tokio::time::timeout(
+        Duration::from_secs(1),
+        app.clone().oneshot(
+            Request::builder()
+                .uri("/api/v1/status")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        ),
+    )
+    .await
+    .expect("status must not wait for the input manager")
+    .expect("status request should succeed");
+    let json = body_json(response).await;
+    let failed = json["data"]["input"]["sources"]
+        .as_array()
+        .expect("sources should be an array")
+        .iter()
+        .find(|source| source["source_id"] == "failed_test_audio")
+        .expect("failed source should be exposed");
+    assert_eq!(failed["state"], "failed");
+    assert_eq!(failed["issue"]["code"], "stale_data");
+    assert_eq!(failed["freshness_issue"]["code"], "stale_data");
+    assert_eq!(failed["lifecycle_issue"]["code"], "capture_worker_exited");
+
+    let response = tokio::time::timeout(
+        Duration::from_secs(1),
+        app.oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/diagnose")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"checks":["input"]}"#))
+                .expect("failed to build request"),
+        ),
+    )
+    .await
+    .expect("diagnose must not wait for the input manager")
+    .expect("diagnose request should succeed");
+    drop(manager_guard);
+
+    let json = body_json(response).await;
+    let checks = json["data"]["checks"]
+        .as_array()
+        .expect("diagnose checks should be an array");
+    let failed_check = checks
+        .iter()
+        .find(|check| check["category"] == "input" && check["name"] == "failed_test_audio")
+        .expect("failed demanded source should produce an input check");
+    assert_eq!(failed_check["status"], "fail");
+    assert!(
+        failed_check["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("capture_worker_exited")),
+        "terminal diagnostics must describe the lifecycle failure, not stale data"
+    );
+    assert!(checks.iter().any(|check| {
+        check["category"] == "input"
+            && check["name"] == "demanded_stopped_audio"
+            && check["status"] == "warning"
+    }));
+    assert!(
+        !checks
+            .iter()
+            .any(|check| check["name"] == "undemanded_stopped_audio")
+    );
+    assert!(
+        json["data"]["snapshot"]["input"]["source_graph_generation"]
+            .as_u64()
+            .is_some_and(|generation| generation > 0)
+    );
+    let undemanded = json["data"]["snapshot"]["input"]["sources"]
+        .as_array()
+        .expect("sources should be an array")
+        .iter()
+        .find(|source| source["source_id"] == "undemanded_stopped_audio")
+        .expect("undemanded source should remain visible in the snapshot");
+    assert_eq!(undemanded["source_graph_generation"], 0);
+    assert_eq!(undemanded["session_generation"], 0);
 }
 
 #[tokio::test]
