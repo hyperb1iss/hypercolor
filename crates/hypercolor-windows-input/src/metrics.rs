@@ -1,92 +1,169 @@
-//! Screen geometry and cursor sampling, under one pinned DPI context.
-//!
-//! The hazard here is not DPI scaling itself but *mixing* contexts between two
-//! reads. `GetSystemMetrics` is explicitly not DPI-aware for per-monitor-aware
-//! callers, `GetCursorPos` can return logical coordinates, and both follow the
-//! *calling thread's* DPI context — which a worker inherits from the process
-//! default but which a `SetThreadDpiAwarenessContext` call elsewhere can
-//! change out from under it. Reading the cursor under one context and the
-//! screen rect under another yields a normalized ratio that is simply wrong.
-//!
-//! So the worker pins per-monitor-v2 as its first act and reads both under it.
-//! If pinning fails, normalization stays *self-consistent* because both reads
-//! still share whatever context is active — the failure mode is a
-//! possibly-scaled pixel value, never a mismatched ratio.
+//! Physical monitor topology and cursor sampling under one pinned DPI context.
 
-use windows::Win32::Foundation::POINT;
+use windows::Win32::Foundation::{LPARAM, POINT, RECT};
+use windows::Win32::Graphics::Gdi::{
+    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO,
+};
 use windows::Win32::UI::HiDpi::{
-    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetThreadDpiAwarenessContext,
+    DPI_AWARENESS_CONTEXT, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetThreadDpiAwarenessContext,
 };
-use windows::Win32::UI::WindowsAndMessaging::{
-    GetCursorPos, GetSystemMetrics, SM_CXSCREEN, SM_CXVIRTUALSCREEN, SM_CYSCREEN,
-    SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
-};
+use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+use windows::core::BOOL;
 
 use crate::decode::ScreenRect;
 use crate::shared::RawCursor;
 
+const MONITOR_INFO_PRIMARY: u32 = 1;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MonitorTopology {
+    pub monitors: Vec<ScreenRect>,
+    pub virtual_screen: ScreenRect,
+    pub primary_screen: ScreenRect,
+}
+
+struct MonitorEnumeration {
+    monitors: Vec<(ScreenRect, bool)>,
+    failure: Option<String>,
+}
+
 /// Pin this thread to per-monitor-v2 DPI awareness.
-///
-/// Per-monitor-v2 is chosen because it makes both the cursor and the screen
-/// metrics return true physical pixels, which is what `MouseData.x`/`y`
-/// promise. Returns whether the pin took effect, for diagnostics only —
-/// failure is not fatal, per the module note.
-pub fn pin_dpi_context() -> bool {
-    // SAFETY: sets a thread-local awareness context; the returned previous
-    // context is a cookie we deliberately drop, since the worker owns this
-    // thread for its whole lifetime and never restores it.
+pub(crate) fn pin_dpi_context() -> bool {
+    // SAFETY: this sets only the current worker thread's DPI context. The
+    // worker owns the thread for its lifetime and deliberately never restores
+    // the previous context.
     let previous =
         unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
-    !previous.is_invalid()
+    dpi_context_call_succeeded(previous)
 }
 
-/// Read the virtual desktop rect, in physical pixels under the pinned context.
-///
-/// Re-read on every wake rather than cached: a message-only window receives no
-/// broadcasts, so `WM_DISPLAYCHANGE` never arrives and there is no invalidation
-/// signal to cache against. These resolve from user32 shared memory and cost
-/// nothing.
-#[must_use]
-pub fn virtual_screen_rect() -> ScreenRect {
-    // SAFETY: `GetSystemMetrics` reads process-global metrics and cannot fail
-    // in a way that requires cleanup; unknown indices simply return 0.
-    unsafe {
-        ScreenRect {
-            left: GetSystemMetrics(SM_XVIRTUALSCREEN),
-            top: GetSystemMetrics(SM_YVIRTUALSCREEN),
-            width: GetSystemMetrics(SM_CXVIRTUALSCREEN),
-            height: GetSystemMetrics(SM_CYVIRTUALSCREEN),
-        }
+fn dpi_context_call_succeeded(previous: DPI_AWARENESS_CONTEXT) -> bool {
+    !previous.0.is_null()
+}
+
+/// Enumerate physical rectangles without changing the caller's lasting DPI context.
+pub(crate) fn physical_monitor_topology() -> Result<MonitorTopology, String> {
+    // SAFETY: changes only the current thread and returns its prior context,
+    // which is restored before this function returns.
+    let previous =
+        unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
+    if !dpi_context_call_succeeded(previous) {
+        return Err(windows::core::Error::from_thread().to_string());
     }
-}
 
-/// Read the primary monitor rect, which absolute pointer reports without
-/// `MOUSE_VIRTUAL_DESKTOP` are scaled against.
-#[must_use]
-pub fn primary_screen_rect() -> ScreenRect {
-    // SAFETY: as `virtual_screen_rect`.
-    unsafe {
-        ScreenRect {
-            left: 0,
-            top: 0,
-            width: GetSystemMetrics(SM_CXSCREEN),
-            height: GetSystemMetrics(SM_CYSCREEN),
-        }
+    let topology = monitor_topology();
+    // SAFETY: `previous` is the valid context cookie returned by the first
+    // call on this same thread.
+    let restored = unsafe { SetThreadDpiAwarenessContext(previous) };
+    if !dpi_context_call_succeeded(restored) {
+        return Err(format!(
+            "failed to restore caller DPI context: {}",
+            windows::core::Error::from_thread()
+        ));
     }
+    topology
 }
 
-/// Sample the cursor, normalized against the virtual desktop.
-///
-/// Returns `None` when the cursor is unreadable, which happens on the secure
-/// desktop (UAC prompt, lock screen, Ctrl+Alt+Del) where `GetCursorPos`
-/// returns access-denied. Callers hold their previous value rather than
-/// blanking, so effects do not lurch on unlock.
-#[must_use]
-pub fn sample_cursor(virtual_screen: ScreenRect) -> Option<RawCursor> {
+/// Enumerate every physical monitor and derive coherent primary and virtual rectangles.
+pub(crate) fn monitor_topology() -> Result<MonitorTopology, String> {
+    let mut enumeration = MonitorEnumeration {
+        monitors: Vec::new(),
+        failure: None,
+    };
+    let data = LPARAM((&raw mut enumeration).expose_provenance().cast_signed());
+    // SAFETY: `data` points to `enumeration` for the duration of this
+    // synchronous call. The callback validates each monitor before storing it.
+    let completed = unsafe { EnumDisplayMonitors(None, None, Some(enumerate_monitor), data) };
+    if let Some(failure) = enumeration.failure {
+        return Err(failure);
+    }
+    if !completed.as_bool() {
+        return Err(windows::core::Error::from_thread().to_string());
+    }
+    topology_from_monitors(enumeration.monitors)
+        .ok_or_else(|| "Windows reported no valid physical monitors".to_owned())
+}
+
+unsafe extern "system" fn enumerate_monitor(
+    monitor: HMONITOR,
+    _device_context: HDC,
+    _clip: *mut RECT,
+    data: LPARAM,
+) -> BOOL {
+    // SAFETY: `monitor_topology` passes a live `MonitorEnumeration` pointer and
+    // EnumDisplayMonitors invokes this callback synchronously.
+    let enumeration: &mut MonitorEnumeration =
+        unsafe { &mut *std::ptr::with_exposed_provenance_mut(data.0.cast_unsigned()) };
+    let mut info = MONITORINFO {
+        cbSize: u32::try_from(size_of::<MONITORINFO>()).unwrap_or(u32::MAX),
+        ..Default::default()
+    };
+    // SAFETY: `monitor` is supplied by EnumDisplayMonitors and `info` is a
+    // live, correctly sized output structure.
+    if !unsafe { GetMonitorInfoW(monitor, &raw mut info) }.as_bool() {
+        enumeration.failure = Some(windows::core::Error::from_thread().to_string());
+        return BOOL(0);
+    }
+    let Some(rect) = screen_rect(info.rcMonitor) else {
+        enumeration.failure =
+            Some("Windows returned an invalid physical monitor rectangle".to_owned());
+        return BOOL(0);
+    };
+    enumeration
+        .monitors
+        .push((rect, info.dwFlags & MONITOR_INFO_PRIMARY != 0));
+    BOOL(1)
+}
+
+fn screen_rect(rect: RECT) -> Option<ScreenRect> {
+    let width = rect.right.checked_sub(rect.left)?;
+    let height = rect.bottom.checked_sub(rect.top)?;
+    (width > 0 && height > 0).then_some(ScreenRect {
+        left: rect.left,
+        top: rect.top,
+        width,
+        height,
+    })
+}
+
+fn topology_from_monitors(monitors: Vec<(ScreenRect, bool)>) -> Option<MonitorTopology> {
+    let primary_screen = monitors
+        .iter()
+        .find_map(|(rect, primary)| primary.then_some(*rect))
+        .or_else(|| monitors.first().map(|(rect, _)| *rect))?;
+    let left = monitors.iter().map(|(rect, _)| rect.left).min()?;
+    let top = monitors.iter().map(|(rect, _)| rect.top).min()?;
+    let right = monitors
+        .iter()
+        .map(|(rect, _)| rect.left.checked_add(rect.width))
+        .collect::<Option<Vec<_>>>()?
+        .into_iter()
+        .max()?;
+    let bottom = monitors
+        .iter()
+        .map(|(rect, _)| rect.top.checked_add(rect.height))
+        .collect::<Option<Vec<_>>>()?
+        .into_iter()
+        .max()?;
+    let virtual_screen = ScreenRect {
+        left,
+        top,
+        width: right.checked_sub(left)?,
+        height: bottom.checked_sub(top)?,
+    };
+    let monitors = monitors.into_iter().map(|(rect, _)| rect).collect();
+    Some(MonitorTopology {
+        monitors,
+        virtual_screen,
+        primary_screen,
+    })
+}
+
+/// Sample the cursor in physical pixels, normalized against the selected desktop.
+pub(crate) fn sample_cursor(virtual_screen: ScreenRect) -> Option<RawCursor> {
     let mut point = POINT::default();
-    // SAFETY: `point` is a live, properly aligned `POINT` owned by this frame;
-    // the call only writes into it. Access-denied on the secure desktop
-    // surfaces as an `Err` rather than a partial write.
+    // SAFETY: `point` is a live, aligned output value. Secure-desktop access
+    // failures return an error and publish no partial coordinate.
     unsafe { GetCursorPos(&raw mut point) }.ok()?;
     let (norm_x, norm_y) = virtual_screen.normalize(point.x, point.y);
     Some(RawCursor {
@@ -96,3 +173,6 @@ pub fn sample_cursor(virtual_screen: ScreenRect) -> Option<RawCursor> {
         norm_y,
     })
 }
+
+#[cfg(test)]
+mod tests;

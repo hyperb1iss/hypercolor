@@ -19,10 +19,14 @@
 //! user keeps moving the mouse, so shutdown would hang exactly when the
 //! machine is busiest.
 
-use std::sync::Arc;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
 
-use windows::Win32::Foundation::{HANDLE, HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Foundation::{
+    ERROR_INSUFFICIENT_BUFFER, GetLastError, HANDLE, HWND, LPARAM, LRESULT, WAIT_FAILED, WPARAM,
+};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::{
     DefRawInputProc, GetRawInputBuffer, GetRegisteredRawInputDevices, RAWINPUT, RAWINPUTDEVICE,
@@ -40,11 +44,11 @@ use windows::core::{PCWSTR, w};
 
 use crate::claim::PROCESS_CLAIM;
 use crate::decode::{
-    AbsoluteSpace, KeyReport, MotionKind, RecordStep, ScreenRect, button_edges, classify_key,
+    AbsoluteSpace, CanonicalKeyReport, KeyCanonicalizer, MotionKind, RecordStep, button_edges,
     is_horizontal_wheel, motion_kind, next_record, normalize_absolute, wheel_delta,
 };
 use crate::devices::{DeviceCache, enumerate_devices, seed_cache};
-use crate::metrics::{pin_dpi_context, primary_screen_rect, sample_cursor, virtual_screen_rect};
+use crate::metrics::{MonitorTopology, monitor_topology, pin_dpi_context, sample_cursor};
 use crate::shared::{
     PendingEvents, RawCursor, RawInputBatch, RawInputConfig, RawInputError, RawInputEvent,
     RawInputResult,
@@ -61,6 +65,9 @@ pub const WM_HYPERCOLOR_STOP: u32 = WM_APP + 1;
 /// is lost, and unlike a peek-and-sleep loop it costs nothing while idle.
 const WAKE_BUDGET_MS: u32 = 100;
 
+/// Topology enumeration is a control-plane operation, never a per-report cost.
+const TOPOLOGY_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+
 /// Initial buffered-read capacity, in `u64` units. `Vec<u64>` rather than
 /// `Vec<u8>` because the buffer must be QWORD-aligned and `Vec<u8>` guarantees
 /// no such thing — the record walk's offset arithmetic depends on it.
@@ -74,6 +81,13 @@ const MAX_BUFFER_QWORDS: usize = 128 * 1024;
 /// gets a look-in under sustained input.
 const MAX_SLICES_PER_WAKE: usize = 32;
 
+/// A genuine `ERROR_INSUFFICIENT_BUFFER` can race repeatedly with an 8 kHz
+/// device. Retry enough times to absorb a burst, but never spin forever.
+const MAX_RESIZE_RETRIES: usize = 8;
+
+/// Retry delay ceiling for repeated, proven buffer-size races.
+const MAX_RESIZE_BACKOFF_MS: u64 = 8;
+
 /// The HID usage page and usages we register for. Keyboards and mice only:
 /// media keys arrive through a separate Consumer Control collection as
 /// `RIM_TYPEHID` with a vendor-defined layout, and we neither register for
@@ -82,20 +96,210 @@ const USAGE_PAGE_GENERIC: u16 = 0x01;
 const USAGE_MOUSE: u16 = 0x02;
 const USAGE_KEYBOARD: u16 = 0x06;
 
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub(crate) enum PumpError {
+    #[error("Raw Input wait failed with Win32 error {0}")]
+    WaitFailed(u32),
+    #[error("GetRawInputBuffer failed with Win32 error {0}")]
+    BufferReadFailed(u32),
+    #[error(
+        "Raw Input buffer resize race persisted for {attempts} attempts (last required size: {required_bytes} bytes)"
+    )]
+    BufferResizeExhausted {
+        attempts: usize,
+        required_bytes: u32,
+    },
+    #[error(
+        "Raw Input buffer requires {required_bytes} bytes, beyond the {capacity_bytes}-byte safety ceiling"
+    )]
+    BufferCapacityExceeded {
+        required_bytes: u32,
+        capacity_bytes: usize,
+    },
+    #[error("Raw Input registration ownership moved to generation {owner:?}")]
+    RegistrationLost { owner: Option<u64> },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BufferReadDisposition {
+    Read(u32),
+    Resize,
+    Failed { error_code: u32 },
+}
+
+#[derive(Debug, Default)]
+struct SourceKeyCanonicalizers {
+    by_source: HashMap<Arc<str>, KeyCanonicalizer>,
+}
+
+impl SourceKeyCanonicalizers {
+    fn canonicalize(
+        &mut self,
+        source_id: &Arc<str>,
+        make_code: u16,
+        flags: u16,
+        vkey: u16,
+    ) -> CanonicalKeyReport {
+        if let Some(canonicalizer) = self.by_source.get_mut(source_id.as_ref()) {
+            return canonicalizer.canonicalize(make_code, flags, vkey);
+        }
+        let mut canonicalizer = KeyCanonicalizer::default();
+        let report = canonicalizer.canonicalize(make_code, flags, vkey);
+        self.by_source.insert(Arc::clone(source_id), canonicalizer);
+        report
+    }
+
+    fn reset(&mut self, source_id: &str) {
+        self.by_source.remove(source_id);
+    }
+}
+
+fn classify_wait_result(wait_result: u32, error_code: u32) -> Result<(), PumpError> {
+    if wait_result == WAIT_FAILED.0 {
+        Err(PumpError::WaitFailed(error_code))
+    } else {
+        Ok(())
+    }
+}
+
+fn classify_buffer_read(count: u32, error_code: u32) -> BufferReadDisposition {
+    if count != u32::MAX {
+        return BufferReadDisposition::Read(count);
+    }
+    if error_code == ERROR_INSUFFICIENT_BUFFER.0 {
+        BufferReadDisposition::Resize
+    } else {
+        BufferReadDisposition::Failed { error_code }
+    }
+}
+
+fn next_buffer_capacity(
+    current_qwords: usize,
+    required_bytes: u32,
+    attempt: usize,
+) -> Result<(usize, Duration), PumpError> {
+    let ceiling_bytes = MAX_BUFFER_QWORDS * size_of::<u64>();
+    let required_bytes_usize = usize::try_from(required_bytes).unwrap_or(usize::MAX);
+    if required_bytes_usize > ceiling_bytes {
+        return Err(PumpError::BufferCapacityExceeded {
+            required_bytes,
+            capacity_bytes: ceiling_bytes,
+        });
+    }
+    if attempt >= MAX_RESIZE_RETRIES {
+        return Err(PumpError::BufferResizeExhausted {
+            attempts: attempt + 1,
+            required_bytes,
+        });
+    }
+
+    let required_qwords = required_bytes_usize.div_ceil(size_of::<u64>());
+    let next_qwords = if required_qwords > current_qwords {
+        current_qwords
+            .saturating_mul(2)
+            .max(required_qwords)
+            .min(MAX_BUFFER_QWORDS)
+    } else {
+        current_qwords
+    };
+
+    let backoff_ms = if attempt == 0 {
+        0
+    } else {
+        1u64.checked_shl(u32::try_from(attempt - 1).unwrap_or(u32::MAX))
+            .unwrap_or(u64::MAX)
+            .min(MAX_RESIZE_BACKOFF_MS)
+    };
+    Ok((next_qwords, Duration::from_millis(backoff_ms)))
+}
+
+fn initial_topology(
+    capture_mouse: bool,
+    enumerate: impl FnOnce() -> Result<MonitorTopology, String>,
+) -> Result<Option<MonitorTopology>, String> {
+    if capture_mouse {
+        enumerate().map(Some)
+    } else {
+        Ok(None)
+    }
+}
+
+/// Stop flag plus the wake primitive used only by transient-error backoff.
+/// Normal idle waits are still driven by the Win32 message queue.
+#[derive(Debug)]
+pub(crate) struct StopSignal {
+    stopped: AtomicBool,
+    gate: Mutex<()>,
+    wake: Condvar,
+    #[cfg(test)]
+    waiting: AtomicBool,
+}
+
+impl StopSignal {
+    pub(crate) const fn new() -> Self {
+        Self {
+            stopped: AtomicBool::new(false),
+            gate: Mutex::new(()),
+            wake: Condvar::new(),
+            #[cfg(test)]
+            waiting: AtomicBool::new(false),
+        }
+    }
+
+    pub(crate) fn request_stop(&self) {
+        let _guard = self
+            .gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.stopped.store(true, Ordering::Release);
+        self.wake.notify_all();
+    }
+
+    pub(crate) fn is_stopped(&self) -> bool {
+        self.stopped.load(Ordering::Acquire)
+    }
+
+    /// Wait for a transient retry delay. Returns whether work should continue.
+    pub(crate) fn wait_for(&self, timeout: Duration) -> bool {
+        let guard = self
+            .gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.is_stopped() {
+            return false;
+        }
+        #[cfg(test)]
+        self.waiting.store(true, Ordering::Release);
+        let _wait = self
+            .wake
+            .wait_timeout(guard, timeout)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        #[cfg(test)]
+        self.waiting.store(false, Ordering::Release);
+        !self.is_stopped()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_waiting(&self) -> bool {
+        self.waiting.load(Ordering::Acquire)
+    }
+}
+
 /// Everything the pump owns for one session's lifetime.
 pub struct Pump {
     window: HWND,
     generation: u64,
     config: RawInputConfig,
     cache: DeviceCache,
+    key_canonicalizers: SourceKeyCanonicalizers,
     buffer: Vec<u64>,
     /// Reused across drains so `DefRawInputProc` costs no allocation on the
     /// hot path. Only ever holds addresses into `buffer`, rebuilt each slice.
     record_pointers: Vec<*const RAWINPUT>,
     events: PendingEvents,
     last_cursor: Option<RawCursor>,
-    virtual_screen: ScreenRect,
-    primary_screen: ScreenRect,
+    topology: Option<MonitorTopology>,
+    topology_refresh_at: Instant,
     registered: bool,
 }
 
@@ -107,7 +311,7 @@ impl Pump {
     pub fn create(
         config: RawInputConfig,
         generation: u64,
-        stop: &AtomicBool,
+        stop: &StopSignal,
     ) -> RawInputResult<Self> {
         if !config.keyboard && !config.mouse {
             return Err(RawInputError::NothingToCapture);
@@ -122,18 +326,21 @@ impl Pump {
             );
         }
 
+        let topology = initial_topology(config.mouse, monitor_topology)
+            .map_err(RawInputError::MonitorTopology)?;
         let window = create_message_window()?;
         let mut pump = Self {
             window,
             generation,
             config,
             cache: DeviceCache::new(),
+            key_canonicalizers: SourceKeyCanonicalizers::default(),
             buffer: vec![0u64; INITIAL_BUFFER_QWORDS],
             record_pointers: Vec::new(),
             events: PendingEvents::new(),
             last_cursor: None,
-            virtual_screen: virtual_screen_rect(),
-            primary_screen: primary_screen_rect(),
+            topology,
+            topology_refresh_at: Instant::now() + TOPOLOGY_REFRESH_INTERVAL,
             registered: false,
         };
 
@@ -166,26 +373,39 @@ impl Pump {
     /// replacement session already did, which hands the stale worker ownership
     /// and lets its teardown deregister the live session. Inside the lock, a
     /// cancelled worker cannot register at all.
-    fn register(&self, stop: &AtomicBool) -> RawInputResult<()> {
+    fn register(&self, stop: &StopSignal) -> RawInputResult<()> {
         let entries =
             self.registration_entries(RIDEV_INPUTSINK | RIDEV_DEVNOTIFY, Some(self.window));
-        PROCESS_CLAIM.acquire(self.generation, || {
-            if stop.load(Ordering::Acquire) {
-                return Err(RawInputError::Cancelled);
-            }
-            // SAFETY: `entries` is a live slice of correctly initialized
-            // `RAWINPUTDEVICE` values owned by this frame, and the size
-            // argument is the caller-ABI element size the API requires.
-            unsafe {
-                RegisterRawInputDevices(
-                    &entries,
-                    u32::try_from(size_of::<RAWINPUTDEVICE>()).unwrap_or(u32::MAX),
-                )
-            }
-            .map_err(|error| RawInputError::Registration(error.to_string()))
-        })?;
-
-        self.verify_registration()
+        PROCESS_CLAIM.acquire(
+            self.generation,
+            |_| {
+                if stop.is_stopped() {
+                    Err(RawInputError::Cancelled)
+                } else {
+                    Ok(())
+                }
+            },
+            || {
+                // SAFETY: `entries` is a live slice of correctly initialized
+                // values owned by this frame, and the size is the ABI element
+                // size required by RegisterRawInputDevices.
+                unsafe {
+                    RegisterRawInputDevices(
+                        &entries,
+                        u32::try_from(size_of::<RAWINPUTDEVICE>()).unwrap_or(u32::MAX),
+                    )
+                }
+                .map_err(|error| RawInputError::Registration(error.to_string()))
+            },
+            || self.verify_registration(),
+            || {
+                let result = self.remove_owned_registration();
+                if let Err(error) = &result {
+                    tracing::warn!(%error, "registration transaction rollback failed");
+                }
+                result
+            },
+        )
     }
 
     /// Confirm our window is still the process's raw input target.
@@ -197,13 +417,31 @@ impl Pump {
     /// that steals it fails loudly instead of producing a daemon that
     /// mysteriously stops seeing keys.
     fn verify_registration(&self) -> RawInputResult<()> {
+        let list = Self::registered_devices()?;
+        let ours_registered = |usage: u16| Self::targets_window(&list, usage, self.window);
+        let keyboard_ok = !self.config.keyboard || ours_registered(USAGE_KEYBOARD);
+        let mouse_ok = !self.config.mouse || ours_registered(USAGE_MOUSE);
+        if keyboard_ok && mouse_ok {
+            Ok(())
+        } else {
+            Err(RawInputError::RegistrationStolen)
+        }
+    }
+
+    fn registered_devices() -> RawInputResult<Vec<RAWINPUTDEVICE>> {
         let mut count: u32 = 0;
         let entry_size = u32::try_from(size_of::<RAWINPUTDEVICE>()).unwrap_or(u32::MAX);
         // SAFETY: the query form takes a null list pointer and only writes the
         // registration count.
         let probe = unsafe { GetRegisteredRawInputDevices(None, &raw mut count, entry_size) };
-        if probe == u32::MAX || count == 0 {
-            return Err(RawInputError::RegistrationStolen);
+        if probe == u32::MAX {
+            let error = windows::core::Error::from_thread();
+            return Err(RawInputError::Registration(format!(
+                "could not query registered devices: {error}"
+            )));
+        }
+        if count == 0 {
+            return Ok(Vec::new());
         }
 
         let mut list = vec![RAWINPUTDEVICE::default(); count as usize];
@@ -213,24 +451,21 @@ impl Pump {
             GetRegisteredRawInputDevices(Some(list.as_mut_ptr()), &raw mut count, entry_size)
         };
         if written == u32::MAX {
-            return Err(RawInputError::RegistrationStolen);
+            let error = windows::core::Error::from_thread();
+            return Err(RawInputError::Registration(format!(
+                "could not read registered devices: {error}"
+            )));
         }
         list.truncate((written as usize).min(list.len()));
+        Ok(list)
+    }
 
-        let ours_registered = |usage: u16| {
-            list.iter().any(|entry| {
-                entry.usUsagePage == USAGE_PAGE_GENERIC
-                    && entry.usUsage == usage
-                    && entry.hwndTarget == self.window
-            })
-        };
-        let keyboard_ok = !self.config.keyboard || ours_registered(USAGE_KEYBOARD);
-        let mouse_ok = !self.config.mouse || ours_registered(USAGE_MOUSE);
-        if keyboard_ok && mouse_ok {
-            Ok(())
-        } else {
-            Err(RawInputError::RegistrationStolen)
-        }
+    fn targets_window(list: &[RAWINPUTDEVICE], usage: u16, window: HWND) -> bool {
+        list.iter().any(|entry| {
+            entry.usUsagePage == USAGE_PAGE_GENERIC
+                && entry.usUsage == usage
+                && entry.hwndTarget == window
+        })
     }
 
     fn registration_entries(
@@ -257,6 +492,36 @@ impl Pump {
             });
         }
         entries
+    }
+
+    fn remove_owned_registration(&self) -> RawInputResult<()> {
+        let list = Self::registered_devices()?;
+        let keyboard_owned =
+            self.config.keyboard && Self::targets_window(&list, USAGE_KEYBOARD, self.window);
+        let mouse_owned =
+            self.config.mouse && Self::targets_window(&list, USAGE_MOUSE, self.window);
+        let mut entries = self.registration_entries(RIDEV_REMOVE, None);
+        entries.retain(|entry| {
+            (entry.usUsage == USAGE_KEYBOARD && keyboard_owned)
+                || (entry.usUsage == USAGE_MOUSE && mouse_owned)
+        });
+        if entries.is_empty() {
+            tracing::debug!("skipping Raw Input removal; this window owns no registered usages");
+            return Ok(());
+        }
+        Self::remove_registration_entries(&entries)
+    }
+
+    fn remove_registration_entries(entries: &[RAWINPUTDEVICE]) -> RawInputResult<()> {
+        // SAFETY: `entries` is a live slice with null targets, which
+        // RIDEV_REMOVE requires, and the size is the ABI element size.
+        unsafe {
+            RegisterRawInputDevices(
+                entries,
+                u32::try_from(size_of::<RAWINPUTDEVICE>()).unwrap_or(u32::MAX),
+            )
+        }
+        .map_err(|error| RawInputError::Registration(error.to_string()))
     }
 
     /// Record devices already attached at registration time.
@@ -288,50 +553,82 @@ impl Pump {
     /// messages. Returns `false` when the pump should stop.
     pub fn run_once(
         &mut self,
-        stop: &AtomicBool,
+        stop: &StopSignal,
         sink: &mut impl FnMut(RawInputBatch<'_>),
-    ) -> bool {
+    ) -> Result<bool, PumpError> {
+        self.verify_claim()?;
+
         // SAFETY: an empty handle array is legal and waits purely on queue
         // input. `QS_ALLINPUT` contains `QS_RAWINPUT`, so `WM_INPUT` wakes it.
-        unsafe {
-            MsgWaitForMultipleObjectsEx(None, WAKE_BUDGET_MS, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+        let wait_result = unsafe {
+            MsgWaitForMultipleObjectsEx(None, WAKE_BUDGET_MS, QS_ALLINPUT, MWMO_INPUTAVAILABLE)
+        };
+        let wait_error = if wait_result == WAIT_FAILED {
+            // SAFETY: reads the calling thread's last-error slot immediately
+            // after the failed API call, before another Win32 call can replace it.
+            unsafe { GetLastError().0 }
+        } else {
+            0
+        };
+        classify_wait_result(wait_result.0, wait_error)?;
+        self.verify_claim()?;
+
+        let now = Instant::now();
+        if self.config.mouse && now >= self.topology_refresh_at {
+            match monitor_topology() {
+                Ok(topology) => self.topology = Some(topology),
+                Err(error) => {
+                    tracing::warn!(%error, "monitor topology refresh failed; keeping previous")
+                }
+            }
+            self.topology_refresh_at = now + TOPOLOGY_REFRESH_INTERVAL;
         }
 
-        self.virtual_screen = virtual_screen_rect();
-        self.primary_screen = primary_screen_rect();
-
         for _ in 0..MAX_SLICES_PER_WAKE {
-            if stop.load(Ordering::Acquire) {
-                return false;
+            if stop.is_stopped() {
+                return Ok(false);
             }
-            if !self.drain_slice(sink) {
+            if !self.drain_slice(stop, sink)? {
                 break;
             }
             if !self.control_pass() {
-                return false;
+                return Ok(false);
             }
         }
 
-        if stop.load(Ordering::Acquire) {
-            return false;
+        if stop.is_stopped() {
+            return Ok(false);
         }
-        self.control_pass()
+        Ok(self.control_pass())
+    }
+
+    fn verify_claim(&self) -> Result<(), PumpError> {
+        let owner = PROCESS_CLAIM.owner();
+        if owner == Some(self.generation) {
+            Ok(())
+        } else {
+            Err(PumpError::RegistrationLost { owner })
+        }
     }
 
     /// Read one buffered slice and deliver it. Returns whether anything was
     /// read, so the caller knows when the queue is genuinely empty.
-    fn drain_slice(&mut self, sink: &mut impl FnMut(RawInputBatch<'_>)) -> bool {
+    fn drain_slice(
+        &mut self,
+        stop: &StopSignal,
+        sink: &mut impl FnMut(RawInputBatch<'_>),
+    ) -> Result<bool, PumpError> {
         // Stamped before the read, not at sink entry: a stamp taken while
         // folding would record when folding happened rather than when input
         // was captured. One stamp per drain, shared by the whole batch, which
         // is exactly what the Linux backend does per device poll.
         let at_ms = (self.config.clock)();
 
-        let Some(count) = self.read_buffer() else {
-            return false;
+        let Some(count) = self.read_buffer(stop)? else {
+            return Ok(false);
         };
         if count == 0 {
-            return false;
+            return Ok(false);
         }
 
         // Appends to whatever the last control pass queued, so a device
@@ -339,7 +636,7 @@ impl Pump {
         self.decode_records(count);
         self.notify_raw_input_handled(count);
         self.emit(at_ms, sink);
-        true
+        Ok(true)
     }
 
     /// Deliver the pending events and clear them.
@@ -369,8 +666,8 @@ impl Pump {
     /// returns the minimum for the *first* pending message, not for the whole
     /// batch, and `(UINT)-1` is an error rather than "empty". So the buffer is
     /// reused across drains and grown geometrically on failure.
-    fn read_buffer(&mut self) -> Option<u32> {
-        loop {
+    fn read_buffer(&mut self, stop: &StopSignal) -> Result<Option<u32>, PumpError> {
+        for attempt in 0..=MAX_RESIZE_RETRIES {
             let mut size = u32::try_from(self.buffer.len() * size_of::<u64>()).unwrap_or(u32::MAX);
             // SAFETY: `self.buffer` is a live `Vec<u64>` — QWORD-aligned by
             // construction, which the record walk depends on — and `size`
@@ -383,18 +680,50 @@ impl Pump {
                     u32::try_from(size_of::<RAWINPUTHEADER>()).unwrap_or(u32::MAX),
                 )
             };
-            if count != u32::MAX {
-                return Some(count);
+            let error_code = if count == u32::MAX {
+                // SAFETY: reads the calling thread's last-error slot immediately
+                // after GetRawInputBuffer, before another Win32 call can replace it.
+                unsafe { GetLastError().0 }
+            } else {
+                0
+            };
+
+            match classify_buffer_read(count, error_code) {
+                BufferReadDisposition::Read(count) => return Ok(Some(count)),
+                BufferReadDisposition::Failed { error_code } => {
+                    return Err(PumpError::BufferReadFailed(error_code));
+                }
+                BufferReadDisposition::Resize => {
+                    let required_bytes = Self::required_buffer_size()?;
+                    let (next_qwords, backoff) =
+                        next_buffer_capacity(self.buffer.len(), required_bytes, attempt)?;
+                    self.buffer.resize(next_qwords, 0);
+                    if !backoff.is_zero() && !stop.wait_for(backoff) {
+                        return Ok(None);
+                    }
+                }
             }
-            if self.buffer.len() >= MAX_BUFFER_QWORDS {
-                tracing::warn!(
-                    qwords = self.buffer.len(),
-                    "raw input buffer hit its ceiling; dropping this slice"
-                );
-                return None;
-            }
-            self.buffer.resize(self.buffer.len() * 2, 0);
         }
+        unreachable!("bounded Raw Input resize loop always returns")
+    }
+
+    fn required_buffer_size() -> Result<u32, PumpError> {
+        let mut required_bytes = 0u32;
+        // SAFETY: the documented query form takes no data buffer and writes
+        // the minimum bytes required for the first pending message.
+        let result = unsafe {
+            GetRawInputBuffer(
+                None,
+                &raw mut required_bytes,
+                u32::try_from(size_of::<RAWINPUTHEADER>()).unwrap_or(u32::MAX),
+            )
+        };
+        if result == u32::MAX {
+            // SAFETY: reads the calling thread's last-error slot immediately
+            // after the failed size query.
+            return Err(PumpError::BufferReadFailed(unsafe { GetLastError().0 }));
+        }
+        Ok(required_bytes)
     }
 
     /// Walk the records the last read produced.
@@ -514,9 +843,14 @@ impl Pump {
     }
 
     fn decode_keyboard(&mut self, source_id: &Arc<str>, make_code: u16, flags: u16, vkey: u16) {
-        match classify_key(make_code, flags) {
-            KeyReport::Ignored => {}
-            KeyReport::Overrun => {
+        let report = self
+            .key_canonicalizers
+            .canonicalize(source_id, make_code, flags, vkey);
+
+        match report {
+            CanonicalKeyReport::Ignored | CanonicalKeyReport::Pending => {}
+            CanonicalKeyReport::Overrun => {
+                self.key_canonicalizers.reset(source_id);
                 // The keyboard's own view of held state is now unreliable, so
                 // core releases everything this source held, in stream order,
                 // before applying anything that follows. Deferring to a "next
@@ -527,7 +861,12 @@ impl Pump {
                     source_id: Arc::clone(source_id),
                 });
             }
-            KeyReport::Edge { prefix, pressed } => {
+            CanonicalKeyReport::Edge {
+                make_code,
+                prefix,
+                vkey,
+                pressed,
+            } => {
                 self.events.push(RawInputEvent::Key {
                     source_id: Arc::clone(source_id),
                     make_code,
@@ -576,12 +915,16 @@ impl Pump {
                 }
             }
             MotionKind::Absolute(space) => {
+                let Some(topology) = self.topology.as_ref() else {
+                    tracing::error!("mouse report arrived without initialized monitor topology");
+                    return;
+                };
                 let (norm_x, norm_y) = normalize_absolute(
                     last_x,
                     last_y,
                     space,
-                    self.primary_screen,
-                    self.virtual_screen,
+                    topology.primary_screen,
+                    topology.virtual_screen,
                 );
                 self.events.push(RawInputEvent::MotionAbsolute {
                     source_id: Arc::clone(source_id),
@@ -666,7 +1009,8 @@ impl Pump {
         if !self.config.mouse {
             return None;
         }
-        if let Some(cursor) = sample_cursor(self.virtual_screen) {
+        let topology = self.topology.as_ref()?;
+        if let Some(cursor) = sample_cursor(topology.virtual_screen) {
             self.last_cursor = Some(cursor);
         }
         self.last_cursor
@@ -725,6 +1069,7 @@ impl Pump {
         match u32::try_from(w_param.0).unwrap_or_default() {
             GIDC_ARRIVAL => {
                 if let Some(identity) = self.cache.resolve(handle) {
+                    self.key_canonicalizers.reset(identity.source_id.as_ref());
                     self.events.push(RawInputEvent::DeviceArrived {
                         source_id: Arc::clone(&identity.source_id),
                         label: identity.label.clone(),
@@ -734,6 +1079,7 @@ impl Pump {
             }
             GIDC_REMOVAL => {
                 if let Some(identity) = self.cache.remove(handle) {
+                    self.key_canonicalizers.reset(identity.source_id.as_ref());
                     self.events.push(RawInputEvent::DeviceRemoved {
                         source_id: identity.source_id,
                     });
@@ -764,22 +1110,13 @@ impl Drop for Pump {
     /// this worker and belongs to nobody else.
     fn drop(&mut self) {
         if self.registered {
-            let entries = self.registration_entries(RIDEV_REMOVE, None);
-            let removed = PROCESS_CLAIM.release(self.generation, || {
-                // SAFETY: `entries` is a live slice of `RAWINPUTDEVICE` values
-                // with `hwndTarget` null, which `RIDEV_REMOVE` requires.
-                unsafe {
-                    RegisterRawInputDevices(
-                        &entries,
-                        u32::try_from(size_of::<RAWINPUTDEVICE>()).unwrap_or(u32::MAX),
-                    )
-                }
-            });
+            let removed =
+                PROCESS_CLAIM.release_owned(self.generation, || self.remove_owned_registration());
             match removed {
                 Ok(true) => tracing::debug!("deregistered raw input"),
                 Ok(false) => tracing::debug!(
                     generation = self.generation,
-                    "stale raw input worker skipped deregistration; a replacement owns it"
+                    "stale raw input worker cleaned up only usages still targeting its window"
                 ),
                 Err(error) => tracing::warn!(%error, "raw input deregistration failed"),
             }
@@ -880,3 +1217,6 @@ extern "system" fn window_proc(
     // the system just handed us.
     unsafe { DefWindowProcW(window, message, w_param, l_param) }
 }
+
+#[cfg(test)]
+mod tests;

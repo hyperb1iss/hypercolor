@@ -288,12 +288,28 @@ fn overlapping_sessions_leave_the_process_registerable() {
     // registration. Once both are gone, a third must still be able to take it
     // — which fails if either teardown removed the wrong one or skipped its
     // own.
-    {
-        let _first =
-            RawInputSession::start(test_config(true, true), |_| {}).expect("first session starts");
-        let _second =
-            RawInputSession::start(test_config(true, true), |_| {}).expect("second session starts");
-    }
+    let mut first =
+        RawInputSession::start(test_config(true, true), |_| {}).expect("first session starts");
+    let mut second =
+        RawInputSession::start(test_config(true, true), |_| {}).expect("second session starts");
+
+    let deadline = Instant::now() + Duration::from_secs(1);
+    let loser_reason = loop {
+        match first.worker_state() {
+            WorkerState::Failed(reason) => break reason,
+            WorkerState::Running if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            WorkerState::Running => panic!("displaced session did not report ownership loss"),
+        }
+    };
+    assert!(
+        loser_reason.contains("registration ownership moved to generation Some("),
+        "unexpected loser diagnostic: {loser_reason}"
+    );
+    assert_eq!(second.worker_state(), WorkerState::Running);
+    first.stop();
+    second.stop();
 
     let mut third =
         RawInputSession::start(test_config(true, true), |_| {}).expect("third session starts");

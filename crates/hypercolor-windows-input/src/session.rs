@@ -12,7 +12,7 @@
 //! transfers it to a join reaper that observes eventual termination.
 
 use std::panic::AssertUnwindSafe;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -21,8 +21,10 @@ use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
 
 use crate::claim::next_generation;
+use crate::decode::ScreenRect;
+use crate::metrics::physical_monitor_topology;
 use crate::probe::interactive_session_state;
-use crate::pump::{Pump, WM_HYPERCOLOR_STOP};
+use crate::pump::{Pump, StopSignal, WM_HYPERCOLOR_STOP};
 use crate::shared::{
     RawInputBatch, RawInputConfig, RawInputError, RawInputResult, SessionState, WorkerState,
 };
@@ -41,7 +43,7 @@ const JOIN_TIMEOUT: Duration = Duration::from_secs(2);
 /// Holds control, join, and snapshot handles only — never the `HWND`, which is
 /// thread-affine to the worker and stays there.
 pub struct RawInputSession {
-    stop: Arc<AtomicBool>,
+    stop: Arc<StopSignal>,
     /// The pump's window, as a raw address so it can cross threads, guarded by
     /// a lock rather than an atomic.
     ///
@@ -62,6 +64,22 @@ pub struct RawInputSession {
 }
 
 impl RawInputSession {
+    /// Enumerate physical monitor rectangles and their primary and virtual bounds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RawInputError::MonitorTopology`] when Windows cannot provide
+    /// a coherent physical monitor topology.
+    pub fn physical_monitor_topology() -> RawInputResult<(Vec<ScreenRect>, ScreenRect, ScreenRect)>
+    {
+        let topology = physical_monitor_topology().map_err(RawInputError::MonitorTopology)?;
+        Ok((
+            topology.monitors,
+            topology.primary_screen,
+            topology.virtual_screen,
+        ))
+    }
+
     /// Start capturing, blocking until the worker is ready or has failed.
     ///
     /// # Errors
@@ -83,7 +101,7 @@ impl RawInputSession {
         }
 
         let generation = next_generation();
-        let stop = Arc::new(AtomicBool::new(false));
+        let stop = Arc::new(StopSignal::new());
         let window = Arc::new(Mutex::new(0isize));
         let device_count = Arc::new(AtomicUsize::new(0));
         let state = Arc::new(Mutex::new(WorkerState::Running));
@@ -125,12 +143,12 @@ impl RawInputSession {
                 join_timed_out: false,
             }),
             Ok(Err(error)) => {
-                stop.store(true, Ordering::Release);
+                stop.request_stop();
                 let _ = worker.join();
                 Err(error)
             }
             Err(_) => {
-                stop.store(true, Ordering::Release);
+                stop.request_stop();
                 retain_raw_input_worker(worker, "readiness timeout");
                 Err(RawInputError::WorkerReadyTimeout)
             }
@@ -178,7 +196,7 @@ impl RawInputSession {
         if self.worker.is_none() {
             return;
         }
-        self.stop.store(true, Ordering::Release);
+        self.stop.request_stop();
         self.nudge();
 
         match self.finished.recv_timeout(timeout) {
@@ -223,7 +241,7 @@ impl RawInputSession {
 impl Drop for RawInputSession {
     fn drop(&mut self) {
         if self.join_timed_out {
-            self.stop.store(true, Ordering::Release);
+            self.stop.request_stop();
             self.nudge();
             if let Some(worker) = self.worker.take() {
                 retain_raw_input_worker(worker, "session drop after stop timeout");
@@ -247,7 +265,7 @@ fn run_worker(
     config: RawInputConfig,
     generation: u64,
     mut sink: impl FnMut(RawInputBatch<'_>),
-    stop: &AtomicBool,
+    stop: &StopSignal,
     window: &Mutex<isize>,
     device_count: &AtomicUsize,
     state: &Mutex<WorkerState>,
@@ -279,18 +297,21 @@ fn run_worker(
             // A panic while folding must not take the process with it, and must
             // not leave core believing a dead source is live.
             let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                let keep_going = pump.run_once(stop, &mut sink);
+                let keep_going = pump.run_once(stop, &mut sink)?;
                 pump.flush_pending(&mut sink);
-                keep_going
+                Ok::<bool, crate::pump::PumpError>(keep_going)
             }));
 
             match outcome {
-                Ok(true) => {}
-                Ok(false) => break,
+                Ok(Ok(true)) => {}
+                Ok(Ok(false)) => break,
+                Ok(Err(error)) => {
+                    set_pump_failure(state, &error);
+                    tracing::error!(%error, "raw input pump failed; stopping capture");
+                    break;
+                }
                 Err(_) => {
-                    if let Ok(mut guard) = state.lock() {
-                        *guard = WorkerState::Failed("raw input fold panicked".to_owned());
-                    }
+                    set_worker_failure(state, "raw input fold panicked".to_owned());
                     tracing::error!("raw input fold panicked; stopping the pump");
                     break;
                 }
@@ -309,12 +330,23 @@ fn run_worker(
     drop(pump);
 }
 
-fn run_initial_step(stop: &AtomicBool, step: impl FnOnce()) -> bool {
-    if stop.load(Ordering::Acquire) {
+fn run_initial_step(stop: &StopSignal, step: impl FnOnce()) -> bool {
+    if stop.is_stopped() {
         return false;
     }
     step();
     true
+}
+
+fn set_worker_failure(state: &Mutex<WorkerState>, reason: String) {
+    let mut guard = state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *guard = WorkerState::Failed(reason);
+}
+
+fn set_pump_failure(state: &Mutex<WorkerState>, error: &crate::pump::PumpError) {
+    set_worker_failure(state, error.to_string());
 }
 
 #[cfg(test)]

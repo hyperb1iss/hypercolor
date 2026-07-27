@@ -40,6 +40,14 @@ pub fn next_generation() -> u64 {
     NEXT_GENERATION.fetch_add(1, Ordering::Relaxed)
 }
 
+/// Cancellation checkpoints inside claim acquisition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClaimStage {
+    Registration,
+    Verification,
+    Publication,
+}
+
 /// Which generation currently owns the process's Raw Input registration.
 ///
 /// Generic over the registration calls so the interleavings above can be
@@ -58,23 +66,50 @@ impl RegistrationClaim {
         }
     }
 
-    /// Register and publish the claim as one critical section.
+    /// Register, verify, and publish the claim as one critical section.
     ///
-    /// On registration failure the claim is left untouched, so the previous
-    /// owner keeps both the registration and the responsibility for removing
-    /// it, and the caller's `start()` fails with no process-global state
-    /// mutated.
+    /// A registration call that fails may have applied only part of a
+    /// multi-usage request. The previous claim is therefore invalidated and
+    /// the caller selectively rolls back any native entries targeting its
+    /// window. The previous worker observes ownership loss and performs the
+    /// same ownership-checked cleanup during teardown.
     ///
     /// # Errors
     ///
-    /// Returns whatever `register` returned.
+    /// Returns the registration, verification, or cancellation error that
+    /// prevented publication. Every failure after registration asks the
+    /// caller to roll back only registrations it can still prove it owns.
+    /// Rollback failure never shadows the original loser diagnostic.
     pub fn acquire<E>(
         &self,
         generation: u64,
+        mut checkpoint: impl FnMut(ClaimStage) -> Result<(), E>,
         register: impl FnOnce() -> Result<(), E>,
+        verify: impl FnOnce() -> Result<(), E>,
+        rollback: impl FnOnce() -> Result<(), E>,
     ) -> Result<(), E> {
         let mut owner = self.lock();
-        register()?;
+        checkpoint(ClaimStage::Registration)?;
+        if let Err(error) = register() {
+            *owner = None;
+            let _ = rollback();
+            return Err(error);
+        }
+        *owner = None;
+
+        if let Err(error) = checkpoint(ClaimStage::Verification) {
+            let _ = rollback();
+            return Err(error);
+        }
+        if let Err(error) = verify() {
+            let _ = rollback();
+            return Err(error);
+        }
+        if let Err(error) = checkpoint(ClaimStage::Publication) {
+            let _ = rollback();
+            return Err(error);
+        }
+
         *owner = Some(generation);
         Ok(())
     }
@@ -102,6 +137,33 @@ impl RegistrationClaim {
         let outcome = remove();
         *owner = None;
         outcome.map(|()| true)
+    }
+
+    /// Clean up only registrations the caller can independently prove it owns.
+    ///
+    /// Unlike [`Self::release`], this invokes `remove_owned` for a stale
+    /// generation while holding the claim lock. That supports sessions which
+    /// registered multiple usages: a keyboard-only successor displaces the
+    /// old keyboard registration, while the old mouse usage still targets the
+    /// stale window and must be removed. `remove_owned` must inspect the native
+    /// registration table and remove only entries still targeting the caller.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever `remove_owned` returned. Current ownership is cleared
+    /// either way; stale cleanup never changes the successor's claim.
+    pub fn release_owned<E>(
+        &self,
+        generation: u64,
+        remove_owned: impl FnOnce() -> Result<(), E>,
+    ) -> Result<bool, E> {
+        let mut owner = self.lock();
+        let current = *owner == Some(generation);
+        let outcome = remove_owned();
+        if current {
+            *owner = None;
+        }
+        outcome.map(|()| current)
     }
 
     /// Generation currently holding the registration, if any.

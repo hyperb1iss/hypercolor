@@ -60,6 +60,33 @@ fn windows_main() {
         std::process::exit(1);
     }
 
+    match RawInputSession::physical_monitor_topology() {
+        Ok((monitors, primary, virtual_screen)) => {
+            println!(
+                "physical desktop: virtual=({},{} {}x{}), primary=({},{} {}x{})",
+                virtual_screen.left,
+                virtual_screen.top,
+                virtual_screen.width,
+                virtual_screen.height,
+                primary.left,
+                primary.top,
+                primary.width,
+                primary.height
+            );
+            for (index, monitor) in monitors.iter().enumerate() {
+                println!(
+                    "  monitor {index}: ({},{} {}x{})",
+                    monitor.left, monitor.top, monitor.width, monitor.height
+                );
+            }
+            println!();
+        }
+        Err(error) => {
+            eprintln!("could not read physical monitor topology: {error}");
+            std::process::exit(1);
+        }
+    }
+
     let epoch = Instant::now();
     let running = Arc::new(AtomicBool::new(true));
 

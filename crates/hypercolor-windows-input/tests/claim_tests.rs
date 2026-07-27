@@ -1,16 +1,22 @@
-//! Registration ownership, driven directly rather than raced.
-//!
-//! The interleavings these cover are microseconds wide in production and
-//! effectively impossible to reproduce by racing threads, which is why the
-//! claim takes an injectable registration call: the orderings that a
-//! compare-and-swap could not survive are forced here, deterministically.
+//! Deterministic tests for process-wide Raw Input registration ownership.
 
 use std::cell::Cell;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Barrier};
 
-use hypercolor_windows_input::claim::{RegistrationClaim, next_generation};
+use hypercolor_windows_input::claim::{ClaimStage, RegistrationClaim, next_generation};
 
-#[derive(Debug, PartialEq, Eq)]
-struct RegistrationFailed;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClaimFailure {
+    Cancelled,
+    Registration,
+    Verification,
+    Rollback,
+}
+
+fn acquire(claim: &RegistrationClaim, generation: u64) -> Result<(), ClaimFailure> {
+    claim.acquire(generation, |_| Ok(()), || Ok(()), || Ok(()), || Ok(()))
+}
 
 #[test]
 fn a_fresh_claim_has_no_owner() {
@@ -20,7 +26,6 @@ fn a_fresh_claim_has_no_owner() {
 
 #[test]
 fn generations_are_unique_and_never_zero() {
-    // Zero is reserved so it can never be mistaken for a live owner.
     let first = next_generation();
     let second = next_generation();
     assert_ne!(first, second);
@@ -29,163 +34,323 @@ fn generations_are_unique_and_never_zero() {
 }
 
 #[test]
-fn a_successful_registration_publishes_the_claim() {
+fn a_successful_transaction_publishes_the_claim() {
     let claim = RegistrationClaim::new();
-    let result: Result<(), RegistrationFailed> = claim.acquire(7, || Ok(()));
-    assert!(result.is_ok());
+    assert_eq!(acquire(&claim, 7), Ok(()));
     assert_eq!(claim.owner(), Some(7));
 }
 
 #[test]
-fn a_failed_registration_leaves_the_previous_owner_installed() {
-    // This is the ordering a claim-then-register CAS gets wrong: rotating the
-    // claim first would orphan the old registration, leaving it pointing at a
-    // window about to be destroyed with nobody willing to remove it.
+fn a_failed_registration_invalidates_uncertain_previous_ownership() {
     let claim = RegistrationClaim::new();
-    claim
-        .acquire(1, || Ok::<(), RegistrationFailed>(()))
-        .expect("first registration succeeds");
+    acquire(&claim, 1).expect("first registration succeeds");
+    let rollbacks = Cell::new(0usize);
 
-    let result = claim.acquire(2, || Err(RegistrationFailed));
-    assert_eq!(result, Err(RegistrationFailed));
-    assert_eq!(
-        claim.owner(),
-        Some(1),
-        "the previous owner keeps both the registration and the duty to remove it"
+    let result = claim.acquire(
+        2,
+        |_| Ok(()),
+        || Err(ClaimFailure::Registration),
+        || Ok(()),
+        || {
+            rollbacks.set(rollbacks.get() + 1);
+            Ok(())
+        },
     );
+
+    assert_eq!(result, Err(ClaimFailure::Registration));
+    assert_eq!(rollbacks.get(), 1);
+    assert_eq!(claim.owner(), None);
+}
+
+#[test]
+fn rollback_failure_preserves_the_registration_diagnostic() {
+    let claim = RegistrationClaim::new();
+    let result = claim.acquire(
+        3,
+        |_| Ok(()),
+        || Err(ClaimFailure::Registration),
+        || Ok(()),
+        || Err(ClaimFailure::Rollback),
+    );
+
+    assert_eq!(result, Err(ClaimFailure::Registration));
+    assert_eq!(claim.owner(), None);
+}
+
+#[test]
+fn cancellation_at_each_stage_has_transactional_effects() {
+    for cancelled_stage in [
+        ClaimStage::Registration,
+        ClaimStage::Verification,
+        ClaimStage::Publication,
+    ] {
+        let claim = RegistrationClaim::new();
+        acquire(&claim, 1).expect("previous registration succeeds");
+        let registrations = Cell::new(0usize);
+        let verifications = Cell::new(0usize);
+        let rollbacks = Cell::new(0usize);
+
+        let result = claim.acquire(
+            2,
+            |stage| {
+                if stage == cancelled_stage {
+                    Err(ClaimFailure::Cancelled)
+                } else {
+                    Ok(())
+                }
+            },
+            || {
+                registrations.set(registrations.get() + 1);
+                Ok(())
+            },
+            || {
+                verifications.set(verifications.get() + 1);
+                Ok(())
+            },
+            || {
+                rollbacks.set(rollbacks.get() + 1);
+                Ok(())
+            },
+        );
+
+        assert_eq!(result, Err(ClaimFailure::Cancelled));
+        if cancelled_stage == ClaimStage::Registration {
+            assert_eq!(registrations.get(), 0);
+            assert_eq!(verifications.get(), 0);
+            assert_eq!(rollbacks.get(), 0);
+            assert_eq!(claim.owner(), Some(1));
+        } else {
+            assert_eq!(registrations.get(), 1);
+            assert_eq!(rollbacks.get(), 1);
+            assert_eq!(claim.owner(), None);
+            let expected_verifications = usize::from(cancelled_stage == ClaimStage::Publication);
+            assert_eq!(verifications.get(), expected_verifications);
+        }
+    }
+}
+
+#[test]
+fn failed_verification_requests_an_ownership_checked_rollback() {
+    let claim = RegistrationClaim::new();
+    let rollbacks = Cell::new(0usize);
+
+    let result = claim.acquire(
+        3,
+        |_| Ok(()),
+        || Ok(()),
+        || Err(ClaimFailure::Verification),
+        || {
+            rollbacks.set(rollbacks.get() + 1);
+            Ok(())
+        },
+    );
+
+    assert_eq!(result, Err(ClaimFailure::Verification));
+    assert_eq!(rollbacks.get(), 1);
+    assert_eq!(claim.owner(), None);
+}
+
+#[test]
+fn rollback_failure_preserves_the_cancellation_diagnostic() {
+    let claim = RegistrationClaim::new();
+    let result = claim.acquire(
+        3,
+        |stage| {
+            if stage == ClaimStage::Publication {
+                Err(ClaimFailure::Cancelled)
+            } else {
+                Ok(())
+            }
+        },
+        || Ok(()),
+        || Ok(()),
+        || Err(ClaimFailure::Rollback),
+    );
+
+    assert_eq!(result, Err(ClaimFailure::Cancelled));
+    assert_eq!(claim.owner(), None);
 }
 
 #[test]
 fn the_owner_removes_and_clears_the_claim() {
     let claim = RegistrationClaim::new();
-    claim
-        .acquire(1, || Ok::<(), RegistrationFailed>(()))
-        .expect("registration succeeds");
+    acquire(&claim, 1).expect("registration succeeds");
+    let removals = Cell::new(0usize);
 
-    let removed = Cell::new(false);
-    let outcome = claim.release(1, || {
-        removed.set(true);
-        Ok::<(), RegistrationFailed>(())
+    let result = claim.release(1, || {
+        removals.set(removals.get() + 1);
+        Ok::<(), ClaimFailure>(())
     });
 
-    assert_eq!(outcome, Ok(true));
-    assert!(removed.get(), "the owner actually deregisters");
+    assert_eq!(result, Ok(true));
+    assert_eq!(removals.get(), 1);
     assert_eq!(claim.owner(), None);
 }
 
 #[test]
-fn a_stale_worker_does_not_deregister_its_replacement() {
-    // The hazard the whole mechanism exists for: registration is process-global,
-    // so a detached pump running its teardown late would otherwise tear down
-    // whichever session is now live. Nothing would look broken — every stale
-    // batch is already epoch-rejected — input would simply stop arriving.
+fn stale_release_cannot_deregister_its_successor() {
     let claim = RegistrationClaim::new();
-    claim
-        .acquire(1, || Ok::<(), RegistrationFailed>(()))
-        .expect("the first session registers");
-    claim
-        .acquire(2, || Ok::<(), RegistrationFailed>(()))
-        .expect("the replacement registers");
+    acquire(&claim, 1).expect("first registration succeeds");
+    acquire(&claim, 2).expect("replacement registration succeeds");
+    let removals = Cell::new(0usize);
 
-    let removed = Cell::new(false);
-    let outcome = claim.release(1, || {
-        removed.set(true);
-        Ok::<(), RegistrationFailed>(())
+    let result = claim.release(1, || {
+        removals.set(removals.get() + 1);
+        Ok::<(), ClaimFailure>(())
     });
 
-    assert_eq!(outcome, Ok(false));
-    assert!(
-        !removed.get(),
-        "the stale worker must not call RIDEV_REMOVE at all"
-    );
-    assert_eq!(
-        claim.owner(),
-        Some(2),
-        "the live session keeps its registration"
-    );
+    assert_eq!(result, Ok(false));
+    assert_eq!(removals.get(), 0);
+    assert_eq!(claim.owner(), Some(2));
+}
+
+#[test]
+fn stale_owned_cleanup_runs_without_clearing_the_successor() {
+    let claim = RegistrationClaim::new();
+    acquire(&claim, 1).expect("first registration succeeds");
+    acquire(&claim, 2).expect("replacement registration succeeds");
+    let cleanups = Cell::new(0usize);
+
+    let result = claim.release_owned(1, || {
+        cleanups.set(cleanups.get() + 1);
+        Ok::<(), ClaimFailure>(())
+    });
+
+    assert_eq!(result, Ok(false));
+    assert_eq!(cleanups.get(), 1);
+    assert_eq!(claim.owner(), Some(2));
 }
 
 #[test]
 fn releasing_twice_removes_once() {
     let claim = RegistrationClaim::new();
-    claim
-        .acquire(1, || Ok::<(), RegistrationFailed>(()))
-        .expect("registration succeeds");
+    acquire(&claim, 1).expect("registration succeeds");
+    let removals = Cell::new(0usize);
 
-    let removals = Cell::new(0u32);
-    let remove_once = || {
-        claim.release(1, || {
+    for expected in [true, false] {
+        let result = claim.release(1, || {
             removals.set(removals.get() + 1);
-            Ok::<(), RegistrationFailed>(())
-        })
-    };
-    assert_eq!(remove_once(), Ok(true));
-    assert_eq!(remove_once(), Ok(false));
-    assert_eq!(removals.get(), 1, "teardown is idempotent");
+            Ok::<(), ClaimFailure>(())
+        });
+        assert_eq!(result, Ok(expected));
+    }
+
+    assert_eq!(removals.get(), 1);
 }
 
 #[test]
-fn a_failed_removal_still_clears_the_claim() {
-    // A removal that failed leaves no live registration this session could
-    // meaningfully retry against, and pinning the slot to a dead generation
-    // would block every future session from ever registering.
+fn failed_removal_still_clears_the_claim() {
     let claim = RegistrationClaim::new();
-    claim
-        .acquire(1, || Ok::<(), RegistrationFailed>(()))
-        .expect("registration succeeds");
+    acquire(&claim, 1).expect("registration succeeds");
 
-    let outcome = claim.release(1, || Err(RegistrationFailed));
-    assert_eq!(outcome, Err(RegistrationFailed));
+    assert_eq!(
+        claim.release(1, || Err(ClaimFailure::Rollback)),
+        Err(ClaimFailure::Rollback)
+    );
     assert_eq!(claim.owner(), None);
 }
 
 #[test]
-fn a_start_stop_cycle_leaves_the_slot_empty() {
-    let claim = RegistrationClaim::new();
-    for generation in 1..=3 {
-        claim
-            .acquire(generation, || Ok::<(), RegistrationFailed>(()))
-            .expect("registration succeeds");
-        assert_eq!(claim.owner(), Some(generation));
-        assert_eq!(
-            claim.release(generation, || Ok::<(), RegistrationFailed>(())),
-            Ok(true)
-        );
-        assert_eq!(claim.owner(), None);
-    }
+fn cancelled_claimant_cannot_register_late_or_displace_successor() {
+    let claim = Arc::new(RegistrationClaim::new());
+    let registered = Arc::new(Barrier::new(2));
+    let continue_claim = Arc::new(Barrier::new(2));
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let rollbacks = Arc::new(AtomicUsize::new(0));
+
+    let claimant = {
+        let claim = Arc::clone(&claim);
+        let registered = Arc::clone(&registered);
+        let continue_claim = Arc::clone(&continue_claim);
+        let cancelled = Arc::clone(&cancelled);
+        let rollbacks = Arc::clone(&rollbacks);
+        std::thread::spawn(move || {
+            claim.acquire(
+                1,
+                |_| {
+                    if cancelled.load(Ordering::Acquire) {
+                        Err(ClaimFailure::Cancelled)
+                    } else {
+                        Ok(())
+                    }
+                },
+                || {
+                    registered.wait();
+                    continue_claim.wait();
+                    Ok(())
+                },
+                || Ok(()),
+                || {
+                    rollbacks.fetch_add(1, Ordering::Relaxed);
+                    Ok(())
+                },
+            )
+        })
+    };
+
+    registered.wait();
+    cancelled.store(true, Ordering::Release);
+    continue_claim.wait();
+    assert_eq!(
+        claimant.join().expect("claimant joins"),
+        Err(ClaimFailure::Cancelled)
+    );
+    assert_eq!(acquire(&claim, 2), Ok(()));
+    assert_eq!(claim.owner(), Some(2));
+    assert_eq!(rollbacks.load(Ordering::Relaxed), 1);
+
+    let stale_removals = Cell::new(0usize);
+    assert_eq!(
+        claim.release(1, || {
+            stale_removals.set(stale_removals.get() + 1);
+            Ok::<(), ClaimFailure>(())
+        }),
+        Ok(false)
+    );
+    assert_eq!(stale_removals.get(), 0);
+    assert_eq!(claim.owner(), Some(2));
 }
 
 #[test]
-fn a_replacement_registering_during_a_stale_teardown_is_serialized() {
-    // The register-then-claim ordering a CAS gets wrong in the other direction:
-    // a stale worker observing itself as owner between the two calls could
-    // remove a replacement that landed microseconds earlier. Because the owner
-    // check and the removal share the critical section with any competing
-    // registration, the only two orderings possible are both safe, and this
-    // asserts the one that matters.
-    let claim = RegistrationClaim::new();
-    claim
-        .acquire(1, || Ok::<(), RegistrationFailed>(()))
-        .expect("the first session registers");
+fn concurrent_claimants_publish_exactly_one_owner_at_a_time() {
+    let claim = Arc::new(RegistrationClaim::new());
+    let start = Arc::new(Barrier::new(3));
+    let active_registrations = Arc::new(AtomicUsize::new(0));
+    let peak_registrations = Arc::new(AtomicUsize::new(0));
 
-    // The replacement's registration completes inside its own critical
-    // section, so by the time the stale release runs, ownership has moved.
-    let registrations = Cell::new(0u32);
-    claim
-        .acquire(2, || {
-            registrations.set(registrations.get() + 1);
-            Ok::<(), RegistrationFailed>(())
+    let workers: Vec<_> = (1..=2)
+        .map(|generation| {
+            let claim = Arc::clone(&claim);
+            let start = Arc::clone(&start);
+            let active_registrations = Arc::clone(&active_registrations);
+            let peak_registrations = Arc::clone(&peak_registrations);
+            std::thread::spawn(move || {
+                start.wait();
+                claim
+                    .acquire(
+                        generation,
+                        |_| Ok::<(), ClaimFailure>(()),
+                        || {
+                            let active = active_registrations.fetch_add(1, Ordering::SeqCst) + 1;
+                            peak_registrations.fetch_max(active, Ordering::SeqCst);
+                            std::thread::yield_now();
+                            active_registrations.fetch_sub(1, Ordering::SeqCst);
+                            Ok(())
+                        },
+                        || Ok(()),
+                        || Ok(()),
+                    )
+                    .expect("registration succeeds");
+            })
         })
-        .expect("the replacement registers");
+        .collect();
 
-    let removals = Cell::new(0u32);
-    let stale = claim.release(1, || {
-        removals.set(removals.get() + 1);
-        Ok::<(), RegistrationFailed>(())
-    });
+    start.wait();
+    for worker in workers {
+        worker.join().expect("worker joins");
+    }
 
-    assert_eq!(stale, Ok(false));
-    assert_eq!(registrations.get(), 1);
-    assert_eq!(removals.get(), 0);
-    assert_eq!(claim.owner(), Some(2));
+    assert_eq!(active_registrations.load(Ordering::SeqCst), 0);
+    assert_eq!(peak_registrations.load(Ordering::SeqCst), 1);
+    assert!(matches!(claim.owner(), Some(1 | 2)));
 }

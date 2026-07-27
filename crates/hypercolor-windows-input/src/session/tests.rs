@@ -1,13 +1,14 @@
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use super::{RawInputSession, WorkerState, run_initial_step};
+use super::{RawInputSession, WorkerState, run_initial_step, set_pump_failure};
+use crate::pump::{PumpError, StopSignal};
 use crate::worker_retention::spawn_raw_input_worker;
 
 fn stalled_session(exit_after: Duration) -> RawInputSession {
-    let stop = Arc::new(AtomicBool::new(false));
+    let stop = Arc::new(StopSignal::new());
     let window = Arc::new(Mutex::new(0));
     let device_count = Arc::new(AtomicUsize::new(0));
     let state = Arc::new(Mutex::new(WorkerState::Running));
@@ -35,7 +36,7 @@ fn stalled_session(exit_after: Duration) -> RawInputSession {
 fn readiness_timeout_blocks_every_late_initial_sink_call() {
     let worker_delay = Duration::from_millis(40);
     let ready_timeout = Duration::from_millis(5);
-    let stop = Arc::new(AtomicBool::new(false));
+    let stop = Arc::new(StopSignal::new());
     let sink_calls = Arc::new(AtomicUsize::new(0));
     let (ready_tx, ready_rx) = mpsc::sync_channel(1);
     let worker_stop = Arc::clone(&stop);
@@ -51,7 +52,7 @@ fn readiness_timeout_blocks_every_late_initial_sink_call() {
         }
     });
     if ready_rx.recv_timeout(ready_timeout).is_err() {
-        stop.store(true, Ordering::Release);
+        stop.request_stop();
     }
     worker.join().expect("test readiness worker exits");
 
@@ -88,5 +89,42 @@ fn drop_after_explicit_stop_timeout_delegates_without_waiting_twice() {
         started.elapsed() < Duration::from_millis(75),
         "drop repeated a bounded join after explicit stop: {:?}",
         started.elapsed()
+    );
+}
+
+#[test]
+fn transient_backoff_is_interrupted_by_stop() {
+    let stop = Arc::new(StopSignal::new());
+    let waiter = {
+        let stop = Arc::clone(&stop);
+        thread::spawn(move || {
+            let began = Instant::now();
+            let active = stop.wait_for(Duration::from_secs(1));
+            (active, began.elapsed())
+        })
+    };
+
+    let deadline = Instant::now() + Duration::from_millis(100);
+    while !stop.is_waiting() && Instant::now() < deadline {
+        thread::yield_now();
+    }
+    assert!(
+        stop.is_waiting(),
+        "backoff waiter never entered the condvar"
+    );
+    stop.request_stop();
+    let (active, elapsed) = waiter.join().expect("backoff waiter joins");
+    assert!(!active);
+    assert!(elapsed < Duration::from_millis(100), "elapsed: {elapsed:?}");
+}
+
+#[test]
+fn terminal_pump_error_becomes_exact_worker_failure() {
+    let state = Mutex::new(WorkerState::Running);
+    set_pump_failure(&state, &PumpError::BufferReadFailed(5));
+
+    assert_eq!(
+        *state.lock().expect("worker state lock"),
+        WorkerState::Failed("GetRawInputBuffer failed with Win32 error 5".to_owned())
     );
 }

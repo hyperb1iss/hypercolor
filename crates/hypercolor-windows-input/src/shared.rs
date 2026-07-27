@@ -238,6 +238,8 @@ pub enum RawInputError {
     WorkerReadyTimeout,
     #[error("failed to create the message-only window: {0}")]
     WindowCreation(String),
+    #[error("failed to enumerate physical monitor topology: {0}")]
+    MonitorTopology(String),
     #[error("failed to register for Raw Input: {0}")]
     Registration(String),
     #[error("another window in this process owns the Raw Input registration")]
