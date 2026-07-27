@@ -127,6 +127,8 @@ impl BrowserInputHandle {
                         },
                         at_ms,
                         seq: 0,
+                        physical_code: None,
+                        repeat_count: 1,
                     },
                     self.event_limit,
                 );
@@ -144,6 +146,8 @@ impl BrowserInputHandle {
                         },
                         at_ms,
                         seq: 0,
+                        physical_code: None,
+                        repeat_count: 1,
                     },
                     self.event_limit,
                 );
@@ -187,6 +191,8 @@ impl BrowserInputHandle {
                         },
                         at_ms,
                         seq: 0,
+                        physical_code: None,
+                        repeat_count: 1,
                     },
                     self.event_limit,
                 );
@@ -218,6 +224,8 @@ impl BrowserInputHandle {
                         },
                         at_ms,
                         seq: 0,
+                        physical_code: None,
+                        repeat_count: 1,
                     },
                     self.event_limit,
                 );
@@ -246,6 +254,8 @@ impl BrowserInputHandle {
                         },
                         at_ms,
                         seq: 0,
+                        physical_code: None,
+                        repeat_count: 1,
                     },
                     self.event_limit,
                 );

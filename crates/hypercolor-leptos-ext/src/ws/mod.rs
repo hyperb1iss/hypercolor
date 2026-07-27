@@ -1,5 +1,6 @@
 mod channel;
 mod frame;
+mod input_event;
 mod preview;
 mod reconnect;
 mod replay;
@@ -19,6 +20,9 @@ pub use frame::{
     write_frame_prefix,
 };
 pub use hypercolor_leptos_ext_macros::BinaryFrame;
+pub use input_event::{
+    INPUT_EVENT_PAYLOAD_SCHEMA, InputEventPayloadDecodeError, TimedInputEventPayload,
+};
 #[cfg(feature = "ws-client-wasm")]
 pub use preview::PreviewFrameView;
 #[cfg(feature = "ws-client-wasm")]

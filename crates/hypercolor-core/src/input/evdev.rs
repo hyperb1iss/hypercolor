@@ -719,6 +719,8 @@ fn fold_event(
                         },
                         at_ms,
                         seq: 0,
+                        physical_code: Some(format!("evdev:{code:?}")),
+                        repeat_count: 1,
                     },
                     event_limit,
                 );
@@ -759,6 +761,8 @@ fn fold_event(
                     },
                     at_ms,
                     seq: 0,
+                    physical_code: Some(format!("evdev:{code:?}")),
+                    repeat_count: 1,
                 },
                 event_limit,
             );
@@ -794,6 +798,8 @@ fn fold_event(
                             },
                             at_ms,
                             seq: 0,
+                            physical_code: Some("evdev:REL_WHEEL_HI_RES".to_owned()),
+                            repeat_count: 1,
                         },
                         event_limit,
                     );
@@ -810,6 +816,8 @@ fn fold_event(
                             },
                             at_ms,
                             seq: 0,
+                            physical_code: Some("evdev:REL_WHEEL".to_owned()),
+                            repeat_count: 1,
                         },
                         event_limit,
                     );
@@ -868,6 +876,8 @@ fn synthesize_releases(state: &mut SharedState, source_id: &str, event_limit: us
                     },
                     at_ms,
                     seq: 0,
+                    physical_code: None,
+                    repeat_count: 1,
                 },
                 event_limit,
             );
@@ -885,6 +895,8 @@ fn synthesize_releases(state: &mut SharedState, source_id: &str, event_limit: us
                     },
                     at_ms,
                     seq: 0,
+                    physical_code: None,
+                    repeat_count: 1,
                 },
                 event_limit,
             );
@@ -1068,6 +1080,8 @@ mod tests {
                     },
                     at_ms: seq,
                     seq,
+                    physical_code: None,
+                    repeat_count: 1,
                 },
                 4,
             );

@@ -85,6 +85,7 @@
       "name": "input_events",
       "kind": "json",
       "requires_control": true,
+      "payload_schema": "timed_input_event_v1",
       "description": "Host input events (key and pointer edges) for automation clients. Control-authorized subscription only; never part of the default events relay."
     }
   ],
@@ -126,6 +127,23 @@
       "error",
       "response"
     ]
+  },
+  "json_payloads": {
+    "timed_input_event_v1": {
+      "schema_version": 1,
+      "channel": "input_events",
+      "event": "input_event_received",
+      "required_fields": [
+        "event"
+      ],
+      "optional_fields": {
+        "at_ms": 0,
+        "seq": 0,
+        "physical_code": null,
+        "repeat_count": 1
+      },
+      "description": "Canonical captured input edge. Missing timing and metadata fields decode with their listed defaults for compatibility with the prior event-only payload."
+    }
   },
   "binary_messages": [
     {

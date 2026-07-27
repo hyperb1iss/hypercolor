@@ -6,8 +6,8 @@
 
 use bytes::Bytes;
 use hypercolor_leptos_ext::ws::{
-    PreviewFrame, PreviewFrameChannel, PreviewPixelFormat, SpectrumFrame, ZONE_PREVIEW_FRAME_TAG,
-    ZonePreviewFrame,
+    PreviewFrame, PreviewFrameChannel, PreviewPixelFormat, SpectrumFrame, TimedInputEventPayload,
+    ZONE_PREVIEW_FRAME_TAG, ZonePreviewFrame,
 };
 use hypercolor_tui::client::ws::{self, WsMessage};
 
@@ -190,6 +190,22 @@ fn decode_json_event() {
     let json = r#"{"type": "event", "data": "test"}"#;
     let msg = ws::decode_json(json);
     assert!(matches!(msg, Some(WsMessage::Event(_))));
+}
+
+#[test]
+fn decode_json_preserves_canonical_timed_input_event() {
+    let json = r#"{"type":"event","event":"input_event_received","timestamp":"2026-07-27T00:00:00.000Z","data":{"event":{"kind":"key","source_id":"host:kbd","key":"a","state":"repeated"},"at_ms":900,"seq":12,"physical_code":"evdev:key:30","repeat_count":5}}"#;
+    let Some(WsMessage::Event(message)) = ws::decode_json(json) else {
+        panic!("expected event message");
+    };
+    let decoded = TimedInputEventPayload::decode(&message["data"])
+        .expect("TUI event data should use the shared input schema");
+
+    assert_eq!(decoded.at_ms, 900);
+    assert_eq!(decoded.seq, 12);
+    assert_eq!(decoded.physical_code.as_deref(), Some("evdev:key:30"));
+    assert_eq!(decoded.repeat_count, 5);
+    assert_eq!(decoded.event["key"], "a");
 }
 
 #[test]

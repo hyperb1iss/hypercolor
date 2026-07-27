@@ -709,6 +709,8 @@ impl EventOnlySource {
                     event,
                     at_ms: 0,
                     seq: 0,
+                    physical_code: None,
+                    repeat_count: 1,
                 })
                 .collect(),
         }
@@ -1167,13 +1169,16 @@ async fn render_thread_publishes_discrete_input_events() {
     .expect("timed out waiting for input event");
 
     assert_eq!(
-        input_event,
+        input_event.event,
         InputEvent::Key {
             source_id: "host:/dev/input/event4".into(),
             key: "a".into(),
             state: InputButtonState::Pressed,
         }
     );
+    assert!(input_event.seq > 0);
+    assert_eq!(input_event.physical_code, None);
+    assert_eq!(input_event.repeat_count, 1);
 
     {
         let mut rl = state.render_loop.write().await;

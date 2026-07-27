@@ -650,6 +650,8 @@ impl EventfulSource {
                     event,
                     at_ms: 0,
                     seq: 0,
+                    physical_code: None,
+                    repeat_count: 1,
                 })
                 .collect(),
         }
@@ -2252,6 +2254,8 @@ fn interaction_dirty_check_tracks_generation_and_batch() {
         },
         at_ms: 1,
         seq: 1,
+        physical_code: None,
+        repeat_count: 1,
     });
     assert!(data.is_dirty_against(Some(0)), "events mark dirty");
 
@@ -2275,6 +2279,8 @@ fn batch_absorb_prior_preserves_order_and_sums() {
             },
             at_ms: seq,
             seq,
+            physical_code: None,
+            repeat_count: 1,
         }
     }
 

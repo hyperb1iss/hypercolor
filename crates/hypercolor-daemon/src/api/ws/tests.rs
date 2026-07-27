@@ -7,12 +7,15 @@ use axum::response::IntoResponse;
 use tokio::sync::{RwLock, watch};
 
 use hypercolor_core::bus::{CanvasFrame, HypercolorBus, ZonePreviewFrame};
+use hypercolor_leptos_ext::ws::TimedInputEventPayload;
 use hypercolor_types::canvas::{
     Canvas, PublishedSurface, Rgba, linear_to_srgb_u8, srgb_u8_to_linear,
 };
 use hypercolor_types::controls::{ControlSurfaceEvent, ControlValue, ControlValueMap};
 use hypercolor_types::device::{ConnectionType, DeviceId, DeviceOrigin};
-use hypercolor_types::event::{FrameData, FrameTiming, HypercolorEvent, SpectrumData, ZoneColors};
+use hypercolor_types::event::{
+    FrameData, FrameTiming, HypercolorEvent, SpectrumData, TimedInputEvent, ZoneColors,
+};
 use hypercolor_types::scene::{SceneId, ZoneId, ZoneRole};
 use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::spatial::SamplingMode;
@@ -48,9 +51,9 @@ use super::protocol::{
 };
 use super::relays::{
     build_device_metrics_message, build_metrics_message, publish_subscriptions, relay_canvas,
-    relay_device_metrics, relay_display_preview, relay_frames, relay_metrics, relay_screen_canvas,
-    relay_sensors, relay_spectrum, relay_web_viewport_canvas, sync_preview_receiver,
-    try_enqueue_json,
+    relay_device_metrics, relay_display_preview, relay_events, relay_frames, relay_metrics,
+    relay_screen_canvas, relay_sensors, relay_spectrum, relay_web_viewport_canvas,
+    sync_preview_receiver, try_enqueue_json,
 };
 use super::session::{authorize_subscription_channels, validated_zone_layout_preview};
 use crate::api::AppState;
@@ -1622,11 +1625,12 @@ fn parse_channels_rejects_unknown_channel() {
 }
 
 #[test]
-fn read_only_auth_rejects_screen_capture_preview_subscriptions() {
+fn read_only_auth_rejects_private_capture_subscriptions() {
     let channels = [
         WsChannel::Events,
         WsChannel::ScreenCanvas,
         WsChannel::ScreenZones,
+        WsChannel::InputEvents,
     ];
     let error = authorize_subscription_channels(RequestAuthContext::read_only(), &channels)
         .expect_err("read-only clients must not subscribe to capture-demand channels");
@@ -1635,7 +1639,7 @@ fn read_only_auth_rejects_screen_capture_preview_subscriptions() {
     assert_eq!(
         error.details,
         Some(serde_json::json!({
-            "channels": ["screen_canvas", "screen_zones"],
+            "channels": ["screen_canvas", "screen_zones", "input_events"],
             "required_tier": "control"
         }))
     );
@@ -1655,8 +1659,12 @@ fn read_only_auth_allows_non_capture_preview_subscriptions() {
 }
 
 #[test]
-fn control_auth_allows_screen_capture_preview_subscriptions() {
-    let channels = [WsChannel::ScreenCanvas, WsChannel::ScreenZones];
+fn control_auth_allows_private_capture_subscriptions() {
+    let channels = [
+        WsChannel::ScreenCanvas,
+        WsChannel::ScreenZones,
+        WsChannel::InputEvents,
+    ];
 
     authorize_subscription_channels(RequestAuthContext::control(), &channels)
         .expect("control clients may subscribe to capture preview channels");
@@ -1996,12 +2004,73 @@ fn frame_rendered_events_pass_through_for_frame_event_clients() {
 
 fn sample_input_event() -> HypercolorEvent {
     HypercolorEvent::InputEventReceived {
-        event: hypercolor_types::event::InputEvent::Key {
-            source_id: "host:/dev/input/event3".into(),
-            key: "a".into(),
-            state: hypercolor_types::event::InputButtonState::Pressed,
+        event: TimedInputEvent {
+            event: hypercolor_types::event::InputEvent::Key {
+                source_id: "host:/dev/input/event3".into(),
+                key: "a".into(),
+                state: hypercolor_types::event::InputButtonState::Repeated,
+            },
+            at_ms: 700,
+            seq: 41,
+            physical_code: Some("evdev:key:30".into()),
+            repeat_count: 3,
         },
     }
+}
+
+#[test]
+fn input_event_websocket_payload_conforms_to_shared_timed_schema() {
+    let (name, data) = event_message_parts(&sample_input_event());
+    let decoded = TimedInputEventPayload::decode(&data).expect("decode shared input payload");
+
+    assert_eq!(name, "input_event_received");
+    assert_eq!(decoded.at_ms, 700);
+    assert_eq!(decoded.seq, 41);
+    assert_eq!(decoded.physical_code.as_deref(), Some("evdev:key:30"));
+    assert_eq!(decoded.repeat_count, 3);
+    assert_eq!(decoded.event["source_id"], "host:/dev/input/event3");
+    assert_eq!(decoded.event["key"], "a");
+    assert_eq!(decoded.event["state"], "repeated");
+}
+
+#[tokio::test]
+async fn input_event_relay_preserves_equal_timestamps_and_sequence_gaps() {
+    let bus = HypercolorBus::new();
+    let event_rx = bus.subscribe_all();
+    let subscriptions = SubscriptionState {
+        channels: ChannelSet::from_channels(&[WsChannel::InputEvents]),
+        ..SubscriptionState::default()
+    };
+    let (_subscriptions_tx, subscriptions_rx) = watch::channel(subscriptions);
+    let (json_tx, mut json_rx) = tokio::sync::mpsc::channel::<Utf8Bytes>(4);
+    let relay_handle = tokio::spawn(relay_events(event_rx, json_tx, subscriptions_rx));
+
+    let first = sample_input_event();
+    let mut second = sample_input_event();
+    let HypercolorEvent::InputEventReceived { event } = &mut second else {
+        panic!("sample should be an input event");
+    };
+    event.seq = 43;
+    event.repeat_count = 2;
+    bus.publish(first);
+    bus.publish(second);
+
+    for (expected_seq, expected_repeat_count) in [(41, 3), (43, 2)] {
+        let json = tokio::time::timeout(Duration::from_secs(1), json_rx.recv())
+            .await
+            .expect("input relay should respond")
+            .expect("input relay should remain open");
+        let wire: serde_json::Value = serde_json::from_str(json.as_str()).expect("relay JSON");
+        assert_eq!(wire["event"], "input_event_received");
+        let decoded = TimedInputEventPayload::decode(&wire["data"])
+            .expect("relay should use shared timed schema");
+        assert_eq!(decoded.at_ms, 700);
+        assert_eq!(decoded.seq, expected_seq);
+        assert_eq!(decoded.repeat_count, expected_repeat_count);
+    }
+
+    relay_handle.abort();
+    let _ = relay_handle.await;
 }
 
 #[test]
@@ -2097,6 +2166,7 @@ fn ws_capabilities_include_commands() {
     assert!(capabilities.contains(&"device_metrics".to_owned()));
     assert!(capabilities.contains(&"sensors".to_owned()));
     assert!(capabilities.contains(&"display_preview".to_owned()));
+    assert!(capabilities.contains(&"input_events".to_owned()));
     assert!(capabilities.contains(&"commands".to_owned()));
     assert!(capabilities.contains(&"canvas_format_jpeg".to_owned()));
 }
@@ -2138,6 +2208,21 @@ fn websocket_manifest_matches_protocol_constants() {
         })
         .collect::<Vec<_>>();
     assert_eq!(manifest_capabilities, ws_capabilities());
+
+    let input_channel = manifest_channels
+        .iter()
+        .position(|channel| channel == "input_events")
+        .and_then(|index| {
+            manifest["channels"]
+                .as_array()
+                .and_then(|channels| channels.get(index))
+        })
+        .expect("input_events manifest channel");
+    assert_eq!(input_channel["payload_schema"], "timed_input_event_v1");
+    assert_eq!(
+        manifest["json_payloads"]["timed_input_event_v1"]["schema_version"],
+        hypercolor_leptos_ext::ws::INPUT_EVENT_PAYLOAD_SCHEMA
+    );
 
     let binary_tags = manifest["binary_messages"]
         .as_array()

@@ -281,13 +281,32 @@ impl InputEvent {
 /// `at_ms` is milliseconds on the daemon's monotonic clock at capture time,
 /// so effects can spread a burst of events delivered in one frame across
 /// their real arrival times. `seq` is assigned at the frame fan-out point
-/// and is strictly increasing across frames.
+/// and is strictly increasing across frames. `physical_code` keeps the
+/// platform-neutral producer identity when one exists, while the logical
+/// key and state remain in [`InputEvent`]. `repeat_count` preserves collapsed
+/// repeat multiplicity and is one for ordinary edges.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TimedInputEvent {
     pub event: InputEvent,
+    #[serde(default)]
     pub at_ms: u64,
     #[serde(default)]
     pub seq: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub physical_code: Option<String>,
+    #[serde(
+        default = "default_input_event_repeat_count",
+        skip_serializing_if = "input_event_repeat_count_is_one"
+    )]
+    pub repeat_count: u32,
+}
+
+const fn default_input_event_repeat_count() -> u32 {
+    1
+}
+
+const fn input_event_repeat_count_is_one(value: &u32) -> bool {
+    *value == 1
 }
 
 /// Context dimensions for automation triggers.
@@ -756,7 +775,10 @@ pub enum HypercolorEvent {
     CaptureStopped { reason: String },
 
     /// A discrete host input event was observed.
-    InputEventReceived { event: InputEvent },
+    InputEventReceived {
+        #[serde(flatten)]
+        event: TimedInputEvent,
+    },
 
     // ── System Events ───────────────────────────────────────────────
     /// A frame was rendered and pushed to all device backends.

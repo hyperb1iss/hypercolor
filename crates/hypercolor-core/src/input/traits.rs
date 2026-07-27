@@ -479,7 +479,8 @@ pub trait InputSource: Send {
 
     /// Drain any discrete input events captured since the last frame.
     ///
-    /// Events are capture-timestamped by the source; delivery sequence
+    /// Events are capture-timestamped by the source and retain portable
+    /// physical-code and repeat metadata when available; delivery sequence
     /// numbers are assigned at the frame fan-out point. Sources that only
     /// expose sampled state can keep the default empty implementation.
     fn drain_events(&mut self) -> Vec<TimedInputEvent> {

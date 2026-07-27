@@ -85,6 +85,11 @@ fn a_press_lands_in_held_state_and_recents() {
             ..
         }
     ));
+    assert_eq!(
+        events[0].physical_code.as_deref(),
+        Some("windows:set1:none:1e")
+    );
+    assert_eq!(events[0].repeat_count, 1);
 }
 
 #[test]
@@ -138,6 +143,9 @@ fn a_held_key_repeats_without_machine_gunning_recents() {
             ..
         }
     )));
+    assert!(events.iter().all(|timed| {
+        timed.physical_code.as_deref() == Some("windows:set1:none:1e") && timed.repeat_count == 1
+    }));
 }
 
 #[test]
@@ -190,7 +198,7 @@ fn a_release_on_one_keyboard_does_not_clear_anothers_hold() {
 #[test]
 fn buttons_track_per_source_and_set_the_down_flag() {
     let mut input = WindowsHostInput::new(true, true);
-    let (data, _) = fold(
+    let (data, events) = fold(
         &mut input,
         &[RawInputEvent::Button {
             source_id: source(MOUSE),
@@ -200,6 +208,10 @@ fn buttons_track_per_source_and_set_the_down_flag() {
     );
     assert_eq!(data.mouse.buttons, vec!["left".to_owned()]);
     assert!(data.mouse.down);
+    assert_eq!(
+        events[0].physical_code.as_deref(),
+        Some("windows:button:left")
+    );
 }
 
 #[test]
@@ -242,6 +254,10 @@ fn wheel_travel_reaches_the_event_bus_unscaled() {
             ..
         }
     ));
+    assert_eq!(
+        events[0].physical_code.as_deref(),
+        Some("windows:wheel:vertical")
+    );
 }
 
 // ── Devices ────────────────────────────────────────────────────────────────
@@ -309,6 +325,7 @@ fn removing_a_device_synthesizes_releases_for_everything_it_held() {
             ..
         }
     )));
+    assert!(events.iter().all(|timed| timed.physical_code.is_none()));
 }
 
 #[test]

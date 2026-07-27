@@ -23,7 +23,9 @@ use anyhow::{Context, Result, bail};
 use axum::Router;
 use hypercolor_daemon::api::{self, AppState};
 use hypercolor_daemon::device_metrics::{DeviceMetrics, DeviceMetricsSnapshot};
+use hypercolor_leptos_ext::ws::TimedInputEventPayload;
 use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
+use hypercolor_types::event::{HypercolorEvent, InputButtonState, InputEvent, TimedInputEvent};
 use hypercolor_types::sensor::SystemSnapshot;
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -629,6 +631,55 @@ async fn multi_channel_subscribe_returns_all_requested_channels() {
         config.get("events").is_none(),
         "events has no per-channel config block"
     );
+}
+
+#[tokio::test]
+async fn input_event_subscription_receives_canonical_timed_payload() {
+    let state = test_app_state();
+    let addr = spawn_test_daemon_with_state(Arc::clone(&state)).await;
+    let mut stream = ws_connect(addr).await.expect("ws handshake");
+    let _ = recv_until_type(&mut stream, "hello").await.expect("hello");
+
+    ws_send_text(
+        &mut stream,
+        &json!({ "type": "subscribe", "channels": ["input_events"] }).to_string(),
+    )
+    .await
+    .expect("send input event subscription");
+    let ack = recv_until_type(&mut stream, "subscribed")
+        .await
+        .expect("input event subscribed ack");
+    assert_eq!(ack["channels"], json!(["input_events"]));
+
+    state
+        .event_bus
+        .publish(HypercolorEvent::InputEventReceived {
+            event: TimedInputEvent {
+                event: InputEvent::Key {
+                    source_id: "host:integration-keyboard".into(),
+                    key: "space".into(),
+                    state: InputButtonState::Repeated,
+                },
+                at_ms: 5_000,
+                seq: 88,
+                physical_code: Some("win:e0:0039".into()),
+                repeat_count: 6,
+            },
+        });
+
+    let message = recv_until_type(&mut stream, "event")
+        .await
+        .expect("timed input event relay");
+    assert_eq!(message["event"], "input_event_received");
+    let decoded = TimedInputEventPayload::decode(&message["data"])
+        .expect("daemon should emit the shared timed input schema");
+    assert_eq!(decoded.at_ms, 5_000);
+    assert_eq!(decoded.seq, 88);
+    assert_eq!(decoded.physical_code.as_deref(), Some("win:e0:0039"));
+    assert_eq!(decoded.repeat_count, 6);
+    assert_eq!(decoded.event["source_id"], "host:integration-keyboard");
+    assert_eq!(decoded.event["key"], "space");
+    assert_eq!(decoded.event["state"], "repeated");
 }
 
 // ── Scenario 3: Subscribe with an unsupported channel ────────────────────

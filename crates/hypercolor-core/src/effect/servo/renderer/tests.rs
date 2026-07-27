@@ -1276,6 +1276,8 @@ fn queued_frames_append_event_batches_from_superseded_inputs() {
             },
             at_ms: seq * 10,
             seq,
+            physical_code: None,
+            repeat_count: 1,
         }
     }
 

@@ -618,6 +618,8 @@ fn fold_event(state: &mut SharedState, event: &RawInputEvent, at_ms: u64, event_
                 },
                 at_ms,
                 seq: 0,
+                physical_code: Some("windows:wheel:vertical".to_owned()),
+                repeat_count: 1,
             },
             event_limit,
         ),
@@ -740,6 +742,8 @@ fn fold_key(
             },
             at_ms,
             seq: 0,
+            physical_code: windows_key_physical_code(make_code, prefix),
+            repeat_count: 1,
         },
         event_limit,
     );
@@ -778,6 +782,8 @@ fn fold_button(
             },
             at_ms,
             seq: 0,
+            physical_code: Some(format!("windows:button:{name}")),
+            repeat_count: 1,
         },
         event_limit,
     );
@@ -842,6 +848,8 @@ fn synthesize_releases(state: &mut SharedState, source_id: &str, at_ms: u64, eve
                     },
                     at_ms,
                     seq: 0,
+                    physical_code: None,
+                    repeat_count: 1,
                 },
                 event_limit,
             );
@@ -859,9 +867,26 @@ fn synthesize_releases(state: &mut SharedState, source_id: &str, at_ms: u64, eve
                     },
                     at_ms,
                     seq: 0,
+                    physical_code: None,
+                    repeat_count: 1,
                 },
                 event_limit,
             );
         }
     }
+}
+
+fn windows_key_physical_code(
+    make_code: u16,
+    prefix: hypercolor_windows_input::RawKeyPrefix,
+) -> Option<String> {
+    if make_code == 0 {
+        return None;
+    }
+    let prefix = match prefix {
+        hypercolor_windows_input::RawKeyPrefix::None => "none",
+        hypercolor_windows_input::RawKeyPrefix::E0 => "e0",
+        hypercolor_windows_input::RawKeyPrefix::E1 => "e1",
+    };
+    Some(format!("windows:set1:{prefix}:{make_code:02x}"))
 }

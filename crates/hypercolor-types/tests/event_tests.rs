@@ -8,7 +8,8 @@ use hypercolor_types::event::{
     AssetChangeKind, ChangeTrigger, ContextType, DisconnectReason, EffectDegradationState,
     EffectRef, EffectStopReason, EventCategory, EventControlValue, EventPriority, FrameData,
     FrameTiming, HypercolorEvent, InputButtonState, InputEvent, LayerHealth, LayerStackChangeKind,
-    SceneChangeReason, Severity, TransitionRef, ZoneChangeKind, ZoneColors, ZoneRef,
+    SceneChangeReason, Severity, TimedInputEvent, TransitionRef, ZoneChangeKind, ZoneColors,
+    ZoneRef,
 };
 use hypercolor_types::layer::SceneLayerId;
 use hypercolor_types::scene::{SceneId, SceneKind, SceneMutationMode, ZoneId, ZoneRole};
@@ -405,10 +406,16 @@ fn input_events_have_input_category() {
             reason: "user request".into(),
         },
         HypercolorEvent::InputEventReceived {
-            event: InputEvent::Key {
-                source_id: "host:/dev/input/event4".into(),
-                key: "a".into(),
-                state: InputButtonState::Pressed,
+            event: TimedInputEvent {
+                event: InputEvent::Key {
+                    source_id: "host:/dev/input/event4".into(),
+                    key: "a".into(),
+                    state: InputButtonState::Pressed,
+                },
+                at_ms: 0,
+                seq: 0,
+                physical_code: None,
+                repeat_count: 1,
             },
         },
         HypercolorEvent::InputSourceChanged {
@@ -430,11 +437,17 @@ fn input_events_have_input_category() {
 #[test]
 fn input_event_received_round_trips_through_json() {
     let original = HypercolorEvent::InputEventReceived {
-        event: InputEvent::MidiControlChange {
-            source_id: "midi:launch-control".into(),
-            channel: 1,
-            controller: 74,
-            value: 96,
+        event: TimedInputEvent {
+            event: InputEvent::MidiControlChange {
+                source_id: "midi:launch-control".into(),
+                channel: 1,
+                controller: 74,
+                value: 96,
+            },
+            at_ms: 431,
+            seq: 19,
+            physical_code: Some("midi:cc:74".into()),
+            repeat_count: 3,
         },
     };
 
@@ -444,20 +457,52 @@ fn input_event_received_round_trips_through_json() {
     match restored {
         HypercolorEvent::InputEventReceived {
             event:
-                InputEvent::MidiControlChange {
-                    source_id,
-                    channel,
-                    controller,
-                    value,
+                TimedInputEvent {
+                    event:
+                        InputEvent::MidiControlChange {
+                            source_id,
+                            channel,
+                            controller,
+                            value,
+                        },
+                    at_ms,
+                    seq,
+                    physical_code,
+                    repeat_count,
                 },
         } => {
             assert_eq!(source_id, "midi:launch-control");
             assert_eq!(channel, 1);
             assert_eq!(controller, 74);
             assert_eq!(value, 96);
+            assert_eq!(at_ms, 431);
+            assert_eq!(seq, 19);
+            assert_eq!(physical_code.as_deref(), Some("midi:cc:74"));
+            assert_eq!(repeat_count, 3);
         }
         other => panic!("expected InputEventReceived after round trip, got {other:?}"),
     }
+}
+
+#[test]
+fn input_event_received_accepts_prior_event_only_payload() {
+    let json = r#"{"type":"InputEventReceived","data":{"event":{"kind":"key","source_id":"host:legacy","key":"a","state":"repeated"}}}"#;
+    let restored: HypercolorEvent = serde_json::from_str(json).expect("deserialize legacy event");
+    let HypercolorEvent::InputEventReceived { event } = restored else {
+        panic!("expected input event");
+    };
+
+    assert_eq!(event.at_ms, 0);
+    assert_eq!(event.seq, 0);
+    assert_eq!(event.physical_code, None);
+    assert_eq!(event.repeat_count, 1);
+    assert!(matches!(
+        event.event,
+        InputEvent::Key {
+            state: InputButtonState::Repeated,
+            ..
+        }
+    ));
 }
 
 #[test]
@@ -1165,8 +1210,6 @@ fn frame_data_is_clone_and_debug() {
 
 #[test]
 fn mouse_input_events_round_trip_through_json() {
-    use hypercolor_types::event::TimedInputEvent;
-
     let timed = TimedInputEvent {
         event: InputEvent::MouseButton {
             source_id: "host:/dev/input/event4".into(),
@@ -1175,6 +1218,8 @@ fn mouse_input_events_round_trip_through_json() {
         },
         at_ms: 12_345,
         seq: 7,
+        physical_code: Some("evdev:key:272".into()),
+        repeat_count: 2,
     };
 
     let json = serde_json::to_string(&timed).expect("serialize timed event");
@@ -1194,9 +1239,9 @@ fn mouse_input_events_round_trip_through_json() {
 
 #[test]
 fn timed_input_event_seq_defaults_to_zero_when_absent() {
-    use hypercolor_types::event::TimedInputEvent;
-
     let json = r#"{"event":{"kind":"key","source_id":"s","key":"a","state":"pressed"},"at_ms":5}"#;
     let restored: TimedInputEvent = serde_json::from_str(json).expect("deserialize without seq");
     assert_eq!(restored.seq, 0);
+    assert_eq!(restored.physical_code, None);
+    assert_eq!(restored.repeat_count, 1);
 }

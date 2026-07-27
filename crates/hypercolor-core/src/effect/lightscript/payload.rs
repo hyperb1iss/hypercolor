@@ -202,6 +202,9 @@ pub(super) struct LightScriptInputEventPayload {
     pub(super) delta: Option<i32>,
     pub(super) at_ms: u64,
     pub(super) seq: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) physical_code: Option<String>,
+    pub(super) repeat_count: u32,
 }
 
 impl LightScriptInputEventPayload {
@@ -261,6 +264,8 @@ impl LightScriptInputEventPayload {
             delta,
             at_ms: timed.at_ms,
             seq: timed.seq,
+            physical_code: timed.physical_code.clone(),
+            repeat_count: timed.repeat_count,
         })
     }
 }
@@ -836,6 +841,8 @@ mod interaction_payload_v2_tests {
                 },
                 at_ms: 100,
                 seq: 9,
+                physical_code: Some("evdev:key:30".into()),
+                repeat_count: 3,
             },
             TimedInputEvent {
                 event: InputEvent::MouseWheel {
@@ -844,6 +851,8 @@ mod interaction_payload_v2_tests {
                 },
                 at_ms: 105,
                 seq: 10,
+                physical_code: None,
+                repeat_count: 1,
             },
             TimedInputEvent {
                 event: InputEvent::MidiRealtime {
@@ -852,6 +861,8 @@ mod interaction_payload_v2_tests {
                 },
                 at_ms: 106,
                 seq: 11,
+                physical_code: Some("midi:realtime:clock".into()),
+                repeat_count: 1,
             },
         ];
 
@@ -868,6 +879,8 @@ mod interaction_payload_v2_tests {
         let events = value["events"].as_array().expect("events array");
         assert_eq!(events.len(), 2, "MIDI edges stay off the effect contract");
         assert_eq!(events[0]["kind"], serde_json::json!("key"));
+        assert_eq!(events[0]["physicalCode"], serde_json::json!("evdev:key:30"));
+        assert_eq!(events[0]["repeatCount"], serde_json::json!(3));
         assert_eq!(events[0]["key"], serde_json::json!("a"));
         assert_eq!(events[0]["state"], serde_json::json!("pressed"));
         assert_eq!(events[0]["atMs"], serde_json::json!(100));

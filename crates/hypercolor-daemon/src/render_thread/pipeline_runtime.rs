@@ -211,7 +211,7 @@ impl InputRouteCache {
             state
                 .event_bus
                 .publish(HypercolorEvent::InputEventReceived {
-                    event: event.event.clone(),
+                    event: event.clone(),
                 });
         }
         inputs.interaction.batch.window_secs = delta_secs.max(0.0);
@@ -1721,6 +1721,8 @@ mod tests {
                     },
                     at_ms: 1,
                     seq: 0,
+                    physical_code: None,
+                    repeat_count: 1,
                 }],
                 running: false,
             }
