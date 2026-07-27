@@ -229,6 +229,11 @@ bench-hal *args='':
 bench-daemon *args='':
     ./scripts/cargo-cache-build.sh cargo bench -p hypercolor-daemon --bench render_pipeline -- {{ args }}
 
+# Measure D3D11 capture reduction with Windows-native build caching
+[windows]
+bench-windows-capture *args='':
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo bench -p hypercolor-windows-capture --features capture-bench --bench capture_reduction -- {{ args }}
+
 # Run all benchmark suites
 bench:
     just bench-core

@@ -3,7 +3,7 @@ use super::{
     average_channel, classify_hresult, desktop_frame_source, logical_to_scanout,
     native_scanout_extent, pointer_scanout_geometry, reacquire_duplication, scanout_to_logical,
 };
-use crate::{CaptureError, DisplayRotation};
+use crate::{CaptureError, DisplayRotation, ReductionPath};
 use std::cell::Cell;
 use std::rc::Rc;
 use windows::Win32::Foundation::{E_ACCESSDENIED, E_FAIL};
@@ -57,6 +57,164 @@ fn pointer(kind: PointerShapeKind, bytes: Vec<u8>) -> PointerState {
         }),
         shape_generation: 1,
     }
+}
+
+fn cpu_reduce(
+    bgra: &[u8],
+    width: u32,
+    height: u32,
+    max_width: u32,
+    pointer: &PointerState,
+    rotation: DisplayRotation,
+) -> Vec<u8> {
+    let mut rgba = Vec::new();
+    super::DesktopDuplicator::copy_bgra_rows(
+        super::BgraRows {
+            bytes: bgra,
+            row_pitch: width as usize * 4,
+            width,
+            height,
+        },
+        &mut rgba,
+        max_width,
+        pointer,
+        rotation,
+    )
+    .expect("fixture rows are valid");
+    rgba
+}
+
+fn assert_gpu_parity(
+    bgra: &[u8],
+    width: u32,
+    height: u32,
+    max_width: u32,
+    pointer: &PointerState,
+    rotation: DisplayRotation,
+) {
+    let cpu = cpu_reduce(bgra, width, height, max_width, pointer, rotation);
+    let gpu =
+        super::gpu_reduction::reduce_fixture(bgra, width, height, max_width, pointer, rotation)
+            .expect("WARP compute reduction succeeds");
+    assert_eq!(gpu.len(), cpu.len());
+    for (index, (gpu, cpu)) in gpu.iter().zip(&cpu).enumerate() {
+        assert!(
+            gpu.abs_diff(*cpu) <= 1,
+            "channel {index} differs: GPU={gpu}, CPU={cpu}"
+        );
+    }
+}
+
+#[test]
+fn embedded_capture_shaders_compile_with_the_system_compiler() {
+    super::gpu_reduction::compile_shaders_for_test().expect("both compute entries compile");
+}
+
+#[test]
+fn shader_creation_failure_selects_explicit_degraded_cpu_telemetry() {
+    assert!(
+        super::gpu_reduction::invalid_shader_is_rejected_for_test()
+            .expect("WARP test device opens")
+    );
+    let telemetry = super::fallback_reduction_telemetry("synthetic shader failure".to_owned());
+    assert_eq!(telemetry.path, ReductionPath::CpuFallback);
+    assert_eq!(telemetry.gpu_failures, 1);
+    assert_eq!(telemetry.issue.as_deref(), Some("synthetic shader failure"));
+}
+
+#[test]
+fn gpu_readback_ring_coalesces_pressure_at_fixed_capacity() {
+    let (pending, busy) = super::gpu_reduction::ring_pressure_is_bounded_for_test()
+        .expect("WARP ring pressure fixture succeeds");
+
+    assert_eq!(pending, 3);
+    assert!(busy);
+}
+
+#[test]
+fn pointer_upload_normalizes_color_and_monochrome_shapes() {
+    let color = pointer(PointerShapeKind::Color, vec![10, 20, 30, 40]);
+    assert_eq!(
+        super::gpu_reduction::normalized_pointer_for_test(
+            color.shape.as_ref().expect("shape exists")
+        ),
+        [30, 20, 10, 40]
+    );
+    let monochrome = PointerShape {
+        kind: PointerShapeKind::Monochrome,
+        width: 2,
+        height: 2,
+        pitch: 1,
+        hotspot_x: 0,
+        hotspot_y: 0,
+        bytes: vec![0b1000_0000, 0b0100_0000],
+    };
+    assert_eq!(
+        super::gpu_reduction::normalized_pointer_for_test(&monochrome),
+        [0xFF, 0, 0, 0xFF, 0, 0xFF, 0, 0xFF]
+    );
+}
+
+#[test]
+fn gpu_reduction_matches_cpu_for_odd_extents_and_clipped_edge_boxes() {
+    let bgra = (0..5 * 3)
+        .flat_map(|index| {
+            let value = u8::try_from(index * 11).unwrap_or(u8::MAX);
+            [value, value.wrapping_add(17), value.wrapping_add(31), 0xFF]
+        })
+        .collect::<Vec<_>>();
+
+    assert_gpu_parity(
+        &bgra,
+        5,
+        3,
+        2,
+        &PointerState::default(),
+        DisplayRotation::Identity,
+    );
+}
+
+#[test]
+fn gpu_reduction_matches_cpu_for_every_cursor_shape_and_rotation() {
+    let bgra = [25, 50, 75, 0xFF].repeat(24);
+    let fixtures = [
+        pointer(PointerShapeKind::Color, vec![200, 100, 50, 128]),
+        pointer(PointerShapeKind::MaskedColor, vec![0x0F, 0x33, 0x55, 0xFF]),
+        pointer(PointerShapeKind::Monochrome, vec![0x00, 0x80]),
+    ];
+    for rotation in [
+        DisplayRotation::Identity,
+        DisplayRotation::Clockwise90,
+        DisplayRotation::Clockwise180,
+        DisplayRotation::Clockwise270,
+    ] {
+        for mut pointer in fixtures.clone() {
+            pointer.position_x = 2;
+            pointer.position_y = 1;
+            assert_gpu_parity(&bgra, 6, 4, 3, &pointer, rotation);
+        }
+    }
+}
+
+#[test]
+fn gpu_cursor_only_update_recomposes_from_clean_desktop_without_residue() {
+    let bgra = [10, 20, 30, 0xFF, 40, 50, 60, 0xFF];
+    let first = pointer(PointerShapeKind::Color, vec![200, 100, 50, 0xFF]);
+    let mut second = first.clone();
+    second.position_x = 1;
+    let (first_gpu, second_gpu) =
+        super::gpu_reduction::reduce_pointer_sequence(&bgra, 2, 1, &first, &second)
+            .expect("pointer-only WARP sequence succeeds");
+
+    assert_eq!(
+        first_gpu,
+        cpu_reduce(&bgra, 2, 1, 2, &first, DisplayRotation::Identity)
+    );
+    assert_eq!(
+        second_gpu,
+        cpu_reduce(&bgra, 2, 1, 2, &second, DisplayRotation::Identity)
+    );
+    assert_eq!(&second_gpu[..4], [30, 20, 10, 0xFF]);
 }
 
 #[test]

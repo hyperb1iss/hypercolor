@@ -7,6 +7,37 @@ use thiserror::Error;
 /// Screen capture result type.
 pub type CaptureResult<T> = Result<T, CaptureError>;
 
+/// Active Windows capture reduction implementation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ReductionPath {
+    /// D3D11 compute reduction with pipelined reduced-surface readback.
+    Gpu,
+    /// Full-quality CPU box reduction used when the GPU path is unavailable.
+    #[default]
+    CpuFallback,
+}
+
+/// Snapshot of capture reduction health and throughput counters.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ReductionTelemetry {
+    /// Currently active implementation.
+    pub path: ReductionPath,
+    /// GPU reductions submitted to the immediate context.
+    pub gpu_submitted: u64,
+    /// GPU reductions whose reduced surface reached the CPU.
+    pub gpu_completed: u64,
+    /// Frames reduced by the full-quality CPU fallback.
+    pub cpu_completed: u64,
+    /// Submissions coalesced because every staging slot was still busy.
+    pub ring_busy: u64,
+    /// Bytes copied from reduced staging surfaces to CPU memory.
+    pub readback_bytes: u64,
+    /// GPU initialization or execution failures that selected fallback.
+    pub gpu_failures: u64,
+    /// Degraded-path reason, absent while GPU reduction is healthy.
+    pub issue: Option<String>,
+}
+
 /// Screen capture failures.
 #[derive(Debug, Error)]
 pub enum CaptureError {

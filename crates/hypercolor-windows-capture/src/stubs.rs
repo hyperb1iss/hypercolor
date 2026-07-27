@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use crate::shared::{CaptureError, CaptureResult, Frame, MonitorSelector};
+use crate::shared::{CaptureError, CaptureResult, Frame, MonitorSelector, ReductionTelemetry};
 
 /// Desktop Duplication placeholder for platforms without the API.
 pub struct DesktopDuplicator {
@@ -66,6 +66,15 @@ impl DesktopDuplicator {
 
     /// Change the subsample target for subsequent frames.
     pub const fn set_max_width(&mut self, _max_width: u32) {}
+
+    /// CPU fallback telemetry for the unsupported platform stub.
+    #[must_use]
+    pub fn reduction_telemetry(&self) -> ReductionTelemetry {
+        ReductionTelemetry {
+            issue: Some("desktop screen capture is only available on Windows".to_owned()),
+            ..ReductionTelemetry::default()
+        }
+    }
 
     /// Always fails: Desktop Duplication is Windows-only.
     ///
