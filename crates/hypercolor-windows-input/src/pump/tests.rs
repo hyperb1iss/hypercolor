@@ -7,11 +7,9 @@ use windows::Win32::Foundation::{
 
 use super::{
     BufferReadDisposition, INITIAL_BUFFER_QWORDS, MAX_BUFFER_QWORDS, MAX_RESIZE_BACKOFF_MS,
-    MAX_RESIZE_RETRIES, PumpError, SourceKeyCanonicalizers, classify_buffer_read,
-    classify_wait_result, initial_topology, next_buffer_capacity,
+    MAX_RESIZE_RETRIES, PumpError, classify_buffer_read, classify_wait_result, initial_topology,
+    next_buffer_capacity,
 };
-use crate::RawKeyPrefix;
-use crate::decode::CanonicalKeyReport;
 
 #[test]
 fn access_denied_is_a_terminal_buffer_failure() {
@@ -117,56 +115,5 @@ fn resize_beyond_the_safety_ceiling_is_terminal() {
             required_bytes,
             capacity_bytes: ceiling_bytes,
         })
-    );
-}
-
-#[test]
-fn interleaved_keyboards_keep_composite_state_per_source() {
-    let keyboard_a: std::sync::Arc<str> = "keyboard:a".into();
-    let keyboard_b: std::sync::Arc<str> = "keyboard:b".into();
-    let mut canonicalizers = SourceKeyCanonicalizers::default();
-
-    assert_eq!(
-        canonicalizers.canonicalize(&keyboard_a, 0x1D, 0x04, 0x11),
-        CanonicalKeyReport::Pending
-    );
-    assert_eq!(
-        canonicalizers.canonicalize(&keyboard_b, 0x1E, 0, 0x41),
-        CanonicalKeyReport::Edge {
-            make_code: 0x1E,
-            prefix: RawKeyPrefix::None,
-            vkey: 0x41,
-            pressed: true,
-        }
-    );
-    assert_eq!(
-        canonicalizers.canonicalize(&keyboard_a, 0x45, 0, 0x13),
-        CanonicalKeyReport::Edge {
-            make_code: 0x45,
-            prefix: RawKeyPrefix::E1,
-            vkey: 0x13,
-            pressed: true,
-        }
-    );
-}
-
-#[test]
-fn source_reset_discards_an_incomplete_composite_sequence() {
-    let keyboard: std::sync::Arc<str> = "keyboard:a".into();
-    let mut canonicalizers = SourceKeyCanonicalizers::default();
-
-    assert_eq!(
-        canonicalizers.canonicalize(&keyboard, 0x1D, 0x04, 0x11),
-        CanonicalKeyReport::Pending
-    );
-    canonicalizers.reset(&keyboard);
-    assert_eq!(
-        canonicalizers.canonicalize(&keyboard, 0x1E, 0, 0x41),
-        CanonicalKeyReport::Edge {
-            make_code: 0x1E,
-            prefix: RawKeyPrefix::None,
-            vkey: 0x41,
-            pressed: true,
-        }
     );
 }

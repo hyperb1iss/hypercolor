@@ -19,7 +19,6 @@
 //! user keeps moving the mouse, so shutdown would hang exactly when the
 //! machine is busiest.
 
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -125,33 +124,6 @@ enum BufferReadDisposition {
     Read(u32),
     Resize,
     Failed { error_code: u32 },
-}
-
-#[derive(Debug, Default)]
-struct SourceKeyCanonicalizers {
-    by_source: HashMap<Arc<str>, KeyCanonicalizer>,
-}
-
-impl SourceKeyCanonicalizers {
-    fn canonicalize(
-        &mut self,
-        source_id: &Arc<str>,
-        make_code: u16,
-        flags: u16,
-        vkey: u16,
-    ) -> CanonicalKeyReport {
-        if let Some(canonicalizer) = self.by_source.get_mut(source_id.as_ref()) {
-            return canonicalizer.canonicalize(make_code, flags, vkey);
-        }
-        let mut canonicalizer = KeyCanonicalizer::default();
-        let report = canonicalizer.canonicalize(make_code, flags, vkey);
-        self.by_source.insert(Arc::clone(source_id), canonicalizer);
-        report
-    }
-
-    fn reset(&mut self, source_id: &str) {
-        self.by_source.remove(source_id);
-    }
 }
 
 fn classify_wait_result(wait_result: u32, error_code: u32) -> Result<(), PumpError> {
@@ -291,7 +263,7 @@ pub struct Pump {
     generation: u64,
     config: RawInputConfig,
     cache: DeviceCache,
-    key_canonicalizers: SourceKeyCanonicalizers,
+    key_canonicalizer: KeyCanonicalizer,
     buffer: Vec<u64>,
     /// Reused across drains so `DefRawInputProc` costs no allocation on the
     /// hot path. Only ever holds addresses into `buffer`, rebuilt each slice.
@@ -334,7 +306,7 @@ impl Pump {
             generation,
             config,
             cache: DeviceCache::new(),
-            key_canonicalizers: SourceKeyCanonicalizers::default(),
+            key_canonicalizer: KeyCanonicalizer,
             buffer: vec![0u64; INITIAL_BUFFER_QWORDS],
             record_pointers: Vec::new(),
             events: PendingEvents::new(),
@@ -843,14 +815,11 @@ impl Pump {
     }
 
     fn decode_keyboard(&mut self, source_id: &Arc<str>, make_code: u16, flags: u16, vkey: u16) {
-        let report = self
-            .key_canonicalizers
-            .canonicalize(source_id, make_code, flags, vkey);
+        let report = self.key_canonicalizer.canonicalize(make_code, flags, vkey);
 
         match report {
-            CanonicalKeyReport::Ignored | CanonicalKeyReport::Pending => {}
+            CanonicalKeyReport::Ignored => {}
             CanonicalKeyReport::Overrun => {
-                self.key_canonicalizers.reset(source_id);
                 // The keyboard's own view of held state is now unreliable, so
                 // core releases everything this source held, in stream order,
                 // before applying anything that follows. Deferring to a "next
@@ -1069,7 +1038,6 @@ impl Pump {
         match u32::try_from(w_param.0).unwrap_or_default() {
             GIDC_ARRIVAL => {
                 if let Some(identity) = self.cache.resolve(handle) {
-                    self.key_canonicalizers.reset(identity.source_id.as_ref());
                     self.events.push(RawInputEvent::DeviceArrived {
                         source_id: Arc::clone(&identity.source_id),
                         label: identity.label.clone(),
@@ -1079,7 +1047,6 @@ impl Pump {
             }
             GIDC_REMOVAL => {
                 if let Some(identity) = self.cache.remove(handle) {
-                    self.key_canonicalizers.reset(identity.source_id.as_ref());
                     self.events.push(RawInputEvent::DeviceRemoved {
                         source_id: identity.source_id,
                     });

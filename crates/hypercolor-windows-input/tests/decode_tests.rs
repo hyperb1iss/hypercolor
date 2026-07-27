@@ -126,16 +126,12 @@ fn terminal_services_flags_carry_no_key_edge() {
 #[test]
 fn pause_sequence_emits_one_canonical_edge_per_action() {
     const VK_PAUSE: u16 = 0x13;
-    let mut canonicalizer = KeyCanonicalizer::default();
+    let canonicalizer = KeyCanonicalizer;
 
     assert_eq!(
-        canonicalizer.canonicalize(0x1D, RI_KEY_E1, 0x11),
-        CanonicalKeyReport::Pending
-    );
-    assert_eq!(
-        canonicalizer.canonicalize(0x45, 0, VK_PAUSE),
+        canonicalizer.canonicalize(0x1D, RI_KEY_E1, VK_PAUSE),
         CanonicalKeyReport::Edge {
-            make_code: 0x45,
+            make_code: 0x1D,
             prefix: RawKeyPrefix::E1,
             vkey: VK_PAUSE,
             pressed: true,
@@ -143,29 +139,31 @@ fn pause_sequence_emits_one_canonical_edge_per_action() {
     );
 
     assert_eq!(
-        canonicalizer.canonicalize(0x1D, RI_KEY_E1 | RI_KEY_BREAK, 0x11),
-        CanonicalKeyReport::Pending
-    );
-    assert_eq!(
-        canonicalizer.canonicalize(0x45, RI_KEY_BREAK, VK_PAUSE),
+        canonicalizer.canonicalize(0x1D, RI_KEY_E1 | RI_KEY_BREAK, VK_PAUSE),
         CanonicalKeyReport::Edge {
-            make_code: 0x45,
+            make_code: 0x1D,
             prefix: RawKeyPrefix::E1,
             vkey: VK_PAUSE,
             pressed: false,
         }
     );
+
+    for flags in [0, RI_KEY_BREAK] {
+        assert_eq!(
+            canonicalizer.canonicalize(0x45, flags, 0xFF),
+            CanonicalKeyReport::Ignored
+        );
+    }
 }
 
 #[test]
 fn repeated_pause_sequences_preserve_each_logical_press() {
-    let mut canonicalizer = KeyCanonicalizer::default();
-    let mut reports = Vec::new();
+    let canonicalizer = KeyCanonicalizer;
 
-    for _ in 0..2 {
-        reports.push(canonicalizer.canonicalize(0x1D, RI_KEY_E1, 0x11));
-        reports.push(canonicalizer.canonicalize(0x45, 0, 0x13));
-    }
+    let reports = [
+        canonicalizer.canonicalize(0x1D, RI_KEY_E1, 0x13),
+        canonicalizer.canonicalize(0x1D, RI_KEY_E1, 0x13),
+    ];
 
     assert_eq!(
         reports
@@ -178,7 +176,7 @@ fn repeated_pause_sequences_preserve_each_logical_press() {
 
 #[test]
 fn print_screen_suppresses_only_its_fake_shift_records() {
-    let mut canonicalizer = KeyCanonicalizer::default();
+    let canonicalizer = KeyCanonicalizer;
     let reports = [
         canonicalizer.canonicalize(0x2A, RI_KEY_E0, 0x10),
         canonicalizer.canonicalize(0x37, RI_KEY_E0, 0x2C),
@@ -210,7 +208,7 @@ fn print_screen_suppresses_only_its_fake_shift_records() {
 
 #[test]
 fn shifted_numpad_navigation_drops_fake_shift_without_dropping_arrow() {
-    let mut canonicalizer = KeyCanonicalizer::default();
+    let canonicalizer = KeyCanonicalizer;
     let reports = [
         canonicalizer.canonicalize(0x2A, RI_KEY_E0 | RI_KEY_BREAK, 0x10),
         canonicalizer.canonicalize(0x48, RI_KEY_E0, 0x26),
@@ -241,8 +239,8 @@ fn shifted_numpad_navigation_drops_fake_shift_without_dropping_arrow() {
 }
 
 #[test]
-fn genuine_shift_edges_and_non_fake_extended_shift_code_survive() {
-    let mut canonicalizer = KeyCanonicalizer::default();
+fn genuine_unprefixed_shift_edges_survive_and_fake_extended_shifts_do_not() {
+    let canonicalizer = KeyCanonicalizer;
 
     assert!(matches!(
         canonicalizer.canonicalize(0x2A, 0, 0xA0),
@@ -254,37 +252,38 @@ fn genuine_shift_edges_and_non_fake_extended_shift_code_survive() {
         }
     ));
     assert!(matches!(
-        canonicalizer.canonicalize(0x36, RI_KEY_E0, 0xA1),
+        canonicalizer.canonicalize(0x36, 0, 0xA1),
         CanonicalKeyReport::Edge {
             make_code: 0x36,
-            prefix: RawKeyPrefix::E0,
+            prefix: RawKeyPrefix::None,
             pressed: true,
             ..
         }
     ));
+    for (make_code, vkey) in [(0x2A, 0xA0), (0x36, 0xA1)] {
+        assert_eq!(
+            canonicalizer.canonicalize(make_code, RI_KEY_E0, vkey),
+            CanonicalKeyReport::Ignored
+        );
+        assert_eq!(
+            canonicalizer.canonicalize(make_code, RI_KEY_E0 | RI_KEY_BREAK, vkey),
+            CanonicalKeyReport::Ignored
+        );
+    }
 }
 
 #[test]
-fn incomplete_e1_sequence_stays_prefix_qualified_and_resettable() {
-    let mut canonicalizer = KeyCanonicalizer::default();
+fn e1_prefix_is_self_contained_and_does_not_leak_to_the_next_record() {
+    let canonicalizer = KeyCanonicalizer;
     assert_eq!(
-        canonicalizer.canonicalize(0x1D, RI_KEY_E1, 0x11),
-        CanonicalKeyReport::Pending
-    );
-    assert!(matches!(
-        canonicalizer.canonicalize(0x46, 0, 0x91),
+        canonicalizer.canonicalize(0x1D, RI_KEY_E1, 0x13),
         CanonicalKeyReport::Edge {
-            make_code: 0x46,
+            make_code: 0x1D,
             prefix: RawKeyPrefix::E1,
-            ..
+            vkey: 0x13,
+            pressed: true,
         }
-    ));
-
-    assert_eq!(
-        canonicalizer.canonicalize(0x1D, RI_KEY_E1, 0x11),
-        CanonicalKeyReport::Pending
     );
-    canonicalizer.reset();
     assert!(matches!(
         canonicalizer.canonicalize(0x1E, 0, 0x41),
         CanonicalKeyReport::Edge {
@@ -296,14 +295,14 @@ fn incomplete_e1_sequence_stays_prefix_qualified_and_resettable() {
 }
 
 #[test]
-fn overrun_resets_an_incomplete_e1_sequence() {
-    let mut canonicalizer = KeyCanonicalizer::default();
-    assert_eq!(
-        canonicalizer.canonicalize(0x1D, RI_KEY_E1, 0x11),
-        CanonicalKeyReport::Pending
-    );
+fn overrun_does_not_change_the_next_records_prefix() {
+    let canonicalizer = KeyCanonicalizer;
     assert_eq!(
         canonicalizer.canonicalize(KEYBOARD_OVERRUN_MAKE_CODE, 0, 0),
+        CanonicalKeyReport::Overrun
+    );
+    assert_eq!(
+        canonicalizer.canonicalize(KEYBOARD_OVERRUN_MAKE_CODE, 0, 0xFF),
         CanonicalKeyReport::Overrun
     );
     assert!(matches!(

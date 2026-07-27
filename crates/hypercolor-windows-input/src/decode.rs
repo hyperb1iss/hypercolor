@@ -17,6 +17,9 @@ use crate::shared::{RawButton, RawKeyPrefix};
 /// not a position and must never reach the key table or the `VKey` fallback.
 pub const KEYBOARD_OVERRUN_MAKE_CODE: u16 = 0xFF;
 
+/// Sentinel Windows uses when a keyboard record has no virtual-key mapping.
+const VKEY_UNMAPPED: u16 = 0xFF;
+
 /// Scroll units per notch. Identical to evdev's `REL_WHEEL_HI_RES` unit, so
 /// wheel travel passes through with no conversion.
 pub const WHEEL_DELTA: i32 = 120;
@@ -74,7 +77,7 @@ pub enum KeyReport {
     Ignored,
 }
 
-/// One canonical key action after composite Raw Input records are folded.
+/// One canonical key action after Raw Input bookkeeping is filtered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CanonicalKeyReport {
     /// A complete physical key edge.
@@ -84,66 +87,39 @@ pub enum CanonicalKeyReport {
         vkey: u16,
         pressed: bool,
     },
-    /// The first record of an `E1` sequence was retained for the next record.
-    Pending,
     /// Rollover overrun; downstream must release this device's held state.
     Overrun,
     /// Synthetic or bookkeeping input with no logical key action.
     Ignored,
 }
 
-/// Per-keyboard canonicalizer for Raw Input's composite set-1 records.
+/// Canonicalizer for Raw Input's set-1 keyboard records.
 ///
-/// Windows exposes the `E1` prefix as its own `RAWKEYBOARD` record and sends
-/// the rest of Pause/Break in the following record. PrintScreen and shifted
-/// numpad navigation also carry synthetic `E0 2A` records. This state must be
-/// scoped to one physical keyboard so interleaved devices cannot complete
-/// each other's sequences.
+/// `RI_KEY_E0` and `RI_KEY_E1` qualify the current `RAWKEYBOARD` record.
+/// PrintScreen and shifted numpad navigation can also carry synthetic
+/// `E0 2A` or `E0 36` Shift records, which are not logical key actions.
 #[derive(Debug, Default)]
-pub struct KeyCanonicalizer {
-    pending_e1: bool,
-}
+pub struct KeyCanonicalizer;
 
 impl KeyCanonicalizer {
     /// Fold one `RAWKEYBOARD` record into zero or one canonical action.
     #[must_use]
-    pub fn canonicalize(&mut self, make_code: u16, flags: u16, vkey: u16) -> CanonicalKeyReport {
+    pub fn canonicalize(&self, make_code: u16, flags: u16, vkey: u16) -> CanonicalKeyReport {
         match classify_key(make_code, flags) {
             KeyReport::Ignored => CanonicalKeyReport::Ignored,
-            KeyReport::Overrun => {
-                self.pending_e1 = false;
-                CanonicalKeyReport::Overrun
-            }
-            KeyReport::Edge {
-                prefix: RawKeyPrefix::E1,
-                ..
-            } => {
-                self.pending_e1 = true;
-                CanonicalKeyReport::Pending
-            }
+            KeyReport::Overrun => CanonicalKeyReport::Overrun,
+            KeyReport::Edge { .. } if vkey == VKEY_UNMAPPED => CanonicalKeyReport::Ignored,
             KeyReport::Edge {
                 prefix: RawKeyPrefix::E0,
                 ..
-            } if make_code == 0x2A => CanonicalKeyReport::Ignored,
-            KeyReport::Edge { prefix, pressed } => {
-                let prefix = if std::mem::take(&mut self.pending_e1) {
-                    RawKeyPrefix::E1
-                } else {
-                    prefix
-                };
-                CanonicalKeyReport::Edge {
-                    make_code,
-                    prefix,
-                    vkey,
-                    pressed,
-                }
-            }
+            } if matches!(make_code, 0x2A | 0x36) => CanonicalKeyReport::Ignored,
+            KeyReport::Edge { prefix, pressed } => CanonicalKeyReport::Edge {
+                make_code,
+                prefix,
+                vkey,
+                pressed,
+            },
         }
-    }
-
-    /// Forget an incomplete composite sequence after a device/state gap.
-    pub fn reset(&mut self) {
-        self.pending_e1 = false;
     }
 }
 

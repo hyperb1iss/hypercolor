@@ -520,17 +520,27 @@ async fn handle_client_message(
             }
         }
         ClientMessage::InputInject { events } => {
-            if let Err(error) = ensure_control_tier(auth_context) {
+            if let Err(error) =
+                inject_browser_input(auth_context, &state.browser_input, input_source_id, events)
+            {
                 let _ = send_json(socket, &error.into_message()).await;
-                return;
             }
-
-            state.browser_input.inject(
-                input_source_id,
-                events.into_iter().map(BrowserInputEdgeWire::into_edge),
-            );
         }
     }
+}
+
+fn inject_browser_input(
+    auth_context: RequestAuthContext,
+    browser_input: &hypercolor_core::input::BrowserInputHandle,
+    input_source_id: &str,
+    events: Vec<BrowserInputEdgeWire>,
+) -> Result<(), WsProtocolError> {
+    ensure_control_tier(auth_context)?;
+    browser_input.inject(
+        input_source_id,
+        events.into_iter().map(BrowserInputEdgeWire::into_edge),
+    );
+    Ok(())
 }
 
 fn ensure_control_tier(auth_context: RequestAuthContext) -> Result<(), WsProtocolError> {
@@ -741,8 +751,10 @@ async fn send_json(socket: &mut WebSocket, msg: &impl Serialize) -> Result<(), a
 
 #[cfg(test)]
 mod security_tests {
-    use super::ensure_control_tier;
+    use super::{ensure_control_tier, inject_browser_input};
     use crate::api::security::RequestAuthContext;
+    use crate::api::ws::protocol::ClientMessage;
+    use hypercolor_core::input::{BrowserInputSource, InputData, InputSource};
 
     #[test]
     fn read_only_auth_cannot_mutate_zone_layout_previews() {
@@ -763,6 +775,58 @@ mod security_tests {
     fn unsecured_auth_can_mutate_zone_layout_previews() {
         ensure_control_tier(RequestAuthContext::unsecured())
             .expect("unsecured context should continue to allow local mutations");
+    }
+
+    #[test]
+    fn read_only_input_injection_is_rejected_without_mutating_browser_state() {
+        let mut source = BrowserInputSource::new();
+        source.start().expect("start browser input source");
+        let handle = source.handle();
+        let ClientMessage::InputInject { events } = serde_json::from_str(
+            r#"{
+                "type": "input_inject",
+                "events": [
+                    {"kind": "key", "key": "a", "state": "pressed"},
+                    {"kind": "button", "button": "left", "state": "pressed"}
+                ]
+            }"#,
+        )
+        .expect("valid input injection message") else {
+            panic!("expected input injection message");
+        };
+        let allowed_events = events.clone();
+
+        let error = inject_browser_input(
+            RequestAuthContext::read_only(),
+            &handle,
+            "browser:read-only",
+            events,
+        )
+        .expect_err("read-only input injection must be rejected");
+
+        assert_eq!(error.code, "forbidden");
+        assert!(source.drain_events().is_empty());
+        let InputData::Interaction(snapshot) = source.sample().expect("sample browser input")
+        else {
+            panic!("expected browser interaction snapshot");
+        };
+        assert!(snapshot.keyboard.pressed_keys.is_empty());
+        assert!(snapshot.mouse.buttons.is_empty());
+
+        inject_browser_input(
+            RequestAuthContext::unsecured(),
+            &handle,
+            "browser:local",
+            allowed_events,
+        )
+        .expect("unsecured local input injection should remain allowed");
+        assert_eq!(source.drain_events().len(), 2);
+        let InputData::Interaction(snapshot) = source.sample().expect("sample browser input")
+        else {
+            panic!("expected browser interaction snapshot");
+        };
+        assert_eq!(snapshot.keyboard.pressed_keys, ["a"]);
+        assert_eq!(snapshot.mouse.buttons, ["left"]);
     }
 }
 
