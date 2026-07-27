@@ -1,13 +1,13 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use hypercolor_core::input::{InputData, InputManager, InputSource, SourceKind};
 use tokio::sync::Mutex;
 
 use super::{
     InputPublicationConsumer, InputPublicationDemand, InputPublicationDemandHandle,
-    InputPublicationPump, InputPublicationStatus, cadence_interval,
+    InputPublicationPump, InputPublicationSchedule, InputPublicationStatus, cadence_interval,
 };
 
 struct CountingSource {
@@ -128,6 +128,59 @@ fn authoritative_registration_does_not_blanket_unrequested_source_types() {
 fn cadence_conversion_does_not_cap_large_requests() {
     assert_eq!(cadence_interval(u32::MAX), Duration::from_nanos(1));
     assert_eq!(cadence_interval(240), Duration::from_nanos(4_166_667));
+}
+
+#[test]
+fn source_cadences_advance_independently_without_catch_up_bursts() {
+    let started_at = Instant::now();
+    let mut schedule = InputPublicationSchedule::default();
+    let demand = InputPublicationDemand::default()
+        .with_source(SourceKind::Screen, 20)
+        .with_source(SourceKind::Interaction, 120);
+    let mut due = Vec::with_capacity(5);
+
+    schedule.synchronize(demand, started_at);
+    schedule.collect_due(started_at, &mut due);
+    assert_eq!(
+        due.iter().map(|(source, _)| *source).collect::<Vec<_>>(),
+        [SourceKind::Screen, SourceKind::Interaction]
+    );
+
+    let interaction_tick = started_at + cadence_interval(120);
+    schedule.collect_due(interaction_tick, &mut due);
+    assert_eq!(due.len(), 1);
+    assert_eq!(due[0].0, SourceKind::Interaction);
+
+    let delayed_tick = started_at + Duration::from_millis(75);
+    schedule.collect_due(delayed_tick, &mut due);
+    assert_eq!(
+        due.iter().map(|(source, _)| *source).collect::<Vec<_>>(),
+        [SourceKind::Screen, SourceKind::Interaction]
+    );
+    assert!(due[0].1 > due[1].1);
+
+    schedule.collect_due(delayed_tick, &mut due);
+    assert!(due.is_empty(), "missed intervals must coalesce, not burst");
+}
+
+#[test]
+fn source_reactivation_starts_with_one_cadence_window() {
+    let started_at = Instant::now();
+    let interval = cadence_interval(20);
+    let mut schedule = InputPublicationSchedule::default();
+    let active = InputPublicationDemand::default().with_source(SourceKind::Screen, 20);
+    let mut due = Vec::with_capacity(5);
+
+    schedule.synchronize(active, started_at);
+    schedule.collect_due(started_at, &mut due);
+    assert_eq!(due, [(SourceKind::Screen, interval.as_secs_f32())]);
+
+    schedule.synchronize(InputPublicationDemand::default(), started_at + interval);
+    let resumed_at = started_at + Duration::from_secs(30);
+    schedule.synchronize(active, resumed_at);
+    schedule.collect_due(resumed_at, &mut due);
+
+    assert_eq!(due, [(SourceKind::Screen, interval.as_secs_f32())]);
 }
 
 #[tokio::test]

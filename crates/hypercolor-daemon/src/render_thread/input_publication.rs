@@ -16,6 +16,13 @@ use tracing::{debug, info};
 
 const STOP_TIMEOUT: Duration = Duration::from_secs(1);
 const LIFECYCLE_PROBE_INTERVAL: Duration = Duration::from_millis(250);
+const SOURCE_KINDS: [SourceKind; 5] = [
+    SourceKind::Audio,
+    SourceKind::Screen,
+    SourceKind::Interaction,
+    SourceKind::Media,
+    SourceKind::Network,
+];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 /// A consumer class contributing input-publication cadence demand.
@@ -536,73 +543,67 @@ async fn run_pump(
     status.send_replace(InputPublicationStatus::Ready);
     let _ = ready.send(());
 
-    let mut last_sample_at = None;
-    let mut next_tick_at = Instant::now();
+    let mut schedule = InputPublicationSchedule::default();
+    let mut due_sources = Vec::with_capacity(SOURCE_KINDS.len());
     loop {
         let graph = reader.graph_snapshot();
         let demand = demands.snapshot();
-        let active_hz = requested_hz_for_active_sources(&graph, &demand);
-        let max_requested_hz = demand.max_requested_hz();
-
-        if max_requested_hz == 0 {
-            tokio::select! {
-                () = cancel.cancelled() => break,
-                () = demands.changed() => next_tick_at = Instant::now(),
-            }
-            continue;
-        }
-
-        let Some(requested_hz) = active_hz else {
-            tokio::select! {
-                () = cancel.cancelled() => break,
-                () = demands.changed() => next_tick_at = Instant::now(),
-                () = tokio::time::sleep(LIFECYCLE_PROBE_INTERVAL) => {
-                    next_tick_at = Instant::now();
-                }
-            }
-            continue;
-        };
-
-        let interval = cadence_interval(requested_hz);
+        let active_demand = demand_for_active_sources(&graph, &demand);
         let now = Instant::now();
-        if next_tick_at > now {
+        schedule.synchronize(active_demand, now);
+
+        if demand.max_requested_hz() == 0 {
             tokio::select! {
                 () = cancel.cancelled() => break,
-                () = demands.changed() => {
-                    next_tick_at = Instant::now();
-                    continue;
-                }
-                () = tokio::time::sleep_until(TokioInstant::from_std(next_tick_at)) => {}
+                () = demands.changed() => {}
             }
+            continue;
         }
 
-        let sample_at = Instant::now();
-        let delta_secs = last_sample_at.map_or(interval.as_secs_f32(), |previous: Instant| {
-            sample_at.saturating_duration_since(previous).as_secs_f32()
-        });
+        if active_demand.max_requested_hz() == 0 {
+            tokio::select! {
+                () = cancel.cancelled() => break,
+                () = demands.changed() => {}
+                () = tokio::time::sleep(LIFECYCLE_PROBE_INTERVAL) => {}
+            }
+            continue;
+        }
+
+        if !schedule.is_due(now) {
+            let lifecycle_probe = now.checked_add(LIFECYCLE_PROBE_INTERVAL).unwrap_or(now);
+            let wake_at = schedule
+                .next_deadline()
+                .map_or(lifecycle_probe, |deadline| deadline.min(lifecycle_probe));
+            tokio::select! {
+                () = cancel.cancelled() => break,
+                () = demands.changed() => {}
+                () = tokio::time::sleep_until(TokioInstant::from_std(wake_at)) => {}
+            }
+            continue;
+        }
+
         let manager_lock = manager.lock();
         tokio::pin!(manager_lock);
         let mut manager = tokio::select! {
             () = cancel.cancelled() => break,
+            () = demands.changed() => continue,
             manager = &mut manager_lock => manager,
         };
-        manager.sample_sources(delta_secs);
-        last_sample_at = Some(sample_at);
-
-        next_tick_at = next_deadline(next_tick_at, interval, Instant::now());
+        schedule.collect_due(Instant::now(), &mut due_sources);
+        manager.sample_source_kinds(&due_sources);
     }
     debug!("input publication worker exited");
 }
 
-fn requested_hz_for_active_sources(
+fn demand_for_active_sources(
     graph: &InputGraphSnapshot,
     demand: &InputPublicationDemandSnapshot,
-) -> Option<u32> {
+) -> InputPublicationDemand {
     let now = Instant::now();
     graph
         .slots()
         .iter()
-        .filter_map(|slot| {
+        .fold(InputPublicationDemand::default(), |active_demand, slot| {
             let status = slot.status().availability_at(now);
             if status.retired
                 || !(status.configured && status.consented && status.demanded)
@@ -611,13 +612,86 @@ fn requested_hz_for_active_sources(
                     SourceState::Starting | SourceState::Live | SourceState::Degraded
                 )
             {
-                return None;
+                return active_demand;
             }
-            let requested_hz = demand.requested_hz(status.kind);
-            (requested_hz > 0).then_some(requested_hz)
+            active_demand.with_source(status.kind, demand.requested_hz(status.kind))
         })
-        .max()
-        .filter(|requested_hz| *requested_hz > 0)
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct SourceCadence {
+    requested_hz: u32,
+    last_sample_at: Option<Instant>,
+    next_sample_at: Option<Instant>,
+}
+
+#[derive(Debug, Default)]
+struct InputPublicationSchedule {
+    sources: [SourceCadence; SOURCE_KINDS.len()],
+}
+
+impl InputPublicationSchedule {
+    fn synchronize(&mut self, demand: InputPublicationDemand, now: Instant) {
+        for source in SOURCE_KINDS {
+            let cadence = &mut self.sources[source_kind_index(source)];
+            let requested_hz = demand.requested_hz(source);
+            if requested_hz == 0 {
+                *cadence = SourceCadence::default();
+            } else if cadence.requested_hz != requested_hz {
+                cadence.requested_hz = requested_hz;
+                cadence.next_sample_at =
+                    Some(cadence.last_sample_at.map_or(now, |last_sample_at| {
+                        let deadline = last_sample_at
+                            .checked_add(cadence_interval(requested_hz))
+                            .unwrap_or(now);
+                        deadline.max(now)
+                    }));
+            }
+        }
+    }
+
+    fn collect_due(&mut self, now: Instant, output: &mut Vec<(SourceKind, f32)>) {
+        output.clear();
+        for source in SOURCE_KINDS {
+            let cadence = &mut self.sources[source_kind_index(source)];
+            let Some(next_sample_at) = cadence.next_sample_at else {
+                continue;
+            };
+            if next_sample_at > now {
+                continue;
+            }
+            let interval = cadence_interval(cadence.requested_hz);
+            let delta_secs = cadence
+                .last_sample_at
+                .map_or(interval.as_secs_f32(), |previous| {
+                    now.saturating_duration_since(previous).as_secs_f32()
+                });
+            output.push((source, delta_secs));
+            cadence.last_sample_at = Some(now);
+            cadence.next_sample_at = Some(next_deadline(next_sample_at, interval, now));
+        }
+    }
+
+    fn next_deadline(&self) -> Option<Instant> {
+        self.sources
+            .iter()
+            .filter_map(|cadence| cadence.next_sample_at)
+            .min()
+    }
+
+    fn is_due(&self, now: Instant) -> bool {
+        self.next_deadline().is_some_and(|deadline| deadline <= now)
+    }
+}
+
+const fn source_kind_index(source: SourceKind) -> usize {
+    match source {
+        SourceKind::Audio => 0,
+        SourceKind::Screen => 1,
+        SourceKind::Interaction => 2,
+        SourceKind::Media => 3,
+        SourceKind::Network => 4,
+    }
 }
 
 fn cadence_interval(requested_hz: u32) -> Duration {
