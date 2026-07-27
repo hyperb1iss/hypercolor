@@ -184,7 +184,9 @@
           state: typeof event.state === 'string' ? event.state : null,
           atMs: finiteNumber(event.atMs, 0),
           seq: finiteNumber(event.seq, 0),
+          repeatCount: Math.max(1, Math.trunc(finiteNumber(event.repeatCount, 1))),
         };
+        if (typeof event.physicalCode === 'string') { entry.physicalCode = event.physicalCode; }
         if (entry.kind === 'key') {
           entry.key = typeof event.key === 'string' ? event.key : '';
           keyEvents.push(entry);

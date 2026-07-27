@@ -114,14 +114,17 @@ function readKeyEvents(raw: unknown): KeyInputEvent[] {
     const events: KeyInputEvent[] = []
     for (const entry of raw as any[]) {
         if (typeof entry !== 'object' || entry === null || entry.kind !== 'key') continue
-        events.push({
+        const event: KeyInputEvent = {
             atMs: finiteNumber(entry.atMs, 0),
             key: typeof entry.key === 'string' ? entry.key : '',
             kind: 'key',
+            repeatCount: positiveInteger(entry.repeatCount, 1),
             seq: finiteNumber(entry.seq, 0),
             source: typeof entry.source === 'string' ? entry.source : '',
             state: entry.state === 'released' || entry.state === 'repeated' ? entry.state : 'pressed',
-        })
+        }
+        if (typeof entry.physicalCode === 'string') event.physicalCode = entry.physicalCode
+        events.push(event)
     }
     return events
 }
@@ -133,22 +136,28 @@ function readMouseEvents(raw: unknown): MouseInputEvent[] {
     for (const entry of raw as any[]) {
         if (typeof entry !== 'object' || entry === null) continue
         if (entry.kind === 'button') {
-            events.push({
+            const event: MouseInputEvent = {
                 atMs: finiteNumber(entry.atMs, 0),
                 button: typeof entry.button === 'string' ? entry.button : '',
                 kind: 'button',
+                repeatCount: positiveInteger(entry.repeatCount, 1),
                 seq: finiteNumber(entry.seq, 0),
                 source: typeof entry.source === 'string' ? entry.source : '',
                 state: entry.state === 'released' ? 'released' : 'pressed',
-            })
+            }
+            if (typeof entry.physicalCode === 'string') event.physicalCode = entry.physicalCode
+            events.push(event)
         } else if (entry.kind === 'wheel') {
-            events.push({
+            const event: MouseInputEvent = {
                 atMs: finiteNumber(entry.atMs, 0),
                 delta: finiteNumber(entry.delta, 0),
                 kind: 'wheel',
+                repeatCount: positiveInteger(entry.repeatCount, 1),
                 seq: finiteNumber(entry.seq, 0),
                 source: typeof entry.source === 'string' ? entry.source : '',
-            })
+            }
+            if (typeof entry.physicalCode === 'string') event.physicalCode = entry.physicalCode
+            events.push(event)
         }
     }
     return events
@@ -170,6 +179,11 @@ function heldMap(raw: any): Record<string, boolean> {
 
 function finiteNumber(raw: unknown, fallback: number): number {
     return typeof raw === 'number' && Number.isFinite(raw) ? raw : fallback
+}
+
+function positiveInteger(raw: unknown, fallback: number): number {
+    const value = Math.trunc(finiteNumber(raw, fallback))
+    return value > 0 ? value : fallback
 }
 
 function clamp01(value: number): number {

@@ -45,7 +45,16 @@ describe('input data contract', () => {
             inputDropped: 3,
             keyboard: {
                 events: [
-                    { atMs: 1000, key: 'a', kind: 'key', seq: 1, source: 'kbd0', state: 'pressed' },
+                    {
+                        atMs: 1000,
+                        key: 'a',
+                        kind: 'key',
+                        physicalCode: 'evdev:key:30',
+                        repeatCount: 4,
+                        seq: 1,
+                        source: 'kbd0',
+                        state: 'pressed',
+                    },
                     { atMs: 1010, key: 'a', kind: 'key', seq: 2, source: 'kbd0', state: 'released' },
                 ],
                 keys: { a: true, ghost: false, KeyA: true },
@@ -80,8 +89,25 @@ describe('input data contract', () => {
         expect(input.keyboard.keys).toEqual({ a: true, KeyA: true })
         expect(input.keyboard.recent).toEqual(['a', 'b'])
         expect(input.keyboard.events).toEqual([
-            { atMs: 1000, key: 'a', kind: 'key', seq: 1, source: 'kbd0', state: 'pressed' },
-            { atMs: 1010, key: 'a', kind: 'key', seq: 2, source: 'kbd0', state: 'released' },
+            {
+                atMs: 1000,
+                key: 'a',
+                kind: 'key',
+                physicalCode: 'evdev:key:30',
+                repeatCount: 4,
+                seq: 1,
+                source: 'kbd0',
+                state: 'pressed',
+            },
+            {
+                atMs: 1010,
+                key: 'a',
+                kind: 'key',
+                repeatCount: 1,
+                seq: 2,
+                source: 'kbd0',
+                state: 'released',
+            },
         ])
         expect(input.mouse.available).toBeTrue()
         expect(input.mouse.mode).toBe('virtual')
@@ -94,8 +120,16 @@ describe('input data contract', () => {
         expect(input.mouse.wheel).toBe(1.5)
         expect(input.mouse.velocity).toBe(0.4)
         expect(input.mouse.events).toEqual([
-            { atMs: 1005, button: 'left', kind: 'button', seq: 3, source: 'mouse0', state: 'pressed' },
-            { atMs: 1006, delta: 1.5, kind: 'wheel', seq: 4, source: 'mouse0' },
+            {
+                atMs: 1005,
+                button: 'left',
+                kind: 'button',
+                repeatCount: 1,
+                seq: 3,
+                source: 'mouse0',
+                state: 'pressed',
+            },
+            { atMs: 1006, delta: 1.5, kind: 'wheel', repeatCount: 1, seq: 4, source: 'mouse0' },
         ])
     })
 

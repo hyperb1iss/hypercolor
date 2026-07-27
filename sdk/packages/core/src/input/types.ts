@@ -27,6 +27,10 @@ export interface KeyInputEvent {
     atMs: number
     /** Strictly increasing sequence number. */
     seq: number
+    /** Backend-neutral physical key code when the source provides one. */
+    physicalCode?: string
+    /** Number of equivalent ordered events represented by this entry. */
+    repeatCount: number
 }
 
 /**
@@ -47,6 +51,10 @@ export interface MouseInputEvent {
     atMs: number
     /** Strictly increasing sequence number. */
     seq: number
+    /** Backend-neutral physical control code when the source provides one. */
+    physicalCode?: string
+    /** Number of equivalent ordered events represented by this entry. */
+    repeatCount: number
 }
 
 /** Keyboard snapshot for the current frame. */

@@ -29,6 +29,67 @@ afterAll(() => {
 })
 
 describe('LightScript input availability bridge', () => {
+    test('preserves physical codes and repeat multiplicity through the production adapter', () => {
+        runtime.__hypercolorApplyFramePayload?.({
+            canvas: { height: 200, width: 320 },
+            interaction: {
+                dropped: 0,
+                events: [
+                    {
+                        atMs: 1000,
+                        key: 'a',
+                        kind: 'key',
+                        physicalCode: 'evdev:key:30',
+                        repeatCount: 3,
+                        seq: 1,
+                        source: 'kbd0',
+                        state: 'repeated',
+                    },
+                    {
+                        atMs: 1001,
+                        button: 'left',
+                        kind: 'button',
+                        physicalCode: 'hid:button:1',
+                        repeatCount: 2,
+                        seq: 2,
+                        source: 'mouse0',
+                        state: 'pressed',
+                    },
+                ],
+                keyboard: { keys: ['a'], recent: ['a'] },
+                mouse: { buttons: ['left'], mode: 'virtual' },
+            },
+            timing: { deltaSecs: 1 / 60, frameNumber: 8, timeSecs: 1 },
+        })
+
+        const input = getInputData()
+
+        expect(input.keyboard.events).toEqual([
+            {
+                atMs: 1000,
+                key: 'a',
+                kind: 'key',
+                physicalCode: 'evdev:key:30',
+                repeatCount: 3,
+                seq: 1,
+                source: 'kbd0',
+                state: 'repeated',
+            },
+        ])
+        expect(input.mouse.events).toEqual([
+            {
+                atMs: 1001,
+                button: 'left',
+                kind: 'button',
+                physicalCode: 'hid:button:1',
+                repeatCount: 2,
+                seq: 2,
+                source: 'mouse0',
+                state: 'pressed',
+            },
+        ])
+    })
+
     test('keeps an idle healthy routed source available', () => {
         runtime.__hypercolorApplyFramePayload?.({
             canvas: { height: 200, width: 320 },

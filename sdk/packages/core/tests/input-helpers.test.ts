@@ -7,7 +7,7 @@ let sequence = 0
 
 function keyEvent(key: string, state: KeyInputEvent['state'], atMs: number): KeyInputEvent {
     sequence += 1
-    return { atMs, key, kind: 'key', seq: sequence, source: 'kbd0', state }
+    return { atMs, key, kind: 'key', repeatCount: 1, seq: sequence, source: 'kbd0', state }
 }
 
 describe('pressEnvelope', () => {
