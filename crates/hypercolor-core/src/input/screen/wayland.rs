@@ -8,7 +8,7 @@
 use std::io::Cursor;
 use std::os::fd::OwnedFd;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Condvar, Mutex, Weak, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -29,19 +29,380 @@ use crate::input::screen::{
     CaptureColorSpace, CaptureConfig, CaptureCursor, CaptureDamage, CaptureEpoch, CaptureFrame,
     CaptureFrameMetadata, CaptureGeometry, CapturePixelFormat, CapturePlanePool, CaptureRotation,
     CaptureSourceId, CaptureStorage, CaptureTransferFunction, CpuCaptureStorage,
-    LegacyScreenSnapshot, PhysicalOrigin, PixelExtent, PooledCapturePlane, RawCaptureSurface,
-    ScreenCaptureInput, SourceScale, analyze_legacy_screen_frame,
+    LegacyScreenSnapshot, PhysicalOrigin, PixelExtent, PixelRect, PooledCapturePlane,
+    RawCaptureSurface, ScreenCaptureInput, SourceScale, analyze_legacy_screen_frame,
 };
 use crate::input::traits::{InputData, InputSource};
 use crate::input::worker_retention::{retain_input_worker, spawn_input_worker};
 use crate::input::{
-    SourceIssue, SourceKind, SourceSessionSlot, SourceStatusHandle, SourceStatusReporter,
+    SourceIssue, SourceKind, SourceSessionSlot, SourceSessionWriter, SourceStatusHandle,
+    SourceStatusReporter,
 };
 
 const DEFAULT_CAPTURE_WIDTH: u32 = 1280;
 const DEFAULT_CAPTURE_HEIGHT: u32 = 720;
 const WORKER_READY_TIMEOUT: Duration = Duration::from_secs(1);
 const WORKER_STOP_TIMEOUT: Duration = Duration::from_secs(1);
+const WORKER_POLL_INTERVAL: Duration = Duration::from_millis(25);
+const RECONNECT_DELAY: Duration = Duration::from_millis(250);
+
+/// Packed raw pixel formats accepted by the PipeWire callback seam.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpaVideoFormat {
+    /// Red, green, blue, alpha.
+    Rgba,
+    /// Blue, green, red, alpha.
+    Bgra,
+    /// Red, green, blue, ignored.
+    Rgbx,
+    /// Blue, green, red, ignored.
+    Bgrx,
+    /// Alpha, red, green, blue.
+    Argb,
+    /// Alpha, blue, green, red.
+    Abgr,
+    /// Ignored, red, green, blue.
+    Xrgb,
+    /// Ignored, blue, green, red.
+    Xbgr,
+    /// Red, green, blue.
+    Rgb,
+    /// Blue, green, red.
+    Bgr,
+}
+
+impl SpaVideoFormat {
+    const fn bytes_per_pixel(self) -> usize {
+        match self {
+            Self::Rgb | Self::Bgr => 3,
+            Self::Rgba
+            | Self::Bgra
+            | Self::Rgbx
+            | Self::Bgrx
+            | Self::Argb
+            | Self::Abgr
+            | Self::Xrgb
+            | Self::Xbgr => 4,
+        }
+    }
+}
+
+/// Borrowed, negotiated SPA chunk presented to the synchronous copy seam.
+#[derive(Clone, Copy, Debug)]
+pub struct SpaChunkView<'a> {
+    data: &'a [u8],
+    offset: usize,
+    size: usize,
+    stride: i32,
+    width: u32,
+    height: u32,
+    format: SpaVideoFormat,
+    crop: Option<PixelRect>,
+    transform: CaptureRotation,
+}
+
+impl<'a> SpaChunkView<'a> {
+    /// Construct one negotiated chunk view. [`decode_chunk`] validates every bound.
+    #[allow(clippy::too_many_arguments)]
+    #[must_use]
+    pub const fn new(
+        data: &'a [u8],
+        offset: usize,
+        size: usize,
+        stride: i32,
+        width: u32,
+        height: u32,
+        format: SpaVideoFormat,
+        crop: Option<PixelRect>,
+        transform: CaptureRotation,
+    ) -> Self {
+        Self {
+            data,
+            offset,
+            size,
+            stride,
+            width,
+            height,
+            format,
+            crop,
+            transform,
+        }
+    }
+}
+
+/// Precise reason a callback chunk was rejected without touching published data.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChunkDropReason {
+    /// PipeWire had no buffer ready when the process callback fired.
+    MissingBuffer,
+    /// The dequeued PipeWire buffer did not contain a pixel plane.
+    MissingPlane,
+    /// A pixel buffer arrived before a supported format was negotiated.
+    MissingFormat,
+    /// The first PipeWire pixel plane was not mapped into this process.
+    UnmappedPlane,
+    /// The negotiated dimensions are empty or overflow addressable storage.
+    InvalidExtent,
+    /// The SPA chunk offset or size escapes the mapped plane.
+    InvalidChunkBounds,
+    /// The signed stride cannot contain one negotiated row.
+    InvalidStride,
+    /// The chunk ends before the final row is complete.
+    TruncatedChunk,
+    /// The SPA crop escapes the negotiated native extent.
+    InvalidCrop,
+    /// Both preallocated buffers are still owned by analysis or publication.
+    BufferUnavailable,
+    /// The negotiated frame exceeds the capacity prepared outside the callback.
+    BufferTooSmall,
+}
+
+/// Allocation-free result counters returned by [`decode_chunk`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CopyStats {
+    bytes_copied: usize,
+    rows_copied: u32,
+    drop_reason: Option<ChunkDropReason>,
+}
+
+impl CopyStats {
+    /// Number of source bytes copied into tightly packed storage.
+    #[must_use]
+    pub const fn bytes_copied(self) -> usize {
+        self.bytes_copied
+    }
+
+    /// Number of complete rows copied.
+    #[must_use]
+    pub const fn rows_copied(self) -> u32 {
+        self.rows_copied
+    }
+
+    /// Rejection reason, or `None` when the copy completed.
+    #[must_use]
+    pub const fn drop_reason(self) -> Option<ChunkDropReason> {
+        self.drop_reason
+    }
+
+    const fn dropped(reason: ChunkDropReason) -> Self {
+        Self {
+            bytes_copied: 0,
+            rows_copied: 0,
+            drop_reason: Some(reason),
+        }
+    }
+}
+
+struct DoubleBufferInner {
+    available: Mutex<Vec<Vec<u8>>>,
+    capacity: usize,
+}
+
+/// Fixed two-plane pool used by the PipeWire process callback.
+pub struct DoubleBuffer {
+    inner: Arc<DoubleBufferInner>,
+    completed: Option<DecodedChunk>,
+}
+
+impl DoubleBuffer {
+    /// Preallocate both callback planes to the negotiated maximum byte size.
+    #[must_use]
+    pub fn with_capacity(capacity: usize) -> Self {
+        let mut available = Vec::with_capacity(2);
+        available.push(vec![0; capacity]);
+        available.push(vec![0; capacity]);
+        Self {
+            inner: Arc::new(DoubleBufferInner {
+                available: Mutex::new(available),
+                capacity,
+            }),
+            completed: None,
+        }
+    }
+
+    /// Bytes copied by the most recent successful decode.
+    #[must_use]
+    pub fn latest_bytes(&self) -> Option<&[u8]> {
+        self.completed.as_ref().map(DecodedChunk::bytes)
+    }
+
+    /// Negotiated extent attached to the most recent successful decode.
+    #[must_use]
+    pub fn latest_extent(&self) -> Option<(u32, u32)> {
+        self.completed
+            .as_ref()
+            .map(|chunk| (chunk.width, chunk.height))
+    }
+
+    /// Crop metadata retained without applying it in the callback.
+    #[must_use]
+    pub fn latest_crop(&self) -> Option<PixelRect> {
+        self.completed.as_ref().and_then(|chunk| chunk.crop)
+    }
+
+    /// Transform metadata retained without applying it in the callback.
+    #[must_use]
+    pub fn latest_transform(&self) -> Option<CaptureRotation> {
+        self.completed.as_ref().map(|chunk| chunk.transform)
+    }
+
+    /// Negotiated pixel encoding attached to the most recent successful decode.
+    #[must_use]
+    pub fn latest_format(&self) -> Option<SpaVideoFormat> {
+        self.completed.as_ref().map(|chunk| chunk.format)
+    }
+
+    fn acquire(&self) -> Option<Vec<u8>> {
+        self.inner
+            .available
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pop()
+    }
+
+    fn take_completed(&mut self) -> Option<DecodedChunk> {
+        self.completed.take()
+    }
+}
+
+#[derive(Debug)]
+struct DoubleBufferedPlane {
+    buffer: Option<Vec<u8>>,
+    pool: Weak<DoubleBufferInner>,
+}
+
+impl AsRef<[u8]> for DoubleBufferedPlane {
+    fn as_ref(&self) -> &[u8] {
+        self.buffer
+            .as_deref()
+            .expect("double-buffered plane owns its storage")
+    }
+}
+
+impl Drop for DoubleBufferedPlane {
+    fn drop(&mut self) {
+        let (Some(buffer), Some(pool)) = (self.buffer.take(), self.pool.upgrade()) else {
+            return;
+        };
+        pool.available
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(buffer);
+    }
+}
+
+#[derive(Debug)]
+struct DecodedChunk {
+    plane: DoubleBufferedPlane,
+    byte_len: usize,
+    width: u32,
+    height: u32,
+    format: SpaVideoFormat,
+    crop: Option<PixelRect>,
+    transform: CaptureRotation,
+    captured_at: Instant,
+}
+
+impl DecodedChunk {
+    fn bytes(&self) -> &[u8] {
+        &self.plane.as_ref()[..self.byte_len]
+    }
+}
+
+/// Validate and copy one SPA chunk without allocating or performing analysis.
+pub fn decode_chunk(view: &SpaChunkView<'_>, buffers: &mut DoubleBuffer) -> CopyStats {
+    let Some(width) = usize::try_from(view.width).ok().filter(|width| *width > 0) else {
+        return CopyStats::dropped(ChunkDropReason::InvalidExtent);
+    };
+    let Some(height) = usize::try_from(view.height)
+        .ok()
+        .filter(|height| *height > 0)
+    else {
+        return CopyStats::dropped(ChunkDropReason::InvalidExtent);
+    };
+    let Some(row_bytes) = width.checked_mul(view.format.bytes_per_pixel()) else {
+        return CopyStats::dropped(ChunkDropReason::InvalidExtent);
+    };
+    let Some(total_bytes) = row_bytes.checked_mul(height) else {
+        return CopyStats::dropped(ChunkDropReason::InvalidExtent);
+    };
+    let Some(chunk_end) = view.offset.checked_add(view.size) else {
+        return CopyStats::dropped(ChunkDropReason::InvalidChunkBounds);
+    };
+    if view.size == 0 || chunk_end > view.data.len() {
+        return CopyStats::dropped(ChunkDropReason::InvalidChunkBounds);
+    }
+
+    let stride = if view.stride == 0 {
+        row_bytes
+    } else {
+        let Some(stride) = view
+            .stride
+            .checked_abs()
+            .and_then(|value| usize::try_from(value).ok())
+        else {
+            return CopyStats::dropped(ChunkDropReason::InvalidStride);
+        };
+        stride
+    };
+    if stride < row_bytes {
+        return CopyStats::dropped(ChunkDropReason::InvalidStride);
+    }
+    let Some(required) = stride
+        .checked_mul(height.saturating_sub(1))
+        .and_then(|span| span.checked_add(row_bytes))
+    else {
+        return CopyStats::dropped(ChunkDropReason::InvalidExtent);
+    };
+    if required > view.size {
+        return CopyStats::dropped(ChunkDropReason::TruncatedChunk);
+    }
+    if let Some(crop) = view.crop {
+        let right = crop.x().checked_add(crop.extent().width());
+        let bottom = crop.y().checked_add(crop.extent().height());
+        if right.is_none_or(|right| right > view.width)
+            || bottom.is_none_or(|bottom| bottom > view.height)
+        {
+            return CopyStats::dropped(ChunkDropReason::InvalidCrop);
+        }
+    }
+    if total_bytes > buffers.inner.capacity {
+        return CopyStats::dropped(ChunkDropReason::BufferTooSmall);
+    }
+    let Some(mut output) = buffers.acquire() else {
+        return CopyStats::dropped(ChunkDropReason::BufferUnavailable);
+    };
+    let chunk = &view.data[view.offset..chunk_end];
+    for row in 0..height {
+        let source_row = if view.stride < 0 {
+            height - 1 - row
+        } else {
+            row
+        };
+        let source_start = source_row * stride;
+        let destination_start = row * row_bytes;
+        output[destination_start..destination_start + row_bytes]
+            .copy_from_slice(&chunk[source_start..source_start + row_bytes]);
+    }
+    buffers.completed = Some(DecodedChunk {
+        plane: DoubleBufferedPlane {
+            buffer: Some(output),
+            pool: Arc::downgrade(&buffers.inner),
+        },
+        byte_len: total_bytes,
+        width: view.width,
+        height: view.height,
+        format: view.format,
+        crop: view.crop,
+        transform: view.transform,
+        captured_at: Instant::now(),
+    });
+    CopyStats {
+        bytes_copied: total_bytes,
+        rows_copied: view.height,
+        drop_reason: None,
+    }
+}
 
 /// Callback invoked when the portal hands back a new restore token (or the
 /// token is cleared before a re-pick). The daemon persists it to config so
@@ -89,11 +450,26 @@ struct CapturedScreenSnapshot {
 }
 
 impl SharedSettings {
-    fn snapshot(&self) -> CaptureConfig {
-        self.config
+    fn snapshot_for_session(
+        &self,
+        session_generation: u64,
+        cancel: &AtomicBool,
+    ) -> Option<CaptureConfig> {
+        let _session_guard = self
+            .expected_epoch
             .lock()
-            .map(|config| config.clone())
-            .unwrap_or_default()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if cancel.load(Ordering::Acquire)
+            || self.session_generation.load(Ordering::Acquire) != session_generation
+        {
+            return None;
+        }
+        Some(
+            self.config
+                .lock()
+                .map(|config| config.clone())
+                .unwrap_or_default(),
+        )
     }
 
     fn expected_epoch(&self) -> Option<CaptureEpoch> {
@@ -114,6 +490,115 @@ impl SharedSettings {
             .wrapping_add(1);
         *expected = None;
         session_generation
+    }
+
+    fn begin_successor_session(
+        &self,
+        session_generation: u64,
+        cancel: &AtomicBool,
+        active_session_generation: &AtomicU64,
+    ) -> Option<u64> {
+        let mut expected = self
+            .expected_epoch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if cancel.load(Ordering::Acquire) {
+            return None;
+        }
+        let successor_generation = session_generation.wrapping_add(1);
+        self.session_generation
+            .compare_exchange(
+                session_generation,
+                successor_generation,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .ok()?;
+        *expected = None;
+        active_session_generation.store(successor_generation, Ordering::Release);
+        Some(successor_generation)
+    }
+
+    fn cancel_worker_session(
+        &self,
+        latest_snapshot: &Mutex<Option<CapturedScreenSnapshot>>,
+        cancel: &AtomicBool,
+        active_session_generation: &AtomicU64,
+    ) {
+        let mut expected = self
+            .expected_epoch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        cancel.store(true, Ordering::SeqCst);
+        let session_generation = active_session_generation.load(Ordering::Acquire);
+        if self.session_generation.load(Ordering::Acquire) != session_generation {
+            return;
+        }
+        if expected
+            .as_ref()
+            .is_some_and(|epoch| epoch.session_generation == session_generation)
+        {
+            *expected = None;
+        }
+        let mut latest = latest_snapshot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if latest.as_ref().is_some_and(|snapshot| {
+            snapshot.legacy.frame().metadata().session_generation == session_generation
+        }) {
+            *latest = None;
+        }
+    }
+
+    fn persist_restore_token_for_session(
+        &self,
+        session_generation: u64,
+        cancel: &AtomicBool,
+        restore_token: Option<String>,
+        token_sink: Option<&RestoreTokenSink>,
+    ) -> bool {
+        let _session_guard = self
+            .expected_epoch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if cancel.load(Ordering::Acquire)
+            || self.session_generation.load(Ordering::Acquire) != session_generation
+        {
+            return false;
+        }
+        self.config
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .restore_token
+            .clone_from(&restore_token);
+        if let Some(sink) = token_sink {
+            sink(restore_token);
+        }
+        true
+    }
+
+    fn session_is_current(&self, session_generation: u64, cancel: &AtomicBool) -> bool {
+        !cancel.load(Ordering::Acquire)
+            && self.session_generation.load(Ordering::Acquire) == session_generation
+    }
+
+    fn publish_status_for_session(
+        &self,
+        session_generation: u64,
+        cancel: &AtomicBool,
+        status: &SourceSessionWriter,
+        publish: impl FnOnce(&SourceSessionWriter) -> bool,
+    ) -> bool {
+        let _session_guard = self
+            .expected_epoch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if cancel.load(Ordering::Acquire)
+            || self.session_generation.load(Ordering::Acquire) != session_generation
+        {
+            return false;
+        }
+        publish(status)
     }
 
     fn activate_topology(
@@ -190,6 +675,33 @@ impl SharedSettings {
             .expected_epoch
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
+
+    fn invalidate_session(
+        &self,
+        latest_snapshot: &Mutex<Option<CapturedScreenSnapshot>>,
+        session_generation: u64,
+    ) -> bool {
+        let mut expected = self
+            .expected_epoch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if expected
+            .as_ref()
+            .is_none_or(|epoch| epoch.session_generation != session_generation)
+        {
+            return false;
+        }
+        *expected = None;
+        let mut latest = latest_snapshot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if latest.as_ref().is_some_and(|snapshot| {
+            snapshot.legacy.frame().metadata().session_generation == session_generation
+        }) {
+            *latest = None;
+        }
+        true
     }
 }
 
@@ -305,7 +817,7 @@ impl WaylandScreenCaptureInput {
             sink(None);
         }
 
-        if !self.running {
+        if !self.running || !self.capture_active {
             return Ok(());
         }
 
@@ -321,15 +833,11 @@ impl WaylandScreenCaptureInput {
 
     fn restart_worker(&mut self) -> anyhow::Result<()> {
         self.shutdown_worker();
-        if self.running
-            && self.capture_active
-            && let Some(session) = self.status.begin_session()?
-        {
-            self.status_session.store(session);
+        if !self.running || !self.capture_active {
+            return Ok(());
         }
         self.spawn_worker()?;
-        let active = self.capture_active;
-        self.send_worker_command(WorkerCommand::SetActive(active))
+        self.send_worker_command(WorkerCommand::SetActive(true))
     }
 
     fn set_capture_active_state(&mut self, active: bool) -> anyhow::Result<()> {
@@ -340,20 +848,30 @@ impl WaylandScreenCaptureInput {
             return Ok(());
         }
 
-        if let Ok(mut latest) = self.latest_snapshot.lock() {
-            *latest = None;
-        }
-
         if !self.running {
+            if let Ok(mut latest) = self.latest_snapshot.lock() {
+                *latest = None;
+            }
+            if !active {
+                self.settings.clear_expected_epoch();
+            }
             self.capture_active = active;
             return Ok(());
         }
 
         if active {
+            if let Ok(mut latest) = self.latest_snapshot.lock() {
+                *latest = None;
+            }
             self.spawn_worker()?;
             self.send_worker_command(WorkerCommand::SetActive(true))?;
+        } else if self.worker.is_some() {
+            self.shutdown_worker();
         } else {
-            self.send_worker_command(WorkerCommand::SetActive(false))?;
+            self.settings.clear_expected_epoch();
+            if let Ok(mut latest) = self.latest_snapshot.lock() {
+                *latest = None;
+            }
         }
 
         self.capture_active = active;
@@ -370,6 +888,7 @@ impl WaylandScreenCaptureInput {
         let settings = Arc::clone(&self.settings);
         let token_sink = self.token_sink.clone();
         let cancel = Arc::new(AtomicBool::new(false));
+        let demanded = Arc::new(AtomicBool::new(self.capture_active));
         // Born true: the worker is portal-bound from its first instruction,
         // and a shutdown landing before the thread even stores the flag must
         // detach rather than join into the picker freeze.
@@ -377,12 +896,17 @@ impl WaylandScreenCaptureInput {
         let worker_flags = WorkerFlags {
             cancel: Arc::clone(&cancel),
             portal_pending: Arc::clone(&portal_pending),
+            demanded: Arc::clone(&demanded),
         };
         let (command_tx, command_rx) = pw::channel::channel();
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let (exit_tx, exit_rx) = mpsc::sync_channel(1);
-        let status_session = self.status_session.clone();
-        let session_generation = settings.begin_session();
+        let status_writer = self.status_session.load();
+        let worker_status_writer = status_writer.clone();
+        let session_generation = Arc::new(AtomicU64::new(settings.begin_session()));
+        let capture_session_generation = Arc::clone(&session_generation);
+        let worker_settings = Arc::clone(&settings);
+        let worker_latest_snapshot = Arc::clone(&latest_snapshot);
         let join_handle = spawn_input_worker(
             thread::Builder::new().name("hypercolor-screen-capture".to_owned()),
             move || {
@@ -393,8 +917,8 @@ impl WaylandScreenCaptureInput {
                     command_rx,
                     token_sink,
                     worker_flags,
-                    status_session,
-                    session_generation,
+                    status_writer,
+                    capture_session_generation,
                 );
                 let _ = exit_tx.send(());
             },
@@ -407,6 +931,11 @@ impl WaylandScreenCaptureInput {
             join_handle: Some(join_handle),
             cancel,
             portal_pending,
+            demanded,
+            status_writer: worker_status_writer,
+            session_generation,
+            settings: worker_settings,
+            latest_snapshot: worker_latest_snapshot,
         });
         if let Err(error) = ready_rx.recv_timeout(WORKER_READY_TIMEOUT) {
             self.shutdown_worker();
@@ -423,7 +952,7 @@ impl WaylandScreenCaptureInput {
             return Ok(());
         };
 
-        if worker.command_tx.send(command.clone()).is_ok() {
+        if dispatch_worker_command(&worker.command_tx, &worker.demanded, &command) {
             return Ok(());
         }
 
@@ -432,11 +961,12 @@ impl WaylandScreenCaptureInput {
 
         if matches!(command, WorkerCommand::SetActive(true)) {
             self.spawn_worker()?;
-            if let Some(worker) = &self.worker {
-                worker
-                    .command_tx
-                    .send(command)
-                    .map_err(|_| anyhow!("failed to restart Wayland screen capture worker"))?;
+            let replacement_accepted = self.worker.as_ref().is_some_and(|worker| {
+                dispatch_worker_command(&worker.command_tx, &worker.demanded, &command)
+            });
+            if !replacement_accepted {
+                self.shutdown_worker();
+                anyhow::bail!("failed to restart Wayland screen capture worker");
             }
         }
 
@@ -448,14 +978,14 @@ impl WaylandScreenCaptureInput {
             return;
         };
 
-        worker.cancel.store(true, Ordering::SeqCst);
+        worker.cancel_session();
         let _ = worker.command_tx.send(WorkerCommand::Stop);
 
         if !worker.portal_pending.load(Ordering::SeqCst) {
             let _ = worker.exit_rx.recv_timeout(WORKER_STOP_TIMEOUT);
         }
         if worker.is_finished() {
-            worker.join(None);
+            let _ = worker.join(false);
         } else {
             debug!("Retaining Wayland capture worker until the portal request terminates");
             self.retiring_workers.push(worker);
@@ -472,11 +1002,23 @@ impl WaylandScreenCaptureInput {
             return false;
         }
         let worker = self.worker.take().expect("finished worker remains owned");
-        worker.join(publish_failure.then(|| self.status.session()).flatten());
-        if let Ok(mut latest) = self.latest_snapshot.lock() {
-            *latest = None;
+        let status_writer = worker.status_writer.clone();
+        let session_generation = Arc::clone(&worker.session_generation);
+        let cancel = Arc::clone(&worker.cancel);
+        let failure_reason = worker.join(publish_failure);
+        if let (Some(reason), Some(status)) = (failure_reason, status_writer.as_ref()) {
+            publish_unexpected_exit_status(
+                &self.settings,
+                &session_generation,
+                &cancel,
+                status,
+                reason,
+            );
         }
-        self.settings.clear_expected_epoch();
+        self.settings.invalidate_session(
+            &self.latest_snapshot,
+            session_generation.load(Ordering::Acquire),
+        );
         self.reap_workers(false);
         true
     }
@@ -488,7 +1030,7 @@ impl WaylandScreenCaptureInput {
                 let _ = worker.exit_rx.recv_timeout(WORKER_STOP_TIMEOUT);
             }
             if worker.is_finished() {
-                worker.join(None);
+                let _ = worker.join(false);
             } else {
                 retained.push(worker);
             }
@@ -535,8 +1077,11 @@ impl InputSource for WaylandScreenCaptureInput {
         self.status.stop();
         self.running = false;
         self.capture_active = false;
-        self.settings.clear_expected_epoch();
-        self.shutdown_worker();
+        if self.worker.is_some() {
+            self.shutdown_worker();
+        } else {
+            self.settings.clear_expected_epoch();
+        }
         self.reap_workers(true);
 
         if let Ok(mut latest) = self.latest_snapshot.lock() {
@@ -545,8 +1090,13 @@ impl InputSource for WaylandScreenCaptureInput {
     }
 
     fn sample(&mut self) -> anyhow::Result<InputData> {
-        self.observe_worker_exit(self.running && self.capture_active);
+        let worker_exited = self.observe_worker_exit(self.running && self.capture_active);
         if !self.running || !self.capture_active {
+            return Ok(InputData::None);
+        }
+        if worker_exited {
+            self.spawn_worker()?;
+            self.send_worker_command(WorkerCommand::SetActive(true))?;
             return Ok(InputData::None);
         }
 
@@ -645,33 +1195,42 @@ struct WaylandCaptureWorker {
     /// True while the worker is awaiting the portal source picker — the
     /// phase during which it cannot see commands and must not be joined.
     portal_pending: Arc<AtomicBool>,
+    demanded: Arc<AtomicBool>,
+    status_writer: Option<SourceSessionWriter>,
+    session_generation: Arc<AtomicU64>,
+    settings: Arc<SharedSettings>,
+    latest_snapshot: Arc<Mutex<Option<CapturedScreenSnapshot>>>,
 }
 
 impl WaylandCaptureWorker {
+    fn cancel_session(&self) {
+        self.settings.cancel_worker_session(
+            &self.latest_snapshot,
+            &self.cancel,
+            &self.session_generation,
+        );
+    }
+
     fn is_finished(&self) -> bool {
         self.join_handle
             .as_ref()
             .is_none_or(thread::JoinHandle::is_finished)
     }
 
-    fn join(mut self, failure_status: Option<crate::input::SourceSessionWriter>) {
+    fn join(mut self, publish_failure: bool) -> Option<String> {
         let Some(join_handle) = self.join_handle.take() else {
-            return;
+            return None;
         };
         let failure = join_handle.join().err();
-        if let Some(status) = failure_status {
-            let reason = failure.map_or_else(
+        if publish_failure {
+            return Some(failure.map_or_else(
                 || "Wayland screen capture worker exited unexpectedly".to_owned(),
                 |panic| format!("Wayland screen capture worker panicked: {panic:?}"),
-            );
-            status.failed(SourceIssue::new(
-                "wayland_screen_worker_exited",
-                reason,
-                true,
             ));
         } else if let Some(panic) = failure {
             warn!(message = ?panic, "Wayland screen capture worker panicked");
         }
+        None
     }
 }
 
@@ -680,7 +1239,7 @@ impl Drop for WaylandCaptureWorker {
         let Some(join_handle) = self.join_handle.take() else {
             return;
         };
-        self.cancel.store(true, Ordering::SeqCst);
+        self.cancel_session();
         let _ = self.command_tx.send(WorkerCommand::Stop);
         if join_handle.is_finished() {
             let _ = join_handle.join();
@@ -694,12 +1253,45 @@ impl Drop for WaylandCaptureWorker {
 struct WorkerFlags {
     cancel: Arc<AtomicBool>,
     portal_pending: Arc<AtomicBool>,
+    demanded: Arc<AtomicBool>,
 }
 
 #[derive(Clone, Debug)]
 enum WorkerCommand {
     SetActive(bool),
     Stop,
+}
+
+fn dispatch_worker_command(
+    command_tx: &pw::channel::Sender<WorkerCommand>,
+    demanded: &AtomicBool,
+    command: &WorkerCommand,
+) -> bool {
+    if let WorkerCommand::SetActive(active) = command {
+        demanded.store(*active, Ordering::Release);
+    }
+    command_tx.send(command.clone()).is_ok()
+}
+
+fn publish_unexpected_exit_status(
+    settings: &SharedSettings,
+    active_session_generation: &AtomicU64,
+    cancel: &AtomicBool,
+    status: &SourceSessionWriter,
+    reason: String,
+) -> bool {
+    settings.publish_status_for_session(
+        active_session_generation.load(Ordering::Acquire),
+        cancel,
+        status,
+        |status| {
+            status.degraded(SourceIssue::new(
+                "wayland_screen_worker_exited",
+                reason,
+                true,
+            ))
+        },
+    )
 }
 
 struct PortalCaptureSession {
@@ -751,8 +1343,169 @@ impl WaylandSourceMetadata {
 }
 
 struct WaylandCaptureUserData {
-    analyzer: ScreenCaptureInput,
     format: spa::param::video::VideoInfoRaw,
+    negotiated: Option<NegotiatedFormat>,
+    buffers: DoubleBuffer,
+    exchange: Arc<AnalysisExchange>,
+    metrics: Arc<CaptureCallbackMetrics>,
+}
+
+impl WaylandCaptureUserData {
+    fn new(exchange: Arc<AnalysisExchange>, metrics: Arc<CaptureCallbackMetrics>) -> Self {
+        Self {
+            format: spa::param::video::VideoInfoRaw::default(),
+            negotiated: None,
+            buffers: DoubleBuffer::with_capacity(0),
+            exchange,
+            metrics,
+        }
+    }
+
+    fn set_negotiated_format(&mut self, format: NegotiatedFormat) -> bool {
+        let Some(capacity) = format.byte_len() else {
+            self.negotiated = None;
+            return false;
+        };
+        if self
+            .negotiated
+            .is_none_or(|previous| previous.byte_len() != Some(capacity))
+        {
+            self.buffers = DoubleBuffer::with_capacity(capacity);
+        }
+        self.negotiated = Some(format);
+        true
+    }
+
+    fn record_drop(&self, reason: ChunkDropReason) {
+        self.metrics.record(CopyStats::dropped(reason));
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct NegotiatedFormat {
+    width: u32,
+    height: u32,
+    format: SpaVideoFormat,
+}
+
+impl NegotiatedFormat {
+    fn byte_len(self) -> Option<usize> {
+        usize::try_from(self.width)
+            .ok()?
+            .checked_mul(usize::try_from(self.height).ok()?)?
+            .checked_mul(self.format.bytes_per_pixel())
+    }
+}
+
+#[derive(Default)]
+struct CaptureCallbackMetrics {
+    copied_frames: AtomicU64,
+    dropped_frames: AtomicU64,
+    copied_bytes: AtomicU64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct CaptureCallbackMetricsSnapshot {
+    copied_frames: u64,
+    dropped_frames: u64,
+    copied_bytes: u64,
+}
+
+impl CaptureCallbackMetrics {
+    fn record(&self, stats: CopyStats) {
+        if stats.drop_reason().is_some() {
+            self.dropped_frames.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.copied_frames.fetch_add(1, Ordering::Relaxed);
+            self.copied_bytes.fetch_add(
+                u64::try_from(stats.bytes_copied()).unwrap_or(u64::MAX),
+                Ordering::Relaxed,
+            );
+        }
+    }
+
+    fn snapshot(&self) -> CaptureCallbackMetricsSnapshot {
+        CaptureCallbackMetricsSnapshot {
+            copied_frames: self.copied_frames.load(Ordering::Relaxed),
+            dropped_frames: self.dropped_frames.load(Ordering::Relaxed),
+            copied_bytes: self.copied_bytes.load(Ordering::Relaxed),
+        }
+    }
+}
+
+#[derive(Default)]
+struct AnalysisExchangeState {
+    latest: Option<DecodedChunk>,
+    stopped: bool,
+}
+
+#[derive(Default)]
+struct AnalysisExchange {
+    state: Mutex<AnalysisExchangeState>,
+    wake: Condvar,
+}
+
+impl AnalysisExchange {
+    fn publish(&self, frame: DecodedChunk) {
+        let replaced = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if state.stopped {
+                Some(frame)
+            } else {
+                state.latest.replace(frame)
+            }
+        };
+        drop(replaced);
+        self.wake.notify_one();
+    }
+
+    fn wait_for_latest(&self, deadline: Instant, cancel: &AtomicBool) -> Option<DecodedChunk> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        loop {
+            if state.stopped || cancel.load(Ordering::Acquire) {
+                return None;
+            }
+            let now = Instant::now();
+            if now >= deadline
+                && let Some(frame) = state.latest.take()
+            {
+                return Some(frame);
+            }
+            let timeout = if now >= deadline {
+                WORKER_POLL_INTERVAL
+            } else {
+                deadline.saturating_duration_since(now)
+            };
+            let waited = self
+                .wake
+                .wait_timeout(state, timeout.min(WORKER_POLL_INTERVAL))
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state = waited.0;
+        }
+    }
+
+    fn stop(&self) {
+        let discarded = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.stopped = true;
+            state.latest.take()
+        };
+        drop(discarded);
+        self.wake.notify_all();
+    }
+}
+
+struct WaylandAnalysisState {
+    analyzer: ScreenCaptureInput,
     latest_snapshot: Arc<Mutex<Option<CapturedScreenSnapshot>>>,
     plane_pool: CapturePlanePool,
     settings: Arc<SharedSettings>,
@@ -761,19 +1514,19 @@ struct WaylandCaptureUserData {
     sequence: u64,
 }
 
-impl WaylandCaptureUserData {
+impl WaylandAnalysisState {
     fn new(
         settings: Arc<SharedSettings>,
         latest_snapshot: Arc<Mutex<Option<CapturedScreenSnapshot>>>,
         source: WaylandSourceMetadata,
+        config: CaptureConfig,
     ) -> Self {
         let applied_generation = settings.generation.load(Ordering::Acquire);
-        let mut analyzer = ScreenCaptureInput::new(settings.snapshot());
+        let mut analyzer = ScreenCaptureInput::new(config);
         let _ = analyzer.start();
 
         Self {
             analyzer,
-            format: spa::param::video::VideoInfoRaw::default(),
             latest_snapshot,
             plane_pool: CapturePlanePool::default(),
             settings,
@@ -783,14 +1536,23 @@ impl WaylandCaptureUserData {
         }
     }
 
-    fn sync_settings(&mut self) {
+    fn sync_settings(&mut self, cancel: &AtomicBool) -> bool {
         let generation = self.settings.generation.load(Ordering::Acquire);
         if generation == self.applied_generation {
-            return;
+            return self
+                .settings
+                .session_is_current(self.source.session_generation, cancel);
         }
+        let Some(config) = self
+            .settings
+            .snapshot_for_session(self.source.session_generation, cancel)
+        else {
+            return false;
+        };
         self.applied_generation = generation;
-        self.analyzer.apply_settings(self.settings.snapshot());
+        self.analyzer.apply_settings(config);
         debug!(generation, "Applied live screen capture settings");
+        true
     }
 
     fn capture_frame(
@@ -798,6 +1560,8 @@ impl WaylandCaptureUserData {
         captured_at: Instant,
         width: u32,
         height: u32,
+        crop: Option<PixelRect>,
+        transform: CaptureRotation,
         plane: PooledCapturePlane,
     ) -> anyhow::Result<CaptureFrame<RawCaptureSurface>> {
         self.sequence = self.sequence.wrapping_add(1).max(1);
@@ -835,8 +1599,8 @@ impl WaylandCaptureUserData {
                     self.source.signature.origin,
                     topology.native_extent,
                     storage_extent,
-                    CaptureRotation::Identity,
-                    None,
+                    transform,
+                    crop,
                     self.source.source_scale(topology.native_extent.width()),
                 )?,
                 color_space: CaptureColorSpace::Unknown,
@@ -860,15 +1624,72 @@ impl WaylandCaptureUserData {
     }
 }
 
+fn run_analysis_worker(
+    exchange: &AnalysisExchange,
+    settings: Arc<SharedSettings>,
+    latest_snapshot: Arc<Mutex<Option<CapturedScreenSnapshot>>>,
+    source: WaylandSourceMetadata,
+    config: CaptureConfig,
+    cancel: &AtomicBool,
+) {
+    let mut state = WaylandAnalysisState::new(settings, latest_snapshot, source, config);
+    let mut deadline = Instant::now();
+    while let Some(decoded) = exchange.wait_for_latest(deadline, cancel) {
+        if !state.sync_settings(cancel) {
+            return;
+        }
+        let Some(rgba_len) = usize::try_from(decoded.width)
+            .ok()
+            .and_then(|width| {
+                usize::try_from(decoded.height)
+                    .ok()
+                    .and_then(|height| width.checked_mul(height))
+            })
+            .and_then(|pixels| pixels.checked_mul(4))
+        else {
+            continue;
+        };
+        let mut plane = state.plane_pool.acquire(rgba_len);
+        plane.resize(rgba_len, 0);
+        convert_packed_to_rgba(&decoded, &mut plane);
+        let captured_at = decoded.captured_at;
+        let width = decoded.width;
+        let height = decoded.height;
+        let crop = decoded.crop;
+        let transform = decoded.transform;
+        drop(decoded);
+
+        let Ok(frame) =
+            state.capture_frame(captured_at, width, height, crop, transform, plane.freeze())
+        else {
+            continue;
+        };
+        let Ok(legacy) = analyze_legacy_screen_frame(&mut state.analyzer, frame) else {
+            continue;
+        };
+        state
+            .settings
+            .publish_snapshot(&state.latest_snapshot, legacy);
+
+        let period =
+            Duration::from_secs_f64(1.0 / f64::from(state.analyzer.config().target_fps.max(1)));
+        deadline = deadline
+            .checked_add(period)
+            .unwrap_or_else(Instant::now)
+            .max(Instant::now());
+    }
+}
+
 fn run_capture_worker(
     settings: Arc<SharedSettings>,
     latest_snapshot: Arc<Mutex<Option<CapturedScreenSnapshot>>>,
     command_rx: pw::channel::Receiver<WorkerCommand>,
     token_sink: Option<RestoreTokenSink>,
     flags: WorkerFlags,
-    status_session: SourceSessionSlot,
-    session_generation: u64,
+    status_writer: Option<SourceSessionWriter>,
+    active_session_generation: Arc<AtomicU64>,
 ) {
+    let mut session_generation = active_session_generation.load(Ordering::Acquire);
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -876,87 +1697,196 @@ fn run_capture_worker(
         Ok(runtime) => runtime,
         Err(error) => {
             warn!(%error, "Failed to create Wayland capture runtime");
-            if let Some(status) = status_session.load() {
-                status.failed(SourceIssue::new(
-                    "wayland_runtime_start_failed",
-                    error.to_string(),
-                    true,
-                ));
-            }
-            return;
-        }
-    };
-
-    let startup_config = settings.snapshot();
-    if flags.cancel.load(Ordering::SeqCst) {
-        flags.portal_pending.store(false, Ordering::SeqCst);
-        debug!("Wayland capture worker cancelled before portal phase");
-        return;
-    }
-    let portal_result = runtime.block_on(open_portal_session(&startup_config));
-    flags.portal_pending.store(false, Ordering::SeqCst);
-
-    let (portal, restore_token) = match portal_result {
-        Ok(portal) => portal,
-        Err(error) => {
-            warn!(%error, "Failed to establish Wayland screencast session");
-            if !flags.cancel.load(Ordering::SeqCst)
-                && let Some(status) = status_session.load()
-            {
-                status.unavailable(
-                    SourceIssue::new("wayland_portal_unavailable", error.to_string(), true)
-                        .with_remediation("grant screen-sharing permission in the desktop portal"),
+            if let Some(status) = status_writer.as_ref() {
+                settings.publish_status_for_session(
+                    session_generation,
+                    &flags.cancel,
+                    status,
+                    |status| {
+                        status.failed(SourceIssue::new(
+                            "wayland_runtime_start_failed",
+                            error.to_string(),
+                            true,
+                        ))
+                    },
                 );
             }
             return;
         }
     };
 
-    // A cancelled (detached) worker was replaced while the picker was open;
-    // close the session quietly and leave all shared state to its successor.
-    if flags.cancel.load(Ordering::SeqCst) {
-        debug!("Wayland capture worker cancelled during portal phase; closing session");
-        if let Err(error) = runtime.block_on(portal.session.close()) {
-            debug!(%error, "Cancelled capture session close reported an error");
-        }
-        return;
-    }
-
-    if restore_token != startup_config.restore_token {
-        if let Ok(mut config) = settings.config.lock() {
-            config.restore_token.clone_from(&restore_token);
-        }
-        if let Some(sink) = &token_sink {
-            sink(restore_token);
-        }
-    }
-
-    let session = match run_pipewire_loop(
-        &startup_config,
-        settings,
-        Arc::clone(&latest_snapshot),
-        portal,
-        command_rx,
-        session_generation,
-    ) {
-        Ok(session) => session,
-        Err(error) => {
-            warn!(%error, "Wayland screen capture loop exited with an error");
-            if !flags.cancel.load(Ordering::SeqCst)
-                && let Some(status) = status_session.load()
-            {
-                status.failed(SourceIssue::new(
-                    "wayland_capture_worker_failed",
-                    error.to_string(),
-                    true,
-                ));
-            }
+    let mut command_rx = Some(command_rx);
+    loop {
+        flags.portal_pending.store(false, Ordering::SeqCst);
+        if !wait_for_demand(&flags) {
             return;
         }
-    };
 
-    if let Err(error) = runtime.block_on(session.close()) {
-        warn!(%error, "Wayland screen capture loop exited with an error");
+        let Some(startup_config) = settings.snapshot_for_session(session_generation, &flags.cancel)
+        else {
+            return;
+        };
+        flags.portal_pending.store(true, Ordering::SeqCst);
+        let portal_result =
+            runtime.block_on(open_portal_session_while_demanded(&startup_config, &flags));
+        flags.portal_pending.store(false, Ordering::SeqCst);
+        let Some(portal_result) = portal_result else {
+            if !settings.session_is_current(session_generation, &flags.cancel) {
+                return;
+            }
+            continue;
+        };
+        let (portal, restore_token) = match portal_result {
+            Ok(portal) => portal,
+            Err(error) => {
+                if !settings.session_is_current(session_generation, &flags.cancel) {
+                    return;
+                }
+                warn!(%error, "Failed to establish Wayland screencast session");
+                if let Some(status) = status_writer.as_ref() {
+                    settings.publish_status_for_session(
+                        session_generation,
+                        &flags.cancel,
+                        status,
+                        |status| {
+                            status.unavailable(
+                                SourceIssue::new(
+                                    "wayland_portal_unavailable",
+                                    error.to_string(),
+                                    true,
+                                )
+                                .with_remediation(
+                                    "grant screen-sharing permission in the desktop portal",
+                                ),
+                            )
+                        },
+                    );
+                }
+                if !wait_for_retry(&flags) {
+                    return;
+                }
+                let Some(successor_generation) = settings.begin_successor_session(
+                    session_generation,
+                    &flags.cancel,
+                    &active_session_generation,
+                ) else {
+                    return;
+                };
+                session_generation = successor_generation;
+                continue;
+            }
+        };
+
+        if !settings.session_is_current(session_generation, &flags.cancel) {
+            return;
+        }
+
+        if restore_token != startup_config.restore_token {
+            if !settings.persist_restore_token_for_session(
+                session_generation,
+                &flags.cancel,
+                restore_token,
+                token_sink.as_ref(),
+            ) {
+                return;
+            }
+        }
+
+        let PortalCaptureSession {
+            session,
+            stream,
+            fd,
+        } = portal;
+        let loop_outcome = run_pipewire_loop(
+            &startup_config,
+            Arc::clone(&settings),
+            Arc::clone(&latest_snapshot),
+            stream,
+            fd,
+            &mut command_rx,
+            Arc::clone(&flags.cancel),
+            session_generation,
+        );
+        settings.invalidate_session(&latest_snapshot, session_generation);
+        if let Err(error) = runtime.block_on(session.close()) {
+            warn!(%error, "Wayland screencast session close reported an error");
+        }
+        if !settings.session_is_current(session_generation, &flags.cancel) {
+            return;
+        }
+
+        let reason = match loop_outcome {
+            Ok(PipeWireLoopExit::Stopped) => return,
+            Ok(PipeWireLoopExit::Terminal(reason)) => reason,
+            Err(error) => error.to_string(),
+        };
+        warn!(%reason, "Wayland screen capture stream terminated; reconnecting");
+        if let Some(status) = status_writer.as_ref() {
+            settings.publish_status_for_session(
+                session_generation,
+                &flags.cancel,
+                status,
+                |status| {
+                    status.degraded(SourceIssue::new(
+                        "wayland_stream_reconnecting",
+                        reason,
+                        true,
+                    ))
+                },
+            );
+        }
+        if !wait_for_retry(&flags) {
+            return;
+        }
+        let Some(successor_generation) = settings.begin_successor_session(
+            session_generation,
+            &flags.cancel,
+            &active_session_generation,
+        ) else {
+            return;
+        };
+        session_generation = successor_generation;
+    }
+}
+
+fn wait_for_demand(flags: &WorkerFlags) -> bool {
+    while !flags.cancel.load(Ordering::Acquire) {
+        if flags.demanded.load(Ordering::Acquire) {
+            return true;
+        }
+        thread::park_timeout(WORKER_POLL_INTERVAL);
+    }
+    false
+}
+
+fn wait_for_retry(flags: &WorkerFlags) -> bool {
+    let deadline = Instant::now()
+        .checked_add(RECONNECT_DELAY)
+        .unwrap_or_else(Instant::now);
+    while !flags.cancel.load(Ordering::Acquire)
+        && flags.demanded.load(Ordering::Acquire)
+        && Instant::now() < deadline
+    {
+        thread::park_timeout(
+            WORKER_POLL_INTERVAL.min(deadline.saturating_duration_since(Instant::now())),
+        );
+    }
+    !flags.cancel.load(Ordering::Acquire) && flags.demanded.load(Ordering::Acquire)
+}
+
+async fn open_portal_session_while_demanded(
+    config: &CaptureConfig,
+    flags: &WorkerFlags,
+) -> Option<anyhow::Result<(PortalCaptureSession, Option<String>)>> {
+    tokio::select! {
+        result = open_portal_session(config) => Some(result),
+        () = wait_until_worker_inactive(flags) => None,
+    }
+}
+
+async fn wait_until_worker_inactive(flags: &WorkerFlags) {
+    while !flags.cancel.load(Ordering::Acquire) && flags.demanded.load(Ordering::Acquire) {
+        tokio::time::sleep(WORKER_POLL_INTERVAL).await;
     }
 }
 
@@ -1020,23 +1950,35 @@ async fn open_portal_session(
     ))
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PipeWireLoopExit {
+    Stopped,
+    Terminal(String),
+}
+
+#[allow(clippy::too_many_arguments)]
 fn run_pipewire_loop(
     config: &CaptureConfig,
     settings: Arc<SharedSettings>,
     latest_snapshot: Arc<Mutex<Option<CapturedScreenSnapshot>>>,
-    portal: PortalCaptureSession,
-    command_rx: pw::channel::Receiver<WorkerCommand>,
+    portal_stream: Stream,
+    portal_fd: OwnedFd,
+    command_rx: &mut Option<pw::channel::Receiver<WorkerCommand>>,
+    cancel: Arc<AtomicBool>,
     session_generation: u64,
-) -> anyhow::Result<Session<Screencast>> {
+) -> anyhow::Result<PipeWireLoopExit> {
     pw::init();
-    let source = WaylandSourceMetadata::from_stream(&portal.stream, session_generation)?;
+    let source = WaylandSourceMetadata::from_stream(&portal_stream, session_generation)?;
+    let exchange = Arc::new(AnalysisExchange::default());
+    let callback_metrics = Arc::new(CaptureCallbackMetrics::default());
+    let loop_exit = Arc::new(Mutex::new(None::<PipeWireLoopExit>));
 
     let mainloop =
         pw::main_loop::MainLoopRc::new(None).context("failed to create PipeWire main loop")?;
     let context = pw::context::ContextRc::new(&mainloop, None)
         .context("failed to create PipeWire context")?;
     let core = context
-        .connect_fd_rc(portal.fd, None)
+        .connect_fd_rc(portal_fd, None)
         .context("failed to connect to screencast PipeWire remote")?;
 
     let stream = pw::stream::StreamRc::new(
@@ -1052,12 +1994,35 @@ fn run_pipewire_loop(
 
     let _listener = stream
         .add_local_listener_with_user_data(WaylandCaptureUserData::new(
-            settings,
-            latest_snapshot,
-            source,
+            Arc::clone(&exchange),
+            Arc::clone(&callback_metrics),
         ))
-        .state_changed(|_, _, old, new| {
-            debug!(?old, ?new, "Wayland screen capture stream state changed");
+        .state_changed({
+            let mainloop = mainloop.clone();
+            let loop_exit = Arc::clone(&loop_exit);
+            move |_, _, old, new| {
+                debug!(?old, ?new, "Wayland screen capture stream state changed");
+                let terminal = match new {
+                    pw::stream::StreamState::Error(error) => {
+                        Some(format!("PipeWire stream entered error state: {error}"))
+                    }
+                    pw::stream::StreamState::Unconnected
+                        if old != pw::stream::StreamState::Unconnected =>
+                    {
+                        Some("PipeWire stream disconnected".to_owned())
+                    }
+                    _ => None,
+                };
+                if let Some(reason) = terminal {
+                    let mut exit = loop_exit
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if exit.is_none() {
+                        *exit = Some(PipeWireLoopExit::Terminal(reason));
+                        mainloop.quit();
+                    }
+                }
+            }
         })
         .param_changed(|_, user_data, id, param| {
             let Some(param) = param else {
@@ -1084,7 +2049,12 @@ fn run_pipewire_loop(
 
             let format = user_data.format.format();
             let size = user_data.format.size();
-            if supports_video_format(format) {
+            let negotiated = spa_video_format(format).map(|format| NegotiatedFormat {
+                width: size.width,
+                height: size.height,
+                format,
+            });
+            if negotiated.is_some_and(|format| user_data.set_negotiated_format(format)) {
                 info!(
                     ?format,
                     width = size.width,
@@ -1101,52 +2071,59 @@ fn run_pipewire_loop(
             }
         })
         .process(|stream, user_data| {
-            user_data.sync_settings();
             let Some(mut buffer) = stream.dequeue_buffer() else {
+                user_data.record_drop(ChunkDropReason::MissingBuffer);
                 return;
             };
             let Some(data) = buffer.datas_mut().first_mut() else {
+                user_data.record_drop(ChunkDropReason::MissingPlane);
                 return;
             };
 
-            let size = user_data.format.size();
-            if size.width == 0 || size.height == 0 {
+            let Some(negotiated) = user_data.negotiated else {
+                user_data.record_drop(ChunkDropReason::MissingFormat);
                 return;
+            };
+            let (offset, size, stride) = {
+                let chunk = data.chunk();
+                (
+                    usize::try_from(chunk.offset()).ok(),
+                    usize::try_from(chunk.size()).ok(),
+                    chunk.stride(),
+                )
+            };
+            let (Some(offset), Some(size)) = (offset, size) else {
+                user_data.record_drop(ChunkDropReason::InvalidChunkBounds);
+                return;
+            };
+            let Some(mapped) = data.data() else {
+                user_data.record_drop(ChunkDropReason::UnmappedPlane);
+                return;
+            };
+            // pipewire-rs 0.9 does not expose SPA buffer metas safely; the
+            // pure seam still carries crop/transform until an audited adapter does.
+            let view = SpaChunkView::new(
+                mapped,
+                offset,
+                size,
+                stride,
+                negotiated.width,
+                negotiated.height,
+                negotiated.format,
+                None,
+                CaptureRotation::Identity,
+            );
+            let stats = decode_chunk(&view, &mut user_data.buffers);
+            let completed = if stats.drop_reason().is_none() {
+                user_data.buffers.take_completed()
+            } else {
+                None
+            };
+            drop(buffer);
+            user_data.metrics.record(stats);
+            if let Some(frame) = completed {
+                user_data.exchange.publish(frame);
             }
-
-            let format = user_data.format.format();
-            if !supports_video_format(format) {
-                return;
-            }
-            let acquired_at = Instant::now();
-            let Some(plane_len) = usize::try_from(size.width)
-                .ok()
-                .and_then(|width| {
-                    usize::try_from(size.height)
-                        .ok()
-                        .and_then(|height| width.checked_mul(height))
-                })
-                .and_then(|pixels| pixels.checked_mul(4))
-            else {
-                return;
-            };
-            let mut plane = user_data.plane_pool.acquire(plane_len);
-
-            if !copy_frame_to_rgba(data, format, size.width, size.height, &mut plane) {
-                return;
-            }
-
-            let Ok(frame) =
-                user_data.capture_frame(acquired_at, size.width, size.height, plane.freeze())
-            else {
-                return;
-            };
-            let Ok(legacy) = analyze_legacy_screen_frame(&mut user_data.analyzer, frame) else {
-                return;
-            };
-            user_data
-                .settings
-                .publish_snapshot(&user_data.latest_snapshot, legacy);
         })
         .register()
         .context("failed to register PipeWire screen capture listener")?;
@@ -1158,32 +2135,96 @@ fn run_pipewire_loop(
     stream
         .connect(
             spa::utils::Direction::Input,
-            Some(portal.stream.pipe_wire_node_id()),
+            Some(portal_stream.pipe_wire_node_id()),
             pw::stream::StreamFlags::AUTOCONNECT | pw::stream::StreamFlags::MAP_BUFFERS,
             &mut params,
         )
         .context("failed to connect PipeWire screen capture stream")?;
 
-    let _command_rx = command_rx.attach(mainloop.loop_(), {
+    let (analysis_exit_tx, analysis_exit_rx) = pw::channel::channel();
+    let analysis_exchange = Arc::clone(&exchange);
+    let analysis_cancel = Arc::clone(&cancel);
+    let analysis_config = config.clone();
+    let analysis_handle = spawn_input_worker(
+        thread::Builder::new().name("hypercolor-screen-analysis".to_owned()),
+        move || {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                run_analysis_worker(
+                    &analysis_exchange,
+                    settings,
+                    latest_snapshot,
+                    source,
+                    analysis_config,
+                    &analysis_cancel,
+                );
+            }));
+            if result.is_err() {
+                let _ = analysis_exit_tx.send(());
+            }
+        },
+    )
+    .context("failed to spawn Wayland screen analysis worker")?;
+    let _analysis_exit_rx = analysis_exit_rx.attach(mainloop.loop_(), {
+        let mainloop = mainloop.clone();
+        let loop_exit = Arc::clone(&loop_exit);
+        move |()| {
+            *loop_exit
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(
+                PipeWireLoopExit::Terminal("Wayland analysis worker panicked".to_owned()),
+            );
+            mainloop.quit();
+        }
+    });
+
+    let receiver = command_rx
+        .take()
+        .context("PipeWire command receiver was not returned by the previous stream")?;
+    let attached_command_rx = receiver.attach(mainloop.loop_(), {
         let mainloop = mainloop.clone();
         let stream = stream.clone();
+        let loop_exit = Arc::clone(&loop_exit);
         move |command| match command {
             WorkerCommand::SetActive(active) => {
                 if let Err(error) = stream.set_active(active) {
                     warn!(active, %error, "Failed to update PipeWire stream active state");
                 }
             }
-            WorkerCommand::Stop => mainloop.quit(),
+            WorkerCommand::Stop => {
+                *loop_exit
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                    Some(PipeWireLoopExit::Stopped);
+                mainloop.quit();
+            }
         }
     });
 
     mainloop.run();
+    *command_rx = Some(attached_command_rx.deattach());
+    exchange.stop();
 
     if let Err(error) = stream.disconnect() {
         debug!(%error, "PipeWire screen capture stream disconnect reported an error");
     }
 
-    Ok(portal.session)
+    analysis_handle
+        .join()
+        .map_err(|panic| anyhow!("Wayland analysis worker join failed: {panic:?}"))?;
+    let metrics = callback_metrics.snapshot();
+    debug!(
+        copied_frames = metrics.copied_frames,
+        dropped_frames = metrics.dropped_frames,
+        copied_bytes = metrics.copied_bytes,
+        "Wayland capture callback totals"
+    );
+    Ok(loop_exit
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+        .unwrap_or_else(|| {
+            PipeWireLoopExit::Terminal("PipeWire main loop exited unexpectedly".to_owned())
+        }))
 }
 
 fn build_format_params(target_fps: u32) -> anyhow::Result<Vec<u8>> {
@@ -1256,118 +2297,44 @@ fn build_format_params(target_fps: u32) -> anyhow::Result<Vec<u8>> {
     .into_inner())
 }
 
-fn supports_video_format(format: spa::param::video::VideoFormat) -> bool {
-    matches!(
-        format,
-        spa::param::video::VideoFormat::RGBA
-            | spa::param::video::VideoFormat::BGRA
-            | spa::param::video::VideoFormat::RGBx
-            | spa::param::video::VideoFormat::BGRx
-            | spa::param::video::VideoFormat::ARGB
-            | spa::param::video::VideoFormat::ABGR
-            | spa::param::video::VideoFormat::xRGB
-            | spa::param::video::VideoFormat::xBGR
-            | spa::param::video::VideoFormat::RGB
-            | spa::param::video::VideoFormat::BGR
-    )
-}
-
-fn copy_frame_to_rgba(
-    data: &mut spa::buffer::Data,
-    format: spa::param::video::VideoFormat,
-    width: u32,
-    height: u32,
-    rgba: &mut Vec<u8>,
-) -> bool {
-    let (offset, stride) = {
-        let chunk = data.chunk();
-        let offset = usize::try_from(chunk.offset()).ok();
-        let stride = if chunk.stride() > 0 {
-            usize::try_from(chunk.stride()).ok()
-        } else {
-            None
-        };
-        let Some(offset) = offset else {
-            return false;
-        };
-        (offset, stride)
-    };
-
-    let Some(mapped) = data.data() else {
-        return false;
-    };
-
-    let width_usize = usize::try_from(width).ok();
-    let height_usize = usize::try_from(height).ok();
-    let Some(width_usize) = width_usize else {
-        return false;
-    };
-    let Some(height_usize) = height_usize else {
-        return false;
-    };
-
-    let bytes_per_pixel = bytes_per_pixel(format);
-    let row_bytes = width_usize.checked_mul(bytes_per_pixel);
-    let Some(row_bytes) = row_bytes else {
-        return false;
-    };
-
-    let stride = if let Some(stride) = stride {
-        Some(stride).filter(|stride| *stride >= row_bytes)
-    } else {
-        Some(row_bytes)
-    };
-    let Some(stride) = stride else {
-        return false;
-    };
-
-    let row_span = stride.checked_mul(height_usize.saturating_sub(1));
-    let Some(row_span) = row_span else {
-        return false;
-    };
-    let required = offset.checked_add(row_span);
-    let required = required.and_then(|base| base.checked_add(row_bytes));
-    let Some(required) = required else {
-        return false;
-    };
-    if mapped.len() < required {
-        return false;
-    }
-
-    let total_rgba_bytes = width_usize
-        .checked_mul(height_usize)
-        .and_then(|pixels| pixels.checked_mul(4));
-    let Some(total_rgba_bytes) = total_rgba_bytes else {
-        return false;
-    };
-    rgba.resize(total_rgba_bytes, 0);
-
-    for row in 0..height_usize {
-        let src_start = offset + row * stride;
-        let src_end = src_start + row_bytes;
-        let dst_start = row * width_usize * 4;
-        let dst_end = dst_start + width_usize * 4;
-        let src_row = &mapped[src_start..src_end];
-        let dst_row = &mut rgba[dst_start..dst_end];
-        convert_row_to_rgba(src_row, dst_row, format);
-    }
-
-    true
-}
-
-fn bytes_per_pixel(format: spa::param::video::VideoFormat) -> usize {
+fn spa_video_format(format: spa::param::video::VideoFormat) -> Option<SpaVideoFormat> {
     match format {
-        spa::param::video::VideoFormat::RGB | spa::param::video::VideoFormat::BGR => 3,
-        _ => 4,
+        spa::param::video::VideoFormat::RGBA => Some(SpaVideoFormat::Rgba),
+        spa::param::video::VideoFormat::BGRA => Some(SpaVideoFormat::Bgra),
+        spa::param::video::VideoFormat::RGBx => Some(SpaVideoFormat::Rgbx),
+        spa::param::video::VideoFormat::BGRx => Some(SpaVideoFormat::Bgrx),
+        spa::param::video::VideoFormat::ARGB => Some(SpaVideoFormat::Argb),
+        spa::param::video::VideoFormat::ABGR => Some(SpaVideoFormat::Abgr),
+        spa::param::video::VideoFormat::xRGB => Some(SpaVideoFormat::Xrgb),
+        spa::param::video::VideoFormat::xBGR => Some(SpaVideoFormat::Xbgr),
+        spa::param::video::VideoFormat::RGB => Some(SpaVideoFormat::Rgb),
+        spa::param::video::VideoFormat::BGR => Some(SpaVideoFormat::Bgr),
+        _ => None,
     }
 }
 
-fn convert_row_to_rgba(src: &[u8], dst: &mut [u8], format: spa::param::video::VideoFormat) {
+fn convert_packed_to_rgba(decoded: &DecodedChunk, rgba: &mut [u8]) {
+    let width = usize::try_from(decoded.width).expect("validated width fits usize");
+    let height = usize::try_from(decoded.height).expect("validated height fits usize");
+    let source_row_bytes = width * decoded.format.bytes_per_pixel();
+    let destination_row_bytes = width * 4;
+    for row in 0..height {
+        let source_start = row * source_row_bytes;
+        let destination_start = row * destination_row_bytes;
+        convert_row_to_rgba(
+            &decoded.bytes()[source_start..source_start + source_row_bytes],
+            &mut rgba[destination_start..destination_start + destination_row_bytes],
+            decoded.format,
+        );
+    }
+}
+
+fn convert_row_to_rgba(src: &[u8], dst: &mut [u8], format: SpaVideoFormat) {
     match format {
-        spa::param::video::VideoFormat::RGBA => {
+        SpaVideoFormat::Rgba => {
             dst.copy_from_slice(src);
         }
-        spa::param::video::VideoFormat::BGRA => {
+        SpaVideoFormat::Bgra => {
             for (src_px, dst_px) in src.chunks_exact(4).zip(dst.chunks_exact_mut(4)) {
                 dst_px[0] = src_px[2];
                 dst_px[1] = src_px[1];
@@ -1375,7 +2342,7 @@ fn convert_row_to_rgba(src: &[u8], dst: &mut [u8], format: spa::param::video::Vi
                 dst_px[3] = src_px[3];
             }
         }
-        spa::param::video::VideoFormat::RGBx => {
+        SpaVideoFormat::Rgbx => {
             for (src_px, dst_px) in src.chunks_exact(4).zip(dst.chunks_exact_mut(4)) {
                 dst_px[0] = src_px[0];
                 dst_px[1] = src_px[1];
@@ -1383,7 +2350,7 @@ fn convert_row_to_rgba(src: &[u8], dst: &mut [u8], format: spa::param::video::Vi
                 dst_px[3] = 255;
             }
         }
-        spa::param::video::VideoFormat::BGRx => {
+        SpaVideoFormat::Bgrx => {
             for (src_px, dst_px) in src.chunks_exact(4).zip(dst.chunks_exact_mut(4)) {
                 dst_px[0] = src_px[2];
                 dst_px[1] = src_px[1];
@@ -1391,7 +2358,7 @@ fn convert_row_to_rgba(src: &[u8], dst: &mut [u8], format: spa::param::video::Vi
                 dst_px[3] = 255;
             }
         }
-        spa::param::video::VideoFormat::ARGB => {
+        SpaVideoFormat::Argb => {
             for (src_px, dst_px) in src.chunks_exact(4).zip(dst.chunks_exact_mut(4)) {
                 dst_px[0] = src_px[1];
                 dst_px[1] = src_px[2];
@@ -1399,7 +2366,7 @@ fn convert_row_to_rgba(src: &[u8], dst: &mut [u8], format: spa::param::video::Vi
                 dst_px[3] = src_px[0];
             }
         }
-        spa::param::video::VideoFormat::ABGR => {
+        SpaVideoFormat::Abgr => {
             for (src_px, dst_px) in src.chunks_exact(4).zip(dst.chunks_exact_mut(4)) {
                 dst_px[0] = src_px[3];
                 dst_px[1] = src_px[2];
@@ -1407,7 +2374,7 @@ fn convert_row_to_rgba(src: &[u8], dst: &mut [u8], format: spa::param::video::Vi
                 dst_px[3] = src_px[0];
             }
         }
-        spa::param::video::VideoFormat::xRGB => {
+        SpaVideoFormat::Xrgb => {
             for (src_px, dst_px) in src.chunks_exact(4).zip(dst.chunks_exact_mut(4)) {
                 dst_px[0] = src_px[1];
                 dst_px[1] = src_px[2];
@@ -1415,7 +2382,7 @@ fn convert_row_to_rgba(src: &[u8], dst: &mut [u8], format: spa::param::video::Vi
                 dst_px[3] = 255;
             }
         }
-        spa::param::video::VideoFormat::xBGR => {
+        SpaVideoFormat::Xbgr => {
             for (src_px, dst_px) in src.chunks_exact(4).zip(dst.chunks_exact_mut(4)) {
                 dst_px[0] = src_px[3];
                 dst_px[1] = src_px[2];
@@ -1423,7 +2390,7 @@ fn convert_row_to_rgba(src: &[u8], dst: &mut [u8], format: spa::param::video::Vi
                 dst_px[3] = 255;
             }
         }
-        spa::param::video::VideoFormat::RGB => {
+        SpaVideoFormat::Rgb => {
             for (src_px, dst_px) in src.chunks_exact(3).zip(dst.chunks_exact_mut(4)) {
                 dst_px[0] = src_px[0];
                 dst_px[1] = src_px[1];
@@ -1431,7 +2398,7 @@ fn convert_row_to_rgba(src: &[u8], dst: &mut [u8], format: spa::param::video::Vi
                 dst_px[3] = 255;
             }
         }
-        spa::param::video::VideoFormat::BGR => {
+        SpaVideoFormat::Bgr => {
             for (src_px, dst_px) in src.chunks_exact(3).zip(dst.chunks_exact_mut(4)) {
                 dst_px[0] = src_px[2];
                 dst_px[1] = src_px[1];
@@ -1439,7 +2406,6 @@ fn convert_row_to_rgba(src: &[u8], dst: &mut [u8], format: spa::param::video::Vi
                 dst_px[3] = 255;
             }
         }
-        _ => {}
     }
 }
 
