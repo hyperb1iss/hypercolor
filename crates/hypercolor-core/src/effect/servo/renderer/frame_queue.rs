@@ -267,6 +267,7 @@ pub(super) struct QueuedFrameInput {
     interaction: Option<Arc<crate::input::InteractionData>>,
     screen: Option<Arc<crate::input::ScreenData>>,
     sensors: Option<Arc<SystemSnapshot>>,
+    input_availability: crate::effect::InputSourceAvailability,
     media: Option<Arc<hypercolor_types::media::MediaState>>,
     net: Option<Arc<hypercolor_types::net::NetStats>>,
     lighting: Option<Arc<hypercolor_types::lighting::LightingState>>,
@@ -290,6 +291,7 @@ impl QueuedFrameInput {
                 None
             },
             sensors: demand.sensors.then(|| Arc::new(input.sensors.clone())),
+            input_availability: input.sources.input_availability,
             media: if demand.media {
                 input.sources.media.map(|media| Arc::new(media.clone()))
             } else {
@@ -332,6 +334,7 @@ impl QueuedFrameInput {
         clone_demanded_from(&mut self.interaction, input.interaction, demand.interaction);
         clone_optional_demanded_from(&mut self.screen, input.screen, demand.screen);
         clone_demanded_from(&mut self.sensors, input.sensors, demand.sensors);
+        self.input_availability = input.sources.input_availability;
         clone_optional_demanded_from(&mut self.media, input.sources.media, demand.media);
         clone_optional_demanded_from(&mut self.net, input.sources.net, demand.net);
         clone_optional_demanded_from(&mut self.lighting, input.sources.lighting, demand.lighting);
@@ -363,6 +366,7 @@ impl QueuedFrameInput {
             screen: self.screen.as_deref(),
             sensors: self.sensors.as_deref().unwrap_or(&EMPTY_SENSORS),
             sources: crate::effect::traits::FrameDataSources {
+                input_availability: self.input_availability,
                 media: self.media.as_deref(),
                 net: self.net.as_deref(),
                 lighting: self.lighting.as_deref(),

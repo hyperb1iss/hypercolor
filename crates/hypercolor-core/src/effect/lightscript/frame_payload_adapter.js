@@ -144,6 +144,16 @@
         }
       }
     };
+    const applyInputAvailability = function(engine, availability) {
+      if (typeof availability !== 'object' || availability === null) { return; }
+      engine.inputAvailability = {
+        declared: availability.declared === true,
+        routed: availability.routed === true,
+        healthy: availability.healthy === true,
+        fresh: availability.fresh === true,
+        degraded: availability.degraded === true,
+      };
+    };
     const applyInteraction = function(engine, interaction) {
       if (typeof interaction !== 'object' || interaction === null) { return; }
       if (typeof engine.keyboard !== 'object' || engine.keyboard === null) { engine.keyboard = {}; }
@@ -224,6 +234,7 @@
       applyNet(engine, payload.net);
       applyLighting(engine, payload.lighting);
       applyControls(payload.controls);
+      applyInputAvailability(engine, payload.inputAvailability);
       applyInteraction(engine, payload.interaction);
       if (payload.renderHostFrame) { renderHostFrame(); }
     };

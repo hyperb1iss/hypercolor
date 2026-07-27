@@ -61,10 +61,12 @@ fn bootstrap_script_contains_runtime_shape_and_frame_adapter() {
     assert!(script.contains("window.engine.zone.hue = new Int16Array(560)"));
     assert!(script.contains("window.engine.getSensorValue = function(name)"));
     assert!(script.contains("window.engine.keyboard.isKeyDown = function(key)"));
+    assert!(script.contains("window.engine.inputAvailability = { declared: false"));
     assert!(script.contains("window.__hypercolorApplyHostFrame = function("));
     assert!(script.contains("window.__hypercolorApplyFramePayload = function(payload)"));
     assert!(script.contains("applyAudio(engine, payload.audio)"));
     assert!(script.contains("applyControls(payload.controls)"));
+    assert!(script.contains("applyInputAvailability(engine, payload.inputAvailability)"));
     assert!(script.contains("applyInteraction(engine, payload.interaction)"));
 }
 
@@ -427,6 +429,97 @@ fn interaction_payload_populates_keyboard_and_mouse_state_on_change() {
             .frame_payload(&input, &HashMap::new(), options)
             .is_none()
     );
+}
+
+#[test]
+fn idle_healthy_interaction_source_emits_available_status() {
+    let mut runtime = LightscriptRuntime::new(320, 200);
+    let audio = AudioData::silence();
+    let interaction = InteractionData::default();
+    let sensors = SystemSnapshot::empty();
+    let mut input = quiet_frame(&audio, &interaction, &sensors);
+    input.sources.input_availability = InputSourceAvailability {
+        routed: true,
+        healthy: true,
+        fresh: true,
+        degraded: false,
+    };
+    let options = LightScriptFrameUpdateOptions {
+        include_audio: false,
+        include_interaction: true,
+        ..default_options()
+    };
+
+    let payload = runtime
+        .frame_payload(&input, &HashMap::new(), options)
+        .expect("declared input availability should emit without activity");
+    assert_eq!(
+        payload.input_availability,
+        Some(LightScriptInputAvailabilityPayload {
+            declared: true,
+            routed: true,
+            healthy: true,
+            fresh: true,
+            degraded: false,
+        })
+    );
+    assert!(
+        runtime
+            .frame_payload(&input, &HashMap::new(), options)
+            .is_none()
+    );
+}
+
+#[test]
+fn failed_source_status_emits_after_recent_activity_without_activity_inference() {
+    let mut runtime = LightscriptRuntime::new(320, 200);
+    let audio = AudioData::silence();
+    let sensors = SystemSnapshot::empty();
+    let interaction = InteractionData {
+        keyboard: crate::input::KeyboardData {
+            pressed_keys: vec!["w".to_owned()],
+            recent_keys: vec!["w".to_owned()],
+        },
+        generation: 1,
+        ..Default::default()
+    };
+    let mut input = quiet_frame(&audio, &interaction, &sensors);
+    input.sources.input_availability = InputSourceAvailability {
+        routed: true,
+        healthy: true,
+        fresh: true,
+        degraded: false,
+    };
+    let options = LightScriptFrameUpdateOptions {
+        include_audio: false,
+        include_interaction: true,
+        ..default_options()
+    };
+
+    runtime
+        .frame_payload(&input, &HashMap::new(), options)
+        .expect("active healthy frame should initialize status and interaction");
+    input.sources.input_availability = InputSourceAvailability {
+        routed: true,
+        healthy: false,
+        fresh: false,
+        degraded: false,
+    };
+    let failed = runtime
+        .frame_payload(&input, &HashMap::new(), options)
+        .expect("source failure should emit independently of interaction generation");
+
+    assert_eq!(
+        failed.input_availability,
+        Some(LightScriptInputAvailabilityPayload {
+            declared: true,
+            routed: true,
+            healthy: false,
+            fresh: false,
+            degraded: false,
+        })
+    );
+    assert!(failed.interaction.is_none());
 }
 
 #[test]

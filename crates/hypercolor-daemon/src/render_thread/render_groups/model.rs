@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use hypercolor_core::bus::{DisplayGroupFrame, DisplayGroupOutputRoute, DisplayGroupTarget};
 use hypercolor_core::effect::media::MediaProducer;
-use hypercolor_core::effect::{EffectRegistry, FrameDataSources};
+use hypercolor_core::effect::{EffectRegistry, FrameDataSources, InputSourceAvailability};
 use hypercolor_core::input::{InteractionData, ScreenData};
 use hypercolor_types::audio::AudioData;
 #[cfg(test)]
@@ -67,6 +67,7 @@ pub(crate) struct ZoneFrameInputs<'a> {
     pub(crate) interaction: &'a InteractionData,
     pub(crate) screen: Option<&'a ScreenData>,
     pub(crate) sensors: &'a SystemSnapshot,
+    pub(crate) input_availability: InputSourceAvailability,
     pub(crate) media: Option<&'a MediaState>,
     pub(crate) net: Option<&'a NetStats>,
     pub(crate) lighting: Option<&'a LightingState>,
@@ -75,6 +76,7 @@ pub(crate) struct ZoneFrameInputs<'a> {
 impl<'a> ZoneFrameInputs<'a> {
     pub(crate) fn sources(&self) -> FrameDataSources<'a> {
         FrameDataSources {
+            input_availability: self.input_availability,
             media: self.media,
             net: self.net,
             lighting: self.lighting,

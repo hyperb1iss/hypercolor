@@ -34,6 +34,22 @@ pub use hypercolor_windows_gpu_interop::{
 
 // ── FrameInput ───────────────────────────────────────────────────────────────
 
+/// Aggregate lifecycle state for the interaction source routed to an effect.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct InputSourceAvailability {
+    /// At least one eligible interaction source is routed to the render graph.
+    pub routed: bool,
+
+    /// At least one routed source is operational, including degraded operation.
+    pub healthy: bool,
+
+    /// At least one healthy routed source is within its freshness contract.
+    pub fresh: bool,
+
+    /// At least one routed source is operating with reduced capability.
+    pub degraded: bool,
+}
+
 /// Typed, cadenced data sources injected alongside audio and sensors.
 ///
 /// Each source is `None` until its producer delivers a snapshot (or on
@@ -41,6 +57,9 @@ pub use hypercolor_windows_gpu_interop::{
 /// these through [`FrameInput::sources`].
 #[derive(Debug, Clone, Copy, Default)]
 pub struct FrameDataSources<'a> {
+    /// Lifecycle state of the routed interaction source, independent of activity.
+    pub input_availability: InputSourceAvailability,
+
     /// Now-playing media snapshot from the MPRIS source.
     pub media: Option<&'a MediaState>,
 

@@ -34,6 +34,8 @@ pub(super) struct LightScriptFramePayload {
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub(super) controls: BTreeMap<String, LightScriptControlValue>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) input_availability: Option<LightScriptInputAvailabilityPayload>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) interaction: Option<LightScriptInteractionPayload>,
     #[serde(skip_serializing_if = "is_false")]
     pub(super) render_host_frame: bool,
@@ -54,8 +56,19 @@ impl LightScriptFramePayload {
             && self.net.is_none()
             && self.lighting.is_none()
             && self.controls.is_empty()
+            && self.input_availability.is_none()
             && self.interaction.is_none()
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct LightScriptInputAvailabilityPayload {
+    pub(super) declared: bool,
+    pub(super) routed: bool,
+    pub(super) healthy: bool,
+    pub(super) fresh: bool,
+    pub(super) degraded: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
@@ -687,6 +700,13 @@ mod tests {
             net: None,
             lighting: None,
             controls,
+            input_availability: Some(LightScriptInputAvailabilityPayload {
+                declared: true,
+                routed: true,
+                healthy: true,
+                fresh: true,
+                degraded: false,
+            }),
             interaction: Some(LightScriptInteractionPayload {
                 keyboard: LightScriptKeyboardPayload {
                     keys: vec!["A".to_owned()],
@@ -745,6 +765,16 @@ mod tests {
         assert_eq!(
             value["controls"]["frontColor"],
             serde_json::json!("#00ffcc")
+        );
+        assert_eq!(
+            value["inputAvailability"],
+            serde_json::json!({
+                "declared": true,
+                "routed": true,
+                "healthy": true,
+                "fresh": true,
+                "degraded": false,
+            })
         );
         assert_eq!(
             value["interaction"]["keyboard"]["keys"],

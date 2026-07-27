@@ -14,12 +14,13 @@ use hypercolor_types::sensor::{SensorReading, SystemSnapshot};
 
 mod payload;
 
-use super::traits::FrameInput;
+use super::traits::{FrameInput, InputSourceAvailability};
 use payload::{
     LightScriptAudioPayload, LightScriptCanvasPayload, LightScriptControlValue,
-    LightScriptFramePayload, LightScriptInteractionPayload, LightScriptLightingPayload,
-    LightScriptMediaPayload, LightScriptNetPayload, LightScriptScreenPayload,
-    LightScriptSensorPayload, LightScriptTimingPayload, sanitize_f32, sanitize_f64,
+    LightScriptFramePayload, LightScriptInputAvailabilityPayload, LightScriptInteractionPayload,
+    LightScriptLightingPayload, LightScriptMediaPayload, LightScriptNetPayload,
+    LightScriptScreenPayload, LightScriptSensorPayload, LightScriptTimingPayload, sanitize_f32,
+    sanitize_f64,
 };
 
 const LEVEL_FLOOR_DB: f32 = -100.0;
@@ -93,6 +94,7 @@ pub struct LightscriptRuntime {
     width: u32,
     height: u32,
     last_controls: HashMap<String, ControlValue>,
+    last_input_availability: Option<LightScriptInputAvailabilityPayload>,
     last_interaction_generation: Option<u64>,
     last_sensor_readings: Option<Vec<SensorReading>>,
     last_sensor_labels: Option<Vec<String>>,
@@ -113,6 +115,7 @@ impl LightscriptRuntime {
             width,
             height,
             last_controls: HashMap::new(),
+            last_input_availability: None,
             last_interaction_generation: None,
             last_sensor_readings: None,
             last_sensor_labels: None,
@@ -344,6 +347,9 @@ impl LightscriptRuntime {
 
         // Keyboard/mouse stubs for interactive effects.
         script.push_str(
+            "  window.engine.inputAvailability = { declared: false, routed: false, healthy: false, fresh: false, degraded: false };\n",
+        );
+        script.push_str(
             "  if (typeof window.engine.keyboard !== 'object' || window.engine.keyboard === null) { window.engine.keyboard = {}; }\n",
         );
         script.push_str(
@@ -520,6 +526,10 @@ impl LightscriptRuntime {
             .then(|| self.lighting_payload(input.sources.lighting))
             .flatten();
         let controls = self.changed_control_payload(controls);
+        let input_availability = options
+            .include_interaction
+            .then(|| self.changed_input_availability_payload(input.sources.input_availability));
+        let input_availability = input_availability.flatten();
         let interaction = (options.include_interaction
             && input
                 .interaction
@@ -537,6 +547,7 @@ impl LightscriptRuntime {
             || net.is_some()
             || lighting.is_some()
             || !controls.is_empty()
+            || input_availability.is_some()
             || interaction.is_some()
             || options.render_host_frame;
         should_emit.then(|| LightScriptFramePayload {
@@ -556,9 +567,28 @@ impl LightscriptRuntime {
             net,
             lighting,
             controls,
+            input_availability,
             interaction,
             render_host_frame: options.render_host_frame,
         })
+    }
+
+    fn changed_input_availability_payload(
+        &mut self,
+        availability: InputSourceAvailability,
+    ) -> Option<LightScriptInputAvailabilityPayload> {
+        let payload = LightScriptInputAvailabilityPayload {
+            declared: true,
+            routed: availability.routed,
+            healthy: availability.healthy,
+            fresh: availability.fresh,
+            degraded: availability.degraded,
+        };
+        if self.last_input_availability == Some(payload) {
+            return None;
+        }
+        self.last_input_availability = Some(payload);
+        Some(payload)
     }
 
     /// Emit a media payload when the state changed; album art rides along

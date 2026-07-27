@@ -1227,6 +1227,7 @@ fn queued_frames_do_not_retain_undemanded_input_domains() {
         screen: Some(&screen),
         sensors: &sensors,
         sources: crate::effect::traits::FrameDataSources {
+            input_availability: Default::default(),
             media: Some(&media),
             net: Some(&net),
             lighting: Some(&lighting),

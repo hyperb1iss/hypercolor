@@ -7,11 +7,12 @@ use anyhow::Result;
 use hypercolor_core::asset::AssetLibrary;
 #[cfg(feature = "wgpu")]
 use hypercolor_core::bus::DisplayGroupOutputRoute;
-use hypercolor_core::effect::EffectRegistry;
+use hypercolor_core::effect::{EffectRegistry, InputSourceAvailability};
 use hypercolor_core::engine::FpsTier;
 use hypercolor_core::input::{
     InputData, InputGraphHandle, InputGraphSnapshot, InputSourceSlot, InteractionData,
-    MotionAggregate, PointerMode, SourceKind,
+    MotionAggregate, PointerMode, SourceFreshness, SourceKind, SourceState, SourceStatusHandle,
+    SourceStatusRegistry,
 };
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_core::types::canvas::{
@@ -67,6 +68,7 @@ pub(crate) struct FrameInputs {
     pub(crate) interaction: hypercolor_core::input::InteractionData,
     pub(crate) screen_data: Option<hypercolor_core::input::ScreenData>,
     pub(crate) sensors: Arc<SystemSnapshot>,
+    pub(crate) input_availability: InputSourceAvailability,
     empty_sensors: Arc<SystemSnapshot>,
     /// Latest media snapshot, carried across frames — the source only emits
     /// on change.
@@ -155,6 +157,7 @@ struct CachedInputRoute {
 #[derive(Default)]
 struct InputRouteCache {
     graph: Option<InputGraphHandle>,
+    status_registry: Option<SourceStatusRegistry>,
     graph_generation: Option<u64>,
     routes: Vec<CachedInputRoute>,
     audio_routes: Vec<usize>,
@@ -178,6 +181,9 @@ impl InputRouteCache {
             if self.graph.is_none() {
                 self.graph = Some(input_manager.input_graph_handle());
             }
+            if self.status_registry.is_none() {
+                self.status_registry = Some(input_manager.source_status_registry());
+            }
             input_manager.sample_sources(delta_secs);
             input_manager.latest_sensor_snapshot()
         };
@@ -192,6 +198,7 @@ impl InputRouteCache {
         }
 
         inputs.prepare_for_sample(sensors);
+        inputs.input_availability = self.interaction_availability();
         self.route_latest_into(inputs);
         self.drain_events_into(inputs);
         inputs
@@ -215,6 +222,14 @@ impl InputRouteCache {
                 });
         }
         inputs.interaction.batch.window_secs = delta_secs.max(0.0);
+    }
+
+    fn interaction_availability(&self) -> InputSourceAvailability {
+        let Some(registry) = &self.status_registry else {
+            return InputSourceAvailability::default();
+        };
+        let snapshot = registry.snapshot();
+        aggregate_interaction_availability(snapshot.handles(), Instant::now())
     }
 
     fn route_latest_into(&mut self, inputs: &mut FrameInputs) {
@@ -364,6 +379,33 @@ fn reset_audio_vector(values: &mut Vec<f32>, len: usize) {
     values.fill(0.0);
 }
 
+fn aggregate_interaction_availability(
+    handles: &[SourceStatusHandle],
+    now: Instant,
+) -> InputSourceAvailability {
+    let mut availability = InputSourceAvailability::default();
+    for handle in handles {
+        let source = handle.snapshot_at(now);
+        if source.retired
+            || source.kind != SourceKind::Interaction
+            || !(source.configured && source.consented && source.demanded)
+        {
+            continue;
+        }
+
+        availability.routed = true;
+        let healthy = matches!(source.state, SourceState::Live | SourceState::Degraded);
+        availability.healthy |= healthy;
+        availability.degraded |= source.state == SourceState::Degraded;
+        availability.fresh |= healthy
+            && matches!(
+                source.freshness,
+                SourceFreshness::Fresh | SourceFreshness::NotApplicable
+            );
+    }
+    availability
+}
+
 impl FrameInputs {
     fn prepare_for_sample(&mut self, sensors: Option<Arc<SystemSnapshot>>) {
         reset_audio_vector(&mut self.audio.spectrum, SPECTRUM_BINS);
@@ -414,6 +456,7 @@ impl FrameInputs {
             interaction: InteractionData::default(),
             screen_data: None,
             sensors: Arc::clone(&empty_sensors),
+            input_availability: InputSourceAvailability::default(),
             empty_sensors,
             media: None,
             net: None,
@@ -1194,6 +1237,7 @@ impl ComposeRuntime<'_> {
                 delta_secs,
                 audio: &inputs.audio,
                 interaction: &inputs.interaction,
+                input_availability: inputs.input_availability,
                 screen: inputs.screen_data.as_ref(),
                 sensors: inputs.sensors.as_ref(),
                 media: inputs.media.as_deref(),
@@ -1679,10 +1723,13 @@ impl PipelineRuntime {
 mod tests {
     use std::cell::Cell;
     use std::sync::Arc;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use hypercolor_core::engine::FpsTier;
-    use hypercolor_core::input::{InputData, InputManager, InputSource, InteractionData};
+    use hypercolor_core::input::{
+        InputData, InputManager, InputSource, InteractionData, SourceIssue, SourceKind,
+        SourceStatusWriter,
+    };
     use hypercolor_core::spatial::SpatialEngine;
     use hypercolor_types::config::RenderAccelerationMode;
     use hypercolor_types::event::{InputButtonState, InputEvent, TimedInputEvent};
@@ -1691,7 +1738,8 @@ mod tests {
 
     use super::{
         EffectDeltaClock, FrameInputs, InputRouteCache, OutputFrameSource, OutputReuseKey,
-        OutputReuseState, PipelineRuntime, should_publish_preview_frame,
+        OutputReuseState, PipelineRuntime, aggregate_interaction_availability,
+        should_publish_preview_frame,
     };
 
     struct FixedInteractionSource {
@@ -1857,6 +1905,49 @@ mod tests {
             spaces: None,
             version: 1,
         }
+    }
+
+    #[test]
+    fn interaction_availability_tracks_idle_health_and_terminal_failure() {
+        let (writer, handle) = SourceStatusWriter::new(
+            "test_interaction",
+            SourceKind::Interaction,
+            "test",
+            true,
+            true,
+            true,
+        );
+        let session = writer
+            .begin_session(1)
+            .expect("eligible source should begin");
+        assert!(session.mark_event_driven_live_without_deadline(1));
+
+        let idle = aggregate_interaction_availability(&[handle.clone()], Instant::now());
+        assert_eq!(
+            idle,
+            hypercolor_core::effect::InputSourceAvailability {
+                routed: true,
+                healthy: true,
+                fresh: true,
+                degraded: false,
+            }
+        );
+
+        assert!(session.failed(SourceIssue::new(
+            "worker_failed",
+            "interaction worker stopped",
+            true,
+        )));
+        let failed = aggregate_interaction_availability(&[handle], Instant::now());
+        assert_eq!(
+            failed,
+            hypercolor_core::effect::InputSourceAvailability {
+                routed: true,
+                healthy: false,
+                fresh: false,
+                degraded: false,
+            }
+        );
     }
 
     #[test]

@@ -6,7 +6,7 @@
  * and the host environment.
  */
 
-import type { EngineKeyboard, EngineMouse } from './input/types'
+import type { EngineKeyboard, EngineMouse, InputAvailability } from './input/types'
 
 /**
  * Audio analysis data from the Hypercolor audio pipeline.
@@ -85,6 +85,8 @@ interface HypercolorEngine {
     mouse?: EngineMouse
     /** Count of input events dropped this frame due to overflow. */
     inputDropped?: number
+    /** Declared capability and lifecycle state for the routed input source. */
+    inputAvailability?: Omit<InputAvailability, 'available'>
 
     // ── Canvas dimensions ──────────────────────────────────────────
     // Set by the daemon to match the render canvas or display resolution.

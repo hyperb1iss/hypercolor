@@ -282,6 +282,7 @@ fn render_scene_for_test_with_screen(
         interaction: &InteractionData::default(),
         screen,
         sensors: &SystemSnapshot::empty(),
+        input_availability: Default::default(),
         media: None,
         net: None,
         lighting: None,
