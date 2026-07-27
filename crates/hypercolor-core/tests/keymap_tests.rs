@@ -6,7 +6,7 @@
 //! inventory in both directions.
 
 use hypercolor_core::input::keymap::{
-    CANONICAL_KEYS, KeyNameResult, evdev_key_name, scancode_key_name, scancode_name,
+    CANONICAL_KEYS, KeyNameResult, MEDIA_KEYS, evdev_key_name, scancode_key_name, scancode_name,
 };
 use hypercolor_windows_input::RawKeyPrefix;
 
@@ -29,6 +29,37 @@ fn every_inventory_row_resolves_from_both_key_spaces() {
             row.name
         );
     }
+}
+
+#[test]
+fn every_media_key_resolves_to_the_same_name_on_both_platforms() {
+    for row in MEDIA_KEYS {
+        assert_eq!(evdev_key_name(row.evdev_code), Some(row.name));
+        assert_eq!(
+            scancode_key_name(0, RawKeyPrefix::None, row.windows_vkey),
+            KeyNameResult::Media(row.name)
+        );
+        assert_eq!(
+            scancode_key_name(0x22, RawKeyPrefix::None, row.windows_vkey),
+            KeyNameResult::Media(row.name),
+            "media identity wins even when firmware supplies an overlapping scan code"
+        );
+    }
+}
+
+#[test]
+fn media_key_identifier_spaces_have_no_duplicates() {
+    let mut evdev_codes: Vec<u16> = MEDIA_KEYS.iter().map(|row| row.evdev_code).collect();
+    evdev_codes.sort_unstable();
+    let before = evdev_codes.len();
+    evdev_codes.dedup();
+    assert_eq!(before, evdev_codes.len());
+
+    let mut virtual_keys: Vec<u16> = MEDIA_KEYS.iter().map(|row| row.windows_vkey).collect();
+    virtual_keys.sort_unstable();
+    let before = virtual_keys.len();
+    virtual_keys.dedup();
+    assert_eq!(before, virtual_keys.len());
 }
 
 #[test]
@@ -168,13 +199,13 @@ fn an_unrecognized_e1_sequence_is_not_force_fit_to_pause() {
 }
 
 #[test]
-fn a_zero_scan_code_falls_back_to_the_virtual_key_and_says_so() {
+fn a_zero_scan_code_resolves_through_the_shared_media_inventory() {
     const VK_MEDIA_PLAY_PAUSE: u16 = 0xB3;
     let resolved = scancode_key_name(0, RawKeyPrefix::None, VK_MEDIA_PLAY_PAUSE);
-    assert_eq!(resolved, KeyNameResult::Logical("MediaPlayPause"));
+    assert_eq!(resolved, KeyNameResult::Media("MediaPlayPause"));
     assert!(
         !matches!(resolved, KeyNameResult::Positional(_)),
-        "a layout-dependent name must never be reported as positional"
+        "a consumer-control key must never be reported as positional"
     );
 }
 

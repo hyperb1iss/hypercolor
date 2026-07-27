@@ -1259,7 +1259,7 @@ fn production_source_constructors_expose_status_handles() {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 #[test]
 fn unsupported_media_platform_reports_structured_unavailable_status() {
     let mut manager = InputManager::new();

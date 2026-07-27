@@ -4739,6 +4739,7 @@ dependencies = [
  "url",
  "uuid",
  "wgpu",
+ "windows 0.62.2",
  "wmi",
  "zbus",
  "zerocopy",

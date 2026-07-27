@@ -7,11 +7,15 @@
 //!
 //! Two platforms have to agree on those names, and the way they drift is for
 //! someone to add a key to one table and forget the other. So there is exactly
-//! one table, [`CANONICAL_KEYS`], and both mappers are derived from it — the
+//! one physical table, [`CANONICAL_KEYS`], and both mappers are derived from it — the
 //! Linux one keyed by evdev code, the Windows one by set-1 scan code plus
 //! prefix. The parity test asserts totality in both directions over this
 //! inventory rather than sampling tuples, so a one-sided addition fails the
 //! build instead of silently diverging.
+//!
+//! Consumer-control keys do not have stable set-1 positions. They live in the
+//! separate [`MEDIA_KEYS`] inventory, keyed by evdev code and Windows virtual
+//! key, so both platforms still expose exactly the same logical names.
 //!
 //! The two key spaces line up almost entirely by construction: evdev's
 //! keycodes 1..=83 were derived from the AT set-1 scan codes, so those rows
@@ -45,7 +49,7 @@ const fn row(evdev_code: u16, make_code: u16, prefix: RawKeyPrefix, name: &'stat
 
 use RawKeyPrefix::{E0, None as NoPrefix};
 
-/// Every key both host backends name identically.
+/// Every physical-position key both host backends name identically.
 ///
 /// Printable keys use the character they produce on a US layout — a
 /// deliberate simplification of the W3C `code` vocabulary that this codebase
@@ -160,6 +164,37 @@ pub const CANONICAL_KEYS: &[KeyRow] = &[
     row(127, 0x5D, E0, "ContextMenu"),
 ];
 
+/// One media key in Linux evdev and Windows virtual-key spaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MediaKeyRow {
+    /// Linux evdev keycode.
+    pub evdev_code: u16,
+    /// Windows virtual-key code.
+    pub windows_vkey: u16,
+    /// The canonical logical name both platforms report.
+    pub name: &'static str,
+}
+
+const fn media_row(evdev_code: u16, windows_vkey: u16, name: &'static str) -> MediaKeyRow {
+    MediaKeyRow {
+        evdev_code,
+        windows_vkey,
+        name,
+    }
+}
+
+/// Media and volume keys supported identically by both host backends.
+pub const MEDIA_KEYS: &[MediaKeyRow] = &[
+    media_row(113, 0xAD, "AudioVolumeMute"),
+    media_row(114, 0xAE, "AudioVolumeDown"),
+    media_row(115, 0xAF, "AudioVolumeUp"),
+    media_row(163, 0xB0, "MediaTrackNext"),
+    media_row(165, 0xB1, "MediaTrackPrevious"),
+    media_row(166, 0xB2, "MediaStop"),
+    media_row(164, 0xB3, "MediaPlayPause"),
+    media_row(226, 0xB5, "MediaSelect"),
+];
+
 /// Canonical name for a Linux evdev keycode.
 #[must_use]
 pub fn evdev_key_name(evdev_code: u16) -> Option<&'static str> {
@@ -167,6 +202,12 @@ pub fn evdev_key_name(evdev_code: u16) -> Option<&'static str> {
         .iter()
         .find(|row| row.evdev_code == evdev_code)
         .map(|row| row.name)
+        .or_else(|| {
+            MEDIA_KEYS
+                .iter()
+                .find(|row| row.evdev_code == evdev_code)
+                .map(|row| row.name)
+        })
 }
 
 /// Canonical name for a Windows scan code plus prefix.
@@ -189,6 +230,9 @@ pub enum KeyNameResult {
     /// A physical position from [`CANONICAL_KEYS`]. Portable across platforms
     /// and layouts.
     Positional(&'static str),
+    /// A logical consumer-control key from [`MEDIA_KEYS`]. Portable across
+    /// platforms even though it has no stable keyboard position.
+    Media(&'static str),
     /// Derived from the virtual-key code, which is layout-dependent. Only
     /// reached for keys with no positional meaning to diverge on.
     Logical(&'static str),
@@ -204,7 +248,9 @@ impl KeyNameResult {
     #[must_use]
     pub fn name(&self) -> Option<String> {
         match self {
-            Self::Positional(name) | Self::Logical(name) => Some((*name).to_owned()),
+            Self::Positional(name) | Self::Media(name) | Self::Logical(name) => {
+                Some((*name).to_owned())
+            }
             Self::Unknown(name) => Some(name.clone()),
             Self::Discard => None,
         }
@@ -227,6 +273,10 @@ pub fn scancode_key_name(make_code: u16, prefix: RawKeyPrefix, vkey: u16) -> Key
             return KeyNameResult::Positional("Pause");
         }
         return KeyNameResult::Unknown(unknown_key_name(make_code, prefix));
+    }
+
+    if let Some(name) = media_key_name(vkey) {
+        return KeyNameResult::Media(name);
     }
 
     if let Some(name) = scancode_name(make_code, prefix) {
@@ -263,17 +313,16 @@ fn virtual_key_name(vkey: u16) -> Option<&'static str> {
         0xAA => Some("BrowserSearch"),
         0xAB => Some("BrowserFavorites"),
         0xAC => Some("BrowserHome"),
-        0xAD => Some("AudioVolumeMute"),
-        0xAE => Some("AudioVolumeDown"),
-        0xAF => Some("AudioVolumeUp"),
-        0xB0 => Some("MediaTrackNext"),
-        0xB1 => Some("MediaTrackPrevious"),
-        0xB2 => Some("MediaStop"),
-        0xB3 => Some("MediaPlayPause"),
         0xB4 => Some("LaunchMail"),
-        0xB5 => Some("MediaSelect"),
         0xB6 => Some("LaunchApp1"),
         0xB7 => Some("LaunchApp2"),
         _ => None,
     }
+}
+
+fn media_key_name(vkey: u16) -> Option<&'static str> {
+    MEDIA_KEYS
+        .iter()
+        .find(|row| row.windows_vkey == vkey)
+        .map(|row| row.name)
 }
