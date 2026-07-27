@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use crate::shared::{CaptureError, CaptureResult, Frame};
+use crate::shared::{CaptureError, CaptureResult, Frame, MonitorSelector};
 
 /// Desktop Duplication placeholder for platforms without the API.
 pub struct DesktopDuplicator {
@@ -19,9 +19,30 @@ impl DesktopDuplicator {
         Err(CaptureError::UnsupportedPlatform)
     }
 
+    /// Always fails: Desktop Duplication is Windows-only.
+    ///
+    /// # Errors
+    ///
+    /// Always returns [`CaptureError::UnsupportedPlatform`].
+    pub fn open(_selector: MonitorSelector, _max_width: u32) -> CaptureResult<Self> {
+        Err(CaptureError::UnsupportedPlatform)
+    }
+
     /// Monitor index this duplicator would be bound to.
     #[must_use]
     pub const fn monitor(&self) -> usize {
+        0
+    }
+
+    /// Empty because no platform source can be opened.
+    #[must_use]
+    pub const fn source_id(&self) -> &str {
+        ""
+    }
+
+    /// Zero because no platform topology exists.
+    #[must_use]
+    pub const fn topology_generation(&self) -> u64 {
         0
     }
 

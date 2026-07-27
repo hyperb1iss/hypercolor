@@ -61,29 +61,7 @@ const REOPEN_BACKOFF: Duration = Duration::from_secs(2);
 struct SharedSettings {
     config: Mutex<CaptureConfig>,
     generation: AtomicU64,
-    topology_generation: AtomicU64,
     session_generation: AtomicU64,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct CaptureTopologySignature {
-    native_width: u32,
-    native_height: u32,
-    origin_x: i32,
-    origin_y: i32,
-    rotation: DisplayRotation,
-}
-
-impl From<&NativeCaptureFrame> for CaptureTopologySignature {
-    fn from(frame: &NativeCaptureFrame) -> Self {
-        Self {
-            native_width: frame.native_width,
-            native_height: frame.native_height,
-            origin_x: frame.origin_x,
-            origin_y: frame.origin_y,
-            rotation: frame.rotation,
-        }
-    }
 }
 
 impl SharedSettings {
@@ -141,7 +119,6 @@ impl WindowsScreenCaptureInput {
             settings: Arc::new(SharedSettings {
                 config: Mutex::new(config),
                 generation: AtomicU64::new(0),
-                topology_generation: AtomicU64::new(1),
                 session_generation: AtomicU64::new(0),
             }),
             running: false,
@@ -313,18 +290,16 @@ impl WindowsScreenCaptureInput {
 
     /// Publish new settings and bump the generation the worker polls.
     fn reconfigure(&mut self, config: CaptureConfig) {
-        let mut topology_changed = false;
+        let mut source_changed = false;
         if let Ok(mut current) = self.settings.config.lock() {
             if *current == config {
                 return;
             }
-            topology_changed = current.monitor != config.monitor;
+            source_changed = current.source != config.source;
             *current = config;
         }
-        if topology_changed {
-            self.settings
-                .topology_generation
-                .fetch_add(1, Ordering::AcqRel);
+        if source_changed && let Ok(mut latest) = self.latest_snapshot.lock() {
+            *latest = None;
         }
         self.settings.generation.fetch_add(1, Ordering::Release);
     }
@@ -399,11 +374,12 @@ impl InputSource for WindowsScreenCaptureInput {
         let Some(snapshot) = latest.as_ref() else {
             return Ok(InputData::None);
         };
-        let expected = capture_epoch(
-            self.settings.snapshot().monitor,
-            self.settings.topology_generation.load(Ordering::Acquire),
-            self.settings.session_generation.load(Ordering::Acquire),
-        )?;
+        let metadata = snapshot.frame().metadata();
+        let expected = CaptureEpoch {
+            source_id: metadata.source_id.clone(),
+            topology_generation: metadata.topology_generation,
+            session_generation: self.settings.session_generation.load(Ordering::Acquire),
+        };
         if snapshot.frame().validate_epoch(&expected).is_err() {
             return Ok(InputData::None);
         }
@@ -483,7 +459,6 @@ fn run_worker(
     let mut active = false;
     let mut open_failure_logged = false;
     let mut sequence = 0_u64;
-    let mut topology_signature = None;
 
     loop {
         if cancel.load(Ordering::Acquire) {
@@ -511,12 +486,11 @@ fn run_worker(
         let latest_generation = settings.generation.load(Ordering::Acquire);
         if latest_generation != generation {
             generation = latest_generation;
-            let previous_monitor = config.monitor;
+            let previous_source = config.source.clone();
             config = settings.snapshot();
             analyzer = ScreenCaptureInput::new(config.clone());
-            if previous_monitor != config.monitor {
+            if previous_source != config.source {
                 duplicator = None;
-                topology_signature = None;
             } else if let Some(duplicator) = duplicator.as_mut() {
                 duplicator.set_max_width(CAPTURE_TARGET_WIDTH);
             }
@@ -524,11 +498,14 @@ fn run_worker(
 
         let session = match duplicator.as_mut() {
             Some(session) => session,
-            None => match DesktopDuplicator::new(config.monitor, CAPTURE_TARGET_WIDTH) {
+            None => match DesktopDuplicator::open(
+                super::monitor_selector_from_source(&config.source),
+                CAPTURE_TARGET_WIDTH,
+            ) {
                 Ok(session) => {
                     let (width, height) = session.native_extent();
                     info!(
-                        monitor = config.monitor,
+                        source = session.source_id(),
                         width, height, "Windows screen capture online"
                     );
                     open_failure_logged = false;
@@ -540,16 +517,7 @@ fn run_worker(
                         open_failure_logged = true;
                     }
                     if let Some(status) = status_session.load() {
-                        status.unavailable(
-                            SourceIssue::new(
-                                "windows_desktop_duplication_unavailable",
-                                error.to_string(),
-                                true,
-                            )
-                            .with_remediation(
-                                "close other capture tools using this display and retry",
-                            ),
-                        );
+                        status.unavailable(capture_issue(&error));
                     }
                     match command_rx.recv_timeout(REOPEN_BACKOFF) {
                         Ok(WorkerCommand::SetActive(next)) => active = next,
@@ -569,26 +537,20 @@ fn run_worker(
                 let frame_period =
                     Duration::from_secs_f64(1.0 / f64::from(config.target_fps.max(1)));
                 sequence = sequence.wrapping_add(1).max(1);
-                let topology_generation = capture_topology_generation(
-                    settings,
-                    &mut topology_signature,
-                    CaptureTopologySignature::from(&frame),
-                );
                 let raw_frame = build_capture_frame(
                     frame,
-                    config.monitor,
-                    topology_generation,
                     session_generation,
                     sequence,
                     acquired_at,
                     frame_period,
                 );
                 let snapshot = raw_frame.and_then(|frame| {
-                    frame.validate_epoch(&capture_epoch(
-                        config.monitor,
-                        topology_generation,
-                        settings.session_generation.load(Ordering::Acquire),
-                    )?)?;
+                    let metadata = frame.metadata();
+                    frame.validate_epoch(&CaptureEpoch {
+                        source_id: metadata.source_id.clone(),
+                        topology_generation: metadata.topology_generation,
+                        session_generation: settings.session_generation.load(Ordering::Acquire),
+                    })?;
                     analyze_legacy_screen_frame(&mut analyzer, frame)
                 });
                 let Ok(snapshot) = snapshot else {
@@ -612,6 +574,9 @@ fn run_worker(
             Ok(None) => {}
             Err(error) => {
                 warn!(%error, "Windows screen capture frame failed; reopening session");
+                if let Some(status) = status_session.load() {
+                    status.degraded(capture_issue(&error));
+                }
                 duplicator = None;
                 match command_rx.recv_timeout(REOPEN_BACKOFF) {
                     Ok(WorkerCommand::SetActive(next)) => active = next,
@@ -628,34 +593,19 @@ fn run_worker(
     debug!("Windows screen capture worker stopped");
 }
 
-fn capture_topology_generation(
-    settings: &SharedSettings,
-    previous: &mut Option<CaptureTopologySignature>,
-    current: CaptureTopologySignature,
-) -> u64 {
-    let changed = previous.replace(current).is_some_and(|old| old != current);
-    if changed {
-        settings
-            .topology_generation
-            .fetch_add(1, Ordering::AcqRel)
-            .wrapping_add(1)
-    } else {
-        settings.topology_generation.load(Ordering::Acquire)
-    }
-}
-
-fn capture_source_id(monitor: usize) -> anyhow::Result<CaptureSourceId> {
-    CaptureSourceId::new(Arc::<str>::from(format!("windows:monitor:{monitor}")))
+fn capture_source_id(source_id: &str) -> anyhow::Result<CaptureSourceId> {
+    CaptureSourceId::new(Arc::<str>::from(format!("windows:{source_id}")))
         .map_err(anyhow::Error::from)
 }
 
+#[cfg(test)]
 fn capture_epoch(
-    monitor: usize,
+    source_id: &str,
     topology_generation: u64,
     session_generation: u64,
 ) -> anyhow::Result<CaptureEpoch> {
     Ok(CaptureEpoch {
-        source_id: capture_source_id(monitor)?,
+        source_id: capture_source_id(source_id)?,
         topology_generation,
         session_generation,
     })
@@ -664,13 +614,30 @@ fn capture_epoch(
 #[allow(clippy::too_many_arguments)]
 fn build_capture_frame(
     frame: NativeCaptureFrame,
-    monitor: usize,
-    topology_generation: u64,
     session_generation: u64,
     sequence: u64,
     captured_at: Instant,
     frame_period: Duration,
 ) -> anyhow::Result<CaptureFrame<RawCaptureSurface>> {
+    let source_id = capture_source_id(&frame.source_id)?;
+    let topology_generation = frame.topology_generation;
+    let cursor = CaptureCursor {
+        visible: frame.cursor.visible,
+        position: (frame.cursor.width > 0 && frame.cursor.height > 0).then_some(PhysicalOrigin {
+            x: frame.cursor.position_x,
+            y: frame.cursor.position_y,
+        }),
+        hotspot: (frame.cursor.width > 0 && frame.cursor.height > 0).then_some(PhysicalOrigin {
+            x: frame.cursor.hotspot_x,
+            y: frame.cursor.hotspot_y,
+        }),
+        shape_extent: (frame.cursor.width > 0 && frame.cursor.height > 0)
+            .then(|| PixelExtent::new(frame.cursor.width, frame.cursor.height))
+            .transpose()?,
+        shape_generation: (frame.cursor.shape_generation > 0)
+            .then_some(frame.cursor.shape_generation),
+        composed: frame.cursor.composed,
+    };
     let storage_extent = PixelExtent::new(frame.width, frame.height)?;
     let native_extent = PixelExtent::new(frame.native_width, frame.native_height)?;
     let row_stride = i64::from(frame.width)
@@ -687,7 +654,7 @@ fn build_capture_frame(
     )?;
     CaptureFrame::new(
         CaptureFrameMetadata {
-            source_id: capture_source_id(monitor)?,
+            source_id,
             topology_generation,
             session_generation,
             sequence,
@@ -696,7 +663,7 @@ fn build_capture_frame(
             geometry,
             color_space: CaptureColorSpace::Unknown,
             transfer_function: CaptureTransferFunction::Unknown,
-            cursor: CaptureCursor::default(),
+            cursor,
         },
         CaptureStorage::Cpu(CpuCaptureStorage::from_owner(
             frame,
@@ -755,12 +722,43 @@ fn drain_commands(command_rx: &mpsc::Receiver<WorkerCommand>, active: &mut bool)
 /// Log an open failure at a level that matches how actionable it is.
 fn log_open_failure(error: &CaptureError) {
     match error {
-        // Expected and self-healing: another RGB or capture tool holds the
-        // single per-output duplication interface until it exits.
         CaptureError::AlreadyDuplicating => {
-            info!("screen capture is held by another application; retrying in the background");
+            info!("desktop duplication has no free client slot; retrying in the background");
+        }
+        CaptureError::AccessDenied | CaptureError::SessionUnavailable => {
+            debug!(%error, "Windows desktop temporarily unavailable; retrying");
         }
         other => warn!(%other, "failed to open Windows screen capture"),
+    }
+}
+
+fn capture_issue(error: &CaptureError) -> SourceIssue {
+    match error {
+        CaptureError::AlreadyDuplicating => {
+            SourceIssue::new("windows_desktop_duplication_limit", error.to_string(), true)
+                .with_remediation("close an application that is capturing this desktop")
+        }
+        CaptureError::AccessDenied => {
+            SourceIssue::new("windows_desktop_access_denied", error.to_string(), true)
+                .with_remediation("dismiss the secure desktop prompt or unlock the session")
+        }
+        CaptureError::SessionUnavailable => {
+            SourceIssue::new("windows_session_unavailable", error.to_string(), true)
+                .with_remediation("return to the interactive Windows session")
+        }
+        CaptureError::DeviceLost => {
+            SourceIssue::new("windows_capture_device_lost", error.to_string(), true)
+                .with_remediation("wait for the display driver to recover")
+        }
+        CaptureError::MonitorNotFound { .. } | CaptureError::SourceNotFound { .. } => {
+            SourceIssue::new("windows_capture_source_missing", error.to_string(), true)
+                .with_remediation("select an attached display")
+        }
+        CaptureError::UnsupportedPlatform | CaptureError::Windows { .. } => SourceIssue::new(
+            "windows_desktop_duplication_unavailable",
+            error.to_string(),
+            true,
+        ),
     }
 }
 

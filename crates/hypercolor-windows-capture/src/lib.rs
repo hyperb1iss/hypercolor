@@ -22,8 +22,8 @@ pub use duplication::DesktopDuplicator;
 mod shared;
 
 pub use shared::{
-    CaptureError, CaptureResult, DisplayRotation, Frame, MonitorInfo, list_monitors, monitor_count,
-    subsample_stride, subsampled_extent,
+    CaptureError, CaptureResult, CursorInfo, DisplayRotation, Frame, MonitorInfo, MonitorSelector,
+    list_monitors, monitor_count, subsample_stride, subsampled_extent,
 };
 
 #[cfg(not(target_os = "windows"))]

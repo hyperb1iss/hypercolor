@@ -46,6 +46,8 @@ pub async fn pick_capture_source(State(state): State<Arc<AppState>>) -> Response
 pub struct CaptureMonitor {
     /// Zero-based capture index.
     pub index: usize,
+    /// Stable source id persisted in capture configuration.
+    pub id: String,
     /// OS device name, e.g. `\\.\DISPLAY1`.
     pub name: String,
     /// Desktop width in pixels.
@@ -67,8 +69,9 @@ pub async fn list_capture_monitors() -> Response {
     let monitors: Vec<CaptureMonitor> = hypercolor_core::input::screen::available_monitors()
         .into_iter()
         .map(|monitor| CaptureMonitor {
-            value: format!("monitor:{}", monitor.index),
+            value: format!("monitor:{}", monitor.id),
             index: monitor.index,
+            id: monitor.id,
             name: monitor.name,
             width: monitor.width,
             height: monitor.height,

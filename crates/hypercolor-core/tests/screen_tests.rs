@@ -938,25 +938,32 @@ fn monitor_source_accepts_prefixed_and_bare_indices() {
         ("  monitor: 2  ", 2),
     ] {
         assert_eq!(
-            hypercolor_core::input::screen::monitor_index_from_source(source),
-            expected,
+            hypercolor_core::input::screen::monitor_selector_from_source(source),
+            hypercolor_windows_capture::MonitorSelector::Index(expected),
             "source {source:?} should select monitor {expected}"
         );
     }
 }
 
-/// Anything unparseable means the primary display. The field is shared with
-/// the Wayland backend, where the portal owns source selection and the value
-/// stays "auto", so unknown strings must never be an error.
+/// Auto means the primary display while non-numeric values remain stable ids.
 #[test]
-fn unknown_monitor_sources_fall_back_to_the_primary_display() {
-    for source in ["auto", "", "pipewire", "monitor:", "monitor:-1", "HDMI-1"] {
-        assert_eq!(
-            hypercolor_core::input::screen::monitor_index_from_source(source),
-            0,
-            "source {source:?} should fall back to the primary display"
-        );
-    }
+fn monitor_sources_preserve_auto_and_stable_ids() {
+    use hypercolor_windows_capture::MonitorSelector;
+
+    assert_eq!(
+        hypercolor_core::input::screen::monitor_selector_from_source("auto"),
+        MonitorSelector::Auto
+    );
+    assert_eq!(
+        hypercolor_core::input::screen::monitor_selector_from_source(""),
+        MonitorSelector::Auto
+    );
+    assert_eq!(
+        hypercolor_core::input::screen::monitor_selector_from_source(
+            r"monitor:display:\\?\display#del4098#instance"
+        ),
+        MonitorSelector::StableId(r"display:\\?\display#del4098#instance".to_owned())
+    );
 }
 
 // ─── Letterbox degeneracy ────────────────────────────────────────────────────

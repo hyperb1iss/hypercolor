@@ -125,10 +125,9 @@ pub struct CaptureConfig {
     /// XDG portal restore token from a previous session, if any.
     pub restore_token: Option<String>,
 
-    /// Zero-based display output to capture, for backends that address
-    /// monitors directly. The XDG portal picks its own source, so this is
-    /// only consulted on Windows.
-    pub monitor: usize,
+    /// Persisted capture source. Windows accepts `auto`, stable monitor ids,
+    /// and legacy numeric indices; the XDG portal owns selection on Linux.
+    pub source: String,
 }
 
 impl Default for CaptureConfig {
@@ -143,7 +142,7 @@ impl Default for CaptureConfig {
             letterbox_enabled: false,
             tuning: ColorTuning::default(),
             restore_token: None,
-            monitor: 0,
+            source: "auto".to_owned(),
         }
     }
 }
@@ -183,8 +182,10 @@ pub fn fit_within(width: u32, height: u32, max_width: u32, max_height: u32) -> (
 /// One display output the capture backend can address directly.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScreenMonitor {
-    /// Zero-based capture index — the `N` in `capture.source = "monitor:N"`.
+    /// Legacy zero-based enumeration index for display ordering.
     pub index: usize,
+    /// Stable capture source id suitable for persistence.
+    pub id: String,
     /// OS device name, e.g. `\\.\DISPLAY1`.
     pub name: String,
     /// Desktop width in pixels.
@@ -209,6 +210,7 @@ pub fn available_monitors() -> Vec<ScreenMonitor> {
             .into_iter()
             .map(|monitor| ScreenMonitor {
                 index: monitor.index,
+                id: monitor.id,
                 name: monitor.name,
                 width: monitor.width,
                 height: monitor.height,
@@ -222,23 +224,16 @@ pub fn available_monitors() -> Vec<ScreenMonitor> {
     }
 }
 
-/// Parse a configured capture source into a zero-based monitor index.
+/// Parse a configured capture source into a Windows monitor selector.
 ///
 /// `capture.source` is a free-form string shared across backends. The XDG
 /// portal picks its own source and leaves the value at "auto", so this only
 /// matters on Windows, which addresses display outputs directly. Accepts
-/// "monitor:N", "display:N", or a bare number; anything else, "auto"
-/// included, means the primary display.
+/// Stable ids are preserved across adapter/output enumeration reorder. Numeric
+/// values remain accepted for configuration compatibility.
 #[must_use]
-pub fn monitor_index_from_source(source: &str) -> usize {
-    let trimmed = source.trim();
-    trimmed
-        .strip_prefix("monitor:")
-        .or_else(|| trimmed.strip_prefix("display:"))
-        .unwrap_or(trimmed)
-        .trim()
-        .parse::<usize>()
-        .unwrap_or(0)
+pub fn monitor_selector_from_source(source: &str) -> hypercolor_windows_capture::MonitorSelector {
+    hypercolor_windows_capture::MonitorSelector::parse(source)
 }
 
 // ── ScreenCaptureInput ────────────────────────────────────────────────────

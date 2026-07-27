@@ -1,58 +1,17 @@
 use std::sync::Arc;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use hypercolor_windows_capture::DisplayRotation;
+use hypercolor_windows_capture::{CaptureError, DisplayRotation};
 
-use super::{
-    CaptureTopologySignature, SharedSettings, capture_epoch, capture_geometry,
-    capture_topology_generation,
-};
+use super::{capture_epoch, capture_geometry, capture_issue};
 use crate::input::screen::{
-    CaptureColorSpace, CaptureConfig, CaptureCursor, CaptureDamage, CaptureFrame,
-    CaptureFrameError, CaptureFrameMetadata, CapturePixelFormat, CaptureRotation, CaptureStorage,
+    CaptureColorSpace, CaptureCursor, CaptureDamage, CaptureFrame, CaptureFrameError,
+    CaptureFrameMetadata, CapturePixelFormat, CaptureRotation, CaptureStorage,
     CaptureTransferFunction, CpuCaptureStorage, PhysicalOrigin, PixelExtent, RawCaptureSurface,
 };
 
 fn extent(width: u32, height: u32) -> PixelExtent {
     PixelExtent::new(width, height).expect("test extent is valid")
-}
-
-#[test]
-fn physical_geometry_changes_advance_the_adapter_topology_epoch() {
-    let settings = SharedSettings {
-        config: Mutex::new(CaptureConfig::default()),
-        generation: AtomicU64::new(0),
-        topology_generation: AtomicU64::new(1),
-        session_generation: AtomicU64::new(7),
-    };
-    let first = CaptureTopologySignature {
-        native_width: 3840,
-        native_height: 2160,
-        origin_x: 0,
-        origin_y: 0,
-        rotation: DisplayRotation::Identity,
-    };
-    let moved = CaptureTopologySignature {
-        origin_x: -3840,
-        ..first
-    };
-    let mut previous = None;
-
-    assert_eq!(
-        capture_topology_generation(&settings, &mut previous, first),
-        1
-    );
-    assert_eq!(
-        capture_topology_generation(&settings, &mut previous, first),
-        1
-    );
-    assert_eq!(
-        capture_topology_generation(&settings, &mut previous, moved),
-        2
-    );
-    assert_eq!(settings.topology_generation.load(Ordering::Acquire), 2);
 }
 
 #[test]
@@ -90,7 +49,7 @@ fn adapter_epoch_rejects_a_frame_from_another_monitor_or_generation() {
     .expect("test geometry is valid");
     let frame = CaptureFrame::<RawCaptureSurface>::new(
         CaptureFrameMetadata {
-            source_id: capture_epoch(1, 3, 7)
+            source_id: capture_epoch("display:left", 3, 7)
                 .expect("test source id is valid")
                 .source_id,
             topology_generation: 3,
@@ -114,15 +73,44 @@ fn adapter_epoch_rejects_a_frame_from_another_monitor_or_generation() {
     .expect("test frame is valid");
 
     assert!(matches!(
-        frame.validate_epoch(&capture_epoch(0, 3, 7).expect("expected epoch is valid")),
+        frame
+            .validate_epoch(&capture_epoch("display:main", 3, 7).expect("expected epoch is valid")),
         Err(CaptureFrameError::SourceMismatch { .. })
     ));
     assert!(matches!(
-        frame.validate_epoch(&capture_epoch(1, 4, 7).expect("expected epoch is valid")),
+        frame
+            .validate_epoch(&capture_epoch("display:left", 4, 7).expect("expected epoch is valid")),
         Err(CaptureFrameError::StaleTopology { .. })
     ));
     assert!(matches!(
-        frame.validate_epoch(&capture_epoch(1, 3, 8).expect("expected epoch is valid")),
+        frame
+            .validate_epoch(&capture_epoch("display:left", 3, 8).expect("expected epoch is valid")),
         Err(CaptureFrameError::StaleSession { .. })
     ));
+}
+
+#[test]
+fn dxgi_failure_classes_publish_distinct_issue_codes() {
+    for (error, expected) in [
+        (
+            CaptureError::AlreadyDuplicating,
+            "windows_desktop_duplication_limit",
+        ),
+        (CaptureError::AccessDenied, "windows_desktop_access_denied"),
+        (
+            CaptureError::SessionUnavailable,
+            "windows_session_unavailable",
+        ),
+        (CaptureError::DeviceLost, "windows_capture_device_lost"),
+        (
+            CaptureError::SourceNotFound {
+                requested: "display:missing".to_owned(),
+            },
+            "windows_capture_source_missing",
+        ),
+    ] {
+        let issue = capture_issue(&error);
+        assert_eq!(&*issue.code, expected);
+        assert!(issue.retryable);
+    }
 }

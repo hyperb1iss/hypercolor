@@ -1,7 +1,7 @@
 //! DXGI Desktop Duplication capture loop.
 
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use tracing::{debug, warn};
 use windows::Win32::Foundation::{E_ACCESSDENIED, HMODULE};
@@ -16,21 +16,437 @@ use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_MODE_ROTATION_ROTATE270,
 };
 use windows::Win32::Graphics::Dxgi::{
-    CreateDXGIFactory1, DXGI_ERROR_ACCESS_LOST, DXGI_ERROR_NOT_FOUND, DXGI_ERROR_UNSUPPORTED,
-    DXGI_ERROR_WAIT_TIMEOUT, DXGI_OUTDUPL_FRAME_INFO, IDXGIAdapter1, IDXGIFactory1, IDXGIOutput,
-    IDXGIOutput1, IDXGIOutputDuplication, IDXGIResource,
+    CreateDXGIFactory1, DXGI_ERROR_ACCESS_LOST, DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET,
+    DXGI_ERROR_NOT_CURRENTLY_AVAILABLE, DXGI_ERROR_NOT_FOUND, DXGI_ERROR_SESSION_DISCONNECTED,
+    DXGI_ERROR_UNSUPPORTED, DXGI_ERROR_WAIT_TIMEOUT, DXGI_OUTDUPL_FRAME_INFO,
+    DXGI_OUTDUPL_POINTER_SHAPE_INFO, DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR,
+    DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MASKED_COLOR, DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME,
+    IDXGIAdapter1, IDXGIFactory1, IDXGIOutput, IDXGIOutput1, IDXGIOutputDuplication, IDXGIResource,
 };
+use windows::Win32::Graphics::Gdi::{DISPLAY_DEVICEW, EnumDisplayDevicesW};
 use windows::core::Interface;
+use windows::core::PCWSTR;
 
 use crate::shared::{
-    CaptureError, CaptureResult, DisplayRotation, Frame, subsample_stride, subsampled_extent,
+    CaptureError, CaptureResult, CursorInfo, DisplayRotation, Frame, MonitorInfo, MonitorSelector,
+    subsample_stride, subsampled_extent,
 };
 
 /// Bytes per pixel in both the duplicated surface and our RGBA output.
 const BYTES_PER_PIXEL: usize = 4;
+const TOPOLOGY_CHECK_INTERVAL: Duration = Duration::from_secs(1);
+const MAX_POINTER_SHAPE_BYTES: usize = 16 * 1024 * 1024;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PointerShapeKind {
+    Color,
+    Monochrome,
+    MaskedColor,
+}
+
+#[derive(Clone, Debug)]
+struct PointerShape {
+    kind: PointerShapeKind,
+    width: u32,
+    height: u32,
+    pitch: u32,
+    hotspot_x: i32,
+    hotspot_y: i32,
+    bytes: Vec<u8>,
+}
+
+#[derive(Default)]
+struct PointerState {
+    visible: bool,
+    position_x: i32,
+    position_y: i32,
+    shape: Option<PointerShape>,
+    shape_generation: u64,
+}
+
+impl PointerState {
+    fn cursor_info(
+        &self,
+        scanout_width: u32,
+        scanout_height: u32,
+        rotation: DisplayRotation,
+    ) -> CursorInfo {
+        let shape = self.shape.as_ref();
+        let (position_x, position_y, width, height, hotspot_x, hotspot_y) =
+            shape.map_or((0, 0, 0, 0, 0, 0), |shape| {
+                pointer_scanout_geometry(
+                    self.position_x,
+                    self.position_y,
+                    shape.width,
+                    shape.visible_height(),
+                    shape.hotspot_x,
+                    shape.hotspot_y,
+                    scanout_width,
+                    scanout_height,
+                    rotation,
+                )
+            });
+        CursorInfo {
+            visible: self.visible,
+            position_x,
+            position_y,
+            hotspot_x,
+            hotspot_y,
+            width,
+            height,
+            shape_generation: self.shape_generation,
+            composed: !self.visible || shape.is_some(),
+        }
+    }
+
+    fn composite_bgra(
+        &self,
+        desktop: [u8; 4],
+        scanout_x: u32,
+        scanout_y: u32,
+        scanout_width: u32,
+        scanout_height: u32,
+        rotation: DisplayRotation,
+    ) -> [u8; 4] {
+        let Some(shape) = self.shape.as_ref().filter(|_| self.visible) else {
+            return desktop;
+        };
+        let (logical_x, logical_y) = scanout_to_logical(
+            scanout_x,
+            scanout_y,
+            scanout_width,
+            scanout_height,
+            rotation,
+        );
+        let shape_x = logical_x - i64::from(self.position_x);
+        let shape_y = logical_y - i64::from(self.position_y);
+        if shape_x < 0
+            || shape_y < 0
+            || shape_x >= i64::from(shape.width)
+            || shape_y >= i64::from(shape.visible_height())
+        {
+            return desktop;
+        }
+        shape.composite(desktop, shape_x as usize, shape_y as usize)
+    }
+}
+
+impl PointerShape {
+    fn validate(&self) -> Result<(), &'static str> {
+        let pitch = self.pitch as usize;
+        let rows = self.height as usize;
+        let required = pitch
+            .checked_mul(rows)
+            .ok_or("pointer shape size overflow")?;
+        if required > self.bytes.len() {
+            return Err("pointer shape buffer is shorter than its pitch and height");
+        }
+        match self.kind {
+            PointerShapeKind::Color | PointerShapeKind::MaskedColor => {
+                let row_bytes = (self.width as usize)
+                    .checked_mul(4)
+                    .ok_or("pointer shape row size overflow")?;
+                if row_bytes > pitch {
+                    return Err("pointer shape pitch is shorter than its color row");
+                }
+            }
+            PointerShapeKind::Monochrome => {
+                if !self.height.is_multiple_of(2) {
+                    return Err("monochrome pointer shape height is not even");
+                }
+                if self.width.div_ceil(8) as usize > pitch {
+                    return Err("pointer shape pitch is shorter than its mask row");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    const fn visible_height(&self) -> u32 {
+        match self.kind {
+            PointerShapeKind::Monochrome => self.height / 2,
+            PointerShapeKind::Color | PointerShapeKind::MaskedColor => self.height,
+        }
+    }
+
+    fn composite(&self, desktop: [u8; 4], x: usize, y: usize) -> [u8; 4] {
+        match self.kind {
+            PointerShapeKind::Color => self.color_pixel(desktop, x, y),
+            PointerShapeKind::Monochrome => self.monochrome_pixel(desktop, x, y),
+            PointerShapeKind::MaskedColor => self.masked_color_pixel(desktop, x, y),
+        }
+    }
+
+    fn color_pixel(&self, desktop: [u8; 4], x: usize, y: usize) -> [u8; 4] {
+        let Some(pixel) = self.bgra_pixel(x, y) else {
+            return desktop;
+        };
+        let alpha = u16::from(pixel[3]);
+        let inverse = 255 - alpha;
+        [
+            blend_channel(pixel[0], desktop[0], alpha, inverse),
+            blend_channel(pixel[1], desktop[1], alpha, inverse),
+            blend_channel(pixel[2], desktop[2], alpha, inverse),
+            0xFF,
+        ]
+    }
+
+    fn masked_color_pixel(&self, desktop: [u8; 4], x: usize, y: usize) -> [u8; 4] {
+        let Some(pixel) = self.bgra_pixel(x, y) else {
+            return desktop;
+        };
+        if pixel[3] == 0 {
+            [pixel[0], pixel[1], pixel[2], 0xFF]
+        } else {
+            [
+                desktop[0] ^ pixel[0],
+                desktop[1] ^ pixel[1],
+                desktop[2] ^ pixel[2],
+                0xFF,
+            ]
+        }
+    }
+
+    fn monochrome_pixel(&self, desktop: [u8; 4], x: usize, y: usize) -> [u8; 4] {
+        let pitch = self.pitch as usize;
+        let byte = x / 8;
+        let bit = 0x80_u8 >> (x % 8);
+        let visible_height = self.visible_height() as usize;
+        let and = self
+            .bytes
+            .get(y.saturating_mul(pitch).saturating_add(byte))
+            .is_some_and(|value| value & bit != 0);
+        let xor = self
+            .bytes
+            .get(
+                y.saturating_add(visible_height)
+                    .saturating_mul(pitch)
+                    .saturating_add(byte),
+            )
+            .is_some_and(|value| value & bit != 0);
+        let and_mask = if and { 0xFF } else { 0 };
+        let xor_mask = if xor { 0xFF } else { 0 };
+        [
+            (desktop[0] & and_mask) ^ xor_mask,
+            (desktop[1] & and_mask) ^ xor_mask,
+            (desktop[2] & and_mask) ^ xor_mask,
+            0xFF,
+        ]
+    }
+
+    fn bgra_pixel(&self, x: usize, y: usize) -> Option<[u8; 4]> {
+        let offset = y
+            .checked_mul(self.pitch as usize)?
+            .checked_add(x.checked_mul(4)?)?;
+        let pixel = self.bytes.get(offset..offset.checked_add(4)?)?;
+        Some([pixel[0], pixel[1], pixel[2], pixel[3]])
+    }
+}
+
+const fn blend_channel(source: u8, desktop: u8, alpha: u16, inverse: u16) -> u8 {
+    ((source as u16 * alpha + desktop as u16 * inverse + 127) / 255) as u8
+}
+
+const fn scanout_to_logical(
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    rotation: DisplayRotation,
+) -> (i64, i64) {
+    match rotation {
+        DisplayRotation::Identity => (x as i64, y as i64),
+        DisplayRotation::Clockwise90 => (height as i64 - 1 - y as i64, x as i64),
+        DisplayRotation::Clockwise180 => {
+            (width as i64 - 1 - x as i64, height as i64 - 1 - y as i64)
+        }
+        DisplayRotation::Clockwise270 => (y as i64, width as i64 - 1 - x as i64),
+    }
+}
+
+const fn logical_to_scanout(
+    x: i64,
+    y: i64,
+    width: u32,
+    height: u32,
+    rotation: DisplayRotation,
+) -> (i64, i64) {
+    match rotation {
+        DisplayRotation::Identity => (x, y),
+        DisplayRotation::Clockwise90 => (y, height as i64 - 1 - x),
+        DisplayRotation::Clockwise180 => (width as i64 - 1 - x, height as i64 - 1 - y),
+        DisplayRotation::Clockwise270 => (width as i64 - 1 - y, x),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn pointer_scanout_geometry(
+    position_x: i32,
+    position_y: i32,
+    shape_width: u32,
+    shape_height: u32,
+    hotspot_x: i32,
+    hotspot_y: i32,
+    scanout_width: u32,
+    scanout_height: u32,
+    rotation: DisplayRotation,
+) -> (i32, i32, u32, u32, i32, i32) {
+    if shape_width == 0 || shape_height == 0 {
+        return (position_x, position_y, 0, 0, hotspot_x, hotspot_y);
+    }
+    let right = i64::from(position_x) + i64::from(shape_width) - 1;
+    let bottom = i64::from(position_y) + i64::from(shape_height) - 1;
+    let corners = [
+        logical_to_scanout(
+            i64::from(position_x),
+            i64::from(position_y),
+            scanout_width,
+            scanout_height,
+            rotation,
+        ),
+        logical_to_scanout(
+            right,
+            i64::from(position_y),
+            scanout_width,
+            scanout_height,
+            rotation,
+        ),
+        logical_to_scanout(
+            i64::from(position_x),
+            bottom,
+            scanout_width,
+            scanout_height,
+            rotation,
+        ),
+        logical_to_scanout(right, bottom, scanout_width, scanout_height, rotation),
+    ];
+    let min_x = corners.iter().map(|(x, _)| *x).min().unwrap_or(0);
+    let max_x = corners.iter().map(|(x, _)| *x).max().unwrap_or(min_x);
+    let min_y = corners.iter().map(|(_, y)| *y).min().unwrap_or(0);
+    let max_y = corners.iter().map(|(_, y)| *y).max().unwrap_or(min_y);
+    let hotspot = logical_to_scanout(
+        i64::from(position_x) + i64::from(hotspot_x),
+        i64::from(position_y) + i64::from(hotspot_y),
+        scanout_width,
+        scanout_height,
+        rotation,
+    );
+    (
+        min_x.try_into().unwrap_or(if min_x.is_negative() {
+            i32::MIN
+        } else {
+            i32::MAX
+        }),
+        min_y.try_into().unwrap_or(if min_y.is_negative() {
+            i32::MIN
+        } else {
+            i32::MAX
+        }),
+        (max_x - min_x + 1).try_into().unwrap_or(u32::MAX),
+        (max_y - min_y + 1).try_into().unwrap_or(u32::MAX),
+        (hotspot.0 - min_x).try_into().unwrap_or(0),
+        (hotspot.1 - min_y).try_into().unwrap_or(0),
+    )
+}
+
+struct EnumeratedOutput {
+    adapter: IDXGIAdapter1,
+    output: IDXGIOutput,
+    monitor: MonitorInfo,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TopologyEntry {
+    id: String,
+    origin_x: i32,
+    origin_y: i32,
+    width: u32,
+    height: u32,
+    primary: bool,
+    rotation: DisplayRotation,
+}
+
+#[derive(Default)]
+struct TopologyState {
+    entries: Vec<TopologyEntry>,
+    generation: u64,
+}
+
+impl TopologyState {
+    fn observe(&mut self, entries: Vec<TopologyEntry>) -> u64 {
+        if self.generation == 0 || self.entries != entries {
+            self.entries = entries;
+            self.generation = self.generation.wrapping_add(1).max(1);
+        }
+        self.generation
+    }
+}
+
+static TOPOLOGY_STATE: OnceLock<Mutex<TopologyState>> = OnceLock::new();
+const EDD_GET_DEVICE_INTERFACE_NAME: u32 = 1;
+
+fn topology_entries(monitors: &[MonitorInfo]) -> Vec<TopologyEntry> {
+    let mut entries = monitors
+        .iter()
+        .map(|monitor| TopologyEntry {
+            id: monitor.id.clone(),
+            origin_x: monitor.origin_x,
+            origin_y: monitor.origin_y,
+            width: monitor.width,
+            height: monitor.height,
+            primary: monitor.primary,
+            rotation: monitor.rotation,
+        })
+        .collect::<Vec<_>>();
+    entries.sort_unstable_by(|left, right| left.id.cmp(&right.id));
+    entries
+}
+
+fn utf16_string(value: &[u16]) -> String {
+    let len = value
+        .iter()
+        .position(|&character| character == 0)
+        .unwrap_or(value.len());
+    String::from_utf16_lossy(&value[..len])
+}
+
+fn persistent_display_id(device_name: &[u16; 32]) -> CaptureResult<String> {
+    let mut display = DISPLAY_DEVICEW {
+        cb: u32::try_from(size_of::<DISPLAY_DEVICEW>()).unwrap_or(u32::MAX),
+        ..DISPLAY_DEVICEW::default()
+    };
+    // SAFETY: DeviceName is a NUL-terminated array owned by the live DXGI
+    // descriptor. `display` has the required cb size and outlives the call.
+    let found = unsafe {
+        EnumDisplayDevicesW(
+            PCWSTR(device_name.as_ptr()),
+            0,
+            &mut display,
+            EDD_GET_DEVICE_INTERFACE_NAME,
+        )
+    };
+    if !found.as_bool() {
+        return Err(CaptureError::windows(
+            "resolve persistent display identity",
+            "EnumDisplayDevicesW returned no monitor device",
+        ));
+    }
+    let id = utf16_string(&display.DeviceID).to_ascii_lowercase();
+    if id.is_empty() {
+        return Err(CaptureError::windows(
+            "resolve persistent display identity",
+            "monitor device interface path was empty",
+        ));
+    }
+    Ok(format!("display:{id}"))
+}
 
 /// Enumerate every output across every adapter, in adapter-then-output order.
-fn enumerate_outputs() -> CaptureResult<Vec<(IDXGIAdapter1, IDXGIOutput)>> {
+fn enumerate_outputs() -> CaptureResult<Vec<EnumeratedOutput>> {
+    let topology_state = TOPOLOGY_STATE.get_or_init(|| Mutex::new(TopologyState::default()));
+    let mut topology_state = topology_state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     // SAFETY: CreateDXGIFactory1 is a plain COM factory call with no
     // preconditions; the returned interface is checked by `?`.
     let factory: IDXGIFactory1 = unsafe { CreateDXGIFactory1() }
@@ -51,13 +467,56 @@ fn enumerate_outputs() -> CaptureResult<Vec<(IDXGIAdapter1, IDXGIOutput)>> {
         for output_index in 0.. {
             // SAFETY: same NOT_FOUND termination contract as adapters.
             match unsafe { adapter.EnumOutputs(output_index) } {
-                Ok(output) => outputs.push((adapter.clone(), output)),
+                Ok(output) => {
+                    // SAFETY: GetDesc copies the live output descriptor into a
+                    // return value and does not retain caller-owned storage.
+                    let desc = unsafe { output.GetDesc() }
+                        .map_err(|source| CaptureError::windows("describe DXGI output", source))?;
+                    if !desc.AttachedToDesktop.as_bool() {
+                        continue;
+                    }
+                    let name = utf16_string(&desc.DeviceName);
+                    let bounds = desc.DesktopCoordinates;
+                    let width = u32::try_from(i64::from(bounds.right) - i64::from(bounds.left))
+                        .unwrap_or(0);
+                    let height = u32::try_from(i64::from(bounds.bottom) - i64::from(bounds.top))
+                        .unwrap_or(0);
+                    if width == 0 || height == 0 {
+                        continue;
+                    }
+                    let id = persistent_display_id(&desc.DeviceName)?;
+                    outputs.push(EnumeratedOutput {
+                        adapter: adapter.clone(),
+                        output,
+                        monitor: MonitorInfo {
+                            index: outputs.len(),
+                            id,
+                            name,
+                            width,
+                            height,
+                            origin_x: bounds.left,
+                            origin_y: bounds.top,
+                            primary: bounds.left == 0 && bounds.top == 0,
+                            rotation: display_rotation(desc.Rotation),
+                            topology_generation: 0,
+                        },
+                    });
+                }
                 Err(error) if error.code() == DXGI_ERROR_NOT_FOUND => break,
                 Err(source) => {
                     return Err(CaptureError::windows("enumerate DXGI outputs", source));
                 }
             }
         }
+    }
+
+    let monitors = outputs
+        .iter()
+        .map(|entry| entry.monitor.clone())
+        .collect::<Vec<_>>();
+    let generation = topology_state.observe(topology_entries(&monitors));
+    for output in &mut outputs {
+        output.monitor.topology_generation = generation;
     }
 
     Ok(outputs)
@@ -70,45 +529,17 @@ pub(crate) fn output_count() -> CaptureResult<usize> {
 
 /// Describe every attached output for monitor pickers.
 pub(crate) fn describe_outputs() -> CaptureResult<Vec<crate::shared::MonitorInfo>> {
-    let outputs = enumerate_outputs()?;
-    let mut monitors = Vec::with_capacity(outputs.len());
-
-    for (index, (_, output)) in outputs.into_iter().enumerate() {
-        // SAFETY: GetDesc fills a caller-owned struct from the live output.
-        let desc = match unsafe { output.GetDesc() } {
-            Ok(desc) => desc,
-            Err(source) => {
-                return Err(CaptureError::windows("describe DXGI output", source));
-            }
-        };
-
-        let name_len = desc
-            .DeviceName
-            .iter()
-            .position(|&c| c == 0)
-            .unwrap_or(desc.DeviceName.len());
-        let name = String::from_utf16_lossy(&desc.DeviceName[..name_len]);
-
-        let bounds = desc.DesktopCoordinates;
-        let width = u32::try_from(i64::from(bounds.right) - i64::from(bounds.left)).unwrap_or(0);
-        let height = u32::try_from(i64::from(bounds.bottom) - i64::from(bounds.top)).unwrap_or(0);
-
-        monitors.push(crate::shared::MonitorInfo {
-            index,
-            name,
-            width,
-            height,
-            // The primary output anchors the virtual desktop at the origin.
-            primary: bounds.left == 0 && bounds.top == 0,
-        });
-    }
-
-    Ok(monitors)
+    enumerate_outputs().map(|outputs| outputs.into_iter().map(|output| output.monitor).collect())
 }
 
 /// A live Desktop Duplication session for one display output.
 pub struct DesktopDuplicator {
+    selector: MonitorSelector,
     monitor: usize,
+    source_id: Arc<str>,
+    topology_generation: u64,
+    adapter_luid: (u32, i32),
+    last_topology_check: Instant,
     max_width: u32,
     device: ID3D11Device,
     context: ID3D11DeviceContext,
@@ -126,6 +557,7 @@ pub struct DesktopDuplicator {
     origin_x: i32,
     origin_y: i32,
     rotation: DisplayRotation,
+    pointer: PointerState,
 }
 
 impl DesktopDuplicator {
@@ -138,17 +570,43 @@ impl DesktopDuplicator {
     /// the duplication interface, or [`CaptureError::Windows`] for any other
     /// D3D11/DXGI failure.
     pub fn new(monitor: usize, max_width: u32) -> CaptureResult<Self> {
-        let outputs = enumerate_outputs()?;
-        let available = outputs.len();
-        let (adapter, output) =
-            outputs
-                .into_iter()
-                .nth(monitor)
-                .ok_or(CaptureError::MonitorNotFound {
-                    requested: monitor,
-                    available,
-                })?;
+        Self::open(MonitorSelector::Index(monitor), max_width)
+    }
 
+    /// Open Desktop Duplication for a stable or primary-aware selector.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CaptureError::MonitorNotFound`] when no outputs are attached
+    /// or a legacy index is out of range, [`CaptureError::SourceNotFound`] when
+    /// a stable output disappeared, and the same platform errors as [`Self::new`].
+    pub fn open(selector: MonitorSelector, max_width: u32) -> CaptureResult<Self> {
+        let outputs = enumerate_outputs()?;
+        let monitors = outputs
+            .iter()
+            .map(|entry| entry.monitor.clone())
+            .collect::<Vec<_>>();
+        let selected = selector.resolve(&monitors)?.clone();
+        let selected_index = outputs
+            .iter()
+            .position(|entry| entry.monitor.id == selected.id)
+            .expect("resolved monitor belongs to enumerated outputs");
+        let EnumeratedOutput {
+            adapter,
+            output,
+            monitor,
+        } = outputs
+            .into_iter()
+            .nth(selected_index)
+            .expect("resolved output index remains in range");
+        let selector = match selector {
+            MonitorSelector::Auto => MonitorSelector::Auto,
+            MonitorSelector::StableId(_) | MonitorSelector::Index(_) => {
+                MonitorSelector::StableId(monitor.id.clone())
+            }
+        };
+
+        let adapter_luid = adapter_luid(&adapter)?;
         let (device, context) = create_device(&adapter)?;
         let output = output
             .cast::<IDXGIOutput1>()
@@ -158,7 +616,12 @@ impl DesktopDuplicator {
         let (origin_x, origin_y) = output_origin(&output)?;
 
         Ok(Self {
-            monitor,
+            selector,
+            monitor: monitor.index,
+            source_id: Arc::from(monitor.id),
+            topology_generation: monitor.topology_generation,
+            adapter_luid,
+            last_topology_check: Instant::now(),
             max_width,
             device,
             context,
@@ -172,6 +635,7 @@ impl DesktopDuplicator {
             origin_x,
             origin_y,
             rotation,
+            pointer: PointerState::default(),
         })
     }
 
@@ -179,6 +643,18 @@ impl DesktopDuplicator {
     #[must_use]
     pub const fn monitor(&self) -> usize {
         self.monitor
+    }
+
+    /// Stable id of the currently selected output.
+    #[must_use]
+    pub fn source_id(&self) -> &str {
+        &self.source_id
+    }
+
+    /// Monotonic generation of the topology used to open this output.
+    #[must_use]
+    pub const fn topology_generation(&self) -> u64 {
+        self.topology_generation
     }
 
     /// Native (pre-subsample) desktop dimensions.
@@ -192,11 +668,93 @@ impl DesktopDuplicator {
         self.max_width = max_width;
     }
 
+    fn update_pointer(&mut self, frame_info: &DXGI_OUTDUPL_FRAME_INFO) -> CaptureResult<bool> {
+        if frame_info.LastMouseUpdateTime == 0 {
+            return Ok(false);
+        }
+
+        self.pointer.visible = frame_info.PointerPosition.Visible.as_bool();
+        self.pointer.position_x = frame_info.PointerPosition.Position.x;
+        self.pointer.position_y = frame_info.PointerPosition.Position.y;
+
+        if frame_info.PointerShapeBufferSize == 0 {
+            return Ok(true);
+        }
+        let buffer_size = frame_info.PointerShapeBufferSize as usize;
+        if buffer_size > MAX_POINTER_SHAPE_BYTES {
+            return Err(CaptureError::windows(
+                "read desktop pointer shape",
+                format_args!(
+                    "shape buffer is {buffer_size} bytes; limit is {MAX_POINTER_SHAPE_BYTES}"
+                ),
+            ));
+        }
+
+        let mut bytes = self
+            .pointer
+            .shape
+            .as_ref()
+            .map_or_else(Vec::new, |shape| shape.bytes.clone());
+        bytes.resize(buffer_size, 0);
+        let mut required = 0_u32;
+        let mut info = DXGI_OUTDUPL_POINTER_SHAPE_INFO::default();
+        // SAFETY: bytes owns `buffer_size` writable bytes and both out-params
+        // are live locals. The duplication interface is held by self.
+        unsafe {
+            self.duplication.GetFramePointerShape(
+                frame_info.PointerShapeBufferSize,
+                bytes.as_mut_ptr().cast(),
+                &mut required,
+                &mut info,
+            )
+        }
+        .map_err(|source| CaptureError::windows("read desktop pointer shape", source))?;
+        let required = required as usize;
+        if required > bytes.len() {
+            return Err(CaptureError::windows(
+                "read desktop pointer shape",
+                "pointer shape grew beyond the advertised buffer",
+            ));
+        }
+        bytes.truncate(required);
+        let kind = if info.Type == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR.0.cast_unsigned() {
+            PointerShapeKind::Color
+        } else if info.Type == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME.0.cast_unsigned() {
+            PointerShapeKind::Monochrome
+        } else if info.Type
+            == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MASKED_COLOR
+                .0
+                .cast_unsigned()
+        {
+            PointerShapeKind::MaskedColor
+        } else {
+            return Err(CaptureError::windows(
+                "read desktop pointer shape",
+                format_args!("unsupported pointer shape type {}", info.Type),
+            ));
+        };
+        let shape = PointerShape {
+            kind,
+            width: info.Width,
+            height: info.Height,
+            pitch: info.Pitch,
+            hotspot_x: info.HotSpot.x,
+            hotspot_y: info.HotSpot.y,
+            bytes,
+        };
+        shape
+            .validate()
+            .map_err(|message| CaptureError::windows("validate desktop pointer shape", message))?;
+        self.pointer.shape = Some(shape);
+        self.pointer.shape_generation = self.pointer.shape_generation.wrapping_add(1).max(1);
+        Ok(true)
+    }
+
     /// Wait up to `timeout` for the next desktop frame.
     ///
     /// Returns `Ok(None)` when nothing new arrived, which is the common and
-    /// cheap case: DXGI reports a timeout whenever the desktop is static, and
-    /// a mouse-only update carries no new desktop image worth re-analyzing.
+    /// cheap case: DXGI reports a timeout whenever both desktop and pointer
+    /// state are static.
     ///
     /// # Errors
     ///
@@ -205,6 +763,27 @@ impl DesktopDuplicator {
     /// loss is handled internally by rebuilding the duplication interface.
     pub fn next_frame(&mut self, timeout: Duration) -> CaptureResult<Option<Frame>> {
         self.release_frame();
+
+        if self.last_topology_check.elapsed() >= TOPOLOGY_CHECK_INTERVAL {
+            self.last_topology_check = Instant::now();
+            let outputs = enumerate_outputs()?;
+            let monitors = outputs
+                .iter()
+                .map(|entry| entry.monitor.clone())
+                .collect::<Vec<_>>();
+            let selected = self.selector.resolve(&monitors)?;
+            if selected.id != self.source_id.as_ref()
+                || selected.topology_generation != self.topology_generation
+            {
+                debug!(
+                    source_id = %selected.id,
+                    topology_generation = selected.topology_generation,
+                    "desktop topology changed; rebuilding capture session"
+                );
+                self.rebuild()?;
+                return Ok(None);
+            }
+        }
 
         let timeout_ms = u32::try_from(timeout.as_millis()).unwrap_or(u32::MAX);
         let mut frame_info = DXGI_OUTDUPL_FRAME_INFO::default();
@@ -228,27 +807,64 @@ impl DesktopDuplicator {
                     self.rebuild()?;
                     Ok(None)
                 }
+                E_ACCESSDENIED => Err(CaptureError::AccessDenied),
+                DXGI_ERROR_SESSION_DISCONNECTED => Err(CaptureError::SessionUnavailable),
+                DXGI_ERROR_DEVICE_REMOVED | DXGI_ERROR_DEVICE_RESET => {
+                    Err(CaptureError::DeviceLost)
+                }
                 _ => Err(CaptureError::windows("acquire duplicated frame", error)),
             };
         }
         self.frame_held = true;
 
-        // LastPresentTime stays zero when only the pointer moved. There is no
-        // new desktop image behind that, so re-running the sector grid would
-        // burn a readback to produce identical colors.
-        if frame_info.LastPresentTime == 0 {
+        let (current_width, current_height, current_rotation) =
+            duplication_geometry(&self.duplication);
+        let (current_origin_x, current_origin_y) = match output_origin(&self.output) {
+            Ok(origin) => origin,
+            Err(error) => {
+                self.release_frame();
+                return Err(error);
+            }
+        };
+        if current_width != self.output_width
+            || current_height != self.output_height
+            || current_origin_x != self.origin_x
+            || current_origin_y != self.origin_y
+            || current_rotation != self.rotation
+        {
+            self.release_frame();
+            self.rebuild()?;
+            return Ok(None);
+        }
+
+        let pointer_updated = match self.update_pointer(&frame_info) {
+            Ok(updated) => updated,
+            Err(error) => {
+                self.release_frame();
+                return Err(error);
+            }
+        };
+        let desktop_updated = frame_info.LastPresentTime != 0;
+        if !desktop_updated && !pointer_updated {
             self.release_frame();
             return Ok(None);
         }
 
-        let Some(resource) = resource else {
-            self.release_frame();
-            return Ok(None);
+        let texture = if desktop_updated {
+            let Some(resource) = resource else {
+                self.release_frame();
+                return Ok(None);
+            };
+            match resource.cast::<ID3D11Texture2D>() {
+                Ok(texture) => Some(texture),
+                Err(source) => {
+                    self.release_frame();
+                    return Err(CaptureError::windows("query duplicated texture", source));
+                }
+            }
+        } else {
+            None
         };
-
-        let texture = resource
-            .cast::<ID3D11Texture2D>()
-            .map_err(|source| CaptureError::windows("query duplicated texture", source))?;
 
         let mut rgba = self
             .frame_pool
@@ -256,11 +872,17 @@ impl DesktopDuplicator {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .pop()
             .unwrap_or_default();
-        let result = self.read_back(&texture, &mut rgba);
+        let result = self.read_back(texture.as_ref(), &mut rgba);
         self.release_frame();
-        let (width, height, native_width, native_height) = result?;
+        let Some((width, height, native_width, native_height)) = result? else {
+            return Ok(None);
+        };
 
         Ok(Some(Frame::new(
+            Arc::clone(&self.source_id),
+            self.topology_generation,
+            self.pointer
+                .cursor_info(native_width, native_height, self.rotation),
             width,
             height,
             native_width,
@@ -276,18 +898,24 @@ impl DesktopDuplicator {
     /// Copy the duplicated texture into staging, then subsample into `rgba`.
     fn read_back(
         &mut self,
-        texture: &ID3D11Texture2D,
+        texture: Option<&ID3D11Texture2D>,
         rgba: &mut Vec<u8>,
-    ) -> CaptureResult<(u32, u32, u32, u32)> {
-        let mut desc = D3D11_TEXTURE2D_DESC::default();
-        // SAFETY: GetDesc fills a caller-owned struct and cannot fail.
-        unsafe { texture.GetDesc(&mut desc) };
-
-        let staging = self.ensure_staging(&desc)?;
-
-        // SAFETY: both textures are same-desc 2D textures on this device;
-        // CopyResource is the documented duplication readback path.
-        unsafe { self.context.CopyResource(&staging, texture) };
+    ) -> CaptureResult<Option<(u32, u32, u32, u32)>> {
+        let (staging, native_width, native_height) = if let Some(texture) = texture {
+            let mut desc = D3D11_TEXTURE2D_DESC::default();
+            // SAFETY: GetDesc fills a caller-owned struct and cannot fail.
+            unsafe { texture.GetDesc(&mut desc) };
+            let staging = self.ensure_staging(&desc)?;
+            // SAFETY: both textures are same-desc 2D textures on this device;
+            // CopyResource is the documented duplication readback path.
+            unsafe { self.context.CopyResource(&staging, texture) };
+            (staging, desc.Width, desc.Height)
+        } else {
+            let Some((staging, width, height)) = self.staging.as_ref() else {
+                return Ok(None);
+            };
+            (staging.clone(), *width, *height)
+        };
 
         let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
         // SAFETY: staging was created USAGE_STAGING | CPU_ACCESS_READ, so
@@ -298,13 +926,20 @@ impl DesktopDuplicator {
         }
         .map_err(|source| CaptureError::windows("map staging texture", source))?;
 
-        let (width, height) =
-            Self::copy_mapped_rows(&mapped, desc.Width, desc.Height, rgba, self.max_width);
+        let (width, height) = Self::copy_mapped_rows(
+            &mapped,
+            native_width,
+            native_height,
+            rgba,
+            self.max_width,
+            &self.pointer,
+            self.rotation,
+        );
 
         // SAFETY: pairs with the Map above on the same subresource.
         unsafe { self.context.Unmap(&staging, 0) };
 
-        Ok((width, height, desc.Width, desc.Height))
+        Ok(Some((width, height, native_width, native_height)))
     }
 
     /// Box-filter BGRA staging rows into the packed RGBA output buffer.
@@ -323,6 +958,8 @@ impl DesktopDuplicator {
         height: u32,
         rgba: &mut Vec<u8>,
         max_width: u32,
+        pointer: &PointerState,
+        rotation: DisplayRotation,
     ) -> (u32, u32) {
         let stride = subsample_stride(width, max_width);
         let out_width = subsampled_extent(width, stride);
@@ -363,10 +1000,22 @@ impl DesktopDuplicator {
                     let row = src_y * row_pitch;
                     for src_x in src_x0..src_x1 {
                         let src = row + src_x * BYTES_PER_PIXEL;
-                        // Desktop Duplication hands back BGRA.
-                        blue += u64::from(source[src]);
-                        green += u64::from(source[src + 1]);
-                        red += u64::from(source[src + 2]);
+                        let pixel = pointer.composite_bgra(
+                            [
+                                source[src],
+                                source[src + 1],
+                                source[src + 2],
+                                source[src + 3],
+                            ],
+                            src_x as u32,
+                            src_y as u32,
+                            width as u32,
+                            height as u32,
+                            rotation,
+                        );
+                        blue += u64::from(pixel[0]);
+                        green += u64::from(pixel[1]);
+                        red += u64::from(pixel[2]);
                         samples += 1;
                     }
                 }
@@ -442,10 +1091,41 @@ impl DesktopDuplicator {
     /// Drop the duplication interface and open a fresh one.
     fn rebuild(&mut self) -> CaptureResult<()> {
         self.release_frame();
+        let outputs = enumerate_outputs()?;
+        let monitors = outputs
+            .iter()
+            .map(|entry| entry.monitor.clone())
+            .collect::<Vec<_>>();
+        let selected = self.selector.resolve(&monitors)?.clone();
+        let entry = outputs
+            .into_iter()
+            .find(|entry| entry.monitor.id == selected.id)
+            .expect("resolved monitor belongs to enumerated outputs");
+        let adapter_luid = adapter_luid(&entry.adapter)?;
+        let (device, context) = if adapter_luid == self.adapter_luid {
+            (self.device.clone(), self.context.clone())
+        } else {
+            create_device(&entry.adapter)?
+        };
+        let output = entry
+            .output
+            .cast::<IDXGIOutput1>()
+            .map_err(|source| CaptureError::windows("query IDXGIOutput1", source))?;
+        let duplication = duplicate_output(&output, &device)?;
+        let (width, height, rotation) = duplication_geometry(&duplication);
+        let (origin_x, origin_y) = output_origin(&output)?;
+
         self.staging = None;
-        self.duplication = duplicate_output(&self.output, &self.device)?;
-        let (width, height, rotation) = duplication_geometry(&self.duplication);
-        let (origin_x, origin_y) = output_origin(&self.output)?;
+        self.device = device;
+        self.context = context;
+        self.output = output;
+        self.duplication = duplication;
+        self.monitor = entry.monitor.index;
+        self.source_id = Arc::from(entry.monitor.id);
+        self.topology_generation = entry.monitor.topology_generation;
+        self.adapter_luid = adapter_luid;
+        self.last_topology_check = Instant::now();
+        self.pointer = PointerState::default();
         self.output_width = width;
         self.output_height = height;
         self.origin_x = origin_x;
@@ -511,6 +1191,14 @@ fn create_device(adapter: &IDXGIAdapter1) -> CaptureResult<(ID3D11Device, ID3D11
     }
 }
 
+fn adapter_luid(adapter: &IDXGIAdapter1) -> CaptureResult<(u32, i32)> {
+    // SAFETY: GetDesc1 copies the live adapter descriptor into a return value
+    // and does not retain caller-owned storage.
+    let desc = unsafe { adapter.GetDesc1() }
+        .map_err(|source| CaptureError::windows("describe DXGI adapter", source))?;
+    Ok((desc.AdapterLuid.LowPart, desc.AdapterLuid.HighPart))
+}
+
 /// Open the duplication interface, mapping the two well-known refusals.
 fn duplicate_output(
     output: &IDXGIOutput1,
@@ -518,8 +1206,10 @@ fn duplicate_output(
 ) -> CaptureResult<IDXGIOutputDuplication> {
     // SAFETY: both interfaces outlive the call.
     unsafe { output.DuplicateOutput(device) }.map_err(|source| match source.code() {
-        // Documented as "already duplicating"; Windows allows one per output.
-        E_ACCESSDENIED => CaptureError::AlreadyDuplicating,
+        E_ACCESSDENIED => CaptureError::AccessDenied,
+        DXGI_ERROR_NOT_CURRENTLY_AVAILABLE => CaptureError::AlreadyDuplicating,
+        DXGI_ERROR_SESSION_DISCONNECTED => CaptureError::SessionUnavailable,
+        DXGI_ERROR_DEVICE_REMOVED | DXGI_ERROR_DEVICE_RESET => CaptureError::DeviceLost,
         // Raised on hybrid-graphics hosts when the desktop is not on this
         // adapter's output. Callers surface it as "capture unavailable".
         DXGI_ERROR_UNSUPPORTED => {

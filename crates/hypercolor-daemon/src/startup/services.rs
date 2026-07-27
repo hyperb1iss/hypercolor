@@ -716,7 +716,7 @@ pub(crate) fn screen_capture_config_from(
         }
         .clamped(),
         restore_token: capture.restore_token.clone(),
-        monitor: hypercolor_core::input::screen::monitor_index_from_source(&capture.source),
+        source: capture.source.clone(),
     }
 }
 fn audio_source_from_device(device: &str) -> AudioSourceType {

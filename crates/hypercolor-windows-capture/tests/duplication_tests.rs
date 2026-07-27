@@ -192,6 +192,16 @@ fn monitor_listing_matches_the_count_and_carries_real_geometry() {
             monitor.name
         );
         assert!(!monitor.name.is_empty(), "monitor names must not be empty");
+        assert!(
+            monitor.id.starts_with("display:"),
+            "monitor {} lacks a persistent device identity: {}",
+            monitor.index,
+            monitor.id
+        );
+        assert!(
+            monitor.topology_generation > 0,
+            "monitor descriptors must carry a topology generation"
+        );
     }
     assert!(
         monitors.iter().any(|monitor| monitor.primary),

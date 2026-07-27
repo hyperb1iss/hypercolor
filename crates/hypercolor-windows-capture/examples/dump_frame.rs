@@ -6,7 +6,7 @@
 //! zone colors. Writing the frame out makes those instantly obvious.
 //!
 //! ```text
-//! cargo run --example dump_frame -p hypercolor-windows-capture -- out.png [monitor] [max_width]
+//! cargo run --example dump_frame -p hypercolor-windows-capture -- out.png [source] [max_width]
 //! ```
 
 fn main() {
@@ -20,23 +20,28 @@ fn main() {
     {
         use std::time::{Duration, Instant};
 
-        use hypercolor_windows_capture::DesktopDuplicator;
+        use hypercolor_windows_capture::{DesktopDuplicator, MonitorSelector};
 
         let mut args = std::env::args().skip(1);
         let path = args.next().unwrap_or_else(|| "capture.png".to_owned());
-        let monitor: usize = args.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+        let source = args.next().unwrap_or_else(|| "auto".to_owned());
         let max_width: u32 = args.next().and_then(|v| v.parse().ok()).unwrap_or(1280);
 
-        let mut duplicator = match DesktopDuplicator::new(monitor, max_width) {
-            Ok(duplicator) => duplicator,
-            Err(error) => {
-                eprintln!("failed to open capture: {error}");
-                std::process::exit(1);
-            }
-        };
+        let mut duplicator =
+            match DesktopDuplicator::open(MonitorSelector::parse(&source), max_width) {
+                Ok(duplicator) => duplicator,
+                Err(error) => {
+                    eprintln!("failed to open capture: {error}");
+                    std::process::exit(1);
+                }
+            };
 
         let (native_width, native_height) = duplicator.native_extent();
-        println!("native desktop: {native_width}x{native_height}");
+        println!(
+            "source {} at topology generation {}: {native_width}x{native_height}",
+            duplicator.source_id(),
+            duplicator.topology_generation()
+        );
 
         // The desktop only produces frames when something changes, so keep
         // asking until one lands rather than giving up on the first timeout.
