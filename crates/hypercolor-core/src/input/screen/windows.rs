@@ -38,6 +38,8 @@ const CAPTURE_TARGET_WIDTH: u32 = 1280;
 /// Bounded well under a second so a stop or deactivate lands promptly even
 /// while the desktop is perfectly static and producing no frames at all.
 const FRAME_WAIT: Duration = Duration::from_millis(100);
+const WORKER_READY_TIMEOUT: Duration = Duration::from_secs(1);
+const WORKER_STOP_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Backoff after a failed attempt to open the duplication interface.
 ///
@@ -73,8 +75,34 @@ pub struct WindowsScreenCaptureInput {
 
 struct CaptureWorker {
     command_tx: mpsc::Sender<WorkerCommand>,
-    join_handle: thread::JoinHandle<()>,
+    exit_rx: mpsc::Receiver<()>,
+    join_handle: Option<thread::JoinHandle<()>>,
     cancel: Arc<AtomicBool>,
+}
+
+impl Drop for CaptureWorker {
+    fn drop(&mut self) {
+        let Some(join_handle) = self.join_handle.take() else {
+            return;
+        };
+        self.cancel.store(true, Ordering::Release);
+        let _ = self.command_tx.send(WorkerCommand::Stop);
+        let _ = self.exit_rx.recv_timeout(WORKER_STOP_TIMEOUT);
+        if join_handle.is_finished() {
+            let _ = join_handle.join();
+            return;
+        }
+        if let Err(error) = thread::Builder::new()
+            .name("hypercolor-screen-reaper".to_owned())
+            .spawn(move || {
+                if let Err(panic) = join_handle.join() {
+                    warn!(?panic, "screen capture worker reaper observed a panic");
+                }
+            })
+        {
+            warn!(%error, "failed to start screen capture worker join reaper");
+        }
+    }
 }
 
 enum WorkerCommand {
@@ -108,11 +136,14 @@ impl WindowsScreenCaptureInput {
     }
 
     fn spawn_worker(&mut self) -> anyhow::Result<()> {
+        self.observe_worker_exit(false);
         if self.worker.is_some() {
-            return Ok(());
+            anyhow::bail!("previous Windows screen capture worker is still stopping");
         }
 
         let (command_tx, command_rx) = mpsc::channel();
+        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        let (exit_tx, exit_rx) = mpsc::sync_channel(1);
         let settings = Arc::clone(&self.settings);
         let latest_snapshot = Arc::clone(&self.latest_snapshot);
         let cancel = Arc::new(AtomicBool::new(false));
@@ -122,6 +153,7 @@ impl WindowsScreenCaptureInput {
         let join_handle = thread::Builder::new()
             .name("hypercolor-screen-capture".to_owned())
             .spawn(move || {
+                let _ = ready_tx.send(());
                 run_worker(
                     &settings,
                     &latest_snapshot,
@@ -129,39 +161,101 @@ impl WindowsScreenCaptureInput {
                     &worker_cancel,
                     status_session,
                 );
+                let _ = exit_tx.send(());
             })
             .map_err(|error| anyhow!("failed to spawn screen capture worker: {error}"))?;
 
         self.worker = Some(CaptureWorker {
             command_tx,
-            join_handle,
+            exit_rx,
+            join_handle: Some(join_handle),
             cancel,
         });
+        if let Err(error) = ready_rx.recv_timeout(WORKER_READY_TIMEOUT) {
+            self.shutdown_worker();
+            anyhow::bail!("Windows screen capture worker readiness timed out: {error}");
+        }
+        if self.observe_worker_exit(true) {
+            anyhow::bail!("Windows screen capture worker exited during startup");
+        }
         Ok(())
     }
 
     fn shutdown_worker(&mut self) {
-        let Some(worker) = self.worker.take() else {
+        let Some(worker) = self.worker.as_mut() else {
             return;
         };
 
         worker.cancel.store(true, Ordering::Release);
         let _ = worker.command_tx.send(WorkerCommand::Stop);
-        if worker.join_handle.join().is_err() {
+        let _ = worker.exit_rx.recv_timeout(WORKER_STOP_TIMEOUT);
+        let Some(join_handle) = worker.join_handle.as_ref() else {
+            self.worker = None;
+            return;
+        };
+        if !join_handle.is_finished() {
+            warn!(
+                "screen capture worker did not stop before the deadline; retaining its join handle"
+            );
+            return;
+        }
+        let mut worker = self.worker.take().expect("finished worker remains owned");
+        if worker
+            .join_handle
+            .take()
+            .expect("finished screen worker retains its join handle")
+            .join()
+            .is_err()
+        {
             warn!("screen capture worker panicked during shutdown");
         }
+    }
+
+    fn observe_worker_exit(&mut self, publish_failure: bool) -> bool {
+        let Some(worker) = self.worker.as_ref() else {
+            return false;
+        };
+        if !worker
+            .join_handle
+            .as_ref()
+            .is_some_and(thread::JoinHandle::is_finished)
+        {
+            return false;
+        }
+        let mut worker = self.worker.take().expect("finished worker remains owned");
+        let failure = worker
+            .join_handle
+            .take()
+            .expect("finished screen worker retains its join handle")
+            .join()
+            .err();
+        if publish_failure && let Some(status) = self.status.session() {
+            let reason = failure.map_or_else(
+                || "Windows screen capture worker exited unexpectedly".to_owned(),
+                |panic| format!("Windows screen capture worker panicked: {panic:?}"),
+            );
+            status.failed(SourceIssue::new(
+                "windows_screen_worker_exited",
+                reason,
+                true,
+            ));
+        }
+        if let Ok(mut latest) = self.latest_snapshot.lock() {
+            *latest = None;
+        }
+        true
     }
 
     fn set_capture_active_state(&mut self, active: bool) -> anyhow::Result<()> {
         if self.capture_active == active {
             return Ok(());
         }
-        self.capture_active = active;
         if let Ok(mut latest) = self.latest_snapshot.lock() {
             *latest = None;
         }
 
         if !self.running {
+            self.capture_active = active;
             return Ok(());
         }
 
@@ -169,10 +263,19 @@ impl WindowsScreenCaptureInput {
             self.spawn_worker()?;
         }
 
-        if let Some(worker) = self.worker.as_ref() {
-            let _ = worker.command_tx.send(WorkerCommand::SetActive(active));
+        if let Some(worker) = self.worker.as_ref()
+            && worker
+                .command_tx
+                .send(WorkerCommand::SetActive(active))
+                .is_err()
+        {
+            self.shutdown_worker();
+            if active {
+                anyhow::bail!("Windows screen capture worker stopped before activation");
+            }
         }
 
+        self.capture_active = active;
         Ok(())
     }
 
@@ -197,15 +300,29 @@ impl InputSource for WindowsScreenCaptureInput {
         if self.running {
             return Ok(());
         }
-        self.running = true;
-
         if self.capture_active {
             if let Some(session) = self.status.begin_session()? {
                 self.status_session.store(session);
             }
-            self.spawn_worker()?;
-            if let Some(worker) = self.worker.as_ref() {
-                let _ = worker.command_tx.send(WorkerCommand::SetActive(true));
+            if let Err(error) = self.spawn_worker().and_then(|()| {
+                self.worker.as_ref().map_or_else(
+                    || {
+                        Err(anyhow!(
+                            "Windows screen capture worker disappeared during startup"
+                        ))
+                    },
+                    |worker| {
+                        worker
+                            .command_tx
+                            .send(WorkerCommand::SetActive(true))
+                            .map_err(|_| anyhow!("Windows screen capture worker rejected startup"))
+                    },
+                )
+            }) {
+                self.status_session.clear();
+                self.status.stop();
+                self.shutdown_worker();
+                return Err(error);
             }
         } else {
             debug!(
@@ -213,6 +330,7 @@ impl InputSource for WindowsScreenCaptureInput {
             );
         }
 
+        self.running = true;
         Ok(())
     }
 
@@ -229,6 +347,7 @@ impl InputSource for WindowsScreenCaptureInput {
     }
 
     fn sample(&mut self) -> anyhow::Result<InputData> {
+        self.observe_worker_exit(self.running && self.capture_active);
         if !self.running || !self.capture_active {
             return Ok(InputData::None);
         }
@@ -258,8 +377,9 @@ impl InputSource for WindowsScreenCaptureInput {
     }
 
     fn set_screen_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
+        let previous = self.capture_active;
         self.status.set_policy(true, true, active)?;
-        if self.capture_active != active {
+        if previous != active {
             if !active {
                 self.status_session.clear();
             }
@@ -270,7 +390,19 @@ impl InputSource for WindowsScreenCaptureInput {
                 self.status_session.store(session);
             }
         }
-        self.set_capture_active_state(active)
+        if let Err(error) = self.set_capture_active_state(active) {
+            self.status_session.clear();
+            self.status.stop();
+            self.status.set_policy(true, true, previous)?;
+            if previous
+                && self.running
+                && let Some(session) = self.status.begin_session()?
+            {
+                self.status_session.store(session);
+            }
+            return Err(error);
+        }
+        Ok(())
     }
 
     fn reconfigure_screen_capture(&mut self, config: &CaptureConfig) -> anyhow::Result<()> {
@@ -362,7 +494,13 @@ fn run_worker(
                             ),
                         );
                     }
-                    thread::sleep(REOPEN_BACKOFF);
+                    match command_rx.recv_timeout(REOPEN_BACKOFF) {
+                        Ok(WorkerCommand::SetActive(next)) => active = next,
+                        Ok(WorkerCommand::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                            break;
+                        }
+                        Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    }
                     continue;
                 }
             },
@@ -392,7 +530,11 @@ fn run_worker(
             Err(error) => {
                 warn!(%error, "Windows screen capture frame failed; reopening session");
                 duplicator = None;
-                thread::sleep(REOPEN_BACKOFF);
+                match command_rx.recv_timeout(REOPEN_BACKOFF) {
+                    Ok(WorkerCommand::SetActive(next)) => active = next,
+                    Ok(WorkerCommand::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                }
             }
         }
     }

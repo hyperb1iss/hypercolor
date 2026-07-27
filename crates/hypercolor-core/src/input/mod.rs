@@ -423,8 +423,10 @@ impl InputManager {
             sensor_poller.start()?;
         }
 
-        for (idx, source) in self.sources.iter_mut().enumerate() {
-            if let Err(err) = source.start() {
+        for source_index in 0..self.sources.len() {
+            let start_result = self.sources[source_index].start();
+            if let Err(err) = start_result {
+                let source = &mut self.sources[source_index];
                 error!(source = source.name(), %err, "Failed to start input source");
                 if let Some(status) = source
                     .source_status_reporter()
@@ -436,16 +438,19 @@ impl InputManager {
                         true,
                     ));
                 }
+                for started in self.sources[..=source_index].iter_mut().rev() {
+                    started.stop();
+                }
                 if let Some(sensor_poller) = self.sensor_poller.as_mut() {
                     sensor_poller.stop();
                 }
-                // Roll back: stop everything we already started.
-                for prev in &mut self.sources[..idx] {
-                    prev.stop();
-                }
+                self.invalidate_capture_domains((true, true, true));
                 return Err(err);
             }
-            info!(source = source.name(), "Started input source");
+            info!(
+                source = self.sources[source_index].name(),
+                "Started input source"
+            );
         }
         Ok(())
     }

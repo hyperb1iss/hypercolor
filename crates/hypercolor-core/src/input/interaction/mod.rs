@@ -3,7 +3,6 @@
 //! The capture backend runs on a dedicated polling thread so the public input
 //! source stays `Send` even when the platform device handle is not.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -17,6 +16,7 @@ use crate::input::{SourceIssue, SourceKind, SourceStatusHandle, SourceStatusRepo
 
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 const READY_TIMEOUT: Duration = Duration::from_secs(1);
+const STOP_TIMEOUT: Duration = Duration::from_secs(1);
 const DEFAULT_RECENT_KEY_LIMIT: usize = 32;
 
 #[derive(Default)]
@@ -39,9 +39,14 @@ pub struct InteractionInput {
     generation: u64,
     last_held: Option<(Vec<String>, MouseData)>,
     shared: Arc<Mutex<SharedInteractionState>>,
-    stop_flag: Arc<AtomicBool>,
-    worker: Option<JoinHandle<()>>,
+    worker: Option<InteractionWorker>,
     status: SourceStatusReporter,
+}
+
+struct InteractionWorker {
+    stop_tx: mpsc::Sender<()>,
+    exit_rx: mpsc::Receiver<()>,
+    join_handle: JoinHandle<()>,
 }
 
 impl InteractionInput {
@@ -56,7 +61,6 @@ impl InteractionInput {
             generation: 0,
             last_held: None,
             shared: Arc::new(Mutex::new(SharedInteractionState::default())),
-            stop_flag: Arc::new(AtomicBool::new(false)),
             worker: None,
             status: SourceStatusReporter::new(
                 "host_input",
@@ -70,9 +74,21 @@ impl InteractionInput {
     }
 
     fn stop_worker(&mut self) {
-        self.stop_flag.store(true, Ordering::Release);
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
+        if let Some(worker) = &self.worker {
+            let _ = worker.stop_tx.send(());
+            let _ = worker.exit_rx.recv_timeout(STOP_TIMEOUT);
+        }
+        if self
+            .worker
+            .as_ref()
+            .is_some_and(|worker| worker.join_handle.is_finished())
+        {
+            let worker = self.worker.take().expect("finished worker remains owned");
+            if let Err(panic) = worker.join_handle.join() {
+                warn!(source = %self.name, message = ?panic, "Host input worker panicked");
+            }
+        } else if self.worker.is_some() {
+            warn!(source = %self.name, "Host input worker did not stop before the deadline");
         }
         if let Ok(mut guard) = self.shared.lock() {
             guard.interaction = InteractionData::default();
@@ -81,19 +97,20 @@ impl InteractionInput {
     }
 
     fn spawn_worker(&mut self) -> anyhow::Result<()> {
+        self.observe_worker_exit(false);
         if self.worker.is_some() {
-            return Ok(());
+            anyhow::bail!("previous host input worker is still stopping");
         }
 
-        self.stop_flag.store(false, Ordering::Release);
         let shared = Arc::clone(&self.shared);
-        let stop_flag = Arc::clone(&self.stop_flag);
         let recent_key_limit = self.recent_key_limit;
         let source_name = self.name.clone();
         let status = self.status.session();
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        let (stop_tx, stop_rx) = mpsc::channel();
+        let (exit_tx, exit_rx) = mpsc::sync_channel(1);
 
-        let worker = thread::Builder::new()
+        let join_handle = thread::Builder::new()
             .name("hypercolor-host-input".to_owned())
             .spawn(move || {
                 let Some(device_state) = try_create_device_state() else {
@@ -113,17 +130,18 @@ impl InteractionInput {
                             ),
                         );
                     }
-                    let _ = ready_tx.send(());
+                    let _ = ready_tx.send(false);
+                    let _ = exit_tx.send(());
                     return;
                 };
 
                 if let Some(status) = &status {
                     status.mark_event_driven_live_without_deadline(1);
                 }
-                let _ = ready_tx.send(());
+                let _ = ready_tx.send(true);
                 let mut previous_keys: Vec<Keycode> = Vec::new();
 
-                while !stop_flag.load(Ordering::Acquire) {
+                loop {
                     let current_keys = sorted_keys(device_state.get_keys());
                     let mouse_state = device_state.get_mouse();
 
@@ -153,21 +171,82 @@ impl InteractionInput {
                         guard.interaction.mouse = mouse;
                     }
 
-                    thread::sleep(POLL_INTERVAL);
+                    match stop_rx.recv_timeout(POLL_INTERVAL) {
+                        Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                        Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    }
                 }
+                let _ = exit_tx.send(());
             })
             .context("failed to spawn host input capture worker")?;
 
-        if ready_rx.recv_timeout(READY_TIMEOUT).is_err() {
-            warn!(
-                source = %self.name,
-                "Host input capture worker did not become ready in time; interactive LightScript input will stay idle"
-            );
+        self.worker = Some(InteractionWorker {
+            stop_tx,
+            exit_rx,
+            join_handle,
+        });
+        let ready = match ready_rx.recv_timeout(READY_TIMEOUT) {
+            Ok(ready) => ready,
+            Err(error) => {
+                self.stop_worker();
+                anyhow::bail!("timed out waiting for host input worker readiness: {error}");
+            }
+        };
+        if !ready {
+            self.stop_worker();
             return Ok(());
         }
-
-        self.worker = Some(worker);
+        if self.observe_worker_exit(true) {
+            anyhow::bail!("host input worker exited during startup");
+        }
         Ok(())
+    }
+
+    fn observe_worker_exit(&mut self, publish_failure: bool) -> bool {
+        let Some(worker) = self.worker.as_ref() else {
+            return false;
+        };
+        if !worker.join_handle.is_finished() {
+            return false;
+        }
+        let worker = self.worker.take().expect("finished worker remains owned");
+        let failure = worker.join_handle.join().err();
+        if publish_failure && let Some(status) = self.status.session() {
+            let detail = failure.map_or_else(
+                || "host input worker exited unexpectedly".to_owned(),
+                |panic| format!("host input worker panicked: {panic:?}"),
+            );
+            status.failed(SourceIssue::new("host_input_worker_exited", detail, true));
+        }
+        if let Ok(mut guard) = self.shared.lock() {
+            guard.interaction = InteractionData::default();
+        }
+        self.last_held = None;
+        true
+    }
+}
+
+impl Drop for InteractionInput {
+    fn drop(&mut self) {
+        let Some(worker) = self.worker.take() else {
+            return;
+        };
+        let _ = worker.stop_tx.send(());
+        let source = self.name.clone();
+        if worker.join_handle.is_finished() {
+            let _ = worker.join_handle.join();
+            return;
+        }
+        if let Err(error) = thread::Builder::new()
+            .name("hypercolor-host-input-reaper".to_owned())
+            .spawn(move || {
+                if let Err(panic) = worker.join_handle.join() {
+                    warn!(source = %source, message = ?panic, "Host input reaper observed a panic");
+                }
+            })
+        {
+            warn!(source = %self.name, %error, "Failed to start host-input join reaper");
+        }
     }
 }
 
@@ -181,11 +260,15 @@ impl InputSource for InteractionInput {
             return Ok(());
         }
 
-        self.running = true;
         if self.capture_active {
             self.status.begin_session()?;
-            self.spawn_worker()?;
+            if let Err(error) = self.spawn_worker() {
+                self.status.stop();
+                self.stop_worker();
+                return Err(error);
+            }
         }
+        self.running = true;
         Ok(())
     }
 
@@ -196,6 +279,7 @@ impl InputSource for InteractionInput {
     }
 
     fn sample(&mut self) -> anyhow::Result<InputData> {
+        self.observe_worker_exit(self.running && self.capture_active);
         if !self.running || self.worker.is_none() {
             return Ok(InputData::None);
         }
@@ -254,22 +338,29 @@ impl InputSource for InteractionInput {
     }
 
     fn set_interaction_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
+        let previous = self.capture_active;
         self.status.set_policy(true, true, active)?;
-        if self.capture_active == active {
+        if previous == active {
             return Ok(());
         }
-
-        self.capture_active = active;
         if !self.running {
+            self.capture_active = active;
             return Ok(());
         }
 
         if active {
             self.status.begin_session()?;
-            self.spawn_worker()?;
+            if let Err(error) = self.spawn_worker() {
+                self.status.stop();
+                self.status.set_policy(true, true, previous)?;
+                self.stop_worker();
+                return Err(error);
+            }
         } else {
+            self.status.stop();
             self.stop_worker();
         }
+        self.capture_active = active;
         Ok(())
     }
 }

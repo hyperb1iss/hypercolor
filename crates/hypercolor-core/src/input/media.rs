@@ -271,6 +271,15 @@ impl InputSource for MediaSource {
             return Ok(());
         }
 
+        #[cfg(target_os = "linux")]
+        if let Some(poller) = self.poller.as_mut() {
+            if poller.stop() {
+                self.poller = None;
+            } else {
+                anyhow::bail!("previous media poller is still stopping");
+            }
+        }
+
         self.publisher.reset();
         self.last_poll = None;
         self.last_sampled = None;
@@ -279,7 +288,7 @@ impl InputSource for MediaSource {
         #[cfg(target_os = "linux")]
         {
             self.poller = match linux::MediaPollerThread::spawn(self.publisher.clone(), status) {
-                Ok(poller) => Some(poller),
+                Ok(poller) => poller,
                 Err(error) => {
                     if let Some(status) = self.status.session() {
                         status.failed(SourceIssue::new(
@@ -288,6 +297,8 @@ impl InputSource for MediaSource {
                             true,
                         ));
                     }
+                    self.status.stop();
+                    self.publisher.reset();
                     return Err(error);
                 }
             };
@@ -315,17 +326,34 @@ impl InputSource for MediaSource {
     }
 
     fn stop(&mut self) {
+        self.status.stop();
         #[cfg(target_os = "linux")]
-        if let Some(poller) = self.poller.take() {
-            poller.stop();
+        if let Some(poller) = self.poller.as_mut()
+            && poller.stop()
+        {
+            self.poller = None;
         }
         self.running = false;
         self.last_poll = None;
         self.last_sampled = None;
-        self.status.stop();
     }
 
     fn sample(&mut self) -> Result<InputData> {
+        #[cfg(target_os = "linux")]
+        if let Some(reason) = self
+            .poller
+            .as_mut()
+            .and_then(linux::MediaPollerThread::observe_exit)
+        {
+            self.poller = None;
+            self.publisher.reset();
+            self.last_poll = None;
+            self.last_sampled = None;
+            if let Some(status) = self.status.session() {
+                status.failed(SourceIssue::new("media_poller_exited", reason, true));
+            }
+            return Ok(InputData::None);
+        }
         let Some(poll) = self.poll_rx.borrow().clone() else {
             return Ok(InputData::None);
         };
@@ -412,18 +440,23 @@ mod linux {
     const PLAYER_INTERFACE: &str = "org.mpris.MediaPlayer2.Player";
     const ART_FETCH_TIMEOUT: Duration = Duration::from_secs(5);
     const MAX_ART_SOURCE_BYTES: usize = 8 * 1024 * 1024;
+    const WORKER_READY_TIMEOUT: Duration = Duration::from_secs(2);
+    const WORKER_STOP_TIMEOUT: Duration = Duration::from_secs(1);
 
     pub(super) struct MediaPollerThread {
         stop_tx: Sender<()>,
-        join_handle: JoinHandle<()>,
+        exit_rx: mpsc::Receiver<()>,
+        join_handle: Option<JoinHandle<()>>,
     }
 
     impl MediaPollerThread {
         pub(super) fn spawn(
             publisher: MediaPollPublisher,
             status: Option<SourceSessionWriter>,
-        ) -> Result<Self> {
+        ) -> Result<Option<Self>> {
             let (stop_tx, stop_rx) = mpsc::channel();
+            let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+            let (exit_tx, exit_rx) = mpsc::sync_channel(1);
             let join_handle = std::thread::Builder::new()
                 .name("hypercolor-media".to_owned())
                 .spawn(move || {
@@ -441,6 +474,8 @@ mod linux {
                                     true,
                                 ));
                             }
+                            let _ = ready_tx.send(Err(error.to_string()));
+                            let _ = exit_tx.send(());
                             return;
                         }
                     };
@@ -462,9 +497,12 @@ mod linux {
                                     ),
                                 );
                             }
+                            let _ = ready_tx.send(Ok(false));
+                            let _ = exit_tx.send(());
                             return;
                         }
                     };
+                    let _ = ready_tx.send(Ok(true));
 
                     let mut art_cache = ArtCache::new();
                     let mut active_player: Option<String> = None;
@@ -499,19 +537,85 @@ mod linux {
                             Err(RecvTimeoutError::Timeout) => {}
                         }
                     }
+                    let _ = exit_tx.send(());
                 })
                 .context("failed to spawn media poller thread")?;
 
-            Ok(Self {
+            let mut worker = Self {
                 stop_tx,
-                join_handle,
-            })
+                exit_rx,
+                join_handle: Some(join_handle),
+            };
+            match ready_rx.recv_timeout(WORKER_READY_TIMEOUT) {
+                Ok(Ok(true)) => Ok(Some(worker)),
+                Ok(Ok(false)) => {
+                    worker.stop();
+                    Ok(None)
+                }
+                Ok(Err(error)) => {
+                    worker.stop();
+                    anyhow::bail!("media poller failed before readiness: {error}");
+                }
+                Err(error) => {
+                    worker.stop();
+                    anyhow::bail!("media poller readiness timed out: {error}");
+                }
+            }
         }
 
-        pub(super) fn stop(self) {
+        pub(super) fn stop(&mut self) -> bool {
+            let Some(join_handle) = self.join_handle.as_ref() else {
+                return true;
+            };
             let _ = self.stop_tx.send(());
-            if let Err(error) = self.join_handle.join() {
+            let _ = self.exit_rx.recv_timeout(WORKER_STOP_TIMEOUT);
+            if !join_handle.is_finished() {
+                warn!("media poller did not stop before the deadline; retaining its join handle");
+                return false;
+            }
+            let join_handle = self
+                .join_handle
+                .take()
+                .expect("finished media worker remains owned");
+            if let Err(error) = join_handle.join() {
                 debug!("media poller thread join failed: {error:?}");
+            }
+            true
+        }
+
+        pub(super) fn observe_exit(&mut self) -> Option<String> {
+            let join_handle = self.join_handle.as_ref()?;
+            if !join_handle.is_finished() {
+                return None;
+            }
+            let join_handle = self
+                .join_handle
+                .take()
+                .expect("finished media worker remains owned");
+            Some(join_handle.join().map_or_else(
+                |panic| format!("media poller panicked: {panic:?}"),
+                |()| "media poller exited unexpectedly".to_owned(),
+            ))
+        }
+    }
+
+    impl Drop for MediaPollerThread {
+        fn drop(&mut self) {
+            if self.stop() {
+                return;
+            }
+            let Some(join_handle) = self.join_handle.take() else {
+                return;
+            };
+            if let Err(error) = std::thread::Builder::new()
+                .name("hypercolor-media-reaper".to_owned())
+                .spawn(move || {
+                    if let Err(panic) = join_handle.join() {
+                        warn!(?panic, "media poller reaper observed a panic");
+                    }
+                })
+            {
+                warn!(%error, "failed to start media poller join reaper");
             }
         }
     }

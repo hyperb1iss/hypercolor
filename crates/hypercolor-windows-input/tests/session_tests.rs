@@ -103,6 +103,34 @@ fn stop_is_idempotent() {
 }
 
 #[test]
+fn readiness_timeout_reaper_observes_late_worker_exit() {
+    let _exclusive = exclusive();
+    assert!(RawInputSession::test_readiness_timeout_reaper(
+        Duration::from_millis(40),
+        Duration::from_millis(5),
+    ));
+}
+
+#[test]
+fn join_timeout_retains_worker_until_a_later_stop_observes_exit() {
+    let _exclusive = exclusive();
+    let mut session = RawInputSession::test_stalled_worker(Duration::from_millis(40));
+
+    session.test_stop_with_timeout(Duration::from_millis(5));
+    assert!(
+        session.test_retains_worker(),
+        "bounded stop must retain a worker that has not exited"
+    );
+
+    std::thread::sleep(Duration::from_millis(50));
+    session.test_stop_with_timeout(Duration::from_millis(20));
+    assert!(
+        !session.test_retains_worker(),
+        "a later stop must join a worker after observing its exit"
+    );
+}
+
+#[test]
 fn dropping_without_stopping_still_tears_down() {
     let _exclusive = exclusive();
     // Drop must reach the same teardown, or a dropped session would leave the

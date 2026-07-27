@@ -5,13 +5,18 @@
 
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc;
 use std::time::Duration;
 
 use anyhow::{Result, bail};
 use hypercolor_core::device::{
     BackendInfo, BackendManager, DeviceBackend, DeviceLifecycleManager, DiscoveryConnectBehavior,
     LifecycleAction,
+};
+use hypercolor_core::input::{
+    InputData, InputManager, InputSource, SourceIssue, SourceKind, SourceState, SourceStatusHandle,
+    SourceStatusReporter,
 };
 use hypercolor_types::canvas::{linear_to_output_u8, srgb_to_linear};
 use hypercolor_types::device::{
@@ -43,6 +48,344 @@ fn expected_led_color(color: [u8; 3]) -> [u8; 3] {
         linear_to_output_u8(compensated[1]),
         linear_to_output_u8(compensated[2]),
     ]
+}
+
+// ── Input-source lifecycle fault injection ────────────────────────────────
+
+#[derive(Clone, Copy)]
+enum InputWorkerFault {
+    Stable,
+    LateReady,
+    ExitAfterReady,
+    PanicAfterReady,
+    FailStart,
+}
+
+#[derive(Default)]
+struct InputLifecycleProbe {
+    starts: AtomicUsize,
+    stops: AtomicUsize,
+    accepted_publications: AtomicUsize,
+    exit_now: AtomicBool,
+}
+
+struct FaultWorker {
+    stop_tx: mpsc::Sender<()>,
+    exit_rx: mpsc::Receiver<()>,
+    join_handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl FaultWorker {
+    fn stop(&mut self) {
+        let Some(join_handle) = self.join_handle.as_ref() else {
+            return;
+        };
+        let _ = self.stop_tx.send(());
+        let _ = self.exit_rx.recv_timeout(Duration::from_millis(200));
+        if join_handle.is_finished() {
+            let join_handle = self
+                .join_handle
+                .take()
+                .expect("finished fault worker remains owned");
+            let _ = join_handle.join();
+        }
+    }
+
+    fn observe_exit(&mut self) -> Option<String> {
+        let join_handle = self.join_handle.as_ref()?;
+        if !join_handle.is_finished() {
+            return None;
+        }
+        let join_handle = self
+            .join_handle
+            .take()
+            .expect("finished fault worker remains owned");
+        Some(join_handle.join().map_or_else(
+            |panic| format!("fault worker panicked: {panic:?}"),
+            |()| "fault worker exited".to_owned(),
+        ))
+    }
+}
+
+impl Drop for FaultWorker {
+    fn drop(&mut self) {
+        self.stop();
+        if let Some(join_handle) = self.join_handle.take() {
+            let _ = std::thread::Builder::new()
+                .name("hypercolor-test-input-reaper".to_owned())
+                .spawn(move || {
+                    let _ = join_handle.join();
+                });
+        }
+    }
+}
+
+struct FaultInputSource {
+    name: &'static str,
+    fault: InputWorkerFault,
+    running: bool,
+    worker: Option<FaultWorker>,
+    probe: Arc<InputLifecycleProbe>,
+    status: SourceStatusReporter,
+}
+
+impl FaultInputSource {
+    fn new(name: &'static str, fault: InputWorkerFault, probe: Arc<InputLifecycleProbe>) -> Self {
+        Self {
+            name,
+            fault,
+            running: false,
+            worker: None,
+            probe,
+            status: SourceStatusReporter::new(
+                name,
+                SourceKind::Interaction,
+                "fault_injection",
+                true,
+                true,
+                true,
+            ),
+        }
+    }
+
+    fn spawn_worker(&mut self) -> Result<()> {
+        let session = self
+            .status
+            .session()
+            .expect("fault source has an active manager-bound session");
+        let probe = Arc::clone(&self.probe);
+        let fault = self.fault;
+        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        let (stop_tx, stop_rx) = mpsc::channel();
+        let (exit_tx, exit_rx) = mpsc::sync_channel(1);
+        let join_handle = std::thread::Builder::new()
+            .name(format!("hypercolor-test-{name}", name = self.name))
+            .spawn(move || {
+                if matches!(fault, InputWorkerFault::LateReady) {
+                    std::thread::sleep(Duration::from_millis(40));
+                }
+                if session.mark_event_driven_live_without_deadline(1) {
+                    probe.accepted_publications.fetch_add(1, Ordering::SeqCst);
+                }
+                let _ = ready_tx.send(());
+
+                match fault {
+                    InputWorkerFault::Stable | InputWorkerFault::LateReady => {
+                        while stop_rx.recv_timeout(Duration::from_millis(5)).is_err() {}
+                    }
+                    InputWorkerFault::ExitAfterReady | InputWorkerFault::PanicAfterReady => {
+                        while !probe.exit_now.load(Ordering::SeqCst) {
+                            if stop_rx.recv_timeout(Duration::from_millis(5)).is_ok() {
+                                let _ = exit_tx.send(());
+                                return;
+                            }
+                        }
+                        if matches!(fault, InputWorkerFault::PanicAfterReady) {
+                            panic!("injected worker panic");
+                        }
+                    }
+                    InputWorkerFault::FailStart => {}
+                }
+                let _ = exit_tx.send(());
+            })?;
+        self.worker = Some(FaultWorker {
+            stop_tx,
+            exit_rx,
+            join_handle: Some(join_handle),
+        });
+
+        let ready_timeout = if matches!(self.fault, InputWorkerFault::LateReady) {
+            Duration::from_millis(5)
+        } else {
+            Duration::from_millis(100)
+        };
+        if ready_rx.recv_timeout(ready_timeout).is_err() {
+            self.status.stop();
+            if let Some(worker) = self.worker.as_mut() {
+                worker.stop();
+            }
+            self.worker = None;
+            bail!("fault worker readiness timed out");
+        }
+        Ok(())
+    }
+}
+
+impl InputSource for FaultInputSource {
+    fn name(&self) -> &str {
+        self.name
+    }
+
+    fn start(&mut self) -> Result<()> {
+        if self.running {
+            return Ok(());
+        }
+        self.probe.starts.fetch_add(1, Ordering::SeqCst);
+        self.status.begin_session()?;
+        if matches!(self.fault, InputWorkerFault::FailStart) {
+            self.running = true;
+            bail!("injected start failure after entering starting");
+        }
+        if let Err(error) = self.spawn_worker() {
+            self.running = false;
+            return Err(error);
+        }
+        self.running = true;
+        Ok(())
+    }
+
+    fn stop(&mut self) {
+        self.status.stop();
+        if !self.running && self.worker.is_none() {
+            return;
+        }
+        self.probe.stops.fetch_add(1, Ordering::SeqCst);
+        if let Some(worker) = self.worker.as_mut() {
+            worker.stop();
+        }
+        self.worker = None;
+        self.running = false;
+    }
+
+    fn sample(&mut self) -> Result<InputData> {
+        let failure = self.worker.as_mut().and_then(FaultWorker::observe_exit);
+        if let Some(failure) = failure {
+            self.worker = None;
+            if let Some(status) = self.status.session() {
+                status.failed(SourceIssue::new("fault_worker_exited", failure, true));
+            }
+            return Ok(InputData::None);
+        }
+        Ok(InputData::None)
+    }
+
+    fn is_running(&self) -> bool {
+        self.running
+    }
+
+    fn source_status_handle(&self) -> Option<SourceStatusHandle> {
+        Some(self.status.handle())
+    }
+
+    fn source_status_reporter(&mut self) -> Option<&mut SourceStatusReporter> {
+        Some(&mut self.status)
+    }
+}
+
+fn wait_for_worker_exit(probe: &InputLifecycleProbe) {
+    probe.exit_now.store(true, Ordering::SeqCst);
+    std::thread::sleep(Duration::from_millis(25));
+}
+
+#[test]
+fn readiness_timeout_self_rolls_back_and_late_ready_is_fenced() {
+    let probe = Arc::new(InputLifecycleProbe::default());
+    let source = FaultInputSource::new(
+        "late_ready",
+        InputWorkerFault::LateReady,
+        Arc::clone(&probe),
+    );
+    let status = source.status.handle();
+    let mut manager = InputManager::new();
+    manager.add_source(Box::new(source));
+
+    assert!(manager.start_all().is_err());
+    assert_eq!(probe.stops.load(Ordering::SeqCst), 0);
+    assert_eq!(probe.accepted_publications.load(Ordering::SeqCst), 0);
+    assert_eq!(status.snapshot().state, SourceState::Stopped);
+}
+
+#[test]
+fn worker_exit_and_panic_transition_status_before_sampling_data() {
+    for fault in [
+        InputWorkerFault::ExitAfterReady,
+        InputWorkerFault::PanicAfterReady,
+    ] {
+        let probe = Arc::new(InputLifecycleProbe::default());
+        let source = FaultInputSource::new("post_ready_exit", fault, Arc::clone(&probe));
+        let status = source.status.handle();
+        let mut manager = InputManager::new();
+        manager.add_source(Box::new(source));
+        manager.start_all().expect("fault worker reaches readiness");
+
+        wait_for_worker_exit(&probe);
+        manager.sample_sources(0.0);
+        assert_eq!(status.snapshot().state, SourceState::Failed);
+        assert!(
+            manager.input_graph_handle().snapshot().slots()[0]
+                .latest()
+                .is_none()
+        );
+        manager.stop_all();
+    }
+}
+
+#[test]
+fn partial_graph_startup_stops_every_source_that_entered_starting() {
+    let first = Arc::new(InputLifecycleProbe::default());
+    let failing = Arc::new(InputLifecycleProbe::default());
+    let mut manager = InputManager::new();
+    manager.add_source(Box::new(FaultInputSource::new(
+        "first",
+        InputWorkerFault::Stable,
+        Arc::clone(&first),
+    )));
+    manager.add_source(Box::new(FaultInputSource::new(
+        "failing",
+        InputWorkerFault::FailStart,
+        Arc::clone(&failing),
+    )));
+
+    assert!(manager.start_all().is_err());
+    assert_eq!(first.stops.load(Ordering::SeqCst), 1);
+    assert_eq!(failing.stops.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn repeated_stop_is_idempotent_for_worker_ownership() {
+    let probe = Arc::new(InputLifecycleProbe::default());
+    let mut manager = InputManager::new();
+    manager.add_source(Box::new(FaultInputSource::new(
+        "repeat_stop",
+        InputWorkerFault::Stable,
+        Arc::clone(&probe),
+    )));
+    manager.start_all().expect("fault worker starts");
+
+    manager.stop_all();
+    manager.stop_all();
+    assert_eq!(probe.stops.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn replacement_stops_worker_and_fences_every_late_publication() {
+    let probe = Arc::new(InputLifecycleProbe::default());
+    let source = FaultInputSource::new("replaced", InputWorkerFault::Stable, Arc::clone(&probe));
+    let status = source.status.handle();
+    let mut manager = InputManager::new();
+    manager.add_source(Box::new(source));
+    manager.start_all().expect("source starts");
+    let accepted_before = probe.accepted_publications.load(Ordering::SeqCst);
+
+    let Ok(retired) = manager.replace_source(
+        0,
+        Box::new(FaultInputSource::new(
+            "replacement",
+            InputWorkerFault::Stable,
+            Arc::new(InputLifecycleProbe::default()),
+        )),
+    ) else {
+        panic!("registered source is replaced");
+    };
+    std::thread::sleep(Duration::from_millis(20));
+
+    assert!(status.snapshot().retired);
+    assert_eq!(probe.stops.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        probe.accepted_publications.load(Ordering::SeqCst),
+        accepted_before
+    );
+    drop(retired);
 }
 
 #[allow(clippy::similar_names)]

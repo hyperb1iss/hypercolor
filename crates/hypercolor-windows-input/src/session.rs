@@ -7,12 +7,9 @@
 //!
 //! The bounded join is where the interesting hazard lives. If the pump is
 //! wedged — blocked in a driver call, or folding behind a render thread that
-//! itself wedged — a bounded join has to give up and detach it, and a detached
-//! thread could later wake and mutate core state belonging to a *restarted*
-//! session. Capture toggles with effect demand, so restart is routine, not
-//! exotic. Two guards close that: core rejects batches whose epoch it no
-//! longer owns, and the registration claim in [`crate::claim`] stops the stale
-//! worker from deregistering its replacement.
+//! itself wedged — stop must return without discarding the join handle. A live
+//! session retains the handle for a later stop probe; dropping the session
+//! transfers it to a join reaper that observes eventual termination.
 
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -130,6 +127,7 @@ impl RawInputSession {
             }
             Err(_) => {
                 stop.store(true, Ordering::Release);
+                retain_worker_until_exit(worker, "readiness timeout");
                 Err(RawInputError::WorkerReadyTimeout)
             }
         }
@@ -147,6 +145,15 @@ impl RawInputSession {
     /// unavailable rather than silently flatlining.
     #[must_use]
     pub fn worker_state(&self) -> WorkerState {
+        if self
+            .worker
+            .as_ref()
+            .is_some_and(std::thread::JoinHandle::is_finished)
+            && let Ok(mut state) = self.state.lock()
+            && matches!(*state, WorkerState::Running)
+        {
+            *state = WorkerState::Failed("raw input pump exited unexpectedly".to_owned());
+        }
         self.state
             .lock()
             .map(|guard| guard.clone())
@@ -157,25 +164,28 @@ impl RawInputSession {
     ///
     /// Sets the flag *and* posts the nudge so the common path tears down
     /// immediately rather than waiting out the wake budget. If the pump does
-    /// not finish inside the join timeout it is detached rather than waited on
-    /// forever; the epoch and the registration claim make that safe.
+    /// not finish inside the join timeout, the session retains its handle so a
+    /// later stop or drop still observes termination.
     pub fn stop(&mut self) {
-        // Taken before nudging: a second `stop()`, or `Drop` after an explicit
-        // one, must not post to a window the worker already destroyed.
-        let Some(worker) = self.worker.take() else {
+        self.stop_with_timeout(JOIN_TIMEOUT);
+    }
+
+    fn stop_with_timeout(&mut self, timeout: Duration) {
+        if self.worker.is_none() {
             return;
-        };
+        }
         self.stop.store(true, Ordering::Release);
         self.nudge();
 
-        match self.finished.recv_timeout(JOIN_TIMEOUT) {
-            Ok(()) => {
-                let _ = worker.join();
+        match self.finished.recv_timeout(timeout) {
+            Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                if let Some(worker) = self.worker.take() {
+                    let _ = worker.join();
+                }
             }
-            Err(_) => {
+            Err(mpsc::RecvTimeoutError::Timeout) => {
                 tracing::warn!(
-                    "raw input pump did not stop within the join timeout; detaching it. \
-                     Its batches are epoch-rejected and it cannot deregister a replacement."
+                    "raw input pump did not stop within the join timeout; retaining its join handle"
                 );
                 if let Ok(mut guard) = self.state.lock() {
                     *guard =
@@ -183,6 +193,59 @@ impl RawInputSession {
                 }
             }
         }
+    }
+
+    /// Construct a deterministic stalled worker for lifecycle contract tests.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn test_stalled_worker(exit_after: Duration) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let window = Arc::new(Mutex::new(0));
+        let device_count = Arc::new(AtomicUsize::new(0));
+        let state = Arc::new(Mutex::new(WorkerState::Running));
+        let (finished_tx, finished) = mpsc::sync_channel(1);
+        let worker = thread::spawn(move || {
+            thread::sleep(exit_after);
+            let _ = finished_tx.send(());
+        });
+        Self {
+            stop,
+            window,
+            device_count,
+            state,
+            finished,
+            worker: Some(worker),
+        }
+    }
+
+    /// Run the production bounded-stop path with a deterministic test timeout.
+    #[doc(hidden)]
+    pub fn test_stop_with_timeout(&mut self, timeout: Duration) {
+        self.stop_with_timeout(timeout);
+    }
+
+    /// Whether bounded stop still owns a worker whose exit is not observed.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn test_retains_worker(&self) -> bool {
+        self.worker.is_some()
+    }
+
+    /// Exercise the readiness-timeout reaper without relying on OS timing.
+    #[doc(hidden)]
+    pub fn test_readiness_timeout_reaper(worker_delay: Duration, ready_timeout: Duration) -> bool {
+        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        let worker = thread::spawn(move || {
+            thread::sleep(worker_delay);
+            let _ = ready_tx.send(());
+        });
+        if ready_rx.recv_timeout(ready_timeout).is_ok() {
+            let _ = worker.join();
+            return false;
+        }
+        retain_worker_until_exit(worker, "test readiness timeout")
+            .recv_timeout(worker_delay + worker_delay)
+            .is_ok()
     }
 
     /// Wake the pump out of its wait so it observes the stop flag now.
@@ -207,7 +270,26 @@ impl RawInputSession {
 impl Drop for RawInputSession {
     fn drop(&mut self) {
         self.stop();
+        if let Some(worker) = self.worker.take() {
+            retain_worker_until_exit(worker, "session drop after stop timeout");
+        }
     }
+}
+
+fn retain_worker_until_exit(worker: JoinHandle<()>, reason: &'static str) -> mpsc::Receiver<()> {
+    let (observed_tx, observed_rx) = mpsc::sync_channel(1);
+    if let Err(error) = thread::Builder::new()
+        .name("hypercolor-raw-input-reaper".to_owned())
+        .spawn(move || {
+            if let Err(panic) = worker.join() {
+                tracing::warn!(?panic, reason, "raw input pump reaper observed a panic");
+            }
+            let _ = observed_tx.send(());
+        })
+    {
+        tracing::error!(%error, reason, "failed to start raw input pump join reaper");
+    }
+    observed_rx
 }
 
 /// The worker body: create the pump, report readiness, then loop.

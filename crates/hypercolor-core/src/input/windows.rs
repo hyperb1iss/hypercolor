@@ -429,11 +429,11 @@ impl InputSource for WindowsHostInput {
         if self.running {
             return Ok(());
         }
-        self.running = true;
         if self.capture_active {
             self.status.begin_session()?;
             self.start_session();
         }
+        self.running = true;
         Ok(())
     }
 
@@ -541,6 +541,9 @@ impl InputSource for WindowsHostInput {
     }
 
     fn drain_events(&mut self) -> Vec<TimedInputEvent> {
+        if self.publish_worker_failure_once() {
+            return Vec::new();
+        }
         if let Ok(mut guard) = self.shared.lock() {
             return std::mem::take(&mut guard.events);
         }

@@ -10,7 +10,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -29,6 +28,7 @@ use crate::types::event::{InputButtonState, InputEvent, TimedInputEvent};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(8);
 const READY_TIMEOUT: Duration = Duration::from_secs(1);
+const STOP_TIMEOUT: Duration = Duration::from_secs(1);
 const DEFAULT_EVENT_LIMIT: usize = 256;
 /// Rescan cadence in poll ticks (≈2 s at the 8 ms poll interval).
 const RESCAN_TICKS: u32 = 250;
@@ -134,9 +134,14 @@ pub struct EvdevHostInput {
     generation: u64,
     last_state_key: Option<HeldStateKey>,
     shared: Arc<Mutex<SharedState>>,
-    stop_flag: Arc<AtomicBool>,
-    worker: Option<JoinHandle<()>>,
+    worker: Option<EvdevWorker>,
     status: SourceStatusReporter,
+}
+
+struct EvdevWorker {
+    stop_tx: mpsc::Sender<()>,
+    exit_rx: mpsc::Receiver<()>,
+    join_handle: JoinHandle<()>,
 }
 
 impl EvdevHostInput {
@@ -153,7 +158,6 @@ impl EvdevHostInput {
             generation: 0,
             last_state_key: None,
             shared: Arc::new(Mutex::new(SharedState::default())),
-            stop_flag: Arc::new(AtomicBool::new(false)),
             worker: None,
             status: SourceStatusReporter::new(
                 "evdev_host_input",
@@ -218,9 +222,21 @@ impl EvdevHostInput {
     }
 
     fn stop_worker(&mut self) {
-        self.stop_flag.store(true, Ordering::Release);
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
+        if let Some(worker) = &self.worker {
+            let _ = worker.stop_tx.send(());
+            let _ = worker.exit_rx.recv_timeout(STOP_TIMEOUT);
+        }
+        if self
+            .worker
+            .as_ref()
+            .is_some_and(|worker| worker.join_handle.is_finished())
+        {
+            let worker = self.worker.take().expect("finished worker remains owned");
+            if let Err(panic) = worker.join_handle.join() {
+                warn!(source = %self.name, message = ?panic, "Evdev input worker panicked");
+            }
+        } else if self.worker.is_some() {
+            warn!(source = %self.name, "Evdev input worker did not stop before the deadline");
         }
         if let Ok(mut guard) = self.shared.lock() {
             guard.clear_live_state();
@@ -229,21 +245,22 @@ impl EvdevHostInput {
     }
 
     fn spawn_worker(&mut self) -> anyhow::Result<()> {
+        self.observe_worker_exit(false);
         if self.worker.is_some() {
-            return Ok(());
+            anyhow::bail!("previous evdev host input worker is still stopping");
         }
 
-        self.stop_flag.store(false, Ordering::Release);
         let shared = Arc::clone(&self.shared);
-        let stop_flag = Arc::clone(&self.stop_flag);
         let event_limit = self.event_limit;
         let source_name = self.name.clone();
         let capture_keyboard = self.capture_keyboard;
         let capture_pointer = self.capture_pointer;
         let status = self.status.session();
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        let (stop_tx, stop_rx) = mpsc::channel();
+        let (exit_tx, exit_rx) = mpsc::sync_channel(1);
 
-        let worker = thread::Builder::new()
+        let join_handle = thread::Builder::new()
             .name("hypercolor-evdev-input".to_owned())
             .spawn(move || {
                 let mut devices: BTreeMap<PathBuf, OpenDevice> = BTreeMap::new();
@@ -261,7 +278,7 @@ impl EvdevHostInput {
                 let _ = ready_tx.send(());
 
                 let mut ticks_since_rescan: u32 = 0;
-                while !stop_flag.load(Ordering::Acquire) {
+                loop {
                     ticks_since_rescan += 1;
                     if ticks_since_rescan >= RESCAN_TICKS {
                         ticks_since_rescan = 0;
@@ -279,17 +296,75 @@ impl EvdevHostInput {
                     }
 
                     poll_devices(&mut devices, &shared, event_limit, &source_name);
-                    thread::sleep(POLL_INTERVAL);
+                    match stop_rx.recv_timeout(POLL_INTERVAL) {
+                        Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                        Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    }
                 }
+                let _ = exit_tx.send(());
             })
             .context("failed to spawn evdev host input worker")?;
 
-        ready_rx
-            .recv_timeout(READY_TIMEOUT)
-            .context("timed out waiting for evdev host input worker readiness")?;
-
-        self.worker = Some(worker);
+        self.worker = Some(EvdevWorker {
+            stop_tx,
+            exit_rx,
+            join_handle,
+        });
+        if let Err(error) = ready_rx.recv_timeout(READY_TIMEOUT) {
+            self.stop_worker();
+            anyhow::bail!("timed out waiting for evdev host input worker readiness: {error}");
+        }
+        if self.observe_worker_exit(true) {
+            anyhow::bail!("evdev host input worker exited during startup");
+        }
         Ok(())
+    }
+
+    fn observe_worker_exit(&mut self, publish_failure: bool) -> bool {
+        let Some(worker) = self.worker.as_ref() else {
+            return false;
+        };
+        if !worker.join_handle.is_finished() {
+            return false;
+        }
+        let worker = self.worker.take().expect("finished worker remains owned");
+        let failure = worker.join_handle.join().err();
+        if publish_failure && let Some(status) = self.status.session() {
+            let detail = failure.map_or_else(
+                || "evdev host input worker exited unexpectedly".to_owned(),
+                |panic| format!("evdev host input worker panicked: {panic:?}"),
+            );
+            status.failed(SourceIssue::new("evdev_worker_exited", detail, true));
+        }
+        if let Ok(mut guard) = self.shared.lock() {
+            guard.clear_live_state();
+        }
+        self.last_state_key = None;
+        true
+    }
+}
+
+impl Drop for EvdevHostInput {
+    fn drop(&mut self) {
+        let Some(worker) = self.worker.take() else {
+            return;
+        };
+        let _ = worker.stop_tx.send(());
+        let source = self.name.clone();
+        if worker.join_handle.is_finished() {
+            let _ = worker.join_handle.join();
+            return;
+        }
+        if let Err(error) = thread::Builder::new()
+            .name("hypercolor-evdev-reaper".to_owned())
+            .spawn(move || {
+                if let Err(panic) = worker.join_handle.join() {
+                    warn!(source = %source, message = ?panic, "Evdev input reaper observed a panic");
+                }
+            })
+        {
+            warn!(source = %self.name, %error, "Failed to start evdev join reaper");
+        }
     }
 }
 
@@ -303,11 +378,15 @@ impl InputSource for EvdevHostInput {
             return Ok(());
         }
 
-        self.running = true;
         if self.capture_active {
             self.status.begin_session()?;
-            self.spawn_worker()?;
+            if let Err(error) = self.spawn_worker() {
+                self.status.stop();
+                self.stop_worker();
+                return Err(error);
+            }
         }
+        self.running = true;
         Ok(())
     }
 
@@ -318,6 +397,7 @@ impl InputSource for EvdevHostInput {
     }
 
     fn sample(&mut self) -> anyhow::Result<InputData> {
+        self.observe_worker_exit(self.running && self.capture_active);
         if !self.running || self.worker.is_none() {
             return Ok(InputData::None);
         }
@@ -334,6 +414,7 @@ impl InputSource for EvdevHostInput {
         &mut self,
         _delta_secs: f32,
     ) -> (anyhow::Result<InputData>, Vec<TimedInputEvent>) {
+        self.observe_worker_exit(self.running && self.capture_active);
         if !self.running || self.worker.is_none() {
             return (Ok(InputData::None), Vec::new());
         }
@@ -394,22 +475,29 @@ impl InputSource for EvdevHostInput {
     }
 
     fn set_interaction_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
+        let previous = self.capture_active;
         self.status.set_policy(true, true, active)?;
-        if self.capture_active == active {
+        if previous == active {
             return Ok(());
         }
-
-        self.capture_active = active;
         if !self.running {
+            self.capture_active = active;
             return Ok(());
         }
 
         if active {
             self.status.begin_session()?;
-            self.spawn_worker()?;
+            if let Err(error) = self.spawn_worker() {
+                self.status.stop();
+                self.status.set_policy(true, true, previous)?;
+                self.stop_worker();
+                return Err(error);
+            }
         } else {
+            self.status.stop();
             self.stop_worker();
         }
+        self.capture_active = active;
         Ok(())
     }
 

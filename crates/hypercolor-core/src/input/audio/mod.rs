@@ -23,6 +23,8 @@ pub mod fft;
 pub mod linux;
 
 #[cfg(target_os = "linux")]
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(target_os = "linux")]
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 #[cfg(target_os = "linux")]
@@ -402,6 +404,25 @@ impl AudioInput {
             return Ok(InputData::Audio(AudioData::silence()));
         }
 
+        if let Some(reason) = self
+            .capture
+            .as_mut()
+            .and_then(CaptureHandle::observe_worker_exit)
+        {
+            self.capture = None;
+            self.clear_latest_snapshot();
+            self.last_status_snapshot = None;
+            self.degraded_to_silence = true;
+            if let Some(status) = self.status.session() {
+                status.failed(SourceIssue::new(
+                    "audio_capture_worker_exited",
+                    reason,
+                    true,
+                ));
+            }
+            return Ok(InputData::Audio(AudioData::silence()));
+        }
+
         if let Some(snapshot) = self.latest_snapshot.load_full() {
             if self
                 .last_status_snapshot
@@ -470,8 +491,8 @@ impl AudioInput {
 
     fn pause_capture_stream(&mut self) {
         match self.capture.as_mut() {
-            Some(CaptureHandle::Cpal(stream)) => {
-                if let Err(error) = stream.pause() {
+            Some(CaptureHandle::Cpal(capture)) => {
+                if let Err(error) = capture.stream.pause() {
                     tracing::warn!(
                         input = %self.name,
                         source = ?self.config.source,
@@ -540,8 +561,9 @@ impl AudioInput {
 
         if let Some(capture) = &self.capture {
             match capture {
-                CaptureHandle::Cpal(stream) => {
-                    stream
+                CaptureHandle::Cpal(capture) => {
+                    capture
+                        .stream
                         .play()
                         .context("failed to resume audio capture stream")?;
                     self.degraded_to_silence = false;
@@ -596,27 +618,36 @@ impl AudioInput {
     }
 
     fn set_capture_active_state(&mut self, active: bool) -> anyhow::Result<()> {
+        let previous = self.capture_active;
         self.status.set_policy(
             !matches!(self.config.source, AudioSourceType::None),
             true,
             active,
         )?;
-        if self.capture_active == active {
+        if previous == active {
             if active && self.running && self.capture.is_none() {
                 self.start_capture_stream()?;
             }
             return Ok(());
         }
 
-        self.capture_active = active;
-
         if !self.running {
+            self.capture_active = active;
             return Ok(());
         }
 
         if active {
             let status = self.status.begin_session()?;
-            self.start_capture_stream()?;
+            if let Err(error) = self.start_capture_stream() {
+                self.status.stop();
+                self.status.set_policy(
+                    !matches!(self.config.source, AudioSourceType::None),
+                    true,
+                    previous,
+                )?;
+                self.drop_capture_stream("capture activation rolled back");
+                return Err(error);
+            }
             if self.degraded_to_silence
                 && let Some(status) = status
             {
@@ -626,9 +657,11 @@ impl AudioInput {
                     true,
                 ));
             }
+            self.capture_active = true;
             Ok(())
         } else {
             self.pause_capture_stream();
+            self.capture_active = false;
             Ok(())
         }
     }
@@ -712,9 +745,10 @@ impl AudioInput {
                 .copied()
                 .unwrap_or_else(|| classify_audio_capture_backend(&config.source, None));
             if effective_capture_active
-                && let Some(CaptureHandle::Cpal(stream)) = self.capture.as_ref()
+                && let Some(CaptureHandle::Cpal(capture)) = self.capture.as_ref()
             {
-                stream
+                capture
+                    .stream
                     .play()
                     .context("failed to resume audio capture stream")?;
             }
@@ -797,12 +831,12 @@ impl InputSource for AudioInput {
             return Ok(());
         }
 
-        self.running = true;
         self.degraded_to_silence = false;
         self.capture = None;
         self.last_status_snapshot = None;
 
         if matches!(self.config.source, AudioSourceType::None) {
+            self.running = true;
             return Ok(());
         }
 
@@ -812,11 +846,17 @@ impl InputSource for AudioInput {
                 source = ?self.config.source,
                 "Audio input armed but idle until an audio-reactive effect requests capture"
             );
+            self.running = true;
             return Ok(());
         }
 
         let status = self.status.begin_session()?;
-        self.start_capture_stream()?;
+        if let Err(error) = self.start_capture_stream() {
+            self.status.stop();
+            self.drop_capture_stream("startup rolled back");
+            self.clear_latest_snapshot();
+            return Err(error);
+        }
         if self.degraded_to_silence
             && let Some(status) = status
         {
@@ -826,6 +866,7 @@ impl InputSource for AudioInput {
                 true,
             ));
         }
+        self.running = true;
         Ok(())
     }
 
@@ -996,6 +1037,7 @@ fn build_capture_stream(
                 sample_format => Err(anyhow!("unsupported audio sample format: {sample_format}")),
             }?;
             stream
+                .stream
                 .play()
                 .context("failed to start audio capture stream")?;
 
@@ -1212,23 +1254,81 @@ fn find_linux_pulse_capture_device(source_name: &str) -> SelectedInputDevice {
 #[cfg(target_os = "linux")]
 struct LinuxPulseCapture {
     stop_tx: mpsc::Sender<()>,
+    exit_rx: mpsc::Receiver<()>,
     worker: Option<thread::JoinHandle<()>>,
+    publish_enabled: Arc<AtomicBool>,
+}
+
+#[cfg(target_os = "linux")]
+impl LinuxPulseCapture {
+    fn stop(&mut self) -> bool {
+        self.publish_enabled.store(false, Ordering::Release);
+        let Some(worker) = self.worker.as_ref() else {
+            return true;
+        };
+        let _ = self.stop_tx.send(());
+        let _ = self.exit_rx.recv_timeout(Duration::from_secs(1));
+        if !worker.is_finished() {
+            tracing::warn!(
+                "PulseAudio capture worker did not stop before the deadline; retaining its join handle"
+            );
+            return false;
+        }
+        let worker = self
+            .worker
+            .take()
+            .expect("finished PulseAudio worker remains owned");
+        let _ = worker.join();
+        true
+    }
+
+    fn observe_exit(&mut self) -> Option<String> {
+        let worker = self.worker.as_ref()?;
+        if !worker.is_finished() {
+            return None;
+        }
+        let worker = self
+            .worker
+            .take()
+            .expect("finished PulseAudio worker remains owned");
+        Some(worker.join().map_or_else(
+            |panic| format!("PulseAudio capture worker panicked: {panic:?}"),
+            |()| "PulseAudio capture worker exited unexpectedly".to_owned(),
+        ))
+    }
 }
 
 #[cfg(target_os = "linux")]
 impl Drop for LinuxPulseCapture {
     fn drop(&mut self) {
-        let _ = self.stop_tx.send(());
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
+        if self.stop() {
+            return;
+        }
+        let Some(worker) = self.worker.take() else {
+            return;
+        };
+        if let Err(error) = thread::Builder::new()
+            .name("hypercolor-pulse-reaper".to_owned())
+            .spawn(move || {
+                if let Err(panic) = worker.join() {
+                    tracing::warn!(?panic, "PulseAudio worker reaper observed a panic");
+                }
+            })
+        {
+            tracing::error!(%error, "failed to start PulseAudio worker join reaper");
         }
     }
 }
 
 enum CaptureHandle {
-    Cpal(Stream),
+    Cpal(CpalCapture),
     #[cfg(target_os = "linux")]
     LinuxPulse(LinuxPulseCapture),
+}
+
+struct CpalCapture {
+    stream: Stream,
+    failure: Arc<Mutex<Option<String>>>,
 }
 
 impl CaptureHandle {
@@ -1237,6 +1337,18 @@ impl CaptureHandle {
             Self::Cpal(_) => AudioCaptureBackend::Cpal,
             #[cfg(target_os = "linux")]
             Self::LinuxPulse(_) => AudioCaptureBackend::PulseAudio,
+        }
+    }
+
+    fn observe_worker_exit(&mut self) -> Option<String> {
+        match self {
+            Self::Cpal(capture) => capture
+                .failure
+                .lock()
+                .ok()
+                .and_then(|mut failure| failure.take()),
+            #[cfg(target_os = "linux")]
+            Self::LinuxPulse(capture) => capture.observe_exit(),
         }
     }
 }
@@ -1258,6 +1370,9 @@ fn build_linux_pulse_capture_stream(
 
     let (ready_tx, ready_rx) = mpsc::sync_channel(1);
     let (stop_tx, stop_rx) = mpsc::channel();
+    let (exit_tx, exit_rx) = mpsc::sync_channel(1);
+    let publish_enabled = Arc::new(AtomicBool::new(true));
+    let worker_publish_enabled = Arc::clone(&publish_enabled);
     let worker_source = source_name.to_owned();
     let worker_display = display_name.to_owned();
     let worker = thread::Builder::new()
@@ -1272,7 +1387,9 @@ fn build_linux_pulse_capture_stream(
                 stop_rx,
                 PULSE_CAPTURE_CHANNELS,
                 PULSE_CAPTURE_RATE_HZ,
+                worker_publish_enabled,
             );
+            let _ = exit_tx.send(());
         })
         .context("failed to spawn Linux PulseAudio capture worker")?;
 
@@ -1288,18 +1405,31 @@ fn build_linux_pulse_capture_stream(
             );
             Ok(CaptureHandle::LinuxPulse(LinuxPulseCapture {
                 stop_tx,
+                exit_rx,
                 worker: Some(worker),
+                publish_enabled,
             }))
         }
         Ok(Err(error)) => {
-            let _ = worker.join();
+            let mut capture = LinuxPulseCapture {
+                stop_tx,
+                exit_rx,
+                worker: Some(worker),
+                publish_enabled,
+            };
+            capture.stop();
             Err(anyhow!(
                 "failed to start Linux PulseAudio capture worker: {error}"
             ))
         }
         Err(error) => {
-            let _ = stop_tx.send(());
-            let _ = worker.join();
+            let mut capture = LinuxPulseCapture {
+                stop_tx,
+                exit_rx,
+                worker: Some(worker),
+                publish_enabled,
+            };
+            capture.stop();
             Err(anyhow!(
                 "timed out waiting for Linux PulseAudio capture worker to start: {error}"
             ))
@@ -1323,6 +1453,7 @@ fn run_linux_pulse_capture(
     stop_rx: mpsc::Receiver<()>,
     channels: usize,
     sample_rate_hz: u32,
+    publish_enabled: Arc<AtomicBool>,
 ) {
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -1382,12 +1513,14 @@ fn run_linux_pulse_capture(
                 match guard.peek() {
                     Ok(pulse::stream::PeekResult::Data(bytes)) => {
                         let samples = bytes_to_f32_samples(bytes);
-                        push_input_samples(
-                            &samples,
-                            channels,
-                            &callback_analyzer,
-                            &callback_snapshot,
-                        );
+                        if publish_enabled.load(Ordering::Acquire) {
+                            push_input_samples(
+                                &samples,
+                                channels,
+                                &callback_analyzer,
+                                &callback_snapshot,
+                            );
+                        }
                         if let Err(error) = guard.discard() {
                             tracing::warn!(
                                 source = %callback_source,
@@ -1492,7 +1625,10 @@ fn run_linux_pulse_capture(
             _ => {}
         }
 
-        thread::sleep(Duration::from_millis(5));
+        match stop_rx.recv_timeout(Duration::from_millis(5)) {
+            Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
     }
 
     let _ = stream.borrow_mut().disconnect();
@@ -1562,7 +1698,12 @@ fn wait_for_pulse_context(
             }
         }
 
-        thread::sleep(Duration::from_millis(5));
+        match stop_rx.recv_timeout(Duration::from_millis(5)) {
+            Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(format!("PulseAudio capture stopped {phase}"));
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
     }
 }
 
@@ -1603,7 +1744,14 @@ fn wait_for_pulse_stream(
             }
         }
 
-        thread::sleep(Duration::from_millis(5));
+        match stop_rx.recv_timeout(Duration::from_millis(5)) {
+            Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(
+                    "PulseAudio capture stopped before record stream became ready".to_owned(),
+                );
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
     }
 }
 
@@ -1627,17 +1775,22 @@ fn build_stream<T>(
     analyzer: Arc<Mutex<AudioAnalyzer>>,
     latest_snapshot: Arc<ArcSwapOption<CapturedAudioSnapshot>>,
     device_name: &str,
-) -> anyhow::Result<Stream>
+) -> anyhow::Result<CpalCapture>
 where
     T: Sample + SizedSample + Send + 'static,
     f32: FromSample<T>,
 {
     let err_name = device_name.to_owned();
-    device
+    let failure = Arc::new(Mutex::new(None));
+    let callback_failure = Arc::clone(&failure);
+    let stream = device
         .build_input_stream(
             config,
             move |data: &[T], _| push_input_samples(data, channels, &analyzer, &latest_snapshot),
             move |error| {
+                if let Ok(mut failure) = callback_failure.lock() {
+                    *failure = Some(error.to_string());
+                }
                 tracing::warn!(
                     device = %err_name,
                     %error,
@@ -1646,7 +1799,8 @@ where
             },
             None,
         )
-        .with_context(|| format!("failed to build audio capture stream for '{device_name}'"))
+        .with_context(|| format!("failed to build audio capture stream for '{device_name}'"))?;
+    Ok(CpalCapture { stream, failure })
 }
 
 fn push_input_samples<T>(

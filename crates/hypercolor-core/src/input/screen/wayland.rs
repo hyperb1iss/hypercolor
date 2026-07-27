@@ -8,9 +8,9 @@
 use std::io::Cursor;
 use std::os::fd::OwnedFd;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, anyhow};
 use ashpd::desktop::{
@@ -33,6 +33,8 @@ use crate::input::{
 
 const DEFAULT_CAPTURE_WIDTH: u32 = 1280;
 const DEFAULT_CAPTURE_HEIGHT: u32 = 720;
+const WORKER_READY_TIMEOUT: Duration = Duration::from_secs(1);
+const WORKER_STOP_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Callback invoked when the portal hands back a new restore token (or the
 /// token is cleared before a re-pick). The daemon persists it to config so
@@ -74,6 +76,7 @@ pub struct WaylandScreenCaptureInput {
     latest_snapshot: Arc<Mutex<Option<CapturedScreenSnapshot>>>,
     status_snapshot_generation: u64,
     worker: Option<WaylandCaptureWorker>,
+    retiring_workers: Vec<WaylandCaptureWorker>,
     token_sink: Option<RestoreTokenSink>,
     status: SourceStatusReporter,
     status_session: SourceSessionSlot,
@@ -94,6 +97,7 @@ impl WaylandScreenCaptureInput {
             latest_snapshot: Arc::new(Mutex::new(None)),
             status_snapshot_generation: 0,
             worker: None,
+            retiring_workers: Vec::new(),
             token_sink: None,
             status: SourceStatusReporter::new(
                 "wayland_screen_capture",
@@ -207,12 +211,12 @@ impl WaylandScreenCaptureInput {
             return Ok(());
         }
 
-        self.capture_active = active;
         if let Ok(mut latest) = self.latest_snapshot.lock() {
             *latest = None;
         }
 
         if !self.running {
+            self.capture_active = active;
             return Ok(());
         }
 
@@ -223,10 +227,12 @@ impl WaylandScreenCaptureInput {
             self.send_worker_command(WorkerCommand::SetActive(false))?;
         }
 
+        self.capture_active = active;
         Ok(())
     }
 
     fn spawn_worker(&mut self) -> anyhow::Result<()> {
+        self.reap_workers(false);
         if self.worker.is_some() {
             return Ok(());
         }
@@ -244,10 +250,13 @@ impl WaylandScreenCaptureInput {
             portal_pending: Arc::clone(&portal_pending),
         };
         let (command_tx, command_rx) = pw::channel::channel();
+        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        let (exit_tx, exit_rx) = mpsc::sync_channel(1);
         let status_session = self.status_session.clone();
         let join_handle = thread::Builder::new()
             .name("hypercolor-screen-capture".to_owned())
             .spawn(move || {
+                let _ = ready_tx.send(());
                 run_capture_worker(
                     settings,
                     latest_snapshot,
@@ -256,15 +265,24 @@ impl WaylandScreenCaptureInput {
                     worker_flags,
                     status_session,
                 );
+                let _ = exit_tx.send(());
             })
             .context("failed to spawn Wayland screen capture worker")?;
 
         self.worker = Some(WaylandCaptureWorker {
             command_tx,
-            join_handle,
+            exit_rx,
+            join_handle: Some(join_handle),
             cancel,
             portal_pending,
         });
+        if let Err(error) = ready_rx.recv_timeout(WORKER_READY_TIMEOUT) {
+            self.shutdown_worker();
+            anyhow::bail!("Wayland screen capture worker readiness timed out: {error}");
+        }
+        if self.observe_worker_exit(true) {
+            anyhow::bail!("Wayland screen capture worker exited during startup");
+        }
         Ok(())
     }
 
@@ -293,32 +311,56 @@ impl WaylandScreenCaptureInput {
         Ok(())
     }
 
-    /// Tear down the current worker without ever blocking on the portal.
-    ///
-    /// The worker's command channel only attaches to the PipeWire main loop
-    /// after the portal session opens, so a worker that is mid-picker cannot
-    /// see a Stop command — joining it would block until the user resolves
-    /// the dialog, and callers hold the input-manager lock the render thread
-    /// takes every frame. Such a worker is cancelled and detached instead:
-    /// it observes the cancel flag right after the portal resolves and exits
-    /// without touching shared state.
     fn shutdown_worker(&mut self) {
-        let Some(worker) = self.worker.take() else {
+        let Some(mut worker) = self.worker.take() else {
             return;
         };
 
         worker.cancel.store(true, Ordering::SeqCst);
         let _ = worker.command_tx.send(WorkerCommand::Stop);
 
-        if worker.portal_pending.load(Ordering::SeqCst) {
-            debug!("Detaching Wayland capture worker stuck in the portal dialog");
-            drop(worker.join_handle);
-            return;
+        if !worker.portal_pending.load(Ordering::SeqCst) {
+            let _ = worker.exit_rx.recv_timeout(WORKER_STOP_TIMEOUT);
         }
+        if worker.is_finished() {
+            worker.join(None);
+        } else {
+            debug!("Retaining Wayland capture worker until the portal request terminates");
+            self.retiring_workers.push(worker);
+        }
+    }
 
-        if let Err(panic) = worker.join_handle.join() {
-            warn!(message = ?panic, "Wayland screen capture worker panicked");
+    fn observe_worker_exit(&mut self, publish_failure: bool) -> bool {
+        let Some(worker) = self.worker.as_ref() else {
+            self.reap_workers(false);
+            return false;
+        };
+        if !worker.is_finished() {
+            self.reap_workers(false);
+            return false;
         }
+        let worker = self.worker.take().expect("finished worker remains owned");
+        worker.join(publish_failure.then(|| self.status.session()).flatten());
+        if let Ok(mut latest) = self.latest_snapshot.lock() {
+            *latest = None;
+        }
+        self.reap_workers(false);
+        true
+    }
+
+    fn reap_workers(&mut self, wait: bool) {
+        let mut retained = Vec::with_capacity(self.retiring_workers.len());
+        for mut worker in self.retiring_workers.drain(..) {
+            if wait && !worker.portal_pending.load(Ordering::SeqCst) {
+                let _ = worker.exit_rx.recv_timeout(WORKER_STOP_TIMEOUT);
+            }
+            if worker.is_finished() {
+                worker.join(None);
+            } else {
+                retained.push(worker);
+            }
+        }
+        self.retiring_workers = retained;
     }
 }
 
@@ -332,19 +374,26 @@ impl InputSource for WaylandScreenCaptureInput {
             return Ok(());
         }
 
-        self.running = true;
         if self.capture_active {
             if let Some(session) = self.status.begin_session()? {
                 self.status_session.store(session);
             }
-            self.spawn_worker()?;
-            self.send_worker_command(WorkerCommand::SetActive(true))?;
+            if let Err(error) = self
+                .spawn_worker()
+                .and_then(|()| self.send_worker_command(WorkerCommand::SetActive(true)))
+            {
+                self.status_session.clear();
+                self.status.stop();
+                self.shutdown_worker();
+                return Err(error);
+            }
         } else {
             debug!(
                 "Wayland screen capture armed but idle until a screen-reactive effect requests capture"
             );
         }
 
+        self.running = true;
         Ok(())
     }
 
@@ -354,6 +403,7 @@ impl InputSource for WaylandScreenCaptureInput {
         self.running = false;
         self.capture_active = false;
         self.shutdown_worker();
+        self.reap_workers(true);
 
         if let Ok(mut latest) = self.latest_snapshot.lock() {
             *latest = None;
@@ -361,6 +411,7 @@ impl InputSource for WaylandScreenCaptureInput {
     }
 
     fn sample(&mut self) -> anyhow::Result<InputData> {
+        self.observe_worker_exit(self.running && self.capture_active);
         if !self.running || !self.capture_active {
             return Ok(InputData::None);
         }
@@ -410,8 +461,9 @@ impl InputSource for WaylandScreenCaptureInput {
     }
 
     fn set_screen_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
+        let previous = self.capture_active;
         self.status.set_policy(true, true, active)?;
-        if self.capture_active != active {
+        if previous != active {
             if !active {
                 self.status_session.clear();
             }
@@ -421,7 +473,19 @@ impl InputSource for WaylandScreenCaptureInput {
                 }
             }
         }
-        self.set_capture_active_state(active)
+        if let Err(error) = self.set_capture_active_state(active) {
+            self.status_session.clear();
+            self.status.stop();
+            self.status.set_policy(true, true, previous)?;
+            if previous
+                && self.running
+                && let Some(session) = self.status.begin_session()?
+            {
+                self.status_session.store(session);
+            }
+            return Err(error);
+        }
+        Ok(())
     }
 
     fn reconfigure_screen_capture(&mut self, config: &CaptureConfig) -> anyhow::Result<()> {
@@ -435,13 +499,66 @@ impl InputSource for WaylandScreenCaptureInput {
 
 struct WaylandCaptureWorker {
     command_tx: pw::channel::Sender<WorkerCommand>,
-    join_handle: thread::JoinHandle<()>,
+    exit_rx: mpsc::Receiver<()>,
+    join_handle: Option<thread::JoinHandle<()>>,
     /// Tells the worker to exit at its next checkpoint without touching
     /// shared state (snapshot, settings, restore token).
     cancel: Arc<AtomicBool>,
     /// True while the worker is awaiting the portal source picker — the
     /// phase during which it cannot see commands and must not be joined.
     portal_pending: Arc<AtomicBool>,
+}
+
+impl WaylandCaptureWorker {
+    fn is_finished(&self) -> bool {
+        self.join_handle
+            .as_ref()
+            .is_none_or(thread::JoinHandle::is_finished)
+    }
+
+    fn join(mut self, failure_status: Option<crate::input::SourceSessionWriter>) {
+        let Some(join_handle) = self.join_handle.take() else {
+            return;
+        };
+        let failure = join_handle.join().err();
+        if let Some(status) = failure_status {
+            let reason = failure.map_or_else(
+                || "Wayland screen capture worker exited unexpectedly".to_owned(),
+                |panic| format!("Wayland screen capture worker panicked: {panic:?}"),
+            );
+            status.failed(SourceIssue::new(
+                "wayland_screen_worker_exited",
+                reason,
+                true,
+            ));
+        } else if let Some(panic) = failure {
+            warn!(message = ?panic, "Wayland screen capture worker panicked");
+        }
+    }
+}
+
+impl Drop for WaylandCaptureWorker {
+    fn drop(&mut self) {
+        let Some(join_handle) = self.join_handle.take() else {
+            return;
+        };
+        self.cancel.store(true, Ordering::SeqCst);
+        let _ = self.command_tx.send(WorkerCommand::Stop);
+        if join_handle.is_finished() {
+            let _ = join_handle.join();
+            return;
+        }
+        if let Err(error) = thread::Builder::new()
+            .name("hypercolor-wayland-capture-reaper".to_owned())
+            .spawn(move || {
+                if let Err(panic) = join_handle.join() {
+                    warn!(?panic, "Wayland capture reaper observed a panic");
+                }
+            })
+        {
+            warn!(%error, "failed to start Wayland capture worker join reaper");
+        }
+    }
 }
 
 /// Cancellation and phase flags shared with a capture worker thread.
