@@ -307,7 +307,7 @@ impl WindowsHostInput {
             if let Some(status) = self.status.session() {
                 status.unavailable(
                     SourceIssue::new(
-                        "windows_no_interactive_session",
+                        InteractionDegradation::NoInteractiveSession.code(),
                         "Raw Input requires an interactive desktop session",
                         true,
                     )
@@ -358,7 +358,7 @@ impl WindowsHostInput {
                 self.degraded = Some(InteractionDegradation::NoInteractiveSession);
                 if let Some(status) = self.status.session() {
                     status.unavailable(SourceIssue::new(
-                        "windows_no_interactive_session",
+                        InteractionDegradation::NoInteractiveSession.code(),
                         "Raw Input requires an interactive desktop session",
                         true,
                     ));
