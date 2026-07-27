@@ -1,4 +1,4 @@
-//! Guaranteed cleanup service for input workers that outlive bounded shutdown.
+//! Guaranteed cleanup service for Raw Input workers that outlive bounded shutdown.
 
 use std::io;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -8,30 +8,30 @@ use std::time::Duration;
 
 const REAPER_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
-struct RetainedInputWorker {
+struct RetainedWorker {
     worker: JoinHandle<()>,
-    context: Arc<str>,
+    reason: Arc<str>,
 }
 
 #[derive(Default)]
 struct ReaperQueue {
-    pending: Mutex<Vec<RetainedInputWorker>>,
+    pending: Mutex<Vec<RetainedWorker>>,
     wake: Condvar,
     shutdown: AtomicBool,
 }
 
-struct InputWorkerReaper {
+struct WorkerReaper {
     queue: Arc<ReaperQueue>,
     worker: Option<JoinHandle<()>>,
     #[cfg(test)]
     reaped_count: Arc<AtomicU64>,
 }
 
-impl InputWorkerReaper {
+impl WorkerReaper {
     fn start() -> io::Result<Self> {
         Self::start_with(|queue, reaped_count| {
             thread::Builder::new()
-                .name("hypercolor-input-reaper".to_owned())
+                .name("hypercolor-raw-input-reaper".to_owned())
                 .spawn(move || reaper_loop(&queue, &reaped_count))
         })
     }
@@ -50,12 +50,12 @@ impl InputWorkerReaper {
         })
     }
 
-    fn submit(&self, worker: JoinHandle<()>, context: Arc<str>) {
+    fn submit(&self, worker: JoinHandle<()>, reason: Arc<str>) {
         self.queue
             .pending
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(RetainedInputWorker { worker, context });
+            .push(RetainedWorker { worker, reason });
         self.queue.wake.notify_one();
     }
 
@@ -65,7 +65,7 @@ impl InputWorkerReaper {
     }
 }
 
-impl Drop for InputWorkerReaper {
+impl Drop for WorkerReaper {
     fn drop(&mut self) {
         self.queue.shutdown.store(true, Ordering::Release);
         self.queue.wake.notify_one();
@@ -86,7 +86,7 @@ fn reaper_loop(queue: &ReaperQueue, reaped_count: &AtomicU64) {
     }
 }
 
-fn collect_pending(queue: &ReaperQueue, retained: &mut Vec<RetainedInputWorker>) {
+fn collect_pending(queue: &ReaperQueue, retained: &mut Vec<RetainedWorker>) {
     let mut pending = queue
         .pending
         .lock()
@@ -108,12 +108,11 @@ fn collect_pending(queue: &ReaperQueue, retained: &mut Vec<RetainedInputWorker>)
     retained.append(&mut pending);
 }
 
-fn reap_finished_workers(retained: &mut Vec<RetainedInputWorker>, reaped_count: &AtomicU64) {
+fn reap_finished_workers(retained: &mut Vec<RetainedWorker>, reaped_count: &AtomicU64) {
     let mut index = 0;
     while index < retained.len() {
         if retained[index].worker.is_finished() {
-            let retained_worker = retained.swap_remove(index);
-            observe_worker(retained_worker);
+            observe_worker(retained.swap_remove(index));
             reaped_count.fetch_add(1, Ordering::Release);
         } else {
             index += 1;
@@ -121,18 +120,18 @@ fn reap_finished_workers(retained: &mut Vec<RetainedInputWorker>, reaped_count: 
     }
 }
 
-fn observe_worker(retained: RetainedInputWorker) {
+fn observe_worker(retained: RetainedWorker) {
     if let Err(panic) = retained.worker.join() {
         tracing::warn!(
-            worker = %retained.context,
+            reason = %retained.reason,
             ?panic,
-            "retained input worker reaper observed a panic"
+            "raw input pump reaper observed a panic"
         );
     }
 }
 
-fn input_worker_reaper() -> io::Result<&'static InputWorkerReaper> {
-    static REAPER: OnceLock<InputWorkerReaper> = OnceLock::new();
+fn worker_reaper() -> io::Result<&'static WorkerReaper> {
+    static REAPER: OnceLock<WorkerReaper> = OnceLock::new();
     static INITIALIZE: Mutex<()> = Mutex::new(());
 
     if let Some(reaper) = REAPER.get() {
@@ -144,22 +143,21 @@ fn input_worker_reaper() -> io::Result<&'static InputWorkerReaper> {
     if let Some(reaper) = REAPER.get() {
         return Ok(reaper);
     }
-    let reaper = InputWorkerReaper::start()?;
+    let reaper = WorkerReaper::start()?;
     let _ = REAPER.set(reaper);
     REAPER.get().ok_or_else(|| {
-        io::Error::other("input worker cleanup service was not retained after initialization")
+        io::Error::other("Raw Input cleanup service was not retained after initialization")
     })
 }
 
-/// Spawn an input worker only after its cleanup service is guaranteed live.
-pub(crate) fn spawn_input_worker(
+pub(super) fn spawn_raw_input_worker(
     builder: thread::Builder,
     worker: impl FnOnce() + Send + 'static,
 ) -> io::Result<JoinHandle<()>> {
-    spawn_input_worker_after(input_worker_reaper().map(|_| ()), builder, worker)
+    spawn_worker_after(worker_reaper().map(|_| ()), builder, worker)
 }
 
-fn spawn_input_worker_after(
+fn spawn_worker_after(
     cleanup_ready: io::Result<()>,
     builder: thread::Builder,
     worker: impl FnOnce() + Send + 'static,
@@ -168,11 +166,10 @@ fn spawn_input_worker_after(
     builder.spawn(worker)
 }
 
-/// Transfer a still-running input worker into guaranteed process-owned cleanup.
-pub(crate) fn retain_input_worker(worker: JoinHandle<()>, context: impl Into<Arc<str>>) {
-    input_worker_reaper()
-        .expect("input cleanup service is initialized before any input worker starts")
-        .submit(worker, context.into());
+pub(super) fn retain_raw_input_worker(worker: JoinHandle<()>, reason: impl Into<Arc<str>>) {
+    worker_reaper()
+        .expect("Raw Input cleanup service is initialized before its worker starts")
+        .submit(worker, reason.into());
 }
 
 #[cfg(test)]

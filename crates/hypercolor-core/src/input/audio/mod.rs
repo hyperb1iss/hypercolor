@@ -40,7 +40,7 @@ use libpulse_binding as pulse;
 
 use crate::input::traits::{InputData, InputSource};
 #[cfg(target_os = "linux")]
-use crate::input::worker_retention::retain_input_worker;
+use crate::input::worker_retention::{retain_input_worker, spawn_input_worker};
 use crate::input::{SourceIssue, SourceKind, SourceStatusHandle, SourceStatusReporter};
 use crate::types::audio::{AudioData, AudioPipelineConfig, AudioSourceType};
 
@@ -1309,11 +1309,7 @@ impl Drop for LinuxPulseCapture {
         let Some(worker) = self.worker.take() else {
             return;
         };
-        retain_input_worker(
-            worker,
-            "hypercolor-pulse-reaper",
-            "PulseAudio capture worker",
-        );
+        retain_input_worker(worker, "PulseAudio capture worker");
     }
 }
 
@@ -1372,9 +1368,9 @@ fn build_linux_pulse_capture_stream(
     let worker_publish_enabled = Arc::clone(&publish_enabled);
     let worker_source = source_name.to_owned();
     let worker_display = display_name.to_owned();
-    let worker = thread::Builder::new()
-        .name("hypercolor-pulse-capture".to_owned())
-        .spawn(move || {
+    let worker = spawn_input_worker(
+        thread::Builder::new().name("hypercolor-pulse-capture".to_owned()),
+        move || {
             run_linux_pulse_capture(
                 &worker_source,
                 &worker_display,
@@ -1387,8 +1383,9 @@ fn build_linux_pulse_capture_stream(
                 worker_publish_enabled,
             );
             let _ = exit_tx.send(());
-        })
-        .context("failed to spawn Linux PulseAudio capture worker")?;
+        },
+    )
+    .context("failed to spawn Linux PulseAudio capture worker")?;
 
     match ready_rx.recv_timeout(Duration::from_secs(2)) {
         Ok(Ok(())) => {

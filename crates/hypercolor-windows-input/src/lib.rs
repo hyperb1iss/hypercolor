@@ -54,6 +54,8 @@ mod probe;
 mod pump;
 #[cfg(target_os = "windows")]
 mod session;
+#[cfg(target_os = "windows")]
+mod worker_retention;
 
 #[cfg(target_os = "windows")]
 pub use probe::interactive_session_state;

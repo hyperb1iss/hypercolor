@@ -13,7 +13,7 @@
 
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -26,6 +26,7 @@ use crate::pump::{Pump, WM_HYPERCOLOR_STOP};
 use crate::shared::{
     RawInputBatch, RawInputConfig, RawInputError, RawInputResult, SessionState, WorkerState,
 };
+use crate::worker_retention::{retain_raw_input_worker, spawn_raw_input_worker};
 
 /// How long `start()` waits for the worker to finish initializing.
 const READY_TIMEOUT: Duration = Duration::from_secs(2);
@@ -74,7 +75,6 @@ impl RawInputSession {
         config: RawInputConfig,
         sink: impl FnMut(RawInputBatch<'_>) + Send + 'static,
     ) -> RawInputResult<Self> {
-        reap_retained_workers();
         if interactive_session_state() == SessionState::NoInteractiveSession {
             return Err(RawInputError::NoInteractiveSession);
         }
@@ -90,9 +90,9 @@ impl RawInputSession {
         let (ready_tx, ready_rx) = mpsc::sync_channel::<RawInputResult<()>>(1);
         let (finished_tx, finished_rx) = mpsc::sync_channel::<()>(1);
 
-        let worker = thread::Builder::new()
-            .name("hypercolor-raw-input".to_owned())
-            .spawn({
+        let worker = spawn_raw_input_worker(
+            thread::Builder::new().name("hypercolor-raw-input".to_owned()),
+            {
                 let stop = Arc::clone(&stop);
                 let window = Arc::clone(&window);
                 let device_count = Arc::clone(&device_count);
@@ -110,8 +110,9 @@ impl RawInputSession {
                     );
                     let _ = finished_tx.send(());
                 }
-            })
-            .map_err(|error| RawInputError::WorkerSpawn(error.to_string()))?;
+            },
+        )
+        .map_err(|error| RawInputError::WorkerSpawn(error.to_string()))?;
 
         match ready_rx.recv_timeout(READY_TIMEOUT) {
             Ok(Ok(())) => Ok(Self {
@@ -130,7 +131,7 @@ impl RawInputSession {
             }
             Err(_) => {
                 stop.store(true, Ordering::Release);
-                retain_worker_until_exit(worker, "readiness timeout");
+                retain_raw_input_worker(worker, "readiness timeout");
                 Err(RawInputError::WorkerReadyTimeout)
             }
         }
@@ -174,7 +175,6 @@ impl RawInputSession {
     }
 
     fn stop_with_timeout(&mut self, timeout: Duration) {
-        reap_retained_workers();
         if self.worker.is_none() {
             return;
         }
@@ -199,120 +199,6 @@ impl RawInputSession {
                 }
             }
         }
-    }
-
-    /// Construct a deterministic stalled worker for lifecycle contract tests.
-    #[doc(hidden)]
-    #[must_use]
-    pub fn test_stalled_worker(exit_after: Duration) -> Self {
-        let stop = Arc::new(AtomicBool::new(false));
-        let window = Arc::new(Mutex::new(0));
-        let device_count = Arc::new(AtomicUsize::new(0));
-        let state = Arc::new(Mutex::new(WorkerState::Running));
-        let (finished_tx, finished) = mpsc::sync_channel(1);
-        let worker = thread::spawn(move || {
-            thread::sleep(exit_after);
-            let _ = finished_tx.send(());
-        });
-        Self {
-            stop,
-            window,
-            device_count,
-            state,
-            finished,
-            worker: Some(worker),
-            join_timed_out: false,
-        }
-    }
-
-    /// Run the production bounded-stop path with a deterministic test timeout.
-    #[doc(hidden)]
-    pub fn test_stop_with_timeout(&mut self, timeout: Duration) {
-        self.stop_with_timeout(timeout);
-    }
-
-    /// Whether bounded stop still owns a worker whose exit is not observed.
-    #[doc(hidden)]
-    #[must_use]
-    pub fn test_retains_worker(&self) -> bool {
-        self.worker.is_some()
-    }
-
-    /// Exercise the readiness-timeout reaper without relying on OS timing.
-    #[doc(hidden)]
-    pub fn test_readiness_timeout_reaper(worker_delay: Duration, ready_timeout: Duration) -> bool {
-        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
-        let worker = thread::spawn(move || {
-            thread::sleep(worker_delay);
-            let _ = ready_tx.send(());
-        });
-        if ready_rx.recv_timeout(ready_timeout).is_ok() {
-            let _ = worker.join();
-            return false;
-        }
-        retain_worker_until_exit(worker, "test readiness timeout")
-            .recv_timeout(worker_delay + worker_delay)
-            .is_ok()
-    }
-
-    /// Prove delayed initialization cannot publish after readiness times out.
-    #[doc(hidden)]
-    pub fn test_readiness_timeout_blocks_initial_publication(
-        worker_delay: Duration,
-        ready_timeout: Duration,
-    ) -> usize {
-        let stop = Arc::new(AtomicBool::new(false));
-        let sink_calls = Arc::new(AtomicUsize::new(0));
-        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
-        let worker_stop = Arc::clone(&stop);
-        let worker_sink_calls = Arc::clone(&sink_calls);
-        let worker = thread::spawn(move || {
-            thread::sleep(worker_delay);
-            if run_initial_step(&worker_stop, || {})
-                && run_initial_step(&worker_stop, || {
-                    worker_sink_calls.fetch_add(1, Ordering::SeqCst);
-                })
-            {
-                let _ = ready_tx.send(());
-            }
-        });
-        if ready_rx.recv_timeout(ready_timeout).is_err() {
-            stop.store(true, Ordering::Release);
-        }
-        let _ = worker.join();
-        sink_calls.load(Ordering::SeqCst)
-    }
-
-    /// Prove a failed reaper spawn leaves the worker owned and later reapable.
-    #[doc(hidden)]
-    pub fn test_reaper_spawn_failure_is_reapable(worker_delay: Duration) -> bool {
-        reap_retained_workers();
-        let baseline = retained_worker_count();
-        let worker = thread::spawn(move || thread::sleep(worker_delay));
-        let observed = retain_worker_until_exit_with(
-            worker,
-            "test reaper spawn failure",
-            ReaperSpawn::InjectFailure,
-        );
-        let retained = retained_worker_count() == baseline + 1;
-        thread::sleep(worker_delay + worker_delay);
-        reap_retained_workers();
-        retained
-            && observed.recv_timeout(worker_delay).is_ok()
-            && retained_worker_count() == baseline
-    }
-
-    /// Number of process-owned workers awaiting observed termination.
-    #[doc(hidden)]
-    #[must_use]
-    pub fn test_retained_worker_count() -> usize {
-        retained_worker_count()
-    }
-
-    /// Observe every retained worker that has now terminated.
-    #[doc(hidden)]
-    pub fn test_reap_retained_workers() {
-        reap_retained_workers();
     }
 
     /// Wake the pump out of its wait so it observes the stop flag now.
@@ -340,154 +226,15 @@ impl Drop for RawInputSession {
             self.stop.store(true, Ordering::Release);
             self.nudge();
             if let Some(worker) = self.worker.take() {
-                retain_worker_until_exit(worker, "session drop after stop timeout");
+                retain_raw_input_worker(worker, "session drop after stop timeout");
             }
             return;
         }
         self.stop();
         if let Some(worker) = self.worker.take() {
-            retain_worker_until_exit(worker, "session drop after stop timeout");
+            retain_raw_input_worker(worker, "session drop after stop timeout");
         }
     }
-}
-
-fn retain_worker_until_exit(worker: JoinHandle<()>, reason: &'static str) -> mpsc::Receiver<()> {
-    retain_worker_until_exit_with(worker, reason, ReaperSpawn::Thread)
-}
-
-#[derive(Clone, Copy)]
-enum ReaperSpawn {
-    Thread,
-    InjectFailure,
-}
-
-struct RetainedWorker {
-    worker: Mutex<Option<JoinHandle<()>>>,
-    observed: Mutex<Option<mpsc::SyncSender<()>>>,
-    completed: AtomicBool,
-    reason: &'static str,
-}
-
-impl RetainedWorker {
-    fn reap_if_finished(&self) -> bool {
-        let mut worker_guard = self
-            .worker
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if worker_guard
-            .as_ref()
-            .is_none_or(std::thread::JoinHandle::is_finished)
-        {
-            let worker = worker_guard.take();
-            drop(worker_guard);
-            if let Some(worker) = worker {
-                self.observe(worker);
-            }
-            return true;
-        }
-        false
-    }
-
-    fn reap(&self) {
-        let worker = self
-            .worker
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take();
-        if let Some(worker) = worker {
-            self.observe(worker);
-        }
-    }
-
-    fn observe(&self, worker: JoinHandle<()>) {
-        if let Err(panic) = worker.join() {
-            tracing::warn!(
-                ?panic,
-                reason = self.reason,
-                "raw input pump reaper observed a panic"
-            );
-        }
-        self.completed.store(true, Ordering::Release);
-        if let Some(observed) = self
-            .observed
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take()
-        {
-            let _ = observed.send(());
-        }
-    }
-}
-
-fn retained_workers() -> &'static Mutex<Vec<Arc<RetainedWorker>>> {
-    static RETAINED_WORKERS: OnceLock<Mutex<Vec<Arc<RetainedWorker>>>> = OnceLock::new();
-    RETAINED_WORKERS.get_or_init(|| Mutex::new(Vec::new()))
-}
-
-fn retain_worker_until_exit_with(
-    worker: JoinHandle<()>,
-    reason: &'static str,
-    spawn: ReaperSpawn,
-) -> mpsc::Receiver<()> {
-    reap_retained_workers();
-    let (observed_tx, observed_rx) = mpsc::sync_channel(1);
-    let retained = Arc::new(RetainedWorker {
-        worker: Mutex::new(Some(worker)),
-        observed: Mutex::new(Some(observed_tx)),
-        completed: AtomicBool::new(false),
-        reason,
-    });
-    retained_workers()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .push(Arc::clone(&retained));
-
-    if retained.reap_if_finished() {
-        prune_completed_workers();
-        return observed_rx;
-    }
-
-    if matches!(spawn, ReaperSpawn::InjectFailure) {
-        tracing::error!(reason, "injected raw input pump reaper spawn failure");
-        return observed_rx;
-    }
-
-    let reaper = Arc::clone(&retained);
-    if let Err(error) = thread::Builder::new()
-        .name("hypercolor-raw-input-reaper".to_owned())
-        .spawn(move || {
-            reaper.reap();
-            prune_completed_workers();
-        })
-    {
-        tracing::error!(%error, reason, "failed to start raw input pump join reaper");
-    }
-    observed_rx
-}
-
-fn reap_retained_workers() {
-    let workers = retained_workers()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .clone();
-    for worker in workers {
-        worker.reap_if_finished();
-    }
-    prune_completed_workers();
-}
-
-fn prune_completed_workers() {
-    retained_workers()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .retain(|worker| !worker.completed.load(Ordering::Acquire));
-}
-
-fn retained_worker_count() -> usize {
-    retained_workers()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .len()
 }
 
 /// The worker body: create the pump, report readiness, then loop.
@@ -569,3 +316,6 @@ fn run_initial_step(stop: &AtomicBool, step: impl FnOnce()) -> bool {
     step();
     true
 }
+
+#[cfg(test)]
+mod tests;

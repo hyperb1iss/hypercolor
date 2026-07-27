@@ -14,6 +14,8 @@ use sysinfo::{
     Components, CpuRefreshKind, MINIMUM_CPU_UPDATE_INTERVAL, MemoryRefreshKind, RefreshKind, System,
 };
 
+use crate::input::worker_retention::spawn_input_worker;
+
 const DEFAULT_SENSOR_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const BYTES_PER_MEGABYTE: f64 = 1_000_000.0;
 
@@ -79,9 +81,9 @@ impl SensorPoller {
         let (stop_tx, stop_rx) = mpsc::channel();
         #[cfg(test)]
         let mut sampler = self.sampler.take();
-        let join_handle = std::thread::Builder::new()
-            .name("hypercolor-sensors".to_owned())
-            .spawn(move || {
+        let join_handle = spawn_input_worker(
+            std::thread::Builder::new().name("hypercolor-sensors".to_owned()),
+            move || {
                 #[cfg(test)]
                 if let Some(ref mut sampler) = sampler {
                     loop {
@@ -102,8 +104,9 @@ impl SensorPoller {
                         Err(RecvTimeoutError::Timeout) => {}
                     }
                 }
-            })
-            .context("failed to spawn sensor poller thread")?;
+            },
+        )
+        .context("failed to spawn sensor poller thread")?;
 
         self.thread = Some(SensorPollerThread {
             stop_tx,

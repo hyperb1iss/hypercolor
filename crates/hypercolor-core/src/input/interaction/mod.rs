@@ -12,7 +12,7 @@ use device_query::{DeviceQuery, DeviceState, Keycode};
 use tracing::warn;
 
 use crate::input::traits::{InputData, InputSource, InteractionData, KeyboardData, MouseData};
-use crate::input::worker_retention::retain_input_worker;
+use crate::input::worker_retention::{retain_input_worker, spawn_input_worker};
 use crate::input::{SourceIssue, SourceKind, SourceStatusHandle, SourceStatusReporter};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
@@ -111,9 +111,9 @@ impl InteractionInput {
         let (stop_tx, stop_rx) = mpsc::channel();
         let (exit_tx, exit_rx) = mpsc::sync_channel(1);
 
-        let join_handle = thread::Builder::new()
-            .name("hypercolor-host-input".to_owned())
-            .spawn(move || {
+        let join_handle = spawn_input_worker(
+            thread::Builder::new().name("hypercolor-host-input".to_owned()),
+            move || {
                 let Some(device_state) = try_create_device_state() else {
                     warn!(
                         source = %source_name,
@@ -178,8 +178,9 @@ impl InteractionInput {
                     }
                 }
                 let _ = exit_tx.send(());
-            })
-            .context("failed to spawn host input capture worker")?;
+            },
+        )
+        .context("failed to spawn host input capture worker")?;
 
         self.worker = Some(InteractionWorker {
             stop_tx,
@@ -239,7 +240,6 @@ impl Drop for InteractionInput {
         }
         retain_input_worker(
             worker.join_handle,
-            "hypercolor-host-input-reaper",
             Arc::<str>::from(format!("host input source {}", self.name)),
         );
     }

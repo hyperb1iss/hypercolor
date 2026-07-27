@@ -31,7 +31,7 @@ use crate::input::screen::{
     analyze_legacy_screen_frame,
 };
 use crate::input::traits::{InputData, InputSource};
-use crate::input::worker_retention::retain_input_worker;
+use crate::input::worker_retention::{retain_input_worker, spawn_input_worker};
 use crate::input::{
     SourceIssue, SourceKind, SourceSessionSlot, SourceStatusHandle, SourceStatusReporter,
 };
@@ -124,11 +124,7 @@ impl Drop for CaptureWorker {
             let _ = join_handle.join();
             return;
         }
-        retain_input_worker(
-            join_handle,
-            "hypercolor-screen-reaper",
-            "Windows screen capture worker",
-        );
+        retain_input_worker(join_handle, "Windows screen capture worker");
     }
 }
 
@@ -184,9 +180,9 @@ impl WindowsScreenCaptureInput {
             .fetch_add(1, Ordering::AcqRel)
             .wrapping_add(1);
 
-        let join_handle = thread::Builder::new()
-            .name("hypercolor-screen-capture".to_owned())
-            .spawn(move || {
+        let join_handle = spawn_input_worker(
+            thread::Builder::new().name("hypercolor-screen-capture".to_owned()),
+            move || {
                 let _ = ready_tx.send(());
                 run_worker(
                     &settings,
@@ -197,8 +193,9 @@ impl WindowsScreenCaptureInput {
                     session_generation,
                 );
                 let _ = exit_tx.send(());
-            })
-            .map_err(|error| anyhow!("failed to spawn screen capture worker: {error}"))?;
+            },
+        )
+        .map_err(|error| anyhow!("failed to spawn screen capture worker: {error}"))?;
 
         self.worker = Some(CaptureWorker {
             command_tx,

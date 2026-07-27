@@ -19,8 +19,7 @@ pub mod sensor;
 mod status;
 mod traits;
 pub mod windows;
-#[doc(hidden)]
-pub mod worker_retention;
+mod worker_retention;
 
 pub use browser::{BrowserInputEdge, BrowserInputHandle, BrowserInputSource};
 #[cfg(target_os = "linux")]

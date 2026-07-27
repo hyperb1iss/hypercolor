@@ -991,7 +991,7 @@ mod worker {
     use tokio::time::MissedTickBehavior;
     use tracing::{debug, warn};
 
-    use crate::input::worker_retention::retain_input_worker;
+    use crate::input::worker_retention::{retain_input_worker, spawn_input_worker};
 
     use super::{
         ArtworkFetcher, ArtworkRequest, MEDIA_POLL_INTERVAL, MEDIA_PROVIDER_TIMEOUT,
@@ -1013,9 +1013,9 @@ mod worker {
             let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
             let (ready_tx, ready_rx) = mpsc::sync_channel(1);
             let (exit_tx, exit_rx) = mpsc::sync_channel(1);
-            let join_handle = std::thread::Builder::new()
-                .name("hypercolor-media".to_owned())
-                .spawn(move || {
+            let join_handle = spawn_input_worker(
+                std::thread::Builder::new().name("hypercolor-media".to_owned()),
+                move || {
                     let runtime = match tokio::runtime::Builder::new_current_thread()
                         .enable_all()
                         .build()
@@ -1038,8 +1038,9 @@ mod worker {
                     tokio::task::LocalSet::new()
                         .block_on(&runtime, run_media_loop(publisher, status, stop_rx));
                     let _ = exit_tx.send(());
-                })
-                .context("failed to spawn media poller thread")?;
+                },
+            )
+            .context("failed to spawn media poller thread")?;
 
             let mut worker = Self {
                 stop_tx,
@@ -1103,7 +1104,7 @@ mod worker {
             let Some(join_handle) = self.join_handle.take() else {
                 return;
             };
-            retain_input_worker(join_handle, "hypercolor-media-reaper", "media poller");
+            retain_input_worker(join_handle, "media poller");
         }
     }
 

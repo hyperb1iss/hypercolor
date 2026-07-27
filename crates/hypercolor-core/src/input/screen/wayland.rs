@@ -33,7 +33,7 @@ use crate::input::screen::{
     ScreenCaptureInput, SourceScale, analyze_legacy_screen_frame,
 };
 use crate::input::traits::{InputData, InputSource};
-use crate::input::worker_retention::retain_input_worker;
+use crate::input::worker_retention::{retain_input_worker, spawn_input_worker};
 use crate::input::{
     SourceIssue, SourceKind, SourceSessionSlot, SourceStatusHandle, SourceStatusReporter,
 };
@@ -296,9 +296,9 @@ impl WaylandScreenCaptureInput {
             .fetch_add(1, Ordering::AcqRel)
             .wrapping_add(1);
         settings.clear_expected_epoch();
-        let join_handle = thread::Builder::new()
-            .name("hypercolor-screen-capture".to_owned())
-            .spawn(move || {
+        let join_handle = spawn_input_worker(
+            thread::Builder::new().name("hypercolor-screen-capture".to_owned()),
+            move || {
                 let _ = ready_tx.send(());
                 run_capture_worker(
                     settings,
@@ -310,8 +310,9 @@ impl WaylandScreenCaptureInput {
                     session_generation,
                 );
                 let _ = exit_tx.send(());
-            })
-            .context("failed to spawn Wayland screen capture worker")?;
+            },
+        )
+        .context("failed to spawn Wayland screen capture worker")?;
 
         self.worker = Some(WaylandCaptureWorker {
             command_tx,
@@ -598,11 +599,7 @@ impl Drop for WaylandCaptureWorker {
             let _ = join_handle.join();
             return;
         }
-        retain_input_worker(
-            join_handle,
-            "hypercolor-wayland-capture-reaper",
-            "Wayland capture worker",
-        );
+        retain_input_worker(join_handle, "Wayland capture worker");
     }
 }
 

@@ -20,7 +20,7 @@ use tracing::{debug, info, trace, warn};
 
 use crate::input::input_mono_ms;
 use crate::input::traits::{InputData, InputSource, InteractionData, MotionAggregate, PointerMode};
-use crate::input::worker_retention::retain_input_worker;
+use crate::input::worker_retention::{retain_input_worker, spawn_input_worker};
 use crate::input::{
     SourceKind, SourceResourceScanHealth, SourceStatusHandle, SourceStatusReporter,
     classify_source_resource_scan,
@@ -261,9 +261,9 @@ impl EvdevHostInput {
         let (stop_tx, stop_rx) = mpsc::channel();
         let (exit_tx, exit_rx) = mpsc::sync_channel(1);
 
-        let join_handle = thread::Builder::new()
-            .name("hypercolor-evdev-input".to_owned())
-            .spawn(move || {
+        let join_handle = spawn_input_worker(
+            thread::Builder::new().name("hypercolor-evdev-input".to_owned()),
+            move || {
                 let mut devices: BTreeMap<PathBuf, OpenDevice> = BTreeMap::new();
                 let health = rescan_devices(
                     &mut devices,
@@ -303,8 +303,9 @@ impl EvdevHostInput {
                     }
                 }
                 let _ = exit_tx.send(());
-            })
-            .context("failed to spawn evdev host input worker")?;
+            },
+        )
+        .context("failed to spawn evdev host input worker")?;
 
         self.worker = Some(EvdevWorker {
             stop_tx,
@@ -357,7 +358,6 @@ impl Drop for EvdevHostInput {
         }
         retain_input_worker(
             worker.join_handle,
-            "hypercolor-evdev-reaper",
             Arc::<str>::from(format!("evdev input source {}", self.name)),
         );
     }
