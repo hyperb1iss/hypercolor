@@ -593,6 +593,11 @@ struct EventfulSource {
     events: Vec<TimedInputEvent>,
 }
 
+struct StatuslessDemandSource {
+    running: bool,
+    capture_active: bool,
+}
+
 struct SequencedSource {
     samples: VecDeque<InputData>,
     interaction: bool,
@@ -682,6 +687,38 @@ impl InputSource for EventfulSource {
 
     fn drain_events(&mut self) -> Vec<TimedInputEvent> {
         std::mem::take(&mut self.events)
+    }
+}
+
+impl InputSource for StatuslessDemandSource {
+    fn name(&self) -> &'static str {
+        "statusless-demand"
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        self.running = true;
+        Ok(())
+    }
+
+    fn stop(&mut self) {
+        self.running = false;
+    }
+
+    fn sample(&mut self) -> anyhow::Result<InputData> {
+        Ok(InputData::None)
+    }
+
+    fn is_running(&self) -> bool {
+        self.running && self.capture_active
+    }
+
+    fn is_interaction_source(&self) -> bool {
+        true
+    }
+
+    fn set_interaction_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
+        self.capture_active = active;
+        Ok(())
     }
 }
 
@@ -1019,6 +1056,54 @@ fn replacing_source_advances_graph_and_retires_previous_handle() {
         retired.source_graph_generation,
         after.source_graph_generation()
     );
+}
+
+#[test]
+fn manager_instruments_statusless_sources_in_their_graph_slot() {
+    let mut manager = InputManager::new();
+    manager.add_source(Box::new(EventfulSource::new(Vec::new())));
+    manager
+        .start_all()
+        .expect("compatibility source should start");
+
+    let graph = manager.input_graph_handle().snapshot();
+    let registry = manager.source_status_registry().snapshot();
+    let graph_status = graph.slots()[0].status().snapshot();
+    let registry_status = registry.handles()[0].snapshot();
+
+    assert_eq!(graph.generation(), registry.source_graph_generation());
+    assert_eq!(graph_status.source_graph_generation, graph.generation());
+    assert!(Arc::ptr_eq(&graph_status, &registry_status));
+    assert_eq!(graph_status.kind, SourceKind::Interaction);
+    assert_eq!(graph_status.state, SourceState::Live);
+    assert_eq!(graph_status.freshness, SourceFreshness::NotApplicable);
+    assert!(graph_status.source_id.starts_with("compatibility:"));
+}
+
+#[test]
+fn manager_tracks_statusless_source_demand_transitions() {
+    let mut manager = InputManager::new();
+    manager.add_source(Box::new(StatuslessDemandSource {
+        running: false,
+        capture_active: true,
+    }));
+    manager.start_all().expect("statusless source should start");
+    let registry = manager.source_status_registry();
+
+    manager
+        .set_interaction_capture_active(false)
+        .expect("statusless source should deactivate");
+    let inactive = registry.snapshot().handles()[0].snapshot();
+    assert!(!inactive.demanded);
+    assert_eq!(inactive.state, SourceState::Stopped);
+
+    manager
+        .set_interaction_capture_active(true)
+        .expect("statusless source should reactivate");
+    let active = registry.snapshot().handles()[0].snapshot();
+    assert!(active.demanded);
+    assert_eq!(active.state, SourceState::Live);
+    assert!(active.session_generation > inactive.session_generation);
 }
 
 #[test]

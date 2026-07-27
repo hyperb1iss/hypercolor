@@ -35,8 +35,8 @@ pub use net::NetSource;
 pub use sensor::SensorPoller;
 pub use status::{
     SourceFreshness, SourceIssue, SourceKind, SourceResourceScanHealth, SourceSessionSlot,
-    SourceSessionWriter, SourceState, SourceStatus, SourceStatusError, SourceStatusHandle,
-    SourceStatusRegistry, SourceStatusRegistrySnapshot, SourceStatusReporter,
+    SourceSessionWriter, SourceState, SourceStatus, SourceStatusAvailability, SourceStatusError,
+    SourceStatusHandle, SourceStatusRegistry, SourceStatusRegistrySnapshot, SourceStatusReporter,
     SourceStatusSubscription, SourceStatusWriter, SourceTimestampField, TerminalFailureLatch,
     classify_source_resource_scan,
 };
@@ -109,15 +109,140 @@ pub struct InputManager {
 struct ManagedInputSource {
     source: Box<dyn InputSource>,
     slot: InputSourceSlot,
+    compatibility_status: Option<SourceStatusReporter>,
 }
 
 impl ManagedInputSource {
-    fn new(source: Box<dyn InputSource>, slot: InputSourceSlot) -> Self {
-        Self { source, slot }
+    fn new(mut source: Box<dyn InputSource>, slot_id: u64, source_graph_generation: u64) -> Self {
+        let declared_kind = declared_source_kind(source.as_ref());
+        source.set_source_graph_generation(source_graph_generation);
+        let mut compatibility_status = source.source_status_handle().is_none().then(|| {
+            SourceStatusReporter::new(
+                format!("compatibility:{slot_id}:{}", source.name()),
+                declared_kind.unwrap_or(SourceKind::Interaction),
+                "compatibility",
+                true,
+                true,
+                true,
+            )
+        });
+        if let Some(status) = &mut compatibility_status {
+            status.set_source_graph_generation(source_graph_generation);
+        }
+        let status = source.source_status_handle().unwrap_or_else(|| {
+            compatibility_status
+                .as_ref()
+                .expect("compatibility status exists for an uninstrumented source")
+                .handle()
+        });
+        let slot = InputSourceSlot::new(slot_id, declared_kind, status);
+        Self {
+            source,
+            slot,
+            compatibility_status,
+        }
     }
 
     fn into_source(self) -> Box<dyn InputSource> {
         self.source
+    }
+
+    fn source_status_handle(&self) -> SourceStatusHandle {
+        self.slot.status().clone()
+    }
+
+    fn set_source_graph_generation(&mut self, source_graph_generation: u64) {
+        self.source
+            .set_source_graph_generation(source_graph_generation);
+        if let Some(status) = &mut self.compatibility_status {
+            status.set_source_graph_generation(source_graph_generation);
+        }
+    }
+
+    fn retire_source_status(
+        &mut self,
+        source_graph_generation: u64,
+    ) -> Result<(), SourceStatusError> {
+        self.source.retire_source_status(source_graph_generation)?;
+        if let Some(status) = &mut self.compatibility_status {
+            status.retire(source_graph_generation)?;
+        }
+        Ok(())
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        let compatibility_session = self
+            .compatibility_status
+            .as_mut()
+            .map(SourceStatusReporter::begin_session)
+            .transpose()?
+            .flatten();
+        match self.source.start() {
+            Ok(()) => {
+                if let Some(session) = compatibility_session {
+                    session.mark_event_driven_live_without_deadline(1);
+                }
+                Ok(())
+            }
+            Err(error) => {
+                if let Some(session) = compatibility_session {
+                    session.failed(SourceIssue::new(
+                        "source_start_failed",
+                        error.to_string(),
+                        true,
+                    ));
+                }
+                Err(error)
+            }
+        }
+    }
+
+    fn stop(&mut self) {
+        self.source.stop();
+        if let Some(status) = &mut self.compatibility_status {
+            status.stop();
+        }
+    }
+
+    fn set_compatibility_demand(&mut self, demanded: bool) -> anyhow::Result<()> {
+        let Some(status) = &mut self.compatibility_status else {
+            return Ok(());
+        };
+        status.set_policy(true, true, demanded)?;
+        if demanded
+            && self.source.is_running()
+            && let Some(session) = status.begin_session()?
+        {
+            session.mark_event_driven_live_without_deadline(1);
+        }
+        Ok(())
+    }
+
+    fn sample_shared_and_drain_into(
+        &mut self,
+        delta_secs: f32,
+        events: &mut Vec<TimedInputEvent>,
+    ) -> anyhow::Result<Option<Arc<InputData>>> {
+        let sample = self.source.sample_shared_and_drain_into(delta_secs, events);
+        if let Some(session) = self
+            .compatibility_status
+            .as_ref()
+            .and_then(SourceStatusReporter::session)
+        {
+            match &sample {
+                Ok(_) => {
+                    session.mark_event_driven_live_without_deadline(1);
+                }
+                Err(error) => {
+                    session.degraded(SourceIssue::new(
+                        "source_sample_failed",
+                        error.to_string(),
+                        true,
+                    ));
+                }
+            }
+        }
+        sample
     }
 }
 
@@ -195,17 +320,16 @@ impl InputManager {
     ///
     /// Sources are sampled in registration order. Adding a source does not
     /// start it — call [`start_all`] or start sources individually.
-    pub fn add_source(&mut self, mut source: Box<dyn InputSource>) {
+    pub fn add_source(&mut self, source: Box<dyn InputSource>) {
         let domains = (
             source.is_audio_source(),
             source.is_screen_source(),
             source.is_interaction_source(),
         );
         let source_graph_generation = self.bump_source_graph_generation();
-        source.set_source_graph_generation(source_graph_generation);
-        let slot = self.create_source_slot(source.as_ref());
         info!(source = source.name(), "Registered input source");
-        self.sources.push(ManagedInputSource::new(source, slot));
+        let managed = self.create_managed_source(source, source_graph_generation);
+        self.sources.push(managed);
         self.invalidate_capture_domains(domains);
         self.publish_source_status_registry();
     }
@@ -217,7 +341,7 @@ impl InputManager {
     pub fn replace_source(
         &mut self,
         index: usize,
-        mut source: Box<dyn InputSource>,
+        source: Box<dyn InputSource>,
     ) -> Result<Box<dyn InputSource>, Box<dyn InputSource>> {
         if index >= self.sources.len() {
             return Err(source);
@@ -233,12 +357,8 @@ impl InputManager {
             source.is_screen_source(),
             source.is_interaction_source(),
         );
-        source.set_source_graph_generation(source_graph_generation);
-        let slot = self.create_source_slot(source.as_ref());
-        let mut previous = std::mem::replace(
-            &mut self.sources[index],
-            ManagedInputSource::new(source, slot),
-        );
+        let replacement = self.create_managed_source(source, source_graph_generation);
+        let mut previous = std::mem::replace(&mut self.sources[index], replacement);
         previous.stop();
         if let Err(error) = previous.retire_source_status(source_graph_generation) {
             error!(source = previous.name(), %error, "Failed to retire replaced input source status");
@@ -741,13 +861,17 @@ impl InputManager {
         self.source_graph_generation
     }
 
-    fn create_source_slot(&mut self, source: &dyn InputSource) -> InputSourceSlot {
+    fn create_managed_source(
+        &mut self,
+        source: Box<dyn InputSource>,
+        source_graph_generation: u64,
+    ) -> ManagedInputSource {
         let id = self.next_source_slot_id;
         self.next_source_slot_id = self
             .next_source_slot_id
             .checked_add(1)
             .expect("input source slot identity exhausted");
-        InputSourceSlot::new(id, declared_source_kind(source))
+        ManagedInputSource::new(source, id, source_graph_generation)
     }
 
     fn transition_capture_demand(
@@ -768,12 +892,9 @@ impl InputManager {
             .sources
             .iter()
             .map(|source| {
-                domain.matches(source.as_ref()).then(|| {
-                    source.source_status_handle().map_or_else(
-                        || cached.unwrap_or(!active),
-                        |handle| handle.snapshot().demanded,
-                    )
-                })
+                domain
+                    .matches(source.as_ref())
+                    .then(|| source.source_status_handle().snapshot().demanded)
             })
             .collect::<Vec<_>>();
 
@@ -788,18 +909,24 @@ impl InputManager {
             if !domain.matches(self.sources[source_index].as_ref()) {
                 continue;
             }
-            if let Err(error) = domain.transition(self.sources[source_index].as_mut(), active) {
+            let transition = domain
+                .transition(self.sources[source_index].as_mut(), active)
+                .and_then(|()| self.sources[source_index].set_compatibility_demand(active));
+            if let Err(error) = transition {
                 let mut rollback_succeeded = true;
                 for (rollback, previous) in self.sources.iter_mut().zip(&prior_demands) {
-                    if let Some(previous) = previous
-                        && let Err(rollback_error) = domain.transition(rollback.as_mut(), *previous)
-                    {
-                        rollback_succeeded = false;
-                        error!(
-                            source = rollback.name(),
-                            %rollback_error,
-                            "Failed to roll back input capture demand"
-                        );
+                    if let Some(previous) = previous {
+                        let rollback_result = domain
+                            .transition(rollback.as_mut(), *previous)
+                            .and_then(|()| rollback.set_compatibility_demand(*previous));
+                        if let Err(rollback_error) = rollback_result {
+                            rollback_succeeded = false;
+                            error!(
+                                source = rollback.name(),
+                                %rollback_error,
+                                "Failed to roll back input capture demand"
+                            );
+                        }
                     }
                 }
                 let restored_cache = if rollback_succeeded {
@@ -853,7 +980,7 @@ impl InputManager {
         let handles = self
             .sources
             .iter()
-            .filter_map(|source| source.source_status_handle())
+            .map(ManagedInputSource::source_status_handle)
             .collect();
         self.source_status_registry
             .publish(self.source_graph_generation, handles);

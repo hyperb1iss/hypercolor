@@ -550,6 +550,25 @@ pub struct SourceStatusHandle {
     shared: Arc<SourceStatusShared>,
 }
 
+/// Allocation-free source fields used by render-plane availability checks.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SourceStatusAvailability {
+    /// Broad source category.
+    pub kind: SourceKind,
+    /// Whether configuration enables the source.
+    pub configured: bool,
+    /// Whether the user has consented to capture.
+    pub consented: bool,
+    /// Whether the current render graph demands source data.
+    pub demanded: bool,
+    /// Current lifecycle health.
+    pub state: SourceState,
+    /// Effective freshness at the requested time.
+    pub freshness: SourceFreshness,
+    /// Whether the source was permanently removed from its owning graph.
+    pub retired: bool,
+}
+
 impl SourceStatusHandle {
     /// Read the effective status at the current monotonic time.
     #[must_use]
@@ -571,6 +590,43 @@ impl SourceStatusHandle {
                 && let Some(status) = status
             {
                 return status;
+            }
+        }
+    }
+
+    /// Read the fields needed for availability aggregation without allocating.
+    #[must_use]
+    pub fn availability_at(&self, now: Instant) -> SourceStatusAvailability {
+        loop {
+            let structural = self.shared.latest.load_full();
+            let mut freshness = structural.freshness;
+            if freshness == SourceFreshness::Fresh {
+                let sample = self.shared.samples.load();
+                if sample.session_generation != structural.session_generation {
+                    continue;
+                }
+                let Some(freshness_deadline) = sample.freshness_deadline else {
+                    continue;
+                };
+                if now >= freshness_deadline {
+                    if !self.shared.samples.mark_stale_observed(sample.token) {
+                        continue;
+                    }
+                    freshness = SourceFreshness::Stale;
+                }
+            }
+
+            let latest = self.shared.latest.load_full();
+            if Arc::ptr_eq(&structural, &latest) {
+                return SourceStatusAvailability {
+                    kind: structural.kind,
+                    configured: structural.configured,
+                    consented: structural.consented,
+                    demanded: structural.demanded,
+                    state: structural.state,
+                    freshness,
+                    retired: structural.retired,
+                };
             }
         }
     }

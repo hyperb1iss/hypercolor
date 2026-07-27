@@ -12,7 +12,7 @@ use std::{
 
 use hypercolor_core::input::{
     InputData, InputManager, InputSource, InteractionData, ScreenData, SourceKind,
-    SourceSessionWriter, SourceStatusWriter,
+    SourceSessionWriter, SourceStatusHandle, SourceStatusWriter,
 };
 use hypercolor_core::types::audio::AudioData;
 use hypercolor_core::types::event::TimedInputEvent;
@@ -82,6 +82,38 @@ fn steady_source_sample_control() -> (Stats, Stats) {
     (
         sample_round(&session, base, 1),
         sample_round(&session, base, 129),
+    )
+}
+
+fn availability_round(handle: &SourceStatusHandle, now: Instant) -> Stats {
+    let mut region = Region::new(GLOBAL);
+    region.reset();
+    for _ in 0..128 {
+        black_box(handle.availability_at(now));
+    }
+    region.change()
+}
+
+fn steady_availability_control() -> (Stats, Stats) {
+    let (writer, handle) = SourceStatusWriter::new(
+        "availability-source",
+        SourceKind::Interaction,
+        "test",
+        true,
+        true,
+        true,
+    );
+    let session = writer
+        .begin_session(1)
+        .expect("availability source session should start");
+    let sampled_at = Instant::now();
+    session
+        .record_sample(sampled_at, sampled_at + Duration::from_mins(1), 1)
+        .expect("availability sample should publish");
+
+    (
+        availability_round(&handle, sampled_at),
+        availability_round(&handle, sampled_at),
     )
 }
 
@@ -215,6 +247,10 @@ fn counting_allocator_is_active_and_scoped() {
     let (first_samples, second_samples) = steady_source_sample_control();
     assert_eq!(first_samples, Stats::default());
     assert_eq!(second_samples, Stats::default());
+
+    let (first_availability, second_availability) = steady_availability_control();
+    assert_eq!(first_availability, Stats::default());
+    assert_eq!(second_availability, first_availability);
 
     let (first_manager_samples, second_manager_samples) = steady_manager_sampling_control();
     assert_eq!(first_manager_samples, Stats::default());

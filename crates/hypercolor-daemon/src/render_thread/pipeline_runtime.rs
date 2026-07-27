@@ -12,7 +12,6 @@ use hypercolor_core::engine::FpsTier;
 use hypercolor_core::input::{
     InputData, InputGraphHandle, InputGraphSnapshot, InputSourceSlot, InteractionData,
     MotionAggregate, PointerMode, SourceFreshness, SourceKind, SourceState, SourceStatusHandle,
-    SourceStatusRegistry,
 };
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_core::types::canvas::{
@@ -141,6 +140,8 @@ impl InputReuseState {
                 .await;
         } else {
             self.cached_inputs.clear_transient_interaction();
+            self.cached_inputs.input_availability =
+                self.routes.refresh_interaction_availability(state).await;
         }
 
         &mut self.cached_inputs
@@ -157,7 +158,6 @@ struct CachedInputRoute {
 #[derive(Default)]
 struct InputRouteCache {
     graph: Option<InputGraphHandle>,
-    status_registry: Option<SourceStatusRegistry>,
     graph_generation: Option<u64>,
     routes: Vec<CachedInputRoute>,
     audio_routes: Vec<usize>,
@@ -180,9 +180,6 @@ impl InputRouteCache {
             let mut input_manager = state.input_manager.lock().await;
             if self.graph.is_none() {
                 self.graph = Some(input_manager.input_graph_handle());
-            }
-            if self.status_registry.is_none() {
-                self.status_registry = Some(input_manager.source_status_registry());
             }
             input_manager.sample_sources(delta_secs);
             input_manager.latest_sensor_snapshot()
@@ -224,12 +221,31 @@ impl InputRouteCache {
         inputs.interaction.batch.window_secs = delta_secs.max(0.0);
     }
 
+    async fn refresh_interaction_availability(
+        &mut self,
+        state: &RenderThreadState,
+    ) -> InputSourceAvailability {
+        if self.graph.is_none() {
+            self.graph = Some(state.input_manager.lock().await.input_graph_handle());
+        }
+        let graph = self
+            .graph
+            .as_ref()
+            .expect("input graph handle is initialized before status refresh")
+            .snapshot();
+        if self.graph_generation != Some(graph.generation()) {
+            self.rebuild_routes(&graph);
+        }
+        self.interaction_availability()
+    }
+
     fn interaction_availability(&self) -> InputSourceAvailability {
-        let Some(registry) = &self.status_registry else {
-            return InputSourceAvailability::default();
-        };
-        let snapshot = registry.snapshot();
-        aggregate_interaction_availability(snapshot.handles(), Instant::now())
+        let handles = self
+            .interaction_routes
+            .iter()
+            .chain(&self.untyped_routes)
+            .map(|&route_index| self.routes[route_index].slot.status());
+        aggregate_interaction_availability(handles, Instant::now())
     }
 
     fn route_latest_into(&mut self, inputs: &mut FrameInputs) {
@@ -379,13 +395,13 @@ fn reset_audio_vector(values: &mut Vec<f32>, len: usize) {
     values.fill(0.0);
 }
 
-fn aggregate_interaction_availability(
-    handles: &[SourceStatusHandle],
+fn aggregate_interaction_availability<'a>(
+    handles: impl IntoIterator<Item = &'a SourceStatusHandle>,
     now: Instant,
 ) -> InputSourceAvailability {
     let mut availability = InputSourceAvailability::default();
     for handle in handles {
-        let source = handle.snapshot_at(now);
+        let source = handle.availability_at(now);
         if source.retired
             || source.kind != SourceKind::Interaction
             || !(source.configured && source.consented && source.demanded)
@@ -1945,6 +1961,31 @@ mod tests {
                 routed: true,
                 healthy: false,
                 fresh: false,
+                degraded: false,
+            }
+        );
+    }
+
+    #[test]
+    fn statusless_interaction_source_is_routed_through_its_graph_slot() {
+        let mut manager = InputManager::new();
+        manager.add_source(Box::new(EventOnceSource::new("KeyA")));
+        manager
+            .start_all()
+            .expect("statusless interaction source should start");
+        let graph = manager.input_graph_handle().snapshot();
+
+        let availability = aggregate_interaction_availability(
+            graph.slots().iter().map(|slot| slot.status()),
+            Instant::now(),
+        );
+
+        assert_eq!(
+            availability,
+            hypercolor_core::effect::InputSourceAvailability {
+                routed: true,
+                healthy: true,
+                fresh: true,
                 degraded: false,
             }
         );

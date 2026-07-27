@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use arc_swap::{ArcSwap, ArcSwapOption};
 
-use super::{InputData, SourceKind};
+use super::{InputData, SourceKind, SourceStatusHandle};
 use crate::types::event::TimedInputEvent;
 
 /// Maximum events retained per source between consumer reads.
@@ -20,6 +20,7 @@ pub struct InputSourceSlot {
 struct InputSourceSlotInner {
     id: u64,
     kind: Option<SourceKind>,
+    status: SourceStatusHandle,
     latest: ArcSwapOption<InputData>,
     event_writer: Mutex<InputEventWriter>,
     events: ArcSwap<InputEventSnapshot>,
@@ -57,11 +58,12 @@ pub struct InputEventRead {
 }
 
 impl InputSourceSlot {
-    pub(crate) fn new(id: u64, kind: Option<SourceKind>) -> Self {
+    pub(crate) fn new(id: u64, kind: Option<SourceKind>, status: SourceStatusHandle) -> Self {
         Self {
             inner: Arc::new(InputSourceSlotInner {
                 id,
                 kind,
+                status,
                 latest: ArcSwapOption::empty(),
                 event_writer: Mutex::new(InputEventWriter {
                     entries: VecDeque::with_capacity(INPUT_EVENT_RING_CAPACITY),
@@ -83,6 +85,12 @@ impl InputSourceSlot {
     #[must_use]
     pub fn kind(&self) -> Option<SourceKind> {
         self.inner.kind
+    }
+
+    /// Health handle bound to the same source generation as this slot.
+    #[must_use]
+    pub fn status(&self) -> &SourceStatusHandle {
+        &self.inner.status
     }
 
     /// Load the latest sample without borrowing the input manager.
