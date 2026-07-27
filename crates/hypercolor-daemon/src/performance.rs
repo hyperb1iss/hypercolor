@@ -94,12 +94,25 @@ pub(crate) struct FrameTimeline {
 pub(crate) struct LatestFrameMetrics {
     pub timestamp_ms: u32,
     pub input_us: u32,
+    /// Time finalizing the *previous* frame's deferred GPU zone readback,
+    /// which runs before composition starts. Reported separately because it
+    /// used to be billed to `sample_us` and made healthy frames look like
+    /// sampler spikes.
+    pub deferred_sample_us: u32,
     pub producer_us: u32,
     pub producer_render_us: u32,
     pub producer_scene_compose_us: u32,
     pub composition_us: u32,
     pub render_us: u32,
+    /// Time submitting and resolving the GPU preview surface, which runs
+    /// between composition and sampling and is only non-zero while a preview
+    /// consumer is attached.
+    pub preview_advance_us: u32,
     pub sample_us: u32,
+    /// Portion of `sample_us` spent inside explicit GPU sampler calls, as
+    /// opposed to the rest of the sampling phase. On scene-pre-sampled frames
+    /// this instead carries the sampling the compositor already did.
+    pub sample_dispatch_us: u32,
     pub push_us: u32,
     pub postprocess_us: u32,
     pub publish_us: u32,

@@ -10,7 +10,7 @@ use hypercolor_core::types::event::FrameTiming;
 use hypercolor_types::event::{FrameData, HypercolorEvent, Severity};
 use hypercolor_types::session::OffOutputBehavior;
 
-use super::frame_composer::{ComposeRequest, RenderStageStats, compose_frame};
+use super::frame_composer::{ComposeRequest, compose_frame};
 use super::frame_io::{FramePublicationRequest, FramePublicationSurfaces, publish_frame_updates};
 use super::frame_metrics::{ActiveFrameMetricsInput, summarize_active_frame};
 use super::frame_policy::{FrameExecution, SkipDecision};
@@ -175,6 +175,7 @@ pub(crate) async fn execute_frame(
             "Deferred GPU spatial sampling finalize failed; dropping deferred sample result",
         )
     };
+    let deferred_sample_us = micros_between(input_done_at, Instant::now());
     let canvas_preview_due = frame_loop.publication_cadence.canvas_preview_due(
         scene_snapshot.elapsed_ms,
         state.preview_canvas_receiver_count(),
@@ -208,10 +209,13 @@ pub(crate) async fn execute_frame(
     .await;
     let render_us = render_stage.total_us;
 
+    let preview_advance_start = Instant::now();
     {
         let mut preview = render.preview_runtime();
         preview.advance_gpu_preview(&mut render_stage);
     }
+    let sample_start = Instant::now();
+    let preview_advance_us = micros_between(preview_advance_start, sample_start);
     let LedSamplingOutcome {
         layout,
         gpu_zone_sampling,
@@ -238,7 +242,8 @@ pub(crate) async fn execute_frame(
 
     let sample_done_at = Instant::now();
     let sample_done_us = micros_between(frame_start, sample_done_at);
-    let sample_us = measured_sampling_us(&render_stage, input_done_us, sample_done_us);
+    let sample_us = micros_between(sample_start, sample_done_at);
+    let sample_dispatch_us = render_stage.sampled_us;
     frame_loop
         .lighting_feed
         .observe_zones(render.output_artifacts.zones(), scene_snapshot.elapsed_ms);
@@ -436,7 +441,9 @@ pub(crate) async fn execute_frame(
     let render_surfaces = render.render_surface_snapshot(state.published_canvas_receiver_count());
     let total_us = publish_done_us;
     let known_stage_us = input_us
+        .saturating_add(deferred_sample_us)
         .saturating_add(render_us)
+        .saturating_add(preview_advance_us)
         .saturating_add(sample_us)
         .saturating_add(push_us)
         .saturating_add(postprocess_us)
@@ -450,6 +457,7 @@ pub(crate) async fn execute_frame(
         publish_stats: &publish_stats,
         producer_full_frame_copy: render_stage.producer_full_frame_copy,
         input_us,
+        deferred_sample_us,
         producer_us: render_stage.producer_us,
         producer_render_us: render_stage.producer_render_us,
         producer_scene_compose_us: render_stage.producer_scene_compose_us,
@@ -457,7 +465,9 @@ pub(crate) async fn execute_frame(
         producer_done_us: render_stage.producer_done_us,
         composition_done_us: render_stage.composition_done_us,
         render_us,
+        preview_advance_us,
         sample_us,
+        sample_dispatch_us,
         push_us,
         postprocess_us,
         total_us,
@@ -621,16 +631,6 @@ const fn output_frame_source_kind(source: OutputFrameSource) -> OutputFrameSourc
     }
 }
 
-fn measured_sampling_us(
-    render_stage: &RenderStageStats,
-    input_done_us: u32,
-    sample_done_us: u32,
-) -> u32 {
-    let sampling_phase_start_us = input_done_us.saturating_add(render_stage.composition_done_us);
-    let measured_us = sample_done_us.saturating_sub(sampling_phase_start_us);
-    measured_us.max(render_stage.sampled_us)
-}
-
 #[cfg(test)]
 mod tests {
     use crate::performance::CompositorBackendKind;
@@ -745,24 +745,6 @@ mod tests {
             sleeping, sleeping
         ));
         assert!(!super::should_switch_to_late_sleep_frame(running, running));
-    }
-
-    #[test]
-    fn measured_sampling_uses_timeline_phase_when_gpu_dispatch_is_deferred() {
-        let mut render_stage = render_stage(CompositorBackendKind::Gpu, false, false);
-        render_stage.composition_done_us = 90;
-        render_stage.sampled_us = 20;
-
-        assert_eq!(super::measured_sampling_us(&render_stage, 10, 320), 220);
-    }
-
-    #[test]
-    fn measured_sampling_preserves_explicit_sample_time_when_timeline_is_clamped() {
-        let mut render_stage = render_stage(CompositorBackendKind::Gpu, false, false);
-        render_stage.composition_done_us = 120;
-        render_stage.sampled_us = 30;
-
-        assert_eq!(super::measured_sampling_us(&render_stage, 10, 100), 30);
     }
 
     fn sample_layout(zone_ids: &[&str]) -> SpatialLayout {

@@ -8,7 +8,30 @@ use crate::performance::LatestFrameMetrics;
 const SLOW_FRAME_WARNING_MIN_INTERVAL: Duration = Duration::from_secs(2);
 const FRAME_STAGE_SPIKE_US: u32 = 2_000;
 
-static LAST_SLOW_FRAME_WARNING: LazyLock<Mutex<Option<Instant>>> = LazyLock::new(Mutex::default);
+static SLOW_FRAME_WARNING_STATE: LazyLock<Mutex<SlowFrameWarningState>> =
+    LazyLock::new(Mutex::default);
+
+#[derive(Debug, Default)]
+struct SlowFrameWarningState {
+    last_warning: Option<Instant>,
+    suppressed: u32,
+}
+
+impl SlowFrameWarningState {
+    /// Yields the number of warnings dropped by the rate limit since the last
+    /// one escaped, or `None` while the limit still holds. Without the count a
+    /// sustained burst and a lone straggler look identical in the log.
+    fn admit(&mut self, now: Instant) -> Option<u32> {
+        if self.last_warning.is_some_and(|last| {
+            now.saturating_duration_since(last) < SLOW_FRAME_WARNING_MIN_INTERVAL
+        }) {
+            self.suppressed = self.suppressed.saturating_add(1);
+            return None;
+        }
+        self.last_warning = Some(now);
+        Some(std::mem::take(&mut self.suppressed))
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct FrameCompletionReport {
@@ -69,7 +92,10 @@ pub(crate) fn report_active_frame_completion(
         gpu_sample_cpu_fallback = metrics.gpu_sample_cpu_fallback,
         preview_surface = metrics.preview_surface,
         scene_canvas_forced_surface = metrics.scene_canvas_forced_surface,
+        deferred_sample_us = metrics.deferred_sample_us,
+        preview_advance_us = metrics.preview_advance_us,
         sample_us = metrics.sample_us,
+        sample_dispatch_us = metrics.sample_dispatch_us,
         push_us = metrics.push_us,
         postprocess_us = metrics.postprocess_us,
         publish_us = metrics.publish_us,
@@ -95,24 +121,28 @@ pub(crate) fn report_active_frame_completion(
     let Some(reason) = frame_completion_warning_reason(report) else {
         return;
     };
-    if !slow_frame_warning_due(Instant::now()) {
+    let Some(suppressed_warnings) = slow_frame_warning_due(Instant::now()) else {
         return;
-    }
+    };
 
     warn!(
         reason,
+        suppressed_warnings,
         frame = metrics.timeline.frame_token,
         frame_interval_us = report.frame_interval_us,
         budget_us = metrics.timeline.budget_us,
         wake_late_us = metrics.wake_late_us,
         jitter_us = metrics.jitter_us,
         input_us = metrics.input_us,
+        deferred_sample_us = metrics.deferred_sample_us,
         render_us = metrics.render_us,
         producer_us = metrics.producer_us,
         producer_render_us = metrics.producer_render_us,
         producer_scene_compose_us = metrics.producer_scene_compose_us,
         composition_us = metrics.composition_us,
+        preview_advance_us = metrics.preview_advance_us,
         sample_us = metrics.sample_us,
+        sample_dispatch_us = metrics.sample_dispatch_us,
         push_us = metrics.push_us,
         postprocess_us = metrics.postprocess_us,
         publish_us = metrics.publish_us,
@@ -175,27 +205,35 @@ fn frame_completion_warning_reason(report: &FrameCompletionReport) -> Option<&'s
     None
 }
 
-fn slow_frame_warning_due(now: Instant) -> bool {
-    let mut last_warning = match LAST_SLOW_FRAME_WARNING.lock() {
+fn slow_frame_warning_due(now: Instant) -> Option<u32> {
+    let mut state = match SLOW_FRAME_WARNING_STATE.lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     };
-    if last_warning
-        .is_some_and(|last| now.saturating_duration_since(last) < SLOW_FRAME_WARNING_MIN_INTERVAL)
-    {
-        return false;
-    }
-    *last_warning = Some(now);
-    true
+    state.admit(now)
 }
 
 #[cfg(test)]
 mod tests {
     use hypercolor_core::device::manager::FrameWriteStats;
+    use std::time::{Duration, Instant};
 
     use super::FrameCompletionReport;
+    use super::SlowFrameWarningState;
     use super::frame_completion_warning_reason;
     use crate::performance::LatestFrameMetrics;
+
+    #[test]
+    fn slow_frame_warning_reports_how_many_it_dropped() {
+        let mut state = SlowFrameWarningState::default();
+        let start = Instant::now();
+
+        assert_eq!(state.admit(start), Some(0));
+        assert_eq!(state.admit(start + Duration::from_millis(100)), None);
+        assert_eq!(state.admit(start + Duration::from_millis(200)), None);
+        assert_eq!(state.admit(start + Duration::from_secs(3)), Some(2));
+        assert_eq!(state.admit(start + Duration::from_secs(6)), Some(0));
+    }
 
     #[test]
     fn frame_completion_report_captures_metrics_and_output_counts() {
