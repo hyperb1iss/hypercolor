@@ -25,7 +25,7 @@ use crate::input::input_mono_ms;
 use crate::input::traits::{InputData, InputSource, InteractionData, MotionAggregate, PointerMode};
 use crate::input::worker_retention::{retain_input_worker, spawn_input_worker};
 use crate::input::{
-    SourceKind, SourceResourceScanHealth, SourceStatusHandle, SourceStatusReporter,
+    SourceIssue, SourceKind, SourceResourceScanHealth, SourceStatusHandle, SourceStatusReporter,
     classify_source_resource_scan,
 };
 use crate::types::event::{InputButtonState, InputEvent, TimedInputEvent};
@@ -291,6 +291,18 @@ impl EvdevHostInput {
     fn stop_worker(&mut self) {
         if let Some(worker) = &self.worker {
             let _ = worker.stop_tx.send(());
+        }
+        let (cursor_x, cursor_y) = self
+            .shared
+            .lock()
+            .map_or((0.0, 0.0), |guard| (guard.cursor_x, guard.cursor_y));
+        self.shared = Arc::new(Mutex::new(SharedState {
+            cursor_x,
+            cursor_y,
+            ..SharedState::default()
+        }));
+        self.last_state_key = None;
+        if let Some(worker) = &self.worker {
             let _ = worker.exit_rx.recv_timeout(STOP_TIMEOUT);
         }
         if self
@@ -305,10 +317,6 @@ impl EvdevHostInput {
         } else if self.worker.is_some() {
             warn!(source = %self.name, "Evdev input worker did not stop before the deadline");
         }
-        if let Ok(mut guard) = self.shared.lock() {
-            guard.clear_live_state();
-        }
-        self.last_state_key = None;
     }
 
     fn spawn_worker(&mut self) -> anyhow::Result<()> {
@@ -563,6 +571,9 @@ impl InputSource for EvdevHostInput {
     }
 
     fn drain_events(&mut self) -> Vec<TimedInputEvent> {
+        if !self.running || self.worker.is_none() {
+            return Vec::new();
+        }
         if let Ok(mut guard) = self.shared.lock() {
             return drain_events(&mut guard.events);
         }
@@ -1246,6 +1257,71 @@ mod tests {
         push_event(&mut state, next, 0);
         assert!(state.events.is_empty());
         assert_eq!(state.dropped, 6);
+    }
+
+    #[test]
+    fn late_worker_publication_is_isolated_after_stop() {
+        let mut source = EvdevHostInput::new(true, true);
+        let retired_state = Arc::clone(&source.shared);
+        let late_worker_state = Arc::clone(&retired_state);
+        let (release_tx, release_rx) = mpsc::sync_channel(1);
+        let late_worker = thread::spawn(move || {
+            release_rx.recv().expect("late worker should be released");
+            let event = TimedInputEvent {
+                event: InputEvent::Key {
+                    source_id: "late-worker".to_owned(),
+                    key: "a".to_owned(),
+                    state: InputButtonState::Pressed,
+                },
+                at_ms: 1,
+                seq: 1,
+                physical_code: None,
+                repeat_count: 1,
+            };
+            push_event(
+                &mut late_worker_state.lock().expect("retired state lock"),
+                event,
+                DEFAULT_EVENT_LIMIT,
+            );
+        });
+        source.stop_worker();
+        assert!(!Arc::ptr_eq(&retired_state, &source.shared));
+        release_tx.send(()).expect("late worker should resume");
+        late_worker.join().expect("late worker should finish");
+
+        assert_eq!(
+            retired_state
+                .lock()
+                .expect("retired state lock")
+                .events
+                .len(),
+            1
+        );
+        assert_eq!(Arc::strong_count(&retired_state), 1);
+        assert!(
+            source
+                .shared
+                .lock()
+                .expect("active state lock")
+                .events
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn stopping_preserves_relative_cursor_position() {
+        let mut source = EvdevHostInput::new(false, true);
+        {
+            let mut state = source.shared.lock().expect("active state lock");
+            state.cursor_x = 0.75;
+            state.cursor_y = 0.25;
+        }
+
+        source.stop_worker();
+
+        let state = source.shared.lock().expect("successor state lock");
+        assert!((state.cursor_x - 0.75).abs() < f32::EPSILON);
+        assert!((state.cursor_y - 0.25).abs() < f32::EPSILON);
     }
 
     #[test]

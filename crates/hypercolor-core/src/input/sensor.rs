@@ -1,7 +1,7 @@
 //! Background system sensor polling for the render pipeline.
 
-use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -31,6 +31,8 @@ const CPU_TEMP_REPROBE_INTERVAL: Duration = Duration::from_secs(20);
 pub struct SensorPoller {
     interval: Duration,
     tx: watch::Sender<Arc<SystemSnapshot>>,
+    publication_session: Arc<Mutex<Option<u64>>>,
+    next_session_generation: u64,
     thread: Option<SensorPollerThread>,
     #[cfg(test)]
     sampler: Option<Box<dyn FnMut() -> SystemSnapshot + Send>>,
@@ -56,6 +58,8 @@ impl SensorPoller {
         Self {
             interval: interval.max(MINIMUM_CPU_UPDATE_INTERVAL),
             tx,
+            publication_session: Arc::new(Mutex::new(None)),
+            next_session_generation: 0,
             thread: None,
             #[cfg(test)]
             sampler: None,
@@ -80,6 +84,20 @@ impl SensorPoller {
 
         let interval = self.interval;
         let tx = self.tx.clone();
+        self.next_session_generation = self
+            .next_session_generation
+            .checked_add(1)
+            .expect("sensor poller session generation exhausted");
+        let session_generation = self.next_session_generation;
+        {
+            let mut active = self
+                .publication_session
+                .lock()
+                .expect("sensor publication session lock is not poisoned");
+            *active = Some(session_generation);
+            tx.send_replace(Arc::new(SystemSnapshot::empty()));
+        }
+        let publication_session = Arc::clone(&self.publication_session);
         let (stop_tx, stop_rx) = mpsc::channel();
         let (exit_tx, exit_rx) = mpsc::sync_channel(1);
         #[cfg(test)]
@@ -90,7 +108,14 @@ impl SensorPoller {
                 #[cfg(test)]
                 if let Some(ref mut sampler) = sampler {
                     loop {
-                        tx.send_replace(Arc::new(sampler()));
+                        if !publish_sensor_snapshot(
+                            &publication_session,
+                            session_generation,
+                            &tx,
+                            sampler(),
+                        ) {
+                            break;
+                        }
                         match stop_rx.recv_timeout(interval) {
                             Ok(()) | Err(RecvTimeoutError::Disconnected) => break,
                             Err(RecvTimeoutError::Timeout) => {}
@@ -102,7 +127,14 @@ impl SensorPoller {
 
                 let mut sampler = SystemSampler::new();
                 loop {
-                    tx.send_replace(Arc::new(sampler.sample_snapshot()));
+                    if !publish_sensor_snapshot(
+                        &publication_session,
+                        session_generation,
+                        &tx,
+                        sampler.sample_snapshot(),
+                    ) {
+                        break;
+                    }
                     match stop_rx.recv_timeout(interval) {
                         Ok(()) | Err(RecvTimeoutError::Disconnected) => break,
                         Err(RecvTimeoutError::Timeout) => {}
@@ -110,8 +142,14 @@ impl SensorPoller {
                 }
                 let _ = exit_tx.send(());
             },
-        )
-        .context("failed to spawn sensor poller thread")?;
+        );
+        let join_handle = match join_handle {
+            Ok(join_handle) => join_handle,
+            Err(error) => {
+                self.end_publication_session();
+                return Err(error).context("failed to spawn sensor poller thread");
+            }
+        };
 
         self.thread = Some(SensorPollerThread {
             stop_tx,
@@ -127,6 +165,7 @@ impl SensorPoller {
     }
 
     fn stop_with_timeout(&mut self, timeout: Duration) {
+        self.end_publication_session();
         let Some(thread) = self.thread.take() else {
             return;
         };
@@ -143,6 +182,16 @@ impl SensorPoller {
         retain_input_worker(thread.join_handle, "sensor poller");
     }
 
+    fn end_publication_session(&self) {
+        let mut active = self
+            .publication_session
+            .lock()
+            .expect("sensor publication session lock is not poisoned");
+        if active.take().is_some() {
+            self.tx.send_replace(Arc::new(SystemSnapshot::empty()));
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn set_test_sampler(
         &mut self,
@@ -150,6 +199,22 @@ impl SensorPoller {
     ) {
         self.sampler = Some(Box::new(sampler));
     }
+}
+
+fn publish_sensor_snapshot(
+    publication_session: &Mutex<Option<u64>>,
+    session_generation: u64,
+    tx: &watch::Sender<Arc<SystemSnapshot>>,
+    snapshot: SystemSnapshot,
+) -> bool {
+    let active = publication_session
+        .lock()
+        .expect("sensor publication session lock is not poisoned");
+    if *active != Some(session_generation) {
+        return false;
+    }
+    tx.send_replace(Arc::new(snapshot));
+    true
 }
 
 impl Default for SensorPoller {
@@ -755,11 +820,11 @@ fn sanitize_zone_label(instance_name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::SensorPoller;
+    use super::{SensorPoller, publish_sensor_snapshot};
     use hypercolor_types::sensor::SystemSnapshot;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::mpsc;
+    use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
     #[test]
@@ -823,6 +888,81 @@ mod tests {
             .expect("blocked test sampler should be releasable");
     }
 
+    #[test]
+    fn timed_out_sampler_cannot_overwrite_a_successor_session() {
+        let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+        let (release_tx, release_rx) = mpsc::sync_channel(1);
+        let (returned_tx, returned_rx) = mpsc::sync_channel(1);
+        let mut poller = SensorPoller::with_interval(Duration::from_secs(5));
+        poller.set_test_sampler(move || {
+            let _ = entered_tx.send(());
+            let _ = release_rx.recv();
+            let _ = returned_tx.send(());
+            SystemSnapshot {
+                polled_at_ms: 1,
+                ..SystemSnapshot::empty()
+            }
+        });
+        let mut rx = poller.receiver();
+        poller.start().expect("blocked sensor poller should start");
+        entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("first session should enter its sampler");
+
+        poller.stop_with_timeout(Duration::from_millis(5));
+        assert_eq!(rx.borrow_and_update().polled_at_ms, 0);
+
+        poller.set_test_sampler(|| SystemSnapshot {
+            polled_at_ms: 2,
+            ..SystemSnapshot::empty()
+        });
+        poller
+            .start()
+            .expect("successor sensor poller should start");
+        assert!(
+            wait_for_snapshot(&mut rx, 2, Duration::from_secs(1)),
+            "successor session should publish its snapshot"
+        );
+
+        release_tx
+            .send(())
+            .expect("timed-out sampler should be releasable");
+        returned_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("timed-out sampler should return");
+        assert!(
+            !wait_for_change(&mut rx, Duration::from_millis(100)),
+            "retired sensor session published after its successor"
+        );
+        assert_eq!(rx.borrow().polled_at_ms, 2);
+        poller.stop();
+    }
+
+    #[test]
+    fn retired_generation_cannot_publish() {
+        let (tx, rx) = tokio::sync::watch::channel(Arc::new(SystemSnapshot::empty()));
+        let publication_session = Mutex::new(Some(2));
+        assert!(publish_sensor_snapshot(
+            &publication_session,
+            2,
+            &tx,
+            SystemSnapshot {
+                polled_at_ms: 2,
+                ..SystemSnapshot::empty()
+            },
+        ));
+        assert!(!publish_sensor_snapshot(
+            &publication_session,
+            1,
+            &tx,
+            SystemSnapshot {
+                polled_at_ms: 1,
+                ..SystemSnapshot::empty()
+            },
+        ));
+        assert_eq!(rx.borrow().polled_at_ms, 2);
+    }
+
     #[cfg(target_os = "windows")]
     #[test]
     fn wmi_access_denied_hresult_is_terminal_for_acpi_thermal_polling() {
@@ -849,5 +989,22 @@ mod tests {
                 Ok(Ok(()))
             )
         })
+    }
+
+    fn wait_for_snapshot(
+        rx: &mut tokio::sync::watch::Receiver<Arc<SystemSnapshot>>,
+        expected_polled_at_ms: u64,
+        timeout: Duration,
+    ) -> bool {
+        let deadline = Instant::now() + timeout;
+        while let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
+            if !wait_for_change(rx, remaining) {
+                return false;
+            }
+            if rx.borrow_and_update().polled_at_ms == expected_polled_at_ms {
+                return true;
+            }
+        }
+        false
     }
 }

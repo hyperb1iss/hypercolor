@@ -1545,12 +1545,27 @@ fn manager_drains_discrete_input_events_from_all_sources() {
             message: hypercolor_core::types::event::MidiRealtimeMessage::Clock,
         },
     ])));
+    mgr.start_all().expect("eventful sources should start");
 
     let first = mgr.drain_events();
     assert_eq!(first.len(), 2);
 
     let second = mgr.drain_events();
     assert!(second.is_empty(), "events should drain exactly once");
+}
+
+#[test]
+fn manager_does_not_drain_events_from_stopped_sources() {
+    let mut mgr = InputManager::new();
+    mgr.add_source(Box::new(EventfulSource::new(vec![InputEvent::Key {
+        source_id: "host:/dev/input/event4".into(),
+        key: "Space".into(),
+        state: InputButtonState::Pressed,
+    }])));
+    mgr.start_all().expect("eventful source should start");
+    mgr.stop_all();
+
+    assert!(mgr.drain_events().is_empty());
 }
 
 #[test]

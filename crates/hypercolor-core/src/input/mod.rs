@@ -481,6 +481,7 @@ impl InputManager {
     pub fn drain_events(&mut self) -> Vec<TimedInputEvent> {
         self.sources
             .iter_mut()
+            .filter(|source| source.is_running())
             .flat_map(|source| source.drain_events())
             .collect()
     }

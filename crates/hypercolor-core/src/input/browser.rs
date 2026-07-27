@@ -42,6 +42,7 @@ pub enum BrowserInputEdge {
 
 #[derive(Default)]
 struct SharedState {
+    accepting: bool,
     events: VecDeque<TimedInputEvent>,
     dropped: u32,
     pressed_keys: BTreeMap<String, BTreeSet<String>>,
@@ -102,6 +103,9 @@ impl BrowserInputHandle {
         let Ok(mut guard) = self.shared.lock() else {
             return;
         };
+        if !guard.accepting {
+            return;
+        }
         let at_ms = input_mono_ms();
         for edge in edges {
             self.fold(&mut guard, source_id, edge, at_ms);
@@ -116,6 +120,9 @@ impl BrowserInputHandle {
         let Ok(mut guard) = self.shared.lock() else {
             return;
         };
+        if !guard.accepting {
+            return;
+        }
         let at_ms = input_mono_ms();
         if let Some(keys) = guard.pressed_keys.remove(source_id) {
             for key in keys {
@@ -357,8 +364,18 @@ impl InputSource for BrowserInputSource {
         if self.running {
             return Ok(());
         }
+        let status = self.status.begin_session()?;
+        let Ok(mut guard) = self.shared.lock() else {
+            self.status.stop();
+            anyhow::bail!("browser input state lock is poisoned");
+        };
+        *guard = SharedState {
+            accepting: true,
+            ..SharedState::default()
+        };
+        drop(guard);
         self.running = true;
-        if let Some(status) = self.status.begin_session()? {
+        if let Some(status) = status {
             status.mark_event_driven_live_without_deadline(0);
         }
         Ok(())
@@ -431,6 +448,9 @@ impl InputSource for BrowserInputSource {
     }
 
     fn drain_events(&mut self) -> Vec<TimedInputEvent> {
+        if !self.running {
+            return Vec::new();
+        }
         if let Ok(mut guard) = self.shared.lock() {
             return drain_events(&mut guard.events);
         }
@@ -688,7 +708,8 @@ mod tests {
     fn stop_clears_all_state() {
         let mut source = BrowserInputSource::new();
         source.start().expect("start");
-        source.handle().inject(
+        let handle = source.handle();
+        handle.inject(
             "browser-1",
             [BrowserInputEdge::Key {
                 key: "a".into(),
@@ -696,8 +717,29 @@ mod tests {
             }],
         );
         source.stop();
+        handle.inject(
+            "browser-1",
+            [BrowserInputEdge::Key {
+                key: "b".into(),
+                state: InputButtonState::Pressed,
+            }],
+        );
+        {
+            let state = source.shared.lock().expect("browser state lock");
+            assert!(state.events.is_empty());
+            assert!(state.pressed_keys.is_empty());
+        }
+        assert!(source.drain_events().is_empty());
         source.start().expect("restart");
         let data = drain_snapshot(&mut source);
         assert!(data.keyboard.pressed_keys.is_empty());
+        handle.inject(
+            "browser-1",
+            [BrowserInputEdge::Key {
+                key: "c".into(),
+                state: InputButtonState::Pressed,
+            }],
+        );
+        assert_eq!(source.drain_events().len(), 1);
     }
 }
