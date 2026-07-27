@@ -7,6 +7,7 @@
 
 mod cache;
 mod command;
+mod interactive_preview_relay;
 mod preview_encode;
 mod preview_scale;
 mod protocol;

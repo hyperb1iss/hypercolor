@@ -7,14 +7,21 @@ use axum::response::IntoResponse;
 use tokio::sync::{RwLock, watch};
 
 use hypercolor_core::bus::{CanvasFrame, HypercolorBus, ZonePreviewFrame};
+use hypercolor_core::effect::EffectRegistry;
 use hypercolor_core::input::{
-    InputData, InputManager, InputSource, SourceIssue, SourceKind, SourceSessionSlot,
-    SourceStatusHandle, SourceStatusReporter,
+    BrowserConnectionIncarnation, BrowserInputChildKey, BrowserInputHandle, BrowserInputSource,
+    BrowserPreviewId, InputData, InputGraphHandle, InputManager, InputSource, SourceIssue,
+    SourceKind, SourceSessionSlot, SourceStatusHandle, SourceStatusReporter,
 };
-use hypercolor_leptos_ext::ws::TimedInputEventPayload;
+use hypercolor_core::scene::SceneManager;
+use hypercolor_leptos_ext::ws::{
+    InteractivePreviewFrame as WireInteractivePreviewFrame,
+    PreviewPixelFormat as WirePreviewPixelFormat, TimedInputEventPayload,
+};
 use hypercolor_types::canvas::{
     Canvas, PublishedSurface, Rgba, linear_to_srgb_u8, srgb_u8_to_linear,
 };
+use hypercolor_types::config::InteractionRoutePolicy;
 use hypercolor_types::controls::{ControlSurfaceEvent, ControlValue, ControlValueMap};
 use hypercolor_types::device::{ConnectionType, DeviceId, DeviceOrigin};
 use hypercolor_types::event::{
@@ -43,17 +50,18 @@ use super::cache::{
 use super::command::{
     command_response_from_http, dispatch_command, normalize_command_path, parse_command_method,
 };
+use super::interactive_preview_relay::InteractivePreviewOutbound;
 use super::preview_encode::{
     PreviewJpegEncoder, PreviewRawEncoder, encode_canvas_jpeg_binary_stateless,
     encode_canvas_jpeg_payload_scaled_stateless,
 };
 use super::protocol::{
     ActiveFramesConfig, BrowserInputEdgeWire, CanvasFormat, ChannelConfig, ChannelConfigPatch,
-    ChannelSet, ClientMessage, FrameFormat, FrameZoneSelection, FramesConfig,
-    MAX_INPUT_INJECT_EVENTS, MAX_INPUT_NAME_BYTES, MAX_INPUT_WHEEL_DELTA, ServerMessage,
-    SubscriptionState, WsChannel, deserialize_finite_coordinate, event_message_parts,
-    parse_channels, should_relay_event, to_snake_case, unique_sorted_channel_names,
-    validate_browser_input_source_id, ws_capabilities,
+    ChannelSet, ClientMessage, FrameFormat, FrameZoneSelection, FramesConfig, InputButtonStateWire,
+    InteractivePreviewConfig, InteractivePreviewTarget, MAX_INPUT_INJECT_EVENTS,
+    MAX_INPUT_NAME_BYTES, MAX_INPUT_WHEEL_DELTA, ServerMessage, SubscriptionState, WsChannel,
+    deserialize_finite_coordinate, event_message_parts, parse_channels, should_relay_event,
+    to_snake_case, unique_sorted_channel_names, validate_interactive_preview_id, ws_capabilities,
 };
 use super::relays::{
     build_device_metrics_message, build_metrics_message, publish_subscriptions, relay_canvas,
@@ -61,11 +69,17 @@ use super::relays::{
     relay_screen_canvas, relay_sensors, relay_spectrum, relay_web_viewport_canvas,
     sync_preview_receiver, try_enqueue_json,
 };
-use super::session::{authorize_subscription_channels, validated_zone_layout_preview};
+use super::session::{
+    BrowserPreviewSession, authorize_subscription_channels, validated_zone_layout_preview,
+};
 use crate::api::AppState;
 use crate::api::security::{RequestAuthContext, SecurityState};
 use crate::device_metrics::{DeviceMetrics, DeviceMetricsSnapshot};
 use crate::display_frames::{DisplayFrameRuntime, DisplayFrameSnapshot};
+use crate::interaction_routing::InteractionRoutingControl;
+use crate::interactive_preview::{
+    InteractivePreviewAcceleration, InteractivePreviewContext, InteractivePreviewExecutor,
+};
 use crate::performance::{
     CompositorBackendKind, FrameTimeline, FullFrameCopyMetrics, LatestFrameMetrics,
     OutputFrameSourceKind,
@@ -73,6 +87,7 @@ use crate::performance::{
 use crate::preview_runtime::{
     PreviewFrameReceiver, PreviewPixelFormat, PreviewRuntime, PreviewStreamDemand,
 };
+use crate::render_thread::InputPublicationDemandHandle;
 use crate::session::OutputPowerState;
 use crate::startup::input_status_events::InputStatusEventPublisher;
 
@@ -2389,6 +2404,7 @@ fn input_inject_message_parses_all_edge_kinds() {
 
     let raw = r#"{
         "type": "input_inject",
+        "preview_id": "main",
         "events": [
             {"kind": "key", "key": "a", "state": "pressed"},
             {"kind": "button", "button": "left", "state": "released"},
@@ -2397,11 +2413,12 @@ fn input_inject_message_parses_all_edge_kinds() {
         ]
     }"#;
 
-    let ClientMessage::InputInject { events } =
+    let ClientMessage::InputInject { preview_id, events } =
         serde_json::from_str::<ClientMessage>(raw).expect("input_inject parses")
     else {
         panic!("expected InputInject");
     };
+    assert_eq!(preview_id, "main");
     assert_eq!(events.len(), 4);
 
     let edges: Vec<BrowserInputEdge> = events
@@ -2440,7 +2457,7 @@ fn input_inject_rejects_batches_before_the_bounded_vector_can_grow() {
     )
     .collect::<Vec<_>>()
     .join(",");
-    let raw = format!(r#"{{"type":"input_inject","events":[{events}]}}"#);
+    let raw = format!(r#"{{"type":"input_inject","preview_id":"main","events":[{events}]}}"#);
 
     let error = serde_json::from_str::<ClientMessage>(&raw)
         .expect_err("oversized input batch must be rejected");
@@ -2453,8 +2470,9 @@ fn input_inject_rejects_batches_before_the_bounded_vector_can_grow() {
     )
     .collect::<Vec<_>>()
     .join(",");
-    let exact = format!(r#"{{"type":"input_inject","events":[{exact_events}]}}"#);
-    let ClientMessage::InputInject { events } =
+    let exact =
+        format!(r#"{{"type":"input_inject","preview_id":"main","events":[{exact_events}]}}"#);
+    let ClientMessage::InputInject { events, .. } =
         serde_json::from_str::<ClientMessage>(&exact).expect("maximum input batch must parse")
     else {
         panic!("expected InputInject");
@@ -2469,6 +2487,7 @@ fn input_inject_rejects_invalid_names_buttons_coordinates_and_wheel_deltas() {
     let long_name = "a".repeat(MAX_INPUT_NAME_BYTES + 1);
     let oversized = serde_json::json!({
         "type": "input_inject",
+        "preview_id": "main",
         "events": [{"kind": "key", "key": long_name, "state": "pressed"}]
     });
     assert!(
@@ -2479,6 +2498,7 @@ fn input_inject_rejects_invalid_names_buttons_coordinates_and_wheel_deltas() {
     for key in ["", "line\nbreak", "escape\u{1b}"] {
         let payload = serde_json::json!({
             "type": "input_inject",
+            "preview_id": "main",
             "events": [{"kind": "key", "key": key, "state": "pressed"}]
         });
         assert!(
@@ -2489,6 +2509,7 @@ fn input_inject_rejects_invalid_names_buttons_coordinates_and_wheel_deltas() {
 
     let invalid_button = serde_json::json!({
         "type": "input_inject",
+        "preview_id": "main",
         "events": [{"kind": "button", "button": "side", "state": "pressed"}]
     });
     assert!(
@@ -2505,7 +2526,7 @@ fn input_inject_rejects_invalid_names_buttons_coordinates_and_wheel_deltas() {
 
     for coordinate in ["NaN", "Infinity", "1e999", "-1e999"] {
         let raw = format!(
-            r#"{{"type":"input_inject","events":[{{"kind":"move","nx":{coordinate},"ny":0.5}}]}}"#
+            r#"{{"type":"input_inject","preview_id":"main","events":[{{"kind":"move","nx":{coordinate},"ny":0.5}}]}}"#
         );
         assert!(
             serde_json::from_str::<ClientMessage>(&raw).is_err(),
@@ -2516,6 +2537,7 @@ fn input_inject_rejects_invalid_names_buttons_coordinates_and_wheel_deltas() {
     for coordinate in [-0.01, 1.01] {
         let payload = serde_json::json!({
             "type": "input_inject",
+            "preview_id": "main",
             "events": [{"kind": "move", "nx": coordinate, "ny": 0.5}]
         });
         assert!(
@@ -2530,6 +2552,7 @@ fn input_inject_rejects_invalid_names_buttons_coordinates_and_wheel_deltas() {
     ] {
         let payload = serde_json::json!({
             "type": "input_inject",
+            "preview_id": "main",
             "events": [{"kind": "wheel", "delta_hi_res": delta}]
         });
         assert!(
@@ -2540,13 +2563,512 @@ fn input_inject_rejects_invalid_names_buttons_coordinates_and_wheel_deltas() {
 }
 
 #[test]
-fn browser_input_source_id_validation_rejects_invalid_identifiers() {
-    for source_id in ["", "browser input", "browser/1"] {
-        let source_error = validate_browser_input_source_id(source_id)
-            .expect_err("invalid source id must be rejected");
-        assert_eq!(source_error.message, "Browser input source id is invalid");
+fn interactive_preview_ids_are_bounded_but_otherwise_opaque() {
+    for preview_id in ["", "line\nbreak", "escape\u{1b}"] {
+        validate_interactive_preview_id(preview_id)
+            .expect_err("empty and control-bearing preview ids must be rejected");
     }
-    validate_browser_input_source_id("browser:42").expect("generated source id must be valid");
+    validate_interactive_preview_id(&"a".repeat(129))
+        .expect_err("oversized preview id must be rejected");
+    for preview_id in ["main canvas", "preview/1", "映像-💜"] {
+        validate_interactive_preview_id(preview_id).expect("opaque preview id must be accepted");
+    }
+}
+
+fn browser_preview_test_context() -> (
+    BrowserInputSource,
+    BrowserInputHandle,
+    InteractionRoutingControl,
+) {
+    let mut source = BrowserInputSource::new();
+    source.start().expect("browser source should start");
+    let handle = source.handle();
+    let routing = InteractionRoutingControl::new(
+        handle.registry(),
+        1,
+        InteractionRoutePolicy::Host,
+        InteractionRoutePolicy::Browser,
+    );
+    (source, handle, routing)
+}
+
+async fn browser_preview_test_executor(
+    routing: InteractionRoutingControl,
+) -> Arc<InteractivePreviewExecutor> {
+    Arc::new(
+        InteractivePreviewExecutor::start_cpu(InteractivePreviewContext {
+            scene_manager: Arc::new(RwLock::new(SceneManager::new())),
+            effect_registry: Arc::new(RwLock::new(EffectRegistry::new(Vec::new()))),
+            asset_library: None,
+            event_bus: Arc::new(HypercolorBus::new()),
+            input_graph: InputGraphHandle::default(),
+            sensor_snapshots: None,
+            interaction_routing: routing,
+            input_demands: InputPublicationDemandHandle::new(),
+            canvas_width: 64,
+            canvas_height: 64,
+            acceleration: InteractivePreviewAcceleration::cpu(),
+        })
+        .await
+        .expect("CPU interactive preview executor should start"),
+    )
+}
+
+fn browser_preview_session(
+    handle: BrowserInputHandle,
+    routing: InteractionRoutingControl,
+    executor: Arc<InteractivePreviewExecutor>,
+) -> (
+    BrowserPreviewSession,
+    tokio::sync::mpsc::Sender<InteractivePreviewOutbound>,
+    tokio::sync::mpsc::Receiver<InteractivePreviewOutbound>,
+) {
+    let (outbound, receiver) = tokio::sync::mpsc::channel(8);
+    (
+        BrowserPreviewSession::new(handle, routing, Some(executor), outbound.clone()),
+        outbound,
+        receiver,
+    )
+}
+
+fn pressed_key(key: &str) -> BrowserInputEdgeWire {
+    BrowserInputEdgeWire::Key {
+        key: key.to_owned(),
+        state: InputButtonStateWire::Pressed,
+    }
+}
+
+fn interactive_preview_config() -> InteractivePreviewConfig {
+    InteractivePreviewConfig {
+        target: InteractivePreviewTarget::ActiveScene,
+        fps: 60,
+        width: 640,
+        height: 480,
+        format: CanvasFormat::Rgba,
+    }
+}
+
+fn opened_address(message: ServerMessage) -> (u64, u64, bool) {
+    let ServerMessage::InteractivePreviewOpened {
+        connection_incarnation,
+        publication_id,
+        already_open,
+        ..
+    } = message
+    else {
+        panic!("expected interactive preview open acknowledgment");
+    };
+    (connection_incarnation, publication_id, already_open)
+}
+
+#[test]
+fn interactive_preview_commands_are_addressed_and_acknowledged() {
+    let open: ClientMessage = serde_json::from_value(serde_json::json!({
+        "type": "interactive_preview_open",
+        "preview_id": "main canvas",
+        "fps": 60,
+        "width": 640,
+        "height": 480,
+        "format": "rgba"
+    }))
+    .expect("open command should parse");
+    assert!(matches!(
+        open,
+        ClientMessage::InteractivePreviewOpen {
+            preview_id,
+            target: InteractivePreviewTarget::ActiveScene,
+            fps: 60,
+            width: 640,
+            height: 480,
+            format: CanvasFormat::Rgba,
+        } if preview_id == "main canvas"
+    ));
+
+    let close: ClientMessage = serde_json::from_value(serde_json::json!({
+        "type": "interactive_preview_close",
+        "preview_id": "main canvas"
+    }))
+    .expect("close command should parse");
+    assert!(matches!(
+        close,
+        ClientMessage::InteractivePreviewClose { preview_id }
+            if preview_id == "main canvas"
+    ));
+
+    let claim: ClientMessage = serde_json::from_value(serde_json::json!({
+        "type": "interactive_preview_claim_authoritative",
+        "preview_id": "main canvas"
+    }))
+    .expect("claim command should parse");
+    assert!(matches!(
+        claim,
+        ClientMessage::InteractivePreviewClaimAuthoritative { preview_id }
+            if preview_id == "main canvas"
+    ));
+
+    let release: ClientMessage = serde_json::from_value(serde_json::json!({
+        "type": "interactive_preview_release_authoritative",
+        "preview_id": "main canvas"
+    }))
+    .expect("release command should parse");
+    assert!(matches!(
+        release,
+        ClientMessage::InteractivePreviewReleaseAuthoritative { preview_id }
+            if preview_id == "main canvas"
+    ));
+
+    let opened = serde_json::to_value(ServerMessage::InteractivePreviewOpened {
+        preview_id: "main canvas".to_owned(),
+        connection_incarnation: 7,
+        publication_id: 11,
+        already_open: false,
+        config: interactive_preview_config(),
+    })
+    .expect("open acknowledgment should serialize");
+    assert_eq!(opened["type"], "interactive_preview_opened");
+    assert_eq!(opened["connection_incarnation"], 7);
+    assert_eq!(opened["publication_id"], 11);
+}
+
+#[test]
+fn interactive_preview_open_rejects_invalid_render_config() {
+    for (field, value) in [("fps", 0), ("fps", 61), ("width", 0), ("width", 4097)] {
+        let mut payload = serde_json::json!({
+            "type": "interactive_preview_open",
+            "preview_id": "main",
+            "fps": 60,
+            "width": 640,
+            "height": 480,
+            "format": "rgba"
+        });
+        payload[field] = value.into();
+        serde_json::from_value::<ClientMessage>(payload)
+            .expect_err("out-of-range interactive preview config must be rejected");
+    }
+
+    let unknown_target = serde_json::json!({
+        "type": "interactive_preview_open",
+        "preview_id": "main",
+        "target": "another_connection",
+        "fps": 60,
+        "width": 640,
+        "height": 480,
+        "format": "rgba"
+    });
+    serde_json::from_value::<ClientMessage>(unknown_target)
+        .expect_err("unsupported interactive preview target must be rejected");
+}
+
+#[tokio::test]
+async fn interactive_preview_input_requires_same_connection_open_and_stays_isolated() {
+    let (_source, handle, routing) = browser_preview_test_context();
+    let executor = browser_preview_test_executor(routing.clone()).await;
+    let (mut first, _first_tx, _first_rx) =
+        browser_preview_session(handle.clone(), routing.clone(), Arc::clone(&executor));
+    let (mut second, _second_tx, _second_rx) =
+        browser_preview_session(handle.clone(), routing, executor);
+    let (first_connection, first_publication, _) = opened_address(
+        first
+            .open("shared".to_owned(), interactive_preview_config())
+            .await
+            .expect("first preview should open"),
+    );
+    let mut resized = interactive_preview_config();
+    resized.width = 960;
+    let (_, repeated_publication, already_open) = opened_address(
+        first
+            .open("shared".to_owned(), resized)
+            .await
+            .expect("reopening should preserve the preview identity"),
+    );
+    assert_eq!(repeated_publication, first_publication);
+    assert!(already_open);
+
+    let error = second
+        .inject("shared".to_owned(), vec![pressed_key("foreign")])
+        .expect_err("another connection cannot address the first preview");
+    assert_eq!(error.code, "invalid_request");
+
+    let (second_connection, second_publication, _) = opened_address(
+        second
+            .open("shared".to_owned(), interactive_preview_config())
+            .await
+            .expect("same opaque id should open independently"),
+    );
+    assert_ne!(first_connection, second_connection);
+    assert_ne!(first_publication, second_publication);
+
+    let first_ack = first
+        .inject("shared".to_owned(), vec![pressed_key("first")])
+        .expect("first connection should inject");
+    assert!(matches!(
+        first_ack,
+        ServerMessage::InputInjected {
+            accepted_events: 1,
+            ..
+        }
+    ));
+    second
+        .inject("shared".to_owned(), vec![pressed_key("second")])
+        .expect("second connection should inject");
+
+    let registry = handle.registry().snapshot();
+    let first_key = BrowserInputChildKey::new(
+        BrowserConnectionIncarnation::new(first_connection),
+        BrowserPreviewId::new("shared"),
+    );
+    let second_key = BrowserInputChildKey::new(
+        BrowserConnectionIncarnation::new(second_connection),
+        BrowserPreviewId::new("shared"),
+    );
+    let first_latest = registry
+        .child(&first_key)
+        .and_then(hypercolor_core::input::BrowserInputChildSlot::latest)
+        .expect("first child should publish state");
+    let second_latest = registry
+        .child(&second_key)
+        .and_then(hypercolor_core::input::BrowserInputChildSlot::latest)
+        .expect("second child should publish state");
+    let InputData::Interaction(first_interaction) = first_latest.as_ref() else {
+        panic!("first child should publish interaction data");
+    };
+    let InputData::Interaction(second_interaction) = second_latest.as_ref() else {
+        panic!("second child should publish interaction data");
+    };
+    assert_eq!(first_interaction.keyboard.pressed_keys, ["first"]);
+    assert_eq!(second_interaction.keyboard.pressed_keys, ["second"]);
+}
+
+#[tokio::test]
+async fn interactive_preview_authoritative_claims_conflict_and_release_idempotently() {
+    let (_source, handle, routing) = browser_preview_test_context();
+    let executor = browser_preview_test_executor(routing.clone()).await;
+    let (mut first, _first_tx, _first_rx) =
+        browser_preview_session(handle.clone(), routing.clone(), Arc::clone(&executor));
+    let (mut second, _second_tx, _second_rx) =
+        browser_preview_session(handle, routing.clone(), executor);
+    first
+        .open("first".to_owned(), interactive_preview_config())
+        .await
+        .expect("first preview should open");
+    second
+        .open("second".to_owned(), interactive_preview_config())
+        .await
+        .expect("second preview should open");
+
+    let claim = first
+        .claim_authoritative("first".to_owned())
+        .expect("first claim should succeed");
+    assert!(matches!(
+        claim,
+        ServerMessage::InteractivePreviewAuthoritativeClaimed {
+            already_owned: false,
+            ..
+        }
+    ));
+    let repeated = first
+        .claim_authoritative("first".to_owned())
+        .expect("same-owner claim should be idempotent");
+    assert!(matches!(
+        repeated,
+        ServerMessage::InteractivePreviewAuthoritativeClaimed {
+            already_owned: true,
+            ..
+        }
+    ));
+
+    let conflict = second
+        .claim_authoritative("second".to_owned())
+        .expect_err("conflicting claim must not steal ownership");
+    assert_eq!(conflict.code, "conflict");
+
+    assert!(matches!(
+        first.release_authoritative("first".to_owned()),
+        ServerMessage::InteractivePreviewAuthoritativeReleased { released: true, .. }
+    ));
+    assert!(matches!(
+        first.release_authoritative("first".to_owned()),
+        ServerMessage::InteractivePreviewAuthoritativeReleased {
+            released: false,
+            ..
+        }
+    ));
+    second
+        .claim_authoritative("second".to_owned())
+        .expect("released ownership should hand off cleanly");
+    assert!(routing.snapshot().authoritative_browser.is_some());
+}
+
+#[tokio::test]
+async fn interactive_preview_aborted_future_closes_all_and_releases_once() {
+    let (_source, handle, routing) = browser_preview_test_context();
+    let observed_routing = routing.clone();
+    let observed_registry = handle.registry();
+    let executor = browser_preview_test_executor(routing.clone()).await;
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
+        let (mut session, _outbound, _frames) = browser_preview_session(handle, routing, executor);
+        session
+            .open("main".to_owned(), interactive_preview_config())
+            .await
+            .expect("main preview should open");
+        session
+            .open("inspector".to_owned(), interactive_preview_config())
+            .await
+            .expect("second preview should open");
+        session
+            .claim_authoritative("main".to_owned())
+            .expect("main preview should claim authoritative input");
+        ready_tx.send(()).expect("test receiver should remain open");
+        std::future::pending::<()>().await;
+    });
+
+    ready_rx.await.expect("preview task should become ready");
+    assert_eq!(observed_registry.snapshot().children().len(), 2);
+    let generation_before_abort = observed_routing.snapshot().generation;
+    task.abort();
+    task.await.expect_err("preview task should be cancelled");
+
+    assert!(observed_registry.snapshot().children().is_empty());
+    let after_abort = observed_routing.snapshot();
+    assert!(after_abort.authoritative_browser.is_none());
+    assert_eq!(after_abort.generation, generation_before_abort + 1);
+}
+
+#[tokio::test]
+async fn interactive_preview_explicit_close_and_drop_are_exactly_once() {
+    let (_source, handle, routing) = browser_preview_test_context();
+    let executor = browser_preview_test_executor(routing.clone()).await;
+    let (mut session, _outbound, _frames) =
+        browser_preview_session(handle.clone(), routing.clone(), executor);
+    session
+        .open("main".to_owned(), interactive_preview_config())
+        .await
+        .expect("preview should open");
+    session
+        .claim_authoritative("main".to_owned())
+        .expect("preview should claim authoritative input");
+
+    assert!(matches!(
+        session.close("main".to_owned()),
+        ServerMessage::InteractivePreviewClosed { closed: true, .. }
+    ));
+    let generation_after_close = routing.snapshot().generation;
+    assert!(matches!(
+        session.close("main".to_owned()),
+        ServerMessage::InteractivePreviewClosed { closed: false, .. }
+    ));
+    drop(session);
+
+    assert_eq!(routing.snapshot().generation, generation_after_close);
+    assert!(handle.registry().snapshot().children().is_empty());
+}
+
+#[tokio::test]
+async fn interactive_preview_sender_rejects_queued_frame_from_closed_publication() {
+    let (_source, handle, routing) = browser_preview_test_context();
+    let executor = browser_preview_test_executor(routing.clone()).await;
+    let (mut session, outbound, mut frames) = browser_preview_session(handle, routing, executor);
+    let (_, first_publication, _) = opened_address(
+        session
+            .open("same".to_owned(), interactive_preview_config())
+            .await
+            .expect("first preview should open"),
+    );
+    let first_publication_id = session
+        .publication_id("same")
+        .expect("first publication should be active");
+    let wire = WireInteractivePreviewFrame {
+        preview_id: "same".to_owned(),
+        frame_number: 7,
+        timestamp_ms: 11,
+        width: 1,
+        height: 1,
+        format: WirePreviewPixelFormat::Rgba,
+        payload: Bytes::from_static(&[1, 2, 3, 255]),
+    }
+    .encode()
+    .expect("addressed frame should encode");
+    outbound
+        .try_send(InteractivePreviewOutbound {
+            preview_id: "same".to_owned(),
+            publication_id: first_publication_id,
+            bytes: wire.clone(),
+        })
+        .expect("old publication frame should enter the bounded queue");
+
+    session.close("same".to_owned());
+    let (_, second_publication, _) = opened_address(
+        session
+            .open("same".to_owned(), interactive_preview_config())
+            .await
+            .expect("same id should reopen with a new publication"),
+    );
+    let second_publication_id = session
+        .publication_id("same")
+        .expect("second publication should be active");
+    assert_ne!(first_publication, second_publication);
+
+    let queued = loop {
+        let frame = frames
+            .recv()
+            .await
+            .expect("queued frame should remain readable");
+        if frame.bytes == wire {
+            break frame;
+        }
+    };
+    assert!(!session.is_current_publication(&queued));
+    let current = InteractivePreviewOutbound {
+        preview_id: "same".to_owned(),
+        publication_id: second_publication_id,
+        bytes: wire.clone(),
+    };
+    assert!(session.is_current_publication(&current));
+    let decoded = WireInteractivePreviewFrame::decode_bytes(&wire)
+        .expect("public binary frame should remain independently decodable");
+    assert_eq!(decoded.preview_id, "same");
+}
+
+#[tokio::test]
+async fn interactive_preview_open_streams_addressed_frames_from_real_lane() {
+    let (_source, handle, routing) = browser_preview_test_context();
+    let executor = browser_preview_test_executor(routing.clone()).await;
+    let (mut session, _outbound, mut frames) = browser_preview_session(handle, routing, executor);
+    let mut config = interactive_preview_config();
+    config.width = 16;
+    config.height = 8;
+    session
+        .open("live".to_owned(), config)
+        .await
+        .expect("interactive preview should open a real lane");
+
+    let frame = tokio::time::timeout(Duration::from_secs(1), frames.recv())
+        .await
+        .expect("real preview lane should publish within one second")
+        .expect("interactive preview relay should remain active");
+    assert!(session.is_current_publication(&frame));
+    let decoded = WireInteractivePreviewFrame::decode_bytes(&frame.bytes)
+        .expect("relayed interactive preview frame should decode");
+    assert_eq!(decoded.preview_id, "live");
+    assert_eq!((decoded.width, decoded.height), (16, 8));
+    assert_eq!(decoded.format, WirePreviewPixelFormat::Rgba);
+    assert_eq!(decoded.payload.len(), 16 * 8 * 4);
+}
+
+#[tokio::test]
+async fn interactive_preview_open_without_executor_creates_no_input_attachment() {
+    let (_source, handle, routing) = browser_preview_test_context();
+    let registry = handle.registry();
+    let (outbound, _frames) = tokio::sync::mpsc::channel(1);
+    let mut session = BrowserPreviewSession::new(handle, routing, None, outbound);
+
+    let error = session
+        .open("unavailable".to_owned(), interactive_preview_config())
+        .await
+        .expect_err("open must fail when no render executor exists");
+    assert_eq!(error.code, "unavailable");
+    assert!(registry.snapshot().children().is_empty());
 }
 
 #[test]

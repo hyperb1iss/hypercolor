@@ -17,18 +17,26 @@ use hypercolor_leptos_ext::axum::upgrade_handler;
 use serde::Serialize;
 use serde_json::json;
 use tokio::sync::watch;
+use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 use uuid::Uuid;
 
+use hypercolor_core::input::{
+    BrowserConnectionIncarnation, BrowserInputAttachment, BrowserInputChildKey, BrowserInputHandle,
+    BrowserInputRegistryError, BrowserPreviewId,
+};
 use hypercolor_types::scene::{Scene, SceneId, ZoneId};
 use hypercolor_types::spatial::SpatialLayout;
 
 use super::cache::{WS_BUFFER_SIZE, WsClientGuard, track_ws_bytes_sent};
 use super::command::dispatch_command;
+use super::interactive_preview_relay::{
+    InteractivePreviewOutbound, spawn_interactive_preview_relay,
+};
 use super::protocol::{
-    BrowserInputEdgeWire, ClientMessage, HelloFps, HelloState, MAX_WS_MESSAGE_BYTES, NameRef,
-    SceneRef, ServerMessage, SubscriptionState, WsChannel, WsProtocolError, parse_channels,
-    sorted_channel_names, unique_sorted_channel_names, validate_browser_input_source_id,
+    BrowserInputEdgeWire, ClientMessage, HelloFps, HelloState, InteractivePreviewConfig,
+    MAX_WS_MESSAGE_BYTES, NameRef, SceneRef, ServerMessage, SubscriptionState, WsChannel,
+    WsProtocolError, parse_channels, sorted_channel_names, unique_sorted_channel_names,
     ws_capabilities,
 };
 use super::relays::{
@@ -41,10 +49,24 @@ use crate::api::effects::active_effect_metadata;
 use crate::api::layouts::validate_layout_sampling_radii;
 use crate::api::scenes;
 use crate::api::security::RequestAuthContext;
+use crate::interaction_routing::{
+    AuthoritativeClaimError, AuthoritativeClaimOutcome, InteractionRoutingControl,
+};
+use crate::interactive_preview::{
+    InteractivePreviewExecutor, InteractivePreviewLaneLease,
+    InteractivePreviewSpec as RuntimeInteractivePreviewSpec,
+    InteractivePreviewTarget as RuntimeInteractivePreviewTarget,
+};
+use crate::preview_runtime::PreviewPixelFormat;
 
 const WS_PROTOCOL_VERSION: &str = "1.0";
 const WS_PING_INTERVAL: Duration = Duration::from_secs(30);
 const WS_PONG_TIMEOUT: Duration = Duration::from_secs(10);
+
+enum BinaryOutbound {
+    Passive(Bytes),
+    Interactive(InteractivePreviewOutbound),
+}
 
 /// `GET /api/v1/ws` — Upgrade to WebSocket.
 pub(crate) async fn ws_handler(
@@ -130,11 +152,6 @@ async fn handle_socket(
     auth_context: RequestAuthContext,
 ) {
     let _client_guard = WsClientGuard::register();
-    let input_source_id = next_browser_input_source_id();
-    if let Err(error) = validate_browser_input_source_id(&input_source_id) {
-        warn!(message = %error.message, "Generated an invalid browser input source id");
-        return;
-    }
 
     let initial_subscriptions = SubscriptionState::default();
     let (subscriptions_tx, subscriptions_rx) = watch::channel(initial_subscriptions.clone());
@@ -160,6 +177,14 @@ async fn handle_socket(
     // grow daemon memory without limit.
     let (json_tx, mut json_rx) = tokio::sync::mpsc::channel::<Utf8Bytes>(WS_BUFFER_SIZE);
     let (binary_tx, mut binary_rx) = tokio::sync::mpsc::channel::<Bytes>(WS_BUFFER_SIZE);
+    let (interactive_preview_tx, mut interactive_preview_rx) =
+        tokio::sync::mpsc::channel::<InteractivePreviewOutbound>(WS_BUFFER_SIZE);
+    let mut browser_previews = BrowserPreviewSession::new(
+        state.browser_input.clone(),
+        state.interaction_routing.clone(),
+        state.preview_runtime.interactive_executor(),
+        interactive_preview_tx,
+    );
 
     // Spawn event relay tasks — each watches immutable subscription snapshots.
     let relay_handle = tokio::spawn(relay_events(
@@ -238,13 +263,6 @@ async fn handle_socket(
     let mut awaiting_pong = false;
     let mut ping_sent_at = Instant::now();
     let mut zone_layout_preview_keys = HashSet::<(SceneId, ZoneId)>::new();
-    // Drop guard, not tail code: if this connection future is aborted or
-    // dropped mid-select, injected keys and buttons still release.
-    let _input_release_guard = BrowserInputReleaseGuard {
-        browser_input: state.browser_input.clone(),
-        source_id: input_source_id.clone(),
-    };
-
     // Main loop: multiplex between incoming client messages and outbound events.
     loop {
         tokio::select! {
@@ -264,16 +282,32 @@ async fn handle_socket(
                 }
             }
 
-            // Outbound binary: bounded queue (drop under pressure in producer tasks).
-            binary_msg = binary_rx.recv() => {
+            binary_msg = async {
+                tokio::select! {
+                    message = binary_rx.recv() => message.map(BinaryOutbound::Passive),
+                    message = interactive_preview_rx.recv() => {
+                        message.map(BinaryOutbound::Interactive)
+                    }
+                }
+            } => {
                 match binary_msg {
-                    Some(bytes) => {
+                    Some(BinaryOutbound::Passive(bytes)) => {
                         let sent_len = bytes.len();
                         if socket.send(Message::Binary(bytes)).await.is_err() {
                             break;
                         }
                         track_ws_bytes_sent(sent_len);
                     }
+                    Some(BinaryOutbound::Interactive(frame))
+                        if browser_previews.is_current_publication(&frame) =>
+                    {
+                        let sent_len = frame.bytes.len();
+                        if socket.send(Message::Binary(frame.bytes)).await.is_err() {
+                            break;
+                        }
+                        track_ws_bytes_sent(sent_len);
+                    }
+                    Some(BinaryOutbound::Interactive(_)) => {}
                     None => break,
                 }
             }
@@ -303,7 +337,7 @@ async fn handle_socket(
                             &mut subscriptions,
                             &subscriptions_tx,
                             &mut zone_layout_preview_keys,
-                            &input_source_id,
+                            &mut browser_previews,
                             &mut socket,
                         )
                         .await;
@@ -349,23 +383,253 @@ async fn handle_socket(
     debug!("WebSocket client disconnected");
 }
 
-/// Releases a connection's injected input state even on future abort.
-struct BrowserInputReleaseGuard {
-    browser_input: hypercolor_core::input::BrowserInputHandle,
-    source_id: String,
+/// A stable server-assigned identity for one WebSocket connection lifetime.
+fn next_browser_connection_incarnation() -> BrowserConnectionIncarnation {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(1);
+    let value = COUNTER
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            current.checked_add(1)
+        })
+        .expect("browser connection incarnation exhausted");
+    BrowserConnectionIncarnation::new(value)
 }
 
-impl Drop for BrowserInputReleaseGuard {
-    fn drop(&mut self) {
-        self.browser_input.release_source(&self.source_id);
+/// Owns every interactive preview attached to one WebSocket connection.
+pub(super) struct BrowserPreviewSession {
+    connection: BrowserConnectionIncarnation,
+    browser_input: BrowserInputHandle,
+    interaction_routing: InteractionRoutingControl,
+    executor: Option<Arc<InteractivePreviewExecutor>>,
+    outbound: tokio::sync::mpsc::Sender<InteractivePreviewOutbound>,
+    previews: HashMap<String, BrowserPreviewBinding>,
+}
+
+struct BrowserPreviewBinding {
+    attachment: BrowserInputAttachment,
+    config: InteractivePreviewConfig,
+    lane: InteractivePreviewLaneLease,
+    relay: JoinHandle<()>,
+}
+
+impl BrowserPreviewSession {
+    pub(super) fn new(
+        browser_input: BrowserInputHandle,
+        interaction_routing: InteractionRoutingControl,
+        executor: Option<Arc<InteractivePreviewExecutor>>,
+        outbound: tokio::sync::mpsc::Sender<InteractivePreviewOutbound>,
+    ) -> Self {
+        Self {
+            connection: next_browser_connection_incarnation(),
+            browser_input,
+            interaction_routing,
+            executor,
+            outbound,
+            previews: HashMap::new(),
+        }
+    }
+
+    pub(super) async fn open(
+        &mut self,
+        preview_id: String,
+        config: InteractivePreviewConfig,
+    ) -> Result<ServerMessage, WsProtocolError> {
+        if let Some(binding) = self.previews.get_mut(&preview_id) {
+            binding
+                .lane
+                .resize_or_retarget(runtime_preview_spec(config))
+                .await
+                .map_err(interactive_preview_error)?;
+            binding.config = config;
+            return Ok(ServerMessage::InteractivePreviewOpened {
+                preview_id,
+                connection_incarnation: self.connection.get(),
+                publication_id: binding.attachment.publication_id().get(),
+                already_open: true,
+                config,
+            });
+        }
+
+        let executor = self.executor.clone().ok_or_else(|| WsProtocolError {
+            code: "unavailable",
+            message: "Interactive preview rendering is unavailable".to_owned(),
+            details: None,
+        })?;
+        let key =
+            BrowserInputChildKey::new(self.connection, BrowserPreviewId::new(preview_id.clone()));
+        let attachment = self
+            .browser_input
+            .attach(key)
+            .map_err(browser_registry_error)?;
+        let lane = match executor
+            .open(&attachment, runtime_preview_spec(config))
+            .await
+        {
+            Ok(lane) => lane,
+            Err(error) => {
+                self.interaction_routing.close_preview(&attachment);
+                return Err(interactive_preview_error(error));
+            }
+        };
+        let publication_id = attachment.publication_id().get();
+        let relay = spawn_interactive_preview_relay(
+            preview_id.clone(),
+            attachment.publication_id(),
+            lane.frame_receiver(),
+            self.outbound.clone(),
+        );
+        self.previews.insert(
+            preview_id.clone(),
+            BrowserPreviewBinding {
+                attachment,
+                config,
+                lane,
+                relay,
+            },
+        );
+        Ok(ServerMessage::InteractivePreviewOpened {
+            preview_id,
+            connection_incarnation: self.connection.get(),
+            publication_id,
+            already_open: false,
+            config,
+        })
+    }
+
+    pub(super) fn close(&mut self, preview_id: String) -> ServerMessage {
+        let closed = self.previews.remove(&preview_id).is_some_and(|binding| {
+            close_preview_binding(&self.interaction_routing, binding);
+            true
+        });
+        ServerMessage::InteractivePreviewClosed { preview_id, closed }
+    }
+
+    pub(super) fn is_current_publication(&self, frame: &InteractivePreviewOutbound) -> bool {
+        self.publication_id(&frame.preview_id) == Some(frame.publication_id)
+    }
+
+    pub(super) fn publication_id(
+        &self,
+        preview_id: &str,
+    ) -> Option<hypercolor_core::input::BrowserInputPublicationId> {
+        self.previews
+            .get(preview_id)
+            .map(|binding| binding.attachment.publication_id())
+    }
+
+    pub(super) fn inject(
+        &self,
+        preview_id: String,
+        events: Vec<BrowserInputEdgeWire>,
+    ) -> Result<ServerMessage, WsProtocolError> {
+        let attachment = self.active_attachment(&preview_id)?;
+        let accepted_events = events.len();
+        attachment
+            .inject(events.into_iter().map(BrowserInputEdgeWire::into_edge))
+            .map_err(browser_registry_error)?;
+        Ok(ServerMessage::InputInjected {
+            preview_id,
+            accepted_events,
+        })
+    }
+
+    pub(super) fn claim_authoritative(
+        &self,
+        preview_id: String,
+    ) -> Result<ServerMessage, WsProtocolError> {
+        let attachment = self.active_attachment(&preview_id)?;
+        let outcome = self
+            .interaction_routing
+            .claim_authoritative(attachment)
+            .map_err(|error| authoritative_claim_error(&preview_id, error))?;
+        Ok(ServerMessage::InteractivePreviewAuthoritativeClaimed {
+            preview_id,
+            already_owned: outcome == AuthoritativeClaimOutcome::AlreadyOwned,
+        })
+    }
+
+    pub(super) fn release_authoritative(&self, preview_id: String) -> ServerMessage {
+        let released = self.previews.get(&preview_id).is_some_and(|binding| {
+            self.interaction_routing
+                .release_authoritative(&binding.attachment)
+        });
+        ServerMessage::InteractivePreviewAuthoritativeReleased {
+            preview_id,
+            released,
+        }
+    }
+
+    fn active_attachment(
+        &self,
+        preview_id: &str,
+    ) -> Result<&BrowserInputAttachment, WsProtocolError> {
+        self.previews
+            .get(preview_id)
+            .map(|binding| &binding.attachment)
+            .ok_or_else(|| {
+                WsProtocolError::invalid_request(format!(
+                    "Interactive preview '{preview_id}' is not active on this connection"
+                ))
+            })
     }
 }
 
-/// A stable per-connection identity for browser input injection.
-fn next_browser_input_source_id() -> String {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(1);
-    format!("browser:{}", COUNTER.fetch_add(1, Ordering::Relaxed))
+impl Drop for BrowserPreviewSession {
+    fn drop(&mut self) {
+        for (_, binding) in self.previews.drain() {
+            close_preview_binding(&self.interaction_routing, binding);
+        }
+    }
+}
+
+fn close_preview_binding(
+    interaction_routing: &InteractionRoutingControl,
+    mut binding: BrowserPreviewBinding,
+) {
+    binding.relay.abort();
+    let _ = binding.lane.close();
+    interaction_routing.close_preview(&binding.attachment);
+}
+
+const fn runtime_preview_spec(config: InteractivePreviewConfig) -> RuntimeInteractivePreviewSpec {
+    RuntimeInteractivePreviewSpec {
+        target: match config.target {
+            super::protocol::InteractivePreviewTarget::ActiveScene => {
+                RuntimeInteractivePreviewTarget::ActiveScene
+            }
+        },
+        fps: config.fps,
+        width: config.width,
+        height: config.height,
+        format: match config.format {
+            super::protocol::CanvasFormat::Rgb => PreviewPixelFormat::Rgb,
+            super::protocol::CanvasFormat::Rgba => PreviewPixelFormat::Rgba,
+            super::protocol::CanvasFormat::Jpeg => PreviewPixelFormat::Jpeg,
+        },
+    }
+}
+
+fn interactive_preview_error(
+    error: crate::interactive_preview::InteractivePreviewError,
+) -> WsProtocolError {
+    WsProtocolError::invalid_request(error.to_string())
+}
+
+fn browser_registry_error(error: BrowserInputRegistryError) -> WsProtocolError {
+    WsProtocolError::invalid_request(error.to_string())
+}
+
+fn authoritative_claim_error(preview_id: &str, error: AuthoritativeClaimError) -> WsProtocolError {
+    match error {
+        AuthoritativeClaimError::PreviewInactive => WsProtocolError::invalid_request(format!(
+            "Interactive preview '{preview_id}' is not active on this connection"
+        )),
+        AuthoritativeClaimError::Conflict => WsProtocolError {
+            code: "conflict",
+            message: "Another interactive preview owns authoritative browser input".to_owned(),
+            details: Some(json!({"preview_id": preview_id})),
+        },
+    }
 }
 
 pub(super) fn authorize_subscription_channels(
@@ -401,7 +665,7 @@ async fn handle_client_message(
     subscriptions: &mut SubscriptionState,
     subscriptions_tx: &watch::Sender<SubscriptionState>,
     zone_layout_preview_keys: &mut HashSet<(SceneId, ZoneId)>,
-    input_source_id: &str,
+    browser_previews: &mut BrowserPreviewSession,
     socket: &mut WebSocket,
 ) {
     let msg = match serde_json::from_str::<ClientMessage>(text) {
@@ -519,28 +783,56 @@ async fn handle_client_message(
                 let _ = send_json(socket, &error.into_message()).await;
             }
         }
-        ClientMessage::InputInject { events } => {
-            if let Err(error) =
-                inject_browser_input(auth_context, &state.browser_input, input_source_id, events)
-            {
-                let _ = send_json(socket, &error.into_message()).await;
-            }
+        ClientMessage::InteractivePreviewOpen {
+            preview_id,
+            target,
+            fps,
+            width,
+            height,
+            format,
+        } => {
+            let config = InteractivePreviewConfig {
+                target,
+                fps,
+                width,
+                height,
+                format,
+            };
+            let result = match ensure_control_tier(auth_context) {
+                Ok(()) => browser_previews.open(preview_id, config).await,
+                Err(error) => Err(error),
+            };
+            send_protocol_result(socket, result).await;
+        }
+        ClientMessage::InteractivePreviewClose { preview_id } => {
+            let result =
+                ensure_control_tier(auth_context).map(|()| browser_previews.close(preview_id));
+            send_protocol_result(socket, result).await;
+        }
+        ClientMessage::InputInject { preview_id, events } => {
+            let result = ensure_control_tier(auth_context)
+                .and_then(|()| browser_previews.inject(preview_id, events));
+            send_protocol_result(socket, result).await;
+        }
+        ClientMessage::InteractivePreviewClaimAuthoritative { preview_id } => {
+            let result = ensure_control_tier(auth_context)
+                .and_then(|()| browser_previews.claim_authoritative(preview_id));
+            send_protocol_result(socket, result).await;
+        }
+        ClientMessage::InteractivePreviewReleaseAuthoritative { preview_id } => {
+            let result = ensure_control_tier(auth_context)
+                .map(|()| browser_previews.release_authoritative(preview_id));
+            send_protocol_result(socket, result).await;
         }
     }
 }
 
-fn inject_browser_input(
-    auth_context: RequestAuthContext,
-    browser_input: &hypercolor_core::input::BrowserInputHandle,
-    input_source_id: &str,
-    events: Vec<BrowserInputEdgeWire>,
-) -> Result<(), WsProtocolError> {
-    ensure_control_tier(auth_context)?;
-    browser_input.inject(
-        input_source_id,
-        events.into_iter().map(BrowserInputEdgeWire::into_edge),
-    );
-    Ok(())
+async fn send_protocol_result(
+    socket: &mut WebSocket,
+    result: Result<ServerMessage, WsProtocolError>,
+) {
+    let message = result.unwrap_or_else(WsProtocolError::into_message);
+    let _ = send_json(socket, &message).await;
 }
 
 fn ensure_control_tier(auth_context: RequestAuthContext) -> Result<(), WsProtocolError> {
@@ -751,10 +1043,8 @@ async fn send_json(socket: &mut WebSocket, msg: &impl Serialize) -> Result<(), a
 
 #[cfg(test)]
 mod security_tests {
-    use super::{ensure_control_tier, inject_browser_input};
+    use super::ensure_control_tier;
     use crate::api::security::RequestAuthContext;
-    use crate::api::ws::protocol::ClientMessage;
-    use hypercolor_core::input::{BrowserInputSource, InputData, InputSource};
 
     #[test]
     fn read_only_auth_cannot_mutate_zone_layout_previews() {
@@ -775,58 +1065,6 @@ mod security_tests {
     fn unsecured_auth_can_mutate_zone_layout_previews() {
         ensure_control_tier(RequestAuthContext::unsecured())
             .expect("unsecured context should continue to allow local mutations");
-    }
-
-    #[test]
-    fn read_only_input_injection_is_rejected_without_mutating_browser_state() {
-        let mut source = BrowserInputSource::new();
-        source.start().expect("start browser input source");
-        let handle = source.handle();
-        let ClientMessage::InputInject { events } = serde_json::from_str(
-            r#"{
-                "type": "input_inject",
-                "events": [
-                    {"kind": "key", "key": "a", "state": "pressed"},
-                    {"kind": "button", "button": "left", "state": "pressed"}
-                ]
-            }"#,
-        )
-        .expect("valid input injection message") else {
-            panic!("expected input injection message");
-        };
-        let allowed_events = events.clone();
-
-        let error = inject_browser_input(
-            RequestAuthContext::read_only(),
-            &handle,
-            "browser:read-only",
-            events,
-        )
-        .expect_err("read-only input injection must be rejected");
-
-        assert_eq!(error.code, "forbidden");
-        assert!(source.drain_events().is_empty());
-        let InputData::Interaction(snapshot) = source.sample().expect("sample browser input")
-        else {
-            panic!("expected browser interaction snapshot");
-        };
-        assert!(snapshot.keyboard.pressed_keys.is_empty());
-        assert!(snapshot.mouse.buttons.is_empty());
-
-        inject_browser_input(
-            RequestAuthContext::unsecured(),
-            &handle,
-            "browser:local",
-            allowed_events,
-        )
-        .expect("unsecured local input injection should remain allowed");
-        assert_eq!(source.drain_events().len(), 2);
-        let InputData::Interaction(snapshot) = source.sample().expect("sample browser input")
-        else {
-            panic!("expected browser interaction snapshot");
-        };
-        assert_eq!(snapshot.keyboard.pressed_keys, ["a"]);
-        assert_eq!(snapshot.mouse.buttons, ["left"]);
     }
 }
 

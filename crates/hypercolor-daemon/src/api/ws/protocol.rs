@@ -12,6 +12,7 @@ use serde::de::{self, IgnoredAny, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::json;
 
+use hypercolor_leptos_ext::ws::INTERACTIVE_PREVIEW_ID_MAX_BYTES;
 use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::server::ServerIdentity;
 use hypercolor_types::spatial::SpatialLayout;
@@ -573,14 +574,28 @@ pub(super) enum CanvasFormat {
     Jpeg,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum InteractivePreviewTarget {
+    #[default]
+    ActiveScene,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub(super) struct InteractivePreviewConfig {
+    pub(super) target: InteractivePreviewTarget,
+    pub(super) fps: u32,
+    pub(super) width: u32,
+    pub(super) height: u32,
+    pub(super) format: CanvasFormat,
+}
+
 /// Hard transport ceiling for one complete WebSocket message or frame.
 pub(super) const MAX_WS_MESSAGE_BYTES: usize = 1024 * 1024;
 /// Maximum number of edges accepted in one browser-input batch.
 pub(super) const MAX_INPUT_INJECT_EVENTS: usize = 256;
 /// Maximum UTF-8 byte length of an injected key or button name.
 pub(super) const MAX_INPUT_NAME_BYTES: usize = 128;
-/// Maximum UTF-8 byte length of a server-generated input source id.
-pub(super) const MAX_INPUT_SOURCE_ID_BYTES: usize = 128;
 /// Largest accepted browser wheel delta, equivalent to 100 notches.
 pub(super) const MAX_INPUT_WHEEL_DELTA: i32 = 120 * 100;
 
@@ -612,13 +627,41 @@ pub(super) enum ClientMessage {
     },
     /// Clear one transient per-zone layout preview.
     ZoneLayoutPreviewClear { scene_id: String, zone_id: String },
-    /// Inject browser-preview input edges into the running effect.
-    ///
-    /// Control-authorized. Edges carry no `source_id`: the session stamps a
-    /// per-connection identity so browser pointers never merge implicitly.
+    /// Open one interactive preview within this connection.
+    InteractivePreviewOpen {
+        #[serde(deserialize_with = "deserialize_interactive_preview_id")]
+        preview_id: String,
+        #[serde(default)]
+        target: InteractivePreviewTarget,
+        #[serde(deserialize_with = "deserialize_interactive_preview_fps")]
+        fps: u32,
+        #[serde(deserialize_with = "deserialize_interactive_preview_dimension")]
+        width: u32,
+        #[serde(deserialize_with = "deserialize_interactive_preview_dimension")]
+        height: u32,
+        format: CanvasFormat,
+    },
+    /// Close one interactive preview within this connection.
+    InteractivePreviewClose {
+        #[serde(deserialize_with = "deserialize_interactive_preview_id")]
+        preview_id: String,
+    },
+    /// Inject browser-preview input edges into one active preview.
     InputInject {
+        #[serde(deserialize_with = "deserialize_interactive_preview_id")]
+        preview_id: String,
         #[serde(deserialize_with = "deserialize_input_edges")]
         events: Vec<BrowserInputEdgeWire>,
+    },
+    /// Claim this preview as the daemon's authoritative browser input.
+    InteractivePreviewClaimAuthoritative {
+        #[serde(deserialize_with = "deserialize_interactive_preview_id")]
+        preview_id: String,
+    },
+    /// Release this preview's authoritative browser-input claim.
+    InteractivePreviewReleaseAuthoritative {
+        #[serde(deserialize_with = "deserialize_interactive_preview_id")]
+        preview_id: String,
     },
 }
 
@@ -685,18 +728,59 @@ impl BrowserInputEdgeWire {
     }
 }
 
-pub(super) fn validate_browser_input_source_id(source_id: &str) -> Result<(), WsProtocolError> {
-    if source_id.is_empty()
-        || source_id.len() > MAX_INPUT_SOURCE_ID_BYTES
-        || !source_id
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b':' | b'.' | b'_' | b'-'))
-    {
+pub(super) fn validate_interactive_preview_id(preview_id: &str) -> Result<(), WsProtocolError> {
+    if preview_id.is_empty() {
         return Err(WsProtocolError::invalid_request(
-            "Browser input source id is invalid",
+            "preview_id cannot be empty",
+        ));
+    }
+    if preview_id.len() > INTERACTIVE_PREVIEW_ID_MAX_BYTES {
+        return Err(WsProtocolError::invalid_request(format!(
+            "preview_id cannot exceed {INTERACTIVE_PREVIEW_ID_MAX_BYTES} UTF-8 bytes"
+        )));
+    }
+    if preview_id.chars().any(char::is_control) {
+        return Err(WsProtocolError::invalid_request(
+            "preview_id cannot contain control characters",
         ));
     }
     Ok(())
+}
+
+fn deserialize_interactive_preview_id<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let preview_id = String::deserialize(deserializer)?;
+    validate_interactive_preview_id(&preview_id)
+        .map_err(|error| serde::de::Error::custom(error.message))?;
+    Ok(preview_id)
+}
+
+fn deserialize_interactive_preview_fps<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let fps = u32::deserialize(deserializer)?;
+    if !(1..=60).contains(&fps) {
+        return Err(serde::de::Error::custom(
+            "interactive preview fps must be in 1..=60",
+        ));
+    }
+    Ok(fps)
+}
+
+fn deserialize_interactive_preview_dimension<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let dimension = u32::deserialize(deserializer)?;
+    if !(1..=4096).contains(&dimension) {
+        return Err(serde::de::Error::custom(
+            "interactive preview dimensions must be in 1..=4096",
+        ));
+    }
+    Ok(dimension)
 }
 
 fn deserialize_input_edges<'de, D>(deserializer: D) -> Result<Vec<BrowserInputEdgeWire>, D::Error>
@@ -966,6 +1050,28 @@ pub(super) enum ServerMessage {
         channels: Vec<String>,
         remaining: Vec<String>,
     },
+    /// Interactive preview open acknowledgment.
+    InteractivePreviewOpened {
+        preview_id: String,
+        connection_incarnation: u64,
+        publication_id: u64,
+        already_open: bool,
+        config: InteractivePreviewConfig,
+    },
+    /// Interactive preview close acknowledgment.
+    InteractivePreviewClosed { preview_id: String, closed: bool },
+    /// Addressed input injection acknowledgment.
+    InputInjected {
+        preview_id: String,
+        accepted_events: usize,
+    },
+    /// Authoritative browser-input claim acknowledgment.
+    InteractivePreviewAuthoritativeClaimed {
+        preview_id: String,
+        already_owned: bool,
+    },
+    /// Authoritative browser-input release acknowledgment.
+    InteractivePreviewAuthoritativeReleased { preview_id: String, released: bool },
     /// Event relay from the bus.
     Event {
         event: String,
