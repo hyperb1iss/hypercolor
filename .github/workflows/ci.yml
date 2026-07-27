@@ -508,6 +508,20 @@ jobs:
           --features allocation-contract-tests --test alloc_contract_tests
           -- -D warnings
 
+      - name: Seed effect cover fixture
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force effects/screenshots/curated/rainbow | Out-Null
+          [IO.File]::WriteAllBytes(
+            "effects/screenshots/curated/rainbow/default.webp",
+            [Text.Encoding]::ASCII.GetBytes("RIFFtest-webp-fixture")
+          )
+
+      - name: Run daemon input and capture integration tests
+        run: >-
+          cargo nextest run --locked -p hypercolor-daemon --no-default-features
+          --features builtin-drivers --test-threads=1
+
   # ── Cargo Deny ─────────────────────────────────────────────────
   rust-deny:
     name: Cargo Deny
@@ -696,6 +710,7 @@ jobs:
         with:
           key: sdk-${{ hashFiles('sdk/bun.lock') }}
       - run: bun install --frozen-lockfile
+      - run: bun test
       - run: bun run check
       - run: bun run typecheck
       - run: bun run build
