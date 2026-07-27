@@ -585,10 +585,6 @@ async fn current_effect_scene_snapshot(
         }
     }
 
-    if !effect_running && screen_capture_configured {
-        screen_capture_active = true;
-    }
-
     let demand = EffectDemand {
         effect_running,
         audio_capture_active,
@@ -911,6 +907,20 @@ mod tests {
         assert!(!snapshot.effect_demand.effect_running);
         assert_eq!(snapshot.spatial_engine.layout().canvas_width, 512);
         assert_eq!(snapshot.spatial_engine.layout().canvas_height, 288);
+    }
+
+    #[tokio::test]
+    async fn configured_capture_without_a_consumer_stays_idle() {
+        let state = minimal_render_thread_state(EffectRegistry::default());
+        let mut scene_snapshot_cache = SceneSnapshotCache::new();
+        let render_scene_state = RenderSceneState::new(SpatialEngine::new(sample_layout()), true);
+
+        let snapshot =
+            build_frame_scene_snapshot(&state, &mut scene_snapshot_cache, &render_scene_state, 0.0)
+                .await;
+
+        assert!(!snapshot.effect_demand.effect_running);
+        assert!(!snapshot.effect_demand.screen_capture_active);
     }
 
     #[tokio::test]
