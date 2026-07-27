@@ -2,6 +2,8 @@
 //!
 //! All tests use synthetic RGBA pixel buffers — no actual screen capture needed.
 
+use std::time::Duration;
+
 use hypercolor_core::input::screen::sector::{LetterboxBars, SectorGrid};
 use hypercolor_core::input::screen::smooth::TemporalSmoother;
 use hypercolor_core::input::screen::{CaptureConfig, ColorTuning, ScreenCaptureInput};
@@ -417,7 +419,7 @@ fn temporal_smoothing_scene_cut_resets_immediately() {
     smoother.apply(&mut colors);
 
     // Massive change: all zones from black to bright white.
-    // Total diff = 4 zones * (255+255+255) = 3060, well above threshold of 50.
+    // Mean per-zone diff = 255+255+255 = 765, well above threshold of 50.
     let mut colors = vec![[255u8, 255, 255]; 4];
     smoother.apply(&mut colors);
 
@@ -428,6 +430,46 @@ fn temporal_smoothing_scene_cut_resets_immediately() {
         "scene cut should snap to new colors"
     );
     assert_eq!(colors[3], [255, 255, 255]);
+}
+
+#[test]
+fn temporal_smoothing_response_is_frame_rate_independent() {
+    fn response_after_one_second(fps: u32) -> u8 {
+        let mut smoother = TemporalSmoother::new(0.3, 10_000.0);
+        let mut colors = vec![[0, 0, 0]];
+        smoother.apply_for_elapsed(&mut colors, Duration::ZERO);
+
+        let interval = Duration::from_secs_f64(1.0 / f64::from(fps));
+        for _ in 0..fps {
+            colors[0] = [255, 255, 255];
+            smoother.apply_for_elapsed(&mut colors, interval);
+        }
+        colors[0][0]
+    }
+
+    let at_30_hz = response_after_one_second(30);
+    let at_60_hz = response_after_one_second(60);
+    let at_120_hz = response_after_one_second(120);
+
+    assert!(at_30_hz.abs_diff(at_60_hz) <= 1);
+    assert!(at_60_hz.abs_diff(at_120_hz) <= 1);
+}
+
+#[test]
+fn temporal_scene_cut_threshold_is_grid_size_independent() {
+    fn response(zone_count: usize, target: [u8; 3]) -> [u8; 3] {
+        let mut smoother = TemporalSmoother::new(0.0, 100.0);
+        let mut colors = vec![[0, 0, 0]; zone_count];
+        smoother.apply(&mut colors);
+        colors.fill(target);
+        smoother.apply(&mut colors);
+        colors[0]
+    }
+
+    assert_eq!(response(1, [64, 64, 64]), [0, 0, 0]);
+    assert_eq!(response(64, [64, 64, 64]), [0, 0, 0]);
+    assert_eq!(response(1, [200, 200, 200]), [200, 200, 200]);
+    assert_eq!(response(64, [200, 200, 200]), [200, 200, 200]);
 }
 
 // ── Temporal Smoothing: Static Scene ─────────────────────────────────────

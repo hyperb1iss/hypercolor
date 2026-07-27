@@ -386,7 +386,10 @@ impl ScreenCaptureInput {
         self.latest_zone_ids = zone_data.into_iter().map(|(id, _)| id).collect();
 
         // 4. Apply temporal smoothing, then color tuning on the smoothed output.
-        self.smoother.apply(&mut colors);
+        let elapsed = self.latest_acquired_at.map_or(Duration::ZERO, |previous| {
+            acquired_at.saturating_duration_since(previous)
+        });
+        self.smoother.apply_for_elapsed(&mut colors, elapsed);
         self.config.tuning.apply(&mut colors);
 
         self.latest_colors = Some(colors);

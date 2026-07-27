@@ -4,16 +4,19 @@
 //! an exponential moving average per zone. Scene cuts are detected when frame
 //! difference exceeds a threshold, causing an immediate reset to the new colors.
 
+use std::time::Duration;
+
 use crate::types::canvas::{linear_to_srgb_u8, srgb_u8_to_linear};
+
+const REFERENCE_FPS: f32 = 60.0;
 
 // ── TemporalSmoother ──────────────────────────────────────────────────────
 
 /// Per-zone exponential moving average smoother with scene-cut detection.
 ///
-/// Each zone's R, G, B channels are smoothed independently. When the total
-/// frame difference (sum of absolute channel deltas across all zones) exceeds
-/// the scene-cut threshold, smoothing is bypassed for that frame so the new
-/// scene snaps in immediately.
+/// Each zone's R, G, B channels are smoothed independently. When the mean
+/// per-zone channel difference exceeds the scene-cut threshold, smoothing is
+/// bypassed for that frame so the new scene snaps in immediately.
 #[derive(Debug, Clone)]
 pub struct TemporalSmoother {
     /// EMA factor: 0.0 = frozen (infinite smoothing), 1.0 = no smoothing.
@@ -37,7 +40,7 @@ impl TemporalSmoother {
     ///
     /// * `alpha` — Smoothing factor, clamped to `0.0..=1.0`. Default: `0.3`.
     /// * `scene_cut_threshold` — Frame difference threshold for scene-cut
-    ///   detection. Default: `100.0` (sum of absolute channel deltas).
+    ///   detection. Default: `100.0` (mean per-zone channel delta).
     #[must_use]
     pub fn new(alpha: f32, scene_cut_threshold: f32) -> Self {
         Self {
@@ -78,23 +81,33 @@ impl TemporalSmoother {
     ///
     /// # Scene-Cut Detection
     ///
-    /// The frame difference metric is the sum of absolute per-channel deltas
-    /// across all zones: `sum(|prev_r - new_r| + |prev_g - new_g| + |prev_b - new_b|)`.
-    /// When this exceeds `scene_cut_threshold`, the smoother copies the new
-    /// colors directly (no blending), effectively resetting to the new scene.
+    /// The frame difference metric is the mean absolute RGB-channel delta per
+    /// zone. When this exceeds `scene_cut_threshold`, the smoother copies the
+    /// new colors directly, effectively resetting to the new scene.
     pub fn apply(&mut self, colors: &mut [[u8; 3]]) {
+        self.apply_for_elapsed(colors, Duration::from_secs_f32(1.0 / REFERENCE_FPS));
+    }
+
+    /// Apply smoothing using the real interval since the previous frame.
+    ///
+    /// The configured alpha is interpreted at 60 Hz and converted to an
+    /// equivalent elapsed-time alpha, keeping response time stable when the
+    /// capture cadence changes.
+    pub fn apply_for_elapsed(&mut self, colors: &mut [[u8; 3]], elapsed: Duration) {
         // First frame or zone count changed — initialize without smoothing.
         if self.prev.len() != colors.len() {
-            self.prev = colors
-                .iter()
-                .map(|c| {
-                    [
-                        srgb_u8_to_linear(c[0]) * 255.0,
-                        srgb_u8_to_linear(c[1]) * 255.0,
-                        srgb_u8_to_linear(c[2]) * 255.0,
-                    ]
-                })
-                .collect();
+            self.prev.clear();
+            self.prev.extend(colors.iter().map(|color| {
+                [
+                    srgb_u8_to_linear(color[0]) * 255.0,
+                    srgb_u8_to_linear(color[1]) * 255.0,
+                    srgb_u8_to_linear(color[2]) * 255.0,
+                ]
+            }));
+            return;
+        }
+
+        if colors.is_empty() {
             return;
         }
 
@@ -103,21 +116,18 @@ impl TemporalSmoother {
 
         // Scene cut detected — snap to new colors immediately.
         if diff > self.scene_cut_threshold {
-            self.prev = colors
-                .iter()
-                .map(|c| {
-                    [
-                        srgb_u8_to_linear(c[0]) * 255.0,
-                        srgb_u8_to_linear(c[1]) * 255.0,
-                        srgb_u8_to_linear(c[2]) * 255.0,
-                    ]
-                })
-                .collect();
+            for (previous, color) in self.prev.iter_mut().zip(colors.iter()) {
+                *previous = [
+                    srgb_u8_to_linear(color[0]) * 255.0,
+                    srgb_u8_to_linear(color[1]) * 255.0,
+                    srgb_u8_to_linear(color[2]) * 255.0,
+                ];
+            }
             return;
         }
 
         // Normal EMA smoothing: smoothed = prev + alpha * (new - prev)
-        let alpha = self.alpha;
+        let alpha = elapsed_alpha(self.alpha, elapsed);
         for (i, color) in colors.iter_mut().enumerate() {
             let prev = &mut self.prev[i];
             let new_r = srgb_u8_to_linear(color[0]) * 255.0;
@@ -139,9 +149,10 @@ impl TemporalSmoother {
         self.prev.clear();
     }
 
-    /// Compute frame difference metric: sum of absolute per-channel deltas.
+    /// Compute the mean absolute RGB-channel delta per zone.
     fn frame_difference(&self, colors: &[[u8; 3]]) -> f32 {
-        self.prev
+        let total = self
+            .prev
             .iter()
             .zip(colors.iter())
             .map(|(prev, new)| {
@@ -150,6 +161,18 @@ impl TemporalSmoother {
                 let db = (prev[2] - (srgb_u8_to_linear(new[2]) * 255.0)).abs();
                 dr + dg + db
             })
-            .sum()
+            .sum::<f32>();
+        total / colors.len() as f32
     }
+}
+
+fn elapsed_alpha(alpha: f32, elapsed: Duration) -> f32 {
+    if alpha <= 0.0 || elapsed.is_zero() {
+        return 0.0;
+    }
+    if alpha >= 1.0 {
+        return 1.0;
+    }
+
+    1.0 - (1.0 - alpha).powf(elapsed.as_secs_f32() * REFERENCE_FPS)
 }
