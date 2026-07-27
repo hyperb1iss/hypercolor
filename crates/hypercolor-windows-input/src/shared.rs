@@ -52,10 +52,25 @@ impl RawButton {
 }
 
 /// Which top-level HID collection a device was registered under.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RawDeviceKind {
     Keyboard,
     Mouse,
+}
+
+/// Immutable identity and diagnostic metadata for one native device lifetime.
+///
+/// Raw Input handles are recycled. The session and device generations make
+/// each native lifetime distinct, while the interned path and label let every
+/// hot event clone one [`Arc`] instead of cloning diagnostic strings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawDeviceDescriptor {
+    pub source_id: Arc<str>,
+    pub interface_path: Option<Arc<str>>,
+    pub label: Arc<str>,
+    pub kind: RawDeviceKind,
+    pub session_generation: u64,
+    pub device_generation: u64,
 }
 
 /// One decoded hardware edge, or a device-lifecycle marker.
@@ -65,7 +80,7 @@ pub enum RawInputEvent {
     /// marker on Windows, so repeat classification happens in core against the
     /// held set for this `source_id`.
     Key {
-        source_id: Arc<str>,
+        device: Arc<RawDeviceDescriptor>,
         make_code: u16,
         prefix: RawKeyPrefix,
         /// Logical virtual-key code. Layout-dependent, so it is only consulted
@@ -74,26 +89,26 @@ pub enum RawInputEvent {
         pressed: bool,
     },
     Button {
-        source_id: Arc<str>,
+        device: Arc<RawDeviceDescriptor>,
         button: RawButton,
         pressed: bool,
     },
     /// Vertical wheel travel in 1/120-notch units, matching evdev's
     /// `REL_WHEEL_HI_RES`. Horizontal wheel is dropped rather than folded in.
     Wheel {
-        source_id: Arc<str>,
+        device: Arc<RawDeviceDescriptor>,
         delta_hi_res: i32,
     },
     /// Relative counts from a normal mouse.
     MotionRelative {
-        source_id: Arc<str>,
+        device: Arc<RawDeviceDescriptor>,
         dx: i32,
         dy: i32,
     },
     /// Absolute position from a tablet, RDP, or VM pointer, already normalized
     /// to `[0,1]²` against whichever rect `MOUSE_VIRTUAL_DESKTOP` selected.
     MotionAbsolute {
-        source_id: Arc<str>,
+        device: Arc<RawDeviceDescriptor>,
         norm_x: f32,
         norm_y: f32,
         /// Which rect the device's raw range covered, from
@@ -107,12 +122,10 @@ pub enum RawInputEvent {
         virtual_desktop: bool,
     },
     DeviceArrived {
-        source_id: Arc<str>,
-        label: String,
-        kind: RawDeviceKind,
+        device: Arc<RawDeviceDescriptor>,
     },
     DeviceRemoved {
-        source_id: Arc<str>,
+        device: Arc<RawDeviceDescriptor>,
     },
     /// Ordered barrier: everything this source had held is now unknown.
     ///
@@ -121,7 +134,7 @@ pub enum RawInputEvent {
     /// only for a keyboard overrun report, where the keyboard's own view of
     /// held state has become unreliable.
     StateGap {
-        source_id: Arc<str>,
+        device: Arc<RawDeviceDescriptor>,
     },
 }
 
@@ -130,14 +143,14 @@ impl RawInputEvent {
     #[must_use]
     pub fn source_id(&self) -> &Arc<str> {
         match self {
-            Self::Key { source_id, .. }
-            | Self::Button { source_id, .. }
-            | Self::Wheel { source_id, .. }
-            | Self::MotionRelative { source_id, .. }
-            | Self::MotionAbsolute { source_id, .. }
-            | Self::DeviceArrived { source_id, .. }
-            | Self::DeviceRemoved { source_id }
-            | Self::StateGap { source_id } => source_id,
+            Self::Key { device, .. }
+            | Self::Button { device, .. }
+            | Self::Wheel { device, .. }
+            | Self::MotionRelative { device, .. }
+            | Self::MotionAbsolute { device, .. }
+            | Self::DeviceArrived { device }
+            | Self::DeviceRemoved { device }
+            | Self::StateGap { device } => &device.source_id,
         }
     }
 }

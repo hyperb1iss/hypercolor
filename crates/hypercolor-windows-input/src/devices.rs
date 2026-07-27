@@ -1,14 +1,14 @@
 //! Device identity, classification, and the handle cache.
 //!
 //! `RAWINPUTHEADER.hDevice` is opaque and recycled, so it cannot be an
-//! identity on its own. Each handle resolves once to its device interface
-//! path, which becomes the `source_id` core unions held state by:
+//! identity on its own. Each native lifetime gets a monotonic generation and
+//! an interned descriptor containing its device interface path:
 //!
 //! ```text
 //! \\?\HID#VID_046D&PID_C52B&MI_01&Col01#7&1f2a3b4c&0&0000#{884b96c3-...}
 //! ```
 //!
-//! That path is a **session-local key, not a durable identity**. It usually
+//! The path is a **session-local key, not a durable identity**. It usually
 //! survives a replug into the same port and it embeds VID/PID, but Windows
 //! guarantees nothing across port changes, driver re-enumeration, or a device
 //! exposing different collections. Good enough for unioning held state within
@@ -25,22 +25,21 @@ use windows::Win32::UI::Input::{
     RIDI_DEVICEINFO, RIDI_DEVICENAME, RIM_TYPEKEYBOARD, RIM_TYPEMOUSE,
 };
 
-use crate::shared::RawDeviceKind;
+use crate::shared::{RawDeviceDescriptor, RawDeviceKind};
 
-/// Devices with a null handle share this bucket.
-///
-/// `hDevice` can legitimately be zero: precision touchpads and some injected
-/// input arrive that way, so the cache cannot cover every event and zero is
-/// *not* a reliable "this was synthetic" marker. Null handles get one stable
-/// source and skip the device-info query entirely.
-const UNKNOWN_SOURCE_ID: &str = "windows:unknown";
+#[derive(Debug)]
+pub(crate) struct DeviceMetadata {
+    interface_path: Arc<str>,
+    label: Arc<str>,
+    kind: RawDeviceKind,
+}
 
-/// One resolved device.
-#[derive(Debug, Clone)]
-pub struct DeviceIdentity {
-    pub source_id: Arc<str>,
-    pub label: String,
-    pub kind: RawDeviceKind,
+#[derive(Debug)]
+pub(crate) struct DeviceResolution {
+    pub(crate) device: Arc<RawDeviceDescriptor>,
+    pub(crate) retired: Option<Arc<RawDeviceDescriptor>>,
+    pub(crate) discovered: bool,
+    pub(crate) metadata_changed: bool,
 }
 
 /// Handle-to-identity cache, generation-tagged against handle recycling.
@@ -49,30 +48,73 @@ pub struct DeviceIdentity {
 /// drain that references a handle already removed and reissued would otherwise
 /// resolve to the *new* device and pour its keys into the old device's held
 /// set, so removal bumps a generation and stale lookups are dropped instead.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct DeviceCache {
-    entries: HashMap<isize, DeviceIdentity>,
-    unknown: Option<Arc<str>>,
+    entries: HashMap<isize, Arc<RawDeviceDescriptor>>,
+    null_keyboard: Option<Arc<RawDeviceDescriptor>>,
+    null_mouse: Option<Arc<RawDeviceDescriptor>>,
+    session_generation: u64,
+    next_device_generation: u64,
 }
 
 impl DeviceCache {
     #[must_use]
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(session_generation: u64) -> Self {
+        Self {
+            entries: HashMap::new(),
+            null_keyboard: None,
+            null_mouse: None,
+            session_generation,
+            next_device_generation: 1,
+        }
     }
 
     /// Number of devices currently resolved and streaming.
     #[must_use]
     pub fn len(&self) -> usize {
         self.entries.len()
+            + usize::from(self.null_keyboard.is_some())
+            + usize::from(self.null_mouse.is_some())
     }
 
-    /// The bucket every null-handle report shares.
-    pub fn unknown_source(&mut self) -> Arc<str> {
-        Arc::clone(
-            self.unknown
-                .get_or_insert_with(|| Arc::from(UNKNOWN_SOURCE_ID)),
-        )
+    /// Resolve a kind-safe null-handle device for this session.
+    pub fn resolve_null(&mut self, kind: RawDeviceKind) -> DeviceResolution {
+        let existing = match kind {
+            RawDeviceKind::Keyboard => self.null_keyboard.as_ref(),
+            RawDeviceKind::Mouse => self.null_mouse.as_ref(),
+        };
+        if let Some(existing) = existing {
+            return DeviceResolution {
+                device: Arc::clone(existing),
+                retired: None,
+                discovered: false,
+                metadata_changed: false,
+            };
+        }
+
+        let device_generation = self.allocate_device_generation();
+        let kind_name = kind_name(kind);
+        let device = Arc::new(RawDeviceDescriptor {
+            source_id: Arc::from(format!(
+                "windows:null:{kind_name}:s{}:d{device_generation}",
+                self.session_generation
+            )),
+            interface_path: None,
+            label: Arc::from(format!("Windows null-device {kind_name}")),
+            kind,
+            session_generation: self.session_generation,
+            device_generation,
+        });
+        match kind {
+            RawDeviceKind::Keyboard => self.null_keyboard = Some(Arc::clone(&device)),
+            RawDeviceKind::Mouse => self.null_mouse = Some(Arc::clone(&device)),
+        }
+        DeviceResolution {
+            device,
+            retired: None,
+            discovered: true,
+            metadata_changed: false,
+        }
     }
 
     /// Look up a handle, resolving it on first sight.
@@ -81,41 +123,139 @@ impl DeviceCache {
     /// device can appear in a report before its arrival notification is
     /// processed, and because `RIDEV_DEVNOTIFY` only fires on *change* —
     /// devices already attached at registration produce no arrival at all.
-    pub fn resolve(&mut self, handle: HANDLE) -> Option<DeviceIdentity> {
+    pub fn resolve(
+        &mut self,
+        handle: HANDLE,
+        expected_kind: RawDeviceKind,
+    ) -> Option<DeviceResolution> {
+        if handle.is_invalid() {
+            return Some(self.resolve_null(expected_kind));
+        }
+        if let Some(entry) = self.entries.get(&handle.0.addr().cast_signed())
+            && entry.kind == expected_kind
+        {
+            return Some(DeviceResolution {
+                device: Arc::clone(entry),
+                retired: None,
+                discovered: false,
+                metadata_changed: false,
+            });
+        }
+        let metadata = query_metadata(handle)?;
+        if metadata.kind != expected_kind {
+            return None;
+        }
+        Some(self.install(handle, metadata))
+    }
+
+    /// Re-read an arrival notification's metadata without duplicating an
+    /// already synthesized first-data arrival.
+    pub fn refresh(&mut self, handle: HANDLE) -> Option<DeviceResolution> {
         if handle.is_invalid() {
             return None;
         }
-        if let Some(entry) = self.entries.get(&handle.0.addr().cast_signed()) {
-            return Some(entry.clone());
-        }
-        let identity = query_identity(handle)?;
-        self.entries
-            .insert(handle.0.addr().cast_signed(), identity.clone());
-        Some(identity)
+        let metadata = query_metadata(handle)?;
+        Some(self.refresh_metadata(handle, metadata))
     }
 
     /// Drop a removed handle, returning the identity it held so the caller can
     /// synthesize release edges for it.
-    pub fn remove(&mut self, handle: HANDLE) -> Option<DeviceIdentity> {
+    pub fn remove(&mut self, handle: HANDLE) -> Option<Arc<RawDeviceDescriptor>> {
         self.entries.remove(&handle.0.addr().cast_signed())
     }
 
     /// Every device currently known, for readiness reporting.
-    pub fn identities(&self) -> impl Iterator<Item = &DeviceIdentity> {
+    pub fn identities(&self) -> impl Iterator<Item = &Arc<RawDeviceDescriptor>> {
         self.entries.values()
+    }
+
+    fn install(&mut self, handle: HANDLE, metadata: DeviceMetadata) -> DeviceResolution {
+        let device_generation = self.allocate_device_generation();
+        let kind_name = kind_name(metadata.kind);
+        let device = Arc::new(RawDeviceDescriptor {
+            source_id: Arc::from(format!(
+                "windows:{kind_name}:s{}:d{device_generation}:{}",
+                self.session_generation, metadata.interface_path
+            )),
+            interface_path: Some(metadata.interface_path),
+            label: metadata.label,
+            kind: metadata.kind,
+            session_generation: self.session_generation,
+            device_generation,
+        });
+        let retired = self
+            .entries
+            .insert(handle.0.addr().cast_signed(), Arc::clone(&device));
+        DeviceResolution {
+            device,
+            retired,
+            discovered: true,
+            metadata_changed: false,
+        }
+    }
+
+    fn refresh_metadata(&mut self, handle: HANDLE, metadata: DeviceMetadata) -> DeviceResolution {
+        let key = handle.0.addr().cast_signed();
+        let Some(existing) = self.entries.get(&key) else {
+            return self.install(handle, metadata);
+        };
+        if existing.kind != metadata.kind
+            || existing.interface_path.as_ref() != Some(&metadata.interface_path)
+        {
+            return self.install(handle, metadata);
+        }
+        if existing.label == metadata.label {
+            return DeviceResolution {
+                device: Arc::clone(existing),
+                retired: None,
+                discovered: false,
+                metadata_changed: false,
+            };
+        }
+
+        let device = Arc::new(RawDeviceDescriptor {
+            source_id: Arc::clone(&existing.source_id),
+            interface_path: existing.interface_path.clone(),
+            label: metadata.label,
+            kind: existing.kind,
+            session_generation: existing.session_generation,
+            device_generation: existing.device_generation,
+        });
+        self.entries.insert(key, Arc::clone(&device));
+        DeviceResolution {
+            device,
+            retired: None,
+            discovered: false,
+            metadata_changed: true,
+        }
+    }
+
+    fn allocate_device_generation(&mut self) -> u64 {
+        let generation = self.next_device_generation;
+        self.next_device_generation = self
+            .next_device_generation
+            .checked_add(1)
+            .expect("Raw Input device generation exhausted");
+        generation
     }
 }
 
 /// Resolve one handle to its interface path, kind, and synthesized label.
-fn query_identity(handle: HANDLE) -> Option<DeviceIdentity> {
+fn query_metadata(handle: HANDLE) -> Option<DeviceMetadata> {
     let kind = query_kind(handle)?;
     let path = query_device_path(handle)?;
-    let label = synthesize_label(&path, kind);
-    Some(DeviceIdentity {
-        source_id: Arc::from(path.as_str()),
-        label,
+    Some(DeviceMetadata {
+        label: Arc::from(synthesize_label(&path, kind)),
+        interface_path: Arc::from(path),
         kind,
     })
+}
+
+const fn kind_name(kind: RawDeviceKind) -> &'static str {
+    match kind {
+        RawDeviceKind::Keyboard => "keyboard",
+        RawDeviceKind::Mouse => "mouse",
+    }
 }
 
 /// Classify via `RIDI_DEVICEINFO`, which reports the type outright — genuinely
@@ -254,7 +394,7 @@ fn extract_field(upper_path: &str, marker: &str) -> Option<String> {
 /// produces no `GIDC_ARRIVAL`. Resolving lazily on first input would leave
 /// core with no pointer at all until the user moved it, whereas the Linux
 /// backend establishes pointer presence from the device list at scan time.
-pub fn enumerate_devices(keyboard: bool, mouse: bool) -> Vec<(HANDLE, DeviceIdentity)> {
+pub(crate) fn enumerate_devices(keyboard: bool, mouse: bool) -> Vec<(HANDLE, DeviceMetadata)> {
     let mut count: u32 = 0;
     let entry_size = u32::try_from(size_of::<RAWINPUTDEVICELIST>()).unwrap_or(u32::MAX);
     // SAFETY: the query form takes a null list pointer and only writes the
@@ -276,21 +416,22 @@ pub fn enumerate_devices(keyboard: bool, mouse: bool) -> Vec<(HANDLE, DeviceIden
     list.truncate((written as usize).min(list.len()));
     list.into_iter()
         .filter_map(|entry| {
-            let identity = query_identity(entry.hDevice)?;
-            let wanted = match identity.kind {
+            let metadata = query_metadata(entry.hDevice)?;
+            let wanted = match metadata.kind {
                 RawDeviceKind::Keyboard => keyboard,
                 RawDeviceKind::Mouse => mouse,
             };
-            wanted.then_some((entry.hDevice, identity))
+            wanted.then_some((entry.hDevice, metadata))
         })
         .collect()
 }
 
 /// Seed a cache from an enumeration result.
-pub fn seed_cache(cache: &mut DeviceCache, devices: Vec<(HANDLE, DeviceIdentity)>) {
-    for (handle, identity) in devices {
-        cache
-            .entries
-            .insert(handle.0.addr().cast_signed(), identity);
+pub(crate) fn seed_cache(cache: &mut DeviceCache, devices: Vec<(HANDLE, DeviceMetadata)>) {
+    for (handle, metadata) in devices {
+        cache.install(handle, metadata);
     }
 }
+
+#[cfg(test)]
+mod tests;

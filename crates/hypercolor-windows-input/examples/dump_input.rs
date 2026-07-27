@@ -109,7 +109,7 @@ fn windows_main() {
             for event in batch.events {
                 match event {
                     RawInputEvent::Key {
-                        source_id,
+                        device,
                         make_code,
                         prefix,
                         vkey,
@@ -119,10 +119,10 @@ fn windows_main() {
                          vk={vkey:#06X} {:4} {}",
                         batch.at_ms,
                         if *pressed { "down" } else { "up" },
-                        short_id(source_id)
+                        short_id(&device.source_id)
                     ),
                     RawInputEvent::Button {
-                        source_id,
+                        device,
                         button,
                         pressed,
                     } => println!(
@@ -130,23 +130,23 @@ fn windows_main() {
                         batch.at_ms,
                         button.canonical_name(),
                         if *pressed { "down" } else { "up" },
-                        short_id(source_id)
+                        short_id(&device.source_id)
                     ),
                     RawInputEvent::Wheel {
-                        source_id,
+                        device,
                         delta_hi_res,
                     } => println!(
                         "{:>8} #{batch_no:<5} wheel {delta_hi_res:+} {}",
                         batch.at_ms,
-                        short_id(source_id)
+                        short_id(&device.source_id)
                     ),
-                    RawInputEvent::MotionRelative { source_id, dx, dy } => println!(
+                    RawInputEvent::MotionRelative { device, dx, dy } => println!(
                         "{:>8} #{batch_no:<5} move  {dx:+} {dy:+} {}",
                         batch.at_ms,
-                        short_id(source_id)
+                        short_id(&device.source_id)
                     ),
                     RawInputEvent::MotionAbsolute {
-                        source_id,
+                        device,
                         norm_x,
                         norm_y,
                         virtual_desktop,
@@ -154,26 +154,24 @@ fn windows_main() {
                         "{:>8} #{batch_no:<5} abs   {norm_x:.4} {norm_y:.4} {} {}",
                         batch.at_ms,
                         if *virtual_desktop { "vdesk" } else { "primary" },
-                        short_id(source_id)
+                        short_id(&device.source_id)
                     ),
-                    RawInputEvent::DeviceArrived {
-                        source_id,
-                        label,
-                        kind,
-                    } => println!(
-                        "{:>8} #{batch_no:<5} +dev  {label} ({kind:?}) {}",
+                    RawInputEvent::DeviceArrived { device } => println!(
+                        "{:>8} #{batch_no:<5} +dev  {} ({:?}) {}",
                         batch.at_ms,
-                        short_id(source_id)
+                        device.label,
+                        device.kind,
+                        short_id(&device.source_id)
                     ),
-                    RawInputEvent::DeviceRemoved { source_id } => println!(
+                    RawInputEvent::DeviceRemoved { device } => println!(
                         "{:>8} #{batch_no:<5} -dev  {}",
                         batch.at_ms,
-                        short_id(source_id)
+                        short_id(&device.source_id)
                     ),
-                    RawInputEvent::StateGap { source_id } => println!(
+                    RawInputEvent::StateGap { device } => println!(
                         "{:>8} #{batch_no:<5} GAP   rollover overrun on {}",
                         batch.at_ms,
-                        short_id(source_id)
+                        short_id(&device.source_id)
                     ),
                 }
             }

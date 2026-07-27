@@ -1,4 +1,5 @@
 use std::mem::size_of;
+use std::sync::Arc;
 use std::time::Duration;
 
 use windows::Win32::Foundation::{
@@ -8,8 +9,23 @@ use windows::Win32::Foundation::{
 use super::{
     BufferReadDisposition, INITIAL_BUFFER_QWORDS, MAX_BUFFER_QWORDS, MAX_RESIZE_BACKOFF_MS,
     MAX_RESIZE_RETRIES, PumpError, classify_buffer_read, classify_wait_result, initial_topology,
-    next_buffer_capacity,
+    next_buffer_capacity, queue_device_resolution,
 };
+use crate::devices::DeviceResolution;
+use crate::shared::{
+    PendingEvents, RawDeviceDescriptor, RawDeviceKind, RawInputBatch, RawInputEvent,
+};
+
+fn device(source_id: &str, kind: RawDeviceKind, generation: u64) -> Arc<RawDeviceDescriptor> {
+    Arc::new(RawDeviceDescriptor {
+        source_id: Arc::from(source_id),
+        interface_path: Some(Arc::from(source_id)),
+        label: Arc::from(source_id),
+        kind,
+        session_generation: 1,
+        device_generation: generation,
+    })
+}
 
 #[test]
 fn access_denied_is_a_terminal_buffer_failure() {
@@ -116,4 +132,60 @@ fn resize_beyond_the_safety_ceiling_is_terminal() {
             capacity_bytes: ceiling_bytes,
         })
     );
+}
+
+#[test]
+fn first_data_discovery_queues_arrival_before_the_record() {
+    let discovered = device("new-keyboard", RawDeviceKind::Keyboard, 1);
+    let resolution = DeviceResolution {
+        device: Arc::clone(&discovered),
+        retired: None,
+        discovered: true,
+        metadata_changed: false,
+    };
+    let mut pending = PendingEvents::new();
+
+    queue_device_resolution(&mut pending, &resolution);
+    pending.push(RawInputEvent::Key {
+        device: discovered,
+        make_code: 0x1e,
+        prefix: crate::shared::RawKeyPrefix::None,
+        vkey: 0,
+        pressed: true,
+    });
+
+    let mut order = Vec::new();
+    pending.deliver(1, 1, None, &mut |batch: RawInputBatch<'_>| {
+        order.extend(batch.events.iter().map(|event| match event {
+            RawInputEvent::DeviceArrived { .. } => "arrival",
+            RawInputEvent::Key { .. } => "key",
+            _ => "other",
+        }));
+    });
+    assert_eq!(order, ["arrival", "key"]);
+}
+
+#[test]
+fn handle_replacement_queues_removal_before_new_arrival() {
+    let retired = device("old-mouse", RawDeviceKind::Mouse, 4);
+    let replacement = device("new-mouse", RawDeviceKind::Mouse, 5);
+    let resolution = DeviceResolution {
+        device: replacement,
+        retired: Some(retired),
+        discovered: true,
+        metadata_changed: false,
+    };
+    let mut pending = PendingEvents::new();
+
+    queue_device_resolution(&mut pending, &resolution);
+
+    let mut order = Vec::new();
+    pending.deliver(1, 1, None, &mut |batch| {
+        order.extend(batch.events.iter().map(|event| match event {
+            RawInputEvent::DeviceRemoved { .. } => "removal",
+            RawInputEvent::DeviceArrived { .. } => "arrival",
+            _ => "other",
+        }));
+    });
+    assert_eq!(order, ["removal", "arrival"]);
 }

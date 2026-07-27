@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use hypercolor_windows_input::{RawInputBatch, RawInputEvent, RawKeyPrefix};
+use hypercolor_windows_input::{
+    RawDeviceDescriptor, RawDeviceKind, RawInputBatch, RawInputEvent, RawKeyPrefix,
+};
 
 use super::{WindowsHostInput, fold_batch};
 use crate::input::InputSource;
@@ -13,7 +15,14 @@ fn failed_start_fences_every_late_initial_batch_from_the_event_drain() {
     assert_ne!(input.epoch(), failed_epoch);
 
     let events = [RawInputEvent::Key {
-        source_id: Arc::from("test-keyboard"),
+        device: Arc::new(RawDeviceDescriptor {
+            source_id: Arc::from("test-keyboard"),
+            interface_path: Some(Arc::from("test-interface")),
+            label: Arc::from("test keyboard"),
+            kind: RawDeviceKind::Keyboard,
+            session_generation: 1,
+            device_generation: 1,
+        }),
         make_code: 0x1e,
         prefix: RawKeyPrefix::None,
         vkey: 0,

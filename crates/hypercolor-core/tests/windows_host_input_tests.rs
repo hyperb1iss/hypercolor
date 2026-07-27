@@ -13,20 +13,28 @@ use std::sync::Arc;
 use hypercolor_core::input::{PointerMode, WindowsHostInput};
 use hypercolor_core::types::event::{InputButtonState, InputEvent};
 use hypercolor_windows_input::{
-    RawButton, RawCursor, RawDeviceKind, RawInputBatch, RawInputEvent, RawKeyPrefix,
+    RawButton, RawCursor, RawDeviceDescriptor, RawDeviceKind, RawInputBatch, RawInputEvent,
+    RawKeyPrefix,
 };
 
 const KBD_A: &str = "\\\\?\\HID#VID_046D&PID_C52B#kbd-a";
 const KBD_B: &str = "\\\\?\\HID#VID_1532&PID_0226#kbd-b";
 const MOUSE: &str = "\\\\?\\HID#VID_046D&PID_C08B#mouse";
 
-fn source(id: &str) -> Arc<str> {
-    Arc::from(id)
+fn device(id: &str, kind: RawDeviceKind) -> Arc<RawDeviceDescriptor> {
+    Arc::new(RawDeviceDescriptor {
+        source_id: Arc::from(id),
+        interface_path: Some(Arc::from(id)),
+        label: Arc::from(format!("test {id}")),
+        kind,
+        session_generation: 1,
+        device_generation: 1,
+    })
 }
 
 fn key(id: &str, make_code: u16, pressed: bool) -> RawInputEvent {
     RawInputEvent::Key {
-        source_id: source(id),
+        device: device(id, RawDeviceKind::Keyboard),
         make_code,
         prefix: RawKeyPrefix::None,
         vkey: 0,
@@ -36,7 +44,7 @@ fn key(id: &str, make_code: u16, pressed: bool) -> RawInputEvent {
 
 fn absolute(id: &str, norm_x: f32, norm_y: f32) -> RawInputEvent {
     RawInputEvent::MotionAbsolute {
-        source_id: source(id),
+        device: device(id, RawDeviceKind::Mouse),
         norm_x,
         norm_y,
         virtual_desktop: true,
@@ -45,9 +53,7 @@ fn absolute(id: &str, norm_x: f32, norm_y: f32) -> RawInputEvent {
 
 fn arrived(id: &str, kind: RawDeviceKind) -> RawInputEvent {
     RawInputEvent::DeviceArrived {
-        source_id: source(id),
-        label: format!("test {id}"),
-        kind,
+        device: device(id, kind),
     }
 }
 
@@ -201,7 +207,7 @@ fn buttons_track_per_source_and_set_the_down_flag() {
     let (data, events) = fold(
         &mut input,
         &[RawInputEvent::Button {
-            source_id: source(MOUSE),
+            device: device(MOUSE, RawDeviceKind::Mouse),
             button: RawButton::Left,
             pressed: true,
         }],
@@ -221,12 +227,12 @@ fn a_click_in_one_batch_leaves_nothing_held() {
         &mut input,
         &[
             RawInputEvent::Button {
-                source_id: source(MOUSE),
+                device: device(MOUSE, RawDeviceKind::Mouse),
                 button: RawButton::Left,
                 pressed: true,
             },
             RawInputEvent::Button {
-                source_id: source(MOUSE),
+                device: device(MOUSE, RawDeviceKind::Mouse),
                 button: RawButton::Left,
                 pressed: false,
             },
@@ -243,7 +249,7 @@ fn wheel_travel_reaches_the_event_bus_unscaled() {
     let (_, events) = fold(
         &mut input,
         &[RawInputEvent::Wheel {
-            source_id: source(MOUSE),
+            device: device(MOUSE, RawDeviceKind::Mouse),
             delta_hi_res: -120,
         }],
     );
@@ -312,7 +318,7 @@ fn removing_a_device_synthesizes_releases_for_everything_it_held() {
     let (data, events) = fold(
         &mut input,
         &[RawInputEvent::DeviceRemoved {
-            source_id: source(KBD_A),
+            device: device(KBD_A, RawDeviceKind::Keyboard),
         }],
     );
 
@@ -338,7 +344,7 @@ fn removing_one_device_leaves_anothers_held_state_alone() {
     let (data, _) = fold(
         &mut input,
         &[RawInputEvent::DeviceRemoved {
-            source_id: source(KBD_A),
+            device: device(KBD_A, RawDeviceKind::Keyboard),
         }],
     );
     assert_eq!(data.keyboard.pressed_keys, vec!["b".to_owned()]);
@@ -364,7 +370,7 @@ fn a_rollover_overrun_releases_that_sources_held_keys_immediately() {
     let (data, events) = fold(
         &mut input,
         &[RawInputEvent::StateGap {
-            source_id: source(KBD_A),
+            device: device(KBD_A, RawDeviceKind::Keyboard),
         }],
     );
 
@@ -388,7 +394,7 @@ fn a_state_gap_is_a_barrier_for_events_later_in_the_same_batch() {
         &mut input,
         &[
             RawInputEvent::StateGap {
-                source_id: source(KBD_A),
+                device: device(KBD_A, RawDeviceKind::Keyboard),
             },
             key(KBD_A, 0x30, true),
         ],
@@ -410,12 +416,12 @@ fn relative_motion_sums_and_accumulates_path_length() {
         &mut input,
         &[
             RawInputEvent::MotionRelative {
-                source_id: source(MOUSE),
+                device: device(MOUSE, RawDeviceKind::Mouse),
                 dx: 600,
                 dy: 0,
             },
             RawInputEvent::MotionRelative {
-                source_id: source(MOUSE),
+                device: device(MOUSE, RawDeviceKind::Mouse),
                 dx: -600,
                 dy: 0,
             },
@@ -440,6 +446,25 @@ fn the_first_absolute_report_after_a_reset_emits_no_delta() {
     let (data, _) = fold(&mut input, &[absolute(MOUSE, 0.9, 0.9)]);
     assert!(data.batch.motion.dx.abs() < 1e-6);
     assert!(data.batch.motion.dy.abs() < 1e-6);
+}
+
+#[test]
+fn delayed_duplicate_arrival_preserves_the_absolute_baseline() {
+    let mut input = WindowsHostInput::new(true, true);
+    fold(
+        &mut input,
+        &[
+            arrived(MOUSE, RawDeviceKind::Mouse),
+            absolute(MOUSE, 0.2, 0.3),
+        ],
+    );
+    fold(&mut input, &[arrived(MOUSE, RawDeviceKind::Mouse)]);
+    let (data, _) = fold(&mut input, &[absolute(MOUSE, 0.7, 0.3)]);
+
+    assert!(
+        (data.batch.motion.dx - 0.5).abs() < 1e-6,
+        "metadata refresh must not reset a baseline established by first data"
+    );
 }
 
 #[test]
@@ -590,7 +615,7 @@ fn a_coordinate_space_change_resets_the_absolute_baseline() {
     fold(
         &mut input,
         &[RawInputEvent::MotionAbsolute {
-            source_id: source(MOUSE),
+            device: device(MOUSE, RawDeviceKind::Mouse),
             norm_x: 0.1,
             norm_y: 0.1,
             virtual_desktop: false,
@@ -599,7 +624,7 @@ fn a_coordinate_space_change_resets_the_absolute_baseline() {
     let (data, _) = fold(
         &mut input,
         &[RawInputEvent::MotionAbsolute {
-            source_id: source(MOUSE),
+            device: device(MOUSE, RawDeviceKind::Mouse),
             norm_x: 0.9,
             norm_y: 0.9,
             virtual_desktop: true,

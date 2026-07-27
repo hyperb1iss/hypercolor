@@ -40,8 +40,9 @@ pub mod decode;
 mod shared;
 
 pub use shared::{
-    PendingEvents, RawButton, RawCursor, RawDeviceKind, RawInputBatch, RawInputConfig,
-    RawInputError, RawInputEvent, RawInputResult, RawKeyPrefix, SessionState, WorkerState,
+    PendingEvents, RawButton, RawCursor, RawDeviceDescriptor, RawDeviceKind, RawInputBatch,
+    RawInputConfig, RawInputError, RawInputEvent, RawInputResult, RawKeyPrefix, SessionState,
+    WorkerState,
 };
 
 #[cfg(target_os = "windows")]

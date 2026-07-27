@@ -11,11 +11,24 @@
 
 use std::sync::Arc;
 
-use hypercolor_windows_input::{PendingEvents, RawInputBatch, RawInputEvent, RawKeyPrefix};
+use hypercolor_windows_input::{
+    PendingEvents, RawDeviceDescriptor, RawDeviceKind, RawInputBatch, RawInputEvent, RawKeyPrefix,
+};
+
+fn device() -> Arc<RawDeviceDescriptor> {
+    Arc::new(RawDeviceDescriptor {
+        source_id: Arc::from("test-device"),
+        interface_path: Some(Arc::from("test-interface")),
+        label: Arc::from("test keyboard"),
+        kind: RawDeviceKind::Keyboard,
+        session_generation: 1,
+        device_generation: 1,
+    })
+}
 
 fn key(make_code: u16, pressed: bool) -> RawInputEvent {
     RawInputEvent::Key {
-        source_id: Arc::from("test-device"),
+        device: device(),
         make_code,
         prefix: RawKeyPrefix::None,
         vkey: 0,

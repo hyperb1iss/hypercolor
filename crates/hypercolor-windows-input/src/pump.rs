@@ -46,11 +46,11 @@ use crate::decode::{
     AbsoluteSpace, CanonicalKeyReport, KeyCanonicalizer, MotionKind, RecordStep, button_edges,
     is_horizontal_wheel, motion_kind, next_record, normalize_absolute, wheel_delta,
 };
-use crate::devices::{DeviceCache, enumerate_devices, seed_cache};
+use crate::devices::{DeviceCache, DeviceResolution, enumerate_devices, seed_cache};
 use crate::metrics::{MonitorTopology, monitor_topology, pin_dpi_context, sample_cursor};
 use crate::shared::{
-    PendingEvents, RawCursor, RawInputBatch, RawInputConfig, RawInputError, RawInputEvent,
-    RawInputResult,
+    PendingEvents, RawCursor, RawDeviceDescriptor, RawDeviceKind, RawInputBatch, RawInputConfig,
+    RawInputError, RawInputEvent, RawInputResult,
 };
 
 /// Window class shared by every session in this process.
@@ -305,7 +305,7 @@ impl Pump {
             window,
             generation,
             config,
-            cache: DeviceCache::new(),
+            cache: DeviceCache::new(generation),
             key_canonicalizer: KeyCanonicalizer,
             buffer: vec![0u64; INITIAL_BUFFER_QWORDS],
             record_pointers: Vec::new(),
@@ -512,10 +512,8 @@ impl Pump {
         let arrivals: Vec<RawInputEvent> = self
             .cache
             .identities()
-            .map(|identity| RawInputEvent::DeviceArrived {
-                source_id: Arc::clone(&identity.source_id),
-                label: identity.label.clone(),
-                kind: identity.kind,
+            .map(|device| RawInputEvent::DeviceArrived {
+                device: Arc::clone(device),
             })
             .collect();
         self.events.extend(arrivals);
@@ -761,20 +759,22 @@ impl Pump {
         record_end: usize,
     ) {
         let handle = header.hDevice;
-        let source_id = match self.cache.resolve(handle) {
-            Some(identity) => identity.source_id,
-            // A null handle is legitimate — precision touchpads and some
-            // injected input arrive that way — and is not a reliable marker
-            // that the input was synthetic, so it gets a stable bucket rather
-            // than being dropped.
-            None if handle.is_invalid() => self.cache.unknown_source(),
+        let kind = match RID_DEVICE_INFO_TYPE(header.dwType) {
+            RIM_TYPEKEYBOARD if self.config.keyboard => RawDeviceKind::Keyboard,
+            RIM_TYPEMOUSE if self.config.mouse => RawDeviceKind::Mouse,
+            _ => return,
+        };
+        let resolution = match self.cache.resolve(handle, kind) {
+            Some(resolution) => resolution,
             None => return,
         };
+        self.queue_device_resolution(&resolution);
+        let device = resolution.device;
 
         let payload = offset + std::mem::offset_of!(RAWINPUT, data);
 
-        match RID_DEVICE_INFO_TYPE(header.dwType) {
-            RIM_TYPEKEYBOARD if self.config.keyboard => {
+        match kind {
+            RawDeviceKind::Keyboard => {
                 if payload.saturating_add(size_of::<RAWKEYBOARD>()) > record_end {
                     tracing::warn!("raw input keyboard record is shorter than its payload");
                     return;
@@ -784,9 +784,9 @@ impl Pump {
                 // this union arm, and `read_unaligned` imposes no alignment
                 // requirement.
                 let keyboard = unsafe { base.add(payload).cast::<RAWKEYBOARD>().read_unaligned() };
-                self.decode_keyboard(&source_id, keyboard.MakeCode, keyboard.Flags, keyboard.VKey);
+                self.decode_keyboard(&device, keyboard.MakeCode, keyboard.Flags, keyboard.VKey);
             }
-            RIM_TYPEMOUSE if self.config.mouse => {
+            RawDeviceKind::Mouse => {
                 if payload.saturating_add(size_of::<RAWMOUSE>()) > record_end {
                     tracing::warn!("raw input mouse record is shorter than its payload");
                     return;
@@ -802,7 +802,7 @@ impl Pump {
                     )
                 };
                 self.decode_mouse(
-                    &source_id,
+                    &device,
                     mouse.usFlags.0,
                     u32::from(button_flags),
                     button_data,
@@ -810,11 +810,16 @@ impl Pump {
                     mouse.lLastY,
                 );
             }
-            _ => {}
         }
     }
 
-    fn decode_keyboard(&mut self, source_id: &Arc<str>, make_code: u16, flags: u16, vkey: u16) {
+    fn decode_keyboard(
+        &mut self,
+        device: &Arc<RawDeviceDescriptor>,
+        make_code: u16,
+        flags: u16,
+        vkey: u16,
+    ) {
         let report = self.key_canonicalizer.canonicalize(make_code, flags, vkey);
 
         match report {
@@ -827,7 +832,7 @@ impl Pump {
                 // keeps typing — which during a key-mashing burst is the whole
                 // time, and mashing keys is the point of half these effects.
                 self.events.push(RawInputEvent::StateGap {
-                    source_id: Arc::clone(source_id),
+                    device: Arc::clone(device),
                 });
             }
             CanonicalKeyReport::Edge {
@@ -837,7 +842,7 @@ impl Pump {
                 pressed,
             } => {
                 self.events.push(RawInputEvent::Key {
-                    source_id: Arc::clone(source_id),
+                    device: Arc::clone(device),
                     make_code,
                     prefix,
                     vkey,
@@ -849,7 +854,7 @@ impl Pump {
 
     fn decode_mouse(
         &mut self,
-        source_id: &Arc<str>,
+        device: &Arc<RawDeviceDescriptor>,
         flags: u16,
         button_flags: u32,
         button_data: u16,
@@ -858,7 +863,7 @@ impl Pump {
     ) {
         for (button, pressed) in button_edges(button_flags) {
             self.events.push(RawInputEvent::Button {
-                source_id: Arc::clone(source_id),
+                device: Arc::clone(device),
                 button,
                 pressed,
             });
@@ -866,7 +871,7 @@ impl Pump {
 
         if let Some(delta) = wheel_delta(button_flags, button_data) {
             self.events.push(RawInputEvent::Wheel {
-                source_id: Arc::clone(source_id),
+                device: Arc::clone(device),
                 delta_hi_res: delta,
             });
         } else if is_horizontal_wheel(button_flags) {
@@ -877,7 +882,7 @@ impl Pump {
             MotionKind::Relative => {
                 if last_x != 0 || last_y != 0 {
                     self.events.push(RawInputEvent::MotionRelative {
-                        source_id: Arc::clone(source_id),
+                        device: Arc::clone(device),
                         dx: last_x,
                         dy: last_y,
                     });
@@ -896,7 +901,7 @@ impl Pump {
                     topology.virtual_screen,
                 );
                 self.events.push(RawInputEvent::MotionAbsolute {
-                    source_id: Arc::clone(source_id),
+                    device: Arc::clone(device),
                     norm_x,
                     norm_y,
                     virtual_desktop: space == AbsoluteSpace::VirtualDesktop,
@@ -1037,23 +1042,21 @@ impl Pump {
         let handle = HANDLE(l_param.0 as *mut std::ffi::c_void);
         match u32::try_from(w_param.0).unwrap_or_default() {
             GIDC_ARRIVAL => {
-                if let Some(identity) = self.cache.resolve(handle) {
-                    self.events.push(RawInputEvent::DeviceArrived {
-                        source_id: Arc::clone(&identity.source_id),
-                        label: identity.label.clone(),
-                        kind: identity.kind,
-                    });
+                if let Some(resolution) = self.cache.refresh(handle) {
+                    self.queue_device_resolution(&resolution);
                 }
             }
             GIDC_REMOVAL => {
-                if let Some(identity) = self.cache.remove(handle) {
-                    self.events.push(RawInputEvent::DeviceRemoved {
-                        source_id: identity.source_id,
-                    });
+                if let Some(device) = self.cache.remove(handle) {
+                    self.events.push(RawInputEvent::DeviceRemoved { device });
                 }
             }
             _ => {}
         }
+    }
+
+    fn queue_device_resolution(&mut self, resolution: &DeviceResolution) {
+        queue_device_resolution(&mut self.events, resolution);
     }
 
     /// Deliver any events the control pass produced outside a drain slice.
@@ -1062,6 +1065,19 @@ impl Pump {
     pub fn flush_pending(&mut self, sink: &mut impl FnMut(RawInputBatch<'_>)) {
         let at_ms = (self.config.clock)();
         self.emit(at_ms, sink);
+    }
+}
+
+fn queue_device_resolution(events: &mut PendingEvents, resolution: &DeviceResolution) {
+    if let Some(retired) = &resolution.retired {
+        events.push(RawInputEvent::DeviceRemoved {
+            device: Arc::clone(retired),
+        });
+    }
+    if resolution.discovered || resolution.metadata_changed {
+        events.push(RawInputEvent::DeviceArrived {
+            device: Arc::clone(&resolution.device),
+        });
     }
 }
 

@@ -27,8 +27,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use hypercolor_windows_input::{
-    RawButton, RawCursor, RawDeviceKind, RawInputBatch, RawInputConfig, RawInputError,
-    RawInputEvent, RawInputSession, SessionState, WorkerState, interactive_session_state,
+    RawButton, RawCursor, RawDeviceDescriptor, RawDeviceKind, RawInputBatch, RawInputConfig,
+    RawInputError, RawInputEvent, RawInputSession, SessionState, WorkerState,
+    interactive_session_state,
 };
 use tracing::{debug, info, warn};
 
@@ -90,8 +91,7 @@ struct SharedState {
 
 #[derive(Debug, Clone)]
 struct DeviceEntry {
-    label: String,
-    kind: RawDeviceKind,
+    descriptor: Arc<RawDeviceDescriptor>,
 }
 
 impl SharedState {
@@ -127,7 +127,7 @@ impl SharedState {
     fn pointer_devices(&self) -> bool {
         self.devices
             .values()
-            .any(|entry| entry.kind == RawDeviceKind::Mouse)
+            .any(|entry| entry.descriptor.kind == RawDeviceKind::Mouse)
     }
 }
 
@@ -591,14 +591,14 @@ fn fold_batch(shared: &Arc<Mutex<SharedState>>, batch: RawInputBatch<'_>, event_
 fn fold_event(state: &mut SharedState, event: &RawInputEvent, at_ms: u64, event_limit: usize) {
     match event {
         RawInputEvent::Key {
-            source_id,
+            device,
             make_code,
             prefix,
             vkey,
             pressed,
         } => fold_key(
             state,
-            source_id,
+            &device.source_id,
             *make_code,
             *prefix,
             *vkey,
@@ -607,18 +607,25 @@ fn fold_event(state: &mut SharedState, event: &RawInputEvent, at_ms: u64, event_
             event_limit,
         ),
         RawInputEvent::Button {
-            source_id,
+            device,
             button,
             pressed,
-        } => fold_button(state, source_id, *button, *pressed, at_ms, event_limit),
+        } => fold_button(
+            state,
+            &device.source_id,
+            *button,
+            *pressed,
+            at_ms,
+            event_limit,
+        ),
         RawInputEvent::Wheel {
-            source_id,
+            device,
             delta_hi_res,
         } => push_event(
             state,
             TimedInputEvent {
                 event: InputEvent::MouseWheel {
-                    source_id: source_id.to_string(),
+                    source_id: device.source_id.to_string(),
                     delta_hi_res: *delta_hi_res,
                 },
                 at_ms,
@@ -643,36 +650,40 @@ fn fold_event(state: &mut SharedState, event: &RawInputEvent, at_ms: u64, event_
             state.motion.distance += delta_x.abs() + delta_y.abs();
         }
         RawInputEvent::MotionAbsolute {
-            source_id,
+            device,
             norm_x,
             norm_y,
             virtual_desktop,
-        } => fold_absolute(state, source_id, *norm_x, *norm_y, *virtual_desktop),
-        RawInputEvent::DeviceArrived {
-            source_id,
-            label,
-            kind,
-        } => {
-            debug!(device = %label, ?kind, "Raw Input device arrived");
-            state.devices.insert(
-                source_id.to_string(),
-                DeviceEntry {
-                    label: label.clone(),
-                    kind: *kind,
-                },
-            );
-            // A new device's first absolute report must not be a delta from
-            // whatever the previous occupant of this source id last reported.
-            state.absolute_baselines.remove(source_id.as_ref());
+        } => fold_absolute(state, &device.source_id, *norm_x, *norm_y, *virtual_desktop),
+        RawInputEvent::DeviceArrived { device } => {
+            debug!(device = %device.label, kind = ?device.kind, "Raw Input device arrived");
+            let source_id = device.source_id.to_string();
+            let first_arrival = state
+                .devices
+                .insert(
+                    source_id.clone(),
+                    DeviceEntry {
+                        descriptor: Arc::clone(device),
+                    },
+                )
+                .is_none();
+            if first_arrival {
+                // A new device's first absolute report must not be a delta
+                // from a retired generation. Duplicate metadata refreshes do
+                // not destroy a baseline established by earlier data.
+                state.absolute_baselines.remove(source_id.as_str());
+            }
         }
-        RawInputEvent::DeviceRemoved { source_id } => {
+        RawInputEvent::DeviceRemoved { device } => {
+            let source_id = &device.source_id;
             if let Some(entry) = state.devices.remove(source_id.as_ref()) {
-                debug!(device = %entry.label, "Raw Input device removed");
+                debug!(device = %entry.descriptor.label, "Raw Input device removed");
             }
             state.absolute_baselines.remove(source_id.as_ref());
             synthesize_releases(state, source_id, at_ms, event_limit);
         }
-        RawInputEvent::StateGap { source_id } => {
+        RawInputEvent::StateGap { device } => {
+            let source_id = &device.source_id;
             // A rollover overrun means the keyboard's own view of held state is
             // unreliable. Releasing immediately, in stream order, is the only
             // honest answer: deferring to a quiet moment would leave keys stuck
