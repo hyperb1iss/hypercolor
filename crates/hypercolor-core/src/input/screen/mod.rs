@@ -15,6 +15,7 @@
 //! The capture backend feeds raw pixel buffers. Everything downstream is
 //! backend-agnostic and testable with synthetic data.
 
+mod frame;
 pub mod sector;
 pub mod smooth;
 pub mod tune;
@@ -23,6 +24,13 @@ pub mod wayland;
 #[cfg(target_os = "windows")]
 pub mod windows;
 
+pub use frame::{
+    CaptureColorSpace, CaptureCursor, CaptureDamage, CaptureEpoch, CaptureFrame, CaptureFrameError,
+    CaptureFrameMetadata, CaptureGeometry, CapturePixelFormat, CaptureRotation, CaptureSourceId,
+    CaptureStageKind, CaptureStorage, CaptureTransferFunction, CpuCaptureStorage, MoveRegion,
+    PhysicalOrigin, PixelExtent, PixelRect, PlatformGpuApi, PlatformGpuSurface,
+    ProcessedCaptureSurface, RawCaptureSurface, SourceScale,
+};
 pub use sector::{LetterboxBars, SectorGrid};
 pub use smooth::TemporalSmoother;
 pub use tune::ColorTuning;
@@ -39,6 +47,44 @@ use crate::types::canvas::{
 };
 use crate::types::event::ZoneColors;
 use std::time::{Duration, Instant};
+
+#[derive(Clone)]
+pub(crate) struct LegacyScreenSnapshot {
+    frame: CaptureFrame<RawCaptureSurface>,
+    data: ScreenData,
+}
+
+impl LegacyScreenSnapshot {
+    pub(crate) const fn frame(&self) -> &CaptureFrame<RawCaptureSurface> {
+        &self.frame
+    }
+
+    pub(crate) const fn data(&self) -> &ScreenData {
+        &self.data
+    }
+}
+
+pub(crate) fn analyze_legacy_screen_frame(
+    analyzer: &mut ScreenCaptureInput,
+    frame: CaptureFrame<RawCaptureSurface>,
+) -> anyhow::Result<LegacyScreenSnapshot> {
+    let geometry = &frame.metadata().geometry;
+    if geometry.rotation() != CaptureRotation::Identity || geometry.crop().is_some() {
+        anyhow::bail!("legacy screen analysis requires canonical geometry");
+    }
+    let CaptureStorage::Cpu(storage) = frame.storage() else {
+        anyhow::bail!("legacy screen analysis requires CPU storage");
+    };
+    let extent = geometry.extent();
+    let pixels = storage
+        .tightly_packed_rgba8(extent)
+        .ok_or_else(|| anyhow::anyhow!("legacy screen analysis requires tightly packed RGBA8"))?;
+    analyzer.push_frame(pixels, extent.width(), extent.height());
+    let InputData::Screen(data) = analyzer.sample()? else {
+        anyhow::bail!("legacy screen analysis did not produce a snapshot");
+    };
+    Ok(LegacyScreenSnapshot { frame, data })
+}
 
 // ── CaptureConfig ─────────────────────────────────────────────────────────
 

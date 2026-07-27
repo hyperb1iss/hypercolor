@@ -25,8 +25,14 @@ use pw::properties::properties;
 use pw::spa;
 use tracing::{debug, info, warn};
 
-use crate::input::screen::{CaptureConfig, ScreenCaptureInput};
-use crate::input::traits::{InputData, InputSource, ScreenData};
+use crate::input::screen::{
+    CaptureColorSpace, CaptureConfig, CaptureCursor, CaptureDamage, CaptureEpoch, CaptureFrame,
+    CaptureFrameMetadata, CaptureGeometry, CapturePixelFormat, CaptureRotation, CaptureSourceId,
+    CaptureStorage, CaptureTransferFunction, CpuCaptureStorage, LegacyScreenSnapshot,
+    PhysicalOrigin, PixelExtent, RawCaptureSurface, ScreenCaptureInput, SourceScale,
+    analyze_legacy_screen_frame,
+};
+use crate::input::traits::{InputData, InputSource};
 use crate::input::{
     SourceIssue, SourceKind, SourceSessionSlot, SourceStatusHandle, SourceStatusReporter,
 };
@@ -50,12 +56,12 @@ struct SharedSettings {
     config: Mutex<CaptureConfig>,
     generation: AtomicU64,
     frame_generation: AtomicU64,
+    session_generation: AtomicU64,
 }
 
 #[derive(Clone)]
 struct CapturedScreenSnapshot {
-    data: ScreenData,
-    acquired_at: Instant,
+    legacy: LegacyScreenSnapshot,
     generation: u64,
 }
 
@@ -91,6 +97,7 @@ impl WaylandScreenCaptureInput {
                 config: Mutex::new(config),
                 generation: AtomicU64::new(0),
                 frame_generation: AtomicU64::new(0),
+                session_generation: AtomicU64::new(0),
             }),
             running: false,
             capture_active: false,
@@ -253,6 +260,10 @@ impl WaylandScreenCaptureInput {
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let (exit_tx, exit_rx) = mpsc::sync_channel(1);
         let status_session = self.status_session.clone();
+        let session_generation = settings
+            .session_generation
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1);
         let join_handle = thread::Builder::new()
             .name("hypercolor-screen-capture".to_owned())
             .spawn(move || {
@@ -264,6 +275,7 @@ impl WaylandScreenCaptureInput {
                     token_sink,
                     worker_flags,
                     status_session,
+                    session_generation,
                 );
                 let _ = exit_tx.send(());
             })
@@ -422,26 +434,32 @@ impl InputSource for WaylandScreenCaptureInput {
             .map_err(|_| anyhow!("wayland screen capture snapshot mutex poisoned"))?;
 
         let snapshot = latest.clone();
-        let sample = snapshot.as_ref().map_or(InputData::None, |snapshot| {
-            InputData::Screen(snapshot.data.clone())
-        });
         drop(latest);
-        if let Some(snapshot) = snapshot
-            && snapshot.generation != self.status_snapshot_generation
-        {
+        let Some(snapshot) = snapshot else {
+            return Ok(InputData::None);
+        };
+        let metadata = snapshot.legacy.frame().metadata();
+        let expected = CaptureEpoch {
+            source_id: metadata.source_id.clone(),
+            topology_generation: metadata.topology_generation,
+            session_generation: self.settings.session_generation.load(Ordering::Acquire),
+        };
+        if snapshot.legacy.frame().validate_epoch(&expected).is_err() {
+            return Ok(InputData::None);
+        }
+        if snapshot.generation != self.status_snapshot_generation {
             if let Some(status) = self.status.session() {
-                let frame_period = std::time::Duration::from_secs_f64(
-                    1.0 / f64::from(self.current_target_fps().max(1)),
-                );
+                let frame_period =
+                    Duration::from_secs_f64(1.0 / f64::from(self.current_target_fps().max(1)));
                 status.record_sample(
-                    snapshot.acquired_at,
-                    snapshot.acquired_at + frame_period + frame_period,
+                    metadata.captured_at,
+                    metadata.captured_at + frame_period + frame_period,
                     1,
                 )?;
             }
             self.status_snapshot_generation = snapshot.generation;
         }
-        Ok(sample)
+        Ok(InputData::Screen(snapshot.legacy.data().clone()))
     }
 
     fn is_running(&self) -> bool {
@@ -579,6 +597,50 @@ struct PortalCaptureSession {
     fd: OwnedFd,
 }
 
+#[derive(Clone)]
+struct WaylandSourceMetadata {
+    source_id: CaptureSourceId,
+    origin: PhysicalOrigin,
+    logical_width: Option<u32>,
+    session_generation: u64,
+}
+
+impl WaylandSourceMetadata {
+    fn from_stream(stream: &Stream, session_generation: u64) -> anyhow::Result<Self> {
+        let source_name = stream
+            .id()
+            .or_else(|| stream.mapping_id())
+            .unwrap_or("monitor");
+        let source_id =
+            CaptureSourceId::new(Arc::<str>::from(format!("wayland:portal:{source_name}")))?;
+        let (x, y) = stream.position().unwrap_or_default();
+        let logical_width = stream
+            .size()
+            .and_then(|(width, _)| u32::try_from(width).ok())
+            .filter(|width| *width > 0);
+        Ok(Self {
+            source_id,
+            origin: PhysicalOrigin { x, y },
+            logical_width,
+            session_generation,
+        })
+    }
+
+    fn source_scale(&self, physical_width: u32) -> SourceScale {
+        self.logical_width
+            .and_then(|logical_width| SourceScale::new(logical_width, physical_width).ok())
+            .unwrap_or(SourceScale::ONE)
+    }
+
+    fn epoch(&self, active_session_generation: u64) -> CaptureEpoch {
+        CaptureEpoch {
+            source_id: self.source_id.clone(),
+            topology_generation: 1,
+            session_generation: active_session_generation,
+        }
+    }
+}
+
 struct WaylandCaptureUserData {
     analyzer: ScreenCaptureInput,
     format: spa::param::video::VideoInfoRaw,
@@ -586,12 +648,15 @@ struct WaylandCaptureUserData {
     rgba_frame: Vec<u8>,
     settings: Arc<SharedSettings>,
     applied_generation: u64,
+    source: WaylandSourceMetadata,
+    sequence: u64,
 }
 
 impl WaylandCaptureUserData {
     fn new(
         settings: Arc<SharedSettings>,
         latest_snapshot: Arc<Mutex<Option<CapturedScreenSnapshot>>>,
+        source: WaylandSourceMetadata,
     ) -> Self {
         let applied_generation = settings.generation.load(Ordering::Acquire);
         let mut analyzer = ScreenCaptureInput::new(settings.snapshot());
@@ -604,6 +669,8 @@ impl WaylandCaptureUserData {
             rgba_frame: Vec::new(),
             settings,
             applied_generation,
+            source,
+            sequence: 0,
         }
     }
 
@@ -616,6 +683,54 @@ impl WaylandCaptureUserData {
         self.analyzer.apply_settings(self.settings.snapshot());
         debug!(generation, "Applied live screen capture settings");
     }
+
+    fn capture_frame(
+        &mut self,
+        captured_at: Instant,
+        width: u32,
+        height: u32,
+    ) -> anyhow::Result<CaptureFrame<RawCaptureSurface>> {
+        self.sequence = self.sequence.wrapping_add(1).max(1);
+        let extent = PixelExtent::new(width, height)?;
+        let row_stride = i64::from(width)
+            .checked_mul(4)
+            .ok_or_else(|| anyhow!("Wayland capture row stride overflow"))?;
+        let frame_period =
+            Duration::from_secs_f64(1.0 / f64::from(self.analyzer.config().target_fps.max(1)));
+        let frame = CaptureFrame::new(
+            CaptureFrameMetadata {
+                source_id: self.source.source_id.clone(),
+                topology_generation: 1,
+                session_generation: self.source.session_generation,
+                sequence: self.sequence,
+                captured_at,
+                fresh_until: captured_at + frame_period + frame_period,
+                geometry: CaptureGeometry::new(
+                    self.source.origin,
+                    extent,
+                    CaptureRotation::Identity,
+                    None,
+                    self.source.source_scale(width),
+                )?,
+                color_space: CaptureColorSpace::Unknown,
+                transfer_function: CaptureTransferFunction::Unknown,
+                cursor: CaptureCursor::default(),
+            },
+            CaptureStorage::Cpu(CpuCaptureStorage::new(
+                Arc::<[u8]>::from(self.rgba_frame.as_slice()),
+                CapturePixelFormat::Rgba8,
+                row_stride,
+                0,
+            )),
+            CaptureDamage::default(),
+        )?;
+        frame.validate_epoch(
+            &self
+                .source
+                .epoch(self.settings.session_generation.load(Ordering::Acquire)),
+        )?;
+        Ok(frame)
+    }
 }
 
 fn run_capture_worker(
@@ -625,6 +740,7 @@ fn run_capture_worker(
     token_sink: Option<RestoreTokenSink>,
     flags: WorkerFlags,
     status_session: SourceSessionSlot,
+    session_generation: u64,
 ) {
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -694,6 +810,7 @@ fn run_capture_worker(
         Arc::clone(&latest_snapshot),
         portal,
         command_rx,
+        session_generation,
     ) {
         Ok(session) => session,
         Err(error) => {
@@ -782,8 +899,10 @@ fn run_pipewire_loop(
     latest_snapshot: Arc<Mutex<Option<CapturedScreenSnapshot>>>,
     portal: PortalCaptureSession,
     command_rx: pw::channel::Receiver<WorkerCommand>,
+    session_generation: u64,
 ) -> anyhow::Result<Session<Screencast>> {
     pw::init();
+    let source = WaylandSourceMetadata::from_stream(&portal.stream, session_generation)?;
 
     let mainloop =
         pw::main_loop::MainLoopRc::new(None).context("failed to create PipeWire main loop")?;
@@ -805,7 +924,11 @@ fn run_pipewire_loop(
     .context("failed to create PipeWire capture stream")?;
 
     let _listener = stream
-        .add_local_listener_with_user_data(WaylandCaptureUserData::new(settings, latest_snapshot))
+        .add_local_listener_with_user_data(WaylandCaptureUserData::new(
+            settings,
+            latest_snapshot,
+            source,
+        ))
         .state_changed(|_, _, old, new| {
             debug!(?old, ?new, "Wayland screen capture stream state changed");
         })
@@ -880,11 +1003,10 @@ fn run_pipewire_loop(
                 return;
             }
 
-            user_data
-                .analyzer
-                .push_frame(&user_data.rgba_frame, size.width, size.height);
-
-            let Ok(InputData::Screen(snapshot)) = user_data.analyzer.sample() else {
+            let Ok(frame) = user_data.capture_frame(acquired_at, size.width, size.height) else {
+                return;
+            };
+            let Ok(legacy) = analyze_legacy_screen_frame(&mut user_data.analyzer, frame) else {
                 return;
             };
             let generation = user_data
@@ -894,11 +1016,7 @@ fn run_pipewire_loop(
                 .wrapping_add(1);
 
             if let Ok(mut latest) = user_data.latest_snapshot.lock() {
-                *latest = Some(CapturedScreenSnapshot {
-                    data: snapshot,
-                    acquired_at,
-                    generation,
-                });
+                *latest = Some(CapturedScreenSnapshot { legacy, generation });
             }
         })
         .register()

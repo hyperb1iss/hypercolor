@@ -15,14 +15,20 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::anyhow;
 use hypercolor_windows_capture::{CaptureError, DesktopDuplicator};
 use tracing::{debug, info, warn};
 
-use crate::input::screen::{CaptureConfig, ScreenCaptureInput};
-use crate::input::traits::{InputData, InputSource, ScreenData};
+use crate::input::screen::{
+    CaptureColorSpace, CaptureConfig, CaptureCursor, CaptureDamage, CaptureEpoch, CaptureFrame,
+    CaptureFrameMetadata, CaptureGeometry, CapturePixelFormat, CaptureRotation, CaptureSourceId,
+    CaptureStorage, CaptureTransferFunction, CpuCaptureStorage, LegacyScreenSnapshot,
+    PhysicalOrigin, PixelExtent, RawCaptureSurface, ScreenCaptureInput, SourceScale,
+    analyze_legacy_screen_frame,
+};
+use crate::input::traits::{InputData, InputSource};
 use crate::input::{
     SourceIssue, SourceKind, SourceSessionSlot, SourceStatusHandle, SourceStatusReporter,
 };
@@ -52,6 +58,8 @@ const REOPEN_BACKOFF: Duration = Duration::from_secs(2);
 struct SharedSettings {
     config: Mutex<CaptureConfig>,
     generation: AtomicU64,
+    topology_generation: AtomicU64,
+    session_generation: AtomicU64,
 }
 
 impl SharedSettings {
@@ -67,7 +75,7 @@ pub struct WindowsScreenCaptureInput {
     settings: Arc<SharedSettings>,
     running: bool,
     capture_active: bool,
-    latest_snapshot: Arc<Mutex<Option<ScreenData>>>,
+    latest_snapshot: Arc<Mutex<Option<LegacyScreenSnapshot>>>,
     worker: Option<CaptureWorker>,
     status: SourceStatusReporter,
     status_session: SourceSessionSlot,
@@ -118,6 +126,8 @@ impl WindowsScreenCaptureInput {
             settings: Arc::new(SharedSettings {
                 config: Mutex::new(config),
                 generation: AtomicU64::new(0),
+                topology_generation: AtomicU64::new(1),
+                session_generation: AtomicU64::new(0),
             }),
             running: false,
             capture_active: false,
@@ -149,6 +159,11 @@ impl WindowsScreenCaptureInput {
         let cancel = Arc::new(AtomicBool::new(false));
         let worker_cancel = Arc::clone(&cancel);
         let status_session = self.status_session.clone();
+        let session_generation = self
+            .settings
+            .session_generation
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1);
 
         let join_handle = thread::Builder::new()
             .name("hypercolor-screen-capture".to_owned())
@@ -160,6 +175,7 @@ impl WindowsScreenCaptureInput {
                     &command_rx,
                     &worker_cancel,
                     status_session,
+                    session_generation,
                 );
                 let _ = exit_tx.send(());
             })
@@ -281,11 +297,18 @@ impl WindowsScreenCaptureInput {
 
     /// Publish new settings and bump the generation the worker polls.
     fn reconfigure(&mut self, config: CaptureConfig) {
+        let mut topology_changed = false;
         if let Ok(mut current) = self.settings.config.lock() {
             if *current == config {
                 return;
             }
+            topology_changed = current.monitor != config.monitor;
             *current = config;
+        }
+        if topology_changed {
+            self.settings
+                .topology_generation
+                .fetch_add(1, Ordering::AcqRel);
         }
         self.settings.generation.fetch_add(1, Ordering::Release);
     }
@@ -357,7 +380,18 @@ impl InputSource for WindowsScreenCaptureInput {
             .lock()
             .map_err(|_| anyhow!("windows screen capture snapshot mutex poisoned"))?;
 
-        Ok(latest.clone().map_or(InputData::None, InputData::Screen))
+        let Some(snapshot) = latest.as_ref() else {
+            return Ok(InputData::None);
+        };
+        let expected = capture_epoch(
+            self.settings.snapshot().monitor,
+            self.settings.topology_generation.load(Ordering::Acquire),
+            self.settings.session_generation.load(Ordering::Acquire),
+        )?;
+        if snapshot.frame().validate_epoch(&expected).is_err() {
+            return Ok(InputData::None);
+        }
+        Ok(InputData::Screen(snapshot.data().clone()))
     }
 
     fn is_running(&self) -> bool {
@@ -420,10 +454,11 @@ impl Drop for WindowsScreenCaptureInput {
 /// Worker loop: own the duplication session, analyze frames, publish results.
 fn run_worker(
     settings: &Arc<SharedSettings>,
-    latest_snapshot: &Arc<Mutex<Option<ScreenData>>>,
+    latest_snapshot: &Arc<Mutex<Option<LegacyScreenSnapshot>>>,
     command_rx: &mpsc::Receiver<WorkerCommand>,
     cancel: &Arc<AtomicBool>,
     status_session: SourceSessionSlot,
+    session_generation: u64,
 ) {
     let mut config = settings.snapshot();
     let mut generation = settings.generation.load(Ordering::Acquire);
@@ -431,6 +466,7 @@ fn run_worker(
     let mut duplicator: Option<DesktopDuplicator> = None;
     let mut active = false;
     let mut open_failure_logged = false;
+    let mut sequence = 0_u64;
 
     loop {
         if cancel.load(Ordering::Acquire) {
@@ -458,9 +494,12 @@ fn run_worker(
         let latest_generation = settings.generation.load(Ordering::Acquire);
         if latest_generation != generation {
             generation = latest_generation;
+            let previous_monitor = config.monitor;
             config = settings.snapshot();
             analyzer = ScreenCaptureInput::new(config.clone());
-            if let Some(duplicator) = duplicator.as_mut() {
+            if previous_monitor != config.monitor {
+                duplicator = None;
+            } else if let Some(duplicator) = duplicator.as_mut() {
                 duplicator.set_max_width(CAPTURE_TARGET_WIDTH);
             }
         }
@@ -508,21 +547,45 @@ fn run_worker(
 
         match session.next_frame(FRAME_WAIT) {
             Ok(Some(frame)) => {
-                let acquired_at = std::time::Instant::now();
-                analyzer.push_frame(frame.rgba, frame.width, frame.height);
-                if let Ok(InputData::Screen(snapshot)) = analyzer.sample()
-                    && let Ok(mut latest) = latest_snapshot.lock()
-                {
+                let acquired_at = Instant::now();
+                let frame_period =
+                    Duration::from_secs_f64(1.0 / f64::from(config.target_fps.max(1)));
+                sequence = sequence.wrapping_add(1).max(1);
+                let topology_generation = settings.topology_generation.load(Ordering::Acquire);
+                let raw_frame = build_capture_frame(
+                    frame.rgba,
+                    frame.width,
+                    frame.height,
+                    config.monitor,
+                    topology_generation,
+                    session_generation,
+                    sequence,
+                    acquired_at,
+                    frame_period,
+                );
+                let snapshot = raw_frame.and_then(|frame| {
+                    frame.validate_epoch(&capture_epoch(
+                        config.monitor,
+                        topology_generation,
+                        settings.session_generation.load(Ordering::Acquire),
+                    )?)?;
+                    analyze_legacy_screen_frame(&mut analyzer, frame)
+                });
+                let Ok(snapshot) = snapshot else {
+                    continue;
+                };
+                let published = if let Ok(mut latest) = latest_snapshot.lock() {
                     *latest = Some(snapshot);
-                    if let Some(status) = status_session.load() {
-                        let frame_period =
-                            Duration::from_secs_f64(1.0 / f64::from(config.target_fps.max(1)));
-                        let _ = status.record_sample(
-                            acquired_at,
-                            acquired_at + frame_period + frame_period,
-                            1,
-                        );
-                    }
+                    true
+                } else {
+                    false
+                };
+                if published && let Some(status) = status_session.load() {
+                    let _ = status.record_sample(
+                        acquired_at,
+                        acquired_at + frame_period + frame_period,
+                        1,
+                    );
                 }
             }
             // Static desktop or pointer-only update: nothing new to analyze.
@@ -543,6 +606,69 @@ fn run_worker(
         *latest = None;
     }
     debug!("Windows screen capture worker stopped");
+}
+
+fn capture_source_id(monitor: usize) -> anyhow::Result<CaptureSourceId> {
+    CaptureSourceId::new(Arc::<str>::from(format!("windows:monitor:{monitor}")))
+        .map_err(anyhow::Error::from)
+}
+
+fn capture_epoch(
+    monitor: usize,
+    topology_generation: u64,
+    session_generation: u64,
+) -> anyhow::Result<CaptureEpoch> {
+    Ok(CaptureEpoch {
+        source_id: capture_source_id(monitor)?,
+        topology_generation,
+        session_generation,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_capture_frame(
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+    monitor: usize,
+    topology_generation: u64,
+    session_generation: u64,
+    sequence: u64,
+    captured_at: Instant,
+    frame_period: Duration,
+) -> anyhow::Result<CaptureFrame<RawCaptureSurface>> {
+    let extent = PixelExtent::new(width, height)?;
+    let row_stride = i64::from(width)
+        .checked_mul(4)
+        .ok_or_else(|| anyhow!("Windows capture row stride overflow"))?;
+    CaptureFrame::new(
+        CaptureFrameMetadata {
+            source_id: capture_source_id(monitor)?,
+            topology_generation,
+            session_generation,
+            sequence,
+            captured_at,
+            fresh_until: captured_at + frame_period + frame_period,
+            geometry: CaptureGeometry::new(
+                PhysicalOrigin::default(),
+                extent,
+                CaptureRotation::Identity,
+                None,
+                SourceScale::ONE,
+            )?,
+            color_space: CaptureColorSpace::Unknown,
+            transfer_function: CaptureTransferFunction::Unknown,
+            cursor: CaptureCursor::default(),
+        },
+        CaptureStorage::Cpu(CpuCaptureStorage::new(
+            Arc::<[u8]>::from(rgba),
+            CapturePixelFormat::Rgba8,
+            row_stride,
+            0,
+        )),
+        CaptureDamage::default(),
+    )
+    .map_err(anyhow::Error::from)
 }
 
 enum ControlFlow {
