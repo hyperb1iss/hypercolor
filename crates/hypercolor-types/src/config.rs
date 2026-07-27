@@ -17,6 +17,7 @@ use crate::session::SessionConfig;
 // Referenced by `#[serde(default = "defaults::...")]` throughout this module.
 
 mod defaults {
+    use super::InteractionRoutePolicy;
     use super::LogLevel;
     use super::RenderAccelerationMode;
     use super::ServoGpuImportMode;
@@ -188,6 +189,12 @@ mod defaults {
     }
     pub fn bool_false() -> bool {
         false
+    }
+    pub const fn daemon_interaction_route() -> InteractionRoutePolicy {
+        InteractionRoutePolicy::Host
+    }
+    pub const fn preview_interaction_route() -> InteractionRoutePolicy {
+        InteractionRoutePolicy::Browser
     }
 }
 
@@ -753,6 +760,14 @@ pub struct InputConfig {
     /// Capture host pointer state and events.
     #[serde(default = "defaults::bool_true")]
     pub mouse: bool,
+
+    /// Interaction sources routed into authoritative daemon effects.
+    #[serde(default = "defaults::daemon_interaction_route")]
+    pub daemon_route: InteractionRoutePolicy,
+
+    /// Interaction sources routed into connection-scoped interactive previews.
+    #[serde(default = "defaults::preview_interaction_route")]
+    pub preview_route: InteractionRoutePolicy,
 }
 
 impl Default for InputConfig {
@@ -761,8 +776,22 @@ impl Default for InputConfig {
             enabled: false,
             keyboard: defaults::bool_true(),
             mouse: defaults::bool_true(),
+            daemon_route: defaults::daemon_interaction_route(),
+            preview_route: defaults::preview_interaction_route(),
         }
     }
+}
+
+/// Which interaction sources one effect consumer receives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum InteractionRoutePolicy {
+    /// Host keyboard and pointer sources only.
+    Host,
+    /// The consumer's explicitly addressed browser source only.
+    Browser,
+    /// Host sources plus the consumer's explicitly addressed browser source.
+    Merge,
 }
 
 // ─── Display ─────────────────────────────────────────────────────────────────

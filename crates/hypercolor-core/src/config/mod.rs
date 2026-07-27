@@ -14,7 +14,9 @@ use anyhow::{Context, Result};
 use arc_swap::{ArcSwap, Guard};
 use tracing::{debug, info};
 
-use crate::types::config::{HypercolorConfig, default_driver_configs};
+use crate::types::config::{
+    CURRENT_SCHEMA_VERSION, HypercolorConfig, InteractionRoutePolicy, default_driver_configs,
+};
 
 // ─── ConfigManager ──────────────────────────────────────────────────────────
 
@@ -37,7 +39,7 @@ pub struct ConfigManager {
 impl ConfigManager {
     /// Creates a new `ConfigManager` by loading configuration from `config_path`.
     ///
-    /// If the file does not exist, a default configuration (schema version 3)
+    /// If the file does not exist, a default configuration at the current schema
     /// is used instead. Any parse errors are propagated as `Err`.
     ///
     /// # Errors
@@ -209,15 +211,48 @@ impl ConfigManager {
 
     /// Parses a TOML string into a [`HypercolorConfig`].
     fn parse_toml(toml_str: &str) -> Result<HypercolorConfig> {
-        toml::from_str(toml_str)
-            .map(normalize_config)
-            .context("failed to parse configuration TOML")
+        let document = toml::from_str::<toml::Value>(toml_str)
+            .context("failed to parse configuration TOML")?;
+        let daemon_route_missing = input_field_missing(&document, "daemon_route");
+        let preview_route_missing = input_field_missing(&document, "preview_route");
+        let config = document
+            .try_into::<HypercolorConfig>()
+            .context("failed to parse configuration TOML")?;
+        Ok(normalize_config(migrate_config(
+            config,
+            daemon_route_missing,
+            preview_route_missing,
+        )))
     }
 
     /// Returns a default config suitable for first-run.
     fn default_config() -> HypercolorConfig {
         normalize_config(HypercolorConfig::default())
     }
+}
+
+fn input_field_missing(document: &toml::Value, field: &str) -> bool {
+    document
+        .get("input")
+        .and_then(toml::Value::as_table)
+        .is_none_or(|input| !input.contains_key(field))
+}
+
+fn migrate_config(
+    mut config: HypercolorConfig,
+    daemon_route_missing: bool,
+    preview_route_missing: bool,
+) -> HypercolorConfig {
+    if config.schema_version <= 3 {
+        if daemon_route_missing {
+            config.input.daemon_route = InteractionRoutePolicy::Merge;
+        }
+        if preview_route_missing {
+            config.input.preview_route = InteractionRoutePolicy::Browser;
+        }
+        config.schema_version = CURRENT_SCHEMA_VERSION;
+    }
+    config
 }
 
 fn normalize_config(mut config: HypercolorConfig) -> HypercolorConfig {

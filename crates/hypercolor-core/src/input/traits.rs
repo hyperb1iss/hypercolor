@@ -4,6 +4,7 @@
 //! into the effect pipeline. Each source produces [`InputData`] snapshots that
 //! the render loop consumes per frame.
 
+use super::graph::InteractionSourceOrigin;
 use super::status::{SourceStatusError, SourceStatusHandle, SourceStatusReporter};
 use crate::input::audio::{AudioRuntimeRetirement, PreparedAudioReconfiguration};
 use crate::types::audio::{AudioData, AudioPipelineConfig};
@@ -534,6 +535,15 @@ pub trait InputSource: Send {
     /// Whether this source captures host keyboard/mouse interaction.
     fn is_interaction_source(&self) -> bool {
         false
+    }
+
+    /// Typed routing origin for an interaction source.
+    ///
+    /// The manager ignores this value unless [`Self::is_interaction_source`]
+    /// returns `true`. Third-party interaction sources capture host input unless
+    /// they explicitly declare a different aggregate origin.
+    fn interaction_source_origin(&self) -> InteractionSourceOrigin {
+        InteractionSourceOrigin::Host
     }
 
     /// Health snapshot for interaction sources, for status and remediation UX.

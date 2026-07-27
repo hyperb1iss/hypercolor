@@ -14,6 +14,7 @@ pub mod interaction;
 pub mod keymap;
 pub mod media;
 pub mod net;
+pub mod routing;
 pub mod screen;
 pub mod sensor;
 mod status;
@@ -21,12 +22,17 @@ mod traits;
 pub mod windows;
 mod worker_retention;
 
-pub use browser::{BrowserInputEdge, BrowserInputHandle, BrowserInputSource};
+pub use browser::{
+    BROWSER_RETIRED_LEGACY_CAPACITY, BrowserConnectionIncarnation, BrowserInputAttachment,
+    BrowserInputChildKey, BrowserInputChildSlot, BrowserInputEdge, BrowserInputHandle,
+    BrowserInputPublicationId, BrowserInputRegistryError, BrowserInputRegistryHandle,
+    BrowserInputRegistrySnapshot, BrowserInputSource, BrowserPreviewId,
+};
 #[cfg(target_os = "linux")]
 pub use evdev::{DeviceOpenState, DeviceOpenStatus, EvdevHostInput};
 pub use graph::{
     INPUT_EVENT_RING_CAPACITY, InputEventRead, InputGraphHandle, InputGraphSnapshot,
-    InputSourceSlot,
+    InputPublicationRead, InputSourceSlot, InteractionSourceOrigin, InteractionTransientTotals,
 };
 #[cfg(target_os = "macos")]
 pub use interaction::InteractionInput;
@@ -179,6 +185,9 @@ struct ManagedInputSource {
 impl ManagedInputSource {
     fn new(mut source: Box<dyn InputSource>, slot_id: u64, source_graph_generation: u64) -> Self {
         let declared_kind = declared_source_kind(source.as_ref());
+        let interaction_origin = source
+            .is_interaction_source()
+            .then(|| source.interaction_source_origin());
         source.set_source_graph_generation(source_graph_generation);
         let mut compatibility_status = source.source_status_handle().is_none().then(|| {
             SourceStatusReporter::new(
@@ -199,7 +208,7 @@ impl ManagedInputSource {
                 .expect("compatibility status exists for an uninstrumented source")
                 .handle()
         });
-        let slot = InputSourceSlot::new(slot_id, declared_kind, status);
+        let slot = InputSourceSlot::new(slot_id, declared_kind, interaction_origin, status);
         Self {
             source,
             slot,
@@ -501,8 +510,9 @@ impl InputManager {
                         None
                     }
                 };
-            source.slot.publish_sample(sample);
-            source.slot.publish_events(&mut self.event_scratch);
+            source
+                .slot
+                .publish_batch(sample, &mut self.event_scratch);
         }
     }
 

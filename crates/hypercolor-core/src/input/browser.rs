@@ -10,14 +10,23 @@
 //! each other or with host input.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 
+use arc_swap::ArcSwap;
+
+use crate::input::graph::{
+    InputEventRead, InputPublicationRead, InputPublicationSlot, InteractionTransientTotals,
+};
 use crate::input::input_mono_ms;
+use crate::input::routing::{InteractionRouteRead, InteractionRouteSlot, InteractionRouteSnapshot};
 use crate::input::traits::{InputData, InputSource, InteractionData, MotionAggregate, PointerMode};
-use crate::input::{SourceKind, SourceStatusHandle, SourceStatusReporter};
+use crate::input::{InteractionSourceOrigin, SourceKind, SourceStatusHandle, SourceStatusReporter};
 use crate::types::event::{InputButtonState, InputEvent, TimedInputEvent};
 
 const DEFAULT_EVENT_LIMIT: usize = 256;
+/// Maximum disconnected legacy children retained for compatibility releases.
+pub const BROWSER_RETIRED_LEGACY_CAPACITY: usize = 256;
 const MAX_HELD_KEYS_PER_SOURCE: usize = 128;
 const MAX_HELD_BUTTONS_PER_SOURCE: usize = 16;
 
@@ -40,245 +49,741 @@ pub enum BrowserInputEdge {
     Wheel { delta_hi_res: i32 },
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+enum BrowserConnectionNamespace {
+    Server,
+    Legacy,
+}
+
+/// One server-assigned WebSocket connection lifetime.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct BrowserConnectionIncarnation {
+    namespace: BrowserConnectionNamespace,
+    value: u64,
+}
+
+impl BrowserConnectionIncarnation {
+    /// Create a server connection incarnation.
+    #[must_use]
+    pub const fn new(value: u64) -> Self {
+        Self {
+            namespace: BrowserConnectionNamespace::Server,
+            value,
+        }
+    }
+
+    const fn legacy(value: u64) -> Self {
+        Self {
+            namespace: BrowserConnectionNamespace::Legacy,
+            value,
+        }
+    }
+
+    /// Numeric connection token supplied by the server.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.value
+    }
+}
+
+/// Client-chosen preview identity scoped to one WebSocket connection.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct BrowserPreviewId(Arc<str>);
+
+impl BrowserPreviewId {
+    /// Wrap one opaque client preview id.
+    #[must_use]
+    pub fn new(value: impl Into<Arc<str>>) -> Self {
+        Self(value.into())
+    }
+
+    /// Borrow the opaque client value.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<String> for BrowserPreviewId {
+    fn from(value: String) -> Self {
+        Self::new(Arc::<str>::from(value))
+    }
+}
+
+/// Address of one interactive preview publication.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct BrowserInputChildKey {
+    connection: BrowserConnectionIncarnation,
+    preview_id: BrowserPreviewId,
+}
+
+impl BrowserInputChildKey {
+    /// Build a connection-scoped preview key.
+    #[must_use]
+    pub fn new(
+        connection: BrowserConnectionIncarnation,
+        preview_id: impl Into<BrowserPreviewId>,
+    ) -> Self {
+        Self {
+            connection,
+            preview_id: preview_id.into(),
+        }
+    }
+
+    /// Server connection lifetime in this key.
+    #[must_use]
+    pub const fn connection(&self) -> BrowserConnectionIncarnation {
+        self.connection
+    }
+
+    /// Client preview id in this key.
+    #[must_use]
+    pub fn preview_id(&self) -> &BrowserPreviewId {
+        &self.preview_id
+    }
+}
+
+/// Opaque lifetime identity for one child publication.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct BrowserInputPublicationId(u64);
+
+impl BrowserInputPublicationId {
+    /// Numeric identity within the browser-publication namespace.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+/// Browser child registry operation failure.
+#[derive(Debug, thiserror::Error, Eq, PartialEq)]
+pub enum BrowserInputRegistryError {
+    /// The manager-owned browser source is not accepting input.
+    #[error("browser input source is not active")]
+    SourceInactive,
+    /// The addressed child has already closed or been replaced.
+    #[error("browser input child is closed")]
+    ChildClosed,
+}
+
 #[derive(Default)]
-struct SharedState {
+struct BrowserChildState {
+    pressed_keys: BTreeSet<String>,
+    held_buttons: BTreeSet<String>,
+    cursor: Option<(f32, f32)>,
+    generation: u64,
+}
+
+/// Lock-free routable publication for one browser preview.
+#[derive(Clone)]
+pub struct BrowserInputChildSlot {
+    inner: Arc<BrowserInputChildSlotInner>,
+}
+
+struct BrowserInputChildSlotInner {
+    key: BrowserInputChildKey,
+    publication_id: BrowserInputPublicationId,
+    source_id: Arc<str>,
+    status: SourceStatusHandle,
+    active: AtomicBool,
+    state: Mutex<BrowserChildState>,
+    publication: InputPublicationSlot,
+}
+
+impl BrowserInputChildSlot {
+    fn new(
+        key: BrowserInputChildKey,
+        publication_id: BrowserInputPublicationId,
+        source_id: Arc<str>,
+        status: SourceStatusHandle,
+        event_capacity: usize,
+    ) -> Self {
+        let publication = InputPublicationSlot::new(event_capacity);
+        publication.publish_batch(
+            Some(Arc::new(InputData::Interaction(InteractionData::default()))),
+            &mut Vec::new(),
+        );
+        Self {
+            inner: Arc::new(BrowserInputChildSlotInner {
+                key,
+                publication_id,
+                source_id,
+                status,
+                active: AtomicBool::new(true),
+                state: Mutex::new(BrowserChildState::default()),
+                publication,
+            }),
+        }
+    }
+
+    /// Structured connection and preview address.
+    #[must_use]
+    pub fn key(&self) -> &BrowserInputChildKey {
+        &self.inner.key
+    }
+
+    /// Opaque incarnation that changes after close and reattach.
+    #[must_use]
+    pub fn publication_id(&self) -> BrowserInputPublicationId {
+        self.inner.publication_id
+    }
+
+    /// Diagnostic source id stamped onto discrete events.
+    #[must_use]
+    pub fn source_id(&self) -> &str {
+        &self.inner.source_id
+    }
+
+    /// Manager-owned browser source health shared by this child.
+    #[must_use]
+    pub fn status(&self) -> &SourceStatusHandle {
+        &self.inner.status
+    }
+
+    /// Whether this incarnation still accepts input.
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        self.inner.active.load(Ordering::Acquire)
+    }
+
+    /// Load the latest held-state and motion publication.
+    #[must_use]
+    pub fn latest(&self) -> Option<Arc<InputData>> {
+        self.inner.publication.latest()
+    }
+
+    /// Append retained events newer than `cursor` without consuming them.
+    pub fn read_events_since(
+        &self,
+        cursor: u64,
+        output: &mut Vec<TimedInputEvent>,
+    ) -> InputEventRead {
+        self.inner.publication.read_events_since(cursor, output)
+    }
+
+    /// Cursor immediately after the newest retained event.
+    #[must_use]
+    pub fn event_cursor(&self) -> u64 {
+        self.inner.publication.event_cursor()
+    }
+
+    /// Atomically read one held-state and bounded-event revision.
+    pub fn read_publication_since(
+        &self,
+        cursor: u64,
+        output: &mut Vec<TimedInputEvent>,
+    ) -> InputPublicationRead {
+        self.inner
+            .publication
+            .read_publication_since(cursor, output)
+    }
+
+    fn inject(
+        &self,
+        edges: impl IntoIterator<Item = BrowserInputEdge>,
+    ) -> Result<(), BrowserInputRegistryError> {
+        if !self.is_active() {
+            return Err(BrowserInputRegistryError::ChildClosed);
+        }
+        let mut state = lock_or_recover(&self.inner.state);
+        if !self.is_active() {
+            return Err(BrowserInputRegistryError::ChildClosed);
+        }
+
+        let mut events = Vec::new();
+        let mut recent_keys = Vec::new();
+        let mut motion = MotionAggregate::default();
+        let mut dropped = 0_u32;
+        let at_ms = input_mono_ms();
+        let mut edge_count = 0_usize;
+        for edge in edges {
+            edge_count = edge_count.saturating_add(1);
+            fold_child_edge(
+                &mut state,
+                &self.inner.source_id,
+                edge,
+                at_ms,
+                &mut events,
+                &mut recent_keys,
+                &mut motion,
+                &mut dropped,
+            );
+        }
+        if edge_count == 0 {
+            return Ok(());
+        }
+
+        state.generation = state
+            .generation
+            .checked_add(1)
+            .expect("browser child generation exhausted");
+        let snapshot = build_child_snapshot(&state, recent_keys, motion, dropped);
+        self.inner.publication.publish_batch(
+            Some(Arc::new(InputData::Interaction(snapshot))),
+            &mut events,
+        );
+        Ok(())
+    }
+
+    fn deactivate(&self) {
+        self.inner.active.store(false, Ordering::Release);
+    }
+
+    fn retire(&self, publish_releases: bool) {
+        let mut state = lock_or_recover(&self.inner.state);
+        let mut events = publish_releases.then(Vec::new).unwrap_or_default();
+        if publish_releases {
+            synthesize_releases(&state, &self.inner.source_id, &mut events);
+        }
+        state.pressed_keys.clear();
+        state.held_buttons.clear();
+        state.cursor = None;
+        state.generation = state
+            .generation
+            .checked_add(1)
+            .expect("browser child generation exhausted");
+        self.inner.publication.publish_batch(
+            Some(Arc::new(InputData::Interaction(build_child_snapshot(
+                &state,
+                Vec::new(),
+                MotionAggregate::default(),
+                0,
+            )))),
+            &mut events,
+        );
+    }
+}
+
+impl InteractionRouteSlot for BrowserInputChildSlot {
+    fn read_interaction_since(
+        &self,
+        cursor: u64,
+        output: &mut Vec<TimedInputEvent>,
+    ) -> InteractionRouteRead {
+        let publication = self.read_publication_since(cursor, output);
+        InteractionRouteRead {
+            snapshot: publication.sample.and_then(|sample| {
+                matches!(sample.as_ref(), InputData::Interaction(_))
+                    .then_some(InteractionRouteSnapshot::InputData(sample))
+            }),
+            events: publication.events,
+            interaction_transients: publication.interaction_transients,
+        }
+    }
+
+    fn status_handle(&self) -> Option<SourceStatusHandle> {
+        Some(self.status().clone())
+    }
+}
+
+/// Immutable view of all active browser child publications.
+pub struct BrowserInputRegistrySnapshot {
+    generation: u64,
+    children: Arc<[BrowserInputChildSlot]>,
+    publication_ids: Arc<[BrowserInputPublicationId]>,
+}
+
+impl BrowserInputRegistrySnapshot {
+    /// Registry generation, incremented by every attach and detach.
+    #[must_use]
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Active children in deterministic key order.
+    #[must_use]
+    pub fn children(&self) -> &[BrowserInputChildSlot] {
+        &self.children
+    }
+
+    /// Resolve one exact connection-scoped preview.
+    #[must_use]
+    pub fn child(&self, key: &BrowserInputChildKey) -> Option<&BrowserInputChildSlot> {
+        self.children
+            .binary_search_by(|child| child.key().cmp(key))
+            .ok()
+            .map(|index| &self.children[index])
+    }
+
+    fn contains_publication(&self, publication_id: BrowserInputPublicationId) -> bool {
+        self.publication_ids.binary_search(&publication_id).is_ok()
+    }
+}
+
+#[derive(Clone)]
+pub struct BrowserInputRegistryHandle {
+    inner: Arc<BrowserInputRegistryInner>,
+}
+
+struct BrowserInputRegistryInner {
+    latest: ArcSwap<BrowserInputRegistrySnapshot>,
+    writer: Mutex<BrowserInputRegistryWriter>,
+    status: SourceStatusHandle,
+}
+
+struct BrowserInputRegistryWriter {
     accepting: bool,
-    events: VecDeque<TimedInputEvent>,
-    dropped: u32,
-    pressed_keys: BTreeMap<String, BTreeSet<String>>,
-    held_buttons: BTreeMap<String, BTreeSet<String>>,
-    recent_keys: VecDeque<String>,
-    cursor: BTreeMap<String, (f32, f32)>,
-    /// Source id of the most recently moved pointer, so the primary pointer
-    /// tracks real activity rather than lexical source order.
-    active_pointer: Option<String>,
-    motion: MotionAggregate,
-    generation_dirty: bool,
+    generation: u64,
+    session_generation: u64,
+    next_publication_id: u64,
+    next_legacy_connection: u64,
+    event_capacity: usize,
+    children: BTreeMap<BrowserInputChildKey, BrowserInputChildSlot>,
+    leases: BTreeMap<BrowserInputChildKey, Arc<BrowserInputLease>>,
+    legacy_keys: BTreeMap<String, BrowserInputChildKey>,
+    retired_legacy: VecDeque<BrowserInputChildSlot>,
 }
 
-impl SharedState {
-    fn union_pressed(&self) -> Vec<String> {
-        let mut keys: BTreeSet<&String> = BTreeSet::new();
-        for held in self.pressed_keys.values() {
-            keys.extend(held.iter());
+impl BrowserInputRegistryHandle {
+    fn new(status: SourceStatusHandle) -> Self {
+        Self {
+            inner: Arc::new(BrowserInputRegistryInner {
+                latest: ArcSwap::from_pointee(BrowserInputRegistrySnapshot {
+                    generation: 0,
+                    children: Arc::from([]),
+                    publication_ids: Arc::from([]),
+                }),
+                writer: Mutex::new(BrowserInputRegistryWriter {
+                    accepting: false,
+                    generation: 0,
+                    session_generation: 0,
+                    next_publication_id: 1,
+                    next_legacy_connection: 1,
+                    event_capacity: DEFAULT_EVENT_LIMIT,
+                    children: BTreeMap::new(),
+                    leases: BTreeMap::new(),
+                    legacy_keys: BTreeMap::new(),
+                    retired_legacy: VecDeque::new(),
+                }),
+                status,
+            }),
         }
-        keys.into_iter().cloned().collect()
     }
 
-    fn union_buttons(&self) -> Vec<String> {
-        let mut buttons: BTreeSet<&String> = BTreeSet::new();
-        for held in self.held_buttons.values() {
-            buttons.extend(held.iter());
-        }
-        buttons.into_iter().cloned().collect()
+    /// Load the active child registry without acquiring its writer lock.
+    #[must_use]
+    pub fn snapshot(&self) -> Arc<BrowserInputRegistrySnapshot> {
+        self.inner.latest.load_full()
     }
 
-    fn primary_cursor(&self) -> Option<(f32, f32)> {
-        // The pointer that moved most recently, falling back to any known
-        // cursor so a still-but-present pointer still reports a position.
-        self.active_pointer
-            .as_ref()
-            .and_then(|source| self.cursor.get(source))
-            .or_else(|| self.cursor.values().next_back())
-            .copied()
+    fn start(&self, event_capacity: usize) {
+        let mut writer = lock_or_recover(&self.inner.writer);
+        writer.session_generation = writer
+            .session_generation
+            .checked_add(1)
+            .expect("browser registry session generation exhausted");
+        writer.accepting = true;
+        writer.event_capacity = event_capacity;
+        publish_registry(&self.inner, &mut writer);
+    }
+
+    fn stop(&self) {
+        let mut writer = lock_or_recover(&self.inner.writer);
+        writer.accepting = false;
+        let children = std::mem::take(&mut writer.children);
+        let leases = std::mem::take(&mut writer.leases);
+        writer.legacy_keys.clear();
+        writer.retired_legacy.clear();
+        for child in children.values() {
+            child.deactivate();
+        }
+        for lease in leases.values() {
+            lease.closed.store(true, Ordering::Release);
+        }
+        publish_registry(&self.inner, &mut writer);
+        drop(writer);
+        for child in children.values() {
+            child.retire(false);
+        }
+    }
+
+    fn attach(
+        &self,
+        key: BrowserInputChildKey,
+        source_id: Arc<str>,
+    ) -> Result<BrowserInputAttachment, BrowserInputRegistryError> {
+        let mut writer = lock_or_recover(&self.inner.writer);
+        if !writer.accepting {
+            return Err(BrowserInputRegistryError::SourceInactive);
+        }
+        if let Some(lease) = writer.leases.get(&key) {
+            return lease
+                .try_acquire()
+                .then(|| BrowserInputAttachment::from_acquired(Arc::clone(lease)))
+                .ok_or(BrowserInputRegistryError::ChildClosed);
+        }
+        let publication_id = BrowserInputPublicationId(writer.next_publication_id);
+        writer.next_publication_id = writer
+            .next_publication_id
+            .checked_add(1)
+            .expect("browser publication id exhausted");
+        let child = BrowserInputChildSlot::new(
+            key.clone(),
+            publication_id,
+            source_id,
+            self.inner.status.clone(),
+            writer.event_capacity,
+        );
+        let attachment = BrowserInputAttachment::new(self.clone(), child.clone());
+        writer.children.insert(key.clone(), child);
+        writer.leases.insert(key, Arc::clone(&attachment.lease));
+        publish_registry(&self.inner, &mut writer);
+        Ok(attachment)
+    }
+
+    fn attach_legacy(
+        &self,
+        source_id: &str,
+    ) -> Result<BrowserInputChildSlot, BrowserInputRegistryError> {
+        let mut writer = lock_or_recover(&self.inner.writer);
+        if !writer.accepting {
+            return Err(BrowserInputRegistryError::SourceInactive);
+        }
+        if let Some(key) = writer.legacy_keys.get(source_id)
+            && let Some(child) = writer.children.get(key)
+        {
+            return Ok(child.clone());
+        }
+        let connection = BrowserConnectionIncarnation::legacy(writer.next_legacy_connection);
+        writer.next_legacy_connection = writer
+            .next_legacy_connection
+            .checked_add(1)
+            .expect("legacy browser connection id exhausted");
+        let key = BrowserInputChildKey::new(connection, source_id.to_owned());
+        let publication_id = BrowserInputPublicationId(writer.next_publication_id);
+        writer.next_publication_id = writer
+            .next_publication_id
+            .checked_add(1)
+            .expect("browser publication id exhausted");
+        let child = BrowserInputChildSlot::new(
+            key.clone(),
+            publication_id,
+            Arc::from(source_id),
+            self.inner.status.clone(),
+            writer.event_capacity,
+        );
+        writer.legacy_keys.insert(source_id.to_owned(), key.clone());
+        writer.children.insert(key, child.clone());
+        publish_registry(&self.inner, &mut writer);
+        Ok(child)
+    }
+
+    fn close(&self, key: &BrowserInputChildKey, publication_id: BrowserInputPublicationId) -> bool {
+        self.close_inner(key, publication_id)
+    }
+
+    fn release_legacy(&self, source_id: &str) {
+        let mut writer = lock_or_recover(&self.inner.writer);
+        let Some(key) = writer.legacy_keys.remove(source_id) else {
+            return;
+        };
+        let Some(child) = writer.children.remove(&key) else {
+            return;
+        };
+        child.deactivate();
+        publish_registry(&self.inner, &mut writer);
+        let session_generation = writer.session_generation;
+        drop(writer);
+        child.retire(true);
+        let mut writer = lock_or_recover(&self.inner.writer);
+        if writer.accepting && writer.session_generation == session_generation {
+            if writer.retired_legacy.len() == BROWSER_RETIRED_LEGACY_CAPACITY {
+                writer.retired_legacy.pop_front();
+            }
+            writer.retired_legacy.push_back(child);
+        }
+    }
+
+    fn close_inner(
+        &self,
+        key: &BrowserInputChildKey,
+        publication_id: BrowserInputPublicationId,
+    ) -> bool {
+        let mut writer = lock_or_recover(&self.inner.writer);
+        let Some(child) = writer.children.get(key) else {
+            return false;
+        };
+        if child.publication_id() != publication_id {
+            return false;
+        }
+        child.deactivate();
+        let child = writer
+            .children
+            .remove(key)
+            .expect("browser child existed during incarnation-fenced close");
+        if let Some(lease) = writer.leases.remove(key) {
+            lease.closed.store(true, Ordering::Release);
+        }
+        writer.legacy_keys.retain(|_, legacy_key| legacy_key != key);
+        publish_registry(&self.inner, &mut writer);
+        drop(writer);
+        child.retire(false);
+        true
+    }
+
+    fn take_retired_legacy(&self, output: &mut Vec<BrowserInputChildSlot>) {
+        let mut writer = lock_or_recover(&self.inner.writer);
+        output.extend(writer.retired_legacy.drain(..));
     }
 }
 
-/// Cloneable push handle for a [`BrowserInputSource`].
-///
-/// Held by the WebSocket layer; every clone feeds the same source, so a
-/// socket can inject without touching the input-manager lock.
+struct BrowserInputLease {
+    registry: BrowserInputRegistryHandle,
+    child: BrowserInputChildSlot,
+    owners: AtomicUsize,
+    closed: AtomicBool,
+}
+
+impl BrowserInputLease {
+    fn try_acquire(&self) -> bool {
+        if self.closed.load(Ordering::Acquire) {
+            return false;
+        }
+        let mut owners = self.owners.load(Ordering::Acquire);
+        loop {
+            if owners == 0 || self.closed.load(Ordering::Acquire) {
+                return false;
+            }
+            match self.owners.compare_exchange_weak(
+                owners,
+                owners
+                    .checked_add(1)
+                    .expect("browser attachment owner count exhausted"),
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return true,
+                Err(current) => owners = current,
+            }
+        }
+    }
+
+    fn release(&self) {
+        let previous = self.owners.fetch_sub(1, Ordering::AcqRel);
+        assert!(previous > 0, "browser attachment owner count underflow");
+        if previous == 1 && !self.closed.swap(true, Ordering::AcqRel) {
+            self.registry
+                .close(self.child.key(), self.child.publication_id());
+        }
+    }
+}
+
+/// Incarnation-fenced owner and writer for one active browser preview.
+pub struct BrowserInputAttachment {
+    lease: Arc<BrowserInputLease>,
+}
+
+impl BrowserInputAttachment {
+    fn new(registry: BrowserInputRegistryHandle, child: BrowserInputChildSlot) -> Self {
+        Self {
+            lease: Arc::new(BrowserInputLease {
+                registry,
+                child,
+                owners: AtomicUsize::new(1),
+                closed: AtomicBool::new(false),
+            }),
+        }
+    }
+
+    fn from_acquired(lease: Arc<BrowserInputLease>) -> Self {
+        Self { lease }
+    }
+
+    /// Child key bound to this attachment.
+    #[must_use]
+    pub fn key(&self) -> &BrowserInputChildKey {
+        self.lease.child.key()
+    }
+
+    /// Opaque publication incarnation bound to this attachment.
+    #[must_use]
+    pub fn publication_id(&self) -> BrowserInputPublicationId {
+        self.lease.child.publication_id()
+    }
+
+    /// Lock-free routable child publication.
+    #[must_use]
+    pub fn slot(&self) -> BrowserInputChildSlot {
+        self.lease.child.clone()
+    }
+
+    /// Publish one edge batch directly to this child.
+    pub fn inject(
+        &self,
+        edges: impl IntoIterator<Item = BrowserInputEdge>,
+    ) -> Result<(), BrowserInputRegistryError> {
+        self.lease.child.inject(edges)
+    }
+
+    /// Close this incarnation without affecting a later attachment at the same key.
+    pub fn close(&self) -> bool {
+        if self.lease.closed.swap(true, Ordering::AcqRel) {
+            return false;
+        }
+        self.lease.registry.close(self.key(), self.publication_id())
+    }
+}
+
+impl Clone for BrowserInputAttachment {
+    fn clone(&self) -> Self {
+        self.lease
+            .owners
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |owners| {
+                Some(
+                    owners
+                        .checked_add(1)
+                        .expect("browser attachment owner count exhausted"),
+                )
+            })
+            .expect("browser attachment owner count updates cannot fail");
+        Self {
+            lease: Arc::clone(&self.lease),
+        }
+    }
+}
+
+impl Drop for BrowserInputAttachment {
+    fn drop(&mut self) {
+        self.lease.release();
+    }
+}
+
+/// Cloneable control handle for the manager-owned browser registry.
 #[derive(Clone)]
 pub struct BrowserInputHandle {
-    shared: Arc<Mutex<SharedState>>,
-    event_limit: usize,
+    registry: BrowserInputRegistryHandle,
 }
 
 impl BrowserInputHandle {
-    /// Inject a batch of edges from one browser connection.
-    ///
-    /// `source_id` scopes held state to the connection so releases and
-    /// pointer positions never cross-contaminate between sockets.
+    /// Attach or idempotently resolve one active connection-scoped preview.
+    pub fn attach(
+        &self,
+        key: BrowserInputChildKey,
+    ) -> Result<BrowserInputAttachment, BrowserInputRegistryError> {
+        let source_id: Arc<str> = Arc::from(format!(
+            "browser:{}:{}",
+            key.connection().get(),
+            key.preview_id().as_str()
+        ));
+        self.registry.attach(key, source_id)
+    }
+
+    /// Clone the lock-free active-child registry.
+    #[must_use]
+    pub fn registry(&self) -> BrowserInputRegistryHandle {
+        self.registry.clone()
+    }
+
+    /// Compatibility injection for the legacy connection-wide protocol.
     pub fn inject(&self, source_id: &str, edges: impl IntoIterator<Item = BrowserInputEdge>) {
-        let Ok(mut guard) = self.shared.lock() else {
-            return;
-        };
-        if !guard.accepting {
-            return;
-        }
-        let at_ms = input_mono_ms();
-        for edge in edges {
-            self.fold(&mut guard, source_id, edge, at_ms);
+        if let Ok(child) = self.registry.attach_legacy(source_id) {
+            let _ = child.inject(edges);
         }
     }
 
-    /// Drop all state a disconnecting connection still held.
-    ///
-    /// Synthesizes release edges for its keys and buttons so effects see
-    /// clean edges and nothing sticks after the socket closes.
+    /// Compatibility release for the legacy connection-wide protocol.
     pub fn release_source(&self, source_id: &str) {
-        let Ok(mut guard) = self.shared.lock() else {
-            return;
-        };
-        if !guard.accepting {
-            return;
-        }
-        let at_ms = input_mono_ms();
-        if let Some(keys) = guard.pressed_keys.remove(source_id) {
-            for key in keys {
-                push_event(
-                    &mut guard,
-                    TimedInputEvent {
-                        event: InputEvent::Key {
-                            source_id: source_id.to_owned(),
-                            key,
-                            state: InputButtonState::Released,
-                        },
-                        at_ms,
-                        seq: 0,
-                        physical_code: None,
-                        repeat_count: 1,
-                    },
-                    self.event_limit,
-                );
-            }
-        }
-        if let Some(buttons) = guard.held_buttons.remove(source_id) {
-            for button in buttons {
-                push_event(
-                    &mut guard,
-                    TimedInputEvent {
-                        event: InputEvent::MouseButton {
-                            source_id: source_id.to_owned(),
-                            button,
-                            state: InputButtonState::Released,
-                        },
-                        at_ms,
-                        seq: 0,
-                        physical_code: None,
-                        repeat_count: 1,
-                    },
-                    self.event_limit,
-                );
-            }
-        }
-        guard.cursor.remove(source_id);
-        if guard.active_pointer.as_deref() == Some(source_id) {
-            guard.active_pointer = guard.cursor.keys().next_back().cloned();
-        }
-        guard.generation_dirty = true;
-    }
-
-    fn fold(&self, state: &mut SharedState, source_id: &str, edge: BrowserInputEdge, at_ms: u64) {
-        match edge {
-            BrowserInputEdge::Key { key, state: st } => {
-                match st {
-                    InputButtonState::Pressed | InputButtonState::Repeated => {
-                        if !try_press(
-                            &mut state.pressed_keys,
-                            source_id,
-                            &key,
-                            MAX_HELD_KEYS_PER_SOURCE,
-                        ) {
-                            state.dropped = state.dropped.saturating_add(1);
-                            return;
-                        }
-                        if st == InputButtonState::Pressed {
-                            state.recent_keys.push_back(key.clone());
-                            cap_recent(&mut state.recent_keys, self.event_limit);
-                        }
-                    }
-                    InputButtonState::Released => {
-                        if let Some(held) = state.pressed_keys.get_mut(source_id) {
-                            held.remove(&key);
-                        }
-                    }
-                }
-                state.generation_dirty = true;
-                push_event(
-                    state,
-                    TimedInputEvent {
-                        event: InputEvent::Key {
-                            source_id: source_id.to_owned(),
-                            key,
-                            state: st,
-                        },
-                        at_ms,
-                        seq: 0,
-                        physical_code: None,
-                        repeat_count: 1,
-                    },
-                    self.event_limit,
-                );
-            }
-            BrowserInputEdge::Button { button, state: st } => {
-                match st {
-                    InputButtonState::Pressed => {
-                        if !try_press(
-                            &mut state.held_buttons,
-                            source_id,
-                            &button,
-                            MAX_HELD_BUTTONS_PER_SOURCE,
-                        ) {
-                            state.dropped = state.dropped.saturating_add(1);
-                            return;
-                        }
-                    }
-                    InputButtonState::Released => {
-                        if let Some(held) = state.held_buttons.get_mut(source_id) {
-                            held.remove(&button);
-                        }
-                    }
-                    InputButtonState::Repeated => {}
-                }
-                state.generation_dirty = true;
-                push_event(
-                    state,
-                    TimedInputEvent {
-                        event: InputEvent::MouseButton {
-                            source_id: source_id.to_owned(),
-                            button,
-                            state: st,
-                        },
-                        at_ms,
-                        seq: 0,
-                        physical_code: None,
-                        repeat_count: 1,
-                    },
-                    self.event_limit,
-                );
-            }
-            BrowserInputEdge::Move { norm_x, norm_y } => {
-                let nx = sanitize_unit(norm_x);
-                let ny = sanitize_unit(norm_y);
-                if let Some((px, py)) = state.cursor.get(source_id).copied() {
-                    let dx = nx - px;
-                    let dy = ny - py;
-                    state.motion.dx += dx;
-                    state.motion.dy += dy;
-                    state.motion.distance += dx.hypot(dy);
-                }
-                state.cursor.insert(source_id.to_owned(), (nx, ny));
-                state.active_pointer = Some(source_id.to_owned());
-                state.generation_dirty = true;
-            }
-            BrowserInputEdge::Wheel { delta_hi_res } => {
-                push_event(
-                    state,
-                    TimedInputEvent {
-                        event: InputEvent::MouseWheel {
-                            source_id: source_id.to_owned(),
-                            delta_hi_res,
-                        },
-                        at_ms,
-                        seq: 0,
-                        physical_code: None,
-                        repeat_count: 1,
-                    },
-                    self.event_limit,
-                );
-            }
-        }
+        self.registry.release_legacy(source_id);
     }
 }
 
@@ -287,7 +792,13 @@ pub struct BrowserInputSource {
     name: String,
     running: bool,
     generation: u64,
-    shared: Arc<Mutex<SharedState>>,
+    last_registry_generation: u64,
+    registry: BrowserInputRegistryHandle,
+    aggregate_event_cursors: BTreeMap<BrowserInputPublicationId, u64>,
+    aggregate_transient_totals: BTreeMap<BrowserInputPublicationId, InteractionTransientTotals>,
+    pending_aggregate_transients: InteractionTransientTotals,
+    aggregate_latest_generations: BTreeMap<BrowserInputPublicationId, u64>,
+    retained_legacy: Vec<BrowserInputChildSlot>,
     event_limit: usize,
     status: SourceStatusReporter,
 }
@@ -296,56 +807,228 @@ impl BrowserInputSource {
     /// Create a browser injection source.
     #[must_use]
     pub fn new() -> Self {
+        let status = SourceStatusReporter::new(
+            "browser_input",
+            SourceKind::Interaction,
+            "browser",
+            true,
+            true,
+            true,
+        );
         Self {
             name: "BrowserInput".to_owned(),
             running: false,
             generation: 0,
-            shared: Arc::new(Mutex::new(SharedState::default())),
+            last_registry_generation: 0,
+            registry: BrowserInputRegistryHandle::new(status.handle()),
+            aggregate_event_cursors: BTreeMap::new(),
+            aggregate_transient_totals: BTreeMap::new(),
+            pending_aggregate_transients: InteractionTransientTotals::default(),
+            aggregate_latest_generations: BTreeMap::new(),
+            retained_legacy: Vec::new(),
             event_limit: DEFAULT_EVENT_LIMIT,
-            status: SourceStatusReporter::new(
-                "browser_input",
-                SourceKind::Interaction,
-                "browser",
-                true,
-                true,
-                true,
-            ),
+            status,
         }
     }
 
-    fn build_snapshot(&mut self, guard: &mut SharedState) -> InteractionData {
-        let mut data = InteractionData::default();
-        data.keyboard.pressed_keys = guard.union_pressed();
-        data.keyboard.recent_keys = guard.recent_keys.drain(..).collect();
-        data.mouse.buttons = guard.union_buttons();
-        data.mouse.down = !data.mouse.buttons.is_empty();
-        if let Some((nx, ny)) = guard.primary_cursor() {
-            data.mouse.mode = PointerMode::Absolute;
-            data.mouse.norm_x = nx;
-            data.mouse.norm_y = ny;
-            // The user is driving this pointer over the preview canvas, so it
-            // outranks the host cursor in `merge_from`. Without the flag, host
-            // capture — which registers first — would shadow it and an
-            // interactive effect previewed in the UI would track the desktop.
-            data.mouse.injected = true;
-        }
-        data.batch.motion = std::mem::take(&mut guard.motion);
-        data.batch.dropped_events = std::mem::take(&mut guard.dropped);
+    fn build_snapshot(&mut self) -> InteractionData {
+        let registry = self.registry.snapshot();
+        let (mut data, mut changed) = self.begin_aggregate_snapshot(&registry);
+        merge_transient_delta(
+            &mut data,
+            std::mem::take(&mut self.pending_aggregate_transients),
+        );
+        let mut no_events = Vec::new();
 
-        if guard.generation_dirty || !data.keyboard.recent_keys.is_empty() {
-            self.generation = self.generation.wrapping_add(1);
-            guard.generation_dirty = false;
+        for child in registry.children() {
+            let publication = child.read_publication_since(u64::MAX, &mut no_events);
+            let transients =
+                self.consume_aggregate_transients(child, publication.interaction_transients);
+            self.merge_aggregate_sample(
+                &mut data,
+                &mut changed,
+                child,
+                publication.sample,
+                transients,
+            );
+        }
+
+        self.finish_aggregate_snapshot(data, changed)
+    }
+
+    fn drain_aggregate_events(&mut self) -> Vec<TimedInputEvent> {
+        self.registry.take_retired_legacy(&mut self.retained_legacy);
+        let registry = self.registry.snapshot();
+        let mut retired_legacy = std::mem::take(&mut self.retained_legacy);
+        let mut events = Vec::new();
+        for child in registry.children() {
+            let (_, child_dropped) = self.read_aggregate_child(child, &mut events);
+            self.pending_aggregate_transients.dropped_events = self
+                .pending_aggregate_transients
+                .dropped_events
+                .saturating_add(u64::from(child_dropped));
+        }
+        for child in &retired_legacy {
+            let (publication, child_dropped) = self.read_aggregate_child(child, &mut events);
+            let transients =
+                self.consume_aggregate_transients(child, publication.interaction_transients);
+            accumulate_transient_totals(&mut self.pending_aggregate_transients, transients);
+            self.pending_aggregate_transients.dropped_events = self
+                .pending_aggregate_transients
+                .dropped_events
+                .saturating_add(u64::from(child_dropped));
+        }
+        self.retain_active_aggregate_cursors(&registry);
+        retired_legacy.clear();
+        self.retained_legacy = retired_legacy;
+        events
+    }
+
+    fn sample_and_drain_aggregate(&mut self) -> (InteractionData, Vec<TimedInputEvent>) {
+        self.registry.take_retired_legacy(&mut self.retained_legacy);
+        let registry = self.registry.snapshot();
+        let mut retired_legacy = std::mem::take(&mut self.retained_legacy);
+        let (mut data, mut changed) = self.begin_aggregate_snapshot(&registry);
+        merge_transient_delta(
+            &mut data,
+            std::mem::take(&mut self.pending_aggregate_transients),
+        );
+        let mut events = Vec::new();
+        let mut dropped = 0_u32;
+
+        for child in registry.children() {
+            let (publication, child_dropped) = self.read_aggregate_child(child, &mut events);
+            dropped = dropped.saturating_add(child_dropped);
+            let transients =
+                self.consume_aggregate_transients(child, publication.interaction_transients);
+            self.merge_aggregate_sample(
+                &mut data,
+                &mut changed,
+                child,
+                publication.sample,
+                transients,
+            );
+        }
+        for child in &retired_legacy {
+            let (publication, child_dropped) = self.read_aggregate_child(child, &mut events);
+            dropped = dropped.saturating_add(child_dropped);
+            let transients =
+                self.consume_aggregate_transients(child, publication.interaction_transients);
+            merge_transient_delta(&mut data, transients);
+        }
+
+        self.retain_active_aggregate_cursors(&registry);
+        retired_legacy.clear();
+        self.retained_legacy = retired_legacy;
+        data.batch.wheel_hi_res = events.iter().fold(0_i32, |total, event| {
+            if let InputEvent::MouseWheel { delta_hi_res, .. } = &event.event {
+                total.saturating_add(*delta_hi_res)
+            } else {
+                total
+            }
+        });
+        data.batch.dropped_events = data.batch.dropped_events.saturating_add(dropped);
+        (self.finish_aggregate_snapshot(data, changed), events)
+    }
+
+    fn begin_aggregate_snapshot(
+        &mut self,
+        registry: &BrowserInputRegistrySnapshot,
+    ) -> (InteractionData, bool) {
+        let changed = registry.generation() != self.last_registry_generation;
+        self.last_registry_generation = registry.generation();
+        self.aggregate_latest_generations
+            .retain(|publication_id, _| registry.contains_publication(*publication_id));
+        (InteractionData::default(), changed)
+    }
+
+    fn merge_aggregate_sample(
+        &mut self,
+        data: &mut InteractionData,
+        changed: &mut bool,
+        child: &BrowserInputChildSlot,
+        sample: Option<Arc<InputData>>,
+        transients: InteractionTransientTotals,
+    ) {
+        let Some(sample) = sample else {
+            return;
+        };
+        let InputData::Interaction(snapshot) = sample.as_ref() else {
+            return;
+        };
+        let transient_is_new = self
+            .aggregate_latest_generations
+            .insert(child.publication_id(), snapshot.generation)
+            != Some(snapshot.generation);
+        *changed |= transient_is_new;
+        let mut contribution = snapshot.clone();
+        contribution.batch.motion = MotionAggregate::default();
+        contribution.batch.window_secs = 0.0;
+        contribution.batch.dropped_events = 0;
+        merge_transient_delta(&mut contribution, transients);
+        if !transient_is_new {
+            contribution.keyboard.recent_keys.clear();
+        }
+        data.merge_from(contribution);
+    }
+
+    fn finish_aggregate_snapshot(
+        &mut self,
+        mut data: InteractionData,
+        changed: bool,
+    ) -> InteractionData {
+        if changed {
+            self.generation = self
+                .generation
+                .checked_add(1)
+                .expect("browser aggregate generation exhausted");
         }
         data.generation = self.generation;
         data
     }
 
-    /// A cloneable handle for the WebSocket layer to push edges through.
+    fn read_aggregate_child(
+        &mut self,
+        child: &BrowserInputChildSlot,
+        events: &mut Vec<TimedInputEvent>,
+    ) -> (InputPublicationRead, u32) {
+        let publication_id = child.publication_id();
+        let cursor = self
+            .aggregate_event_cursors
+            .get(&publication_id)
+            .copied()
+            .unwrap_or(0);
+        let publication = child.read_publication_since(cursor, events);
+        self.aggregate_event_cursors
+            .insert(publication_id, publication.events.next_cursor);
+        let dropped = u32::try_from(publication.events.dropped).unwrap_or(u32::MAX);
+        (publication, dropped)
+    }
+
+    fn consume_aggregate_transients(
+        &mut self,
+        child: &BrowserInputChildSlot,
+        current: InteractionTransientTotals,
+    ) -> InteractionTransientTotals {
+        let previous = self
+            .aggregate_transient_totals
+            .insert(child.publication_id(), current)
+            .unwrap_or_default();
+        current.delta_since(previous)
+    }
+
+    fn retain_active_aggregate_cursors(&mut self, registry: &BrowserInputRegistrySnapshot) {
+        self.aggregate_event_cursors
+            .retain(|publication_id, _| registry.contains_publication(*publication_id));
+        self.aggregate_transient_totals
+            .retain(|publication_id, _| registry.contains_publication(*publication_id));
+    }
+
+    /// A cloneable handle for WebSocket control and injection.
     #[must_use]
     pub fn handle(&self) -> BrowserInputHandle {
         BrowserInputHandle {
-            shared: Arc::clone(&self.shared),
-            event_limit: self.event_limit,
+            registry: self.registry.clone(),
         }
     }
 }
@@ -366,15 +1049,7 @@ impl InputSource for BrowserInputSource {
             return Ok(());
         }
         let status = self.status.begin_session()?;
-        let Ok(mut guard) = self.shared.lock() else {
-            self.status.stop();
-            anyhow::bail!("browser input state lock is poisoned");
-        };
-        *guard = SharedState {
-            accepting: true,
-            ..SharedState::default()
-        };
-        drop(guard);
+        self.registry.start(self.event_limit);
         self.running = true;
         if let Some(status) = status {
             status.mark_event_driven_live_without_deadline(0);
@@ -384,23 +1059,21 @@ impl InputSource for BrowserInputSource {
 
     fn stop(&mut self) {
         self.running = false;
-        if let Ok(mut guard) = self.shared.lock() {
-            *guard = SharedState::default();
-        }
+        self.registry.stop();
+        self.aggregate_event_cursors.clear();
+        self.aggregate_transient_totals.clear();
+        self.pending_aggregate_transients = InteractionTransientTotals::default();
+        self.aggregate_latest_generations.clear();
+        self.retained_legacy.clear();
         self.status.stop();
     }
 
     fn sample(&mut self) -> anyhow::Result<InputData> {
-        if !self.running {
-            return Ok(InputData::None);
+        if self.running {
+            Ok(InputData::Interaction(self.build_snapshot()))
+        } else {
+            Ok(InputData::None)
         }
-
-        let shared = Arc::clone(&self.shared);
-        let Ok(mut guard) = shared.lock() else {
-            return Ok(InputData::None);
-        };
-        let snapshot = self.build_snapshot(&mut guard);
-        Ok(InputData::Interaction(snapshot))
     }
 
     fn sample_and_drain_with_delta_secs(
@@ -410,14 +1083,7 @@ impl InputSource for BrowserInputSource {
         if !self.running {
             return (Ok(InputData::None), Vec::new());
         }
-
-        let shared = Arc::clone(&self.shared);
-        let Ok(mut guard) = shared.lock() else {
-            return (Ok(InputData::None), Vec::new());
-        };
-        // One lock for both halves so batch and held state stay coherent.
-        let events = drain_events(&mut guard.events);
-        let snapshot = self.build_snapshot(&mut guard);
+        let (snapshot, events) = self.sample_and_drain_aggregate();
         (Ok(InputData::Interaction(snapshot)), events)
     }
 
@@ -437,6 +1103,10 @@ impl InputSource for BrowserInputSource {
         true
     }
 
+    fn interaction_source_origin(&self) -> InteractionSourceOrigin {
+        InteractionSourceOrigin::BrowserCompatibilityAggregate
+    }
+
     fn interaction_diagnostics(&self) -> Option<crate::input::InteractionDiagnostics> {
         Some(crate::input::InteractionDiagnostics {
             backend: "browser",
@@ -449,50 +1119,215 @@ impl InputSource for BrowserInputSource {
     }
 
     fn drain_events(&mut self) -> Vec<TimedInputEvent> {
-        if !self.running {
-            return Vec::new();
+        if self.running {
+            self.drain_aggregate_events()
+        } else {
+            Vec::new()
         }
-        if let Ok(mut guard) = self.shared.lock() {
-            return drain_events(&mut guard.events);
-        }
-        Vec::new()
     }
 }
 
-fn push_event(state: &mut SharedState, event: TimedInputEvent, limit: usize) {
-    if limit == 0 {
-        state.dropped = state
-            .dropped
-            .saturating_add(u32::try_from(state.events.len()).unwrap_or(u32::MAX))
-            .saturating_add(1);
-        state.events.clear();
-        return;
-    }
-    while state.events.len() >= limit {
-        state.events.pop_front();
-        state.dropped = state.dropped.saturating_add(1);
-    }
-    state.events.push_back(event);
+fn merge_transient_delta(data: &mut InteractionData, transients: InteractionTransientTotals) {
+    data.batch.motion.dx += finite_f32(transients.dx);
+    data.batch.motion.dy += finite_f32(transients.dy);
+    data.batch.motion.distance += finite_f32(transients.distance);
+    data.batch.window_secs = data
+        .batch
+        .window_secs
+        .max(finite_f32(transients.window_secs));
+    data.batch.dropped_events = data
+        .batch
+        .dropped_events
+        .saturating_add(u32::try_from(transients.dropped_events).unwrap_or(u32::MAX))
+        .saturating_add(u32::try_from(transients.invalid_events).unwrap_or(u32::MAX));
 }
 
-fn try_press(
-    held: &mut BTreeMap<String, BTreeSet<String>>,
+fn accumulate_transient_totals(
+    totals: &mut InteractionTransientTotals,
+    delta: InteractionTransientTotals,
+) {
+    totals.dx += delta.dx;
+    totals.dy += delta.dy;
+    totals.distance += delta.distance;
+    totals.window_secs += delta.window_secs;
+    totals.dropped_events = totals.dropped_events.saturating_add(delta.dropped_events);
+    totals.invalid_events = totals.invalid_events.saturating_add(delta.invalid_events);
+}
+
+fn finite_f32(value: f64) -> f32 {
+    value.clamp(f64::from(f32::MIN), f64::from(f32::MAX)) as f32
+}
+
+fn publish_registry(inner: &BrowserInputRegistryInner, writer: &mut BrowserInputRegistryWriter) {
+    writer.generation = writer
+        .generation
+        .checked_add(1)
+        .expect("browser registry generation exhausted");
+    let children: Arc<[BrowserInputChildSlot]> = writer.children.values().cloned().collect();
+    let mut publication_ids = children
+        .iter()
+        .map(BrowserInputChildSlot::publication_id)
+        .collect::<Vec<_>>();
+    publication_ids.sort_unstable();
+    inner.latest.store(Arc::new(BrowserInputRegistrySnapshot {
+        generation: writer.generation,
+        children,
+        publication_ids: publication_ids.into(),
+    }));
+}
+
+#[expect(clippy::too_many_arguments)]
+fn fold_child_edge(
+    state: &mut BrowserChildState,
     source_id: &str,
-    name: &str,
-    limit: usize,
-) -> bool {
-    let entries = held.entry(source_id.to_owned()).or_default();
-    entries.contains(name) || (entries.len() < limit && entries.insert(name.to_owned()))
-}
-
-fn cap_recent(recent: &mut VecDeque<String>, limit: usize) {
-    while recent.len() > limit {
-        recent.pop_front();
+    edge: BrowserInputEdge,
+    at_ms: u64,
+    events: &mut Vec<TimedInputEvent>,
+    recent_keys: &mut Vec<String>,
+    motion: &mut MotionAggregate,
+    dropped: &mut u32,
+) {
+    match edge {
+        BrowserInputEdge::Key {
+            key,
+            state: edge_state,
+        } => {
+            match edge_state {
+                InputButtonState::Pressed | InputButtonState::Repeated => {
+                    if !try_press(&mut state.pressed_keys, &key, MAX_HELD_KEYS_PER_SOURCE) {
+                        *dropped = dropped.saturating_add(1);
+                        return;
+                    }
+                    if edge_state == InputButtonState::Pressed {
+                        recent_keys.push(key.clone());
+                    }
+                }
+                InputButtonState::Released => {
+                    state.pressed_keys.remove(&key);
+                }
+            }
+            events.push(timed_event(
+                InputEvent::Key {
+                    source_id: source_id.to_owned(),
+                    key,
+                    state: edge_state,
+                },
+                at_ms,
+            ));
+        }
+        BrowserInputEdge::Button {
+            button,
+            state: edge_state,
+        } => {
+            match edge_state {
+                InputButtonState::Pressed => {
+                    if !try_press(
+                        &mut state.held_buttons,
+                        &button,
+                        MAX_HELD_BUTTONS_PER_SOURCE,
+                    ) {
+                        *dropped = dropped.saturating_add(1);
+                        return;
+                    }
+                }
+                InputButtonState::Released => {
+                    state.held_buttons.remove(&button);
+                }
+                InputButtonState::Repeated => {}
+            }
+            events.push(timed_event(
+                InputEvent::MouseButton {
+                    source_id: source_id.to_owned(),
+                    button,
+                    state: edge_state,
+                },
+                at_ms,
+            ));
+        }
+        BrowserInputEdge::Move { norm_x, norm_y } => {
+            let position = (sanitize_unit(norm_x), sanitize_unit(norm_y));
+            if let Some(previous) = state.cursor {
+                let dx = position.0 - previous.0;
+                let dy = position.1 - previous.1;
+                motion.dx += dx;
+                motion.dy += dy;
+                motion.distance += dx.hypot(dy);
+            }
+            state.cursor = Some(position);
+        }
+        BrowserInputEdge::Wheel { delta_hi_res } => events.push(timed_event(
+            InputEvent::MouseWheel {
+                source_id: source_id.to_owned(),
+                delta_hi_res,
+            },
+            at_ms,
+        )),
     }
 }
 
-fn drain_events(events: &mut VecDeque<TimedInputEvent>) -> Vec<TimedInputEvent> {
-    events.drain(..).collect()
+fn build_child_snapshot(
+    state: &BrowserChildState,
+    recent_keys: Vec<String>,
+    motion: MotionAggregate,
+    dropped: u32,
+) -> InteractionData {
+    let mut data = InteractionData::default();
+    data.keyboard.pressed_keys = state.pressed_keys.iter().cloned().collect();
+    data.keyboard.recent_keys = recent_keys;
+    data.mouse.buttons = state.held_buttons.iter().cloned().collect();
+    data.mouse.down = !data.mouse.buttons.is_empty();
+    if let Some((norm_x, norm_y)) = state.cursor {
+        data.mouse.mode = PointerMode::Absolute;
+        data.mouse.norm_x = norm_x;
+        data.mouse.norm_y = norm_y;
+        data.mouse.injected = true;
+    }
+    data.batch.motion = motion;
+    data.batch.dropped_events = dropped;
+    data.generation = state.generation;
+    data
+}
+
+fn synthesize_releases(
+    state: &BrowserChildState,
+    source_id: &str,
+    events: &mut Vec<TimedInputEvent>,
+) {
+    let at_ms = input_mono_ms();
+    events.extend(state.pressed_keys.iter().cloned().map(|key| {
+        timed_event(
+            InputEvent::Key {
+                source_id: source_id.to_owned(),
+                key,
+                state: InputButtonState::Released,
+            },
+            at_ms,
+        )
+    }));
+    events.extend(state.held_buttons.iter().cloned().map(|button| {
+        timed_event(
+            InputEvent::MouseButton {
+                source_id: source_id.to_owned(),
+                button,
+                state: InputButtonState::Released,
+            },
+            at_ms,
+        )
+    }));
+}
+
+fn timed_event(event: InputEvent, at_ms: u64) -> TimedInputEvent {
+    TimedInputEvent {
+        event,
+        at_ms,
+        seq: 0,
+        physical_code: None,
+        repeat_count: 1,
+    }
+}
+
+fn try_press(held: &mut BTreeSet<String>, name: &str, limit: usize) -> bool {
+    held.contains(name) || (held.len() < limit && held.insert(name.to_owned()))
 }
 
 fn sanitize_unit(value: f32) -> f32 {
@@ -500,6 +1335,13 @@ fn sanitize_unit(value: f32) -> f32 {
         value.clamp(0.0, 1.0)
     } else {
         0.0
+    }
+}
+
+fn lock_or_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
     }
 }
 
@@ -656,29 +1498,20 @@ mod tests {
     }
 
     #[test]
-    fn event_ring_enforces_a_lowered_or_zero_limit() {
-        let mut state = SharedState::default();
-        let event = TimedInputEvent {
-            event: InputEvent::MouseWheel {
-                source_id: "browser-1".to_owned(),
-                delta_hi_res: 120,
-            },
-            at_ms: 1,
-            seq: 0,
-            physical_code: None,
-            repeat_count: 1,
+    fn event_ring_reports_a_zero_limit_without_publishing() {
+        let mut source = BrowserInputSource::new();
+        source.event_limit = 0;
+        source.start().expect("start");
+        source
+            .handle()
+            .inject("browser-1", [BrowserInputEdge::Wheel { delta_hi_res: 120 }]);
+
+        let (data, events) = source.sample_and_drain_with_delta_secs(0.0);
+        let InputData::Interaction(data) = data.expect("sample") else {
+            panic!("expected interaction data");
         };
-        for _ in 0..4 {
-            push_event(&mut state, event.clone(), 4);
-        }
-
-        push_event(&mut state, event.clone(), 2);
-        assert_eq!(state.events.len(), 2);
-        assert_eq!(state.dropped, 3);
-
-        push_event(&mut state, event, 0);
-        assert!(state.events.is_empty());
-        assert_eq!(state.dropped, 6);
+        assert!(events.is_empty());
+        assert_eq!(data.batch.dropped_events, 1);
     }
 
     #[test]
@@ -763,11 +1596,7 @@ mod tests {
                 state: InputButtonState::Pressed,
             }],
         );
-        {
-            let state = source.shared.lock().expect("browser state lock");
-            assert!(state.events.is_empty());
-            assert!(state.pressed_keys.is_empty());
-        }
+        assert!(handle.registry().snapshot().children().is_empty());
         assert!(source.drain_events().is_empty());
         source.start().expect("restart");
         let data = drain_snapshot(&mut source);

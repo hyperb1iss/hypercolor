@@ -3,9 +3,10 @@
 use hypercolor_types::config::{
     AudioConfig, CaptureConfig, DaemonConfig, DbusConfig, DiscoveryConfig, DisplayConfig,
     EffectEngineConfig, EffectErrorFallbackPolicy, FeatureFlags, GoveeConfig, HypercolorConfig,
-    InputConfig, LogLevel, McpConfig, MediaConfig, NetworkAccessMode, NetworkClientScope,
-    NetworkConfig, RenderAccelerationMode, RenderingConfig, ServoGpuImportConfig,
-    ServoGpuImportMode, ShutdownBehavior, TuiConfig, WebConfig, default_driver_configs,
+    InputConfig, InteractionRoutePolicy, LogLevel, McpConfig, MediaConfig, NetworkAccessMode,
+    NetworkClientScope, NetworkConfig, RenderAccelerationMode, RenderingConfig,
+    ServoGpuImportConfig, ServoGpuImportMode, ShutdownBehavior, TuiConfig, WebConfig,
+    default_driver_configs,
 };
 use hypercolor_types::session::{OffOutputBehavior, SessionConfig};
 
@@ -563,12 +564,41 @@ fn input_config_defaults_to_disabled_with_both_kinds_on() {
     assert!(!config.enabled, "input capture must be opt-in");
     assert!(config.keyboard);
     assert!(config.mouse);
+    assert_eq!(config.daemon_route, InteractionRoutePolicy::Host);
+    assert_eq!(config.preview_route, InteractionRoutePolicy::Browser);
 
     let parsed: InputConfig = toml::from_str("").expect("empty input config parses");
     assert!(!parsed.enabled);
     assert!(parsed.keyboard);
     assert!(parsed.mouse);
+    assert_eq!(parsed.daemon_route, InteractionRoutePolicy::Host);
+    assert_eq!(parsed.preview_route, InteractionRoutePolicy::Browser);
 
     let full: HypercolorConfig = toml::from_str("schema_version = 4").expect("minimal config");
     assert!(!full.input.enabled);
+    assert_eq!(full.input.daemon_route, InteractionRoutePolicy::Host);
+    assert_eq!(full.input.preview_route, InteractionRoutePolicy::Browser);
+}
+
+#[test]
+fn interaction_route_policies_use_stable_toml_spellings() {
+    for (policy, spelling) in [
+        (InteractionRoutePolicy::Host, "host"),
+        (InteractionRoutePolicy::Browser, "browser"),
+        (InteractionRoutePolicy::Merge, "merge"),
+    ] {
+        let input: InputConfig = toml::from_str(&format!("daemon_route = \"{spelling}\""))
+            .expect("route spelling parses");
+        assert_eq!(input.daemon_route, policy);
+
+        let encoded = toml::to_string(&input).expect("route policy serializes");
+        assert!(encoded.contains(&format!("daemon_route = \"{spelling}\"")));
+    }
+}
+
+#[test]
+fn invalid_interaction_route_policy_is_rejected() {
+    let error = toml::from_str::<InputConfig>("daemon_route = \"all_browsers\"")
+        .expect_err("unknown route policy must fail");
+    assert!(error.to_string().contains("unknown variant"));
 }

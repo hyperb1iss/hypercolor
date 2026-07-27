@@ -3,6 +3,7 @@
 use std::{fs, sync::Arc};
 
 use hypercolor_core::config::ConfigManager;
+use hypercolor_core::types::config::InteractionRoutePolicy;
 
 // ─── TOML Parsing ───────────────────────────────────────────────────────────
 
@@ -23,6 +24,45 @@ fn load_minimal_toml() {
     assert_eq!(config.daemon.target_fps, 30);
     assert!(config.web.enabled);
     assert!(!config.features.wasm_plugins);
+    assert_eq!(config.input.daemon_route, InteractionRoutePolicy::Host);
+    assert_eq!(config.input.preview_route, InteractionRoutePolicy::Browser);
+}
+
+#[test]
+fn legacy_config_without_routes_migrates_to_compatibility_policy() {
+    let tmp = tempfile::NamedTempFile::new().expect("failed to create temp file");
+    fs::write(
+        tmp.path(),
+        "schema_version = 3\n\n[input]\nenabled = true\n",
+    )
+    .expect("failed to write legacy config");
+
+    let config = ConfigManager::load(tmp.path()).expect("legacy config should migrate");
+
+    assert_eq!(config.schema_version, 4);
+    assert_eq!(config.input.daemon_route, InteractionRoutePolicy::Merge);
+    assert_eq!(config.input.preview_route, InteractionRoutePolicy::Browser);
+}
+
+#[test]
+fn legacy_config_preserves_explicit_route_fields() {
+    let tmp = tempfile::NamedTempFile::new().expect("failed to create temp file");
+    fs::write(
+        tmp.path(),
+        concat!(
+            "schema_version = 3\n\n",
+            "[input]\n",
+            "daemon_route = \"host\"\n",
+            "preview_route = \"merge\"\n",
+        ),
+    )
+    .expect("failed to write legacy config");
+
+    let config = ConfigManager::load(tmp.path()).expect("legacy config should migrate");
+
+    assert_eq!(config.schema_version, 4);
+    assert_eq!(config.input.daemon_route, InteractionRoutePolicy::Host);
+    assert_eq!(config.input.preview_route, InteractionRoutePolicy::Merge);
 }
 
 #[test]
