@@ -1,6 +1,6 @@
 //! Tests for the configuration manager and path resolution.
 
-use std::fs;
+use std::{fs, sync::Arc};
 
 use hypercolor_core::config::ConfigManager;
 
@@ -162,6 +162,21 @@ fn update_canonicalizes_legacy_audio_device_ids() {
     manager.update(config);
 
     assert_eq!(manager.get().audio.device, "default");
+}
+
+#[test]
+fn config_snapshot_identity_fences_stale_preparation() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let path = dir.path().join("hypercolor.toml");
+    let manager = ConfigManager::new(path).expect("ConfigManager should use defaults");
+    let first = Arc::clone(&manager.get());
+
+    assert!(manager.is_current(&first));
+    manager.modify(|config| config.audio.enabled = !config.audio.enabled);
+
+    assert!(!manager.is_current(&first));
+    let current = Arc::clone(&manager.get());
+    assert!(manager.is_current(&current));
 }
 
 #[test]

@@ -59,11 +59,16 @@ impl RingBuffer {
     /// Push a slice of samples into the ring buffer.
     pub fn push_slice(&mut self, samples: &[f32]) {
         for &s in samples {
-            self.data[self.write_pos] = s;
-            self.write_pos = (self.write_pos + 1) % self.data.len();
-            if self.len < self.data.len() {
-                self.len += 1;
-            }
+            self.push(s);
+        }
+    }
+
+    /// Push one sample without constructing a temporary slice.
+    pub(crate) fn push(&mut self, sample: f32) {
+        self.data[self.write_pos] = sample;
+        self.write_pos = (self.write_pos + 1) % self.data.len();
+        if self.len < self.data.len() {
+            self.len += 1;
         }
     }
 

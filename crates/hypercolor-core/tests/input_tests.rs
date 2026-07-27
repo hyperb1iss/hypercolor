@@ -12,9 +12,9 @@ use hypercolor_core::input::screen::WindowsScreenCaptureInput;
 #[cfg(target_os = "linux")]
 use hypercolor_core::input::screen::{CaptureConfig, WaylandScreenCaptureInput};
 use hypercolor_core::input::{
-    BrowserInputSource, INPUT_EVENT_RING_CAPACITY, InputData, InputManager, InputSource,
-    MediaSource, NetSource, ScreenData, SourceFreshness, SourceIssue, SourceKind,
-    SourceResourceScanHealth, SourceSessionSlot, SourceSessionWriter, SourceState,
+    AudioReconfigurationConflict, BrowserInputSource, INPUT_EVENT_RING_CAPACITY, InputData,
+    InputManager, InputSource, MediaSource, NetSource, ScreenData, SourceFreshness, SourceIssue,
+    SourceKind, SourceResourceScanHealth, SourceSessionSlot, SourceSessionWriter, SourceState,
     SourceStatusError, SourceStatusHandle, SourceStatusReporter, SourceStatusWriter,
     SourceTimestampField, TerminalFailureLatch, classify_source_resource_scan,
 };
@@ -1630,6 +1630,178 @@ fn manager_reconfigures_existing_audio_source_live() {
         InputData::Audio(audio) => assert!((audio.rms_level - 0.5).abs() < f32::EPSILON),
         _ => panic!("expected audio data"),
     }
+}
+
+#[test]
+fn prepared_audio_reconfiguration_commits_after_native_work_is_complete() {
+    let config = AudioPipelineConfig {
+        source: AudioSourceType::None,
+        ..AudioPipelineConfig::default()
+    };
+    let mut manager = InputManager::new();
+    manager.add_source(Box::new(AudioInput::new(&config).with_name("audio-before")));
+    manager.start_all().expect("audio source should start");
+
+    let plan = manager
+        .plan_audio_runtime_config(false, &config, "audio-after", false)
+        .expect("production audio source supports preparation");
+    let mut prepared = plan.prepare().expect("disabled audio preparation is local");
+    manager
+        .commit_audio_runtime_config(&mut prepared)
+        .expect("unchanged graph should accept prepared audio")
+        .retire();
+
+    assert_eq!(manager.source_names(), vec!["audio-after"]);
+}
+
+#[test]
+fn prepared_audio_enable_while_demanded_registers_a_live_source() {
+    let config = AudioPipelineConfig {
+        source: AudioSourceType::Microphone,
+        ..AudioPipelineConfig::default()
+    };
+    let mut manager = InputManager::new();
+    let mut prepared = manager
+        .plan_audio_runtime_config(true, &config, "audio-active", true)
+        .expect("absent audio source should support preparation")
+        .prepare_with_synthetic_capture_for_testing()
+        .expect("synthetic capture should stage without hardware");
+
+    manager
+        .commit_audio_runtime_config(&mut prepared)
+        .expect("active prepared audio source should commit")
+        .retire();
+
+    assert_eq!(manager.source_names(), vec!["audio-active"]);
+    let statuses = manager.source_status_registry().snapshot().statuses();
+    assert_eq!(statuses.len(), 1);
+    assert!(statuses[0].configured);
+    assert!(statuses[0].demanded);
+    assert_eq!(statuses[0].state, SourceState::Starting);
+    assert_eq!(
+        statuses[0].source_graph_generation,
+        manager.source_graph_generation()
+    );
+    manager.stop_all();
+}
+
+#[test]
+fn prepared_audio_reconfiguration_rejects_a_changed_input_graph() {
+    let config = AudioPipelineConfig {
+        source: AudioSourceType::None,
+        ..AudioPipelineConfig::default()
+    };
+    let mut manager = InputManager::new();
+    manager.add_source(Box::new(AudioInput::new(&config).with_name("audio-before")));
+    manager.start_all().expect("audio source should start");
+    let mut prepared = manager
+        .plan_audio_runtime_config(false, &config, "audio-after", false)
+        .expect("production audio source supports preparation")
+        .prepare()
+        .expect("disabled audio preparation is local");
+
+    manager.add_source(Box::new(MockScreenSource::new(1)));
+    let error = manager
+        .commit_audio_runtime_config(&mut prepared)
+        .expect_err("graph changes must fence a stale prepared runtime");
+
+    assert!(matches!(
+        error.downcast_ref::<AudioReconfigurationConflict>(),
+        Some(AudioReconfigurationConflict::GraphChanged)
+    ));
+    assert!(error.to_string().contains("input graph changed"));
+    assert_eq!(manager.source_names()[0], "audio-before");
+}
+
+#[test]
+fn prepared_audio_reconfiguration_rejects_changed_capture_demand() {
+    let config = AudioPipelineConfig {
+        source: AudioSourceType::None,
+        ..AudioPipelineConfig::default()
+    };
+    let mut manager = InputManager::new();
+    manager
+        .set_audio_capture_active(false)
+        .expect("initial demand should be cached");
+    let mut prepared = manager
+        .plan_audio_runtime_config(false, &config, "audio-disabled", false)
+        .expect("absent audio source supports disabled preparation")
+        .prepare()
+        .expect("disabled audio preparation is local");
+
+    manager
+        .set_audio_capture_active(true)
+        .expect("concurrent demand should update the graph generation");
+    let error = manager
+        .commit_audio_runtime_config(&mut prepared)
+        .expect_err("capture demand changes must fence a stale prepared runtime");
+
+    assert!(error.to_string().contains("input graph changed"));
+    assert_eq!(manager.source_count(), 0);
+}
+
+#[test]
+fn prepared_audio_reconfiguration_rejects_terminal_failure_before_commit() {
+    let config = AudioPipelineConfig {
+        source: AudioSourceType::None,
+        ..AudioPipelineConfig::default()
+    };
+    let mut manager = InputManager::new();
+    manager.add_source(Box::new(AudioInput::new(&config).with_name("audio-before")));
+    manager.start_all().expect("audio source should start");
+    let mut prepared = manager
+        .plan_audio_runtime_config(false, &config, "audio-after", false)
+        .expect("production audio source supports preparation")
+        .prepare()
+        .expect("disabled audio preparation is local");
+    prepared.fail_before_commit_for_testing();
+
+    let error = manager
+        .commit_audio_runtime_config(&mut prepared)
+        .expect_err("a terminal staged failure must preserve the committed source");
+
+    assert!(error.to_string().contains("failed before commit"));
+    assert_eq!(manager.source_names(), vec!["audio-before"]);
+}
+
+#[test]
+fn disabling_absent_audio_fences_an_older_enable_plan() {
+    let disabled = AudioPipelineConfig {
+        source: AudioSourceType::None,
+        ..AudioPipelineConfig::default()
+    };
+    let enabled = AudioPipelineConfig {
+        source: AudioSourceType::Microphone,
+        ..AudioPipelineConfig::default()
+    };
+    let mut manager = InputManager::new();
+    let initial_generation = manager.source_graph_generation();
+    let older_enable = manager
+        .plan_audio_runtime_config(true, &enabled, "audio-enabled", false)
+        .expect("absent audio source supports prepared enable")
+        .prepare()
+        .expect("idle enable does not open native capture");
+    let mut newer_disable = manager
+        .plan_audio_runtime_config(false, &disabled, "audio-disabled", false)
+        .expect("absent audio source supports prepared disable")
+        .prepare()
+        .expect("disable preparation is local");
+
+    manager
+        .commit_audio_runtime_config(&mut newer_disable)
+        .expect("newer disable should commit")
+        .retire();
+    assert!(manager.source_graph_generation() > initial_generation);
+
+    let mut older_enable = older_enable;
+    let error = manager
+        .commit_audio_runtime_config(&mut older_enable)
+        .expect_err("newer disable must fence an older enable plan");
+    assert!(matches!(
+        error.downcast_ref::<AudioReconfigurationConflict>(),
+        Some(AudioReconfigurationConflict::GraphChanged)
+    ));
+    assert_eq!(manager.source_count(), 0);
 }
 
 #[test]

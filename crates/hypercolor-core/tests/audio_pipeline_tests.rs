@@ -15,6 +15,7 @@ use hypercolor_core::input::audio::features::{
     compute_rms, spectral_centroid,
 };
 use hypercolor_core::input::audio::fft::{FftPipeline, RingBuffer, precompute_hann, spectral_flux};
+use hypercolor_core::input::audio::realtime::{AudioFrameRing, PushStats, push_frames};
 use hypercolor_core::input::audio::{
     AudioCaptureBackend, AudioInput, classify_audio_capture_backend,
 };
@@ -743,15 +744,23 @@ fn audio_status_backend_tracks_committed_configuration() {
 
 #[test]
 fn failed_audio_reconfiguration_preserves_committed_backend() {
-    let initial = AudioPipelineConfig {
-        source: AudioSourceType::Microphone,
-        ..AudioPipelineConfig::default()
-    };
+    let initial = manual_input_config();
     let mut input = AudioInput::new(&initial);
+    input.start().expect("manual input should start");
+    input
+        .set_capture_active(true)
+        .expect("manual input should become live");
+    let samples = sine_wave(440.0, 48_000, 2048);
+    input.push_samples(&samples);
+    let InputData::Audio(before_failure) = input.sample().expect("initial source should sample")
+    else {
+        panic!("expected live audio before reconfiguration");
+    };
+    assert!(before_failure.rms_level > 0.0);
     let handle = input
         .source_status_handle()
         .expect("audio status should exist");
-    assert_eq!(handle.snapshot().backend.as_ref(), "cpal");
+    assert_eq!(handle.snapshot().backend.as_ref(), "disabled");
 
     let replacement = AudioPipelineConfig {
         source: AudioSourceType::Named(
@@ -764,8 +773,53 @@ fn failed_audio_reconfiguration_preserves_committed_backend() {
         .expect_err("a nonexistent device should reject the staged reconfiguration");
 
     assert!(error.to_string().contains("not found"));
-    assert_eq!(handle.snapshot().backend.as_ref(), "cpal");
+    assert_eq!(handle.snapshot().backend.as_ref(), "disabled");
     assert_eq!(input.name(), "AudioInput");
+    input.push_samples(&samples);
+    let InputData::Audio(after_failure) = input.sample().expect("preserved source should sample")
+    else {
+        panic!("expected live audio after rejected reconfiguration");
+    };
+    assert!(after_failure.rms_level > 0.0);
+
+    input
+        .reconfigure_live(&manual_input_config(), "retry", false)
+        .expect("a later valid reconfiguration should remain actionable");
+    assert_eq!(handle.snapshot().backend.as_ref(), "disabled");
+    assert_eq!(input.name(), "retry");
+}
+
+#[test]
+fn audio_callback_ring_is_bounded_and_reports_shedding() {
+    let ring = AudioFrameRing::with_channels(3, 2);
+    assert_eq!(
+        push_frames(&[0.1, 0.3, 0.2, 0.4, 0.3, 0.5, 0.4, 0.6], &ring),
+        PushStats {
+            accepted: 4,
+            dropped: 1,
+        }
+    );
+    assert_eq!(ring.accepted_total(), 4);
+    assert_eq!(ring.dropped_total(), 1);
+    assert_eq!(ring.pop_frame(), Some(0.3));
+    assert_eq!(ring.pop_frame(), Some(0.4));
+    assert_eq!(ring.pop_frame(), Some(0.5));
+    assert_eq!(ring.pop_frame(), None);
+}
+
+#[test]
+fn audio_callback_ring_sanitizes_non_finite_device_samples() {
+    let ring = AudioFrameRing::new(4);
+    assert_eq!(
+        push_frames(&[f32::NAN, f32::INFINITY, f32::NEG_INFINITY], &ring),
+        PushStats {
+            accepted: 3,
+            dropped: 0,
+        }
+    );
+    assert_eq!(ring.pop_frame(), Some(0.0));
+    assert_eq!(ring.pop_frame(), Some(0.0));
+    assert_eq!(ring.pop_frame(), Some(0.0));
 }
 
 #[test]
@@ -877,10 +931,14 @@ fn audio_status_uses_callback_acquisition_time_not_consumer_read_time() {
     input.push_samples(&samples);
     let after_push = Instant::now();
     std::thread::sleep(Duration::from_millis(300));
-    assert!(matches!(
-        input.sample().expect("delayed audio sample succeeds"),
-        InputData::Audio(_)
-    ));
+    let InputData::Audio(expired) = input.sample().expect("delayed audio sample succeeds") else {
+        panic!("expired analysis should degrade to audio silence");
+    };
+    assert_eq!(
+        expired,
+        AudioData::silence(),
+        "expired analysis must fail closed instead of replaying stale audio"
+    );
 
     let status = handle.snapshot();
     let acquired_at = status
@@ -981,6 +1039,50 @@ fn audio_input_missing_device_degrades_to_silence() {
         matches!(data, InputData::Audio(audio) if audio == AudioData::silence()),
         "missing device should degrade to silence"
     );
+}
+
+#[test]
+fn missing_audio_device_reports_recoverable_device_loss() {
+    let config = AudioPipelineConfig {
+        source: AudioSourceType::Named("__hypercolor_missing_reconnect_device__".to_owned()),
+        ..AudioPipelineConfig::default()
+    };
+    let mut input = AudioInput::new(&config);
+    input.set_source_graph_generation(1);
+    input
+        .set_capture_active(true)
+        .expect("capture demand should arm before startup");
+    let status = input
+        .source_status_handle()
+        .expect("audio status should exist");
+
+    input
+        .start()
+        .expect("missing hardware should enter recoverable degraded mode");
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let snapshot = loop {
+        let _ = input.sample().expect("recovery polling should succeed");
+        let snapshot = status.snapshot();
+        if snapshot.state == hypercolor_core::input::SourceState::Degraded {
+            break snapshot;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "background device discovery should report its terminal failure"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    assert_eq!(
+        snapshot.state,
+        hypercolor_core::input::SourceState::Degraded
+    );
+    assert_eq!(
+        snapshot.issue.as_ref().map(|issue| issue.code.as_ref()),
+        Some("audio_device_lost")
+    );
+    assert!(snapshot.issue.as_ref().is_some_and(|issue| issue.retryable));
+    input.stop();
 }
 
 #[test]

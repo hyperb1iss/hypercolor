@@ -83,6 +83,17 @@ impl ConfigManager {
         self.config.load()
     }
 
+    /// Whether `snapshot` is still the manager's current immutable value.
+    ///
+    /// This gives long-running preparation work a cheap compare step before it
+    /// commits derived runtime state. Every update installs a distinct `Arc`,
+    /// so pointer identity is the snapshot generation.
+    #[must_use]
+    pub fn is_current(&self, snapshot: &Arc<HypercolorConfig>) -> bool {
+        let current = self.config.load();
+        Arc::ptr_eq(snapshot, &current)
+    }
+
     /// Replace the live configuration snapshot without re-reading from disk.
     pub fn update(&self, config: HypercolorConfig) {
         let _guard = self

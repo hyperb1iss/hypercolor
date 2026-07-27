@@ -5,6 +5,7 @@
 //! the render loop consumes per frame.
 
 use super::status::{SourceStatusError, SourceStatusHandle, SourceStatusReporter};
+use crate::input::audio::{AudioRuntimeRetirement, PreparedAudioReconfiguration};
 use crate::types::audio::{AudioData, AudioPipelineConfig};
 use crate::types::canvas::PublishedSurface;
 use crate::types::event::{TimedInputEvent, ZoneColors};
@@ -581,6 +582,25 @@ pub trait InputSource: Send {
         _capture_active: bool,
     ) -> anyhow::Result<()> {
         Ok(())
+    }
+
+    /// Whether the source can commit a native runtime prepared without holding
+    /// the input manager lock.
+    fn supports_prepared_audio_reconfiguration(&self) -> bool {
+        false
+    }
+
+    /// Commit a previously staged native audio runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the source does not support transactional audio
+    /// reconfiguration or the staged state cannot be committed.
+    fn commit_prepared_audio_reconfiguration(
+        &mut self,
+        _prepared: &mut PreparedAudioReconfiguration,
+    ) -> anyhow::Result<AudioRuntimeRetirement> {
+        anyhow::bail!("input source does not support prepared audio reconfiguration")
     }
 
     /// Toggle whether an audio source should actively capture from hardware.

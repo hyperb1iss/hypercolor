@@ -21,28 +21,27 @@ pub mod features;
 pub mod fft;
 #[cfg(target_os = "linux")]
 pub mod linux;
+pub mod realtime;
 
-#[cfg(target_os = "linux")]
-use std::sync::atomic::{AtomicBool, Ordering};
-#[cfg(target_os = "linux")]
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
-#[cfg(target_os = "linux")]
 use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, anyhow};
 use arc_swap::ArcSwapOption;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{FromSample, Sample, SampleFormat, SizedSample, Stream, SupportedStreamConfig};
+use cpal::{FromSample, Sample, SampleFormat, SizedSample, Stream};
 #[cfg(target_os = "linux")]
 use libpulse_binding as pulse;
 
+use crate::input::status::SourceStatusPolicy;
 use crate::input::traits::{InputData, InputSource};
-#[cfg(target_os = "linux")]
 use crate::input::worker_retention::{retain_input_worker, spawn_input_worker};
 use crate::input::{SourceIssue, SourceKind, SourceStatusHandle, SourceStatusReporter};
 use crate::types::audio::{AudioData, AudioPipelineConfig, AudioSourceType};
+use crate::types::event::TimedInputEvent;
 
 use beat::{BeatDetector, BeatFrame};
 use features::{
@@ -50,16 +49,25 @@ use features::{
     compute_rms, spectral_centroid,
 };
 use fft::{FftPipeline, RingBuffer};
+use realtime::{AudioFrameRing, push_interleaved_frames};
 
 #[cfg(target_os = "linux")]
 use self::linux as linux_audio;
 use crate::types::audio::{CHROMA_BINS, MEL_BANDS, SPECTRUM_BINS};
 
 const DEFAULT_AUDIO_FRAME_DT: f32 = 1.0 / 60.0;
+const AUDIO_RING_DURATION_MS: usize = 500;
+const AUDIO_ANALYSIS_IDLE: Duration = Duration::from_millis(2);
+const AUDIO_SNAPSHOT_FRESHNESS: Duration = Duration::from_millis(250);
+const AUDIO_OVERFLOW_REPORT_INTERVAL: Duration = Duration::from_secs(1);
 #[cfg(target_os = "linux")]
 const PULSE_CAPTURE_TARGET_LATENCY_MS: u64 = 20;
 #[cfg(target_os = "linux")]
 const PULSE_CAPTURE_MAX_BUFFER_FRAGMENTS: u32 = 4;
+#[cfg(target_os = "linux")]
+const PULSE_CAPTURE_CHANNELS: usize = 2;
+#[cfg(target_os = "linux")]
+const PULSE_CAPTURE_RATE_HZ: u32 = 48_000;
 
 // ── AudioAnalyzer ────────────────────────────────────────────────────────
 
@@ -132,9 +140,9 @@ impl AudioAnalyzer {
         if (gain - 1.0).abs() < f32::EPSILON {
             self.ring.push_slice(samples);
         } else {
-            // Apply gain. We collect to a temp vec to avoid mutating the input.
-            let gained: Vec<f32> = samples.iter().map(|&s| s * gain).collect();
-            self.ring.push_slice(&gained);
+            for &sample in samples {
+                self.ring.push(sample * gain);
+            }
         }
     }
 
@@ -260,8 +268,296 @@ impl AudioAnalyzer {
 // ── AudioInput (InputSource implementation) ──────────────────────────────
 
 struct CapturedAudioSnapshot {
-    data: AudioData,
+    data: Arc<InputData>,
     captured_at: Instant,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+enum AudioFailureKind {
+    None = 0,
+    DeviceLost = 1,
+    PermissionDenied = 2,
+    BackendUnavailable = 3,
+    AnalysisWorkerExited = 4,
+}
+
+impl AudioFailureKind {
+    fn from_code(code: u8) -> Self {
+        match code {
+            1 => Self::DeviceLost,
+            2 => Self::PermissionDenied,
+            3 => Self::BackendUnavailable,
+            4 => Self::AnalysisWorkerExited,
+            _ => Self::None,
+        }
+    }
+
+    const fn issue_code(self) -> &'static str {
+        match self {
+            Self::None => "audio_capture_unavailable",
+            Self::DeviceLost => "audio_device_lost",
+            Self::PermissionDenied => "audio_permission_denied",
+            Self::BackendUnavailable => "audio_backend_unavailable",
+            Self::AnalysisWorkerExited => "audio_analysis_worker_exited",
+        }
+    }
+
+    const fn message(self) -> &'static str {
+        match self {
+            Self::None => "audio capture is unavailable",
+            Self::DeviceLost => "audio device was disconnected or invalidated",
+            Self::PermissionDenied => "audio capture permission was denied",
+            Self::BackendUnavailable => "audio capture backend stopped unexpectedly",
+            Self::AnalysisWorkerExited => "audio analysis worker stopped unexpectedly",
+        }
+    }
+}
+
+fn classify_audio_start_failure(error: &anyhow::Error) -> AudioFailureKind {
+    let message = format!("{error:#}").to_ascii_lowercase();
+    if ["permission", "access denied", "not authorized"]
+        .iter()
+        .any(|needle| message.contains(needle))
+    {
+        AudioFailureKind::PermissionDenied
+    } else if [
+        "not found",
+        "no input device",
+        "no microphone",
+        "no longer available",
+    ]
+    .iter()
+    .any(|needle| message.contains(needle))
+    {
+        AudioFailureKind::DeviceLost
+    } else {
+        AudioFailureKind::BackendUnavailable
+    }
+}
+
+struct AnalysisWorker {
+    ring: Arc<AudioFrameRing>,
+    stop: Arc<AtomicBool>,
+    worker: Option<thread::JoinHandle<()>>,
+}
+
+impl AnalysisWorker {
+    fn spawn(
+        config: &AudioPipelineConfig,
+        sample_rate_hz: u32,
+        channels: usize,
+        latest_snapshot: Arc<ArcSwapOption<CapturedAudioSnapshot>>,
+        terminal_failure: Arc<AtomicU8>,
+    ) -> anyhow::Result<Self> {
+        let samples_per_window = usize::try_from(sample_rate_hz)
+            .unwrap_or(48_000)
+            .saturating_mul(AUDIO_RING_DURATION_MS)
+            / 1_000;
+        let ring = Arc::new(AudioFrameRing::with_channels(
+            samples_per_window.max(config.fft_size.saturating_mul(4)),
+            channels,
+        ));
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_ring = Arc::clone(&ring);
+        let worker_stop = Arc::clone(&stop);
+        let analyzer = AudioAnalyzer::with_sample_rate(config, sample_rate_hz);
+        let samples = Vec::with_capacity(config.fft_size.saturating_mul(4).max(4_096));
+        let worker = spawn_input_worker(
+            thread::Builder::new().name("hypercolor-audio-analysis".to_owned()),
+            move || {
+                run_analysis_worker(
+                    analyzer,
+                    samples,
+                    &worker_ring,
+                    &worker_stop,
+                    &latest_snapshot,
+                    &terminal_failure,
+                );
+            },
+        )
+        .context("failed to spawn audio analysis worker")?;
+        Ok(Self {
+            ring,
+            stop,
+            worker: Some(worker),
+        })
+    }
+
+    fn ring(&self) -> Arc<AudioFrameRing> {
+        Arc::clone(&self.ring)
+    }
+
+    fn is_finished(&self) -> bool {
+        self.worker
+            .as_ref()
+            .is_some_and(thread::JoinHandle::is_finished)
+    }
+}
+
+impl Drop for AnalysisWorker {
+    fn drop(&mut self) {
+        self.ring.close();
+        self.stop.store(true, Ordering::Release);
+        if let Some(worker) = self.worker.take() {
+            worker.thread().unpark();
+            if let Err(panic) = worker.join() {
+                tracing::warn!(?panic, "Audio analysis worker panicked during shutdown");
+            }
+        }
+    }
+}
+
+struct RecoveryWorker {
+    result_rx: mpsc::Receiver<CaptureRuntime>,
+    failure: Arc<AtomicU8>,
+    stop: Arc<AtomicBool>,
+    worker: Option<thread::JoinHandle<()>>,
+}
+
+enum RecoveryPoll {
+    Pending,
+    Ready(CaptureRuntime),
+    Terminated,
+}
+
+impl RecoveryWorker {
+    fn spawn(
+        config: &AudioPipelineConfig,
+        initial_failure: AudioFailureKind,
+    ) -> anyhow::Result<Self> {
+        // A rendezvous prevents an unclaimed native runtime from being dropped
+        // on the render thread when demand disappears during startup.
+        let (result_tx, result_rx) = mpsc::sync_channel(0);
+        let failure = Arc::new(AtomicU8::new(initial_failure as u8));
+        let worker_failure = Arc::clone(&failure);
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = Arc::clone(&stop);
+        let worker_config = config.clone();
+        let worker = spawn_input_worker(
+            thread::Builder::new().name("hypercolor-audio-recovery".to_owned()),
+            move || {
+                let mut attempt = 0_u32;
+                let mut failure = initial_failure;
+                loop {
+                    if attempt > 0 {
+                        thread::park_timeout(audio_reconnect_delay(failure, attempt - 1));
+                    }
+                    if worker_stop.load(Ordering::Acquire) {
+                        return;
+                    }
+                    let host = cpal::default_host();
+                    match build_capture_stream(&host, &worker_config) {
+                        Ok(capture) => {
+                            let _ = result_tx.send(capture);
+                            return;
+                        }
+                        Err(error) => {
+                            failure = classify_audio_start_failure(&error);
+                            worker_failure.store(failure as u8, Ordering::Release);
+                            attempt = attempt.saturating_add(1);
+                        }
+                    }
+                }
+            },
+        )
+        .context("failed to spawn audio recovery worker")?;
+        Ok(Self {
+            result_rx,
+            failure,
+            stop,
+            worker: Some(worker),
+        })
+    }
+
+    fn poll(&mut self) -> RecoveryPoll {
+        match self.result_rx.try_recv() {
+            Ok(capture) => RecoveryPoll::Ready(capture),
+            Err(mpsc::TryRecvError::Empty) => RecoveryPoll::Pending,
+            Err(mpsc::TryRecvError::Disconnected) => RecoveryPoll::Terminated,
+        }
+    }
+
+    fn failure(&self) -> AudioFailureKind {
+        AudioFailureKind::from_code(self.failure.load(Ordering::Acquire))
+    }
+}
+
+impl Drop for RecoveryWorker {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        let Some(worker) = self.worker.take() else {
+            return;
+        };
+        worker.thread().unpark();
+        if worker.is_finished() {
+            let _ = worker.join();
+        } else {
+            retain_input_worker(worker, "audio recovery worker");
+        }
+    }
+}
+
+fn audio_reconnect_delay(failure: AudioFailureKind, attempt: u32) -> Duration {
+    let exponent = attempt.min(4);
+    let multiplier = 1_u32 << exponent;
+    match failure {
+        AudioFailureKind::DeviceLost => Duration::from_millis(250 * u64::from(multiplier)),
+        AudioFailureKind::AnalysisWorkerExited => {
+            Duration::from_millis(500 * u64::from(multiplier))
+        }
+        AudioFailureKind::BackendUnavailable | AudioFailureKind::None => {
+            Duration::from_secs(2 * u64::from(multiplier))
+        }
+        AudioFailureKind::PermissionDenied => Duration::from_secs(30),
+    }
+}
+
+fn run_analysis_worker(
+    mut analyzer: AudioAnalyzer,
+    mut samples: Vec<f32>,
+    ring: &AudioFrameRing,
+    stop: &AtomicBool,
+    latest_snapshot: &Arc<ArcSwapOption<CapturedAudioSnapshot>>,
+    terminal_failure: &AtomicU8,
+) {
+    struct ExitGuard<'a> {
+        stop: &'a AtomicBool,
+        terminal_failure: &'a AtomicU8,
+    }
+
+    impl Drop for ExitGuard<'_> {
+        fn drop(&mut self) {
+            if !self.stop.load(Ordering::Acquire) {
+                let _ = self.terminal_failure.compare_exchange(
+                    AudioFailureKind::None as u8,
+                    AudioFailureKind::AnalysisWorkerExited as u8,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                );
+            }
+        }
+    }
+
+    let _exit_guard = ExitGuard {
+        stop,
+        terminal_failure,
+    };
+    while !stop.load(Ordering::Acquire) {
+        samples.clear();
+        while samples.len() < samples.capacity() {
+            let Some(sample) = ring.pop_frame() else {
+                break;
+            };
+            samples.push(sample);
+        }
+        if samples.is_empty() {
+            thread::park_timeout(AUDIO_ANALYSIS_IDLE);
+            continue;
+        }
+        analyzer.push_samples(&samples);
+        publish_latest_snapshot(&mut analyzer, samples.len(), latest_snapshot);
+    }
 }
 
 /// Control-plane identity of the committed audio capture backend.
@@ -275,6 +571,190 @@ pub enum AudioCaptureBackend {
     PulseAudio,
     /// Audio capture is intentionally disabled.
     Disabled,
+}
+
+/// Native audio state prepared away from the render-owned input manager.
+///
+/// Construction may enumerate devices and wait for a backend. Committing the
+/// prepared value only swaps in-memory state and retires the previous runtime
+/// asynchronously.
+#[must_use = "prepared native audio state must be committed or explicitly dropped"]
+pub struct PreparedAudioReconfiguration {
+    pub(super) expected_graph_generation: u64,
+    pub(super) expected_source_present: bool,
+    pub(super) expected_source_running: bool,
+    pub(super) enabled: bool,
+    config: AudioPipelineConfig,
+    pub(super) name: String,
+    pub(super) capture_active: bool,
+    capture: Option<CaptureRuntime>,
+    analyzer: Option<Arc<Mutex<AudioAnalyzer>>>,
+    silence: Option<Arc<InputData>>,
+    latest_snapshot: Option<Arc<ArcSwapOption<CapturedAudioSnapshot>>>,
+    status: Option<SourceStatusReporter>,
+    terminal_failure: Arc<AtomicU8>,
+}
+
+/// Previous audio workers detached by a successful in-memory commit.
+///
+/// Call [`Self::retire`] only after releasing the input manager lock.
+#[must_use = "detached audio workers must be retired outside the input manager lock"]
+pub struct AudioRuntimeRetirement {
+    capture: Option<CaptureRuntime>,
+    recovery: Option<RecoveryWorker>,
+}
+
+impl std::fmt::Debug for AudioRuntimeRetirement {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AudioRuntimeRetirement")
+            .field("capture", &self.capture.is_some())
+            .field("recovery", &self.recovery.is_some())
+            .finish()
+    }
+}
+
+impl AudioRuntimeRetirement {
+    pub(super) fn empty() -> Self {
+        Self {
+            capture: None,
+            recovery: None,
+        }
+    }
+
+    fn new(capture: Option<CaptureRuntime>, recovery: Option<RecoveryWorker>) -> Self {
+        Self { capture, recovery }
+    }
+
+    /// Stop detached audio workers without blocking the caller.
+    pub fn retire(self) {
+        if self.capture.is_none() && self.recovery.is_none() {
+            return;
+        }
+        retire_audio_runtime(self);
+    }
+}
+
+pub(super) struct AudioPreparationRequest {
+    pub expected_graph_generation: u64,
+    pub expected_source_present: bool,
+    pub expected_source_running: bool,
+    pub enabled: bool,
+    pub config: AudioPipelineConfig,
+    pub name: String,
+    pub capture_active: bool,
+}
+
+impl PreparedAudioReconfiguration {
+    pub(super) fn prepare(request: AudioPreparationRequest) -> anyhow::Result<Self> {
+        Self::prepare_with_capture(request, |config, terminal_failure| {
+            build_capture_stream_with_failure(&cpal::default_host(), config, terminal_failure)
+        })
+    }
+
+    pub(super) fn prepare_with_synthetic_capture_for_testing(
+        request: AudioPreparationRequest,
+    ) -> anyhow::Result<Self> {
+        Self::prepare_with_capture(request, build_synthetic_capture_stream)
+    }
+
+    fn prepare_with_capture(
+        request: AudioPreparationRequest,
+        build_capture: impl FnOnce(
+            &AudioPipelineConfig,
+            Arc<AtomicU8>,
+        ) -> anyhow::Result<CaptureRuntime>,
+    ) -> anyhow::Result<Self> {
+        let terminal_failure = Arc::new(AtomicU8::new(AudioFailureKind::None as u8));
+        let should_start_capture = request.capture_active
+            && if request.expected_source_present {
+                request.expected_source_running
+            } else {
+                request.enabled
+            };
+        let capture = if should_start_capture {
+            Some(build_capture(
+                &request.config,
+                Arc::clone(&terminal_failure),
+            )?)
+        } else {
+            None
+        };
+        let capture_backend = classify_audio_capture_backend(
+            &request.config.source,
+            capture.as_ref().map(CaptureRuntime::backend),
+        );
+        let analyzer = Arc::new(Mutex::new(AudioAnalyzer::new(&request.config)));
+        let silence = Arc::new(InputData::Audio(AudioData::silence()));
+        let latest_snapshot = Some(capture.as_ref().map_or_else(
+            || Arc::new(ArcSwapOption::empty()),
+            |capture| Arc::clone(&capture.latest_snapshot),
+        ));
+        let status = (!request.expected_source_present).then(|| {
+            SourceStatusReporter::new(
+                "audio",
+                SourceKind::Audio,
+                capture_backend.status_id(),
+                !matches!(request.config.source, AudioSourceType::None),
+                true,
+                request.capture_active,
+            )
+        });
+        Ok(Self {
+            expected_graph_generation: request.expected_graph_generation,
+            expected_source_present: request.expected_source_present,
+            expected_source_running: request.expected_source_running,
+            enabled: request.enabled,
+            config: request.config,
+            name: request.name,
+            capture_active: request.capture_active,
+            capture,
+            analyzer: Some(analyzer),
+            silence: Some(silence),
+            latest_snapshot,
+            status,
+            terminal_failure,
+        })
+    }
+
+    pub(super) fn ensure_ready(&mut self) -> anyhow::Result<()> {
+        if let Some(failure) = self
+            .capture
+            .as_mut()
+            .and_then(CaptureRuntime::observe_failure)
+        {
+            self.terminal_failure
+                .store(failure as u8, Ordering::Release);
+        }
+        let failure = AudioFailureKind::from_code(
+            self.terminal_failure
+                .swap(AudioFailureKind::None as u8, Ordering::AcqRel),
+        );
+        if failure == AudioFailureKind::None {
+            return Ok(());
+        }
+        anyhow::bail!(
+            "prepared audio runtime failed before commit: {}",
+            failure.message()
+        )
+    }
+
+    /// Inject a terminal pre-commit failure for deterministic transaction tests.
+    #[doc(hidden)]
+    pub fn fail_before_commit_for_testing(&mut self) {
+        self.terminal_failure.store(
+            AudioFailureKind::BackendUnavailable as u8,
+            Ordering::Release,
+        );
+    }
+}
+
+impl Drop for PreparedAudioReconfiguration {
+    fn drop(&mut self) {
+        if let Some(capture) = self.capture.take() {
+            retire_capture_runtime(capture);
+        }
+    }
 }
 
 impl AudioCaptureBackend {
@@ -312,19 +792,18 @@ pub fn classify_audio_capture_backend(
 /// from a callback thread. For testing, call [`push_samples`](AudioInput::push_samples)
 /// directly with synthetic data.
 pub struct AudioInput {
-    host: cpal::Host,
     name: String,
     running: bool,
     capture_active: bool,
     config: AudioPipelineConfig,
     analyzer: Arc<Mutex<AudioAnalyzer>>,
+    silence: Arc<InputData>,
     latest_snapshot: Arc<ArcSwapOption<CapturedAudioSnapshot>>,
     last_status_snapshot: Option<Arc<CapturedAudioSnapshot>>,
-    capture: Option<CaptureHandle>,
-    parked_source: Option<AudioSourceType>,
-    parked_backend: Option<AudioCaptureBackend>,
+    capture: Option<CaptureRuntime>,
+    recovery: Option<RecoveryWorker>,
     degraded_to_silence: bool,
-    capture_backend: AudioCaptureBackend,
+    last_failure: AudioFailureKind,
     status: SourceStatusReporter,
 }
 
@@ -334,19 +813,18 @@ impl AudioInput {
     pub fn new(config: &AudioPipelineConfig) -> Self {
         let capture_backend = classify_audio_capture_backend(&config.source, None);
         Self {
-            host: cpal::default_host(),
             name: "AudioInput".to_owned(),
             running: false,
             capture_active: false,
             config: config.clone(),
             analyzer: Arc::new(Mutex::new(AudioAnalyzer::new(config))),
+            silence: Arc::new(InputData::Audio(AudioData::silence())),
             latest_snapshot: Arc::new(ArcSwapOption::empty()),
             last_status_snapshot: None,
             capture: None,
-            parked_source: None,
-            parked_backend: None,
+            recovery: None,
             degraded_to_silence: false,
-            capture_backend,
+            last_failure: AudioFailureKind::None,
             status: SourceStatusReporter::new(
                 "audio",
                 SourceKind::Audio,
@@ -367,8 +845,12 @@ impl AudioInput {
 
     /// Push raw samples into the analysis pipeline.
     ///
-    /// This is the entry point for both cpal callbacks and test harnesses.
+    /// This deterministic seam is available while no committed native capture
+    /// owns publication. A staged recovery cannot publish until it is committed.
     pub fn push_samples(&mut self, samples: &[f32]) {
+        if self.capture.is_some() {
+            return;
+        }
         if let Ok(mut analyzer) = self.analyzer.lock() {
             analyzer.push_samples(samples);
             publish_latest_snapshot(&mut analyzer, samples.len(), &self.latest_snapshot);
@@ -394,35 +876,113 @@ impl AudioInput {
         self.set_capture_active_state(active)
     }
 
-    #[allow(
-        clippy::unnecessary_wraps,
-        reason = "InputSource::sample_with_dt trait signature returns Result; callers threads errors uniformly"
-    )]
-    fn sample_with_dt(&mut self, _dt: f32) -> anyhow::Result<InputData> {
-        if !self.running {
-            return Ok(InputData::None);
+    fn schedule_recovery(&mut self, failure: AudioFailureKind) -> anyhow::Result<()> {
+        self.last_failure = failure;
+        self.degraded_to_silence = failure != AudioFailureKind::None;
+        if self.recovery.is_none() && !matches!(self.config.source, AudioSourceType::None) {
+            self.recovery = Some(RecoveryWorker::spawn(&self.config, failure)?);
         }
-        if !self.capture_active {
-            return Ok(InputData::Audio(AudioData::silence()));
-        }
+        Ok(())
+    }
 
-        if let Some(reason) = self
-            .capture
-            .as_mut()
-            .and_then(CaptureHandle::observe_worker_exit)
-        {
-            self.capture = None;
-            self.clear_latest_snapshot();
-            self.last_status_snapshot = None;
-            self.degraded_to_silence = true;
+    fn poll_recovery(&mut self) -> anyhow::Result<()> {
+        let failure = self
+            .recovery
+            .as_ref()
+            .map_or(AudioFailureKind::None, RecoveryWorker::failure);
+        if failure != AudioFailureKind::None && failure != self.last_failure {
+            self.last_failure = failure;
             if let Some(status) = self.status.session() {
-                status.failed(SourceIssue::new(
-                    "audio_capture_worker_exited",
-                    reason,
+                status.degraded(SourceIssue::new(
+                    failure.issue_code(),
+                    failure.message(),
                     true,
                 ));
             }
-            return Ok(InputData::Audio(AudioData::silence()));
+        }
+
+        let recovery_poll = self
+            .recovery
+            .as_mut()
+            .map_or(RecoveryPoll::Pending, RecoveryWorker::poll);
+        let capture = match recovery_poll {
+            RecoveryPoll::Pending => return Ok(()),
+            RecoveryPoll::Ready(capture) => capture,
+            RecoveryPoll::Terminated => {
+                self.recovery = None;
+                let failure = AudioFailureKind::AnalysisWorkerExited;
+                self.schedule_recovery(failure)?;
+                if let Some(status) = self.status.session() {
+                    status.degraded(SourceIssue::new(
+                        failure.issue_code(),
+                        failure.message(),
+                        true,
+                    ));
+                }
+                return Ok(());
+            }
+        };
+        let capture_backend =
+            classify_audio_capture_backend(&self.config.source, Some(capture.backend()));
+        if let Err(error) = self.status.set_backend(capture_backend.status_id()) {
+            retire_capture_runtime(capture);
+            return Err(error.into());
+        }
+        self.latest_snapshot = Arc::clone(&capture.latest_snapshot);
+        self.capture = Some(capture);
+        self.recovery = None;
+        self.degraded_to_silence = false;
+        self.last_failure = AudioFailureKind::None;
+        tracing::info!(
+            input = %self.name,
+            source = ?self.config.source,
+            backend = capture_backend.status_id(),
+            "Audio capture recovered without restarting the daemon"
+        );
+        Ok(())
+    }
+
+    fn sample_shared_with_dt(&mut self, _dt: f32) -> anyhow::Result<Option<Arc<InputData>>> {
+        if !self.running {
+            return Ok(None);
+        }
+        if !self.capture_active {
+            return Ok(Some(Arc::clone(&self.silence)));
+        }
+
+        if let Some(failure) = self
+            .capture
+            .as_mut()
+            .and_then(CaptureRuntime::observe_failure)
+        {
+            let failed_capture = self
+                .capture
+                .take()
+                .expect("observed audio failure has an active capture runtime");
+            retire_capture_runtime(failed_capture);
+            self.latest_snapshot = Arc::new(ArcSwapOption::empty());
+            self.last_status_snapshot = None;
+            self.schedule_recovery(failure)?;
+            if let Some(status) = self.status.session() {
+                status.degraded(SourceIssue::new(
+                    failure.issue_code(),
+                    failure.message(),
+                    true,
+                ));
+            }
+        }
+        self.poll_recovery()?;
+
+        if let Some(capture) = self.capture.as_mut()
+            && let Some((dropped, dropped_total)) = capture.take_drop_report(Instant::now())
+        {
+            tracing::warn!(
+                input = %self.name,
+                source = ?self.config.source,
+                dropped,
+                dropped_total,
+                "Audio callback ring saturated; oldest frames were shed"
+            );
         }
 
         if let Some(snapshot) = self.latest_snapshot.load_full() {
@@ -434,48 +994,146 @@ impl AudioInput {
                 if let Some(status) = self.status.session() {
                     status.record_sample(
                         snapshot.captured_at,
-                        snapshot.captured_at + Duration::from_millis(250),
+                        snapshot.captured_at + AUDIO_SNAPSHOT_FRESHNESS,
                         usize::from(self.capture.is_some()),
                     )?;
                 }
                 self.last_status_snapshot = Some(Arc::clone(&snapshot));
             }
-            return Ok(InputData::Audio(snapshot.data.clone()));
+            if snapshot.captured_at.elapsed() > AUDIO_SNAPSHOT_FRESHNESS {
+                return Ok(Some(Arc::clone(&self.silence)));
+            }
+            return Ok(Some(Arc::clone(&snapshot.data)));
         }
 
-        if self.degraded_to_silence || matches!(self.config.source, AudioSourceType::None) {
-            return Ok(InputData::Audio(AudioData::silence()));
+        if self.degraded_to_silence
+            || self.recovery.is_some()
+            || matches!(self.config.source, AudioSourceType::None)
+        {
+            return Ok(Some(Arc::clone(&self.silence)));
         }
 
-        Ok(InputData::None)
+        Ok(None)
     }
 
-    fn apply_analyzer_config(&mut self, config: &AudioPipelineConfig) {
-        if let Ok(mut analyzer) = self.analyzer.lock() {
-            analyzer.reconfigure(config);
-        } else {
-            self.analyzer = Arc::new(Mutex::new(AudioAnalyzer::new(config)));
-        }
-        self.clear_latest_snapshot();
+    fn sample_with_dt(&mut self, dt: f32) -> anyhow::Result<InputData> {
+        Ok(self
+            .sample_shared_with_dt(dt)?
+            .map_or(InputData::None, |sample| sample.as_ref().clone()))
     }
 
-    fn start_stream_for_config(
-        &self,
-        config: &AudioPipelineConfig,
-    ) -> anyhow::Result<(Arc<Mutex<AudioAnalyzer>>, Option<CaptureHandle>)> {
-        let analyzer = Arc::new(Mutex::new(AudioAnalyzer::new(config)));
-        if matches!(config.source, AudioSourceType::None) {
-            return Ok((analyzer, None));
-        }
-
-        let capture = build_capture_stream(
-            &self.host,
-            config,
-            Arc::clone(&analyzer),
-            Arc::clone(&self.latest_snapshot),
+    pub(super) fn commit_prepared(
+        &mut self,
+        prepared: &mut PreparedAudioReconfiguration,
+    ) -> anyhow::Result<AudioRuntimeRetirement> {
+        prepared.ensure_ready()?;
+        let previous_source = self.config.source.clone();
+        let was_running = self.running;
+        let capture_backend = classify_audio_capture_backend(
+            &prepared.config.source,
+            prepared.capture.as_ref().map(CaptureRuntime::backend),
+        );
+        self.status.reconfigure(
+            capture_backend.status_id(),
+            SourceStatusPolicy::new(
+                !matches!(prepared.config.source, AudioSourceType::None),
+                true,
+                prepared.capture_active,
+            ),
+            was_running && prepared.capture_active,
         )?;
+        let next_analyzer = prepared
+            .analyzer
+            .take()
+            .expect("prepared audio analyzer is committed exactly once");
+        let next_silence = prepared
+            .silence
+            .take()
+            .expect("prepared audio silence snapshot is committed exactly once");
+        let next_snapshot = prepared
+            .latest_snapshot
+            .take()
+            .expect("prepared audio snapshot slot is committed exactly once");
+        let previous_capture = self.capture.take();
+        let previous_recovery = self.recovery.take();
+        self.name = std::mem::take(&mut prepared.name);
+        self.config = std::mem::take(&mut prepared.config);
+        self.analyzer = next_analyzer;
+        self.silence = next_silence;
+        self.latest_snapshot = next_snapshot;
+        self.capture = prepared.capture.take();
+        self.capture_active = prepared.capture_active;
+        self.degraded_to_silence = false;
+        self.last_failure = AudioFailureKind::None;
+        self.last_status_snapshot = None;
 
-        Ok((analyzer, Some(capture)))
+        tracing::info!(
+            input = %self.name,
+            previous_source = ?previous_source,
+            source = ?self.config.source,
+            capture_active = self.capture_active,
+            "Live audio capture configuration committed"
+        );
+        Ok(AudioRuntimeRetirement::new(
+            previous_capture,
+            previous_recovery,
+        ))
+    }
+
+    pub(super) fn from_prepared(
+        prepared: &mut PreparedAudioReconfiguration,
+        source_graph_generation: u64,
+    ) -> anyhow::Result<Self> {
+        prepared.ensure_ready()?;
+        let capture_backend = classify_audio_capture_backend(
+            &prepared.config.source,
+            prepared.capture.as_ref().map(CaptureRuntime::backend),
+        );
+        let mut status = prepared
+            .status
+            .take()
+            .expect("new prepared audio source owns staged status state");
+        if let Err(error) = status.set_backend(capture_backend.status_id()) {
+            prepared.status = Some(status);
+            return Err(error.into());
+        }
+        status.set_source_graph_generation(source_graph_generation);
+        let should_capture =
+            prepared.capture_active && !matches!(prepared.config.source, AudioSourceType::None);
+        if should_capture && prepared.capture.is_none() {
+            prepared.status = Some(status);
+            anyhow::bail!("active prepared audio source is missing its capture runtime");
+        }
+        if should_capture && let Err(error) = status.begin_session() {
+            prepared.status = Some(status);
+            return Err(error.into());
+        }
+        let capture = prepared.capture.take();
+        let latest_snapshot = prepared
+            .latest_snapshot
+            .take()
+            .expect("prepared audio snapshot slot is committed exactly once");
+        Ok(Self {
+            name: std::mem::take(&mut prepared.name),
+            running: true,
+            capture_active: prepared.capture_active,
+            config: std::mem::take(&mut prepared.config),
+            analyzer: prepared
+                .analyzer
+                .take()
+                .expect("prepared audio analyzer is committed exactly once"),
+            silence: prepared
+                .silence
+                .take()
+                .expect("prepared audio silence snapshot is committed exactly once"),
+            latest_snapshot,
+            last_status_snapshot: None,
+            capture,
+            recovery: None,
+            degraded_to_silence: false,
+            last_failure: AudioFailureKind::None,
+            status,
+        })
     }
 
     fn reset_analyzer(&mut self) {
@@ -492,49 +1150,20 @@ impl AudioInput {
     }
 
     fn pause_capture_stream(&mut self) {
-        match self.capture.as_mut() {
-            Some(CaptureHandle::Cpal(capture)) => {
-                if let Err(error) = capture.stream.pause() {
-                    tracing::warn!(
-                        input = %self.name,
-                        source = ?self.config.source,
-                        %error,
-                        "Failed to pause audio capture stream"
-                    );
-                } else {
-                    tracing::info!(
-                        input = %self.name,
-                        source = ?self.config.source,
-                        "Audio capture stream paused"
-                    );
-                }
-            }
-            #[cfg(target_os = "linux")]
-            Some(CaptureHandle::LinuxPulse(_)) => {
-                if let Some(CaptureHandle::LinuxPulse(capture)) = self.capture.take() {
-                    drop(capture);
-                }
-                tracing::info!(
-                    input = %self.name,
-                    source = ?self.config.source,
-                    "Audio capture stream stopped while inactive"
-                );
-            }
-            None => {}
+        if let Some(capture) = self.capture.take() {
+            retire_capture_runtime(capture);
         }
+        self.recovery = None;
 
         self.degraded_to_silence = false;
+        self.last_failure = AudioFailureKind::None;
         self.reset_analyzer();
     }
 
     fn drop_capture_stream(&mut self, reason: &'static str) {
-        let stream_source = self
-            .parked_source
-            .clone()
-            .unwrap_or_else(|| self.config.source.clone());
+        let stream_source = self.config.source.clone();
         let previous_capture = self.capture.take();
-        self.parked_source = None;
-        self.parked_backend = None;
+        self.recovery = None;
 
         if previous_capture.is_none() {
             tracing::debug!(
@@ -546,7 +1175,9 @@ impl AudioInput {
             return;
         }
 
-        drop(previous_capture);
+        if let Some(capture) = previous_capture {
+            retire_capture_runtime(capture);
+        }
         tracing::info!(
             input = %self.name,
             source = ?stream_source,
@@ -558,64 +1189,24 @@ impl AudioInput {
     fn start_capture_stream(&mut self) -> anyhow::Result<()> {
         if matches!(self.config.source, AudioSourceType::None) {
             self.degraded_to_silence = false;
+            self.recovery = None;
+            self.last_failure = AudioFailureKind::None;
             return Ok(());
         }
 
-        if let Some(capture) = &self.capture {
-            match capture {
-                CaptureHandle::Cpal(capture) => {
-                    capture
-                        .stream
-                        .play()
-                        .context("failed to resume audio capture stream")?;
-                    self.degraded_to_silence = false;
-                    tracing::info!(
-                        input = %self.name,
-                        source = ?self.config.source,
-                        "Audio capture stream resumed"
-                    );
-                    return Ok(());
-                }
-                #[cfg(target_os = "linux")]
-                CaptureHandle::LinuxPulse(pulse_capture) => {
-                    let _ = pulse_capture;
-                    self.degraded_to_silence = false;
-                    return Ok(());
-                }
-            }
+        if self.capture.is_some() {
+            self.degraded_to_silence = false;
+            self.recovery = None;
+            return Ok(());
         }
 
-        self.clear_latest_snapshot();
-        match build_capture_stream(
-            &self.host,
-            &self.config,
-            Arc::clone(&self.analyzer),
-            Arc::clone(&self.latest_snapshot),
-        ) {
-            Ok(capture) => {
-                let capture_backend =
-                    classify_audio_capture_backend(&self.config.source, Some(capture.backend()));
-                self.status.set_backend(capture_backend.status_id())?;
-                tracing::info!(
-                    input = %self.name,
-                    source = ?self.config.source,
-                    "Audio capture stream started"
-                );
-                self.degraded_to_silence = false;
-                self.capture_backend = capture_backend;
-                self.capture = Some(capture);
-            }
-            Err(error) => {
-                self.degraded_to_silence = true;
-                tracing::warn!(
-                    input = %self.name,
-                    source = ?self.config.source,
-                    %error,
-                    "Audio capture unavailable; LightScript audio input will fall back to silence"
-                );
-            }
-        }
-
+        self.latest_snapshot = Arc::new(ArcSwapOption::empty());
+        self.schedule_recovery(AudioFailureKind::None)?;
+        tracing::debug!(
+            input = %self.name,
+            source = ?self.config.source,
+            "Audio capture startup scheduled off the render thread"
+        );
         Ok(())
     }
 
@@ -654,8 +1245,8 @@ impl AudioInput {
                 && let Some(status) = status
             {
                 status.degraded(SourceIssue::new(
-                    "audio_capture_unavailable",
-                    "audio capture is unavailable; producing silence",
+                    self.last_failure.issue_code(),
+                    self.last_failure.message(),
                     true,
                 ));
             }
@@ -670,10 +1261,9 @@ impl AudioInput {
 
     /// Apply a runtime audio config change without rebuilding the whole input manager.
     ///
-    /// Disabling audio parks any existing hardware stream so a plain toggle can
-    /// resume it without touching the native backend. Switching between live
-    /// sources still opens the replacement stream before dropping the previous
-    /// one so the capture path does not go completely dark in between.
+    /// A replacement native stream and analysis worker become ready against a
+    /// private publication slot before any committed state changes. A failed
+    /// replacement therefore leaves the current stream live and retryable.
     ///
     /// # Errors
     ///
@@ -685,140 +1275,20 @@ impl AudioInput {
         capture_active: bool,
     ) -> anyhow::Result<()> {
         let next_name = name.into();
-        let previous_source = self.config.source.clone();
+        let was_running = self.running;
         let effective_capture_active =
             capture_active && !matches!(config.source, AudioSourceType::None);
-        let source_changed = previous_source != config.source;
-
-        if !source_changed {
-            self.name = next_name;
-            self.config = config.clone();
-            self.running = true;
-            self.status.set_policy(
-                !matches!(config.source, AudioSourceType::None),
-                true,
-                effective_capture_active,
-            )?;
-            self.degraded_to_silence = false;
-            self.apply_analyzer_config(config);
-            self.set_capture_active_state(effective_capture_active)?;
-            tracing::info!(
-                input = %self.name,
-                source = ?self.config.source,
-                capture_active = effective_capture_active,
-                "Live audio config updated without reopening capture stream"
-            );
-            return Ok(());
-        }
-
-        if matches!(config.source, AudioSourceType::None) {
-            if !matches!(previous_source, AudioSourceType::None) && self.capture.is_some() {
-                self.parked_source = Some(previous_source.clone());
-                self.parked_backend = Some(self.capture_backend);
-            }
-            let capture_backend = classify_audio_capture_backend(&config.source, None);
-            self.status.set_backend(capture_backend.status_id())?;
-            self.name = next_name;
-            self.config = config.clone();
-            self.running = true;
-            self.status.set_policy(false, true, false)?;
-            self.set_capture_active_state(false)?;
-            self.degraded_to_silence = false;
-            self.capture_backend = capture_backend;
-            self.last_status_snapshot = None;
-            self.apply_analyzer_config(config);
-            tracing::info!(
-                input = %self.name,
-                previous_source = ?previous_source,
-                parked_source = ?self.parked_source,
-                source = ?self.config.source,
-                "Live audio input disabled; parked existing capture stream for fast resume"
-            );
-            return Ok(());
-        }
-
-        if matches!(previous_source, AudioSourceType::None)
-            && self.capture.is_some()
-            && self.parked_source.as_ref() == Some(&config.source)
-        {
-            let capture_backend = self
-                .parked_backend
-                .as_ref()
-                .copied()
-                .unwrap_or_else(|| classify_audio_capture_backend(&config.source, None));
-            if effective_capture_active
-                && let Some(CaptureHandle::Cpal(capture)) = self.capture.as_ref()
-            {
-                capture
-                    .stream
-                    .play()
-                    .context("failed to resume audio capture stream")?;
-            }
-            self.status.set_backend(capture_backend.status_id())?;
-            self.name = next_name;
-            self.config = config.clone();
-            self.running = true;
-            self.status
-                .set_policy(true, true, effective_capture_active)?;
-            self.parked_source = None;
-            self.parked_backend = None;
-            self.capture_backend = capture_backend;
-            self.degraded_to_silence = false;
-            self.last_status_snapshot = None;
-            self.apply_analyzer_config(config);
-            self.capture_active = effective_capture_active;
-            if effective_capture_active {
-                self.status.begin_session()?;
-            }
-            tracing::info!(
-                input = %self.name,
-                previous_source = ?previous_source,
-                source = ?self.config.source,
-                capture_active = effective_capture_active,
-                "Live audio input resumed parked capture stream"
-            );
-            return Ok(());
-        }
-
-        let (next_analyzer, next_capture) = if effective_capture_active {
-            self.start_stream_for_config(config)?
-        } else {
-            (Arc::new(Mutex::new(AudioAnalyzer::new(config))), None)
-        };
-        let capture_backend = classify_audio_capture_backend(
-            &config.source,
-            next_capture.as_ref().map(CaptureHandle::backend),
-        );
-
-        self.status.set_backend(capture_backend.status_id())?;
-        self.name = next_name;
-        self.config = config.clone();
-        self.running = true;
-        self.status.stop();
-        self.status
-            .set_policy(true, true, effective_capture_active)?;
-        let previous_capture = self.capture.take();
-        self.parked_source = None;
-        self.parked_backend = None;
-        self.analyzer = next_analyzer;
-        self.capture = next_capture;
-        self.capture_active = effective_capture_active;
-        self.degraded_to_silence = false;
-        self.capture_backend = capture_backend;
-        self.last_status_snapshot = None;
-        drop(previous_capture);
-        if effective_capture_active {
-            self.status.begin_session()?;
-        }
-
-        tracing::info!(
-            input = %self.name,
-            previous_source = ?previous_source,
-            source = ?self.config.source,
-            capture_active = effective_capture_active,
-            "Live audio capture source switched"
-        );
-
+        let prepared = PreparedAudioReconfiguration::prepare(AudioPreparationRequest {
+            expected_graph_generation: 0,
+            expected_source_present: true,
+            expected_source_running: was_running,
+            enabled: !matches!(config.source, AudioSourceType::None),
+            config: config.clone(),
+            name: next_name,
+            capture_active: effective_capture_active,
+        })?;
+        let mut prepared = prepared;
+        self.commit_prepared(&mut prepared)?.retire();
         Ok(())
     }
 }
@@ -834,8 +1304,9 @@ impl InputSource for AudioInput {
         }
 
         self.degraded_to_silence = false;
-        self.capture = None;
+        self.recovery = None;
         self.last_status_snapshot = None;
+        self.last_failure = AudioFailureKind::None;
 
         if matches!(self.config.source, AudioSourceType::None) {
             self.running = true;
@@ -863,8 +1334,8 @@ impl InputSource for AudioInput {
             && let Some(status) = status
         {
             status.degraded(SourceIssue::new(
-                "audio_capture_unavailable",
-                "audio capture is unavailable; producing silence",
+                self.last_failure.issue_code(),
+                self.last_failure.message(),
                 true,
             ));
         }
@@ -877,6 +1348,8 @@ impl InputSource for AudioInput {
         self.running = false;
         self.capture_active = false;
         self.degraded_to_silence = false;
+        self.recovery = None;
+        self.last_failure = AudioFailureKind::None;
         self.last_status_snapshot = None;
         self.reset_analyzer();
         self.status.stop();
@@ -888,6 +1361,14 @@ impl InputSource for AudioInput {
 
     fn sample_with_delta_secs(&mut self, delta_secs: f32) -> anyhow::Result<InputData> {
         self.sample_with_dt(delta_secs)
+    }
+
+    fn sample_shared_and_drain_into(
+        &mut self,
+        delta_secs: f32,
+        _events: &mut Vec<TimedInputEvent>,
+    ) -> anyhow::Result<Option<Arc<InputData>>> {
+        self.sample_shared_with_dt(delta_secs)
     }
 
     fn is_running(&self) -> bool {
@@ -915,17 +1396,47 @@ impl InputSource for AudioInput {
         self.reconfigure_live(config, name, capture_active)
     }
 
+    fn supports_prepared_audio_reconfiguration(&self) -> bool {
+        true
+    }
+
+    fn commit_prepared_audio_reconfiguration(
+        &mut self,
+        prepared: &mut PreparedAudioReconfiguration,
+    ) -> anyhow::Result<AudioRuntimeRetirement> {
+        self.commit_prepared(prepared)
+    }
+
     fn set_audio_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
         self.set_capture_active_state(active)
+    }
+}
+
+impl Drop for AudioInput {
+    fn drop(&mut self) {
+        if let Some(capture) = self.capture.take() {
+            retire_capture_runtime(capture);
+        }
+        self.recovery = None;
     }
 }
 
 fn build_capture_stream(
     host: &cpal::Host,
     config: &AudioPipelineConfig,
-    analyzer: Arc<Mutex<AudioAnalyzer>>,
-    latest_snapshot: Arc<ArcSwapOption<CapturedAudioSnapshot>>,
-) -> anyhow::Result<CaptureHandle> {
+) -> anyhow::Result<CaptureRuntime> {
+    build_capture_stream_with_failure(
+        host,
+        config,
+        Arc::new(AtomicU8::new(AudioFailureKind::None as u8)),
+    )
+}
+
+fn build_capture_stream_with_failure(
+    host: &cpal::Host,
+    config: &AudioPipelineConfig,
+    terminal_failure: Arc<AtomicU8>,
+) -> anyhow::Result<CaptureRuntime> {
     let selected = select_input_device(host, &config.source)?;
     match selected {
         SelectedInputDevice::Cpal {
@@ -935,106 +1446,114 @@ fn build_capture_stream(
             let supported_config = device.default_input_config().with_context(|| {
                 format!("failed to get default input config for '{display_name}'")
             })?;
-            reconfigure_analyzer(&analyzer, config, &supported_config);
             let stream_config: cpal::StreamConfig = supported_config.config();
             let channels = usize::from(stream_config.channels.max(1));
             let sample_format = supported_config.sample_format();
+            let latest_snapshot = Arc::new(ArcSwapOption::empty());
+            let analysis = AnalysisWorker::spawn(
+                config,
+                supported_config.sample_rate(),
+                channels,
+                Arc::clone(&latest_snapshot),
+                Arc::clone(&terminal_failure),
+            )?;
+            let ring = analysis.ring();
             let stream = match sample_format {
                 SampleFormat::I8 => build_stream::<i8>(
                     &device,
                     &stream_config,
                     channels,
-                    analyzer,
-                    latest_snapshot,
+                    &ring,
                     &display_name,
+                    Arc::clone(&terminal_failure),
                 ),
                 SampleFormat::I16 => build_stream::<i16>(
                     &device,
                     &stream_config,
                     channels,
-                    analyzer,
-                    latest_snapshot,
+                    &ring,
                     &display_name,
+                    Arc::clone(&terminal_failure),
                 ),
                 SampleFormat::I24 => build_stream::<cpal::I24>(
                     &device,
                     &stream_config,
                     channels,
-                    analyzer,
-                    latest_snapshot,
+                    &ring,
                     &display_name,
+                    Arc::clone(&terminal_failure),
                 ),
                 SampleFormat::I32 => build_stream::<i32>(
                     &device,
                     &stream_config,
                     channels,
-                    analyzer,
-                    latest_snapshot,
+                    &ring,
                     &display_name,
+                    Arc::clone(&terminal_failure),
                 ),
                 SampleFormat::I64 => build_stream::<i64>(
                     &device,
                     &stream_config,
                     channels,
-                    analyzer,
-                    latest_snapshot,
+                    &ring,
                     &display_name,
+                    Arc::clone(&terminal_failure),
                 ),
                 SampleFormat::U8 => build_stream::<u8>(
                     &device,
                     &stream_config,
                     channels,
-                    analyzer,
-                    latest_snapshot,
+                    &ring,
                     &display_name,
+                    Arc::clone(&terminal_failure),
                 ),
                 SampleFormat::U16 => build_stream::<u16>(
                     &device,
                     &stream_config,
                     channels,
-                    analyzer,
-                    latest_snapshot,
+                    &ring,
                     &display_name,
+                    Arc::clone(&terminal_failure),
                 ),
                 SampleFormat::U24 => build_stream::<cpal::U24>(
                     &device,
                     &stream_config,
                     channels,
-                    analyzer,
-                    latest_snapshot,
+                    &ring,
                     &display_name,
+                    Arc::clone(&terminal_failure),
                 ),
                 SampleFormat::U32 => build_stream::<u32>(
                     &device,
                     &stream_config,
                     channels,
-                    analyzer,
-                    latest_snapshot,
+                    &ring,
                     &display_name,
+                    Arc::clone(&terminal_failure),
                 ),
                 SampleFormat::U64 => build_stream::<u64>(
                     &device,
                     &stream_config,
                     channels,
-                    analyzer,
-                    latest_snapshot,
+                    &ring,
                     &display_name,
+                    Arc::clone(&terminal_failure),
                 ),
                 SampleFormat::F32 => build_stream::<f32>(
                     &device,
                     &stream_config,
                     channels,
-                    analyzer,
-                    latest_snapshot,
+                    &ring,
                     &display_name,
+                    Arc::clone(&terminal_failure),
                 ),
                 SampleFormat::F64 => build_stream::<f64>(
                     &device,
                     &stream_config,
                     channels,
-                    analyzer,
-                    latest_snapshot,
+                    &ring,
                     &display_name,
+                    Arc::clone(&terminal_failure),
                 ),
                 sample_format => Err(anyhow!("unsupported audio sample format: {sample_format}")),
             }?;
@@ -1052,30 +1571,69 @@ fn build_capture_stream(
                 "Audio capture stream configured"
             );
 
-            Ok(CaptureHandle::Cpal(stream))
+            Ok(CaptureRuntime {
+                capture: CaptureHandle::Cpal { _capture: stream },
+                analysis,
+                latest_snapshot,
+                observed_drops: 0,
+                pending_drop_report: 0,
+                last_drop_report: None,
+                terminal_failure,
+            })
         }
         #[cfg(target_os = "linux")]
         SelectedInputDevice::LinuxPulse {
             source_name,
             display_name,
-        } => build_linux_pulse_capture_stream(
-            &source_name,
-            &display_name,
-            analyzer,
-            latest_snapshot,
-            config,
-        ),
+        } => {
+            let latest_snapshot = Arc::new(ArcSwapOption::empty());
+            let analysis = AnalysisWorker::spawn(
+                config,
+                PULSE_CAPTURE_RATE_HZ,
+                PULSE_CAPTURE_CHANNELS,
+                Arc::clone(&latest_snapshot),
+                Arc::clone(&terminal_failure),
+            )?;
+            let capture = build_linux_pulse_capture_stream(
+                &source_name,
+                &display_name,
+                analysis.ring(),
+                Arc::clone(&terminal_failure),
+            )?;
+            Ok(CaptureRuntime {
+                capture,
+                analysis,
+                latest_snapshot,
+                observed_drops: 0,
+                pending_drop_report: 0,
+                last_drop_report: None,
+                terminal_failure,
+            })
+        }
     }
 }
 
-fn reconfigure_analyzer(
-    analyzer: &Arc<Mutex<AudioAnalyzer>>,
+fn build_synthetic_capture_stream(
     config: &AudioPipelineConfig,
-    supported_config: &SupportedStreamConfig,
-) {
-    if let Ok(mut guard) = analyzer.lock() {
-        *guard = AudioAnalyzer::with_sample_rate(config, supported_config.sample_rate());
-    }
+    terminal_failure: Arc<AtomicU8>,
+) -> anyhow::Result<CaptureRuntime> {
+    let latest_snapshot = Arc::new(ArcSwapOption::empty());
+    let analysis = AnalysisWorker::spawn(
+        config,
+        48_000,
+        2,
+        Arc::clone(&latest_snapshot),
+        Arc::clone(&terminal_failure),
+    )?;
+    Ok(CaptureRuntime {
+        capture: CaptureHandle::Synthetic,
+        analysis,
+        latest_snapshot,
+        observed_drops: 0,
+        pending_drop_report: 0,
+        last_drop_report: None,
+        terminal_failure,
+    })
 }
 
 fn select_input_device(
@@ -1259,6 +1817,7 @@ struct LinuxPulseCapture {
     exit_rx: mpsc::Receiver<()>,
     worker: Option<thread::JoinHandle<()>>,
     publish_enabled: Arc<AtomicBool>,
+    failure: Arc<AtomicU8>,
 }
 
 #[cfg(target_os = "linux")]
@@ -1284,7 +1843,14 @@ impl LinuxPulseCapture {
         true
     }
 
-    fn observe_exit(&mut self) -> Option<String> {
+    fn observe_exit(&mut self) -> Option<AudioFailureKind> {
+        let code = self
+            .failure
+            .swap(AudioFailureKind::None as u8, Ordering::AcqRel);
+        let failure = AudioFailureKind::from_code(code);
+        if failure != AudioFailureKind::None {
+            return Some(failure);
+        }
         let worker = self.worker.as_ref()?;
         if !worker.is_finished() {
             return None;
@@ -1293,10 +1859,8 @@ impl LinuxPulseCapture {
             .worker
             .take()
             .expect("finished PulseAudio worker remains owned");
-        Some(worker.join().map_or_else(
-            |panic| format!("PulseAudio capture worker panicked: {panic:?}"),
-            |()| "PulseAudio capture worker exited unexpectedly".to_owned(),
-        ))
+        let _ = worker.join();
+        Some(AudioFailureKind::BackendUnavailable)
     }
 }
 
@@ -1314,35 +1878,97 @@ impl Drop for LinuxPulseCapture {
 }
 
 enum CaptureHandle {
-    Cpal(CpalCapture),
+    Cpal {
+        _capture: CpalCapture,
+    },
+    Synthetic,
     #[cfg(target_os = "linux")]
     LinuxPulse(LinuxPulseCapture),
 }
 
 struct CpalCapture {
     stream: Stream,
-    failure: Arc<Mutex<Option<String>>>,
 }
 
 impl CaptureHandle {
     fn backend(&self) -> AudioCaptureBackend {
         match self {
-            Self::Cpal(_) => AudioCaptureBackend::Cpal,
+            Self::Cpal { .. } => AudioCaptureBackend::Cpal,
+            Self::Synthetic => AudioCaptureBackend::Cpal,
             #[cfg(target_os = "linux")]
             Self::LinuxPulse(_) => AudioCaptureBackend::PulseAudio,
         }
     }
 
-    fn observe_worker_exit(&mut self) -> Option<String> {
+    fn observe_failure(&mut self) -> Option<AudioFailureKind> {
         match self {
-            Self::Cpal(capture) => capture
-                .failure
-                .lock()
-                .ok()
-                .and_then(|mut failure| failure.take()),
+            Self::Cpal { .. } => None,
+            Self::Synthetic => None,
             #[cfg(target_os = "linux")]
             Self::LinuxPulse(capture) => capture.observe_exit(),
         }
+    }
+}
+
+struct CaptureRuntime {
+    capture: CaptureHandle,
+    analysis: AnalysisWorker,
+    latest_snapshot: Arc<ArcSwapOption<CapturedAudioSnapshot>>,
+    observed_drops: u64,
+    pending_drop_report: u64,
+    last_drop_report: Option<Instant>,
+    terminal_failure: Arc<AtomicU8>,
+}
+
+impl CaptureRuntime {
+    fn backend(&self) -> AudioCaptureBackend {
+        self.capture.backend()
+    }
+
+    fn observe_failure(&mut self) -> Option<AudioFailureKind> {
+        let failure = AudioFailureKind::from_code(
+            self.terminal_failure
+                .swap(AudioFailureKind::None as u8, Ordering::AcqRel),
+        );
+        if failure != AudioFailureKind::None {
+            return Some(failure);
+        }
+        if self.analysis.is_finished() {
+            return Some(AudioFailureKind::AnalysisWorkerExited);
+        }
+        self.capture.observe_failure()
+    }
+
+    fn take_drop_report(&mut self, now: Instant) -> Option<(u64, u64)> {
+        let total = self.analysis.ring.dropped_total();
+        self.pending_drop_report = self
+            .pending_drop_report
+            .saturating_add(total.saturating_sub(self.observed_drops));
+        self.observed_drops = total;
+        if self.pending_drop_report == 0
+            || self
+                .last_drop_report
+                .is_some_and(|last| now.duration_since(last) < AUDIO_OVERFLOW_REPORT_INTERVAL)
+        {
+            return None;
+        }
+        let pending = std::mem::take(&mut self.pending_drop_report);
+        self.last_drop_report = Some(now);
+        Some((pending, total))
+    }
+}
+
+fn retire_capture_runtime(capture: CaptureRuntime) {
+    retire_audio_runtime(AudioRuntimeRetirement::new(Some(capture), None));
+}
+
+fn retire_audio_runtime(runtime: AudioRuntimeRetirement) {
+    match spawn_input_worker(
+        thread::Builder::new().name("hypercolor-audio-retire".to_owned()),
+        move || drop(runtime),
+    ) {
+        Ok(worker) => retain_input_worker(worker, "audio capture retirement"),
+        Err(error) => tracing::warn!(%error, "Failed to spawn audio capture retirement worker"),
     }
 }
 
@@ -1350,22 +1976,15 @@ impl CaptureHandle {
 fn build_linux_pulse_capture_stream(
     source_name: &str,
     display_name: &str,
-    analyzer: Arc<Mutex<AudioAnalyzer>>,
-    latest_snapshot: Arc<ArcSwapOption<CapturedAudioSnapshot>>,
-    config: &AudioPipelineConfig,
+    ring: Arc<AudioFrameRing>,
+    failure: Arc<AtomicU8>,
 ) -> anyhow::Result<CaptureHandle> {
-    const PULSE_CAPTURE_CHANNELS: usize = 2;
-    const PULSE_CAPTURE_RATE_HZ: u32 = 48_000;
-
-    if let Ok(mut guard) = analyzer.lock() {
-        *guard = AudioAnalyzer::with_sample_rate(config, PULSE_CAPTURE_RATE_HZ);
-    }
-
     let (ready_tx, ready_rx) = mpsc::sync_channel(1);
     let (stop_tx, stop_rx) = mpsc::channel();
     let (exit_tx, exit_rx) = mpsc::sync_channel(1);
     let publish_enabled = Arc::new(AtomicBool::new(true));
     let worker_publish_enabled = Arc::clone(&publish_enabled);
+    let worker_failure = Arc::clone(&failure);
     let worker_source = source_name.to_owned();
     let worker_display = display_name.to_owned();
     let worker = spawn_input_worker(
@@ -1374,13 +1993,13 @@ fn build_linux_pulse_capture_stream(
             run_linux_pulse_capture(
                 &worker_source,
                 &worker_display,
-                analyzer,
-                latest_snapshot,
+                ring,
                 ready_tx,
                 stop_rx,
                 PULSE_CAPTURE_CHANNELS,
                 PULSE_CAPTURE_RATE_HZ,
                 worker_publish_enabled,
+                worker_failure,
             );
             let _ = exit_tx.send(());
         },
@@ -1402,6 +2021,7 @@ fn build_linux_pulse_capture_stream(
                 exit_rx,
                 worker: Some(worker),
                 publish_enabled,
+                failure,
             }))
         }
         Ok(Err(error)) => {
@@ -1410,6 +2030,7 @@ fn build_linux_pulse_capture_stream(
                 exit_rx,
                 worker: Some(worker),
                 publish_enabled,
+                failure,
             };
             capture.stop();
             Err(anyhow!(
@@ -1422,6 +2043,7 @@ fn build_linux_pulse_capture_stream(
                 exit_rx,
                 worker: Some(worker),
                 publish_enabled,
+                failure,
             };
             capture.stop();
             Err(anyhow!(
@@ -1441,13 +2063,13 @@ fn build_linux_pulse_capture_stream(
 fn run_linux_pulse_capture(
     source_name: &str,
     display_name: &str,
-    analyzer: Arc<Mutex<AudioAnalyzer>>,
-    latest_snapshot: Arc<ArcSwapOption<CapturedAudioSnapshot>>,
+    ring: Arc<AudioFrameRing>,
     ready_tx: mpsc::SyncSender<Result<(), String>>,
     stop_rx: mpsc::Receiver<()>,
     channels: usize,
     sample_rate_hz: u32,
     publish_enabled: Arc<AtomicBool>,
+    failure: Arc<AtomicU8>,
 ) {
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -1496,9 +2118,7 @@ fn run_linux_pulse_capture(
     let stream = Rc::new(RefCell::new(stream));
     let buffer_attr = pulse_record_buffer_attr(&spec);
     let stream_for_callback = Rc::clone(&stream);
-    let callback_analyzer = Arc::clone(&analyzer);
-    let callback_snapshot = Arc::clone(&latest_snapshot);
-    let callback_source = source_name.to_owned();
+    let callback_ring = Arc::clone(&ring);
     stream
         .borrow_mut()
         .set_read_callback(Some(Box::new(move |_bytes_available| {
@@ -1506,40 +2126,34 @@ fn run_linux_pulse_capture(
             loop {
                 match guard.peek() {
                     Ok(pulse::stream::PeekResult::Data(bytes)) => {
-                        let samples = bytes_to_f32_samples(bytes);
                         if publish_enabled.load(Ordering::Acquire) {
-                            push_input_samples(
-                                &samples,
-                                channels,
-                                &callback_analyzer,
-                                &callback_snapshot,
-                            );
+                            push_native_f32_bytes(bytes, channels, &callback_ring);
                         }
                         if let Err(error) = guard.discard() {
-                            tracing::warn!(
-                                source = %callback_source,
-                                %error,
-                                "Failed to discard PulseAudio record buffer"
+                            let _ = error;
+                            failure.store(
+                                AudioFailureKind::BackendUnavailable as u8,
+                                Ordering::Release,
                             );
                             break;
                         }
                     }
                     Ok(pulse::stream::PeekResult::Hole(_)) => {
                         if let Err(error) = guard.discard() {
-                            tracing::warn!(
-                                source = %callback_source,
-                                %error,
-                                "Failed to discard PulseAudio record hole"
+                            let _ = error;
+                            failure.store(
+                                AudioFailureKind::BackendUnavailable as u8,
+                                Ordering::Release,
                             );
                             break;
                         }
                     }
                     Ok(pulse::stream::PeekResult::Empty) => break,
                     Err(error) => {
-                        tracing::warn!(
-                            source = %callback_source,
-                            %error,
-                            "PulseAudio record stream peek failed"
+                        let _ = error;
+                        failure.store(
+                            AudioFailureKind::BackendUnavailable as u8,
+                            Ordering::Release,
                         );
                         break;
                     }
@@ -1750,75 +2364,63 @@ fn wait_for_pulse_stream(
 }
 
 #[cfg(target_os = "linux")]
-fn bytes_to_f32_samples(bytes: &[u8]) -> Vec<f32> {
-    bytes
-        .chunks_exact(std::mem::size_of::<f32>())
-        .map(|chunk| {
-            let array: [u8; std::mem::size_of::<f32>()] = chunk
+fn push_native_f32_bytes(bytes: &[u8], channels: usize, ring: &AudioFrameRing) {
+    let channel_count = channels.max(1);
+    debug_assert_eq!(ring.channels(), channel_count);
+    let frame_bytes = std::mem::size_of::<f32>().saturating_mul(channel_count);
+    let mut stats = realtime::PushStats::default();
+    for frame in bytes.chunks_exact(frame_bytes) {
+        let pushed = ring.push_frame_with(|channel| {
+            let start = channel * std::mem::size_of::<f32>();
+            let sample = frame[start..start + std::mem::size_of::<f32>()]
                 .try_into()
-                .unwrap_or([0_u8; std::mem::size_of::<f32>()]);
-            f32::from_ne_bytes(array)
-        })
-        .collect()
+                .expect("f32 audio chunks have exact width");
+            f32::from_ne_bytes(sample)
+        });
+        stats.accepted += pushed.accepted;
+        stats.dropped += pushed.dropped;
+    }
+    ring.record(stats);
 }
 
 fn build_stream<T>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
     channels: usize,
-    analyzer: Arc<Mutex<AudioAnalyzer>>,
-    latest_snapshot: Arc<ArcSwapOption<CapturedAudioSnapshot>>,
+    ring: &Arc<AudioFrameRing>,
     device_name: &str,
+    failure: Arc<AtomicU8>,
 ) -> anyhow::Result<CpalCapture>
 where
     T: Sample + SizedSample + Send + 'static,
     f32: FromSample<T>,
 {
-    let err_name = device_name.to_owned();
-    let failure = Arc::new(Mutex::new(None));
+    debug_assert_eq!(ring.channels(), channels.max(1));
+    let callback_ring = Arc::clone(ring);
     let callback_failure = Arc::clone(&failure);
     let stream = device
         .build_input_stream(
             config,
-            move |data: &[T], _| push_input_samples(data, channels, &analyzer, &latest_snapshot),
+            move |data: &[T], _| {
+                let _ = push_interleaved_frames(data, &callback_ring, f32::from_sample);
+            },
             move |error| {
-                if let Ok(mut failure) = callback_failure.lock() {
-                    *failure = Some(error.to_string());
+                let failure = match error {
+                    cpal::StreamError::DeviceNotAvailable
+                    | cpal::StreamError::StreamInvalidated => AudioFailureKind::DeviceLost,
+                    cpal::StreamError::BackendSpecific { .. } => {
+                        AudioFailureKind::BackendUnavailable
+                    }
+                    cpal::StreamError::BufferUnderrun => AudioFailureKind::None,
+                };
+                if failure != AudioFailureKind::None {
+                    callback_failure.store(failure as u8, Ordering::Release);
                 }
-                tracing::warn!(
-                    device = %err_name,
-                    %error,
-                    "Audio capture stream reported an error"
-                );
             },
             None,
         )
         .with_context(|| format!("failed to build audio capture stream for '{device_name}'"))?;
-    Ok(CpalCapture { stream, failure })
-}
-
-fn push_input_samples<T>(
-    input: &[T],
-    channels: usize,
-    analyzer: &Arc<Mutex<AudioAnalyzer>>,
-    latest_snapshot: &Arc<ArcSwapOption<CapturedAudioSnapshot>>,
-) where
-    T: Sample + Copy,
-    f32: FromSample<T>,
-{
-    let channel_count = channels.max(1);
-    let mut mono = Vec::with_capacity(input.len().max(1) / channel_count.max(1));
-
-    for frame in input.chunks(channel_count) {
-        let sum = frame.iter().copied().map(f32::from_sample).sum::<f32>();
-        let sample_count = u16::try_from(frame.len()).unwrap_or(1);
-        mono.push((sum / f32::from(sample_count)).clamp(-1.0, 1.0));
-    }
-
-    if let Ok(mut guard) = analyzer.lock() {
-        guard.push_samples(&mono);
-        publish_latest_snapshot(&mut guard, mono.len(), latest_snapshot);
-    }
+    Ok(CpalCapture { stream })
 }
 
 fn publish_latest_snapshot(
@@ -1828,7 +2430,7 @@ fn publish_latest_snapshot(
 ) {
     match analyzer.analyze(analysis_dt_seconds(sample_count, analyzer.sample_rate_hz())) {
         Ok(Some(snapshot)) => latest_snapshot.store(Some(Arc::new(CapturedAudioSnapshot {
-            data: snapshot,
+            data: Arc::new(InputData::Audio(snapshot)),
             captured_at: Instant::now(),
         }))),
         Ok(None) => {}
@@ -1848,7 +2450,7 @@ fn analysis_dt_seconds(sample_count: usize, sample_rate_hz: u32) -> f32 {
         reason = "audio callback chunk durations only need frame-scale precision"
     )]
     let dt = (f64::from(safe_sample_count) / f64::from(sample_rate_hz)) as f32;
-    dt.max(DEFAULT_AUDIO_FRAME_DT / 8.0)
+    dt
 }
 
 #[cfg(all(test, target_os = "linux"))]

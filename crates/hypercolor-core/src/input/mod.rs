@@ -46,7 +46,9 @@ pub use traits::{
 };
 pub use windows::WindowsHostInput;
 
-use crate::input::audio::AudioInput;
+use crate::input::audio::{
+    AudioInput, AudioPreparationRequest, AudioRuntimeRetirement, PreparedAudioReconfiguration,
+};
 use crate::types::audio::AudioPipelineConfig;
 use crate::types::event::TimedInputEvent;
 use hypercolor_types::sensor::SystemSnapshot;
@@ -72,6 +74,68 @@ pub fn input_mono_ms() -> u64 {
 }
 
 // ── InputManager ───────────────────────────────────────────────────────────
+
+/// Generation-fenced audio configuration captured while briefly holding the
+/// input manager lock.
+#[must_use = "audio reconfiguration plans must be prepared and committed"]
+pub struct AudioRuntimeConfigPlan {
+    expected_graph_generation: u64,
+    expected_source_present: bool,
+    expected_source_running: bool,
+    enabled: bool,
+    config: AudioPipelineConfig,
+    display_name: String,
+    capture_active: bool,
+}
+
+/// A concurrent input-graph transition invalidated prepared audio state.
+#[derive(Debug, thiserror::Error)]
+pub enum AudioReconfigurationConflict {
+    /// The canonical source graph changed after preparation began.
+    #[error("input graph changed while audio reconfiguration was prepared")]
+    GraphChanged,
+    /// An audio source was added or removed after preparation began.
+    #[error("audio source topology changed while reconfiguration was prepared")]
+    SourceTopologyChanged,
+    /// The target audio source started or stopped after preparation began.
+    #[error("audio source lifecycle changed while reconfiguration was prepared")]
+    SourceLifecycleChanged,
+}
+
+impl AudioRuntimeConfigPlan {
+    /// Perform native device discovery and stream construction.
+    ///
+    /// This can block and must run without the render-owned input manager lock.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested native stream cannot be staged.
+    pub fn prepare(self) -> anyhow::Result<PreparedAudioReconfiguration> {
+        PreparedAudioReconfiguration::prepare(self.into_request())
+    }
+
+    /// Stage an in-memory capture runtime for deterministic transaction tests.
+    #[doc(hidden)]
+    pub fn prepare_with_synthetic_capture_for_testing(
+        self,
+    ) -> anyhow::Result<PreparedAudioReconfiguration> {
+        PreparedAudioReconfiguration::prepare_with_synthetic_capture_for_testing(
+            self.into_request(),
+        )
+    }
+
+    fn into_request(self) -> AudioPreparationRequest {
+        AudioPreparationRequest {
+            expected_graph_generation: self.expected_graph_generation,
+            expected_source_present: self.expected_source_present,
+            expected_source_running: self.expected_source_running,
+            enabled: self.enabled,
+            config: self.config,
+            name: self.display_name,
+            capture_active: self.capture_active,
+        }
+    }
+}
 
 /// Orchestrates multiple [`InputSource`] instances.
 ///
@@ -589,11 +653,127 @@ impl InputManager {
         self.invalidate_capture_domains((true, true, true));
     }
 
+    /// Snapshot a generation-fenced audio reconfiguration plan.
+    ///
+    /// The returned plan owns all data needed for native preparation after the
+    /// manager lock is released.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the registered audio source cannot accept a staged
+    /// native runtime.
+    pub fn plan_audio_runtime_config(
+        &self,
+        enabled: bool,
+        config: &AudioPipelineConfig,
+        display_name: &str,
+        capture_active: bool,
+    ) -> anyhow::Result<AudioRuntimeConfigPlan> {
+        let source = self.sources.iter().find(|source| source.is_audio_source());
+        if source.is_some_and(|source| !source.supports_prepared_audio_reconfiguration()) {
+            anyhow::bail!("registered audio source does not support prepared reconfiguration");
+        }
+        let mut effective_config = config.clone();
+        if !enabled {
+            effective_config.source = crate::types::audio::AudioSourceType::None;
+        }
+        let capture_active = enabled
+            && capture_active
+            && !matches!(
+                effective_config.source,
+                crate::types::audio::AudioSourceType::None
+            );
+        Ok(AudioRuntimeConfigPlan {
+            expected_graph_generation: self.source_graph_generation,
+            expected_source_present: source.is_some(),
+            expected_source_running: source.is_some_and(|source| source.is_running()),
+            enabled,
+            config: effective_config,
+            display_name: display_name.to_owned(),
+            capture_active,
+        })
+    }
+
+    /// Commit a prepared audio runtime if the input graph is unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a concurrent graph or lifecycle transition made
+    /// the prepared runtime stale, or when the source rejects the commit.
+    pub fn commit_audio_runtime_config(
+        &mut self,
+        prepared: &mut PreparedAudioReconfiguration,
+    ) -> anyhow::Result<AudioRuntimeRetirement> {
+        if self.source_graph_generation != prepared.expected_graph_generation {
+            return Err(AudioReconfigurationConflict::GraphChanged.into());
+        }
+        prepared.ensure_ready()?;
+        let source_index = self
+            .sources
+            .iter()
+            .position(|source| source.is_audio_source());
+        if source_index.is_some() != prepared.expected_source_present {
+            return Err(AudioReconfigurationConflict::SourceTopologyChanged.into());
+        }
+        if let Some(index) = source_index {
+            if self.sources[index].is_running() != prepared.expected_source_running {
+                return Err(AudioReconfigurationConflict::SourceLifecycleChanged.into());
+            }
+            let capture_active = prepared.capture_active;
+            let source_graph_generation = self.bump_source_graph_generation();
+            let result = {
+                let source = &mut self.sources[index];
+                source.set_source_graph_generation(source_graph_generation);
+                source.commit_prepared_audio_reconfiguration(prepared)
+            };
+            if result.is_ok() {
+                self.audio_capture_active = Some(capture_active);
+                info!(
+                    source = self.sources[index].name(),
+                    capture_active, "Committed prepared live audio input source"
+                );
+            }
+            self.publish_source_status_registry();
+            return result;
+        }
+
+        if !prepared.enabled {
+            self.bump_source_graph_generation();
+            self.audio_capture_active = Some(false);
+            return Ok(AudioRuntimeRetirement::empty());
+        }
+
+        let capture_active = prepared.capture_active;
+        let source_graph_generation = self
+            .source_graph_generation
+            .checked_add(1)
+            .expect("input source graph generation exhausted");
+        let audio_input = AudioInput::from_prepared(prepared, source_graph_generation)?;
+        self.source_graph_generation = source_graph_generation;
+        let managed = self.create_managed_source(Box::new(audio_input), source_graph_generation);
+        self.sources.push(managed);
+        self.audio_capture_active = Some(capture_active);
+        self.publish_source_status_registry();
+        info!(
+            source = self
+                .sources
+                .last()
+                .expect("audio source was just registered")
+                .name(),
+            capture_active, "Added prepared live audio input source"
+        );
+        Ok(AudioRuntimeRetirement::empty())
+    }
+
     /// Apply a live audio config change without rebuilding unrelated sources.
     ///
     /// If an audio source already exists, it is reconfigured in place. If audio
     /// is being enabled and no audio source exists yet, one is created and
     /// started. Disabling audio reconfigures the existing source to silence.
+    /// Native preparation may enumerate devices and block. Callers that share
+    /// the manager across latency-sensitive work should use
+    /// [`Self::plan_audio_runtime_config`], prepare after releasing the manager,
+    /// then reacquire it for [`Self::commit_audio_runtime_config`].
     ///
     /// # Errors
     ///
@@ -605,6 +785,16 @@ impl InputManager {
         display_name: &str,
         capture_active: bool,
     ) -> anyhow::Result<()> {
+        let audio_source = self.sources.iter().find(|source| source.is_audio_source());
+        if audio_source.is_none_or(|source| source.supports_prepared_audio_reconfiguration()) {
+            let mut prepared = self
+                .plan_audio_runtime_config(enabled, config, display_name, capture_active)?
+                .prepare()?;
+            let retirement = self.commit_audio_runtime_config(&mut prepared)?;
+            retirement.retire();
+            return Ok(());
+        }
+
         let effective_capture_active = enabled && capture_active;
         let effective_config = if enabled {
             config.clone()
@@ -614,63 +804,28 @@ impl InputManager {
             disabled
         };
 
-        if let Some(index) = self
+        let index = self
             .sources
             .iter()
             .position(|source| source.is_audio_source())
-        {
-            let source_graph_generation = self.bump_source_graph_generation();
-            let result = {
-                let source = &mut self.sources[index];
-                source.set_source_graph_generation(source_graph_generation);
-                source.reconfigure_audio(&effective_config, display_name, effective_capture_active)
-            };
-            if result.is_ok() {
-                info!(
-                    source = display_name,
-                    enabled,
-                    capture_active = effective_capture_active,
-                    "Reconfigured live audio input source"
-                );
-                self.audio_capture_active = Some(effective_capture_active);
-            }
-            self.publish_source_status_registry();
-            return result;
+            .expect("unsupported prepared reconfiguration requires an audio source");
+        let source_graph_generation = self.bump_source_graph_generation();
+        let result = {
+            let source = &mut self.sources[index];
+            source.set_source_graph_generation(source_graph_generation);
+            source.reconfigure_audio(&effective_config, display_name, effective_capture_active)
+        };
+        if result.is_ok() {
+            info!(
+                source = display_name,
+                enabled,
+                capture_active = effective_capture_active,
+                "Reconfigured compatibility audio input source"
+            );
+            self.audio_capture_active = Some(effective_capture_active);
         }
-
-        if !enabled {
-            self.audio_capture_active = Some(false);
-            return Ok(());
-        }
-
-        let mut audio_input = AudioInput::new(&effective_config).with_name(display_name.to_owned());
-        audio_input.set_capture_active(effective_capture_active)?;
-        self.add_source(Box::new(audio_input));
-        let start_result = self
-            .sources
-            .last_mut()
-            .expect("audio source was just registered")
-            .start();
-        if let Err(error) = start_result {
-            let mut failed = self
-                .sources
-                .pop()
-                .expect("audio source was just registered");
-            failed.stop();
-            let removal_generation = self.bump_source_graph_generation();
-            if let Err(status_error) = failed.retire_source_status(removal_generation) {
-                error!(source = failed.name(), %status_error, "Failed to retire rejected audio source status");
-            }
-            self.publish_source_status_registry();
-            return Err(error);
-        }
-        info!(
-            source = display_name,
-            capture_active = effective_capture_active,
-            "Added live audio input source"
-        );
-        self.audio_capture_active = Some(effective_capture_active);
-        Ok(())
+        self.publish_source_status_registry();
+        result
     }
 
     /// Toggle live audio capture for any registered audio sources.

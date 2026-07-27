@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use anyhow::Context;
 use axum::Json;
 use axum::extract::{Query, State};
 use axum::response::Response;
@@ -11,6 +12,7 @@ use utoipa::ToSchema;
 
 use hypercolor_core::config::canonical_audio_device_id;
 use hypercolor_core::engine::FpsTier;
+use hypercolor_core::input::AudioReconfigurationConflict;
 use hypercolor_types::audio::{AudioPipelineConfig, AudioSourceType};
 use hypercolor_types::config::HypercolorConfig;
 
@@ -382,40 +384,79 @@ async fn reconfigure_input_manager(state: &Arc<AppState>) -> anyhow::Result<()> 
         return Ok(());
     };
 
-    let latest_config = manager.get();
-    let capture_active = current_live_audio_capture_demand(state).await;
-    let mut input_manager = state.input_manager.lock().await;
-    let previous_sources = input_manager.source_names();
-    let audio_device = latest_config.audio.device.clone();
-    let effective_config = audio_pipeline_config(latest_config.as_ref());
-    let replacement_sources = if latest_config.audio.enabled {
-        vec![format!("AudioInput({audio_device})")]
-    } else {
-        Vec::new()
-    };
+    let mut conflict_count = 0_u64;
+    loop {
+        let latest_config = Arc::clone(&manager.get());
+        let capture_active = current_live_audio_capture_demand(state).await;
+        let audio_device = latest_config.audio.device.clone();
+        let audio_name = format!("AudioInput({audio_device})");
+        let effective_config = audio_pipeline_config(latest_config.as_ref());
+        let (plan, previous_sources) = {
+            let input_manager = state.input_manager.lock().await;
+            (
+                input_manager.plan_audio_runtime_config(
+                    latest_config.audio.enabled,
+                    &effective_config,
+                    &audio_name,
+                    capture_active,
+                )?,
+                input_manager.source_names(),
+            )
+        };
+        let replacement_sources = if latest_config.audio.enabled {
+            vec![audio_name]
+        } else {
+            Vec::new()
+        };
 
-    info!(
-        audio_enabled = latest_config.audio.enabled,
-        audio_device = %audio_device,
-        capture_active,
-        previous_sources = ?previous_sources,
-        replacement_sources = ?replacement_sources,
-        "Applying targeted live audio config change"
-    );
+        info!(
+            audio_enabled = latest_config.audio.enabled,
+            audio_device = %audio_device,
+            capture_active,
+            conflict_count,
+            previous_sources = ?previous_sources,
+            replacement_sources = ?replacement_sources,
+            "Applying targeted live audio config change"
+        );
 
-    input_manager.apply_audio_runtime_config(
-        latest_config.audio.enabled,
-        &effective_config,
-        &format!("AudioInput({audio_device})"),
-        capture_active,
-    )?;
-
-    info!(
-        audio_device = %audio_device,
-        sources = ?input_manager.source_names(),
-        "Live audio config change applied"
-    );
-    Ok(())
+        let mut prepared = tokio::task::spawn_blocking(move || plan.prepare())
+            .await
+            .context("audio reconfiguration preparation task failed")??;
+        if !manager.is_current(&latest_config) {
+            anyhow::bail!("audio config changed while live reconfiguration was prepared");
+        }
+        let mut input_manager = state.input_manager.lock().await;
+        match input_manager.commit_audio_runtime_config(&mut prepared) {
+            Ok(retirement) => {
+                let sources = input_manager.source_names();
+                drop(input_manager);
+                drop(prepared);
+                retirement.retire();
+                info!(
+                    audio_device = %audio_device,
+                    conflict_count,
+                    sources = ?sources,
+                    "Live audio config change applied"
+                );
+                return Ok(());
+            }
+            Err(error)
+                if error
+                    .downcast_ref::<AudioReconfigurationConflict>()
+                    .is_some()
+                    && manager.is_current(&latest_config) =>
+            {
+                conflict_count = conflict_count.saturating_add(1);
+                drop(input_manager);
+                drop(prepared);
+            }
+            Err(error) => {
+                drop(input_manager);
+                drop(prepared);
+                return Err(error);
+            }
+        }
+    }
 }
 
 async fn current_live_audio_capture_demand(state: &Arc<AppState>) -> bool {

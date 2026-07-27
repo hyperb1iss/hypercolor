@@ -10,11 +10,13 @@ use std::{
     time::{Duration, Instant},
 };
 
+use hypercolor_core::input::audio::AudioInput;
+use hypercolor_core::input::audio::realtime::{AudioFrameRing, PushStats, push_frames};
 use hypercolor_core::input::{
     InputData, InputManager, InputSource, InteractionData, ScreenData, SourceKind,
     SourceSessionWriter, SourceStatusHandle, SourceStatusWriter,
 };
-use hypercolor_core::types::audio::AudioData;
+use hypercolor_core::types::audio::{AudioData, AudioPipelineConfig};
 use hypercolor_core::types::event::TimedInputEvent;
 use stats_alloc::{INSTRUMENTED_SYSTEM, Region, Stats, StatsAlloc};
 
@@ -43,6 +45,13 @@ fn preallocated_control(storage: &mut Vec<u8>) -> Stats {
     black_box(value);
 
     region.change()
+}
+
+fn audio_callback_round(input: &[f32], ring: &AudioFrameRing) -> (PushStats, Stats) {
+    let mut region = Region::new(GLOBAL);
+    region.reset();
+    let pushed = black_box(push_frames(black_box(input), black_box(ring)));
+    (pushed, region.change())
 }
 
 fn sample_round(session: &SourceSessionWriter, base: Instant, first_offset: u64) -> Stats {
@@ -213,6 +222,51 @@ fn steady_manager_sampling_control() -> (Stats, Stats) {
     )
 }
 
+fn steady_audio_manager_sampling_control() -> (Stats, Stats) {
+    let mut manager = InputManager::new();
+    manager.add_source(Box::new(AudioInput::new(&AudioPipelineConfig::default())));
+    manager
+        .start_all()
+        .expect("manual audio source should start");
+    manager.sample_sources(1.0 / 60.0);
+    (
+        manager_sample_round(&mut manager),
+        manager_sample_round(&mut manager),
+    )
+}
+
+fn audio_input_construction_round(config: &AudioPipelineConfig) -> Stats {
+    let mut region = Region::new(GLOBAL);
+    region.reset();
+    let input = black_box(AudioInput::new(black_box(config)));
+    let stats = region.change();
+    drop(input);
+    stats
+}
+
+fn prepared_audio_commit_round(config: &AudioPipelineConfig) -> Stats {
+    let mut manager = InputManager::new();
+    manager.add_source(Box::new(AudioInput::new(config)));
+    manager
+        .start_all()
+        .expect("manual audio source should start");
+    let mut prepared = manager
+        .plan_audio_runtime_config(false, config, "prepared-audio", false)
+        .expect("manual audio source should support preparation")
+        .prepare()
+        .expect("disabled audio preparation should stay local");
+
+    let mut region = Region::new(GLOBAL);
+    region.reset();
+    let retirement = black_box(&mut manager)
+        .commit_audio_runtime_config(black_box(&mut prepared))
+        .expect("prepared audio state should commit");
+    black_box(&retirement);
+    let stats = region.change();
+    retirement.retire();
+    stats
+}
+
 #[test]
 fn counting_allocator_is_active_and_scoped() {
     drop(black_box(vec![0_u8; 4_096]));
@@ -244,6 +298,21 @@ fn counting_allocator_is_active_and_scoped() {
     assert_eq!(first_preallocated, Stats::default());
     assert_eq!(second_preallocated, first_preallocated);
 
+    let audio_ring = AudioFrameRing::with_channels(2_048, 2);
+    let audio_frames = vec![0.25_f32; 512];
+    let first_audio_push = audio_callback_round(&audio_frames, &audio_ring);
+    let second_audio_push = audio_callback_round(&audio_frames, &audio_ring);
+    assert_eq!(
+        first_audio_push.0,
+        PushStats {
+            accepted: 256,
+            dropped: 0,
+        }
+    );
+    assert_eq!(second_audio_push.0, first_audio_push.0);
+    assert_eq!(first_audio_push.1, Stats::default());
+    assert_eq!(second_audio_push.1, first_audio_push.1);
+
     let (first_samples, second_samples) = steady_source_sample_control();
     assert_eq!(first_samples, Stats::default());
     assert_eq!(second_samples, Stats::default());
@@ -255,4 +324,19 @@ fn counting_allocator_is_active_and_scoped() {
     let (first_manager_samples, second_manager_samples) = steady_manager_sampling_control();
     assert_eq!(first_manager_samples, Stats::default());
     assert_eq!(second_manager_samples, first_manager_samples);
+
+    let (first_audio_samples, second_audio_samples) = steady_audio_manager_sampling_control();
+    assert_eq!(first_audio_samples, Stats::default());
+    assert_eq!(second_audio_samples, first_audio_samples);
+
+    let audio_config = AudioPipelineConfig::default();
+    let analyzer_construction = audio_input_construction_round(&audio_config);
+    let first_audio_commit = prepared_audio_commit_round(&audio_config);
+    let second_audio_commit = prepared_audio_commit_round(&audio_config);
+    assert_eq!(first_audio_commit, second_audio_commit);
+    assert!(
+        first_audio_commit.bytes_allocated.saturating_mul(4)
+            < analyzer_construction.bytes_allocated,
+        "prepared commit rebuilt heavy analyzer state: commit={first_audio_commit:?}, construction={analyzer_construction:?}"
+    );
 }
