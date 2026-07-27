@@ -351,16 +351,6 @@ impl ScreenCaptureInput {
         self.frame_generation = self.frame_generation.wrapping_add(1);
         self.frame_width = width;
         self.frame_height = height;
-        let (downscale_width, downscale_height) =
-            fit_within(width, height, DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT);
-        self.latest_canvas_downscale = downscale_frame(
-            frame,
-            width,
-            height,
-            downscale_width,
-            downscale_height,
-            &mut self.downscale_pool,
-        );
 
         // 1. Compute sector grid from raw pixels.
         let grid = SectorGrid::compute(
@@ -380,11 +370,39 @@ impl ScreenCaptureInput {
         }
 
         // 3. Get zone colors — crop letterbox if bars detected, else use full grid.
-        let effective_grid = if self.letterbox.has_bars() {
-            grid.crop_letterbox(&self.letterbox).unwrap_or(grid)
+        let (effective_grid, region) = if self.letterbox.has_bars() {
+            grid.crop_letterbox(&self.letterbox).map_or_else(
+                || (grid.clone(), FrameRegion::full(width, height)),
+                |cropped| {
+                    let region = FrameRegion::from_letterbox(
+                        width,
+                        height,
+                        grid.cols(),
+                        grid.rows(),
+                        self.letterbox,
+                    )
+                    .unwrap_or_else(|| FrameRegion::full(width, height));
+                    (cropped, region)
+                },
+            )
         } else {
-            grid
+            (grid, FrameRegion::full(width, height))
         };
+        let (downscale_width, downscale_height) = fit_within(
+            region.width,
+            region.height,
+            DEFAULT_CANVAS_WIDTH,
+            DEFAULT_CANVAS_HEIGHT,
+        );
+        self.latest_canvas_downscale = downscale_frame(
+            frame,
+            width,
+            height,
+            region,
+            downscale_width,
+            downscale_height,
+            &mut self.downscale_pool,
+        );
 
         let zone_data = effective_grid.to_zone_colors();
         self.latest_grid_width = effective_grid.cols();
@@ -525,10 +543,61 @@ impl InputSource for ScreenCaptureInput {
     }
 }
 
+#[derive(Clone, Copy)]
+struct FrameRegion {
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+}
+
+impl FrameRegion {
+    const fn full(width: u32, height: u32) -> Self {
+        Self {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        }
+    }
+
+    fn from_letterbox(
+        width: u32,
+        height: u32,
+        cols: u32,
+        rows: u32,
+        bars: LetterboxBars,
+    ) -> Option<Self> {
+        let sector_width = width.checked_div(cols)?;
+        let sector_height = height.checked_div(rows)?;
+        let x = bars.left.checked_mul(sector_width)?;
+        let y = bars.top.checked_mul(sector_height)?;
+        let right = if bars.right == 0 {
+            width
+        } else {
+            cols.checked_sub(bars.right)?.checked_mul(sector_width)?
+        };
+        let bottom = if bars.bottom == 0 {
+            height
+        } else {
+            rows.checked_sub(bars.bottom)?.checked_mul(sector_height)?
+        };
+        let width = right.checked_sub(x)?;
+        let height = bottom.checked_sub(y)?;
+        (width > 0 && height > 0).then_some(Self {
+            x,
+            y,
+            width,
+            height,
+        })
+    }
+}
+
 fn downscale_frame(
     frame: &[u8],
     width: u32,
     height: u32,
+    region: FrameRegion,
     target_width: u32,
     target_height: u32,
     surface_pool: &mut RenderSurfacePool,
@@ -556,21 +625,21 @@ fn downscale_frame(
     let target_width_usize = usize::try_from(target_width).ok()?;
 
     for y in 0..target_height {
+        let region_y =
+            u32::try_from(u64::from(y) * u64::from(region.height) / u64::from(target_height))
+                .ok()?;
         let src_y = u32::min(
-            (u64::from(y) * u64::from(height) / u64::from(target_height))
-                .try_into()
-                .ok()
-                .unwrap_or_default(),
-            height.saturating_sub(1),
+            region.y.checked_add(region_y)?,
+            region.y.saturating_add(region.height).saturating_sub(1),
         );
         let src_row = usize::try_from(src_y).ok()?;
         for x in 0..target_width {
+            let region_x =
+                u32::try_from(u64::from(x) * u64::from(region.width) / u64::from(target_width))
+                    .ok()?;
             let src_x = u32::min(
-                (u64::from(x) * u64::from(width) / u64::from(target_width))
-                    .try_into()
-                    .ok()
-                    .unwrap_or_default(),
-                width.saturating_sub(1),
+                region.x.checked_add(region_x)?,
+                region.x.saturating_add(region.width).saturating_sub(1),
             );
             let src_col = usize::try_from(src_x).ok()?;
             let src_idx = src_row

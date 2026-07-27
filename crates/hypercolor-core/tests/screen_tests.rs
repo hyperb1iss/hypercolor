@@ -953,6 +953,12 @@ fn disabling_letterbox_live_clears_stale_bars() {
     assert_eq!(cropped.grid_width, 4);
     assert_eq!(cropped.grid_height, 2);
     assert_eq!(cropped.zone_colors.len(), 8);
+    let cropped_surface = cropped
+        .canvas_downscale
+        .as_ref()
+        .expect("letterbox crop should publish a surface");
+    assert_eq!(cropped_surface.width(), 640);
+    assert_eq!(cropped_surface.height(), 213);
 
     input.apply_settings(CaptureConfig {
         letterbox_enabled: false,
@@ -971,6 +977,12 @@ fn disabling_letterbox_live_clears_stale_bars() {
         24,
         "full uncropped grid should be reported once letterbox is off"
     );
+    let full_surface = data
+        .canvas_downscale
+        .as_ref()
+        .expect("full frame should publish a surface");
+    assert_eq!(full_surface.width(), 480);
+    assert_eq!(full_surface.height(), 480);
 }
 
 // ─── Monitor selection ───────────────────────────────────────────────────────
