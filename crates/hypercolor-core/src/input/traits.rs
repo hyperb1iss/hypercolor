@@ -121,6 +121,48 @@ impl InteractionData {
             .saturating_add(other.batch.dropped_events);
         self.generation = self.generation.wrapping_add(other.generation);
     }
+
+    /// Fold a borrowed source snapshot into reusable aggregate storage.
+    ///
+    /// Unlike [`Self::merge_from`], this retains the destination vectors so a
+    /// warmed route cache can merge stable source shapes without reallocating.
+    pub fn merge_from_ref(&mut self, other: &Self) {
+        for key in &other.keyboard.pressed_keys {
+            if !self.keyboard.pressed_keys.contains(key) {
+                self.keyboard.pressed_keys.push(key.clone());
+            }
+        }
+        self.keyboard
+            .recent_keys
+            .extend(other.keyboard.recent_keys.iter().cloned());
+        let take_pointer = takes_pointer_from(&self.mouse, &other.mouse);
+        for button in &other.mouse.buttons {
+            if !self.mouse.buttons.contains(button) {
+                self.mouse.buttons.push(button.clone());
+            }
+        }
+        self.mouse.down |= other.mouse.down;
+        if take_pointer {
+            self.mouse.x = other.mouse.x;
+            self.mouse.y = other.mouse.y;
+            self.mouse.norm_x = other.mouse.norm_x;
+            self.mouse.norm_y = other.mouse.norm_y;
+            self.mouse.mode = other.mouse.mode;
+            self.mouse.injected = other.mouse.injected;
+        }
+        self.batch.wheel_hi_res = self
+            .batch
+            .wheel_hi_res
+            .saturating_add(other.batch.wheel_hi_res);
+        self.batch.motion.dx += other.batch.motion.dx;
+        self.batch.motion.dy += other.batch.motion.dy;
+        self.batch.motion.distance += other.batch.motion.distance;
+        self.batch.window_secs = self.batch.window_secs.max(other.batch.window_secs);
+        self.batch.dropped_events = self
+            .batch
+            .dropped_events
+            .saturating_add(other.batch.dropped_events);
+    }
 }
 
 /// Health snapshot for one interaction source.
@@ -457,6 +499,24 @@ pub trait InputSource: Send {
         let sample = self.sample_with_delta_secs(delta_secs);
         let events = self.drain_events();
         (sample, events)
+    }
+
+    /// Publish one shared sample and append drained events into reusable storage.
+    ///
+    /// The compatibility default preserves the atomic sample-and-drain seam but
+    /// allocates an [`Arc`] for non-empty samples. Sources with an upstream
+    /// latest-value publication can override this and clone their existing Arc.
+    fn sample_shared_and_drain_into(
+        &mut self,
+        delta_secs: f32,
+        events: &mut Vec<TimedInputEvent>,
+    ) -> anyhow::Result<Option<Arc<InputData>>> {
+        let (sample, drained) = self.sample_and_drain_with_delta_secs(delta_secs);
+        events.extend(drained);
+        match sample? {
+            InputData::None => Ok(None),
+            sample => Ok(Some(Arc::new(sample))),
+        }
     }
 
     /// Whether this source supports runtime audio reconfiguration.

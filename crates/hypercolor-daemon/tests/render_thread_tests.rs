@@ -2135,6 +2135,77 @@ async fn render_thread_gates_screen_capture_to_screen_reactive_scene_groups() {
 }
 
 #[tokio::test]
+async fn screen_source_added_during_live_demand_is_activated_once() {
+    let state = make_render_state(
+        active_builtin_effect("screen_cast", HashMap::new()),
+        SpatialEngine::new(test_layout(vec![point_zone(
+            "zone_screen",
+            "mock:screen",
+            0.5,
+            0.5,
+        )])),
+        BackendManager::new(),
+    );
+    let transitions = Arc::new(StdMutex::new(Vec::new()));
+
+    {
+        let mut render_loop = state.render_loop.write().await;
+        render_loop.start();
+    }
+    let mut render_thread = RenderThread::spawn(state.clone());
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if state.input_manager.lock().await.source_graph_generation() >= 3 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("initial empty-graph demand should reconcile");
+
+    let screen_data = ScreenData {
+        zone_colors: Vec::new(),
+        grid_width: 0,
+        grid_height: 0,
+        canvas_downscale: Some(PublishedSurface::from_owned_canvas(Canvas::new(2, 2), 5, 9)),
+        source_width: 2,
+        source_height: 2,
+        letterbox: [0; 4],
+    };
+    {
+        let mut input_manager = state.input_manager.lock().await;
+        input_manager.add_source(Box::new(DemandGatedMockScreenSource::new(
+            screen_data,
+            Arc::clone(&transitions),
+        )));
+        input_manager
+            .start_all()
+            .expect("new screen source should start");
+    }
+
+    wait_for_screen_capture_transition(&transitions, true).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        transitions
+            .lock()
+            .expect("transition log should lock")
+            .iter()
+            .filter(|active| **active)
+            .count(),
+        1,
+        "stable graph generations must not reapply live demand"
+    );
+
+    {
+        let mut render_loop = state.render_loop.write().await;
+        render_loop.stop();
+    }
+    render_thread.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
 async fn pipeline_publishes_frame_data_via_watch() {
     let state = make_render_state(
         idle_effect(),

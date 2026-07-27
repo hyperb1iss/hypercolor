@@ -8,6 +8,7 @@ pub mod audio;
 pub mod browser;
 #[cfg(target_os = "linux")]
 pub mod evdev;
+mod graph;
 #[cfg(target_os = "macos")]
 pub mod interaction;
 pub mod keymap;
@@ -22,6 +23,10 @@ pub mod windows;
 pub use browser::{BrowserInputEdge, BrowserInputHandle, BrowserInputSource};
 #[cfg(target_os = "linux")]
 pub use evdev::{DeviceOpenState, DeviceOpenStatus, EvdevHostInput};
+pub use graph::{
+    INPUT_EVENT_RING_CAPACITY, InputEventRead, InputGraphHandle, InputGraphSnapshot,
+    InputSourceSlot,
+};
 #[cfg(target_os = "macos")]
 pub use interaction::InteractionInput;
 pub use media::MediaSource;
@@ -44,6 +49,7 @@ use crate::input::audio::AudioInput;
 use crate::types::audio::AudioPipelineConfig;
 use crate::types::event::TimedInputEvent;
 use hypercolor_types::sensor::SystemSnapshot;
+use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, LazyLock};
 use std::time::Instant;
 use tokio::sync::watch;
@@ -86,14 +92,58 @@ pub fn input_mono_ms() -> u64 {
 /// }
 /// ```
 pub struct InputManager {
-    sources: Vec<Box<dyn InputSource>>,
+    sources: Vec<ManagedInputSource>,
     source_graph_generation: u64,
+    next_source_slot_id: u64,
+    input_graph: InputGraphHandle,
     source_status_registry: SourceStatusRegistry,
+    event_scratch: Vec<TimedInputEvent>,
     audio_capture_active: Option<bool>,
     screen_capture_active: Option<bool>,
     interaction_capture_active: Option<bool>,
     sensor_poller: Option<SensorPoller>,
     sensor_snapshot_rx: Option<watch::Receiver<Arc<SystemSnapshot>>>,
+}
+
+struct ManagedInputSource {
+    source: Box<dyn InputSource>,
+    slot: InputSourceSlot,
+}
+
+impl ManagedInputSource {
+    fn new(source: Box<dyn InputSource>, slot: InputSourceSlot) -> Self {
+        Self { source, slot }
+    }
+
+    fn into_source(self) -> Box<dyn InputSource> {
+        self.source
+    }
+}
+
+impl Deref for ManagedInputSource {
+    type Target = dyn InputSource;
+
+    fn deref(&self) -> &Self::Target {
+        self.source.as_ref()
+    }
+}
+
+impl DerefMut for ManagedInputSource {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.source.as_mut()
+    }
+}
+
+impl AsRef<dyn InputSource> for ManagedInputSource {
+    fn as_ref(&self) -> &(dyn InputSource + 'static) {
+        self.source.as_ref()
+    }
+}
+
+impl AsMut<dyn InputSource> for ManagedInputSource {
+    fn as_mut(&mut self) -> &mut (dyn InputSource + 'static) {
+        self.source.as_mut()
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -128,7 +178,10 @@ impl InputManager {
         Self {
             sources: Vec::new(),
             source_graph_generation: 0,
+            next_source_slot_id: 1,
+            input_graph: InputGraphHandle::new(),
             source_status_registry: SourceStatusRegistry::new(),
+            event_scratch: Vec::with_capacity(INPUT_EVENT_RING_CAPACITY),
             audio_capture_active: None,
             screen_capture_active: None,
             interaction_capture_active: None,
@@ -149,8 +202,9 @@ impl InputManager {
         );
         let source_graph_generation = self.bump_source_graph_generation();
         source.set_source_graph_generation(source_graph_generation);
+        let slot = self.create_source_slot(source.as_ref());
         info!(source = source.name(), "Registered input source");
-        self.sources.push(source);
+        self.sources.push(ManagedInputSource::new(source, slot));
         self.invalidate_capture_domains(domains);
         self.publish_source_status_registry();
     }
@@ -179,7 +233,11 @@ impl InputManager {
             source.is_interaction_source(),
         );
         source.set_source_graph_generation(source_graph_generation);
-        let mut previous = std::mem::replace(&mut self.sources[index], source);
+        let slot = self.create_source_slot(source.as_ref());
+        let mut previous = std::mem::replace(
+            &mut self.sources[index],
+            ManagedInputSource::new(source, slot),
+        );
         previous.stop();
         if let Err(error) = previous.retire_source_status(source_graph_generation) {
             error!(source = previous.name(), %error, "Failed to retire replaced input source status");
@@ -190,7 +248,13 @@ impl InputManager {
             previous_domains.2 || replacement_domains.2,
         ));
         self.publish_source_status_registry();
-        Ok(previous)
+        Ok(previous.into_source())
+    }
+
+    /// Clone the lock-free immutable input graph retained by render consumers.
+    #[must_use]
+    pub fn input_graph_handle(&self) -> InputGraphHandle {
+        self.input_graph.clone()
     }
 
     /// Clone the lock-free source-status registry retained outside the manager.
@@ -235,6 +299,26 @@ impl InputManager {
             .iter()
             .map(|source| source.name().to_owned())
             .collect()
+    }
+
+    /// Sample each source into its stable latest-value publication.
+    ///
+    /// Manager-owned route and event scratch storage is retained across calls;
+    /// graph consumers perform typed aggregation after releasing the manager.
+    pub fn sample_sources(&mut self, delta_secs: f32) {
+        for source in &mut self.sources {
+            self.event_scratch.clear();
+            let sample =
+                match source.sample_shared_and_drain_into(delta_secs, &mut self.event_scratch) {
+                    Ok(sample) => sample,
+                    Err(error) => {
+                        error!(source = source.name(), %error, "Input sample failed");
+                        None
+                    }
+                };
+            source.slot.publish_sample(sample);
+            source.slot.publish_events(&mut self.event_scratch);
+        }
     }
 
     /// Sample every registered source, collecting one [`InputData`] per source.
@@ -651,6 +735,15 @@ impl InputManager {
         self.source_graph_generation
     }
 
+    fn create_source_slot(&mut self, source: &dyn InputSource) -> InputSourceSlot {
+        let id = self.next_source_slot_id;
+        self.next_source_slot_id = self
+            .next_source_slot_id
+            .checked_add(1)
+            .expect("input source slot identity exhausted");
+        InputSourceSlot::new(id, declared_source_kind(source))
+    }
+
     fn transition_capture_demand(
         &mut self,
         domain: CaptureDomain,
@@ -743,6 +836,14 @@ impl InputManager {
     }
 
     fn publish_source_status_registry(&self) {
+        let slots = self
+            .sources
+            .iter()
+            .map(|source| source.slot.clone())
+            .collect::<Vec<_>>()
+            .into();
+        self.input_graph
+            .publish(self.source_graph_generation, slots);
         let handles = self
             .sources
             .iter()
@@ -751,6 +852,19 @@ impl InputManager {
         self.source_status_registry
             .publish(self.source_graph_generation, handles);
     }
+}
+
+fn declared_source_kind(source: &dyn InputSource) -> Option<SourceKind> {
+    source
+        .source_status_handle()
+        .map(|handle| handle.snapshot().kind)
+        .or_else(|| source.is_audio_source().then_some(SourceKind::Audio))
+        .or_else(|| source.is_screen_source().then_some(SourceKind::Screen))
+        .or_else(|| {
+            source
+                .is_interaction_source()
+                .then_some(SourceKind::Interaction)
+        })
 }
 
 impl Default for InputManager {

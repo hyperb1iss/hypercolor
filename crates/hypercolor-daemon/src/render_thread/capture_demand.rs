@@ -1,12 +1,46 @@
+use hypercolor_core::input::{InputGraphHandle, InputManager};
 use tracing::warn;
 
 use super::RenderThreadState;
 use super::scene_snapshot::EffectDemand;
 
-#[derive(Debug, Default)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CaptureDemandKey {
+    graph_generation: u64,
+    desired_active: bool,
+}
+
+#[derive(Clone, Copy)]
+enum CaptureDomain {
+    Audio,
+    Screen,
+    Interaction,
+}
+
+impl CaptureDomain {
+    fn apply(self, manager: &mut InputManager, desired_active: bool) -> anyhow::Result<()> {
+        match self {
+            Self::Audio => manager.set_audio_capture_active(desired_active),
+            Self::Screen => manager.set_screen_capture_active(desired_active),
+            Self::Interaction => manager.set_interaction_capture_active(desired_active),
+        }
+    }
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Audio => "audio",
+            Self::Screen => "screen",
+            Self::Interaction => "interaction",
+        }
+    }
+}
+
+#[derive(Default)]
 pub(crate) struct CaptureDemandState {
-    last_audio_capture_active: Option<bool>,
-    last_screen_capture_active: Option<bool>,
+    input_graph: Option<InputGraphHandle>,
+    last_audio: Option<CaptureDemandKey>,
+    last_screen: Option<CaptureDemandKey>,
+    last_interaction: Option<CaptureDemandKey>,
 }
 
 impl CaptureDemandState {
@@ -43,30 +77,8 @@ impl CaptureDemandState {
         state: &RenderThreadState,
         desired_active: bool,
     ) {
-        if self
-            .last_audio_capture_active
-            .is_some_and(|previous| previous == desired_active)
-        {
-            return;
-        }
-
-        let result = {
-            let mut input_manager = state.input_manager.lock().await;
-            input_manager.set_audio_capture_active(desired_active)
-        };
-
-        match result {
-            Ok(()) => {
-                self.last_audio_capture_active = Some(desired_active);
-            }
-            Err(error) => {
-                warn!(
-                    desired_active,
-                    %error,
-                    "Failed to update audio capture demand"
-                );
-            }
-        }
+        self.reconcile_domain(state, CaptureDomain::Audio, desired_active)
+            .await;
     }
 
     pub(crate) async fn reconcile_screen(
@@ -74,52 +86,81 @@ impl CaptureDemandState {
         state: &RenderThreadState,
         desired_active: bool,
     ) {
-        if self
-            .last_screen_capture_active
-            .is_some_and(|previous| previous == desired_active)
-        {
-            return;
-        }
-
-        let result = {
-            let mut input_manager = state.input_manager.lock().await;
-            input_manager.set_screen_capture_active(desired_active)
-        };
-
-        match result {
-            Ok(()) => {
-                self.last_screen_capture_active = Some(desired_active);
-            }
-            Err(error) => {
-                warn!(
-                    desired_active,
-                    %error,
-                    "Failed to update screen capture demand"
-                );
-            }
-        }
+        self.reconcile_domain(state, CaptureDomain::Screen, desired_active)
+            .await;
     }
 
-    /// Deliberately uncached: interaction sources can be added or removed
-    /// live via config, and a cached last-value here would leave a freshly
-    /// added source inactive while an interactive effect is already running.
-    /// Sources no-op internally when the state is unchanged.
     pub(crate) async fn reconcile_interaction(
         &mut self,
         state: &RenderThreadState,
         desired_active: bool,
     ) {
-        let result = {
+        self.reconcile_domain(state, CaptureDomain::Interaction, desired_active)
+            .await;
+    }
+
+    async fn reconcile_domain(
+        &mut self,
+        state: &RenderThreadState,
+        domain: CaptureDomain,
+        desired_active: bool,
+    ) {
+        let input_graph = self.input_graph(state).await;
+        let observed_generation = input_graph.snapshot().generation();
+        let desired_key = CaptureDemandKey {
+            graph_generation: observed_generation,
+            desired_active,
+        };
+        if self.cached_key(domain) == Some(desired_key) {
+            return;
+        }
+
+        let (result, resulting_generation) = {
             let mut input_manager = state.input_manager.lock().await;
-            input_manager.set_interaction_capture_active(desired_active)
+            let result = domain.apply(&mut input_manager, desired_active);
+            (result, input_manager.source_graph_generation())
         };
 
-        if let Err(error) = result {
-            warn!(
+        match result {
+            Ok(()) => self.set_cached_key(
+                domain,
+                CaptureDemandKey {
+                    graph_generation: resulting_generation,
+                    desired_active,
+                },
+            ),
+            Err(error) => warn!(
+                domain = domain.name(),
                 desired_active,
                 %error,
-                "Failed to update interaction capture demand"
-            );
+                "Failed to update capture demand"
+            ),
+        }
+    }
+
+    async fn input_graph(&mut self, state: &RenderThreadState) -> InputGraphHandle {
+        if self.input_graph.is_none() {
+            self.input_graph = Some(state.input_manager.lock().await.input_graph_handle());
+        }
+        self.input_graph
+            .as_ref()
+            .expect("input graph handle is initialized before reconciliation")
+            .clone()
+    }
+
+    fn cached_key(&self, domain: CaptureDomain) -> Option<CaptureDemandKey> {
+        match domain {
+            CaptureDomain::Audio => self.last_audio,
+            CaptureDomain::Screen => self.last_screen,
+            CaptureDomain::Interaction => self.last_interaction,
+        }
+    }
+
+    fn set_cached_key(&mut self, domain: CaptureDomain, key: CaptureDemandKey) {
+        match domain {
+            CaptureDomain::Audio => self.last_audio = Some(key),
+            CaptureDomain::Screen => self.last_screen = Some(key),
+            CaptureDomain::Interaction => self.last_interaction = Some(key),
         }
     }
 }

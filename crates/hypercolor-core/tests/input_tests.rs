@@ -12,15 +12,18 @@ use hypercolor_core::input::screen::WindowsScreenCaptureInput;
 #[cfg(target_os = "linux")]
 use hypercolor_core::input::screen::{CaptureConfig, WaylandScreenCaptureInput};
 use hypercolor_core::input::{
-    BrowserInputSource, InputData, InputManager, InputSource, MediaSource, NetSource, ScreenData,
-    SourceFreshness, SourceIssue, SourceKind, SourceResourceScanHealth, SourceSessionSlot,
-    SourceSessionWriter, SourceState, SourceStatusError, SourceStatusHandle, SourceStatusReporter,
-    SourceStatusWriter, SourceTimestampField, TerminalFailureLatch, classify_source_resource_scan,
+    BrowserInputSource, INPUT_EVENT_RING_CAPACITY, InputData, InputManager, InputSource,
+    MediaSource, NetSource, ScreenData, SourceFreshness, SourceIssue, SourceKind,
+    SourceResourceScanHealth, SourceSessionSlot, SourceSessionWriter, SourceState,
+    SourceStatusError, SourceStatusHandle, SourceStatusReporter, SourceStatusWriter,
+    SourceTimestampField, TerminalFailureLatch, classify_source_resource_scan,
 };
 use hypercolor_core::types::audio::{AudioData, AudioPipelineConfig, AudioSourceType};
 use hypercolor_core::types::event::{InputButtonState, InputEvent, TimedInputEvent, ZoneColors};
+use std::collections::VecDeque;
 #[cfg(target_os = "linux")]
 use std::fs;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -590,6 +593,53 @@ struct EventfulSource {
     events: Vec<TimedInputEvent>,
 }
 
+struct SequencedSource {
+    samples: VecDeque<InputData>,
+    interaction: bool,
+    running: bool,
+}
+
+impl SequencedSource {
+    fn new(samples: impl IntoIterator<Item = InputData>, interaction: bool) -> Self {
+        Self {
+            samples: samples.into_iter().collect(),
+            interaction,
+            running: false,
+        }
+    }
+}
+
+impl InputSource for SequencedSource {
+    fn name(&self) -> &'static str {
+        "Sequenced"
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        self.running = true;
+        Ok(())
+    }
+
+    fn stop(&mut self) {
+        self.running = false;
+    }
+
+    fn sample(&mut self) -> anyhow::Result<InputData> {
+        Ok(if self.running {
+            self.samples.pop_front().unwrap_or(InputData::None)
+        } else {
+            InputData::None
+        })
+    }
+
+    fn is_running(&self) -> bool {
+        self.running
+    }
+
+    fn is_interaction_source(&self) -> bool {
+        self.interaction
+    }
+}
+
 impl EventfulSource {
     fn new(events: Vec<InputEvent>) -> Self {
         Self {
@@ -650,6 +700,58 @@ impl CaptureTrackingAudioSource {
 struct CaptureTrackingScreenSource {
     running: bool,
     capture_active: bool,
+}
+
+struct CountingScreenDemandSource {
+    running: bool,
+    capture_active: bool,
+    activations: Arc<AtomicUsize>,
+}
+
+impl CountingScreenDemandSource {
+    fn new(activations: Arc<AtomicUsize>) -> Self {
+        Self {
+            running: false,
+            capture_active: false,
+            activations,
+        }
+    }
+}
+
+impl InputSource for CountingScreenDemandSource {
+    fn name(&self) -> &'static str {
+        "CountingScreenDemand"
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        self.running = true;
+        Ok(())
+    }
+
+    fn stop(&mut self) {
+        self.running = false;
+        self.capture_active = false;
+    }
+
+    fn sample(&mut self) -> anyhow::Result<InputData> {
+        Ok(InputData::None)
+    }
+
+    fn is_running(&self) -> bool {
+        self.running
+    }
+
+    fn is_screen_source(&self) -> bool {
+        true
+    }
+
+    fn set_screen_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
+        if active && !self.capture_active {
+            self.activations.fetch_add(1, Ordering::Relaxed);
+        }
+        self.capture_active = active;
+        Ok(())
+    }
 }
 
 impl CaptureTrackingScreenSource {
@@ -888,14 +990,22 @@ fn replacing_source_advances_graph_and_retires_previous_handle() {
     let mut manager = InputManager::new();
     manager.add_source(Box::new(StatusAwareScreenSource::new(session_sink)));
     let registry = manager.source_status_registry();
+    let graph = manager.input_graph_handle();
     let before = registry.snapshot();
+    let previous_slot_id = graph.snapshot().slots()[0].id();
     let previous_handle = before.handles()[0].clone();
 
     let replacement = manager.replace_source(0, Box::new(BrowserInputSource::new()));
 
     assert!(replacement.is_ok());
     let after = registry.snapshot();
+    let replacement_graph = graph.snapshot();
     assert!(after.source_graph_generation() > before.source_graph_generation());
+    assert_eq!(
+        replacement_graph.generation(),
+        after.source_graph_generation()
+    );
+    assert_ne!(replacement_graph.slots()[0].id(), previous_slot_id);
     assert_eq!(after.handles().len(), 1);
     assert_eq!(
         after.handles()[0].snapshot().source_id.as_ref(),
@@ -907,6 +1017,80 @@ fn replacing_source_advances_graph_and_retires_previous_handle() {
         retired.source_graph_generation,
         after.source_graph_generation()
     );
+}
+
+#[test]
+fn input_graph_event_ring_bounds_history_and_advances_cursor_once() {
+    let events = (0..INPUT_EVENT_RING_CAPACITY + 44)
+        .map(|index| InputEvent::Key {
+            source_id: "event-ring".into(),
+            key: format!("Key{index}"),
+            state: InputButtonState::Pressed,
+        })
+        .collect();
+    let mut manager = InputManager::new();
+    manager.add_source(Box::new(EventfulSource::new(events)));
+    manager.start_all().expect("event source should start");
+    manager.sample_sources(1.0 / 60.0);
+
+    let graph = manager.input_graph_handle().snapshot();
+    let slot = &graph.slots()[0];
+    let mut delivered = Vec::new();
+    let first = slot.read_events_since(0, &mut delivered);
+    assert_eq!(delivered.len(), INPUT_EVENT_RING_CAPACITY);
+    assert_eq!(first.dropped, 44);
+    assert_eq!(first.dropped_total, 44);
+    assert_eq!(
+        first.next_cursor,
+        u64::try_from(INPUT_EVENT_RING_CAPACITY + 44).expect("event count fits u64")
+    );
+
+    delivered.clear();
+    let second = slot.read_events_since(first.next_cursor, &mut delivered);
+    assert!(
+        delivered.is_empty(),
+        "an advanced cursor must not replay events"
+    );
+    assert_eq!(second.dropped, 0);
+    assert_eq!(second.next_cursor, first.next_cursor);
+}
+
+#[test]
+fn input_graph_clears_absent_live_data_but_retains_change_only_snapshots() {
+    let mut interaction = hypercolor_core::input::InteractionData::default();
+    interaction.keyboard.pressed_keys.push("KeyA".to_owned());
+    interaction.generation = 1;
+    let media = Arc::new(hypercolor_types::media::MediaState::unavailable());
+    let mut manager = InputManager::new();
+    manager.add_source(Box::new(SequencedSource::new(
+        [InputData::Interaction(interaction), InputData::None],
+        true,
+    )));
+    manager.add_source(Box::new(SequencedSource::new(
+        [InputData::Media(Arc::clone(&media)), InputData::None],
+        false,
+    )));
+    manager.start_all().expect("sequenced sources should start");
+    let graph = manager.input_graph_handle();
+
+    manager.sample_sources(1.0 / 60.0);
+    let first = graph.snapshot();
+    assert!(matches!(
+        first.slots()[0].latest().as_deref(),
+        Some(InputData::Interaction(_))
+    ));
+    assert!(matches!(
+        first.slots()[1].latest().as_deref(),
+        Some(InputData::Media(_))
+    ));
+
+    manager.sample_sources(1.0 / 60.0);
+    let second = graph.snapshot();
+    assert!(second.slots()[0].latest().is_none());
+    let Some(InputData::Media(retained)) = second.slots()[1].latest().as_deref().cloned() else {
+        panic!("change-only media snapshot should remain published");
+    };
+    assert!(Arc::ptr_eq(&retained, &media));
 }
 
 #[test]
@@ -1465,6 +1649,32 @@ fn manager_updates_screen_capture_demand_for_screen_sources() {
 
     let samples = mgr.sample_all();
     assert!(matches!(&samples[0], InputData::None));
+}
+
+#[test]
+fn screen_source_added_while_demanded_is_activated_once_on_next_graph_generation() {
+    let activations = Arc::new(AtomicUsize::new(0));
+    let mut manager = InputManager::new();
+    manager
+        .set_screen_capture_active(true)
+        .expect("empty graph should accept screen demand");
+    let demanded_generation = manager.source_graph_generation();
+
+    manager.add_source(Box::new(CountingScreenDemandSource::new(Arc::clone(
+        &activations,
+    ))));
+    manager
+        .start_all()
+        .expect("newly registered screen source should start");
+    assert!(manager.source_graph_generation() > demanded_generation);
+    manager
+        .set_screen_capture_active(true)
+        .expect("graph change should reconcile existing demand");
+    manager
+        .set_screen_capture_active(true)
+        .expect("stable graph demand should be cached");
+
+    assert_eq!(activations.load(Ordering::Relaxed), 1);
 }
 
 #[test]

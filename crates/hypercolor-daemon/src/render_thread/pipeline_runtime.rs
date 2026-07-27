@@ -9,13 +9,16 @@ use hypercolor_core::asset::AssetLibrary;
 use hypercolor_core::bus::DisplayGroupOutputRoute;
 use hypercolor_core::effect::EffectRegistry;
 use hypercolor_core::engine::FpsTier;
-use hypercolor_core::input::{InputData, InteractionBatch, InteractionData, ScreenData};
+use hypercolor_core::input::{
+    InputData, InputGraphHandle, InputGraphSnapshot, InputSourceSlot, InteractionData,
+    MotionAggregate, PointerMode, SourceKind,
+};
 use hypercolor_core::spatial::SpatialEngine;
-use hypercolor_core::types::audio::AudioData;
 use hypercolor_core::types::canvas::{
     Canvas, PublishedSurface, RenderSurfacePool, Rgba, SurfaceDescriptor,
 };
 use hypercolor_core::types::event::{FrameData, HypercolorEvent};
+use hypercolor_types::audio::{AudioData, CHROMA_BINS, MEL_BANDS, SPECTRUM_BINS};
 use hypercolor_types::config::RenderAccelerationMode;
 #[cfg(feature = "wgpu")]
 use hypercolor_types::device::DisplayFrameFormat;
@@ -64,6 +67,7 @@ pub(crate) struct FrameInputs {
     pub(crate) interaction: hypercolor_core::input::InteractionData,
     pub(crate) screen_data: Option<hypercolor_core::input::ScreenData>,
     pub(crate) sensors: Arc<SystemSnapshot>,
+    empty_sensors: Arc<SystemSnapshot>,
     /// Latest media snapshot, carried across frames — the source only emits
     /// on change.
     pub(crate) media: Option<Arc<hypercolor_types::media::MediaState>>,
@@ -110,12 +114,14 @@ impl FrameClockState {
 
 pub(crate) struct InputReuseState {
     cached_inputs: FrameInputs,
+    routes: InputRouteCache,
 }
 
 impl Default for InputReuseState {
     fn default() -> Self {
         Self {
             cached_inputs: FrameInputs::silence(),
+            routes: InputRouteCache::default(),
         }
     }
 }
@@ -128,80 +134,79 @@ impl InputReuseState {
         delta_secs: f32,
     ) -> &'a mut FrameInputs {
         if matches!(skip_decision, SkipDecision::None) {
-            let screen_surface_pool = self
-                .cached_inputs
-                .screen_surface_pool
-                .take()
-                .unwrap_or_else(FrameInputs::new_screen_surface_pool);
-            let carried_media = self.cached_inputs.media.take();
-            let carried_net = self.cached_inputs.net.take();
-            self.cached_inputs = FrameInputs::sample(state, delta_secs, screen_surface_pool).await;
-            if self.cached_inputs.media.is_none() {
-                self.cached_inputs.media = carried_media;
-            }
-            if self.cached_inputs.net.is_none() {
-                self.cached_inputs.net = carried_net;
-            }
+            self.routes
+                .sample_into(state, delta_secs, &mut self.cached_inputs)
+                .await;
         } else {
-            // Reused frames must not re-deliver the previous frame's
-            // transient input batch; held state stays valid.
-            self.cached_inputs.interaction.batch = InteractionBatch::default();
+            self.cached_inputs.clear_transient_interaction();
         }
 
         &mut self.cached_inputs
     }
 }
 
-impl FrameInputs {
-    pub(crate) async fn sample(
+#[derive(Clone)]
+struct CachedInputRoute {
+    slot: InputSourceSlot,
+    event_cursor: u64,
+    interaction_generation: Option<u64>,
+}
+
+#[derive(Default)]
+struct InputRouteCache {
+    graph: Option<InputGraphHandle>,
+    graph_generation: Option<u64>,
+    routes: Vec<CachedInputRoute>,
+    audio_routes: Vec<usize>,
+    screen_routes: Vec<usize>,
+    interaction_routes: Vec<usize>,
+    media_routes: Vec<usize>,
+    network_routes: Vec<usize>,
+    untyped_routes: Vec<usize>,
+    aggregate_interaction_generation: u64,
+}
+
+impl InputRouteCache {
+    async fn sample_into(
+        &mut self,
         state: &RenderThreadState,
         delta_secs: f32,
-        screen_surface_pool: RenderSurfacePool,
-    ) -> Self {
-        let (samples, mut events) = {
+        inputs: &mut FrameInputs,
+    ) {
+        let sensors = {
             let mut input_manager = state.input_manager.lock().await;
-            input_manager.sample_and_drain_with_delta_secs(delta_secs)
+            if self.graph.is_none() {
+                self.graph = Some(input_manager.input_graph_handle());
+            }
+            input_manager.sample_sources(delta_secs);
+            input_manager.latest_sensor_snapshot()
         };
 
-        let mut audio = AudioData::silence();
-        let mut interaction = InteractionData::default();
-        let mut interaction_seen = false;
-        let mut screen_data: Option<ScreenData> = None;
-        let mut sensors = Arc::new(SystemSnapshot::empty());
-        let mut media = None;
-        let mut net = None;
-        for sample in samples {
-            match sample {
-                InputData::Audio(snapshot) => audio = snapshot,
-                // Merge, don't overwrite: host capture and browser injection
-                // both emit interaction snapshots, and last-writer-wins would
-                // let an idle source blank the other's held state.
-                InputData::Interaction(snapshot) => {
-                    if interaction_seen {
-                        interaction.merge_from(snapshot);
-                    } else {
-                        interaction = snapshot;
-                        interaction_seen = true;
-                    }
-                }
-                InputData::Screen(snapshot) => screen_data = Some(snapshot),
-                InputData::Sensors(snapshot) => sensors = snapshot,
-                InputData::Media(snapshot) => media = Some(snapshot),
-                InputData::Net(snapshot) => net = Some(snapshot),
-                InputData::None => {}
-            }
+        let graph = self
+            .graph
+            .as_ref()
+            .expect("input graph handle is initialized before sampling")
+            .snapshot();
+        if self.graph_generation != Some(graph.generation()) {
+            self.rebuild_routes(&graph);
         }
 
-        // Single fan-out point: drained events feed the bus (automation,
-        // authorized WS subscribers) and this frame's interaction batch, so
-        // nothing is consumed twice or lost between the two paths. Sort by
-        // capture time first so cross-source events sequence in real order.
-        events.sort_by_key(|event| event.at_ms);
-        for event in &mut events {
+        inputs.prepare_for_sample(sensors);
+        self.route_latest_into(inputs);
+        self.drain_events_into(inputs);
+        inputs
+            .interaction
+            .batch
+            .events
+            .sort_by_key(|event| event.at_ms);
+        for event in &mut inputs.interaction.batch.events {
             event.seq = next_input_event_seq();
             if let InputEvent::MouseWheel { delta_hi_res, .. } = event.event {
-                interaction.batch.wheel_hi_res =
-                    interaction.batch.wheel_hi_res.saturating_add(delta_hi_res);
+                inputs.interaction.batch.wheel_hi_res = inputs
+                    .interaction
+                    .batch
+                    .wheel_hi_res
+                    .saturating_add(delta_hi_res);
             }
             state
                 .event_bus
@@ -209,29 +214,207 @@ impl FrameInputs {
                     event: event.event.clone(),
                 });
         }
-        interaction.batch.events = events;
-        interaction.batch.window_secs = delta_secs.max(0.0);
+        inputs.interaction.batch.window_secs = delta_secs.max(0.0);
+    }
 
-        Self {
-            audio,
-            interaction,
-            screen_data,
-            sensors,
-            media,
-            net,
-            lighting: None,
-            screen_surface: None,
-            screen_sector_grid: Vec::new(),
-            screen_surface_pool: Some(screen_surface_pool),
+    fn route_latest_into(&mut self, inputs: &mut FrameInputs) {
+        for &route_index in &self.audio_routes {
+            if let Some(sample) = self.routes[route_index].slot.latest()
+                && let InputData::Audio(snapshot) = sample.as_ref()
+            {
+                inputs.audio.clone_from(snapshot);
+            }
+        }
+        let mut screen_seen = false;
+        for &route_index in &self.screen_routes {
+            if let Some(sample) = self.routes[route_index].slot.latest()
+                && let InputData::Screen(snapshot) = sample.as_ref()
+            {
+                match &mut inputs.screen_data {
+                    Some(current) => current.clone_from(snapshot),
+                    None => inputs.screen_data = Some(snapshot.clone()),
+                }
+                screen_seen = true;
+            }
+        }
+        for &route_index in &self.interaction_routes {
+            let Some(sample) = self.routes[route_index].slot.latest() else {
+                continue;
+            };
+            let InputData::Interaction(snapshot) = sample.as_ref() else {
+                continue;
+            };
+            let route = &mut self.routes[route_index];
+            if route.interaction_generation != Some(snapshot.generation) {
+                self.aggregate_interaction_generation = self
+                    .aggregate_interaction_generation
+                    .checked_add(1)
+                    .expect("aggregate interaction generation exhausted");
+                route.interaction_generation = Some(snapshot.generation);
+            }
+            inputs.interaction.merge_from_ref(snapshot);
+        }
+        for &route_index in &self.media_routes {
+            if let Some(sample) = self.routes[route_index].slot.latest()
+                && let InputData::Media(snapshot) = sample.as_ref()
+            {
+                inputs.media = Some(Arc::clone(snapshot));
+            }
+        }
+        for &route_index in &self.network_routes {
+            if let Some(sample) = self.routes[route_index].slot.latest()
+                && let InputData::Net(snapshot) = sample.as_ref()
+            {
+                inputs.net = Some(Arc::clone(snapshot));
+            }
+        }
+        for &route_index in &self.untyped_routes {
+            let Some(sample) = self.routes[route_index].slot.latest() else {
+                continue;
+            };
+            match sample.as_ref() {
+                InputData::Audio(snapshot) => inputs.audio.clone_from(snapshot),
+                InputData::Interaction(snapshot) => {
+                    let route = &mut self.routes[route_index];
+                    if route.interaction_generation != Some(snapshot.generation) {
+                        self.aggregate_interaction_generation = self
+                            .aggregate_interaction_generation
+                            .checked_add(1)
+                            .expect("aggregate interaction generation exhausted");
+                        route.interaction_generation = Some(snapshot.generation);
+                    }
+                    inputs.interaction.merge_from_ref(snapshot);
+                }
+                InputData::Media(snapshot) => inputs.media = Some(Arc::clone(snapshot)),
+                InputData::Net(snapshot) => inputs.net = Some(Arc::clone(snapshot)),
+                InputData::Screen(snapshot) => {
+                    match &mut inputs.screen_data {
+                        Some(current) => current.clone_from(snapshot),
+                        None => inputs.screen_data = Some(snapshot.clone()),
+                    }
+                    screen_seen = true;
+                }
+                InputData::Sensors(snapshot) => inputs.sensors = Arc::clone(snapshot),
+                InputData::None => {}
+            }
+        }
+        if !screen_seen {
+            inputs.screen_data = None;
+        }
+        inputs.interaction.generation = self.aggregate_interaction_generation;
+    }
+
+    fn drain_events_into(&mut self, inputs: &mut FrameInputs) {
+        for route in &mut self.routes {
+            let read = route
+                .slot
+                .read_events_since(route.event_cursor, &mut inputs.interaction.batch.events);
+            route.event_cursor = read.next_cursor;
+            inputs.interaction.batch.dropped_events = inputs
+                .interaction
+                .batch
+                .dropped_events
+                .saturating_add(u32::try_from(read.dropped).unwrap_or(u32::MAX));
         }
     }
 
+    fn rebuild_routes(&mut self, graph: &InputGraphSnapshot) {
+        let previous_routes = std::mem::take(&mut self.routes);
+        self.routes
+            .reserve(graph.slots().len().saturating_sub(self.routes.capacity()));
+        self.clear_typed_routes();
+        for slot in graph.slots() {
+            let previous = previous_routes
+                .iter()
+                .find(|route| route.slot.id() == slot.id());
+            let route_index = self.routes.len();
+            self.routes.push(CachedInputRoute {
+                slot: slot.clone(),
+                event_cursor: previous.map_or(0, |route| route.event_cursor),
+                interaction_generation: previous.and_then(|route| route.interaction_generation),
+            });
+            match slot.kind() {
+                Some(SourceKind::Audio) => self.audio_routes.push(route_index),
+                Some(SourceKind::Screen) => self.screen_routes.push(route_index),
+                Some(SourceKind::Interaction) => self.interaction_routes.push(route_index),
+                Some(SourceKind::Media) => self.media_routes.push(route_index),
+                Some(SourceKind::Network) => self.network_routes.push(route_index),
+                None => self.untyped_routes.push(route_index),
+            }
+        }
+        self.graph_generation = Some(graph.generation());
+        self.aggregate_interaction_generation = self
+            .aggregate_interaction_generation
+            .checked_add(1)
+            .expect("aggregate interaction generation exhausted");
+    }
+
+    fn clear_typed_routes(&mut self) {
+        self.audio_routes.clear();
+        self.screen_routes.clear();
+        self.interaction_routes.clear();
+        self.media_routes.clear();
+        self.network_routes.clear();
+        self.untyped_routes.clear();
+    }
+}
+
+fn reset_audio_vector(values: &mut Vec<f32>, len: usize) {
+    values.resize(len, 0.0);
+    values.fill(0.0);
+}
+
+impl FrameInputs {
+    fn prepare_for_sample(&mut self, sensors: Option<Arc<SystemSnapshot>>) {
+        reset_audio_vector(&mut self.audio.spectrum, SPECTRUM_BINS);
+        reset_audio_vector(&mut self.audio.mel_bands, MEL_BANDS);
+        reset_audio_vector(&mut self.audio.chromagram, CHROMA_BINS);
+        self.audio.beat_detected = false;
+        self.audio.beat_confidence = 0.0;
+        self.audio.beat_phase = 0.0;
+        self.audio.beat_pulse = 0.0;
+        self.audio.bpm = 0.0;
+        self.audio.rms_level = 0.0;
+        self.audio.peak_level = 0.0;
+        self.audio.spectral_centroid = 0.0;
+        self.audio.spectral_flux = 0.0;
+        self.audio.onset_detected = false;
+        self.audio.onset_pulse = 0.0;
+        self.interaction.keyboard.pressed_keys.clear();
+        self.interaction.keyboard.recent_keys.clear();
+        self.interaction.mouse.x = 0;
+        self.interaction.mouse.y = 0;
+        self.interaction.mouse.buttons.clear();
+        self.interaction.mouse.down = false;
+        self.interaction.mouse.norm_x = 0.0;
+        self.interaction.mouse.norm_y = 0.0;
+        self.interaction.mouse.mode = PointerMode::None;
+        self.interaction.mouse.injected = false;
+        self.clear_transient_interaction();
+        self.sensors = sensors.unwrap_or_else(|| Arc::clone(&self.empty_sensors));
+        self.media = None;
+        self.net = None;
+        self.lighting = None;
+        self.screen_surface = None;
+        self.screen_sector_grid.clear();
+    }
+
+    fn clear_transient_interaction(&mut self) {
+        self.interaction.batch.events.clear();
+        self.interaction.batch.wheel_hi_res = 0;
+        self.interaction.batch.motion = MotionAggregate::default();
+        self.interaction.batch.window_secs = 0.0;
+        self.interaction.batch.dropped_events = 0;
+    }
+
     pub(crate) fn silence() -> Self {
+        let empty_sensors = Arc::new(SystemSnapshot::empty());
         Self {
             audio: AudioData::silence(),
             interaction: InteractionData::default(),
             screen_data: None,
-            sensors: Arc::new(SystemSnapshot::empty()),
+            sensors: Arc::clone(&empty_sensors),
+            empty_sensors,
             media: None,
             net: None,
             lighting: None,
@@ -1495,17 +1678,169 @@ impl PipelineRuntime {
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
+    use std::sync::Arc;
     use std::time::Duration;
 
     use hypercolor_core::engine::FpsTier;
+    use hypercolor_core::input::{InputData, InputManager, InputSource, InteractionData};
     use hypercolor_core::spatial::SpatialEngine;
     use hypercolor_types::config::RenderAccelerationMode;
+    use hypercolor_types::event::{InputButtonState, InputEvent, TimedInputEvent};
+    use hypercolor_types::sensor::SystemSnapshot;
     use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 
     use super::{
-        EffectDeltaClock, OutputFrameSource, OutputReuseKey, OutputReuseState, PipelineRuntime,
-        should_publish_preview_frame,
+        EffectDeltaClock, FrameInputs, InputRouteCache, OutputFrameSource, OutputReuseKey,
+        OutputReuseState, PipelineRuntime, should_publish_preview_frame,
     };
+
+    struct FixedInteractionSource {
+        sample: InteractionData,
+        running: bool,
+    }
+
+    struct WarmingUntypedSensorSource {
+        snapshot: Arc<SystemSnapshot>,
+        samples: usize,
+        running: bool,
+    }
+
+    struct EventOnceSource {
+        events: Vec<TimedInputEvent>,
+        running: bool,
+    }
+
+    impl EventOnceSource {
+        fn new(key: &str) -> Self {
+            Self {
+                events: vec![TimedInputEvent {
+                    event: InputEvent::Key {
+                        source_id: "route-cache".into(),
+                        key: key.to_owned(),
+                        state: InputButtonState::Pressed,
+                    },
+                    at_ms: 1,
+                    seq: 0,
+                }],
+                running: false,
+            }
+        }
+    }
+
+    impl InputSource for EventOnceSource {
+        fn name(&self) -> &'static str {
+            "event-once"
+        }
+
+        fn start(&mut self) -> anyhow::Result<()> {
+            self.running = true;
+            Ok(())
+        }
+
+        fn stop(&mut self) {
+            self.running = false;
+        }
+
+        fn sample(&mut self) -> anyhow::Result<InputData> {
+            Ok(InputData::None)
+        }
+
+        fn is_running(&self) -> bool {
+            self.running
+        }
+
+        fn drain_events(&mut self) -> Vec<TimedInputEvent> {
+            std::mem::take(&mut self.events)
+        }
+
+        fn is_interaction_source(&self) -> bool {
+            true
+        }
+    }
+
+    impl WarmingUntypedSensorSource {
+        fn new(snapshot: Arc<SystemSnapshot>) -> Self {
+            Self {
+                snapshot,
+                samples: 0,
+                running: false,
+            }
+        }
+    }
+
+    impl InputSource for WarmingUntypedSensorSource {
+        fn name(&self) -> &'static str {
+            "warming-untyped-sensor"
+        }
+
+        fn start(&mut self) -> anyhow::Result<()> {
+            self.running = true;
+            Ok(())
+        }
+
+        fn stop(&mut self) {
+            self.running = false;
+        }
+
+        fn sample(&mut self) -> anyhow::Result<InputData> {
+            if !self.running {
+                return Ok(InputData::None);
+            }
+            self.samples += 1;
+            match self.samples {
+                1 => Ok(InputData::None),
+                2 => Ok(InputData::Sensors(Arc::clone(&self.snapshot))),
+                _ => Ok(InputData::None),
+            }
+        }
+
+        fn is_running(&self) -> bool {
+            self.running
+        }
+    }
+
+    impl FixedInteractionSource {
+        fn new(key: &str, generation: u64) -> Self {
+            let mut sample = InteractionData::default();
+            sample.keyboard.pressed_keys.push(key.to_owned());
+            sample.generation = generation;
+            Self {
+                sample,
+                running: false,
+            }
+        }
+    }
+
+    impl InputSource for FixedInteractionSource {
+        fn name(&self) -> &'static str {
+            "fixed-interaction"
+        }
+
+        fn start(&mut self) -> anyhow::Result<()> {
+            self.running = true;
+            Ok(())
+        }
+
+        fn stop(&mut self) {
+            self.running = false;
+        }
+
+        fn sample(&mut self) -> anyhow::Result<InputData> {
+            if self.running {
+                Ok(InputData::Interaction(self.sample.clone()))
+            } else {
+                Ok(InputData::None)
+            }
+        }
+
+        fn is_running(&self) -> bool {
+            self.running
+        }
+
+        fn is_interaction_source(&self) -> bool {
+            true
+        }
+    }
 
     fn empty_layout() -> SpatialLayout {
         SpatialLayout {
@@ -1520,6 +1855,114 @@ mod tests {
             spaces: None,
             version: 1,
         }
+    }
+
+    #[test]
+    fn interaction_replacement_with_same_local_generation_invalidates_route_identity() {
+        let mut manager = InputManager::new();
+        manager.add_source(Box::new(FixedInteractionSource::new("KeyA", 7)));
+        manager.start_all().expect("first source should start");
+        let graph = manager.input_graph_handle();
+        let mut routes = InputRouteCache::default();
+        let mut inputs = FrameInputs::silence();
+
+        manager.sample_sources(1.0 / 60.0);
+        routes.rebuild_routes(&graph.snapshot());
+        inputs.prepare_for_sample(None);
+        routes.route_latest_into(&mut inputs);
+        let first_generation = inputs.interaction.generation;
+        assert_eq!(inputs.interaction.keyboard.pressed_keys, ["KeyA"]);
+
+        let replacement =
+            manager.replace_source(0, Box::new(FixedInteractionSource::new("KeyB", 7)));
+        assert!(replacement.is_ok(), "replacement index should exist");
+        manager
+            .start_all()
+            .expect("replacement source should start");
+        manager.sample_sources(1.0 / 60.0);
+        routes.rebuild_routes(&graph.snapshot());
+        inputs.prepare_for_sample(None);
+        routes.route_latest_into(&mut inputs);
+
+        assert!(inputs.interaction.generation > first_generation);
+        assert_eq!(inputs.interaction.keyboard.pressed_keys, ["KeyB"]);
+    }
+
+    #[test]
+    fn untyped_source_is_routed_after_warming_up_without_a_graph_change() {
+        let snapshot = Arc::new(SystemSnapshot::empty());
+        let mut manager = InputManager::new();
+        manager.add_source(Box::new(WarmingUntypedSensorSource::new(Arc::clone(
+            &snapshot,
+        ))));
+        manager.start_all().expect("sensor source should start");
+        let graph = manager.input_graph_handle();
+        let mut routes = InputRouteCache::default();
+        let mut inputs = FrameInputs::silence();
+
+        manager.sample_sources(1.0 / 60.0);
+        routes.rebuild_routes(&graph.snapshot());
+        inputs.prepare_for_sample(None);
+        routes.route_latest_into(&mut inputs);
+        assert!(!Arc::ptr_eq(&inputs.sensors, &snapshot));
+
+        manager.sample_sources(1.0 / 60.0);
+        inputs.prepare_for_sample(None);
+        routes.route_latest_into(&mut inputs);
+        assert!(Arc::ptr_eq(&inputs.sensors, &snapshot));
+
+        manager.sample_sources(1.0 / 60.0);
+        inputs.prepare_for_sample(None);
+        routes.route_latest_into(&mut inputs);
+        assert!(!Arc::ptr_eq(&inputs.sensors, &snapshot));
+    }
+
+    #[test]
+    fn event_cursor_survives_graph_rebuild_and_resets_for_replacement_slot() {
+        let mut manager = InputManager::new();
+        manager.add_source(Box::new(EventOnceSource::new("KeyA")));
+        manager
+            .start_all()
+            .expect("first event source should start");
+        let graph = manager.input_graph_handle();
+        let mut routes = InputRouteCache::default();
+        let mut inputs = FrameInputs::silence();
+
+        manager.sample_sources(1.0 / 60.0);
+        routes.rebuild_routes(&graph.snapshot());
+        routes.drain_events_into(&mut inputs);
+        assert!(matches!(
+            inputs.interaction.batch.events.as_slice(),
+            [TimedInputEvent {
+                event: InputEvent::Key { key, .. },
+                ..
+            }] if key == "KeyA"
+        ));
+
+        inputs.clear_transient_interaction();
+        manager
+            .set_interaction_capture_active(false)
+            .expect("same-slot graph rebuild should succeed");
+        manager.sample_sources(1.0 / 60.0);
+        routes.rebuild_routes(&graph.snapshot());
+        routes.drain_events_into(&mut inputs);
+        assert!(inputs.interaction.batch.events.is_empty());
+
+        let replacement = manager.replace_source(0, Box::new(EventOnceSource::new("KeyB")));
+        assert!(replacement.is_ok(), "replacement index should exist");
+        manager
+            .start_all()
+            .expect("replacement event source should start");
+        manager.sample_sources(1.0 / 60.0);
+        routes.rebuild_routes(&graph.snapshot());
+        routes.drain_events_into(&mut inputs);
+        assert!(matches!(
+            inputs.interaction.batch.events.as_slice(),
+            [TimedInputEvent {
+                event: InputEvent::Key { key, .. },
+                ..
+            }] if key == "KeyB"
+        ));
     }
 
     #[test]
