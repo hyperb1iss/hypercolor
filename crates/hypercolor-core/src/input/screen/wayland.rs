@@ -27,10 +27,10 @@ use tracing::{debug, info, warn};
 
 use crate::input::screen::{
     CaptureColorSpace, CaptureConfig, CaptureCursor, CaptureDamage, CaptureEpoch, CaptureFrame,
-    CaptureFrameMetadata, CaptureGeometry, CapturePixelFormat, CaptureRotation, CaptureSourceId,
-    CaptureStorage, CaptureTransferFunction, CpuCaptureStorage, LegacyScreenSnapshot,
-    PhysicalOrigin, PixelExtent, RawCaptureSurface, ScreenCaptureInput, SourceScale,
-    analyze_legacy_screen_frame,
+    CaptureFrameMetadata, CaptureGeometry, CapturePixelFormat, CapturePlanePool, CaptureRotation,
+    CaptureSourceId, CaptureStorage, CaptureTransferFunction, CpuCaptureStorage,
+    LegacyScreenSnapshot, PhysicalOrigin, PixelExtent, PooledCapturePlane, RawCaptureSurface,
+    ScreenCaptureInput, SourceScale, analyze_legacy_screen_frame,
 };
 use crate::input::traits::{InputData, InputSource};
 use crate::input::worker_retention::retain_input_worker;
@@ -57,7 +57,9 @@ struct SharedSettings {
     config: Mutex<CaptureConfig>,
     generation: AtomicU64,
     frame_generation: AtomicU64,
+    topology_generation: AtomicU64,
     session_generation: AtomicU64,
+    expected_epoch: Mutex<Option<CaptureEpoch>>,
 }
 
 #[derive(Clone)]
@@ -72,6 +74,32 @@ impl SharedSettings {
             .lock()
             .map(|config| config.clone())
             .unwrap_or_default()
+    }
+
+    fn expected_epoch(&self) -> Option<CaptureEpoch> {
+        self.expected_epoch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    fn install_expected_epoch(&self, epoch: CaptureEpoch) -> bool {
+        let mut expected = self
+            .expected_epoch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.session_generation.load(Ordering::Acquire) != epoch.session_generation {
+            return false;
+        }
+        *expected = Some(epoch);
+        true
+    }
+
+    fn clear_expected_epoch(&self) {
+        *self
+            .expected_epoch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     }
 }
 
@@ -98,7 +126,9 @@ impl WaylandScreenCaptureInput {
                 config: Mutex::new(config),
                 generation: AtomicU64::new(0),
                 frame_generation: AtomicU64::new(0),
+                topology_generation: AtomicU64::new(0),
                 session_generation: AtomicU64::new(0),
+                expected_epoch: Mutex::new(None),
             }),
             running: false,
             capture_active: false,
@@ -265,6 +295,7 @@ impl WaylandScreenCaptureInput {
             .session_generation
             .fetch_add(1, Ordering::AcqRel)
             .wrapping_add(1);
+        settings.clear_expected_epoch();
         let join_handle = thread::Builder::new()
             .name("hypercolor-screen-capture".to_owned())
             .spawn(move || {
@@ -357,6 +388,7 @@ impl WaylandScreenCaptureInput {
         if let Ok(mut latest) = self.latest_snapshot.lock() {
             *latest = None;
         }
+        self.settings.clear_expected_epoch();
         self.reap_workers(false);
         true
     }
@@ -415,6 +447,7 @@ impl InputSource for WaylandScreenCaptureInput {
         self.status.stop();
         self.running = false;
         self.capture_active = false;
+        self.settings.clear_expected_epoch();
         self.shutdown_worker();
         self.reap_workers(true);
 
@@ -440,10 +473,8 @@ impl InputSource for WaylandScreenCaptureInput {
             return Ok(InputData::None);
         };
         let metadata = snapshot.legacy.frame().metadata();
-        let expected = CaptureEpoch {
-            source_id: metadata.source_id.clone(),
-            topology_generation: metadata.topology_generation,
-            session_generation: self.settings.session_generation.load(Ordering::Acquire),
+        let Some(expected) = self.settings.expected_epoch() else {
+            return Ok(InputData::None);
         };
         if snapshot.legacy.frame().validate_epoch(&expected).is_err() {
             return Ok(InputData::None);
@@ -599,6 +630,8 @@ struct WaylandSourceMetadata {
     origin: PhysicalOrigin,
     logical_width: Option<u32>,
     session_generation: u64,
+    topology_generation: u64,
+    storage_extent: Option<PixelExtent>,
 }
 
 impl WaylandSourceMetadata {
@@ -619,6 +652,8 @@ impl WaylandSourceMetadata {
             origin: PhysicalOrigin { x, y },
             logical_width,
             session_generation,
+            topology_generation: 0,
+            storage_extent: None,
         })
     }
 
@@ -628,11 +663,11 @@ impl WaylandSourceMetadata {
             .unwrap_or(SourceScale::ONE)
     }
 
-    fn epoch(&self, active_session_generation: u64) -> CaptureEpoch {
+    fn epoch(&self) -> CaptureEpoch {
         CaptureEpoch {
             source_id: self.source_id.clone(),
-            topology_generation: 1,
-            session_generation: active_session_generation,
+            topology_generation: self.topology_generation,
+            session_generation: self.session_generation,
         }
     }
 }
@@ -641,7 +676,7 @@ struct WaylandCaptureUserData {
     analyzer: ScreenCaptureInput,
     format: spa::param::video::VideoInfoRaw,
     latest_snapshot: Arc<Mutex<Option<CapturedScreenSnapshot>>>,
-    rgba_frame: Vec<u8>,
+    plane_pool: CapturePlanePool,
     settings: Arc<SharedSettings>,
     applied_generation: u64,
     source: WaylandSourceMetadata,
@@ -662,7 +697,7 @@ impl WaylandCaptureUserData {
             analyzer,
             format: spa::param::video::VideoInfoRaw::default(),
             latest_snapshot,
-            rgba_frame: Vec::new(),
+            plane_pool: CapturePlanePool::default(),
             settings,
             applied_generation,
             source,
@@ -685,9 +720,21 @@ impl WaylandCaptureUserData {
         captured_at: Instant,
         width: u32,
         height: u32,
+        plane: PooledCapturePlane,
     ) -> anyhow::Result<CaptureFrame<RawCaptureSurface>> {
         self.sequence = self.sequence.wrapping_add(1).max(1);
         let extent = PixelExtent::new(width, height)?;
+        if self.source.storage_extent != Some(extent) {
+            self.source.storage_extent = Some(extent);
+            self.source.topology_generation = self
+                .settings
+                .topology_generation
+                .fetch_add(1, Ordering::AcqRel)
+                .wrapping_add(1);
+            if !self.settings.install_expected_epoch(self.source.epoch()) {
+                anyhow::bail!("Wayland capture session became stale during topology update");
+            }
+        }
         let row_stride = i64::from(width)
             .checked_mul(4)
             .ok_or_else(|| anyhow!("Wayland capture row stride overflow"))?;
@@ -696,13 +743,14 @@ impl WaylandCaptureUserData {
         let frame = CaptureFrame::new(
             CaptureFrameMetadata {
                 source_id: self.source.source_id.clone(),
-                topology_generation: 1,
+                topology_generation: self.source.topology_generation,
                 session_generation: self.source.session_generation,
                 sequence: self.sequence,
                 captured_at,
                 fresh_until: captured_at + frame_period + frame_period,
                 geometry: CaptureGeometry::new(
                     self.source.origin,
+                    extent,
                     extent,
                     CaptureRotation::Identity,
                     None,
@@ -712,19 +760,19 @@ impl WaylandCaptureUserData {
                 transfer_function: CaptureTransferFunction::Unknown,
                 cursor: CaptureCursor::default(),
             },
-            CaptureStorage::Cpu(CpuCaptureStorage::new(
-                Arc::<[u8]>::from(self.rgba_frame.as_slice()),
+            CaptureStorage::Cpu(CpuCaptureStorage::from_owner(
+                plane,
                 CapturePixelFormat::Rgba8,
                 row_stride,
                 0,
             )),
             CaptureDamage::default(),
         )?;
-        frame.validate_epoch(
-            &self
-                .source
-                .epoch(self.settings.session_generation.load(Ordering::Acquire)),
-        )?;
+        let expected = self
+            .settings
+            .expected_epoch()
+            .ok_or_else(|| anyhow!("Wayland capture epoch is not active"))?;
+        frame.validate_epoch(&expected)?;
         Ok(frame)
     }
 }
@@ -988,18 +1036,26 @@ fn run_pipewire_loop(
                 return;
             }
             let acquired_at = Instant::now();
+            let Some(plane_len) = usize::try_from(size.width)
+                .ok()
+                .and_then(|width| {
+                    usize::try_from(size.height)
+                        .ok()
+                        .and_then(|height| width.checked_mul(height))
+                })
+                .and_then(|pixels| pixels.checked_mul(4))
+            else {
+                return;
+            };
+            let mut plane = user_data.plane_pool.acquire(plane_len);
 
-            if !copy_frame_to_rgba(
-                data,
-                format,
-                size.width,
-                size.height,
-                &mut user_data.rgba_frame,
-            ) {
+            if !copy_frame_to_rgba(data, format, size.width, size.height, &mut plane) {
                 return;
             }
 
-            let Ok(frame) = user_data.capture_frame(acquired_at, size.width, size.height) else {
+            let Ok(frame) =
+                user_data.capture_frame(acquired_at, size.width, size.height, plane.freeze())
+            else {
                 return;
             };
             let Ok(legacy) = analyze_legacy_screen_frame(&mut user_data.analyzer, frame) else {
@@ -1309,3 +1365,6 @@ fn convert_row_to_rgba(src: &[u8], dst: &mut [u8], format: spa::param::video::Vi
         _ => {}
     }
 }
+
+#[cfg(test)]
+mod tests;

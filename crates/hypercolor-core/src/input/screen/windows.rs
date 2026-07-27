@@ -18,7 +18,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::anyhow;
-use hypercolor_windows_capture::{CaptureError, DesktopDuplicator};
+use hypercolor_windows_capture::{
+    CaptureError, DesktopDuplicator, DisplayRotation, Frame as NativeCaptureFrame,
+};
 use tracing::{debug, info, warn};
 
 use crate::input::screen::{
@@ -61,6 +63,27 @@ struct SharedSettings {
     generation: AtomicU64,
     topology_generation: AtomicU64,
     session_generation: AtomicU64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CaptureTopologySignature {
+    native_width: u32,
+    native_height: u32,
+    origin_x: i32,
+    origin_y: i32,
+    rotation: DisplayRotation,
+}
+
+impl From<&NativeCaptureFrame> for CaptureTopologySignature {
+    fn from(frame: &NativeCaptureFrame) -> Self {
+        Self {
+            native_width: frame.native_width,
+            native_height: frame.native_height,
+            origin_x: frame.origin_x,
+            origin_y: frame.origin_y,
+            rotation: frame.rotation,
+        }
+    }
 }
 
 impl SharedSettings {
@@ -463,6 +486,7 @@ fn run_worker(
     let mut active = false;
     let mut open_failure_logged = false;
     let mut sequence = 0_u64;
+    let mut topology_signature = None;
 
     loop {
         if cancel.load(Ordering::Acquire) {
@@ -495,6 +519,7 @@ fn run_worker(
             analyzer = ScreenCaptureInput::new(config.clone());
             if previous_monitor != config.monitor {
                 duplicator = None;
+                topology_signature = None;
             } else if let Some(duplicator) = duplicator.as_mut() {
                 duplicator.set_max_width(CAPTURE_TARGET_WIDTH);
             }
@@ -547,11 +572,13 @@ fn run_worker(
                 let frame_period =
                     Duration::from_secs_f64(1.0 / f64::from(config.target_fps.max(1)));
                 sequence = sequence.wrapping_add(1).max(1);
-                let topology_generation = settings.topology_generation.load(Ordering::Acquire);
+                let topology_generation = capture_topology_generation(
+                    settings,
+                    &mut topology_signature,
+                    CaptureTopologySignature::from(&frame),
+                );
                 let raw_frame = build_capture_frame(
-                    frame.rgba,
-                    frame.width,
-                    frame.height,
+                    frame,
                     config.monitor,
                     topology_generation,
                     session_generation,
@@ -604,6 +631,22 @@ fn run_worker(
     debug!("Windows screen capture worker stopped");
 }
 
+fn capture_topology_generation(
+    settings: &SharedSettings,
+    previous: &mut Option<CaptureTopologySignature>,
+    current: CaptureTopologySignature,
+) -> u64 {
+    let changed = previous.replace(current).is_some_and(|old| old != current);
+    if changed {
+        settings
+            .topology_generation
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1)
+    } else {
+        settings.topology_generation.load(Ordering::Acquire)
+    }
+}
+
 fn capture_source_id(monitor: usize) -> anyhow::Result<CaptureSourceId> {
     CaptureSourceId::new(Arc::<str>::from(format!("windows:monitor:{monitor}")))
         .map_err(anyhow::Error::from)
@@ -623,9 +666,7 @@ fn capture_epoch(
 
 #[allow(clippy::too_many_arguments)]
 fn build_capture_frame(
-    rgba: &[u8],
-    width: u32,
-    height: u32,
+    frame: NativeCaptureFrame,
     monitor: usize,
     topology_generation: u64,
     session_generation: u64,
@@ -633,10 +674,20 @@ fn build_capture_frame(
     captured_at: Instant,
     frame_period: Duration,
 ) -> anyhow::Result<CaptureFrame<RawCaptureSurface>> {
-    let extent = PixelExtent::new(width, height)?;
-    let row_stride = i64::from(width)
+    let storage_extent = PixelExtent::new(frame.width, frame.height)?;
+    let native_extent = PixelExtent::new(frame.native_width, frame.native_height)?;
+    let row_stride = i64::from(frame.width)
         .checked_mul(4)
         .ok_or_else(|| anyhow!("Windows capture row stride overflow"))?;
+    let geometry = capture_geometry(
+        native_extent,
+        storage_extent,
+        PhysicalOrigin {
+            x: frame.origin_x,
+            y: frame.origin_y,
+        },
+        frame.rotation,
+    )?;
     CaptureFrame::new(
         CaptureFrameMetadata {
             source_id: capture_source_id(monitor)?,
@@ -645,19 +696,13 @@ fn build_capture_frame(
             sequence,
             captured_at,
             fresh_until: captured_at + frame_period + frame_period,
-            geometry: CaptureGeometry::new(
-                PhysicalOrigin::default(),
-                extent,
-                CaptureRotation::Identity,
-                None,
-                SourceScale::ONE,
-            )?,
+            geometry,
             color_space: CaptureColorSpace::Unknown,
             transfer_function: CaptureTransferFunction::Unknown,
             cursor: CaptureCursor::default(),
         },
-        CaptureStorage::Cpu(CpuCaptureStorage::new(
-            Arc::<[u8]>::from(rgba),
+        CaptureStorage::Cpu(CpuCaptureStorage::from_owner(
+            frame,
             CapturePixelFormat::Rgba8,
             row_stride,
             0,
@@ -665,6 +710,31 @@ fn build_capture_frame(
         CaptureDamage::default(),
     )
     .map_err(anyhow::Error::from)
+}
+
+fn capture_geometry(
+    native_extent: PixelExtent,
+    storage_extent: PixelExtent,
+    origin: PhysicalOrigin,
+    rotation: DisplayRotation,
+) -> Result<CaptureGeometry, crate::input::screen::CaptureFrameError> {
+    CaptureGeometry::new(
+        origin,
+        native_extent,
+        storage_extent,
+        capture_rotation(rotation),
+        None,
+        SourceScale::ONE,
+    )
+}
+
+const fn capture_rotation(rotation: DisplayRotation) -> CaptureRotation {
+    match rotation {
+        DisplayRotation::Identity => CaptureRotation::Identity,
+        DisplayRotation::Clockwise90 => CaptureRotation::Clockwise90,
+        DisplayRotation::Clockwise180 => CaptureRotation::Clockwise180,
+        DisplayRotation::Clockwise270 => CaptureRotation::Clockwise270,
+    }
 }
 
 enum ControlFlow {
@@ -696,3 +766,6 @@ fn log_open_failure(error: &CaptureError) {
         other => warn!(%other, "failed to open Windows screen capture"),
     }
 }
+
+#[cfg(test)]
+mod tests;

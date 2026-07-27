@@ -3,7 +3,9 @@
 use std::any::Any;
 use std::fmt;
 use std::marker::PhantomData;
-use std::sync::Arc;
+use std::ops::{Deref, DerefMut};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Instant;
 
 use thiserror::Error;
@@ -209,7 +211,8 @@ impl SourceScale {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CaptureGeometry {
     origin: PhysicalOrigin,
-    extent: PixelExtent,
+    native_extent: PixelExtent,
+    storage_extent: PixelExtent,
     rotation: CaptureRotation,
     crop: Option<PixelRect>,
     source_scale: SourceScale,
@@ -224,19 +227,24 @@ impl CaptureGeometry {
     /// native scanout extent.
     pub fn new(
         origin: PhysicalOrigin,
-        extent: PixelExtent,
+        native_extent: PixelExtent,
+        storage_extent: PixelExtent,
         rotation: CaptureRotation,
         crop: Option<PixelRect>,
         source_scale: SourceScale,
     ) -> Result<Self, CaptureFrameError> {
         if let Some(crop) = crop
-            && !crop.fits_within(extent)
+            && !crop.fits_within(native_extent)
         {
-            return Err(CaptureFrameError::CropOutOfBounds { crop, extent });
+            return Err(CaptureFrameError::CropOutOfBounds {
+                crop,
+                extent: native_extent,
+            });
         }
         Ok(Self {
             origin,
-            extent,
+            native_extent,
+            storage_extent,
             rotation,
             crop,
             source_scale,
@@ -249,10 +257,16 @@ impl CaptureGeometry {
         self.origin
     }
 
-    /// Native scanout extent before rotation or crop.
+    /// Native scanout extent before rotation, crop, or backend downsampling.
     #[must_use]
-    pub const fn extent(&self) -> PixelExtent {
-        self.extent
+    pub const fn native_extent(&self) -> PixelExtent {
+        self.native_extent
+    }
+
+    /// Extent of the pixel plane retained in frame storage.
+    #[must_use]
+    pub const fn storage_extent(&self) -> PixelExtent {
+        self.storage_extent
     }
 
     /// Transform still pending on the stored pixels.
@@ -338,10 +352,23 @@ impl CapturePixelFormat {
     }
 }
 
+trait CaptureBytePlane: Send + Sync {
+    fn bytes(&self) -> &[u8];
+}
+
+impl<T> CaptureBytePlane for T
+where
+    T: AsRef<[u8]> + Send + Sync,
+{
+    fn bytes(&self) -> &[u8] {
+        self.as_ref()
+    }
+}
+
 /// Owned CPU pixel plane with an explicit signed row stride.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct CpuCaptureStorage {
-    bytes: Arc<[u8]>,
+    plane: Arc<dyn CaptureBytePlane>,
     format: CapturePixelFormat,
     row_stride: i64,
     row0_offset: usize,
@@ -357,8 +384,22 @@ impl CpuCaptureStorage {
         row_stride: i64,
         row0_offset: usize,
     ) -> Self {
+        Self::from_owner(bytes, format, row_stride, row0_offset)
+    }
+
+    /// Retain an ownership-transferable byte plane without copying its pixels.
+    #[must_use]
+    pub fn from_owner<T>(
+        owner: T,
+        format: CapturePixelFormat,
+        row_stride: i64,
+        row0_offset: usize,
+    ) -> Self
+    where
+        T: AsRef<[u8]> + Send + Sync + 'static,
+    {
         Self {
-            bytes,
+            plane: Arc::new(owner),
             format,
             row_stride,
             row0_offset,
@@ -367,8 +408,8 @@ impl CpuCaptureStorage {
 
     /// Shared pixel bytes.
     #[must_use]
-    pub fn bytes(&self) -> &Arc<[u8]> {
-        &self.bytes
+    pub fn bytes(&self) -> &[u8] {
+        self.plane.bytes()
     }
 
     /// Pixel encoding.
@@ -397,11 +438,11 @@ impl CpuCaptureStorage {
         if self.format != CapturePixelFormat::Rgba8
             || self.row_stride != i64::try_from(row_bytes).ok()?
             || self.row0_offset != 0
-            || self.bytes.len() < expected
+            || self.bytes().len() < expected
         {
             return None;
         }
-        self.bytes.get(..expected)
+        self.bytes().get(..expected)
     }
 
     fn validate(&self, extent: PixelExtent) -> Result<(), CaptureFrameError> {
@@ -438,11 +479,11 @@ impl CpuCaptureStorage {
                 i128::try_from(row_bytes).map_err(|_| CaptureFrameError::StorageSizeOverflow)?,
             )
             .ok_or(CaptureFrameError::StorageSizeOverflow)?;
-        let buffer_len =
-            i128::try_from(self.bytes.len()).map_err(|_| CaptureFrameError::StorageSizeOverflow)?;
+        let buffer_len = i128::try_from(self.bytes().len())
+            .map_err(|_| CaptureFrameError::StorageSizeOverflow)?;
         if lowest < 0 || end > buffer_len {
             return Err(CaptureFrameError::CpuBufferOutOfBounds {
-                buffer_len: self.bytes.len(),
+                buffer_len: self.bytes().len(),
                 row0_offset: self.row0_offset,
                 stride: self.row_stride,
                 extent,
@@ -450,6 +491,150 @@ impl CpuCaptureStorage {
         }
         Ok(())
     }
+}
+
+impl fmt::Debug for CpuCaptureStorage {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CpuCaptureStorage")
+            .field("len", &self.bytes().len())
+            .field("format", &self.format)
+            .field("row_stride", &self.row_stride)
+            .field("row0_offset", &self.row0_offset)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Debug, Default)]
+struct CapturePlanePoolInner {
+    available: Mutex<Vec<Vec<u8>>>,
+    allocations: AtomicUsize,
+}
+
+/// Reusable owner pool for capture adapters that must materialize CPU pixels.
+#[derive(Clone, Debug, Default)]
+pub struct CapturePlanePool {
+    inner: Arc<CapturePlanePoolInner>,
+}
+
+impl CapturePlanePool {
+    /// Acquire exclusive mutable storage with at least `minimum_capacity` bytes.
+    #[must_use]
+    pub fn acquire(&self, minimum_capacity: usize) -> CapturePlaneLease {
+        let mut available = self
+            .inner
+            .available
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let index = available
+            .iter()
+            .position(|buffer| buffer.capacity() >= minimum_capacity);
+        let buffer = match index {
+            Some(index) => available.swap_remove(index),
+            None => {
+                if let Some(mut buffer) = available.pop() {
+                    buffer.reserve(minimum_capacity);
+                    buffer
+                } else {
+                    self.inner.allocations.fetch_add(1, Ordering::Relaxed);
+                    Vec::with_capacity(minimum_capacity)
+                }
+            }
+        };
+        drop(available);
+        CapturePlaneLease {
+            buffer: Some(buffer),
+            pool: Arc::downgrade(&self.inner),
+        }
+    }
+
+    /// Number of backing allocations created by this pool.
+    #[must_use]
+    pub fn allocation_count(&self) -> usize {
+        self.inner.allocations.load(Ordering::Relaxed)
+    }
+
+    /// Number of buffers currently available for immediate reuse.
+    #[must_use]
+    pub fn available_count(&self) -> usize {
+        self.inner
+            .available
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+    }
+}
+
+/// Exclusive mutable lease that freezes into an immutable pooled frame plane.
+pub struct CapturePlaneLease {
+    buffer: Option<Vec<u8>>,
+    pool: Weak<CapturePlanePoolInner>,
+}
+
+impl CapturePlaneLease {
+    /// Freeze the populated buffer for publication.
+    #[must_use]
+    pub fn freeze(mut self) -> PooledCapturePlane {
+        PooledCapturePlane {
+            buffer: self.buffer.take(),
+            pool: self.pool.clone(),
+        }
+    }
+}
+
+impl Deref for CapturePlaneLease {
+    type Target = Vec<u8>;
+
+    fn deref(&self) -> &Self::Target {
+        self.buffer
+            .as_ref()
+            .expect("capture plane lease owns a buffer")
+    }
+}
+
+impl DerefMut for CapturePlaneLease {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.buffer
+            .as_mut()
+            .expect("capture plane lease owns a buffer")
+    }
+}
+
+impl Drop for CapturePlaneLease {
+    fn drop(&mut self) {
+        recycle_plane(self.buffer.take(), &self.pool);
+    }
+}
+
+/// Immutable CPU plane whose allocation returns to its pool after publication.
+pub struct PooledCapturePlane {
+    buffer: Option<Vec<u8>>,
+    pool: Weak<CapturePlanePoolInner>,
+}
+
+impl AsRef<[u8]> for PooledCapturePlane {
+    fn as_ref(&self) -> &[u8] {
+        self.buffer
+            .as_deref()
+            .expect("pooled capture plane owns a buffer")
+    }
+}
+
+impl Drop for PooledCapturePlane {
+    fn drop(&mut self) {
+        recycle_plane(self.buffer.take(), &self.pool);
+    }
+}
+
+fn recycle_plane(buffer: Option<Vec<u8>>, pool: &Weak<CapturePlanePoolInner>) {
+    let (Some(mut buffer), Some(pool)) = (buffer, pool.upgrade()) else {
+        return;
+    };
+    buffer.clear();
+    pool.available
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(buffer);
 }
 
 /// Platform family of an opaque GPU surface.
@@ -693,14 +878,46 @@ pub struct CaptureFrame<S: CaptureSurfaceStage> {
     stage: PhantomData<S>,
 }
 
-impl<S: CaptureSurfaceStage> CaptureFrame<S> {
-    /// Validate and construct a capture frame at the requested type-level stage.
+impl CaptureFrame<RawCaptureSurface> {
+    /// Validate and construct a raw capture frame.
     ///
     /// # Errors
     ///
     /// Rejects zero generations or sequence, inverted freshness, inconsistent
-    /// storage, out-of-bounds damage, and processed surfaces with pending rotation.
+    /// storage, and out-of-bounds damage.
     pub fn new(
+        metadata: CaptureFrameMetadata,
+        storage: CaptureStorage,
+        damage: CaptureDamage,
+    ) -> Result<Self, CaptureFrameError> {
+        Self::from_parts(metadata, storage, damage)
+    }
+
+    /// Consume a raw frame and publish the canonical output of geometry processing.
+    ///
+    /// The source identity, epochs, sequence, timestamps, and color metadata are
+    /// retained from the raw input. Callers supply only the processed geometry,
+    /// storage, and damage map, so a processed frame cannot be fabricated without
+    /// consuming the raw frame it came from.
+    ///
+    /// # Errors
+    ///
+    /// Rejects processed geometry with a pending crop or rotation and validates
+    /// the replacement storage against its stored extent.
+    pub fn into_processed(
+        self,
+        geometry: CaptureGeometry,
+        storage: CaptureStorage,
+        damage: CaptureDamage,
+    ) -> Result<CaptureFrame<ProcessedCaptureSurface>, CaptureFrameError> {
+        let mut metadata = self.metadata;
+        metadata.geometry = geometry;
+        CaptureFrame::from_parts(metadata, storage, damage)
+    }
+}
+
+impl<S: CaptureSurfaceStage> CaptureFrame<S> {
+    fn from_parts(
         metadata: CaptureFrameMetadata,
         storage: CaptureStorage,
         damage: CaptureDamage,
@@ -790,20 +1007,25 @@ fn validate_metadata<S: CaptureSurfaceStage>(
             metadata.geometry.rotation,
         ));
     }
+    if S::KIND == CaptureStageKind::Processed
+        && let Some(crop) = metadata.geometry.crop
+    {
+        return Err(CaptureFrameError::ProcessedCropPending(crop));
+    }
 
     match storage {
-        CaptureStorage::Cpu(cpu) => cpu.validate(metadata.geometry.extent)?,
-        CaptureStorage::Gpu(gpu) if gpu.extent != metadata.geometry.extent => {
+        CaptureStorage::Cpu(cpu) => cpu.validate(metadata.geometry.storage_extent)?,
+        CaptureStorage::Gpu(gpu) if gpu.extent != metadata.geometry.storage_extent => {
             return Err(CaptureFrameError::GpuExtentMismatch {
                 storage: gpu.extent,
-                geometry: metadata.geometry.extent,
+                geometry: metadata.geometry.storage_extent,
             });
         }
         CaptureStorage::Gpu(_) => {}
     }
 
     for region in damage.dirty_regions.iter().copied() {
-        if !region.fits_within(metadata.geometry.extent) {
+        if !region.fits_within(metadata.geometry.native_extent) {
             return Err(CaptureFrameError::DamageOutOfBounds(region));
         }
     }
@@ -813,8 +1035,8 @@ fn validate_metadata<S: CaptureSurfaceStage>(
             y: region.destination.1,
             extent: region.source.extent,
         };
-        if !region.source.fits_within(metadata.geometry.extent)
-            || !destination.fits_within(metadata.geometry.extent)
+        if !region.source.fits_within(metadata.geometry.native_extent)
+            || !destination.fits_within(metadata.geometry.native_extent)
         {
             return Err(CaptureFrameError::MoveOutOfBounds(region));
         }
@@ -877,6 +1099,9 @@ pub enum CaptureFrameError {
     /// A processed surface cannot retain a pending display transform.
     #[error("processed capture surface still has pending rotation {0:?}")]
     ProcessedRotationPending(CaptureRotation),
+    /// A processed surface cannot retain a pending native crop.
+    #[error("processed capture surface still has pending crop {0:?}")]
+    ProcessedCropPending(PixelRect),
     /// Dirty region escaped the native scanout extent.
     #[error("dirty region {0:?} is outside the capture extent")]
     DamageOutOfBounds(PixelRect),

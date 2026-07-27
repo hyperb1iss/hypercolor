@@ -26,10 +26,11 @@ pub mod windows;
 
 pub use frame::{
     CaptureColorSpace, CaptureCursor, CaptureDamage, CaptureEpoch, CaptureFrame, CaptureFrameError,
-    CaptureFrameMetadata, CaptureGeometry, CapturePixelFormat, CaptureRotation, CaptureSourceId,
-    CaptureStageKind, CaptureStorage, CaptureTransferFunction, CpuCaptureStorage, MoveRegion,
-    PhysicalOrigin, PixelExtent, PixelRect, PlatformGpuApi, PlatformGpuSurface,
-    ProcessedCaptureSurface, RawCaptureSurface, SourceScale,
+    CaptureFrameMetadata, CaptureGeometry, CapturePixelFormat, CapturePlaneLease, CapturePlanePool,
+    CaptureRotation, CaptureSourceId, CaptureStageKind, CaptureStorage, CaptureTransferFunction,
+    CpuCaptureStorage, MoveRegion, PhysicalOrigin, PixelExtent, PixelRect, PlatformGpuApi,
+    PlatformGpuSurface, PooledCapturePlane, ProcessedCaptureSurface, RawCaptureSurface,
+    SourceScale,
 };
 pub use sector::{LetterboxBars, SectorGrid};
 pub use smooth::TemporalSmoother;
@@ -75,7 +76,7 @@ pub(crate) fn analyze_legacy_screen_frame(
     let CaptureStorage::Cpu(storage) = frame.storage() else {
         anyhow::bail!("legacy screen analysis requires CPU storage");
     };
-    let extent = geometry.extent();
+    let extent = geometry.storage_extent();
     let pixels = storage
         .tightly_packed_rgba8(extent)
         .ok_or_else(|| anyhow::anyhow!("legacy screen analysis requires tightly packed RGBA8"))?;

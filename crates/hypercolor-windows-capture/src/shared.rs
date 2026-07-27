@@ -1,5 +1,7 @@
 //! Platform-neutral surface: errors, frame view, and the subsample math.
 
+use std::sync::{Arc, Mutex};
+
 use thiserror::Error;
 
 /// Screen capture result type.
@@ -57,18 +59,89 @@ impl CaptureError {
     }
 }
 
-/// A borrowed RGBA frame produced by the capture backend.
+/// Pending display rotation reported by Desktop Duplication.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DisplayRotation {
+    /// Pixels already share the logical display orientation.
+    #[default]
+    Identity,
+    /// Rotate 90 degrees clockwise.
+    Clockwise90,
+    /// Rotate 180 degrees.
+    Clockwise180,
+    /// Rotate 270 degrees clockwise.
+    Clockwise270,
+}
+
+type FramePool = Arc<Mutex<Vec<Vec<u8>>>>;
+
+/// Owned RGBA frame produced by the capture backend.
 ///
-/// The pixel buffer is owned by the duplicator and reused between frames, so
-/// consumers must copy anything they need to keep.
+/// The pixel allocation returns to the duplicator's pool when the final frame
+/// owner drops it, so downstream adapters can retain the plane without copying.
 #[derive(Debug)]
-pub struct Frame<'a> {
+pub struct Frame {
     /// Frame width in pixels, after subsampling.
     pub width: u32,
     /// Frame height in pixels, after subsampling.
     pub height: u32,
+    /// Native scanout width before subsampling.
+    pub native_width: u32,
+    /// Native scanout height before subsampling.
+    pub native_height: u32,
+    /// Horizontal origin in virtual-desktop coordinates.
+    pub origin_x: i32,
+    /// Vertical origin in virtual-desktop coordinates.
+    pub origin_y: i32,
+    /// Display transform still pending on the stored pixels.
+    pub rotation: DisplayRotation,
     /// Tightly packed RGBA8 pixels, `width * height * 4` bytes.
-    pub rgba: &'a [u8],
+    pub rgba: Vec<u8>,
+    pool: FramePool,
+}
+
+impl Frame {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        width: u32,
+        height: u32,
+        native_width: u32,
+        native_height: u32,
+        origin_x: i32,
+        origin_y: i32,
+        rotation: DisplayRotation,
+        rgba: Vec<u8>,
+        pool: FramePool,
+    ) -> Self {
+        Self {
+            width,
+            height,
+            native_width,
+            native_height,
+            origin_x,
+            origin_y,
+            rotation,
+            rgba,
+            pool,
+        }
+    }
+}
+
+impl AsRef<[u8]> for Frame {
+    fn as_ref(&self) -> &[u8] {
+        &self.rgba
+    }
+}
+
+impl Drop for Frame {
+    fn drop(&mut self) {
+        let mut rgba = std::mem::take(&mut self.rgba);
+        rgba.clear();
+        self.pool
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(rgba);
+    }
 }
 
 /// Number of attached display outputs, or zero when capture is unavailable.

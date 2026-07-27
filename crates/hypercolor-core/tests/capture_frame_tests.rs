@@ -6,10 +6,10 @@ use std::time::{Duration, Instant};
 
 use hypercolor_core::input::screen::{
     CaptureColorSpace, CaptureCursor, CaptureDamage, CaptureEpoch, CaptureFrame, CaptureFrameError,
-    CaptureFrameMetadata, CaptureGeometry, CapturePixelFormat, CaptureRotation, CaptureSourceId,
-    CaptureStageKind, CaptureStorage, CaptureTransferFunction, CpuCaptureStorage, MoveRegion,
-    PhysicalOrigin, PixelExtent, PixelRect, PlatformGpuApi, PlatformGpuSurface,
-    ProcessedCaptureSurface, RawCaptureSurface, SourceScale,
+    CaptureFrameMetadata, CaptureGeometry, CapturePixelFormat, CapturePlanePool, CaptureRotation,
+    CaptureSourceId, CaptureStageKind, CaptureStorage, CaptureTransferFunction, CpuCaptureStorage,
+    MoveRegion, PhysicalOrigin, PixelExtent, PixelRect, PlatformGpuApi, PlatformGpuSurface,
+    RawCaptureSurface, SourceScale,
 };
 
 fn extent(width: u32, height: u32) -> PixelExtent {
@@ -31,6 +31,7 @@ fn metadata(rotation: CaptureRotation) -> CaptureFrameMetadata {
         fresh_until: captured_at + Duration::from_millis(50),
         geometry: CaptureGeometry::new(
             PhysicalOrigin { x: -1920, y: -120 },
+            extent(4, 3),
             extent(4, 3),
             rotation,
             None,
@@ -74,7 +75,7 @@ fn every_rotation_preserves_raw_scanout_and_reports_logical_extent() {
                 .metadata()
                 .geometry
                 .rotation()
-                .apply_to_extent(frame.metadata().geometry.extent()),
+                .apply_to_extent(frame.metadata().geometry.native_extent()),
             expected
         );
     }
@@ -102,6 +103,7 @@ fn crop_must_fit_the_native_scanout_extent() {
         CaptureGeometry::new(
             PhysicalOrigin::default(),
             extent(4, 3),
+            extent(4, 3),
             CaptureRotation::Identity,
             Some(valid),
             SourceScale::ONE,
@@ -113,6 +115,7 @@ fn crop_must_fit_the_native_scanout_extent() {
     assert!(matches!(
         CaptureGeometry::new(
             PhysicalOrigin::default(),
+            extent(4, 3),
             extent(4, 3),
             CaptureRotation::Identity,
             Some(invalid),
@@ -354,10 +357,24 @@ fn invalid_freshness_damage_and_move_metadata_fail_at_construction() {
 }
 
 #[test]
-fn processed_stage_rejects_any_pending_rotation() {
+fn processed_transition_rejects_any_pending_rotation_or_crop() {
+    let raw = CaptureFrame::<RawCaptureSurface>::new(
+        metadata(CaptureRotation::Identity),
+        cpu_storage(4, 3),
+        CaptureDamage::default(),
+    )
+    .expect("raw input is valid");
     assert!(matches!(
-        CaptureFrame::<ProcessedCaptureSurface>::new(
-            metadata(CaptureRotation::Clockwise90),
+        raw.into_processed(
+            CaptureGeometry::new(
+                PhysicalOrigin::default(),
+                extent(4, 3),
+                extent(4, 3),
+                CaptureRotation::Clockwise90,
+                None,
+                SourceScale::ONE,
+            )
+            .expect("pending rotation is valid raw geometry"),
             cpu_storage(4, 3),
             CaptureDamage::default(),
         ),
@@ -366,13 +383,105 @@ fn processed_stage_rejects_any_pending_rotation() {
         ))
     ));
 
-    let processed = CaptureFrame::<ProcessedCaptureSurface>::new(
+    let raw = CaptureFrame::<RawCaptureSurface>::new(
         metadata(CaptureRotation::Identity),
         cpu_storage(4, 3),
         CaptureDamage::default(),
     )
-    .expect("identity rotation is a legal processed stage");
+    .expect("raw input is valid");
+    let pending_crop = PixelRect::new(1, 1, 2, 2).expect("test crop is valid");
+    assert!(matches!(
+        raw.into_processed(
+            CaptureGeometry::new(
+                PhysicalOrigin::default(),
+                extent(4, 3),
+                extent(2, 2),
+                CaptureRotation::Identity,
+                Some(pending_crop),
+                SourceScale::ONE,
+            )
+            .expect("pending crop is valid raw geometry"),
+            cpu_storage(2, 2),
+            CaptureDamage::default(),
+        ),
+        Err(CaptureFrameError::ProcessedCropPending(crop)) if crop == pending_crop
+    ));
+
+    let raw = CaptureFrame::<RawCaptureSurface>::new(
+        metadata(CaptureRotation::Identity),
+        cpu_storage(4, 3),
+        CaptureDamage::default(),
+    )
+    .expect("raw input is valid");
+    let processed = raw
+        .into_processed(
+            CaptureGeometry::new(
+                PhysicalOrigin::default(),
+                extent(4, 3),
+                extent(4, 3),
+                CaptureRotation::Identity,
+                None,
+                SourceScale::ONE,
+            )
+            .expect("canonical processed geometry is valid"),
+            cpu_storage(4, 3),
+            CaptureDamage::default(),
+        )
+        .expect("canonical geometry is a legal processed stage");
     assert_eq!(processed.stage(), CaptureStageKind::Processed);
+}
+
+#[test]
+fn native_and_stored_extents_are_distinct_contracts() {
+    let mut downsampled = metadata(CaptureRotation::Identity);
+    downsampled.geometry = CaptureGeometry::new(
+        PhysicalOrigin { x: -2560, y: 40 },
+        extent(2560, 1440),
+        extent(1280, 720),
+        CaptureRotation::Identity,
+        None,
+        SourceScale::ONE,
+    )
+    .expect("downsampled geometry is valid");
+    let frame = CaptureFrame::<RawCaptureSurface>::new(
+        downsampled,
+        cpu_storage(1280, 720),
+        CaptureDamage::default(),
+    )
+    .expect("storage validates against the retained plane extent");
+
+    assert_eq!(
+        frame.metadata().geometry.native_extent(),
+        extent(2560, 1440)
+    );
+    assert_eq!(
+        frame.metadata().geometry.storage_extent(),
+        extent(1280, 720)
+    );
+    assert_eq!(
+        frame.metadata().geometry.origin(),
+        PhysicalOrigin { x: -2560, y: 40 }
+    );
+}
+
+#[test]
+fn pooled_cpu_planes_transfer_ownership_without_copying_and_reuse_capacity() {
+    let pool = CapturePlanePool::default();
+    let mut lease = pool.acquire(48);
+    lease.resize(48, 7);
+    let pointer = lease.as_ptr();
+    let plane = lease.freeze();
+    let storage = CpuCaptureStorage::from_owner(plane, CapturePixelFormat::Rgba8, 16, 0);
+
+    assert_eq!(storage.bytes().as_ptr(), pointer);
+    assert_eq!(pool.allocation_count(), 1);
+    assert_eq!(pool.available_count(), 0);
+    drop(storage);
+    assert_eq!(pool.available_count(), 1);
+
+    let reused = pool.acquire(48);
+    assert_eq!(reused.as_ptr(), pointer);
+    assert_eq!(pool.allocation_count(), 1);
 }
 
 #[test]

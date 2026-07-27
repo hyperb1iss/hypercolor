@@ -1,5 +1,6 @@
 //! DXGI Desktop Duplication capture loop.
 
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tracing::{debug, warn};
@@ -10,6 +11,10 @@ use windows::Win32::Graphics::Direct3D11::{
     D3D11_MAPPED_SUBRESOURCE, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
     D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
 };
+use windows::Win32::Graphics::Dxgi::Common::{
+    DXGI_MODE_ROTATION, DXGI_MODE_ROTATION_ROTATE90, DXGI_MODE_ROTATION_ROTATE180,
+    DXGI_MODE_ROTATION_ROTATE270,
+};
 use windows::Win32::Graphics::Dxgi::{
     CreateDXGIFactory1, DXGI_ERROR_ACCESS_LOST, DXGI_ERROR_NOT_FOUND, DXGI_ERROR_UNSUPPORTED,
     DXGI_ERROR_WAIT_TIMEOUT, DXGI_OUTDUPL_FRAME_INFO, IDXGIAdapter1, IDXGIFactory1, IDXGIOutput,
@@ -17,7 +22,9 @@ use windows::Win32::Graphics::Dxgi::{
 };
 use windows::core::Interface;
 
-use crate::shared::{CaptureError, CaptureResult, Frame, subsample_stride, subsampled_extent};
+use crate::shared::{
+    CaptureError, CaptureResult, DisplayRotation, Frame, subsample_stride, subsampled_extent,
+};
 
 /// Bytes per pixel in both the duplicated surface and our RGBA output.
 const BYTES_PER_PIXEL: usize = 4;
@@ -109,13 +116,16 @@ pub struct DesktopDuplicator {
     duplication: IDXGIOutputDuplication,
     /// CPU-readable copy target, rebuilt when the desktop dimensions change.
     staging: Option<(ID3D11Texture2D, u32, u32)>,
-    /// Reused RGBA output buffer.
-    rgba: Vec<u8>,
+    /// RGBA allocations returned by frames after their last consumer drops.
+    frame_pool: Arc<Mutex<Vec<Vec<u8>>>>,
     /// Set while a duplicated frame is held and must be released before the
     /// next acquire. DXGI rejects back-to-back acquires without a release.
     frame_held: bool,
     output_width: u32,
     output_height: u32,
+    origin_x: i32,
+    origin_y: i32,
+    rotation: DisplayRotation,
 }
 
 impl DesktopDuplicator {
@@ -144,7 +154,8 @@ impl DesktopDuplicator {
             .cast::<IDXGIOutput1>()
             .map_err(|source| CaptureError::windows("query IDXGIOutput1", source))?;
         let duplication = duplicate_output(&output, &device)?;
-        let (output_width, output_height) = duplication_extent(&duplication);
+        let (output_width, output_height, rotation) = duplication_geometry(&duplication);
+        let (origin_x, origin_y) = output_origin(&output)?;
 
         Ok(Self {
             monitor,
@@ -154,10 +165,13 @@ impl DesktopDuplicator {
             output,
             duplication,
             staging: None,
-            rgba: Vec::new(),
+            frame_pool: Arc::new(Mutex::new(Vec::new())),
             frame_held: false,
             output_width,
             output_height,
+            origin_x,
+            origin_y,
+            rotation,
         })
     }
 
@@ -189,7 +203,7 @@ impl DesktopDuplicator {
     /// Returns [`CaptureError::Windows`] when acquiring, copying, or mapping
     /// the frame fails for a reason that is not recoverable in place. Access
     /// loss is handled internally by rebuilding the duplication interface.
-    pub fn next_frame(&mut self, timeout: Duration) -> CaptureResult<Option<Frame<'_>>> {
+    pub fn next_frame(&mut self, timeout: Duration) -> CaptureResult<Option<Frame>> {
         self.release_frame();
 
         let timeout_ms = u32::try_from(timeout.as_millis()).unwrap_or(u32::MAX);
@@ -236,19 +250,35 @@ impl DesktopDuplicator {
             .cast::<ID3D11Texture2D>()
             .map_err(|source| CaptureError::windows("query duplicated texture", source))?;
 
-        let result = self.read_back(&texture);
+        let mut rgba = self
+            .frame_pool
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pop()
+            .unwrap_or_default();
+        let result = self.read_back(&texture, &mut rgba);
         self.release_frame();
-        let (width, height) = result?;
+        let (width, height, native_width, native_height) = result?;
 
-        Ok(Some(Frame {
+        Ok(Some(Frame::new(
             width,
             height,
-            rgba: &self.rgba[..(width as usize * height as usize * BYTES_PER_PIXEL)],
-        }))
+            native_width,
+            native_height,
+            self.origin_x,
+            self.origin_y,
+            self.rotation,
+            rgba,
+            Arc::clone(&self.frame_pool),
+        )))
     }
 
     /// Copy the duplicated texture into staging, then subsample into `rgba`.
-    fn read_back(&mut self, texture: &ID3D11Texture2D) -> CaptureResult<(u32, u32)> {
+    fn read_back(
+        &mut self,
+        texture: &ID3D11Texture2D,
+        rgba: &mut Vec<u8>,
+    ) -> CaptureResult<(u32, u32, u32, u32)> {
         let mut desc = D3D11_TEXTURE2D_DESC::default();
         // SAFETY: GetDesc fills a caller-owned struct and cannot fail.
         unsafe { texture.GetDesc(&mut desc) };
@@ -268,12 +298,13 @@ impl DesktopDuplicator {
         }
         .map_err(|source| CaptureError::windows("map staging texture", source))?;
 
-        let extent = self.copy_mapped_rows(&mapped, desc.Width, desc.Height);
+        let (width, height) =
+            Self::copy_mapped_rows(&mapped, desc.Width, desc.Height, rgba, self.max_width);
 
         // SAFETY: pairs with the Map above on the same subresource.
         unsafe { self.context.Unmap(&staging, 0) };
 
-        Ok(extent)
+        Ok((width, height, desc.Width, desc.Height))
     }
 
     /// Box-filter BGRA staging rows into the packed RGBA output buffer.
@@ -287,18 +318,19 @@ impl DesktopDuplicator {
     /// Wayland path never had this problem because PipeWire hands over an
     /// already-filtered frame.
     fn copy_mapped_rows(
-        &mut self,
         mapped: &D3D11_MAPPED_SUBRESOURCE,
         width: u32,
         height: u32,
+        rgba: &mut Vec<u8>,
+        max_width: u32,
     ) -> (u32, u32) {
-        let stride = subsample_stride(width, self.max_width);
+        let stride = subsample_stride(width, max_width);
         let out_width = subsampled_extent(width, stride);
         let out_height = subsampled_extent(height, stride);
         let row_pitch = mapped.RowPitch as usize;
         let source_len = row_pitch * height as usize;
 
-        self.rgba.resize(
+        rgba.resize(
             out_width as usize * out_height as usize * BYTES_PER_PIXEL,
             0,
         );
@@ -341,10 +373,10 @@ impl DesktopDuplicator {
 
                 let samples = samples.max(1);
                 let dst = dst_row_start + out_x * BYTES_PER_PIXEL;
-                self.rgba[dst] = (red / samples) as u8;
-                self.rgba[dst + 1] = (green / samples) as u8;
-                self.rgba[dst + 2] = (blue / samples) as u8;
-                self.rgba[dst + 3] = 0xFF;
+                rgba[dst] = (red / samples) as u8;
+                rgba[dst + 1] = (green / samples) as u8;
+                rgba[dst + 2] = (blue / samples) as u8;
+                rgba[dst + 3] = 0xFF;
             }
         }
 
@@ -389,6 +421,11 @@ impl DesktopDuplicator {
             self.staging = Some((texture, desc.Width, desc.Height));
             self.output_width = desc.Width;
             self.output_height = desc.Height;
+            let (_, _, rotation) = duplication_geometry(&self.duplication);
+            let (origin_x, origin_y) = output_origin(&self.output)?;
+            self.origin_x = origin_x;
+            self.origin_y = origin_y;
+            self.rotation = rotation;
         }
 
         self.staging
@@ -407,9 +444,13 @@ impl DesktopDuplicator {
         self.release_frame();
         self.staging = None;
         self.duplication = duplicate_output(&self.output, &self.device)?;
-        let (width, height) = duplication_extent(&self.duplication);
+        let (width, height, rotation) = duplication_geometry(&self.duplication);
+        let (origin_x, origin_y) = output_origin(&self.output)?;
         self.output_width = width;
         self.output_height = height;
+        self.origin_x = origin_x;
+        self.origin_y = origin_y;
+        self.rotation = rotation;
         Ok(())
     }
 
@@ -485,12 +526,28 @@ fn duplicate_output(
 }
 
 /// Read the duplicated desktop dimensions, defaulting to zero on failure.
-fn duplication_extent(duplication: &IDXGIOutputDuplication) -> (u32, u32) {
+fn duplication_geometry(duplication: &IDXGIOutputDuplication) -> (u32, u32, DisplayRotation) {
     // SAFETY: GetDesc reads cached descriptor state and cannot fail.
     let desc = unsafe { duplication.GetDesc() };
     let mode = desc.ModeDesc;
     if mode.Width == 0 || mode.Height == 0 {
         warn!("desktop duplication reported a zero-sized mode");
     }
-    (mode.Width, mode.Height)
+    (mode.Width, mode.Height, display_rotation(desc.Rotation))
+}
+
+fn display_rotation(rotation: DXGI_MODE_ROTATION) -> DisplayRotation {
+    match rotation {
+        DXGI_MODE_ROTATION_ROTATE90 => DisplayRotation::Clockwise90,
+        DXGI_MODE_ROTATION_ROTATE180 => DisplayRotation::Clockwise180,
+        DXGI_MODE_ROTATION_ROTATE270 => DisplayRotation::Clockwise270,
+        _ => DisplayRotation::Identity,
+    }
+}
+
+fn output_origin(output: &IDXGIOutput1) -> CaptureResult<(i32, i32)> {
+    // SAFETY: GetDesc fills a caller-owned struct from the live output.
+    let desc = unsafe { output.GetDesc() }
+        .map_err(|source| CaptureError::windows("describe DXGI output", source))?;
+    Ok((desc.DesktopCoordinates.left, desc.DesktopCoordinates.top))
 }

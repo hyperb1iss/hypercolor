@@ -39,7 +39,7 @@ impl DesktopDuplicator {
     /// # Errors
     ///
     /// Always returns [`CaptureError::UnsupportedPlatform`].
-    pub const fn next_frame(&mut self, _timeout: Duration) -> CaptureResult<Option<Frame<'_>>> {
+    pub const fn next_frame(&mut self, _timeout: Duration) -> CaptureResult<Option<Frame>> {
         Err(CaptureError::UnsupportedPlatform)
     }
 }

@@ -137,6 +137,38 @@ fn alpha_is_opaque_across_repeated_acquisitions() {
 }
 
 #[test]
+fn repeated_frames_reuse_the_owned_plane_allocation() {
+    let Some(mut duplicator) = duplicator_or_skip() else {
+        return;
+    };
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut first_pointer = None;
+    while Instant::now() < deadline {
+        match duplicator.next_frame(Duration::from_millis(150)) {
+            Ok(Some(frame)) => {
+                let pointer = frame.rgba.as_ptr();
+                assert_eq!(frame.native_width, duplicator.native_extent().0);
+                assert_eq!(frame.native_height, duplicator.native_extent().1);
+                drop(frame);
+                if let Some(first_pointer) = first_pointer {
+                    assert_eq!(
+                        pointer, first_pointer,
+                        "the released frame plane should be reused at capture cadence"
+                    );
+                    return;
+                }
+                first_pointer = Some(pointer);
+            }
+            Ok(None) => {}
+            Err(error) => panic!("repeated acquisition failed: {error}"),
+        }
+    }
+
+    eprintln!("desktop was static; allocation reuse needed two frames to verify");
+}
+
+#[test]
 fn monitor_listing_matches_the_count_and_carries_real_geometry() {
     use hypercolor_windows_capture::list_monitors;
 

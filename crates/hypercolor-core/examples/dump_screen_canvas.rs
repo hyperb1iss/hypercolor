@@ -46,7 +46,7 @@ fn main() {
             match duplicator.next_frame(Duration::from_millis(200)) {
                 Ok(Some(frame)) => {
                     println!("capture backend produced {}x{}", frame.width, frame.height);
-                    analyzer.push_frame(frame.rgba, frame.width, frame.height);
+                    analyzer.push_frame(&frame.rgba, frame.width, frame.height);
                 }
                 Ok(None) => continue,
                 Err(error) => {
