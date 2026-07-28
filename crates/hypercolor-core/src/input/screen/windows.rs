@@ -89,6 +89,13 @@ struct CaptureSettingsSnapshot {
     demand: ScreenCaptureDemand,
 }
 
+struct PreparedWorkerSettings {
+    config: CaptureConfig,
+    source_generation: u64,
+    demand: ScreenCaptureDemand,
+    analyzer: ScreenCaptureInput,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ActiveCaptureEpoch {
     epoch: CaptureEpoch,
@@ -168,6 +175,37 @@ impl SharedSettings {
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
         }
     }
+
+    fn commit(&self, prepared: &PreparedWorkerSettings) -> u64 {
+        self.commit_values(
+            &prepared.config,
+            prepared.source_generation,
+            prepared.demand,
+        )
+    }
+
+    fn commit_values(
+        &self,
+        next_config: &CaptureConfig,
+        source_generation: u64,
+        demand: ScreenCaptureDemand,
+    ) -> u64 {
+        {
+            let mut config = self
+                .config
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            config.value.clone_from(next_config);
+            config.source_generation = source_generation;
+        }
+        *self
+            .demand
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = demand;
+        self.generation
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1)
+    }
 }
 
 /// Windows-only live screen capture input source.
@@ -210,6 +248,23 @@ impl WindowsScreenCaptureFixture {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .is_some()
+    }
+
+    /// Extent currently owned by the deterministic analysis worker.
+    #[must_use]
+    pub fn requested_extent(&self) -> PixelExtent {
+        self.state
+            .analyzer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .requested_extent()
+    }
+
+    /// Apply production frame-failure publication semantics without hardware.
+    pub fn inject_frame_failure(&self, error: &CaptureError) {
+        if capture_frame_failure_invalidates_session(error) {
+            clear_capture_publication(&self.publication);
+        }
     }
 
     /// Analyze and publish one raw frame as if Desktop Duplication produced it.
@@ -273,13 +328,22 @@ impl Drop for CaptureWorker {
     }
 }
 
-#[derive(Clone, Copy)]
 enum WorkerCommand {
     SetActive {
         active: bool,
         activity_generation: u64,
     },
+    AdoptSettings {
+        prepared: PreparedWorkerSettings,
+        ready: mpsc::SyncSender<()>,
+        decision: mpsc::Receiver<SettingsDecision>,
+        done: mpsc::SyncSender<()>,
+    },
     Stop,
+}
+
+enum SettingsDecision {
+    Commit,
 }
 
 impl WindowsScreenCaptureInput {
@@ -561,12 +625,95 @@ impl WindowsScreenCaptureInput {
         }
     }
 
+    fn prepare_active_settings(
+        &self,
+        config: CaptureConfig,
+        source_generation: u64,
+        demand: ScreenCaptureDemand,
+    ) -> Result<PreparedWorkerSettings, SurfaceResourceError> {
+        let requested_extent = demand
+            .requested_extent()
+            .expect("active Windows capture settings carry an extent");
+        let analyzer = ScreenCaptureInput::with_requested_extent(config.clone(), requested_extent)?;
+        Ok(PreparedWorkerSettings {
+            config,
+            source_generation,
+            demand,
+            analyzer,
+        })
+    }
+
+    fn adopt_worker_settings(&self, prepared: PreparedWorkerSettings) -> anyhow::Result<()> {
+        let worker = self
+            .worker
+            .as_ref()
+            .ok_or_else(|| anyhow!("Windows capture worker is unavailable for live adoption"))?;
+        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        let (decision_tx, decision_rx) = mpsc::sync_channel(1);
+        let (done_tx, done_rx) = mpsc::sync_channel(1);
+        worker
+            .command_tx
+            .send(WorkerCommand::AdoptSettings {
+                prepared,
+                ready: ready_tx,
+                decision: decision_rx,
+                done: done_tx,
+            })
+            .map_err(|_| anyhow!("Windows capture worker rejected prepared settings"))?;
+        ready_rx
+            .recv_timeout(WORKER_READY_TIMEOUT)
+            .map_err(|error| anyhow!("Windows capture worker adoption timed out: {error}"))?;
+        decision_tx
+            .send(SettingsDecision::Commit)
+            .map_err(|_| anyhow!("Windows capture worker exited before settings commit"))?;
+        done_rx
+            .recv()
+            .map_err(|_| anyhow!("Windows capture worker exited during settings commit"))
+    }
+
+    #[cfg(feature = "windows-capture-fixtures")]
+    fn adopt_fixture_settings(&self, prepared: PreparedWorkerSettings) {
+        let snapshot = self.settings.snapshot();
+        self.settings.commit_values(
+            &prepared.config,
+            prepared.source_generation,
+            prepared.demand,
+        );
+        *self
+            .fixture
+            .as_ref()
+            .expect("fixture adoption requires a deterministic source")
+            .analyzer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = prepared.analyzer;
+        if snapshot.source_generation != prepared.source_generation {
+            self.publication
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .fence_source(prepared.source_generation);
+        }
+    }
+
     fn set_capture_demand_state(&mut self, demand: ScreenCaptureDemand) -> anyhow::Result<()> {
         if self.capture_demand == demand {
             return Ok(());
         }
         let previous = self.capture_demand;
-        let mut _admission = demand
+        if previous.is_active() && demand.is_active() && self.running {
+            let snapshot = self.settings.snapshot();
+            let prepared =
+                self.prepare_active_settings(snapshot.config, snapshot.source_generation, demand)?;
+            #[cfg(feature = "windows-capture-fixtures")]
+            if self.fixture.is_some() {
+                self.adopt_fixture_settings(prepared);
+                self.capture_demand = demand;
+                return Ok(());
+            }
+            self.adopt_worker_settings(prepared)?;
+            self.capture_demand = demand;
+            return Ok(());
+        }
+        let admission = demand
             .requested_extent()
             .map(|requested_extent| {
                 let config = self.settings.snapshot().config;
@@ -575,10 +722,12 @@ impl WindowsScreenCaptureInput {
             .transpose()?;
         #[cfg(feature = "windows-capture-fixtures")]
         let prepared_fixture_analyzer = if self.fixture.is_some() {
-            _admission.take()
+            admission
         } else {
             None
         };
+        #[cfg(not(feature = "windows-capture-fixtures"))]
+        drop(admission);
         let previous_latest = self
             .publication
             .lock()
@@ -671,52 +820,34 @@ impl WindowsScreenCaptureInput {
     }
 
     /// Publish new settings and bump the generation the worker polls.
-    fn reconfigure(&mut self, config: CaptureConfig) {
-        let mut current = self
-            .settings
-            .config
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if current.value == config {
-            return;
+    fn reconfigure(&mut self, config: CaptureConfig) -> anyhow::Result<()> {
+        let snapshot = self.settings.snapshot();
+        if snapshot.config == config {
+            return Ok(());
         }
-        let source_changed = current.value.source != config.source;
-        let mut publication = source_changed.then(|| {
-            self.publication
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-        });
-        if source_changed {
-            current.source_generation = current.source_generation.wrapping_add(1).max(1);
+        let source_generation = if snapshot.config.source == config.source {
+            snapshot.source_generation
+        } else {
+            snapshot.source_generation.wrapping_add(1).max(1)
+        };
+        if self.capture_demand.is_active() {
+            let prepared =
+                self.prepare_active_settings(config, source_generation, self.capture_demand)?;
+            #[cfg(feature = "windows-capture-fixtures")]
+            if self.fixture.is_some() {
+                self.adopt_fixture_settings(prepared);
+                return Ok(());
+            }
+            if self.running {
+                self.adopt_worker_settings(prepared)?;
+            } else {
+                self.settings.commit(&prepared);
+            }
+            return Ok(());
         }
-        current.value = config;
-        self.settings.generation.fetch_add(1, Ordering::Release);
-        #[cfg(feature = "windows-capture-fixtures")]
-        if let Some(fixture) = self.fixture.as_ref() {
-            let analyzer = self.capture_demand.requested_extent().map_or_else(
-                || Ok(ScreenCaptureInput::new(current.value.clone())),
-                |requested_extent| {
-                    ScreenCaptureInput::with_requested_extent(
-                        current.value.clone(),
-                        requested_extent,
-                    )
-                },
-            );
-            let Ok(analyzer) = analyzer else {
-                warn!("Retaining prior fixture analyzer after capture allocation failure");
-                return;
-            };
-            *fixture
-                .analyzer
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = analyzer;
-        }
-        if source_changed {
-            publication
-                .as_mut()
-                .expect("source changes lock the publication fence")
-                .fence_source(current.source_generation);
-        }
+        self.settings
+            .commit_values(&config, source_generation, self.capture_demand);
+        Ok(())
     }
 }
 
@@ -852,8 +983,7 @@ impl InputSource for WindowsScreenCaptureInput {
     }
 
     fn reconfigure_screen_capture(&mut self, config: &CaptureConfig) -> anyhow::Result<()> {
-        self.reconfigure(config.clone());
-        Ok(())
+        self.reconfigure(config.clone())
     }
 }
 
@@ -951,6 +1081,7 @@ fn run_worker(
     let mut active = false;
     let mut activity_generation = 0_u64;
     let mut open_failure_logged = false;
+    let mut resource_failure_logged = false;
     let mut failed_settings_generation = None;
     let mut settings_retry_at = Instant::now();
 
@@ -959,7 +1090,19 @@ fn run_worker(
             break;
         }
 
-        match drain_commands(command_rx, &mut active, &mut activity_generation) {
+        match drain_commands(
+            command_rx,
+            &mut active,
+            &mut activity_generation,
+            settings,
+            publication,
+            &mut config,
+            &mut source_generation,
+            &mut demand,
+            &mut generation,
+            &mut analyzer,
+            &mut duplicator,
+        ) {
             ControlFlow::Stop => break,
             ControlFlow::Continue => {}
         }
@@ -982,6 +1125,25 @@ fn run_worker(
                     active = next;
                     activity_generation = next_generation;
                 }
+                Ok(WorkerCommand::AdoptSettings {
+                    prepared,
+                    ready,
+                    decision,
+                    done,
+                }) => adopt_prepared_worker_settings(
+                    settings,
+                    publication,
+                    &mut config,
+                    &mut source_generation,
+                    &mut demand,
+                    &mut generation,
+                    &mut analyzer,
+                    &mut duplicator,
+                    prepared,
+                    ready,
+                    decision,
+                    done,
+                ),
                 Ok(WorkerCommand::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
             }
@@ -1073,6 +1235,25 @@ fn run_worker(
                             active = next;
                             activity_generation = next_generation;
                         }
+                        Ok(WorkerCommand::AdoptSettings {
+                            prepared,
+                            ready,
+                            decision,
+                            done,
+                        }) => adopt_prepared_worker_settings(
+                            settings,
+                            publication,
+                            &mut config,
+                            &mut source_generation,
+                            &mut demand,
+                            &mut generation,
+                            &mut analyzer,
+                            &mut duplicator,
+                            prepared,
+                            ready,
+                            decision,
+                            done,
+                        ),
                         Ok(WorkerCommand::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => {
                             break;
                         }
@@ -1129,6 +1310,7 @@ fn run_worker(
 
         match frame_result {
             Ok(Some(frame)) => {
+                resource_failure_logged = false;
                 let Some(current_epoch) = current_epoch else {
                     duplicator = None;
                     continue;
@@ -1159,11 +1341,23 @@ fn run_worker(
             // Static desktop or pointer-only update: nothing new to analyze.
             Ok(None) => {}
             Err(error) => {
-                clear_capture_publication(publication);
-                warn!(%error, "Windows screen capture frame failed; reopening session");
+                if !capture_frame_failure_invalidates_session(&error) {
+                    if !resource_failure_logged {
+                        warn!(%error, "Windows screen capture frame failed; retaining last good publication and live session");
+                        if let Some(status) = status_session.load() {
+                            status.degraded(capture_issue(&error));
+                        }
+                        resource_failure_logged = true;
+                    }
+                    thread::sleep(FRAME_WAIT);
+                    continue;
+                }
+                resource_failure_logged = false;
                 if let Some(status) = status_session.load() {
                     status.degraded(capture_issue(&error));
                 }
+                clear_capture_publication(publication);
+                warn!(%error, "Windows screen capture frame failed; reopening session");
                 duplicator = None;
                 match command_rx.recv_timeout(REOPEN_BACKOFF) {
                     Ok(WorkerCommand::SetActive {
@@ -1173,6 +1367,25 @@ fn run_worker(
                         active = next;
                         activity_generation = next_generation;
                     }
+                    Ok(WorkerCommand::AdoptSettings {
+                        prepared,
+                        ready,
+                        decision,
+                        done,
+                    }) => adopt_prepared_worker_settings(
+                        settings,
+                        publication,
+                        &mut config,
+                        &mut source_generation,
+                        &mut demand,
+                        &mut generation,
+                        &mut analyzer,
+                        &mut duplicator,
+                        prepared,
+                        ready,
+                        decision,
+                        done,
+                    ),
                     Ok(WorkerCommand::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
                     Err(mpsc::RecvTimeoutError::Timeout) => {}
                 }
@@ -1182,6 +1395,15 @@ fn run_worker(
 
     clear_capture_publication(publication);
     debug!("Windows screen capture worker stopped");
+}
+
+const fn capture_frame_failure_invalidates_session(error: &CaptureError) -> bool {
+    !matches!(
+        error,
+        CaptureError::ResourceExhausted { .. }
+            | CaptureError::GeometryOverflow { .. }
+            | CaptureError::InvalidBufferGeometry { .. }
+    )
 }
 
 fn native_capture_extent(extent: PixelExtent) -> NativeCaptureExtent {
@@ -1313,6 +1535,14 @@ fn drain_commands(
     command_rx: &mpsc::Receiver<WorkerCommand>,
     active: &mut bool,
     activity_generation: &mut u64,
+    settings: &SharedSettings,
+    publication: &Mutex<CapturePublication<AnalyzedScreenSnapshot>>,
+    config: &mut CaptureConfig,
+    source_generation: &mut u64,
+    demand: &mut ScreenCaptureDemand,
+    generation: &mut u64,
+    analyzer: &mut ScreenCaptureInput,
+    duplicator: &mut Option<DesktopDuplicator>,
 ) -> ControlFlow {
     loop {
         match command_rx.try_recv() {
@@ -1323,12 +1553,77 @@ fn drain_commands(
                 *active = next;
                 *activity_generation = next_generation;
             }
+            Ok(WorkerCommand::AdoptSettings {
+                prepared,
+                ready,
+                decision,
+                done,
+            }) => adopt_prepared_worker_settings(
+                settings,
+                publication,
+                config,
+                source_generation,
+                demand,
+                generation,
+                analyzer,
+                duplicator,
+                prepared,
+                ready,
+                decision,
+                done,
+            ),
             Ok(WorkerCommand::Stop) | Err(mpsc::TryRecvError::Disconnected) => {
                 return ControlFlow::Stop;
             }
             Err(mpsc::TryRecvError::Empty) => return ControlFlow::Continue,
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn adopt_prepared_worker_settings(
+    settings: &SharedSettings,
+    publication: &Mutex<CapturePublication<AnalyzedScreenSnapshot>>,
+    config: &mut CaptureConfig,
+    source_generation: &mut u64,
+    demand: &mut ScreenCaptureDemand,
+    generation: &mut u64,
+    analyzer: &mut ScreenCaptureInput,
+    duplicator: &mut Option<DesktopDuplicator>,
+    prepared: PreparedWorkerSettings,
+    ready: mpsc::SyncSender<()>,
+    decision: mpsc::Receiver<SettingsDecision>,
+    done: mpsc::SyncSender<()>,
+) {
+    if ready.send(()).is_err() || !matches!(decision.recv(), Ok(SettingsDecision::Commit)) {
+        return;
+    }
+    let source_changed = *source_generation != prepared.source_generation;
+    if source_changed {
+        *duplicator = None;
+    } else if let Some(duplicator) = duplicator.as_mut() {
+        let requested_extent = prepared
+            .demand
+            .requested_extent()
+            .expect("prepared active Windows settings carry an extent");
+        duplicator.set_requested_extent(native_capture_extent(requested_extent));
+    }
+    config.clone_from(&prepared.config);
+    *source_generation = prepared.source_generation;
+    *demand = prepared.demand;
+    *generation = settings.commit_values(
+        &prepared.config,
+        prepared.source_generation,
+        prepared.demand,
+    );
+    *analyzer = prepared.analyzer;
+    if source_changed {
+        publication
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .fence_source(*source_generation);
+    }
+    let _ = done.send(());
 }
 
 /// Log an open failure at a level that matches how actionable it is.
