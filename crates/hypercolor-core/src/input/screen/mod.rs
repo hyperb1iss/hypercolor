@@ -21,6 +21,7 @@ mod hub;
 mod plan;
 mod process;
 mod publication;
+mod reducer;
 pub mod sector;
 pub mod smooth;
 pub mod tune;
@@ -78,6 +79,9 @@ pub use publication::{
     ScreenSmoothingPolicy, ScreenSourceReflection, ScreenSourceSelector, ScreenSubpixelRect,
     ScreenTargetColorimetry, ScreenToneMapOperator, ScreenToneMapPolicy, ScreenUnknownColorPolicy,
     ScreenUpscalePolicy,
+};
+pub use reducer::{
+    CpuReductionError, CpuReductionExecutor, CpuReductionLayout, CpuReductionRequest,
 };
 pub use sector::{LetterboxBars, SectorGrid};
 pub use smooth::TemporalSmoother;
