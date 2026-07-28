@@ -70,6 +70,42 @@ fn raw_rgba(
     .expect("test raw frame is valid")
 }
 
+fn raw_rgba_with_geometry(
+    native_extent: PixelExtent,
+    storage_extent: PixelExtent,
+    origin: PhysicalOrigin,
+    rotation: CaptureRotation,
+    crop: PixelRect,
+    scale: SourceScale,
+) -> CaptureFrame<RawCaptureSurface> {
+    let mut metadata = metadata(
+        native_extent.width(),
+        native_extent.height(),
+        rotation,
+        Some(crop),
+    );
+    metadata.geometry = CaptureGeometry::new(
+        origin,
+        native_extent,
+        storage_extent,
+        rotation,
+        Some(crop),
+        scale,
+    )
+    .expect("test geometry is valid");
+    CaptureFrame::new(
+        metadata,
+        CaptureStorage::Cpu(CpuCaptureStorage::new(
+            labeled_rgba(storage_extent.width(), storage_extent.height()),
+            CapturePixelFormat::Rgba8,
+            i64::from(storage_extent.width() * 4),
+            0,
+        )),
+        CaptureDamage::default(),
+    )
+    .expect("test raw frame is valid")
+}
+
 fn red_labels(
     frame: &CaptureFrame<hypercolor_core::input::screen::ProcessedCaptureSurface>,
 ) -> Vec<u8> {
@@ -139,6 +175,98 @@ fn native_crop_precedes_rotation() {
     assert_eq!(processed.metadata().geometry.native_extent(), extent(2, 2));
     assert_eq!(processed.metadata().geometry.storage_extent(), extent(2, 2));
     assert_eq!(red_labels(&processed), vec![5, 2, 6, 3]);
+}
+
+#[test]
+fn crop_origin_tracks_every_rotation_from_negative_desktop_coordinates() {
+    let native = extent(8, 6);
+    let crop = PixelRect::new(2, 1, 3, 2).expect("test crop is valid");
+    let origin = PhysicalOrigin { x: -100, y: -200 };
+
+    for (rotation, expected) in [
+        (
+            CaptureRotation::Identity,
+            PhysicalOrigin { x: -98, y: -199 },
+        ),
+        (
+            CaptureRotation::Clockwise90,
+            PhysicalOrigin { x: -97, y: -198 },
+        ),
+        (
+            CaptureRotation::Clockwise180,
+            PhysicalOrigin { x: -97, y: -197 },
+        ),
+        (
+            CaptureRotation::Clockwise270,
+            PhysicalOrigin { x: -99, y: -197 },
+        ),
+    ] {
+        let processed = CaptureFrameProcessor::default()
+            .process(raw_rgba_with_geometry(
+                native,
+                native,
+                origin,
+                rotation,
+                crop,
+                SourceScale::ONE,
+            ))
+            .expect("crop origin should normalize");
+
+        assert_eq!(processed.metadata().geometry.origin(), expected);
+    }
+}
+
+#[test]
+fn crop_origin_is_independent_of_backend_storage_extent() {
+    let native = extent(8, 6);
+    let crop = PixelRect::new(2, 2, 4, 2).expect("test crop is valid");
+    let origin = PhysicalOrigin { x: -40, y: 20 };
+    let rotation = CaptureRotation::Clockwise90;
+    let full_resolution = CaptureFrameProcessor::default()
+        .process(raw_rgba_with_geometry(
+            native,
+            native,
+            origin,
+            rotation,
+            crop,
+            SourceScale::ONE,
+        ))
+        .expect("full-resolution adapter frame should normalize");
+    let reduced = CaptureFrameProcessor::default()
+        .process(raw_rgba_with_geometry(
+            native,
+            extent(4, 3),
+            origin,
+            rotation,
+            crop,
+            SourceScale::ONE,
+        ))
+        .expect("reduced adapter frame should normalize");
+
+    assert_eq!(
+        full_resolution.metadata().geometry.origin(),
+        reduced.metadata().geometry.origin()
+    );
+}
+
+#[test]
+fn crop_origin_applies_wayland_source_scale_with_checked_arithmetic() {
+    let crop = PixelRect::new(4, 2, 2, 2).expect("test crop is valid");
+    let processed = CaptureFrameProcessor::default()
+        .process(raw_rgba_with_geometry(
+            extent(8, 6),
+            extent(4, 3),
+            PhysicalOrigin { x: -10, y: -20 },
+            CaptureRotation::Identity,
+            crop,
+            SourceScale::new(1, 2).expect("test source scale is valid"),
+        ))
+        .expect("scaled crop origin should normalize");
+
+    assert_eq!(
+        processed.metadata().geometry.origin(),
+        PhysicalOrigin { x: -8, y: -19 }
+    );
 }
 
 #[test]

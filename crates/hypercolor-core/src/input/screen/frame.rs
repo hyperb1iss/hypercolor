@@ -1128,6 +1128,9 @@ pub enum CaptureFrameError {
     /// Canonical cursor coordinates exceeded the shared signed representation.
     #[error("canonical cursor coordinate exceeds the supported range")]
     CursorCoordinateOverflow,
+    /// Canonical capture origin exceeded the shared signed representation.
+    #[error("canonical capture origin exceeds the supported range")]
+    OriginCoordinateOverflow,
     /// Dirty region escaped the native scanout extent.
     #[error("dirty region {0:?} is outside the capture extent")]
     DamageOutOfBounds(PixelRect),

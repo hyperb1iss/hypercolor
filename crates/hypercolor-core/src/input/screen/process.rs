@@ -3,7 +3,7 @@
 use crate::input::screen::frame::{
     CaptureDamage, CaptureFrame, CaptureFrameError, CaptureGeometry, CapturePixelFormat,
     CapturePlanePool, CaptureRotation, CaptureStorage, CpuCaptureStorage, PhysicalOrigin,
-    PixelExtent, ProcessedCaptureSurface, RawCaptureSurface,
+    PixelExtent, ProcessedCaptureSurface, RawCaptureSurface, SourceScale,
 };
 
 /// Reusable raw-to-processed capture converter.
@@ -41,7 +41,12 @@ impl CaptureFrameProcessor {
                     let storage = CaptureStorage::Cpu(storage.clone());
                     let damage = frame.damage().clone();
                     return frame.into_processed(
-                        canonical_geometry(geometry, geometry.native_extent(), storage_extent)?,
+                        canonical_geometry(
+                            geometry,
+                            geometry.origin(),
+                            geometry.native_extent(),
+                            storage_extent,
+                        )?,
                         storage,
                         damage,
                     );
@@ -50,7 +55,12 @@ impl CaptureFrameProcessor {
                     let storage = CaptureStorage::Gpu(storage.clone());
                     let damage = frame.damage().clone();
                     return frame.into_processed(
-                        canonical_geometry(geometry, geometry.native_extent(), storage_extent)?,
+                        canonical_geometry(
+                            geometry,
+                            geometry.origin(),
+                            geometry.native_extent(),
+                            storage_extent,
+                        )?,
                         storage,
                         damage,
                     );
@@ -97,9 +107,10 @@ impl CaptureFrameProcessor {
             0,
         ));
         let cursor = transform_cursor(&frame.metadata().cursor, native_crop, geometry.rotation())?;
+        let origin = transform_capture_origin(geometry, native_crop)?;
 
         frame.into_processed_with_cursor(
-            canonical_geometry(geometry, logical_extent, output_extent)?,
+            canonical_geometry(geometry, origin, logical_extent, output_extent)?,
             processed_storage,
             CaptureDamage::default(),
             cursor,
@@ -129,17 +140,82 @@ struct StorageCrop {
 
 fn canonical_geometry(
     source: CaptureGeometry,
+    origin: PhysicalOrigin,
     logical_extent: PixelExtent,
     storage_extent: PixelExtent,
 ) -> Result<CaptureGeometry, CaptureFrameError> {
     CaptureGeometry::new(
-        source.origin(),
+        origin,
         logical_extent,
         storage_extent,
         CaptureRotation::Identity,
         None,
         source.source_scale(),
     )
+}
+
+fn transform_capture_origin(
+    geometry: CaptureGeometry,
+    crop: NativeCrop,
+) -> Result<PhysicalOrigin, CaptureFrameError> {
+    let native = geometry.native_extent();
+    let right = crop
+        .x
+        .checked_add(crop.extent.width())
+        .ok_or(CaptureFrameError::OriginCoordinateOverflow)?;
+    let bottom = crop
+        .y
+        .checked_add(crop.extent.height())
+        .ok_or(CaptureFrameError::OriginCoordinateOverflow)?;
+    let (x, y) = match geometry.rotation() {
+        CaptureRotation::Identity => (crop.x, crop.y),
+        CaptureRotation::Clockwise90 => (
+            native
+                .height()
+                .checked_sub(bottom)
+                .ok_or(CaptureFrameError::OriginCoordinateOverflow)?,
+            crop.x,
+        ),
+        CaptureRotation::Clockwise180 => (
+            native
+                .width()
+                .checked_sub(right)
+                .ok_or(CaptureFrameError::OriginCoordinateOverflow)?,
+            native
+                .height()
+                .checked_sub(bottom)
+                .ok_or(CaptureFrameError::OriginCoordinateOverflow)?,
+        ),
+        CaptureRotation::Clockwise270 => (
+            crop.y,
+            native
+                .width()
+                .checked_sub(right)
+                .ok_or(CaptureFrameError::OriginCoordinateOverflow)?,
+        ),
+    };
+    let x = scaled_origin_offset(x, geometry.source_scale())?;
+    let y = scaled_origin_offset(y, geometry.source_scale())?;
+    let source = geometry.origin();
+    Ok(PhysicalOrigin {
+        x: add_origin_offset(source.x, x)?,
+        y: add_origin_offset(source.y, y)?,
+    })
+}
+
+fn scaled_origin_offset(value: u32, scale: SourceScale) -> Result<i64, CaptureFrameError> {
+    let scaled = u64::from(value)
+        .checked_mul(u64::from(scale.numerator()))
+        .ok_or(CaptureFrameError::OriginCoordinateOverflow)?
+        / u64::from(scale.denominator());
+    i64::try_from(scaled).map_err(|_| CaptureFrameError::OriginCoordinateOverflow)
+}
+
+fn add_origin_offset(origin: i32, offset: i64) -> Result<i32, CaptureFrameError> {
+    i64::from(origin)
+        .checked_add(offset)
+        .and_then(|coordinate| i32::try_from(coordinate).ok())
+        .ok_or(CaptureFrameError::OriginCoordinateOverflow)
 }
 
 fn storage_crop(
