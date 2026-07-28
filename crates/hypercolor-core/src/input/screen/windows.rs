@@ -820,7 +820,6 @@ fn run_worker(
                     analyze_screen_frame(&mut analyzer, frame)
                 });
                 let Ok(snapshot) = snapshot else {
-                    clear_capture_publication(publication);
                     continue;
                 };
                 let published = publication

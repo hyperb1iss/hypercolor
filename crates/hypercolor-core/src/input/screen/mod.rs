@@ -81,7 +81,9 @@ pub(crate) fn analyze_screen_frame(
     let pixels = storage
         .tightly_packed_rgba8(extent)
         .ok_or_else(|| anyhow::anyhow!("legacy screen analysis requires tightly packed RGBA8"))?;
-    analyzer.push_frame_at(pixels, extent.width(), extent.height(), captured_at);
+    if !analyzer.push_frame_at(pixels, extent.width(), extent.height(), captured_at) {
+        anyhow::bail!("screen analysis rejected malformed normalized pixels");
+    }
     let InputData::Screen(data) = analyzer.sample()? else {
         anyhow::bail!("legacy screen analysis did not produce a snapshot");
     };
@@ -284,6 +286,8 @@ pub struct ScreenCaptureInput {
 
     downscale_pool: RenderSurfacePool,
 
+    policy_pixels: Vec<[u8; 3]>,
+
     /// Whether the source is actively capturing.
     running: bool,
 
@@ -318,6 +322,7 @@ impl ScreenCaptureInput {
                 SurfaceDescriptor::rgba8888(DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT),
                 2,
             ),
+            policy_pixels: Vec::new(),
             running: false,
             frame_width: 0,
             frame_height: 0,
@@ -350,31 +355,31 @@ impl ScreenCaptureInput {
         self.push_frame_at(frame, width, height, Instant::now());
     }
 
-    fn push_frame_at(&mut self, frame: &[u8], width: u32, height: u32, acquired_at: Instant) {
-        self.frame_generation = self.frame_generation.wrapping_add(1);
-        self.frame_width = width;
-        self.frame_height = height;
-
-        // 1. Compute sector grid from raw pixels.
-        let grid = SectorGrid::compute(
+    fn push_frame_at(
+        &mut self,
+        frame: &[u8],
+        width: u32,
+        height: u32,
+        acquired_at: Instant,
+    ) -> bool {
+        let Some(grid) = SectorGrid::try_compute(
             frame,
             width,
             height,
             self.config.grid_cols,
             self.config.grid_rows,
-        );
+        ) else {
+            return false;
+        };
 
-        // 2. Detect letterbox bars (if enabled). Stale bars must clear when
-        // detection is switched off live, or cropping would continue forever.
-        if self.config.letterbox_enabled {
-            self.letterbox = grid.detect_letterbox(self.config.letterbox_threshold);
+        let letterbox = if self.config.letterbox_enabled {
+            grid.detect_letterbox(self.config.letterbox_threshold)
         } else {
-            self.letterbox = LetterboxBars::default();
-        }
+            LetterboxBars::default()
+        };
 
-        // 3. Get zone colors — crop letterbox if bars detected, else use full grid.
-        let (effective_grid, region) = if self.letterbox.has_bars() {
-            grid.crop_letterbox(&self.letterbox).map_or_else(
+        let (effective_grid, region) = if letterbox.has_bars() {
+            grid.crop_letterbox(&letterbox).map_or_else(
                 || (grid.clone(), FrameRegion::full(width, height)),
                 |cropped| {
                     let region = FrameRegion::from_letterbox(
@@ -382,7 +387,7 @@ impl ScreenCaptureInput {
                         height,
                         grid.cols(),
                         grid.rows(),
-                        self.letterbox,
+                        letterbox,
                     )
                     .unwrap_or_else(|| FrameRegion::full(width, height));
                     (cropped, region)
@@ -391,13 +396,25 @@ impl ScreenCaptureInput {
         } else {
             (grid, FrameRegion::full(width, height))
         };
+        let effective_cols = effective_grid.cols();
+        let effective_rows = effective_grid.rows();
         let (downscale_width, downscale_height) = fit_within(
             region.width,
             region.height,
             DEFAULT_CANVAS_WIDTH,
             DEFAULT_CANVAS_HEIGHT,
         );
-        self.latest_canvas_downscale = downscale_frame(
+        let elapsed = self.latest_acquired_at.map_or(Duration::ZERO, |previous| {
+            acquired_at.saturating_duration_since(previous)
+        });
+        let mut next_smoother = self.smoother.clone();
+        if (self.latest_grid_width != 0 || self.latest_grid_height != 0)
+            && (self.latest_grid_width != effective_cols
+                || self.latest_grid_height != effective_rows)
+        {
+            next_smoother.reset();
+        }
+        let Some(canvas_downscale) = downscale_frame(
             frame,
             width,
             height,
@@ -405,23 +422,38 @@ impl ScreenCaptureInput {
             downscale_width,
             downscale_height,
             &mut self.downscale_pool,
-        );
+            &mut next_smoother,
+            self.config.tuning,
+            &mut self.policy_pixels,
+            elapsed,
+        ) else {
+            return false;
+        };
+        let Some(policy_grid) = SectorGrid::try_compute(
+            canvas_downscale.rgba_bytes(),
+            canvas_downscale.width(),
+            canvas_downscale.height(),
+            effective_cols,
+            effective_rows,
+        ) else {
+            return false;
+        };
+        let zone_data = policy_grid.to_zone_colors();
+        let colors = zone_data.iter().map(|(_, color)| *color).collect();
+        let zone_ids = zone_data.into_iter().map(|(id, _)| id).collect();
 
-        let zone_data = effective_grid.to_zone_colors();
-        self.latest_grid_width = effective_grid.cols();
-        self.latest_grid_height = effective_grid.rows();
-        let mut colors: Vec<[u8; 3]> = zone_data.iter().map(|(_, c)| *c).collect();
-        self.latest_zone_ids = zone_data.into_iter().map(|(id, _)| id).collect();
-
-        // 4. Apply temporal smoothing, then color tuning on the smoothed output.
-        let elapsed = self.latest_acquired_at.map_or(Duration::ZERO, |previous| {
-            acquired_at.saturating_duration_since(previous)
-        });
-        self.smoother.apply_for_elapsed(&mut colors, elapsed);
-        self.config.tuning.apply(&mut colors);
-
+        self.smoother = next_smoother;
+        self.latest_canvas_downscale = Some(canvas_downscale);
+        self.latest_grid_width = effective_cols;
+        self.latest_grid_height = effective_rows;
+        self.latest_zone_ids = zone_ids;
         self.latest_colors = Some(colors);
+        self.letterbox = letterbox;
+        self.frame_width = width;
+        self.frame_height = height;
+        self.frame_generation = self.frame_generation.wrapping_add(1);
         self.latest_acquired_at = Some(acquired_at);
+        true
     }
 
     /// Current configuration.
@@ -604,6 +636,10 @@ fn downscale_frame(
     target_width: u32,
     target_height: u32,
     surface_pool: &mut RenderSurfacePool,
+    smoother: &mut TemporalSmoother,
+    tuning: ColorTuning,
+    policy_pixels: &mut Vec<[u8; 3]>,
+    elapsed: Duration,
 ) -> Option<PublishedSurface> {
     if width == 0 || height == 0 || target_width == 0 || target_height == 0 {
         return None;
@@ -656,6 +692,19 @@ fn downscale_frame(
                 .checked_mul(4)?;
             bytes[dst_idx..dst_idx + 4].copy_from_slice(&frame[src_idx..src_idx + 4]);
         }
+    }
+
+    policy_pixels.clear();
+    policy_pixels.extend(
+        bytes
+            .chunks_exact(4)
+            .map(|pixel| [pixel[0], pixel[1], pixel[2]]),
+    );
+    smoother.apply_for_elapsed_grid(policy_pixels, target_width, target_height, elapsed);
+    tuning.apply(policy_pixels);
+    for (pixel, color) in bytes.chunks_exact_mut(4).zip(policy_pixels.iter()) {
+        pixel[..3].copy_from_slice(color);
+        pixel[3] = 255;
     }
 
     Some(lease.submit(0, 0))

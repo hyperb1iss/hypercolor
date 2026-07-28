@@ -749,6 +749,65 @@ fn temporal_smoother_zone_count_change_reinitializes() {
 }
 
 #[test]
+fn temporal_smoother_equal_count_shape_change_reinitializes() {
+    let mut smoother = TemporalSmoother::new(0.0, 10_000.0);
+    let mut horizontal = vec![[10, 20, 30], [40, 50, 60]];
+    smoother.apply_for_elapsed_grid(&mut horizontal, 2, 1, Duration::from_millis(16));
+
+    let mut vertical = vec![[200, 180, 160], [140, 120, 100]];
+    let expected = vertical.clone();
+    smoother.apply_for_elapsed_grid(&mut vertical, 1, 2, Duration::from_millis(16));
+
+    assert_eq!(vertical, expected);
+}
+
+#[test]
+fn malformed_push_preserves_the_last_valid_publication() {
+    let mut input = ScreenCaptureInput::new(CaptureConfig {
+        grid_cols: 2,
+        grid_rows: 2,
+        smoothing_alpha: 1.0,
+        ..CaptureConfig::default()
+    });
+    input.start().expect("screen input should start");
+    let valid = solid_frame(4, 4, 90, 40, 200);
+    input.push_frame(&valid, 4, 4);
+    let InputData::Screen(before) = input.sample().expect("valid sample should publish") else {
+        panic!("expected valid screen data");
+    };
+    let before_surface = before
+        .canvas_downscale
+        .as_ref()
+        .expect("valid sample should publish a policy surface");
+    let before_pointer = before_surface.rgba_bytes().as_ptr();
+    let before_status = input
+        .source_status_handle()
+        .expect("screen input should expose status")
+        .snapshot();
+
+    input.push_frame(&[], u32::MAX, 2);
+    let InputData::Screen(after) = input.sample().expect("malformed push should preserve data")
+    else {
+        panic!("expected retained screen data");
+    };
+    let after_surface = after
+        .canvas_downscale
+        .as_ref()
+        .expect("retained sample should keep its policy surface");
+
+    assert_eq!(input.frame_dimensions(), (4, 4));
+    assert_eq!(after.zone_colors, before.zone_colors);
+    assert_eq!(after_surface.rgba_bytes().as_ptr(), before_pointer);
+    assert_eq!(
+        input
+            .source_status_handle()
+            .expect("screen input should expose status")
+            .snapshot(),
+        before_status
+    );
+}
+
+#[test]
 fn letterbox_bars_default_has_no_bars() {
     let bars = LetterboxBars::default();
     assert!(!bars.has_bars());

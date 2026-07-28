@@ -33,6 +33,10 @@ pub struct TemporalSmoother {
     /// scene-cut threshold can stay on the same rough scale as before while
     /// avoiding gamma-space EMA artifacts.
     prev: Vec<[f32; 3]>,
+
+    /// Spatial identity of `prev`; equal counts with different geometry must
+    /// never blend unrelated coordinates.
+    prev_shape: Option<(u32, u32)>,
 }
 
 impl TemporalSmoother {
@@ -47,6 +51,7 @@ impl TemporalSmoother {
             alpha: alpha.clamp(0.0, 1.0),
             scene_cut_threshold,
             prev: Vec::new(),
+            prev_shape: None,
         }
     }
 
@@ -94,8 +99,21 @@ impl TemporalSmoother {
     /// equivalent elapsed-time alpha, keeping response time stable when the
     /// capture cadence changes.
     pub fn apply_for_elapsed(&mut self, colors: &mut [[u8; 3]], elapsed: Duration) {
-        // First frame or zone count changed — initialize without smoothing.
-        if self.prev.len() != colors.len() {
+        let width = u32::try_from(colors.len()).unwrap_or(u32::MAX);
+        self.apply_for_elapsed_grid(colors, width, 1, elapsed);
+    }
+
+    /// Apply smoothing to a spatial grid using its full shape as state identity.
+    pub fn apply_for_elapsed_grid(
+        &mut self,
+        colors: &mut [[u8; 3]],
+        width: u32,
+        height: u32,
+        elapsed: Duration,
+    ) {
+        let shape = (width, height);
+        // First frame or spatial shape changed — initialize without smoothing.
+        if self.prev.len() != colors.len() || self.prev_shape != Some(shape) {
             self.prev.clear();
             self.prev.extend(colors.iter().map(|color| {
                 [
@@ -104,6 +122,7 @@ impl TemporalSmoother {
                     srgb_u8_to_linear(color[2]) * 255.0,
                 ]
             }));
+            self.prev_shape = Some(shape);
             return;
         }
 
@@ -147,6 +166,7 @@ impl TemporalSmoother {
     /// Reset internal state. Next call to `apply` will initialize fresh.
     pub fn reset(&mut self) {
         self.prev.clear();
+        self.prev_shape = None;
     }
 
     /// Compute the mean absolute RGB-channel delta per zone.

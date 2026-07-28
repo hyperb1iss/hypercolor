@@ -13,7 +13,8 @@ use hypercolor_core::effect::builtin::{
     create_builtin_renderer, register_builtin_effects,
 };
 use hypercolor_core::effect::{EffectRegistry, EffectRenderer, FrameInput};
-use hypercolor_core::input::{InteractionData, ScreenData};
+use hypercolor_core::input::screen::{CaptureConfig, ColorTuning, ScreenCaptureInput};
+use hypercolor_core::input::{InputData, InputSource, InteractionData, ScreenData};
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, PublishedSurface, Rgba};
@@ -1149,6 +1150,70 @@ fn screen_cast_renders_capture_frame() {
 
     assert_eq!(canvas.get_pixel(0, 0), Rgba::new(255, 0, 0, 255));
     assert_eq!(canvas.get_pixel(W - 1, 0), Rgba::new(0, 0, 255, 255));
+}
+
+#[test]
+fn screen_analysis_consumers_share_letterbox_smoothing_and_tuning_policy() {
+    let mut input = ScreenCaptureInput::new(CaptureConfig {
+        grid_cols: 1,
+        grid_rows: 3,
+        smoothing_alpha: 0.0,
+        scene_cut_threshold: 10_000.0,
+        letterbox_enabled: true,
+        tuning: ColorTuning {
+            saturation: 0.0,
+            ..ColorTuning::default()
+        },
+        ..CaptureConfig::default()
+    });
+    input.start().expect("screen input should start");
+    let frame = |content: [u8; 3]| {
+        (0..6)
+            .flat_map(|y| {
+                let color = if (2..4).contains(&y) {
+                    content
+                } else {
+                    [0, 0, 0]
+                };
+                std::iter::repeat_n([color[0], color[1], color[2], 255], 6).flatten()
+            })
+            .collect::<Vec<_>>()
+    };
+    input.push_frame(&frame([220, 20, 20]), 6, 6);
+    input.push_frame(&frame([20, 20, 220]), 6, 6);
+    let InputData::Screen(screen) = input.sample().expect("policy frame should publish") else {
+        panic!("expected analyzed screen data");
+    };
+    let surface = screen
+        .canvas_downscale
+        .as_ref()
+        .expect("policy frame should include pixels");
+    let first = surface.get_pixel(0, 0);
+
+    assert_eq!(screen.letterbox, [1, 1, 0, 0]);
+    assert_eq!(screen.zone_colors.len(), 1);
+    assert_eq!(
+        screen.zone_colors[0].colors,
+        vec![[first.r, first.g, first.b]]
+    );
+    assert_eq!(first.r, first.g, "desaturation should reach effect pixels");
+    assert_eq!(first.g, first.b, "desaturation should reach effect pixels");
+    assert!(
+        surface
+            .rgba_bytes()
+            .chunks_exact(4)
+            .all(|pixel| pixel == [first.r, first.g, first.b, 255]),
+        "letterbox bars should be absent and frozen tuned content should fill the policy surface"
+    );
+
+    let mut renderer = ScreenCastRenderer::new();
+    renderer
+        .init(&make_metadata("screen_cast"))
+        .expect("screen cast should initialize");
+    let rendered = renderer
+        .tick(&frame_with_screen(0.0, &screen))
+        .expect("screen cast should render policy pixels");
+    assert_eq!(rendered.get_pixel(W / 2, H / 2), first);
 }
 
 #[test]

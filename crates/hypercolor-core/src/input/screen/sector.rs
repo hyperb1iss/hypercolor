@@ -44,19 +44,41 @@ impl SectorGrid {
     #[must_use]
     #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
     pub fn compute(frame: &[u8], width: u32, height: u32, cols: u32, rows: u32) -> Self {
+        Self::try_compute(frame, width, height, cols, rows).unwrap_or_else(|| {
+            let cols = cols.max(1);
+            let rows = rows.max(1);
+            let Some(total_sectors) = usize::try_from(cols)
+                .ok()
+                .and_then(|cols| usize::try_from(rows).ok()?.checked_mul(cols))
+            else {
+                return Self::black(1, 1, 1);
+            };
+            Self::black(cols, rows, total_sectors)
+        })
+    }
+
+    /// Compute a sector grid only when all frame and grid arithmetic is valid.
+    #[must_use]
+    pub fn try_compute(
+        frame: &[u8],
+        width: u32,
+        height: u32,
+        cols: u32,
+        rows: u32,
+    ) -> Option<Self> {
         let cols = cols.max(1);
         let rows = rows.max(1);
-        let total_sectors = (cols * rows) as usize;
-        let stride = width * 4;
-
-        let mut colors = Vec::with_capacity(total_sectors);
-
-        // Guard: empty or undersized buffer → all-black grid.
-        let expected_len = (height * stride) as usize;
-        if frame.len() < expected_len || width == 0 || height == 0 {
-            colors.resize(total_sectors, [0, 0, 0]);
-            return Self { cols, rows, colors };
+        let total_sectors = usize::try_from(cols)
+            .ok()?
+            .checked_mul(usize::try_from(rows).ok()?)?;
+        let stride = usize::try_from(width).ok()?.checked_mul(4)?;
+        let expected_len = usize::try_from(height).ok()?.checked_mul(stride)?;
+        if width == 0 || height == 0 || frame.len() < expected_len {
+            return None;
         }
+
+        let mut colors = Vec::new();
+        colors.try_reserve_exact(total_sectors).ok()?;
 
         let sector_w = width / cols;
         let sector_h = height / rows;
@@ -94,7 +116,7 @@ impl SectorGrid {
             }
         }
 
-        Self { cols, rows, colors }
+        Some(Self { cols, rows, colors })
     }
 
     /// Number of columns in the grid.
@@ -295,6 +317,19 @@ impl SectorGrid {
         }
         count
     }
+
+    fn black(cols: u32, rows: u32, total_sectors: usize) -> Self {
+        let mut colors = Vec::new();
+        if colors.try_reserve_exact(total_sectors).is_err() {
+            return Self {
+                cols: 1,
+                rows: 1,
+                colors: vec![[0, 0, 0]],
+            };
+        }
+        colors.resize(total_sectors, [0, 0, 0]);
+        Self { cols, rows, colors }
+    }
 }
 
 // ── LetterboxBars ─────────────────────────────────────────────────────────
@@ -326,7 +361,7 @@ impl LetterboxBars {
 #[allow(clippy::as_conversions)]
 fn accumulate_region(
     frame: &[u8],
-    stride: u32,
+    stride: usize,
     x_start: u32,
     x_end: u32,
     y_start: u32,
@@ -338,12 +373,20 @@ fn accumulate_region(
     let mut count: u64 = 0;
 
     for y in y_start..y_end {
-        let row_offset = (y * stride) as usize;
+        let Some(row_offset) = usize::try_from(y).ok().and_then(|y| y.checked_mul(stride)) else {
+            continue;
+        };
         for x in x_start..x_end {
-            let px = row_offset + (x * 4) as usize;
+            let Some(px) = usize::try_from(x)
+                .ok()
+                .and_then(|x| x.checked_mul(4))
+                .and_then(|x| row_offset.checked_add(x))
+            else {
+                continue;
+            };
             // Bounds check — skip if pixel would read past the buffer.
             // We need at least 3 bytes (R, G, B) starting at `px`.
-            if px + 3 > frame.len() {
+            if px.checked_add(3).is_none_or(|end| end > frame.len()) {
                 continue;
             }
             sum_r += srgb_u8_to_linear(frame[px]) * 255.0;
