@@ -9,8 +9,9 @@ use anyhow::{Context, Result};
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use hypercolor_leptos_ext::ws::{
-    PreviewFrame, PreviewFrameChannel, PreviewPixelFormat, SPECTRUM_FRAME_TAG, SpectrumFrame,
-    ZONE_PREVIEW_FRAME_TAG,
+    PREVIEW_CHUNK_FRAME_TAG, PreviewChunkReassembler, PreviewFrame, PreviewFrameChannel,
+    PreviewPixelFormat, PreviewReassemblyLimits, PreviewStreamId, ReassembledPreviewPublication,
+    SPECTRUM_FRAME_TAG, SpectrumFrame, WIDE_ZONE_PREVIEW_FRAME_TAG, ZONE_PREVIEW_FRAME_TAG,
 };
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
@@ -18,6 +19,9 @@ use tokio_tungstenite::tungstenite::Message;
 use crate::state::{CanvasFrame, SpectrumSnapshot};
 
 const TUI_CANVAS_FPS: u8 = 60;
+const TUI_MAX_PREVIEW_PUBLICATION_BYTES: usize = 512 * 1024 * 1024;
+const TUI_MAX_PREVIEW_CONNECTION_BYTES: usize = 1024 * 1024 * 1024;
+const TUI_MAX_PREVIEW_STREAMS: usize = 8;
 
 /// Messages decoded from the WebSocket stream.
 #[derive(Debug)]
@@ -65,6 +69,8 @@ pub async fn connect(
         .await
         .context("Failed to send subscribe message")?;
 
+    let mut binary_decoder = WsBinaryDecoder::new();
+
     // Read loop
     while let Some(msg) = read.next().await {
         let msg = match msg {
@@ -76,7 +82,7 @@ pub async fn connect(
         };
 
         let decoded = match msg {
-            Message::Binary(data) => decode_binary(&data),
+            Message::Binary(data) => binary_decoder.decode(&data),
             Message::Text(text) => decode_json(&text),
             Message::Close(_) => Some(WsMessage::Closed),
             Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => None,
@@ -120,9 +126,70 @@ fn percent_encode(input: &str) -> String {
 /// slice of the message). Preview channels the TUI doesn't render yet
 /// (screen/web-viewport/display/zone previews) are recognized and dropped.
 pub fn decode_binary(data: &Bytes) -> Option<WsMessage> {
+    WsBinaryDecoder::new().decode(data)
+}
+
+pub struct WsBinaryDecoder {
+    preview_chunks: PreviewChunkReassembler,
+}
+
+impl Default for WsBinaryDecoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl WsBinaryDecoder {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            preview_chunks: PreviewChunkReassembler::new(PreviewReassemblyLimits {
+                max_publication_bytes: TUI_MAX_PREVIEW_PUBLICATION_BYTES,
+                max_connection_bytes: TUI_MAX_PREVIEW_CONNECTION_BYTES,
+                max_streams: TUI_MAX_PREVIEW_STREAMS,
+            }),
+        }
+    }
+
+    pub fn decode(&mut self, data: &Bytes) -> Option<WsMessage> {
+        if data.first() == Some(&PREVIEW_CHUNK_FRAME_TAG) {
+            return match self.preview_chunks.push(data) {
+                Ok(Some(publication)) => decode_reassembled_preview(&publication),
+                Ok(None) => None,
+                Err(error) => {
+                    tracing::warn!(%error, "Rejected preview chunk publication");
+                    None
+                }
+            };
+        }
+
+        decode_unchunked_binary(data)
+    }
+}
+
+fn decode_reassembled_preview(publication: &ReassembledPreviewPublication) -> Option<WsMessage> {
+    let frame = PreviewFrame::decode_bytes(&publication.encoded).ok()?;
+    let PreviewStreamId::Passive(channel) = &publication.metadata.stream else {
+        tracing::trace!("Ignoring non-passive chunked preview publication");
+        return None;
+    };
+    if frame.channel != *channel
+        || frame.frame_number != publication.metadata.frame_number
+        || frame.timestamp_ms != publication.metadata.timestamp_ms
+        || frame.width != publication.metadata.width
+        || frame.height != publication.metadata.height
+        || frame.format != publication.metadata.format
+    {
+        tracing::warn!("Rejected preview publication with mismatched chunk metadata");
+        return None;
+    }
+    decode_preview(&publication.encoded)
+}
+
+fn decode_unchunked_binary(data: &Bytes) -> Option<WsMessage> {
     match *data.first()? {
         SPECTRUM_FRAME_TAG => decode_spectrum(data),
-        ZONE_PREVIEW_FRAME_TAG => {
+        ZONE_PREVIEW_FRAME_TAG | WIDE_ZONE_PREVIEW_FRAME_TAG => {
             tracing::trace!("Ignoring zone preview frame (not consumed yet)");
             None
         }
@@ -146,7 +213,7 @@ fn decode_preview(data: &Bytes) -> Option<WsMessage> {
 
     let pixels = match frame.format {
         PreviewPixelFormat::Rgb => frame.payload,
-        PreviewPixelFormat::Rgba => Bytes::from(rgba_to_rgb(&frame.payload)),
+        PreviewPixelFormat::Rgba => Bytes::from(rgba_to_rgb(&frame.payload)?),
         PreviewPixelFormat::Jpeg => {
             tracing::trace!("Ignoring JPEG canvas frame (TUI subscribes raw)");
             return None;
@@ -162,12 +229,14 @@ fn decode_preview(data: &Bytes) -> Option<WsMessage> {
     }))
 }
 
-fn rgba_to_rgb(pixel_data: &[u8]) -> Vec<u8> {
-    let mut rgb = Vec::with_capacity((pixel_data.len() / 4) * 3);
+fn rgba_to_rgb(pixel_data: &[u8]) -> Option<Vec<u8>> {
+    let rgb_len = (pixel_data.len() / 4).checked_mul(3)?;
+    let mut rgb = Vec::new();
+    rgb.try_reserve_exact(rgb_len).ok()?;
     for chunk in pixel_data.chunks_exact(4) {
         rgb.extend_from_slice(&chunk[..3]);
     }
-    rgb
+    Some(rgb)
 }
 
 fn decode_spectrum(data: &Bytes) -> Option<WsMessage> {

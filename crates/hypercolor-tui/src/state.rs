@@ -275,8 +275,8 @@ impl PreviewSource {
 pub struct CanvasFrame {
     pub frame_number: u32,
     pub timestamp_ms: u32,
-    pub width: u16,
-    pub height: u16,
+    pub width: u32,
+    pub height: u32,
     /// RGB pixel data, 3 bytes per pixel, row-major.
     pub pixels: Bytes,
 }
@@ -285,8 +285,8 @@ pub struct CanvasFrame {
 pub struct CanvasPreviewState {
     pub frame_number: u32,
     pub timestamp_ms: u32,
-    pub width: u16,
-    pub height: u16,
+    pub width: u32,
+    pub height: u32,
 }
 
 impl From<&CanvasFrame> for CanvasPreviewState {

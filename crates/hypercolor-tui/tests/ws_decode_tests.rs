@@ -6,12 +6,13 @@
 
 use bytes::Bytes;
 use hypercolor_leptos_ext::ws::{
-    PreviewFrame, PreviewFrameChannel, PreviewPixelFormat, SpectrumFrame, TimedInputEventPayload,
-    ZONE_PREVIEW_FRAME_TAG, ZonePreviewFrame,
+    PreviewFrame, PreviewFrameChannel, PreviewPixelFormat, PreviewPublicationMetadata,
+    PreviewStreamId, SpectrumFrame, TimedInputEventPayload, ZONE_PREVIEW_FRAME_TAG,
+    ZonePreviewFrame, split_preview_publication,
 };
-use hypercolor_tui::client::ws::{self, WsMessage};
+use hypercolor_tui::client::ws::{self, WsBinaryDecoder, WsMessage};
 
-fn canvas_frame(format: PreviewPixelFormat, width: u16, height: u16, pixels: &[u8]) -> Bytes {
+fn canvas_frame(format: PreviewPixelFormat, width: u32, height: u32, pixels: &[u8]) -> Bytes {
     PreviewFrame {
         channel: PreviewFrameChannel::Canvas,
         frame_number: 1,
@@ -63,6 +64,44 @@ fn decode_canvas_rgba_strips_alpha() {
         panic!("expected Canvas variant");
     };
     assert_eq!(frame.pixels, Bytes::from(vec![100, 200, 50]));
+}
+
+#[test]
+fn decode_wide_canvas_preserves_u32_dimensions() {
+    let pixels = vec![0_u8; 65_536 * 3];
+    let data = canvas_frame(PreviewPixelFormat::Rgb, 65_536, 1, &pixels);
+    let Some(WsMessage::Canvas(frame)) = ws::decode_binary(&data) else {
+        panic!("wide canvas should decode");
+    };
+    assert_eq!(frame.width, 65_536);
+    assert_eq!(frame.height, 1);
+}
+
+#[test]
+fn stateful_decoder_reassembles_chunked_canvas_once() {
+    let encoded = canvas_frame(PreviewPixelFormat::Rgb, 2, 1, &[1, 2, 3, 4, 5, 6]);
+    let metadata = PreviewPublicationMetadata {
+        stream: PreviewStreamId::Passive(PreviewFrameChannel::Canvas),
+        publication_id: 9,
+        frame_number: 1,
+        timestamp_ms: 42,
+        width: 2,
+        height: 1,
+        format: PreviewPixelFormat::Rgb,
+    };
+    let chunks = split_preview_publication(&encoded, &metadata, 70).expect("frame chunks");
+    assert!(chunks.len() > 1);
+    let mut decoder = WsBinaryDecoder::new();
+    for chunk in &chunks[..chunks.len() - 1] {
+        assert!(decoder.decode(chunk).is_none());
+    }
+    let Some(WsMessage::Canvas(frame)) = decoder.decode(chunks.last().expect("last chunk")) else {
+        panic!("complete publication should activate once");
+    };
+    assert_eq!(frame.width, 2);
+    assert_eq!(frame.height, 1);
+    assert_eq!(frame.pixels.as_ref(), &[1, 2, 3, 4, 5, 6]);
+    assert!(decoder.decode(chunks.last().expect("last chunk")).is_none());
 }
 
 #[test]

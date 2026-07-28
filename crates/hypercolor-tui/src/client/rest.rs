@@ -700,16 +700,11 @@ fn decode_simulated_display_frame(bytes: &[u8]) -> Result<CanvasFrame> {
     let width = rgb.width();
     let height = rgb.height();
 
-    if width > u32::from(u16::MAX) || height > u32::from(u16::MAX) {
-        anyhow::bail!("Simulator preview dimensions exceed TUI limits: {width}x{height}");
-    }
-
-    #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
     Ok(CanvasFrame {
         frame_number: 0,
         timestamp_ms: 0,
-        width: width as u16,
-        height: height as u16,
+        width,
+        height,
         pixels: Bytes::from(rgb.into_raw()),
     })
 }

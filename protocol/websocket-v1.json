@@ -106,7 +106,9 @@
     "input_events",
     "commands",
     "canvas_format_jpeg",
-    "interactive_previews"
+    "interactive_previews",
+    "wide_preview_frames",
+    "preview_chunking"
   ],
   "json_messages": {
     "client": [
@@ -297,6 +299,36 @@
       "tag": 10,
       "channel": "interactive_preview",
       "layout": "interactive_preview_frame"
+    },
+    {
+      "name": "wide_preview",
+      "tag": 11,
+      "channel": "preview_transport",
+      "layout": "wide_preview_frame"
+    },
+    {
+      "name": "wide_zone_preview",
+      "tag": 12,
+      "channel": "zone_preview",
+      "layout": "wide_zone_preview_frame"
+    },
+    {
+      "name": "wide_interactive_preview",
+      "tag": 13,
+      "channel": "interactive_preview",
+      "layout": "wide_interactive_preview_frame"
+    },
+    {
+      "name": "wide_screen_zones",
+      "tag": 14,
+      "channel": "screen_zones",
+      "layout": "wide_screen_zones_frame"
+    },
+    {
+      "name": "preview_chunk",
+      "tag": 15,
+      "channel": "preview_transport",
+      "layout": "preview_chunk_frame"
     }
   ],
   "preview_frame": {
@@ -480,6 +512,89 @@
         "repeated_u8_rgb",
         "zone_colors"
       ]
+    ]
+  },
+  "wide_preview_frame": {
+    "header_len": 19,
+    "description": "Additive preview layout for u32 dimensions. The channel_tag identifies the logical passive preview stream.",
+    "layout": [
+      ["u8", "tag"],
+      ["u8", "channel_tag"],
+      ["u32_le", "frame_number"],
+      ["u32_le", "timestamp_ms"],
+      ["u32_le", "width"],
+      ["u32_le", "height"],
+      ["u8", "format"],
+      ["bytes", "payload"]
+    ]
+  },
+  "wide_zone_preview_frame": {
+    "header_len": 50,
+    "layout": [
+      ["u8", "tag"],
+      ["u32_le", "frame_number"],
+      ["u32_le", "timestamp_ms"],
+      ["uuid", "scene_id"],
+      ["uuid", "zone_id"],
+      ["u32_le", "width"],
+      ["u32_le", "height"],
+      ["u8", "format"],
+      ["bytes", "payload"]
+    ]
+  },
+  "wide_interactive_preview_frame": {
+    "prefix_len": 19,
+    "layout": [
+      ["u8", "tag"],
+      ["u8", "preview_id_len"],
+      ["u32_le", "frame_number"],
+      ["u32_le", "timestamp_ms"],
+      ["u32_le", "width"],
+      ["u32_le", "height"],
+      ["u8", "format"],
+      ["utf8", "preview_id"],
+      ["bytes", "payload"]
+    ]
+  },
+  "wide_screen_zones_frame": {
+    "header_len": 23,
+    "layout": [
+      ["u8", "tag"],
+      ["u32_le", "frame_number"],
+      ["u32_le", "timestamp_ms"],
+      ["u32_le", "source_width"],
+      ["u32_le", "source_height"],
+      ["u8", "grid_cols"],
+      ["u8", "grid_rows"],
+      ["u8", "letterbox_top"],
+      ["u8", "letterbox_bottom"],
+      ["u8", "letterbox_left"],
+      ["u8", "letterbox_right"],
+      ["repeated_u8_rgb", "zone_colors"]
+    ]
+  },
+  "preview_chunk_frame": {
+    "schema": 1,
+    "fixed_header_len": 55,
+    "description": "Bounded chunk envelope around one fully encoded legacy or wide preview publication.",
+    "layout": [
+      ["u8", "tag"],
+      ["u8", "schema"],
+      ["u8", "stream_kind"],
+      ["u8", "channel_tag"],
+      ["u8", "format"],
+      ["u16_le", "stream_identity_len"],
+      ["u64_le", "publication_id"],
+      ["u32_le", "frame_number"],
+      ["u32_le", "timestamp_ms"],
+      ["u32_le", "width"],
+      ["u32_le", "height"],
+      ["u64_le", "total_encoded_bytes"],
+      ["u64_le", "chunk_offset"],
+      ["u32_le", "chunk_index"],
+      ["u32_le", "chunk_count"],
+      ["bytes", "stream_identity"],
+      ["bytes", "chunk_payload"]
     ]
   },
   "channel_config": {

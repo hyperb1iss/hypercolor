@@ -228,14 +228,15 @@ pub fn canvas_ambient_bleed(channel: CanvasColorChannel, sensitivity: MotionSens
 /// Samples the four edges (top, bottom, left, right) of the canvas and
 /// averages them — Ambilight-style edge detection. Returns `None` for empty
 /// or malformed frames. Pixels are 3 bytes each (R, G, B).
-pub fn sample_canvas_border(width: u16, height: u16, pixels: &[u8]) -> Option<(u8, u8, u8)> {
+pub fn sample_canvas_border(width: u32, height: u32, pixels: &[u8]) -> Option<(u8, u8, u8)> {
     if width == 0 || height == 0 {
         return None;
     }
-    let w = usize::from(width);
-    let h = usize::from(height);
-    let stride = w * 3;
-    if pixels.len() < stride * h {
+    let w = usize::try_from(width).ok()?;
+    let h = usize::try_from(height).ok()?;
+    let stride = w.checked_mul(3)?;
+    let required = stride.checked_mul(h)?;
+    if pixels.len() < required {
         return None;
     }
 

@@ -134,8 +134,10 @@ impl QuarterblocksFrame {
 }
 
 fn sample_quarterblock_grid(frame: &CanvasFrame, area: Rect) -> Result<RgbImage, String> {
-    let frame_width = usize::from(frame.width);
-    let frame_height = usize::from(frame.height);
+    let frame_width =
+        usize::try_from(frame.width).map_err(|_| "preview dimensions overflow".to_string())?;
+    let frame_height =
+        usize::try_from(frame.height).map_err(|_| "preview dimensions overflow".to_string())?;
     let expected_len = frame_width
         .checked_mul(frame_height)
         .and_then(|pixels| pixels.checked_mul(3))
@@ -149,7 +151,7 @@ fn sample_quarterblock_grid(frame: &CanvasFrame, area: Rect) -> Result<RgbImage,
     let target_height = u32::from(area.height) * 2;
     let source = FlatSamples {
         samples: frame.pixels.as_ref(),
-        layout: SampleLayout::row_major_packed(3, u32::from(frame.width), u32::from(frame.height)),
+        layout: SampleLayout::row_major_packed(3, frame.width, frame.height),
         color_hint: None,
     };
     let view = source
@@ -355,8 +357,8 @@ mod tests {
         CanvasFrame {
             frame_number: 1,
             timestamp_ms: 0,
-            width,
-            height,
+            width: u32::from(width),
+            height: u32::from(height),
             pixels: bytes::Bytes::from(pixels),
         }
     }
@@ -385,8 +387,8 @@ mod tests {
         CanvasFrame {
             frame_number: 1,
             timestamp_ms: 0,
-            width,
-            height,
+            width: u32::from(width),
+            height: u32::from(height),
             pixels: bytes::Bytes::from(pixels),
         }
     }

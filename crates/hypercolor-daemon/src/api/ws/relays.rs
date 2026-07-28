@@ -589,7 +589,6 @@ pub(super) async fn relay_screen_zones(
 }
 
 pub(super) fn encode_screen_zones_frame(frame: &hypercolor_core::bus::ScreenZonesFrame) -> Bytes {
-    let saturate_u16 = |value: u32| u16::try_from(value).unwrap_or(u16::MAX);
     let saturate_u8 = |value: u32| u8::try_from(value).unwrap_or(u8::MAX);
     let payload: Vec<u8> = frame
         .colors
@@ -600,8 +599,8 @@ pub(super) fn encode_screen_zones_frame(frame: &hypercolor_core::bus::ScreenZone
     hypercolor_leptos_ext::ws::ScreenZonesFrame {
         frame_number: frame.frame_number,
         timestamp_ms: frame.timestamp_ms,
-        source_width: saturate_u16(frame.source_width),
-        source_height: saturate_u16(frame.source_height),
+        source_width: frame.source_width,
+        source_height: frame.source_height,
         grid_cols: saturate_u8(frame.grid_cols),
         grid_rows: saturate_u8(frame.grid_rows),
         letterbox: [

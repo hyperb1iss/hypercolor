@@ -3235,6 +3235,26 @@ fn websocket_manifest_matches_protocol_constants() {
         binary_tags["interactive_preview"],
         hypercolor_leptos_ext::ws::INTERACTIVE_PREVIEW_FRAME_TAG
     );
+    assert_eq!(
+        binary_tags["wide_preview"],
+        hypercolor_leptos_ext::ws::WIDE_PREVIEW_FRAME_TAG
+    );
+    assert_eq!(
+        binary_tags["wide_zone_preview"],
+        hypercolor_leptos_ext::ws::WIDE_ZONE_PREVIEW_FRAME_TAG
+    );
+    assert_eq!(
+        binary_tags["wide_interactive_preview"],
+        hypercolor_leptos_ext::ws::WIDE_INTERACTIVE_PREVIEW_FRAME_TAG
+    );
+    assert_eq!(
+        binary_tags["wide_screen_zones"],
+        hypercolor_leptos_ext::ws::WIDE_SCREEN_ZONES_FRAME_TAG
+    );
+    assert_eq!(
+        binary_tags["preview_chunk"],
+        hypercolor_leptos_ext::ws::PREVIEW_CHUNK_FRAME_TAG
+    );
 
     let client_messages = manifest["json_messages"]["client"]
         .as_array()

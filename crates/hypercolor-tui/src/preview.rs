@@ -77,8 +77,8 @@ impl PreviewPolicy {
             return PreviewTransport::Halfblocks;
         }
 
-        let desired_width = u32::from(frame.width).div_ceil(u32::from(font_size.0.max(1)));
-        let desired_height = u32::from(frame.height).div_ceil(u32::from(font_size.1.max(1)));
+        let desired_width = frame.width.div_ceil(u32::from(font_size.0.max(1)));
+        let desired_height = frame.height.div_ceil(u32::from(font_size.1.max(1)));
 
         if u32::from(area.width) * 10 > desired_width * u32::from(self.max_primary_scale_tenths)
             || u32::from(area.height) * 10
@@ -601,15 +601,15 @@ impl PreviewManager {
                         && (!request.fullscreen || build_use_kitty_fast_fullscreen)
                     {
                         let source_rect = cover_source_rect(
-                            u32::from(request.frame.width),
-                            u32::from(request.frame.height),
+                            request.frame.width,
+                            request.frame.height,
                             request.area,
                             build_primary_picker.font_size(),
                         );
                         match kitty_fast::KittyFrame::new(
                             request.frame.pixels.as_ref(),
-                            u32::from(request.frame.width),
-                            u32::from(request.frame.height),
+                            request.frame.width,
+                            request.frame.height,
                             source_rect,
                             request.area,
                             request.image_id,
@@ -1136,11 +1136,8 @@ fn build_preview_image(
     validate_preview_frame_len(frame)?;
 
     if resize_mode != StatefulResizeMode::Cover || area.width == 0 || area.height == 0 {
-        let Some(img) = image::RgbImage::from_raw(
-            u32::from(frame.width),
-            u32::from(frame.height),
-            frame.pixels.to_vec(),
-        ) else {
+        let Some(img) = image::RgbImage::from_raw(frame.width, frame.height, frame.pixels.to_vec())
+        else {
             return Err("invalid preview frame length".to_string());
         };
         return Ok(DynamicImage::ImageRgb8(img));
@@ -1149,22 +1146,16 @@ fn build_preview_image(
     let target_width = u32::from(area.width) * u32::from(font_size.0.max(1));
     let target_height = u32::from(area.height) * u32::from(font_size.1.max(1));
     if target_width == 0 || target_height == 0 {
-        let Some(img) = image::RgbImage::from_raw(
-            u32::from(frame.width),
-            u32::from(frame.height),
-            frame.pixels.to_vec(),
-        ) else {
+        let Some(img) = image::RgbImage::from_raw(frame.width, frame.height, frame.pixels.to_vec())
+        else {
             return Err("invalid preview frame length".to_string());
         };
         return Ok(DynamicImage::ImageRgb8(img));
     }
 
-    if u32::from(frame.width) == target_width && u32::from(frame.height) == target_height {
-        let Some(img) = image::RgbImage::from_raw(
-            u32::from(frame.width),
-            u32::from(frame.height),
-            frame.pixels.to_vec(),
-        ) else {
+    if frame.width == target_width && frame.height == target_height {
+        let Some(img) = image::RgbImage::from_raw(frame.width, frame.height, frame.pixels.to_vec())
+        else {
             return Err("invalid preview frame length".to_string());
         };
         return Ok(DynamicImage::ImageRgb8(img));
@@ -1177,7 +1168,7 @@ fn build_preview_image(
     };
     let source = FlatSamples {
         samples: frame.pixels.as_ref(),
-        layout: SampleLayout::row_major_packed(3, u32::from(frame.width), u32::from(frame.height)),
+        layout: SampleLayout::row_major_packed(3, frame.width, frame.height),
         color_hint: None,
     };
     let view = source
@@ -1215,8 +1206,13 @@ fn build_preview_image(
 }
 
 fn validate_preview_frame_len(frame: &CanvasFrame) -> Result<(), String> {
-    let expected_len = usize::from(frame.width)
-        .checked_mul(usize::from(frame.height))
+    let expected_len = usize::try_from(frame.width)
+        .ok()
+        .and_then(|width| {
+            usize::try_from(frame.height)
+                .ok()
+                .and_then(|height| width.checked_mul(height))
+        })
         .and_then(|pixels| pixels.checked_mul(3))
         .ok_or_else(|| "preview dimensions overflow".to_string())?;
 

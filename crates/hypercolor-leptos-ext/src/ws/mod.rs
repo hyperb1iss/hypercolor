@@ -31,10 +31,17 @@ pub use preview::PreviewFrameView;
 pub use preview::ZonePreviewFrameView;
 pub use preview::{
     INTERACTIVE_PREVIEW_FRAME_PREFIX_LEN, INTERACTIVE_PREVIEW_FRAME_TAG,
-    INTERACTIVE_PREVIEW_ID_MAX_BYTES, InteractivePreviewFrame, PREVIEW_FRAME_HEADER_LEN,
-    PreviewFrame, PreviewFrameChannel, PreviewFrameDecodeError, PreviewPixelFormat,
+    INTERACTIVE_PREVIEW_ID_MAX_BYTES, InteractivePreviewFrame, PREVIEW_CHUNK_FIXED_HEADER_LEN,
+    PREVIEW_CHUNK_FRAME_TAG, PREVIEW_CHUNK_SCHEMA, PREVIEW_FRAME_HEADER_LEN, PreviewChunkError,
+    PreviewChunkFrame, PreviewChunkReassembler, PreviewFrame, PreviewFrameChannel,
+    PreviewFrameDecodeError, PreviewPixelFormat, PreviewPublicationMetadata,
+    PreviewReassemblyLimits, PreviewStreamId, ReassembledPreviewPublication,
     SCREEN_ZONES_FRAME_HEADER_LEN, SCREEN_ZONES_FRAME_TAG, ScreenZonesFrame,
+    WIDE_INTERACTIVE_PREVIEW_FRAME_PREFIX_LEN, WIDE_INTERACTIVE_PREVIEW_FRAME_TAG,
+    WIDE_PREVIEW_FRAME_HEADER_LEN, WIDE_PREVIEW_FRAME_TAG, WIDE_SCREEN_ZONES_FRAME_HEADER_LEN,
+    WIDE_SCREEN_ZONES_FRAME_TAG, WIDE_ZONE_PREVIEW_FRAME_HEADER_LEN, WIDE_ZONE_PREVIEW_FRAME_TAG,
     ZONE_PREVIEW_FRAME_HEADER_LEN, ZONE_PREVIEW_FRAME_TAG, ZonePreviewFrame,
+    split_preview_publication,
 };
 pub use reconnect::{
     Connector, ExponentialBackoff, Jitter, ReconnectError, ReconnectOutcome, ReconnectPolicy,

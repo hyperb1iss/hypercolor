@@ -43,6 +43,8 @@ WS_CAPABILITIES: Final = (
     "commands",
     "canvas_format_jpeg",
     "interactive_previews",
+    "wide_preview_frames",
+    "preview_chunking",
 )
 
 BINARY_MESSAGE_TAGS: Final = MappingProxyType(
@@ -56,6 +58,11 @@ BINARY_MESSAGE_TAGS: Final = MappingProxyType(
         "zone_preview": 0x08,
         "display_preview": 0x07,
         "interactive_preview": 0x0A,
+        "wide_preview": 0x0B,
+        "wide_zone_preview": 0x0C,
+        "wide_interactive_preview": 0x0D,
+        "wide_screen_zones": 0x0E,
+        "preview_chunk": 0x0F,
     }
 )
 PREVIEW_CHANNEL_TAGS: Final = MappingProxyType(

@@ -3,10 +3,14 @@
 use bytes::Bytes;
 use hypercolor_leptos_ext::ws::{
     INTERACTIVE_PREVIEW_FRAME_PREFIX_LEN, INTERACTIVE_PREVIEW_FRAME_TAG,
-    INTERACTIVE_PREVIEW_ID_MAX_BYTES, InteractivePreviewFrame, PREVIEW_FRAME_HEADER_LEN,
+    INTERACTIVE_PREVIEW_ID_MAX_BYTES, InteractivePreviewFrame, PREVIEW_CHUNK_FRAME_TAG,
+    PREVIEW_FRAME_HEADER_LEN, PreviewChunkError, PreviewChunkFrame, PreviewChunkReassembler,
     PreviewFrame, PreviewFrameChannel, PreviewFrameDecodeError, PreviewPixelFormat,
+    PreviewPublicationMetadata, PreviewReassemblyLimits, PreviewStreamId,
     SCREEN_ZONES_FRAME_HEADER_LEN, SCREEN_ZONES_FRAME_TAG, ScreenZonesFrame,
-    ZONE_PREVIEW_FRAME_HEADER_LEN, ZONE_PREVIEW_FRAME_TAG, ZonePreviewFrame,
+    WIDE_INTERACTIVE_PREVIEW_FRAME_TAG, WIDE_PREVIEW_FRAME_TAG, WIDE_SCREEN_ZONES_FRAME_TAG,
+    WIDE_ZONE_PREVIEW_FRAME_TAG, ZONE_PREVIEW_FRAME_HEADER_LEN, ZONE_PREVIEW_FRAME_TAG,
+    ZonePreviewFrame, split_preview_publication,
 };
 
 #[test]
@@ -85,16 +89,18 @@ fn preview_frame_rejects_unknown_channel() {
 
 #[test]
 fn preview_frame_rejects_short_raw_payload() {
-    let encoded = PreviewFrame {
+    let mut encoded = PreviewFrame {
         channel: PreviewFrameChannel::ScreenCanvas,
         frame_number: 1,
         timestamp_ms: 2,
         width: 2,
         height: 2,
         format: PreviewPixelFormat::Rgb,
-        payload: Bytes::from_static(&[1, 2, 3]),
+        payload: Bytes::from_static(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]),
     }
-    .encode();
+    .encode()
+    .to_vec();
+    encoded.truncate(PREVIEW_FRAME_HEADER_LEN + 3);
 
     assert_eq!(
         PreviewFrame::decode(&encoded),
@@ -331,4 +337,292 @@ fn screen_zones_frame_rejects_wrong_tag() {
         ScreenZonesFrame::decode(&encoded),
         Err(PreviewFrameDecodeError::UnknownChannel { .. })
     ));
+}
+
+#[test]
+fn legacy_preview_layout_is_byte_for_byte_stable() {
+    let encoded = PreviewFrame {
+        channel: PreviewFrameChannel::Canvas,
+        frame_number: 0x0403_0201,
+        timestamp_ms: 0x0807_0605,
+        width: 2,
+        height: 1,
+        format: PreviewPixelFormat::Rgb,
+        payload: Bytes::from_static(&[0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]),
+    }
+    .encode();
+
+    assert_eq!(
+        encoded.as_ref(),
+        &[
+            0x03, 1, 2, 3, 4, 5, 6, 7, 8, 2, 0, 1, 0, 0, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF,
+        ],
+    );
+}
+
+#[test]
+fn wide_preview_layouts_round_trip_without_truncation() {
+    let passive = PreviewFrame {
+        channel: PreviewFrameChannel::DisplayPreview,
+        frame_number: 1,
+        timestamp_ms: 2,
+        width: 70_001,
+        height: 3,
+        format: PreviewPixelFormat::Jpeg,
+        payload: Bytes::from_static(b"jpeg"),
+    };
+    let passive_bytes = passive.encode();
+    assert_eq!(passive_bytes[0], WIDE_PREVIEW_FRAME_TAG);
+    assert_eq!(PreviewFrame::decode(&passive_bytes), Ok(passive));
+
+    let zone = ZonePreviewFrame {
+        scene_id: [1; 16],
+        zone_id: [2; 16],
+        frame_number: 3,
+        timestamp_ms: 4,
+        width: 7680,
+        height: 4320,
+        format: PreviewPixelFormat::Jpeg,
+        payload: Bytes::from_static(b"8k-jpeg"),
+    };
+    let zone_bytes = zone.encode();
+    assert_eq!(zone_bytes[0], ZONE_PREVIEW_FRAME_TAG);
+    assert_eq!(ZonePreviewFrame::decode(&zone_bytes), Ok(zone));
+
+    let interactive = InteractivePreviewFrame {
+        preview_id: "wide".to_owned(),
+        frame_number: 5,
+        timestamp_ms: 6,
+        width: 2,
+        height: 70_003,
+        format: PreviewPixelFormat::Jpeg,
+        payload: Bytes::from_static(b"portrait"),
+    };
+    let interactive_bytes = interactive.encode().expect("wide frame encodes");
+    assert_eq!(interactive_bytes[0], WIDE_INTERACTIVE_PREVIEW_FRAME_TAG);
+    assert_eq!(
+        InteractivePreviewFrame::decode(&interactive_bytes),
+        Ok(interactive),
+    );
+
+    let screen_zones = ScreenZonesFrame {
+        frame_number: 7,
+        timestamp_ms: 8,
+        source_width: 100_000,
+        source_height: 1,
+        grid_cols: 1,
+        grid_rows: 1,
+        letterbox: [0; 4],
+        payload: Bytes::from_static(&[1, 2, 3]),
+    };
+    let screen_bytes = screen_zones.encode();
+    assert_eq!(screen_bytes[0], WIDE_SCREEN_ZONES_FRAME_TAG);
+    assert_eq!(ScreenZonesFrame::decode(&screen_bytes), Ok(screen_zones));
+
+    let wide_zone = ZonePreviewFrame {
+        scene_id: [3; 16],
+        zone_id: [4; 16],
+        frame_number: 9,
+        timestamp_ms: 10,
+        width: 65_536,
+        height: 1,
+        format: PreviewPixelFormat::Jpeg,
+        payload: Bytes::from_static(b"wide-zone"),
+    };
+    assert_eq!(wide_zone.encode()[0], WIDE_ZONE_PREVIEW_FRAME_TAG);
+}
+
+fn interactive_metadata(publication_id: u64, frame_number: u32) -> PreviewPublicationMetadata {
+    PreviewPublicationMetadata {
+        stream: PreviewStreamId::Interactive("preview-a".to_owned()),
+        publication_id,
+        frame_number,
+        timestamp_ms: frame_number,
+        width: 4096,
+        height: 4096,
+        format: PreviewPixelFormat::Rgba,
+    }
+}
+
+fn reassembler(max_bytes: usize) -> PreviewChunkReassembler {
+    PreviewChunkReassembler::new(PreviewReassemblyLimits {
+        max_publication_bytes: max_bytes,
+        max_connection_bytes: max_bytes.checked_mul(2).expect("fixture budget fits"),
+        max_streams: 2,
+    })
+}
+
+#[test]
+fn raw_4096_square_publication_chunks_and_reassembles() {
+    let payload_len = 4096_usize * 4096 * 4;
+    let encoded_len = PREVIEW_FRAME_HEADER_LEN + payload_len;
+    let mut encoded = Vec::new();
+    encoded
+        .try_reserve_exact(encoded_len)
+        .expect("fixture allocates");
+    encoded.resize(encoded_len, 0x5A);
+    encoded[0] = PreviewFrameChannel::Canvas.tag();
+    encoded[9..11].copy_from_slice(&4096_u16.to_le_bytes());
+    encoded[11..13].copy_from_slice(&4096_u16.to_le_bytes());
+    encoded[13] = PreviewPixelFormat::Rgba.tag();
+    let encoded = Bytes::from(encoded);
+    let metadata = PreviewPublicationMetadata {
+        stream: PreviewStreamId::Passive(PreviewFrameChannel::Canvas),
+        publication_id: 1,
+        frame_number: 0,
+        timestamp_ms: 0,
+        width: 4096,
+        height: 4096,
+        format: PreviewPixelFormat::Rgba,
+    };
+    let chunks = split_preview_publication(&encoded, &metadata, 4 * 1024 * 1024)
+        .expect("large raw publication chunks");
+    assert!(chunks.len() > 1);
+    assert!(chunks.iter().all(|chunk| chunk.len() <= 4 * 1024 * 1024));
+
+    let mut reassembler = reassembler(encoded_len);
+    let mut complete = None;
+    for chunk in chunks {
+        complete = reassembler
+            .push(&chunk)
+            .expect("chunk accepted")
+            .or(complete);
+    }
+    let complete = complete.expect("publication completes");
+    assert_eq!(complete.encoded, encoded);
+    assert_eq!(
+        PreviewFrame::decode(&complete.encoded)
+            .expect("frame decodes")
+            .width,
+        4096
+    );
+}
+
+#[test]
+fn chunk_reassembly_rejects_gap_overlap_duplicate_and_metadata_change() {
+    let encoded = Bytes::from(vec![7_u8; 256]);
+    let metadata = interactive_metadata(10, 1);
+    let chunks = split_preview_publication(&encoded, &metadata, 128).expect("chunks split");
+    assert!(chunks.len() >= 3);
+
+    let mut gaps = reassembler(1024);
+    assert_eq!(gaps.push(&chunks[0]), Ok(None));
+    assert_eq!(
+        gaps.push(&chunks[2]),
+        Err(PreviewChunkError::NonContiguousChunk),
+    );
+
+    let mut duplicate = reassembler(1024);
+    assert_eq!(duplicate.push(&chunks[0]), Ok(None));
+    assert_eq!(
+        duplicate.push(&chunks[0]),
+        Err(PreviewChunkError::DuplicateChunk),
+    );
+
+    let mut overlap_frame = PreviewChunkFrame::decode_bytes(&chunks[1]).expect("chunk decodes");
+    overlap_frame.chunk_offset -= 1;
+    let overlap = overlap_frame.try_encode().expect("overlap encodes");
+    let mut overlap_reassembler = reassembler(1024);
+    assert_eq!(overlap_reassembler.push(&chunks[0]), Ok(None));
+    assert_eq!(
+        overlap_reassembler.push(&overlap),
+        Err(PreviewChunkError::NonContiguousChunk),
+    );
+
+    let mut changed_frame = PreviewChunkFrame::decode_bytes(&chunks[1]).expect("chunk decodes");
+    changed_frame.metadata.width += 1;
+    let changed = changed_frame.try_encode().expect("changed chunk encodes");
+    let mut changed_reassembler = reassembler(1024);
+    assert_eq!(changed_reassembler.push(&chunks[0]), Ok(None));
+    assert_eq!(
+        changed_reassembler.push(&changed),
+        Err(PreviewChunkError::MetadataChanged),
+    );
+}
+
+#[test]
+fn newer_publication_reclaims_superseded_partial() {
+    let old = split_preview_publication(
+        &Bytes::from(vec![1_u8; 256]),
+        &interactive_metadata(1, 1),
+        128,
+    )
+    .expect("old chunks");
+    let new = split_preview_publication(
+        &Bytes::from(vec![2_u8; 128]),
+        &interactive_metadata(2, 2),
+        128,
+    )
+    .expect("new chunks");
+    let mut reassembler = reassembler(1024);
+    assert_eq!(reassembler.push(&old[0]), Ok(None));
+    assert_eq!(reassembler.partial_count(), 1);
+    assert_eq!(reassembler.push(&new[0]), Ok(None));
+    assert_eq!(reassembler.partial_count(), 1);
+    assert_eq!(reassembler.superseded_publications(), 1);
+    assert_eq!(reassembler.reserved_bytes(), 128);
+}
+
+#[test]
+fn chunk_reassembly_enforces_publication_and_connection_byte_budgets() {
+    let encoded = Bytes::from(vec![1_u8; 512]);
+    let chunks = split_preview_publication(&encoded, &interactive_metadata(1, 1), 128)
+        .expect("chunks split");
+    let mut limited = reassembler(511);
+    assert_eq!(
+        limited.push(&chunks[0]),
+        Err(PreviewChunkError::PublicationBudgetExceeded {
+            requested: 512,
+            limit: 511,
+        }),
+    );
+
+    let first = PreviewPublicationMetadata {
+        stream: PreviewStreamId::Interactive("one".to_owned()),
+        ..interactive_metadata(1, 1)
+    };
+    let second = PreviewPublicationMetadata {
+        stream: PreviewStreamId::Interactive("two".to_owned()),
+        ..interactive_metadata(2, 2)
+    };
+    let first_chunks = split_preview_publication(&Bytes::from(vec![1_u8; 400]), &first, 128)
+        .expect("first chunks");
+    let second_chunks = split_preview_publication(&Bytes::from(vec![2_u8; 400]), &second, 128)
+        .expect("second chunks");
+    let mut connection_limited = PreviewChunkReassembler::new(PreviewReassemblyLimits {
+        max_publication_bytes: 512,
+        max_connection_bytes: 700,
+        max_streams: 2,
+    });
+    assert_eq!(connection_limited.push(&first_chunks[0]), Ok(None));
+    assert_eq!(
+        connection_limited.push(&second_chunks[0]),
+        Err(PreviewChunkError::ConnectionBudgetExceeded {
+            requested: 800,
+            limit: 700,
+        }),
+    );
+}
+
+#[test]
+fn chunk_envelope_rejects_unknown_tag_and_schema() {
+    let chunks = split_preview_publication(
+        &Bytes::from_static(b"publication"),
+        &interactive_metadata(1, 1),
+        128,
+    )
+    .expect("chunks split");
+    assert_eq!(chunks[0][0], PREVIEW_CHUNK_FRAME_TAG);
+    let mut unknown_tag = chunks[0].to_vec();
+    unknown_tag[0] = 0xFF;
+    assert_eq!(
+        PreviewChunkFrame::decode_bytes(&Bytes::from(unknown_tag)),
+        Err(PreviewChunkError::UnknownTag { actual: 0xFF }),
+    );
+    let mut unknown_schema = chunks[0].to_vec();
+    unknown_schema[1] = 0xFF;
+    assert_eq!(
+        PreviewChunkFrame::decode_bytes(&Bytes::from(unknown_schema)),
+        Err(PreviewChunkError::UnknownSchema { actual: 0xFF }),
+    );
 }

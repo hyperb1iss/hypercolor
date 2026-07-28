@@ -104,10 +104,8 @@ fn encode_frame(
         preview_id: preview_id.to_owned(),
         frame_number: frame.frame_number,
         timestamp_ms: frame.timestamp_ms,
-        width: u16::try_from(frame.width)
-            .context("interactive preview width exceeds wire limit")?,
-        height: u16::try_from(frame.height)
-            .context("interactive preview height exceeds wire limit")?,
+        width: frame.width,
+        height: frame.height,
         format: wire_format(frame.format),
         payload: Bytes::from(payload),
     }
