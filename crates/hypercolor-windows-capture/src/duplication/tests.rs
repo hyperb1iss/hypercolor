@@ -184,6 +184,14 @@ fn production_query_polling_progresses_without_manual_flush() {
 }
 
 #[test]
+fn second_gpu_query_retry_is_nonflushing() {
+    let (first, second) = super::gpu_reduction::query_poll_flags_for_test();
+
+    assert_eq!(first, 0);
+    assert_ne!(second, 0);
+}
+
+#[test]
 fn first_static_frame_query_failure_preserves_cpu_fallback_state() {
     let (sequence, region) = super::gpu_reduction::poll_failure_preserves_clean_metadata_for_test(
         super::gpu_reduction::InjectedPollFailure::Query,

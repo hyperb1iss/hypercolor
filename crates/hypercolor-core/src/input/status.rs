@@ -101,6 +101,42 @@ impl SourceIssue {
     }
 }
 
+/// Screen-capture reduction implementation reported by source diagnostics.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ScreenCaptureReductionPath {
+    /// GPU-native reduction and reduced-surface readback.
+    Gpu,
+    /// Full-quality CPU reduction after native readback.
+    CpuFallback,
+}
+
+/// Latest-value screen-capture reduction counters for one source session.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ScreenCaptureDiagnostics {
+    /// Active reduction implementation.
+    pub reduction_path: ScreenCaptureReductionPath,
+    /// GPU reductions submitted to the native context.
+    pub gpu_submitted: u64,
+    /// GPU reductions delivered to the CPU.
+    pub gpu_completed: u64,
+    /// Frames delivered through CPU fallback.
+    pub cpu_completed: u64,
+    /// Submissions coalesced while every readback slot was occupied.
+    pub ring_busy: u64,
+    /// Bytes copied from reduced GPU staging surfaces.
+    pub readback_bytes: u64,
+    /// GPU initialization or execution failures observed by this session.
+    pub gpu_failures: u64,
+}
+
+/// Backend-specific latest-value diagnostics attached to a source session.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum SourceDiagnostics {
+    /// Screen-capture reduction health and throughput.
+    ScreenCapture(ScreenCaptureDiagnostics),
+}
+
 /// Platform-neutral health result for a backend resource scan.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SourceResourceScanHealth {
@@ -384,6 +420,7 @@ struct SourceStatusShared {
     structural: watch::Sender<Arc<SourceStatus>>,
     sample_signals: watch::Sender<u64>,
     samples: SampleBuffer,
+    diagnostics: ArcSwapOption<SourceDiagnostics>,
 }
 
 struct SourceStatusControl {
@@ -590,6 +627,19 @@ impl SourceStatusHandle {
     #[must_use]
     pub fn snapshot(&self) -> Arc<SourceStatus> {
         self.snapshot_at(Instant::now())
+    }
+
+    /// Read backend diagnostics for the active source session.
+    #[must_use]
+    pub fn diagnostics_snapshot(&self) -> Option<Arc<SourceDiagnostics>> {
+        let status = self.shared.latest.load_full();
+        if !matches!(
+            status.state,
+            SourceState::Starting | SourceState::Live | SourceState::Degraded
+        ) {
+            return None;
+        }
+        self.shared.diagnostics.load_full()
     }
 
     /// Read the effective status at `now` without taking the control mutex.
@@ -800,6 +850,7 @@ impl SourceStatusWriter {
             structural,
             sample_signals,
             samples: SampleBuffer::new(),
+            diagnostics: ArcSwapOption::empty(),
         });
         (
             Self {
@@ -843,10 +894,11 @@ impl SourceStatusWriter {
             control.active_session = None;
             clear_stopped_state(&mut status);
         }
-        publish_structural(&self.shared, status);
         if !(configured && consented && demanded) {
+            self.shared.diagnostics.store(None);
             self.shared.samples.tombstone();
         }
+        publish_structural(&self.shared, status);
         Ok(())
     }
 
@@ -909,6 +961,7 @@ impl SourceStatusWriter {
         status.denied_resource_count = 0;
         status.issue = None;
         status.freshness_issue = None;
+        self.shared.diagnostics.store(None);
         publish_structural(&self.shared, status);
         self.shared.samples.tombstone();
 
@@ -933,6 +986,7 @@ impl SourceStatusWriter {
         clear_stopped_state(&mut status);
         publish_structural(&self.shared, status);
         self.shared.samples.tombstone();
+        self.shared.diagnostics.store(None);
     }
 
     /// Permanently remove the source at a strictly newer graph generation.
@@ -958,6 +1012,7 @@ impl SourceStatusWriter {
         status.retired = true;
         publish_structural(&self.shared, status);
         self.shared.samples.tombstone();
+        self.shared.diagnostics.store(None);
         Ok(())
     }
 }
@@ -1102,6 +1157,7 @@ impl SourceStatusReporter {
             clear_stopped_state(&mut status);
             None
         };
+        self.writer.shared.diagnostics.store(None);
         publish_structural(&self.writer.shared, status);
         self.writer.shared.samples.tombstone();
         self.session.clone_from(&session);
@@ -1179,6 +1235,16 @@ impl SourceSessionWriter {
     #[must_use]
     pub fn earliest_encodable_timestamp(&self) -> Instant {
         self.shared.samples.epoch
+    }
+
+    /// Publish backend diagnostics on a non-subscribed latest-value plane.
+    pub fn publish_diagnostics(&self, diagnostics: SourceDiagnostics) -> bool {
+        let control = lock_control(&self.shared);
+        if control.active_session != Some(self.session_generation) {
+            return false;
+        }
+        self.shared.diagnostics.store(Some(Arc::new(diagnostics)));
+        true
     }
 
     /// Publish a sampled value with its mandatory freshness deadline.

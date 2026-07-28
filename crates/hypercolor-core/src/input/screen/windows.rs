@@ -31,6 +31,9 @@ use crate::input::screen::{
     PhysicalOrigin, PixelExtent, RawCaptureSurface, ScreenCaptureInput, SourceScale,
     analyze_legacy_screen_frame,
 };
+use crate::input::status::{
+    ScreenCaptureDiagnostics, ScreenCaptureReductionPath, SourceDiagnostics,
+};
 use crate::input::traits::{InputData, InputSource};
 use crate::input::worker_retention::{retain_input_worker, spawn_input_worker};
 use crate::input::{
@@ -1069,9 +1072,28 @@ fn record_capture_health(
     telemetry: &ReductionTelemetry,
 ) {
     let _ = status.record_sample(captured_at, freshness_deadline, 1);
+    status.publish_diagnostics(reduction_diagnostics(telemetry));
     if let Some(issue) = reduction_issue(telemetry) {
         status.degraded(issue);
     }
+}
+
+fn reduction_diagnostics(telemetry: &ReductionTelemetry) -> SourceDiagnostics {
+    let reduction_path = match telemetry.path {
+        hypercolor_windows_capture::ReductionPath::Gpu => ScreenCaptureReductionPath::Gpu,
+        hypercolor_windows_capture::ReductionPath::CpuFallback => {
+            ScreenCaptureReductionPath::CpuFallback
+        }
+    };
+    SourceDiagnostics::ScreenCapture(ScreenCaptureDiagnostics {
+        reduction_path,
+        gpu_submitted: telemetry.gpu_submitted,
+        gpu_completed: telemetry.gpu_completed,
+        cpu_completed: telemetry.cpu_completed,
+        ring_busy: telemetry.ring_busy,
+        readback_bytes: telemetry.readback_bytes,
+        gpu_failures: telemetry.gpu_failures,
+    })
 }
 
 #[cfg(test)]

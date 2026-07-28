@@ -408,12 +408,7 @@ impl GpuReducer {
             return Ok(false);
         }
         let mut ready = BOOL::default();
-        let flags = if slot.progress_kicked {
-            D3D11_ASYNC_GETDATA_DONOTFLUSH.0.cast_unsigned()
-        } else {
-            slot.progress_kicked = true;
-            0
-        };
+        let flags = query_poll_flags(&mut slot.progress_kicked);
         // SAFETY: the query is live, and `ready` supplies the documented BOOL
         // output storage. The first poll flushes queued work without waiting;
         // later polls remain non-blocking and avoid redundant flushes.
@@ -575,6 +570,15 @@ impl GpuReducer {
             srv,
         });
         Ok(())
+    }
+}
+
+fn query_poll_flags(progress_kicked: &mut bool) -> u32 {
+    if *progress_kicked {
+        D3D11_ASYNC_GETDATA_DONOTFLUSH.0.cast_unsigned()
+    } else {
+        *progress_kicked = true;
+        0
     }
 }
 
@@ -1203,6 +1207,14 @@ pub(super) fn compile_shaders_for_test() -> Result<(), GpuReductionError> {
 #[cfg(test)]
 pub(super) fn normalized_pointer_for_test(shape: &super::PointerShape) -> Vec<u8> {
     normalized_pointer(shape)
+}
+
+#[cfg(test)]
+pub(super) fn query_poll_flags_for_test() -> (u32, u32) {
+    let mut progress_kicked = false;
+    let first = query_poll_flags(&mut progress_kicked);
+    let second = query_poll_flags(&mut progress_kicked);
+    (first, second)
 }
 
 #[cfg(test)]

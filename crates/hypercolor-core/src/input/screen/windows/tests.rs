@@ -17,8 +17,48 @@ use crate::input::screen::{
     CaptureFrameError, CaptureFrameMetadata, CapturePixelFormat, CaptureRotation, CaptureStorage,
     CaptureTransferFunction, CpuCaptureStorage, PhysicalOrigin, PixelExtent, RawCaptureSurface,
 };
+use crate::input::status::{ScreenCaptureReductionPath, SourceDiagnostics};
 use crate::input::traits::InputSource;
 use crate::input::{SourceKind, SourceState, SourceStatusReporter};
+
+#[test]
+fn healthy_gpu_reduction_counters_are_visible_through_source_diagnostics() {
+    let mut reporter = SourceStatusReporter::new(
+        "windows_screen_capture",
+        SourceKind::Screen,
+        "dxgi_desktop_duplication",
+        true,
+        true,
+        true,
+    );
+    reporter.set_source_graph_generation(1);
+    let status = reporter
+        .begin_session()
+        .expect("status session starts")
+        .expect("configured reporter yields a writer");
+    let now = Instant::now();
+    let telemetry = ReductionTelemetry {
+        path: ReductionPath::Gpu,
+        gpu_submitted: 12,
+        gpu_completed: 11,
+        ring_busy: 2,
+        readback_bytes: 8192,
+        ..ReductionTelemetry::default()
+    };
+
+    record_capture_health(&status, now, now + Duration::from_millis(50), &telemetry);
+
+    let diagnostics = reporter
+        .handle()
+        .diagnostics_snapshot()
+        .expect("healthy capture diagnostics are published");
+    let SourceDiagnostics::ScreenCapture(diagnostics) = diagnostics.as_ref();
+    assert_eq!(diagnostics.reduction_path, ScreenCaptureReductionPath::Gpu);
+    assert_eq!(diagnostics.gpu_submitted, 12);
+    assert_eq!(diagnostics.gpu_completed, 11);
+    assert_eq!(diagnostics.ring_busy, 2);
+    assert_eq!(diagnostics.readback_bytes, 8192);
+}
 
 #[test]
 fn gpu_reduction_degradation_survives_successful_sample_recording() {
@@ -67,6 +107,17 @@ fn gpu_reduction_degradation_survives_successful_sample_recording() {
     );
     assert!(issue.message.contains("ring_busy=3"));
     assert!(issue.message.contains("readback_bytes=4096"));
+    let diagnostics = reporter
+        .handle()
+        .diagnostics_snapshot()
+        .expect("fallback diagnostics remain visible");
+    let SourceDiagnostics::ScreenCapture(diagnostics) = diagnostics.as_ref();
+    assert_eq!(
+        diagnostics.reduction_path,
+        ScreenCaptureReductionPath::CpuFallback
+    );
+    assert_eq!(diagnostics.cpu_completed, 2);
+    assert_eq!(diagnostics.gpu_failures, 1);
 }
 
 fn extent(width: u32, height: u32) -> PixelExtent {

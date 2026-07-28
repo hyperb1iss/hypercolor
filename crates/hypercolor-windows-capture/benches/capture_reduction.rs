@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use hypercolor_windows_capture::CaptureReductionBenchmark;
@@ -66,6 +66,30 @@ fn report_deadlines(width: u32, height: u32) {
         .expect("real-time cadence sample succeeds");
     let mut acquisition = report.acquisition_enqueue;
     let mut analysis = report.analysis_latency;
+    let phase_samples = (0..120)
+        .map(|_| harness.sample().expect("phase sample succeeds"))
+        .collect::<Vec<_>>();
+    let mut gpu_enqueue = phase_samples
+        .iter()
+        .map(|sample| sample.analysis_enqueue)
+        .collect::<Vec<_>>();
+    let mut gpu_wait = phase_samples
+        .iter()
+        .map(|sample| sample.wait)
+        .collect::<Vec<_>>();
+    let mut map_readback = phase_samples
+        .iter()
+        .map(|sample| sample.map)
+        .collect::<Vec<_>>();
+    let source = vec![0x7F; width as usize * height as usize * 4];
+    let mut output = Vec::new();
+    let mut cpu_analysis = (0..120)
+        .map(|_| {
+            let started = Instant::now();
+            cpu_box_reduce(&source, width, height, ANALYSIS_WIDTH, &mut output);
+            started.elapsed()
+        })
+        .collect::<Vec<_>>();
     eprintln!(
         "{width}x{height}: acquisition_enqueue p50={:?} p95={:?} p99={:?}, \
          analysis_latency p50={:?} p95={:?} p99={:?}, \
@@ -82,6 +106,27 @@ fn report_deadlines(width: u32, height: u32) {
         report.ring_busy,
         report.source_bytes,
         report.readback_bytes,
+    );
+    eprintln!(
+        "{width}x{height}: gpu_enqueue p50={:?} p95={:?} p99={:?}, \
+         gpu_wait p50={:?} p95={:?} p99={:?}, \
+         map_readback p50={:?} p95={:?} p99={:?}, \
+         cpu_analysis p50={:?} p95={:?} p99={:?}, \
+         source_bytes_per_frame={}, readback_bytes_per_frame={}",
+        percentile(&mut gpu_enqueue, 0.50),
+        percentile(&mut gpu_enqueue, 0.95),
+        percentile(&mut gpu_enqueue, 0.99),
+        percentile(&mut gpu_wait, 0.50),
+        percentile(&mut gpu_wait, 0.95),
+        percentile(&mut gpu_wait, 0.99),
+        percentile(&mut map_readback, 0.50),
+        percentile(&mut map_readback, 0.95),
+        percentile(&mut map_readback, 0.99),
+        percentile(&mut cpu_analysis, 0.50),
+        percentile(&mut cpu_analysis, 0.95),
+        percentile(&mut cpu_analysis, 0.99),
+        phase_samples[0].source_bytes,
+        phase_samples[0].readback_bytes,
     );
 }
 
