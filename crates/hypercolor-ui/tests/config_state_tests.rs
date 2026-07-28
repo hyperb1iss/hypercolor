@@ -19,21 +19,32 @@ fn config_values_roundtrip_for_rollback() {
 #[test]
 fn rollback_generation_never_overwrites_a_newer_same_key_apply() {
     let mut tracker = ConfigApplyTracker::default();
+    let mut config = HypercolorConfig::default();
     let stale = tracker.begin("input.keyboard");
+    apply_config_key(&mut config, "input.keyboard", &serde_json::json!(false));
     let current = tracker.begin("input.keyboard");
+    apply_config_key(&mut config, "input.keyboard", &serde_json::json!(true));
 
     assert!(!tracker.finish_if_current("input.keyboard", stale));
+    assert!(config.input.keyboard);
     assert!(tracker.finish_if_current("input.keyboard", current));
     assert!(!tracker.finish_if_current("input.keyboard", current));
 }
 
 #[test]
-fn independent_keys_finish_independently() {
+fn failed_independent_key_rollback_preserves_newer_optimistic_state() {
     let mut tracker = ConfigApplyTracker::default();
+    let mut config = HypercolorConfig::default();
+    let previous_keyboard = config_key_value(&config, "input.keyboard").expect("keyboard value");
     let keyboard = tracker.begin("input.keyboard");
+    apply_config_key(&mut config, "input.keyboard", &serde_json::json!(false));
     let mouse = tracker.begin("input.mouse");
+    apply_config_key(&mut config, "input.mouse", &serde_json::json!(false));
 
     assert!(tracker.finish_if_current("input.keyboard", keyboard));
+    apply_config_key(&mut config, "input.keyboard", &previous_keyboard);
+    assert!(config.input.keyboard);
+    assert!(!config.input.mouse);
     assert!(tracker.finish_if_current("input.mouse", mouse));
 }
 

@@ -318,6 +318,12 @@ fn permanently_live_browser_source_does_not_claim_host_capture() {
     }];
 
     assert_eq!(input_pipeline_state(&status), InputPipelineState::Ready);
+
+    status.host_capture_registered = false;
+    assert_eq!(
+        input_pipeline_state(&status),
+        InputPipelineState::Unavailable
+    );
 }
 
 #[test]

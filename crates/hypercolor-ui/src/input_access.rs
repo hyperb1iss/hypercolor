@@ -68,12 +68,7 @@ pub fn input_pipeline_state(input: &InputStatus) -> InputPipelineState {
     if input.host_capturing {
         return InputPipelineState::Live;
     }
-    if input.host_capture_registered
-        || input
-            .sources
-            .iter()
-            .any(|source| source.configured && source.consented)
-    {
+    if input.host_capture_registered {
         return InputPipelineState::Ready;
     }
     InputPipelineState::Unavailable

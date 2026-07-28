@@ -151,19 +151,19 @@ pub fn SettingsPage() -> impl IntoView {
         leptos::task::spawn_local(async move {
             if let Err(e) = api::set_config_value(&key, &value).await {
                 leptos::logging::warn!("Config set failed: {e}");
-                if config_applies
+                let is_current = config_applies
                     .lock()
                     .expect("config apply tracker lock poisoned")
-                    .finish_if_current(&key, generation)
-                    && let Some(previous) = previous
-                {
-                    set_config.update(|cfg| {
-                        if let Some(cfg) = cfg {
-                            apply_config_key(cfg, &key, &previous);
-                        }
-                    });
+                    .finish_if_current(&key, generation);
+                if is_current {
+                    if let Some(previous) = previous {
+                        set_config.update(|cfg| {
+                            if let Some(cfg) = cfg {
+                                apply_config_key(cfg, &key, &previous);
+                            }
+                        });
+                    }
                 }
-                config_ctx.refresh.run(());
             } else {
                 config_applies
                     .lock()
