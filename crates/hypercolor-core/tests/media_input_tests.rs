@@ -495,6 +495,94 @@ async fn cached_snapshot_does_not_mask_an_aggregate_refresh_failure() {
     assert!(attempts.load(Ordering::SeqCst) >= 2);
 }
 
+async fn cached_then_mixed_refresh(
+    identity: usize,
+    attempts: Arc<[AtomicUsize; 2]>,
+    release_refresh: Arc<tokio::sync::Notify>,
+) -> std::result::Result<PlayerSnapshot, MediaProviderError> {
+    if attempts[identity].fetch_add(1, Ordering::SeqCst) == 0 {
+        return Ok(player(
+            if identity == 0 { "failed" } else { "healthy" },
+            PlaybackStatus::Playing,
+            if identity == 0 {
+                "cached-failed"
+            } else {
+                "cached-healthy"
+            },
+        ));
+    }
+
+    release_refresh.notified().await;
+    if identity == 0 {
+        Err(MediaProviderError::new("failed refresh"))
+    } else {
+        Ok(player("healthy", PlaybackStatus::Playing, "fresh-healthy"))
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn failed_player_cache_is_excluded_from_a_mixed_refresh() {
+    let attempts = Arc::new([AtomicUsize::new(0), AtomicUsize::new(0)]);
+    let release_refresh = Arc::new(tokio::sync::Notify::new());
+    let discovered = [("failed".to_owned(), 0), ("healthy".to_owned(), 1)];
+    let mut scanner = PlayerSnapshotScanner::default();
+    let mut snapshots = Vec::new();
+
+    for _ in 0..4 {
+        let poll_attempts = Arc::clone(&attempts);
+        let poll_release = Arc::clone(&release_refresh);
+        snapshots = scanner
+            .poll(discovered.iter().cloned(), move |identity| {
+                cached_then_mixed_refresh(
+                    identity,
+                    Arc::clone(&poll_attempts),
+                    Arc::clone(&poll_release),
+                )
+            })
+            .await
+            .expect("initial player snapshots should populate the cache");
+        if snapshots.len() == 2
+            && attempts
+                .iter()
+                .all(|attempts| attempts.load(Ordering::SeqCst) >= 2)
+        {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(snapshots.len(), 2);
+    assert!(
+        attempts
+            .iter()
+            .all(|attempts| attempts.load(Ordering::SeqCst) >= 2)
+    );
+
+    release_refresh.notify_waiters();
+    tokio::task::yield_now().await;
+    for _ in 0..4 {
+        let poll_attempts = Arc::clone(&attempts);
+        let poll_release = Arc::clone(&release_refresh);
+        snapshots = scanner
+            .poll(discovered.iter().cloned(), move |identity| {
+                cached_then_mixed_refresh(
+                    identity,
+                    Arc::clone(&poll_attempts),
+                    Arc::clone(&poll_release),
+                )
+            })
+            .await
+            .expect("one healthy refresh keeps the provider connected");
+        if snapshots.len() == 1 && snapshots[0].track == "fresh-healthy" {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+
+    assert_eq!(snapshots.len(), 1);
+    assert_eq!(snapshots[0].bus_name, "healthy");
+    assert_eq!(snapshots[0].track, "fresh-healthy");
+}
+
 #[tokio::test(start_paused = true)]
 async fn stale_completed_incarnation_cannot_replace_successor_snapshot() {
     let release_old = Arc::new(tokio::sync::Notify::new());

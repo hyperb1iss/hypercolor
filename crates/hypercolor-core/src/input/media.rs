@@ -695,6 +695,12 @@ impl<I: Clone + PartialEq + 'static> PlayerSnapshotScanner<I> {
             .iter()
             .filter_map(|key| {
                 let player = self.discovered.get(key)?;
+                if self.failures.contains_key(&PlayerScanToken {
+                    key: key.clone(),
+                    incarnation: player.incarnation,
+                }) {
+                    return None;
+                }
                 let cached = self.cache.get(key)?;
                 (cached.incarnation == player.incarnation
                     && now.saturating_duration_since(cached.refreshed_at) <= MEDIA_PLAYER_CACHE_TTL)
