@@ -141,7 +141,8 @@ subscribed.
     "frames", "spectrum", "events", "frame_events", "canvas",
     "screen_canvas", "screen_zones", "web_viewport_canvas", "zone_preview",
     "metrics", "device_metrics", "sensors", "display_preview", "input_events",
-    "commands", "canvas_format_jpeg", "interactive_previews"
+    "commands", "canvas_format_jpeg", "interactive_previews",
+    "wide_preview_frames", "preview_chunking"
   ],
   "subscriptions": ["events"]
 }
@@ -149,8 +150,9 @@ subscribed.
 
 `version` is the protocol version (`"1.0"`), distinct from the
 `server.version` daemon build string. `capabilities` lists all 14 channel names
-plus three feature flags (`commands`, `canvas_format_jpeg`,
-`interactive_previews`). `subscriptions` shows
+plus feature flags such as `commands`, `canvas_format_jpeg`,
+`interactive_previews`, `wide_preview_frames`, and `preview_chunking`.
+`subscriptions` shows
 what is already live — only `events` by default.
 
 The `effect`, `scene`, `profile`, and `layout` fields are nullable: each is
@@ -438,9 +440,11 @@ and dashboard surface. The `data` object is a `SystemSnapshot`.
 
 ### backpressure
 
-Sent when the daemon is dropping binary frames for a consumer that cannot keep
-up. The outbound binary queue is bounded, so a slow client is throttled by
-dropped frames rather than unbounded daemon memory growth.
+Sent when the daemon drops count-queued `frames` or `spectrum` data for a consumer
+that cannot keep up. Preview publications use a different policy: one latest
+publication per stream under a connection byte budget. A newer publication
+replaces queued work for the same stream; under cross-stream pressure, the oldest
+queued preview is evicted. Neither path grows daemon memory without a bound.
 
 ```json
 {
@@ -452,7 +456,9 @@ dropped frames rather than unbounded daemon memory growth.
 }
 ```
 
-React by lowering the channel's `fps` with a fresh `subscribe` config patch.
+Clients can patch the subscription to match the bandwidth they intend to consume.
+Daemon metrics expose preview queue bytes plus queued, replaced, evicted, rejected,
+sent-publication, and sent-chunk counters for diagnosing the actual bottleneck.
 
 ### error
 
@@ -502,12 +508,15 @@ These four preview channels share the same config shape:
 | --- | --- | --- | --- |
 | `fps` | integer | `15` | 1..=60 |
 | `format` | string | `"rgb"` | `"rgb"`, `"rgba"`, or `"jpeg"` |
-| `width` | integer | `0` | 0..=4096 (0 = daemon canvas width) |
-| `height` | integer | `0` | 0..=4096 (0 = daemon canvas height) |
+| `width` | integer | `0` | unsigned 32-bit; 0 selects the source width or preserves aspect ratio |
+| `height` | integer | `0` | unsigned 32-bit; 0 selects the source height or preserves aspect ratio |
 
 The canvas dimensions default to the daemon's configured render size, which is
 640×480 unless `daemon.canvas_width`/`daemon.canvas_height` change it — never
-assume a fixed size.
+assume a fixed size. If both dimensions are zero, the daemon publishes the source
+size. If exactly one is zero, it derives that axis from the source aspect ratio.
+Admission is based on checked pixel and byte counts, not an arbitrary axis ceiling.
+The maximum accepted preview surface is currently 512 MiB at four bytes per pixel.
 
 ### metrics / device_metrics config
 
@@ -531,10 +540,10 @@ screen-capture grid as produced.
 
 ## Binary frame formats
 
-Every binary frame opens with a tag byte at offset 0 identifying its channel.
-The preview, spectrum, frames, and zone frames carry that single tag and then
-their own header; the optional CinderRPC frames (tags `0x80`/`0x81`) add a
-second schema-version byte. All integers are little-endian.
+Every binary frame opens with a tag byte at offset 0. Direct preview, spectrum,
+frames, and zone messages continue with their type-specific header. Preview
+chunks (`0x0F`) and optional CinderRPC frames (`0x80`/`0x81`) add a schema byte
+at offset 1. All integers are little-endian.
 
 | Tag | Channel | Header length |
 | --- | --- | --- |
@@ -547,6 +556,11 @@ second schema-version byte. All integers are little-endian.
 | `0x08` | `zone_preview` | 46 bytes |
 | `0x09` | `screen_zones` | 19 bytes |
 | `0x0A` | addressed interactive preview | 15 bytes + preview id |
+| `0x0B` | wide preview family | 19 bytes |
+| `0x0C` | wide zone preview | 50 bytes |
+| `0x0D` | wide addressed interactive preview | 19 bytes + preview id |
+| `0x0E` | wide screen zones | 23 bytes |
+| `0x0F` | chunked preview envelope | 55 bytes + stream identity |
 | `0x80` | RPC request | 2-byte prefix |
 | `0x81` | RPC response | 2-byte prefix |
 
@@ -599,8 +613,10 @@ Byte(s)  Field
 
 ### canvas / screen_canvas / web_viewport_canvas / display_preview (0x03 / 0x05 / 0x06 / 0x07)
 
-The preview family shares one 14-byte header. `display_preview` (`0x07`) is
-always JPEG; the others honor the `format` you subscribed with.
+The legacy preview family shares one 14-byte header and remains byte-exact for
+dimensions that fit `u16`. `display_preview` (`0x07`) is always JPEG; the others
+honor the `format` you subscribed with. Larger dimensions use the additive wide
+layout documented below.
 
 ```
 Byte(s)  Field
@@ -676,6 +692,29 @@ Route frames by `preview_id`, not arrival order. A connection may own more
 than one preview, and closing then reopening an id creates a new publication
 lifetime.
 
+### Wide preview dimensions (0x0B / 0x0C / 0x0D / 0x0E)
+
+Wide tags replace each `u16` dimension with `u32` while preserving the remaining
+field order. `0x0B` adds the original passive channel tag at byte 1, followed by
+`frame_number`, `timestamp_ms`, `width`, `height`, `format`, and payload. The wide
+zone, interactive, and screen-zone layouts otherwise mirror their legacy forms.
+Clients should decode both layouts; servers keep sending legacy bytes whenever
+both axes fit `u16`.
+
+### Chunked preview publication (0x0F)
+
+One WebSocket message is limited to 1 MiB. A larger preview publication is split
+into ordered `0x0F` messages instead of being resized or truncated. The 55-byte
+fixed envelope carries schema `1`, stream kind and channel, pixel format, stream
+identity length, publication id, frame metadata, total encoded length, chunk
+offset, chunk index, and chunk count. The stream identity follows the fixed
+header, then that chunk's payload bytes.
+
+Reassembly is keyed by stream identity and publication id. Chunks must begin at
+index and offset zero, remain contiguous, and keep identical metadata. Clients
+must bound partial state by bytes and stream count, discard it on reconnect, and
+validate the completed publication against the envelope metadata before display.
+
 ### RPC frames (0x80 / 0x81)
 
 The CinderRPC request/response frames are the one binary type that uses the
@@ -700,7 +739,8 @@ ws.onmessage = (event) => {
     const view = new DataView(event.data);
     const tag = view.getUint8(0);
     // 0x01 frames, 0x02 spectrum, 0x03/0x05/0x06/0x07 previews,
-    // 0x08 zone_preview, 0x09 screen_zones, 0x0A interactive preview
+    // 0x08 zone, 0x09 screen zones, 0x0A interactive, 0x0B-0x0E wide,
+    // 0x0F preview chunks
     if (tag === 0x01) parseFramePayload(view);
     return;
   }

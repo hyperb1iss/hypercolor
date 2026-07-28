@@ -23,14 +23,14 @@ subscribe to the channels that produce these frames, see the
 
 {% callout(type="info") %}
 All multi-byte integers and floats are **little-endian**. Floats are IEEE-754
-`f32`. There is no length prefix on the frame itself — the WebSocket message
-boundary is the frame boundary, and each codec derives its payload length from its
-own header fields.
+`f32`. Direct frames derive payload length from their header and WebSocket message
+boundary. Publications larger than one message use the `0x0F` chunk envelope,
+which carries explicit total length, offset, and chunk-count fields.
 {% end %}
 
-## Two framing conventions ⚡
+## Three framing conventions ⚡
 
-Hypercolor uses two distinct binary framing conventions on the wire, and the first
+Hypercolor uses three binary framing conventions on the wire, and the first
 byte tells you which one you are looking at. Do not assume a uniform header.
 
 The **streaming data frames** — preview canvases, the audio spectrum, zone
@@ -38,15 +38,20 @@ previews, and screen zones — use a **single tag byte** at offset 0. That tag b
 is the channel identity. There is no schema byte; these codecs version their layout
 through the tag space itself and through fixed header lengths.
 
+The **preview chunk envelope** uses tag `0x0F` at offset 0 and schema `1` at
+offset 1. It carries routing, publication, and reassembly metadata before one
+slice of a larger encoded preview.
+
 The **RPC frames** — request and response — use a **two-byte prefix**: a tag byte
 at offset 0 followed by a schema byte at offset 1. This is the `BinaryFrameSchema`
 contract (`TAG`, `SCHEMA`, `NAME`), and decoders validate both bytes with
 `validate_frame_prefix` before touching the body.
 
 {% callout(type="warning") %}
-The streaming frames do **not** carry a schema byte. Only RPC frames do. A decoder
-that blindly skips two bytes on a spectrum frame will read its `timestamp_ms` one
-byte short. Branch on the first byte first, then apply the right convention.
+Direct streaming frames do **not** carry a schema byte. Preview chunks and RPC
+frames do. A decoder that blindly skips two bytes on a spectrum frame will read
+its `timestamp_ms` one byte short. Branch on the first byte first, then apply the
+right convention.
 {% end %}
 
 ## Tag byte map
@@ -64,6 +69,12 @@ magic numbers, taken straight from the source constants.
 | `0x07` | Preview — display face | single byte | `PreviewFrameChannel::DisplayPreview` |
 | `0x08` | Zone preview | single byte | `ZONE_PREVIEW_FRAME_TAG` |
 | `0x09` | Screen zones (ambilight grid) | single byte | `SCREEN_ZONES_FRAME_TAG` |
+| `0x0A` | Addressed interactive preview | single byte | `INTERACTIVE_PREVIEW_FRAME_TAG` |
+| `0x0B` | Wide passive preview | single byte | `WIDE_PREVIEW_FRAME_TAG` |
+| `0x0C` | Wide zone preview | single byte | `WIDE_ZONE_PREVIEW_FRAME_TAG` |
+| `0x0D` | Wide interactive preview | single byte | `WIDE_INTERACTIVE_PREVIEW_FRAME_TAG` |
+| `0x0E` | Wide screen zones | single byte | `WIDE_SCREEN_ZONES_FRAME_TAG` |
+| `0x0F` | Preview chunk envelope | tag + schema | `PREVIEW_CHUNK_FRAME_TAG` |
 | `0x80` | RPC request | tag + schema | `RPC_REQUEST_TAG` |
 | `0x81` | RPC response | tag + schema | `RPC_RESPONSE_TAG` |
 
@@ -73,12 +84,13 @@ as a frame you should skip rather than reject the connection — the channel spa
 is designed to grow.
 {% end %}
 
-## Preview frame (`0x03`, `0x05`, `0x06`, `0x07`)
+## Legacy preview frame (`0x03`, `0x05`, `0x06`, `0x07`)
 
 A preview frame carries one rendered image: the composed render canvas, the screen
 capture the ambilight pipeline sees, the web viewport, or a display face. All four
 channels share a single 14-byte header (`PREVIEW_FRAME_HEADER_LEN = 14`) and differ
-only by their tag byte.
+only by their tag byte. This byte-exact compatibility layout is used whenever both
+dimensions fit `u16`; larger surfaces use `0x0B`.
 
 ```text
 offset  size  field
@@ -102,7 +114,7 @@ The `format` byte selects the payload encoding through `PreviewPixelFormat`:
 For the raw formats (`Rgb`, `Rgba`) the payload is tightly packed, row-major,
 top-left origin, and its length is fully determined by `width`, `height`, and the
 per-pixel byte count. For `Jpeg` there is no fixed length — the payload is a
-complete JPEG image that runs from offset 14 to the end of the WebSocket message.
+complete JPEG image that runs from offset 14 to the end of the direct publication.
 
 {% callout(type="tip") %}
 Native Rust clients holding the message as `bytes::Bytes` can decode with
@@ -116,7 +128,7 @@ The default render canvas is 640×480 but is configurable, so never hardcode
 dimensions — always read `width` and `height` from the header. The canvas can resize
 live, and the next frame's header will simply carry the new size.
 
-## Zone preview frame (`0x08`)
+## Legacy zone preview frame (`0x08`)
 
 A zone preview is a preview canvas scoped to one zone of one scene. Scenes are
 whole-rig configurations; zones are flexible partitions of the canvas within a scene.
@@ -153,7 +165,7 @@ For the REST and concurrency side of zones — the routes, `If-Match` revisions,
 `ZoneOutcome::Stale` — see the Studio zone documentation. This page covers only the
 preview wire format.
 
-## Screen zones frame (`0x09`)
+## Legacy screen zones frame (`0x09`)
 
 The screen zones frame is the ambilight grid: the smoothed, color-tuned per-sector
 colors extracted from screen capture, exactly as screen-reactive effects consume
@@ -183,6 +195,56 @@ source is letterboxed into a different aspect. To read one sector's color, the
 decoder offers `ScreenZonesFrame::zone_rgb(row, col)`, which computes
 `(row * grid_cols + col) * 3` and returns the three bytes, or `None` if the
 coordinate is out of range.
+
+## Wide preview frames (`0x0B` through `0x0E`)
+
+Wide layouts are additive. They keep legacy tags byte-exact for existing clients
+and replace only dimension fields with `u32` when an axis exceeds `u16::MAX`.
+
+| Tag | Frame | Wide header change |
+|---|---|---|
+| `0x0B` | Passive preview | byte 1 is the original channel tag; dimensions are at offsets 10 and 14; payload starts at 19 |
+| `0x0C` | Zone preview | dimensions are at offsets 41 and 45; payload starts at 50 |
+| `0x0D` | Interactive preview | dimensions are at offsets 10 and 14; preview id starts at 19 |
+| `0x0E` | Screen zones | source dimensions are at offsets 9 and 13; grid metadata starts at 17; payload starts at 23 |
+
+There is no fixed axis ceiling below `u32::MAX`. The daemon admits a requested
+surface using checked pixel and byte arithmetic, with a 512 MiB publication
+resource budget. Passive width and height may both be zero to select source size;
+if exactly one is zero, the daemon preserves the source aspect ratio. Interactive
+previews require both axes to be nonzero.
+
+## Preview chunk envelope (`0x0F`)
+
+Preview publications larger than the 1 MiB per-message budget are sent as ordered
+chunks without resizing or truncation.
+
+```text
+offset  size  field
+0       1     tag = 0x0F
+1       1     schema = 1
+2       1     stream_kind (0=passive, 1=zone, 2=interactive, 3=screen_zones)
+3       1     channel tag
+4       1     pixel format
+5       2     stream_identity_len u16
+7       8     publication_id u64
+15      4     frame_number u32
+19      4     timestamp_ms u32
+23      4     width u32
+27      4     height u32
+31      8     total_encoded_bytes u64
+39      8     chunk_offset u64
+47      4     chunk_index u32
+51      4     chunk_count u32
+55      N     stream identity
+55+N    ..    chunk payload
+```
+
+The stream identity is empty for passive and screen-zone streams, 32 raw UUID
+bytes for a zone stream, and the UTF-8 preview id for an interactive stream.
+Clients reassemble by stream and publication id, require contiguous ordered
+chunks with stable metadata, and bound both per-publication and per-connection
+memory. Reassembly state is connection-scoped and must be cleared on reconnect.
 
 ## Spectrum frame (`0x02`)
 

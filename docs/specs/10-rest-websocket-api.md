@@ -3272,7 +3272,9 @@ On connection, the server immediately sends a `hello` message with a full state 
     "frame_events",
     "commands",
     "canvas",
-    "metrics"
+    "metrics",
+    "wide_preview_frames",
+    "preview_chunking"
   ],
   "subscriptions": ["events"]
 }
@@ -3375,7 +3377,7 @@ Clients control bandwidth by subscribing to specific channels. By default, only 
 | `spectrum` | Binary    | 30          | Audio FFT spectrum data                              |
 | `events`   | JSON      | N/A (push)  | Discrete events (device, effect, profile changes)    |
 | `frame_events` | JSON | N/A (push)  | High-rate per-frame render timing diagnostics        |
-| `canvas`   | Binary    | 15          | Raw legacy 320 by 200 canvas pixels (for UI preview) |
+| `canvas`   | Binary    | 15          | Configurable-resolution canvas pixels for UI preview |
 | `metrics`  | JSON      | 1 Hz        | Performance metrics (FPS, latency, memory)           |
 
 ---
@@ -3422,21 +3424,44 @@ Bytes 27-...:   bins (bin_count * f32 LE)
 
 **Bandwidth estimate:** With 64 bins: `27 + 256 = 283 bytes` per message. At 30 fps: **~8.5 KB/s**.
 
-#### Canvas Message (type `0x03`)
+#### Legacy Canvas Message (type `0x03`)
 
-Raw canvas pixel data (for the spatial editor preview).
+Raw canvas pixel data for the spatial editor preview. This exact compatibility
+layout is emitted whenever both dimensions fit `u16`.
 
 ```
 Byte 0:         0x03 (canvas type)
 Bytes 1-4:      frame_number (u32 LE)
 Bytes 5-8:      timestamp_ms (u32 LE)
-Bytes 9-10:     width (u16 LE) -- 320
-Bytes 11-12:    height (u16 LE) -- 200
-Byte 13:        format (u8) -- 0 = RGB, 1 = RGBA
+Bytes 9-10:     width (u16 LE)
+Bytes 11-12:    height (u16 LE)
+Byte 13:        format (u8) -- 0 = RGB, 1 = RGBA, 2 = JPEG
 Bytes 14-...:   pixel data (width * height * bpp)
 ```
 
-**Bandwidth estimate:** Full canvas at RGB: `14 + 192,000 = 192,014 bytes`. At 15 fps: **~2.8 MB/s**. Only subscribe when the spatial editor is open.
+The canvas is configurable and can resize live. Clients must read dimensions from
+every frame rather than assume a default.
+
+#### Wide Preview Messages (types `0x0B`-`0x0E`)
+
+Preview surfaces with an axis above `u16::MAX` use additive wide tags with `u32`
+dimensions. `0x0B` covers the passive canvas family and carries the original
+channel tag at byte 1; `0x0C`, `0x0D`, and `0x0E` cover zone, interactive, and
+screen-zone previews. Legacy tags remain byte-exact for smaller surfaces.
+
+Dimension requests are admitted with checked `u32` pixel and byte arithmetic,
+not a fixed axis cap. The publication resource budget is 512 MiB at four bytes
+per pixel. A passive request with both axes zero selects source resolution; one
+zero axis preserves aspect ratio. Interactive preview axes must be nonzero.
+
+#### Chunked Preview Message (type `0x0F`)
+
+The maximum WebSocket message is 1 MiB. Larger preview publications are split
+into ordered `0x0F` envelopes without resizing or truncation. Schema 1 carries
+the stream identity, a connection-local publication id, original frame metadata,
+total encoded length, chunk offset, index, and count. Receivers reassemble by
+stream and publication id with bounded byte and stream budgets, require contiguous
+metadata-stable chunks, and clear partial state when the socket reconnects.
 
 ---
 
@@ -3616,13 +3641,21 @@ Clients can send REST-equivalent commands over the WebSocket connection, avoidin
 
 ### 14.9 Backpressure Handling
 
-The server manages backpressure to prevent slow clients from causing memory issues or blocking the render loop.
+The server manages backpressure without blocking the render loop or allowing a
+slow connection to grow memory without bound.
 
 **Server-side behavior:**
 
-1. Each client has a bounded send buffer (configurable, default: 64 messages).
-2. If the buffer fills, the **oldest undelivered binary messages** (frames, spectrum, canvas) are dropped. JSON messages (events, responses) are never dropped.
-3. When frames are dropped, the server sends a `backpressure` notification:
+1. JSON and small binary telemetry use separate 64-message bounded queues.
+2. `frames` and `spectrum` use non-blocking send. A new update is dropped when
+   its queue is full and the relay emits a rate-limited `backpressure` notice.
+3. Preview surfaces use a keyed latest-publication router instead of the telemetry
+   queue. One queued publication per stream is byte-accounted; a newer value
+   replaces the same stream and connection pressure evicts the oldest other stream.
+4. Preview publications above the 1 MiB message budget are chunked lazily. The
+   sender rechecks stream currency and interactive publication fences between chunks.
+
+A telemetry drop notice has this shape:
 
 ```json
 {
@@ -3634,24 +3667,14 @@ The server manages backpressure to prevent slow clients from causing memory issu
 }
 ```
 
-4. If a client is consistently too slow (>50% frame drop rate over 10 seconds), the server downgrades the subscription FPS automatically and notifies:
-
-```json
-{
-  "type": "subscription_downgraded",
-  "channel": "frames",
-  "previous_fps": 30,
-  "new_fps": 15,
-  "reason": "client_too_slow"
-}
-```
-
 **Client-side strategy:**
 
-- Monitor `backpressure` messages and reduce subscription FPS proactively.
-- Use the `canvas` channel at 15 fps (not 30 or 60) -- it is ~2.8 MB/s even at 15.
-- Only subscribe to `canvas` when the spatial editor is visible.
-- Unsubscribe from `frames` when the frame preview is not in view.
+- Subscribe only to surfaces the current view consumes and unsubscribe when hidden.
+- Use metrics to distinguish transport saturation from encoding or rendering cost.
+- Patch FPS, format, or dimensions when the client intentionally wants a different
+  bandwidth-quality tradeoff; the daemon does not silently downgrade subscriptions.
+- Reassemble chunks within explicit byte and stream budgets and clear partial state
+  when a socket reconnects.
 
 ---
 
@@ -3692,12 +3715,13 @@ Clients may also send ping frames; the server will respond with pong.
 | S -> C    | `0x01`                    | Binary | LED frame data              |
 | S -> C    | `0x02`                    | Binary | Audio spectrum data         |
 | S -> C    | `0x03`                    | Binary | Canvas pixel data           |
+| S -> C    | `0x0B`-`0x0E`             | Binary | Wide preview data           |
+| S -> C    | `0x0F`                    | Binary | Preview publication chunk   |
 | S -> C    | `event`                   | JSON   | System event notification   |
 | S -> C    | `metrics`                 | JSON   | Performance metrics         |
 | C -> S    | `command`                 | JSON   | REST-equivalent command     |
 | S -> C    | `response`                | JSON   | Command response            |
 | S -> C    | `backpressure`            | JSON   | Backpressure warning        |
-| S -> C    | `subscription_downgraded` | JSON   | Auto-downgrade notification |
 
 ---
 

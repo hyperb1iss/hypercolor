@@ -1200,6 +1200,14 @@ Completed:
 - Browser helpers for typed document/window access, worker message handlers, timers, sleep, monotonic time, random sampling, page location, viewport metrics, localStorage, and console logging.
 - Canvas helpers for canvas creation, context acquisition, image data construction, Blob URLs, worker script URLs, WebGL texture upload, WebGL buffer upload, and bitmap worker probes.
 - Hypercolor UI migrations for direct `window`, `localStorage`, console, WebSocket construction, WebSocket JSON sends, Blob URL creation, worker script URL creation, worker frame posting, and WebGL buffer upload.
+- One preview wire vocabulary in `ws/preview.rs`: byte-exact legacy `u16` layouts,
+  additive wide `u32` layouts, and a shared chunk envelope for publications above
+  the per-message budget.
+- Checked preview codecs with fallible allocation, native zero-copy decode, WASM
+  `ArrayBuffer` views, and bounded latest-publication reassembly in both clients.
+- Daemon preview routing keyed by stream identity with byte admission, replacement
+  and eviction counters, lazy chunk emission, and interactive publication fences
+  checked between chunks.
 
 Still deliberately deferred:
 
@@ -1209,7 +1217,12 @@ Still deliberately deferred:
 - Daemon-side `hypercolor-v2` control/state channel migration. The stream codec exists, but old daemon JSON message paths remain while the preview-media decision stays open.
 - README extraction plan for `cinder-stream`.
 
-Current audit result: no direct `web_sys::window()`, `localStorage`, console calls, WebSocket constructors, WebSocket text sends, Blob URL creation/revocation, `Float32Array`, `Date::now`, or `Math::random` remain in `hypercolor-ui/src/`. The remaining `js_sys::ArrayBuffer` use is the typed input for binary preview frame decode.
+Current audit result: no direct `web_sys::window()`, `localStorage`, console calls,
+WebSocket constructors, WebSocket text sends, Blob URL creation/revocation,
+`Float32Array`, `Date::now`, or `Math::random` remain in `hypercolor-ui/src/`.
+The remaining `js_sys::ArrayBuffer` use is the typed input for direct and chunked
+preview decode. Reassembly state belongs to one socket lifetime and is cleared by
+construction on reconnect.
 
 ## Validation metrics
 
