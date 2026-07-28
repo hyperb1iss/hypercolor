@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use bytes::{BufMut, Bytes};
 use thiserror::Error;
 
@@ -20,8 +22,14 @@ pub const INTERACTIVE_PREVIEW_ID_MAX_BYTES: usize = 128;
 pub const PREVIEW_CHUNK_FRAME_TAG: u8 = 0x0F;
 pub const PREVIEW_CHUNK_FIXED_HEADER_LEN: usize = 55;
 pub const PREVIEW_CHUNK_SCHEMA: u8 = 1;
+pub const DEFAULT_PREVIEW_MAX_DECODED_PUBLICATION_BYTES: usize = 512 * 1024 * 1024;
+pub const DEFAULT_PREVIEW_MAX_ENCODED_PUBLICATION_BYTES: usize =
+    DEFAULT_PREVIEW_MAX_DECODED_PUBLICATION_BYTES + 64 * 1024;
+pub const DEFAULT_PREVIEW_MAX_CONNECTION_BYTES: usize = 1024 * 1024 * 1024;
+pub const DEFAULT_PREVIEW_MAX_REASSEMBLY_STREAMS: usize = 256;
+pub const DEFAULT_PREVIEW_MAX_IDLE_CHUNKS: u64 = 1024;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 #[repr(u8)]
 pub enum PreviewFrameChannel {
     Canvas = 0x03,
@@ -511,7 +519,7 @@ impl ScreenZonesFrame {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum PreviewStreamId {
     Passive(PreviewFrameChannel),
     Zone {
@@ -691,6 +699,12 @@ impl PreviewChunkFrame {
         if self.total_encoded_bytes == 0 || self.chunk_count == 0 {
             return Err(PreviewChunkError::InvalidLayout);
         }
+        if u64::from(self.chunk_count) > self.total_encoded_bytes {
+            return Err(PreviewChunkError::ImpossibleChunkCount {
+                chunks: self.chunk_count,
+                total_bytes: self.total_encoded_bytes,
+            });
+        }
         if self.chunk_index >= self.chunk_count || self.payload.is_empty() {
             return Err(PreviewChunkError::InvalidLayout);
         }
@@ -769,9 +783,23 @@ pub fn split_preview_publication(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PreviewReassemblyLimits {
-    pub max_publication_bytes: usize,
+    pub max_decoded_publication_bytes: usize,
+    pub max_encoded_publication_bytes: usize,
     pub max_connection_bytes: usize,
     pub max_streams: usize,
+    pub max_idle_chunks: u64,
+}
+
+impl Default for PreviewReassemblyLimits {
+    fn default() -> Self {
+        Self {
+            max_decoded_publication_bytes: DEFAULT_PREVIEW_MAX_DECODED_PUBLICATION_BYTES,
+            max_encoded_publication_bytes: DEFAULT_PREVIEW_MAX_ENCODED_PUBLICATION_BYTES,
+            max_connection_bytes: DEFAULT_PREVIEW_MAX_CONNECTION_BYTES,
+            max_streams: DEFAULT_PREVIEW_MAX_REASSEMBLY_STREAMS,
+            max_idle_chunks: DEFAULT_PREVIEW_MAX_IDLE_CHUNKS,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -790,21 +818,32 @@ struct PartialPreviewPublication {
 }
 
 #[derive(Debug)]
+struct PreviewStreamState {
+    high_water_publication_id: u64,
+    partial: Option<PartialPreviewPublication>,
+    last_activity: u64,
+}
+
+#[derive(Debug)]
 pub struct PreviewChunkReassembler {
     limits: PreviewReassemblyLimits,
-    partials: Vec<PartialPreviewPublication>,
-    completed: Vec<(PreviewStreamId, u64)>,
+    streams: HashMap<PreviewStreamId, PreviewStreamState>,
+    reserved_bytes: usize,
+    ingress_sequence: u64,
     superseded_publications: u64,
+    expired_publications: u64,
 }
 
 impl PreviewChunkReassembler {
     #[must_use]
-    pub const fn new(limits: PreviewReassemblyLimits) -> Self {
+    pub fn new(limits: PreviewReassemblyLimits) -> Self {
         Self {
             limits,
-            partials: Vec::new(),
-            completed: Vec::new(),
+            streams: HashMap::new(),
+            reserved_bytes: 0,
+            ingress_sequence: 0,
             superseded_publications: 0,
+            expired_publications: 0,
         }
     }
 
@@ -812,44 +851,124 @@ impl PreviewChunkReassembler {
         &mut self,
         encoded_chunk: &Bytes,
     ) -> Result<Option<ReassembledPreviewPublication>, PreviewChunkError> {
+        self.ingress_sequence = self.ingress_sequence.saturating_add(1);
+        self.expire_idle_partials();
         let chunk = PreviewChunkFrame::decode_bytes(encoded_chunk)?;
-        if self.completed.iter().any(|(stream, publication_id)| {
-            stream == &chunk.metadata.stream && *publication_id == chunk.metadata.publication_id
-        }) {
-            return Err(PreviewChunkError::DuplicateChunk);
-        }
         let total_encoded_bytes = usize::try_from(chunk.total_encoded_bytes)
             .map_err(|_| PreviewChunkError::LengthOverflow)?;
-        if total_encoded_bytes > self.limits.max_publication_bytes {
+        validate_reassembly_admission(&chunk.metadata, total_encoded_bytes, self.limits)?;
+        if total_encoded_bytes > self.limits.max_encoded_publication_bytes {
             return Err(PreviewChunkError::PublicationBudgetExceeded {
                 requested: total_encoded_bytes,
-                limit: self.limits.max_publication_bytes,
+                limit: self.limits.max_encoded_publication_bytes,
             });
         }
 
-        let stream_index = self
-            .partials
-            .iter()
-            .position(|partial| partial.metadata.stream == chunk.metadata.stream);
-        let partial_index = match stream_index {
-            Some(index)
-                if self.partials[index].metadata.publication_id
-                    == chunk.metadata.publication_id =>
-            {
-                index
+        let stream = chunk.metadata.stream.clone();
+        let publication_id = chunk.metadata.publication_id;
+        if let Some(state) = self.streams.get(&stream) {
+            if publication_id < state.high_water_publication_id {
+                return Err(PreviewChunkError::StalePublication {
+                    publication_id,
+                    high_water: state.high_water_publication_id,
+                });
             }
-            Some(index) => {
-                if chunk.chunk_index != 0 || chunk.chunk_offset != 0 {
-                    return Err(PreviewChunkError::MissingPublicationStart);
-                }
-                self.partials.swap_remove(index);
-                self.superseded_publications = self.superseded_publications.saturating_add(1);
-                self.admit_partial(&chunk, total_encoded_bytes)?
+            if publication_id == state.high_water_publication_id && state.partial.is_none() {
+                return Err(PreviewChunkError::StalePublication {
+                    publication_id,
+                    high_water: state.high_water_publication_id,
+                });
             }
-            None => self.admit_partial(&chunk, total_encoded_bytes)?,
-        };
+        }
 
-        let partial = &mut self.partials[partial_index];
+        let starts_new_publication = self
+            .streams
+            .get(&stream)
+            .is_none_or(|state| publication_id > state.high_water_publication_id);
+        if starts_new_publication {
+            self.admit_partial(&chunk, total_encoded_bytes)?;
+        }
+        self.append_chunk(&stream, &chunk, total_encoded_bytes)
+    }
+
+    fn admit_partial(
+        &mut self,
+        chunk: &PreviewChunkFrame,
+        total_encoded_bytes: usize,
+    ) -> Result<(), PreviewChunkError> {
+        if chunk.chunk_index != 0 || chunk.chunk_offset != 0 {
+            return Err(PreviewChunkError::MissingPublicationStart);
+        }
+        let stream = &chunk.metadata.stream;
+        if !self.streams.contains_key(stream) && self.streams.len() >= self.limits.max_streams {
+            return Err(PreviewChunkError::StreamBudgetExceeded {
+                limit: self.limits.max_streams,
+            });
+        }
+
+        let replaced_bytes = self
+            .streams
+            .get(stream)
+            .and_then(|state| state.partial.as_ref())
+            .map_or(0, |partial| partial.total_encoded_bytes);
+        let retained_bytes = self
+            .reserved_bytes
+            .checked_sub(replaced_bytes)
+            .ok_or(PreviewChunkError::LengthOverflow)?;
+        let requested = retained_bytes
+            .checked_add(total_encoded_bytes)
+            .ok_or(PreviewChunkError::LengthOverflow)?;
+        if requested > self.limits.max_connection_bytes {
+            return Err(PreviewChunkError::ConnectionBudgetExceeded {
+                requested,
+                limit: self.limits.max_connection_bytes,
+            });
+        }
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(total_encoded_bytes).map_err(|_| {
+            PreviewChunkError::AllocationFailed {
+                bytes: total_encoded_bytes,
+            }
+        })?;
+        let partial = PartialPreviewPublication {
+            metadata: chunk.metadata.clone(),
+            total_encoded_bytes,
+            chunk_count: chunk.chunk_count,
+            next_chunk_index: 0,
+            bytes,
+        };
+        let replaced = self.streams.insert(
+            stream.clone(),
+            PreviewStreamState {
+                high_water_publication_id: chunk.metadata.publication_id,
+                partial: Some(partial),
+                last_activity: self.ingress_sequence,
+            },
+        );
+        if replaced
+            .as_ref()
+            .is_some_and(|state| state.partial.is_some())
+        {
+            self.superseded_publications = self.superseded_publications.saturating_add(1);
+        }
+        self.reserved_bytes = requested;
+        Ok(())
+    }
+
+    fn append_chunk(
+        &mut self,
+        stream: &PreviewStreamId,
+        chunk: &PreviewChunkFrame,
+        total_encoded_bytes: usize,
+    ) -> Result<Option<ReassembledPreviewPublication>, PreviewChunkError> {
+        let state = self
+            .streams
+            .get_mut(stream)
+            .ok_or(PreviewChunkError::MissingPublicationStart)?;
+        let partial = state
+            .partial
+            .as_mut()
+            .ok_or(PreviewChunkError::DuplicateChunk)?;
         if partial.metadata != chunk.metadata
             || partial.total_encoded_bytes != total_encoded_bytes
             || partial.chunk_count != chunk.chunk_count
@@ -869,6 +988,7 @@ impl PreviewChunkReassembler {
             .next_chunk_index
             .checked_add(1)
             .ok_or(PreviewChunkError::LengthOverflow)?;
+        state.last_activity = self.ingress_sequence;
 
         if partial.next_chunk_index != partial.chunk_count {
             return Ok(None);
@@ -876,65 +996,41 @@ impl PreviewChunkReassembler {
         if partial.bytes.len() != partial.total_encoded_bytes {
             return Err(PreviewChunkError::NonContiguousChunk);
         }
-        let completed = self.partials.swap_remove(partial_index);
-        self.completed
-            .retain(|(stream, _)| stream != &completed.metadata.stream);
-        if self.completed.len() >= self.limits.max_streams && !self.completed.is_empty() {
-            self.completed.swap_remove(0);
-        }
-        self.completed.push((
-            completed.metadata.stream.clone(),
-            completed.metadata.publication_id,
-        ));
+        let completed = state
+            .partial
+            .take()
+            .ok_or(PreviewChunkError::DuplicateChunk)?;
+        self.reserved_bytes = self
+            .reserved_bytes
+            .checked_sub(completed.total_encoded_bytes)
+            .ok_or(PreviewChunkError::LengthOverflow)?;
         Ok(Some(ReassembledPreviewPublication {
             metadata: completed.metadata,
             encoded: Bytes::from(completed.bytes),
         }))
     }
 
-    fn admit_partial(
-        &mut self,
-        chunk: &PreviewChunkFrame,
-        total_encoded_bytes: usize,
-    ) -> Result<usize, PreviewChunkError> {
-        if chunk.chunk_index != 0 || chunk.chunk_offset != 0 {
-            return Err(PreviewChunkError::MissingPublicationStart);
-        }
-        if self.partials.len() >= self.limits.max_streams {
-            return Err(PreviewChunkError::StreamBudgetExceeded {
-                limit: self.limits.max_streams,
-            });
-        }
-        let reserved = self
-            .partials
-            .iter()
-            .try_fold(0_usize, |total, partial| {
-                total.checked_add(partial.total_encoded_bytes)
-            })
-            .ok_or(PreviewChunkError::LengthOverflow)?;
-        let requested = reserved
-            .checked_add(total_encoded_bytes)
-            .ok_or(PreviewChunkError::LengthOverflow)?;
-        if requested > self.limits.max_connection_bytes {
-            return Err(PreviewChunkError::ConnectionBudgetExceeded {
-                requested,
-                limit: self.limits.max_connection_bytes,
-            });
-        }
-        let mut bytes = Vec::new();
-        bytes.try_reserve_exact(total_encoded_bytes).map_err(|_| {
-            PreviewChunkError::AllocationFailed {
-                bytes: total_encoded_bytes,
+    fn expire_idle_partials(&mut self) {
+        let max_idle_chunks = self.limits.max_idle_chunks;
+        let ingress_sequence = self.ingress_sequence;
+        let mut expired_bytes = 0_usize;
+        let mut expired_publications = 0_u64;
+        for state in self.streams.values_mut() {
+            let expired = state.partial.is_some()
+                && ingress_sequence.saturating_sub(state.last_activity) > max_idle_chunks;
+            if !expired {
+                continue;
             }
-        })?;
-        self.partials.push(PartialPreviewPublication {
-            metadata: chunk.metadata.clone(),
-            total_encoded_bytes,
-            chunk_count: chunk.chunk_count,
-            next_chunk_index: 0,
-            bytes,
-        });
-        Ok(self.partials.len() - 1)
+            if let Some(partial) = state.partial.take() {
+                expired_bytes = expired_bytes.saturating_add(partial.total_encoded_bytes);
+                expired_publications = expired_publications.saturating_add(1);
+            }
+            state.last_activity = ingress_sequence;
+        }
+        self.reserved_bytes = self.reserved_bytes.saturating_sub(expired_bytes);
+        self.expired_publications = self
+            .expired_publications
+            .saturating_add(expired_publications);
     }
 
     #[must_use]
@@ -943,21 +1039,123 @@ impl PreviewChunkReassembler {
     }
 
     #[must_use]
-    pub fn reserved_bytes(&self) -> usize {
-        self.partials
-            .iter()
-            .map(|partial| partial.total_encoded_bytes)
-            .sum()
+    pub const fn expired_publications(&self) -> u64 {
+        self.expired_publications
+    }
+
+    #[must_use]
+    pub const fn reserved_bytes(&self) -> usize {
+        self.reserved_bytes
     }
 
     #[must_use]
     pub fn partial_count(&self) -> usize {
-        self.partials.len()
+        self.streams
+            .values()
+            .filter(|state| state.partial.is_some())
+            .count()
+    }
+
+    pub fn cancel_stream(&mut self, stream: &PreviewStreamId) -> bool {
+        let Some(state) = self.streams.get_mut(stream) else {
+            return false;
+        };
+        let Some(partial) = state.partial.take() else {
+            return false;
+        };
+        self.reserved_bytes = self
+            .reserved_bytes
+            .saturating_sub(partial.total_encoded_bytes);
+        state.last_activity = self.ingress_sequence;
+        true
     }
 
     pub fn clear(&mut self) {
-        self.partials.clear();
-        self.completed.clear();
+        self.streams.clear();
+        self.reserved_bytes = 0;
+    }
+}
+
+fn validate_reassembly_admission(
+    metadata: &PreviewPublicationMetadata,
+    total_encoded_bytes: usize,
+    limits: PreviewReassemblyLimits,
+) -> Result<(), PreviewChunkError> {
+    if metadata.width == 0 || metadata.height == 0 {
+        return Err(PreviewChunkError::InvalidGeometry {
+            width: metadata.width,
+            height: metadata.height,
+        });
+    }
+
+    if !matches!(metadata.stream, PreviewStreamId::ScreenZones) {
+        let decoded_bytes = raw_payload_len(metadata.width, metadata.height, 4)
+            .map_err(PreviewChunkError::Frame)?;
+        if decoded_bytes > limits.max_decoded_publication_bytes {
+            return Err(PreviewChunkError::DecodedPublicationBudgetExceeded {
+                requested: decoded_bytes,
+                limit: limits.max_decoded_publication_bytes,
+            });
+        }
+    }
+
+    let header_len = publication_header_len(metadata)?;
+    if let Some(bytes_per_pixel) = metadata.format.bytes_per_pixel()
+        && !matches!(metadata.stream, PreviewStreamId::ScreenZones)
+    {
+        let expected = header_len
+            .checked_add(
+                raw_payload_len(metadata.width, metadata.height, bytes_per_pixel)
+                    .map_err(PreviewChunkError::Frame)?,
+            )
+            .ok_or(PreviewChunkError::LengthOverflow)?;
+        if total_encoded_bytes != expected {
+            return Err(PreviewChunkError::RawPublicationLengthMismatch {
+                expected,
+                actual: total_encoded_bytes,
+            });
+        }
+    } else if total_encoded_bytes <= header_len {
+        return Err(PreviewChunkError::InvalidLayout);
+    }
+    Ok(())
+}
+
+fn publication_header_len(
+    metadata: &PreviewPublicationMetadata,
+) -> Result<usize, PreviewChunkError> {
+    let wide = metadata.width > u16::MAX as u32 || metadata.height > u16::MAX as u32;
+    match &metadata.stream {
+        PreviewStreamId::Passive(_) => Ok(if wide {
+            WIDE_PREVIEW_FRAME_HEADER_LEN
+        } else {
+            PREVIEW_FRAME_HEADER_LEN
+        }),
+        PreviewStreamId::Zone { .. } => Ok(if wide {
+            WIDE_ZONE_PREVIEW_FRAME_HEADER_LEN
+        } else {
+            ZONE_PREVIEW_FRAME_HEADER_LEN
+        }),
+        PreviewStreamId::Interactive(preview_id) => {
+            validate_interactive_preview_id(preview_id).map_err(PreviewChunkError::Frame)?;
+            (if wide {
+                WIDE_INTERACTIVE_PREVIEW_FRAME_PREFIX_LEN
+            } else {
+                INTERACTIVE_PREVIEW_FRAME_PREFIX_LEN
+            })
+            .checked_add(preview_id.len())
+            .ok_or(PreviewChunkError::LengthOverflow)
+        }
+        PreviewStreamId::ScreenZones => {
+            if metadata.format != PreviewPixelFormat::Rgb {
+                return Err(PreviewChunkError::MetadataChanged);
+            }
+            Ok(if wide {
+                WIDE_SCREEN_ZONES_FRAME_HEADER_LEN
+            } else {
+                SCREEN_ZONES_FRAME_HEADER_LEN
+            })
+        }
     }
 }
 
@@ -983,6 +1181,8 @@ pub enum PreviewChunkError {
     MessageBudgetTooSmall { required: usize, actual: usize },
     #[error("preview publication needs {requested} bytes; limit is {limit}")]
     PublicationBudgetExceeded { requested: usize, limit: usize },
+    #[error("decoded preview publication needs {requested} bytes; limit is {limit}")]
+    DecodedPublicationBudgetExceeded { requested: usize, limit: usize },
     #[error("preview connection needs {requested} bytes; limit is {limit}")]
     ConnectionBudgetExceeded { requested: usize, limit: usize },
     #[error("preview reassembly stream limit is {limit}")]
@@ -995,6 +1195,19 @@ pub enum PreviewChunkError {
     NonContiguousChunk,
     #[error("preview chunk metadata changed within a publication")]
     MetadataChanged,
+    #[error("preview dimensions must be nonzero, got {width}x{height}")]
+    InvalidGeometry { width: u32, height: u32 },
+    #[error("raw preview publication length must be {expected} bytes, got {actual}")]
+    RawPublicationLengthMismatch { expected: usize, actual: usize },
+    #[error(
+        "preview publication {publication_id} is not newer than stream high-water {high_water}"
+    )]
+    StalePublication {
+        publication_id: u64,
+        high_water: u64,
+    },
+    #[error("preview chunk count {chunks} cannot fit in {total_bytes} non-empty bytes")]
+    ImpossibleChunkCount { chunks: u32, total_bytes: u64 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

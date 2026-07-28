@@ -19,8 +19,6 @@ use tokio_tungstenite::tungstenite::Message;
 use crate::state::{CanvasFrame, SpectrumSnapshot};
 
 const TUI_CANVAS_FPS: u8 = 60;
-const TUI_MAX_PREVIEW_PUBLICATION_BYTES: usize = 512 * 1024 * 1024;
-const TUI_MAX_PREVIEW_CONNECTION_BYTES: usize = 1024 * 1024 * 1024;
 const TUI_MAX_PREVIEW_STREAMS: usize = 8;
 
 /// Messages decoded from the WebSocket stream.
@@ -141,12 +139,11 @@ impl Default for WsBinaryDecoder {
 
 impl WsBinaryDecoder {
     #[must_use]
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             preview_chunks: PreviewChunkReassembler::new(PreviewReassemblyLimits {
-                max_publication_bytes: TUI_MAX_PREVIEW_PUBLICATION_BYTES,
-                max_connection_bytes: TUI_MAX_PREVIEW_CONNECTION_BYTES,
                 max_streams: TUI_MAX_PREVIEW_STREAMS,
+                ..PreviewReassemblyLimits::default()
             }),
         }
     }

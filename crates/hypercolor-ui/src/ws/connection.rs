@@ -318,6 +318,7 @@ impl WsManager {
                 if let Some(buffer) = message_array_buffer(&event) {
                     if let Some(message) = preview_decoder.decode(buffer) {
                         match message {
+                            PreviewBinaryMessage::Zone(_) => {}
                             PreviewBinaryMessage::Interactive(preview_id, frame) => {
                                 if interactive_preview_lifecycles.with_untracked(|lifecycles| {
                                     matches!(

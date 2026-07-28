@@ -440,15 +440,17 @@ fn interactive_metadata(publication_id: u64, frame_number: u32) -> PreviewPublic
         timestamp_ms: frame_number,
         width: 4096,
         height: 4096,
-        format: PreviewPixelFormat::Rgba,
+        format: PreviewPixelFormat::Jpeg,
     }
 }
 
 fn reassembler(max_bytes: usize) -> PreviewChunkReassembler {
     PreviewChunkReassembler::new(PreviewReassemblyLimits {
-        max_publication_bytes: max_bytes,
+        max_decoded_publication_bytes: 128 * 1024 * 1024,
+        max_encoded_publication_bytes: max_bytes,
         max_connection_bytes: max_bytes.checked_mul(2).expect("fixture budget fits"),
         max_streams: 2,
+        max_idle_chunks: 64,
     })
 }
 
@@ -590,9 +592,11 @@ fn chunk_reassembly_enforces_publication_and_connection_byte_budgets() {
     let second_chunks = split_preview_publication(&Bytes::from(vec![2_u8; 400]), &second, 128)
         .expect("second chunks");
     let mut connection_limited = PreviewChunkReassembler::new(PreviewReassemblyLimits {
-        max_publication_bytes: 512,
+        max_decoded_publication_bytes: 128 * 1024 * 1024,
+        max_encoded_publication_bytes: 512,
         max_connection_bytes: 700,
         max_streams: 2,
+        max_idle_chunks: 64,
     });
     assert_eq!(connection_limited.push(&first_chunks[0]), Ok(None));
     assert_eq!(
@@ -602,6 +606,211 @@ fn chunk_reassembly_enforces_publication_and_connection_byte_budgets() {
             limit: 700,
         }),
     );
+}
+
+#[test]
+fn chunk_reassembly_validates_raw_geometry_before_reserving_peer_bytes() {
+    let metadata = PreviewPublicationMetadata {
+        stream: PreviewStreamId::Passive(PreviewFrameChannel::Canvas),
+        publication_id: 1,
+        frame_number: 1,
+        timestamp_ms: 1,
+        width: 1,
+        height: 1,
+        format: PreviewPixelFormat::Rgba,
+    };
+    let declared = 512_u64 * 1024 * 1024;
+    let chunk = PreviewChunkFrame {
+        metadata,
+        total_encoded_bytes: declared,
+        chunk_offset: 0,
+        chunk_index: 0,
+        chunk_count: 2,
+        payload: Bytes::from_static(&[0]),
+    }
+    .try_encode()
+    .expect("malicious declaration has a valid chunk envelope");
+    let mut reassembler = PreviewChunkReassembler::new(PreviewReassemblyLimits::default());
+
+    assert_eq!(
+        reassembler.push(&chunk),
+        Err(PreviewChunkError::RawPublicationLengthMismatch {
+            expected: PREVIEW_FRAME_HEADER_LEN + 4,
+            actual: usize::try_from(declared).expect("fixture fits usize"),
+        })
+    );
+    assert_eq!(reassembler.reserved_bytes(), 0);
+    assert_eq!(reassembler.partial_count(), 0);
+}
+
+#[test]
+fn chunk_reassembly_enforces_decoded_budget_separately_from_encoded_budget() {
+    let encoded = Bytes::from(vec![0xCC_u8; 128]);
+    let metadata = PreviewPublicationMetadata {
+        width: 16,
+        height: 16,
+        format: PreviewPixelFormat::Jpeg,
+        ..interactive_metadata(1, 1)
+    };
+    let chunks = split_preview_publication(&encoded, &metadata, 96).expect("chunks split");
+    let mut reassembler = PreviewChunkReassembler::new(PreviewReassemblyLimits {
+        max_decoded_publication_bytes: 1023,
+        max_encoded_publication_bytes: 1024,
+        max_connection_bytes: 2048,
+        max_streams: 2,
+        max_idle_chunks: 64,
+    });
+
+    assert_eq!(
+        reassembler.push(&chunks[0]),
+        Err(PreviewChunkError::DecodedPublicationBudgetExceeded {
+            requested: 1024,
+            limit: 1023,
+        })
+    );
+    assert_eq!(reassembler.reserved_bytes(), 0);
+}
+
+#[test]
+fn chunk_layout_rejects_more_nonempty_chunks_than_total_bytes() {
+    let frame = PreviewChunkFrame {
+        metadata: interactive_metadata(1, 1),
+        total_encoded_bytes: 2,
+        chunk_offset: 0,
+        chunk_index: 0,
+        chunk_count: 3,
+        payload: Bytes::from_static(&[1]),
+    };
+
+    assert_eq!(
+        frame.try_encode(),
+        Err(PreviewChunkError::ImpossibleChunkCount {
+            chunks: 3,
+            total_bytes: 2,
+        })
+    );
+}
+
+#[test]
+fn stream_high_water_rejects_delayed_older_publication() {
+    let old = split_preview_publication(
+        &Bytes::from(vec![1_u8; 256]),
+        &interactive_metadata(10, 10),
+        128,
+    )
+    .expect("old chunks");
+    let new = split_preview_publication(
+        &Bytes::from(vec![2_u8; 256]),
+        &interactive_metadata(11, 11),
+        128,
+    )
+    .expect("new chunks");
+    let mut reassembler = reassembler(1024);
+
+    assert_eq!(reassembler.push(&new[0]), Ok(None));
+    assert_eq!(
+        reassembler.push(&old[0]),
+        Err(PreviewChunkError::StalePublication {
+            publication_id: 10,
+            high_water: 11,
+        })
+    );
+    assert_eq!(reassembler.reserved_bytes(), 256);
+}
+
+#[test]
+fn cancellation_releases_bytes_but_keeps_stream_high_water() {
+    let metadata = interactive_metadata(7, 7);
+    let chunks = split_preview_publication(&Bytes::from(vec![7_u8; 256]), &metadata, 128)
+        .expect("chunks split");
+    let mut reassembler = reassembler(1024);
+
+    assert_eq!(reassembler.push(&chunks[0]), Ok(None));
+    assert!(reassembler.cancel_stream(&metadata.stream));
+    assert_eq!(reassembler.reserved_bytes(), 0);
+    assert_eq!(
+        reassembler.push(&chunks[0]),
+        Err(PreviewChunkError::StalePublication {
+            publication_id: 7,
+            high_water: 7,
+        })
+    );
+}
+
+#[test]
+fn idle_expiry_releases_bytes_but_keeps_stream_high_water() {
+    let first = PreviewPublicationMetadata {
+        stream: PreviewStreamId::Interactive("first".to_owned()),
+        ..interactive_metadata(5, 5)
+    };
+    let second = PreviewPublicationMetadata {
+        stream: PreviewStreamId::Interactive("second".to_owned()),
+        ..interactive_metadata(6, 6)
+    };
+    let first_chunks = split_preview_publication(&Bytes::from(vec![1_u8; 256]), &first, 128)
+        .expect("first chunks");
+    let second_chunks = split_preview_publication(&Bytes::from(vec![2_u8; 256]), &second, 128)
+        .expect("second chunks");
+    let mut reassembler = PreviewChunkReassembler::new(PreviewReassemblyLimits {
+        max_decoded_publication_bytes: 128 * 1024 * 1024,
+        max_encoded_publication_bytes: 1024,
+        max_connection_bytes: 2048,
+        max_streams: 2,
+        max_idle_chunks: 1,
+    });
+
+    assert_eq!(reassembler.push(&first_chunks[0]), Ok(None));
+    assert_eq!(reassembler.push(&second_chunks[0]), Ok(None));
+    assert_eq!(reassembler.push(&second_chunks[1]), Ok(None));
+    assert_eq!(reassembler.expired_publications(), 1);
+    assert_eq!(reassembler.reserved_bytes(), 256);
+    assert_eq!(
+        reassembler.push(&first_chunks[0]),
+        Err(PreviewChunkError::StalePublication {
+            publication_id: 5,
+            high_water: 5,
+        })
+    );
+}
+
+#[test]
+fn chunked_zone_publication_reassembles_for_shared_ui_decoder() {
+    let frame = ZonePreviewFrame {
+        scene_id: [3; 16],
+        zone_id: [4; 16],
+        frame_number: 9,
+        timestamp_ms: 10,
+        width: 2,
+        height: 2,
+        format: PreviewPixelFormat::Rgba,
+        payload: Bytes::from_static(&[5; 16]),
+    };
+    let encoded = frame.try_encode().expect("zone frame encodes");
+    let metadata = PreviewPublicationMetadata {
+        stream: PreviewStreamId::Zone {
+            scene_id: frame.scene_id,
+            zone_id: frame.zone_id,
+        },
+        publication_id: 12,
+        frame_number: frame.frame_number,
+        timestamp_ms: frame.timestamp_ms,
+        width: frame.width,
+        height: frame.height,
+        format: frame.format,
+    };
+    let chunks = split_preview_publication(&encoded, &metadata, 128).expect("zone chunks split");
+    assert!(chunks.len() > 1);
+    let mut reassembler = reassembler(1024);
+    let mut completed = None;
+    for chunk in chunks {
+        completed = reassembler
+            .push(&chunk)
+            .expect("chunk admitted")
+            .or(completed);
+    }
+    let completed = completed.expect("zone publication completes");
+    let decoded = ZonePreviewFrame::decode_bytes(&completed.encoded).expect("zone frame decodes");
+    assert_eq!(decoded, frame);
 }
 
 #[test]

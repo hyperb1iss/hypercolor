@@ -7,9 +7,11 @@ use hypercolor_leptos_ext::prelude::now_ms;
 pub(super) use hypercolor_leptos_ext::ws::PreviewFrameChannel;
 pub use hypercolor_leptos_ext::ws::ScreenZonesFrame;
 use hypercolor_leptos_ext::ws::{
-    InteractivePreviewFrameView, PREVIEW_CHUNK_FRAME_TAG, PreviewChunkReassembler,
-    PreviewPublicationMetadata, PreviewReassemblyLimits, PreviewStreamId,
-    ReassembledPreviewPublication,
+    INTERACTIVE_PREVIEW_FRAME_TAG, InteractivePreviewFrame, InteractivePreviewFrameView,
+    PREVIEW_CHUNK_FRAME_TAG, PreviewChunkReassembler, PreviewFrame, PreviewPublicationMetadata,
+    PreviewReassemblyLimits, PreviewStreamId, ReassembledPreviewPublication,
+    SCREEN_ZONES_FRAME_TAG, WIDE_INTERACTIVE_PREVIEW_FRAME_TAG, WIDE_SCREEN_ZONES_FRAME_TAG,
+    WIDE_ZONE_PREVIEW_FRAME_TAG, ZONE_PREVIEW_FRAME_TAG, ZonePreviewFrame, ZonePreviewFrameView,
 };
 pub use hypercolor_leptos_ext::ws::{
     PreviewFrameView as CanvasFrame, PreviewPixelFormat as CanvasPixelFormat,
@@ -518,12 +520,9 @@ pub struct AudioLevel {
 
 // ── Binary Frame Decoder ────────────────────────────────────────────────────
 
-const MAX_PREVIEW_PUBLICATION_BYTES: usize = 512 * 1024 * 1024;
-const MAX_PREVIEW_CONNECTION_BYTES: usize = 1024 * 1024 * 1024;
-const MAX_PREVIEW_REASSEMBLY_STREAMS: usize = 256;
-
 pub(super) enum PreviewBinaryMessage {
     Frame(PreviewFrameChannel, CanvasFrame),
+    Zone(ZonePreviewFrameView),
     Interactive(String, CanvasFrame),
     ScreenZones(ScreenZonesFrame),
 }
@@ -535,11 +534,7 @@ pub(super) struct PreviewBinaryDecoder {
 impl Default for PreviewBinaryDecoder {
     fn default() -> Self {
         Self {
-            chunks: PreviewChunkReassembler::new(PreviewReassemblyLimits {
-                max_publication_bytes: MAX_PREVIEW_PUBLICATION_BYTES,
-                max_connection_bytes: MAX_PREVIEW_CONNECTION_BYTES,
-                max_streams: MAX_PREVIEW_REASSEMBLY_STREAMS,
-            }),
+            chunks: PreviewChunkReassembler::new(PreviewReassemblyLimits::default()),
         }
     }
 }
@@ -564,8 +559,14 @@ impl PreviewBinaryDecoder {
 }
 
 fn decode_direct_preview(buffer: js_sys::ArrayBuffer) -> Option<PreviewBinaryMessage> {
+    let tag = js_sys::Uint8Array::new(&buffer).get_index(0);
     if let Some((preview_id, frame)) = decode_interactive_preview_frame(&buffer) {
         return Some(PreviewBinaryMessage::Interactive(preview_id, frame));
+    }
+    if matches!(tag, ZONE_PREVIEW_FRAME_TAG | WIDE_ZONE_PREVIEW_FRAME_TAG) {
+        return ZonePreviewFrameView::decode_array_buffer(&buffer)
+            .ok()
+            .map(PreviewBinaryMessage::Zone);
     }
     if let Some(frame) = decode_screen_zones_frame(&buffer) {
         return Some(PreviewBinaryMessage::ScreenZones(frame));
@@ -577,10 +578,65 @@ fn decode_direct_preview(buffer: js_sys::ArrayBuffer) -> Option<PreviewBinaryMes
 fn decode_reassembled_preview(
     publication: &ReassembledPreviewPublication,
 ) -> Option<PreviewBinaryMessage> {
-    let bytes = js_sys::Uint8Array::from(publication.encoded.as_ref());
-    let buffer = bytes.buffer();
-    let decoded = decode_direct_preview(buffer)?;
-    preview_metadata_matches(&decoded, &publication.metadata).then_some(decoded)
+    let metadata = &publication.metadata;
+    let decoded = match &metadata.stream {
+        PreviewStreamId::Passive(expected_channel) => {
+            let frame = PreviewFrame::decode_bytes(&publication.encoded).ok()?;
+            if frame.channel != *expected_channel {
+                return None;
+            }
+            PreviewBinaryMessage::Frame(
+                frame.channel,
+                CanvasFrame {
+                    channel: frame.channel,
+                    frame_number: frame.frame_number,
+                    timestamp_ms: frame.timestamp_ms,
+                    width: frame.width,
+                    height: frame.height,
+                    format: frame.format,
+                    payload: js_sys::Uint8Array::from(frame.payload.as_ref()),
+                },
+            )
+        }
+        PreviewStreamId::Zone { scene_id, zone_id } => {
+            let frame = ZonePreviewFrame::decode_bytes(&publication.encoded).ok()?;
+            if frame.scene_id != *scene_id || frame.zone_id != *zone_id {
+                return None;
+            }
+            PreviewBinaryMessage::Zone(ZonePreviewFrameView {
+                scene_id: frame.scene_id,
+                zone_id: frame.zone_id,
+                frame_number: frame.frame_number,
+                timestamp_ms: frame.timestamp_ms,
+                width: frame.width,
+                height: frame.height,
+                format: frame.format,
+                payload: js_sys::Uint8Array::from(frame.payload.as_ref()),
+            })
+        }
+        PreviewStreamId::Interactive(expected_preview_id) => {
+            let frame = InteractivePreviewFrame::decode_bytes(&publication.encoded).ok()?;
+            if frame.preview_id != *expected_preview_id {
+                return None;
+            }
+            PreviewBinaryMessage::Interactive(
+                frame.preview_id,
+                CanvasFrame {
+                    channel: PreviewFrameChannel::Canvas,
+                    frame_number: frame.frame_number,
+                    timestamp_ms: frame.timestamp_ms,
+                    width: frame.width,
+                    height: frame.height,
+                    format: frame.format,
+                    payload: js_sys::Uint8Array::from(frame.payload.as_ref()),
+                },
+            )
+        }
+        PreviewStreamId::ScreenZones => {
+            PreviewBinaryMessage::ScreenZones(ScreenZonesFrame::decode(&publication.encoded).ok()?)
+        }
+    };
+    preview_metadata_matches(&decoded, metadata).then_some(decoded)
 }
 
 fn preview_metadata_matches(
@@ -595,6 +651,15 @@ fn preview_metadata_matches(
             PreviewBinaryMessage::Interactive(preview_id, frame),
             PreviewStreamId::Interactive(expected),
         ) => preview_id == expected && canvas_metadata_matches(frame, metadata),
+        (PreviewBinaryMessage::Zone(frame), PreviewStreamId::Zone { scene_id, zone_id }) => {
+            frame.scene_id == *scene_id
+                && frame.zone_id == *zone_id
+                && frame.frame_number == metadata.frame_number
+                && frame.timestamp_ms == metadata.timestamp_ms
+                && frame.width == metadata.width
+                && frame.height == metadata.height
+                && frame.format == metadata.format
+        }
         (PreviewBinaryMessage::ScreenZones(frame), PreviewStreamId::ScreenZones) => {
             frame.frame_number == metadata.frame_number
                 && frame.timestamp_ms == metadata.timestamp_ms
@@ -624,6 +689,13 @@ pub(super) fn decode_preview_frame(
 pub(super) fn decode_interactive_preview_frame(
     buffer: &js_sys::ArrayBuffer,
 ) -> Option<(String, CanvasFrame)> {
+    let tag = js_sys::Uint8Array::new(buffer).get_index(0);
+    if !matches!(
+        tag,
+        INTERACTIVE_PREVIEW_FRAME_TAG | WIDE_INTERACTIVE_PREVIEW_FRAME_TAG
+    ) {
+        return None;
+    }
     let frame = InteractivePreviewFrameView::decode_array_buffer(buffer).ok()?;
     Some((
         frame.preview_id,
@@ -640,6 +712,10 @@ pub(super) fn decode_interactive_preview_frame(
 }
 
 pub(super) fn decode_screen_zones_frame(buffer: &js_sys::ArrayBuffer) -> Option<ScreenZonesFrame> {
+    let tag = js_sys::Uint8Array::new(buffer).get_index(0);
+    if !matches!(tag, SCREEN_ZONES_FRAME_TAG | WIDE_SCREEN_ZONES_FRAME_TAG) {
+        return None;
+    }
     ScreenZonesFrame::decode_array_buffer(buffer).ok()
 }
 
