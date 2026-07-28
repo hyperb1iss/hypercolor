@@ -342,7 +342,7 @@ impl SmBusTransport {
         Ok(())
     }
 
-    fn execute_transfer_segment_locked(
+    fn execute_batch_locked(
         device: &Mutex<LinuxI2CDevice>,
         path: &str,
         address: u16,
@@ -369,53 +369,33 @@ impl SmBusTransport {
                 SmBusOperation::WriteBlockData { register, data } => device
                     .smbus_write_block_data(*register, data)
                     .map_err(|error| map_linux_i2c_error(path, address, &error))?,
-                SmBusOperation::Delay { .. } => {
-                    return Err(TransportError::IoError {
-                        detail: "SMBus delay reached a transfer-only segment".to_owned(),
-                    });
-                }
+                SmBusOperation::Delay { duration } => std::thread::sleep(*duration),
             }
         }
 
         Ok(reads)
     }
 
+    /// Run one device transaction as a single blocking segment,
+    /// inter-operation delays included.
+    ///
+    /// The delays run inside the closure rather than between fragments so the
+    /// ENE address-set and its data-write stay inside one bus-arbiter hold.
     async fn execute_operations(
         &self,
         operations: Vec<SmBusOperation>,
-    ) -> Result<Vec<u8>, TransportError> {
-        let mut reads = Vec::new();
-        let mut transfer_segment = Vec::new();
-
-        for operation in operations {
-            if let SmBusOperation::Delay { duration } = operation {
-                reads.extend(self.execute_transfer_segment(&mut transfer_segment).await?);
-                tokio::time::sleep(duration).await;
-            } else {
-                transfer_segment.push(operation);
-            }
-        }
-        reads.extend(self.execute_transfer_segment(&mut transfer_segment).await?);
-
-        Ok(reads)
-    }
-
-    async fn execute_transfer_segment(
-        &self,
-        operations: &mut Vec<SmBusOperation>,
     ) -> Result<Vec<u8>, TransportError> {
         if operations.is_empty() {
             return Ok(Vec::new());
         }
 
-        let operations = std::mem::take(operations);
         let device = Arc::clone(&self.device);
         let path = self.path.clone();
         let address = self.address;
 
         self.bus_arbiter
             .run_blocking(move || {
-                Self::execute_transfer_segment_locked(device.as_ref(), &path, address, &operations)
+                Self::execute_batch_locked(device.as_ref(), &path, address, &operations)
             })
             .await
     }
@@ -545,7 +525,7 @@ impl SmBusTransport {
         Ok(())
     }
 
-    fn execute_transfer_segment_locked(
+    fn execute_batch_locked(
         bus: &Mutex<WindowsSmBusBus>,
         path: &str,
         address: u16,
@@ -588,8 +568,8 @@ impl SmBusTransport {
                         },
                     })
                 }
-                SmBusOperation::Delay { .. } => Err(TransportError::IoError {
-                    detail: "SMBus delay reached a transfer-only segment".to_owned(),
+                SmBusOperation::Delay { duration } => Ok(SmBusBatchOperation::Delay {
+                    duration: *duration,
                 }),
             })
             .collect::<Result<Vec<_>, TransportError>>()?;
@@ -611,42 +591,29 @@ impl SmBusTransport {
         Ok(reads)
     }
 
+    /// Run one device transaction as a single batch, inter-operation delays
+    /// included.
+    ///
+    /// The delays are carried in the batch rather than awaited between
+    /// fragments so the ENE address-set and its data-write stay inside one
+    /// bus-arbiter hold, and so a frame costs one broker round trip instead of
+    /// one per delay. Splitting here also pushed every delay onto the tokio
+    /// timer, which quantizes to the ~15.6ms Windows tick.
     async fn execute_operations(
         &self,
         operations: Vec<SmBusOperation>,
-    ) -> Result<Vec<u8>, TransportError> {
-        let mut reads = Vec::new();
-        let mut transfer_segment = Vec::new();
-
-        for operation in operations {
-            if let SmBusOperation::Delay { duration } = operation {
-                reads.extend(self.execute_transfer_segment(&mut transfer_segment).await?);
-                tokio::time::sleep(duration).await;
-            } else {
-                transfer_segment.push(operation);
-            }
-        }
-        reads.extend(self.execute_transfer_segment(&mut transfer_segment).await?);
-
-        Ok(reads)
-    }
-
-    async fn execute_transfer_segment(
-        &self,
-        operations: &mut Vec<SmBusOperation>,
     ) -> Result<Vec<u8>, TransportError> {
         if operations.is_empty() {
             return Ok(Vec::new());
         }
 
-        let operations = std::mem::take(operations);
         let bus = Arc::clone(&self.bus);
         let path = self.path.clone();
         let address = self.address;
 
         self.bus_arbiter
             .run_blocking(move || {
-                Self::execute_transfer_segment_locked(bus.as_ref(), &path, address, &operations)
+                Self::execute_batch_locked(bus.as_ref(), &path, address, &operations)
             })
             .await
     }

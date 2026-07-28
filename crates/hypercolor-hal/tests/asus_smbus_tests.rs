@@ -446,3 +446,45 @@ fn smbus_protocol_frame_encoding_reasserts_direct_mode_and_appends_dram_apply_la
 
     assert_eq!(operations, expected);
 }
+
+fn count_delays(operations: &[EneSmBusOperation]) -> usize {
+    operations
+        .iter()
+        .filter(|operation| matches!(operation, EneSmBusOperation::Delay { .. }))
+        .count()
+}
+
+/// Each ENE delay costs a full bus-arbiter hold and, on Windows, a broker round
+/// trip, so the delay count is the transport's real cost model rather than an
+/// encoding detail. An eight-LED DIMM sits close to the 16ms frame interval
+/// already; a regression in chunking or latch order would blow the budget
+/// silently.
+#[test]
+fn dram_frame_and_init_delay_counts_stay_within_the_transport_cost_model() {
+    let protocol = AuraSmBusProtocol::new();
+    let mut firmware = [0_u8; 16];
+    firmware[..15].copy_from_slice(b"AUDA0-E6K5-0101");
+    protocol
+        .parse_response(&firmware)
+        .expect("firmware response should parse");
+
+    let colors = [[0x11, 0x22, 0x33]; 8];
+    let commands = protocol.encode_frame(&colors);
+    assert_eq!(commands.len(), 1, "a frame must stay one transaction");
+    let frame_operations =
+        decode_ene_transaction(&commands[0].data).expect("frame transaction should decode");
+
+    // 1 direct-mode re-assert + 24 payload bytes / 3-byte chunks + 1 apply latch.
+    assert_eq!(count_delays(&frame_operations), 10);
+
+    let init_delays = protocol
+        .init_sequence()
+        .iter()
+        .map(|command| {
+            count_delays(&decode_ene_transaction(&command.data).expect("init should decode"))
+        })
+        .sum::<usize>();
+
+    // 16-byte firmware read + 64-byte config read + 1 direct-mode write.
+    assert_eq!(init_delays, 81);
+}
