@@ -144,7 +144,8 @@ impl ZoneRuntime {
                 output.record_render_elapsed(render_start);
                 continue;
             }
-            if !copy_producer_frame_to_canvas(frame, target, &mut output.producer_full_frame_copy) {
+            if !copy_producer_frame_to_canvas(frame, target, &mut output.producer_full_frame_copy)?
+            {
                 target.clear();
                 output.record_render_elapsed(render_start);
                 continue;

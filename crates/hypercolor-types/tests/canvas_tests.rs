@@ -353,6 +353,42 @@ fn published_surface_from_owned_canvas_reuses_shared_storage_without_copy() {
 }
 
 #[test]
+fn canvas_copy_from_surface_reuses_matching_unique_storage() {
+    let mut source = Canvas::new(2, 1);
+    source.fill(Rgba::new(90, 80, 70, 255));
+    let surface = PublishedSurface::from_owned_canvas(source, 7, 42);
+    let mut target = Canvas::new(2, 1);
+    let target_storage = target.as_rgba_bytes().as_ptr();
+
+    target
+        .try_copy_from_published_surface(&surface)
+        .expect("matching surface copy should reuse admitted storage");
+
+    assert_eq!(target.as_rgba_bytes().as_ptr(), target_storage);
+    assert_eq!(target.get_pixel(1, 0), Rgba::new(90, 80, 70, 255));
+}
+
+#[test]
+fn canvas_copy_from_surface_preserves_shared_readers() {
+    let mut source = Canvas::new(2, 1);
+    source.fill(Rgba::new(90, 80, 70, 255));
+    let surface = PublishedSurface::from_owned_canvas(source, 7, 42);
+    let mut target = Canvas::new(2, 1);
+    target.fill(Rgba::new(1, 2, 3, 255));
+    let published = target.clone();
+    let published_storage = published.as_rgba_bytes().as_ptr();
+
+    target
+        .try_copy_from_published_surface(&surface)
+        .expect("shared target replacement should allocate fallibly");
+
+    assert_eq!(published.as_rgba_bytes().as_ptr(), published_storage);
+    assert_eq!(published.get_pixel(1, 0), Rgba::new(1, 2, 3, 255));
+    assert_ne!(target.as_rgba_bytes().as_ptr(), published_storage);
+    assert_eq!(target.get_pixel(1, 0), Rgba::new(90, 80, 70, 255));
+}
+
+#[test]
 fn render_surface_pool_uses_three_slots_and_reclaims_released_surface() {
     let descriptor = SurfaceDescriptor::rgba8888(4, 2);
     let mut pool = RenderSurfacePool::new(descriptor);

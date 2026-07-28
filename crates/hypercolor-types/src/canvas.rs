@@ -652,6 +652,25 @@ impl Canvas {
         }
     }
 
+    /// Copy a published surface into this canvas without invalidating readers.
+    ///
+    /// Matching uniquely owned storage is reused. A shared or differently sized
+    /// canvas is replaced only after the new allocation succeeds, so failure
+    /// leaves both this canvas and every published reader unchanged.
+    pub fn try_copy_from_published_surface(
+        &mut self,
+        surface: &PublishedSurface,
+    ) -> Result<(), SurfaceResourceError> {
+        if self.width == surface.width() && self.height == surface.height() && !self.is_shared() {
+            self.as_rgba_bytes_mut()
+                .copy_from_slice(surface.rgba_bytes());
+            return Ok(());
+        }
+
+        *self = Self::try_from_rgba(surface.rgba_bytes(), surface.width(), surface.height())?;
+        Ok(())
+    }
+
     /// Horizontal pixel count.
     #[must_use]
     pub const fn width(&self) -> u32 {

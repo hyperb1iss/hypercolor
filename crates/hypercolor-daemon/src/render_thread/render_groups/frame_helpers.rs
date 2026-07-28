@@ -4,6 +4,7 @@ use hypercolor_core::input::ScreenData;
 use hypercolor_core::spatial::sample_viewport;
 use hypercolor_types::canvas::{
     Canvas, PublishedSurface, RenderSurfacePool, Rgba, RgbaF32, SurfaceDescriptor,
+    SurfaceResourceError,
 };
 use hypercolor_types::layer::{
     LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
@@ -257,12 +258,14 @@ pub(super) fn surface_backed_frame(
             let Some(mut lease) = surface_pool.try_dequeue()? else {
                 return Ok(None);
             };
+            if let Err(error) = lease.canvas_mut().try_copy_from_published_surface(&surface) {
+                lease.release();
+                return Err(error.into());
+            }
             full_frame_copy.record(
                 usize_to_u32(surface.rgba_bytes().len()),
                 "generation_zero_surface_pool_materialization",
             );
-            *lease.canvas_mut() =
-                Canvas::try_from_rgba(surface.rgba_bytes(), surface.width(), surface.height())?;
             Ok(Some(ProducerFrame::Surface(
                 lease.submit(surface.frame_number(), surface.timestamp_ms()),
             )))
@@ -275,31 +278,31 @@ pub(super) fn copy_producer_frame_to_canvas(
     frame: ProducerFrame,
     target: &mut Canvas,
     full_frame_copy: &mut FullFrameCopyMetrics,
-) -> bool {
+) -> Result<bool, SurfaceResourceError> {
     match frame {
         ProducerFrame::Canvas(canvas) => {
             *target = canvas;
-            true
+            Ok(true)
         }
         ProducerFrame::Surface(surface) => {
+            target.try_copy_from_published_surface(&surface)?;
             full_frame_copy.record(
                 usize_to_u32(surface.rgba_bytes().len()),
                 "surface_to_group_canvas_materialization",
             );
-            *target = Canvas::from_rgba(surface.rgba_bytes(), surface.width(), surface.height());
-            true
+            Ok(true)
         }
         #[cfg(feature = "servo-gpu-import")]
         ProducerFrame::Gpu(frame) => {
             let frame = ProducerFrame::Gpu(frame);
             frame.record_cpu_materialization_blocked();
-            false
+            Ok(false)
         }
         #[cfg(feature = "wgpu")]
         ProducerFrame::GpuTexture(frame) => {
             let frame = ProducerFrame::GpuTexture(frame);
             frame.record_cpu_materialization_blocked();
-            false
+            Ok(false)
         }
     }
 }
