@@ -708,7 +708,7 @@ impl<I: Clone + PartialEq + 'static> PlayerSnapshotScanner<I> {
         now: tokio::time::Instant,
     ) -> std::result::Result<Vec<PlayerSnapshot>, MediaProviderError> {
         let snapshots = self.fresh_snapshots(now);
-        if !snapshots.is_empty() || self.order.is_empty() {
+        if self.order.is_empty() {
             return Ok(snapshots);
         }
 

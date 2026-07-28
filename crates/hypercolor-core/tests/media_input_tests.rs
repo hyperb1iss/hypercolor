@@ -463,6 +463,38 @@ async fn scanner_reports_an_error_when_every_discovered_player_fails() {
     );
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn cached_snapshot_does_not_mask_an_aggregate_refresh_failure() {
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let mut scanner = PlayerSnapshotScanner::default();
+    let first_attempts = Arc::clone(&attempts);
+    let snapshots = scanner
+        .poll([("only".to_owned(), ())], move |()| {
+            let attempts = Arc::clone(&first_attempts);
+            async move {
+                if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                    Ok(player("only", PlaybackStatus::Playing, "cached"))
+                } else {
+                    Err(MediaProviderError::new("refresh failed"))
+                }
+            }
+        })
+        .await
+        .expect("initial snapshot should populate the cache");
+    assert_eq!(snapshots.len(), 1);
+
+    tokio::task::yield_now().await;
+    let error = scanner
+        .poll([("only".to_owned(), ())], |()| async {
+            Err(MediaProviderError::new("refresh failed"))
+        })
+        .await
+        .expect_err("the latest aggregate failure must outrank a fresh cache entry");
+
+    assert_eq!(error.to_string(), "refresh failed");
+    assert!(attempts.load(Ordering::SeqCst) >= 2);
+}
+
 #[tokio::test(start_paused = true)]
 async fn stale_completed_incarnation_cannot_replace_successor_snapshot() {
     let release_old = Arc::new(tokio::sync::Notify::new());
