@@ -31,9 +31,8 @@ use super::interactive_preview::{
 use super::messages::{
     AudioLevel, BackpressureNotice, CanvasFrame, ConnectionState, ControlSurfaceEventHint,
     DeviceEventHint, EffectErrorHint, ExtensionEventHint, InputSourceStatusEventHint,
-    PerformanceMetrics, PreviewFrameChannel, SceneEventHint, ScreenZonesFrame,
-    decode_interactive_preview_frame, decode_preview_frame, decode_screen_zones_frame,
-    handle_json_message, interactive_preview_supported,
+    PerformanceMetrics, PreviewBinaryDecoder, PreviewBinaryMessage, PreviewFrameChannel,
+    SceneEventHint, ScreenZonesFrame, handle_json_message, interactive_preview_supported,
 };
 use super::preview::{
     DEFAULT_PREVIEW_FPS_CAP, PreviewSubscriptionRequest, clear_preview_subscription,
@@ -313,79 +312,83 @@ impl WsManager {
             };
 
             // onmessage — handle both JSON and binary frames
+            let mut preview_decoder = PreviewBinaryDecoder::default();
             let on_message = move |event: MessageEvent| {
                 // Binary frame (ArrayBuffer)
                 if let Some(buffer) = message_array_buffer(&event) {
-                    if let Some((preview_id, frame)) = decode_interactive_preview_frame(&buffer) {
-                        if interactive_preview_lifecycles.with_untracked(|lifecycles| {
-                            matches!(
-                                lifecycles.get(&preview_id),
-                                Some(InteractivePreviewLifecycle::Opened { .. })
-                            )
-                        }) {
-                            set_interactive_preview_frames.update(|frames| {
-                                frames.insert(preview_id, frame);
-                            });
-                        }
-                        return;
-                    }
-                    if let Some(zones) = decode_screen_zones_frame(&buffer) {
-                        set_screen_zones_frame.set(Some(zones));
-                        return;
-                    }
-                    if let Some((channel, frame)) = decode_preview_frame(buffer) {
-                        match channel {
-                            PreviewFrameChannel::Canvas => {
-                                let current_frame_number = frame.frame_number;
-                                let current_timestamp_ms = frame.timestamp_ms;
-                                set_canvas_frame.set(Some(frame));
+                    if let Some(message) = preview_decoder.decode(buffer) {
+                        match message {
+                            PreviewBinaryMessage::Interactive(preview_id, frame) => {
+                                if interactive_preview_lifecycles.with_untracked(|lifecycles| {
+                                    matches!(
+                                        lifecycles.get(&preview_id),
+                                        Some(InteractivePreviewLifecycle::Opened { .. })
+                                    )
+                                }) {
+                                    set_interactive_preview_frames.update(|frames| {
+                                        frames.insert(preview_id, frame);
+                                    });
+                                }
+                            }
+                            PreviewBinaryMessage::ScreenZones(zones) => {
+                                set_screen_zones_frame.set(Some(zones));
+                            }
+                            PreviewBinaryMessage::Frame(channel, frame) => match channel {
+                                PreviewFrameChannel::Canvas => {
+                                    let current_frame_number = frame.frame_number;
+                                    let current_timestamp_ms = frame.timestamp_ms;
+                                    set_canvas_frame.set(Some(frame));
 
-                                if let (Some(previous_frame_number), Some(previous_timestamp_ms)) = (
-                                    last_frame_number.get_value(),
-                                    last_frame_timestamp.get_value(),
-                                ) {
-                                    let frame_delta =
-                                        current_frame_number.saturating_sub(previous_frame_number);
-                                    let elapsed_ms =
-                                        current_timestamp_ms.saturating_sub(previous_timestamp_ms);
+                                    if let (
+                                        Some(previous_frame_number),
+                                        Some(previous_timestamp_ms),
+                                    ) = (
+                                        last_frame_number.get_value(),
+                                        last_frame_timestamp.get_value(),
+                                    ) {
+                                        let frame_delta = current_frame_number
+                                            .saturating_sub(previous_frame_number);
+                                        let elapsed_ms = current_timestamp_ms
+                                            .saturating_sub(previous_timestamp_ms);
 
-                                    if frame_delta > 0 && elapsed_ms > 0 {
-                                        let target_fps = preview_target_fps.get_untracked();
-                                        let mut instant_fps =
-                                            f64::from(frame_delta) * 1000.0 / f64::from(elapsed_ms);
-                                        if target_fps > 0 {
-                                            instant_fps =
-                                                instant_fps.clamp(0.0, f64::from(target_fps));
-                                        } else {
-                                            instant_fps = instant_fps.clamp(0.0, 120.0);
-                                        }
+                                        if frame_delta > 0 && elapsed_ms > 0 {
+                                            let target_fps = preview_target_fps.get_untracked();
+                                            let mut instant_fps = f64::from(frame_delta) * 1000.0
+                                                / f64::from(elapsed_ms);
+                                            if target_fps > 0 {
+                                                instant_fps =
+                                                    instant_fps.clamp(0.0, f64::from(target_fps));
+                                            } else {
+                                                instant_fps = instant_fps.clamp(0.0, 120.0);
+                                            }
 
-                                        let previous = smoothed_fps.get_value();
-                                        let next = if previous <= 0.0 {
-                                            instant_fps
-                                        } else {
-                                            previous * 0.82 + instant_fps * 0.18
-                                        };
-                                        smoothed_fps.set_value(next);
-                                        let quantized_fps = quantize_preview_fps(next);
-                                        if preview_fps.get_untracked() != quantized_fps {
-                                            set_preview_fps.set(quantized_fps);
+                                            let previous = smoothed_fps.get_value();
+                                            let next = if previous <= 0.0 {
+                                                instant_fps
+                                            } else {
+                                                previous * 0.82 + instant_fps * 0.18
+                                            };
+                                            smoothed_fps.set_value(next);
+                                            let quantized_fps = quantize_preview_fps(next);
+                                            if preview_fps.get_untracked() != quantized_fps {
+                                                set_preview_fps.set(quantized_fps);
+                                            }
                                         }
                                     }
-                                }
 
-                                last_frame_number.set_value(Some(current_frame_number));
-                                last_frame_timestamp.set_value(Some(current_timestamp_ms));
-                            }
-                            PreviewFrameChannel::ScreenCanvas => {
-                                set_screen_canvas_frame.set(Some(frame));
-                            }
-                            PreviewFrameChannel::WebViewportCanvas => {
-                                set_web_viewport_canvas_frame.set(Some(frame));
-                            }
-                            PreviewFrameChannel::DisplayPreview => {
-                                set_display_preview_frame.set(Some(frame));
-                            }
+                                    last_frame_number.set_value(Some(current_frame_number));
+                                    last_frame_timestamp.set_value(Some(current_timestamp_ms));
+                                }
+                                PreviewFrameChannel::ScreenCanvas => {
+                                    set_screen_canvas_frame.set(Some(frame));
+                                }
+                                PreviewFrameChannel::WebViewportCanvas => {
+                                    set_web_viewport_canvas_frame.set(Some(frame));
+                                }
+                                PreviewFrameChannel::DisplayPreview => {
+                                    set_display_preview_frame.set(Some(frame));
+                                }
+                            },
                         }
                     }
                     return;

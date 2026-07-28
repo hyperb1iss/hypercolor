@@ -2,10 +2,15 @@
 
 use std::collections::HashMap;
 
+use bytes::Bytes;
 use hypercolor_leptos_ext::prelude::now_ms;
-use hypercolor_leptos_ext::ws::InteractivePreviewFrameView;
 pub(super) use hypercolor_leptos_ext::ws::PreviewFrameChannel;
 pub use hypercolor_leptos_ext::ws::ScreenZonesFrame;
+use hypercolor_leptos_ext::ws::{
+    InteractivePreviewFrameView, PREVIEW_CHUNK_FRAME_TAG, PreviewChunkReassembler,
+    PreviewPublicationMetadata, PreviewReassemblyLimits, PreviewStreamId,
+    ReassembledPreviewPublication,
+};
 pub use hypercolor_leptos_ext::ws::{
     PreviewFrameView as CanvasFrame, PreviewPixelFormat as CanvasPixelFormat,
 };
@@ -512,6 +517,102 @@ pub struct AudioLevel {
 }
 
 // ── Binary Frame Decoder ────────────────────────────────────────────────────
+
+const MAX_PREVIEW_PUBLICATION_BYTES: usize = 512 * 1024 * 1024;
+const MAX_PREVIEW_CONNECTION_BYTES: usize = 1024 * 1024 * 1024;
+const MAX_PREVIEW_REASSEMBLY_STREAMS: usize = 256;
+
+pub(super) enum PreviewBinaryMessage {
+    Frame(PreviewFrameChannel, CanvasFrame),
+    Interactive(String, CanvasFrame),
+    ScreenZones(ScreenZonesFrame),
+}
+
+pub(super) struct PreviewBinaryDecoder {
+    chunks: PreviewChunkReassembler,
+}
+
+impl Default for PreviewBinaryDecoder {
+    fn default() -> Self {
+        Self {
+            chunks: PreviewChunkReassembler::new(PreviewReassemblyLimits {
+                max_publication_bytes: MAX_PREVIEW_PUBLICATION_BYTES,
+                max_connection_bytes: MAX_PREVIEW_CONNECTION_BYTES,
+                max_streams: MAX_PREVIEW_REASSEMBLY_STREAMS,
+            }),
+        }
+    }
+}
+
+impl PreviewBinaryDecoder {
+    pub(super) fn decode(&mut self, buffer: js_sys::ArrayBuffer) -> Option<PreviewBinaryMessage> {
+        let bytes = js_sys::Uint8Array::new(&buffer);
+        if bytes.length() > 0 && bytes.get_index(0) == PREVIEW_CHUNK_FRAME_TAG {
+            let encoded = Bytes::from(bytes.to_vec());
+            return match self.chunks.push(&encoded) {
+                Ok(Some(publication)) => decode_reassembled_preview(&publication),
+                Ok(None) => None,
+                Err(error) => {
+                    log::warn!("rejected preview chunk publication: {error}");
+                    None
+                }
+            };
+        }
+
+        decode_direct_preview(buffer)
+    }
+}
+
+fn decode_direct_preview(buffer: js_sys::ArrayBuffer) -> Option<PreviewBinaryMessage> {
+    if let Some((preview_id, frame)) = decode_interactive_preview_frame(&buffer) {
+        return Some(PreviewBinaryMessage::Interactive(preview_id, frame));
+    }
+    if let Some(frame) = decode_screen_zones_frame(&buffer) {
+        return Some(PreviewBinaryMessage::ScreenZones(frame));
+    }
+    let (channel, frame) = decode_preview_frame(buffer)?;
+    Some(PreviewBinaryMessage::Frame(channel, frame))
+}
+
+fn decode_reassembled_preview(
+    publication: &ReassembledPreviewPublication,
+) -> Option<PreviewBinaryMessage> {
+    let bytes = js_sys::Uint8Array::from(publication.encoded.as_ref());
+    let buffer = bytes.buffer();
+    let decoded = decode_direct_preview(buffer)?;
+    preview_metadata_matches(&decoded, &publication.metadata).then_some(decoded)
+}
+
+fn preview_metadata_matches(
+    decoded: &PreviewBinaryMessage,
+    metadata: &PreviewPublicationMetadata,
+) -> bool {
+    match (decoded, &metadata.stream) {
+        (PreviewBinaryMessage::Frame(channel, frame), PreviewStreamId::Passive(expected)) => {
+            channel == expected && canvas_metadata_matches(frame, metadata)
+        }
+        (
+            PreviewBinaryMessage::Interactive(preview_id, frame),
+            PreviewStreamId::Interactive(expected),
+        ) => preview_id == expected && canvas_metadata_matches(frame, metadata),
+        (PreviewBinaryMessage::ScreenZones(frame), PreviewStreamId::ScreenZones) => {
+            frame.frame_number == metadata.frame_number
+                && frame.timestamp_ms == metadata.timestamp_ms
+                && frame.source_width == metadata.width
+                && frame.source_height == metadata.height
+                && metadata.format == CanvasPixelFormat::Rgb
+        }
+        _ => false,
+    }
+}
+
+fn canvas_metadata_matches(frame: &CanvasFrame, metadata: &PreviewPublicationMetadata) -> bool {
+    frame.frame_number == metadata.frame_number
+        && frame.timestamp_ms == metadata.timestamp_ms
+        && frame.width == metadata.width
+        && frame.height == metadata.height
+        && frame.format == metadata.format
+}
 
 pub(super) fn decode_preview_frame(
     buffer: js_sys::ArrayBuffer,
