@@ -18,9 +18,11 @@ use super::sampling::{
 use super::{
     CaptureCursor, CaptureCursorContent, CaptureDynamicRange, CaptureFrame, CaptureFrameError,
     CapturePixelFormat, CaptureRotation, CaptureTransferFunction, CpuCaptureStorage, PixelExtent,
-    RawCaptureSurface, ResolvedScreenColorPipeline, ResolvedScreenColorTransform,
-    ResolvedScreenSource, ScreenCapturePlan, ScreenColorTransformCapabilities, ScreenCursorPolicy,
-    ScreenPhysicalReductionDescriptor, ScreenPlanGeneration, ScreenReductionFilter,
+    PreparedScreenPublication, RawCaptureSurface, ResolvedScreenColorPipeline,
+    ResolvedScreenColorTransform, ResolvedScreenSource, ScreenCapturePlan,
+    ScreenColorTransformCapabilities, ScreenColorTuning, ScreenContentBarsPolicy,
+    ScreenCursorPolicy, ScreenLetterboxFill, ScreenPhysicalReductionDescriptor,
+    ScreenPlanGeneration, ScreenPublicationKind, ScreenReductionFilter, ScreenSmoothingPolicy,
     ScreenSourceReflection, ScreenSubpixelRect,
 };
 
@@ -285,6 +287,44 @@ impl<'descriptor, 'output> CpuReductionBatchJob<'descriptor, 'output> {
     }
 }
 
+trait CpuReductionDestination {
+    fn physical_descriptor(&self) -> &ScreenPhysicalReductionDescriptor;
+
+    fn output_mut(&mut self, index: usize) -> Result<&mut [u8], CpuReductionError>;
+}
+
+impl CpuReductionDestination for CpuReductionBatchJob<'_, '_> {
+    fn physical_descriptor(&self) -> &ScreenPhysicalReductionDescriptor {
+        self.descriptor
+    }
+
+    fn output_mut(&mut self, _index: usize) -> Result<&mut [u8], CpuReductionError> {
+        Ok(self.output)
+    }
+}
+
+impl CpuReductionDestination for PreparedScreenPublication {
+    fn physical_descriptor(&self) -> &ScreenPhysicalReductionDescriptor {
+        self.descriptor().physical()
+    }
+
+    fn output_mut(&mut self, index: usize) -> Result<&mut [u8], CpuReductionError> {
+        if !matches!(self.descriptor().kind(), ScreenPublicationKind::Surface) {
+            return Err(CpuReductionError::BatchPublicationNotSurface { index });
+        }
+        let profile = self.descriptor().processing_profile();
+        if profile.content_bars() != ScreenContentBarsPolicy::Disabled
+            || profile.letterbox_fill() != ScreenLetterboxFill::default()
+            || profile.smoothing() != ScreenSmoothingPolicy::Disabled
+            || profile.tuning() != ScreenColorTuning::default()
+        {
+            return Err(CpuReductionError::BatchPublicationRequiresMaterialization { index });
+        }
+        self.surface_pixels_mut()
+            .map_err(|_| CpuReductionError::BatchPublicationReservationUnavailable { index })
+    }
+}
+
 /// Completion receipt for one allocation-free CPU batch execution.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CpuReductionBatchReport {
@@ -483,26 +523,67 @@ impl CpuReductionExecutor {
         frame: &CaptureFrame<RawCaptureSurface>,
         jobs: &mut [CpuReductionBatchJob<'_, '_>],
     ) -> Result<CpuReductionBatchReport, CpuReductionError> {
-        if jobs.len() != batch.reductions.len() {
+        self.execute_destinations(batch, frame, jobs)
+    }
+
+    /// Execute every physical key directly into one exact writable surface slot.
+    ///
+    /// Reservations must follow the prepared batch's canonical physical-key
+    /// order. A successful report leaves every reservation ready for
+    /// `ScreenPublicationHub::finalize_writable_publication`. Every validation
+    /// error returns before reducer writes begin. A reduction error leaves every
+    /// slot unfinalized, so dropping the reservations preserves each branch's
+    /// last-good publication.
+    ///
+    /// # Errors
+    ///
+    /// Rejects non-surface or branch-materialized reservations, reordered or
+    /// substituted descriptors, stale frames, incompatible cursor storage, and
+    /// count or length mismatches before writing any slot.
+    pub fn execute_surface_publications(
+        &self,
+        batch: &PreparedCpuReductionBatch,
+        frame: &CaptureFrame<RawCaptureSurface>,
+        publications: &mut [PreparedScreenPublication],
+    ) -> Result<CpuReductionBatchReport, CpuReductionError> {
+        self.execute_destinations(batch, frame, publications)
+    }
+
+    fn execute_destinations<D>(
+        &self,
+        batch: &PreparedCpuReductionBatch,
+        frame: &CaptureFrame<RawCaptureSurface>,
+        destinations: &mut [D],
+    ) -> Result<CpuReductionBatchReport, CpuReductionError>
+    where
+        D: CpuReductionDestination + Send,
+    {
+        if destinations.len() != batch.reductions.len() {
             return Err(CpuReductionError::BatchOutputCountMismatch {
                 expected: batch.reductions.len(),
-                actual: jobs.len(),
+                actual: destinations.len(),
             });
         }
         let view =
             CpuSamplingView::try_new_prepared(frame, &batch.source, batch.sampling_transform)?;
         let mut output_bytes = 0_u64;
         let mut scheduled_tiles = 0_u64;
-        for (index, (reduction, job)) in batch.reductions.iter().zip(jobs.iter()).enumerate() {
-            if job.descriptor != &reduction.descriptor {
+        for (index, (reduction, destination)) in batch
+            .reductions
+            .iter()
+            .zip(destinations.iter_mut())
+            .enumerate()
+        {
+            if destination.physical_descriptor() != &reduction.descriptor {
                 return Err(CpuReductionError::BatchDescriptorMismatch { index });
             }
             let expected = reduction.output.byte_len_usize();
-            if job.output.len() != expected {
+            let actual = destination.output_mut(index)?.len();
+            if actual != expected {
                 return Err(CpuReductionError::BatchOutputLengthMismatch {
                     index,
                     expected,
-                    actual: job.output.len(),
+                    actual,
                 });
             }
             validate_cursor(reduction.descriptor.cursor(), &frame.metadata().cursor)?;
@@ -525,21 +606,23 @@ impl CpuReductionExecutor {
                 })?;
         }
         self.inner.pool.install(|| {
-            jobs.par_iter_mut()
+            destinations
+                .par_iter_mut()
                 .zip(batch.reductions.par_iter())
-                .try_for_each(|(job, reduction)| {
+                .enumerate()
+                .try_for_each(|(index, (destination, reduction))| {
                     reduce_prepared_in_pool(
                         &view,
                         reduction,
                         self.inner.worker_count,
                         self.inner.tile_rows,
-                        job.output,
+                        destination.output_mut(index)?,
                     )
                 })
         })?;
         Ok(CpuReductionBatchReport {
             source_sequence: frame.metadata().sequence,
-            completed_jobs: jobs.len(),
+            completed_jobs: destinations.len(),
             scheduled_tiles,
             output_bytes,
         })
@@ -1014,6 +1097,15 @@ pub enum CpuReductionError {
     /// A caller reordered or substituted an output binding after preparation.
     #[error("CPU batch output {index} is bound to another physical descriptor")]
     BatchDescriptorMismatch { index: usize },
+    /// A logical zone slot cannot receive a physical surface reduction.
+    #[error("CPU batch publication {index} is not a writable surface")]
+    BatchPublicationNotSurface { index: usize },
+    /// Branch-local policy must materialize from the shared physical surface.
+    #[error("CPU batch publication {index} requires logical branch materialization")]
+    BatchPublicationRequiresMaterialization { index: usize },
+    /// A prepared surface slot no longer owns its admitted storage.
+    #[error("CPU batch publication {index} lost its writable reservation")]
+    BatchPublicationReservationUnavailable { index: usize },
 }
 
 impl From<CpuSamplingError> for CpuReductionError {
