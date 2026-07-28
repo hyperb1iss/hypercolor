@@ -123,46 +123,33 @@ fn capture_config_tolerates_legacy_monitor_key() {
 }
 
 #[test]
-fn capture_config_accepts_backend_boundary_rates() {
+fn capture_config_accepts_any_nonzero_backend_rate() {
     let mut config = CaptureConfig::default();
-    for (platform, max_fps) in [
-        (CapturePlatform::WindowsDesktopDuplication, 240),
-        (CapturePlatform::LinuxPipeWire, 1000),
+    for platform in [
+        CapturePlatform::WindowsDesktopDuplication,
+        CapturePlatform::LinuxPipeWire,
     ] {
         config.source = "auto".to_owned();
         config.capture_fps = 1;
         config
             .validate_for_platform(platform)
-            .expect("backend minimum cadence should validate");
-        config.capture_fps = max_fps;
+            .expect("minimum nonzero cadence should validate");
+        config.capture_fps = u32::MAX;
         config
             .validate_for_platform(platform)
-            .expect("backend maximum cadence should validate");
+            .expect("configuration should not impose an arbitrary cadence ceiling");
     }
 }
 
 #[test]
-fn capture_config_rejects_values_outside_backend_limits() {
-    let mut config = CaptureConfig {
+fn capture_config_rejects_zero_cadence() {
+    let config = CaptureConfig {
         capture_fps: 0,
         ..CaptureConfig::default()
     };
     assert!(matches!(
         config.validate_for_platform(CapturePlatform::WindowsDesktopDuplication),
-        Err(CaptureConfigValidationError::CaptureFps {
-            min: 1,
-            max: 240,
-            value: 0
-        })
-    ));
-    config.capture_fps = 241;
-    assert!(matches!(
-        config.validate_for_platform(CapturePlatform::WindowsDesktopDuplication),
-        Err(CaptureConfigValidationError::CaptureFps {
-            min: 1,
-            max: 240,
-            value: 241
-        })
+        Err(CaptureConfigValidationError::CaptureFps { value: 0 })
     ));
 }
 

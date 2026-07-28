@@ -749,16 +749,6 @@ impl CapturePlatform {
             Self::Unsupported
         }
     }
-
-    /// Inclusive analysis cadence supported by this backend.
-    #[must_use]
-    pub const fn capture_fps_range(self) -> Option<(u32, u32)> {
-        match self {
-            Self::WindowsDesktopDuplication => Some((1, 240)),
-            Self::LinuxPipeWire => Some((1, 1000)),
-            Self::Unsupported => None,
-        }
-    }
 }
 
 /// Invalid screen-capture configuration rejected before persistence or startup.
@@ -767,13 +757,9 @@ pub enum CaptureConfigValidationError {
     /// The target has no native capture backend.
     #[error("screen capture is not supported on this platform")]
     UnsupportedPlatform,
-    /// Capture cadence is outside the native backend's supported range.
-    #[error("capture.capture_fps must be in {min}..={max}, got {value}")]
+    /// Capture cadence must be non-zero.
+    #[error("capture.capture_fps must be non-zero, got {value}")]
     CaptureFps {
-        /// Inclusive lower bound.
-        min: u32,
-        /// Inclusive upper bound.
-        max: u32,
         /// Rejected value.
         value: u32,
     },
@@ -826,11 +812,8 @@ impl CaptureConfig {
         &self,
         platform: CapturePlatform,
     ) -> Result<(), CaptureConfigValidationError> {
-        let (min_fps, max_fps) = platform.capture_fps_range().unwrap_or((1, 1000));
-        if !(min_fps..=max_fps).contains(&self.capture_fps) {
+        if self.capture_fps == 0 {
             return Err(CaptureConfigValidationError::CaptureFps {
-                min: min_fps,
-                max: max_fps,
                 value: self.capture_fps,
             });
         }
