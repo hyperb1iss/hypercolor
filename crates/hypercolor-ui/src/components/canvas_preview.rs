@@ -22,8 +22,8 @@ use crate::api;
 use crate::app::{EffectsContext, WsContext};
 use crate::icons::LuMousePointerClick;
 use crate::preview_telemetry::{PreviewPresenterTelemetry, PreviewTelemetryContext};
-use crate::ws::CanvasFrame;
 use crate::ws::input::{InputEdgeButton, InputEdgeState, InputInjectEdge};
+use crate::ws::{CanvasFrame, InteractivePreviewRequest};
 
 use super::preview_runtime::{PreviewRenderOutcome, PreviewRuntime, PreviewRuntimeInitError};
 
@@ -267,6 +267,7 @@ pub fn CanvasPreview(
     /// (sidebar mini-preview, pickers, layout ghosts).
     #[prop(default = false)]
     allow_interactive: bool,
+    #[prop(default = "main".to_owned())] interactive_preview_id: String,
 ) -> impl IntoView {
     let canvas_ref = NodeRef::<Canvas>::new();
     let mounted_canvas = Rc::new(RefCell::new(None::<web_sys::HtmlCanvasElement>));
@@ -283,6 +284,41 @@ pub fn CanvasPreview(
     let last_published_telemetry = Rc::new(RefCell::new(PreviewPresenterTelemetry::default()));
     let last_telemetry_published_at = Rc::new(RefCell::new(None::<f64>));
     let ws = use_context::<WsContext>();
+    let effects_ctx = use_context::<EffectsContext>();
+    let interactive_preview_id = StoredValue::new(interactive_preview_id);
+    let interactive_on = RwSignal::new(false);
+    let capture_focused = RwSignal::new(false);
+    let interactive_effect_eligible = Memo::new(move |_| {
+        allow_interactive
+            && effects_ctx.is_some_and(|fx| {
+                fx.active_effect_id.get().is_some_and(|id| {
+                    fx.effects_index.with(|effects| {
+                        effects
+                            .iter()
+                            .find(|entry| entry.effect.id == id)
+                            .is_some_and(|entry| effect_wants_interaction(&entry.effect))
+                    })
+                })
+            })
+    });
+    let interactive_available = Memo::new(move |_| {
+        interactive_effect_eligible.get()
+            && ws.is_some_and(|ws| ws.interactive_preview_available.get())
+    });
+    let interactive_active =
+        Signal::derive(move || interactive_available.get() && interactive_on.get());
+    let authoritative_frame = frame;
+    let frame = Signal::derive(move || {
+        if interactive_active.get()
+            && let Some(interactive) = ws.and_then(|ws| {
+                ws.interactive_preview_frames
+                    .with(|frames| frames.get(&interactive_preview_id.get_value()).cloned())
+            })
+        {
+            return Some(interactive);
+        }
+        authoritative_frame.get()
+    });
     let preview_telemetry = use_context::<PreviewTelemetryContext>()
         .filter(|_| report_presenter_telemetry)
         .map(|context| context.set_presenter);
@@ -608,26 +644,44 @@ pub fn CanvasPreview(
     // synthesizes releases on socket close. Local held state is released
     // explicitly on blur/visibility-loss/toggle-off/unmount because none
     // of those close the socket.
-    let effects_ctx = use_context::<EffectsContext>();
     let send_input_inject = ws.map(|ws| ws.send_input_inject);
-    let interactive_available = Memo::new(move |_| {
-        allow_interactive
-            && send_input_inject.is_some()
-            && effects_ctx.is_some_and(|fx| {
-                fx.active_effect_id.get().is_some_and(|id| {
-                    fx.effects_index.with(|effects| {
-                        effects
-                            .iter()
-                            .find(|entry| entry.effect.id == id)
-                            .is_some_and(|entry| effect_wants_interaction(&entry.effect))
-                    })
-                })
+    let open_interactive_preview = ws.map(|ws| ws.open_interactive_preview);
+    let close_interactive_preview = ws.map(|ws| ws.close_interactive_preview);
+    let requested_interactive_preview = StoredValue::new(None::<(u64, u32, u32, u32)>);
+
+    Effect::new(move |_| {
+        let available = interactive_available.get();
+        let active = interactive_active.get();
+        let generation = ws.map_or(0, |ws| ws.connection_generation.get());
+        let fps = fps_target.get().clamp(1, 60);
+        let (width, height) = authoritative_frame
+            .with(|current| {
+                current
+                    .as_ref()
+                    .map(|frame| (frame.width.max(1), frame.height.max(1)))
             })
+            .unwrap_or((640, 480));
+        let next = (available && active).then_some((generation, fps, width, height));
+        if requested_interactive_preview.get_value() == next {
+            return;
+        }
+
+        if let Some((_, fps, width, height)) = next
+            && let Some(open) = open_interactive_preview
+        {
+            open.run(InteractivePreviewRequest {
+                preview_id: interactive_preview_id.get_value(),
+                fps,
+                width,
+                height,
+            });
+        } else if requested_interactive_preview.get_value().is_some()
+            && let Some(close) = close_interactive_preview
+        {
+            close.run(interactive_preview_id.get_value());
+        }
+        requested_interactive_preview.set_value(next);
     });
-    let interactive_on = RwSignal::new(false);
-    let capture_focused = RwSignal::new(false);
-    let interactive_active =
-        Signal::derive(move || interactive_available.get() && interactive_on.get());
 
     let pressed_keys = Rc::new(RefCell::new(HashSet::<String>::new()));
     let pressed_buttons = Rc::new(RefCell::new(HashSet::<InputEdgeButton>::new()));
@@ -651,7 +705,7 @@ pub fn CanvasPreview(
             if !edges.is_empty()
                 && let Some(send) = send_input_inject
             {
-                send.run(edges);
+                send.run((interactive_preview_id.get_value(), edges));
             }
         })
     };
@@ -691,7 +745,7 @@ pub fn CanvasPreview(
             if !edges.is_empty()
                 && let Some(send) = send_input_inject
             {
-                send.run(edges);
+                send.run((interactive_preview_id.get_value(), edges));
             }
         }
     });
@@ -699,7 +753,7 @@ pub fn CanvasPreview(
     // Switching to a non-interactive effect (or losing the host gate)
     // resets the toggle so it never sticks on across effect swaps.
     Effect::new(move |_| {
-        if !interactive_available.get() && interactive_on.get_untracked() {
+        if !interactive_effect_eligible.get() && interactive_on.get_untracked() {
             interactive_on.set(false);
         }
     });
@@ -736,6 +790,11 @@ pub fn CanvasPreview(
     on_cleanup(move || {
         interactive_release.with_value(|release| release());
         interactive_scheduler.with_value(Scheduler::pause);
+        if requested_interactive_preview.get_value().is_some()
+            && let Some(close) = close_interactive_preview
+        {
+            close.run(interactive_preview_id.get_value());
+        }
     });
 
     let canvas_style = format!("max-width: {max_width}; image-rendering: {image_rendering};");

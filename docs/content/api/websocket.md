@@ -141,7 +141,7 @@ subscribed.
     "frames", "spectrum", "events", "frame_events", "canvas",
     "screen_canvas", "screen_zones", "web_viewport_canvas", "zone_preview",
     "metrics", "device_metrics", "sensors", "display_preview",
-    "commands", "canvas_format_jpeg"
+    "commands", "canvas_format_jpeg", "interactive_previews"
   ],
   "subscriptions": ["events"]
 }
@@ -149,7 +149,8 @@ subscribed.
 
 `version` is the protocol version (`"1.0"`), distinct from the
 `server.version` daemon build string. `capabilities` lists all 13 channel names
-plus two feature flags (`commands`, `canvas_format_jpeg`). `subscriptions` shows
+plus three feature flags (`commands`, `canvas_format_jpeg`,
+`interactive_previews`). `subscriptions` shows
 what is already live — only `events` by default.
 
 The `effect`, `scene`, `profile`, and `layout` fields are nullable: each is
@@ -188,9 +189,9 @@ and the subscription succeeds.
 
 ## Client messages
 
-Clients send JSON messages tagged with `type`. Five message types are accepted:
-`subscribe`, `unsubscribe`, `command`, `zone_layout_preview`, and
-`zone_layout_preview_clear`.
+Clients send JSON messages tagged with `type`. Subscription, command, layout
+preview, and connection-scoped interactive preview messages are accepted. The
+canonical inventory lives in `protocol/websocket-v1.json`.
 
 ### subscribe
 
@@ -318,11 +319,57 @@ control-tier.
 }
 ```
 
+### Interactive previews
+
+Check for the `interactive_previews` capability before using this flow. Open an
+addressed preview before sending input:
+
+```json
+{
+  "type": "interactive_preview_open",
+  "preview_id": "main",
+  "target": "active_scene",
+  "fps": 30,
+  "width": 640,
+  "height": 480,
+  "format": "jpeg"
+}
+```
+
+The daemon replies with `interactive_preview_opened`, then streams binary
+`0x0A` frames carrying the same `preview_id`. Reopening the same id updates its
+configuration in place. Pointer and key batches must name that active preview:
+
+```json
+{
+  "type": "input_inject",
+  "preview_id": "main",
+  "events": [
+    { "kind": "move", "nx": 0.5, "ny": 0.25 },
+    { "kind": "key", "key": "a", "state": "pressed" }
+  ]
+}
+```
+
+Close it with `interactive_preview_close`. The daemon also accepts
+`interactive_preview_claim_authoritative` and
+`interactive_preview_release_authoritative` for explicitly routing that
+browser source to authoritative device output. All five messages require a
+control-tier connection. Closing the socket releases previews, injected held
+state, and authoritative claims.
+
+Source-less `input_inject` messages are no longer accepted. Clients migrating
+from the earlier experimental shape must add `preview_id` and own the matching
+open and close lifecycle.
+
 ## Server messages
 
 Beyond the `hello`, `subscribed`, `unsubscribed`, and `response` messages
-already shown, the daemon emits the following JSON messages on subscribed
-channels.
+already shown, interactive preview commands receive
+`interactive_preview_opened`, `interactive_preview_closed`, `input_injected`,
+`interactive_preview_authoritative_claimed`, or
+`interactive_preview_authoritative_released`. The daemon also emits the
+following JSON messages on subscribed channels.
 
 ### event
 
@@ -499,6 +546,7 @@ second schema-version byte. All integers are little-endian.
 | `0x07` | `display_preview` | 14 bytes |
 | `0x08` | `zone_preview` | 46 bytes |
 | `0x09` | `screen_zones` | 19 bytes |
+| `0x0A` | addressed interactive preview | 15 bytes + preview id |
 | `0x80` | RPC request | 2-byte prefix |
 | `0x81` | RPC response | 2-byte prefix |
 
@@ -605,6 +653,29 @@ Byte(s)  Field
 19..     RGB payload (grid_cols × grid_rows × 3 bytes, row-major)
 ```
 
+### Addressed interactive preview (0x0A)
+
+This frame is pushed by an open interactive preview rather than a channel
+subscription. The fixed prefix is 15 bytes, followed by the UTF-8 preview id
+and image payload.
+
+```
+Byte(s)  Field
+0        tag = 0x0A
+1        preview_id length (u8)
+2-5      frame_number (u32 LE)
+6-9      timestamp_ms (u32 LE)
+10-11    width (u16 LE)
+12-13    height (u16 LE)
+14       format: 0 = RGB, 1 = RGBA, 2 = JPEG
+15..N    preview_id UTF-8 bytes
+N..      payload bytes
+```
+
+Route frames by `preview_id`, not arrival order. A connection may own more
+than one preview, and closing then reopening an id creates a new publication
+lifetime.
+
 ### RPC frames (0x80 / 0x81)
 
 The CinderRPC request/response frames are the one binary type that uses the
@@ -629,7 +700,7 @@ ws.onmessage = (event) => {
     const view = new DataView(event.data);
     const tag = view.getUint8(0);
     // 0x01 frames, 0x02 spectrum, 0x03/0x05/0x06/0x07 previews,
-    // 0x08 zone_preview, 0x09 screen_zones
+    // 0x08 zone_preview, 0x09 screen_zones, 0x0A interactive preview
     if (tag === 0x01) parseFramePayload(view);
     return;
   }

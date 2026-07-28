@@ -18,6 +18,7 @@ from hypercolor.websocket import (
     FrameData,
     HelloMessage,
     HypercolorEventStream,
+    InteractivePreviewData,
     ScreenZonesData,
     SpectrumData,
     ZonePreviewData,
@@ -133,6 +134,33 @@ def test_parse_display_preview_jpeg() -> None:
     assert message.format == "jpeg"
     assert message.width == 64
     assert message.pixels == jpeg
+
+
+def test_parse_addressed_interactive_preview() -> None:
+    jpeg = b"\xff\xd8\xff\xe0preview"
+    preview_id = b"main"
+    payload = bytearray((0x0A, len(preview_id)))
+    payload.extend(struct.pack("<II", 9, 1002))
+    payload.extend(struct.pack("<HH", 640, 480))
+    payload.extend(b"\x02")
+    payload.extend(preview_id)
+    payload.extend(jpeg)
+
+    message = HypercolorEventStream._decode_binary(bytes(payload))
+
+    assert isinstance(message, InteractivePreviewData)
+    assert message.preview_id == "main"
+    assert message.frame_number == 9
+    assert message.width == 640
+    assert message.height == 480
+    assert message.format == "jpeg"
+    assert message.pixels == jpeg
+
+
+@pytest.mark.parametrize("payload", [b"\x0a", b"\x0a\x04" + b"\x00" * 13])
+def test_interactive_preview_rejects_truncated_frames(payload: bytes) -> None:
+    with pytest.raises(ValueError, match=r"shorter|truncated"):
+        HypercolorEventStream._decode_binary(payload)
 
 
 def test_unknown_json_message_falls_back_to_event() -> None:

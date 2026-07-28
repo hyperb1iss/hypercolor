@@ -3,7 +3,11 @@ use hypercolor_ui::components::canvas_preview::{
     canonical_injection_key, effect_wants_interaction, normalized_canvas_position,
     wheel_delta_hi_res,
 };
-use hypercolor_ui::ws::{InputEdgeButton, InputEdgeState, InputInjectEdge};
+use hypercolor_ui::ws::interactive_preview::{close_message, input_inject_message, open_message};
+use hypercolor_ui::ws::messages::interactive_preview_supported;
+use hypercolor_ui::ws::{
+    InputEdgeButton, InputEdgeState, InputInjectEdge, InteractivePreviewRequest,
+};
 
 fn summary(input_reactive: bool, category: &str, tags: &[&str]) -> EffectSummary {
     EffectSummary {
@@ -40,11 +44,12 @@ fn edges_serialize_to_daemon_wire_shape() {
         InputInjectEdge::Move { nx: 0.25, ny: 1.0 },
         InputInjectEdge::Wheel { delta_hi_res: -120 },
     ];
-    let message = serde_json::json!({ "type": "input_inject", "events": edges });
+    let message = input_inject_message("main", &edges);
     assert_eq!(
         message,
         serde_json::json!({
             "type": "input_inject",
+            "preview_id": "main",
             "events": [
                 { "kind": "key", "key": "a", "state": "pressed" },
                 { "kind": "button", "button": "left", "state": "released" },
@@ -53,6 +58,51 @@ fn edges_serialize_to_daemon_wire_shape() {
             ],
         })
     );
+}
+
+#[test]
+fn interactive_preview_control_messages_are_addressed() {
+    let request = InteractivePreviewRequest {
+        preview_id: "main".to_owned(),
+        fps: 30,
+        width: 640,
+        height: 480,
+    };
+    assert_eq!(
+        open_message(&request),
+        serde_json::json!({
+            "type": "interactive_preview_open",
+            "preview_id": "main",
+            "target": "active_scene",
+            "fps": 30,
+            "width": 640,
+            "height": 480,
+            "format": "jpeg",
+        })
+    );
+    assert_eq!(
+        close_message("main"),
+        serde_json::json!({
+            "type": "interactive_preview_close",
+            "preview_id": "main",
+        })
+    );
+}
+
+#[test]
+fn interactive_preview_requires_explicit_server_capability() {
+    assert!(interactive_preview_supported(&serde_json::json!({
+        "type": "hello",
+        "capabilities": ["events", "interactive_previews"],
+    })));
+    assert!(!interactive_preview_supported(&serde_json::json!({
+        "type": "hello",
+        "capabilities": ["events"],
+    })));
+    assert!(!interactive_preview_supported(&serde_json::json!({
+        "type": "event",
+        "capabilities": ["interactive_previews"],
+    })));
 }
 
 #[test]

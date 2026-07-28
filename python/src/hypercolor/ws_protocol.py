@@ -42,6 +42,7 @@ WS_CAPABILITIES: Final = (
     "input_events",
     "commands",
     "canvas_format_jpeg",
+    "interactive_previews",
 )
 
 BINARY_MESSAGE_TAGS: Final = MappingProxyType(
@@ -54,6 +55,7 @@ BINARY_MESSAGE_TAGS: Final = MappingProxyType(
         "web_viewport_canvas": 0x06,
         "zone_preview": 0x08,
         "display_preview": 0x07,
+        "interactive_preview": 0x0A,
     }
 )
 PREVIEW_CHANNEL_TAGS: Final = MappingProxyType(

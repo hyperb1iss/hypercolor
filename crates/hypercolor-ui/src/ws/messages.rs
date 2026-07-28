@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 use hypercolor_leptos_ext::prelude::now_ms;
+use hypercolor_leptos_ext::ws::InteractivePreviewFrameView;
 pub(super) use hypercolor_leptos_ext::ws::PreviewFrameChannel;
 pub use hypercolor_leptos_ext::ws::ScreenZonesFrame;
 pub use hypercolor_leptos_ext::ws::{
@@ -519,8 +520,39 @@ pub(super) fn decode_preview_frame(
     Some((frame.channel, frame))
 }
 
+pub(super) fn decode_interactive_preview_frame(
+    buffer: &js_sys::ArrayBuffer,
+) -> Option<(String, CanvasFrame)> {
+    let frame = InteractivePreviewFrameView::decode_array_buffer(buffer).ok()?;
+    Some((
+        frame.preview_id,
+        CanvasFrame {
+            channel: PreviewFrameChannel::Canvas,
+            frame_number: frame.frame_number,
+            timestamp_ms: frame.timestamp_ms,
+            width: frame.width,
+            height: frame.height,
+            format: frame.format,
+            payload: frame.payload,
+        },
+    ))
+}
+
 pub(super) fn decode_screen_zones_frame(buffer: &js_sys::ArrayBuffer) -> Option<ScreenZonesFrame> {
     ScreenZonesFrame::decode_array_buffer(buffer).ok()
+}
+
+#[must_use]
+pub fn interactive_preview_supported(message: &serde_json::Value) -> bool {
+    message.get("type").and_then(serde_json::Value::as_str) == Some("hello")
+        && message
+            .get("capabilities")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|capabilities| {
+                capabilities
+                    .iter()
+                    .any(|capability| capability.as_str() == Some("interactive_previews"))
+            })
 }
 
 // ── JSON Message Handler ────────────────────────────────────────────────────

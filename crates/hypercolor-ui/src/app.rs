@@ -42,7 +42,7 @@ use crate::ws::messages::scene_event_affects_active_effect;
 use crate::ws::{
     AudioLevel, BackpressureNotice, CanvasFrame, ControlSurfaceEventHint, DeviceEventHint,
     EffectErrorHint, ExtensionEventHint, InputInjectEdge, InputSourceStatusEventHint,
-    PerformanceMetrics, SceneEventHint, ScreenZonesFrame, WsManager,
+    InteractivePreviewRequest, PerformanceMetrics, SceneEventHint, ScreenZonesFrame, WsManager,
 };
 
 mod effect_state;
@@ -63,6 +63,8 @@ pub struct WsContext {
     /// channel. Cleared when the selected display changes (handled by
     /// `set_display_preview_device`).
     pub display_preview_frame: ReadSignal<Option<CanvasFrame>>,
+    pub interactive_preview_frames: ReadSignal<HashMap<String, CanvasFrame>>,
+    pub interactive_preview_available: ReadSignal<bool>,
     /// Set to `Some(device_id)` to subscribe the live preview stream to
     /// that display, or `None` to unsubscribe. Setting the same id twice
     /// is safe — subsequent subscribes retarget without dropping the
@@ -110,10 +112,11 @@ pub struct WsContext {
     pub audio_level: ReadSignal<AudioLevel>,
     pub send_zone_layout_preview: Callback<(String, String, SpatialLayout)>,
     pub clear_zone_layout_preview: Callback<(String, String)>,
-    /// Send browser-preview input edges as one control-authorized
-    /// `input_inject` message (spec 71 W4). No-op while disconnected;
-    /// read-only sockets get a daemon-side `forbidden` error.
-    pub send_input_inject: Callback<Vec<InputInjectEdge>>,
+    pub open_interactive_preview: Callback<InteractivePreviewRequest>,
+    pub close_interactive_preview: Callback<String>,
+    /// Send addressed browser-preview input edges as one control-authorized
+    /// `input_inject` message. No-op while disconnected.
+    pub send_input_inject: Callback<(String, Vec<InputInjectEdge>)>,
 }
 
 #[derive(Clone, Copy)]
@@ -494,6 +497,8 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         screen_canvas_frame: ws.screen_canvas_frame,
         web_viewport_canvas_frame: ws.web_viewport_canvas_frame,
         display_preview_frame: ws.display_preview_frame,
+        interactive_preview_frames: ws.interactive_preview_frames,
+        interactive_preview_available: ws.interactive_preview_available,
         set_display_preview_device: ws.set_display_preview_device,
         preview_fps: ws.preview_fps,
         preview_target_fps: ws.preview_target_fps,
@@ -521,6 +526,8 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         audio_level: ws.audio_level,
         send_zone_layout_preview: ws.send_zone_layout_preview,
         clear_zone_layout_preview: ws.clear_zone_layout_preview,
+        open_interactive_preview: ws.open_interactive_preview,
+        close_interactive_preview: ws.close_interactive_preview,
         send_input_inject: ws.send_input_inject,
     };
     provide_context(ws_ctx);

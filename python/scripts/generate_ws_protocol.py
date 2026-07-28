@@ -78,7 +78,7 @@ def render(manifest: dict[str, Any]) -> str:
         "BINARY_MESSAGE_TAGS: Final = MappingProxyType(",
         "    {",
         *[
-            f"        {quote(str(message['name']))}: 0x{int(message['tag']):02x},"
+            f"        {quote(str(message['name']))}: 0x{int(message['tag']):02X},"
             for message in binary_messages
         ],
         "    }",
@@ -86,7 +86,7 @@ def render(manifest: dict[str, Any]) -> str:
         "PREVIEW_CHANNEL_TAGS: Final = MappingProxyType(",
         "    {",
         *[
-            f"        0x{int(message['tag']):02x}: {quote(str(message['channel']))},"
+            f"        0x{int(message['tag']):02X}: {quote(str(message['channel']))},"
             for message in preview_messages
         ],
         "    }",

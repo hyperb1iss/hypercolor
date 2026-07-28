@@ -8,8 +8,6 @@
 
 use serde::Serialize;
 
-use hypercolor_leptos_ext::ws::transport::send_websocket_json;
-
 /// One injected input edge, serialized exactly as the daemon's
 /// `input_inject` message expects.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -63,18 +61,4 @@ impl InputEdgeButton {
             _ => None,
         }
     }
-}
-
-/// Send one `input_inject` message carrying `events` in order. Empty
-/// batches are dropped client-side — the daemon treats them as no-ops
-/// anyway.
-pub(super) fn send_input_inject(ws: &web_sys::WebSocket, events: &[InputInjectEdge]) {
-    if events.is_empty() {
-        return;
-    }
-    let msg = serde_json::json!({
-        "type": "input_inject",
-        "events": events,
-    });
-    let _ = send_websocket_json(ws, &msg);
 }

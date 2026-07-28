@@ -107,6 +107,19 @@ class CanvasData:
 
 
 @dataclass(slots=True)
+class InteractivePreviewData:
+    """Connection-scoped interactive preview frame."""
+
+    preview_id: str
+    frame_number: int
+    timestamp_ms: int
+    width: int
+    height: int
+    format: str
+    pixels: bytes
+
+
+@dataclass(slots=True)
 class ZonePreviewData:
     """Per-zone canvas preview payload."""
 
@@ -150,13 +163,20 @@ type WsMessage = (
     | FrameData
     | SpectrumData
     | CanvasData
+    | InteractivePreviewData
     | ZonePreviewData
     | ScreenZonesData
     | BinaryMessage
 )
 
 type _BinaryWsMessage = (
-    FrameData | SpectrumData | CanvasData | ZonePreviewData | ScreenZonesData | BinaryMessage
+    FrameData
+    | SpectrumData
+    | CanvasData
+    | InteractivePreviewData
+    | ZonePreviewData
+    | ScreenZonesData
+    | BinaryMessage
 )
 
 
@@ -171,6 +191,7 @@ class HypercolorEventStream:
         self._frame_handlers: list[EventHandler] = []
         self._spectrum_handlers: list[EventHandler] = []
         self._canvas_handlers: list[EventHandler] = []
+        self._interactive_preview_handlers: list[EventHandler] = []
         self._metrics_handlers: list[EventHandler] = []
         self._pending_responses: dict[str, asyncio.Future[CommandResponse]] = {}
         self._send_lock = asyncio.Lock()
@@ -222,6 +243,65 @@ class HypercolorEventStream:
         """Unsubscribe from one or more channels."""
         await self._send_json({"type": "unsubscribe", "channels": list(channels)})
 
+    async def open_interactive_preview(
+        self,
+        preview_id: str,
+        *,
+        fps: int,
+        width: int,
+        height: int,
+        format: str = "jpeg",
+        target: str = "active_scene",
+    ) -> None:
+        """Open or reconfigure one connection-scoped interactive preview."""
+        await self._send_json(
+            {
+                "type": "interactive_preview_open",
+                "preview_id": preview_id,
+                "target": target,
+                "fps": fps,
+                "width": width,
+                "height": height,
+                "format": format,
+            }
+        )
+
+    async def close_interactive_preview(self, preview_id: str) -> None:
+        """Close one connection-scoped interactive preview."""
+        await self._send_json({"type": "interactive_preview_close", "preview_id": preview_id})
+
+    async def inject_preview_input(
+        self,
+        preview_id: str,
+        events: list[Mapping[str, Any]],
+    ) -> None:
+        """Inject an ordered input batch into an active preview."""
+        await self._send_json(
+            {
+                "type": "input_inject",
+                "preview_id": preview_id,
+                "events": [dict(event) for event in events],
+            }
+        )
+
+    async def claim_interactive_preview(self, preview_id: str) -> None:
+        """Claim an active preview as authoritative browser input."""
+        await self._send_json(
+            {
+                "type": "interactive_preview_claim_authoritative",
+                "preview_id": preview_id,
+            }
+        )
+
+    async def release_interactive_preview(self, preview_id: str) -> None:
+        """Release an active preview's authoritative browser-input claim."""
+        await self._send_json(
+            {
+                "type": "interactive_preview_release_authoritative",
+                "preview_id": preview_id,
+            }
+        )
+
     def on(self, event: str, handler: EventHandler) -> None:
         """Register a handler for a JSON event."""
         self._handlers[event].append(handler)
@@ -237,6 +317,10 @@ class HypercolorEventStream:
     def on_canvas(self, handler: EventHandler) -> None:
         """Register a handler for canvas preview messages."""
         self._canvas_handlers.append(handler)
+
+    def on_interactive_preview(self, handler: EventHandler) -> None:
+        """Register a handler for addressed interactive preview frames."""
+        self._interactive_preview_handlers.append(handler)
 
     def on_metrics(self, handler: EventHandler) -> None:
         """Register a handler for metrics messages."""
@@ -348,10 +432,16 @@ class HypercolorEventStream:
             return HypercolorEventStream._parse_spectrum(payload)
         if message_type in PREVIEW_CHANNEL_TAGS:
             return HypercolorEventStream._parse_canvas(payload)
+        return HypercolorEventStream._parse_special_binary(message_type, payload)
+
+    @staticmethod
+    def _parse_special_binary(message_type: int, payload: bytes) -> _BinaryWsMessage:
         if message_type == BINARY_MESSAGE_TAGS["zone_preview"]:
             return HypercolorEventStream._parse_zone_preview(payload)
         if message_type == BINARY_MESSAGE_TAGS["screen_zones"]:
             return HypercolorEventStream._parse_screen_zones(payload)
+        if message_type == BINARY_MESSAGE_TAGS["interactive_preview"]:
+            return HypercolorEventStream._parse_interactive_preview(payload)
         return BinaryMessage(tag=message_type, payload=payload)
 
     async def _dispatch_json(self, message: WsMessage) -> None:
@@ -377,6 +467,9 @@ class HypercolorEventStream:
                 await _run_handler(handler, message)
         elif isinstance(message, CanvasData):
             for handler in self._canvas_handlers:
+                await _run_handler(handler, message)
+        elif isinstance(message, InteractivePreviewData):
+            for handler in self._interactive_preview_handlers:
                 await _run_handler(handler, message)
 
     @staticmethod
@@ -456,6 +549,33 @@ class HypercolorEventStream:
             height=height,
             format=CANVAS_FORMAT_TAGS.get(payload[45], "rgb"),
             pixels=payload[46:],
+        )
+
+    @staticmethod
+    def _parse_interactive_preview(payload: bytes) -> InteractivePreviewData:
+        if len(payload) < 15:
+            msg = "Interactive preview frame is shorter than its prefix"
+            raise ValueError(msg)
+        preview_id_len = payload[1]
+        payload_offset = 15 + preview_id_len
+        if len(payload) < payload_offset:
+            msg = "Interactive preview frame has a truncated preview id"
+            raise ValueError(msg)
+        frame_number, timestamp_ms = struct.unpack_from("<II", payload, 2)
+        width, height = struct.unpack_from("<HH", payload, 10)
+        format_byte = payload[14]
+        image_format = CANVAS_FORMAT_TAGS.get(format_byte)
+        if image_format is None:
+            msg = f"Unknown interactive preview format: {format_byte:#x}"
+            raise ValueError(msg)
+        return InteractivePreviewData(
+            preview_id=payload[15:payload_offset].decode("utf-8"),
+            frame_number=frame_number,
+            timestamp_ms=timestamp_ms,
+            width=width,
+            height=height,
+            format=image_format,
+            pixels=payload[payload_offset:],
         )
 
     @staticmethod

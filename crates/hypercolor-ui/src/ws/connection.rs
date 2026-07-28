@@ -24,11 +24,13 @@ use wasm_bindgen::{JsCast, JsValue};
 use web_sys::MessageEvent;
 
 use super::input::InputInjectEdge;
+use super::interactive_preview::InteractivePreviewRequest;
 use super::messages::{
     AudioLevel, BackpressureNotice, CanvasFrame, ConnectionState, ControlSurfaceEventHint,
     DeviceEventHint, EffectErrorHint, ExtensionEventHint, InputSourceStatusEventHint,
     PerformanceMetrics, PreviewFrameChannel, SceneEventHint, ScreenZonesFrame,
-    decode_preview_frame, decode_screen_zones_frame, handle_json_message,
+    decode_interactive_preview_frame, decode_preview_frame, decode_screen_zones_frame,
+    handle_json_message, interactive_preview_supported,
 };
 use super::preview::{
     DEFAULT_PREVIEW_FPS_CAP, PreviewSubscriptionRequest, clear_preview_subscription,
@@ -67,6 +69,8 @@ pub struct WsManager {
     /// frame arrives; reset to `None` when the target changes or the
     /// connection drops.
     pub display_preview_frame: ReadSignal<Option<CanvasFrame>>,
+    pub interactive_preview_frames: ReadSignal<HashMap<String, CanvasFrame>>,
+    pub interactive_preview_available: ReadSignal<bool>,
     pub preview_fps: ReadSignal<f32>,
     pub metrics: ReadSignal<Option<PerformanceMetrics>>,
     pub sensors: ReadSignal<Option<SystemSnapshot>>,
@@ -116,9 +120,10 @@ pub struct WsManager {
     pub set_display_preview_device: WriteSignal<Option<String>>,
     pub send_zone_layout_preview: Callback<(String, String, SpatialLayout)>,
     pub clear_zone_layout_preview: Callback<(String, String)>,
-    /// Send browser-preview input edges as one `input_inject` message.
-    /// Control-tier authorized daemon-side; a no-op while disconnected.
-    pub send_input_inject: Callback<Vec<InputInjectEdge>>,
+    pub open_interactive_preview: Callback<InteractivePreviewRequest>,
+    pub close_interactive_preview: Callback<String>,
+    /// Send addressed browser-preview input edges as one `input_inject` message.
+    pub send_input_inject: Callback<(String, Vec<InputInjectEdge>)>,
 }
 
 impl Default for WsManager {
@@ -134,6 +139,9 @@ impl WsManager {
         let (web_viewport_canvas_frame, set_web_viewport_canvas_frame) =
             signal(None::<CanvasFrame>);
         let (display_preview_frame, set_display_preview_frame) = signal(None::<CanvasFrame>);
+        let (interactive_preview_frames, set_interactive_preview_frames) =
+            signal(HashMap::<String, CanvasFrame>::new());
+        let (interactive_preview_available, set_interactive_preview_available) = signal(false);
         let (display_preview_device, set_display_preview_device) = signal(None::<String>);
         let (connection_state, set_connection_state) = signal(ConnectionState::Disconnected);
         let (connection_generation, set_connection_generation) = signal(0_u64);
@@ -214,6 +222,8 @@ impl WsManager {
             dispose_existing_socket(ws_handle, socket_callbacks);
             set_connection_state.set(ConnectionState::Connecting);
             set_backpressure_notice.set(None);
+            set_interactive_preview_available.set(false);
+            set_interactive_preview_frames.set(HashMap::new());
             set_preview_transport_cap.set(preview_page_cap.get_untracked());
             set_last_backpressure_at_ms.set(None);
 
@@ -278,6 +288,8 @@ impl WsManager {
                 screen_zones_requested.set_value(false);
                 set_screen_zones_frame.set(None);
                 set_display_preview_frame.set(None);
+                set_interactive_preview_available.set(false);
+                set_interactive_preview_frames.set(HashMap::new());
                 set_sensors.set(None);
                 schedule_reconnect(reconnect_attempts, reconnect_timeout, connect);
             };
@@ -292,6 +304,12 @@ impl WsManager {
             let on_message = move |event: MessageEvent| {
                 // Binary frame (ArrayBuffer)
                 if let Some(buffer) = message_array_buffer(&event) {
+                    if let Some((preview_id, frame)) = decode_interactive_preview_frame(&buffer) {
+                        set_interactive_preview_frames.update(|frames| {
+                            frames.insert(preview_id, frame);
+                        });
+                        return;
+                    }
                     if let Some(zones) = decode_screen_zones_frame(&buffer) {
                         set_screen_zones_frame.set(Some(zones));
                         return;
@@ -358,6 +376,9 @@ impl WsManager {
                 if let Some(text) = event.data().as_string()
                     && let Ok(msg) = serde_json::from_str::<serde_json::Value>(&text)
                 {
+                    if msg.get("type").and_then(serde_json::Value::as_str) == Some("hello") {
+                        set_interactive_preview_available.set(interactive_preview_supported(&msg));
+                    }
                     handle_json_message(
                         &msg,
                         &set_active_effect,
@@ -650,17 +671,37 @@ impl WsManager {
                     super::preview::send_zone_layout_preview_clear(&ws, &scene_id, &zone_id);
                 }
             });
-        let send_input_inject = Callback::new(move |events: Vec<InputInjectEdge>| {
+        let open_interactive_preview = Callback::new(move |request: InteractivePreviewRequest| {
+            set_interactive_preview_frames.update(|frames| {
+                frames.remove(&request.preview_id);
+            });
             if let Some(ws) = ws_handle.get_value() {
-                super::input::send_input_inject(&ws, &events);
+                super::interactive_preview::send_open(&ws, &request);
             }
         });
+        let close_interactive_preview = Callback::new(move |preview_id: String| {
+            if let Some(ws) = ws_handle.get_value() {
+                super::interactive_preview::send_close(&ws, &preview_id);
+            }
+            set_interactive_preview_frames.update(|frames| {
+                frames.remove(&preview_id);
+            });
+        });
+        let send_input_inject = Callback::new(
+            move |(preview_id, events): (String, Vec<InputInjectEdge>)| {
+                if let Some(ws) = ws_handle.get_value() {
+                    super::interactive_preview::send_input(&ws, &preview_id, &events);
+                }
+            },
+        );
 
         Self {
             canvas_frame,
             screen_canvas_frame,
             web_viewport_canvas_frame,
             display_preview_frame,
+            interactive_preview_frames,
+            interactive_preview_available,
             preview_fps,
             metrics,
             sensors,
@@ -688,6 +729,8 @@ impl WsManager {
             set_display_preview_device,
             send_zone_layout_preview,
             clear_zone_layout_preview,
+            open_interactive_preview,
+            close_interactive_preview,
             send_input_inject,
         }
     }

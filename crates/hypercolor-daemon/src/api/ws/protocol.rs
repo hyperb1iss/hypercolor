@@ -1658,6 +1658,7 @@ pub(super) fn ws_capabilities() -> Vec<String> {
         .collect();
     capabilities.push("commands".to_owned());
     capabilities.push("canvas_format_jpeg".to_owned());
+    capabilities.push("interactive_previews".to_owned());
     capabilities
 }
 

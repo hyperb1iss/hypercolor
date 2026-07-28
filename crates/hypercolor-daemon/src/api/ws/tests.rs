@@ -3088,6 +3088,7 @@ fn ws_capabilities_include_commands() {
     assert!(capabilities.contains(&"input_events".to_owned()));
     assert!(capabilities.contains(&"commands".to_owned()));
     assert!(capabilities.contains(&"canvas_format_jpeg".to_owned()));
+    assert!(capabilities.contains(&"interactive_previews".to_owned()));
 }
 
 #[test]
@@ -3172,6 +3173,26 @@ fn websocket_manifest_matches_protocol_constants() {
     );
     assert_eq!(binary_tags["display_preview"], WS_DISPLAY_PREVIEW_HEADER);
     assert_eq!(binary_tags["zone_preview"], WS_ZONE_PREVIEW_HEADER);
+    assert_eq!(
+        binary_tags["interactive_preview"],
+        hypercolor_leptos_ext::ws::INTERACTIVE_PREVIEW_FRAME_TAG
+    );
+
+    let client_messages = manifest["json_messages"]["client"]
+        .as_array()
+        .expect("client message inventory")
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect::<std::collections::BTreeSet<_>>();
+    for message in [
+        "interactive_preview_open",
+        "interactive_preview_close",
+        "input_inject",
+        "interactive_preview_claim_authoritative",
+        "interactive_preview_release_authoritative",
+    ] {
+        assert!(client_messages.contains(message), "missing {message}");
+    }
 }
 
 #[test]

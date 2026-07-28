@@ -105,7 +105,8 @@
     "display_preview",
     "input_events",
     "commands",
-    "canvas_format_jpeg"
+    "canvas_format_jpeg",
+    "interactive_previews"
   ],
   "json_messages": {
     "client": [
@@ -113,7 +114,12 @@
       "unsubscribe",
       "command",
       "zone_layout_preview",
-      "zone_layout_preview_clear"
+      "zone_layout_preview_clear",
+      "interactive_preview_open",
+      "interactive_preview_close",
+      "input_inject",
+      "interactive_preview_claim_authoritative",
+      "interactive_preview_release_authoritative"
     ],
     "server": [
       "hello",
@@ -125,7 +131,12 @@
       "sensors",
       "backpressure",
       "error",
-      "response"
+      "response",
+      "interactive_preview_opened",
+      "interactive_preview_closed",
+      "input_injected",
+      "interactive_preview_authoritative_claimed",
+      "interactive_preview_authoritative_released"
     ]
   },
   "json_payloads": {
@@ -280,6 +291,12 @@
       "tag": 7,
       "channel": "display_preview",
       "layout": "preview_frame"
+    },
+    {
+      "name": "interactive_preview",
+      "tag": 10,
+      "channel": "interactive_preview",
+      "layout": "interactive_preview_frame"
     }
   ],
   "preview_frame": {
@@ -354,6 +371,52 @@
       [
         "u8",
         "format"
+      ],
+      [
+        "bytes",
+        "payload"
+      ]
+    ],
+    "formats": {
+      "rgb": 0,
+      "rgba": 1,
+      "jpeg": 2
+    }
+  },
+  "interactive_preview_frame": {
+    "prefix_len": 15,
+    "layout": [
+      [
+        "u8",
+        "tag"
+      ],
+      [
+        "u8",
+        "preview_id_len"
+      ],
+      [
+        "u32_le",
+        "frame_number"
+      ],
+      [
+        "u32_le",
+        "timestamp_ms"
+      ],
+      [
+        "u16_le",
+        "width"
+      ],
+      [
+        "u16_le",
+        "height"
+      ],
+      [
+        "u8",
+        "format"
+      ],
+      [
+        "utf8",
+        "preview_id"
       ],
       [
         "bytes",
