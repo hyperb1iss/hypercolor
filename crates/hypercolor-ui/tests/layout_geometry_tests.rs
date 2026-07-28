@@ -19,10 +19,34 @@ fn zone_summary(name: &str, led_count: u32, topology_hint: ZoneTopologySummary) 
 }
 
 fn rendered_aspect(size: NormalizedPosition, canvas_width: u32, canvas_height: u32) -> f32 {
-    let canvas_width = f32::from(u16::try_from(canvas_width).unwrap_or(u16::MAX));
-    let canvas_height = f32::from(u16::try_from(canvas_height).unwrap_or(u16::MAX));
+    #[allow(clippy::cast_precision_loss)]
+    let canvas_width = canvas_width as f32;
+    #[allow(clippy::cast_precision_loss)]
+    let canvas_height = canvas_height as f32;
     let canvas_aspect = canvas_width / canvas_height;
     (size.x / size.y) * canvas_aspect
+}
+
+#[test]
+fn default_layout_preserves_aspect_above_legacy_u16_dimensions() {
+    let zone = zone_summary(
+        "Display",
+        0,
+        ZoneTopologySummary::Display {
+            width: 480,
+            height: 480,
+            circular: false,
+        },
+    );
+    let defaults = layout_geometry::default_zone_visuals(
+        "Large Canvas Display",
+        Some(&zone),
+        0,
+        131_072,
+        65_536,
+    );
+
+    assert!((rendered_aspect(defaults.size, 131_072, 65_536) - 1.0).abs() < 0.01);
 }
 
 fn push2_zone_summaries() -> Vec<ZoneSummary> {

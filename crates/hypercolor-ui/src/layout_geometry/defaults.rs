@@ -744,8 +744,10 @@ fn fit_aspect_ratio(
 }
 
 fn canvas_aspect_ratio(canvas_width: u32, canvas_height: u32) -> f32 {
-    let width = f32::from(u16::try_from(canvas_width.max(1)).unwrap_or(u16::MAX));
-    let height = f32::from(u16::try_from(canvas_height.max(1)).unwrap_or(u16::MAX));
+    #[allow(clippy::cast_precision_loss)]
+    let width = canvas_width.max(1) as f32;
+    #[allow(clippy::cast_precision_loss)]
+    let height = canvas_height.max(1) as f32;
     (width / height).max(GRID_EPSILON)
 }
 

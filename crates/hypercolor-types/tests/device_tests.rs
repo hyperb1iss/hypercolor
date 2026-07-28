@@ -969,6 +969,20 @@ fn zone_layout_hint_custom_grid_builds_normalized_positions() {
 }
 
 #[test]
+fn zone_layout_hint_custom_grid_preserves_coordinates_above_u16() {
+    let hint = ZoneLayoutHint::custom_grid(100_001, 2, &[(0, 0), (50_000, 1), (100_000, 1)]);
+    let positions = match hint.topology {
+        Some(LedTopology::Custom { positions }) => positions,
+        other => panic!("expected custom topology, got {other:?}"),
+    };
+
+    assert_eq!(positions[0], NormalizedPosition::new(0.0, 0.0));
+    assert!((positions[1].x - 0.5).abs() < f32::EPSILON);
+    assert_eq!(positions[1].y, 1.0);
+    assert_eq!(positions[2], NormalizedPosition::new(1.0, 1.0));
+}
+
+#[test]
 fn zone_info_matrix_topology() {
     let zone = ZoneInfo {
         name: "Panel".into(),

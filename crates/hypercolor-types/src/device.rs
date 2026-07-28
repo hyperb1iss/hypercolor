@@ -326,16 +326,19 @@ fn normalized_grid_positions(
     height: u32,
     coordinates: &[(u32, u32)],
 ) -> Vec<NormalizedPosition> {
-    let x_divisor = f32::from(u16::try_from(width.saturating_sub(1).max(1)).unwrap_or(u16::MAX));
-    let y_divisor = f32::from(u16::try_from(height.saturating_sub(1).max(1)).unwrap_or(u16::MAX));
+    #[allow(clippy::cast_precision_loss)]
+    let x_divisor = width.saturating_sub(1).max(1) as f32;
+    #[allow(clippy::cast_precision_loss)]
+    let y_divisor = height.saturating_sub(1).max(1) as f32;
 
     coordinates
         .iter()
         .map(|&(x, y)| {
-            NormalizedPosition::new(
-                f32::from(u16::try_from(x).unwrap_or(u16::MAX)) / x_divisor,
-                f32::from(u16::try_from(y).unwrap_or(u16::MAX)) / y_divisor,
-            )
+            #[allow(clippy::cast_precision_loss)]
+            let normalized_x = x as f32 / x_divisor;
+            #[allow(clippy::cast_precision_loss)]
+            let normalized_y = y as f32 / y_divisor;
+            NormalizedPosition::new(normalized_x, normalized_y)
         })
         .collect()
 }
