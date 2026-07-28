@@ -1022,13 +1022,15 @@ fn apply_settings_updates_tuning_live() {
         panic!("expected screen data");
     };
 
-    input.apply_settings(CaptureConfig {
-        tuning: ColorTuning {
-            saturation: 0.0,
-            ..ColorTuning::default()
-        },
-        ..config
-    });
+    input
+        .apply_settings(CaptureConfig {
+            tuning: ColorTuning {
+                saturation: 0.0,
+                ..ColorTuning::default()
+            },
+            ..config
+        })
+        .expect("representable live cadence is admitted");
     input.push_frame(&frame, 40, 40).expect("frame is admitted");
     let InputData::Screen(after) = input.sample().expect("sample succeeds") else {
         panic!("expected screen data");
@@ -1054,11 +1056,13 @@ fn apply_settings_grid_change_takes_effect_next_frame() {
     let frame = solid_frame(64, 64, 50, 100, 150);
     input.push_frame(&frame, 64, 64).expect("frame is admitted");
 
-    input.apply_settings(CaptureConfig {
-        grid_cols: 4,
-        grid_rows: 4,
-        ..config
-    });
+    input
+        .apply_settings(CaptureConfig {
+            grid_cols: 4,
+            grid_rows: 4,
+            ..config
+        })
+        .expect("representable live cadence is admitted");
     input.push_frame(&frame, 64, 64).expect("frame is admitted");
     let InputData::Screen(data) = input.sample().expect("sample succeeds") else {
         panic!("expected screen data");
@@ -1101,10 +1105,12 @@ fn disabling_letterbox_live_clears_stale_bars() {
     assert_eq!(cropped_surface.width(), 640);
     assert_eq!(cropped_surface.height(), 213);
 
-    input.apply_settings(CaptureConfig {
-        letterbox_enabled: false,
-        ..config
-    });
+    input
+        .apply_settings(CaptureConfig {
+            letterbox_enabled: false,
+            ..config
+        })
+        .expect("representable live cadence is admitted");
     input.push_frame(&frame, 60, 60).expect("frame is admitted");
     assert!(
         !input.letterbox_bars().has_bars(),

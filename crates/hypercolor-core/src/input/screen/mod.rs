@@ -15,6 +15,7 @@
 //! The capture backend feeds raw pixel buffers. Everything downstream is
 //! backend-agnostic and testable with synthetic data.
 
+mod cadence;
 mod frame;
 mod process;
 pub mod sector;
@@ -25,6 +26,9 @@ pub mod wayland;
 #[cfg(target_os = "windows")]
 pub mod windows;
 
+pub use cadence::{
+    CaptureCadence, CaptureCadenceError, CapturePacer, MAX_REPRESENTABLE_CAPTURE_FPS,
+};
 pub use frame::{
     CaptureColorSpace, CaptureCursor, CaptureDamage, CaptureEpoch, CaptureFrame, CaptureFrameError,
     CaptureFrameMetadata, CaptureGeometry, CapturePixelFormat, CapturePlaneLease, CapturePlanePool,
@@ -592,7 +596,13 @@ impl ScreenCaptureInput {
     /// Grid, smoothing, letterbox, and tuning changes take effect on the next
     /// pushed frame. The smoother resets when the grid shape changes so stale
     /// zone state never blends into the new layout.
-    pub fn apply_settings(&mut self, config: CaptureConfig) {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error without changing the active settings when the capture
+    /// cadence is not representable by the scheduler clock.
+    pub fn apply_settings(&mut self, config: CaptureConfig) -> Result<(), CaptureCadenceError> {
+        CaptureCadence::new(config.target_fps)?;
         if config.grid_cols != self.config.grid_cols || config.grid_rows != self.config.grid_rows {
             self.smoother.reset();
         }
@@ -600,6 +610,7 @@ impl ScreenCaptureInput {
         self.smoother
             .set_scene_cut_threshold(config.scene_cut_threshold);
         self.config = config;
+        Ok(())
     }
 
     /// Most recently detected letterbox bars.
@@ -625,6 +636,7 @@ impl InputSource for ScreenCaptureInput {
         if self.running {
             return Ok(());
         }
+        CaptureCadence::new(self.config.target_fps)?;
         self.status.begin_session()?;
         self.running = true;
         self.smoother.reset();
@@ -667,9 +679,8 @@ impl InputSource for ScreenCaptureInput {
             if let (Some(status), Some(acquired_at)) =
                 (self.status.session(), self.latest_acquired_at)
             {
-                let frame_period =
-                    Duration::from_secs_f64(1.0 / f64::from(self.config.target_fps.max(1)));
-                status.record_sample(acquired_at, acquired_at + frame_period + frame_period, 1)?;
+                let cadence = CaptureCadence::new(self.config.target_fps)?;
+                status.record_sample(acquired_at, cadence.freshness_deadline(acquired_at)?, 1)?;
             }
             self.status_frame_generation = self.frame_generation;
         }
