@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use tracing::{debug, warn};
-use windows::Win32::Foundation::{E_ACCESSDENIED, HMODULE};
+use windows::Win32::Foundation::{E_ACCESSDENIED, E_OUTOFMEMORY, HMODULE};
 use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_UNKNOWN, D3D_FEATURE_LEVEL_11_0};
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAP_READ,
@@ -28,8 +28,8 @@ use windows::core::{HRESULT, Interface, PCWSTR};
 
 use crate::shared::{
     CaptureError, CaptureExtent, CaptureRegion, CaptureResult, CursorInfo, DisplayRotation, Frame,
-    MonitorInfo, MonitorSelector, ReductionPath, ReductionTelemetry, subsample_stride,
-    subsampled_extent, width_target_within,
+    MonitorInfo, MonitorSelector, ReductionPath, ReductionTelemetry, subsample_stride_within,
+    subsampled_extent,
 };
 
 pub(crate) mod gpu_reduction;
@@ -53,6 +53,95 @@ struct BgraRows<'a> {
     row_pitch: usize,
     width: u32,
     height: u32,
+}
+
+struct MappedTexture<'a> {
+    context: &'a ID3D11DeviceContext,
+    texture: &'a ID3D11Texture2D,
+    mapped: D3D11_MAPPED_SUBRESOURCE,
+}
+
+impl<'a> MappedTexture<'a> {
+    fn map(context: &'a ID3D11DeviceContext, texture: &'a ID3D11Texture2D) -> CaptureResult<Self> {
+        let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+        // SAFETY: the caller supplies a staging texture created for CPU reads.
+        unsafe { context.Map(texture, 0, D3D11_MAP_READ, 0, Some(&mut mapped)) }
+            .map_err(|source| classify_windows_error("map staging texture", source))?;
+        Ok(Self {
+            context,
+            texture,
+            mapped,
+        })
+    }
+
+    fn rows(&self, width: u32, height: u32) -> CaptureResult<BgraRows<'_>> {
+        let row_pitch = self.mapped.RowPitch as usize;
+        let minimum_row_bytes = checked_rgba_len(width, 1, "validate mapped row pitch")?;
+        let source_len = row_pitch
+            .checked_mul(height as usize)
+            .filter(|len| *len <= isize::MAX as usize);
+        if self.mapped.pData.is_null() || row_pitch < minimum_row_bytes || source_len.is_none() {
+            return Err(CaptureError::InvalidBufferGeometry {
+                operation: "map staging texture",
+                width,
+                height,
+                row_pitch,
+            });
+        }
+        // SAFETY: Map succeeded with a non-null pointer and the checked length
+        // stays within both the reported row geometry and slice limits.
+        let bytes = unsafe {
+            std::slice::from_raw_parts(
+                self.mapped.pData.cast::<u8>(),
+                source_len.expect("mapped length was validated above"),
+            )
+        };
+        Ok(BgraRows {
+            bytes,
+            row_pitch,
+            width,
+            height,
+        })
+    }
+}
+
+impl Drop for MappedTexture<'_> {
+    fn drop(&mut self) {
+        // SAFETY: this guard exists only after a successful Map for the same
+        // texture, context, and subresource.
+        unsafe { self.context.Unmap(self.texture, 0) };
+    }
+}
+
+fn checked_rgba_len(width: u32, height: u32, operation: &'static str) -> CaptureResult<usize> {
+    usize::try_from(width)
+        .ok()
+        .and_then(|width| {
+            usize::try_from(height)
+                .ok()
+                .and_then(|height| width.checked_mul(height))
+        })
+        .and_then(|pixels| pixels.checked_mul(BYTES_PER_PIXEL))
+        .ok_or(CaptureError::GeometryOverflow {
+            operation,
+            width,
+            height,
+        })
+}
+
+fn admit_plane(
+    rgba: &mut Vec<u8>,
+    requested_bytes: usize,
+    operation: &'static str,
+) -> CaptureResult<()> {
+    if requested_bytes <= rgba.capacity() {
+        return Ok(());
+    }
+    rgba.try_reserve(requested_bytes.saturating_sub(rgba.len()))
+        .map_err(|_| CaptureError::ResourceExhausted {
+            operation,
+            requested_bytes,
+        })
 }
 
 #[derive(Clone)]
@@ -889,11 +978,8 @@ impl DesktopDuplicator {
             ));
         }
 
-        let mut bytes = self
-            .pointer
-            .shape
-            .as_ref()
-            .map_or_else(Vec::new, |shape| shape.bytes.clone());
+        let mut bytes = Vec::new();
+        admit_plane(&mut bytes, buffer_size, "read desktop pointer shape")?;
         bytes.resize(buffer_size, 0);
         let mut required = 0_u32;
         let mut info = DXGI_OUTDUPL_POINTER_SHAPE_INFO::default();
@@ -1152,12 +1238,7 @@ impl DesktopDuplicator {
         let Some(reducer) = self.gpu_reducer.as_mut() else {
             return Ok(());
         };
-        let reduction_width = width_target_within(
-            metadata.region.width(),
-            metadata.region.height(),
-            self.requested_extent,
-        );
-        match reducer.submit(texture, reduction_width, metadata) {
+        match reducer.submit(texture, self.requested_extent, metadata) {
             Ok(SubmitOutcome::Submitted) => {
                 self.reduction_telemetry.gpu_submitted =
                     self.reduction_telemetry.gpu_submitted.saturating_add(1);
@@ -1168,6 +1249,9 @@ impl DesktopDuplicator {
                     self.reduction_telemetry.ring_busy.saturating_add(1);
             }
             Err(error) => {
+                if let Some(capture_error) = error.as_capture_error() {
+                    return Err(capture_error);
+                }
                 let clean = reducer.clean_desktop();
                 if let Some(clean) = clean {
                     self.retain_desktop(&clean.texture, clean.metadata)?;
@@ -1205,6 +1289,10 @@ impl DesktopDuplicator {
                 Ok(None)
             }
             Err(error) => {
+                if let Some(capture_error) = error.as_capture_error() {
+                    self.recycle_plane(rgba);
+                    return Err(capture_error);
+                }
                 let clean = reducer.clean_desktop();
                 self.recycle_plane(rgba);
                 if let Some(clean) = clean {
@@ -1226,15 +1314,23 @@ impl DesktopDuplicator {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .pop()
             .unwrap_or_default();
-        let Some((width, height, metadata)) = self.read_back(&mut rgba)? else {
-            self.recycle_plane(rgba);
-            return Ok(None);
-        };
-        self.reduction_telemetry.cpu_completed =
-            self.reduction_telemetry.cpu_completed.saturating_add(1);
-        Ok(Some(
-            self.frame_from_metadata(metadata, width, height, rgba),
-        ))
+        match self.read_back(&mut rgba) {
+            Ok(Some((width, height, metadata))) => {
+                self.reduction_telemetry.cpu_completed =
+                    self.reduction_telemetry.cpu_completed.saturating_add(1);
+                Ok(Some(
+                    self.frame_from_metadata(metadata, width, height, rgba),
+                ))
+            }
+            Ok(None) => {
+                self.recycle_plane(rgba);
+                Ok(None)
+            }
+            Err(error) => {
+                self.recycle_plane(rgba);
+                Err(error)
+            }
+        }
     }
 
     fn frame_from_reduction(&self, reduced: ReducedFrame, rgba: Vec<u8>) -> Frame {
@@ -1340,40 +1436,15 @@ impl DesktopDuplicator {
         let native_width = metadata.source_width;
         let native_height = metadata.source_height;
 
-        let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
-        // SAFETY: staging was created USAGE_STAGING | CPU_ACCESS_READ, so
-        // subresource 0 is mappable for reads.
-        unsafe {
-            self.context
-                .Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
-        }
-        .map_err(|source| classify_windows_error("map staging texture", source))?;
-
-        let row_pitch = mapped.RowPitch as usize;
-        let source_len = row_pitch * native_height as usize;
-        // SAFETY: Map returned at least RowPitch * Height live bytes for this
-        // subresource, and the slice is consumed before the paired Unmap.
-        let source = unsafe { std::slice::from_raw_parts(mapped.pData.cast::<u8>(), source_len) };
+        let mapped = MappedTexture::map(&self.context, &staging)?;
         let dimensions = Self::copy_bgra_rows(
-            BgraRows {
-                bytes: source,
-                row_pitch,
-                width: native_width,
-                height: native_height,
-            },
+            mapped.rows(native_width, native_height)?,
             rgba,
-            width_target_within(
-                metadata.region.width(),
-                metadata.region.height(),
-                self.requested_extent,
-            ),
+            self.requested_extent,
             &metadata.pointer,
             metadata.rotation,
             metadata.region,
-        );
-
-        // SAFETY: pairs with the Map above on the same subresource.
-        unsafe { self.context.Unmap(&staging, 0) };
+        )?;
 
         let Some((width, height)) = dimensions else {
             return Ok(None);
@@ -1395,32 +1466,33 @@ impl DesktopDuplicator {
     fn copy_bgra_rows(
         rows: BgraRows<'_>,
         rgba: &mut Vec<u8>,
-        max_width: u32,
+        requested_extent: CaptureExtent,
         pointer: &PointerState,
         rotation: DisplayRotation,
         region: CaptureRegion,
-    ) -> Option<(u32, u32)> {
+    ) -> CaptureResult<Option<(u32, u32)>> {
         let BgraRows {
             bytes: source,
             row_pitch,
             width,
             height,
         } = rows;
-        let minimum_row_bytes = width as usize * BYTES_PER_PIXEL;
-        let source_len = row_pitch.checked_mul(height as usize);
+        let minimum_row_bytes = checked_rgba_len(width, 1, "validate BGRA source rows")?;
+        let source_len = row_pitch
+            .checked_mul(height as usize)
+            .filter(|len| *len <= isize::MAX as usize);
         if row_pitch < minimum_row_bytes || source_len.is_none_or(|len| source.len() < len) {
-            return None;
+            return Ok(None);
         }
         if !region.fits_within(width, height) {
-            return None;
+            return Ok(None);
         }
-        let stride = subsample_stride(region.width(), max_width);
+        let stride = subsample_stride_within(region.width(), region.height(), requested_extent);
         let out_width = subsampled_extent(region.width(), stride);
         let out_height = subsampled_extent(region.height(), stride);
-        rgba.resize(
-            out_width as usize * out_height as usize * BYTES_PER_PIXEL,
-            0,
-        );
+        let output_len = checked_rgba_len(out_width, out_height, "allocate CPU capture plane")?;
+        admit_plane(rgba, output_len, "allocate CPU capture plane")?;
+        rgba.resize(output_len, 0);
 
         let stride = stride as usize;
         let width = width as usize;
@@ -1475,7 +1547,7 @@ impl DesktopDuplicator {
             }
         }
 
-        Some((out_width, out_height))
+        Ok(Some((out_width, out_height)))
     }
 
     /// Drop the duplication interface and open a fresh one.
@@ -1573,6 +1645,8 @@ fn create_staging_texture(
     device: &ID3D11Device,
     desc: &D3D11_TEXTURE2D_DESC,
 ) -> CaptureResult<ID3D11Texture2D> {
+    let requested_bytes =
+        checked_rgba_len(desc.Width, desc.Height, "create retained staging texture")?;
     let staging_desc = D3D11_TEXTURE2D_DESC {
         Usage: D3D11_USAGE_STAGING,
         BindFlags: 0,
@@ -1582,8 +1656,18 @@ fn create_staging_texture(
     };
     let mut texture = None;
     // SAFETY: staging_desc is valid and the caller-owned out-param is live.
-    unsafe { device.CreateTexture2D(&staging_desc, None, Some(&mut texture)) }
-        .map_err(|source| classify_windows_error("create staging texture", source))?;
+    unsafe { device.CreateTexture2D(&staging_desc, None, Some(&mut texture)) }.map_err(
+        |source| {
+            if source.code() == E_OUTOFMEMORY {
+                CaptureError::ResourceExhausted {
+                    operation: "create retained staging texture",
+                    requested_bytes,
+                }
+            } else {
+                classify_windows_error("create staging texture", source)
+            }
+        },
+    )?;
     texture.ok_or_else(|| {
         CaptureError::windows(
             "create staging texture",

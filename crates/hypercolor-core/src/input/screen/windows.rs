@@ -1384,6 +1384,16 @@ fn capture_issue(error: &CaptureError) -> SourceIssue {
             error.to_string(),
             true,
         ),
+        CaptureError::GeometryOverflow { .. } => SourceIssue::new(
+            "windows_capture_geometry_overflow",
+            error.to_string(),
+            false,
+        ),
+        CaptureError::InvalidBufferGeometry { .. } => SourceIssue::new(
+            "windows_capture_buffer_geometry_invalid",
+            error.to_string(),
+            true,
+        ),
         CaptureError::UnsupportedPlatform | CaptureError::Windows { .. } => SourceIssue::new(
             "windows_desktop_duplication_unavailable",
             error.to_string(),

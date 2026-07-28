@@ -60,6 +60,30 @@ pub enum CaptureError {
         requested_bytes: usize,
     },
 
+    /// Resolution-derived byte geometry could not be represented safely.
+    #[error("{operation} byte geometry overflows for {width}x{height}")]
+    GeometryOverflow {
+        /// Resource operation that failed.
+        operation: &'static str,
+        /// Width whose byte geometry overflowed.
+        width: u32,
+        /// Height whose byte geometry overflowed.
+        height: u32,
+    },
+
+    /// A mapped capture surface reported unusable row geometry.
+    #[error("{operation} returned invalid {width}x{height} row geometry with pitch {row_pitch}")]
+    InvalidBufferGeometry {
+        /// Resource operation that failed.
+        operation: &'static str,
+        /// Mapped surface width.
+        width: u32,
+        /// Mapped surface height.
+        height: u32,
+        /// Reported row pitch in bytes.
+        row_pitch: usize,
+    },
+
     /// Desktop Duplication is a Windows-only API.
     #[error("desktop screen capture is only available on Windows")]
     UnsupportedPlatform,

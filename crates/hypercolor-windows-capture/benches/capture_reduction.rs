@@ -1,9 +1,38 @@
 use std::time::{Duration, Instant};
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use hypercolor_windows_capture::CaptureReductionBenchmark;
+use hypercolor_windows_capture::{
+    CaptureExtent, CaptureReductionBenchmark, subsample_stride_within, subsampled_extent,
+};
 
 const ANALYSIS_WIDTH: u32 = 1280;
+const ANALYSIS_HEIGHT: u32 = 720;
+
+fn analysis_extent() -> CaptureExtent {
+    CaptureExtent::try_new(ANALYSIS_WIDTH, ANALYSIS_HEIGHT).expect("analysis extent is non-empty")
+}
+
+fn checked_rgba_len(width: u32, height: u32) -> Result<usize, String> {
+    usize::try_from(width)
+        .ok()
+        .and_then(|width| {
+            usize::try_from(height)
+                .ok()
+                .and_then(|height| width.checked_mul(height))
+        })
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or_else(|| format!("RGBA8 byte geometry overflows for {width}x{height}"))
+}
+
+fn solid_plane(width: u32, height: u32) -> Result<Vec<u8>, String> {
+    let len = checked_rgba_len(width, height)?;
+    let mut plane = Vec::new();
+    plane
+        .try_reserve(len)
+        .map_err(|error| format!("could not reserve {len} source bytes: {error}"))?;
+    plane.resize(len, 0x7F);
+    Ok(plane)
+}
 
 fn summed_samples(
     harness: &mut CaptureReductionBenchmark,
@@ -21,11 +50,30 @@ fn summed_samples(
         .sum()
 }
 
-fn cpu_box_reduce(source: &[u8], width: u32, height: u32, max_width: u32, output: &mut Vec<u8>) {
-    let stride = hypercolor_windows_capture::subsample_stride(width, max_width);
-    let output_width = hypercolor_windows_capture::subsampled_extent(width, stride);
-    let output_height = hypercolor_windows_capture::subsampled_extent(height, stride);
-    output.resize(output_width as usize * output_height as usize * 4, 0);
+fn cpu_box_reduce(
+    source: &[u8],
+    width: u32,
+    height: u32,
+    requested_extent: CaptureExtent,
+    output: &mut Vec<u8>,
+) -> Result<(), String> {
+    let source_len = checked_rgba_len(width, height)?;
+    if source.len() != source_len {
+        return Err(format!(
+            "source has {} bytes, expected {source_len}",
+            source.len()
+        ));
+    }
+    let stride = subsample_stride_within(width, height, requested_extent);
+    let output_width = subsampled_extent(width, stride);
+    let output_height = subsampled_extent(height, stride);
+    let output_len = checked_rgba_len(output_width, output_height)?;
+    if output_len > output.capacity() {
+        output
+            .try_reserve(output_len.saturating_sub(output.len()))
+            .map_err(|error| format!("could not reserve {output_len} output bytes: {error}"))?;
+    }
+    output.resize(output_len, 0);
     for output_y in 0..output_height {
         let source_y = output_y * stride;
         let end_y = (source_y + stride).min(height);
@@ -50,6 +98,7 @@ fn cpu_box_reduce(source: &[u8], width: u32, height: u32, max_width: u32, output
             output[target + 3] = 0xFF;
         }
     }
+    Ok(())
 }
 
 fn percentile(samples: &mut [Duration], percentile: f64) -> Duration {
@@ -59,7 +108,8 @@ fn percentile(samples: &mut [Duration], percentile: f64) -> Duration {
 }
 
 fn report_deadlines(width: u32, height: u32) {
-    let mut harness = CaptureReductionBenchmark::new(width, height, ANALYSIS_WIDTH)
+    let requested_extent = analysis_extent();
+    let mut harness = CaptureReductionBenchmark::new(width, height, requested_extent)
         .expect("hardware D3D11 benchmark fixture opens");
     let report = harness
         .run_cadence(120)
@@ -81,12 +131,13 @@ fn report_deadlines(width: u32, height: u32) {
         .iter()
         .map(|sample| sample.map)
         .collect::<Vec<_>>();
-    let source = vec![0x7F; width as usize * height as usize * 4];
+    let source = solid_plane(width, height).expect("CPU benchmark source admits");
     let mut output = Vec::new();
     let mut cpu_analysis = (0..120)
         .map(|_| {
             let started = Instant::now();
-            cpu_box_reduce(&source, width, height, ANALYSIS_WIDTH, &mut output);
+            cpu_box_reduce(&source, width, height, requested_extent, &mut output)
+                .expect("CPU benchmark reduction succeeds");
             started.elapsed()
         })
         .collect::<Vec<_>>();
@@ -131,53 +182,50 @@ fn report_deadlines(width: u32, height: u32) {
 }
 
 fn capture_reduction(criterion: &mut Criterion) {
-    for (width, height) in [(1920, 1080), (2560, 1440), (3840, 2160)] {
+    for (width, height) in [
+        (1920, 1080),
+        (2560, 1440),
+        (3840, 2160),
+        (7680, 2160),
+        (2160, 7680),
+    ] {
+        let requested_extent = analysis_extent();
         report_deadlines(width, height);
         let id = format!("{width}x{height}");
-        let probe = CaptureReductionBenchmark::new(width, height, ANALYSIS_WIDTH)
-            .expect("hardware D3D11 benchmark fixture opens")
-            .sample()
-            .expect("benchmark probe succeeds");
+        let mut gpu = CaptureReductionBenchmark::new(width, height, requested_extent)
+            .expect("hardware D3D11 benchmark fixture opens");
+        let probe = gpu.sample().expect("benchmark probe succeeds");
         let mut group = criterion.benchmark_group(format!("windows_capture/{id}"));
         group.throughput(Throughput::Bytes(probe.readback_bytes));
 
-        let mut acquisition_enqueue = CaptureReductionBenchmark::new(width, height, ANALYSIS_WIDTH)
-            .expect("hardware D3D11 benchmark fixture opens");
         group.bench_function(BenchmarkId::new("acquisition_enqueue", &id), |benchmark| {
             benchmark.iter_custom(|iterations| {
-                summed_samples(&mut acquisition_enqueue, iterations, |sample| {
-                    sample.acquisition_enqueue
-                })
+                summed_samples(&mut gpu, iterations, |sample| sample.acquisition_enqueue)
             });
         });
-        let mut gpu = CaptureReductionBenchmark::new(width, height, ANALYSIS_WIDTH)
-            .expect("hardware D3D11 benchmark fixture opens");
         group.bench_function(BenchmarkId::new("analysis_enqueue", &id), |benchmark| {
             benchmark.iter_custom(|iterations| {
                 summed_samples(&mut gpu, iterations, |sample| sample.analysis_enqueue)
             });
         });
-        let mut wait = CaptureReductionBenchmark::new(width, height, ANALYSIS_WIDTH)
-            .expect("hardware D3D11 benchmark fixture opens");
         group.bench_function(BenchmarkId::new("wait", &id), |benchmark| {
             benchmark.iter_custom(|iterations| {
-                summed_samples(&mut wait, iterations, |sample| sample.wait)
+                summed_samples(&mut gpu, iterations, |sample| sample.wait)
             });
         });
-        let mut map = CaptureReductionBenchmark::new(width, height, ANALYSIS_WIDTH)
-            .expect("hardware D3D11 benchmark fixture opens");
         group.bench_function(BenchmarkId::new("map", &id), |benchmark| {
             benchmark.iter_custom(|iterations| {
-                summed_samples(&mut map, iterations, |sample| sample.map)
+                summed_samples(&mut gpu, iterations, |sample| sample.map)
             });
         });
 
-        let source = vec![0x7F; width as usize * height as usize * 4];
+        let source = solid_plane(width, height).expect("CPU benchmark source admits");
         let mut output = Vec::new();
         group.throughput(Throughput::Bytes(source.len() as u64));
         group.bench_function(BenchmarkId::new("cpu_analysis", &id), |benchmark| {
             benchmark.iter(|| {
-                cpu_box_reduce(&source, width, height, ANALYSIS_WIDTH, &mut output);
+                cpu_box_reduce(&source, width, height, requested_extent, &mut output)
+                    .expect("CPU benchmark reduction succeeds");
             });
         });
         group.finish();

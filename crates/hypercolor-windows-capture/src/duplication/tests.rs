@@ -4,7 +4,7 @@ use super::{
     desktop_frame_source, logical_to_scanout, native_scanout_extent, pointer_scanout_geometry,
     reacquire_duplication, scanout_to_logical,
 };
-use crate::{CaptureError, CaptureRegion, DisplayRotation, ReductionPath};
+use crate::{CaptureError, CaptureExtent, CaptureRegion, DisplayRotation, ReductionPath};
 use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -101,7 +101,7 @@ fn cpu_reduce_region(
             height,
         },
         &mut rgba,
-        max_width,
+        CaptureExtent::try_new(max_width, u32::MAX).expect("test extent"),
         pointer,
         rotation,
         region,
@@ -465,7 +465,7 @@ fn retained_clean_staging_recomposes_a_moving_pointer_without_residue() {
             height: 1,
         },
         &mut rgba,
-        2,
+        CaptureExtent::try_new(2, u32::MAX).expect("test extent"),
         &pointer,
         DisplayRotation::Identity,
         CaptureRegion::full(2, 1),
@@ -482,7 +482,7 @@ fn retained_clean_staging_recomposes_a_moving_pointer_without_residue() {
             height: 1,
         },
         &mut rgba,
-        2,
+        CaptureExtent::try_new(2, u32::MAX).expect("test extent"),
         &pointer,
         DisplayRotation::Identity,
         CaptureRegion::full(2, 1),
@@ -504,13 +504,13 @@ fn bgra_rows_reject_a_pitch_narrower_than_the_pixel_width() {
             height: 1,
         },
         &mut rgba,
-        1,
+        CaptureExtent::try_new(1, u32::MAX).expect("test extent"),
         &pointer,
         DisplayRotation::Identity,
         CaptureRegion::full(1, 1),
     );
 
-    assert_eq!(dimensions, None);
+    assert_eq!(dimensions.expect("row validation does not allocate"), None);
     assert!(rgba.is_empty());
 }
 

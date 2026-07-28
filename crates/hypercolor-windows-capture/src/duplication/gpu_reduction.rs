@@ -3,7 +3,7 @@ use std::mem::{size_of, transmute};
 use std::sync::OnceLock;
 
 use thiserror::Error;
-use windows::Win32::Foundation::{FreeLibrary, HMODULE};
+use windows::Win32::Foundation::{E_OUTOFMEMORY, FreeLibrary, HMODULE};
 use windows::Win32::Graphics::Direct3D::Fxc::{
     D3DCOMPILE_ENABLE_STRICTNESS, D3DCOMPILE_OPTIMIZATION_LEVEL3,
 };
@@ -26,11 +26,12 @@ use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 use windows::core::{BOOL, HRESULT, Interface, PCSTR, w};
 
 use super::{CaptureMetadata, PointerShapeKind, PointerState};
-use crate::{CaptureRegion, DisplayRotation, subsample_stride, subsampled_extent};
-
-#[cfg(test)]
-#[path = "gpu_reduction/allocation_tests.rs"]
-mod allocation_tests;
+#[cfg(feature = "capture-bench")]
+use crate::CaptureResult;
+use crate::{
+    CaptureError, CaptureExtent, CaptureRegion, DisplayRotation, subsample_stride_within,
+    subsampled_extent,
+};
 
 const READBACK_RING_LEN: usize = 3;
 const THREAD_GROUP: u32 = 8;
@@ -98,6 +99,29 @@ impl GpuReductionError {
             message: error.to_string(),
         }
     }
+
+    pub(super) fn as_capture_error(&self) -> Option<CaptureError> {
+        match self {
+            Self::ResourceExhausted {
+                context,
+                requested_bytes,
+                ..
+            } => Some(CaptureError::ResourceExhausted {
+                operation: context,
+                requested_bytes: *requested_bytes,
+            }),
+            Self::SizeOverflow {
+                context,
+                width,
+                height,
+            } => Some(CaptureError::GeometryOverflow {
+                operation: context,
+                width: *width,
+                height: *height,
+            }),
+            Self::Operation { .. } | Self::Windows { .. } => None,
+        }
+    }
 }
 
 fn checked_rgba_len(
@@ -143,6 +167,13 @@ fn admit_vec_len(
     buffer
         .try_reserve(requested_len.saturating_sub(buffer.len()))
         .map_err(|error| GpuReductionError::resource_exhausted(context, requested_len, error))
+}
+
+#[cfg(feature = "capture-bench")]
+fn public_capture_error(error: GpuReductionError) -> CaptureError {
+    error
+        .as_capture_error()
+        .unwrap_or_else(|| CaptureError::windows("run D3D11 capture reduction", error))
 }
 
 struct ShaderBytecode {
@@ -339,7 +370,6 @@ pub(super) struct GpuReducer {
 pub(super) enum InjectedPollFailure {
     Query,
     Map,
-    Allocation,
 }
 
 impl GpuReducer {
@@ -381,10 +411,10 @@ impl GpuReducer {
     pub(super) fn submit(
         &mut self,
         texture: Option<&ID3D11Texture2D>,
-        max_width: u32,
+        requested_extent: CaptureExtent,
         metadata: CaptureMetadata,
     ) -> Result<SubmitOutcome, GpuReductionError> {
-        self.update_clean(texture, max_width, &metadata)?;
+        self.update_clean(texture, requested_extent, &metadata)?;
         self.ensure_pointer(&metadata.pointer)?;
         let context = self.context.clone();
         let params_buffer = self.params.clone();
@@ -457,10 +487,10 @@ impl GpuReducer {
     fn update_clean(
         &mut self,
         texture: Option<&ID3D11Texture2D>,
-        max_width: u32,
+        requested_extent: CaptureExtent,
         metadata: &CaptureMetadata,
     ) -> Result<(), GpuReductionError> {
-        self.ensure_resources(texture, max_width, metadata.region)?;
+        self.ensure_resources(texture, requested_extent, metadata.region)?;
         let resources = self
             .resources
             .as_mut()
@@ -529,12 +559,6 @@ impl GpuReducer {
             .pending
             .as_ref()
             .expect("a ready query has pending frame metadata");
-        #[cfg(test)]
-        if matches!(self.poll_failure, Some(InjectedPollFailure::Allocation)) {
-            self.poll_failure = None;
-            admit_vec_len(rgba, usize::MAX, "injected readback allocation")?;
-            unreachable!("usize::MAX growth must fail");
-        }
         let output_len = checked_rgba_len(
             resources.key.output_width,
             resources.key.output_height,
@@ -593,7 +617,7 @@ impl GpuReducer {
     fn ensure_resources(
         &mut self,
         texture: Option<&ID3D11Texture2D>,
-        max_width: u32,
+        requested_extent: CaptureExtent,
         region: CaptureRegion,
     ) -> Result<(), GpuReductionError> {
         let source_desc = if let Some(texture) = texture {
@@ -609,7 +633,7 @@ impl GpuReducer {
             };
             source_desc(resources.key)
         };
-        let key = resource_key(&source_desc, max_width, region)?;
+        let key = resource_key(&source_desc, requested_extent, region)?;
         if self
             .resources
             .as_ref()
@@ -725,7 +749,7 @@ fn unbind_compute_views(context: &ID3D11DeviceContext) {
 
 fn resource_key(
     desc: &D3D11_TEXTURE2D_DESC,
-    max_width: u32,
+    requested_extent: CaptureExtent,
     region: CaptureRegion,
 ) -> Result<ResourceKey, GpuReductionError> {
     if desc.Width == 0 || desc.Height == 0 {
@@ -738,7 +762,7 @@ fn resource_key(
             "capture region is outside the duplicated texture",
         ));
     }
-    let stride = subsample_stride(region.width(), max_width);
+    let stride = subsample_stride_within(region.width(), region.height(), requested_extent);
     let output_width = subsampled_extent(region.width(), stride);
     let output_height = subsampled_extent(region.height(), stride);
     checked_rgba_len(output_width, output_height, "admit reduction geometry")?;
@@ -885,7 +909,7 @@ fn create_texture(
     desc: &D3D11_TEXTURE2D_DESC,
     initial: Option<&D3D11_SUBRESOURCE_DATA>,
 ) -> Result<ID3D11Texture2D, GpuReductionError> {
-    checked_rgba_len(desc.Width, desc.Height, "admit D3D11 texture")?;
+    let requested_bytes = checked_rgba_len(desc.Width, desc.Height, "admit D3D11 texture")?;
     if let Some(initial) = initial {
         let minimum_pitch =
             checked_rgba_row_pitch(desc.Width, desc.Height, "admit D3D11 texture row pitch")?;
@@ -899,7 +923,17 @@ fn create_texture(
     // SAFETY: descriptor and optional initial data are live through the call;
     // the out-pointer remains valid.
     unsafe { device.CreateTexture2D(desc, initial.map(std::ptr::from_ref), Some(&mut texture)) }
-        .map_err(|error| GpuReductionError::windows("create reduction texture", error))?;
+        .map_err(|error| {
+            if error.code() == E_OUTOFMEMORY {
+                GpuReductionError::ResourceExhausted {
+                    context: "create reduction texture",
+                    requested_bytes,
+                    message: error.to_string(),
+                }
+            } else {
+                GpuReductionError::windows("create reduction texture", error)
+            }
+        })?;
     texture.ok_or_else(|| GpuReductionError::operation("texture creation returned no texture"))
 }
 
@@ -1041,7 +1075,7 @@ pub struct CaptureReductionBenchmark {
     reducer: GpuReducer,
     source: ID3D11Texture2D,
     pointer: PointerState,
-    max_width: u32,
+    requested_extent: CaptureExtent,
     source_bytes: u64,
     source_width: u32,
     source_height: u32,
@@ -1052,7 +1086,7 @@ pub struct CaptureReductionBenchmark {
 #[cfg(feature = "capture-bench")]
 impl CaptureReductionBenchmark {
     /// Create a hardware-backed stable-resource reduction fixture.
-    pub fn new(width: u32, height: u32, max_width: u32) -> Result<Self, String> {
+    pub fn new(width: u32, height: u32, requested_extent: CaptureExtent) -> CaptureResult<Self> {
         use windows::Win32::Graphics::Direct3D::{
             D3D_DRIVER_TYPE_HARDWARE, D3D_FEATURE_LEVEL_11_0,
         };
@@ -1061,6 +1095,15 @@ impl CaptureReductionBenchmark {
         };
         use windows::Win32::Graphics::Dxgi::IDXGIAdapter;
 
+        let rgba_len = checked_rgba_len(width, height, "allocate benchmark source")
+            .map_err(public_capture_error)?;
+        let mut rgba = Vec::new();
+        admit_vec_len(&mut rgba, rgba_len, "allocate benchmark source")
+            .map_err(public_capture_error)?;
+        for index in 0..rgba_len / 4 {
+            let value = index as u8;
+            rgba.extend_from_slice(&[value, value.wrapping_add(47), value.wrapping_add(109), 0xFF]);
+        }
         let mut device = None;
         let mut context = None;
         // SAFETY: the hardware path takes no explicit adapter, and all input
@@ -1078,18 +1121,16 @@ impl CaptureReductionBenchmark {
                 Some(&mut context),
             )
         }
-        .map_err(|error| format!("create benchmark D3D11 device: {error}"))?;
-        let device = device.ok_or_else(|| "D3D11 returned no benchmark device".to_owned())?;
-        let context = context.ok_or_else(|| "D3D11 returned no benchmark context".to_owned())?;
-        let rgba_len = checked_rgba_len(width, height, "allocate benchmark source")
-            .map_err(|error| error.to_string())?;
-        let mut rgba = Vec::new();
-        admit_vec_len(&mut rgba, rgba_len, "allocate benchmark source")
-            .map_err(|error| error.to_string())?;
-        for index in 0..rgba_len / 4 {
-            let value = index as u8;
-            rgba.extend_from_slice(&[value, value.wrapping_add(47), value.wrapping_add(109), 0xFF]);
-        }
+        .map_err(|error| CaptureError::windows("create benchmark D3D11 device", error))?;
+        let device = device.ok_or_else(|| {
+            CaptureError::windows("create benchmark D3D11 device", "D3D11 returned no device")
+        })?;
+        let context = context.ok_or_else(|| {
+            CaptureError::windows(
+                "create benchmark D3D11 context",
+                "D3D11 returned no context",
+            )
+        })?;
         let desc = D3D11_TEXTURE2D_DESC {
             Width: width,
             Height: height,
@@ -1108,22 +1149,22 @@ impl CaptureReductionBenchmark {
         let initial = D3D11_SUBRESOURCE_DATA {
             pSysMem: rgba.as_ptr().cast(),
             SysMemPitch: checked_rgba_row_pitch(width, height, "create benchmark source")
-                .map_err(|error| error.to_string())?,
+                .map_err(public_capture_error)?,
             SysMemSlicePitch: 0,
         };
         let source =
-            create_texture(&device, &desc, Some(&initial)).map_err(|error| error.to_string())?;
-        let mut reducer = GpuReducer::new(&device, &context).map_err(|error| error.to_string())?;
+            create_texture(&device, &desc, Some(&initial)).map_err(public_capture_error)?;
+        let mut reducer = GpuReducer::new(&device, &context).map_err(public_capture_error)?;
         let region = CaptureRegion::full(width, height);
         reducer
-            .ensure_resources(Some(&source), max_width, region)
-            .map_err(|error| error.to_string())?;
+            .ensure_resources(Some(&source), requested_extent, region)
+            .map_err(public_capture_error)?;
         Ok(Self {
             context,
             reducer,
             source,
             pointer: PointerState::default(),
-            max_width,
+            requested_extent,
             source_bytes: u64::try_from(rgba_len).unwrap_or(u64::MAX),
             source_width: width,
             source_height: height,
@@ -1161,7 +1202,7 @@ impl CaptureReductionBenchmark {
         );
         match self
             .reducer
-            .submit(None, self.max_width, metadata)
+            .submit(None, self.requested_extent, metadata)
             .map_err(|error| error.to_string())?
         {
             SubmitOutcome::Submitted => {}
@@ -1224,7 +1265,7 @@ impl CaptureReductionBenchmark {
             );
             let acquisition_started = Instant::now();
             self.reducer
-                .update_clean(Some(&self.source), self.max_width, &metadata)
+                .update_clean(Some(&self.source), self.requested_extent, &metadata)
                 .map_err(|error| error.to_string())?;
             acquisition_enqueue.push(acquisition_started.elapsed());
 
@@ -1244,7 +1285,7 @@ impl CaptureReductionBenchmark {
                 let submitted_at = Instant::now();
                 match self
                     .reducer
-                    .submit(None, self.max_width, metadata)
+                    .submit(None, self.requested_extent, metadata)
                     .map_err(|error| error.to_string())?
                 {
                     SubmitOutcome::Submitted => {
@@ -1381,7 +1422,11 @@ pub(super) fn ring_pressure_is_bounded_for_test() -> Result<(usize, bool), GpuRe
             CaptureRegion::full(1, 1),
             submission as u64 + 1,
         );
-        let outcome = reducer.submit((submission == 0).then_some(&source), 1, metadata)?;
+        let outcome = reducer.submit(
+            (submission == 0).then_some(&source),
+            CaptureExtent::try_new(1, u32::MAX).expect("test extent"),
+            metadata,
+        )?;
         if submission < READBACK_RING_LEN {
             if !matches!(outcome, SubmitOutcome::Submitted) {
                 return Ok((submission, false));
@@ -1411,7 +1456,7 @@ pub(super) fn ring_busy_keeps_latest_clean_metadata_for_test()
     for sequence in 1..=4 {
         reducer.submit(
             (sequence == 1).then_some(&source),
-            1,
+            CaptureExtent::try_new(1, u32::MAX).expect("test extent"),
             synthetic_metadata(1, 1, &pointer, DisplayRotation::Identity, region, sequence),
         )?;
     }
@@ -1446,7 +1491,7 @@ pub(super) fn poll_failure_preserves_clean_metadata_for_test(
     let mut reducer = GpuReducer::new(&device, &context)?;
     reducer.submit(
         Some(&source),
-        3,
+        CaptureExtent::try_new(3, u32::MAX).expect("test extent"),
         synthetic_metadata(5, 3, &pointer, DisplayRotation::Identity, region, 41),
     )?;
     reducer.poll_failure = Some(failure);
@@ -1498,12 +1543,12 @@ pub(super) fn region_changes_resource_identity_for_test() -> Result<bool, GpuRed
     };
     let first = resource_key(
         &desc,
-        3,
+        CaptureExtent::try_new(3, u32::MAX).expect("test extent"),
         CaptureRegion::new(1, 1, 5, 3).expect("fixture region is non-empty"),
     )?;
     let second = resource_key(
         &desc,
-        3,
+        CaptureExtent::try_new(3, u32::MAX).expect("test extent"),
         CaptureRegion::new(2, 1, 5, 3).expect("fixture region is non-empty"),
     )?;
     Ok(first != second)
@@ -1543,7 +1588,11 @@ pub(super) fn reduce_region_fixture(
     let source = test_source(&device, bgra, width, height)?;
     let mut reducer = GpuReducer::new(&device, &context)?;
     let metadata = synthetic_metadata(width, height, pointer, rotation, region, 1);
-    match reducer.submit(Some(&source), max_width, metadata)? {
+    match reducer.submit(
+        Some(&source),
+        CaptureExtent::try_new(max_width, u32::MAX).expect("test extent"),
+        metadata,
+    )? {
         SubmitOutcome::Submitted => {}
         SubmitOutcome::Busy => {
             return Err(GpuReductionError::operation(
@@ -1568,13 +1617,13 @@ pub(super) fn reduce_pointer_sequence(
     let region = CaptureRegion::full(width, height);
     reducer.submit(
         Some(&source),
-        width,
+        CaptureExtent::try_new(width, u32::MAX).expect("test extent"),
         synthetic_metadata(width, height, first, DisplayRotation::Identity, region, 1),
     )?;
     let first = poll_test_reduction(&mut reducer)?;
     reducer.submit(
         None,
-        width,
+        CaptureExtent::try_new(width, u32::MAX).expect("test extent"),
         synthetic_metadata(width, height, second, DisplayRotation::Identity, region, 2),
     )?;
     let second = poll_test_reduction(&mut reducer)?;
