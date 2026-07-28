@@ -6,10 +6,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use hypercolor_core::input::screen::{
-    CaptureColorSpace, CaptureConfig, CaptureCursor, CaptureDamage, CaptureEpoch, CaptureFrame,
-    CaptureFrameMetadata, CaptureGeometry, CapturePixelFormat, CaptureRotation, CaptureSourceId,
-    CaptureStorage, CaptureTransferFunction, CpuCaptureStorage, PhysicalOrigin, PixelExtent,
-    RawCaptureSurface, ScreenCaptureDemand, SourceScale, WindowsScreenCaptureInput,
+    CaptureColorSpace, CaptureColorimetry, CaptureConfig, CaptureCursor, CaptureDamage,
+    CaptureDynamicRange, CaptureEpoch, CaptureFrame, CaptureFrameError, CaptureFrameMetadata,
+    CaptureGeometry, CaptureLuminanceContext, CapturePixelFormat, CapturePositiveScalar,
+    CaptureRotation, CaptureSourceId, CaptureStorage, CaptureTransferFunction, CpuCaptureStorage,
+    KnownCaptureColorimetry, PhysicalOrigin, PixelExtent, RawCaptureSurface, ScreenCaptureDemand,
+    SourceScale, WindowsScreenCaptureInput,
 };
 use hypercolor_core::input::{InputData, InputSource};
 use hypercolor_windows_capture::CaptureError;
@@ -24,6 +26,13 @@ fn fixture_epoch() -> CaptureEpoch {
 }
 
 fn fixture_frame(epoch: &CaptureEpoch) -> CaptureFrame<RawCaptureSurface> {
+    fixture_frame_with_colorimetry(epoch, CaptureColorimetry::SRGB)
+}
+
+fn fixture_frame_with_colorimetry(
+    epoch: &CaptureEpoch,
+    colorimetry: CaptureColorimetry,
+) -> CaptureFrame<RawCaptureSurface> {
     let extent = PixelExtent::new(4, 2).expect("fixture extent is nonempty");
     let captured_at = Instant::now();
     let pixels: Arc<[u8]> = Arc::from([
@@ -47,8 +56,7 @@ fn fixture_frame(epoch: &CaptureEpoch) -> CaptureFrame<RawCaptureSurface> {
                 SourceScale::ONE,
             )
             .expect("fixture geometry is valid"),
-            color_space: CaptureColorSpace::Unknown,
-            transfer_function: CaptureTransferFunction::Unknown,
+            colorimetry,
             cursor: CaptureCursor::default(),
         },
         CaptureStorage::Cpu(CpuCaptureStorage::new(
@@ -60,6 +68,89 @@ fn fixture_frame(epoch: &CaptureEpoch) -> CaptureFrame<RawCaptureSurface> {
         CaptureDamage::default(),
     )
     .expect("fixture frame is valid")
+}
+
+fn hdr_luminance() -> CaptureLuminanceContext {
+    CaptureLuminanceContext::new(
+        CapturePositiveScalar::try_new(203.0).expect("reference white is valid"),
+        CapturePositiveScalar::try_new(1_000.0).expect("peak luminance is valid"),
+    )
+    .expect("HDR luminance context is ordered")
+}
+
+#[test]
+fn unsupported_colorimetry_retains_the_last_good_windows_publication() {
+    let config = CaptureConfig {
+        target_fps: 60,
+        grid_cols: 2,
+        grid_rows: 1,
+        smoothing_alpha: 1.0,
+        ..CaptureConfig::default()
+    };
+    let epoch = fixture_epoch();
+    let (mut source, fixture) =
+        WindowsScreenCaptureInput::new_deterministic_fixture(config, epoch.clone())
+            .expect("deterministic Windows source is valid");
+    source.start().expect("deterministic source starts idle");
+    source
+        .set_screen_capture_demand(ScreenCaptureDemand::active(
+            PixelExtent::new(4, 2).expect("fixture extent is nonempty"),
+        ))
+        .expect("deterministic capture activates without hardware");
+    assert!(
+        fixture
+            .publish(fixture_frame(&epoch))
+            .expect("known sRGB frame is accepted")
+    );
+    let InputData::Screen(before) = source.sample().expect("last good sample is readable") else {
+        panic!("expected a published screen sample");
+    };
+
+    let rejected = [
+        CaptureColorimetry::unknown(),
+        CaptureColorimetry::from_known(
+            KnownCaptureColorimetry::try_new(
+                CaptureColorSpace::Rec2020,
+                CaptureTransferFunction::Pq,
+                CaptureDynamicRange::High,
+                Some(hdr_luminance()),
+            )
+            .expect("known PQ fixture is complete"),
+        ),
+        CaptureColorimetry::new(
+            CaptureColorSpace::Unknown,
+            CaptureTransferFunction::Pq,
+            None,
+            None,
+        )
+        .expect("partial PQ fixture is coherent"),
+        CaptureColorimetry::new(
+            CaptureColorSpace::Unknown,
+            CaptureTransferFunction::Hlg,
+            None,
+            None,
+        )
+        .expect("partial HLG fixture is coherent"),
+    ];
+    for colorimetry in rejected {
+        let error = fixture
+            .publish(fixture_frame_with_colorimetry(&epoch, colorimetry))
+            .expect_err("unsupported encoded samples must not reach legacy averaging");
+        assert!(matches!(
+            error.downcast_ref::<CaptureFrameError>(),
+            Some(CaptureFrameError::UnsupportedLegacyAnalysisColorimetry {
+                colorimetry: rejected
+            }) if *rejected == colorimetry
+        ));
+
+        let InputData::Screen(after) = source.sample().expect("last good sample remains readable")
+        else {
+            panic!("expected the retained screen sample");
+        };
+        assert_eq!(after.zone_colors, before.zone_colors);
+        assert_eq!(after.source_width, before.source_width);
+        assert_eq!(after.source_height, before.source_height);
+    }
 }
 
 #[test]

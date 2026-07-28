@@ -16,10 +16,10 @@ use hypercolor_core::device::{BackendManager, DeviceRegistry};
 use hypercolor_core::effect::{EffectRegistry, builtin::register_builtin_effects};
 use hypercolor_core::engine::{FpsTier, RenderLoop};
 use hypercolor_core::input::screen::{
-    CaptureColorSpace, CaptureConfig, CaptureCursor, CaptureDamage, CaptureEpoch, CaptureFrame,
+    CaptureColorimetry, CaptureConfig, CaptureCursor, CaptureDamage, CaptureEpoch, CaptureFrame,
     CaptureFrameMetadata, CaptureGeometry, CapturePixelFormat, CaptureRotation, CaptureSourceId,
-    CaptureStorage, CaptureTransferFunction, CpuCaptureStorage, PhysicalOrigin, PixelExtent,
-    RawCaptureSurface, SourceScale, WindowsScreenCaptureInput,
+    CaptureStorage, CpuCaptureStorage, PhysicalOrigin, PixelExtent, RawCaptureSurface, SourceScale,
+    WindowsScreenCaptureInput,
 };
 use hypercolor_core::input::{
     InputManager, SourceFreshness, SourceKind, SourceState, WindowsHostInput,
@@ -253,8 +253,7 @@ fn capture_frame(epoch: &CaptureEpoch) -> CaptureFrame<RawCaptureSurface> {
                 SourceScale::ONE,
             )
             .expect("fixture geometry is valid"),
-            color_space: CaptureColorSpace::Unknown,
-            transfer_function: CaptureTransferFunction::Unknown,
+            colorimetry: CaptureColorimetry::SRGB,
             cursor: CaptureCursor::default(),
         },
         CaptureStorage::Cpu(CpuCaptureStorage::new(

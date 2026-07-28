@@ -4,11 +4,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use hypercolor_core::input::screen::{
-    CaptureColorSpace, CaptureCursor, CaptureCursorContent, CaptureCursorShape,
+    CaptureColorimetry, CaptureCursor, CaptureCursorContent, CaptureCursorShape,
     CaptureCursorShapeFormat, CaptureDamage, CaptureFrame, CaptureFrameError, CaptureFrameMetadata,
     CaptureFrameProcessor, CaptureGeometry, CapturePixelFormat, CaptureRotation, CaptureSourceId,
-    CaptureStageKind, CaptureStorage, CaptureTransferFunction, CpuCaptureStorage, PhysicalOrigin,
-    PixelExtent, PixelRect, RawCaptureSurface, SourceScale,
+    CaptureStageKind, CaptureStorage, CpuCaptureStorage, PhysicalOrigin, PixelExtent, PixelRect,
+    RawCaptureSurface, SourceScale,
 };
 
 fn extent(width: u32, height: u32) -> PixelExtent {
@@ -39,8 +39,7 @@ fn metadata(
             SourceScale::ONE,
         )
         .expect("test geometry is valid"),
-        color_space: CaptureColorSpace::Srgb,
-        transfer_function: CaptureTransferFunction::Srgb,
+        colorimetry: CaptureColorimetry::SRGB,
         cursor: CaptureCursor::default(),
     }
 }

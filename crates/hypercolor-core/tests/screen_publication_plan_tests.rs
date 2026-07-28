@@ -4,22 +4,25 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use hypercolor_core::input::screen::{
-    ArmedScreenPlan, CaptureColorSpace, CaptureEpoch, CaptureGeometry, CapturePixelFormat,
+    ArmedScreenPlan, CaptureColorSpace, CaptureColorimetry, CaptureDynamicRange, CaptureEpoch,
+    CaptureGeometry, CaptureLuminanceContext, CapturePixelFormat, CapturePositiveScalar,
     CaptureRotation, CaptureSourceId, CaptureTransferFunction, CommittedScreenPlan,
-    InputPublicationDemandRevision, PhysicalOrigin, PixelExtent, PixelRect, PlatformGpuApi,
-    RegisteredScreenBranchDemand, ResolvedScreenBranchDemand, ResolvedScreenPublicationDescriptor,
-    ResolvedScreenSource, ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAspectPolicy,
-    ScreenBackendResourceIdentity, ScreenBranchDeliveryLifecycle, ScreenBranchPayload,
-    ScreenCaptureBackend, ScreenCapturePlan, ScreenColorTuning, ScreenCompatibilitySelection,
+    InputPublicationDemandRevision, KnownCaptureColorimetry, PhysicalOrigin, PixelExtent,
+    PixelRect, PlatformGpuApi, RegisteredScreenBranchDemand, ResolvedScreenBranchDemand,
+    ResolvedScreenPublicationDescriptor, ResolvedScreenSource, ResolvedScreenSourceConfig,
+    ScreenAdmissionCapacity, ScreenAspectPolicy, ScreenBackendResourceIdentity,
+    ScreenBranchDeliveryLifecycle, ScreenBranchPayload, ScreenCaptureBackend, ScreenCapturePlan,
+    ScreenColorTransformCapabilities, ScreenColorTuning, ScreenCompatibilitySelection,
     ScreenContentBarsPolicy, ScreenContinuityError, ScreenCursorCapabilities, ScreenCursorPolicy,
     ScreenExactResource, ScreenExactResourceLedger, ScreenExtentRequest, ScreenGridPolicy,
-    ScreenInputGraphGeneration, ScreenLetterboxFill, ScreenPlanBuilder, ScreenPlanError,
-    ScreenProcessingProfile, ScreenProcessingProfileConfig, ScreenProfileScalar,
+    ScreenHdrPolicy, ScreenInputGraphGeneration, ScreenLetterboxFill, ScreenPlanBuilder,
+    ScreenPlanError, ScreenProcessingProfile, ScreenProcessingProfileConfig, ScreenProfileScalar,
     ScreenPublicationColorimetry, ScreenPublicationError, ScreenPublicationFreshness,
     ScreenPublicationHealth, ScreenPublicationHubError, ScreenPublicationKind,
     ScreenPublicationMetadata, ScreenPublicationRequest, ScreenPublicationSlotPolicy,
     ScreenReductionFilter, ScreenResourceApi, ScreenResourceKind, ScreenSceneCutPolicy,
     ScreenSmoothingPolicy, ScreenSourceReflection, ScreenSourceSelector, ScreenSurfacePayload,
+    ScreenTargetColorimetry, ScreenToneMapOperator, ScreenToneMapPolicy, ScreenUnknownColorPolicy,
     ScreenUpscalePolicy, ScreenWorkerBinding, ScreenWorkerBindingState,
     ScreenWorkerPreparationTicket, ScreenZonesPayload, SourceScale,
 };
@@ -30,6 +33,34 @@ fn non_zero(value: u32) -> NonZeroU32 {
 
 fn pixel_extent(width: u32, height: u32) -> PixelExtent {
     PixelExtent::new(width, height).expect("test extents are non-empty")
+}
+
+fn known_colorimetry(
+    color_space: CaptureColorSpace,
+    transfer_function: CaptureTransferFunction,
+) -> KnownCaptureColorimetry {
+    KnownCaptureColorimetry::try_new(
+        color_space,
+        transfer_function,
+        CaptureDynamicRange::Standard,
+        None,
+    )
+    .expect("test colorimetry is complete")
+}
+
+fn colorimetry(
+    color_space: CaptureColorSpace,
+    transfer_function: CaptureTransferFunction,
+) -> CaptureColorimetry {
+    CaptureColorimetry::from_known(known_colorimetry(color_space, transfer_function))
+}
+
+fn luminance(reference_white: f32, peak: f32) -> CaptureLuminanceContext {
+    CaptureLuminanceContext::new(
+        CapturePositiveScalar::try_new(reference_white).expect("test white is positive"),
+        CapturePositiveScalar::try_new(peak).expect("test peak is positive"),
+    )
+    .expect("test luminance is ordered")
 }
 
 fn source_id(value: &str) -> CaptureSourceId {
@@ -73,8 +104,7 @@ impl SourceConfigParts {
             self.logical_extent,
             self.reflection,
             self.pixel_format,
-            self.color_space,
-            self.transfer_function,
+            colorimetry(self.color_space, self.transfer_function),
             ScreenCursorCapabilities::clean_with_separate_cursor(),
             self.resources,
         )
@@ -160,7 +190,15 @@ fn resolve(
     source: &ResolvedScreenSource,
 ) -> ResolvedScreenBranchDemand {
     demand
-        .resolve(source)
+        .resolve_with_color_capabilities(
+            source,
+            ScreenColorTransformCapabilities::new(
+                true,
+                true,
+                true,
+                demand.request().processing_profile().algorithm_revision(),
+            ),
+        )
         .expect("test publication request resolves")
 }
 
@@ -216,10 +254,7 @@ fn binding_for(builder: &ScreenPlanBuilder, source: &CaptureSourceId) -> ScreenW
 fn descriptor_colorimetry(
     descriptor: &ResolvedScreenPublicationDescriptor,
 ) -> ScreenPublicationColorimetry {
-    ScreenPublicationColorimetry::new(
-        descriptor.physical().target_color_space(),
-        descriptor.physical().target_transfer_function(),
-    )
+    ScreenPublicationColorimetry::new(descriptor.physical().color_pipeline().output())
 }
 
 fn surface_payload<'a>(
@@ -789,7 +824,32 @@ fn every_processing_profile_field_participates_in_exact_grouping() {
             ..ScreenProcessingProfileConfig::default()
         },
         ScreenProcessingProfileConfig {
-            target_color_space: CaptureColorSpace::DisplayP3,
+            target_colorimetry: ScreenTargetColorimetry::ConvertTo(known_colorimetry(
+                CaptureColorSpace::DisplayP3,
+                CaptureTransferFunction::Srgb,
+            )),
+            ..ScreenProcessingProfileConfig::default()
+        },
+        ScreenProcessingProfileConfig {
+            target_colorimetry: ScreenTargetColorimetry::PreserveSource,
+            ..ScreenProcessingProfileConfig::default()
+        },
+        ScreenProcessingProfileConfig {
+            unknown_color: ScreenUnknownColorPolicy::PreserveEncodedSamples,
+            ..ScreenProcessingProfileConfig::default()
+        },
+        ScreenProcessingProfileConfig {
+            unknown_color: ScreenUnknownColorPolicy::Assume(known_colorimetry(
+                CaptureColorSpace::DisplayP3,
+                CaptureTransferFunction::Srgb,
+            )),
+            ..ScreenProcessingProfileConfig::default()
+        },
+        ScreenProcessingProfileConfig {
+            hdr: ScreenHdrPolicy::ToneMap(ScreenToneMapPolicy::new(
+                ScreenToneMapOperator::Bt2390Eetf,
+                luminance(100.0, 100.0),
+            )),
             ..ScreenProcessingProfileConfig::default()
         },
         ScreenProcessingProfileConfig {
@@ -3157,16 +3217,31 @@ fn typed_publication_validation_and_fixed_slots_preserve_last_good() {
         ScreenSurfacePayload::try_new(
             output_extent(&descriptor),
             descriptor.physical().target_pixel_format(),
-            ScreenPublicationColorimetry::new(
+            ScreenPublicationColorimetry::new(colorimetry(
                 CaptureColorSpace::DisplayP3,
                 CaptureTransferFunction::Linear,
-            ),
+            )),
             &pixels,
         )
         .expect("wrong colorimetry remains structurally valid"),
     );
     assert!(matches!(
         hub.publish(&publisher, wrong_color, &metadata(1)),
+        Err(ScreenPublicationHubError::ColorimetryMismatch { .. })
+    ));
+    let wrong_luminance = ScreenBranchPayload::Surface(
+        ScreenSurfacePayload::try_new(
+            output_extent(&descriptor),
+            descriptor.physical().target_pixel_format(),
+            ScreenPublicationColorimetry::new(CaptureColorimetry::from_known(
+                KnownCaptureColorimetry::SRGB.with_luminance(luminance(100.0, 100.0)),
+            )),
+            &pixels,
+        )
+        .expect("mismatched luminance remains structurally valid"),
+    );
+    assert!(matches!(
+        hub.publish(&publisher, wrong_luminance, &metadata(1)),
         Err(ScreenPublicationHubError::ColorimetryMismatch { .. })
     ));
     let wrong_epoch = ScreenPublicationMetadata::try_new(

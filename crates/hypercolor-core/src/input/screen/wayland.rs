@@ -27,12 +27,11 @@ use pw::spa;
 use tracing::{debug, info, warn};
 
 use crate::input::screen::{
-    AnalyzedScreenSnapshot, CaptureCadence, CaptureColorSpace, CaptureConfig, CaptureCursor,
+    AnalyzedScreenSnapshot, CaptureCadence, CaptureColorimetry, CaptureConfig, CaptureCursor,
     CaptureDamage, CaptureEpoch, CaptureFrame, CaptureFrameMetadata, CaptureGeometry, CapturePacer,
     CapturePixelFormat, CapturePlanePool, CaptureRotation, CaptureSourceId, CaptureStorage,
-    CaptureTransferFunction, CpuCaptureStorage, PhysicalOrigin, PixelExtent, PixelRect,
-    PooledCapturePlane, RawCaptureSurface, ScreenCaptureDemand, ScreenCaptureInput, SourceScale,
-    analyze_screen_frame,
+    CpuCaptureStorage, PhysicalOrigin, PixelExtent, PixelRect, PooledCapturePlane,
+    RawCaptureSurface, ScreenCaptureDemand, ScreenCaptureInput, SourceScale, analyze_screen_frame,
 };
 use crate::input::traits::{InputData, InputSource};
 use crate::input::worker_retention::{retain_input_worker, spawn_input_worker};
@@ -2486,6 +2485,7 @@ impl WaylandAnalysisState {
         crop: Option<PixelRect>,
         transform: CaptureRotation,
         plane: PooledCapturePlane,
+        colorimetry: CaptureColorimetry,
     ) -> anyhow::Result<CaptureFrame<RawCaptureSurface>> {
         self.sequence = self.sequence.wrapping_add(1).max(1);
         let storage_extent = PixelExtent::new(width, height)?;
@@ -2525,8 +2525,7 @@ impl WaylandAnalysisState {
                     crop,
                     self.source.source_scale(topology.native_extent.width()),
                 )?,
-                color_space: CaptureColorSpace::Unknown,
-                transfer_function: CaptureTransferFunction::Unknown,
+                colorimetry,
                 cursor: CaptureCursor::default(),
             },
             CaptureStorage::Cpu(CpuCaptureStorage::from_owner(
@@ -2559,6 +2558,7 @@ fn run_analysis_worker(
     config: CaptureConfig,
     demand: ScreenCaptureDemand,
     cancel: &AtomicBool,
+    status_writer: Option<SourceSessionWriter>,
 ) {
     let mut state =
         match WaylandAnalysisState::new(settings, latest_snapshot, source, config, demand) {
@@ -2568,6 +2568,7 @@ fn run_analysis_worker(
                 return;
             }
         };
+    let mut analysis_failure_latched = false;
     while let Some(event) = exchange.wait_for_event(state.next_analysis_at, cancel) {
         let decoded = match event {
             AnalysisEvent::Frame(decoded) => decoded,
@@ -2610,18 +2611,68 @@ fn run_analysis_worker(
         let transform = decoded.transform;
         drop(decoded);
 
-        let Ok(frame) =
-            state.capture_frame(captured_at, width, height, crop, transform, plane.freeze())
-        else {
-            continue;
+        let frame = match state.capture_frame(
+            captured_at,
+            width,
+            height,
+            crop,
+            transform,
+            plane.freeze(),
+            CaptureColorimetry::unknown(),
+        ) {
+            Ok(frame) => frame,
+            Err(error) => {
+                latch_wayland_analysis_failure(
+                    status_writer.as_ref(),
+                    &mut analysis_failure_latched,
+                    &error,
+                );
+                continue;
+            }
         };
-        let Ok(analysis) = analyze_screen_frame(&mut state.analyzer, frame) else {
-            continue;
+        let analysis = match analyze_screen_frame(&mut state.analyzer, frame) {
+            Ok(analysis) => analysis,
+            Err(error) => {
+                latch_wayland_analysis_failure(
+                    status_writer.as_ref(),
+                    &mut analysis_failure_latched,
+                    &error,
+                );
+                continue;
+            }
         };
-        state
+        let metadata = analysis.geometry_frame().metadata();
+        let captured_at = metadata.captured_at;
+        let fresh_until = metadata.fresh_until;
+        if state
             .settings
-            .publish_snapshot(&state.latest_snapshot, analysis);
+            .publish_snapshot(&state.latest_snapshot, analysis)
+        {
+            analysis_failure_latched = false;
+            if let Some(status) = status_writer.as_ref() {
+                let _ = status.record_sample(captured_at, fresh_until, 1);
+            }
+        }
     }
+}
+
+fn latch_wayland_analysis_failure(
+    status_writer: Option<&SourceSessionWriter>,
+    latched: &mut bool,
+    error: &anyhow::Error,
+) {
+    if *latched {
+        return;
+    }
+    warn!(%error, "Wayland screen analysis rejected a frame; retaining last good publication");
+    if let Some(status) = status_writer {
+        status.degraded(SourceIssue::new(
+            "wayland_screen_analysis_rejected",
+            error.to_string(),
+            true,
+        ));
+    }
+    *latched = true;
 }
 
 fn run_capture_worker(
@@ -2751,6 +2802,7 @@ fn run_capture_worker(
             &mut command_rx,
             Arc::clone(&flags.cancel),
             session_generation,
+            status_writer.clone(),
         );
         settings.invalidate_session(&latest_snapshot, session_generation);
         if let Err(error) = runtime.block_on(session.close()) {
@@ -3127,6 +3179,7 @@ fn run_pipewire_loop(
     command_rx: &mut Option<pw::channel::Receiver<WorkerCommand>>,
     cancel: Arc<AtomicBool>,
     session_generation: u64,
+    status_writer: Option<SourceSessionWriter>,
 ) -> anyhow::Result<PipeWireLoopExit> {
     pw::init();
     let source = WaylandSourceMetadata::from_stream(&portal_stream, session_generation)?;
@@ -3490,6 +3543,7 @@ fn run_pipewire_loop(
                     analysis_config,
                     analysis_demand,
                     &analysis_cancel,
+                    status_writer,
                 );
             }));
             if result.is_err() {

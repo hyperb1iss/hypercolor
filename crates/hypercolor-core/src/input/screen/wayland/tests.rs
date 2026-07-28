@@ -17,9 +17,9 @@ use super::{
     worker_demand_epoch, worker_demanded,
 };
 use crate::input::screen::{
-    AnalyzedScreenSnapshot, CaptureConfig, CaptureRotation, CaptureSourceId,
-    MAX_REPRESENTABLE_CAPTURE_FPS, PhysicalOrigin, PixelExtent, PixelRect, ScreenCaptureDemand,
-    analyze_screen_frame,
+    AnalyzedScreenSnapshot, CaptureColorimetry, CaptureConfig, CaptureFrameError, CaptureRotation,
+    CaptureSourceId, MAX_REPRESENTABLE_CAPTURE_FPS, PhysicalOrigin, PixelExtent, PixelRect,
+    ScreenCaptureDemand, analyze_screen_frame,
 };
 use crate::input::{SourceIssue, SourceKind, SourceState, SourceStatusReporter};
 
@@ -134,6 +134,7 @@ fn capture_legacy(
             None,
             CaptureRotation::Identity,
             plane.freeze(),
+            CaptureColorimetry::SRGB,
         )
         .expect("test frame is valid");
     analyze_screen_frame(&mut state.analyzer, frame)
@@ -736,6 +737,7 @@ fn analysis_envelope_reports_pending_crop_and_transform() {
             Some(crop),
             CaptureRotation::Clockwise270,
             plane.freeze(),
+            CaptureColorimetry::unknown(),
         )
         .expect("raw frame accepts pending geometry metadata");
 
@@ -744,6 +746,43 @@ fn analysis_envelope_reports_pending_crop_and_transform() {
         frame.metadata().geometry.rotation(),
         CaptureRotation::Clockwise270
     );
+}
+
+#[test]
+fn legacy_analysis_rejects_unknown_wayland_samples_before_averaging() {
+    let settings = settings(17);
+    let mut analysis = WaylandAnalysisState::new(
+        Arc::clone(&settings),
+        Arc::new(Mutex::new(None)),
+        source(17, PhysicalOrigin::default(), extent(4, 2)),
+        CaptureConfig::default(),
+        active_demand(),
+    )
+    .expect("test analysis extent allocates");
+    let mut plane = analysis
+        .plane_pool
+        .try_acquire(32)
+        .expect("test plane allocation succeeds");
+    plane.resize(32, 0);
+    let frame = analysis
+        .capture_frame(
+            Instant::now(),
+            4,
+            2,
+            None,
+            CaptureRotation::Identity,
+            plane.freeze(),
+            CaptureColorimetry::unknown(),
+        )
+        .expect("raw frame accepts unknown backend metadata");
+
+    let error = analyze_screen_frame(&mut analysis.analyzer, frame)
+        .expect_err("unknown encoded samples must not reach legacy averaging");
+    assert!(matches!(
+        error.downcast_ref::<CaptureFrameError>(),
+        Some(CaptureFrameError::UnsupportedLegacyAnalysisColorimetry { colorimetry })
+            if *colorimetry == CaptureColorimetry::unknown()
+    ));
 }
 
 #[test]

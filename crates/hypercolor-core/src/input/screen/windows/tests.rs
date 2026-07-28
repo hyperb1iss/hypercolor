@@ -13,10 +13,10 @@ use super::{
     record_capture_health, settle_inactive_capture,
 };
 use crate::input::screen::{
-    CaptureCadence, CaptureColorSpace, CaptureConfig, CaptureCursor, CaptureDamage, CaptureFrame,
+    CaptureCadence, CaptureColorimetry, CaptureConfig, CaptureCursor, CaptureDamage, CaptureFrame,
     CaptureFrameError, CaptureFrameMetadata, CapturePixelFormat, CaptureRotation, CaptureStorage,
-    CaptureTransferFunction, CpuCaptureStorage, MAX_REPRESENTABLE_CAPTURE_FPS, PhysicalOrigin,
-    PixelExtent, RawCaptureSurface, ScreenCaptureDemand,
+    CpuCaptureStorage, MAX_REPRESENTABLE_CAPTURE_FPS, PhysicalOrigin, PixelExtent,
+    RawCaptureSurface, ScreenCaptureDemand,
 };
 use crate::input::status::{ScreenCaptureReductionPath, SourceDiagnostics};
 use crate::input::traits::InputSource;
@@ -538,8 +538,7 @@ fn adapter_epoch_rejects_a_frame_from_another_monitor_or_generation() {
             captured_at,
             fresh_until: captured_at + Duration::from_millis(50),
             geometry,
-            color_space: CaptureColorSpace::Unknown,
-            transfer_function: CaptureTransferFunction::Unknown,
+            colorimetry: CaptureColorimetry::unknown(),
             cursor: CaptureCursor::default(),
         },
         CaptureStorage::Cpu(CpuCaptureStorage::new(

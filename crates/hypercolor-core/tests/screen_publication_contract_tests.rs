@@ -3,14 +3,15 @@
 use std::sync::Arc;
 
 use hypercolor_core::input::screen::{
-    CaptureColorSpace, CaptureEpoch, CaptureGeometry, CapturePixelFormat, CaptureRotation,
-    CaptureSourceId, CaptureTransferFunction, PhysicalOrigin, PixelExtent,
-    RegisteredScreenBranchDemand, ResolvedScreenSource, ResolvedScreenSourceConfig,
-    ScreenAspectPolicy, ScreenBackendResourceIdentity, ScreenCaptureBackend,
-    ScreenCursorCapabilities, ScreenCursorPolicy, ScreenExtentRequest, ScreenProcessingProfile,
+    CaptureColorSpace, CaptureColorimetry, CaptureDynamicRange, CaptureEpoch, CaptureGeometry,
+    CapturePixelFormat, CaptureRotation, CaptureSourceId, CaptureTransferFunction,
+    KnownCaptureColorimetry, PhysicalOrigin, PixelExtent, RegisteredScreenBranchDemand,
+    ResolvedScreenSource, ResolvedScreenSourceConfig, ScreenAspectPolicy,
+    ScreenBackendResourceIdentity, ScreenCaptureBackend, ScreenCursorCapabilities,
+    ScreenCursorPolicy, ScreenExtentRequest, ScreenProcessingProfile,
     ScreenProcessingProfileConfig, ScreenPublicationError, ScreenPublicationKind,
     ScreenPublicationRequest, ScreenResourceApi, ScreenSourceReflection, ScreenSourceSelector,
-    SourceScale,
+    ScreenTargetColorimetry, SourceScale,
 };
 
 fn source(capabilities: ScreenCursorCapabilities) -> ResolvedScreenSource {
@@ -38,8 +39,7 @@ fn source(capabilities: ScreenCursorCapabilities) -> ResolvedScreenSource {
             extent,
             ScreenSourceReflection::None,
             CapturePixelFormat::Bgra8,
-            CaptureColorSpace::Srgb,
-            CaptureTransferFunction::Srgb,
+            CaptureColorimetry::SRGB,
             capabilities,
             ScreenBackendResourceIdentity::new(
                 ScreenCaptureBackend::Synthetic,
@@ -62,8 +62,10 @@ fn request(profile: ScreenProcessingProfile) -> ScreenPublicationRequest {
 }
 
 #[test]
-fn cursor_policy_rejects_only_impossible_source_storage() {
-    let exclude = request(ScreenProcessingProfile::default());
+fn cursor_policy_rejects_impossible_storage_before_transform_admission() {
+    let exclude = request(ScreenProcessingProfile::new(
+        ScreenProcessingProfileConfig::exact_encoded_identity(CapturePixelFormat::Bgra8),
+    ));
     assert_eq!(
         exclude.resolve(&source(ScreenCursorCapabilities::composed_only())),
         Err(ScreenPublicationError::CursorExclusionUnsupported)
@@ -79,42 +81,43 @@ fn cursor_policy_rejects_only_impossible_source_storage() {
         include.resolve(&source(ScreenCursorCapabilities::clean_only())),
         Err(ScreenPublicationError::CursorInclusionUnsupported)
     );
-    include
-        .resolve(&source(
+    assert_eq!(
+        include.resolve(&source(
             ScreenCursorCapabilities::clean_with_separate_cursor(),
-        ))
-        .expect("separate cursor pixels can satisfy inclusion");
-    include
-        .resolve(&source(ScreenCursorCapabilities::composed_only()))
-        .expect("composed cursor pixels can satisfy inclusion");
+        )),
+        Err(ScreenPublicationError::UnsupportedColorTransform)
+    );
+    assert_eq!(
+        include.resolve(&source(ScreenCursorCapabilities::composed_only())),
+        Err(ScreenPublicationError::UnsupportedColorTransform)
+    );
 }
 
 #[test]
-fn target_transfer_function_participates_in_physical_identity() {
+fn target_transfer_function_participates_in_profile_identity_before_admission() {
     let srgb_profile = ScreenProcessingProfile::default();
+    let linear = KnownCaptureColorimetry::try_new(
+        CaptureColorSpace::Srgb,
+        CaptureTransferFunction::Linear,
+        CaptureDynamicRange::Standard,
+        None,
+    )
+    .expect("test target is complete");
     let linear_profile = ScreenProcessingProfile::new(ScreenProcessingProfileConfig {
-        target_transfer_function: CaptureTransferFunction::Linear,
+        target_colorimetry: ScreenTargetColorimetry::ConvertTo(linear),
         ..ScreenProcessingProfileConfig::default()
     });
     assert_ne!(srgb_profile, linear_profile);
     assert_ne!(srgb_profile.cmp(&linear_profile), std::cmp::Ordering::Equal);
 
     let source = source(ScreenCursorCapabilities::clean_only());
-    let srgb = request(srgb_profile)
-        .resolve(&source)
-        .expect("clean source supports exclusion");
-    let linear = request(linear_profile)
-        .resolve(&source)
-        .expect("clean source supports exclusion");
-
-    assert_ne!(srgb.physical(), linear.physical());
     assert_eq!(
-        srgb.physical().target_transfer_function(),
-        CaptureTransferFunction::Srgb
+        request(srgb_profile).resolve(&source),
+        Err(ScreenPublicationError::UnsupportedColorTransform)
     );
     assert_eq!(
-        linear.physical().target_transfer_function(),
-        CaptureTransferFunction::Linear
+        request(linear_profile).resolve(&source),
+        Err(ScreenPublicationError::UnsupportedColorTransform)
     );
 }
 

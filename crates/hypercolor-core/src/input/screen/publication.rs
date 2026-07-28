@@ -8,8 +8,10 @@ use std::time::Duration;
 use thiserror::Error;
 
 use super::{
-    CaptureColorSpace, CaptureEpoch, CaptureGeometry, CapturePixelFormat, CaptureRotation,
-    CaptureSourceId, CaptureTransferFunction, PixelExtent, PixelRect, PlatformGpuApi,
+    CaptureColorSpace, CaptureColorimetry, CaptureColorimetryError, CaptureDynamicRange,
+    CaptureEpoch, CaptureGeometry, CaptureLuminanceContext, CapturePixelFormat, CaptureRotation,
+    CaptureSourceId, CaptureTransferFunction, KnownCaptureColorimetry, PixelExtent, PixelRect,
+    PlatformGpuApi,
 };
 
 /// Selector used by a consumer before capture-source resolution.
@@ -142,8 +144,7 @@ pub struct ResolvedScreenSourceConfig {
     logical_extent: PixelExtent,
     reflection: ScreenSourceReflection,
     pixel_format: CapturePixelFormat,
-    color_space: CaptureColorSpace,
-    transfer_function: CaptureTransferFunction,
+    colorimetry: CaptureColorimetry,
     cursor_capabilities: ScreenCursorCapabilities,
     resources: ScreenBackendResourceIdentity,
 }
@@ -156,8 +157,7 @@ impl ResolvedScreenSourceConfig {
         logical_extent: PixelExtent,
         reflection: ScreenSourceReflection,
         pixel_format: CapturePixelFormat,
-        color_space: CaptureColorSpace,
-        transfer_function: CaptureTransferFunction,
+        colorimetry: CaptureColorimetry,
         resources: ScreenBackendResourceIdentity,
     ) -> Self {
         Self {
@@ -165,8 +165,7 @@ impl ResolvedScreenSourceConfig {
             logical_extent,
             reflection,
             pixel_format,
-            color_space,
-            transfer_function,
+            colorimetry,
             cursor_capabilities: ScreenCursorCapabilities::clean_only(),
             resources,
         }
@@ -179,8 +178,7 @@ impl ResolvedScreenSourceConfig {
         logical_extent: PixelExtent,
         reflection: ScreenSourceReflection,
         pixel_format: CapturePixelFormat,
-        color_space: CaptureColorSpace,
-        transfer_function: CaptureTransferFunction,
+        colorimetry: CaptureColorimetry,
         cursor_capabilities: ScreenCursorCapabilities,
         resources: ScreenBackendResourceIdentity,
     ) -> Self {
@@ -189,8 +187,7 @@ impl ResolvedScreenSourceConfig {
             logical_extent,
             reflection,
             pixel_format,
-            color_space,
-            transfer_function,
+            colorimetry,
             cursor_capabilities,
             resources,
         }
@@ -220,16 +217,10 @@ impl ResolvedScreenSourceConfig {
         self.pixel_format
     }
 
-    /// Native source color space.
+    /// Native source color metadata.
     #[must_use]
-    pub const fn color_space(&self) -> CaptureColorSpace {
-        self.color_space
-    }
-
-    /// Native source transfer function.
-    #[must_use]
-    pub const fn transfer_function(&self) -> CaptureTransferFunction {
-        self.transfer_function
+    pub const fn colorimetry(&self) -> CaptureColorimetry {
+        self.colorimetry
     }
 
     /// Cursor storage modes the backend can truthfully provide.
@@ -253,13 +244,7 @@ impl Ord for ResolvedScreenSourceConfig {
             .then_with(|| {
                 pixel_format_rank(self.pixel_format).cmp(&pixel_format_rank(other.pixel_format))
             })
-            .then_with(|| {
-                color_space_rank(self.color_space).cmp(&color_space_rank(other.color_space))
-            })
-            .then_with(|| {
-                transfer_function_rank(self.transfer_function)
-                    .cmp(&transfer_function_rank(other.transfer_function))
-            })
+            .then_with(|| self.colorimetry.cmp(&other.colorimetry))
             .then_with(|| self.cursor_capabilities.cmp(&other.cursor_capabilities))
             .then_with(|| self.resources.cmp(&other.resources))
     }
@@ -616,6 +601,236 @@ pub enum ScreenReductionFilter {
     Area,
 }
 
+/// Requested output color contract.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ScreenTargetColorimetry {
+    /// Retain the source encoding and metadata exactly.
+    PreserveSource,
+    /// Decode and encode into one fully-known target contract.
+    ConvertTo(KnownCaptureColorimetry),
+}
+
+impl Default for ScreenTargetColorimetry {
+    fn default() -> Self {
+        Self::ConvertTo(KnownCaptureColorimetry::SRGB)
+    }
+}
+
+/// Color operations one concrete reducer can execute faithfully.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ScreenColorTransformCapabilities {
+    linear_light_sdr_processing: bool,
+    linear_relative_color_conversion: bool,
+    pq_bt2390_tone_mapping: bool,
+    algorithm_revision: Option<NonZeroU32>,
+}
+
+impl ScreenColorTransformCapabilities {
+    /// No byte-changing color operation is executable.
+    pub const NONE: Self = Self {
+        linear_light_sdr_processing: false,
+        linear_relative_color_conversion: false,
+        pq_bt2390_tone_mapping: false,
+        algorithm_revision: None,
+    };
+
+    /// Declare the exact color operations implemented by one reducer.
+    #[must_use]
+    pub const fn new(
+        linear_light_sdr_processing: bool,
+        linear_relative_color_conversion: bool,
+        pq_bt2390_tone_mapping: bool,
+        algorithm_revision: NonZeroU32,
+    ) -> Self {
+        Self {
+            linear_light_sdr_processing,
+            linear_relative_color_conversion,
+            pq_bt2390_tone_mapping,
+            algorithm_revision: Some(algorithm_revision),
+        }
+    }
+
+    /// Whether same-encoding SDR samples can be processed in linear light end to end.
+    #[must_use]
+    pub const fn supports_linear_light_sdr_processing(self) -> bool {
+        self.linear_light_sdr_processing
+    }
+
+    /// Whether differing known SDR contracts can be converted end to end.
+    #[must_use]
+    pub const fn supports_linear_relative_color_conversion(self) -> bool {
+        self.linear_relative_color_conversion
+    }
+
+    /// Whether PQ HDR can be mapped to SDR with BT.2390 end to end.
+    #[must_use]
+    pub const fn supports_pq_bt2390_tone_mapping(self) -> bool {
+        self.pq_bt2390_tone_mapping
+    }
+
+    /// Whether this reducer's end-to-end conversion promises cover one gamut policy.
+    #[must_use]
+    pub const fn supports_gamut_policy(self, policy: ScreenGamutMapPolicy) -> bool {
+        match policy {
+            ScreenGamutMapPolicy::RelativeColorimetricClip => {
+                self.linear_relative_color_conversion || self.pq_bt2390_tone_mapping
+            }
+        }
+    }
+
+    /// Exact processing algorithm revision implemented by this reducer.
+    #[must_use]
+    pub const fn algorithm_revision(self) -> Option<NonZeroU32> {
+        self.algorithm_revision
+    }
+}
+
+/// Policy for source metadata that is not complete enough to decode.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ScreenUnknownColorPolicy {
+    /// Reject the branch before backend preparation.
+    #[default]
+    Reject,
+    /// Retain unknown encoded samples only through a byte-preserving surface path.
+    PreserveEncodedSamples,
+    /// Fill only missing source fields from an explicit known contract.
+    Assume(KnownCaptureColorimetry),
+}
+
+/// Gamut behavior for known-primary conversions.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ScreenGamutMapPolicy {
+    /// Apply the relative-colorimetric matrix and clip target-linear channels.
+    #[default]
+    RelativeColorimetricClip,
+}
+
+/// Precisely selected HDR-to-SDR electro-electrical transfer operation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ScreenToneMapOperator {
+    /// ITU-R BT.2390 electro-electrical transfer function.
+    Bt2390Eetf,
+}
+
+/// Requested HDR-to-SDR tone-map parameters.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ScreenToneMapPolicy {
+    operator: ScreenToneMapOperator,
+    target_luminance: CaptureLuminanceContext,
+}
+
+impl ScreenToneMapPolicy {
+    /// Construct one complete tone-map request.
+    #[must_use]
+    pub const fn new(
+        operator: ScreenToneMapOperator,
+        target_luminance: CaptureLuminanceContext,
+    ) -> Self {
+        Self {
+            operator,
+            target_luminance,
+        }
+    }
+
+    /// Exact tone-map operator.
+    #[must_use]
+    pub const fn operator(self) -> ScreenToneMapOperator {
+        self.operator
+    }
+
+    /// Absolute target display context.
+    #[must_use]
+    pub const fn target_luminance(self) -> CaptureLuminanceContext {
+        self.target_luminance
+    }
+}
+
+/// Admission policy for HDR source or target contracts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ScreenHdrPolicy {
+    /// Reject HDR before backend preparation.
+    #[default]
+    Reject,
+    /// Resolve an HDR source into an SDR target with exact parameters.
+    ToneMap(ScreenToneMapPolicy),
+}
+
+/// Fully-resolved tone-map operation participating in physical identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ResolvedScreenToneMap {
+    operator: ScreenToneMapOperator,
+    source_luminance: CaptureLuminanceContext,
+    target_luminance: CaptureLuminanceContext,
+    gamut: ScreenGamutMapPolicy,
+}
+
+impl ResolvedScreenToneMap {
+    /// Exact tone-map operator.
+    #[must_use]
+    pub const fn operator(self) -> ScreenToneMapOperator {
+        self.operator
+    }
+
+    /// Absolute source luminance context.
+    #[must_use]
+    pub const fn source_luminance(self) -> CaptureLuminanceContext {
+        self.source_luminance
+    }
+
+    /// Absolute target luminance context.
+    #[must_use]
+    pub const fn target_luminance(self) -> CaptureLuminanceContext {
+        self.target_luminance
+    }
+
+    /// Exact gamut conversion behavior.
+    #[must_use]
+    pub const fn gamut(self) -> ScreenGamutMapPolicy {
+        self.gamut
+    }
+}
+
+/// Byte-changing color operation selected before backend preparation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ResolvedScreenColorTransform {
+    /// Preserve source encoded samples and metadata.
+    PreserveEncodedSamples,
+    /// Decode, process, and re-encode without changing the SDR encoding.
+    LinearLightSdr,
+    /// Decode, convert primaries in linear light, and encode the target.
+    LinearRelativeColorimetric { gamut: ScreenGamutMapPolicy },
+    /// Decode and tone-map HDR samples into an SDR target.
+    ToneMap(ResolvedScreenToneMap),
+}
+
+/// Complete color pipeline used as part of physical byte identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ResolvedScreenColorPipeline {
+    effective_source: Option<KnownCaptureColorimetry>,
+    output: CaptureColorimetry,
+    transform: ResolvedScreenColorTransform,
+}
+
+impl ResolvedScreenColorPipeline {
+    /// Effective source contract after explicit assumption resolution.
+    #[must_use]
+    pub const fn effective_source(self) -> Option<KnownCaptureColorimetry> {
+        self.effective_source
+    }
+
+    /// Exact metadata describing published channel values.
+    #[must_use]
+    pub const fn output(self) -> CaptureColorimetry {
+        self.output
+    }
+
+    /// Exact color operation required before publication.
+    #[must_use]
+    pub const fn transform(self) -> ResolvedScreenColorTransform {
+        self.transform
+    }
+}
+
 /// Complete immutable byte-changing processing configuration.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ScreenProcessingProfile {
@@ -627,8 +842,10 @@ pub struct ScreenProcessingProfile {
     grid: ScreenGridPolicy,
     reduction_filter: ScreenReductionFilter,
     target_pixel_format: CapturePixelFormat,
-    target_color_space: CaptureColorSpace,
-    target_transfer_function: CaptureTransferFunction,
+    target_colorimetry: ScreenTargetColorimetry,
+    unknown_color: ScreenUnknownColorPolicy,
+    hdr: ScreenHdrPolicy,
+    gamut: ScreenGamutMapPolicy,
     algorithm_revision: NonZeroU32,
 }
 
@@ -651,14 +868,43 @@ pub struct ScreenProcessingProfileConfig {
     pub reduction_filter: ScreenReductionFilter,
     /// Pixel storage format of the derived output.
     pub target_pixel_format: CapturePixelFormat,
-    /// Color space of the derived output.
-    pub target_color_space: CaptureColorSpace,
-    /// Transfer function of the derived output.
-    pub target_transfer_function: CaptureTransferFunction,
+    /// Desired output color contract.
+    pub target_colorimetry: ScreenTargetColorimetry,
+    /// Admission policy for incomplete source metadata.
+    pub unknown_color: ScreenUnknownColorPolicy,
+    /// Admission policy for HDR sources and targets.
+    pub hdr: ScreenHdrPolicy,
+    /// Gamut behavior for known-primary conversions.
+    pub gamut: ScreenGamutMapPolicy,
     /// Revision of the complete processing algorithm.
     pub algorithm_revision: NonZeroU32,
 }
 
+impl ScreenProcessingProfileConfig {
+    /// Exact encoded-sample identity without any managed color operation.
+    ///
+    /// This profile is executable without reducer color capabilities for a
+    /// canonical native surface. Fully-known SDR metadata is retained, while
+    /// unknown metadata is admitted only through the same byte-identity proof.
+    /// Algorithm revision is irrelevant because no processing is performed.
+    #[must_use]
+    pub fn exact_encoded_identity(pixel_format: CapturePixelFormat) -> Self {
+        Self {
+            content_bars: ScreenContentBarsPolicy::Disabled,
+            smoothing: ScreenSmoothingPolicy::Disabled,
+            tuning: ScreenColorTuning::default(),
+            cursor: ScreenCursorPolicy::Exclude,
+            reduction_filter: ScreenReductionFilter::Nearest,
+            target_pixel_format: pixel_format,
+            target_colorimetry: ScreenTargetColorimetry::PreserveSource,
+            unknown_color: ScreenUnknownColorPolicy::PreserveEncodedSamples,
+            ..Self::default()
+        }
+    }
+}
+
+/// Desired high-quality managed output. Resolution remains capability-gated
+/// until the reducer advertises executable color transforms.
 impl Default for ScreenProcessingProfileConfig {
     fn default() -> Self {
         Self {
@@ -670,8 +916,10 @@ impl Default for ScreenProcessingProfileConfig {
             grid: ScreenGridPolicy::default(),
             reduction_filter: ScreenReductionFilter::default(),
             target_pixel_format: CapturePixelFormat::Rgba8,
-            target_color_space: CaptureColorSpace::Srgb,
-            target_transfer_function: CaptureTransferFunction::Srgb,
+            target_colorimetry: ScreenTargetColorimetry::default(),
+            unknown_color: ScreenUnknownColorPolicy::default(),
+            hdr: ScreenHdrPolicy::default(),
+            gamut: ScreenGamutMapPolicy::default(),
             algorithm_revision: NonZeroU32::MIN,
         }
     }
@@ -690,8 +938,10 @@ impl ScreenProcessingProfile {
             grid: config.grid,
             reduction_filter: config.reduction_filter,
             target_pixel_format: config.target_pixel_format,
-            target_color_space: config.target_color_space,
-            target_transfer_function: config.target_transfer_function,
+            target_colorimetry: config.target_colorimetry,
+            unknown_color: config.unknown_color,
+            hdr: config.hdr,
+            gamut: config.gamut,
             algorithm_revision: config.algorithm_revision,
         }
     }
@@ -744,16 +994,28 @@ impl ScreenProcessingProfile {
         self.target_pixel_format
     }
 
-    /// Derived output color space.
+    /// Desired output color contract.
     #[must_use]
-    pub const fn target_color_space(&self) -> CaptureColorSpace {
-        self.target_color_space
+    pub const fn target_colorimetry(&self) -> ScreenTargetColorimetry {
+        self.target_colorimetry
     }
 
-    /// Derived output transfer function.
+    /// Incomplete-source admission policy.
     #[must_use]
-    pub const fn target_transfer_function(&self) -> CaptureTransferFunction {
-        self.target_transfer_function
+    pub const fn unknown_color(&self) -> ScreenUnknownColorPolicy {
+        self.unknown_color
+    }
+
+    /// HDR admission policy.
+    #[must_use]
+    pub const fn hdr(&self) -> ScreenHdrPolicy {
+        self.hdr
+    }
+
+    /// Gamut conversion behavior.
+    #[must_use]
+    pub const fn gamut(&self) -> ScreenGamutMapPolicy {
+        self.gamut
     }
 
     /// Complete processing algorithm revision.
@@ -783,14 +1045,10 @@ impl Ord for ScreenProcessingProfile {
                 pixel_format_rank(self.target_pixel_format)
                     .cmp(&pixel_format_rank(other.target_pixel_format))
             })
-            .then_with(|| {
-                color_space_rank(self.target_color_space)
-                    .cmp(&color_space_rank(other.target_color_space))
-            })
-            .then_with(|| {
-                transfer_function_rank(self.target_transfer_function)
-                    .cmp(&transfer_function_rank(other.target_transfer_function))
-            })
+            .then_with(|| self.target_colorimetry.cmp(&other.target_colorimetry))
+            .then_with(|| self.unknown_color.cmp(&other.unknown_color))
+            .then_with(|| self.hdr.cmp(&other.hdr))
+            .then_with(|| self.gamut.cmp(&other.gamut))
             .then_with(|| self.algorithm_revision.cmp(&other.algorithm_revision))
     }
 }
@@ -870,6 +1128,21 @@ impl ScreenPublicationRequest {
         &self,
         source: &ResolvedScreenSource,
     ) -> Result<ResolvedScreenPublicationDescriptor, ScreenPublicationError> {
+        self.resolve_with_color_capabilities(source, ScreenColorTransformCapabilities::NONE)
+    }
+
+    /// Resolve against one source and the exact color operations implemented
+    /// by the selected reducer.
+    ///
+    /// # Errors
+    ///
+    /// In addition to ordinary resolution failures, rejects every
+    /// byte-changing color operation not declared by `capabilities`.
+    pub fn resolve_with_color_capabilities(
+        &self,
+        source: &ResolvedScreenSource,
+        capabilities: ScreenColorTransformCapabilities,
+    ) -> Result<ResolvedScreenPublicationDescriptor, ScreenPublicationError> {
         source.validate_selector(&self.selector)?;
         let cursor_capabilities = source.config.cursor_capabilities;
         match self.processing_profile.cursor {
@@ -882,6 +1155,13 @@ impl ScreenPublicationRequest {
             ScreenCursorPolicy::Exclude | ScreenCursorPolicy::Include => {}
         }
         let geometry = resolve_geometry(source.config.logical_extent, self.extent, self.aspect)?;
+        let color_pipeline = resolve_color_pipeline(
+            &source.config,
+            self.kind,
+            geometry,
+            &self.processing_profile,
+            capabilities,
+        )?;
         Ok(ResolvedScreenPublicationDescriptor {
             physical: ScreenPhysicalReductionDescriptor {
                 source_epoch: source.epoch.clone(),
@@ -892,8 +1172,7 @@ impl ScreenPublicationRequest {
                 reduction_filter: self.processing_profile.reduction_filter,
                 algorithm_revision: self.processing_profile.algorithm_revision,
                 target_pixel_format: self.processing_profile.target_pixel_format,
-                target_color_space: self.processing_profile.target_color_space,
-                target_transfer_function: self.processing_profile.target_transfer_function,
+                color_pipeline,
             },
             kind: self.kind,
             aspect: self.aspect,
@@ -955,16 +1234,10 @@ impl ResolvedScreenSource {
         self.config.pixel_format
     }
 
-    /// Native source color space.
+    /// Native source color metadata.
     #[must_use]
-    pub const fn color_space(&self) -> CaptureColorSpace {
-        self.config.color_space
-    }
-
-    /// Native source transfer function.
-    #[must_use]
-    pub const fn transfer_function(&self) -> CaptureTransferFunction {
-        self.config.transfer_function
+    pub const fn colorimetry(&self) -> CaptureColorimetry {
+        self.config.colorimetry
     }
 
     fn validate_selector(
@@ -1105,8 +1378,7 @@ pub struct ScreenPhysicalReductionDescriptor {
     reduction_filter: ScreenReductionFilter,
     algorithm_revision: NonZeroU32,
     target_pixel_format: CapturePixelFormat,
-    target_color_space: CaptureColorSpace,
-    target_transfer_function: CaptureTransferFunction,
+    color_pipeline: ResolvedScreenColorPipeline,
 }
 
 /// Canonical sharing key for physical reduction work.
@@ -1161,16 +1433,10 @@ impl ScreenPhysicalReductionDescriptor {
         self.target_pixel_format
     }
 
-    /// Target storage color space.
+    /// Complete resolved color conversion and output metadata.
     #[must_use]
-    pub const fn target_color_space(&self) -> CaptureColorSpace {
-        self.target_color_space
-    }
-
-    /// Target storage transfer function.
-    #[must_use]
-    pub const fn target_transfer_function(&self) -> CaptureTransferFunction {
-        self.target_transfer_function
+    pub const fn color_pipeline(&self) -> ResolvedScreenColorPipeline {
+        self.color_pipeline
     }
 }
 
@@ -1189,14 +1455,7 @@ impl Ord for ScreenPhysicalReductionDescriptor {
                 pixel_format_rank(self.target_pixel_format)
                     .cmp(&pixel_format_rank(other.target_pixel_format))
             })
-            .then_with(|| {
-                color_space_rank(self.target_color_space)
-                    .cmp(&color_space_rank(other.target_color_space))
-            })
-            .then_with(|| {
-                transfer_function_rank(self.target_transfer_function)
-                    .cmp(&transfer_function_rank(other.target_transfer_function))
-            })
+            .then_with(|| self.color_pipeline.cmp(&other.color_pipeline))
     }
 }
 
@@ -1240,16 +1499,10 @@ impl ResolvedScreenPublicationDescriptor {
         self.physical.source.pixel_format
     }
 
-    /// Native source color space.
+    /// Native source color metadata.
     #[must_use]
-    pub const fn source_color_space(&self) -> CaptureColorSpace {
-        self.physical.source.color_space
-    }
-
-    /// Native source transfer function.
-    #[must_use]
-    pub const fn source_transfer_function(&self) -> CaptureTransferFunction {
-        self.physical.source.transfer_function
+    pub const fn source_colorimetry(&self) -> CaptureColorimetry {
+        self.physical.source.colorimetry
     }
 
     /// Independently resolved crop and output raster.
@@ -1340,8 +1593,23 @@ impl RegisteredScreenBranchDemand {
         &self,
         source: &ResolvedScreenSource,
     ) -> Result<ResolvedScreenBranchDemand, ScreenPublicationError> {
+        self.resolve_with_color_capabilities(source, ScreenColorTransformCapabilities::NONE)
+    }
+
+    /// Resolve with the exact color operations implemented by the selected reducer.
+    ///
+    /// # Errors
+    ///
+    /// Propagates publication resolution and capability-admission failures.
+    pub fn resolve_with_color_capabilities(
+        &self,
+        source: &ResolvedScreenSource,
+        capabilities: ScreenColorTransformCapabilities,
+    ) -> Result<ResolvedScreenBranchDemand, ScreenPublicationError> {
         Ok(ResolvedScreenBranchDemand {
-            descriptor: self.request.resolve(source)?,
+            descriptor: self
+                .request
+                .resolve_with_color_capabilities(source, capabilities)?,
             requested_hz: self.requested_hz,
         })
     }
@@ -1384,12 +1652,253 @@ pub enum ScreenPublicationError {
     /// Cursor inclusion was requested without composed or separately-owned pixels.
     #[error("screen source cannot provide visible cursor pixels")]
     CursorInclusionUnsupported,
+    /// Source metadata cannot support color-managed processing.
+    #[error("screen source colorimetry is unknown")]
+    UnknownSourceColorimetry,
+    /// An explicit assumption contradicted backend-provided metadata.
+    #[error("screen color assumption conflicts with known source metadata")]
+    ColorAssumptionConflict,
+    /// Unknown samples were requested through a byte-changing path.
+    #[error("unknown colorimetry can only use a byte-preserving surface publication")]
+    UnknownPreservationRequiresByteIdentity,
+    /// The default policy rejects HDR work before backend preparation.
+    #[error("screen HDR processing is not enabled for this publication")]
+    HdrRejected,
+    /// The selected HDR policy cannot perform this source/target conversion.
+    #[error("screen HDR source and target require an unsupported conversion")]
+    UnsupportedHdrConversion,
+    /// Current publication storage cannot preserve the requested color depth.
+    #[error("screen target pixel format cannot preserve the requested color contract")]
+    UnsupportedTargetPixelFormat,
+    /// The reducer has not advertised an executable color transform.
+    #[error("screen reducer does not support the requested color transform")]
+    UnsupportedColorTransform,
+    /// HDR input did not include the absolute context required for tone mapping.
+    #[error("screen HDR source is missing luminance context")]
+    MissingSourceLuminance,
+    /// Target metadata and tone-map policy named different display luminance.
+    #[error("screen tone-map target luminance conflicts with target colorimetry")]
+    ToneMapTargetLuminanceConflict,
     /// A processing scalar was NaN or infinite.
     #[error("screen processing profile scalars must be finite")]
     NonFiniteProfileScalar,
     /// Aspect-derived geometry exceeded the representable pixel extent.
     #[error("resolved screen publication geometry exceeds u32 dimensions")]
     GeometryOverflow,
+}
+
+fn resolve_color_pipeline(
+    source_config: &ResolvedScreenSourceConfig,
+    kind: ScreenPublicationKind,
+    geometry: ResolvedScreenGeometry,
+    profile: &ScreenProcessingProfile,
+    capabilities: ScreenColorTransformCapabilities,
+) -> Result<ResolvedScreenColorPipeline, ScreenPublicationError> {
+    let byte_preserving =
+        byte_preserving_surface_processing(source_config, kind, geometry, profile);
+    let source = source_config.colorimetry();
+    let known_source = source.try_known();
+    let effective_source = match known_source {
+        Ok(known) => known,
+        Err(error) => match profile.unknown_color {
+            ScreenUnknownColorPolicy::Reject => match error {
+                CaptureColorimetryError::MissingHdrLuminance => {
+                    return Err(ScreenPublicationError::MissingSourceLuminance);
+                }
+                CaptureColorimetryError::NonFinitePositiveScalar
+                | CaptureColorimetryError::NonPositiveScalar
+                | CaptureColorimetryError::PeakBelowReferenceWhite
+                | CaptureColorimetryError::UnknownColorSpace
+                | CaptureColorimetryError::UnknownTransferFunction
+                | CaptureColorimetryError::UnknownDynamicRange
+                | CaptureColorimetryError::TransferDynamicRangeMismatch => {
+                    return Err(ScreenPublicationError::UnknownSourceColorimetry);
+                }
+            },
+            ScreenUnknownColorPolicy::PreserveEncodedSamples => {
+                if source.dynamic_range() == Some(CaptureDynamicRange::High)
+                    || matches!(
+                        source.transfer_function(),
+                        CaptureTransferFunction::Pq | CaptureTransferFunction::Hlg
+                    )
+                {
+                    return Err(ScreenPublicationError::UnsupportedTargetPixelFormat);
+                }
+                if profile.target_colorimetry != ScreenTargetColorimetry::PreserveSource
+                    || !byte_preserving
+                {
+                    return Err(ScreenPublicationError::UnknownPreservationRequiresByteIdentity);
+                }
+                return Ok(ResolvedScreenColorPipeline {
+                    effective_source: None,
+                    output: source,
+                    transform: ResolvedScreenColorTransform::PreserveEncodedSamples,
+                });
+            }
+            ScreenUnknownColorPolicy::Assume(assumption) => {
+                merge_color_assumption(source, assumption)?
+            }
+        },
+    };
+
+    resolve_known_color_pipeline(effective_source, byte_preserving, profile, capabilities)
+}
+
+fn merge_color_assumption(
+    source: CaptureColorimetry,
+    assumption: KnownCaptureColorimetry,
+) -> Result<KnownCaptureColorimetry, ScreenPublicationError> {
+    if source.color_space() != CaptureColorSpace::Unknown
+        && source.color_space() != assumption.color_space()
+        || source.transfer_function() != CaptureTransferFunction::Unknown
+            && source.transfer_function() != assumption.transfer_function()
+        || source
+            .dynamic_range()
+            .is_some_and(|range| range != assumption.dynamic_range())
+        || matches!(
+            (source.luminance(), assumption.luminance()),
+            (Some(source), Some(assumption)) if source != assumption
+        )
+    {
+        return Err(ScreenPublicationError::ColorAssumptionConflict);
+    }
+    KnownCaptureColorimetry::try_new(
+        if source.color_space() == CaptureColorSpace::Unknown {
+            assumption.color_space()
+        } else {
+            source.color_space()
+        },
+        if source.transfer_function() == CaptureTransferFunction::Unknown {
+            assumption.transfer_function()
+        } else {
+            source.transfer_function()
+        },
+        source.dynamic_range().unwrap_or(assumption.dynamic_range()),
+        source.luminance().or(assumption.luminance()),
+    )
+    .map_err(|_| ScreenPublicationError::ColorAssumptionConflict)
+}
+
+fn resolve_known_color_pipeline(
+    source: KnownCaptureColorimetry,
+    byte_preserving: bool,
+    profile: &ScreenProcessingProfile,
+    capabilities: ScreenColorTransformCapabilities,
+) -> Result<ResolvedScreenColorPipeline, ScreenPublicationError> {
+    let target = match profile.target_colorimetry {
+        ScreenTargetColorimetry::PreserveSource => source,
+        ScreenTargetColorimetry::ConvertTo(target) => target,
+    };
+    let source_hdr = source.dynamic_range() == CaptureDynamicRange::High;
+    let target_hdr = target.dynamic_range() == CaptureDynamicRange::High;
+
+    if source_hdr || target_hdr {
+        return resolve_hdr_color_pipeline(source, target, profile, capabilities);
+    }
+
+    let preserve = profile.target_colorimetry == ScreenTargetColorimetry::PreserveSource
+        && byte_preserving
+        && source.dynamic_range() == CaptureDynamicRange::Standard;
+    if preserve {
+        return Ok(ResolvedScreenColorPipeline {
+            effective_source: Some(source),
+            output: CaptureColorimetry::from_known(target),
+            transform: ResolvedScreenColorTransform::PreserveEncodedSamples,
+        });
+    }
+    if capabilities.algorithm_revision() != Some(profile.algorithm_revision) {
+        return Err(ScreenPublicationError::UnsupportedColorTransform);
+    }
+    let same_encoding = source.color_space() == target.color_space()
+        && source.transfer_function() == target.transfer_function()
+        && source.dynamic_range() == target.dynamic_range();
+    let supported = if same_encoding {
+        capabilities.supports_linear_light_sdr_processing()
+    } else {
+        capabilities.supports_linear_relative_color_conversion()
+    };
+    if !supported || !same_encoding && !capabilities.supports_gamut_policy(profile.gamut) {
+        return Err(ScreenPublicationError::UnsupportedColorTransform);
+    }
+    Ok(ResolvedScreenColorPipeline {
+        effective_source: Some(source),
+        output: CaptureColorimetry::from_known(target),
+        transform: if same_encoding {
+            ResolvedScreenColorTransform::LinearLightSdr
+        } else {
+            ResolvedScreenColorTransform::LinearRelativeColorimetric {
+                gamut: profile.gamut,
+            }
+        },
+    })
+}
+
+fn resolve_hdr_color_pipeline(
+    source: KnownCaptureColorimetry,
+    target: KnownCaptureColorimetry,
+    profile: &ScreenProcessingProfile,
+    capabilities: ScreenColorTransformCapabilities,
+) -> Result<ResolvedScreenColorPipeline, ScreenPublicationError> {
+    match profile.hdr {
+        ScreenHdrPolicy::Reject => Err(ScreenPublicationError::HdrRejected),
+        ScreenHdrPolicy::ToneMap(policy)
+            if source.dynamic_range() == CaptureDynamicRange::High
+                && source.transfer_function() == CaptureTransferFunction::Pq
+                && target.dynamic_range() == CaptureDynamicRange::Standard =>
+        {
+            if capabilities.algorithm_revision() != Some(profile.algorithm_revision)
+                || !capabilities.supports_pq_bt2390_tone_mapping()
+                || !capabilities.supports_gamut_policy(profile.gamut)
+            {
+                return Err(ScreenPublicationError::UnsupportedColorTransform);
+            }
+            if target
+                .luminance()
+                .is_some_and(|luminance| luminance != policy.target_luminance)
+            {
+                return Err(ScreenPublicationError::ToneMapTargetLuminanceConflict);
+            }
+            let source_luminance = source
+                .luminance()
+                .ok_or(ScreenPublicationError::MissingSourceLuminance)?;
+            let output = target.with_luminance(policy.target_luminance);
+            Ok(ResolvedScreenColorPipeline {
+                effective_source: Some(source),
+                output: CaptureColorimetry::from_known(output),
+                transform: ResolvedScreenColorTransform::ToneMap(ResolvedScreenToneMap {
+                    operator: policy.operator,
+                    source_luminance,
+                    target_luminance: policy.target_luminance,
+                    gamut: profile.gamut,
+                }),
+            })
+        }
+        ScreenHdrPolicy::ToneMap(_) => Err(ScreenPublicationError::UnsupportedHdrConversion),
+    }
+}
+
+fn byte_preserving_surface_processing(
+    source: &ResolvedScreenSourceConfig,
+    kind: ScreenPublicationKind,
+    geometry: ResolvedScreenGeometry,
+    profile: &ScreenProcessingProfile,
+) -> bool {
+    let source_geometry = source.geometry();
+    let source_extent = source.logical_extent();
+    matches!(kind, ScreenPublicationKind::Surface)
+        && source_geometry.rotation() == CaptureRotation::Identity
+        && source_geometry.crop().is_none()
+        && source_geometry.native_extent() == source_geometry.storage_extent()
+        && source_geometry.storage_extent() == source_extent
+        && source.reflection() == ScreenSourceReflection::None
+        && geometry.source_region == full_source_region(source_extent)
+        && geometry.output_extent == source_extent
+        && profile.content_bars == ScreenContentBarsPolicy::Disabled
+        && profile.smoothing == ScreenSmoothingPolicy::Disabled
+        && profile.tuning == ScreenColorTuning::default()
+        && profile.cursor == ScreenCursorPolicy::Exclude
+        && profile.reduction_filter == ScreenReductionFilter::Nearest
+        && profile.target_pixel_format == source.pixel_format()
 }
 
 fn resolve_geometry(
@@ -1635,24 +2144,5 @@ const fn pixel_format_rank(format: CapturePixelFormat) -> u8 {
     match format {
         CapturePixelFormat::Rgba8 => 0,
         CapturePixelFormat::Bgra8 => 1,
-    }
-}
-
-const fn color_space_rank(color_space: CaptureColorSpace) -> u8 {
-    match color_space {
-        CaptureColorSpace::Srgb => 0,
-        CaptureColorSpace::DisplayP3 => 1,
-        CaptureColorSpace::Rec2020 => 2,
-        CaptureColorSpace::Unknown => 3,
-    }
-}
-
-const fn transfer_function_rank(transfer_function: CaptureTransferFunction) -> u8 {
-    match transfer_function {
-        CaptureTransferFunction::Srgb => 0,
-        CaptureTransferFunction::Linear => 1,
-        CaptureTransferFunction::Pq => 2,
-        CaptureTransferFunction::Hlg => 3,
-        CaptureTransferFunction::Unknown => 4,
     }
 }

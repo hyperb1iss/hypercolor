@@ -3,7 +3,7 @@
 use std::any::Any;
 use std::fmt;
 use std::marker::PhantomData;
-use std::num::NonZeroU64;
+use std::num::{NonZeroU32, NonZeroU64};
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
@@ -307,24 +307,23 @@ impl CaptureGeometry {
 }
 
 /// Color primaries and white point of stored pixels.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CaptureColorSpace {
     /// IEC 61966-2-1 sRGB primaries.
-    #[default]
     Srgb,
     /// Display P3 primaries.
     DisplayP3,
     /// ITU-R BT.2020 primaries.
     Rec2020,
     /// Backend did not provide trustworthy color metadata.
+    #[default]
     Unknown,
 }
 
 /// Transfer function used by stored channel values.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CaptureTransferFunction {
     /// Standard sRGB electro-optical transfer function.
-    #[default]
     Srgb,
     /// Linear light.
     Linear,
@@ -333,7 +332,319 @@ pub enum CaptureTransferFunction {
     /// Hybrid log-gamma.
     Hlg,
     /// Backend did not provide trustworthy transfer metadata.
+    #[default]
     Unknown,
+}
+
+/// Canonical positive finite scalar retained by exact color contracts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CapturePositiveScalar(NonZeroU32);
+
+impl CapturePositiveScalar {
+    /// Validate and retain one positive finite scalar without rounding.
+    ///
+    /// # Errors
+    ///
+    /// Rejects zero, negative, NaN, and infinite values.
+    pub fn try_new(value: f32) -> Result<Self, CaptureColorimetryError> {
+        if !value.is_finite() {
+            return Err(CaptureColorimetryError::NonFinitePositiveScalar);
+        }
+        if value <= 0.0 {
+            return Err(CaptureColorimetryError::NonPositiveScalar);
+        }
+        Ok(Self(NonZeroU32::new(value.to_bits()).expect(
+            "positive finite floats have non-zero bit patterns",
+        )))
+    }
+
+    /// Recover the retained scalar.
+    #[must_use]
+    pub const fn value(self) -> f32 {
+        f32::from_bits(self.0.get())
+    }
+}
+
+/// Absolute luminance context for display-referred color processing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CaptureLuminanceContext {
+    reference_white_nits: CapturePositiveScalar,
+    peak_nits: CapturePositiveScalar,
+}
+
+impl CaptureLuminanceContext {
+    /// Construct an ordered reference-white and peak-luminance contract.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a peak luminance below reference white.
+    pub fn new(
+        reference_white_nits: CapturePositiveScalar,
+        peak_nits: CapturePositiveScalar,
+    ) -> Result<Self, CaptureColorimetryError> {
+        if peak_nits < reference_white_nits {
+            return Err(CaptureColorimetryError::PeakBelowReferenceWhite);
+        }
+        Ok(Self {
+            reference_white_nits,
+            peak_nits,
+        })
+    }
+
+    /// Reference white in candelas per square metre.
+    #[must_use]
+    pub const fn reference_white_nits(self) -> CapturePositiveScalar {
+        self.reference_white_nits
+    }
+
+    /// Peak luminance in candelas per square metre.
+    #[must_use]
+    pub const fn peak_nits(self) -> CapturePositiveScalar {
+        self.peak_nits
+    }
+}
+
+/// Declared dynamic range of one encoded surface.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CaptureDynamicRange {
+    /// Standard-dynamic-range content.
+    Standard,
+    /// High-dynamic-range content.
+    High,
+}
+
+/// Backend color metadata, including explicitly missing fields.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CaptureColorimetry {
+    color_space: CaptureColorSpace,
+    transfer_function: CaptureTransferFunction,
+    dynamic_range: Option<CaptureDynamicRange>,
+    luminance: Option<CaptureLuminanceContext>,
+}
+
+impl CaptureColorimetry {
+    /// Canonical fully-known SDR sRGB metadata.
+    pub const SRGB: Self = Self::from_known(KnownCaptureColorimetry::SRGB);
+
+    /// Construct backend metadata without manufacturing missing knowledge.
+    ///
+    /// # Errors
+    ///
+    /// Rejects known transfer functions paired with a contradictory dynamic
+    /// range. Missing fields remain admissible until publication resolution.
+    pub fn new(
+        color_space: CaptureColorSpace,
+        transfer_function: CaptureTransferFunction,
+        dynamic_range: Option<CaptureDynamicRange>,
+        luminance: Option<CaptureLuminanceContext>,
+    ) -> Result<Self, CaptureColorimetryError> {
+        validate_transfer_range(transfer_function, dynamic_range)?;
+        Ok(Self {
+            color_space,
+            transfer_function,
+            dynamic_range,
+            luminance,
+        })
+    }
+
+    /// Metadata supplied without trustworthy color information.
+    #[must_use]
+    pub const fn unknown() -> Self {
+        Self {
+            color_space: CaptureColorSpace::Unknown,
+            transfer_function: CaptureTransferFunction::Unknown,
+            dynamic_range: None,
+            luminance: None,
+        }
+    }
+
+    /// Convert a fully-known color contract to backend metadata.
+    #[must_use]
+    pub const fn from_known(known: KnownCaptureColorimetry) -> Self {
+        Self {
+            color_space: known.color_space,
+            transfer_function: known.transfer_function,
+            dynamic_range: Some(known.dynamic_range),
+            luminance: known.luminance,
+        }
+    }
+
+    /// Declared primaries and white point.
+    #[must_use]
+    pub const fn color_space(self) -> CaptureColorSpace {
+        self.color_space
+    }
+
+    /// Declared channel transfer function.
+    #[must_use]
+    pub const fn transfer_function(self) -> CaptureTransferFunction {
+        self.transfer_function
+    }
+
+    /// Declared dynamic range, when known.
+    #[must_use]
+    pub const fn dynamic_range(self) -> Option<CaptureDynamicRange> {
+        self.dynamic_range
+    }
+
+    /// Absolute luminance context, when supplied.
+    #[must_use]
+    pub const fn luminance(self) -> Option<CaptureLuminanceContext> {
+        self.luminance
+    }
+
+    /// Require every field needed for color-managed processing.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unknown primaries, transfer, or dynamic range, and HDR metadata
+    /// without an absolute luminance context.
+    pub fn try_known(self) -> Result<KnownCaptureColorimetry, CaptureColorimetryError> {
+        KnownCaptureColorimetry::try_new(
+            self.color_space,
+            self.transfer_function,
+            self.dynamic_range
+                .ok_or(CaptureColorimetryError::UnknownDynamicRange)?,
+            self.luminance,
+        )
+    }
+}
+
+impl Default for CaptureColorimetry {
+    fn default() -> Self {
+        Self::unknown()
+    }
+}
+
+/// Fully-known source or target colorimetry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct KnownCaptureColorimetry {
+    color_space: CaptureColorSpace,
+    transfer_function: CaptureTransferFunction,
+    dynamic_range: CaptureDynamicRange,
+    luminance: Option<CaptureLuminanceContext>,
+}
+
+impl KnownCaptureColorimetry {
+    /// Canonical SDR sRGB target without an implied absolute display level.
+    pub const SRGB: Self = Self {
+        color_space: CaptureColorSpace::Srgb,
+        transfer_function: CaptureTransferFunction::Srgb,
+        dynamic_range: CaptureDynamicRange::Standard,
+        luminance: None,
+    };
+
+    /// Construct a complete color-managed processing contract.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unknown fields, contradictory transfer/range pairs, and HDR
+    /// contracts without absolute luminance context.
+    pub fn try_new(
+        color_space: CaptureColorSpace,
+        transfer_function: CaptureTransferFunction,
+        dynamic_range: CaptureDynamicRange,
+        luminance: Option<CaptureLuminanceContext>,
+    ) -> Result<Self, CaptureColorimetryError> {
+        if color_space == CaptureColorSpace::Unknown {
+            return Err(CaptureColorimetryError::UnknownColorSpace);
+        }
+        if transfer_function == CaptureTransferFunction::Unknown {
+            return Err(CaptureColorimetryError::UnknownTransferFunction);
+        }
+        validate_transfer_range(transfer_function, Some(dynamic_range))?;
+        if dynamic_range == CaptureDynamicRange::High && luminance.is_none() {
+            return Err(CaptureColorimetryError::MissingHdrLuminance);
+        }
+        Ok(Self {
+            color_space,
+            transfer_function,
+            dynamic_range,
+            luminance,
+        })
+    }
+
+    /// Declared primaries and white point.
+    #[must_use]
+    pub const fn color_space(self) -> CaptureColorSpace {
+        self.color_space
+    }
+
+    /// Declared channel transfer function.
+    #[must_use]
+    pub const fn transfer_function(self) -> CaptureTransferFunction {
+        self.transfer_function
+    }
+
+    /// Declared dynamic range.
+    #[must_use]
+    pub const fn dynamic_range(self) -> CaptureDynamicRange {
+        self.dynamic_range
+    }
+
+    /// Absolute luminance context, when relevant.
+    #[must_use]
+    pub const fn luminance(self) -> Option<CaptureLuminanceContext> {
+        self.luminance
+    }
+
+    /// Replace the absolute luminance context while retaining encoding.
+    #[must_use]
+    pub const fn with_luminance(self, luminance: CaptureLuminanceContext) -> Self {
+        Self {
+            luminance: Some(luminance),
+            ..self
+        }
+    }
+}
+
+fn validate_transfer_range(
+    transfer_function: CaptureTransferFunction,
+    dynamic_range: Option<CaptureDynamicRange>,
+) -> Result<(), CaptureColorimetryError> {
+    let contradictory = matches!(
+        (transfer_function, dynamic_range),
+        (
+            CaptureTransferFunction::Srgb,
+            Some(CaptureDynamicRange::High)
+        ) | (
+            CaptureTransferFunction::Pq | CaptureTransferFunction::Hlg,
+            Some(CaptureDynamicRange::Standard)
+        )
+    );
+    if contradictory {
+        return Err(CaptureColorimetryError::TransferDynamicRangeMismatch);
+    }
+    Ok(())
+}
+
+/// Invalid color metadata rejected before publication work begins.
+#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
+pub enum CaptureColorimetryError {
+    /// Positive scalars cannot be NaN or infinite.
+    #[error("capture color scalar must be finite")]
+    NonFinitePositiveScalar,
+    /// Positive scalars cannot be zero or negative.
+    #[error("capture color scalar must be greater than zero")]
+    NonPositiveScalar,
+    /// Peak luminance cannot be below reference white.
+    #[error("capture peak luminance must be at least reference white")]
+    PeakBelowReferenceWhite,
+    /// Managed color processing requires known primaries.
+    #[error("capture color space is unknown")]
+    UnknownColorSpace,
+    /// Managed color processing requires a known transfer function.
+    #[error("capture transfer function is unknown")]
+    UnknownTransferFunction,
+    /// Managed color processing requires an explicit dynamic range.
+    #[error("capture dynamic range is unknown")]
+    UnknownDynamicRange,
+    /// The transfer function contradicts the declared dynamic range.
+    #[error("capture transfer function contradicts its dynamic range")]
+    TransferDynamicRangeMismatch,
+    /// HDR processing requires absolute luminance context.
+    #[error("HDR capture colorimetry requires luminance context")]
+    MissingHdrLuminance,
 }
 
 /// Native encoding of one separately-owned cursor shape.
@@ -1045,10 +1356,8 @@ pub struct CaptureFrameMetadata {
     pub fresh_until: Instant,
     /// Physical scanout geometry and pending transform.
     pub geometry: CaptureGeometry,
-    /// Color primaries and white point.
-    pub color_space: CaptureColorSpace,
-    /// Channel transfer function.
-    pub transfer_function: CaptureTransferFunction,
+    /// Source color metadata, including explicitly missing fields.
+    pub colorimetry: CaptureColorimetry,
     /// Cursor metadata and composition state.
     pub cursor: CaptureCursor,
 }
@@ -1144,14 +1453,12 @@ impl CaptureFrame<RawCaptureSurface> {
         geometry: CaptureGeometry,
         storage: CaptureStorage,
         damage: CaptureDamage,
-        color_space: CaptureColorSpace,
-        transfer_function: CaptureTransferFunction,
+        colorimetry: CaptureColorimetry,
         cursor: CaptureCursor,
     ) -> Result<CaptureFrame<GeometryNormalizedCaptureSurface>, CaptureFrameError> {
         let mut metadata = self.metadata;
         metadata.geometry = geometry;
-        metadata.color_space = color_space;
-        metadata.transfer_function = transfer_function;
+        metadata.colorimetry = colorimetry;
         metadata.cursor = cursor;
         CaptureFrame::from_parts(metadata, storage, damage)
     }
@@ -1401,6 +1708,9 @@ pub enum CaptureFrameError {
     /// GPU geometry needs the owning platform's native interop processor.
     #[error("GPU capture geometry requires platform-native processing")]
     GpuGeometryProcessingRequired,
+    /// Legacy pixel averaging only accepts fully-known SDR sRGB samples.
+    #[error("legacy screen analysis cannot interpret encoded color metadata {colorimetry:?}")]
+    UnsupportedLegacyAnalysisColorimetry { colorimetry: CaptureColorimetry },
     /// Canonical cursor coordinates exceeded the shared signed representation.
     #[error("canonical cursor coordinate exceeds the supported range")]
     CursorCoordinateOverflow,

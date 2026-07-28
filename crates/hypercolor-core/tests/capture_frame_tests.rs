@@ -5,12 +5,12 @@ use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
 use hypercolor_core::input::screen::{
-    CaptureColorSpace, CaptureCursor, CaptureCursorContent, CaptureCursorShape,
-    CaptureCursorShapeFormat, CaptureDamage, CaptureEpoch, CaptureFrame, CaptureFrameError,
-    CaptureFrameMetadata, CaptureGeometry, CapturePixelFormat, CapturePlanePool, CaptureRotation,
-    CaptureSourceId, CaptureStageKind, CaptureStorage, CaptureTransferFunction, CpuCaptureStorage,
-    MoveRegion, PhysicalOrigin, PixelExtent, PixelRect, PlatformGpuApi, PlatformGpuSurface,
-    RawCaptureSurface, SourceScale,
+    CaptureColorSpace, CaptureColorimetry, CaptureCursor, CaptureCursorContent, CaptureCursorShape,
+    CaptureCursorShapeFormat, CaptureDamage, CaptureDynamicRange, CaptureEpoch, CaptureFrame,
+    CaptureFrameError, CaptureFrameMetadata, CaptureGeometry, CapturePixelFormat, CapturePlanePool,
+    CaptureRotation, CaptureSourceId, CaptureStageKind, CaptureStorage, CaptureTransferFunction,
+    CpuCaptureStorage, KnownCaptureColorimetry, MoveRegion, PhysicalOrigin, PixelExtent, PixelRect,
+    PlatformGpuApi, PlatformGpuSurface, RawCaptureSurface, SourceScale,
 };
 
 fn extent(width: u32, height: u32) -> PixelExtent {
@@ -39,8 +39,7 @@ fn metadata(rotation: CaptureRotation) -> CaptureFrameMetadata {
             SourceScale::ONE,
         )
         .expect("test geometry is valid"),
-        color_space: CaptureColorSpace::Srgb,
-        transfer_function: CaptureTransferFunction::Srgb,
+        colorimetry: CaptureColorimetry::SRGB,
         cursor: CaptureCursor::default(),
     }
 }
@@ -247,8 +246,15 @@ fn normalized_transition_stamps_output_color_metadata_only() {
             geometry,
             cpu_storage(4, 3),
             CaptureDamage::default(),
-            CaptureColorSpace::DisplayP3,
-            CaptureTransferFunction::Linear,
+            CaptureColorimetry::from_known(
+                KnownCaptureColorimetry::try_new(
+                    CaptureColorSpace::DisplayP3,
+                    CaptureTransferFunction::Linear,
+                    CaptureDynamicRange::Standard,
+                    None,
+                )
+                .expect("test output colorimetry is known"),
+            ),
             output_cursor.clone(),
         )
         .expect("identity geometry is normalized");
@@ -260,8 +266,14 @@ fn normalized_transition_stamps_output_color_metadata_only() {
     assert_eq!(output.sequence, expected_sequence);
     assert_eq!(output.captured_at, expected_captured_at);
     assert_eq!(output.fresh_until, expected_fresh_until);
-    assert_eq!(output.color_space, CaptureColorSpace::DisplayP3);
-    assert_eq!(output.transfer_function, CaptureTransferFunction::Linear);
+    assert_eq!(
+        output.colorimetry.color_space(),
+        CaptureColorSpace::DisplayP3
+    );
+    assert_eq!(
+        output.colorimetry.transfer_function(),
+        CaptureTransferFunction::Linear
+    );
     assert_eq!(output.cursor, output_cursor);
 }
 

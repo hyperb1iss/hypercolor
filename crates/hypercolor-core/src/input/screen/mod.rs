@@ -33,13 +33,14 @@ pub use cadence::{
     CaptureCadence, CaptureCadenceError, CapturePacer, MAX_REPRESENTABLE_CAPTURE_FPS,
 };
 pub use frame::{
-    CaptureColorSpace, CaptureCursor, CaptureCursorContent, CaptureCursorShape,
-    CaptureCursorShapeFormat, CaptureDamage, CaptureEpoch, CaptureFrame, CaptureFrameError,
-    CaptureFrameMetadata, CaptureGeometry, CapturePixelFormat, CapturePlaneLease, CapturePlanePool,
-    CaptureRotation, CaptureSourceId, CaptureStageKind, CaptureStorage, CaptureTransferFunction,
-    CpuCaptureStorage, GeometryNormalizedCaptureSurface, MoveRegion, PhysicalOrigin, PixelExtent,
-    PixelRect, PlatformGpuApi, PlatformGpuSurface, PooledCapturePlane, RawCaptureSurface,
-    SourceScale,
+    CaptureColorSpace, CaptureColorimetry, CaptureColorimetryError, CaptureCursor,
+    CaptureCursorContent, CaptureCursorShape, CaptureCursorShapeFormat, CaptureDamage,
+    CaptureDynamicRange, CaptureEpoch, CaptureFrame, CaptureFrameError, CaptureFrameMetadata,
+    CaptureGeometry, CaptureLuminanceContext, CapturePixelFormat, CapturePlaneLease,
+    CapturePlanePool, CapturePositiveScalar, CaptureRotation, CaptureSourceId, CaptureStageKind,
+    CaptureStorage, CaptureTransferFunction, CpuCaptureStorage, GeometryNormalizedCaptureSurface,
+    KnownCaptureColorimetry, MoveRegion, PhysicalOrigin, PixelExtent, PixelRect, PlatformGpuApi,
+    PlatformGpuSurface, PooledCapturePlane, RawCaptureSurface, SourceScale,
 };
 pub use hub::{
     PreparedScreenPublication, ScreenBranchDeliveryLifecycle, ScreenBranchDeliveryState,
@@ -64,15 +65,18 @@ pub use plan::{
 };
 pub use process::CaptureFrameProcessor;
 pub use publication::{
-    RegisteredScreenBranchDemand, ResolvedScreenBranchDemand, ResolvedScreenGeometry,
-    ResolvedScreenPublicationDescriptor, ResolvedScreenSource, ResolvedScreenSourceConfig,
-    ScreenAspectPolicy, ScreenBackendResourceIdentity, ScreenBoundedExtent, ScreenCaptureBackend,
-    ScreenColorTuning, ScreenContentBarsPolicy, ScreenCursorCapabilities, ScreenCursorPolicy,
-    ScreenExtentRequest, ScreenGridPolicy, ScreenLetterboxFill, ScreenPhysicalReductionDescriptor,
+    RegisteredScreenBranchDemand, ResolvedScreenBranchDemand, ResolvedScreenColorPipeline,
+    ResolvedScreenColorTransform, ResolvedScreenGeometry, ResolvedScreenPublicationDescriptor,
+    ResolvedScreenSource, ResolvedScreenSourceConfig, ResolvedScreenToneMap, ScreenAspectPolicy,
+    ScreenBackendResourceIdentity, ScreenBoundedExtent, ScreenCaptureBackend,
+    ScreenColorTransformCapabilities, ScreenColorTuning, ScreenContentBarsPolicy,
+    ScreenCursorCapabilities, ScreenCursorPolicy, ScreenExtentRequest, ScreenGamutMapPolicy,
+    ScreenGridPolicy, ScreenHdrPolicy, ScreenLetterboxFill, ScreenPhysicalReductionDescriptor,
     ScreenPhysicalReductionKey, ScreenProcessingProfile, ScreenProcessingProfileConfig,
     ScreenProfileScalar, ScreenPublicationError, ScreenPublicationKind, ScreenPublicationRequest,
     ScreenRational, ScreenReductionFilter, ScreenResourceApi, ScreenSceneCutPolicy,
     ScreenSmoothingPolicy, ScreenSourceReflection, ScreenSourceSelector, ScreenSubpixelRect,
+    ScreenTargetColorimetry, ScreenToneMapOperator, ScreenToneMapPolicy, ScreenUnknownColorPolicy,
     ScreenUpscalePolicy,
 };
 pub use sector::{LetterboxBars, SectorGrid};
@@ -181,6 +185,7 @@ pub(crate) fn analyze_screen_frame(
     analyzer: &mut ScreenCaptureInput,
     frame: CaptureFrame<RawCaptureSurface>,
 ) -> anyhow::Result<AnalyzedScreenSnapshot> {
+    validate_legacy_screen_colorimetry(frame.metadata().colorimetry)?;
     let captured_at = frame.metadata().captured_at;
     let frame = analyzer.capture_processor.process(frame)?;
     let geometry = &frame.metadata().geometry;
@@ -201,6 +206,18 @@ pub(crate) fn analyze_screen_frame(
         geometry_frame: frame,
         data,
     })
+}
+
+pub(crate) fn validate_legacy_screen_colorimetry(
+    colorimetry: CaptureColorimetry,
+) -> Result<(), CaptureFrameError> {
+    if colorimetry.color_space() == CaptureColorSpace::Srgb
+        && colorimetry.transfer_function() == CaptureTransferFunction::Srgb
+        && colorimetry.dynamic_range() == Some(CaptureDynamicRange::Standard)
+    {
+        return Ok(());
+    }
+    Err(CaptureFrameError::UnsupportedLegacyAnalysisColorimetry { colorimetry })
 }
 
 // ── CaptureConfig ─────────────────────────────────────────────────────────

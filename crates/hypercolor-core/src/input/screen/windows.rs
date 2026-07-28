@@ -25,11 +25,11 @@ use hypercolor_windows_capture::{
 use tracing::{debug, info, warn};
 
 use crate::input::screen::{
-    AnalyzedScreenSnapshot, CaptureCadence, CaptureCadenceError, CaptureColorSpace, CaptureConfig,
+    AnalyzedScreenSnapshot, CaptureCadence, CaptureCadenceError, CaptureColorimetry, CaptureConfig,
     CaptureCursor, CaptureDamage, CaptureEpoch, CaptureFrame, CaptureFrameMetadata,
     CaptureGeometry, CapturePacer, CapturePixelFormat, CaptureRotation, CaptureSourceId,
-    CaptureStorage, CaptureTransferFunction, CpuCaptureStorage, PhysicalOrigin, PixelExtent,
-    RawCaptureSurface, ScreenCaptureDemand, ScreenCaptureInput, SourceScale, analyze_screen_frame,
+    CaptureStorage, CpuCaptureStorage, PhysicalOrigin, PixelExtent, RawCaptureSurface,
+    ScreenCaptureDemand, ScreenCaptureInput, SourceScale, analyze_screen_frame,
 };
 use crate::input::status::{
     ScreenCaptureDiagnostics, ScreenCaptureReductionPath, SourceDiagnostics,
@@ -1137,6 +1137,7 @@ fn run_worker(
     let mut activity_generation = 0_u64;
     let mut open_failure_logged = false;
     let mut resource_failure_logged = false;
+    let mut analysis_failure_latched = false;
     let mut failed_settings_generation = None;
     let mut settings_retry_at = Instant::now();
 
@@ -1420,10 +1421,25 @@ fn run_worker(
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .publish(&current_epoch, snapshot))
                 });
-                let Ok(published) = published else {
-                    continue;
+                let published = match published {
+                    Ok(published) => published,
+                    Err(error) => {
+                        if !analysis_failure_latched {
+                            warn!(%error, "Windows screen analysis rejected a frame; retaining last good publication");
+                            if let Some(status) = status_session.load() {
+                                status.degraded(SourceIssue::new(
+                                    "windows_screen_analysis_rejected",
+                                    error.to_string(),
+                                    true,
+                                ));
+                            }
+                            analysis_failure_latched = true;
+                        }
+                        continue;
+                    }
                 };
                 if published && let Some(status) = status_session.load() {
+                    analysis_failure_latched = false;
                     record_capture_health(
                         &status,
                         captured_at,
@@ -1589,8 +1605,7 @@ fn build_capture_frame(
             captured_at: frame.captured_at,
             fresh_until: freshness_deadline,
             geometry,
-            color_space: CaptureColorSpace::Unknown,
-            transfer_function: CaptureTransferFunction::Unknown,
+            colorimetry: CaptureColorimetry::unknown(),
             cursor,
         },
         CaptureStorage::Cpu(CpuCaptureStorage::from_owner(

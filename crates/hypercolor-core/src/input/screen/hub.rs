@@ -14,8 +14,9 @@ use super::plan::{
     ScreenRetainedResourceLedger, ScreenWorkerActivationLatch, ScreenWorkerBinding,
 };
 use super::{
-    CaptureColorSpace, CaptureEpoch, CapturePixelFormat, CaptureTransferFunction, PixelExtent,
-    ResolvedScreenPublicationDescriptor, ScreenPublicationKind,
+    CaptureColorSpace, CaptureColorimetry, CaptureEpoch, CapturePixelFormat,
+    CaptureTransferFunction, PixelExtent, ResolvedScreenPublicationDescriptor,
+    ScreenPublicationKind,
 };
 
 const SURFACE_PIXEL_BYTES: u64 = 4;
@@ -146,33 +147,32 @@ impl<'a> ScreenSurfacePayload<'a> {
 /// Target primaries and transfer contract shared by surfaces and RGB zones.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ScreenPublicationColorimetry {
-    color_space: CaptureColorSpace,
-    transfer_function: CaptureTransferFunction,
+    colorimetry: CaptureColorimetry,
 }
 
 impl ScreenPublicationColorimetry {
     /// Construct exact target colorimetry.
     #[must_use]
-    pub const fn new(
-        color_space: CaptureColorSpace,
-        transfer_function: CaptureTransferFunction,
-    ) -> Self {
-        Self {
-            color_space,
-            transfer_function,
-        }
+    pub const fn new(colorimetry: CaptureColorimetry) -> Self {
+        Self { colorimetry }
+    }
+
+    /// Complete published color metadata.
+    #[must_use]
+    pub const fn value(self) -> CaptureColorimetry {
+        self.colorimetry
     }
 
     /// Target channel primaries.
     #[must_use]
     pub const fn color_space(self) -> CaptureColorSpace {
-        self.color_space
+        self.colorimetry.color_space()
     }
 
     /// Target transfer function.
     #[must_use]
     pub const fn transfer_function(self) -> CaptureTransferFunction {
-        self.transfer_function
+        self.colorimetry.transfer_function()
     }
 }
 
@@ -2110,10 +2110,7 @@ fn validate_colorimetry(
 fn descriptor_colorimetry(
     descriptor: &ResolvedScreenPublicationDescriptor,
 ) -> ScreenPublicationColorimetry {
-    ScreenPublicationColorimetry::new(
-        descriptor.physical().target_color_space(),
-        descriptor.physical().target_transfer_function(),
-    )
+    ScreenPublicationColorimetry::new(descriptor.physical().color_pipeline().output())
 }
 
 fn surface_byte_len(extent: PixelExtent) -> Result<usize, ScreenPublicationHubError> {
