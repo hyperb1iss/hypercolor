@@ -12,7 +12,7 @@ use hypercolor_leptos_ext::ws::{
 use hypercolor_types::canvas::{linear_to_srgb_u8, srgb_u8_to_linear};
 
 use super::preview_scale::{PreviewScaleFormat, scale_rgba_bilinear};
-use super::protocol::CanvasFormat;
+use super::protocol::{CanvasFormat, validate_preview_surface_resource};
 
 const PREVIEW_JPEG_QUALITY: u8 = 80;
 const PREVIEW_JPEG_SUBSAMP: TurboJpegSubsamp = TurboJpegSubsamp::Sub2x2;
@@ -416,13 +416,11 @@ fn resolve_preview_dimensions(
     requested_width: u32,
     requested_height: u32,
 ) -> Result<(u32, u32)> {
-    if source_width == 0 || source_height == 0 {
-        return Ok((source_width, source_height));
-    }
-    if requested_width == 0 && requested_height == 0 {
-        return Ok((source_width, source_height));
-    }
-    if requested_width == 0 {
+    let dimensions = if source_width == 0 || source_height == 0 {
+        (source_width, source_height)
+    } else if requested_width == 0 && requested_height == 0 {
+        (source_width, source_height)
+    } else if requested_width == 0 {
         let height = requested_height.max(1);
         let width = u32::try_from(
             (u64::from(source_width) * u64::from(height))
@@ -431,9 +429,8 @@ fn resolve_preview_dimensions(
         )
         .context("preview aspect width exceeds u32")?
         .max(1);
-        return Ok((width, height));
-    }
-    if requested_height == 0 {
+        (width, height)
+    } else if requested_height == 0 {
         let width = requested_width.max(1);
         let height = u32::try_from(
             (u64::from(source_height) * u64::from(width))
@@ -442,9 +439,12 @@ fn resolve_preview_dimensions(
         )
         .context("preview aspect height exceeds u32")?
         .max(1);
-        return Ok((width, height));
-    }
-    Ok((requested_width.max(1), requested_height.max(1)))
+        (width, height)
+    } else {
+        (requested_width.max(1), requested_height.max(1))
+    };
+    validate_preview_surface_resource(dimensions.0, dimensions.1).map_err(anyhow::Error::msg)?;
+    Ok(dimensions)
 }
 
 fn checked_pixel_bytes(width: u32, height: u32, bytes_per_pixel: usize) -> Result<usize> {

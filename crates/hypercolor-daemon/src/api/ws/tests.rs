@@ -59,9 +59,10 @@ use super::protocol::{
     ActiveFramesConfig, BrowserInputEdgeWire, CanvasFormat, ChannelConfig, ChannelConfigPatch,
     ChannelSet, ClientMessage, FrameFormat, FrameZoneSelection, FramesConfig, InputButtonStateWire,
     InteractivePreviewConfig, InteractivePreviewTarget, MAX_INPUT_INJECT_EVENTS,
-    MAX_INPUT_NAME_BYTES, MAX_INPUT_WHEEL_DELTA, ServerMessage, SubscriptionState, WsChannel,
-    deserialize_finite_coordinate, event_message_parts, parse_channels, should_relay_event,
-    to_snake_case, unique_sorted_channel_names, validate_interactive_preview_id, ws_capabilities,
+    MAX_INPUT_NAME_BYTES, MAX_INPUT_WHEEL_DELTA, MAX_PREVIEW_PUBLICATION_BYTES, ServerMessage,
+    SubscriptionState, WsChannel, deserialize_finite_coordinate, event_message_parts,
+    parse_channels, should_relay_event, to_snake_case, unique_sorted_channel_names,
+    validate_interactive_preview_id, validate_interactive_preview_shape, ws_capabilities,
 };
 use super::relays::{
     build_device_metrics_message, build_metrics_message, publish_subscriptions, relay_canvas,
@@ -1934,6 +1935,46 @@ fn channel_config_apply_patch_supports_all_channels() {
 }
 
 #[test]
+fn channel_config_admits_wide_shapes_and_preserves_auto_dimensions() {
+    let mut config = ChannelConfig::default();
+    let patch: ChannelConfigPatch = serde_json::from_value(serde_json::json!({
+        "canvas": {"width": 100_000, "height": 1_000},
+        "screen_canvas": {"width": u32::MAX, "height": 0}
+    }))
+    .expect("wide preview patch");
+
+    config.apply_patch(patch).expect("wide shapes are admitted");
+
+    assert_eq!(
+        (config.canvas.width, config.canvas.height),
+        (100_000, 1_000)
+    );
+    assert_eq!(config.screen_canvas.width, u32::MAX);
+    assert_eq!(config.screen_canvas.height, 0);
+}
+
+#[test]
+fn channel_config_rejects_over_budget_shape_transactionally() {
+    let mut config = ChannelConfig::default();
+    let patch: ChannelConfigPatch = serde_json::from_value(serde_json::json!({
+        "canvas": {"fps": 60},
+        "zone_preview": {"width": 32_768, "height": 4_097}
+    }))
+    .expect("over-budget preview patch");
+
+    let error = config
+        .apply_patch(patch)
+        .expect_err("over-budget shape is rejected");
+
+    assert_eq!(error.code, "invalid_config");
+    assert_eq!(config.canvas.fps, 15);
+    assert_eq!(
+        (config.zone_preview.width, config.zone_preview.height),
+        (0, 0)
+    );
+}
+
+#[test]
 fn channel_config_defaults_are_stable() {
     let config = ChannelConfig::default();
     let json = serde_json::to_value(config).expect("config serializes");
@@ -2782,6 +2823,43 @@ fn interactive_preview_commands_are_addressed_and_acknowledged() {
 }
 
 #[test]
+fn interactive_preview_dimensions_use_shape_admission_not_axis_caps() {
+    let wide: ClientMessage = serde_json::from_value(serde_json::json!({
+        "type": "interactive_preview_open",
+        "preview_id": "wide",
+        "fps": 60,
+        "width": 100_000,
+        "height": 1_000,
+        "format": "rgba"
+    }))
+    .expect("wide interactive preview parses");
+    assert!(matches!(
+        wide,
+        ClientMessage::InteractivePreviewOpen {
+            width: 100_000,
+            height: 1_000,
+            ..
+        }
+    ));
+    validate_interactive_preview_shape(100_000, 1_000)
+        .expect("wide shape fits the publication budget");
+
+    let zero = serde_json::from_value::<ClientMessage>(serde_json::json!({
+        "type": "interactive_preview_open",
+        "preview_id": "empty",
+        "fps": 60,
+        "width": 0,
+        "height": 1,
+        "format": "rgba"
+    }));
+    assert!(zero.is_err());
+
+    let error = validate_interactive_preview_shape(32_768, 4_097)
+        .expect_err("over-budget interactive shape is rejected");
+    assert_eq!(error.code, "invalid_request");
+}
+
+#[test]
 fn interactive_preview_open_rejects_invalid_render_config() {
     for (field, value) in [("fps", 0), ("fps", 61), ("width", 0), ("width", 4097)] {
         let mut payload = serde_json::json!({
@@ -3147,6 +3225,8 @@ fn ws_capabilities_include_commands() {
     assert!(capabilities.contains(&"commands".to_owned()));
     assert!(capabilities.contains(&"canvas_format_jpeg".to_owned()));
     assert!(capabilities.contains(&"interactive_previews".to_owned()));
+    assert!(capabilities.contains(&"wide_preview_frames".to_owned()));
+    assert!(capabilities.contains(&"preview_chunking".to_owned()));
 }
 
 #[test]
@@ -3186,6 +3266,31 @@ fn websocket_manifest_matches_protocol_constants() {
         })
         .collect::<Vec<_>>();
     assert_eq!(manifest_capabilities, ws_capabilities());
+    assert_eq!(
+        manifest["preview_transport"]["max_publication_decoded_bytes"],
+        MAX_PREVIEW_PUBLICATION_BYTES
+    );
+    assert_eq!(
+        manifest["preview_transport"]["max_message_bytes"],
+        super::protocol::MAX_WS_MESSAGE_BYTES
+    );
+    for channel in [
+        "canvas",
+        "screen_canvas",
+        "web_viewport_canvas",
+        "zone_preview",
+    ] {
+        assert!(
+            manifest["channel_config"][channel]["width"]
+                .get("max")
+                .is_none()
+        );
+        assert!(
+            manifest["channel_config"][channel]["height"]
+                .get("max")
+                .is_none()
+        );
+    }
 
     let input_channel = manifest_channels
         .iter()

@@ -13,6 +13,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::json;
 
 use hypercolor_leptos_ext::ws::INTERACTIVE_PREVIEW_ID_MAX_BYTES;
+use hypercolor_types::canvas::SurfaceDescriptor;
 use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::server::ServerIdentity;
 use hypercolor_types::spatial::SpatialLayout;
@@ -190,6 +191,13 @@ pub(super) struct ChannelConfig {
 
 impl ChannelConfig {
     pub(super) fn apply_patch(&mut self, patch: ChannelConfigPatch) -> Result<(), WsProtocolError> {
+        let mut next = self.clone();
+        next.apply_patch_inner(patch)?;
+        *self = next;
+        Ok(())
+    }
+
+    fn apply_patch_inner(&mut self, patch: ChannelConfigPatch) -> Result<(), WsProtocolError> {
         if let Some(frames) = patch.frames {
             if let Some(fps) = frames.fps {
                 validate_range(fps, 1, 60, "config.frames.fps", "expected 1..=60")?;
@@ -234,13 +242,12 @@ impl ChannelConfig {
                 self.canvas.format = format;
             }
             if let Some(width) = canvas.width {
-                validate_range(width, 0, 4096, "config.canvas.width", "expected 0..=4096")?;
                 self.canvas.width = width;
             }
             if let Some(height) = canvas.height {
-                validate_range(height, 0, 4096, "config.canvas.height", "expected 0..=4096")?;
                 self.canvas.height = height;
             }
+            validate_passive_preview_shape(&self.canvas, "config.canvas")?;
         }
 
         if let Some(screen_canvas) = patch.screen_canvas {
@@ -252,25 +259,12 @@ impl ChannelConfig {
                 self.screen_canvas.format = format;
             }
             if let Some(width) = screen_canvas.width {
-                validate_range(
-                    width,
-                    0,
-                    4096,
-                    "config.screen_canvas.width",
-                    "expected 0..=4096",
-                )?;
                 self.screen_canvas.width = width;
             }
             if let Some(height) = screen_canvas.height {
-                validate_range(
-                    height,
-                    0,
-                    4096,
-                    "config.screen_canvas.height",
-                    "expected 0..=4096",
-                )?;
                 self.screen_canvas.height = height;
             }
+            validate_passive_preview_shape(&self.screen_canvas, "config.screen_canvas")?;
         }
 
         if let Some(web_viewport_canvas) = patch.web_viewport_canvas {
@@ -288,25 +282,15 @@ impl ChannelConfig {
                 self.web_viewport_canvas.format = format;
             }
             if let Some(width) = web_viewport_canvas.width {
-                validate_range(
-                    width,
-                    0,
-                    4096,
-                    "config.web_viewport_canvas.width",
-                    "expected 0..=4096",
-                )?;
                 self.web_viewport_canvas.width = width;
             }
             if let Some(height) = web_viewport_canvas.height {
-                validate_range(
-                    height,
-                    0,
-                    4096,
-                    "config.web_viewport_canvas.height",
-                    "expected 0..=4096",
-                )?;
                 self.web_viewport_canvas.height = height;
             }
+            validate_passive_preview_shape(
+                &self.web_viewport_canvas,
+                "config.web_viewport_canvas",
+            )?;
         }
 
         if let Some(zone_preview) = patch.zone_preview {
@@ -318,25 +302,12 @@ impl ChannelConfig {
                 self.zone_preview.format = format;
             }
             if let Some(width) = zone_preview.width {
-                validate_range(
-                    width,
-                    0,
-                    4096,
-                    "config.zone_preview.width",
-                    "expected 0..=4096",
-                )?;
                 self.zone_preview.width = width;
             }
             if let Some(height) = zone_preview.height {
-                validate_range(
-                    height,
-                    0,
-                    4096,
-                    "config.zone_preview.height",
-                    "expected 0..=4096",
-                )?;
                 self.zone_preview.height = height;
             }
+            validate_passive_preview_shape(&self.zone_preview, "config.zone_preview")?;
         }
 
         if let Some(metrics) = patch.metrics
@@ -528,6 +499,20 @@ impl Default for CanvasConfig {
     }
 }
 
+fn validate_passive_preview_shape(
+    config: &CanvasConfig,
+    field: &'static str,
+) -> Result<(), WsProtocolError> {
+    if config.width == 0 || config.height == 0 {
+        return Ok(());
+    }
+    validate_preview_surface_resource(config.width, config.height)
+        .map(|_| ())
+        .map_err(|reason| {
+            WsProtocolError::invalid_config_resource(field, config.width, config.height, reason)
+        })
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct MetricsConfig {
     pub(super) interval_ms: u32,
@@ -592,6 +577,8 @@ pub(super) struct InteractivePreviewConfig {
 
 /// Hard transport ceiling for one complete WebSocket message or frame.
 pub(super) const MAX_WS_MESSAGE_BYTES: usize = 1024 * 1024;
+/// Maximum decoded surface bytes admitted for one preview publication.
+pub(super) const MAX_PREVIEW_PUBLICATION_BYTES: usize = 512 * 1024 * 1024;
 /// Maximum number of edges accepted in one browser-input batch.
 pub(super) const MAX_INPUT_INJECT_EVENTS: usize = 256;
 /// Maximum UTF-8 byte length of an injected key or button name.
@@ -775,12 +762,34 @@ where
     D: Deserializer<'de>,
 {
     let dimension = u32::deserialize(deserializer)?;
-    if !(1..=4096).contains(&dimension) {
+    if dimension == 0 {
         return Err(serde::de::Error::custom(
-            "interactive preview dimensions must be in 1..=4096",
+            "interactive preview dimensions must be nonzero",
         ));
     }
     Ok(dimension)
+}
+
+pub(super) fn validate_interactive_preview_shape(
+    width: u32,
+    height: u32,
+) -> Result<(), WsProtocolError> {
+    validate_preview_surface_resource(width, height)
+        .map(|_| ())
+        .map_err(WsProtocolError::invalid_request)
+}
+
+pub(super) fn validate_preview_surface_resource(width: u32, height: u32) -> Result<usize, String> {
+    let byte_len = SurfaceDescriptor::rgba8888(width, height)
+        .try_non_empty_byte_len()
+        .map_err(|error| error.to_string())?;
+    if byte_len > MAX_PREVIEW_PUBLICATION_BYTES {
+        return Err(format!(
+            "preview surface {width}x{height} requires {byte_len} decoded bytes, exceeding the \
+             {MAX_PREVIEW_PUBLICATION_BYTES}-byte publication budget"
+        ));
+    }
+    Ok(byte_len)
 }
 
 fn deserialize_input_edges<'de, D>(deserializer: D) -> Result<Vec<BrowserInputEdgeWire>, D::Error>
@@ -1572,6 +1581,25 @@ impl WsProtocolError {
         }
     }
 
+    fn invalid_config_resource(
+        field: &'static str,
+        width: u32,
+        height: u32,
+        reason: String,
+    ) -> Self {
+        Self {
+            code: "invalid_config",
+            message: format!("Invalid configuration for {field}: {reason}"),
+            details: Some(json!({
+                "field": field,
+                "reason": reason,
+                "width": width,
+                "height": height,
+                "max_publication_bytes": MAX_PREVIEW_PUBLICATION_BYTES,
+            })),
+        }
+    }
+
     pub(super) fn unsupported_channel(channel: &str) -> Self {
         Self {
             code: "unsupported_channel",
@@ -1659,6 +1687,8 @@ pub(super) fn ws_capabilities() -> Vec<String> {
     capabilities.push("commands".to_owned());
     capabilities.push("canvas_format_jpeg".to_owned());
     capabilities.push("interactive_previews".to_owned());
+    capabilities.push("wide_preview_frames".to_owned());
+    capabilities.push("preview_chunking".to_owned());
     capabilities
 }
 

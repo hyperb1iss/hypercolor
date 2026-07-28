@@ -110,6 +110,13 @@
     "wide_preview_frames",
     "preview_chunking"
   ],
+  "preview_transport": {
+    "dimension_type": "u32",
+    "passive_zero_dimension": "auto",
+    "interactive_zero_dimension": "invalid",
+    "max_message_bytes": 1048576,
+    "max_publication_decoded_bytes": 536870912
+  },
   "json_messages": {
     "client": [
       "subscribe",
@@ -650,12 +657,10 @@
       },
       "width": {
         "min": 0,
-        "max": 4096,
         "default": 0
       },
       "height": {
         "min": 0,
-        "max": 4096,
         "default": 0
       }
     },
@@ -675,12 +680,10 @@
       },
       "width": {
         "min": 0,
-        "max": 4096,
         "default": 0
       },
       "height": {
         "min": 0,
-        "max": 4096,
         "default": 0
       }
     },
@@ -700,12 +703,10 @@
       },
       "width": {
         "min": 0,
-        "max": 4096,
         "default": 0
       },
       "height": {
         "min": 0,
-        "max": 4096,
         "default": 0
       }
     },
@@ -725,12 +726,10 @@
       },
       "width": {
         "min": 0,
-        "max": 4096,
         "default": 0
       },
       "height": {
         "min": 0,
-        "max": 4096,
         "default": 0
       }
     },

@@ -29,7 +29,10 @@ use hypercolor_types::scene::{SceneId, ZoneId};
 use super::preview_encode::{
     PreviewJpegEncoder, PreviewRawEncoder, encode_canvas_jpeg_payload_scaled_stateless,
 };
-use super::protocol::{ActiveFramesConfig, CanvasFormat, FrameFormat, FrameZoneSelection};
+use super::protocol::{
+    ActiveFramesConfig, CanvasFormat, FrameFormat, FrameZoneSelection,
+    validate_preview_surface_resource,
+};
 use crate::api::AppState;
 use crate::display_frames::DisplayFrameSnapshot;
 
@@ -1358,19 +1361,17 @@ fn resolve_canvas_output_size(
     requested_width: u32,
     requested_height: u32,
 ) -> Result<CanvasOutputSize> {
-    if source_width == 0 || source_height == 0 {
-        return Ok(CanvasOutputSize {
+    let output_size = if source_width == 0 || source_height == 0 {
+        CanvasOutputSize {
             width: source_width,
             height: source_height,
-        });
-    }
-    if requested_width == 0 && requested_height == 0 {
-        return Ok(CanvasOutputSize {
+        }
+    } else if requested_width == 0 && requested_height == 0 {
+        CanvasOutputSize {
             width: source_width,
             height: source_height,
-        });
-    }
-    if requested_width == 0 {
+        }
+    } else if requested_width == 0 {
         let height = requested_height.max(1);
         let width = u32::try_from(
             (u64::from(source_width) * u64::from(height))
@@ -1379,9 +1380,8 @@ fn resolve_canvas_output_size(
         )
         .context("canvas preview aspect width exceeds u32")?
         .max(1);
-        return Ok(CanvasOutputSize { width, height });
-    }
-    if requested_height == 0 {
+        CanvasOutputSize { width, height }
+    } else if requested_height == 0 {
         let width = requested_width.max(1);
         let height = u32::try_from(
             (u64::from(source_height) * u64::from(width))
@@ -1390,12 +1390,16 @@ fn resolve_canvas_output_size(
         )
         .context("canvas preview aspect height exceeds u32")?
         .max(1);
-        return Ok(CanvasOutputSize { width, height });
-    }
-    Ok(CanvasOutputSize {
-        width: requested_width.max(1),
-        height: requested_height.max(1),
-    })
+        CanvasOutputSize { width, height }
+    } else {
+        CanvasOutputSize {
+            width: requested_width.max(1),
+            height: requested_height.max(1),
+        }
+    };
+    validate_preview_surface_resource(output_size.width, output_size.height)
+        .map_err(anyhow::Error::msg)?;
+    Ok(output_size)
 }
 
 fn sanitize_f32(value: f32) -> f32 {

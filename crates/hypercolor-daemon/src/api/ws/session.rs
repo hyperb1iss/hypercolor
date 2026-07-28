@@ -37,7 +37,7 @@ use super::protocol::{
     BrowserInputEdgeWire, ClientMessage, HelloFps, HelloState, InteractivePreviewConfig,
     MAX_WS_MESSAGE_BYTES, NameRef, SceneRef, ServerMessage, SubscriptionState, WsChannel,
     WsProtocolError, parse_channels, sorted_channel_names, unique_sorted_channel_names,
-    ws_capabilities,
+    validate_interactive_preview_shape, ws_capabilities,
 };
 use super::relays::{
     publish_subscriptions, relay_canvas, relay_device_metrics, relay_display_preview, relay_events,
@@ -523,6 +523,7 @@ impl BrowserPreviewSession {
         preview_id: String,
         config: InteractivePreviewConfig,
     ) -> Result<ServerMessage, WsProtocolError> {
+        validate_interactive_preview_shape(config.width, config.height)?;
         if let Some(binding) = self.previews.get_mut(&preview_id) {
             binding
                 .lane
