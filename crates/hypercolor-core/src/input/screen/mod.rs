@@ -22,6 +22,7 @@ mod plan;
 mod process;
 mod publication;
 mod reducer;
+mod sampling;
 pub mod sector;
 pub mod smooth;
 pub mod tune;
@@ -83,6 +84,10 @@ pub use publication::{
 pub use reducer::{
     CpuReductionBatchJob, CpuReductionBatchReport, CpuReductionError, CpuReductionExecutor,
     CpuReductionLayout, CpuReductionRequest, PreparedCpuReductionBatch,
+};
+pub use sampling::{
+    CpuMappedSamplingPoint, CpuSamplingError, CpuSamplingPoint, CpuSamplingView,
+    CpuStorageCoordinate,
 };
 pub use sector::{LetterboxBars, SectorGrid};
 pub use smooth::TemporalSmoother;

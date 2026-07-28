@@ -1264,7 +1264,13 @@ pub struct ScreenRational {
 }
 
 impl ScreenRational {
-    fn new(numerator: u64, denominator: u64) -> Result<Self, ScreenPublicationError> {
+    /// Construct and reduce one non-negative rational coordinate.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ScreenPublicationError::GeometryOverflow`] for a zero
+    /// denominator.
+    pub fn new(numerator: u64, denominator: u64) -> Result<Self, ScreenPublicationError> {
         let denominator =
             NonZeroU64::new(denominator).ok_or(ScreenPublicationError::GeometryOverflow)?;
         let divisor = greatest_common_divisor(numerator, denominator.get());
@@ -1275,7 +1281,9 @@ impl ScreenRational {
         })
     }
 
-    const fn from_u32(value: u32) -> Self {
+    /// Construct an exact integer coordinate.
+    #[must_use]
+    pub const fn from_u32(value: u32) -> Self {
         Self {
             numerator: value as u64,
             denominator: NonZeroU64::MIN,
