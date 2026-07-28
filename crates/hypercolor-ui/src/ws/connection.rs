@@ -400,6 +400,7 @@ impl WsManager {
                     && let Ok(msg) = serde_json::from_str::<serde_json::Value>(&text)
                 {
                     if msg.get("type").and_then(serde_json::Value::as_str) == Some("hello") {
+                        preview_decoder.apply_hello_capabilities(&msg);
                         set_interactive_preview_available.set(interactive_preview_supported(&msg));
                     }
                     if let Some(update) = server_update(&msg) {

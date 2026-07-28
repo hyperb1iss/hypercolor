@@ -7,10 +7,10 @@ use hypercolor_leptos_ext::ws::{
     PREVIEW_FRAME_HEADER_LEN, PreviewChunkError, PreviewChunkFrame, PreviewChunkReassembler,
     PreviewFrame, PreviewFrameChannel, PreviewFrameDecodeError, PreviewPixelFormat,
     PreviewPublicationMetadata, PreviewReassemblyLimits, PreviewStreamId,
-    SCREEN_ZONES_FRAME_HEADER_LEN, SCREEN_ZONES_FRAME_TAG, ScreenZonesFrame,
-    WIDE_INTERACTIVE_PREVIEW_FRAME_TAG, WIDE_PREVIEW_FRAME_TAG, WIDE_SCREEN_ZONES_FRAME_TAG,
-    WIDE_ZONE_PREVIEW_FRAME_TAG, ZONE_PREVIEW_FRAME_HEADER_LEN, ZONE_PREVIEW_FRAME_TAG,
-    ZonePreviewFrame, split_preview_publication,
+    PreviewTransportCapability, SCREEN_ZONES_FRAME_HEADER_LEN, SCREEN_ZONES_FRAME_TAG,
+    ScreenZonesFrame, WIDE_INTERACTIVE_PREVIEW_FRAME_TAG, WIDE_PREVIEW_FRAME_TAG,
+    WIDE_SCREEN_ZONES_FRAME_TAG, WIDE_ZONE_PREVIEW_FRAME_TAG, ZONE_PREVIEW_FRAME_HEADER_LEN,
+    ZONE_PREVIEW_FRAME_TAG, ZonePreviewFrame, split_preview_publication,
 };
 
 #[test]
@@ -811,6 +811,42 @@ fn chunked_zone_publication_reassembles_for_shared_ui_decoder() {
     let completed = completed.expect("zone publication completes");
     let decoded = ZonePreviewFrame::decode_bytes(&completed.encoded).expect("zone frame decodes");
     assert_eq!(decoded, frame);
+}
+
+#[test]
+fn preview_transport_capability_roundtrips_shared_resource_budgets() {
+    let capability = PreviewTransportCapability::default();
+    let encoded = capability.encode();
+
+    assert_eq!(PreviewTransportCapability::decode(&encoded), Ok(capability));
+    assert_eq!(
+        PreviewTransportCapability::from_capabilities(["preview_chunking", encoded.as_str()]),
+        Some(capability)
+    );
+    assert!(capability.max_connection_bytes >= capability.max_encoded_publication_bytes * 2);
+}
+
+#[test]
+fn preview_transport_negotiation_uses_each_peers_physical_minimum() {
+    let local = PreviewReassemblyLimits::default();
+    let peer = PreviewTransportCapability {
+        max_decoded_publication_bytes: local.max_decoded_publication_bytes / 2,
+        max_encoded_publication_bytes: local.max_encoded_publication_bytes / 2,
+        max_connection_bytes: local.max_connection_bytes / 2,
+        max_streams: local.max_streams / 2,
+        max_idle_chunks: local.max_idle_chunks / 2,
+    };
+
+    assert_eq!(
+        local.negotiated_with(peer),
+        PreviewReassemblyLimits {
+            max_decoded_publication_bytes: peer.max_decoded_publication_bytes,
+            max_encoded_publication_bytes: peer.max_encoded_publication_bytes,
+            max_connection_bytes: peer.max_connection_bytes,
+            max_streams: peer.max_streams,
+            max_idle_chunks: peer.max_idle_chunks,
+        }
+    );
 }
 
 #[test]

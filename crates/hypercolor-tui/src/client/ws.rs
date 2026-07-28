@@ -10,8 +10,9 @@ use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use hypercolor_leptos_ext::ws::{
     PREVIEW_CHUNK_FRAME_TAG, PreviewChunkReassembler, PreviewFrame, PreviewFrameChannel,
-    PreviewPixelFormat, PreviewReassemblyLimits, PreviewStreamId, ReassembledPreviewPublication,
-    SPECTRUM_FRAME_TAG, SpectrumFrame, WIDE_ZONE_PREVIEW_FRAME_TAG, ZONE_PREVIEW_FRAME_TAG,
+    PreviewPixelFormat, PreviewReassemblyLimits, PreviewStreamId, PreviewTransportCapability,
+    ReassembledPreviewPublication, SPECTRUM_FRAME_TAG, SpectrumFrame, WIDE_ZONE_PREVIEW_FRAME_TAG,
+    ZONE_PREVIEW_FRAME_TAG,
 };
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
@@ -81,7 +82,13 @@ pub async fn connect(
 
         let decoded = match msg {
             Message::Binary(data) => binary_decoder.decode(&data),
-            Message::Text(text) => decode_json(&text),
+            Message::Text(text) => {
+                let decoded = decode_json(&text);
+                if let Some(WsMessage::Hello(hello)) = &decoded {
+                    binary_decoder.apply_hello_capabilities(hello);
+                }
+                decoded
+            }
             Message::Close(_) => Some(WsMessage::Closed),
             Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => None,
         };
@@ -146,6 +153,26 @@ impl WsBinaryDecoder {
                 ..PreviewReassemblyLimits::default()
             }),
         }
+    }
+
+    fn apply_hello_capabilities(&mut self, message: &serde_json::Value) {
+        let Some(capability) = message
+            .get("capabilities")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|capabilities| {
+                PreviewTransportCapability::from_capabilities(
+                    capabilities.iter().filter_map(serde_json::Value::as_str),
+                )
+            })
+        else {
+            return;
+        };
+        let limits = PreviewReassemblyLimits {
+            max_streams: TUI_MAX_PREVIEW_STREAMS,
+            ..PreviewReassemblyLimits::default()
+        }
+        .negotiated_with(capability);
+        self.preview_chunks = PreviewChunkReassembler::new(limits);
     }
 
     pub fn decode(&mut self, data: &Bytes) -> Option<WsMessage> {

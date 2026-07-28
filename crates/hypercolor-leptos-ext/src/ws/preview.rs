@@ -25,9 +25,11 @@ pub const PREVIEW_CHUNK_SCHEMA: u8 = 1;
 pub const DEFAULT_PREVIEW_MAX_DECODED_PUBLICATION_BYTES: usize = 512 * 1024 * 1024;
 pub const DEFAULT_PREVIEW_MAX_ENCODED_PUBLICATION_BYTES: usize =
     DEFAULT_PREVIEW_MAX_DECODED_PUBLICATION_BYTES + 64 * 1024;
-pub const DEFAULT_PREVIEW_MAX_CONNECTION_BYTES: usize = 1024 * 1024 * 1024;
+pub const DEFAULT_PREVIEW_MAX_CONNECTION_BYTES: usize =
+    DEFAULT_PREVIEW_MAX_ENCODED_PUBLICATION_BYTES * 2;
 pub const DEFAULT_PREVIEW_MAX_REASSEMBLY_STREAMS: usize = 256;
 pub const DEFAULT_PREVIEW_MAX_IDLE_CHUNKS: u64 = 1024;
+pub const PREVIEW_TRANSPORT_CAPABILITY_PREFIX: &str = "preview_transport_v1:";
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 #[repr(u8)]
@@ -790,7 +792,81 @@ pub struct PreviewReassemblyLimits {
     pub max_idle_chunks: u64,
 }
 
-impl Default for PreviewReassemblyLimits {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PreviewTransportCapability {
+    pub max_decoded_publication_bytes: usize,
+    pub max_encoded_publication_bytes: usize,
+    pub max_connection_bytes: usize,
+    pub max_streams: usize,
+    pub max_idle_chunks: u64,
+}
+
+impl PreviewTransportCapability {
+    #[must_use]
+    pub fn encode(self) -> String {
+        format!(
+            "{PREVIEW_TRANSPORT_CAPABILITY_PREFIX}decoded={},encoded={},connection={},streams={},idle_chunks={}",
+            self.max_decoded_publication_bytes,
+            self.max_encoded_publication_bytes,
+            self.max_connection_bytes,
+            self.max_streams,
+            self.max_idle_chunks,
+        )
+    }
+
+    pub fn decode(value: &str) -> Result<Self, PreviewCapabilityError> {
+        let fields = value
+            .strip_prefix(PREVIEW_TRANSPORT_CAPABILITY_PREFIX)
+            .ok_or(PreviewCapabilityError::UnknownCapability)?;
+        let mut decoded = None;
+        let mut encoded = None;
+        let mut connection = None;
+        let mut streams = None;
+        let mut idle_chunks = None;
+        for field in fields.split(',') {
+            let (name, value) = field
+                .split_once('=')
+                .ok_or(PreviewCapabilityError::InvalidField)?;
+            match name {
+                "decoded" => parse_capability_field(value, &mut decoded)?,
+                "encoded" => parse_capability_field(value, &mut encoded)?,
+                "connection" => parse_capability_field(value, &mut connection)?,
+                "streams" => parse_capability_field(value, &mut streams)?,
+                "idle_chunks" => parse_capability_field(value, &mut idle_chunks)?,
+                _ => return Err(PreviewCapabilityError::InvalidField),
+            }
+        }
+        let capability = Self {
+            max_decoded_publication_bytes: decoded.ok_or(PreviewCapabilityError::MissingField)?,
+            max_encoded_publication_bytes: encoded.ok_or(PreviewCapabilityError::MissingField)?,
+            max_connection_bytes: connection.ok_or(PreviewCapabilityError::MissingField)?,
+            max_streams: streams.ok_or(PreviewCapabilityError::MissingField)?,
+            max_idle_chunks: idle_chunks.ok_or(PreviewCapabilityError::MissingField)?,
+        };
+        capability.validate()?;
+        Ok(capability)
+    }
+
+    pub fn from_capabilities<'a>(capabilities: impl IntoIterator<Item = &'a str>) -> Option<Self> {
+        capabilities
+            .into_iter()
+            .find_map(|capability| Self::decode(capability).ok())
+    }
+
+    fn validate(self) -> Result<(), PreviewCapabilityError> {
+        if self.max_decoded_publication_bytes == 0
+            || self.max_encoded_publication_bytes == 0
+            || self.max_connection_bytes < self.max_encoded_publication_bytes
+            || self.max_streams == 0
+            || self.max_idle_chunks == 0
+        {
+            return Err(PreviewCapabilityError::InvalidLimits);
+        }
+        Ok(())
+    }
+}
+
+impl Default for PreviewTransportCapability {
     fn default() -> Self {
         Self {
             max_decoded_publication_bytes: DEFAULT_PREVIEW_MAX_DECODED_PUBLICATION_BYTES,
@@ -800,6 +876,51 @@ impl Default for PreviewReassemblyLimits {
             max_idle_chunks: DEFAULT_PREVIEW_MAX_IDLE_CHUNKS,
         }
     }
+}
+
+impl PreviewReassemblyLimits {
+    #[must_use]
+    pub fn negotiated_with(self, peer: PreviewTransportCapability) -> Self {
+        Self {
+            max_decoded_publication_bytes: self
+                .max_decoded_publication_bytes
+                .min(peer.max_decoded_publication_bytes),
+            max_encoded_publication_bytes: self
+                .max_encoded_publication_bytes
+                .min(peer.max_encoded_publication_bytes),
+            max_connection_bytes: self.max_connection_bytes.min(peer.max_connection_bytes),
+            max_streams: self.max_streams.min(peer.max_streams),
+            max_idle_chunks: self.max_idle_chunks.min(peer.max_idle_chunks),
+        }
+    }
+}
+
+impl Default for PreviewReassemblyLimits {
+    fn default() -> Self {
+        let capability = PreviewTransportCapability::default();
+        Self {
+            max_decoded_publication_bytes: capability.max_decoded_publication_bytes,
+            max_encoded_publication_bytes: capability.max_encoded_publication_bytes,
+            max_connection_bytes: capability.max_connection_bytes,
+            max_streams: capability.max_streams,
+            max_idle_chunks: capability.max_idle_chunks,
+        }
+    }
+}
+
+fn parse_capability_field<T: std::str::FromStr>(
+    value: &str,
+    slot: &mut Option<T>,
+) -> Result<(), PreviewCapabilityError> {
+    if slot.is_some() {
+        return Err(PreviewCapabilityError::DuplicateField);
+    }
+    *slot = Some(
+        value
+            .parse()
+            .map_err(|_| PreviewCapabilityError::InvalidField)?,
+    );
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1157,6 +1278,20 @@ fn publication_header_len(
             })
         }
     }
+}
+
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum PreviewCapabilityError {
+    #[error("preview transport capability has an unknown schema")]
+    UnknownCapability,
+    #[error("preview transport capability contains an invalid field")]
+    InvalidField,
+    #[error("preview transport capability contains a duplicate field")]
+    DuplicateField,
+    #[error("preview transport capability is missing a required field")]
+    MissingField,
+    #[error("preview transport capability contains invalid resource limits")]
+    InvalidLimits,
 }
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]

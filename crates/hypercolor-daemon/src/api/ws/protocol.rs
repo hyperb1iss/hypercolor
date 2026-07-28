@@ -12,7 +12,10 @@ use serde::de::{self, IgnoredAny, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::json;
 
-use hypercolor_leptos_ext::ws::INTERACTIVE_PREVIEW_ID_MAX_BYTES;
+use hypercolor_leptos_ext::ws::{
+    DEFAULT_PREVIEW_MAX_DECODED_PUBLICATION_BYTES, INTERACTIVE_PREVIEW_ID_MAX_BYTES,
+    PreviewTransportCapability,
+};
 use hypercolor_types::canvas::SurfaceDescriptor;
 use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::server::ServerIdentity;
@@ -578,7 +581,8 @@ pub(super) struct InteractivePreviewConfig {
 /// Hard transport ceiling for one complete WebSocket message or frame.
 pub(super) const MAX_WS_MESSAGE_BYTES: usize = 1024 * 1024;
 /// Maximum decoded surface bytes admitted for one preview publication.
-pub(super) const MAX_PREVIEW_PUBLICATION_BYTES: usize = 512 * 1024 * 1024;
+pub(super) const MAX_PREVIEW_PUBLICATION_BYTES: usize =
+    DEFAULT_PREVIEW_MAX_DECODED_PUBLICATION_BYTES;
 /// Maximum number of edges accepted in one browser-input batch.
 pub(super) const MAX_INPUT_INJECT_EVENTS: usize = 256;
 /// Maximum UTF-8 byte length of an injected key or button name.
@@ -1696,6 +1700,7 @@ pub(super) fn ws_capabilities() -> Vec<String> {
     capabilities.push("interactive_previews".to_owned());
     capabilities.push("wide_preview_frames".to_owned());
     capabilities.push("preview_chunking".to_owned());
+    capabilities.push(PreviewTransportCapability::default().encode());
     capabilities
 }
 

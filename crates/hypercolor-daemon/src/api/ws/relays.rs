@@ -6,7 +6,7 @@
 //! mpsc channels and `try_send` backpressure — drop under load rather than
 //! queue unboundedly.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime};
@@ -20,9 +20,10 @@ use hypercolor_leptos_ext::ws::{
     InteractivePreviewFrame as WireInteractivePreviewFrame, PREVIEW_CHUNK_FIXED_HEADER_LEN,
     PreviewChunkFrame, PreviewFrame as WirePreviewFrame, PreviewFrameChannel,
     PreviewPixelFormat as WirePreviewFormat, PreviewPublicationMetadata, PreviewStreamId,
-    ScreenZonesFrame as WireScreenZonesFrame, ZonePreviewFrame as WireZonePreviewFrame,
+    PreviewTransportCapability, ScreenZonesFrame as WireScreenZonesFrame,
+    ZonePreviewFrame as WireZonePreviewFrame,
 };
-use hypercolor_types::canvas::PublishedSurfaceStorageIdentity;
+use hypercolor_types::canvas::{PublishedSurfaceStorageIdentity, SurfaceDescriptor};
 use hypercolor_types::sensor::SystemSnapshot;
 use thiserror::Error;
 use tokio::sync::mpsc::error::TrySendError;
@@ -38,11 +39,11 @@ use super::cache::{
     try_encode_cached_canvas_preview_binary, try_encode_cached_zone_preview_binary_scaled,
 };
 use super::protocol::{
-    ActiveFramesConfig, CanvasConfig, MAX_PREVIEW_PUBLICATION_BYTES, MetricsCopies, MetricsDevices,
-    MetricsDisplayLane, MetricsDisplayOutput, MetricsEffectHealth, MetricsFps, MetricsFrameTime,
-    MetricsMemory, MetricsPacing, MetricsPayload, MetricsPreview, MetricsPreviewDemand,
-    MetricsRenderSurfaces, MetricsStages, MetricsTimeline, MetricsWebsocket, ServerMessage,
-    SpectrumConfig, SubscriptionState, WsChannel, event_message_parts, should_relay_event,
+    ActiveFramesConfig, CanvasConfig, MetricsCopies, MetricsDevices, MetricsDisplayLane,
+    MetricsDisplayOutput, MetricsEffectHealth, MetricsFps, MetricsFrameTime, MetricsMemory,
+    MetricsPacing, MetricsPayload, MetricsPreview, MetricsPreviewDemand, MetricsRenderSurfaces,
+    MetricsStages, MetricsTimeline, MetricsWebsocket, ServerMessage, SpectrumConfig,
+    SubscriptionState, WsChannel, event_message_parts, should_relay_event,
 };
 use crate::api::AppState;
 use crate::performance::FrameTimeSummary as RenderFrameTimeSummary;
@@ -51,9 +52,6 @@ use crate::preview_runtime::{PreviewDemandSummary, PreviewPixelFormat, PreviewSt
 use crate::session::OutputPowerState;
 
 const BACKPRESSURE_REPORT_INTERVAL: Duration = Duration::from_millis(500);
-const MAX_PREVIEW_ENCODED_PUBLICATION_BYTES: usize = MAX_PREVIEW_PUBLICATION_BYTES + 64 * 1024;
-const MAX_PREVIEW_CONNECTION_QUEUE_BYTES: usize = 1024 * 1024 * 1024;
-
 pub(super) static WS_PREVIEW_PUBLICATION_QUEUED_COUNT: AtomicU64 = AtomicU64::new(0);
 pub(super) static WS_PREVIEW_PUBLICATION_REPLACED_COUNT: AtomicU64 = AtomicU64::new(0);
 pub(super) static WS_PREVIEW_PUBLICATION_EVICTED_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -70,9 +68,10 @@ pub(super) struct PreviewOutboundLimits {
 
 impl Default for PreviewOutboundLimits {
     fn default() -> Self {
+        let capability = PreviewTransportCapability::default();
         Self {
-            max_publication_bytes: MAX_PREVIEW_ENCODED_PUBLICATION_BYTES,
-            max_connection_bytes: MAX_PREVIEW_CONNECTION_QUEUE_BYTES,
+            max_publication_bytes: capability.max_encoded_publication_bytes,
+            max_connection_bytes: capability.max_connection_bytes,
         }
     }
 }
@@ -95,10 +94,16 @@ pub(super) enum PreviewOutboundError {
     UnexpectedInteractiveFence,
     #[error("preview publication uses {actual} bytes, exceeding the {maximum}-byte budget")]
     PublicationBudgetExceeded { maximum: usize, actual: usize },
+    #[error("decoded preview uses {actual} bytes, exceeding the {maximum}-byte budget")]
+    DecodedPublicationBudgetExceeded { maximum: usize, actual: usize },
     #[error(
         "preview connection queue cannot admit a {actual}-byte publication within {maximum} bytes"
     )]
     ConnectionBudgetExceeded { maximum: usize, actual: usize },
+    #[error("preview connection stream limit is {maximum}")]
+    StreamBudgetExceeded { maximum: usize },
+    #[error("preview router could not allocate indexed state for {entries} streams")]
+    RouterAllocationFailed { entries: usize },
     #[error("preview publication identity space is exhausted")]
     PublicationIdExhausted,
     #[error("preview chunk encoding failed: {0}")]
@@ -121,6 +126,13 @@ impl PreviewPublication {
         self.metadata.publication_id
     }
 
+    fn key(&self) -> PreviewPublicationKey {
+        PreviewPublicationKey {
+            stream: self.metadata.stream.clone(),
+            publication_id: self.metadata.publication_id,
+        }
+    }
+
     pub(super) fn interactive_fence(&self) -> Option<(&str, BrowserInputPublicationId)> {
         match (&self.metadata.stream, self.interactive_fence) {
             (PreviewStreamId::Interactive(preview_id), Some(publication_id)) => {
@@ -133,17 +145,120 @@ impl PreviewPublication {
 
 #[derive(Debug)]
 struct PreviewOutboundState {
-    queued: VecDeque<PreviewPublication>,
+    queued: HashMap<PreviewStreamId, QueuedPreviewPublication>,
+    queue_head: Option<PreviewStreamId>,
+    queue_tail: Option<PreviewStreamId>,
     queued_bytes: usize,
-    current: Vec<(PreviewStreamId, u64)>,
+    in_flight: HashMap<PreviewPublicationKey, usize>,
+    in_flight_bytes: usize,
+    current: HashMap<PreviewStreamId, u64>,
     next_publication_id: u64,
     limits: PreviewOutboundLimits,
+    capability: PreviewTransportCapability,
 }
 
 impl Drop for PreviewOutboundState {
     fn drop(&mut self) {
-        WS_PREVIEW_QUEUE_BYTES.fetch_sub(self.queued_bytes, Ordering::Relaxed);
+        WS_PREVIEW_QUEUE_BYTES.fetch_sub(self.retained_bytes(), Ordering::Relaxed);
     }
+}
+
+impl PreviewOutboundState {
+    fn retained_bytes(&self) -> usize {
+        self.queued_bytes.saturating_add(self.in_flight_bytes)
+    }
+
+    fn try_reserve_stream_state(
+        &mut self,
+        stream: &PreviewStreamId,
+    ) -> Result<(), PreviewOutboundError> {
+        let entries = self.current.len().saturating_add(1);
+        self.queued
+            .try_reserve(1)
+            .map_err(|_| PreviewOutboundError::RouterAllocationFailed { entries })?;
+        self.in_flight
+            .try_reserve(1)
+            .map_err(|_| PreviewOutboundError::RouterAllocationFailed { entries })?;
+        if !self.current.contains_key(stream) {
+            self.current
+                .try_reserve(1)
+                .map_err(|_| PreviewOutboundError::RouterAllocationFailed { entries })?;
+        }
+        Ok(())
+    }
+
+    fn enqueue(&mut self, publication: PreviewPublication) -> Option<PreviewPublication> {
+        let stream = publication.stream().clone();
+        if let Some(queued) = self.queued.get_mut(&stream) {
+            return Some(std::mem::replace(&mut queued.publication, publication));
+        }
+
+        let previous = self.queue_tail.clone();
+        if let Some(tail) = &previous {
+            self.queued
+                .get_mut(tail)
+                .expect("queue tail must reference an indexed publication")
+                .next = Some(stream.clone());
+        } else {
+            self.queue_head = Some(stream.clone());
+        }
+        self.queue_tail = Some(stream.clone());
+        self.queued.insert(
+            stream,
+            QueuedPreviewPublication {
+                publication,
+                previous,
+                next: None,
+            },
+        );
+        None
+    }
+
+    fn remove_queued(&mut self, stream: &PreviewStreamId) -> Option<PreviewPublication> {
+        let queued = self.queued.remove(stream)?;
+        if let Some(previous) = &queued.previous {
+            self.queued
+                .get_mut(previous)
+                .expect("queued predecessor must remain indexed")
+                .next
+                .clone_from(&queued.next);
+        } else {
+            self.queue_head.clone_from(&queued.next);
+        }
+        if let Some(next) = &queued.next {
+            self.queued
+                .get_mut(next)
+                .expect("queued successor must remain indexed")
+                .previous
+                .clone_from(&queued.previous);
+        } else {
+            self.queue_tail.clone_from(&queued.previous);
+        }
+        Some(queued.publication)
+    }
+
+    fn oldest_queued_except(&self, excluded: &PreviewStreamId) -> Option<PreviewStreamId> {
+        let mut candidate = self.queue_head.as_ref()?;
+        loop {
+            if candidate != excluded {
+                return Some(candidate.clone());
+            }
+            candidate = self.queued.get(candidate)?.next.as_ref()?;
+        }
+    }
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+struct PreviewPublicationKey {
+    stream: PreviewStreamId,
+    publication_id: u64,
+}
+
+#[derive(Debug)]
+struct QueuedPreviewPublication {
+    publication: PreviewPublication,
+    previous: Option<PreviewStreamId>,
+    next: Option<PreviewStreamId>,
 }
 
 #[derive(Debug)]
@@ -171,11 +286,16 @@ pub(super) fn preview_outbound_channel_with_limits(
 ) -> (PreviewOutboundSender, PreviewOutboundReceiver) {
     let shared = Arc::new(PreviewOutboundShared {
         state: StdMutex::new(PreviewOutboundState {
-            queued: VecDeque::new(),
+            queued: HashMap::new(),
+            queue_head: None,
+            queue_tail: None,
             queued_bytes: 0,
-            current: Vec::new(),
+            in_flight: HashMap::new(),
+            in_flight_bytes: 0,
+            current: HashMap::new(),
             next_publication_id: 1,
             limits,
+            capability: PreviewTransportCapability::default(),
         }),
         notify: Notify::new(),
     });
@@ -209,11 +329,19 @@ impl PreviewOutboundSender {
     ) -> Result<PreviewPublishOutcome, PreviewOutboundError> {
         validate_preview_fence(&stream, interactive_fence)?;
         let fields = decode_preview_fields(&stream, &encoded)?;
+        let decoded_bytes = decoded_preview_bytes(&stream, fields.width, fields.height)?;
+        let encoded_len = encoded.len();
         let mut state = self
             .shared
             .state
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
+        if decoded_bytes > state.capability.max_decoded_publication_bytes {
+            return Err(PreviewOutboundError::DecodedPublicationBudgetExceeded {
+                maximum: state.capability.max_decoded_publication_bytes,
+                actual: decoded_bytes,
+            });
+        }
         if encoded.len() > state.limits.max_publication_bytes {
             return Err(PreviewOutboundError::PublicationBudgetExceeded {
                 maximum: state.limits.max_publication_bytes,
@@ -226,39 +354,85 @@ impl PreviewOutboundSender {
                 actual: encoded.len(),
             });
         }
-        let publication_id = state.next_publication_id;
-        state.next_publication_id = publication_id
-            .checked_add(1)
-            .ok_or(PreviewOutboundError::PublicationIdExhausted)?;
-
-        let replaced = state
-            .queued
-            .iter()
-            .position(|publication| publication.stream() == &stream)
-            .and_then(|index| state.queued.remove(index));
-        let outcome = if replaced.is_some() {
-            PreviewPublishOutcome::Replaced
-        } else {
-            PreviewPublishOutcome::Queued
-        };
-        if let Some(replaced) = replaced {
-            state.queued_bytes -= replaced.encoded.len();
-            WS_PREVIEW_QUEUE_BYTES.fetch_sub(replaced.encoded.len(), Ordering::Relaxed);
-            WS_PREVIEW_PUBLICATION_REPLACED_COUNT.fetch_add(1, Ordering::Relaxed);
+        if !state.current.contains_key(&stream)
+            && state.current.len() >= state.capability.max_streams
+        {
+            return Err(PreviewOutboundError::StreamBudgetExceeded {
+                maximum: state.capability.max_streams,
+            });
         }
 
-        while state
-            .queued_bytes
-            .checked_add(encoded.len())
-            .is_none_or(|bytes| bytes > state.limits.max_connection_bytes)
-        {
-            let Some(evicted) = state.queued.pop_front() else {
+        let replaced_bytes = state
+            .queued
+            .get(&stream)
+            .map_or(0, |queued| queued.publication.encoded.len());
+        let mut projected_bytes = state
+            .retained_bytes()
+            .checked_sub(replaced_bytes)
+            .and_then(|bytes| bytes.checked_add(encoded.len()))
+            .ok_or(PreviewOutboundError::ConnectionBudgetExceeded {
+                maximum: state.limits.max_connection_bytes,
+                actual: encoded.len(),
+            })?;
+        let mut eviction_cursor = state.queue_head.clone();
+        while projected_bytes > state.limits.max_connection_bytes {
+            let Some(candidate) = eviction_cursor.take() else {
                 return Err(PreviewOutboundError::ConnectionBudgetExceeded {
                     maximum: state.limits.max_connection_bytes,
                     actual: encoded.len(),
                 });
             };
-            state.queued_bytes -= evicted.encoded.len();
+            let queued = state
+                .queued
+                .get(&candidate)
+                .expect("queue links must reference indexed publications");
+            eviction_cursor.clone_from(&queued.next);
+            if candidate == stream {
+                continue;
+            }
+            projected_bytes = projected_bytes.saturating_sub(queued.publication.encoded.len());
+        }
+        state.try_reserve_stream_state(&stream)?;
+
+        let publication_id = state.next_publication_id;
+        let next_publication_id = publication_id
+            .checked_add(1)
+            .ok_or(PreviewOutboundError::PublicationIdExhausted)?;
+        let publication = PreviewPublication {
+            metadata: PreviewPublicationMetadata {
+                stream: stream.clone(),
+                publication_id,
+                frame_number: fields.frame_number,
+                timestamp_ms: fields.timestamp_ms,
+                width: fields.width,
+                height: fields.height,
+                format: fields.format,
+            },
+            encoded,
+            interactive_fence,
+        };
+        let replaced = state.enqueue(publication);
+        let outcome = if let Some(replaced) = replaced {
+            state.queued_bytes = state.queued_bytes.saturating_sub(replaced.encoded.len());
+            WS_PREVIEW_QUEUE_BYTES.fetch_sub(replaced.encoded.len(), Ordering::Relaxed);
+            WS_PREVIEW_PUBLICATION_REPLACED_COUNT.fetch_add(1, Ordering::Relaxed);
+            PreviewPublishOutcome::Replaced
+        } else {
+            PreviewPublishOutcome::Queued
+        };
+
+        while state
+            .retained_bytes()
+            .checked_add(encoded_len)
+            .is_none_or(|bytes| bytes > state.limits.max_connection_bytes)
+        {
+            let candidate = state
+                .oldest_queued_except(&stream)
+                .expect("admission projection proved enough queued bytes can be evicted");
+            let evicted = state
+                .remove_queued(&candidate)
+                .expect("eviction candidate must remain indexed");
+            state.queued_bytes = state.queued_bytes.saturating_sub(evicted.encoded.len());
             remove_current_publication(
                 &mut state.current,
                 evicted.stream(),
@@ -269,21 +443,9 @@ impl PreviewOutboundSender {
         }
 
         set_current_publication(&mut state.current, &stream, publication_id);
-        state.queued_bytes += encoded.len();
-        WS_PREVIEW_QUEUE_BYTES.fetch_add(encoded.len(), Ordering::Relaxed);
-        state.queued.push_back(PreviewPublication {
-            metadata: PreviewPublicationMetadata {
-                stream,
-                publication_id,
-                frame_number: fields.frame_number,
-                timestamp_ms: fields.timestamp_ms,
-                width: fields.width,
-                height: fields.height,
-                format: fields.format,
-            },
-            encoded,
-            interactive_fence,
-        });
+        state.next_publication_id = next_publication_id;
+        state.queued_bytes += encoded_len;
+        WS_PREVIEW_QUEUE_BYTES.fetch_add(encoded_len, Ordering::Relaxed);
         WS_PREVIEW_PUBLICATION_QUEUED_COUNT.fetch_add(1, Ordering::Relaxed);
         drop(state);
         self.shared.notify.notify_one();
@@ -296,16 +458,11 @@ impl PreviewOutboundSender {
             .state
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        if let Some(index) = state
-            .queued
-            .iter()
-            .position(|publication| publication.stream() == stream)
-            && let Some(removed) = state.queued.remove(index)
-        {
-            state.queued_bytes -= removed.encoded.len();
+        if let Some(removed) = state.remove_queued(stream) {
+            state.queued_bytes = state.queued_bytes.saturating_sub(removed.encoded.len());
             WS_PREVIEW_QUEUE_BYTES.fetch_sub(removed.encoded.len(), Ordering::Relaxed);
         }
-        state.current.retain(|(candidate, _)| candidate != stream);
+        state.current.remove(stream);
     }
 }
 
@@ -326,9 +483,14 @@ impl PreviewOutboundReceiver {
             .state
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        let publication = state.queued.pop_front()?;
-        state.queued_bytes -= publication.encoded.len();
-        WS_PREVIEW_QUEUE_BYTES.fetch_sub(publication.encoded.len(), Ordering::Relaxed);
+        let stream = state.queue_head.clone()?;
+        let publication = state
+            .remove_queued(&stream)
+            .expect("queue head must remain indexed");
+        let byte_len = publication.encoded.len();
+        state.queued_bytes = state.queued_bytes.saturating_sub(byte_len);
+        state.in_flight_bytes = state.in_flight_bytes.saturating_add(byte_len);
+        state.in_flight.insert(publication.key(), byte_len);
         Some(publication)
     }
 
@@ -338,10 +500,8 @@ impl PreviewOutboundReceiver {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .current
-            .iter()
-            .any(|(stream, publication_id)| {
-                stream == publication.stream() && *publication_id == publication.publication_id()
-            })
+            .get(publication.stream())
+            .is_some_and(|publication_id| *publication_id == publication.publication_id())
     }
 
     pub(super) fn complete(&self, publication: &PreviewPublication) {
@@ -350,6 +510,11 @@ impl PreviewOutboundReceiver {
             .state
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
+        let key = publication.key();
+        if let Some(byte_len) = state.in_flight.remove(&key) {
+            state.in_flight_bytes = state.in_flight_bytes.saturating_sub(byte_len);
+            WS_PREVIEW_QUEUE_BYTES.fetch_sub(byte_len, Ordering::Relaxed);
+        }
         remove_current_publication(
             &mut state.current,
             publication.stream(),
@@ -358,6 +523,7 @@ impl PreviewOutboundReceiver {
     }
 }
 
+#[derive(Debug)]
 pub(super) struct PreviewSendCursor {
     publication: PreviewPublication,
     payload_capacity: usize,
@@ -458,6 +624,110 @@ impl PreviewSendCursor {
     }
 }
 
+#[derive(Debug)]
+struct QueuedPreviewCursor {
+    cursor: PreviewSendCursor,
+    previous: Option<PreviewStreamId>,
+    next: Option<PreviewStreamId>,
+}
+
+#[derive(Debug)]
+#[allow(
+    dead_code,
+    reason = "the WebSocket session scheduler consumes this fairness boundary"
+)]
+pub(super) struct PreviewCursorQueue {
+    cursors: HashMap<PreviewStreamId, QueuedPreviewCursor>,
+    head: Option<PreviewStreamId>,
+    tail: Option<PreviewStreamId>,
+    max_streams: usize,
+}
+
+impl PreviewCursorQueue {
+    pub(super) fn new(max_streams: usize) -> Self {
+        Self {
+            cursors: HashMap::new(),
+            head: None,
+            tail: None,
+            max_streams,
+        }
+    }
+
+    pub(super) fn try_insert(
+        &mut self,
+        cursor: PreviewSendCursor,
+    ) -> Result<Option<PreviewSendCursor>, PreviewOutboundError> {
+        let stream = cursor.publication().stream().clone();
+        if let Some(queued) = self.cursors.get_mut(&stream) {
+            return Ok(Some(std::mem::replace(&mut queued.cursor, cursor)));
+        }
+        if self.cursors.len() >= self.max_streams {
+            return Err(PreviewOutboundError::StreamBudgetExceeded {
+                maximum: self.max_streams,
+            });
+        }
+        self.cursors
+            .try_reserve(1)
+            .map_err(|_| PreviewOutboundError::RouterAllocationFailed {
+                entries: self.cursors.len().saturating_add(1),
+            })?;
+        let previous = self.tail.clone();
+        if let Some(tail) = &previous {
+            self.cursors
+                .get_mut(tail)
+                .expect("cursor tail must remain indexed")
+                .next = Some(stream.clone());
+        } else {
+            self.head = Some(stream.clone());
+        }
+        self.tail = Some(stream.clone());
+        self.cursors.insert(
+            stream,
+            QueuedPreviewCursor {
+                cursor,
+                previous,
+                next: None,
+            },
+        );
+        Ok(None)
+    }
+
+    pub(super) fn pop_next(&mut self) -> Option<PreviewSendCursor> {
+        let stream = self.head.clone()?;
+        let queued = self
+            .cursors
+            .remove(&stream)
+            .expect("cursor head must remain indexed");
+        self.head.clone_from(&queued.next);
+        if let Some(next) = &queued.next {
+            self.cursors
+                .get_mut(next)
+                .expect("cursor successor must remain indexed")
+                .previous = None;
+        } else {
+            self.tail = None;
+        }
+        Some(queued.cursor)
+    }
+
+    pub(super) fn requeue(
+        &mut self,
+        cursor: PreviewSendCursor,
+    ) -> Result<(), PreviewOutboundError> {
+        let replaced = self.try_insert(cursor)?;
+        debug_assert!(replaced.is_none());
+        Ok(())
+    }
+
+    pub(super) fn len(&self) -> usize {
+        self.cursors.len()
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        self.cursors.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct PreviewWireFields {
     frame_number: u32,
@@ -548,27 +818,35 @@ impl PreviewWireFields {
     }
 }
 
+fn decoded_preview_bytes(
+    stream: &PreviewStreamId,
+    width: u32,
+    height: u32,
+) -> Result<usize, PreviewOutboundError> {
+    if matches!(stream, PreviewStreamId::ScreenZones) {
+        return Ok(0);
+    }
+    SurfaceDescriptor::rgba8888(width, height)
+        .try_non_empty_byte_len()
+        .map_err(|error| PreviewOutboundError::InvalidPublication(error.to_string()))
+}
+
 fn set_current_publication(
-    current: &mut Vec<(PreviewStreamId, u64)>,
+    current: &mut HashMap<PreviewStreamId, u64>,
     stream: &PreviewStreamId,
     publication_id: u64,
 ) {
-    if let Some((_, current_id)) = current
-        .iter_mut()
-        .find(|(candidate, _)| candidate == stream)
-    {
-        *current_id = publication_id;
-    } else {
-        current.push((stream.clone(), publication_id));
-    }
+    current.insert(stream.clone(), publication_id);
 }
 
 fn remove_current_publication(
-    current: &mut Vec<(PreviewStreamId, u64)>,
+    current: &mut HashMap<PreviewStreamId, u64>,
     stream: &PreviewStreamId,
     publication_id: u64,
 ) {
-    current.retain(|(candidate, current_id)| candidate != stream || *current_id != publication_id);
+    if current.get(stream) == Some(&publication_id) {
+        current.remove(stream);
+    }
 }
 
 #[derive(Debug, Default)]
@@ -2788,6 +3066,9 @@ pub(super) fn publish_subscriptions(
 ) {
     let _ = subscriptions_tx.send(subscriptions.clone());
 }
+
+#[cfg(test)]
+mod transport_tests;
 
 #[cfg(test)]
 mod tests {

@@ -9,9 +9,10 @@ pub use hypercolor_leptos_ext::ws::ScreenZonesFrame;
 use hypercolor_leptos_ext::ws::{
     INTERACTIVE_PREVIEW_FRAME_TAG, InteractivePreviewFrame, InteractivePreviewFrameView,
     PREVIEW_CHUNK_FRAME_TAG, PreviewChunkReassembler, PreviewFrame, PreviewPublicationMetadata,
-    PreviewReassemblyLimits, PreviewStreamId, ReassembledPreviewPublication,
-    SCREEN_ZONES_FRAME_TAG, WIDE_INTERACTIVE_PREVIEW_FRAME_TAG, WIDE_SCREEN_ZONES_FRAME_TAG,
-    WIDE_ZONE_PREVIEW_FRAME_TAG, ZONE_PREVIEW_FRAME_TAG, ZonePreviewFrame, ZonePreviewFrameView,
+    PreviewReassemblyLimits, PreviewStreamId, PreviewTransportCapability,
+    ReassembledPreviewPublication, SCREEN_ZONES_FRAME_TAG, WIDE_INTERACTIVE_PREVIEW_FRAME_TAG,
+    WIDE_SCREEN_ZONES_FRAME_TAG, WIDE_ZONE_PREVIEW_FRAME_TAG, ZONE_PREVIEW_FRAME_TAG,
+    ZonePreviewFrame, ZonePreviewFrameView,
 };
 pub use hypercolor_leptos_ext::ws::{
     PreviewFrameView as CanvasFrame, PreviewPixelFormat as CanvasPixelFormat,
@@ -540,6 +541,23 @@ impl Default for PreviewBinaryDecoder {
 }
 
 impl PreviewBinaryDecoder {
+    pub(super) fn apply_hello_capabilities(&mut self, message: &serde_json::Value) {
+        let Some(capability) = message
+            .get("capabilities")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|capabilities| {
+                PreviewTransportCapability::from_capabilities(
+                    capabilities.iter().filter_map(serde_json::Value::as_str),
+                )
+            })
+        else {
+            return;
+        };
+        self.chunks = PreviewChunkReassembler::new(
+            PreviewReassemblyLimits::default().negotiated_with(capability),
+        );
+    }
+
     pub(super) fn decode(&mut self, buffer: js_sys::ArrayBuffer) -> Option<PreviewBinaryMessage> {
         let bytes = js_sys::Uint8Array::new(&buffer);
         if bytes.length() > 0 && bytes.get_index(0) == PREVIEW_CHUNK_FRAME_TAG {
