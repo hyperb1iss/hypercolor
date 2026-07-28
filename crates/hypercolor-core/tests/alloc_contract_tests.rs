@@ -68,7 +68,9 @@ fn screen_push_round(
 ) -> Stats {
     let mut region = Region::new(GLOBAL);
     region.reset();
-    input.push_frame(black_box(frame), width, height);
+    input
+        .push_frame(black_box(frame), width, height)
+        .expect("benchmark frame resources remain admitted");
     region.change()
 }
 
@@ -99,7 +101,9 @@ fn steady_screen_shape_push_control(
     let frame = patterned_rgba_frame(width, height);
 
     for _ in 0..3 {
-        input.push_frame(&frame, width, height);
+        input
+            .push_frame(&frame, width, height)
+            .expect("benchmark frame resources remain admitted");
     }
 
     (
@@ -686,7 +690,8 @@ fn counting_allocator_is_active_and_scoped() {
         let data = [
             90, 91, 92, 93, 1, 2, 3, 4, 5, 6, 7, 8, 70, 71, 9, 10, 11, 12, 13, 14, 15, 16,
         ];
-        let mut buffers = DoubleBuffer::with_capacity(16);
+        let mut buffers =
+            DoubleBuffer::try_with_capacity(16).expect("tiny fixture buffers fit in memory");
         assert_eq!(
             decode_chunk(
                 &SpaChunkView::new(

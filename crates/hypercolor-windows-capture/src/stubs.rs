@@ -4,12 +4,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::shared::{
-    CaptureError, CaptureRegion, CaptureResult, Frame, MonitorSelector, ReductionTelemetry,
+    CaptureError, CaptureExtent, CaptureRegion, CaptureResult, Frame, MonitorSelector,
+    ReductionTelemetry,
 };
 
 /// Desktop Duplication placeholder for platforms without the API.
 pub struct DesktopDuplicator {
-    _private: (),
+    requested_extent: CaptureExtent,
 }
 
 impl DesktopDuplicator {
@@ -18,7 +19,7 @@ impl DesktopDuplicator {
     /// # Errors
     ///
     /// Always returns [`CaptureError::UnsupportedPlatform`].
-    pub const fn new(_monitor: usize, _max_width: u32) -> CaptureResult<Self> {
+    pub const fn new(_monitor: usize, _requested_extent: CaptureExtent) -> CaptureResult<Self> {
         Err(CaptureError::UnsupportedPlatform)
     }
 
@@ -27,7 +28,10 @@ impl DesktopDuplicator {
     /// # Errors
     ///
     /// Always returns [`CaptureError::UnsupportedPlatform`].
-    pub fn open(_selector: MonitorSelector, _max_width: u32) -> CaptureResult<Self> {
+    pub const fn open(
+        _selector: MonitorSelector,
+        _requested_extent: CaptureExtent,
+    ) -> CaptureResult<Self> {
         Err(CaptureError::UnsupportedPlatform)
     }
 
@@ -67,8 +71,16 @@ impl DesktopDuplicator {
         0
     }
 
-    /// Change the subsample target for subsequent frames.
-    pub const fn set_max_width(&mut self, _max_width: u32) {}
+    /// A stub has no live capture request.
+    #[must_use]
+    pub const fn requested_extent(&self) -> CaptureExtent {
+        self.requested_extent
+    }
+
+    /// Ignore the requested extent on unsupported platforms.
+    pub const fn set_requested_extent(&mut self, requested_extent: CaptureExtent) {
+        self.requested_extent = requested_extent;
+    }
 
     /// Always fails: no native capture extent exists on this platform.
     ///

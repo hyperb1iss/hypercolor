@@ -467,7 +467,9 @@ fn native_and_stored_extents_are_distinct_contracts() {
 #[test]
 fn pooled_cpu_planes_transfer_ownership_without_copying_and_reuse_capacity() {
     let pool = CapturePlanePool::default();
-    let mut lease = pool.acquire(48);
+    let mut lease = pool
+        .try_acquire(48)
+        .expect("test plane allocation succeeds");
     lease.resize(48, 7);
     let pointer = lease.as_ptr();
     let plane = lease.freeze();
@@ -479,9 +481,32 @@ fn pooled_cpu_planes_transfer_ownership_without_copying_and_reuse_capacity() {
     drop(storage);
     assert_eq!(pool.available_count(), 1);
 
-    let reused = pool.acquire(48);
+    let reused = pool.try_acquire(48).expect("test plane reuse succeeds");
     assert_eq!(reused.as_ptr(), pointer);
     assert_eq!(pool.allocation_count(), 1);
+}
+
+#[test]
+fn failed_plane_growth_preserves_the_reusable_allocation() {
+    let pool = CapturePlanePool::default();
+    let mut lease = pool.try_acquire(48).expect("test allocation succeeds");
+    lease.resize(48, 7);
+    let pointer = lease.as_ptr();
+    drop(lease);
+
+    assert!(matches!(
+        pool.try_acquire(usize::MAX),
+        Err(CaptureFrameError::PlaneAllocationFailed {
+            byte_len: usize::MAX
+        })
+    ));
+    assert_eq!(pool.allocation_count(), 1);
+    assert_eq!(pool.available_count(), 1);
+
+    let reused = pool
+        .try_acquire(48)
+        .expect("last-good plane remains reusable");
+    assert_eq!(reused.as_ptr(), pointer);
 }
 
 #[test]

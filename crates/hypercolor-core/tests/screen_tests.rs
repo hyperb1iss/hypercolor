@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use hypercolor_core::input::screen::sector::{LetterboxBars, SectorGrid};
 use hypercolor_core::input::screen::smooth::TemporalSmoother;
-use hypercolor_core::input::screen::{CaptureConfig, ColorTuning, ScreenCaptureInput};
+use hypercolor_core::input::screen::{CaptureConfig, ColorTuning, PixelExtent, ScreenCaptureInput};
 use hypercolor_core::input::{InputData, InputSource};
 use hypercolor_types::canvas::{DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH};
 
@@ -597,7 +597,7 @@ fn screen_capture_input_produces_screen_data() {
     input.start().expect("start should succeed");
 
     let frame = solid_frame(40, 40, 200, 100, 50);
-    input.push_frame(&frame, 40, 40);
+    input.push_frame(&frame, 40, 40).expect("frame is admitted");
 
     let data = input.sample().expect("sample should succeed");
     match data {
@@ -644,7 +644,9 @@ fn screen_capture_input_reuses_downscale_surface_pool_after_warmup() {
     let frame_b = solid_frame(4, 4, 40, 50, 60);
     let frame_c = solid_frame(4, 4, 70, 80, 90);
 
-    input.push_frame(&frame_a, 4, 4);
+    input
+        .push_frame(&frame_a, 4, 4)
+        .expect("frame A is admitted");
     let first = match input.sample().expect("first sample should succeed") {
         InputData::Screen(screen) => screen
             .canvas_downscale
@@ -655,7 +657,9 @@ fn screen_capture_input_reuses_downscale_surface_pool_after_warmup() {
         other => panic!("expected InputData::Screen, got {other:?}"),
     };
 
-    input.push_frame(&frame_b, 4, 4);
+    input
+        .push_frame(&frame_b, 4, 4)
+        .expect("frame B is admitted");
     let second = match input.sample().expect("second sample should succeed") {
         InputData::Screen(screen) => screen
             .canvas_downscale
@@ -666,7 +670,9 @@ fn screen_capture_input_reuses_downscale_surface_pool_after_warmup() {
         other => panic!("expected InputData::Screen, got {other:?}"),
     };
 
-    input.push_frame(&frame_c, 4, 4);
+    input
+        .push_frame(&frame_c, 4, 4)
+        .expect("frame C is admitted");
     let third = match input.sample().expect("third sample should succeed") {
         InputData::Screen(screen) => screen
             .canvas_downscale
@@ -693,7 +699,7 @@ fn screen_capture_input_zone_ids_in_screen_data() {
     input.start().expect("start should succeed");
 
     let frame = solid_frame(20, 10, 100, 100, 100);
-    input.push_frame(&frame, 20, 10);
+    input.push_frame(&frame, 20, 10).expect("frame is admitted");
 
     let data = input.sample().expect("sample should succeed");
     match data {
@@ -712,7 +718,7 @@ fn screen_capture_input_stopped_returns_none() {
     input.start().expect("start should succeed");
 
     let frame = solid_frame(40, 40, 255, 0, 0);
-    input.push_frame(&frame, 40, 40);
+    input.push_frame(&frame, 40, 40).expect("frame is admitted");
 
     // Confirm data is available.
     let data = input.sample().expect("sample should succeed");
@@ -843,7 +849,9 @@ fn malformed_push_preserves_the_last_valid_publication() {
     });
     input.start().expect("screen input should start");
     let valid = solid_frame(4, 4, 90, 40, 200);
-    input.push_frame(&valid, 4, 4);
+    input
+        .push_frame(&valid, 4, 4)
+        .expect("valid frame is admitted");
     let InputData::Screen(before) = input.sample().expect("valid sample should publish") else {
         panic!("expected valid screen data");
     };
@@ -857,7 +865,9 @@ fn malformed_push_preserves_the_last_valid_publication() {
         .expect("screen input should expose status")
         .snapshot();
 
-    input.push_frame(&[], u32::MAX, 2);
+    input
+        .push_frame(&[], u32::MAX, 2)
+        .expect("malformed dimensions do not allocate");
     let InputData::Screen(after) = input.sample().expect("malformed push should preserve data")
     else {
         panic!("expected retained screen data");
@@ -1007,7 +1017,7 @@ fn apply_settings_updates_tuning_live() {
     input.start().expect("start should succeed");
 
     let frame = solid_frame(40, 40, 160, 110, 110);
-    input.push_frame(&frame, 40, 40);
+    input.push_frame(&frame, 40, 40).expect("frame is admitted");
     let InputData::Screen(before) = input.sample().expect("sample succeeds") else {
         panic!("expected screen data");
     };
@@ -1019,7 +1029,7 @@ fn apply_settings_updates_tuning_live() {
         },
         ..config
     });
-    input.push_frame(&frame, 40, 40);
+    input.push_frame(&frame, 40, 40).expect("frame is admitted");
     let InputData::Screen(after) = input.sample().expect("sample succeeds") else {
         panic!("expected screen data");
     };
@@ -1042,14 +1052,14 @@ fn apply_settings_grid_change_takes_effect_next_frame() {
     input.start().expect("start should succeed");
 
     let frame = solid_frame(64, 64, 50, 100, 150);
-    input.push_frame(&frame, 64, 64);
+    input.push_frame(&frame, 64, 64).expect("frame is admitted");
 
     input.apply_settings(CaptureConfig {
         grid_cols: 4,
         grid_rows: 4,
         ..config
     });
-    input.push_frame(&frame, 64, 64);
+    input.push_frame(&frame, 64, 64).expect("frame is admitted");
     let InputData::Screen(data) = input.sample().expect("sample succeeds") else {
         panic!("expected screen data");
     };
@@ -1073,7 +1083,7 @@ fn disabling_letterbox_live_clears_stale_bars() {
 
     // Heavy letterbox: top and bottom thirds black.
     let frame = letterbox_frame(60, 60, 20, [200, 50, 50]);
-    input.push_frame(&frame, 60, 60);
+    input.push_frame(&frame, 60, 60).expect("frame is admitted");
     assert!(
         input.letterbox_bars().has_bars(),
         "letterbox should be detected while enabled"
@@ -1095,7 +1105,7 @@ fn disabling_letterbox_live_clears_stale_bars() {
         letterbox_enabled: false,
         ..config
     });
-    input.push_frame(&frame, 60, 60);
+    input.push_frame(&frame, 60, 60).expect("frame is admitted");
     assert!(
         !input.letterbox_bars().has_bars(),
         "disabling letterbox must clear stale bars"
@@ -1250,7 +1260,9 @@ fn pushed_frames_publish_an_aspect_correct_surface() {
 
     // A 16:9 frame must not come back as 4:3.
     let frame = solid_frame(320, 180, 90, 40, 200);
-    input.push_frame(&frame, 320, 180);
+    input
+        .push_frame(&frame, 320, 180)
+        .expect("frame is admitted");
 
     let InputData::Screen(data) = input.sample().expect("sample succeeds") else {
         panic!("expected screen data");
@@ -1265,5 +1277,79 @@ fn pushed_frames_publish_an_aspect_correct_surface() {
         (descriptor.width, descriptor.height),
         (640, 360),
         "16:9 input must publish a 16:9 surface"
+    );
+}
+
+#[test]
+fn arbitrary_wide_requested_extent_is_published_without_a_hidden_cap() {
+    let requested_extent = PixelExtent::new(5_001, 1).expect("extent is non-empty");
+    let mut input = ScreenCaptureInput::with_requested_extent(
+        CaptureConfig {
+            grid_cols: 1,
+            grid_rows: 1,
+            smoothing_alpha: 1.0,
+            letterbox_enabled: false,
+            ..CaptureConfig::default()
+        },
+        requested_extent,
+    )
+    .expect("small ultrawide surface is admitted");
+    input.start().expect("screen input starts");
+    let frame = solid_frame(5_001, 1, 90, 40, 200);
+
+    assert!(
+        input
+            .push_frame(&frame, 5_001, 1)
+            .expect("ultrawide frame is admitted")
+    );
+    let InputData::Screen(data) = input.sample().expect("screen sample succeeds") else {
+        panic!("expected screen data");
+    };
+    let surface = data
+        .canvas_downscale
+        .expect("ultrawide surface is published");
+    assert_eq!((surface.width(), surface.height()), (5_001, 1));
+}
+
+#[test]
+fn failed_extent_admission_preserves_last_good_request_and_publication() {
+    let initial_extent = PixelExtent::new(4, 4).expect("extent is non-empty");
+    let mut input = ScreenCaptureInput::with_requested_extent(
+        CaptureConfig {
+            grid_cols: 1,
+            grid_rows: 1,
+            smoothing_alpha: 1.0,
+            letterbox_enabled: false,
+            ..CaptureConfig::default()
+        },
+        initial_extent,
+    )
+    .expect("small surface is admitted");
+    input.start().expect("screen input starts");
+    let frame = solid_frame(4, 4, 30, 60, 90);
+    input
+        .push_frame(&frame, 4, 4)
+        .expect("last-good frame is admitted");
+    let InputData::Screen(before) = input.sample().expect("last-good sample succeeds") else {
+        panic!("expected screen data");
+    };
+    let before_surface = before
+        .canvas_downscale
+        .expect("last-good surface is published");
+    let before_pointer = before_surface.rgba_bytes().as_ptr();
+    let impossible = PixelExtent::new(u32::MAX, u32::MAX).expect("extent is non-empty");
+
+    assert!(input.set_requested_extent(impossible).is_err());
+    assert_eq!(input.requested_extent(), initial_extent);
+    let InputData::Screen(after) = input.sample().expect("retained sample succeeds") else {
+        panic!("expected retained screen data");
+    };
+    let after_surface = after
+        .canvas_downscale
+        .expect("retained surface remains published");
+    assert_eq!(after_surface.rgba_bytes().as_ptr(), before_pointer);
+    assert_eq!((after_surface.width(), after_surface.height()), (4, 4));
+    assert!(
+        ScreenCaptureInput::with_requested_extent(CaptureConfig::default(), impossible).is_err()
     );
 }

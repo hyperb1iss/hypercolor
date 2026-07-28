@@ -1179,8 +1179,12 @@ fn screen_analysis_consumers_share_letterbox_smoothing_and_tuning_policy() {
             })
             .collect::<Vec<_>>()
     };
-    input.push_frame(&frame([220, 20, 20]), 6, 6);
-    input.push_frame(&frame([20, 20, 220]), 6, 6);
+    input
+        .push_frame(&frame([220, 20, 20]), 6, 6)
+        .expect("first test frame is admitted");
+    input
+        .push_frame(&frame([20, 20, 220]), 6, 6)
+        .expect("second test frame is admitted");
     let InputData::Screen(screen) = input.sample().expect("policy frame should publish") else {
         panic!("expected analyzed screen data");
     };

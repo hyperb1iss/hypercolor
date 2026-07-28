@@ -28,9 +28,9 @@ pub use duplication::gpu_reduction::{
 mod shared;
 
 pub use shared::{
-    CaptureError, CaptureRegion, CaptureResult, CursorInfo, DisplayRotation, Frame, MonitorInfo,
-    MonitorSelector, ReductionPath, ReductionTelemetry, list_monitors, monitor_count,
-    subsample_stride, subsampled_extent,
+    CaptureError, CaptureExtent, CaptureRegion, CaptureResult, CursorInfo, DisplayRotation, Frame,
+    MonitorInfo, MonitorSelector, ReductionPath, ReductionTelemetry, list_monitors, monitor_count,
+    subsample_stride, subsample_stride_within, subsampled_extent, width_target_within,
 };
 
 #[cfg(not(target_os = "windows"))]

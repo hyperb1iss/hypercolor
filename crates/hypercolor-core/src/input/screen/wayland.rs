@@ -30,7 +30,7 @@ use crate::input::screen::{
     CaptureEpoch, CaptureFrame, CaptureFrameMetadata, CaptureGeometry, CapturePixelFormat,
     CapturePlanePool, CaptureRotation, CaptureSourceId, CaptureStorage, CaptureTransferFunction,
     CpuCaptureStorage, PhysicalOrigin, PixelExtent, PixelRect, PooledCapturePlane,
-    RawCaptureSurface, ScreenCaptureInput, SourceScale, analyze_screen_frame,
+    RawCaptureSurface, ScreenCaptureDemand, ScreenCaptureInput, SourceScale, analyze_screen_frame,
 };
 use crate::input::traits::{InputData, InputSource};
 use crate::input::worker_retention::{retain_input_worker, spawn_input_worker};
@@ -38,9 +38,8 @@ use crate::input::{
     SourceIssue, SourceKind, SourceSessionSlot, SourceSessionWriter, SourceStatusHandle,
     SourceStatusReporter,
 };
+use crate::types::canvas::SurfaceResourceError;
 
-const DEFAULT_CAPTURE_WIDTH: u32 = 1280;
-const DEFAULT_CAPTURE_HEIGHT: u32 = 720;
 const WORKER_READY_TIMEOUT: Duration = Duration::from_secs(1);
 const WORKER_STOP_TIMEOUT: Duration = Duration::from_secs(1);
 const WORKER_POLL_INTERVAL: Duration = Duration::from_millis(25);
@@ -206,18 +205,31 @@ pub struct DoubleBuffer {
 
 impl DoubleBuffer {
     /// Preallocate both callback planes to the negotiated maximum byte size.
-    #[must_use]
-    pub fn with_capacity(capacity: usize) -> Self {
-        let mut available = Vec::with_capacity(2);
-        available.push(vec![0; capacity]);
-        available.push(vec![0; capacity]);
-        Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed allocation failure when either callback plane cannot
+    /// reserve `capacity` bytes.
+    pub fn try_with_capacity(capacity: usize) -> Result<Self, CaptureFrameError> {
+        let mut available = Vec::new();
+        available
+            .try_reserve_exact(2)
+            .map_err(|_| CaptureFrameError::PlaneAllocationFailed { byte_len: capacity })?;
+        for _ in 0..2 {
+            let mut plane = Vec::new();
+            plane
+                .try_reserve_exact(capacity)
+                .map_err(|_| CaptureFrameError::PlaneAllocationFailed { byte_len: capacity })?;
+            plane.resize(capacity, 0);
+            available.push(plane);
+        }
+        Ok(Self {
             inner: Arc::new(DoubleBufferInner {
                 available: Mutex::new(available),
                 capacity,
             }),
             completed: None,
-        }
+        })
     }
 
     /// Bytes copied by the most recent successful decode.
@@ -416,12 +428,18 @@ pub type RestoreTokenSink = Arc<dyn Fn(Option<String>) + Send + Sync>;
 /// a reconfiguration actually happened.
 struct SharedSettings {
     config: Mutex<CaptureConfig>,
+    demand: Mutex<ScreenCaptureDemand>,
     generation: AtomicU64,
     frame_generation: AtomicU64,
     topology_generation: AtomicU64,
     topology: Mutex<Option<WaylandTopologyState>>,
     session_generation: AtomicU64,
     expected_epoch: Mutex<Option<CaptureEpoch>>,
+}
+
+struct CaptureRuntimeSettings {
+    config: CaptureConfig,
+    demand: ScreenCaptureDemand,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -454,7 +472,7 @@ impl SharedSettings {
         &self,
         session_generation: u64,
         cancel: &AtomicBool,
-    ) -> Option<CaptureConfig> {
+    ) -> Option<CaptureRuntimeSettings> {
         let _session_guard = self
             .expected_epoch
             .lock()
@@ -464,12 +482,16 @@ impl SharedSettings {
         {
             return None;
         }
-        Some(
-            self.config
-                .lock()
-                .map(|config| config.clone())
-                .unwrap_or_default(),
-        )
+        let config = self
+            .config
+            .lock()
+            .map(|config| config.clone())
+            .unwrap_or_default();
+        let demand = *self
+            .demand
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Some(CaptureRuntimeSettings { config, demand })
     }
 
     fn expected_epoch(&self) -> Option<CaptureEpoch> {
@@ -722,7 +744,7 @@ impl SharedSettings {
 pub struct WaylandScreenCaptureInput {
     settings: Arc<SharedSettings>,
     running: bool,
-    capture_active: bool,
+    capture_demand: ScreenCaptureDemand,
     latest_snapshot: Arc<Mutex<Option<CapturedScreenSnapshot>>>,
     status_snapshot_generation: u64,
     worker: Option<WaylandCaptureWorker>,
@@ -739,6 +761,7 @@ impl WaylandScreenCaptureInput {
         Self {
             settings: Arc::new(SharedSettings {
                 config: Mutex::new(config),
+                demand: Mutex::new(ScreenCaptureDemand::Inactive),
                 generation: AtomicU64::new(0),
                 frame_generation: AtomicU64::new(0),
                 topology_generation: AtomicU64::new(0),
@@ -747,7 +770,7 @@ impl WaylandScreenCaptureInput {
                 expected_epoch: Mutex::new(None),
             }),
             running: false,
-            capture_active: false,
+            capture_demand: ScreenCaptureDemand::Inactive,
             latest_snapshot: Arc::new(Mutex::new(None)),
             status_snapshot_generation: 0,
             worker: None,
@@ -830,7 +853,7 @@ impl WaylandScreenCaptureInput {
             sink(None);
         }
 
-        if !self.running || !self.capture_active {
+        if !self.running || !self.capture_demand.is_active() {
             return Ok(());
         }
 
@@ -846,52 +869,92 @@ impl WaylandScreenCaptureInput {
 
     fn restart_worker(&mut self) -> anyhow::Result<()> {
         self.shutdown_worker();
-        if !self.running || !self.capture_active {
+        if !self.running || !self.capture_demand.is_active() {
             return Ok(());
         }
-        self.spawn_worker()?;
-        self.send_worker_command(WorkerCommand::SetActive(true))
+        self.spawn_worker(self.capture_demand)?;
+        self.send_worker_command(WorkerCommand::SetDemand(self.capture_demand))
     }
 
-    fn set_capture_active_state(&mut self, active: bool) -> anyhow::Result<()> {
-        if self.capture_active == active {
-            if active && self.running && self.worker.is_none() {
-                self.spawn_worker()?;
+    fn set_capture_demand_state(&mut self, demand: ScreenCaptureDemand) -> anyhow::Result<()> {
+        let previous = self.capture_demand;
+        if previous == demand {
+            if demand.is_active() && self.running && self.worker.is_none() {
+                self.spawn_worker(demand)?;
             }
             return Ok(());
         }
+
+        let _admission = demand
+            .requested_extent()
+            .map(|requested_extent| {
+                let config = self
+                    .settings
+                    .config
+                    .lock()
+                    .map(|config| config.clone())
+                    .unwrap_or_default();
+                ScreenCaptureInput::with_requested_extent(config, requested_extent)
+            })
+            .transpose()?;
+
+        if let Ok(mut current) = self.settings.demand.lock() {
+            *current = demand;
+        }
+        self.settings.generation.fetch_add(1, Ordering::Release);
 
         if !self.running {
+            if !demand.is_active() {
+                self.settings.clear_expected_epoch();
+            }
             if let Ok(mut latest) = self.latest_snapshot.lock() {
                 *latest = None;
             }
-            if !active {
-                self.settings.clear_expected_epoch();
-            }
-            self.capture_active = active;
+            self.capture_demand = demand;
             return Ok(());
         }
 
-        if active {
-            if let Ok(mut latest) = self.latest_snapshot.lock() {
-                *latest = None;
-            }
-            self.spawn_worker()?;
-            self.send_worker_command(WorkerCommand::SetActive(true))?;
+        let result = if demand.is_active() {
+            self.spawn_worker(demand)
+                .and_then(|()| self.send_worker_command(WorkerCommand::SetDemand(demand)))
         } else if self.worker.is_some() {
             self.shutdown_worker();
+            Ok(())
         } else {
             self.settings.clear_expected_epoch();
-            if let Ok(mut latest) = self.latest_snapshot.lock() {
-                *latest = None;
+            Ok(())
+        };
+
+        if let Err(error) = result {
+            if let Ok(mut current) = self.settings.demand.lock() {
+                *current = previous;
             }
+            self.settings.generation.fetch_add(1, Ordering::Release);
+            let rollback = if previous.is_active() {
+                self.spawn_worker(previous)
+                    .and_then(|()| self.send_worker_command(WorkerCommand::SetDemand(previous)))
+            } else {
+                self.shutdown_worker();
+                Ok(())
+            };
+            if let Err(rollback_error) = rollback {
+                return Err(error.context(format!(
+                    "failed to restore previous Wayland capture demand: {rollback_error}"
+                )));
+            }
+            return Err(error);
         }
 
-        self.capture_active = active;
+        if previous.is_active() != demand.is_active()
+            && let Ok(mut latest) = self.latest_snapshot.lock()
+        {
+            *latest = None;
+        }
+        self.capture_demand = demand;
         Ok(())
     }
 
-    fn spawn_worker(&mut self) -> anyhow::Result<()> {
+    fn spawn_worker(&mut self, initial_demand: ScreenCaptureDemand) -> anyhow::Result<()> {
         self.reap_workers(false);
         if self.worker.is_some() {
             return Ok(());
@@ -901,7 +964,7 @@ impl WaylandScreenCaptureInput {
         let settings = Arc::clone(&self.settings);
         let token_sink = self.token_sink.clone();
         let cancel = Arc::new(AtomicBool::new(false));
-        let demanded = Arc::new(AtomicBool::new(self.capture_active));
+        let demanded = Arc::new(AtomicBool::new(initial_demand.is_active()));
         // Born true: the worker is portal-bound from its first instruction,
         // and a shutdown landing before the thread even stores the flag must
         // detach rather than join into the picker freeze.
@@ -972,8 +1035,10 @@ impl WaylandScreenCaptureInput {
         warn!("Wayland screen capture worker is no longer accepting commands");
         self.shutdown_worker();
 
-        if matches!(command, WorkerCommand::SetActive(true)) {
-            self.spawn_worker()?;
+        if let WorkerCommand::SetDemand(demand) = command
+            && demand.is_active()
+        {
+            self.spawn_worker(demand)?;
             let replacement_accepted = self.worker.as_ref().is_some_and(|worker| {
                 dispatch_worker_command(&worker.command_tx, &worker.demanded, &command)
             });
@@ -1062,14 +1127,13 @@ impl InputSource for WaylandScreenCaptureInput {
             return Ok(());
         }
 
-        if self.capture_active {
+        if self.capture_demand.is_active() {
             if let Some(session) = self.status.begin_session()? {
                 self.status_session.store(session);
             }
-            if let Err(error) = self
-                .spawn_worker()
-                .and_then(|()| self.send_worker_command(WorkerCommand::SetActive(true)))
-            {
+            if let Err(error) = self.spawn_worker(self.capture_demand).and_then(|()| {
+                self.send_worker_command(WorkerCommand::SetDemand(self.capture_demand))
+            }) {
                 self.status_session.clear();
                 self.status.stop();
                 self.shutdown_worker();
@@ -1089,7 +1153,10 @@ impl InputSource for WaylandScreenCaptureInput {
         self.status_session.clear();
         self.status.stop();
         self.running = false;
-        self.capture_active = false;
+        self.capture_demand = ScreenCaptureDemand::Inactive;
+        if let Ok(mut demand) = self.settings.demand.lock() {
+            *demand = ScreenCaptureDemand::Inactive;
+        }
         if self.worker.is_some() {
             self.shutdown_worker();
         } else {
@@ -1103,13 +1170,14 @@ impl InputSource for WaylandScreenCaptureInput {
     }
 
     fn sample(&mut self) -> anyhow::Result<InputData> {
-        let worker_exited = self.observe_worker_exit(self.running && self.capture_active);
-        if !self.running || !self.capture_active {
+        let worker_exited =
+            self.observe_worker_exit(self.running && self.capture_demand.is_active());
+        if !self.running || !self.capture_demand.is_active() {
             return Ok(InputData::None);
         }
         if worker_exited {
-            self.spawn_worker()?;
-            self.send_worker_command(WorkerCommand::SetActive(true))?;
+            self.spawn_worker(self.capture_demand)?;
+            self.send_worker_command(WorkerCommand::SetDemand(self.capture_demand))?;
             return Ok(InputData::None);
         }
 
@@ -1166,10 +1234,15 @@ impl InputSource for WaylandScreenCaptureInput {
         true
     }
 
-    fn set_screen_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
-        let previous = self.capture_active;
+    fn screen_capture_demand(&self) -> ScreenCaptureDemand {
+        self.capture_demand
+    }
+
+    fn set_screen_capture_demand(&mut self, demand: ScreenCaptureDemand) -> anyhow::Result<()> {
+        let previous = self.capture_demand;
+        let active = demand.is_active();
         self.status.set_policy(true, true, active)?;
-        if previous != active {
+        if previous.is_active() != active {
             if !active {
                 self.status_session.clear();
             }
@@ -1179,11 +1252,11 @@ impl InputSource for WaylandScreenCaptureInput {
                 }
             }
         }
-        if let Err(error) = self.set_capture_active_state(active) {
+        if let Err(error) = self.set_capture_demand_state(demand) {
             self.status_session.clear();
             self.status.stop();
-            self.status.set_policy(true, true, previous)?;
-            if previous
+            self.status.set_policy(true, true, previous.is_active())?;
+            if previous.is_active()
                 && self.running
                 && let Some(session) = self.status.begin_session()?
             {
@@ -1276,7 +1349,7 @@ struct WorkerFlags {
 
 #[derive(Clone, Debug)]
 enum WorkerCommand {
-    SetActive(bool),
+    SetDemand(ScreenCaptureDemand),
     Stop,
 }
 
@@ -1285,8 +1358,8 @@ fn dispatch_worker_command(
     demanded: &AtomicBool,
     command: &WorkerCommand,
 ) -> bool {
-    if let WorkerCommand::SetActive(active) = command {
-        demanded.store(*active, Ordering::Release);
+    if let WorkerCommand::SetDemand(demand) = command {
+        demanded.store(demand.is_active(), Ordering::Release);
     }
     command_tx.send(command.clone()).is_ok()
 }
@@ -1373,25 +1446,33 @@ impl WaylandCaptureUserData {
         Self {
             format: spa::param::video::VideoInfoRaw::default(),
             negotiated: None,
-            buffers: DoubleBuffer::with_capacity(0),
+            buffers: DoubleBuffer::try_with_capacity(0)
+                .expect("empty callback planes require no pixel allocation"),
             exchange,
             metrics,
         }
     }
 
-    fn set_negotiated_format(&mut self, format: NegotiatedFormat) -> bool {
+    fn set_negotiated_format(&mut self, format: NegotiatedFormat) -> Result<(), CaptureFrameError> {
         let Some(capacity) = format.byte_len() else {
             self.negotiated = None;
-            return false;
+            return Err(CaptureFrameError::StorageSizeOverflow);
         };
         if self
             .negotiated
             .is_none_or(|previous| previous.byte_len() != Some(capacity))
         {
-            self.buffers = DoubleBuffer::with_capacity(capacity);
+            let prepared = match DoubleBuffer::try_with_capacity(capacity) {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    self.negotiated = None;
+                    return Err(error);
+                }
+            };
+            self.buffers = prepared;
         }
         self.negotiated = Some(format);
-        true
+        Ok(())
     }
 
     fn record_drop(&self, reason: ChunkDropReason) {
@@ -1528,6 +1609,7 @@ struct WaylandAnalysisState {
     plane_pool: CapturePlanePool,
     settings: Arc<SharedSettings>,
     applied_generation: u64,
+    applied_demand: ScreenCaptureDemand,
     source: WaylandSourceMetadata,
     sequence: u64,
 }
@@ -1538,20 +1620,25 @@ impl WaylandAnalysisState {
         latest_snapshot: Arc<Mutex<Option<CapturedScreenSnapshot>>>,
         source: WaylandSourceMetadata,
         config: CaptureConfig,
-    ) -> Self {
+        demand: ScreenCaptureDemand,
+    ) -> Result<Self, SurfaceResourceError> {
         let applied_generation = settings.generation.load(Ordering::Acquire);
-        let mut analyzer = ScreenCaptureInput::new(config);
+        let requested_extent = demand
+            .requested_extent()
+            .expect("an active Wayland analysis worker carries an extent");
+        let mut analyzer = ScreenCaptureInput::with_requested_extent(config, requested_extent)?;
         let _ = analyzer.start();
 
-        Self {
+        Ok(Self {
             analyzer,
             latest_snapshot,
             plane_pool: CapturePlanePool::default(),
             settings,
             applied_generation,
+            applied_demand: demand,
             source,
             sequence: 0,
-        }
+        })
     }
 
     fn sync_settings(&mut self, cancel: &AtomicBool) -> bool {
@@ -1561,14 +1648,21 @@ impl WaylandAnalysisState {
                 .settings
                 .session_is_current(self.source.session_generation, cancel);
         }
-        let Some(config) = self
+        let Some(runtime) = self
             .settings
             .snapshot_for_session(self.source.session_generation, cancel)
         else {
             return false;
         };
+        if let Some(requested_extent) = runtime.demand.requested_extent() {
+            if let Err(error) = self.analyzer.set_requested_extent(requested_extent) {
+                warn!(%error, generation, previous_demand = ?self.applied_demand, next_demand = ?runtime.demand, "Retaining prior Wayland screen analysis settings");
+                return true;
+            }
+        }
+        self.analyzer.apply_settings(runtime.config);
+        self.applied_demand = runtime.demand;
         self.applied_generation = generation;
-        self.analyzer.apply_settings(config);
         debug!(generation, "Applied live screen capture settings");
         true
     }
@@ -1648,9 +1742,17 @@ fn run_analysis_worker(
     latest_snapshot: Arc<Mutex<Option<CapturedScreenSnapshot>>>,
     source: WaylandSourceMetadata,
     config: CaptureConfig,
+    demand: ScreenCaptureDemand,
     cancel: &AtomicBool,
 ) {
-    let mut state = WaylandAnalysisState::new(settings, latest_snapshot, source, config);
+    let mut state =
+        match WaylandAnalysisState::new(settings, latest_snapshot, source, config, demand) {
+            Ok(state) => state,
+            Err(error) => {
+                warn!(%error, "Failed to admit Wayland screen analysis extent");
+                return;
+            }
+        };
     let mut deadline = Instant::now();
     while let Some(decoded) = exchange.wait_for_latest(deadline, cancel) {
         if !state.sync_settings(cancel) {
@@ -1667,7 +1769,13 @@ fn run_analysis_worker(
         else {
             continue;
         };
-        let mut plane = state.plane_pool.acquire(rgba_len);
+        let Ok(mut plane) = state.plane_pool.try_acquire(rgba_len) else {
+            warn!(
+                rgba_len,
+                "Retaining prior Wayland snapshot after plane allocation failure"
+            );
+            continue;
+        };
         plane.resize(rgba_len, 0);
         convert_packed_to_rgba(&decoded, &mut plane);
         let captured_at = decoded.captured_at;
@@ -1740,13 +1848,12 @@ fn run_capture_worker(
             return;
         }
 
-        let Some(startup_config) = settings.snapshot_for_session(session_generation, &flags.cancel)
-        else {
+        let Some(startup) = settings.snapshot_for_session(session_generation, &flags.cancel) else {
             return;
         };
         flags.portal_pending.store(true, Ordering::SeqCst);
         let portal_result =
-            runtime.block_on(open_portal_session_while_demanded(&startup_config, &flags));
+            runtime.block_on(open_portal_session_while_demanded(&startup.config, &flags));
         flags.portal_pending.store(false, Ordering::SeqCst);
         let Some(portal_result) = portal_result else {
             if !settings.session_is_current(session_generation, &flags.cancel) {
@@ -1799,7 +1906,7 @@ fn run_capture_worker(
             return;
         }
 
-        if restore_token != startup_config.restore_token {
+        if restore_token != startup.config.restore_token {
             if !settings.persist_restore_token_for_session(
                 session_generation,
                 &flags.cancel,
@@ -1816,7 +1923,8 @@ fn run_capture_worker(
             fd,
         } = portal;
         let loop_outcome = run_pipewire_loop(
-            &startup_config,
+            &startup.config,
+            startup.demand,
             Arc::clone(&settings),
             Arc::clone(&latest_snapshot),
             stream,
@@ -1977,6 +2085,7 @@ enum PipeWireLoopExit {
 #[allow(clippy::too_many_arguments)]
 fn run_pipewire_loop(
     config: &CaptureConfig,
+    demand: ScreenCaptureDemand,
     settings: Arc<SharedSettings>,
     latest_snapshot: Arc<Mutex<Option<CapturedScreenSnapshot>>>,
     portal_stream: Stream,
@@ -2072,20 +2181,28 @@ fn run_pipewire_loop(
                 height: size.height,
                 format,
             });
-            if negotiated.is_some_and(|format| user_data.set_negotiated_format(format)) {
-                info!(
-                    ?format,
-                    width = size.width,
-                    height = size.height,
-                    "Negotiated Wayland screen capture format"
-                );
-            } else {
-                warn!(
+            match negotiated {
+                Some(negotiated) => match user_data.set_negotiated_format(negotiated) {
+                    Ok(()) => info!(
+                        ?format,
+                        width = size.width,
+                        height = size.height,
+                        "Negotiated Wayland screen capture format"
+                    ),
+                    Err(error) => warn!(
+                        ?format,
+                        width = size.width,
+                        height = size.height,
+                        %error,
+                        "Retaining prior Wayland callback planes"
+                    ),
+                },
+                None => warn!(
                     ?format,
                     width = size.width,
                     height = size.height,
                     "Negotiated unsupported Wayland screen capture format"
-                );
+                ),
             }
         })
         .process(|stream, user_data| {
@@ -2146,7 +2263,10 @@ fn run_pipewire_loop(
         .register()
         .context("failed to register PipeWire screen capture listener")?;
 
-    let format_bytes = build_format_params(config.target_fps.max(1))?;
+    let requested_extent = demand
+        .requested_extent()
+        .context("active Wayland capture demand must carry an extent")?;
+    let format_bytes = build_format_params(config.target_fps.max(1), requested_extent)?;
     let mut params = [spa::pod::Pod::from_bytes(&format_bytes)
         .context("failed to deserialize PipeWire format pod")?];
 
@@ -2163,6 +2283,7 @@ fn run_pipewire_loop(
     let analysis_exchange = Arc::clone(&exchange);
     let analysis_cancel = Arc::clone(&cancel);
     let analysis_config = config.clone();
+    let analysis_demand = demand;
     let analysis_handle = spawn_input_worker(
         thread::Builder::new().name("hypercolor-screen-analysis".to_owned()),
         move || {
@@ -2173,6 +2294,7 @@ fn run_pipewire_loop(
                     latest_snapshot,
                     source,
                     analysis_config,
+                    analysis_demand,
                     &analysis_cancel,
                 );
             }));
@@ -2202,10 +2324,25 @@ fn run_pipewire_loop(
         let mainloop = mainloop.clone();
         let stream = stream.clone();
         let loop_exit = Arc::clone(&loop_exit);
+        let target_fps = config.target_fps.max(1);
         move |command| match command {
-            WorkerCommand::SetActive(active) => {
+            WorkerCommand::SetDemand(demand) => {
+                let active = demand.is_active();
                 if let Err(error) = stream.set_active(active) {
                     warn!(active, %error, "Failed to update PipeWire stream active state");
+                }
+                if let Some(requested_extent) = demand.requested_extent() {
+                    let update =
+                        build_format_params(target_fps, requested_extent).and_then(|bytes| {
+                            let pod = spa::pod::Pod::from_bytes(&bytes)
+                                .context("failed to deserialize PipeWire format pod")?;
+                            stream
+                                .update_params(&mut [pod])
+                                .context("failed to update PipeWire format")
+                        });
+                    if let Err(error) = update {
+                        warn!(%error, "Failed to update PipeWire capture extent");
+                    }
                 }
             }
             WorkerCommand::Stop => {
@@ -2245,7 +2382,7 @@ fn run_pipewire_loop(
         }))
 }
 
-fn build_format_params(target_fps: u32) -> anyhow::Result<Vec<u8>> {
+fn build_format_params(target_fps: u32, requested_extent: PixelExtent) -> anyhow::Result<Vec<u8>> {
     let fps = target_fps;
     let object = spa::pod::object!(
         spa::utils::SpaTypes::ObjectParamFormat,
@@ -2281,16 +2418,16 @@ fn build_format_params(target_fps: u32) -> anyhow::Result<Vec<u8>> {
             Range,
             Rectangle,
             spa::utils::Rectangle {
-                width: DEFAULT_CAPTURE_WIDTH,
-                height: DEFAULT_CAPTURE_HEIGHT,
+                width: requested_extent.width(),
+                height: requested_extent.height(),
             },
             spa::utils::Rectangle {
                 width: 1,
                 height: 1,
             },
             spa::utils::Rectangle {
-                width: 4096,
-                height: 4096,
+                width: requested_extent.width(),
+                height: requested_extent.height(),
             }
         ),
         spa::pod::property!(

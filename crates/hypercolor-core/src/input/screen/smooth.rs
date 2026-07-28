@@ -6,7 +6,7 @@
 
 use std::time::Duration;
 
-use crate::types::canvas::{linear_to_srgb_u8, srgb_u8_to_linear};
+use crate::types::canvas::{SurfaceResourceError, linear_to_srgb_u8, srgb_u8_to_linear};
 
 const REFERENCE_FPS: f32 = 60.0;
 
@@ -58,6 +58,43 @@ impl TemporalSmoother {
             staged: Vec::new(),
             staged_shape: None,
         }
+    }
+
+    pub(super) fn try_new_for_grid(
+        alpha: f32,
+        scene_cut_threshold: f32,
+        width: u32,
+        height: u32,
+    ) -> Result<Self, SurfaceResourceError> {
+        let pixel_count = usize::try_from(width)
+            .ok()
+            .and_then(|width| {
+                usize::try_from(height)
+                    .ok()
+                    .and_then(|height| width.checked_mul(height))
+            })
+            .ok_or(SurfaceResourceError::ByteLengthOverflow { width, height })?;
+        let history_bytes = pixel_count
+            .checked_mul(std::mem::size_of::<[f32; 3]>())
+            .and_then(|bytes| bytes.checked_mul(2))
+            .ok_or(SurfaceResourceError::ByteLengthOverflow { width, height })?;
+        let mut smoother = Self::new(alpha, scene_cut_threshold);
+        smoother.prev.try_reserve_exact(pixel_count).map_err(|_| {
+            SurfaceResourceError::AllocationFailed {
+                width,
+                height,
+                byte_len: history_bytes,
+            }
+        })?;
+        smoother
+            .staged
+            .try_reserve_exact(pixel_count)
+            .map_err(|_| SurfaceResourceError::AllocationFailed {
+                width,
+                height,
+                byte_len: history_bytes,
+            })?;
+        Ok(smoother)
     }
 
     /// Create a smoother with default parameters.

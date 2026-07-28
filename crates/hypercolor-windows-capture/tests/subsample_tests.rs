@@ -4,7 +4,35 @@
 //! desktop, which an ambient rig shows as a dead strip of LEDs rather than as
 //! an error.
 
-use hypercolor_windows_capture::{subsample_stride, subsampled_extent};
+use hypercolor_windows_capture::{
+    CaptureError, CaptureExtent, subsample_stride, subsample_stride_within, subsampled_extent,
+    width_target_within,
+};
+
+#[test]
+fn capture_extent_rejects_empty_axes() {
+    assert!(matches!(
+        CaptureExtent::try_new(0, 720),
+        Err(CaptureError::InvalidExtent {
+            width: 0,
+            height: 720
+        })
+    ));
+    assert!(matches!(
+        CaptureExtent::try_new(1280, 0),
+        Err(CaptureError::InvalidExtent {
+            width: 1280,
+            height: 0
+        })
+    ));
+}
+
+#[test]
+fn capture_extent_preserves_arbitrary_dimensions() {
+    let extent = CaptureExtent::try_new(5120, 2160).expect("extent is non-empty");
+    assert_eq!(extent.width(), 5120);
+    assert_eq!(extent.height(), 2160);
+}
 
 #[test]
 fn stride_is_one_when_source_already_fits() {
@@ -51,4 +79,26 @@ fn a_4k_desktop_lands_on_the_documented_geometry() {
     assert_eq!(stride, 3);
     assert_eq!(subsampled_extent(3840, stride), 1280);
     assert_eq!(subsampled_extent(2160, stride), 720);
+}
+
+#[test]
+fn two_axis_bounds_cover_portrait_and_ultrawide_sources() {
+    for (source_width, source_height, max_width, max_height) in [
+        (2160, 3840, 1920, 1080),
+        (7680, 2160, 2560, 1440),
+        (5120, 1440, 1920, 1080),
+    ] {
+        let requested_extent =
+            CaptureExtent::try_new(max_width, max_height).expect("test extent is non-empty");
+        let stride = subsample_stride_within(source_width, source_height, requested_extent);
+        assert!(subsampled_extent(source_width, stride) <= max_width);
+        assert!(subsampled_extent(source_height, stride) <= max_height);
+        assert_eq!(
+            subsample_stride(
+                source_width,
+                width_target_within(source_width, source_height, requested_extent),
+            ),
+            stride
+        );
+    }
 }

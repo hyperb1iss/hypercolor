@@ -42,6 +42,24 @@ pub struct ReductionTelemetry {
 /// Screen capture failures.
 #[derive(Debug, Error)]
 pub enum CaptureError {
+    /// A requested capture extent was empty.
+    #[error("capture extent must be non-zero, got {width}x{height}")]
+    InvalidExtent {
+        /// Requested width.
+        width: u32,
+        /// Requested height.
+        height: u32,
+    },
+
+    /// A capture resource could not reserve the requested storage.
+    #[error("{operation} could not reserve {requested_bytes} bytes")]
+    ResourceExhausted {
+        /// Resource operation that failed.
+        operation: &'static str,
+        /// Number of bytes requested by the operation.
+        requested_bytes: usize,
+    },
+
     /// Desktop Duplication is a Windows-only API.
     #[error("desktop screen capture is only available on Windows")]
     UnsupportedPlatform,
@@ -100,6 +118,39 @@ pub enum CaptureError {
         /// Rendered HRESULT description.
         message: String,
     },
+}
+
+/// Validated non-empty reduction extent requested by a capture consumer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CaptureExtent {
+    width: u32,
+    height: u32,
+}
+
+impl CaptureExtent {
+    /// Construct a non-empty requested capture extent.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CaptureError::InvalidExtent`] when either dimension is zero.
+    pub const fn try_new(width: u32, height: u32) -> CaptureResult<Self> {
+        if width == 0 || height == 0 {
+            return Err(CaptureError::InvalidExtent { width, height });
+        }
+        Ok(Self { width, height })
+    }
+
+    /// Requested width in pixels.
+    #[must_use]
+    pub const fn width(self) -> u32 {
+        self.width
+    }
+
+    /// Requested height in pixels.
+    #[must_use]
+    pub const fn height(self) -> u32 {
+        self.height
+    }
 }
 
 // Only the cfg(windows) duplication module builds this variant, so the
@@ -458,6 +509,31 @@ pub fn subsample_stride(source: u32, target: u32) -> u32 {
         return 1;
     }
     source.div_ceil(target).max(1)
+}
+
+/// Integer stride that fits both source axes within independent bounds.
+#[must_use]
+pub fn subsample_stride_within(
+    source_width: u32,
+    source_height: u32,
+    requested_extent: CaptureExtent,
+) -> u32 {
+    subsample_stride(source_width, requested_extent.width())
+        .max(subsample_stride(source_height, requested_extent.height()))
+}
+
+/// Width target that makes a width-driven reducer honor two-axis bounds.
+#[must_use]
+pub fn width_target_within(
+    source_width: u32,
+    source_height: u32,
+    requested_extent: CaptureExtent,
+) -> u32 {
+    source_width.div_ceil(subsample_stride_within(
+        source_width,
+        source_height,
+        requested_extent,
+    ))
 }
 
 /// Dimension after applying `stride` to `source`.

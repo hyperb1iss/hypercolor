@@ -9,7 +9,7 @@ use hypercolor_core::input::screen::{
     CaptureColorSpace, CaptureConfig, CaptureCursor, CaptureDamage, CaptureEpoch, CaptureFrame,
     CaptureFrameMetadata, CaptureGeometry, CapturePixelFormat, CaptureRotation, CaptureSourceId,
     CaptureStorage, CaptureTransferFunction, CpuCaptureStorage, PhysicalOrigin, PixelExtent,
-    RawCaptureSurface, SourceScale, WindowsScreenCaptureInput,
+    RawCaptureSurface, ScreenCaptureDemand, SourceScale, WindowsScreenCaptureInput,
 };
 use hypercolor_core::input::{InputData, InputSource};
 
@@ -79,7 +79,9 @@ fn deterministic_fixture_reuses_windows_analysis_and_publication() {
     assert!(!fixture.is_active());
     assert!(fixture.publish(fixture_frame(&epoch)).is_err());
     source
-        .set_screen_capture_active(true)
+        .set_screen_capture_demand(ScreenCaptureDemand::active(
+            PixelExtent::new(4, 2).expect("fixture extent is nonempty"),
+        ))
         .expect("deterministic capture activates without hardware");
     assert!(fixture.is_active());
     assert!(

@@ -38,6 +38,7 @@ pub use graph::{
 pub use interaction::InteractionInput;
 pub use media::MediaSource;
 pub use net::NetSource;
+pub use screen::ScreenCaptureDemand;
 pub use sensor::SensorPoller;
 pub use status::{
     ScreenCaptureDiagnostics, ScreenCaptureReductionPath, SourceDiagnostics, SourceFreshness,
@@ -119,7 +120,7 @@ pub struct ScreenRuntimeConfigPlan {
     expected_source_present: bool,
     expected_source_running: bool,
     enabled: bool,
-    capture_active: bool,
+    capture_demand: ScreenCaptureDemand,
 }
 
 impl ScreenRuntimeConfigPlan {
@@ -131,8 +132,8 @@ impl ScreenRuntimeConfigPlan {
 
     /// Demand state the prepared replacement must adopt before it starts.
     #[must_use]
-    pub const fn capture_active(&self) -> bool {
-        self.capture_active
+    pub const fn capture_demand(&self) -> ScreenCaptureDemand {
+        self.capture_demand
     }
 
     /// Graph generation reserved for a staged replacement source.
@@ -243,7 +244,7 @@ pub struct InputManager {
     source_status_registry: SourceStatusRegistry,
     event_scratch: Vec<TimedInputEvent>,
     audio_capture_active: Option<bool>,
-    screen_capture_active: Option<bool>,
+    screen_capture_demand: Option<ScreenCaptureDemand>,
     interaction_capture_active: Option<bool>,
     sensor_poller: Option<SensorPoller>,
     sensor_snapshot_rx: Option<watch::Receiver<Arc<SystemSnapshot>>>,
@@ -421,7 +422,6 @@ impl AsMut<dyn InputSource> for ManagedInputSource {
 #[derive(Clone, Copy)]
 enum CaptureDomain {
     Audio,
-    Screen,
     Interaction,
 }
 
@@ -429,7 +429,6 @@ impl CaptureDomain {
     fn matches(self, source: &dyn InputSource) -> bool {
         match self {
             Self::Audio => source.is_audio_source(),
-            Self::Screen => source.is_screen_source(),
             Self::Interaction => source.is_interaction_source(),
         }
     }
@@ -437,7 +436,6 @@ impl CaptureDomain {
     fn transition(self, source: &mut dyn InputSource, active: bool) -> anyhow::Result<()> {
         match self {
             Self::Audio => source.set_audio_capture_active(active),
-            Self::Screen => source.set_screen_capture_active(active),
             Self::Interaction => source.set_interaction_capture_active(active),
         }
     }
@@ -455,7 +453,7 @@ impl InputManager {
             source_status_registry: SourceStatusRegistry::new(),
             event_scratch: Vec::with_capacity(INPUT_EVENT_RING_CAPACITY),
             audio_capture_active: None,
-            screen_capture_active: None,
+            screen_capture_demand: None,
             interaction_capture_active: None,
             sensor_poller: None,
             sensor_snapshot_rx: None,
@@ -932,7 +930,7 @@ impl InputManager {
         self.transition_capture_demand(CaptureDomain::Audio, active)
     }
 
-    /// Toggle live screen capture for any registered screen sources.
+    /// Apply live screen publication demand to every registered screen source.
     ///
     /// This keeps the input graph intact while allowing the capture backend to
     /// pause or resume compositor capture based on current render demand.
@@ -940,8 +938,8 @@ impl InputManager {
     /// # Errors
     ///
     /// Returns an error if a screen source cannot update its capture state.
-    pub fn set_screen_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
-        self.transition_capture_demand(CaptureDomain::Screen, active)
+    pub fn set_screen_capture_demand(&mut self, demand: ScreenCaptureDemand) -> anyhow::Result<()> {
+        self.transition_screen_capture_demand(demand)
     }
 
     /// Whether any registered source handles screen capture.
@@ -953,15 +951,21 @@ impl InputManager {
     /// Snapshot a generation-fenced screen-source replacement plan.
     pub fn plan_screen_runtime_config(&self, enabled: bool) -> ScreenRuntimeConfigPlan {
         let source = self.sources.iter().find(|source| source.is_screen_source());
-        let current_demand = self.screen_capture_active.unwrap_or_else(|| {
-            source.is_some_and(|source| source.source_status_handle().snapshot().demanded)
+        let current_demand = self.screen_capture_demand.unwrap_or_else(|| {
+            source.map_or(ScreenCaptureDemand::Inactive, |source| {
+                source.screen_capture_demand()
+            })
         });
         ScreenRuntimeConfigPlan {
             expected_graph_generation: self.source_graph_generation,
             expected_source_present: source.is_some(),
             expected_source_running: source.is_some_and(|source| source.is_running()),
             enabled,
-            capture_active: enabled && current_demand,
+            capture_demand: if enabled {
+                current_demand
+            } else {
+                ScreenCaptureDemand::Inactive
+            },
         }
     }
 
@@ -1004,7 +1008,7 @@ impl InputManager {
             }
             (None, None) => {}
         }
-        self.screen_capture_active = Some(plan.capture_active);
+        self.screen_capture_demand = Some(plan.capture_demand);
         if topology_changed {
             self.publish_source_status_registry();
         }
@@ -1040,9 +1044,11 @@ impl InputManager {
             return Err(ScreenReconfigurationConflict::SourceLifecycleChanged);
         }
         if replacement.as_ref().is_some() != plan.enabled
-            || replacement
-                .as_ref()
-                .is_some_and(|source| !source.is_screen_source() || !source.is_running())
+            || replacement.as_ref().is_some_and(|source| {
+                !source.is_screen_source()
+                    || !source.is_running()
+                    || source.screen_capture_demand() != plan.capture_demand
+            })
         {
             return Err(ScreenReconfigurationConflict::InvalidReplacement);
         }
@@ -1124,7 +1130,7 @@ impl InputManager {
                 true
             }
         });
-        self.screen_capture_active = None;
+        self.screen_capture_demand = None;
         self.publish_source_status_registry();
     }
 
@@ -1228,7 +1234,6 @@ impl InputManager {
     ) -> anyhow::Result<()> {
         let cached = match domain {
             CaptureDomain::Audio => self.audio_capture_active,
-            CaptureDomain::Screen => self.screen_capture_active,
             CaptureDomain::Interaction => self.interaction_capture_active,
         };
         if cached == Some(active) {
@@ -1298,9 +1303,79 @@ impl InputManager {
     fn set_capture_demand_cache(&mut self, domain: CaptureDomain, demand: Option<bool>) {
         match domain {
             CaptureDomain::Audio => self.audio_capture_active = demand,
-            CaptureDomain::Screen => self.screen_capture_active = demand,
             CaptureDomain::Interaction => self.interaction_capture_active = demand,
         }
+    }
+
+    fn transition_screen_capture_demand(
+        &mut self,
+        demand: ScreenCaptureDemand,
+    ) -> anyhow::Result<()> {
+        if self.screen_capture_demand == Some(demand) {
+            return Ok(());
+        }
+
+        let previous_cached_demand = self.screen_capture_demand;
+        let prior_demands = self
+            .sources
+            .iter()
+            .map(|source| {
+                source
+                    .is_screen_source()
+                    .then(|| source.screen_capture_demand())
+            })
+            .collect::<Vec<_>>();
+        let source_graph_generation = self.bump_source_graph_generation();
+        for source in &mut self.sources {
+            if source.is_screen_source() {
+                source.set_source_graph_generation(source_graph_generation);
+            }
+        }
+
+        for source_index in 0..self.sources.len() {
+            if !self.sources[source_index].is_screen_source() {
+                continue;
+            }
+            let transition = self.sources[source_index]
+                .set_screen_capture_demand(demand)
+                .and_then(|()| {
+                    self.sources[source_index].set_compatibility_demand(demand.is_active())
+                });
+            if let Err(error) = transition {
+                let mut rollback_succeeded = true;
+                for (source, previous) in self.sources.iter_mut().zip(&prior_demands) {
+                    if let Some(previous) = previous {
+                        let rollback_result = source
+                            .set_screen_capture_demand(*previous)
+                            .and_then(|()| source.set_compatibility_demand(previous.is_active()));
+                        if let Err(rollback_error) = rollback_result {
+                            rollback_succeeded = false;
+                            error!(
+                                source = source.name(),
+                                %rollback_error,
+                                "Failed to roll back screen capture demand"
+                            );
+                        }
+                    }
+                }
+                self.screen_capture_demand = if rollback_succeeded {
+                    previous_cached_demand.or_else(|| {
+                        let mut restored = prior_demands.iter().flatten().copied();
+                        restored
+                            .next()
+                            .filter(|first| restored.all(|demand| demand == *first))
+                    })
+                } else {
+                    None
+                };
+                self.publish_source_status_registry();
+                return Err(error);
+            }
+        }
+
+        self.screen_capture_demand = Some(demand);
+        self.publish_source_status_registry();
+        Ok(())
     }
 
     fn invalidate_capture_domains(&mut self, domains: (bool, bool, bool)) {
@@ -1308,7 +1383,7 @@ impl InputManager {
             self.audio_capture_active = None;
         }
         if domains.1 {
-            self.screen_capture_active = None;
+            self.screen_capture_demand = None;
         }
         if domains.2 {
             self.interaction_capture_active = None;

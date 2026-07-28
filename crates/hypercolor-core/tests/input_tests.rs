@@ -6,11 +6,11 @@ use hypercolor_core::input::SensorPoller;
 use hypercolor_core::input::WindowsHostInput;
 use hypercolor_core::input::audio::AudioInput;
 use hypercolor_core::input::screen::CaptureConfig as ScreenCaptureConfig;
-use hypercolor_core::input::screen::ScreenCaptureInput;
 #[cfg(target_os = "windows")]
 use hypercolor_core::input::screen::WindowsScreenCaptureInput;
 #[cfg(target_os = "linux")]
 use hypercolor_core::input::screen::{CaptureConfig, WaylandScreenCaptureInput};
+use hypercolor_core::input::screen::{PixelExtent, ScreenCaptureDemand, ScreenCaptureInput};
 use hypercolor_core::input::{
     AudioReconfigurationConflict, BrowserInputSource, INPUT_EVENT_RING_CAPACITY, InputData,
     InputManager, InputSource, MediaSource, NetSource, ScreenData, SourceFreshness, SourceIssue,
@@ -100,16 +100,38 @@ impl InputSource for StatusAwareScreenSource {
     }
 }
 
+fn screen_demand(width: u32, height: u32) -> ScreenCaptureDemand {
+    ScreenCaptureDemand::active(
+        PixelExtent::new(width, height).expect("test screen demand extent is non-empty"),
+    )
+}
+
+fn active_screen_demand() -> ScreenCaptureDemand {
+    screen_demand(640, 480)
+}
+
+#[test]
+fn screen_capture_demand_unions_each_axis_without_a_resolution_cap() {
+    let ultrawide = screen_demand(5_120, 720);
+    let portrait = screen_demand(1_920, 2_160);
+
+    assert_eq!(ultrawide.union(portrait), screen_demand(5_120, 2_160));
+    assert_eq!(ScreenCaptureDemand::Inactive.union(ultrawide), ultrawide);
+    assert_eq!(portrait.union(ScreenCaptureDemand::Inactive), portrait);
+    assert!(ScreenCaptureDemand::try_active(0, 720).is_err());
+    assert!(ScreenCaptureDemand::try_active(1_280, 0).is_err());
+}
+
 #[derive(Default)]
 struct DemandTransitionState {
-    active: bool,
-    transitions: Vec<bool>,
+    demand: ScreenCaptureDemand,
+    transitions: Vec<ScreenCaptureDemand>,
 }
 
 struct FallibleStatusScreenSource {
     name: &'static str,
     running: bool,
-    fail_on: Option<bool>,
+    fail_on: Option<ScreenCaptureDemand>,
     state: Arc<Mutex<DemandTransitionState>>,
     status: SourceStatusReporter,
 }
@@ -117,7 +139,7 @@ struct FallibleStatusScreenSource {
 impl FallibleStatusScreenSource {
     fn new(
         name: &'static str,
-        fail_on: Option<bool>,
+        fail_on: Option<ScreenCaptureDemand>,
         state: Arc<Mutex<DemandTransitionState>>,
     ) -> Self {
         Self {
@@ -165,17 +187,27 @@ impl InputSource for FallibleStatusScreenSource {
         true
     }
 
-    fn set_screen_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
-        self.status.set_policy(true, true, active)?;
+    fn screen_capture_demand(&self) -> ScreenCaptureDemand {
+        self.state.lock().expect("demand state lock").demand
+    }
+
+    fn set_screen_capture_demand(&mut self, demand: ScreenCaptureDemand) -> anyhow::Result<()> {
+        let was_active = self
+            .state
+            .lock()
+            .expect("demand state lock")
+            .demand
+            .is_active();
+        self.status.set_policy(true, true, demand.is_active())?;
         {
             let mut state = self.state.lock().expect("demand state lock");
-            state.active = active;
-            state.transitions.push(active);
+            state.demand = demand;
+            state.transitions.push(demand);
         }
-        if active && self.running {
+        if demand.is_active() && !was_active && self.running {
             self.status.begin_session()?;
         }
-        if self.fail_on == Some(active) {
+        if self.fail_on == Some(demand) {
             anyhow::bail!("injected demand transition failure");
         }
         Ok(())
@@ -738,12 +770,12 @@ impl CaptureTrackingAudioSource {
 
 struct CaptureTrackingScreenSource {
     running: bool,
-    capture_active: bool,
+    demand: ScreenCaptureDemand,
 }
 
 struct CountingScreenDemandSource {
     running: bool,
-    capture_active: bool,
+    demand: ScreenCaptureDemand,
     activations: Arc<AtomicUsize>,
 }
 
@@ -751,7 +783,7 @@ impl CountingScreenDemandSource {
     fn new(activations: Arc<AtomicUsize>) -> Self {
         Self {
             running: false,
-            capture_active: false,
+            demand: ScreenCaptureDemand::Inactive,
             activations,
         }
     }
@@ -769,7 +801,7 @@ impl InputSource for CountingScreenDemandSource {
 
     fn stop(&mut self) {
         self.running = false;
-        self.capture_active = false;
+        self.demand = ScreenCaptureDemand::Inactive;
     }
 
     fn sample(&mut self) -> anyhow::Result<InputData> {
@@ -784,11 +816,15 @@ impl InputSource for CountingScreenDemandSource {
         true
     }
 
-    fn set_screen_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
-        if active && !self.capture_active {
+    fn screen_capture_demand(&self) -> ScreenCaptureDemand {
+        self.demand
+    }
+
+    fn set_screen_capture_demand(&mut self, demand: ScreenCaptureDemand) -> anyhow::Result<()> {
+        if demand.is_active() && !self.demand.is_active() {
             self.activations.fetch_add(1, Ordering::Relaxed);
         }
-        self.capture_active = active;
+        self.demand = demand;
         Ok(())
     }
 }
@@ -797,7 +833,7 @@ impl CaptureTrackingScreenSource {
     fn new() -> Self {
         Self {
             running: false,
-            capture_active: false,
+            demand: ScreenCaptureDemand::Inactive,
         }
     }
 }
@@ -814,11 +850,11 @@ impl InputSource for CaptureTrackingScreenSource {
 
     fn stop(&mut self) {
         self.running = false;
-        self.capture_active = false;
+        self.demand = ScreenCaptureDemand::Inactive;
     }
 
     fn sample(&mut self) -> anyhow::Result<InputData> {
-        if !self.running || !self.capture_active {
+        if !self.running || !self.demand.is_active() {
             return Ok(InputData::None);
         }
 
@@ -840,8 +876,12 @@ impl InputSource for CaptureTrackingScreenSource {
         true
     }
 
-    fn set_screen_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
-        self.capture_active = active;
+    fn screen_capture_demand(&self) -> ScreenCaptureDemand {
+        self.demand
+    }
+
+    fn set_screen_capture_demand(&mut self, demand: ScreenCaptureDemand) -> anyhow::Result<()> {
+        self.demand = demand;
         Ok(())
     }
 }
@@ -1953,13 +1993,13 @@ fn manager_updates_screen_capture_demand_for_screen_sources() {
     let samples = mgr.sample_all();
     assert!(matches!(&samples[0], InputData::None));
 
-    mgr.set_screen_capture_active(true)
+    mgr.set_screen_capture_demand(active_screen_demand())
         .expect("screen capture demand update should succeed");
 
     let samples = mgr.sample_all();
     assert!(matches!(&samples[0], InputData::Screen(_)));
 
-    mgr.set_screen_capture_active(false)
+    mgr.set_screen_capture_demand(ScreenCaptureDemand::Inactive)
         .expect("screen capture demand reset should succeed");
 
     let samples = mgr.sample_all();
@@ -1967,11 +2007,81 @@ fn manager_updates_screen_capture_demand_for_screen_sources() {
 }
 
 #[test]
+fn manager_propagates_extent_only_screen_demand_changes_and_shrinks() {
+    let state = Arc::new(Mutex::new(DemandTransitionState::default()));
+    let mut manager = InputManager::new();
+    manager.add_source(Box::new(FallibleStatusScreenSource::new(
+        "screen-resize",
+        None,
+        Arc::clone(&state),
+    )));
+    manager.start_all().expect("screen source starts idle");
+    let large = screen_demand(5_120, 2_160);
+    let small = screen_demand(1_280, 720);
+
+    manager
+        .set_screen_capture_demand(large)
+        .expect("large demand is admitted");
+    manager
+        .set_screen_capture_demand(small)
+        .expect("active demand shrink is propagated");
+
+    let state = state.lock().expect("demand state lock");
+    assert_eq!(state.demand, small);
+    assert_eq!(state.transitions, vec![large, small]);
+}
+
+#[test]
+fn extent_transition_failure_restores_the_exact_previous_demand() {
+    let large = screen_demand(5_120, 2_160);
+    let small = screen_demand(1_280, 720);
+    let states: Vec<_> = (0..2)
+        .map(|_| Arc::new(Mutex::new(DemandTransitionState::default())))
+        .collect();
+    let mut manager = InputManager::new();
+    manager.add_source(Box::new(FallibleStatusScreenSource::new(
+        "resize-first",
+        None,
+        Arc::clone(&states[0]),
+    )));
+    manager.add_source(Box::new(FallibleStatusScreenSource::new(
+        "resize-failing",
+        Some(small),
+        Arc::clone(&states[1]),
+    )));
+    manager.start_all().expect("screen sources start idle");
+    manager
+        .set_screen_capture_demand(large)
+        .expect("initial large demand succeeds");
+
+    manager
+        .set_screen_capture_demand(small)
+        .expect_err("second source rejects the shrink");
+
+    for state in &states {
+        let state = state.lock().expect("demand state lock");
+        assert_eq!(state.demand, large);
+        assert_eq!(state.transitions, vec![large, small, large]);
+    }
+    manager
+        .set_screen_capture_demand(large)
+        .expect("rollback restores the manager demand cache");
+    assert_eq!(
+        states[0]
+            .lock()
+            .expect("first demand state lock")
+            .transitions,
+        vec![large, small, large],
+        "restored demand is a cache no-op"
+    );
+}
+
+#[test]
 fn screen_source_added_while_demanded_is_activated_once_on_next_graph_generation() {
     let activations = Arc::new(AtomicUsize::new(0));
     let mut manager = InputManager::new();
     manager
-        .set_screen_capture_active(true)
+        .set_screen_capture_demand(active_screen_demand())
         .expect("empty graph should accept screen demand");
     let demanded_generation = manager.source_graph_generation();
 
@@ -1983,10 +2093,10 @@ fn screen_source_added_while_demanded_is_activated_once_on_next_graph_generation
         .expect("newly registered screen source should start");
     assert!(manager.source_graph_generation() > demanded_generation);
     manager
-        .set_screen_capture_active(true)
+        .set_screen_capture_demand(active_screen_demand())
         .expect("graph change should reconcile existing demand");
     manager
-        .set_screen_capture_active(true)
+        .set_screen_capture_demand(active_screen_demand())
         .expect("stable graph demand should be cached");
 
     assert_eq!(activations.load(Ordering::Relaxed), 1);
@@ -2005,7 +2115,7 @@ fn screen_capture_demand_rolls_back_every_source_and_publishes_one_completed_epo
     )));
     manager.add_source(Box::new(FallibleStatusScreenSource::new(
         "screen-failing",
-        Some(true),
+        Some(active_screen_demand()),
         Arc::clone(&states[1]),
     )));
     manager.add_source(Box::new(FallibleStatusScreenSource::new(
@@ -2020,7 +2130,7 @@ fn screen_capture_demand_rolls_back_every_source_and_publishes_one_completed_epo
     let before = manager.source_graph_generation();
 
     let error = manager
-        .set_screen_capture_active(true)
+        .set_screen_capture_demand(active_screen_demand())
         .expect_err("second source injects an activation failure");
     assert!(
         error
@@ -2033,22 +2143,25 @@ fn screen_capture_demand_rolls_back_every_source_and_publishes_one_completed_epo
         manager.source_graph_generation()
     );
     for state in &states {
-        assert!(!state.lock().expect("demand state lock").active);
+        assert_eq!(
+            state.lock().expect("demand state lock").demand,
+            ScreenCaptureDemand::Inactive
+        );
     }
     assert_eq!(
         states[0].lock().expect("first state lock").transitions,
-        vec![true, false]
+        vec![active_screen_demand(), ScreenCaptureDemand::Inactive]
     );
     assert_eq!(
         states[1].lock().expect("failing state lock").transitions,
-        vec![true, false]
+        vec![active_screen_demand(), ScreenCaptureDemand::Inactive]
     );
     assert_eq!(
         states[2]
             .lock()
             .expect("unattempted state lock")
             .transitions,
-        vec![false],
+        vec![ScreenCaptureDemand::Inactive],
         "rollback covers sources not reached before the failure"
     );
     assert!(
@@ -2060,11 +2173,11 @@ fn screen_capture_demand_rolls_back_every_source_and_publishes_one_completed_epo
     );
 
     manager
-        .set_screen_capture_active(false)
+        .set_screen_capture_demand(ScreenCaptureDemand::Inactive)
         .expect("rolled-back demand cache remains false");
     assert_eq!(
         states[0].lock().expect("first state lock").transitions,
-        vec![true, false],
+        vec![active_screen_demand(), ScreenCaptureDemand::Inactive],
         "a false -> false request must be a cache no-op"
     );
 }
@@ -2082,7 +2195,7 @@ fn screen_capture_deactivation_failure_restores_live_demand_and_cache() {
     )));
     manager.add_source(Box::new(FallibleStatusScreenSource::new(
         "deactivate-failing",
-        Some(false),
+        Some(ScreenCaptureDemand::Inactive),
         Arc::clone(&states[1]),
     )));
     manager.add_source(Box::new(FallibleStatusScreenSource::new(
@@ -2092,32 +2205,40 @@ fn screen_capture_deactivation_failure_restores_live_demand_and_cache() {
     )));
     manager.start_all().expect("screen sources start idle");
     manager
-        .set_screen_capture_active(true)
+        .set_screen_capture_demand(active_screen_demand())
         .expect("initial activation succeeds");
     let registry = manager.source_status_registry();
 
     manager
-        .set_screen_capture_active(false)
+        .set_screen_capture_demand(ScreenCaptureDemand::Inactive)
         .expect_err("second source injects a deactivation failure");
     assert!(
         states
             .iter()
-            .all(|state| state.lock().expect("demand state lock").active)
+            .all(|state| state.lock().expect("demand state lock").demand.is_active())
     );
     assert_eq!(
         states[0].lock().expect("first state lock").transitions,
-        vec![true, false, true]
+        vec![
+            active_screen_demand(),
+            ScreenCaptureDemand::Inactive,
+            active_screen_demand()
+        ]
     );
     assert_eq!(
         states[1].lock().expect("failing state lock").transitions,
-        vec![true, false, true]
+        vec![
+            active_screen_demand(),
+            ScreenCaptureDemand::Inactive,
+            active_screen_demand()
+        ]
     );
     assert_eq!(
         states[2]
             .lock()
             .expect("unattempted state lock")
             .transitions,
-        vec![true, true]
+        vec![active_screen_demand(), active_screen_demand()]
     );
     assert!(
         registry
@@ -2128,11 +2249,15 @@ fn screen_capture_deactivation_failure_restores_live_demand_and_cache() {
     );
 
     manager
-        .set_screen_capture_active(true)
+        .set_screen_capture_demand(active_screen_demand())
         .expect("rolled-back demand cache remains true");
     assert_eq!(
         states[0].lock().expect("first state lock").transitions,
-        vec![true, false, true],
+        vec![
+            active_screen_demand(),
+            ScreenCaptureDemand::Inactive,
+            active_screen_demand()
+        ],
         "a true -> true request must be a cache no-op"
     );
 }
@@ -2304,7 +2429,9 @@ fn screen_status_uses_frame_acquisition_time_not_consumer_read_time() {
     input.start().expect("screen analysis starts");
     let frame = vec![96_u8; 64 * 64 * 4];
     let before_push = Instant::now();
-    input.push_frame(&frame, 64, 64);
+    input
+        .push_frame(&frame, 64, 64)
+        .expect("test frame is admitted");
     let after_push = Instant::now();
     std::thread::sleep(Duration::from_millis(100));
 

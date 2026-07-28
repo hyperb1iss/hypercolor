@@ -12,13 +12,14 @@ use super::{
 };
 use crate::input::screen::{
     AnalyzedScreenSnapshot, CaptureConfig, CaptureRotation, CaptureSourceId, PhysicalOrigin,
-    PixelExtent, PixelRect, analyze_screen_frame,
+    PixelExtent, PixelRect, ScreenCaptureDemand, analyze_screen_frame,
 };
 use crate::input::{SourceIssue, SourceKind, SourceState, SourceStatusReporter};
 
 fn settings(session_generation: u64) -> Arc<SharedSettings> {
     Arc::new(SharedSettings {
         config: Mutex::new(CaptureConfig::default()),
+        demand: Mutex::new(active_demand()),
         generation: 0.into(),
         frame_generation: 0.into(),
         topology_generation: 0.into(),
@@ -34,6 +35,10 @@ fn source_id(value: &str) -> CaptureSourceId {
 
 fn extent(width: u32, height: u32) -> PixelExtent {
     PixelExtent::new(width, height).expect("test extent is valid")
+}
+
+fn active_demand() -> ScreenCaptureDemand {
+    ScreenCaptureDemand::active(extent(640, 480))
 }
 
 fn source(
@@ -63,7 +68,10 @@ fn capture_legacy(
         .checked_mul(usize::try_from(height).expect("test height fits usize"))
         .and_then(|pixels| pixels.checked_mul(4))
         .expect("test plane length fits usize");
-    let mut plane = state.plane_pool.acquire(plane_len);
+    let mut plane = state
+        .plane_pool
+        .try_acquire(plane_len)
+        .expect("test plane allocation succeeds");
     plane.resize(plane_len, fill);
     let frame = state
         .capture_frame(
@@ -110,7 +118,9 @@ fn physical_topology_persists_across_storage_resize_and_session_restart() {
         Arc::clone(&latest),
         source(7, physical_origin, extent(1920, 1080)),
         CaptureConfig::default(),
-    );
+        active_demand(),
+    )
+    .expect("test analysis extent allocates");
 
     let first = capture_legacy(&mut first_worker, 4, 2, 1);
     let resized = capture_legacy(&mut first_worker, 2, 1, 2);
@@ -131,7 +141,9 @@ fn physical_topology_persists_across_storage_resize_and_session_restart() {
         Arc::clone(&latest),
         source(next_session, physical_origin, extent(1920, 1080)),
         CaptureConfig::default(),
-    );
+        active_demand(),
+    )
+    .expect("test analysis extent allocates");
     let restarted = capture_legacy(&mut successor, 1, 1, 3);
     assert_eq!(restarted.frame().metadata().topology_generation, 1);
     assert_eq!(
@@ -148,7 +160,9 @@ fn physical_topology_persists_across_storage_resize_and_session_restart() {
             extent(1920, 1080),
         ),
         CaptureConfig::default(),
-    );
+        active_demand(),
+    )
+    .expect("test analysis extent allocates");
     let moved = capture_legacy(&mut moved_source, 2, 1, 4);
     assert_eq!(moved.frame().metadata().topology_generation, 2);
     assert_eq!(
@@ -168,7 +182,9 @@ fn stale_worker_cannot_overwrite_the_successor_snapshot() {
         Arc::clone(&latest),
         source(9, physical_origin, logical_extent),
         CaptureConfig::default(),
-    );
+        active_demand(),
+    )
+    .expect("test analysis extent allocates");
     let stale = capture_legacy(&mut retiring, 4, 2, 1);
 
     let active_session = settings.begin_session();
@@ -177,7 +193,9 @@ fn stale_worker_cannot_overwrite_the_successor_snapshot() {
         Arc::clone(&latest),
         source(active_session, physical_origin, logical_extent),
         CaptureConfig::default(),
-    );
+        active_demand(),
+    )
+    .expect("test analysis extent allocates");
     let current = capture_legacy(&mut active, 2, 1, 2);
     assert!(settings.publish_snapshot(&latest, current));
     assert!(!settings.publish_snapshot(&latest, stale));
@@ -212,6 +230,7 @@ fn retired_worker_cannot_read_or_update_successor_settings() {
         settings
             .snapshot_for_session(31, &not_cancelled)
             .expect("current worker may read its settings")
+            .config
             .restore_token
             .as_deref(),
         Some("retiring")
@@ -509,7 +528,7 @@ fn decode_honors_chunk_offset_size_and_row_padding() {
     let mapped = [
         90, 91, 1, 2, 3, 4, 5, 6, 7, 8, 70, 71, 9, 10, 11, 12, 13, 14, 15, 16, 72, 73,
     ];
-    let mut buffers = DoubleBuffer::with_capacity(16);
+    let mut buffers = DoubleBuffer::try_with_capacity(16).expect("test callback planes allocate");
     let stats = decode_chunk(&rgba_view(&mapped, 2, 18, 10, 2, 2), &mut buffers);
 
     assert_eq!(stats.bytes_copied(), 16);
@@ -524,7 +543,8 @@ fn decode_honors_chunk_offset_size_and_row_padding() {
 #[test]
 fn decode_normalizes_negative_stride_without_touching_pixels() {
     let mapped = [9, 10, 11, 12, 13, 14, 15, 16, 1, 2, 3, 4, 5, 6, 7, 8];
-    let mut buffers = DoubleBuffer::with_capacity(mapped.len());
+    let mut buffers =
+        DoubleBuffer::try_with_capacity(mapped.len()).expect("test callback planes allocate");
     let stats = decode_chunk(&rgba_view(&mapped, 0, mapped.len(), -8, 2, 2), &mut buffers);
 
     assert_eq!(stats.drop_reason(), None);
@@ -548,7 +568,8 @@ fn negotiated_format_conversion_runs_only_after_callback_copy() {
         None,
         CaptureRotation::Identity,
     );
-    let mut buffers = DoubleBuffer::with_capacity(mapped.len());
+    let mut buffers =
+        DoubleBuffer::try_with_capacity(mapped.len()).expect("test callback planes allocate");
     assert_eq!(decode_chunk(&view, &mut buffers).drop_reason(), None);
     assert_eq!(buffers.latest_bytes(), Some(&mapped[..]));
 
@@ -563,7 +584,8 @@ fn negotiated_format_conversion_runs_only_after_callback_copy() {
 #[test]
 fn decode_rejects_truncated_and_malformed_chunks() {
     let mapped = [0_u8; 32];
-    let mut buffers = DoubleBuffer::with_capacity(mapped.len());
+    let mut buffers =
+        DoubleBuffer::try_with_capacity(mapped.len()).expect("test callback planes allocate");
     let cases = [
         (
             rgba_view(&mapped, 4, 15, 8, 2, 2),
@@ -607,7 +629,8 @@ fn decode_retains_valid_crop_and_transform_metadata() {
         Some(crop),
         CaptureRotation::Clockwise90,
     );
-    let mut buffers = DoubleBuffer::with_capacity(mapped.len());
+    let mut buffers =
+        DoubleBuffer::try_with_capacity(mapped.len()).expect("test callback planes allocate");
 
     assert_eq!(decode_chunk(&view, &mut buffers).drop_reason(), None);
     assert_eq!(buffers.latest_crop(), Some(crop));
@@ -643,9 +666,14 @@ fn analysis_envelope_reports_pending_crop_and_transform() {
         Arc::new(Mutex::new(None)),
         source(13, PhysicalOrigin { x: -100, y: 50 }, extent(1920, 1080)),
         CaptureConfig::default(),
-    );
+        active_demand(),
+    )
+    .expect("test analysis extent allocates");
     let crop = PixelRect::new(1, 0, 2, 2).expect("test crop is valid");
-    let mut plane = analysis.plane_pool.acquire(64);
+    let mut plane = analysis
+        .plane_pool
+        .try_acquire(64)
+        .expect("test plane allocation succeeds");
     plane.resize(64, 0);
     let frame = analysis
         .capture_frame(
@@ -670,11 +698,13 @@ fn negotiated_format_change_rebuilds_callback_planes_outside_decode() {
     let exchange = Arc::new(AnalysisExchange::default());
     let metrics = Arc::new(CaptureCallbackMetrics::default());
     let mut callback = WaylandCaptureUserData::new(exchange, Arc::clone(&metrics));
-    assert!(callback.set_negotiated_format(NegotiatedFormat {
-        width: 2,
-        height: 2,
-        format: SpaVideoFormat::Rgb,
-    }));
+    callback
+        .set_negotiated_format(NegotiatedFormat {
+            width: 2,
+            height: 2,
+            format: SpaVideoFormat::Rgb,
+        })
+        .expect("test RGB callback planes allocate");
     let rgb = [1_u8; 12];
     let rgb_view = SpaChunkView::new(
         &rgb,
@@ -691,11 +721,13 @@ fn negotiated_format_change_rebuilds_callback_planes_outside_decode() {
     callback.metrics.record(first);
     assert_eq!(first.drop_reason(), None);
 
-    assert!(callback.set_negotiated_format(NegotiatedFormat {
-        width: 4,
-        height: 2,
-        format: SpaVideoFormat::Rgba,
-    }));
+    callback
+        .set_negotiated_format(NegotiatedFormat {
+            width: 4,
+            height: 2,
+            format: SpaVideoFormat::Rgba,
+        })
+        .expect("test RGBA callback planes allocate");
     let rgba = [2_u8; 32];
     let second = decode_chunk(
         &rgba_view(&rgba, 0, rgba.len(), 16, 4, 2),
@@ -709,9 +741,54 @@ fn negotiated_format_change_rebuilds_callback_planes_outside_decode() {
 }
 
 #[test]
+fn failed_format_negotiation_invalidates_metadata_but_retains_last_good_planes() {
+    let exchange = Arc::new(AnalysisExchange::default());
+    let metrics = Arc::new(CaptureCallbackMetrics::default());
+    let mut callback = WaylandCaptureUserData::new(exchange, metrics);
+    callback
+        .set_negotiated_format(NegotiatedFormat {
+            width: 2,
+            height: 2,
+            format: SpaVideoFormat::Rgba,
+        })
+        .expect("test callback planes allocate");
+    let rgba = [7_u8; 16];
+    assert_eq!(
+        decode_chunk(
+            &rgba_view(&rgba, 0, rgba.len(), 8, 2, 2),
+            &mut callback.buffers,
+        )
+        .drop_reason(),
+        None
+    );
+    let previous_capacity = callback.buffers.inner.capacity;
+    let previous_bytes = callback
+        .buffers
+        .latest_bytes()
+        .expect("last-good callback frame exists")
+        .to_vec();
+
+    assert!(matches!(
+        callback.set_negotiated_format(NegotiatedFormat {
+            width: u32::MAX,
+            height: u32::MAX,
+            format: SpaVideoFormat::Rgba,
+        }),
+        Err(crate::input::screen::CaptureFrameError::StorageSizeOverflow)
+    ));
+    assert_eq!(callback.negotiated, None);
+    assert_eq!(callback.buffers.inner.capacity, previous_capacity);
+    assert_eq!(
+        callback.buffers.latest_bytes(),
+        Some(previous_bytes.as_slice())
+    );
+}
+
+#[test]
 fn stopped_analysis_wait_wakes_and_discards_queued_pixels() {
     let mapped = [7_u8; 16];
-    let mut buffers = DoubleBuffer::with_capacity(mapped.len());
+    let mut buffers =
+        DoubleBuffer::try_with_capacity(mapped.len()).expect("test callback planes allocate");
     assert_eq!(
         decode_chunk(&rgba_view(&mapped, 0, mapped.len(), 8, 2, 2), &mut buffers,).drop_reason(),
         None
@@ -742,7 +819,7 @@ fn stopped_analysis_wait_wakes_and_discards_queued_pixels() {
 #[test]
 fn analysis_exchange_keeps_the_newest_eligible_frame() {
     let exchange = AnalysisExchange::default();
-    let mut buffers = DoubleBuffer::with_capacity(4);
+    let mut buffers = DoubleBuffer::try_with_capacity(4).expect("test callback planes allocate");
     for value in [1_u8, 2, 3] {
         let mapped = [value; 4];
         assert_eq!(
@@ -772,7 +849,9 @@ fn terminal_session_invalidation_clears_only_its_snapshot() {
         Arc::clone(&latest),
         source(21, PhysicalOrigin::default(), extent(1920, 1080)),
         CaptureConfig::default(),
-    );
+        active_demand(),
+    )
+    .expect("test analysis extent allocates");
     let snapshot = capture_legacy(&mut analysis, 2, 1, 4);
     assert!(settings.publish_snapshot(&latest, snapshot));
     assert!(settings.invalidate_session(&latest, 21));
@@ -788,7 +867,9 @@ fn terminal_session_invalidation_clears_only_its_snapshot() {
             extent(1920, 1080),
         ),
         CaptureConfig::default(),
-    );
+        active_demand(),
+    )
+    .expect("test analysis extent allocates");
     let successor_snapshot = capture_legacy(&mut successor, 2, 1, 5);
     assert!(settings.publish_snapshot(&latest, successor_snapshot));
     assert!(!settings.invalidate_session(&latest, 21));
@@ -838,7 +919,7 @@ fn failed_command_recovery_reapplies_activation_to_replacement_worker() {
     let (failed_tx, failed_rx) = pipewire::channel::channel();
     drop(failed_rx);
     let failed_demand = AtomicBool::new(false);
-    let activate = WorkerCommand::SetActive(true);
+    let activate = WorkerCommand::SetDemand(active_demand());
     assert!(!dispatch_worker_command(
         &failed_tx,
         &failed_demand,
@@ -857,7 +938,7 @@ fn failed_command_recovery_reapplies_activation_to_replacement_worker() {
 
 #[test]
 fn callback_buffer_reuse_preserves_length_without_zero_filling() {
-    let mut buffers = DoubleBuffer::with_capacity(16);
+    let mut buffers = DoubleBuffer::try_with_capacity(16).expect("test callback planes allocate");
     {
         let mut available = buffers
             .inner
@@ -900,7 +981,8 @@ fn callback_buffer_reuse_preserves_length_without_zero_filling() {
 fn callback_drops_instead_of_allocating_a_third_plane() {
     let mapped = [4_u8; 4];
     let view = rgba_view(&mapped, 0, mapped.len(), 4, 1, 1);
-    let mut buffers = DoubleBuffer::with_capacity(mapped.len());
+    let mut buffers =
+        DoubleBuffer::try_with_capacity(mapped.len()).expect("test callback planes allocate");
     assert_eq!(decode_chunk(&view, &mut buffers).drop_reason(), None);
     let first = buffers
         .take_completed()

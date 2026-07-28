@@ -6,7 +6,7 @@
 //! zone colors. Writing the frame out makes those instantly obvious.
 //!
 //! ```text
-//! cargo run --example dump_frame -p hypercolor-windows-capture -- out.png [source] [max_width]
+//! cargo run --example dump_frame -p hypercolor-windows-capture -- out.png [source] [max_width] [max_height]
 //! ```
 
 fn main() {
@@ -20,15 +20,23 @@ fn main() {
     {
         use std::time::{Duration, Instant};
 
-        use hypercolor_windows_capture::{DesktopDuplicator, MonitorSelector};
+        use hypercolor_windows_capture::{CaptureExtent, DesktopDuplicator, MonitorSelector};
 
         let mut args = std::env::args().skip(1);
         let path = args.next().unwrap_or_else(|| "capture.png".to_owned());
         let source = args.next().unwrap_or_else(|| "auto".to_owned());
         let max_width: u32 = args.next().and_then(|v| v.parse().ok()).unwrap_or(1280);
+        let max_height: u32 = args.next().and_then(|v| v.parse().ok()).unwrap_or(720);
+        let requested_extent = match CaptureExtent::try_new(max_width, max_height) {
+            Ok(extent) => extent,
+            Err(error) => {
+                eprintln!("invalid capture extent: {error}");
+                std::process::exit(2);
+            }
+        };
 
         let mut duplicator =
-            match DesktopDuplicator::open(MonitorSelector::parse(&source), max_width) {
+            match DesktopDuplicator::open(MonitorSelector::parse(&source), requested_extent) {
                 Ok(duplicator) => duplicator,
                 Err(error) => {
                     eprintln!("failed to open capture: {error}");

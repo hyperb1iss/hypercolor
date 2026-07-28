@@ -48,10 +48,77 @@ use crate::input::traits::{InputData, InputSource, ScreenData};
 use crate::input::{SourceKind, SourceStatusHandle, SourceStatusReporter};
 use crate::types::canvas::{
     DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, PublishedSurface, RenderSurfacePool,
-    SurfaceDescriptor,
+    SurfaceDescriptor, SurfaceResourceError,
 };
 use crate::types::event::ZoneColors;
 use std::time::{Duration, Instant};
+
+/// Requested screen publication state for downstream render consumers.
+///
+/// The requested extent describes the analyzed surface published by the input
+/// source. Native capture geometry remains authoritative in frame metadata.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ScreenCaptureDemand {
+    /// No consumer currently needs screen publications.
+    #[default]
+    Inactive,
+    /// Publish screen data fitted within this non-empty extent.
+    Active {
+        /// Maximum width and height requested by the current consumer union.
+        requested_extent: PixelExtent,
+    },
+}
+
+impl ScreenCaptureDemand {
+    /// Construct active demand from a validated extent.
+    #[must_use]
+    pub const fn active(requested_extent: PixelExtent) -> Self {
+        Self::Active { requested_extent }
+    }
+
+    /// Construct active demand from checked pixel dimensions.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CaptureFrameError::EmptyExtent`] when either dimension is zero.
+    pub fn try_active(width: u32, height: u32) -> Result<Self, CaptureFrameError> {
+        match PixelExtent::new(width, height) {
+            Ok(requested_extent) => Ok(Self::active(requested_extent)),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Whether at least one consumer requests screen publications.
+    #[must_use]
+    pub const fn is_active(self) -> bool {
+        matches!(self, Self::Active { .. })
+    }
+
+    /// Requested publication extent, or `None` while inactive.
+    #[must_use]
+    pub const fn requested_extent(self) -> Option<PixelExtent> {
+        match self {
+            Self::Inactive => None,
+            Self::Active { requested_extent } => Some(requested_extent),
+        }
+    }
+
+    /// Union independent consumer demands without imposing a resolution cap.
+    #[must_use]
+    pub const fn union(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Inactive, demand) | (demand, Self::Inactive) => demand,
+            (
+                Self::Active {
+                    requested_extent: left,
+                },
+                Self::Active {
+                    requested_extent: right,
+                },
+            ) => Self::active(left.union(right)),
+        }
+    }
+}
 
 #[derive(Clone)]
 pub(crate) struct AnalyzedScreenSnapshot {
@@ -83,7 +150,7 @@ pub(crate) fn analyze_screen_frame(
     let pixels = storage
         .tightly_packed_rgba8(extent)
         .ok_or_else(|| anyhow::anyhow!("legacy screen analysis requires tightly packed RGBA8"))?;
-    if !analyzer.push_frame_at(pixels, extent.width(), extent.height(), captured_at) {
+    if !analyzer.push_frame_at(pixels, extent.width(), extent.height(), captured_at)? {
         anyhow::bail!("screen analysis rejected malformed normalized pixels");
     }
     let InputData::Screen(data) = analyzer.sample()? else {
@@ -259,7 +326,7 @@ pub fn monitor_selector_from_source(source: &str) -> hypercolor_windows_capture:
 /// input.start()?;
 ///
 /// // Backend captures a frame and pushes raw RGBA pixels:
-/// input.push_frame(&rgba_pixels, width, height);
+/// input.push_frame(&rgba_pixels, width, height)?;
 ///
 /// // Render loop samples the latest data:
 /// let data = input.sample()?;
@@ -288,6 +355,8 @@ pub struct ScreenCaptureInput {
 
     downscale_pool: RenderSurfacePool,
 
+    requested_extent: PixelExtent,
+
     policy_pixels: Vec<[u8; 3]>,
 
     /// Whether the source is actively capturing.
@@ -309,9 +378,32 @@ impl ScreenCaptureInput {
     /// Create a new screen capture input with the given configuration.
     #[must_use]
     pub fn new(config: CaptureConfig) -> Self {
-        let smoother = TemporalSmoother::new(config.smoothing_alpha, config.scene_cut_threshold);
+        let requested_extent = PixelExtent::new(DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT)
+            .expect("default canvas extent is non-empty");
+        Self::with_requested_extent(config, requested_extent)
+            .expect("default screen publication extent fits available memory")
+    }
 
-        Self {
+    /// Create screen analysis with an explicit publication extent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when storage for the requested extent cannot be
+    /// admitted before construction.
+    pub fn with_requested_extent(
+        config: CaptureConfig,
+        requested_extent: PixelExtent,
+    ) -> Result<Self, SurfaceResourceError> {
+        let smoother = TemporalSmoother::try_new_for_grid(
+            config.smoothing_alpha,
+            config.scene_cut_threshold,
+            requested_extent.width(),
+            requested_extent.height(),
+        )?;
+        let downscale_pool = prepare_downscale_pool(requested_extent)?;
+        let policy_pixels = prepare_policy_pixels(requested_extent)?;
+
+        Ok(Self {
             config,
             smoother,
             capture_processor: CaptureFrameProcessor::default(),
@@ -320,11 +412,9 @@ impl ScreenCaptureInput {
             latest_grid_width: 0,
             latest_grid_height: 0,
             latest_canvas_downscale: None,
-            downscale_pool: RenderSurfacePool::with_slot_count(
-                SurfaceDescriptor::rgba8888(DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT),
-                2,
-            ),
-            policy_pixels: Vec::new(),
+            downscale_pool,
+            requested_extent,
+            policy_pixels,
             running: false,
             frame_width: 0,
             frame_height: 0,
@@ -340,7 +430,7 @@ impl ScreenCaptureInput {
                 true,
                 true,
             ),
-        }
+        })
     }
 
     /// Push a raw RGBA8 frame into the pipeline.
@@ -353,8 +443,13 @@ impl ScreenCaptureInput {
     /// * `frame` — Raw RGBA8 pixel data, row-major, 4 bytes per pixel.
     /// * `width` — Frame width in pixels.
     /// * `height` — Frame height in pixels.
-    pub fn push_frame(&mut self, frame: &[u8], width: u32, height: u32) {
-        self.push_frame_at(frame, width, height, Instant::now());
+    pub fn push_frame(
+        &mut self,
+        frame: &[u8],
+        width: u32,
+        height: u32,
+    ) -> Result<bool, SurfaceResourceError> {
+        self.push_frame_at(frame, width, height, Instant::now())
     }
 
     fn push_frame_at(
@@ -363,7 +458,7 @@ impl ScreenCaptureInput {
         width: u32,
         height: u32,
         acquired_at: Instant,
-    ) -> bool {
+    ) -> Result<bool, SurfaceResourceError> {
         let Some(grid) = SectorGrid::try_compute(
             frame,
             width,
@@ -371,7 +466,7 @@ impl ScreenCaptureInput {
             self.config.grid_cols,
             self.config.grid_rows,
         ) else {
-            return false;
+            return Ok(false);
         };
 
         let letterbox = if self.config.letterbox_enabled {
@@ -403,8 +498,8 @@ impl ScreenCaptureInput {
         let (downscale_width, downscale_height) = fit_within(
             region.width,
             region.height,
-            DEFAULT_CANVAS_WIDTH,
-            DEFAULT_CANVAS_HEIGHT,
+            self.requested_extent.width(),
+            self.requested_extent.height(),
         );
         let elapsed = self.latest_acquired_at.map_or(Duration::ZERO, |previous| {
             acquired_at.saturating_duration_since(previous)
@@ -425,8 +520,9 @@ impl ScreenCaptureInput {
             &mut self.policy_pixels,
             elapsed,
             reset_smoother,
-        ) else {
-            return false;
+        )?
+        else {
+            return Ok(false);
         };
         let Some(policy_grid) = SectorGrid::try_compute(
             canvas_downscale.rgba_bytes(),
@@ -435,7 +531,7 @@ impl ScreenCaptureInput {
             effective_cols,
             effective_rows,
         ) else {
-            return false;
+            return Ok(false);
         };
         let zone_data = policy_grid.to_zone_colors();
         let colors = zone_data.iter().map(|(_, color)| *color).collect();
@@ -452,13 +548,43 @@ impl ScreenCaptureInput {
         self.frame_height = height;
         self.frame_generation = self.frame_generation.wrapping_add(1);
         self.latest_acquired_at = Some(acquired_at);
-        true
+        Ok(true)
     }
 
     /// Current configuration.
     #[must_use]
     pub fn config(&self) -> &CaptureConfig {
         &self.config
+    }
+
+    /// Update the requested publication extent for the next analyzed frame.
+    pub fn set_requested_extent(
+        &mut self,
+        requested_extent: PixelExtent,
+    ) -> Result<(), SurfaceResourceError> {
+        if self.requested_extent == requested_extent {
+            return Ok(());
+        }
+        let downscale_pool = prepare_downscale_pool(requested_extent)?;
+        let policy_pixels = prepare_policy_pixels(requested_extent)?;
+        let smoother = TemporalSmoother::try_new_for_grid(
+            self.config.smoothing_alpha,
+            self.config.scene_cut_threshold,
+            requested_extent.width(),
+            requested_extent.height(),
+        )?;
+        self.downscale_pool = downscale_pool;
+        self.policy_pixels = policy_pixels;
+        self.smoother = smoother;
+        self.requested_extent = requested_extent;
+        self.latest_canvas_downscale = None;
+        Ok(())
+    }
+
+    /// Current requested publication extent.
+    #[must_use]
+    pub const fn requested_extent(&self) -> PixelExtent {
+        self.requested_extent
     }
 
     /// Apply new analysis settings to a running pipeline.
@@ -627,6 +753,45 @@ impl FrameRegion {
     }
 }
 
+fn prepare_downscale_pool(extent: PixelExtent) -> Result<RenderSurfacePool, SurfaceResourceError> {
+    let descriptor = SurfaceDescriptor::rgba8888(extent.width(), extent.height());
+    let mut pool = RenderSurfacePool::try_with_lazy_slot_count(descriptor, 2)?;
+    let lease = pool
+        .try_dequeue()?
+        .expect("new screen downscale pool has an available slot");
+    lease.release();
+    Ok(pool)
+}
+
+fn prepare_policy_pixels(extent: PixelExtent) -> Result<Vec<[u8; 3]>, SurfaceResourceError> {
+    let pixel_count = usize::try_from(extent.width())
+        .ok()
+        .and_then(|width| {
+            usize::try_from(extent.height())
+                .ok()
+                .and_then(|height| width.checked_mul(height))
+        })
+        .ok_or(SurfaceResourceError::ByteLengthOverflow {
+            width: extent.width(),
+            height: extent.height(),
+        })?;
+    let byte_len = pixel_count
+        .checked_mul(3)
+        .ok_or(SurfaceResourceError::ByteLengthOverflow {
+            width: extent.width(),
+            height: extent.height(),
+        })?;
+    let mut pixels = Vec::new();
+    pixels
+        .try_reserve_exact(pixel_count)
+        .map_err(|_| SurfaceResourceError::AllocationFailed {
+            width: extent.width(),
+            height: extent.height(),
+            byte_len,
+        })?;
+    Ok(pixels)
+}
+
 fn downscale_frame(
     frame: &[u8],
     width: u32,
@@ -640,60 +805,73 @@ fn downscale_frame(
     policy_pixels: &mut Vec<[u8; 3]>,
     elapsed: Duration,
     reset_smoother: bool,
-) -> Option<PublishedSurface> {
+) -> Result<Option<PublishedSurface>, SurfaceResourceError> {
     if width == 0 || height == 0 || target_width == 0 || target_height == 0 {
-        return None;
+        return Ok(None);
     }
 
     let expected_len = usize::try_from(width)
         .ok()
         .and_then(|w| usize::try_from(height).ok().and_then(|h| w.checked_mul(h)))
-        .and_then(|pixels| pixels.checked_mul(4))?;
+        .and_then(|pixels| pixels.checked_mul(4));
+    let Some(expected_len) = expected_len else {
+        return Ok(None);
+    };
     if frame.len() < expected_len {
-        return None;
+        return Ok(None);
+    }
+    let required_pixels = usize::try_from(target_width)
+        .ok()
+        .and_then(|width| {
+            usize::try_from(target_height)
+                .ok()
+                .and_then(|height| width.checked_mul(height))
+        })
+        .ok_or(SurfaceResourceError::ByteLengthOverflow {
+            width: target_width,
+            height: target_height,
+        })?;
+    if policy_pixels.capacity() < required_pixels {
+        let additional = required_pixels.saturating_sub(policy_pixels.len());
+        let byte_len =
+            required_pixels
+                .checked_mul(3)
+                .ok_or(SurfaceResourceError::ByteLengthOverflow {
+                    width: target_width,
+                    height: target_height,
+                })?;
+        policy_pixels.try_reserve_exact(additional).map_err(|_| {
+            SurfaceResourceError::AllocationFailed {
+                width: target_width,
+                height: target_height,
+                byte_len,
+            }
+        })?;
     }
 
     let descriptor = SurfaceDescriptor::rgba8888(target_width, target_height);
     if surface_pool.descriptor() != descriptor {
-        *surface_pool = RenderSurfacePool::with_slot_count(descriptor, 2);
+        let extent = PixelExtent::new(target_width, target_height)
+            .expect("downscale target dimensions are non-empty");
+        let prepared = prepare_downscale_pool(extent)?;
+        *surface_pool = prepared;
     }
 
-    let mut lease = surface_pool.dequeue()?;
+    let Some(mut lease) = surface_pool.try_dequeue()? else {
+        return Ok(None);
+    };
+    if !copy_downscaled_rgba(
+        frame,
+        width,
+        region,
+        target_width,
+        target_height,
+        lease.canvas_mut().as_rgba_bytes_mut(),
+    ) {
+        lease.release();
+        return Ok(None);
+    }
     let bytes = lease.canvas_mut().as_rgba_bytes_mut();
-    let src_width = usize::try_from(width).ok()?;
-    let target_width_usize = usize::try_from(target_width).ok()?;
-
-    for y in 0..target_height {
-        let region_y =
-            u32::try_from(u64::from(y) * u64::from(region.height) / u64::from(target_height))
-                .ok()?;
-        let src_y = u32::min(
-            region.y.checked_add(region_y)?,
-            region.y.saturating_add(region.height).saturating_sub(1),
-        );
-        let src_row = usize::try_from(src_y).ok()?;
-        for x in 0..target_width {
-            let region_x =
-                u32::try_from(u64::from(x) * u64::from(region.width) / u64::from(target_width))
-                    .ok()?;
-            let src_x = u32::min(
-                region.x.checked_add(region_x)?,
-                region.x.saturating_add(region.width).saturating_sub(1),
-            );
-            let src_col = usize::try_from(src_x).ok()?;
-            let src_idx = src_row
-                .checked_mul(src_width)?
-                .checked_add(src_col)?
-                .checked_mul(4)?;
-            let dst_idx = usize::try_from(y)
-                .ok()?
-                .checked_mul(target_width_usize)?
-                .checked_add(usize::try_from(x).ok()?)?
-                .checked_mul(4)?;
-            bytes[dst_idx..dst_idx + 4].copy_from_slice(&frame[src_idx..src_idx + 4]);
-        }
-    }
-
     policy_pixels.clear();
     policy_pixels.extend(
         bytes
@@ -707,7 +885,8 @@ fn downscale_frame(
         elapsed,
         reset_smoother,
     ) {
-        return None;
+        lease.release();
+        return Ok(None);
     }
     tuning.apply(policy_pixels);
     for (pixel, color) in bytes.chunks_exact_mut(4).zip(policy_pixels.iter()) {
@@ -715,5 +894,77 @@ fn downscale_frame(
         pixel[3] = 255;
     }
 
-    Some(lease.submit(0, 0))
+    Ok(Some(lease.submit(0, 0)))
+}
+
+fn copy_downscaled_rgba(
+    frame: &[u8],
+    width: u32,
+    region: FrameRegion,
+    target_width: u32,
+    target_height: u32,
+    output: &mut [u8],
+) -> bool {
+    let Some(src_width) = usize::try_from(width).ok() else {
+        return false;
+    };
+    let Some(target_width_usize) = usize::try_from(target_width).ok() else {
+        return false;
+    };
+    for y in 0..target_height {
+        let Some(region_y) =
+            u32::try_from(u64::from(y) * u64::from(region.height) / u64::from(target_height)).ok()
+        else {
+            return false;
+        };
+        let Some(candidate_y) = region.y.checked_add(region_y) else {
+            return false;
+        };
+        let src_y = candidate_y.min(region.y.saturating_add(region.height).saturating_sub(1));
+        let Some(src_row) = usize::try_from(src_y).ok() else {
+            return false;
+        };
+        for x in 0..target_width {
+            let Some(region_x) =
+                u32::try_from(u64::from(x) * u64::from(region.width) / u64::from(target_width))
+                    .ok()
+            else {
+                return false;
+            };
+            let Some(candidate_x) = region.x.checked_add(region_x) else {
+                return false;
+            };
+            let src_x = candidate_x.min(region.x.saturating_add(region.width).saturating_sub(1));
+            let Some(src_col) = usize::try_from(src_x).ok() else {
+                return false;
+            };
+            let Some(src_idx) = src_row
+                .checked_mul(src_width)
+                .and_then(|index| index.checked_add(src_col))
+                .and_then(|index| index.checked_mul(4))
+            else {
+                return false;
+            };
+            let Some(dst_idx) = usize::try_from(y)
+                .ok()
+                .and_then(|row| row.checked_mul(target_width_usize))
+                .and_then(|index| {
+                    usize::try_from(x)
+                        .ok()
+                        .and_then(|column| index.checked_add(column))
+                })
+                .and_then(|index| index.checked_mul(4))
+            else {
+                return false;
+            };
+            let (Some(source), Some(target)) = (
+                frame.get(src_idx..src_idx.saturating_add(4)),
+                output.get_mut(dst_idx..dst_idx.saturating_add(4)),
+            ) else {
+                return false;
+            };
+            target.copy_from_slice(source);
+        }
+    }
+    true
 }

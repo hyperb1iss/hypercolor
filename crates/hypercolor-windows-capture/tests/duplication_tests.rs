@@ -18,11 +18,17 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 use hypercolor_windows_capture::{
-    CaptureError, CaptureResult, DesktopDuplicator, DisplayRotation, list_monitors, monitor_count,
+    CaptureError, CaptureExtent, CaptureResult, DesktopDuplicator, DisplayRotation, list_monitors,
+    monitor_count,
 };
 
 /// Subsample target used across the tests, matching the daemon's default.
 const MAX_WIDTH: u32 = 1280;
+const MAX_HEIGHT: u32 = 720;
+
+fn requested_extent() -> CaptureExtent {
+    CaptureExtent::try_new(MAX_WIDTH, MAX_HEIGHT).expect("test extent is non-empty")
+}
 
 fn capture_test_lock() -> MutexGuard<'static, ()> {
     static CAPTURE_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -39,7 +45,7 @@ fn duplicator_or_skip(monitor: usize) -> Option<DesktopDuplicator> {
         return None;
     }
 
-    match DesktopDuplicator::new(monitor, MAX_WIDTH) {
+    match DesktopDuplicator::new(monitor, requested_extent()) {
         Ok(duplicator) => Some(duplicator),
         Err(CaptureError::AlreadyDuplicating) => {
             eprintln!("skipping monitor {monitor}: another process holds the duplication slot");
@@ -97,7 +103,7 @@ fn monitor_count_is_sane() {
 #[test]
 #[ignore = "requires Windows with D3D11 display enumeration"]
 fn opening_a_missing_monitor_reports_not_found() {
-    let Err(error) = DesktopDuplicator::new(9_999, MAX_WIDTH) else {
+    let Err(error) = DesktopDuplicator::new(9_999, requested_extent()) else {
         panic!("monitor index 9999 should not resolve to a real output");
     };
 
@@ -127,6 +133,10 @@ fn captures_a_frame_with_consistent_geometry() {
     assert!(
         width <= MAX_WIDTH,
         "subsampling should hold width at or under {MAX_WIDTH}, got {width}"
+    );
+    assert!(
+        height <= MAX_HEIGHT,
+        "subsampling should hold height at or under {MAX_HEIGHT}, got {height}"
     );
     assert_eq!(
         len,

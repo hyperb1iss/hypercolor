@@ -16,6 +16,7 @@ use crate::input::screen::{
     CaptureColorSpace, CaptureConfig, CaptureCursor, CaptureDamage, CaptureFrame,
     CaptureFrameError, CaptureFrameMetadata, CapturePixelFormat, CaptureRotation, CaptureStorage,
     CaptureTransferFunction, CpuCaptureStorage, PhysicalOrigin, PixelExtent, RawCaptureSurface,
+    ScreenCaptureDemand,
 };
 use crate::input::status::{ScreenCaptureReductionPath, SourceDiagnostics};
 use crate::input::traits::InputSource;
@@ -133,6 +134,10 @@ fn extent(width: u32, height: u32) -> PixelExtent {
     PixelExtent::new(width, height).expect("test extent is valid")
 }
 
+fn active_demand() -> ScreenCaptureDemand {
+    ScreenCaptureDemand::active(extent(640, 480))
+}
+
 fn active_epoch(
     source: &str,
     topology_generation: u64,
@@ -218,7 +223,7 @@ fn deactivated_worker_is_reused_when_capture_reactivates() {
     assert!(input.worker.is_none());
 
     input
-        .set_capture_active_state(true)
+        .set_capture_demand_state(active_demand())
         .expect("first activation starts the worker");
     let first_activity = input.settings.activity_generation.load(Ordering::Acquire);
     wait_for_activity(&input, first_activity);
@@ -232,7 +237,7 @@ fn deactivated_worker_is_reused_when_capture_reactivates() {
     let first_generation = input.settings.session_generation.load(Ordering::Acquire);
 
     input
-        .set_capture_active_state(false)
+        .set_capture_demand_state(ScreenCaptureDemand::Inactive)
         .expect("deactivation idles the worker");
     let inactive_activity = input.settings.activity_generation.load(Ordering::Acquire);
     wait_for_activity(&input, inactive_activity);
@@ -242,7 +247,7 @@ fn deactivated_worker_is_reused_when_capture_reactivates() {
     );
 
     input
-        .set_capture_active_state(true)
+        .set_capture_demand_state(active_demand())
         .expect("reactivation reuses the idle worker");
     let reactivated_activity = input.settings.activity_generation.load(Ordering::Acquire);
     wait_for_activity(&input, reactivated_activity);
@@ -298,7 +303,7 @@ fn disconnected_worker_is_reaped_before_activation_retries_once() {
     });
 
     input
-        .set_capture_active_state(true)
+        .set_capture_demand_state(active_demand())
         .expect("activation replaces the disconnected worker");
     let activity_generation = input.settings.activity_generation.load(Ordering::Acquire);
     wait_for_activity(&input, activity_generation);

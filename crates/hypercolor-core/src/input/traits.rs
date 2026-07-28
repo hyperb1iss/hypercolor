@@ -625,15 +625,23 @@ pub trait InputSource: Send {
         Ok(())
     }
 
-    /// Toggle whether a screen source should actively capture from the compositor.
+    /// Current screen publication demand retained by this source.
+    fn screen_capture_demand(&self) -> crate::input::screen::ScreenCaptureDemand {
+        crate::input::screen::ScreenCaptureDemand::Inactive
+    }
+
+    /// Apply typed screen publication demand.
     ///
-    /// Screen sources can use this to pause their underlying capture session
-    /// while remaining registered with the input manager.
+    /// Active demand carries the analyzed publication extent independently of
+    /// the backend's native capture geometry.
     ///
     /// # Errors
     ///
     /// Returns an error if the source cannot update its capture state.
-    fn set_screen_capture_active(&mut self, _active: bool) -> anyhow::Result<()> {
+    fn set_screen_capture_demand(
+        &mut self,
+        _demand: crate::input::screen::ScreenCaptureDemand,
+    ) -> anyhow::Result<()> {
         Ok(())
     }
 

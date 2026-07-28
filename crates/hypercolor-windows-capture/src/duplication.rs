@@ -27,8 +27,9 @@ use windows::Win32::Graphics::Gdi::{DISPLAY_DEVICEW, EnumDisplayDevicesW};
 use windows::core::{HRESULT, Interface, PCWSTR};
 
 use crate::shared::{
-    CaptureError, CaptureRegion, CaptureResult, CursorInfo, DisplayRotation, Frame, MonitorInfo,
-    MonitorSelector, ReductionPath, ReductionTelemetry, subsample_stride, subsampled_extent,
+    CaptureError, CaptureExtent, CaptureRegion, CaptureResult, CursorInfo, DisplayRotation, Frame,
+    MonitorInfo, MonitorSelector, ReductionPath, ReductionTelemetry, subsample_stride,
+    subsampled_extent, width_target_within,
 };
 
 pub(crate) mod gpu_reduction;
@@ -621,7 +622,7 @@ pub struct DesktopDuplicator {
     duplication_generation: u64,
     adapter_luid: (u32, i32),
     last_topology_check: Instant,
-    max_width: u32,
+    requested_extent: CaptureExtent,
     device: ID3D11Device,
     context: ID3D11DeviceContext,
     output: IDXGIOutput1,
@@ -650,7 +651,7 @@ pub struct DesktopDuplicator {
 }
 
 impl DesktopDuplicator {
-    /// Open Desktop Duplication for `monitor`, subsampling to `max_width`.
+    /// Open Desktop Duplication for `monitor` at the requested extent.
     ///
     /// # Errors
     ///
@@ -658,8 +659,8 @@ impl DesktopDuplicator {
     /// range, [`CaptureError::AlreadyDuplicating`] when another process holds
     /// the duplication interface, or [`CaptureError::Windows`] for any other
     /// D3D11/DXGI failure.
-    pub fn new(monitor: usize, max_width: u32) -> CaptureResult<Self> {
-        Self::open(MonitorSelector::Index(monitor), max_width)
+    pub fn new(monitor: usize, requested_extent: CaptureExtent) -> CaptureResult<Self> {
+        Self::open(MonitorSelector::Index(monitor), requested_extent)
     }
 
     /// Open Desktop Duplication for a stable or primary-aware selector.
@@ -669,7 +670,7 @@ impl DesktopDuplicator {
     /// Returns [`CaptureError::MonitorNotFound`] when no outputs are attached
     /// or a legacy index is out of range, [`CaptureError::SourceNotFound`] when
     /// a stable output disappeared, and the same platform errors as [`Self::new`].
-    pub fn open(selector: MonitorSelector, max_width: u32) -> CaptureResult<Self> {
+    pub fn open(selector: MonitorSelector, requested_extent: CaptureExtent) -> CaptureResult<Self> {
         let outputs = enumerate_outputs()?;
         let monitors = outputs
             .iter()
@@ -715,7 +716,7 @@ impl DesktopDuplicator {
             duplication_generation: 1,
             adapter_luid,
             last_topology_check: Instant::now(),
-            max_width,
+            requested_extent,
             device,
             context,
             output,
@@ -776,12 +777,18 @@ impl DesktopDuplicator {
         self.duplication_generation
     }
 
-    /// Change the subsample target for subsequent frames.
-    pub fn set_max_width(&mut self, max_width: u32) {
-        if self.max_width == max_width {
+    /// Requested reduction extent for subsequent frames.
+    #[must_use]
+    pub const fn requested_extent(&self) -> CaptureExtent {
+        self.requested_extent
+    }
+
+    /// Change the requested reduction extent for subsequent frames.
+    pub fn set_requested_extent(&mut self, requested_extent: CaptureExtent) {
+        if self.requested_extent == requested_extent {
             return;
         }
-        self.max_width = max_width;
+        self.requested_extent = requested_extent;
         self.refresh_latest_capture();
     }
 
@@ -1145,7 +1152,12 @@ impl DesktopDuplicator {
         let Some(reducer) = self.gpu_reducer.as_mut() else {
             return Ok(());
         };
-        match reducer.submit(texture, self.max_width, metadata) {
+        let reduction_width = width_target_within(
+            metadata.region.width(),
+            metadata.region.height(),
+            self.requested_extent,
+        );
+        match reducer.submit(texture, reduction_width, metadata) {
             Ok(SubmitOutcome::Submitted) => {
                 self.reduction_telemetry.gpu_submitted =
                     self.reduction_telemetry.gpu_submitted.saturating_add(1);
@@ -1350,7 +1362,11 @@ impl DesktopDuplicator {
                 height: native_height,
             },
             rgba,
-            self.max_width,
+            width_target_within(
+                metadata.region.width(),
+                metadata.region.height(),
+                self.requested_extent,
+            ),
             &metadata.pointer,
             metadata.rotation,
             metadata.region,

@@ -28,7 +28,9 @@ fn main() {
             .nth(1)
             .unwrap_or_else(|| "screen-canvas.png".to_owned());
 
-        let mut duplicator = match DesktopDuplicator::new(0, 1280) {
+        let requested_extent = hypercolor_windows_capture::CaptureExtent::try_new(1280, 720)
+            .expect("dump extent is non-empty");
+        let mut duplicator = match DesktopDuplicator::new(0, requested_extent) {
             Ok(duplicator) => duplicator,
             Err(error) => {
                 eprintln!("failed to open capture: {error}");
@@ -46,7 +48,11 @@ fn main() {
             match duplicator.next_frame(Duration::from_millis(200)) {
                 Ok(Some(frame)) => {
                     println!("capture backend produced {}x{}", frame.width, frame.height);
-                    analyzer.push_frame(&frame.rgba, frame.width, frame.height);
+                    if let Err(error) = analyzer.push_frame(&frame.rgba, frame.width, frame.height)
+                    {
+                        eprintln!("screen analysis resources exhausted: {error}");
+                        std::process::exit(1);
+                    }
                 }
                 Ok(None) => continue,
                 Err(error) => {

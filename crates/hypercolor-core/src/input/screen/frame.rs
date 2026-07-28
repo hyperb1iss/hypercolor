@@ -72,6 +72,23 @@ impl PixelExtent {
     pub const fn height(self) -> u32 {
         self.height
     }
+
+    /// Component-wise maximum used to union independent publication requests.
+    #[must_use]
+    pub const fn union(self, other: Self) -> Self {
+        Self {
+            width: if self.width > other.width {
+                self.width
+            } else {
+                other.width
+            },
+            height: if self.height > other.height {
+                self.height
+            } else {
+                other.height
+            },
+        }
+    }
 }
 
 /// Signed origin in the physical desktop coordinate space.
@@ -519,8 +536,14 @@ pub struct CapturePlanePool {
 
 impl CapturePlanePool {
     /// Acquire exclusive mutable storage with at least `minimum_capacity` bytes.
-    #[must_use]
-    pub fn acquire(&self, minimum_capacity: usize) -> CapturePlaneLease {
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed allocation failure without discarding a reusable plane.
+    pub fn try_acquire(
+        &self,
+        minimum_capacity: usize,
+    ) -> Result<CapturePlaneLease, CaptureFrameError> {
         let mut available = self
             .inner
             .available
@@ -529,23 +552,28 @@ impl CapturePlanePool {
         let index = available
             .iter()
             .position(|buffer| buffer.capacity() >= minimum_capacity);
-        let buffer = match index {
-            Some(index) => available.swap_remove(index),
-            None => {
-                if let Some(mut buffer) = available.pop() {
-                    buffer.reserve(minimum_capacity);
-                    buffer
-                } else {
-                    self.inner.allocations.fetch_add(1, Ordering::Relaxed);
-                    Vec::with_capacity(minimum_capacity)
-                }
-            }
+        let (mut buffer, created) = match index {
+            Some(index) => (available.swap_remove(index), false),
+            None => available
+                .pop()
+                .map_or_else(|| (Vec::new(), true), |buffer| (buffer, false)),
         };
+        if buffer.capacity() < minimum_capacity
+            && buffer.try_reserve_exact(minimum_capacity).is_err()
+        {
+            available.push(buffer);
+            return Err(CaptureFrameError::PlaneAllocationFailed {
+                byte_len: minimum_capacity,
+            });
+        }
+        if created {
+            self.inner.allocations.fetch_add(1, Ordering::Relaxed);
+        }
         drop(available);
-        CapturePlaneLease {
+        Ok(CapturePlaneLease {
             buffer: Some(buffer),
             pool: Arc::downgrade(&self.inner),
-        }
+        })
     }
 
     /// Number of backing allocations created by this pool.
@@ -1107,6 +1135,9 @@ pub enum CaptureFrameError {
     /// Storage length arithmetic overflowed the host address space.
     #[error("capture storage size overflow")]
     StorageSizeOverflow,
+    /// A demanded CPU capture plane could not be allocated.
+    #[error("could not allocate {byte_len} bytes for a capture plane")]
+    PlaneAllocationFailed { byte_len: usize },
     /// Opaque GPU handles reserve zero as invalid.
     #[error("GPU surface handle id must be non-zero")]
     InvalidGpuHandle,

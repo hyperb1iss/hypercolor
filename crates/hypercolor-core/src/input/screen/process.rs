@@ -88,7 +88,7 @@ impl CaptureFrameProcessor {
         let output_extent = geometry.rotation().apply_to_extent(storage_crop.extent);
         let logical_extent = geometry.rotation().apply_to_extent(native_crop.extent);
         let output_len = rgba_len(output_extent)?;
-        let mut plane = self.plane_pool.acquire(output_len);
+        let mut plane = self.plane_pool.try_acquire(output_len)?;
         plane.resize(output_len, 0);
         transform_cpu_pixels(
             storage,
