@@ -56,6 +56,10 @@ pub(super) const WS_ZONE_PREVIEW_HEADER: u8 = ZONE_PREVIEW_FRAME_TAG;
 #[cfg(test)]
 pub(super) const WS_ZONE_PREVIEW_HEADER_LEN: usize = ZONE_PREVIEW_FRAME_HEADER_LEN;
 const WS_CANVAS_BINARY_CACHE_CAPACITY: usize = 32;
+const WS_CANVAS_BINARY_CACHE_MAX_BYTES: usize = 128 * 1024 * 1024;
+const WS_ZONE_PREVIEW_BINARY_CACHE_MAX_BYTES: usize = 128 * 1024 * 1024;
+const WS_CANVAS_RAW_BODY_CACHE_MAX_BYTES: usize = 128 * 1024 * 1024;
+const WS_CANVAS_JPEG_BODY_CACHE_MAX_BYTES: usize = 64 * 1024 * 1024;
 const WS_DISPLAY_PREVIEW_PAYLOAD_CACHE_CAPACITY: usize = 64;
 /// Display-preview payloads larger than this skip the shared cache and are
 /// rebuilt per request. Bounds worst-case cache memory at roughly
@@ -1136,13 +1140,13 @@ fn canvas_binary_cache_put(key: CanvasBinaryCacheKey, payload: Bytes) {
     let mut cache = WS_CANVAS_BINARY_CACHE[cache_shard_index(&key)]
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
-    if let Some(index) = cache.iter().position(|(candidate, _)| *candidate == key) {
-        let _ = cache.remove(index);
-    }
-    cache.push_front((key, payload));
-    while cache.len() > per_shard_capacity(WS_CANVAS_BINARY_CACHE_CAPACITY) {
-        let _ = cache.pop_back();
-    }
+    put_bytes_lru(
+        &mut cache,
+        key,
+        payload,
+        per_shard_capacity(WS_CANVAS_BINARY_CACHE_CAPACITY),
+        per_shard_capacity(WS_CANVAS_BINARY_CACHE_MAX_BYTES),
+    );
 }
 
 fn zone_preview_binary_cache_get(key: ZonePreviewBinaryCacheKey) -> Option<Bytes> {
@@ -1160,13 +1164,13 @@ fn zone_preview_binary_cache_put(key: ZonePreviewBinaryCacheKey, payload: Bytes)
     let mut cache = WS_ZONE_PREVIEW_BINARY_CACHE[cache_shard_index(&key)]
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
-    if let Some(index) = cache.iter().position(|(candidate, _)| *candidate == key) {
-        let _ = cache.remove(index);
-    }
-    cache.push_front((key, payload));
-    while cache.len() > per_shard_capacity(WS_CANVAS_BINARY_CACHE_CAPACITY) {
-        let _ = cache.pop_back();
-    }
+    put_bytes_lru(
+        &mut cache,
+        key,
+        payload,
+        per_shard_capacity(WS_CANVAS_BINARY_CACHE_CAPACITY),
+        per_shard_capacity(WS_ZONE_PREVIEW_BINARY_CACHE_MAX_BYTES),
+    );
 }
 
 fn canvas_raw_body_cache_get(key: CanvasRawBodyCacheKey) -> Option<Bytes> {
@@ -1184,13 +1188,13 @@ fn canvas_raw_body_cache_put(key: CanvasRawBodyCacheKey, payload: Bytes) {
     let mut cache = WS_CANVAS_RAW_BODY_CACHE[cache_shard_index(&key)]
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
-    if let Some(index) = cache.iter().position(|(candidate, _)| *candidate == key) {
-        let _ = cache.remove(index);
-    }
-    cache.push_front((key, payload));
-    while cache.len() > per_shard_capacity(WS_CANVAS_BINARY_CACHE_CAPACITY) {
-        let _ = cache.pop_back();
-    }
+    put_bytes_lru(
+        &mut cache,
+        key,
+        payload,
+        per_shard_capacity(WS_CANVAS_BINARY_CACHE_CAPACITY),
+        per_shard_capacity(WS_CANVAS_RAW_BODY_CACHE_MAX_BYTES),
+    );
 }
 
 fn canvas_jpeg_body_cache_get(key: CanvasJpegBodyCacheKey) -> Option<Bytes> {
@@ -1208,13 +1212,13 @@ fn canvas_jpeg_body_cache_put(key: CanvasJpegBodyCacheKey, payload: Bytes) {
     let mut cache = WS_CANVAS_JPEG_BODY_CACHE[cache_shard_index(&key)]
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
-    if let Some(index) = cache.iter().position(|(candidate, _)| *candidate == key) {
-        let _ = cache.remove(index);
-    }
-    cache.push_front((key, payload));
-    while cache.len() > per_shard_capacity(WS_CANVAS_BINARY_CACHE_CAPACITY) {
-        let _ = cache.pop_back();
-    }
+    put_bytes_lru(
+        &mut cache,
+        key,
+        payload,
+        per_shard_capacity(WS_CANVAS_BINARY_CACHE_CAPACITY),
+        per_shard_capacity(WS_CANVAS_JPEG_BODY_CACHE_MAX_BYTES),
+    );
 }
 
 fn display_preview_payload_cache_get(key: DisplayPreviewPayloadCacheKey) -> Option<Bytes> {
@@ -1232,13 +1236,15 @@ fn display_preview_payload_cache_put(key: DisplayPreviewPayloadCacheKey, payload
     let mut cache = WS_DISPLAY_PREVIEW_PAYLOAD_CACHE[cache_shard_index(&key)]
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
-    if let Some(index) = cache.iter().position(|(candidate, _)| *candidate == key) {
-        let _ = cache.remove(index);
-    }
-    cache.push_front((key, payload));
-    while cache.len() > per_shard_capacity(WS_DISPLAY_PREVIEW_PAYLOAD_CACHE_CAPACITY) {
-        let _ = cache.pop_back();
-    }
+    put_bytes_lru(
+        &mut cache,
+        key,
+        payload,
+        per_shard_capacity(WS_DISPLAY_PREVIEW_PAYLOAD_CACHE_CAPACITY),
+        per_shard_capacity(
+            WS_DISPLAY_PREVIEW_PAYLOAD_CACHE_CAPACITY * WS_DISPLAY_PREVIEW_PAYLOAD_CACHE_MAX_BYTES,
+        ),
+    );
 }
 
 fn spectrum_payload_cache_get(key: SpectrumPayloadCacheKey) -> Option<Bytes> {
@@ -1263,6 +1269,30 @@ fn spectrum_payload_cache_put(key: SpectrumPayloadCacheKey, payload: Bytes) {
     while cache.len() > per_shard_capacity(WS_SPECTRUM_PAYLOAD_CACHE_CAPACITY) {
         let _ = cache.pop_back();
     }
+}
+
+pub(super) fn put_bytes_lru<K: PartialEq>(
+    cache: &mut VecDeque<(K, Bytes)>,
+    key: K,
+    payload: Bytes,
+    max_entries: usize,
+    max_bytes: usize,
+) -> bool {
+    if max_entries == 0 || payload.len() > max_bytes {
+        return false;
+    }
+    if let Some(index) = cache.iter().position(|(candidate, _)| *candidate == key) {
+        let _ = cache.remove(index);
+    }
+    cache.push_front((key, payload));
+    while cache.len() > max_entries
+        || cache.iter().fold(0_usize, |total, (_, payload)| {
+            total.saturating_add(payload.len())
+        }) > max_bytes
+    {
+        let _ = cache.pop_back();
+    }
+    true
 }
 
 const fn per_shard_capacity(total_capacity: usize) -> usize {

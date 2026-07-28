@@ -44,7 +44,7 @@ use super::cache::{
     WS_ZONE_PREVIEW_HEADER_LEN, cached_display_preview_payload, cached_frame_payload,
     cached_spectrum_payload, encode_cached_canvas_preview_binary, encode_canvas_binary_with_header,
     encode_canvas_preview_binary, encode_frame_binary, encode_frame_binary_selected,
-    encode_spectrum_binary, reset_canvas_jpeg_body_cache_for_tests,
+    encode_spectrum_binary, put_bytes_lru, reset_canvas_jpeg_body_cache_for_tests,
     reset_canvas_raw_body_cache_for_tests, reset_display_preview_payload_cache_for_tests,
     reset_preview_jpeg_encoders_for_tests, try_encode_cached_zone_preview_binary_scaled,
 };
@@ -1450,6 +1450,38 @@ fn display_preview_payload_frame_number(payload: &Bytes) -> u32 {
             .try_into()
             .expect("display preview frame number should be four bytes"),
     )
+}
+
+#[test]
+fn byte_bounded_lru_evicts_by_weight_and_rejects_oversized_entries() {
+    let mut cache = std::collections::VecDeque::new();
+
+    assert!(put_bytes_lru(
+        &mut cache,
+        1_u8,
+        Bytes::from_static(b"12345"),
+        4,
+        8,
+    ));
+    assert!(put_bytes_lru(
+        &mut cache,
+        2_u8,
+        Bytes::from_static(b"67890"),
+        4,
+        8,
+    ));
+    assert_eq!(cache.len(), 1);
+    assert_eq!(cache.front().map(|(key, _)| *key), Some(2));
+
+    assert!(!put_bytes_lru(
+        &mut cache,
+        3_u8,
+        Bytes::from_static(b"oversized"),
+        4,
+        8,
+    ));
+    assert_eq!(cache.len(), 1);
+    assert_eq!(cache.front().map(|(key, _)| *key), Some(2));
 }
 
 fn preview_test_frame(
