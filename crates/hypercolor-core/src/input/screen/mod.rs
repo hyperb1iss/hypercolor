@@ -81,7 +81,8 @@ pub use publication::{
     ScreenUpscalePolicy,
 };
 pub use reducer::{
-    CpuReductionError, CpuReductionExecutor, CpuReductionLayout, CpuReductionRequest,
+    CpuReductionBatchJob, CpuReductionBatchReport, CpuReductionError, CpuReductionExecutor,
+    CpuReductionLayout, CpuReductionRequest, PreparedCpuReductionBatch,
 };
 pub use sector::{LetterboxBars, SectorGrid};
 pub use smooth::TemporalSmoother;
