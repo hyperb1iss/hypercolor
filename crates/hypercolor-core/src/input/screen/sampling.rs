@@ -287,36 +287,32 @@ pub(crate) struct PreparedCpuSamplingPlan {
 }
 
 impl PreparedCpuSamplingPlan {
-    pub(crate) fn nearest(&self, target_x: u32, target_y: u32) -> (u32, u32) {
-        self.storage_pair(
-            self.logical_x.nearest(target_x),
-            self.logical_y.nearest(target_y),
-        )
+    pub(crate) const fn logical_x_storage_axis(&self) -> CpuStorageAxis {
+        self.logical_x.storage_axis
     }
 
-    pub(crate) fn bilinear(
-        &self,
-        target_x: u32,
-        target_y: u32,
-    ) -> (CpuAxisInterpolation, CpuAxisInterpolation) {
-        self.storage_pair(
-            self.logical_x.bilinear(target_x),
-            self.logical_y.bilinear(target_y),
-        )
+    pub(crate) fn logical_x_nearest(&self, target_x: u32) -> u32 {
+        self.logical_x.nearest(target_x)
     }
 
-    pub(crate) fn area(&self, target_x: u32, target_y: u32) -> (CpuStorageSpan, CpuStorageSpan) {
-        self.storage_pair(
-            self.logical_x.cell_span(target_x),
-            self.logical_y.cell_span(target_y),
-        )
+    pub(crate) fn logical_y_nearest(&self, target_y: u32) -> u32 {
+        self.logical_y.nearest(target_y)
     }
 
-    fn storage_pair<T>(&self, logical_x: T, logical_y: T) -> (T, T) {
-        match self.logical_x.storage_axis {
-            CpuStorageAxis::X => (logical_x, logical_y),
-            CpuStorageAxis::Y => (logical_y, logical_x),
-        }
+    pub(crate) fn logical_x_bilinear(&self, target_x: u32) -> CpuAxisInterpolation {
+        self.logical_x.bilinear(target_x)
+    }
+
+    pub(crate) fn logical_y_bilinear(&self, target_y: u32) -> CpuAxisInterpolation {
+        self.logical_y.bilinear(target_y)
+    }
+
+    pub(crate) fn logical_x_area(&self, target_x: u32) -> CpuStorageSpan {
+        self.logical_x.cell_span(target_x)
+    }
+
+    pub(crate) fn logical_y_area(&self, target_y: u32) -> CpuStorageSpan {
+        self.logical_y.cell_span(target_y)
     }
 }
 

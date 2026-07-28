@@ -11,7 +11,8 @@ use thiserror::Error;
 use hypercolor_types::canvas::{linear_to_srgb_u8, srgb_u8_to_linear};
 
 use super::sampling::{
-    CpuSamplingError, CpuSamplingTransform, CpuSamplingView, PreparedCpuSamplingPlan,
+    CpuAxisInterpolation, CpuSamplingError, CpuSamplingRow, CpuSamplingTransform, CpuSamplingView,
+    CpuStorageAxis, CpuStorageSpan, PreparedCpuSamplingPlan,
 };
 
 use super::{
@@ -289,6 +290,7 @@ impl<'descriptor, 'output> CpuReductionBatchJob<'descriptor, 'output> {
 pub struct CpuReductionBatchReport {
     source_sequence: u64,
     completed_jobs: usize,
+    scheduled_tiles: u64,
     output_bytes: u64,
 }
 
@@ -303,6 +305,12 @@ impl CpuReductionBatchReport {
     #[must_use]
     pub const fn completed_jobs(self) -> usize {
         self.completed_jobs
+    }
+
+    /// Deterministic output tiles exposed to the local Rayon pool.
+    #[must_use]
+    pub const fn scheduled_tiles(self) -> u64 {
+        self.scheduled_tiles
     }
 
     /// Sum of caller-owned output bytes written by this batch.
@@ -400,7 +408,9 @@ impl CpuReductionExecutor {
         self.inner.worker_count
     }
 
-    /// Fixed number of target rows assigned to each deterministic tile.
+    /// Maximum whole-row work used to size deterministic batch tiles.
+    ///
+    /// Short outputs split across their width to keep every worker useful.
     #[must_use]
     pub fn tile_rows(&self) -> NonZeroU32 {
         self.inner.tile_rows
@@ -482,6 +492,7 @@ impl CpuReductionExecutor {
         let view =
             CpuSamplingView::try_new_prepared(frame, &batch.source, batch.sampling_transform)?;
         let mut output_bytes = 0_u64;
+        let mut scheduled_tiles = 0_u64;
         for (index, (reduction, job)) in batch.reductions.iter().zip(jobs.iter()).enumerate() {
             if job.descriptor != &reduction.descriptor {
                 return Err(CpuReductionError::BatchDescriptorMismatch { index });
@@ -500,17 +511,36 @@ impl CpuReductionExecutor {
                 .ok_or(CpuReductionError::GeometryOverflow {
                     resource: "batch output",
                 })?;
+            scheduled_tiles = scheduled_tiles
+                .checked_add(
+                    prepare_reduction_tiles(
+                        reduction.output,
+                        self.inner.worker_count,
+                        self.inner.tile_rows,
+                    )?
+                    .scheduled_tiles,
+                )
+                .ok_or(CpuReductionError::GeometryOverflow {
+                    resource: "batch tile count",
+                })?;
         }
         self.inner.pool.install(|| {
             jobs.par_iter_mut()
                 .zip(batch.reductions.par_iter())
                 .try_for_each(|(job, reduction)| {
-                    reduce_prepared_in_pool(&view, reduction, self.inner.tile_rows, job.output)
+                    reduce_prepared_in_pool(
+                        &view,
+                        reduction,
+                        self.inner.worker_count,
+                        self.inner.tile_rows,
+                        job.output,
+                    )
                 })
         })?;
         Ok(CpuReductionBatchReport {
             source_sequence: frame.metadata().sequence,
             completed_jobs: jobs.len(),
+            scheduled_tiles,
             output_bytes,
         })
     }
@@ -646,52 +676,106 @@ fn reduce_request_in_pool(
 fn reduce_prepared_in_pool(
     view: &CpuSamplingView<'_>,
     reduction: &PreparedCpuReduction,
+    worker_count: NonZeroUsize,
     tile_rows: NonZeroU32,
     output: &mut [u8],
 ) -> Result<(), CpuReductionError> {
+    let tile_plan = prepare_reduction_tiles(reduction.output, worker_count, tile_rows)?;
+    output
+        .par_chunks_mut(tile_plan.bytes_per_tile)
+        .enumerate()
+        .try_for_each(|(tile_index, tile)| {
+            reduce_prepared_tile(view, reduction, tile_index, tile_plan.pixels_per_tile, tile)
+        })
+}
+
+#[derive(Clone, Copy, Debug)]
+struct CpuReductionTilePlan {
+    pixels_per_tile: usize,
+    bytes_per_tile: usize,
+    scheduled_tiles: u64,
+}
+
+fn prepare_reduction_tiles(
+    output: CpuReductionOutputLayout,
+    worker_count: NonZeroUsize,
+    tile_rows: NonZeroU32,
+) -> Result<CpuReductionTilePlan, CpuReductionError> {
     let configured_rows_per_tile = usize::try_from(tile_rows.get()).map_err(|_| {
         CpuReductionError::ByteLengthNotAddressable {
             resource: "tile rows",
             byte_len: u64::from(tile_rows.get()),
         }
     })?;
-    let target_rows = usize::try_from(reduction.output.extent().height()).map_err(|_| {
+    let target_rows = usize::try_from(output.extent().height()).map_err(|_| {
         CpuReductionError::ByteLengthNotAddressable {
             resource: "target height",
-            byte_len: u64::from(reduction.output.extent().height()),
+            byte_len: u64::from(output.extent().height()),
         }
     })?;
     let rows_per_tile = configured_rows_per_tile.min(target_rows);
-    let tile_bytes = reduction
-        .output
+    let configured_tile_pixels = output
         .row_bytes()
-        .checked_mul(rows_per_tile)
+        .checked_div(4)
+        .and_then(|width| width.checked_mul(rows_per_tile))
         .ok_or(CpuReductionError::GeometryOverflow { resource: "tile" })?;
-    output
-        .par_chunks_mut(tile_bytes)
-        .enumerate()
-        .try_for_each(|(tile_index, tile)| {
-            reduce_prepared_tile(view, reduction, tile_index, rows_per_tile, tile)
-        })
+    let target_pixels = output.byte_len_usize() / 4;
+    let target_tile_count =
+        worker_count
+            .get()
+            .checked_mul(4)
+            .ok_or(CpuReductionError::GeometryOverflow {
+                resource: "worker tile count",
+            })?;
+    let balanced_tile_pixels = target_pixels.div_ceil(target_tile_count);
+    let pixels_per_tile = configured_tile_pixels.min(balanced_tile_pixels).max(1);
+    let tile_bytes = pixels_per_tile
+        .checked_mul(4)
+        .ok_or(CpuReductionError::GeometryOverflow { resource: "tile" })?;
+    let scheduled_tiles =
+        u64::try_from(output.byte_len_usize().div_ceil(tile_bytes)).map_err(|_| {
+            CpuReductionError::ByteLengthNotAddressable {
+                resource: "tile count",
+                byte_len: u64::MAX,
+            }
+        })?;
+    Ok(CpuReductionTilePlan {
+        pixels_per_tile,
+        bytes_per_tile: tile_bytes,
+        scheduled_tiles,
+    })
 }
 
 fn reduce_prepared_tile(
     view: &CpuSamplingView<'_>,
     reduction: &PreparedCpuReduction,
     tile_index: usize,
-    rows_per_tile: usize,
-    tile: &mut [u8],
+    tile_pixels: usize,
+    mut tile: &mut [u8],
 ) -> Result<(), CpuReductionError> {
-    let row_bytes = reduction.output.row_bytes();
-    let first_row = tile_index
-        .checked_mul(rows_per_tile)
+    let target_width = usize::try_from(reduction.output.extent().width()).map_err(|_| {
+        CpuReductionError::ByteLengthNotAddressable {
+            resource: "target width",
+            byte_len: u64::from(reduction.output.extent().width()),
+        }
+    })?;
+    let mut first_pixel = tile_index
+        .checked_mul(tile_pixels)
         .ok_or(CpuReductionError::GeometryOverflow { resource: "tile" })?;
-    for (local_row, row) in tile.chunks_exact_mut(row_bytes).enumerate() {
-        let target_y = first_row
-            .checked_add(local_row)
-            .and_then(|row| u32::try_from(row).ok())
-            .ok_or(CpuReductionError::GeometryOverflow { resource: "target" })?;
-        reduce_prepared_row(view, reduction, target_y, row)?;
+    while !tile.is_empty() {
+        let first_target_x = first_pixel % target_width;
+        let target_y = u32::try_from(first_pixel / target_width)
+            .map_err(|_| CpuReductionError::GeometryOverflow { resource: "target" })?;
+        let run_pixels = (target_width - first_target_x).min(tile.len() / 4);
+        let run_bytes = run_pixels
+            .checked_mul(4)
+            .ok_or(CpuReductionError::GeometryOverflow { resource: "tile" })?;
+        let (row, remainder) = tile.split_at_mut(run_bytes);
+        reduce_prepared_row(view, reduction, target_y, first_target_x, row)?;
+        first_pixel = first_pixel
+            .checked_add(run_pixels)
+            .ok_or(CpuReductionError::GeometryOverflow { resource: "tile" })?;
+        tile = remainder;
     }
     Ok(())
 }
@@ -700,55 +784,77 @@ fn reduce_prepared_row(
     view: &CpuSamplingView<'_>,
     reduction: &PreparedCpuReduction,
     target_y: u32,
+    first_target_x: usize,
     row: &mut [u8],
 ) -> Result<(), CpuReductionError> {
-    for (target_x, target) in row.chunks_exact_mut(4).enumerate() {
-        let target_x = u32::try_from(target_x)
-            .map_err(|_| CpuReductionError::GeometryOverflow { resource: "target" })?;
-        let sample = match reduction.descriptor.reduction_filter() {
-            ScreenReductionFilter::Nearest => {
-                sample_prepared_nearest(view, &reduction.sampling, target_x, target_y)?
-            }
-            ScreenReductionFilter::Bilinear => sample_prepared_bilinear(
-                view,
-                &reduction.sampling,
-                reduction.color,
-                target_x,
-                target_y,
-            )?,
-            ScreenReductionFilter::Area => sample_prepared_area(
-                view,
-                &reduction.sampling,
-                reduction.color,
-                target_x,
-                target_y,
-            )?,
-        };
-        write_pixel(target, reduction.descriptor.target_pixel_format(), sample);
+    match reduction.descriptor.reduction_filter() {
+        ScreenReductionFilter::Nearest => {
+            reduce_prepared_nearest_row(view, reduction, target_y, first_target_x, row)
+        }
+        ScreenReductionFilter::Bilinear => {
+            reduce_prepared_bilinear_row(view, reduction, target_y, first_target_x, row)
+        }
+        ScreenReductionFilter::Area => {
+            reduce_prepared_area_row(view, reduction, target_y, first_target_x, row)
+        }
     }
-    Ok(())
 }
 
-fn sample_prepared_nearest(
+fn reduce_prepared_nearest_row(
     view: &CpuSamplingView<'_>,
-    sampling: &PreparedCpuSamplingPlan,
-    target_x: u32,
+    reduction: &PreparedCpuReduction,
     target_y: u32,
-) -> Result<[u8; 4], CpuReductionError> {
-    let (source_x, source_y) = sampling.nearest(target_x, target_y);
-    Ok(view.read_storage_pixel(source_x, source_y)?)
+    first_target_x: usize,
+    row: &mut [u8],
+) -> Result<(), CpuReductionError> {
+    let fixed = reduction.sampling.logical_y_nearest(target_y);
+    match reduction.sampling.logical_x_storage_axis() {
+        CpuStorageAxis::X => {
+            let source_row = view.storage_row(fixed)?;
+            write_prepared_row(reduction, first_target_x, row, |target_x| {
+                Ok(source_row.read_rgba(reduction.sampling.logical_x_nearest(target_x))?)
+            })
+        }
+        CpuStorageAxis::Y => write_prepared_row(reduction, first_target_x, row, |target_x| {
+            let source_row = view.storage_row(reduction.sampling.logical_x_nearest(target_x))?;
+            Ok(source_row.read_rgba(fixed)?)
+        }),
+    }
+}
+
+fn reduce_prepared_bilinear_row(
+    view: &CpuSamplingView<'_>,
+    reduction: &PreparedCpuReduction,
+    target_y: u32,
+    first_target_x: usize,
+    row: &mut [u8],
+) -> Result<(), CpuReductionError> {
+    let fixed = reduction.sampling.logical_y_bilinear(target_y);
+    match reduction.sampling.logical_x_storage_axis() {
+        CpuStorageAxis::X => {
+            let top = view.storage_row(fixed.lower())?;
+            let bottom = view.storage_row(fixed.upper())?;
+            write_prepared_row(reduction, first_target_x, row, |target_x| {
+                let x = reduction.sampling.logical_x_bilinear(target_x);
+                sample_prepared_bilinear(top, bottom, x, fixed, reduction.color)
+            })
+        }
+        CpuStorageAxis::Y => write_prepared_row(reduction, first_target_x, row, |target_x| {
+            let y = reduction.sampling.logical_x_bilinear(target_x);
+            let top = view.storage_row(y.lower())?;
+            let bottom = view.storage_row(y.upper())?;
+            sample_prepared_bilinear(top, bottom, fixed, y, reduction.color)
+        }),
+    }
 }
 
 fn sample_prepared_bilinear(
-    view: &CpuSamplingView<'_>,
-    sampling: &PreparedCpuSamplingPlan,
+    top: CpuSamplingRow<'_>,
+    bottom: CpuSamplingRow<'_>,
+    x: CpuAxisInterpolation,
+    y: CpuAxisInterpolation,
     color: ReductionColor,
-    target_x: u32,
-    target_y: u32,
 ) -> Result<[u8; 4], CpuReductionError> {
-    let (x, y) = sampling.bilinear(target_x, target_y);
-    let top = view.storage_row(y.lower())?;
-    let bottom = view.storage_row(y.upper())?;
     let top_left = color.decode(top.read_rgba(x.lower())?);
     let top_right = color.decode(top.read_rgba(x.upper())?);
     let bottom_left = color.decode(bottom.read_rgba(x.lower())?);
@@ -766,14 +872,60 @@ fn sample_prepared_bilinear(
     Ok(color.encode(output))
 }
 
+fn reduce_prepared_area_row(
+    view: &CpuSamplingView<'_>,
+    reduction: &PreparedCpuReduction,
+    target_y: u32,
+    first_target_x: usize,
+    row: &mut [u8],
+) -> Result<(), CpuReductionError> {
+    let fixed = reduction.sampling.logical_y_area(target_y);
+    match reduction.sampling.logical_x_storage_axis() {
+        CpuStorageAxis::X => write_prepared_row(reduction, first_target_x, row, |target_x| {
+            sample_prepared_area(
+                view,
+                reduction.sampling.logical_x_area(target_x),
+                fixed,
+                reduction.color,
+            )
+        }),
+        CpuStorageAxis::Y => write_prepared_row(reduction, first_target_x, row, |target_x| {
+            sample_prepared_area(
+                view,
+                fixed,
+                reduction.sampling.logical_x_area(target_x),
+                reduction.color,
+            )
+        }),
+    }
+}
+
+fn write_prepared_row(
+    reduction: &PreparedCpuReduction,
+    first_target_x: usize,
+    row: &mut [u8],
+    mut sample: impl FnMut(u32) -> Result<[u8; 4], CpuReductionError>,
+) -> Result<(), CpuReductionError> {
+    for (target_x, target) in row.chunks_exact_mut(4).enumerate() {
+        let target_x = first_target_x
+            .checked_add(target_x)
+            .and_then(|target_x| u32::try_from(target_x).ok())
+            .ok_or(CpuReductionError::GeometryOverflow { resource: "target" })?;
+        write_pixel(
+            target,
+            reduction.descriptor.target_pixel_format(),
+            sample(target_x)?,
+        );
+    }
+    Ok(())
+}
+
 fn sample_prepared_area(
     view: &CpuSamplingView<'_>,
-    sampling: &PreparedCpuSamplingPlan,
+    x_span: CpuStorageSpan,
+    y_span: CpuStorageSpan,
     color: ReductionColor,
-    target_x: u32,
-    target_y: u32,
 ) -> Result<[u8; 4], CpuReductionError> {
-    let (x_span, y_span) = sampling.area(target_x, target_y);
     let mut sums = [0.0; 4];
     for source_y in y_span.start()..y_span.end() {
         let y_weight = y_span.normalized_weight(source_y);
