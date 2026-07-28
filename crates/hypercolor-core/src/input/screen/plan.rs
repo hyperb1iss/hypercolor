@@ -331,9 +331,6 @@ pub struct ScreenResourceLedger {
     physical_pixels: u64,
     physical_row_stride_bytes: u64,
     physical_plane_bytes: u64,
-    surface_analysis_output_bytes: u64,
-    zone_grid_bytes: u64,
-    zone_output_bytes: u64,
     worker_additional_bytes: u64,
     publication_retention_bytes: u64,
     publication_subscriber_slot_bytes: u64,
@@ -358,24 +355,6 @@ impl ScreenResourceLedger {
     #[must_use]
     pub const fn physical_plane_bytes(self) -> u64 {
         self.physical_plane_bytes
-    }
-
-    /// Bytes retained by derived surface analysis/output planes.
-    #[must_use]
-    pub const fn surface_analysis_output_bytes(self) -> u64 {
-        self.surface_analysis_output_bytes
-    }
-
-    /// Bytes retained by zone grid storage.
-    #[must_use]
-    pub const fn zone_grid_bytes(self) -> u64 {
-        self.zone_grid_bytes
-    }
-
-    /// Bytes retained by zone output storage.
-    #[must_use]
-    pub const fn zone_output_bytes(self) -> u64 {
-        self.zone_output_bytes
     }
 
     /// Exact retained bytes beyond the planner's modeled minimums.
@@ -2472,64 +2451,6 @@ fn required_source_minimums(
             continue;
         }
         let descriptor = branch.descriptor();
-        match descriptor.kind() {
-            ScreenPublicationKind::Surface => {
-                let extent = descriptor.geometry().output_extent();
-                let pixels = checked_product(
-                    descriptor,
-                    ScreenResourceKind::SurfaceAnalysisOutput,
-                    u64::from(extent.width()),
-                    u64::from(extent.height()),
-                )?;
-                let bytes = checked_product(
-                    descriptor,
-                    ScreenResourceKind::SurfaceAnalysisOutput,
-                    pixels,
-                    TARGET_PIXEL_BYTES,
-                )?;
-                push_required_minimum(
-                    &mut contracts,
-                    &descriptor.source_epoch().source_id,
-                    ScreenRequiredResourceMinimum {
-                        name: Arc::from(format!("branch-{index}-surface-analysis-output")),
-                        resource: ScreenResourceKind::SurfaceAnalysisOutput,
-                        descriptor: Arc::new(descriptor.clone()),
-                        minimum_bytes: bytes,
-                        retention: ScreenResourceRetentionKey::Branch(descriptor.clone()),
-                    },
-                )?;
-            }
-            ScreenPublicationKind::Zones { columns, rows } => {
-                let cells = checked_product(
-                    descriptor,
-                    ScreenResourceKind::ZoneGrid,
-                    u64::from(columns.get()),
-                    u64::from(rows.get()),
-                )?;
-                let bytes = checked_product(
-                    descriptor,
-                    ScreenResourceKind::ZoneGrid,
-                    cells,
-                    ZONE_COLOR_BYTES,
-                )?;
-                for (suffix, resource) in [
-                    ("grid", ScreenResourceKind::ZoneGrid),
-                    ("output", ScreenResourceKind::ZoneOutput),
-                ] {
-                    push_required_minimum(
-                        &mut contracts,
-                        &descriptor.source_epoch().source_id,
-                        ScreenRequiredResourceMinimum {
-                            name: Arc::from(format!("branch-{index}-zone-{suffix}")),
-                            resource,
-                            descriptor: Arc::new(descriptor.clone()),
-                            minimum_bytes: bytes,
-                            retention: ScreenResourceRetentionKey::Branch(descriptor.clone()),
-                        },
-                    )?;
-                }
-            }
-        }
         push_required_minimum(
             &mut contracts,
             &descriptor.source_epoch().source_id,
@@ -2742,9 +2663,6 @@ fn full_plan_ledger(plan: &ScreenCapturePlan) -> Result<ScreenResourceLedger, Sc
         let owner = &plan.branches()[reduction.branch_indices()[0]].descriptor;
         add_physical_usage(&mut ledger, reduction.descriptor(), owner)?;
     }
-    for branch in plan.branches() {
-        add_branch_usage(&mut ledger, branch.descriptor())?;
-    }
     Ok(ledger)
 }
 
@@ -2757,11 +2675,6 @@ fn staged_plan_ledger(
         if !active.contains_physical(reduction.descriptor()) {
             let owner = &candidate.branches()[reduction.branch_indices()[0]].descriptor;
             add_physical_usage(&mut ledger, reduction.descriptor(), owner)?;
-        }
-    }
-    for branch in candidate.branches() {
-        if !active.contains_descriptor(branch.descriptor()) {
-            add_branch_usage(&mut ledger, branch.descriptor())?;
         }
     }
     Ok(ledger)
@@ -2895,85 +2808,6 @@ fn add_physical_usage(
     )
 }
 
-fn add_branch_usage(
-    ledger: &mut ScreenResourceLedger,
-    descriptor: &ResolvedScreenPublicationDescriptor,
-) -> Result<(), ScreenPlanError> {
-    match descriptor.kind() {
-        ScreenPublicationKind::Surface => {
-            let extent = descriptor.geometry().output_extent();
-            let pixels = checked_product(
-                descriptor,
-                ScreenResourceKind::SurfaceAnalysisOutput,
-                u64::from(extent.width()),
-                u64::from(extent.height()),
-            )?;
-            let bytes = checked_product(
-                descriptor,
-                ScreenResourceKind::SurfaceAnalysisOutput,
-                pixels,
-                TARGET_PIXEL_BYTES,
-            )?;
-            checked_add_assign(
-                &mut ledger.surface_analysis_output_bytes,
-                bytes,
-                descriptor,
-                ScreenResourceKind::SurfaceAnalysisOutput,
-            )?;
-            checked_add_assign(
-                &mut ledger.total_bytes,
-                bytes,
-                descriptor,
-                ScreenResourceKind::SurfaceAnalysisOutput,
-            )
-        }
-        ScreenPublicationKind::Zones { columns, rows } => {
-            let cells = checked_product(
-                descriptor,
-                ScreenResourceKind::ZoneGrid,
-                u64::from(columns.get()),
-                u64::from(rows.get()),
-            )?;
-            let grid_bytes = checked_product(
-                descriptor,
-                ScreenResourceKind::ZoneGrid,
-                cells,
-                ZONE_COLOR_BYTES,
-            )?;
-            let output_bytes = checked_product(
-                descriptor,
-                ScreenResourceKind::ZoneOutput,
-                cells,
-                ZONE_COLOR_BYTES,
-            )?;
-            checked_add_assign(
-                &mut ledger.zone_grid_bytes,
-                grid_bytes,
-                descriptor,
-                ScreenResourceKind::ZoneGrid,
-            )?;
-            checked_add_assign(
-                &mut ledger.zone_output_bytes,
-                output_bytes,
-                descriptor,
-                ScreenResourceKind::ZoneOutput,
-            )?;
-            checked_add_assign(
-                &mut ledger.total_bytes,
-                grid_bytes,
-                descriptor,
-                ScreenResourceKind::ZoneGrid,
-            )?;
-            checked_add_assign(
-                &mut ledger.total_bytes,
-                output_bytes,
-                descriptor,
-                ScreenResourceKind::ZoneOutput,
-            )
-        }
-    }
-}
-
 fn merge_ledgers(
     left: ScreenResourceLedger,
     right: ScreenResourceLedger,
@@ -2997,24 +2831,6 @@ fn merge_ledgers(
             ScreenResourceKind::PhysicalPlane,
             left.physical_plane_bytes,
             right.physical_plane_bytes,
-        )?,
-        surface_analysis_output_bytes: checked_optional_sum(
-            owner,
-            ScreenResourceKind::SurfaceAnalysisOutput,
-            left.surface_analysis_output_bytes,
-            right.surface_analysis_output_bytes,
-        )?,
-        zone_grid_bytes: checked_optional_sum(
-            owner,
-            ScreenResourceKind::ZoneGrid,
-            left.zone_grid_bytes,
-            right.zone_grid_bytes,
-        )?,
-        zone_output_bytes: checked_optional_sum(
-            owner,
-            ScreenResourceKind::ZoneOutput,
-            left.zone_output_bytes,
-            right.zone_output_bytes,
         )?,
         worker_additional_bytes: checked_optional_sum(
             owner,

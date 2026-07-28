@@ -1395,7 +1395,7 @@ fn physical_reductions_share_only_complete_compatible_work() {
 }
 
 #[test]
-fn admission_accounts_physical_and_logical_bytes_without_double_counting() {
+fn admission_counts_shared_physical_work_and_writable_publication_slots() {
     let source = resolved_source(ScreenSourceSelector::Configured, "display-a", 4, 3);
     let surface = resolve(
         &registered(
@@ -1439,12 +1439,9 @@ fn admission_accounts_physical_and_logical_bytes_without_double_counting() {
     assert_eq!(ledger.physical_pixels(), 12);
     assert_eq!(ledger.physical_row_stride_bytes(), 16);
     assert_eq!(ledger.physical_plane_bytes(), 48);
-    assert_eq!(ledger.surface_analysis_output_bytes(), 48);
-    assert_eq!(ledger.zone_grid_bytes(), 12);
-    assert_eq!(ledger.zone_output_bytes(), 12);
     assert_eq!(ledger.publication_retention_bytes(), 60);
     assert_eq!(ledger.publication_subscriber_slot_bytes(), 120);
-    assert_eq!(ledger.total_bytes(), 300);
+    assert_eq!(ledger.total_bytes(), 228);
     assert_eq!(preparing.admission().active().total_bytes(), 0);
     assert_eq!(preparing.admission().staged(), ledger);
     assert_eq!(preparing.admission().overlap(), ledger);
@@ -1491,10 +1488,10 @@ fn unchanged_and_replacement_admission_use_exact_transition_overlap() {
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
         )
         .expect("unchanged plan reuses every resource");
-    assert_eq!(unchanged.admission().active().total_bytes(), 240);
-    assert_eq!(unchanged.admission().candidate().total_bytes(), 240);
+    assert_eq!(unchanged.admission().active().total_bytes(), 192);
+    assert_eq!(unchanged.admission().candidate().total_bytes(), 192);
     assert_eq!(unchanged.admission().staged().total_bytes(), 0);
-    assert_eq!(unchanged.admission().overlap().total_bytes(), 240);
+    assert_eq!(unchanged.admission().overlap().total_bytes(), 192);
     assert_eq!(
         unchanged.admission().active().publication_retention_bytes(),
         48
@@ -1518,10 +1515,10 @@ fn unchanged_and_replacement_admission_use_exact_transition_overlap() {
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
         )
         .expect("replacement shares the physical reduction");
-    assert_eq!(replacement.admission().active().total_bytes(), 240);
-    assert_eq!(replacement.admission().candidate().total_bytes(), 108);
-    assert_eq!(replacement.admission().staged().total_bytes(), 60);
-    assert_eq!(replacement.admission().overlap().total_bytes(), 300);
+    assert_eq!(replacement.admission().active().total_bytes(), 192);
+    assert_eq!(replacement.admission().candidate().total_bytes(), 84);
+    assert_eq!(replacement.admission().staged().total_bytes(), 36);
+    assert_eq!(replacement.admission().overlap().total_bytes(), 228);
     assert_eq!(
         replacement
             .admission()
@@ -1554,11 +1551,11 @@ fn admission_reports_explicit_budget_backend_and_arithmetic_failures() {
     );
     for (capacity, expected_resource) in [
         (
-            ScreenAdmissionCapacity::new(239, u64::MAX),
+            ScreenAdmissionCapacity::new(191, u64::MAX),
             ScreenResourceKind::ByteBudget,
         ),
         (
-            ScreenAdmissionCapacity::new(u64::MAX, 239),
+            ScreenAdmissionCapacity::new(u64::MAX, 191),
             ScreenResourceKind::BackendCapacity,
         ),
     ] {
@@ -1572,7 +1569,7 @@ fn admission_reports_explicit_budget_backend_and_arithmetic_failures() {
                 ScreenInputGraphGeneration::new(1),
                 capacity,
             )
-            .expect_err("240-byte admitted plan exceeds the explicit capacity");
+            .expect_err("192-byte admitted plan exceeds the explicit capacity");
         match error {
             ScreenPlanError::ResourceExhausted {
                 descriptor,
@@ -1582,8 +1579,8 @@ fn admission_reports_explicit_budget_backend_and_arithmetic_failures() {
             } => {
                 assert_eq!(descriptor.as_ref(), surface.descriptor());
                 assert_eq!(resource, expected_resource);
-                assert_eq!(requested, 240);
-                assert_eq!(available, 239);
+                assert_eq!(requested, 192);
+                assert_eq!(available, 191);
             }
             other => panic!("unexpected admission error: {other:?}"),
         }
@@ -1882,7 +1879,7 @@ fn exact_worker_attestation_requires_minimums_and_counts_disjoint_extras() {
         .expect("worker ticket is issued");
     let backend_scope = required_scope(&ticket, ScreenResourceKind::BackendAllocation);
     let profile_scope = required_scope(&ticket, ScreenResourceKind::ProcessingProfileState);
-    assert_eq!(ticket.required_minimums().len(), 5);
+    assert_eq!(ticket.required_minimums().len(), 4);
     for required_kind in [
         ScreenResourceKind::BackendAllocation,
         ScreenResourceKind::ApiAllocation,
@@ -2172,7 +2169,7 @@ fn exact_worker_ledgers_gate_arming_and_survive_explicit_abort() {
             None,
             revision,
             graph,
-            ScreenAdmissionCapacity::new(300, 300),
+            ScreenAdmissionCapacity::new(243, 243),
         )
         .expect("planned overlap fits capacity");
     let ticket = preparing
@@ -2214,15 +2211,15 @@ fn exact_worker_ledgers_gate_arming_and_survive_explicit_abort() {
         failure.error(),
         ScreenPlanError::ResourceExhausted {
             resource: ScreenResourceKind::ByteBudget,
-            requested: 316,
-            available: 300,
+            requested: 244,
+            available: 243,
             ..
         }
     ));
     let abort = failure.into_preparing().abort();
     assert_eq!(abort.active_plan(), active.as_ref());
     assert_eq!(abort.prepared_tokens().len(), 1);
-    assert_eq!(abort.prepared_tokens()[0].exact_ledger().total_bytes(), 40);
+    assert_eq!(abort.prepared_tokens()[0].exact_ledger().total_bytes(), 16);
     assert_eq!(builder.current(), active);
 
     let overflow = ScreenExactResourceLedger::try_new([
@@ -2316,7 +2313,7 @@ fn committed_exact_resources_drive_future_overlap_and_retention() {
         .commit(armed, revision, graph)
         .expect("surface candidate commits");
     reclaim_committed(committed);
-    assert_eq!(builder.retained_exact_bytes(), 146);
+    assert_eq!(builder.retained_exact_bytes(), 98);
 
     let revision = next_demand_revision(&builder);
     let failure = builder
@@ -2325,19 +2322,19 @@ fn committed_exact_resources_drive_future_overlap_and_retention() {
             None,
             revision,
             graph,
-            ScreenAdmissionCapacity::new(330, 330),
+            ScreenAdmissionCapacity::new(270, 270),
         )
         .expect_err("retained exact bytes plus staged zones exceed capacity");
     assert!(matches!(
         failure,
         ScreenPlanError::ResourceExhausted {
             resource: ScreenResourceKind::ByteBudget,
-            requested: 350,
-            available: 330,
+            requested: 278,
+            available: 270,
             ..
         }
     ));
-    assert_eq!(builder.retained_exact_bytes(), 146);
+    assert_eq!(builder.retained_exact_bytes(), 98);
 
     let revision = next_demand_revision(&builder);
     let mut preparing = builder
@@ -2366,7 +2363,7 @@ fn committed_exact_resources_drive_future_overlap_and_retention() {
         .commit(armed, revision, graph)
         .expect("zones candidate commits");
     reclaim_committed(committed);
-    assert_eq!(builder.retained_exact_bytes(), 122);
+    assert_eq!(builder.retained_exact_bytes(), 98);
 
     let revision = next_demand_revision(&builder);
     let mut preparing = builder
@@ -2393,7 +2390,7 @@ fn committed_exact_resources_drive_future_overlap_and_retention() {
         .expect("abort candidate arms");
     let abort = armed.abort();
     assert_eq!(abort.active_plan(), builder.current().as_ref());
-    assert_eq!(builder.retained_exact_bytes(), 122);
+    assert_eq!(builder.retained_exact_bytes(), 98);
 }
 
 #[test]

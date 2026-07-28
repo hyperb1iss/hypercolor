@@ -704,6 +704,7 @@ fn eight_k_slots_are_admitted_by_exact_bytes_without_resolution_caps() {
         .expect("8K exact bytes fit the admitted capacity");
     let bytes_per_slot = WIDTH * HEIGHT * PIXEL_BYTES;
     let candidate = preparing.admission().candidate();
+    assert_eq!(candidate.physical_plane_bytes(), bytes_per_slot);
     assert_eq!(candidate.publication_retention_bytes(), bytes_per_slot);
     assert_eq!(
         candidate.publication_subscriber_slot_bytes(),
@@ -712,6 +713,10 @@ fn eight_k_slots_are_admitted_by_exact_bytes_without_resolution_caps() {
     assert_eq!(
         candidate.publication_retention_bytes() + candidate.publication_subscriber_slot_bytes(),
         bytes_per_slot * u64::from(policy.total_slots())
+    );
+    assert_eq!(
+        candidate.total_bytes(),
+        bytes_per_slot * (u64::from(policy.total_slots()) + 1)
     );
     let _abort = preparing.abort();
 }
