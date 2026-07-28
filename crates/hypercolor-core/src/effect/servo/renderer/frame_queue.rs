@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 
 use hypercolor_types::effect::{ControlValue, EffectCategory, EffectMetadata};
+use hypercolor_types::event::{InputButtonState, InputEvent};
 use hypercolor_types::sensor::SystemSnapshot;
 use tracing::warn;
 
@@ -316,15 +317,12 @@ impl QueuedFrameInput {
     }
 
     fn merge_from_input(&mut self, input: &FrameInput<'_>, demand: QueuedFrameDemand) {
-        let (prior_recent_keys, prior_batch) = self
+        let prior_batch = self
             .interaction
             .as_mut()
             .map(|interaction| {
                 let interaction = Arc::make_mut(interaction);
-                (
-                    std::mem::take(&mut interaction.keyboard.recent_keys),
-                    std::mem::take(&mut interaction.batch),
-                )
+                std::mem::take(&mut interaction.batch)
             })
             .unwrap_or_default();
         self.time_secs = input.time_secs;
@@ -340,14 +338,10 @@ impl QueuedFrameInput {
         clone_optional_demanded_from(&mut self.lighting, input.sources.lighting, demand.lighting);
         if let Some(interaction) = self.interaction.as_mut() {
             let interaction = Arc::make_mut(interaction);
-            // Prior presses stay ahead of newer ones so the legacy recent
-            // list keeps press order and multiplicity across coalesced frames.
-            let mut merged_recent = prior_recent_keys;
-            merged_recent.append(&mut interaction.keyboard.recent_keys);
-            interaction.keyboard.recent_keys = merged_recent;
             // Superseded frames must not lose their input edges: fold the
             // replaced frame's batch in ahead of the new one.
             interaction.batch.absorb_prior(prior_batch);
+            normalize_queued_interaction(interaction);
         }
         self.canvas_width = input.canvas_width;
         self.canvas_height = input.canvas_height;
@@ -395,6 +389,44 @@ impl QueuedFrameInput {
     pub(super) const fn queued_frame_number(&self) -> u64 {
         self.frame_number
     }
+}
+
+fn normalize_queued_interaction(interaction: &mut crate::input::InteractionData) {
+    if interaction.batch.events.len() > crate::input::InteractionBatch::MAX_EVENTS {
+        let overflow = interaction.batch.events.len() - crate::input::InteractionBatch::MAX_EVENTS;
+        interaction.batch.events.drain(..overflow);
+        interaction.batch.dropped_events = interaction
+            .batch
+            .dropped_events
+            .saturating_add(u32::try_from(overflow).unwrap_or(u32::MAX));
+    }
+
+    // The bounded timed batch is canonical after coalescing, so legacy
+    // recents cannot retain a press that overflow discarded.
+    interaction.keyboard.recent_keys.clear();
+    interaction
+        .keyboard
+        .recent_keys
+        .extend(
+            interaction
+                .batch
+                .events
+                .iter()
+                .filter_map(|event| match &event.event {
+                    InputEvent::Key {
+                        key,
+                        state: InputButtonState::Pressed,
+                        ..
+                    } => Some(key.clone()),
+                    InputEvent::Key { .. }
+                    | InputEvent::MouseButton { .. }
+                    | InputEvent::MouseWheel { .. }
+                    | InputEvent::MidiNote { .. }
+                    | InputEvent::MidiControlChange { .. }
+                    | InputEvent::MidiPitchBend { .. }
+                    | InputEvent::MidiRealtime { .. } => None,
+                }),
+        );
 }
 
 fn clone_demanded_from<T: Clone>(slot: &mut Option<Arc<T>>, next: &T, demanded: bool) {

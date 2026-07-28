@@ -15,6 +15,7 @@ use hypercolor_types::config::ServoGpuImportMode;
 use hypercolor_types::effect::{
     ControlDefinition, ControlType, EffectCategory, EffectId, EffectSource,
 };
+use hypercolor_types::event::{InputButtonState, InputEvent, TimedInputEvent};
 use hypercolor_types::sensor::SystemSnapshot;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, LazyLock, Mutex};
@@ -68,6 +69,36 @@ fn custom_interaction(
         mouse: crate::input::MouseData::default(),
         generation: hasher.finish(),
         ..Default::default()
+    }
+}
+
+fn timed_key(
+    source_id: &str,
+    key: &str,
+    state: InputButtonState,
+    seq: u64,
+    repeat_count: u32,
+) -> TimedInputEvent {
+    TimedInputEvent {
+        event: InputEvent::Key {
+            source_id: source_id.into(),
+            key: key.into(),
+            state,
+        },
+        at_ms: seq * 10,
+        seq,
+        physical_code: None,
+        repeat_count,
+    }
+}
+
+fn timed_event(event: InputEvent, seq: u64) -> TimedInputEvent {
+    TimedInputEvent {
+        event,
+        at_ms: seq * 10,
+        seq,
+        physical_code: None,
+        repeat_count: 1,
     }
 }
 
@@ -1115,7 +1146,8 @@ fn queued_frames_submit_latest_state_after_in_flight_render_finishes() {
     renderer.set_control("speed", &ControlValue::Float(0.25));
 
     let first_audio = custom_audio(0.1);
-    let first_interaction = custom_interaction(&["a"], &["a"]);
+    let mut first_interaction = custom_interaction(&["a"], &["a"]);
+    first_interaction.batch.events = vec![timed_key("host", "a", InputButtonState::Pressed, 1, 1)];
     let first_frame = frame_input_with(1.0 / 30.0, 1, &first_audio, &first_interaction, 320, 200);
 
     let first_output = renderer.tick(&first_frame).expect("first tick");
@@ -1142,13 +1174,15 @@ fn queued_frames_submit_latest_state_after_in_flight_render_finishes() {
 
     renderer.set_control("speed", &ControlValue::Float(0.75));
     let second_audio = custom_audio(0.6);
-    let second_interaction = custom_interaction(&["b"], &["b"]);
+    let mut second_interaction = custom_interaction(&["b"], &["b"]);
+    second_interaction.batch.events = vec![timed_key("host", "b", InputButtonState::Pressed, 2, 1)];
     let second_frame =
         frame_input_with(1.0 / 15.0, 2, &second_audio, &second_interaction, 640, 360);
     renderer.tick(&second_frame).expect("second tick");
     assert!(render_rx.recv_timeout(Duration::from_millis(20)).is_err());
 
-    let third_interaction = custom_interaction(&["c"], &["c"]);
+    let mut third_interaction = custom_interaction(&["c"], &["c"]);
+    third_interaction.batch.events = vec![timed_key("host", "c", InputButtonState::Pressed, 3, 1)];
     let third_frame = frame_input_with(1.0 / 15.0, 3, &second_audio, &third_interaction, 640, 360);
     renderer.tick(&third_frame).expect("third tick");
     assert!(render_rx.recv_timeout(Duration::from_millis(20)).is_err());
@@ -1247,8 +1281,16 @@ fn queued_frames_do_not_retain_undemanded_input_domains() {
 #[test]
 fn queued_frames_merge_recent_keys_from_superseded_inputs() {
     let audio = custom_audio(0.0);
-    let first_interaction = custom_interaction(&["a", "b"], &["a", "b"]);
-    let second_interaction = custom_interaction(&["b", "c"], &["a", "c"]);
+    let mut first_interaction = custom_interaction(&["ghost"], &["a", "b"]);
+    first_interaction.batch.events = vec![
+        timed_key("host", "a", InputButtonState::Pressed, 1, 1),
+        timed_key("host", "b", InputButtonState::Pressed, 2, 1),
+    ];
+    let mut second_interaction = custom_interaction(&["stale"], &["a", "c"]);
+    second_interaction.batch.events = vec![
+        timed_key("host", "a", InputButtonState::Pressed, 3, 1),
+        timed_key("host", "c", InputButtonState::Pressed, 4, 1),
+    ];
     let first = frame_input_with(1.0 / 30.0, 1, &audio, &first_interaction, 320, 200);
     let second = frame_input_with(1.0 / 30.0, 2, &audio, &second_interaction, 320, 200);
     let mut renderer = ServoRenderer::new();
@@ -1266,36 +1308,47 @@ fn queued_frames_merge_recent_keys_from_superseded_inputs() {
 
 #[test]
 fn queued_frames_append_event_batches_from_superseded_inputs() {
-    use hypercolor_types::event::{InputButtonState, InputEvent, TimedInputEvent};
-
-    fn timed_key(
-        key: &str,
-        state: InputButtonState,
-        seq: u64,
-        repeat_count: u32,
-    ) -> TimedInputEvent {
-        TimedInputEvent {
-            event: InputEvent::Key {
-                source_id: "test".into(),
-                key: key.into(),
-                state,
-            },
-            at_ms: seq * 10,
-            seq,
-            physical_code: None,
-            repeat_count,
-        }
-    }
-
     let audio = custom_audio(0.0);
     let mut first_interaction = custom_interaction(&[], &[]);
     first_interaction.batch.events = vec![
-        timed_key("a", InputButtonState::Pressed, 1, 2),
-        timed_key("a", InputButtonState::Released, 2, 1),
+        timed_key("test", "a", InputButtonState::Pressed, 1, 2),
+        timed_event(
+            InputEvent::MouseButton {
+                source_id: "test".into(),
+                button: "left".into(),
+                state: InputButtonState::Pressed,
+            },
+            2,
+        ),
+        timed_event(
+            InputEvent::MouseWheel {
+                source_id: "test".into(),
+                delta_hi_res: 120,
+            },
+            3,
+        ),
+        timed_key("test", "a", InputButtonState::Released, 4, 1),
     ];
     first_interaction.batch.wheel_hi_res = 120;
     let mut second_interaction = custom_interaction(&[], &[]);
-    second_interaction.batch.events = vec![timed_key("a", InputButtonState::Pressed, 3, 4)];
+    second_interaction.batch.events = vec![
+        timed_key("test", "a", InputButtonState::Pressed, 5, 4),
+        timed_event(
+            InputEvent::MouseButton {
+                source_id: "test".into(),
+                button: "left".into(),
+                state: InputButtonState::Released,
+            },
+            6,
+        ),
+        timed_event(
+            InputEvent::MouseWheel {
+                source_id: "test".into(),
+                delta_hi_res: -240,
+            },
+            7,
+        ),
+    ];
     second_interaction.batch.wheel_hi_res = -240;
 
     let first = frame_input_with(1.0 / 30.0, 1, &audio, &first_interaction, 320, 200);
@@ -1315,7 +1368,7 @@ fn queued_frames_append_event_batches_from_superseded_inputs() {
         .iter()
         .map(|event| event.seq)
         .collect::<Vec<_>>();
-    assert_eq!(seqs, [1, 2, 3], "ordering survives coalescing");
+    assert_eq!(seqs, [1, 2, 3, 4, 5, 6, 7], "ordering survives coalescing");
     assert_eq!(
         interaction
             .batch
@@ -1323,10 +1376,80 @@ fn queued_frames_append_event_batches_from_superseded_inputs() {
             .iter()
             .map(|event| event.repeat_count)
             .collect::<Vec<_>>(),
-        [2, 1, 4],
+        [2, 1, 1, 1, 4, 1, 1],
         "repeat multiplicity survives coalescing"
     );
+    assert_eq!(interaction.keyboard.recent_keys, ["a", "a"]);
     assert_eq!(interaction.batch.wheel_hi_res, -120, "wheel travel sums");
+}
+
+#[test]
+fn prolonged_frame_coalescing_bounds_legacy_recents_to_retained_events() {
+    let audio = custom_audio(0.0);
+    let mut renderer = ServoRenderer::new();
+    renderer.include_audio_updates = false;
+    renderer.include_interaction_updates = true;
+
+    for frame_number in 0_u64..6 {
+        let held = format!("held-{frame_number}");
+        let mut interaction = custom_interaction(&["ghost"], &[]);
+        interaction.keyboard.pressed_keys.push(held);
+        interaction.batch.events = (0_u64..100)
+            .map(|offset| {
+                let seq = frame_number * 100 + offset;
+                timed_key(
+                    &format!("host-{}", frame_number / 2),
+                    &format!("key-{seq}"),
+                    InputButtonState::Pressed,
+                    seq,
+                    1,
+                )
+            })
+            .collect();
+        let input = frame_input_with(1.0 / 60.0, frame_number, &audio, &interaction, 320, 200);
+        renderer.queue_frame(&input);
+    }
+
+    let interaction = renderer
+        .queued_frame
+        .as_ref()
+        .and_then(QueuedFrameInput::queued_interaction)
+        .expect("coalesced interaction");
+    let retained_seqs = interaction
+        .batch
+        .events
+        .iter()
+        .map(|event| event.seq)
+        .collect::<Vec<_>>();
+    let retained_keys = interaction
+        .batch
+        .events
+        .iter()
+        .filter_map(|event| match &event.event {
+            InputEvent::Key {
+                key,
+                state: InputButtonState::Pressed,
+                ..
+            } => Some(key.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(retained_seqs, (344_u64..600).collect::<Vec<_>>());
+    assert_eq!(interaction.batch.dropped_events, 344);
+    assert_eq!(interaction.keyboard.recent_keys, retained_keys);
+    assert_eq!(
+        interaction.keyboard.recent_keys.len(),
+        crate::input::InteractionBatch::MAX_EVENTS
+    );
+    assert_eq!(interaction.keyboard.pressed_keys, ["held-5"]);
+    assert!(
+        !interaction
+            .keyboard
+            .recent_keys
+            .iter()
+            .any(|key| key == "ghost")
+    );
 }
 
 #[test]
@@ -1347,34 +1470,110 @@ fn queue_saturation_preserves_runtime_deltas_until_admission() {
         .reserve_all_render_capacity()
         .expect("test should exhaust render admission");
     let audio = custom_audio(0.0);
-    let interaction = custom_interaction(&["space"], &["space"]);
-    let input = frame_input_with(1.0 / 60.0, 3, &audio, &interaction, 320, 200);
+    let mut old_source = custom_interaction(&["ghost-old"], &["legacy-old"]);
+    old_source.batch.events = vec![
+        timed_key("host-v1", "legacy-old", InputButtonState::Pressed, 1, 1),
+        timed_event(
+            InputEvent::MouseButton {
+                source_id: "host-v1".into(),
+                button: "left".into(),
+                state: InputButtonState::Pressed,
+            },
+            2,
+        ),
+        timed_event(
+            InputEvent::MouseWheel {
+                source_id: "host-v1".into(),
+                delta_hi_res: 120,
+            },
+            3,
+        ),
+    ];
+    old_source.batch.wheel_hi_res = 120;
+    let old_frame = frame_input_with(1.0 / 60.0, 3, &audio, &old_source, 320, 200);
 
     let error = renderer
-        .tick(&input)
+        .tick(&old_frame)
         .expect_err("saturated render admission should report degradation");
+    assert!(error.to_string().contains("render queue is saturated"));
+
+    let mut new_source = custom_interaction(&["ghost-new"], &["legacy-new"]);
+    new_source.mouse.buttons.push("right".into());
+    new_source.mouse.down = true;
+    new_source.mouse.norm_x = 0.75;
+    new_source.mouse.norm_y = 0.25;
+    new_source.mouse.mode = crate::input::PointerMode::Virtual;
+    new_source.mouse.injected = true;
+    new_source.batch.events = vec![
+        timed_key("host-v1", "legacy-old", InputButtonState::Released, 4, 1),
+        timed_key("host-v2", "legacy-new", InputButtonState::Pressed, 5, 3),
+        timed_event(
+            InputEvent::MouseButton {
+                source_id: "host-v2".into(),
+                button: "right".into(),
+                state: InputButtonState::Pressed,
+            },
+            6,
+        ),
+    ];
+    let new_frame = frame_input_with(1.0 / 60.0, 4, &audio, &new_source, 320, 200);
+    let error = renderer
+        .tick(&new_frame)
+        .expect_err("replacement frame should remain retained while saturated");
     assert!(error.to_string().contains("render queue is saturated"));
     assert_eq!(renderer.pending_scripts, ["persistent-control"]);
     assert!(renderer.pending_frame_payloads.is_empty());
+    let queued = renderer.queued_frame.as_ref().expect("latest queued frame");
+    assert_eq!(queued.queued_frame_number(), 4);
+    let interaction = queued.queued_interaction().expect("queued interaction");
+    assert_eq!(interaction.keyboard.pressed_keys, ["legacy-new"]);
     assert_eq!(
-        renderer
-            .queued_frame
-            .as_ref()
-            .expect("latest queued frame")
-            .queued_frame_number(),
-        3
+        interaction.keyboard.recent_keys,
+        ["legacy-old", "legacy-new"]
     );
+    assert_eq!(
+        interaction
+            .batch
+            .events
+            .iter()
+            .map(|event| event.seq)
+            .collect::<Vec<_>>(),
+        [1, 2, 3, 4, 5, 6]
+    );
+    assert_eq!(interaction.batch.wheel_hi_res, 120);
+    assert_eq!(interaction.mouse.buttons, ["right"]);
+    assert!(interaction.mouse.injected);
     assert!(render_rx.try_recv().is_err());
 
     drop(reservations);
+    let mut ready_interaction = custom_interaction(&["ghost-ready"], &["legacy-new"]);
+    ready_interaction.mouse.clone_from(&new_source.mouse);
+    let ready_frame = frame_input_with(1.0 / 60.0, 5, &audio, &ready_interaction, 320, 200);
     renderer
-        .tick(&input)
+        .tick(&ready_frame)
         .expect("the retained frame should submit when capacity returns");
     let command = render_rx
         .recv_timeout(Duration::from_millis(100))
         .expect("retained render command");
     assert_eq!(command.scripts, ["persistent-control"]);
-    assert!(frame_payload_value(&command.frame_payloads)["interaction"].is_object());
+    let payload = frame_payload_value(&command.frame_payloads);
+    assert_eq!(
+        payload["interaction"]["events"]
+            .as_array()
+            .expect("ordered event payload")
+            .iter()
+            .map(|event| event["seq"].as_u64().expect("event sequence"))
+            .collect::<Vec<_>>(),
+        [1, 2, 3, 4, 5, 6]
+    );
+    assert_eq!(
+        payload["interaction"]["keyboard"]["recent"],
+        serde_json::json!(["legacy-old", "legacy-new"])
+    );
+    assert_eq!(
+        payload["interaction"]["mouse"]["down"],
+        serde_json::json!(true)
+    );
 
     result_tx
         .send(Ok(solid_canvas(320, 200, 1, 2, 3)))
