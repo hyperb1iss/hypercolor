@@ -1,21 +1,26 @@
+use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 use arc_swap::ArcSwap;
-use hypercolor_core::input::screen::{PixelExtent, ScreenCaptureDemand};
+use hypercolor_core::input::screen::{
+    InputPublicationDemandRevision, PixelExtent, RegisteredScreenBranchDemand, ScreenAspectPolicy,
+    ScreenCaptureDemand, ScreenExtentRequest, ScreenProcessingProfile, ScreenPublicationKind,
+    ScreenPublicationRequest, ScreenSourceSelector, ScreenUpscalePolicy,
+};
 use hypercolor_core::input::{
     InputGraphHandle, InputGraphSnapshot, InputManager, SourceKind, SourceState,
 };
 use hypercolor_types::sensor::SystemSnapshot;
-use tokio::sync::{Mutex, Notify, oneshot, watch};
+use tokio::sync::{Mutex, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{Instant as TokioInstant, timeout};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
-use super::capture_demand::CaptureDemandState;
+use super::capture_demand::{CaptureDemand, CaptureDemandState};
 
 const STOP_TIMEOUT: Duration = Duration::from_secs(1);
 const LIFECYCLE_PROBE_INTERVAL: Duration = Duration::from_millis(250);
@@ -40,20 +45,67 @@ pub enum InputPublicationConsumer {
     Diagnostic,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 /// Per-source publication rates requested by one consumer class.
 pub struct InputPublicationDemand {
     audio: u32,
-    screen: Option<ScreenPublicationDemand>,
+    screen: Arc<[InputScreenBranchDemand]>,
     interaction: u32,
     media: u32,
     network: u32,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct ScreenPublicationDemand {
-    requested_hz: u32,
-    requested_extent: PixelExtent,
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InputScreenBranchDemand {
+    branch: RegisteredScreenBranchDemand,
+    legacy_extent: PixelExtent,
+}
+
+impl InputScreenBranchDemand {
+    /// Pair one exact unresolved branch with its temporary legacy projection.
+    #[must_use]
+    pub const fn new(branch: RegisteredScreenBranchDemand, legacy_extent: PixelExtent) -> Self {
+        Self {
+            branch,
+            legacy_extent,
+        }
+    }
+
+    /// Exact unresolved branch preserved by the authoritative registry.
+    #[must_use]
+    pub const fn branch(&self) -> &RegisteredScreenBranchDemand {
+        &self.branch
+    }
+
+    /// Concrete extent consumed only by the legacy single-surface adapter.
+    #[must_use]
+    pub const fn legacy_extent(&self) -> PixelExtent {
+        self.legacy_extent
+    }
+
+    fn surface(requested_hz: u32, requested_extent: PixelExtent) -> Option<Self> {
+        let requested_hz = NonZeroU32::new(requested_hz)?;
+        let extent = ScreenExtentRequest::bounded(
+            NonZeroU32::new(requested_extent.width()),
+            NonZeroU32::new(requested_extent.height()),
+            ScreenUpscalePolicy::Never,
+        );
+        let request = ScreenPublicationRequest::new(
+            ScreenSourceSelector::Configured,
+            ScreenPublicationKind::Surface,
+            extent,
+            ScreenAspectPolicy::Contain,
+            Arc::new(ScreenProcessingProfile::default()),
+        );
+        Some(Self::new(
+            RegisteredScreenBranchDemand::new(request, requested_hz),
+            requested_extent,
+        ))
+    }
+
+    const fn requested_hz(&self) -> u32 {
+        self.branch.requested_hz().get()
+    }
 }
 
 impl InputPublicationDemand {
@@ -62,10 +114,10 @@ impl InputPublicationDemand {
     pub fn all_sources(requested_hz: u32, screen_extent: PixelExtent) -> Self {
         Self {
             audio: requested_hz,
-            screen: (requested_hz > 0).then_some(ScreenPublicationDemand {
-                requested_hz,
-                requested_extent: screen_extent,
-            }),
+            screen: InputScreenBranchDemand::surface(requested_hz, screen_extent)
+                .into_iter()
+                .collect::<Vec<_>>()
+                .into(),
             interaction: requested_hz,
             media: requested_hz,
             network: requested_hz,
@@ -82,7 +134,7 @@ impl InputPublicationDemand {
     /// Panics when `source` is [`SourceKind::Screen`] and `requested_hz` is
     /// non-zero.
     #[must_use]
-    pub const fn with_source(mut self, source: SourceKind, requested_hz: u32) -> Self {
+    pub fn with_source(mut self, source: SourceKind, requested_hz: u32) -> Self {
         match source {
             SourceKind::Audio => self.audio = requested_hz,
             SourceKind::Screen => {
@@ -90,7 +142,7 @@ impl InputPublicationDemand {
                     requested_hz == 0,
                     "screen publication demand requires an explicit extent"
                 );
-                self.screen = None;
+                self.screen = Arc::default();
             }
             SourceKind::Interaction => self.interaction = requested_hz,
             SourceKind::Media => self.media = requested_hz,
@@ -102,95 +154,74 @@ impl InputPublicationDemand {
     /// Set screen publication cadence and extent together.
     #[must_use]
     pub fn with_screen(mut self, requested_hz: u32, requested_extent: PixelExtent) -> Self {
-        self.screen = (requested_hz > 0).then_some(ScreenPublicationDemand {
-            requested_hz,
-            requested_extent,
-        });
+        self.screen = InputScreenBranchDemand::surface(requested_hz, requested_extent)
+            .into_iter()
+            .collect::<Vec<_>>()
+            .into();
         self
     }
 
-    pub(crate) fn screen_capture_demand(self) -> ScreenCaptureDemand {
-        self.screen.map_or(ScreenCaptureDemand::Inactive, |screen| {
-            ScreenCaptureDemand::active(screen.requested_extent)
-        })
+    /// Replace screen demand with an immutable set of independent exact branches.
+    #[must_use]
+    pub fn with_screen_branches(
+        mut self,
+        branches: impl IntoIterator<Item = InputScreenBranchDemand>,
+    ) -> Self {
+        self.screen = branches.into_iter().collect::<Vec<_>>().into();
+        self
     }
 
     #[cfg(test)]
-    pub(crate) fn screen_requested_extent(self) -> Option<PixelExtent> {
-        self.screen.map(|screen| screen.requested_extent)
+    pub(crate) fn screen_requested_extent(&self) -> Option<PixelExtent> {
+        self.screen
+            .first()
+            .map(InputScreenBranchDemand::legacy_extent)
     }
 
-    pub(crate) fn requested_hz(self, source: SourceKind) -> u32 {
+    pub(crate) fn requested_hz(&self, source: SourceKind) -> u32 {
         match source {
             SourceKind::Audio => self.audio,
-            SourceKind::Screen => self.screen.map_or(0, |screen| screen.requested_hz),
+            SourceKind::Screen => self
+                .screen
+                .iter()
+                .map(InputScreenBranchDemand::requested_hz)
+                .max()
+                .unwrap_or(0),
             SourceKind::Interaction => self.interaction,
             SourceKind::Media => self.media,
             SourceKind::Network => self.network,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct InputPublicationCadence {
+    requested_hz: [u32; SOURCE_KINDS.len()],
+}
+
+impl InputPublicationCadence {
+    fn merge_demand(&mut self, demand: &InputPublicationDemand) {
+        for source in SOURCE_KINDS {
+            self.requested_hz[source_kind_index(source)] =
+                self.requested_hz(source).max(demand.requested_hz(source));
+        }
+    }
+
+    const fn with_source(mut self, source: SourceKind, requested_hz: u32) -> Self {
+        self.requested_hz[source_kind_index(source)] = requested_hz;
+        self
+    }
+
+    const fn requested_hz(self, source: SourceKind) -> u32 {
+        self.requested_hz[source_kind_index(source)]
+    }
 
     fn max_requested_hz(self) -> u32 {
-        let screen_hz = self.requested_hz(SourceKind::Screen);
-        let max = if self.audio > screen_hz {
-            self.audio
-        } else {
-            screen_hz
-        };
-        let max = if max > self.interaction {
-            max
-        } else {
-            self.interaction
-        };
-        let max = if max > self.media { max } else { self.media };
-        if max > self.network {
-            max
-        } else {
-            self.network
-        }
-    }
-
-    fn union(self, other: Self) -> Self {
-        Self {
-            audio: if self.audio > other.audio {
-                self.audio
-            } else {
-                other.audio
-            },
-            screen: union_screen_demand(self.screen, other.screen),
-            interaction: if self.interaction > other.interaction {
-                self.interaction
-            } else {
-                other.interaction
-            },
-            media: if self.media > other.media {
-                self.media
-            } else {
-                other.media
-            },
-            network: if self.network > other.network {
-                self.network
-            } else {
-                other.network
-            },
-        }
+        self.requested_hz.into_iter().max().unwrap_or(0)
     }
 }
 
-fn union_screen_demand(
-    left: Option<ScreenPublicationDemand>,
-    right: Option<ScreenPublicationDemand>,
-) -> Option<ScreenPublicationDemand> {
-    match (left, right) {
-        (None, demand) | (demand, None) => demand,
-        (Some(left), Some(right)) => Some(ScreenPublicationDemand {
-            requested_hz: left.requested_hz.max(right.requested_hz),
-            requested_extent: left.requested_extent.union(right.requested_extent),
-        }),
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct InputPublicationDemandEntry {
     id: u64,
     consumer: InputPublicationConsumer,
@@ -200,28 +231,59 @@ struct InputPublicationDemandEntry {
 #[derive(Clone, Debug, Default)]
 struct InputPublicationDemandSnapshot {
     entries: Arc<[InputPublicationDemandEntry]>,
-    aggregate: InputPublicationDemand,
+    cadence: InputPublicationCadence,
+    screen_branches: Arc<[RegisteredScreenBranchDemand]>,
+    compatibility_screen_extent: Option<PixelExtent>,
+    revision: InputPublicationDemandRevision,
 }
 
 impl InputPublicationDemandSnapshot {
-    fn from_entries(entries: Vec<InputPublicationDemandEntry>) -> Self {
-        let aggregate = entries
-            .iter()
-            .fold(InputPublicationDemand::default(), |aggregate, entry| {
-                aggregate.union(entry.demand)
-            });
+    fn from_entries(
+        entries: Vec<InputPublicationDemandEntry>,
+        revision: InputPublicationDemandRevision,
+    ) -> Self {
+        let mut cadence = InputPublicationCadence::default();
+        let mut screen_branches = Vec::new();
+        let mut compatibility_screen: Option<(
+            &InputPublicationDemandEntry,
+            &InputScreenBranchDemand,
+        )> = None;
+        for entry in &entries {
+            cadence.merge_demand(&entry.demand);
+            for screen in entry.demand.screen.iter() {
+                screen_branches.push(screen.branch.clone());
+                if compatibility_screen
+                    .as_ref()
+                    .is_none_or(|(selected_entry, selected_screen)| {
+                        compatibility_screen_precedes(
+                            entry,
+                            screen,
+                            selected_entry,
+                            selected_screen,
+                        )
+                    })
+                {
+                    compatibility_screen = Some((entry, screen));
+                }
+            }
+        }
+        let compatibility_screen_extent =
+            compatibility_screen.map(|(_, screen)| screen.legacy_extent);
         Self {
             entries: entries.into(),
-            aggregate,
+            cadence,
+            screen_branches: screen_branches.into(),
+            compatibility_screen_extent,
+            revision,
         }
     }
 
     fn requested_hz(&self, source: SourceKind) -> u32 {
-        self.aggregate.requested_hz(source)
+        self.cadence.requested_hz(source)
     }
 
     fn max_requested_hz(&self) -> u32 {
-        self.aggregate.max_requested_hz()
+        self.cadence.max_requested_hz()
     }
 
     fn registration_count(&self, consumer: InputPublicationConsumer) -> usize {
@@ -230,12 +292,71 @@ impl InputPublicationDemandSnapshot {
             .filter(|entry| entry.consumer == consumer)
             .count()
     }
+
+    fn capture_demand(&self) -> CaptureDemand {
+        let screen = self
+            .compatibility_screen_extent
+            .map_or(ScreenCaptureDemand::Inactive, ScreenCaptureDemand::active);
+        CaptureDemand::new(
+            self.requested_hz(SourceKind::Audio) > 0,
+            screen,
+            self.requested_hz(SourceKind::Interaction) > 0,
+        )
+    }
+
+    const fn revision(&self) -> InputPublicationDemandRevision {
+        self.revision
+    }
+}
+
+fn compatibility_screen_precedes(
+    candidate: &InputPublicationDemandEntry,
+    candidate_screen: &InputScreenBranchDemand,
+    selected: &InputPublicationDemandEntry,
+    selected_screen: &InputScreenBranchDemand,
+) -> bool {
+    let candidate_rank = consumer_rank(candidate.consumer);
+    let selected_rank = consumer_rank(selected.consumer);
+    if candidate_rank != selected_rank {
+        return candidate_rank < selected_rank;
+    }
+    let candidate_kind = publication_kind_rank(candidate_screen.branch.request().kind());
+    let selected_kind = publication_kind_rank(selected_screen.branch.request().kind());
+    if candidate_kind != selected_kind {
+        return candidate_kind < selected_kind;
+    }
+    let candidate_pixels = u64::from(candidate_screen.legacy_extent.width())
+        * u64::from(candidate_screen.legacy_extent.height());
+    let selected_pixels = u64::from(selected_screen.legacy_extent.width())
+        * u64::from(selected_screen.legacy_extent.height());
+    candidate_pixels > selected_pixels
+        || (candidate_pixels == selected_pixels
+            && candidate_screen.requested_hz() > selected_screen.requested_hz())
+        || (candidate_pixels == selected_pixels
+            && candidate_screen.requested_hz() == selected_screen.requested_hz()
+            && candidate.id < selected.id)
+}
+
+const fn publication_kind_rank(kind: ScreenPublicationKind) -> u8 {
+    match kind {
+        ScreenPublicationKind::Surface => 0,
+        ScreenPublicationKind::Zones { .. } => 1,
+    }
+}
+
+const fn consumer_rank(consumer: InputPublicationConsumer) -> u8 {
+    match consumer {
+        InputPublicationConsumer::Authoritative => 0,
+        InputPublicationConsumer::Preview => 1,
+        InputPublicationConsumer::PassiveStream => 2,
+        InputPublicationConsumer::Diagnostic => 3,
+    }
 }
 
 struct InputPublicationDemandRegistry {
     next_id: AtomicU64,
     latest: ArcSwap<InputPublicationDemandSnapshot>,
-    changed: Notify,
+    revision_tx: watch::Sender<InputPublicationDemandRevision>,
 }
 
 #[derive(Clone)]
@@ -248,11 +369,12 @@ impl InputPublicationDemandHandle {
     /// Create an empty demand publication.
     #[must_use]
     pub fn new() -> Self {
+        let (revision_tx, _) = watch::channel(InputPublicationDemandRevision::default());
         Self {
             registry: Arc::new(InputPublicationDemandRegistry {
                 next_id: AtomicU64::new(1),
                 latest: ArcSwap::from_pointee(InputPublicationDemandSnapshot::default()),
-                changed: Notify::new(),
+                revision_tx,
             }),
         }
     }
@@ -275,7 +397,7 @@ impl InputPublicationDemandHandle {
             entries.push(InputPublicationDemandEntry {
                 id,
                 consumer,
-                demand,
+                demand: demand.clone(),
             });
         });
         InputPublicationDemandRegistration {
@@ -296,6 +418,18 @@ impl InputPublicationDemandHandle {
         self.snapshot().requested_hz(source)
     }
 
+    /// Read every independently registered unresolved screen branch.
+    #[must_use]
+    pub fn screen_branches(&self) -> Arc<[RegisteredScreenBranchDemand]> {
+        Arc::clone(&self.snapshot().screen_branches)
+    }
+
+    /// Read the monotonic revision of the immutable demand snapshot.
+    #[must_use]
+    pub fn revision(&self) -> InputPublicationDemandRevision {
+        self.snapshot().revision()
+    }
+
     pub(crate) fn is_active(&self) -> bool {
         self.snapshot().max_requested_hz() > 0
     }
@@ -304,8 +438,8 @@ impl InputPublicationDemandHandle {
         self.registry.latest.load_full()
     }
 
-    async fn changed(&self) {
-        self.registry.changed.notified().await;
+    fn subscribe_revision(&self) -> watch::Receiver<InputPublicationDemandRevision> {
+        self.registry.revision_tx.subscribe()
     }
 }
 
@@ -320,15 +454,34 @@ impl InputPublicationDemandRegistry {
         self.latest.rcu(|current| {
             let mut entries = current.entries.to_vec();
             update(&mut entries);
-            Arc::new(InputPublicationDemandSnapshot::from_entries(entries))
+            if entries.as_slice() == current.entries.as_ref() {
+                return Arc::clone(current);
+            }
+            let revision = current
+                .revision()
+                .next()
+                .expect("input publication demand revision exhausted");
+            Arc::new(InputPublicationDemandSnapshot::from_entries(
+                entries, revision,
+            ))
         });
-        self.changed.notify_one();
+        self.publish_revision(self.latest.load().revision());
+    }
+
+    fn publish_revision(&self, revision: InputPublicationDemandRevision) {
+        self.revision_tx.send_if_modified(|published| {
+            if *published >= revision {
+                return false;
+            }
+            *published = revision;
+            true
+        });
     }
 
     fn update_registration(&self, id: u64, demand: InputPublicationDemand) {
         self.update_entries(|entries| {
             if let Some(entry) = entries.iter_mut().find(|entry| entry.id == id) {
-                entry.demand = demand;
+                entry.demand = demand.clone();
             }
         });
     }
@@ -375,7 +528,7 @@ impl OwnedInputPublicationDemand {
 
     pub(crate) fn publish(&mut self, demand: InputPublicationDemand) {
         if demand != self.current {
-            self.registration.update(demand);
+            self.registration.update(demand.clone());
             self.current = demand;
         }
     }
@@ -614,30 +767,35 @@ async fn run_pump(
     let mut capture_demand = CaptureDemandState::default();
     let mut due_sources = Vec::with_capacity(SOURCE_KINDS.len());
     let mut graph_changes = reader.graph.subscribe_generation();
+    let mut demand_changes = demands.subscribe_revision();
     loop {
         let demand = demands.snapshot();
+        let desired_capture = demand.capture_demand();
         let mut graph = reader.graph_snapshot();
-        if !capture_demand.is_current(graph.generation(), demand.aggregate) {
+        if !capture_demand.is_current(graph.generation(), desired_capture) {
             let manager_lock = manager.lock();
             tokio::pin!(manager_lock);
             let mut input_manager = tokio::select! {
                 () = cancel.cancelled() => break,
-                () = demands.changed() => continue,
+                _ = demand_changes.changed() => continue,
                 manager = &mut manager_lock => manager,
             };
-            capture_demand.reconcile(&mut input_manager, demand.aggregate);
+            if demands.snapshot().revision() != demand.revision() {
+                continue;
+            }
+            capture_demand.reconcile(&mut input_manager, desired_capture);
             drop(input_manager);
             graph = reader.graph_snapshot();
         }
-        let lifecycle_current = capture_demand.is_current(graph.generation(), demand.aggregate);
+        let lifecycle_current = capture_demand.is_current(graph.generation(), desired_capture);
         let active_demand = demand_for_active_sources(&graph, &demand);
         let now = Instant::now();
-        schedule.synchronize(active_demand, now);
+        schedule.synchronize(&active_demand, now);
 
         if demand.max_requested_hz() == 0 && lifecycle_current {
             tokio::select! {
                 () = cancel.cancelled() => break,
-                () = demands.changed() => {}
+                _ = demand_changes.changed() => {}
                 _ = graph_changes.changed() => {}
             }
             continue;
@@ -646,7 +804,7 @@ async fn run_pump(
         if demand.max_requested_hz() == 0 {
             tokio::select! {
                 () = cancel.cancelled() => break,
-                () = demands.changed() => {}
+                _ = demand_changes.changed() => {}
                 _ = graph_changes.changed() => {}
                 () = tokio::time::sleep(LIFECYCLE_PROBE_INTERVAL) => {}
             }
@@ -656,7 +814,7 @@ async fn run_pump(
         if active_demand.max_requested_hz() == 0 {
             tokio::select! {
                 () = cancel.cancelled() => break,
-                () = demands.changed() => {}
+                _ = demand_changes.changed() => {}
                 _ = graph_changes.changed() => {}
                 () = tokio::time::sleep(LIFECYCLE_PROBE_INTERVAL) => {}
             }
@@ -670,7 +828,7 @@ async fn run_pump(
                 .map_or(lifecycle_probe, |deadline| deadline.min(lifecycle_probe));
             tokio::select! {
                 () = cancel.cancelled() => break,
-                () = demands.changed() => {}
+                _ = demand_changes.changed() => {}
                 _ = graph_changes.changed() => {}
                 () = tokio::time::sleep_until(TokioInstant::from_std(wake_at)) => {}
             }
@@ -681,10 +839,13 @@ async fn run_pump(
         tokio::pin!(manager_lock);
         let mut manager = tokio::select! {
             () = cancel.cancelled() => break,
-            () = demands.changed() => continue,
+            _ = demand_changes.changed() => continue,
             _ = graph_changes.changed() => continue,
             manager = &mut manager_lock => manager,
         };
+        if demands.snapshot().revision() != demand.revision() {
+            continue;
+        }
         schedule.collect_due(Instant::now(), &mut due_sources);
         manager.sample_source_kinds(&due_sources);
     }
@@ -694,12 +855,12 @@ async fn run_pump(
 fn demand_for_active_sources(
     graph: &InputGraphSnapshot,
     demand: &InputPublicationDemandSnapshot,
-) -> InputPublicationDemand {
+) -> InputPublicationCadence {
     let now = Instant::now();
     graph
         .slots()
         .iter()
-        .fold(InputPublicationDemand::default(), |active_demand, slot| {
+        .fold(InputPublicationCadence::default(), |active_demand, slot| {
             let status = slot.status().availability_at(now);
             if status.retired
                 || !(status.configured && status.consented && status.demanded)
@@ -710,13 +871,7 @@ fn demand_for_active_sources(
             {
                 return active_demand;
             }
-            if status.kind == SourceKind::Screen {
-                demand.aggregate.screen.map_or(active_demand, |screen| {
-                    active_demand.with_screen(screen.requested_hz, screen.requested_extent)
-                })
-            } else {
-                active_demand.with_source(status.kind, demand.requested_hz(status.kind))
-            }
+            active_demand.with_source(status.kind, demand.requested_hz(status.kind))
         })
 }
 
@@ -733,7 +888,7 @@ struct InputPublicationSchedule {
 }
 
 impl InputPublicationSchedule {
-    fn synchronize(&mut self, demand: InputPublicationDemand, now: Instant) {
+    fn synchronize(&mut self, demand: &InputPublicationCadence, now: Instant) {
         for source in SOURCE_KINDS {
             let cadence = &mut self.sources[source_kind_index(source)];
             let requested_hz = demand.requested_hz(source);

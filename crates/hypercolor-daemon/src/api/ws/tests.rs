@@ -1,3 +1,4 @@
+use std::num::NonZeroU32;
 use std::sync::{Arc, LazyLock, Mutex as StdMutex, PoisonError};
 use std::time::{Duration, SystemTime};
 
@@ -8,7 +9,7 @@ use tokio::sync::{RwLock, watch};
 
 use hypercolor_core::bus::{CanvasFrame, HypercolorBus, ZonePreviewFrame};
 use hypercolor_core::effect::EffectRegistry;
-use hypercolor_core::input::screen::PixelExtent;
+use hypercolor_core::input::screen::{PixelExtent, ScreenExtentRequest, ScreenPublicationKind};
 use hypercolor_core::input::{
     BrowserConnectionIncarnation, BrowserInputChildKey, BrowserInputHandle, BrowserInputSource,
     BrowserPreviewId, InputData, InputGraphHandle, InputManager, InputSource, SourceIssue,
@@ -100,7 +101,7 @@ use crate::startup::input_status_events::InputStatusEventPublisher;
 fn websocket_input_demand_leases_follow_subscription_lifetime() {
     let demands = InputPublicationDemandHandle::new();
     let base_screen_extent = PixelExtent::new(1_920, 1_080).expect("fixture extent");
-    let mut leases = WsInputDemandLeases::new(demands.clone(), 60, base_screen_extent);
+    let mut leases = WsInputDemandLeases::new(demands.clone(), 60, base_screen_extent, 8, 6);
     let mut subscriptions = SubscriptionState::default();
 
     leases
@@ -121,6 +122,19 @@ fn websocket_input_demand_leases_follow_subscription_lifetime() {
         leases.screen_requested_extent(),
         PixelExtent::new(5_120, 2_880).ok()
     );
+    let canvas_only = demands.screen_branches();
+    assert_eq!(canvas_only.len(), 1);
+    let ScreenExtentRequest::Bounded(canvas_bounds) = canvas_only[0].request().extent() else {
+        panic!("width-only canvas request remains bounded");
+    };
+    assert_eq!(canvas_bounds.max_width().map(NonZeroU32::get), Some(5_120));
+    assert_eq!(canvas_bounds.max_height(), None);
+    let canvas_revision = demands.revision();
+    subscriptions.config.screen_canvas.fps = 0;
+    assert!(leases.synchronize(&subscriptions).is_err());
+    assert_eq!(demands.revision(), canvas_revision);
+    assert_eq!(demands.screen_branches(), canvas_only);
+    subscriptions.config.screen_canvas.fps = 15;
 
     subscriptions.channels.insert(WsChannel::Spectrum);
     subscriptions.config.spectrum.fps = 24;
@@ -138,8 +152,20 @@ fn websocket_input_demand_leases_follow_subscription_lifetime() {
     assert_eq!(demands.requested_hz(SourceKind::Screen), 15);
     assert_eq!(
         leases.screen_requested_extent(),
-        PixelExtent::new(5_120, 1_080).ok()
+        PixelExtent::new(5_120, 720).ok()
     );
+    let mixed_branches = demands.screen_branches();
+    assert_eq!(mixed_branches.len(), 2);
+    let ScreenExtentRequest::Bounded(canvas_bounds) = mixed_branches[0].request().extent() else {
+        panic!("two-axis canvas request remains bounded");
+    };
+    assert_eq!(canvas_bounds.max_width().map(NonZeroU32::get), Some(5_120));
+    assert_eq!(canvas_bounds.max_height().map(NonZeroU32::get), Some(720));
+    assert!(matches!(
+        mixed_branches[1].request().kind(),
+        ScreenPublicationKind::Zones { columns, rows }
+            if columns.get() == 8 && rows.get() == 6
+    ));
     assert_eq!(demands.requested_hz(SourceKind::Interaction), 60);
 
     subscriptions.config.spectrum.fps = 48;
@@ -150,6 +176,12 @@ fn websocket_input_demand_leases_follow_subscription_lifetime() {
     assert_eq!(demands.requested_hz(SourceKind::Audio), 48);
     assert_eq!(demands.requested_hz(SourceKind::Screen), 15);
     assert_eq!(leases.screen_requested_extent(), Some(base_screen_extent));
+    let zone_only = demands.screen_branches();
+    assert_eq!(zone_only.len(), 1);
+    assert!(matches!(
+        zone_only[0].request().kind(),
+        ScreenPublicationKind::Zones { .. }
+    ));
 
     subscriptions.channels.remove(WsChannel::ScreenZones);
     subscriptions.channels.remove(WsChannel::InputEvents);
@@ -1617,7 +1649,10 @@ fn subscribe_wire_negotiates_preview_transport_before_publication() {
     let Some(PreviewOutboundItem::Cancellation(cancellation)) = receiver.try_recv() else {
         panic!("latest replacement must cancel the active publication first");
     };
-    assert_eq!(cancellation.publication_id, cursor.publication().publication_id());
+    assert_eq!(
+        cancellation.publication_id,
+        cursor.publication().publication_id()
+    );
     receiver.complete(cursor.publication());
     let replacement = try_receive_preview_publication(&receiver)
         .expect("latest replacement follows its cancellation");
@@ -1673,8 +1708,8 @@ fn subscribe_wire_negotiates_preview_transport_before_publication() {
             None,
         )
         .expect("third byte-accounted publication");
-    let _in_flight_three = try_receive_preview_publication(&byte_receiver)
-        .expect("third publication moves in flight");
+    let _in_flight_three =
+        try_receive_preview_publication(&byte_receiver).expect("third publication moves in flight");
     assert!(matches!(
         byte_sender.publish(
             PreviewStreamId::Passive(PreviewFrameChannel::DisplayPreview),

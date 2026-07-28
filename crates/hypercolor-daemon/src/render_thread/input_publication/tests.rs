@@ -1,14 +1,20 @@
+use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
-use hypercolor_core::input::screen::{PixelExtent, ScreenCaptureDemand};
+use hypercolor_core::input::screen::{
+    PixelExtent, RegisteredScreenBranchDemand, ScreenAspectPolicy, ScreenCaptureDemand,
+    ScreenExtentRequest, ScreenProcessingProfile, ScreenPublicationKind, ScreenPublicationRequest,
+    ScreenSourceSelector, ScreenUpscalePolicy,
+};
 use hypercolor_core::input::{InputData, InputManager, InputSource, SourceKind};
 use tokio::sync::Mutex;
 
 use super::{
-    InputPublicationConsumer, InputPublicationDemand, InputPublicationDemandHandle,
-    InputPublicationPump, InputPublicationSchedule, InputPublicationStatus, cadence_interval,
+    InputPublicationCadence, InputPublicationConsumer, InputPublicationDemand,
+    InputPublicationDemandHandle, InputPublicationPump, InputPublicationSchedule,
+    InputPublicationStatus, InputScreenBranchDemand, cadence_interval,
 };
 
 fn extent(width: u32, height: u32) -> PixelExtent {
@@ -147,15 +153,21 @@ fn demand_snapshot_uses_the_highest_typed_consumer_rate() {
     let snapshot = demands.snapshot();
     assert_eq!(snapshot.requested_hz(SourceKind::Interaction), 360);
     assert_eq!(snapshot.requested_hz(SourceKind::Screen), 144);
+    assert_eq!(snapshot.compatibility_screen_extent, Some(extent(640, 480)));
+    assert_eq!(snapshot.screen_branches.len(), 2);
     assert_eq!(
-        snapshot.aggregate.screen_requested_extent(),
-        Some(extent(5_120, 720))
+        branch_extent(&snapshot.screen_branches[0]),
+        extent(640, 480)
+    );
+    assert_eq!(
+        branch_extent(&snapshot.screen_branches[1]),
+        extent(5_120, 720)
     );
     assert_eq!(snapshot.requested_hz(SourceKind::Audio), 60);
 }
 
 #[test]
-fn screen_demand_unions_each_extent_axis_and_shrinks_after_release() {
+fn incompatible_screen_demands_remain_exact_and_never_form_an_envelope() {
     let demands = InputPublicationDemandHandle::new();
     let ultrawide = demands.register(
         InputPublicationConsumer::Authoritative,
@@ -166,19 +178,208 @@ fn screen_demand_unions_each_extent_axis_and_shrinks_after_release() {
         InputPublicationDemand::default().with_screen(144, extent(1_920, 2_160)),
     );
 
-    let aggregate = demands.snapshot().aggregate;
-    assert_eq!(aggregate.requested_hz(SourceKind::Screen), 144);
+    let snapshot = demands.snapshot();
+    assert_eq!(snapshot.requested_hz(SourceKind::Screen), 144);
     assert_eq!(
-        aggregate.screen_requested_extent(),
-        Some(extent(5_120, 2_160))
+        snapshot.compatibility_screen_extent,
+        Some(extent(5_120, 720))
+    );
+    assert_eq!(snapshot.screen_branches.len(), 2);
+    assert_eq!(
+        snapshot
+            .screen_branches
+            .iter()
+            .map(branch_extent)
+            .collect::<Vec<_>>(),
+        [extent(5_120, 720), extent(1_920, 2_160)]
+    );
+    assert!(
+        !snapshot
+            .screen_branches
+            .iter()
+            .any(|branch| branch_extent(branch) == extent(5_120, 2_160))
     );
 
     drop(ultrawide);
-    let shrunk = demands.snapshot().aggregate;
+    let shrunk = demands.snapshot();
     assert_eq!(shrunk.requested_hz(SourceKind::Screen), 144);
-    assert_eq!(shrunk.screen_requested_extent(), Some(extent(1_920, 2_160)));
+    assert_eq!(
+        shrunk.compatibility_screen_extent,
+        Some(extent(1_920, 2_160))
+    );
+    assert_eq!(shrunk.screen_branches.len(), 1);
     drop(portrait);
-    assert_eq!(demands.snapshot().aggregate.screen_requested_extent(), None);
+    assert_eq!(demands.snapshot().compatibility_screen_extent, None);
+}
+
+#[test]
+fn demand_revision_advances_on_register_update_and_release() {
+    let demands = InputPublicationDemandHandle::new();
+    let initial = demands.snapshot().revision();
+    let registration = demands.register(
+        InputPublicationConsumer::Preview,
+        InputPublicationDemand::default().with_screen(60, extent(1_280, 720)),
+    );
+    let registered = demands.snapshot().revision();
+    assert!(registered > initial);
+
+    registration.update(InputPublicationDemand::default().with_screen(120, extent(3_840, 2_160)));
+    let updated = demands.snapshot().revision();
+    assert!(updated > registered);
+
+    drop(registration);
+    let released = demands.snapshot().revision();
+    assert!(released > updated);
+}
+
+#[tokio::test]
+async fn demand_revision_wakes_independent_coordinators() {
+    let demands = InputPublicationDemandHandle::new();
+    let mut pump_revision = demands.subscribe_revision();
+    let mut plan_revision = demands.subscribe_revision();
+    let _registration = demands.register(
+        InputPublicationConsumer::Authoritative,
+        InputPublicationDemand::default().with_screen(60, extent(1_920, 1_080)),
+    );
+
+    pump_revision
+        .changed()
+        .await
+        .expect("pump revision watch remains open");
+    plan_revision
+        .changed()
+        .await
+        .expect("plan revision watch remains open");
+    assert_eq!(*pump_revision.borrow(), demands.revision());
+    assert_eq!(*plan_revision.borrow(), demands.revision());
+}
+
+#[test]
+fn delayed_revision_publication_cannot_regress_or_repeat_watch_state() {
+    let demands = InputPublicationDemandHandle::new();
+    let registration = demands.register(
+        InputPublicationConsumer::Authoritative,
+        InputPublicationDemand::default().with_screen(60, extent(1_920, 1_080)),
+    );
+    let stale_revision = demands.revision();
+    registration.update(InputPublicationDemand::default().with_screen(120, extent(3_840, 2_160)));
+    let current_revision = demands.revision();
+    let mut pump_revision = demands.subscribe_revision();
+    let mut plan_revision = demands.subscribe_revision();
+    pump_revision.borrow_and_update();
+    plan_revision.borrow_and_update();
+
+    demands.registry.publish_revision(stale_revision);
+    demands.registry.publish_revision(current_revision);
+
+    assert_eq!(demands.revision(), current_revision);
+    assert_eq!(*pump_revision.borrow(), current_revision);
+    assert_eq!(*plan_revision.borrow(), current_revision);
+    assert!(
+        !pump_revision
+            .has_changed()
+            .expect("revision watch remains open")
+    );
+    assert!(
+        !plan_revision
+            .has_changed()
+            .expect("revision watch remains open")
+    );
+}
+
+#[test]
+fn identical_updates_preserve_revision_and_older_snapshots() {
+    let demands = InputPublicationDemandHandle::new();
+    let initial_demand = InputPublicationDemand::default().with_screen(60, extent(1_280, 720));
+    let registration = demands.register(InputPublicationConsumer::Preview, initial_demand.clone());
+    let held = demands.snapshot();
+
+    registration.update(initial_demand);
+    let unchanged = demands.snapshot();
+    assert_eq!(unchanged.revision(), held.revision());
+    assert!(Arc::ptr_eq(&unchanged, &held));
+
+    registration.update(InputPublicationDemand::default().with_screen(120, extent(3_840, 2_160)));
+    let updated = demands.snapshot();
+    assert!(updated.revision() > held.revision());
+    assert_eq!(branch_extent(&held.screen_branches[0]), extent(1_280, 720));
+    assert_eq!(
+        branch_extent(&updated.screen_branches[0]),
+        extent(3_840, 2_160)
+    );
+}
+
+#[test]
+fn one_registration_preserves_every_screen_request_shape() {
+    let demands = InputPublicationDemandHandle::new();
+    let native = test_screen_branch(
+        ScreenPublicationKind::Surface,
+        ScreenExtentRequest::Native,
+        30,
+        extent(1_920, 1_080),
+    );
+    let width_only = test_screen_branch(
+        ScreenPublicationKind::Surface,
+        ScreenExtentRequest::bounded(NonZeroU32::new(5_120), None, ScreenUpscalePolicy::Never),
+        60,
+        extent(5_120, 720),
+    );
+    let upscaled = test_screen_branch(
+        ScreenPublicationKind::Surface,
+        ScreenExtentRequest::bounded(
+            NonZeroU32::new(7_680),
+            NonZeroU32::new(4_320),
+            ScreenUpscalePolicy::Allow,
+        ),
+        120,
+        extent(7_680, 4_320),
+    );
+    let zones = test_screen_branch(
+        ScreenPublicationKind::Zones {
+            columns: NonZeroU32::new(32).expect("test grid columns are non-zero"),
+            rows: NonZeroU32::new(18).expect("test grid rows are non-zero"),
+        },
+        ScreenExtentRequest::bounded(
+            NonZeroU32::new(1_920),
+            NonZeroU32::new(1_080),
+            ScreenUpscalePolicy::Never,
+        ),
+        144,
+        extent(1_920, 1_080),
+    );
+    let _registration = demands.register(
+        InputPublicationConsumer::Preview,
+        InputPublicationDemand::default()
+            .with_screen_branches([native, width_only, upscaled, zones]),
+    );
+
+    let branches = demands.screen_branches();
+    assert_eq!(branches.len(), 4);
+    assert_eq!(branches[0].request().extent(), ScreenExtentRequest::Native);
+    assert_eq!(
+        branches[1].request().extent().bounded_extent(),
+        ScreenExtentRequest::bounded(NonZeroU32::new(5_120), None, ScreenUpscalePolicy::Never,)
+            .bounded_extent()
+    );
+    assert_eq!(
+        branches[2].request().extent().bounded_extent(),
+        ScreenExtentRequest::bounded(
+            NonZeroU32::new(7_680),
+            NonZeroU32::new(4_320),
+            ScreenUpscalePolicy::Allow,
+        )
+        .bounded_extent()
+    );
+    assert!(matches!(
+        branches[3].request().kind(),
+        ScreenPublicationKind::Zones { columns, rows }
+            if columns.get() == 32 && rows.get() == 18
+    ));
+    assert_eq!(demands.requested_hz(SourceKind::Screen), 144);
+    assert_eq!(
+        demands.snapshot().compatibility_screen_extent,
+        Some(extent(7_680, 4_320))
+    );
 }
 
 #[test]
@@ -241,12 +442,12 @@ fn cadence_conversion_does_not_cap_large_requests() {
 fn source_cadences_advance_independently_without_catch_up_bursts() {
     let started_at = Instant::now();
     let mut schedule = InputPublicationSchedule::default();
-    let demand = InputPublicationDemand::default()
-        .with_screen(20, extent(640, 480))
+    let demand = InputPublicationCadence::default()
+        .with_source(SourceKind::Screen, 20)
         .with_source(SourceKind::Interaction, 120);
     let mut due = Vec::with_capacity(5);
 
-    schedule.synchronize(demand, started_at);
+    schedule.synchronize(&demand, started_at);
     schedule.collect_due(started_at, &mut due);
     assert_eq!(
         due.iter().map(|(source, _)| *source).collect::<Vec<_>>(),
@@ -275,16 +476,16 @@ fn source_reactivation_starts_with_one_cadence_window() {
     let started_at = Instant::now();
     let interval = cadence_interval(20);
     let mut schedule = InputPublicationSchedule::default();
-    let active = InputPublicationDemand::default().with_screen(20, extent(640, 480));
+    let active = InputPublicationCadence::default().with_source(SourceKind::Screen, 20);
     let mut due = Vec::with_capacity(5);
 
-    schedule.synchronize(active, started_at);
+    schedule.synchronize(&active, started_at);
     schedule.collect_due(started_at, &mut due);
     assert_eq!(due, [(SourceKind::Screen, interval.as_secs_f32())]);
 
-    schedule.synchronize(InputPublicationDemand::default(), started_at + interval);
+    schedule.synchronize(&InputPublicationCadence::default(), started_at + interval);
     let resumed_at = started_at + Duration::from_secs(30);
-    schedule.synchronize(active, resumed_at);
+    schedule.synchronize(&active, resumed_at);
     schedule.collect_due(resumed_at, &mut due);
 
     assert_eq!(due, [(SourceKind::Screen, interval.as_secs_f32())]);
@@ -473,6 +674,41 @@ async fn pump_propagates_screen_extent_changes_even_while_cadence_stays_active()
     pump.shutdown().await.expect("publication pump stops");
 }
 
+#[tokio::test]
+async fn pump_rejects_a_stale_demand_after_waiting_for_the_manager() {
+    let transitions = Arc::new(StdMutex::new(Vec::new()));
+    let mut manager = InputManager::new();
+    manager.add_source(Box::new(ScreenDemandSource::new(Arc::clone(&transitions))));
+    manager.start_all().expect("screen source starts");
+    let manager = Arc::new(Mutex::new(manager));
+    let demands = InputPublicationDemandHandle::new();
+    let mut pump = InputPublicationPump::start(Arc::clone(&manager), demands.clone())
+        .await
+        .expect("publication pump starts");
+    let manager_guard = manager.lock().await;
+    let stale_extent = extent(7_680, 4_320);
+    let current_extent = extent(1_280, 720);
+    let registration = demands.register(
+        InputPublicationConsumer::Authoritative,
+        InputPublicationDemand::default().with_screen(60, stale_extent),
+    );
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    registration.update(InputPublicationDemand::default().with_screen(60, current_extent));
+    drop(manager_guard);
+
+    wait_for_screen_demand(&transitions, ScreenCaptureDemand::active(current_extent)).await;
+    assert!(
+        !transitions
+            .lock()
+            .expect("screen transitions lock")
+            .contains(&ScreenCaptureDemand::active(stale_extent))
+    );
+
+    drop(registration);
+    wait_for_screen_demand(&transitions, ScreenCaptureDemand::Inactive).await;
+    pump.shutdown().await.expect("publication pump stops");
+}
+
 async fn wait_for_screen_demand(
     transitions: &StdMutex<Vec<ScreenCaptureDemand>>,
     expected: ScreenCaptureDemand,
@@ -517,4 +753,45 @@ async fn wait_for_interaction_demand(
     })
     .await
     .expect("capture lifecycle should follow aggregate demand");
+}
+
+fn branch_extent(
+    demand: &hypercolor_core::input::screen::RegisteredScreenBranchDemand,
+) -> PixelExtent {
+    let ScreenExtentRequest::Bounded(bounds) = demand.request().extent() else {
+        panic!("compatibility surface demand uses explicit bounds");
+    };
+    PixelExtent::new(
+        bounds
+            .max_width()
+            .expect("compatibility surface has width")
+            .get(),
+        bounds
+            .max_height()
+            .expect("compatibility surface has height")
+            .get(),
+    )
+    .expect("compatibility bounds are non-empty")
+}
+
+fn test_screen_branch(
+    kind: ScreenPublicationKind,
+    extent_request: ScreenExtentRequest,
+    requested_hz: u32,
+    legacy_extent: PixelExtent,
+) -> InputScreenBranchDemand {
+    let request = ScreenPublicationRequest::new(
+        ScreenSourceSelector::Configured,
+        kind,
+        extent_request,
+        ScreenAspectPolicy::Contain,
+        Arc::new(ScreenProcessingProfile::default()),
+    );
+    InputScreenBranchDemand::new(
+        RegisteredScreenBranchDemand::new(
+            request,
+            NonZeroU32::new(requested_hz).expect("test cadence is non-zero"),
+        ),
+        legacy_extent,
+    )
 }

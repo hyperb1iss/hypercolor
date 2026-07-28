@@ -64,7 +64,7 @@ use tracing::info;
 
 pub use self::input_publication::{
     InputPublicationConsumer, InputPublicationDemand, InputPublicationDemandHandle,
-    InputPublicationDemandRegistration, InputPublicationStatus,
+    InputPublicationDemandRegistration, InputPublicationStatus, InputScreenBranchDemand,
 };
 use self::input_publication::{InputPublicationMonitor, InputPublicationPump};
 use self::pipeline_driver::run_pipeline;

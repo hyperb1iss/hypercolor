@@ -753,7 +753,7 @@ impl PreviewLane {
         let current_demand = preview_input_demand(&resolved, context.spec.fps);
         let demand = context
             .demands
-            .register(InputPublicationConsumer::Preview, current_demand);
+            .register(InputPublicationConsumer::Preview, current_demand.clone());
         let input = PreviewLaneInput::new(
             context.graph,
             context.sensor_snapshots,
@@ -822,7 +822,7 @@ impl PreviewLane {
         }
         let demand = preview_input_demand(&scene, self.spec.fps);
         if demand != self.current_demand {
-            self.demand.update(demand);
+            self.demand.update(demand.clone());
             self.current_demand = demand;
         }
         self.input.read();

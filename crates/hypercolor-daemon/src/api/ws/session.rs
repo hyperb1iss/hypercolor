@@ -5,6 +5,7 @@
 //! outbound JSON/binary queues, and the ping/pong heartbeat.
 
 use std::collections::{HashMap, HashSet};
+use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -22,12 +23,17 @@ use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 use uuid::Uuid;
 
-use hypercolor_core::input::screen::PixelExtent;
+use hypercolor_core::input::screen::{
+    PixelExtent, RegisteredScreenBranchDemand, ScreenAspectPolicy, ScreenExtentRequest,
+    ScreenProcessingProfile, ScreenPublicationKind, ScreenPublicationRequest, ScreenSourceSelector,
+    ScreenUpscalePolicy,
+};
 use hypercolor_core::input::{
     BrowserConnectionIncarnation, BrowserInputAttachment, BrowserInputChildKey, BrowserInputHandle,
     BrowserInputRegistryError, BrowserPreviewId,
 };
 use hypercolor_types::canvas::{DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH};
+use hypercolor_types::config::CaptureConfig;
 use hypercolor_types::scene::{Scene, SceneId, ZoneId};
 use hypercolor_types::spatial::SpatialLayout;
 
@@ -65,7 +71,7 @@ use crate::interactive_preview::{
 use crate::preview_runtime::PreviewPixelFormat;
 use crate::render_thread::{
     InputPublicationConsumer, InputPublicationDemand, InputPublicationDemandHandle,
-    InputPublicationDemandRegistration,
+    InputPublicationDemandRegistration, InputScreenBranchDemand,
 };
 
 const WS_PROTOCOL_VERSION: &str = "1.0";
@@ -160,13 +166,25 @@ async fn handle_socket(
     let initial_subscriptions = SubscriptionState::default();
     let (subscriptions_tx, subscriptions_rx) = watch::channel(initial_subscriptions.clone());
     let mut subscriptions = initial_subscriptions;
-    let (screen_base_width, screen_base_height) = state.config_manager.as_ref().map_or(
-        (DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT),
-        |manager| {
-            let config = manager.get();
-            (config.daemon.canvas_width, config.daemon.canvas_height)
-        },
-    );
+    let default_capture = CaptureConfig::default();
+    let (screen_base_width, screen_base_height, screen_grid_cols, screen_grid_rows) =
+        state.config_manager.as_ref().map_or(
+            (
+                DEFAULT_CANVAS_WIDTH,
+                DEFAULT_CANVAS_HEIGHT,
+                default_capture.grid_cols,
+                default_capture.grid_rows,
+            ),
+            |manager| {
+                let config = manager.get();
+                (
+                    config.daemon.canvas_width,
+                    config.daemon.canvas_height,
+                    config.capture.grid_cols,
+                    config.capture.grid_rows,
+                )
+            },
+        );
     let Ok(screen_base_extent) = PixelExtent::new(screen_base_width, screen_base_height) else {
         warn!(
             width = screen_base_width,
@@ -179,6 +197,8 @@ async fn handle_socket(
         state.input_publication_demands.clone(),
         state.configured_max_fps_tier.get().fps(),
         screen_base_extent,
+        screen_grid_cols,
+        screen_grid_rows,
     );
 
     // Send hello message.
@@ -497,6 +517,8 @@ pub(super) struct WsInputDemandLeases {
     demands: InputPublicationDemandHandle,
     interaction_hz: u32,
     screen_base_extent: PixelExtent,
+    screen_grid_cols: NonZeroU32,
+    screen_grid_rows: NonZeroU32,
     spectrum: Option<InputPublicationDemandRegistration>,
     screen: Option<InputPublicationDemandRegistration>,
     interaction: Option<InputPublicationDemandRegistration>,
@@ -509,11 +531,17 @@ impl WsInputDemandLeases {
         demands: InputPublicationDemandHandle,
         interaction_hz: u32,
         screen_base_extent: PixelExtent,
+        screen_grid_cols: u32,
+        screen_grid_rows: u32,
     ) -> Self {
         Self {
             demands,
             interaction_hz,
             screen_base_extent,
+            screen_grid_cols: NonZeroU32::new(screen_grid_cols)
+                .expect("validated capture grid columns are non-zero"),
+            screen_grid_rows: NonZeroU32::new(screen_grid_rows)
+                .expect("validated capture grid rows are non-zero"),
             spectrum: None,
             screen: None,
             interaction: None,
@@ -529,10 +557,15 @@ impl WsInputDemandLeases {
         let screen_active = subscriptions.channels.contains(WsChannel::ScreenCanvas)
             || subscriptions.channels.contains(WsChannel::ScreenZones);
         let (screen_demand, screen_requested_extent) = if screen_active {
-            let mut requested_extent = subscriptions
-                .channels
-                .contains(WsChannel::ScreenZones)
-                .then_some(self.screen_base_extent);
+            let requested_hz =
+                NonZeroU32::new(subscriptions.config.screen_canvas.fps).ok_or_else(|| {
+                    WsProtocolError::invalid_config(
+                        "config.screen_canvas.fps",
+                        "expected a non-zero cadence",
+                    )
+                })?;
+            let mut branches = Vec::with_capacity(2);
+            let mut requested_extent = None;
             if subscriptions.channels.contains(WsChannel::ScreenCanvas) {
                 let output = resolve_canvas_output_size(
                     self.screen_base_extent.width(),
@@ -557,15 +590,40 @@ impl WsInputDemandLeases {
                             error.to_string(),
                         )
                     })?;
-                requested_extent = Some(
-                    requested_extent.map_or(canvas_extent, |extent| extent.union(canvas_extent)),
+                let extent_request = ScreenExtentRequest::bounded(
+                    NonZeroU32::new(subscriptions.config.screen_canvas.width),
+                    NonZeroU32::new(subscriptions.config.screen_canvas.height),
+                    ScreenUpscalePolicy::Never,
                 );
+                branches.push(screen_branch_demand(
+                    ScreenPublicationKind::Surface,
+                    extent_request,
+                    requested_hz,
+                    canvas_extent,
+                ));
+                requested_extent = Some(canvas_extent);
+            }
+            if subscriptions.channels.contains(WsChannel::ScreenZones) {
+                let extent_request = ScreenExtentRequest::bounded(
+                    NonZeroU32::new(self.screen_base_extent.width()),
+                    NonZeroU32::new(self.screen_base_extent.height()),
+                    ScreenUpscalePolicy::Never,
+                );
+                branches.push(screen_branch_demand(
+                    ScreenPublicationKind::Zones {
+                        columns: self.screen_grid_cols,
+                        rows: self.screen_grid_rows,
+                    },
+                    extent_request,
+                    requested_hz,
+                    self.screen_base_extent,
+                ));
+                requested_extent.get_or_insert(self.screen_base_extent);
             }
             let requested_extent =
                 requested_extent.expect("an active screen subscription has an extent");
             (
-                InputPublicationDemand::default()
-                    .with_screen(subscriptions.config.screen_canvas.fps, requested_extent),
+                InputPublicationDemand::default().with_screen_branches(branches),
                 Some(requested_extent),
             )
         } else {
@@ -626,6 +684,25 @@ impl WsInputDemandLeases {
             (None, false) => {}
         }
     }
+}
+
+fn screen_branch_demand(
+    kind: ScreenPublicationKind,
+    extent: ScreenExtentRequest,
+    requested_hz: NonZeroU32,
+    legacy_extent: PixelExtent,
+) -> InputScreenBranchDemand {
+    let request = ScreenPublicationRequest::new(
+        ScreenSourceSelector::Configured,
+        kind,
+        extent,
+        ScreenAspectPolicy::Contain,
+        Arc::new(ScreenProcessingProfile::default()),
+    );
+    InputScreenBranchDemand::new(
+        RegisteredScreenBranchDemand::new(request, requested_hz),
+        legacy_extent,
+    )
 }
 
 /// A stable server-assigned identity for one WebSocket connection lifetime.
