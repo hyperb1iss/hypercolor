@@ -3068,6 +3068,13 @@ async fn interactive_preview_open_without_executor_creates_no_input_attachment()
         .await
         .expect_err("open must fail when no render executor exists");
     assert_eq!(error.code, "unavailable");
+    assert_eq!(
+        error
+            .details
+            .as_ref()
+            .and_then(|details| details["preview_id"].as_str()),
+        Some("unavailable")
+    );
     assert!(registry.snapshot().children().is_empty());
 }
 

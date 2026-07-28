@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import struct
+import unicodedata
 import uuid
 from collections import defaultdict
 from collections.abc import AsyncIterator, Callable, Mapping
@@ -557,6 +558,12 @@ class HypercolorEventStream:
             msg = "Interactive preview frame is shorter than its prefix"
             raise ValueError(msg)
         preview_id_len = payload[1]
+        if preview_id_len == 0:
+            msg = "Interactive preview id cannot be empty"
+            raise ValueError(msg)
+        if preview_id_len > 128:
+            msg = "Interactive preview id exceeds 128 bytes"
+            raise ValueError(msg)
         payload_offset = 15 + preview_id_len
         if len(payload) < payload_offset:
             msg = "Interactive preview frame has a truncated preview id"
@@ -568,14 +575,29 @@ class HypercolorEventStream:
         if image_format is None:
             msg = f"Unknown interactive preview format: {format_byte:#x}"
             raise ValueError(msg)
+        preview_id = payload[15:payload_offset].decode("utf-8")
+        if any(unicodedata.category(character) == "Cc" for character in preview_id):
+            msg = "Interactive preview id contains a control character"
+            raise ValueError(msg)
+        image = payload[payload_offset:]
+        bytes_per_pixel = {"rgb": 3, "rgba": 4}.get(image_format)
+        if bytes_per_pixel is not None:
+            expected = width * height * bytes_per_pixel
+            if len(image) < expected:
+                msg = (
+                    "Interactive preview payload is too short: "
+                    f"expected {expected} bytes, got {len(image)}"
+                )
+                raise ValueError(msg)
+            image = image[:expected]
         return InteractivePreviewData(
-            preview_id=payload[15:payload_offset].decode("utf-8"),
+            preview_id=preview_id,
             frame_number=frame_number,
             timestamp_ms=timestamp_ms,
             width=width,
             height=height,
             format=image_format,
-            pixels=payload[payload_offset:],
+            pixels=image,
         )
 
     @staticmethod

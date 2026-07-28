@@ -23,7 +23,7 @@ use crate::app::{EffectsContext, WsContext};
 use crate::icons::LuMousePointerClick;
 use crate::preview_telemetry::{PreviewPresenterTelemetry, PreviewTelemetryContext};
 use crate::ws::input::{InputEdgeButton, InputEdgeState, InputInjectEdge};
-use crate::ws::{CanvasFrame, InteractivePreviewRequest};
+use crate::ws::{CanvasFrame, InteractivePreviewLifecycle, InteractivePreviewRequest};
 
 use super::preview_runtime::{PreviewRenderOutcome, PreviewRuntime, PreviewRuntimeInitError};
 
@@ -305,8 +305,21 @@ pub fn CanvasPreview(
         interactive_effect_eligible.get()
             && ws.is_some_and(|ws| ws.interactive_preview_available.get())
     });
-    let interactive_active =
+    let interactive_requested =
         Signal::derive(move || interactive_available.get() && interactive_on.get());
+    let interactive_lifecycle = Memo::new(move |_| {
+        ws.and_then(|ws| {
+            ws.interactive_preview_lifecycles
+                .with(|lifecycles| lifecycles.get(&interactive_preview_id.get_value()).copied())
+        })
+    });
+    let interactive_active = Signal::derive(move || {
+        interactive_requested.get()
+            && matches!(
+                interactive_lifecycle.get(),
+                Some(InteractivePreviewLifecycle::Opened { .. })
+            )
+    });
     let authoritative_frame = frame;
     let frame = Signal::derive(move || {
         if interactive_active.get()
@@ -650,8 +663,7 @@ pub fn CanvasPreview(
     let requested_interactive_preview = StoredValue::new(None::<(u64, u32, u32, u32)>);
 
     Effect::new(move |_| {
-        let available = interactive_available.get();
-        let active = interactive_active.get();
+        let requested = interactive_requested.get();
         let generation = ws.map_or(0, |ws| ws.connection_generation.get());
         let fps = fps_target.get().clamp(1, 60);
         let (width, height) = authoritative_frame
@@ -661,7 +673,7 @@ pub fn CanvasPreview(
                     .map(|frame| (frame.width.max(1), frame.height.max(1)))
             })
             .unwrap_or((640, 480));
-        let next = (available && active).then_some((generation, fps, width, height));
+        let next = requested.then_some((generation, fps, width, height));
         if requested_interactive_preview.get_value() == next {
             return;
         }
@@ -754,6 +766,15 @@ pub fn CanvasPreview(
     // resets the toggle so it never sticks on across effect swaps.
     Effect::new(move |_| {
         if !interactive_effect_eligible.get() && interactive_on.get_untracked() {
+            interactive_on.set(false);
+        }
+    });
+    Effect::new(move |_| {
+        if matches!(
+            interactive_lifecycle.get(),
+            Some(InteractivePreviewLifecycle::Rejected)
+        ) && interactive_on.get_untracked()
+        {
             interactive_on.set(false);
         }
     });
@@ -1025,7 +1046,7 @@ pub fn CanvasPreview(
             {move || interactive_available.get().then(|| view! {
                 <button
                     type="button"
-                    class=move || if interactive_on.get() {
+                    class=move || if interactive_active.get() {
                         "absolute top-2 left-2 z-20 p-1.5 rounded-lg backdrop-blur-sm border \
                          transition-colors duration-200 btn-press \
                          bg-accent/20 border-accent-muted text-accent"
@@ -1035,17 +1056,17 @@ pub fn CanvasPreview(
                          bg-black/45 border-edge-subtle/60 text-fg-secondary \
                          hover:text-fg-primary hover:bg-black/65 hover:border-edge-default"
                     }
-                    title=move || if interactive_on.get() {
+                    title=move || if interactive_active.get() {
                         "Stop driving the effect from the preview"
                     } else {
                         "Drive the effect — send preview clicks, keys, and wheel to the daemon"
                     }
-                    aria-label=move || if interactive_on.get() {
+                    aria-label=move || if interactive_active.get() {
                         "Disable interactive preview input"
                     } else {
                         "Enable interactive preview input"
                     }
-                    aria-pressed=move || interactive_on.get().to_string()
+                    aria-pressed=move || interactive_active.get().to_string()
                     on:click=move |ev| {
                         ev.stop_propagation();
                         interactive_on.update(|on| *on = !*on);

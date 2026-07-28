@@ -163,6 +163,32 @@ def test_interactive_preview_rejects_truncated_frames(payload: bytes) -> None:
         HypercolorEventStream._decode_binary(payload)
 
 
+@pytest.mark.parametrize(
+    ("preview_id", "match"),
+    [(b"", "empty"), (b"a" * 129, "exceeds"), (b"bad\nname", "control")],
+)
+def test_interactive_preview_rejects_invalid_ids(preview_id: bytes, match: str) -> None:
+    payload = bytearray((0x0A, len(preview_id)))
+    payload.extend(struct.pack("<IIHHB", 1, 2, 1, 1, 2))
+    payload.extend(preview_id)
+    payload.extend(b"jpeg")
+    with pytest.raises(ValueError, match=match):
+        HypercolorEventStream._decode_binary(bytes(payload))
+
+
+@pytest.mark.parametrize(("format_byte", "pixels"), [(0, b"\x00" * 5), (1, b"\x00" * 7)])
+def test_interactive_preview_rejects_truncated_raw_payloads(
+    format_byte: int, pixels: bytes
+) -> None:
+    preview_id = b"main"
+    payload = bytearray((0x0A, len(preview_id)))
+    payload.extend(struct.pack("<IIHHB", 1, 2, 2, 1, format_byte))
+    payload.extend(preview_id)
+    payload.extend(pixels)
+    with pytest.raises(ValueError, match="payload is too short"):
+        HypercolorEventStream._decode_binary(bytes(payload))
+
+
 def test_unknown_json_message_falls_back_to_event() -> None:
     message = HypercolorEventStream._decode_json('{"type":"subscribed","channels":["events"]}')
 

@@ -42,7 +42,8 @@ use crate::ws::messages::scene_event_affects_active_effect;
 use crate::ws::{
     AudioLevel, BackpressureNotice, CanvasFrame, ControlSurfaceEventHint, DeviceEventHint,
     EffectErrorHint, ExtensionEventHint, InputInjectEdge, InputSourceStatusEventHint,
-    InteractivePreviewRequest, PerformanceMetrics, SceneEventHint, ScreenZonesFrame, WsManager,
+    InteractivePreviewLifecycle, InteractivePreviewRequest, PerformanceMetrics, SceneEventHint,
+    ScreenZonesFrame, WsManager,
 };
 
 mod effect_state;
@@ -64,6 +65,7 @@ pub struct WsContext {
     /// `set_display_preview_device`).
     pub display_preview_frame: ReadSignal<Option<CanvasFrame>>,
     pub interactive_preview_frames: ReadSignal<HashMap<String, CanvasFrame>>,
+    pub interactive_preview_lifecycles: ReadSignal<HashMap<String, InteractivePreviewLifecycle>>,
     pub interactive_preview_available: ReadSignal<bool>,
     /// Set to `Some(device_id)` to subscribe the live preview stream to
     /// that display, or `None` to unsubscribe. Setting the same id twice
@@ -498,6 +500,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         web_viewport_canvas_frame: ws.web_viewport_canvas_frame,
         display_preview_frame: ws.display_preview_frame,
         interactive_preview_frames: ws.interactive_preview_frames,
+        interactive_preview_lifecycles: ws.interactive_preview_lifecycles,
         interactive_preview_available: ws.interactive_preview_available,
         set_display_preview_device: ws.set_display_preview_device,
         preview_fps: ws.preview_fps,

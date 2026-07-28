@@ -140,7 +140,7 @@ subscribed.
   "capabilities": [
     "frames", "spectrum", "events", "frame_events", "canvas",
     "screen_canvas", "screen_zones", "web_viewport_canvas", "zone_preview",
-    "metrics", "device_metrics", "sensors", "display_preview",
+    "metrics", "device_metrics", "sensors", "display_preview", "input_events",
     "commands", "canvas_format_jpeg", "interactive_previews"
   ],
   "subscriptions": ["events"]
@@ -148,7 +148,7 @@ subscribed.
 ```
 
 `version` is the protocol version (`"1.0"`), distinct from the
-`server.version` daemon build string. `capabilities` lists all 13 channel names
+`server.version` daemon build string. `capabilities` lists all 14 channel names
 plus three feature flags (`commands`, `canvas_format_jpeg`,
 `interactive_previews`). `subscriptions` shows
 what is already live — only `events` by default.

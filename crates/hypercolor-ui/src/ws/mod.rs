@@ -10,7 +10,7 @@ mod preview;
 
 pub use connection::WsManager;
 pub use input::{InputEdgeButton, InputEdgeState, InputInjectEdge};
-pub use interactive_preview::InteractivePreviewRequest;
+pub use interactive_preview::{InteractivePreviewLifecycle, InteractivePreviewRequest};
 pub use messages::{
     AudioLevel, BackpressureNotice, CanvasFrame, CanvasPixelFormat, ControlSurfaceEventHint,
     DeviceEventHint, EffectErrorHint, ExtensionEventHint, InputSourceStatusEventHint,

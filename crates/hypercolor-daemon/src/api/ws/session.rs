@@ -434,6 +434,17 @@ impl BrowserPreviewSession {
         preview_id: String,
         config: InteractivePreviewConfig,
     ) -> Result<ServerMessage, WsProtocolError> {
+        let error_preview_id = preview_id.clone();
+        self.open_unscoped(preview_id, config)
+            .await
+            .map_err(|error| scope_preview_error(error, &error_preview_id))
+    }
+
+    async fn open_unscoped(
+        &mut self,
+        preview_id: String,
+        config: InteractivePreviewConfig,
+    ) -> Result<ServerMessage, WsProtocolError> {
         if let Some(binding) = self.previews.get_mut(&preview_id) {
             binding
                 .lane
@@ -615,6 +626,16 @@ fn interactive_preview_error(
     WsProtocolError::invalid_request(error.to_string())
 }
 
+fn scope_preview_error(mut error: WsProtocolError, preview_id: &str) -> WsProtocolError {
+    match error.details.as_mut() {
+        Some(serde_json::Value::Object(details)) => {
+            details.insert("preview_id".to_owned(), json!(preview_id));
+        }
+        _ => error.details = Some(json!({"preview_id": preview_id})),
+    }
+    error
+}
+
 fn browser_registry_error(error: BrowserInputRegistryError) -> WsProtocolError {
     WsProtocolError::invalid_request(error.to_string())
 }
@@ -791,6 +812,7 @@ async fn handle_client_message(
             height,
             format,
         } => {
+            let error_preview_id = preview_id.clone();
             let config = InteractivePreviewConfig {
                 target,
                 fps,
@@ -801,12 +823,15 @@ async fn handle_client_message(
             let result = match ensure_control_tier(auth_context) {
                 Ok(()) => browser_previews.open(preview_id, config).await,
                 Err(error) => Err(error),
-            };
+            }
+            .map_err(|error| scope_preview_error(error, &error_preview_id));
             send_protocol_result(socket, result).await;
         }
         ClientMessage::InteractivePreviewClose { preview_id } => {
-            let result =
-                ensure_control_tier(auth_context).map(|()| browser_previews.close(preview_id));
+            let error_preview_id = preview_id.clone();
+            let result = ensure_control_tier(auth_context)
+                .map(|()| browser_previews.close(preview_id))
+                .map_err(|error| scope_preview_error(error, &error_preview_id));
             send_protocol_result(socket, result).await;
         }
         ClientMessage::InputInject { preview_id, events } => {

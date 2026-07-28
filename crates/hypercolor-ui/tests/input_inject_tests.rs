@@ -3,7 +3,11 @@ use hypercolor_ui::components::canvas_preview::{
     canonical_injection_key, effect_wants_interaction, normalized_canvas_position,
     wheel_delta_hi_res,
 };
-use hypercolor_ui::ws::interactive_preview::{close_message, input_inject_message, open_message};
+use hypercolor_ui::ws::interactive_preview::{
+    InteractivePreviewLifecycle, InteractivePreviewLifecycleTracker,
+    InteractivePreviewServerUpdate, close_message, input_inject_message, open_message,
+    server_update,
+};
 use hypercolor_ui::ws::messages::interactive_preview_supported;
 use hypercolor_ui::ws::{
     InputEdgeButton, InputEdgeState, InputInjectEdge, InteractivePreviewRequest,
@@ -103,6 +107,65 @@ fn interactive_preview_requires_explicit_server_capability() {
         "type": "event",
         "capabilities": ["interactive_previews"],
     })));
+}
+
+#[test]
+fn interactive_preview_lifecycle_fences_rapid_reopen_until_latest_ack() {
+    let mut tracker = InteractivePreviewLifecycleTracker::default();
+    tracker.request_open("main");
+    tracker.request_close("main");
+    tracker.request_open("main");
+
+    tracker.apply(InteractivePreviewServerUpdate::Opened {
+        preview_id: "main".to_owned(),
+        publication_id: 11,
+    });
+    assert_eq!(
+        tracker.lifecycles().get("main"),
+        Some(&InteractivePreviewLifecycle::Requested)
+    );
+    tracker.apply(InteractivePreviewServerUpdate::Closed {
+        preview_id: "main".to_owned(),
+    });
+    assert_eq!(
+        tracker.lifecycles().get("main"),
+        Some(&InteractivePreviewLifecycle::Requested)
+    );
+    tracker.apply(InteractivePreviewServerUpdate::Opened {
+        preview_id: "main".to_owned(),
+        publication_id: 12,
+    });
+    assert_eq!(
+        tracker.lifecycles().get("main"),
+        Some(&InteractivePreviewLifecycle::Opened { publication_id: 12 })
+    );
+
+    tracker.clear();
+    assert!(tracker.lifecycles().is_empty());
+}
+
+#[test]
+fn interactive_preview_rejection_is_addressed_and_terminal() {
+    let update = server_update(&serde_json::json!({
+        "type": "error",
+        "code": "unavailable",
+        "details": { "preview_id": "main" },
+    }))
+    .expect("addressed error should parse");
+    let mut tracker = InteractivePreviewLifecycleTracker::default();
+    tracker.request_open("main");
+    tracker.apply(update);
+    assert_eq!(
+        tracker.lifecycles().get("main"),
+        Some(&InteractivePreviewLifecycle::Rejected)
+    );
+    assert!(
+        server_update(&serde_json::json!({
+            "type": "error",
+            "details": { "preview_id": "" },
+        }))
+        .is_none()
+    );
 }
 
 #[test]

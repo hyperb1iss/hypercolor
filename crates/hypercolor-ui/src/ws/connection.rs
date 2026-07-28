@@ -24,7 +24,10 @@ use wasm_bindgen::{JsCast, JsValue};
 use web_sys::MessageEvent;
 
 use super::input::InputInjectEdge;
-use super::interactive_preview::InteractivePreviewRequest;
+use super::interactive_preview::{
+    InteractivePreviewLifecycle, InteractivePreviewLifecycleTracker, InteractivePreviewRequest,
+    server_update,
+};
 use super::messages::{
     AudioLevel, BackpressureNotice, CanvasFrame, ConnectionState, ControlSurfaceEventHint,
     DeviceEventHint, EffectErrorHint, ExtensionEventHint, InputSourceStatusEventHint,
@@ -70,6 +73,7 @@ pub struct WsManager {
     /// connection drops.
     pub display_preview_frame: ReadSignal<Option<CanvasFrame>>,
     pub interactive_preview_frames: ReadSignal<HashMap<String, CanvasFrame>>,
+    pub interactive_preview_lifecycles: ReadSignal<HashMap<String, InteractivePreviewLifecycle>>,
     pub interactive_preview_available: ReadSignal<bool>,
     pub preview_fps: ReadSignal<f32>,
     pub metrics: ReadSignal<Option<PerformanceMetrics>>,
@@ -141,7 +145,11 @@ impl WsManager {
         let (display_preview_frame, set_display_preview_frame) = signal(None::<CanvasFrame>);
         let (interactive_preview_frames, set_interactive_preview_frames) =
             signal(HashMap::<String, CanvasFrame>::new());
+        let (interactive_preview_lifecycles, set_interactive_preview_lifecycles) =
+            signal(HashMap::<String, InteractivePreviewLifecycle>::new());
         let (interactive_preview_available, set_interactive_preview_available) = signal(false);
+        let interactive_preview_tracker =
+            StoredValue::new(InteractivePreviewLifecycleTracker::default());
         let (display_preview_device, set_display_preview_device) = signal(None::<String>);
         let (connection_state, set_connection_state) = signal(ConnectionState::Disconnected);
         let (connection_generation, set_connection_generation) = signal(0_u64);
@@ -224,6 +232,8 @@ impl WsManager {
             set_backpressure_notice.set(None);
             set_interactive_preview_available.set(false);
             set_interactive_preview_frames.set(HashMap::new());
+            interactive_preview_tracker.update_value(InteractivePreviewLifecycleTracker::clear);
+            set_interactive_preview_lifecycles.set(HashMap::new());
             set_preview_transport_cap.set(preview_page_cap.get_untracked());
             set_last_backpressure_at_ms.set(None);
 
@@ -290,6 +300,8 @@ impl WsManager {
                 set_display_preview_frame.set(None);
                 set_interactive_preview_available.set(false);
                 set_interactive_preview_frames.set(HashMap::new());
+                interactive_preview_tracker.update_value(InteractivePreviewLifecycleTracker::clear);
+                set_interactive_preview_lifecycles.set(HashMap::new());
                 set_sensors.set(None);
                 schedule_reconnect(reconnect_attempts, reconnect_timeout, connect);
             };
@@ -305,9 +317,16 @@ impl WsManager {
                 // Binary frame (ArrayBuffer)
                 if let Some(buffer) = message_array_buffer(&event) {
                     if let Some((preview_id, frame)) = decode_interactive_preview_frame(&buffer) {
-                        set_interactive_preview_frames.update(|frames| {
-                            frames.insert(preview_id, frame);
-                        });
+                        if interactive_preview_lifecycles.with_untracked(|lifecycles| {
+                            matches!(
+                                lifecycles.get(&preview_id),
+                                Some(InteractivePreviewLifecycle::Opened { .. })
+                            )
+                        }) {
+                            set_interactive_preview_frames.update(|frames| {
+                                frames.insert(preview_id, frame);
+                            });
+                        }
                         return;
                     }
                     if let Some(zones) = decode_screen_zones_frame(&buffer) {
@@ -378,6 +397,17 @@ impl WsManager {
                 {
                     if msg.get("type").and_then(serde_json::Value::as_str) == Some("hello") {
                         set_interactive_preview_available.set(interactive_preview_supported(&msg));
+                    }
+                    if let Some(update) = server_update(&msg) {
+                        let preview_id = update.preview_id().to_owned();
+                        interactive_preview_tracker.update_value(|tracker| tracker.apply(update));
+                        set_interactive_preview_lifecycles.set(
+                            interactive_preview_tracker
+                                .with_value(InteractivePreviewLifecycleTracker::lifecycles),
+                        );
+                        set_interactive_preview_frames.update(|frames| {
+                            frames.remove(&preview_id);
+                        });
                     }
                     handle_json_message(
                         &msg,
@@ -675,11 +705,22 @@ impl WsManager {
             set_interactive_preview_frames.update(|frames| {
                 frames.remove(&request.preview_id);
             });
+            interactive_preview_tracker
+                .update_value(|tracker| tracker.request_open(&request.preview_id));
+            set_interactive_preview_lifecycles.set(
+                interactive_preview_tracker
+                    .with_value(InteractivePreviewLifecycleTracker::lifecycles),
+            );
             if let Some(ws) = ws_handle.get_value() {
                 super::interactive_preview::send_open(&ws, &request);
             }
         });
         let close_interactive_preview = Callback::new(move |preview_id: String| {
+            interactive_preview_tracker.update_value(|tracker| tracker.request_close(&preview_id));
+            set_interactive_preview_lifecycles.set(
+                interactive_preview_tracker
+                    .with_value(InteractivePreviewLifecycleTracker::lifecycles),
+            );
             if let Some(ws) = ws_handle.get_value() {
                 super::interactive_preview::send_close(&ws, &preview_id);
             }
@@ -701,6 +742,7 @@ impl WsManager {
             web_viewport_canvas_frame,
             display_preview_frame,
             interactive_preview_frames,
+            interactive_preview_lifecycles,
             interactive_preview_available,
             preview_fps,
             metrics,
