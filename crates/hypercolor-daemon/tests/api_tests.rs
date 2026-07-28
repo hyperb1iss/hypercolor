@@ -1537,6 +1537,104 @@ async fn config_set_driver_registry_key_rejects_non_routable_ip() {
 }
 
 #[tokio::test]
+async fn config_set_rejects_invalid_capture_boundaries_before_persistence() {
+    let (state, manager, _tempdir) = test_state_with_temp_config_manager();
+    let app = test_app_with_state(Arc::clone(&state));
+
+    for (key, value) in [
+        ("capture.capture_fps", "0"),
+        ("capture.grid_cols", "65"),
+        ("capture.smoothing", "1.1"),
+        ("capture.gamma", "nan"),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/config/set")
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"key":"{key}","value":"{value}"}}"#
+                    )))
+                    .expect("failed to build request"),
+            )
+            .await
+            .expect("failed to execute request");
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let json = body_json(response).await;
+        assert_eq!(json["error"]["code"], "validation_error");
+    }
+
+    assert!(
+        !manager.path().exists(),
+        "invalid capture config must not reach persistent storage"
+    );
+    assert!(!state.input_manager.lock().await.has_screen_source());
+}
+
+#[cfg(target_os = "windows")]
+#[tokio::test]
+async fn config_set_applies_windows_capture_settings_source_and_disable_live() {
+    let (state, manager, _tempdir) = test_state_with_temp_config_manager();
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let source = r"monitor:\\?\DISPLAY#TEST#stable";
+    for (key, value) in [
+        ("capture.grid_cols", "9".to_owned()),
+        (
+            "capture.source",
+            serde_json::to_string(source).expect("source should encode as JSON"),
+        ),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/config/set")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "key": key, "value": value }).to_string(),
+                    ))
+                    .expect("failed to build request"),
+            )
+            .await
+            .expect("failed to execute request");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        assert_eq!(json["data"]["live"], true);
+        assert!(state.input_manager.lock().await.has_screen_source());
+    }
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/config/set")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"key":"capture.enabled","value":"false"}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["live"], true);
+    assert!(!state.input_manager.lock().await.has_screen_source());
+
+    let persisted = fs::read_to_string(manager.path()).expect("capture config should persist");
+    let persisted: HypercolorConfig =
+        toml::from_str(&persisted).expect("persisted capture config should parse");
+    assert_eq!(persisted.capture.grid_cols, 9);
+    assert_eq!(persisted.capture.source, source);
+    assert!(!persisted.capture.enabled);
+}
+
+#[tokio::test]
 async fn config_set_audio_device_rebuilds_live_input_manager_when_requested() {
     let tempdir = tempfile::tempdir().expect("tempdir should build");
     let config_path = tempdir.path().join("hypercolor.toml");

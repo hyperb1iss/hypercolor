@@ -40,9 +40,10 @@ pub use media::MediaSource;
 pub use net::NetSource;
 pub use sensor::SensorPoller;
 pub use status::{
-    SourceFreshness, SourceIssue, SourceKind, SourceResourceScanHealth, SourceSessionSlot,
-    SourceSessionWriter, SourceState, SourceStatus, SourceStatusAvailability, SourceStatusError,
-    SourceStatusHandle, SourceStatusRegistry, SourceStatusRegistrySnapshot, SourceStatusReporter,
+    ScreenCaptureDiagnostics, ScreenCaptureReductionPath, SourceDiagnostics, SourceFreshness,
+    SourceIssue, SourceKind, SourceResourceScanHealth, SourceSessionSlot, SourceSessionWriter,
+    SourceState, SourceStatus, SourceStatusAvailability, SourceStatusError, SourceStatusHandle,
+    SourceStatusRegistry, SourceStatusRegistrySnapshot, SourceStatusReporter,
     SourceStatusSubscription, SourceStatusWriter, SourceTimestampField, TerminalFailureLatch,
     classify_source_resource_scan,
 };
@@ -106,6 +107,76 @@ pub enum AudioReconfigurationConflict {
     /// The target audio source started or stopped after preparation began.
     #[error("audio source lifecycle changed while reconfiguration was prepared")]
     SourceLifecycleChanged,
+}
+
+/// Generation-fenced screen configuration captured while briefly holding the
+/// input manager lock.
+#[must_use = "screen reconfiguration plans must be prepared and committed"]
+pub struct ScreenRuntimeConfigPlan {
+    expected_graph_generation: u64,
+    expected_source_present: bool,
+    expected_source_running: bool,
+    enabled: bool,
+    capture_active: bool,
+}
+
+impl ScreenRuntimeConfigPlan {
+    /// Whether the replacement source must be registered after commit.
+    #[must_use]
+    pub const fn enabled(&self) -> bool {
+        self.enabled
+    }
+
+    /// Demand state the prepared replacement must adopt before it starts.
+    #[must_use]
+    pub const fn capture_active(&self) -> bool {
+        self.capture_active
+    }
+
+    /// Graph generation reserved for a staged replacement source.
+    #[must_use]
+    pub fn replacement_source_graph_generation(&self) -> u64 {
+        self.expected_graph_generation
+            .checked_add(1)
+            .expect("input source graph generation exhausted")
+    }
+}
+
+/// A concurrent input-graph transition invalidated prepared screen state.
+#[derive(Debug, thiserror::Error)]
+pub enum ScreenReconfigurationConflict {
+    /// The canonical source graph changed after preparation began.
+    #[error("input graph changed while screen reconfiguration was prepared")]
+    GraphChanged,
+    /// A screen source was added or removed after preparation began.
+    #[error("screen source topology changed while reconfiguration was prepared")]
+    SourceTopologyChanged,
+    /// The target screen source started or stopped after preparation began.
+    #[error("screen source lifecycle changed while reconfiguration was prepared")]
+    SourceLifecycleChanged,
+    /// The prepared replacement does not match the plan.
+    #[error("prepared screen source does not match the reconfiguration plan")]
+    InvalidReplacement,
+}
+
+/// Screen sources detached by an atomic graph commit.
+#[must_use = "retired screen sources must be stopped outside the input manager lock"]
+pub struct ScreenRuntimeRetirement {
+    sources: Vec<ManagedInputSource>,
+    source_graph_generation: u64,
+}
+
+impl ScreenRuntimeRetirement {
+    /// Stop detached workers and retire their status handles.
+    pub fn retire(mut self) {
+        for source in &mut self.sources {
+            source.stop();
+            if let Err(error) = source.retire_source_status(self.source_graph_generation) {
+                error!(source = source.name(), %error, "Failed to retire screen input source status");
+            }
+            info!(source = source.name(), "Retired screen capture source");
+        }
+    }
 }
 
 impl AudioRuntimeConfigPlan {
@@ -875,6 +946,105 @@ impl InputManager {
     #[must_use]
     pub fn has_screen_source(&self) -> bool {
         self.sources.iter().any(|source| source.is_screen_source())
+    }
+
+    /// Snapshot a generation-fenced screen-source replacement plan.
+    pub fn plan_screen_runtime_config(&self, enabled: bool) -> ScreenRuntimeConfigPlan {
+        let source = self.sources.iter().find(|source| source.is_screen_source());
+        let current_demand = self.screen_capture_active.unwrap_or_else(|| {
+            source.is_some_and(|source| source.source_status_handle().snapshot().demanded)
+        });
+        ScreenRuntimeConfigPlan {
+            expected_graph_generation: self.source_graph_generation,
+            expected_source_present: source.is_some(),
+            expected_source_running: source.is_some_and(|source| source.is_running()),
+            enabled,
+            capture_active: enabled && current_demand,
+        }
+    }
+
+    /// Atomically install a prepared screen source if the input graph is unchanged.
+    ///
+    /// `replacement` remains owned by the caller on error so dropping or stopping
+    /// a prepared backend never occurs while the input manager lock is held.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed conflict when graph topology or lifecycle changed during
+    /// preparation, or the replacement does not match the plan.
+    pub fn commit_screen_runtime_config(
+        &mut self,
+        plan: &ScreenRuntimeConfigPlan,
+        replacement: &mut Option<Box<dyn InputSource>>,
+    ) -> Result<ScreenRuntimeRetirement, ScreenReconfigurationConflict> {
+        self.validate_screen_runtime_config(plan, replacement)?;
+
+        let source_index = self
+            .sources
+            .iter()
+            .position(|source| source.is_screen_source());
+        let topology_changed = source_index.is_some() || replacement.is_some();
+        let source_graph_generation = if topology_changed {
+            self.bump_source_graph_generation()
+        } else {
+            self.source_graph_generation
+        };
+        let mut retired = Vec::with_capacity(usize::from(source_index.is_some()));
+        match (source_index, replacement.take()) {
+            (Some(index), Some(source)) => {
+                let replacement = self.create_managed_source(source, source_graph_generation);
+                retired.push(std::mem::replace(&mut self.sources[index], replacement));
+            }
+            (Some(index), None) => retired.push(self.sources.remove(index)),
+            (None, Some(source)) => {
+                let replacement = self.create_managed_source(source, source_graph_generation);
+                self.sources.push(replacement);
+            }
+            (None, None) => {}
+        }
+        self.screen_capture_active = Some(plan.capture_active);
+        if topology_changed {
+            self.publish_source_status_registry();
+        }
+        Ok(ScreenRuntimeRetirement {
+            sources: retired,
+            source_graph_generation,
+        })
+    }
+
+    /// Verify that a prepared screen replacement can still commit.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed conflict when the source graph changed during preparation.
+    pub fn validate_screen_runtime_config(
+        &self,
+        plan: &ScreenRuntimeConfigPlan,
+        replacement: &Option<Box<dyn InputSource>>,
+    ) -> Result<(), ScreenReconfigurationConflict> {
+        if self.source_graph_generation != plan.expected_graph_generation {
+            return Err(ScreenReconfigurationConflict::GraphChanged);
+        }
+        let source_index = self
+            .sources
+            .iter()
+            .position(|source| source.is_screen_source());
+        if source_index.is_some() != plan.expected_source_present {
+            return Err(ScreenReconfigurationConflict::SourceTopologyChanged);
+        }
+        if source_index
+            .is_some_and(|index| self.sources[index].is_running() != plan.expected_source_running)
+        {
+            return Err(ScreenReconfigurationConflict::SourceLifecycleChanged);
+        }
+        if replacement.as_ref().is_some() != plan.enabled
+            || replacement
+                .as_ref()
+                .is_some_and(|source| !source.is_screen_source() || !source.is_running())
+        {
+            return Err(ScreenReconfigurationConflict::InvalidReplacement);
+        }
+        Ok(())
     }
 
     /// Whether any registered source captures host interaction.

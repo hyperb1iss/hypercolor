@@ -1,12 +1,12 @@
 //! Tests for configuration types — defaults, serde roundtrips, partial deserialization.
 
 use hypercolor_types::config::{
-    AudioConfig, CaptureConfig, DaemonConfig, DbusConfig, DiscoveryConfig, DisplayConfig,
-    EffectEngineConfig, EffectErrorFallbackPolicy, FeatureFlags, GoveeConfig, HypercolorConfig,
-    InputConfig, InteractionRoutePolicy, LogLevel, McpConfig, MediaConfig, NetworkAccessMode,
-    NetworkClientScope, NetworkConfig, RenderAccelerationMode, RenderingConfig,
-    ServoGpuImportConfig, ServoGpuImportMode, ShutdownBehavior, TuiConfig, WebConfig,
-    default_driver_configs,
+    AudioConfig, CaptureConfig, CaptureConfigValidationError, CapturePlatform, DaemonConfig,
+    DbusConfig, DiscoveryConfig, DisplayConfig, EffectEngineConfig, EffectErrorFallbackPolicy,
+    FeatureFlags, GoveeConfig, HypercolorConfig, InputConfig, InteractionRoutePolicy, LogLevel,
+    McpConfig, MediaConfig, NetworkAccessMode, NetworkClientScope, NetworkConfig,
+    RenderAccelerationMode, RenderingConfig, ServoGpuImportConfig, ServoGpuImportMode,
+    ShutdownBehavior, TuiConfig, WebConfig, default_driver_configs,
 };
 use hypercolor_types::session::{OffOutputBehavior, SessionConfig};
 
@@ -120,6 +120,131 @@ fn capture_config_tolerates_legacy_monitor_key() {
         toml::from_str("enabled = true\nmonitor = 2\n").expect("legacy capture config parses");
     assert!(parsed.enabled);
     assert_eq!(parsed.grid_cols, 8);
+}
+
+#[test]
+fn capture_config_accepts_backend_boundary_rates() {
+    let mut config = CaptureConfig::default();
+    for (platform, max_fps) in [
+        (CapturePlatform::WindowsDesktopDuplication, 240),
+        (CapturePlatform::LinuxPipeWire, 1000),
+    ] {
+        config.source = "auto".to_owned();
+        config.capture_fps = 1;
+        config
+            .validate_for_platform(platform)
+            .expect("backend minimum cadence should validate");
+        config.capture_fps = max_fps;
+        config
+            .validate_for_platform(platform)
+            .expect("backend maximum cadence should validate");
+    }
+}
+
+#[test]
+fn capture_config_rejects_values_outside_backend_limits() {
+    let mut config = CaptureConfig {
+        capture_fps: 0,
+        ..CaptureConfig::default()
+    };
+    assert!(matches!(
+        config.validate_for_platform(CapturePlatform::WindowsDesktopDuplication),
+        Err(CaptureConfigValidationError::CaptureFps {
+            min: 1,
+            max: 240,
+            value: 0
+        })
+    ));
+    config.capture_fps = 241;
+    assert!(matches!(
+        config.validate_for_platform(CapturePlatform::WindowsDesktopDuplication),
+        Err(CaptureConfigValidationError::CaptureFps {
+            min: 1,
+            max: 240,
+            value: 241
+        })
+    ));
+}
+
+#[test]
+fn capture_config_rejects_invalid_grid_and_float_values() {
+    let platform = CapturePlatform::WindowsDesktopDuplication;
+    let mut config = CaptureConfig {
+        grid_cols: 65,
+        ..CaptureConfig::default()
+    };
+    assert!(matches!(
+        config.validate_for_platform(platform),
+        Err(CaptureConfigValidationError::GridDimension {
+            field: "grid_cols",
+            value: 65
+        })
+    ));
+
+    config.grid_cols = 8;
+    config.smoothing = f32::NAN;
+    assert!(matches!(
+        config.validate_for_platform(platform),
+        Err(CaptureConfigValidationError::FloatRange {
+            field: "smoothing",
+            ..
+        })
+    ));
+
+    config.smoothing = 0.3;
+    config.gamma = 0.19;
+    assert!(matches!(
+        config.validate_for_platform(platform),
+        Err(CaptureConfigValidationError::FloatRange { field: "gamma", .. })
+    ));
+}
+
+#[test]
+fn capture_config_validates_source_by_backend() {
+    let mut config = CaptureConfig {
+        source: r"monitor:\\?\DISPLAY#DEL40A9#stable".to_owned(),
+        ..CaptureConfig::default()
+    };
+    config
+        .validate_for_platform(CapturePlatform::WindowsDesktopDuplication)
+        .expect("stable Windows display identities should validate");
+    assert!(matches!(
+        config.validate_for_platform(CapturePlatform::LinuxPipeWire),
+        Err(CaptureConfigValidationError::Source { .. })
+    ));
+    config.enabled = false;
+    config
+        .validate_for_platform(CapturePlatform::LinuxPipeWire)
+        .expect("disabled cross-platform source identities should remain portable");
+
+    config.enabled = true;
+    config.source = "auto\0hidden".to_owned();
+    assert!(matches!(
+        config.validate_for_platform(CapturePlatform::WindowsDesktopDuplication),
+        Err(CaptureConfigValidationError::Source { .. })
+    ));
+}
+
+#[test]
+fn unsupported_capture_platform_only_accepts_disabled_config() {
+    let mut config = CaptureConfig {
+        enabled: false,
+        ..CaptureConfig::default()
+    };
+    config
+        .validate_for_platform(CapturePlatform::Unsupported)
+        .expect("dormant portable capture config should remain loadable");
+    config.grid_rows = 0;
+    assert!(matches!(
+        config.validate_for_platform(CapturePlatform::Unsupported),
+        Err(CaptureConfigValidationError::GridDimension { .. })
+    ));
+    config.grid_rows = 6;
+    config.enabled = true;
+    assert_eq!(
+        config.validate_for_platform(CapturePlatform::Unsupported),
+        Err(CaptureConfigValidationError::UnsupportedPlatform)
+    );
 }
 
 #[test]

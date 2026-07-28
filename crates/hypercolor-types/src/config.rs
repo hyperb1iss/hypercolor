@@ -721,6 +721,205 @@ pub struct CaptureConfig {
     pub restore_token: Option<String>,
 }
 
+/// Native capture implementation selected by the current target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CapturePlatform {
+    /// DXGI Desktop Duplication.
+    WindowsDesktopDuplication,
+    /// XDG desktop portal plus PipeWire.
+    LinuxPipeWire,
+    /// No native screen-capture implementation is available.
+    Unsupported,
+}
+
+impl CapturePlatform {
+    /// Capture platform compiled into this target.
+    #[must_use]
+    pub const fn current() -> Self {
+        #[cfg(target_os = "windows")]
+        {
+            Self::WindowsDesktopDuplication
+        }
+        #[cfg(target_os = "linux")]
+        {
+            Self::LinuxPipeWire
+        }
+        #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+        {
+            Self::Unsupported
+        }
+    }
+
+    /// Inclusive analysis cadence supported by this backend.
+    #[must_use]
+    pub const fn capture_fps_range(self) -> Option<(u32, u32)> {
+        match self {
+            Self::WindowsDesktopDuplication => Some((1, 240)),
+            Self::LinuxPipeWire => Some((1, 1000)),
+            Self::Unsupported => None,
+        }
+    }
+}
+
+/// Invalid screen-capture configuration rejected before persistence or startup.
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+pub enum CaptureConfigValidationError {
+    /// The target has no native capture backend.
+    #[error("screen capture is not supported on this platform")]
+    UnsupportedPlatform,
+    /// Capture cadence is outside the native backend's supported range.
+    #[error("capture.capture_fps must be in {min}..={max}, got {value}")]
+    CaptureFps {
+        /// Inclusive lower bound.
+        min: u32,
+        /// Inclusive upper bound.
+        max: u32,
+        /// Rejected value.
+        value: u32,
+    },
+    /// A grid dimension is outside the indexed publication format.
+    #[error("capture.{field} must be in 1..=64, got {value}")]
+    GridDimension {
+        /// Config field name.
+        field: &'static str,
+        /// Rejected value.
+        value: u32,
+    },
+    /// A floating-point setting is non-finite or outside its semantic range.
+    #[error("capture.{field} must be finite and in {min}..={max}, got {value}")]
+    FloatRange {
+        /// Config field name.
+        field: &'static str,
+        /// Inclusive lower bound.
+        min: f32,
+        /// Inclusive upper bound.
+        max: f32,
+        /// Rejected value.
+        value: f32,
+    },
+    /// The selected source cannot be represented by the native backend.
+    #[error("capture.source is invalid for {platform}: {reason}")]
+    Source {
+        /// Backend accepting the source string.
+        platform: &'static str,
+        /// Specific validation failure.
+        reason: &'static str,
+    },
+}
+
+impl CaptureConfig {
+    /// Validate every capture setting against the backend compiled for this target.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first unsupported or out-of-range setting.
+    pub fn validate(&self) -> Result<(), CaptureConfigValidationError> {
+        self.validate_for_platform(CapturePlatform::current())
+    }
+
+    /// Validate against an explicit backend for cross-platform contract tests.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first unsupported or out-of-range setting.
+    pub fn validate_for_platform(
+        &self,
+        platform: CapturePlatform,
+    ) -> Result<(), CaptureConfigValidationError> {
+        let (min_fps, max_fps) = platform.capture_fps_range().unwrap_or((1, 1000));
+        if !(min_fps..=max_fps).contains(&self.capture_fps) {
+            return Err(CaptureConfigValidationError::CaptureFps {
+                min: min_fps,
+                max: max_fps,
+                value: self.capture_fps,
+            });
+        }
+        validate_grid_dimension("grid_cols", self.grid_cols)?;
+        validate_grid_dimension("grid_rows", self.grid_rows)?;
+        validate_capture_float("smoothing", self.smoothing, 0.0, 1.0)?;
+        validate_capture_float("scene_cut_threshold", self.scene_cut_threshold, 0.0, 765.0)?;
+        validate_capture_float("letterbox_threshold", self.letterbox_threshold, 0.0, 1.0)?;
+        validate_capture_float("saturation", self.saturation, 0.0, 4.0)?;
+        validate_capture_float("brightness", self.brightness, 0.0, 4.0)?;
+        validate_capture_float("gamma", self.gamma, 0.2, 5.0)?;
+        validate_capture_source(platform, &self.source, self.enabled)?;
+        if matches!(platform, CapturePlatform::Unsupported) && self.enabled {
+            return Err(CaptureConfigValidationError::UnsupportedPlatform);
+        }
+        Ok(())
+    }
+}
+
+fn validate_grid_dimension(
+    field: &'static str,
+    value: u32,
+) -> Result<(), CaptureConfigValidationError> {
+    if (1..=64).contains(&value) {
+        Ok(())
+    } else {
+        Err(CaptureConfigValidationError::GridDimension { field, value })
+    }
+}
+
+fn validate_capture_float(
+    field: &'static str,
+    value: f32,
+    min: f32,
+    max: f32,
+) -> Result<(), CaptureConfigValidationError> {
+    if value.is_finite() && (min..=max).contains(&value) {
+        Ok(())
+    } else {
+        Err(CaptureConfigValidationError::FloatRange {
+            field,
+            min,
+            max,
+            value,
+        })
+    }
+}
+
+fn validate_capture_source(
+    platform: CapturePlatform,
+    source: &str,
+    enabled: bool,
+) -> Result<(), CaptureConfigValidationError> {
+    let source = source.trim();
+    let platform_name = match platform {
+        CapturePlatform::WindowsDesktopDuplication => "Windows Desktop Duplication",
+        CapturePlatform::LinuxPipeWire => "Linux PipeWire",
+        CapturePlatform::Unsupported => "this platform",
+    };
+    if source.is_empty() {
+        return Err(CaptureConfigValidationError::Source {
+            platform: platform_name,
+            reason: "the source must not be empty",
+        });
+    }
+    if source.len() > 1024 {
+        return Err(CaptureConfigValidationError::Source {
+            platform: platform_name,
+            reason: "the source exceeds 1024 bytes",
+        });
+    }
+    if source.chars().any(char::is_control) {
+        return Err(CaptureConfigValidationError::Source {
+            platform: platform_name,
+            reason: "the source contains control characters",
+        });
+    }
+    if enabled
+        && matches!(platform, CapturePlatform::LinuxPipeWire)
+        && !source.eq_ignore_ascii_case("auto")
+    {
+        return Err(CaptureConfigValidationError::Source {
+            platform: platform_name,
+            reason: "portal-managed capture requires source = \"auto\"",
+        });
+    }
+    Ok(())
+}
+
 impl Default for CaptureConfig {
     fn default() -> Self {
         Self {

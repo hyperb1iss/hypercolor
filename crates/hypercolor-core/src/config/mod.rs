@@ -121,6 +121,58 @@ impl ConfigManager {
         self.config.store(Arc::new(normalize_config(config)));
     }
 
+    /// Atomically mutate the live configuration only while `expected` is current.
+    ///
+    /// Preparation can happen without the write lock, then use this compare-and-
+    /// modify seam to reject a stale commit without executing `mutate`.
+    pub fn modify_if_current(
+        &self,
+        expected: &Arc<HypercolorConfig>,
+        mutate: impl FnOnce(&mut HypercolorConfig),
+    ) -> bool {
+        let _guard = self
+            .write_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let current = self.config.load();
+        if !Arc::ptr_eq(expected, &current) {
+            return false;
+        }
+        let mut config = (**current).clone();
+        mutate(&mut config);
+        self.config.store(Arc::new(normalize_config(config)));
+        true
+    }
+
+    /// Persist and publish a mutation only while `expected` is current.
+    ///
+    /// The candidate is written before it becomes visible to lock-free readers,
+    /// so a persistence failure leaves both the live snapshot and disk unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serialization or the atomic file replacement fails.
+    pub fn modify_and_save_if_current(
+        &self,
+        expected: &Arc<HypercolorConfig>,
+        mutate: impl FnOnce(&mut HypercolorConfig),
+    ) -> Result<bool> {
+        let _guard = self
+            .write_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let current = self.config.load();
+        if !Arc::ptr_eq(expected, &current) {
+            return Ok(false);
+        }
+        let mut candidate = (**current).clone();
+        mutate(&mut candidate);
+        let candidate = normalize_config(candidate);
+        self.persist(&candidate)?;
+        self.config.store(Arc::new(candidate));
+        Ok(true)
+    }
+
     /// Reloads configuration from the original file path.
     ///
     /// On success, atomically swaps the live config. On failure, the previous
@@ -152,7 +204,11 @@ impl ConfigManager {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let snapshot = self.config.load();
-        let toml = toml::to_string_pretty(&**snapshot).context("failed to serialize config")?;
+        self.persist(&snapshot)
+    }
+
+    fn persist(&self, config: &HypercolorConfig) -> Result<()> {
+        let toml = toml::to_string_pretty(config).context("failed to serialize config")?;
         if let Some(parent) = self.config_path.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("failed to create {}", parent.display()))?;

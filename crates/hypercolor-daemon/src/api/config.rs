@@ -12,13 +12,14 @@ use utoipa::ToSchema;
 
 use hypercolor_core::config::canonical_audio_device_id;
 use hypercolor_core::engine::FpsTier;
-use hypercolor_core::input::AudioReconfigurationConflict;
+use hypercolor_core::input::{
+    AudioReconfigurationConflict, InputSource, ScreenReconfigurationConflict, SourceState,
+};
 use hypercolor_types::audio::{AudioPipelineConfig, AudioSourceType};
-use hypercolor_types::config::HypercolorConfig;
+use hypercolor_types::config::{CaptureConfig, HypercolorConfig};
 
 use crate::api::AppState;
 use crate::api::envelope::{ApiError, ApiResponse};
-#[cfg(target_os = "linux")]
 use crate::scene_transactions::SceneTransaction;
 use crate::scene_transactions::apply_layout_update;
 
@@ -76,8 +77,9 @@ pub async fn set_config_value(
         return ApiError::internal("Config manager unavailable in this runtime");
     };
 
-    let current = config_snapshot(&state);
-    let mut root = match serde_json::to_value(current) {
+    let current_snapshot = Arc::clone(&manager.get());
+    let current = (*current_snapshot).clone();
+    let mut root = match serde_json::to_value(&current) {
         Ok(v) => v,
         Err(e) => return ApiError::internal(format!("Failed to serialize config: {e}")),
     };
@@ -87,7 +89,15 @@ pub async fn set_config_value(
         .unwrap_or_else(|_| serde_json::Value::String(body.value.clone()));
     let parsed_value = canonicalize_config_value(&key, parsed_value);
 
-    if get_json_path(&root, &key).is_some_and(|current| current == &parsed_value) {
+    let value_is_unchanged =
+        get_json_path(&root, &key).is_some_and(|current| current == &parsed_value);
+    let capture_runtime_matches = if value_is_unchanged && should_reconfigure_capture(Some(&key)) {
+        state.input_manager.lock().await.has_screen_source() == current.capture.enabled
+    } else {
+        true
+    };
+
+    if value_is_unchanged && capture_runtime_matches {
         info!(
             key,
             live_requested = body.live.unwrap_or(false),
@@ -116,6 +126,56 @@ pub async fn set_config_value(
     };
     if let Err(error) = validate_driver_config_scope(&state, Some(&key), &updated) {
         return ApiError::validation(error);
+    }
+    if let Err(error) = updated.capture.validate() {
+        return ApiError::validation(error.to_string());
+    }
+
+    if should_reconfigure_capture(Some(&key)) {
+        match apply_capture_config_transaction(&state, &current_snapshot, updated.capture.clone())
+            .await
+        {
+            Ok(()) => {
+                let effective_config = manager.get();
+                let effective_root = match serde_json::to_value(&**effective_config) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        return ApiError::internal(format!(
+                            "Failed to serialize canonicalized config: {error}"
+                        ));
+                    }
+                };
+                let Some(effective_value) = get_json_path(&effective_root, &key).cloned() else {
+                    return ApiError::internal(format!(
+                        "Canonicalized config is missing expected key: {key}"
+                    ));
+                };
+                return ApiResponse::ok(serde_json::json!({
+                    "key": key,
+                    "value": effective_value,
+                    "live": true,
+                    "path": manager.path().display().to_string(),
+                }));
+            }
+            Err(CaptureConfigTransactionError::Conflict) => {
+                return ApiError::conflict(
+                    "Capture config changed while its live runtime was prepared; retry the update",
+                );
+            }
+            Err(CaptureConfigTransactionError::Prepare(error)) => {
+                return ApiError::validation(format!(
+                    "Failed to prepare live screen capture config: {error}"
+                ));
+            }
+            Err(CaptureConfigTransactionError::Persist(error)) => {
+                return ApiError::internal(format!("Failed to persist config: {error}"));
+            }
+            Err(CaptureConfigTransactionError::Commit(error)) => {
+                return ApiError::conflict(format!(
+                    "Screen capture graph changed during live apply: {error}"
+                ));
+            }
+        }
     }
 
     // Re-apply the validated key against the freshest config under the
@@ -152,10 +212,8 @@ pub async fn set_config_value(
     let audio_live_applied =
         maybe_apply_audio_config_change(&state, Some(&key), body.live.unwrap_or(false)).await;
     let render_live_applied = maybe_apply_render_config_change(&state, Some(&key)).await;
-    let capture_live_applied = maybe_apply_capture_config_change(&state, Some(&key)).await;
     let input_live_applied = maybe_apply_input_config_change(&state, Some(&key)).await;
-    let live_applied =
-        audio_live_applied || render_live_applied || capture_live_applied || input_live_applied;
+    let live_applied = audio_live_applied || render_live_applied || input_live_applied;
 
     ApiResponse::ok(serde_json::json!({
         "key": key,
@@ -184,7 +242,8 @@ pub async fn reset_config_value(
         return ApiError::internal("Config manager unavailable in this runtime");
     };
 
-    let mut current = match serde_json::to_value(config_snapshot(&state)) {
+    let current_snapshot = Arc::clone(&manager.get());
+    let mut current = match serde_json::to_value(&*current_snapshot) {
         Ok(v) => v,
         Err(e) => return ApiError::internal(format!("Failed to serialize config: {e}")),
     };
@@ -216,6 +275,52 @@ pub async fn reset_config_value(
     if let Err(error) = validate_driver_config_scope(&state, normalized_key.as_deref(), &updated) {
         return ApiError::validation(error);
     }
+    if let Err(error) = updated.capture.validate() {
+        return ApiError::validation(error.to_string());
+    }
+
+    let capture_live_applied = if normalized_key
+        .as_deref()
+        .is_none_or(|key| should_reconfigure_capture(Some(key)))
+    {
+        match apply_capture_config_transaction(&state, &current_snapshot, updated.capture.clone())
+            .await
+        {
+            Ok(()) => true,
+            Err(CaptureConfigTransactionError::Conflict) => {
+                return ApiError::conflict(
+                    "Capture config changed while its live runtime was prepared; retry the reset",
+                );
+            }
+            Err(CaptureConfigTransactionError::Prepare(error)) => {
+                return ApiError::validation(format!(
+                    "Failed to prepare live screen capture config: {error}"
+                ));
+            }
+            Err(CaptureConfigTransactionError::Persist(error)) => {
+                return ApiError::internal(format!("Failed to persist config: {error}"));
+            }
+            Err(CaptureConfigTransactionError::Commit(error)) => {
+                return ApiError::conflict(format!(
+                    "Screen capture graph changed during live apply: {error}"
+                ));
+            }
+        }
+    } else {
+        false
+    };
+
+    if normalized_key
+        .as_deref()
+        .is_some_and(|key| should_reconfigure_capture(Some(key)))
+    {
+        return ApiResponse::ok(serde_json::json!({
+            "key": normalized_key,
+            "reset": true,
+            "live": true,
+            "path": manager.path().display().to_string(),
+        }));
+    }
 
     // Keyed resets re-apply the default at the key against the freshest
     // config under the write lock (same race protection as set); a full
@@ -245,8 +350,6 @@ pub async fn reset_config_value(
     .await;
     let render_live_applied =
         maybe_apply_render_config_change(&state, normalized_key.as_deref()).await;
-    let capture_live_applied =
-        maybe_apply_capture_config_change(&state, normalized_key.as_deref()).await;
     let input_live_applied =
         maybe_apply_input_config_change(&state, normalized_key.as_deref()).await;
     let live_applied =
@@ -527,72 +630,166 @@ fn should_reconfigure_capture(key: Option<&str>) -> bool {
     key.is_none_or(|value| value == "capture" || value.starts_with("capture."))
 }
 
-/// Apply screen capture config changes live.
-///
-/// Enable/disable adds or removes the capture source on the running input
-/// manager; analysis settings (grid, smoothing, letterbox, color tuning)
-/// reach the capture worker without interrupting the stream. A target FPS
-/// change restarts the worker, which is silent once a portal restore token
-/// has been persisted.
-#[cfg_attr(not(target_os = "linux"), allow(clippy::unused_async))]
-async fn maybe_apply_capture_config_change(state: &Arc<AppState>, key: Option<&str>) -> bool {
-    if !should_reconfigure_capture(key) {
-        return false;
-    }
+#[derive(Debug, thiserror::Error)]
+enum CaptureConfigTransactionError {
+    #[error("capture config identity changed during preparation")]
+    Conflict,
+    #[error(transparent)]
+    Prepare(anyhow::Error),
+    #[error(transparent)]
+    Persist(anyhow::Error),
+    #[error(transparent)]
+    Commit(ScreenReconfigurationConflict),
+}
 
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = state;
-        false
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        let Some(manager) = state.config_manager.as_ref() else {
-            return false;
-        };
-
-        let capture = manager.get().capture.clone();
-        let mut input_manager = state.input_manager.lock().await;
-        let had_source = input_manager.has_screen_source();
-        let mut applied = false;
-
-        if capture.enabled && !had_source {
-            let mut source = crate::startup::services::build_screen_capture_source(
+async fn apply_capture_config_transaction(
+    state: &Arc<AppState>,
+    expected_config: &Arc<HypercolorConfig>,
+    capture: CaptureConfig,
+) -> Result<(), CaptureConfigTransactionError> {
+    let Some(manager) = state.config_manager.as_ref() else {
+        return Err(CaptureConfigTransactionError::Prepare(anyhow::anyhow!(
+            "config manager unavailable"
+        )));
+    };
+    let plan = {
+        let input_manager = state.input_manager.lock().await;
+        input_manager.plan_screen_runtime_config(capture.enabled)
+    };
+    let (mut replacement, persistence) = if plan.enabled() {
+        let (mut source, persistence) =
+            crate::startup::services::prepare_platform_screen_capture_source(
                 &capture,
                 Arc::clone(manager),
-            );
-            if let Err(error) = source.start() {
-                warn!(%error, "Failed to start live screen capture source");
-                return false;
-            }
-            input_manager.add_source(source);
-            state
-                .scene_transactions
-                .push(SceneTransaction::SetScreenCaptureConfigured(true));
-            info!("Enabled screen capture live");
-            applied = true;
-        } else if !capture.enabled && had_source {
-            input_manager.remove_screen_sources();
-            state
-                .scene_transactions
-                .push(SceneTransaction::SetScreenCaptureConfigured(false));
-            info!("Disabled screen capture live");
-            applied = true;
-        }
-
-        if capture.enabled && input_manager.has_screen_source() {
-            let core_config = crate::startup::services::screen_capture_config_from(&capture);
-            match input_manager.reconfigure_screen_capture(&core_config) {
-                Ok(()) => applied = true,
-                Err(error) => {
-                    warn!(%error, "Failed to apply live screen capture settings");
-                }
-            }
-        }
-
-        applied
+            )
+            .map_err(CaptureConfigTransactionError::Prepare)?;
+        source.set_source_graph_generation(plan.replacement_source_graph_generation());
+        source
+            .set_screen_capture_active(plan.capture_active())
+            .map_err(CaptureConfigTransactionError::Prepare)?;
+        let source = Some(
+            tokio::task::spawn_blocking(move || {
+                source.start()?;
+                Ok::<_, anyhow::Error>(source)
+            })
+            .await
+            .map_err(|error| {
+                CaptureConfigTransactionError::Prepare(anyhow::anyhow!(
+                    "capture preparation task failed: {error}"
+                ))
+            })?
+            .map_err(CaptureConfigTransactionError::Prepare)?,
+        );
+        (source, Some(persistence))
+    } else {
+        (None, None)
+    };
+    if plan.capture_active()
+        && let Some(status) = replacement
+            .as_ref()
+            .and_then(|source| source.source_status_handle())
+        && let Err(error) = validate_prepared_capture_status(status).await
+    {
+        stop_prepared_capture_source(replacement).await;
+        return Err(CaptureConfigTransactionError::Prepare(error));
     }
+
+    let mut input_manager = state.input_manager.lock().await;
+    if let Err(error) = input_manager.validate_screen_runtime_config(&plan, &replacement) {
+        drop(input_manager);
+        stop_prepared_capture_source(replacement).await;
+        return Err(CaptureConfigTransactionError::Commit(error));
+    }
+    match manager.modify_and_save_if_current(expected_config, |config| {
+        config.capture.clone_from(&capture);
+    }) {
+        Ok(true) => {}
+        Ok(false) => {
+            drop(input_manager);
+            stop_prepared_capture_source(replacement).await;
+            return Err(CaptureConfigTransactionError::Conflict);
+        }
+        Err(error) => {
+            drop(input_manager);
+            stop_prepared_capture_source(replacement).await;
+            return Err(CaptureConfigTransactionError::Persist(error));
+        }
+    }
+
+    let retirement = match input_manager.commit_screen_runtime_config(&plan, &mut replacement) {
+        Ok(retirement) => retirement,
+        Err(error) => {
+            drop(input_manager);
+            stop_prepared_capture_source(replacement).await;
+            return Err(CaptureConfigTransactionError::Commit(error));
+        }
+    };
+    drop(input_manager);
+
+    if let Err(error) = tokio::task::spawn_blocking(move || retirement.retire()).await {
+        warn!(%error, "Detached capture source retirement task failed");
+    }
+    if let Some(persistence) = persistence
+        && let Err(error) = tokio::task::spawn_blocking(move || persistence.commit()).await
+    {
+        warn!(%error, "Capture identity persistence task failed");
+    }
+    state
+        .scene_transactions
+        .push(SceneTransaction::SetScreenCaptureConfigured(
+            capture.enabled,
+        ));
+    info!(
+        enabled = capture.enabled,
+        "Applied live screen capture config"
+    );
+    Ok(())
+}
+
+async fn validate_prepared_capture_status(
+    status: hypercolor_core::input::SourceStatusHandle,
+) -> anyhow::Result<()> {
+    let mut subscription = status.subscribe();
+    let initial = subscription.snapshot();
+    if matches!(
+        initial.state,
+        SourceState::Unavailable | SourceState::Failed
+    ) {
+        anyhow::bail!(
+            "{}",
+            initial.issue.as_ref().map_or_else(
+                || "capture source is unavailable".to_owned(),
+                |issue| issue.message.to_string()
+            )
+        );
+    }
+    if !matches!(initial.state, SourceState::Starting) {
+        return Ok(());
+    }
+
+    if let Ok(Some(next)) = tokio::time::timeout(
+        std::time::Duration::from_millis(500),
+        subscription.changed(),
+    )
+    .await
+        && matches!(next.state, SourceState::Unavailable | SourceState::Failed)
+    {
+        anyhow::bail!(
+            "{}",
+            next.issue.as_ref().map_or_else(
+                || "capture source is unavailable".to_owned(),
+                |issue| issue.message.to_string()
+            )
+        );
+    }
+    Ok(())
+}
+
+async fn stop_prepared_capture_source(source: Option<Box<dyn InputSource>>) {
+    let Some(mut source) = source else {
+        return;
+    };
+    let _ = tokio::task::spawn_blocking(move || source.stop()).await;
 }
 
 fn should_reconfigure_input(key: Option<&str>) -> bool {
@@ -770,13 +967,69 @@ async fn sync_active_layout_canvas_size(state: &Arc<AppState>, width: u32, heigh
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use hypercolor_core::config::ConfigManager;
+    use hypercolor_core::input::{
+        InputData, InputManager, InputSource, ScreenReconfigurationConflict,
+    };
     use hypercolor_types::config::InteractionRoutePolicy;
 
-    use super::{canvas_dimensions_differ, maybe_apply_input_config_change};
+    use super::{
+        CaptureConfigTransactionError, SetConfigRequest, apply_capture_config_transaction,
+        canvas_dimensions_differ, maybe_apply_input_config_change, set_config_value,
+    };
     use crate::api::AppState;
+
+    struct TestScreenSource {
+        running: bool,
+        demanded: bool,
+        stopped: Arc<AtomicBool>,
+    }
+
+    impl TestScreenSource {
+        fn new(stopped: Arc<AtomicBool>) -> Self {
+            Self {
+                running: false,
+                demanded: false,
+                stopped,
+            }
+        }
+    }
+
+    impl InputSource for TestScreenSource {
+        fn name(&self) -> &'static str {
+            "test_screen"
+        }
+
+        fn start(&mut self) -> anyhow::Result<()> {
+            self.running = true;
+            Ok(())
+        }
+
+        fn stop(&mut self) {
+            self.running = false;
+            self.stopped.store(true, Ordering::Release);
+        }
+
+        fn sample(&mut self) -> anyhow::Result<InputData> {
+            Ok(InputData::None)
+        }
+
+        fn is_running(&self) -> bool {
+            self.running
+        }
+
+        fn is_screen_source(&self) -> bool {
+            true
+        }
+
+        fn set_screen_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
+            self.demanded = active;
+            Ok(())
+        }
+    }
 
     #[test]
     fn canvas_dimensions_differ_only_when_size_changes() {
@@ -818,5 +1071,152 @@ mod tests {
             state.input_manager.lock().await.source_graph_generation(),
             graph_generation
         );
+    }
+
+    #[test]
+    fn screen_runtime_commit_preserves_demand_and_retires_after_swap() {
+        let mut manager = InputManager::new();
+        manager
+            .set_screen_capture_active(true)
+            .expect("screen demand should cache before a source exists");
+        let first_plan = manager.plan_screen_runtime_config(true);
+        assert!(first_plan.capture_active());
+
+        let first_stopped = Arc::new(AtomicBool::new(false));
+        let mut first = Box::new(TestScreenSource::new(Arc::clone(&first_stopped)));
+        first
+            .set_screen_capture_active(first_plan.capture_active())
+            .expect("prepared source should accept demand");
+        first.start().expect("prepared source should start");
+        let mut first = Some(first as Box<dyn InputSource>);
+        manager
+            .commit_screen_runtime_config(&first_plan, &mut first)
+            .expect("initial prepared source should commit")
+            .retire();
+        assert!(first.is_none());
+
+        let replacement_plan = manager.plan_screen_runtime_config(true);
+        assert!(replacement_plan.capture_active());
+        let replacement_stopped = Arc::new(AtomicBool::new(false));
+        let mut replacement = Box::new(TestScreenSource::new(replacement_stopped));
+        replacement
+            .set_screen_capture_active(replacement_plan.capture_active())
+            .expect("replacement should accept demand");
+        replacement.start().expect("replacement should start");
+        let mut replacement = Some(replacement as Box<dyn InputSource>);
+        let retirement = manager
+            .commit_screen_runtime_config(&replacement_plan, &mut replacement)
+            .expect("replacement should commit");
+
+        assert!(!first_stopped.load(Ordering::Acquire));
+        retirement.retire();
+        assert!(first_stopped.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn screen_runtime_commit_rejects_stale_graph_without_consuming_replacement() {
+        let mut manager = InputManager::new();
+        let plan = manager.plan_screen_runtime_config(true);
+        let stopped = Arc::new(AtomicBool::new(false));
+        let mut source = Box::new(TestScreenSource::new(Arc::clone(&stopped)));
+        source.start().expect("prepared source should start");
+        let mut replacement = Some(source as Box<dyn InputSource>);
+        manager.add_source(Box::new(hypercolor_core::input::MediaSource::new()));
+
+        assert!(matches!(
+            manager.commit_screen_runtime_config(&plan, &mut replacement),
+            Err(ScreenReconfigurationConflict::GraphChanged)
+        ));
+        assert!(replacement.is_some());
+        assert!(!stopped.load(Ordering::Acquire));
+        replacement
+            .as_mut()
+            .expect("failed commit preserves replacement ownership")
+            .stop();
+        assert!(stopped.load(Ordering::Acquire));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[tokio::test]
+    async fn failed_windows_capture_preparation_preserves_old_graph_and_config() {
+        let config_path = std::env::temp_dir().join(format!(
+            "hypercolor-capture-config-{}-{}.toml",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock should follow Unix epoch")
+                .as_nanos()
+        ));
+        let manager = Arc::new(
+            ConfigManager::new(config_path.clone()).expect("test config manager should initialize"),
+        );
+        let mut state = AppState::new();
+        state.config_manager = Some(Arc::clone(&manager));
+        let state = Arc::new(state);
+        {
+            let mut input_manager = state.input_manager.lock().await;
+            let mut old = Box::new(TestScreenSource::new(Arc::new(AtomicBool::new(false))));
+            old.start().expect("old test source should start");
+            input_manager.add_source(old);
+            input_manager
+                .set_screen_capture_active(true)
+                .expect("old source should accept active demand");
+        }
+        let graph_generation = state.input_manager.lock().await.source_graph_generation();
+        let expected = Arc::clone(&manager.get());
+        let mut capture = expected.capture.clone();
+        capture.source = "monitor:hypercolor-test-source-that-does-not-exist".to_owned();
+
+        let result = apply_capture_config_transaction(&state, &expected, capture).await;
+
+        assert!(matches!(
+            result,
+            Err(CaptureConfigTransactionError::Prepare(_))
+        ));
+        assert_eq!(manager.get().capture.source, "auto");
+        let input_manager = state.input_manager.lock().await;
+        assert_eq!(input_manager.source_graph_generation(), graph_generation);
+        assert!(input_manager.has_screen_source());
+        assert!(
+            input_manager
+                .source_names()
+                .iter()
+                .any(|name| name == "test_screen")
+        );
+        assert!(!config_path.exists());
+    }
+
+    #[tokio::test]
+    async fn unchanged_disabled_capture_repairs_stale_runtime_source() {
+        let tempdir = tempfile::tempdir().expect("temporary config directory should build");
+        let manager = Arc::new(
+            ConfigManager::new(tempdir.path().join("hypercolor.toml"))
+                .expect("test config manager should initialize"),
+        );
+        manager.modify(|config| config.capture.enabled = false);
+        let mut state = AppState::new();
+        state.config_manager = Some(Arc::clone(&manager));
+        let state = Arc::new(state);
+        let stopped = Arc::new(AtomicBool::new(false));
+        {
+            let mut input_manager = state.input_manager.lock().await;
+            let mut source = Box::new(TestScreenSource::new(Arc::clone(&stopped)));
+            source.start().expect("stale source should start");
+            input_manager.add_source(source);
+        }
+
+        let response = set_config_value(
+            axum::extract::State(Arc::clone(&state)),
+            axum::Json(SetConfigRequest {
+                key: "capture.enabled".to_owned(),
+                value: "false".to_owned(),
+                live: None,
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        assert!(!state.input_manager.lock().await.has_screen_source());
+        assert!(stopped.load(Ordering::Acquire));
     }
 }

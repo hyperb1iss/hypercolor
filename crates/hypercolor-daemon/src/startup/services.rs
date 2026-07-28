@@ -85,6 +85,10 @@ impl DaemonState {
     )]
     pub fn initialize(config: &HypercolorConfig, config_path: PathBuf) -> Result<Self> {
         info!("Initializing daemon subsystems");
+        config
+            .capture
+            .validate()
+            .context("invalid screen capture configuration")?;
         #[cfg(feature = "servo-gpu-import")]
         {
             hypercolor_core::effect::set_servo_gpu_import_mode(
@@ -256,7 +260,7 @@ impl DaemonState {
         info!("Device lifecycle manager created");
 
         // ── Input Manager ───────────────────────────────────────────────
-        let (built_input_manager, browser_input) = build_input_manager(config, &config_manager);
+        let (built_input_manager, browser_input) = build_input_manager(config, &config_manager)?;
         let interaction_routing = InteractionRoutingControl::new(
             browser_input.registry(),
             1,
@@ -582,9 +586,7 @@ impl DaemonState {
 pub(crate) fn build_input_manager(
     config: &HypercolorConfig,
     config_manager: &Arc<ConfigManager>,
-) -> (InputManager, hypercolor_core::input::BrowserInputHandle) {
-    #[cfg(not(target_os = "linux"))]
-    let _ = config_manager;
+) -> Result<(InputManager, hypercolor_core::input::BrowserInputHandle)> {
     let mut input_manager = InputManager::new();
     input_manager.set_sensor_poller(SensorPoller::new());
     // Host input capture is consent-gated and platform-native: evdev on Linux,
@@ -617,53 +619,192 @@ pub(crate) fn build_input_manager(
         input_manager.add_source(Box::new(audio_input));
     }
 
-    #[cfg(target_os = "linux")]
     if config.capture.enabled {
-        input_manager.add_source(build_screen_capture_source(
+        input_manager.add_source(build_platform_screen_capture_source(
             &config.capture,
             Arc::clone(config_manager),
-        ));
+        )?);
     }
 
-    // Desktop Duplication needs no picker and no consent, so the Windows
-    // source is registered outright. It stays idle until an effect creates
-    // capture demand, exactly like the Wayland source.
+    Ok((input_manager, browser_input))
+}
+
+pub(crate) fn build_platform_screen_capture_source(
+    capture: &hypercolor_types::config::CaptureConfig,
+    config_manager: Arc<ConfigManager>,
+) -> Result<Box<dyn hypercolor_core::input::InputSource>> {
+    let persistence = CaptureConfigPersistenceGate::new(config_manager, true);
+    build_platform_screen_capture_source_with_persistence(capture, persistence)
+}
+
+pub(crate) fn prepare_platform_screen_capture_source(
+    capture: &hypercolor_types::config::CaptureConfig,
+    config_manager: Arc<ConfigManager>,
+) -> Result<(
+    Box<dyn hypercolor_core::input::InputSource>,
+    CaptureConfigPersistenceGate,
+)> {
+    let persistence = CaptureConfigPersistenceGate::new(config_manager, false);
+    let source =
+        build_platform_screen_capture_source_with_persistence(capture, persistence.clone())?;
+    Ok((source, persistence))
+}
+
+fn build_platform_screen_capture_source_with_persistence(
+    capture: &hypercolor_types::config::CaptureConfig,
+    persistence: CaptureConfigPersistenceGate,
+) -> Result<Box<dyn hypercolor_core::input::InputSource>> {
     #[cfg(target_os = "windows")]
-    if config.capture.enabled {
-        input_manager.add_source(build_windows_screen_capture_source(
-            &config.capture,
-            Arc::clone(config_manager),
-        ));
+    {
+        build_windows_screen_capture_source(capture, persistence)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        build_screen_capture_source(capture, persistence)
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    {
+        let _ = (capture, persistence);
+        anyhow::bail!("screen capture is not supported on this platform")
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct CaptureConfigPersistenceGate {
+    inner: Arc<CaptureConfigPersistenceInner>,
+}
+
+struct CaptureConfigPersistenceInner {
+    config_manager: Arc<ConfigManager>,
+    state: StdMutex<CaptureConfigPersistenceState>,
+}
+
+struct CaptureConfigPersistenceState {
+    committed: bool,
+    pending: Option<CaptureConfigPersistenceUpdate>,
+}
+
+enum CaptureConfigPersistenceUpdate {
+    #[cfg(target_os = "windows")]
+    WindowsSource(ResolvedCaptureSource),
+    #[cfg(target_os = "linux")]
+    RestoreToken {
+        configured: Option<String>,
+        resolved: Option<String>,
+    },
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    Unsupported,
+}
+
+impl CaptureConfigPersistenceGate {
+    fn new(config_manager: Arc<ConfigManager>, committed: bool) -> Self {
+        Self {
+            inner: Arc::new(CaptureConfigPersistenceInner {
+                config_manager,
+                state: StdMutex::new(CaptureConfigPersistenceState {
+                    committed,
+                    pending: None,
+                }),
+            }),
+        }
     }
 
-    (input_manager, browser_input)
+    fn publish(&self, update: CaptureConfigPersistenceUpdate) {
+        let update = {
+            let mut state = self
+                .inner
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if state.committed {
+                Some(update)
+            } else {
+                state.pending = Some(update);
+                None
+            }
+        };
+        if let Some(update) = update {
+            self.persist(update, false);
+        }
+    }
+
+    pub(crate) fn commit(&self) {
+        let pending = {
+            let mut state = self
+                .inner
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.committed = true;
+            state.pending.take()
+        };
+        if let Some(update) = pending {
+            self.persist(update, true);
+        }
+    }
+
+    fn persist(&self, update: CaptureConfigPersistenceUpdate, deferred: bool) {
+        #[cfg(not(target_os = "linux"))]
+        let _ = deferred;
+        let config_manager = &self.inner.config_manager;
+        let snapshot = Arc::clone(&config_manager.get());
+        let should_persist = match &update {
+            #[cfg(target_os = "windows")]
+            CaptureConfigPersistenceUpdate::WindowsSource(resolved) => {
+                snapshot.capture.source == resolved.configured_source
+            }
+            #[cfg(target_os = "linux")]
+            CaptureConfigPersistenceUpdate::RestoreToken {
+                configured,
+                resolved,
+            } => {
+                if deferred {
+                    snapshot.capture.restore_token == *configured
+                } else {
+                    snapshot.capture.restore_token != *resolved
+                }
+            }
+            #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+            CaptureConfigPersistenceUpdate::Unsupported => false,
+        };
+        if !should_persist {
+            return;
+        }
+
+        let result = config_manager.modify_and_save_if_current(&snapshot, |config| match update {
+            #[cfg(target_os = "windows")]
+            CaptureConfigPersistenceUpdate::WindowsSource(resolved) => {
+                config.capture.source = resolved.stable_source;
+            }
+            #[cfg(target_os = "linux")]
+            CaptureConfigPersistenceUpdate::RestoreToken { resolved, .. } => {
+                config.capture.restore_token = resolved;
+            }
+            #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+            CaptureConfigPersistenceUpdate::Unsupported => {}
+        });
+        if let Err(error) = result {
+            warn!(%error, "Failed to persist resolved screen capture identity");
+        }
+    }
 }
 
 #[cfg(target_os = "windows")]
-fn windows_capture_source_sink(config_manager: Arc<ConfigManager>) -> CaptureSourceSink {
+fn windows_capture_source_sink(persistence: CaptureConfigPersistenceGate) -> CaptureSourceSink {
     Arc::new(move |resolved: ResolvedCaptureSource| {
-        let mut changed = false;
-        config_manager.modify(|config| {
-            if config.capture.source == resolved.configured_source {
-                config.capture.source.clone_from(&resolved.stable_source);
-                changed = true;
-            }
-        });
-        if changed && let Err(error) = config_manager.save() {
-            warn!(%error, "Failed to persist resolved Windows capture source");
-        }
+        persistence.publish(CaptureConfigPersistenceUpdate::WindowsSource(resolved));
     })
 }
 
 #[cfg(target_os = "windows")]
-fn build_windows_screen_capture_source(
+pub(crate) fn build_windows_screen_capture_source(
     capture: &hypercolor_types::config::CaptureConfig,
-    config_manager: Arc<ConfigManager>,
-) -> Box<dyn hypercolor_core::input::InputSource> {
-    Box::new(
-        WindowsScreenCaptureInput::new(screen_capture_config_from(capture))
-            .with_capture_source_sink(windows_capture_source_sink(config_manager)),
-    )
+    persistence: CaptureConfigPersistenceGate,
+) -> Result<Box<dyn hypercolor_core::input::InputSource>> {
+    Ok(Box::new(
+        WindowsScreenCaptureInput::new(screen_capture_config_from(capture)?)
+            .with_capture_source_sink(windows_capture_source_sink(persistence)),
+    ))
 }
 
 /// Build the platform host-input capture source, when config allows one.
@@ -717,45 +858,45 @@ pub(crate) fn build_interaction_source(
 #[cfg(target_os = "linux")]
 pub(crate) fn build_screen_capture_source(
     capture: &hypercolor_types::config::CaptureConfig,
-    config_manager: Arc<ConfigManager>,
-) -> Box<dyn hypercolor_core::input::InputSource> {
-    let capture_config = screen_capture_config_from(capture);
+    persistence: CaptureConfigPersistenceGate,
+) -> Result<Box<dyn hypercolor_core::input::InputSource>> {
+    let capture_config = screen_capture_config_from(capture)?;
+    let configured = capture.restore_token.clone();
     let sink = Arc::new(move |token: Option<String>| {
-        if config_manager.get().capture.restore_token == token {
-            return;
-        }
-        config_manager.modify(|config| {
-            config.capture.restore_token.clone_from(&token);
+        persistence.publish(CaptureConfigPersistenceUpdate::RestoreToken {
+            configured: configured.clone(),
+            resolved: token,
         });
-        if let Err(error) = config_manager.save() {
-            warn!(%error, "Failed to persist screen capture restore token");
-        }
     });
 
-    Box::new(WaylandScreenCaptureInput::new(capture_config).with_restore_token_sink(sink))
+    Ok(Box::new(
+        WaylandScreenCaptureInput::new(capture_config).with_restore_token_sink(sink),
+    ))
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 pub(crate) fn screen_capture_config_from(
     capture: &hypercolor_types::config::CaptureConfig,
-) -> ScreenCaptureConfig {
-    ScreenCaptureConfig {
-        target_fps: capture.capture_fps.clamp(1, 240),
-        grid_cols: capture.grid_cols.clamp(1, 64),
-        grid_rows: capture.grid_rows.clamp(1, 64),
-        smoothing_alpha: capture.smoothing.clamp(0.0, 1.0),
-        scene_cut_threshold: capture.scene_cut_threshold.max(0.0),
-        letterbox_threshold: capture.letterbox_threshold.clamp(0.0, 1.0),
+) -> Result<ScreenCaptureConfig> {
+    capture
+        .validate()
+        .context("invalid screen capture configuration")?;
+    Ok(ScreenCaptureConfig {
+        target_fps: capture.capture_fps,
+        grid_cols: capture.grid_cols,
+        grid_rows: capture.grid_rows,
+        smoothing_alpha: capture.smoothing,
+        scene_cut_threshold: capture.scene_cut_threshold,
+        letterbox_threshold: capture.letterbox_threshold,
         letterbox_enabled: capture.letterbox,
         tuning: hypercolor_core::input::screen::ColorTuning {
             saturation: capture.saturation,
             brightness: capture.brightness,
             gamma: capture.gamma,
-        }
-        .clamped(),
+        },
         restore_token: capture.restore_token.clone(),
         source: capture.source.clone(),
-    }
+    })
 }
 fn audio_source_from_device(device: &str) -> AudioSourceType {
     let normalized = device.trim();
