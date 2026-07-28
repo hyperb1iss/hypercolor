@@ -894,6 +894,7 @@ impl SceneManager {
         scene_id: &SceneId,
         group_id: ZoneId,
         device_zone: Output,
+        placement: OutputPlacement,
     ) -> Result<(), ZoneMutationError> {
         let active_scene_id = self.active_scene_id().copied();
         let scene = self
@@ -932,7 +933,12 @@ impl SceneManager {
             }
             let slot = scene.groups[target_index].layout.zones.len();
             let mut moved = device_zone;
-            reset_device_zone_placement(&mut moved, slot);
+            match placement {
+                OutputPlacement::AutoGrid => reset_device_zone_placement(&mut moved, slot),
+                OutputPlacement::Preserve => {
+                    moved.display_order = i32::try_from(slot).unwrap_or(0);
+                }
+            }
             scene.groups[target_index].layout.zones.push(moved);
         }
 
@@ -2052,6 +2058,20 @@ fn empty_default_spatial_layout() -> SpatialLayout {
 /// spot nor blanket the whole canvas. `size` is a normalized extent and
 /// `position` is the box center, so a 0.2 x 0.15 box centered inside the
 /// canvas stays small and movable; the user repositions from there.
+/// How [`SceneManager::assign_device_zone`] places an output that lands in a
+/// zone it did not previously belong to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputPlacement {
+    /// Drop the output into the target zone's next grid slot, discarding
+    /// whatever geometry it arrived with.
+    AutoGrid,
+
+    /// Keep the caller's position, size, rotation, and scale. Only
+    /// `display_order` is reassigned, so the output stacks predictably
+    /// against whatever the zone already holds.
+    Preserve,
+}
+
 fn reset_device_zone_placement(zone: &mut Output, slot: usize) {
     const COLS: usize = 5;
     let col = (slot % COLS) as f32;

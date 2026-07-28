@@ -7,7 +7,7 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 
-use hypercolor_core::scene::{SceneManager, ZoneMetaPatch, ZoneMutationError};
+use hypercolor_core::scene::{OutputPlacement, SceneManager, ZoneMetaPatch, ZoneMutationError};
 use hypercolor_types::event::{HypercolorEvent, SceneSettingsChangeKind, ZoneChangeKind};
 use hypercolor_types::scene::{SceneId, UnassignedBehavior, Zone, ZoneId, ZoneRole};
 use hypercolor_types::spatial::{Output, SpatialLayout};
@@ -235,6 +235,11 @@ pub async fn assign_devices(
         Ok(version) => version,
         Err(message) => return ApiError::bad_request(message),
     };
+    let placement = if body.preserve_placement {
+        OutputPlacement::Preserve
+    } else {
+        OutputPlacement::AutoGrid
+    };
 
     let (scene_id, previous_groups, zones, target_group, groups_revision) = {
         let mut manager = state.scene_manager.write().await;
@@ -258,7 +263,9 @@ pub async fn assign_devices(
             }
         };
         for device_zone in device_zones {
-            if let Err(error) = manager.assign_device_zone(&scene_id, zone_id, device_zone) {
+            if let Err(error) =
+                manager.assign_device_zone(&scene_id, zone_id, device_zone, placement)
+            {
                 return zone_mutation_error(error);
             }
         }

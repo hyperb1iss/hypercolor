@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
-use hypercolor_core::scene::{SceneManager, ZoneMetaPatch, ZoneMutationError, make_scene};
+use hypercolor_core::scene::{
+    OutputPlacement, SceneManager, ZoneMetaPatch, ZoneMutationError, make_scene,
+};
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
 use hypercolor_types::scene::{SceneId, SceneMutationMode, UnassignedBehavior, ZoneId, ZoneRole};
@@ -273,7 +275,12 @@ fn assignment_moves_zones_and_resets_cross_zone_placement() {
     zone.scale = 2.0;
 
     manager
-        .assign_device_zone(&scene_id, custom_id, zone.clone())
+        .assign_device_zone(
+            &scene_id,
+            custom_id,
+            zone.clone(),
+            OutputPlacement::AutoGrid,
+        )
         .expect("zone should move into custom group");
 
     let scene = manager
@@ -312,6 +319,55 @@ fn assignment_moves_zones_and_resets_cross_zone_placement() {
             .groups
             .iter()
             .all(|group| group.layout.zones.is_empty())
+    );
+}
+
+#[test]
+fn preserved_assignment_keeps_caller_placement() {
+    let mut manager = SceneManager::with_default();
+    let scene_id = SceneId::DEFAULT;
+    manager
+        .upsert_primary_group(
+            &sample_effect("Primary"),
+            HashMap::new(),
+            None,
+            sample_layout("device-zone"),
+        )
+        .expect("primary should be created");
+    let custom_id = manager
+        .create_render_group(&scene_id, "Custom".to_owned(), None, (320, 200))
+        .expect("custom zone should be created");
+    let mut zone = sample_zone("device-zone");
+    zone.position = NormalizedPosition::new(0.9, 0.8);
+    zone.size = NormalizedPosition::new(0.42, 0.11);
+    zone.rotation = 1.2;
+    zone.scale = 2.0;
+
+    manager
+        .assign_device_zone(
+            &scene_id,
+            custom_id,
+            zone.clone(),
+            OutputPlacement::Preserve,
+        )
+        .expect("zone should move into custom group");
+
+    let scene = manager
+        .active_scene()
+        .expect("default scene should stay active");
+    let custom_zone = scene
+        .groups
+        .iter()
+        .find(|group| group.id == custom_id)
+        .and_then(|group| group.layout.zones.first())
+        .expect("custom group should own moved zone");
+    assert_eq!(custom_zone.position, zone.position);
+    assert_eq!(custom_zone.size, zone.size);
+    assert_eq!(custom_zone.rotation, zone.rotation);
+    assert_eq!(custom_zone.scale, zone.scale);
+    assert_eq!(
+        custom_zone.display_order, 0,
+        "display_order still tracks the slot so outputs stack predictably"
     );
 }
 
@@ -434,7 +490,12 @@ fn effect_apply_preserves_primary_assignment_when_custom_zones_exist() {
         .create_render_group(&scene_id, "Custom".to_owned(), None, (320, 200))
         .expect("custom zone should be created");
     manager
-        .assign_device_zone(&scene_id, custom_id, sample_zone("custom-zone"))
+        .assign_device_zone(
+            &scene_id,
+            custom_id,
+            sample_zone("custom-zone"),
+            OutputPlacement::AutoGrid,
+        )
         .expect("custom zone should claim a device zone");
     let before = manager
         .active_scene()
@@ -479,7 +540,12 @@ fn effect_apply_seeds_new_primary_with_unclaimed_zones_only() {
         .create_render_group(&scene_id, "Custom".to_owned(), None, (320, 200))
         .expect("custom zone should be created");
     manager
-        .assign_device_zone(&scene_id, custom_id, sample_zone("custom-zone"))
+        .assign_device_zone(
+            &scene_id,
+            custom_id,
+            sample_zone("custom-zone"),
+            OutputPlacement::AutoGrid,
+        )
         .expect("custom zone should claim a device zone");
     let full_layout = SpatialLayout {
         zones: vec![sample_zone("primary-zone"), sample_zone("custom-zone")],

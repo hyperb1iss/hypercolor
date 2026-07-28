@@ -7,6 +7,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 use hypercolor_core::config::ConfigManager;
+use hypercolor_core::scene::OutputPlacement;
 use hypercolor_daemon::api::{self, AppState};
 use hypercolor_daemon::mcp;
 use hypercolor_daemon::mcp::prompts::{
@@ -282,7 +283,12 @@ async fn seed_multi_zone_primary_assignment(
         .create_render_group(&SceneId::DEFAULT, "Custom".to_owned(), None, (320, 200))
         .expect("custom group should be created");
     manager
-        .assign_device_zone(&SceneId::DEFAULT, custom_id, custom_zone)
+        .assign_device_zone(
+            &SceneId::DEFAULT,
+            custom_id,
+            custom_zone,
+            OutputPlacement::AutoGrid,
+        )
         .expect("custom group should claim a zone");
     primary_layout
 }

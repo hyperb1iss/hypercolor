@@ -95,6 +95,13 @@ pub enum OutputAssignment {
 pub struct AssignDevicesRequest {
     #[schema(value_type = Vec<Object>)]
     pub device_zones: Vec<OutputAssignment>,
+
+    /// Keep the position and size carried by each assignment instead of
+    /// auto-placing it into the target zone's next grid slot. Clients set
+    /// this when they authored a deliberate arrangement — a hardware
+    /// footprint, say — that grid placement would destroy.
+    #[serde(default)]
+    pub preserve_placement: bool,
 }
 
 /// Request body for `PATCH /api/v1/scenes/{id}/unassigned-behavior`.

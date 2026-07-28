@@ -3,7 +3,9 @@
 //! Picking a device brings every output it has into this zone. A device
 //! placed in another zone is moved (its `Output`s reassigned); a
 //! device the scene has not placed at all is minted (a fresh
-//! `Output` per channel; the daemon resets placement on assign).
+//! `Output` per channel). Minting prefers a seeded hardware footprint
+//! when one exists, and asks the daemon to keep it; otherwise the daemon
+//! grid-places the outputs.
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -16,14 +18,16 @@ use crate::api::zones::{OutputAssignment, ZoneOutcome};
 use crate::app::DevicesContext;
 use crate::components::silk_select::SilkSelect;
 use crate::icons::*;
+use crate::layout_geometry;
 use crate::layout_utils;
 use crate::toasts;
 
 use super::StudioContext;
 
 /// Canvas dimensions used when minting a `Output` for an unassigned
-/// device. The daemon resets position and size on assign, so these only
-/// seed the topology defaults `create_default_zone` derives from them.
+/// device. They set the aspect ratio a seeded hardware footprint is
+/// fitted against, and seed the topology defaults `create_default_zone`
+/// derives for devices that have no footprint of their own.
 const MINT_CANVAS_WIDTH: u32 = 640;
 const MINT_CANVAS_HEIGHT: u32 = 480;
 
@@ -148,9 +152,10 @@ pub fn ZoneAddDevice(zone_id: String) -> impl IntoView {
 }
 
 /// Bring a device's outputs into `zone_id`. Existing outputs in another
-/// zone are moved; a device the scene has not placed is minted fresh (the
-/// daemon resets placement on assign). Shared by the per-zone picker and
-/// the single-zone "available device" add button on the device card.
+/// zone are moved and the daemon grid-places them; a device the scene has
+/// not placed is minted fresh, keeping its seeded footprint when it has
+/// one. Shared by the per-zone picker and the single-zone "available
+/// device" add button on the device card.
 pub(super) fn assign_device_to_zone(
     studio: StudioContext,
     device: api::DeviceSummary,
@@ -173,8 +178,11 @@ pub(super) fn assign_device_to_zone(
             }
         }
     }
+    let mut preserve_placement = false;
     if assignments.is_empty() {
-        assignments = mint_device_zones(&device);
+        let minted = mint_device_zones(&device);
+        assignments = minted.assignments;
+        preserve_placement = minted.preserve_placement;
     }
     if assignments.is_empty() {
         // No existing outputs and no channels to mint from; nothing the
@@ -186,7 +194,15 @@ pub(super) fn assign_device_to_zone(
     let revision = scene.groups_revision;
     let device_name = device.name.clone();
     spawn_local(async move {
-        match api::zones::assign_devices(&scene_id, &zone_id, assignments, Some(revision)).await {
+        match api::zones::assign_devices(
+            &scene_id,
+            &zone_id,
+            assignments,
+            preserve_placement,
+            Some(revision),
+        )
+        .await
+        {
             Ok(ZoneOutcome::Applied(_)) => {
                 toasts::toast_success(&format!("{device_name} added to the zone"));
                 studio.refresh_scene.run(());
@@ -200,46 +216,82 @@ pub(super) fn assign_device_to_zone(
     });
 }
 
+/// Outputs minted for a device the scene has not placed, plus whether
+/// their geometry is deliberate enough that the daemon should keep it.
+struct MintedOutputs {
+    assignments: Vec<OutputAssignment>,
+    preserve_placement: bool,
+}
+
 /// Build a fresh `Output` per channel for a device that no scene
 /// has placed: one zone per declared `ZoneSummary`, or a single zone
-/// for a device with no channels. The daemon resets position and size
-/// on assign, so these defaults only seed topology and shape.
-fn mint_device_zones(device: &api::DeviceSummary) -> Vec<OutputAssignment> {
+/// for a device with no channels.
+///
+/// A device with a seeded footprint (the Push 2's pads, display, and
+/// touch strip sit at fixed offsets on the real hardware) mints that
+/// arrangement and asks the daemon to preserve it. Everything else mints
+/// topology and shape only, and the daemon grid-places it.
+fn mint_device_zones(device: &api::DeviceSummary) -> MintedOutputs {
     let layout_id = device.layout_device_id.as_str();
     let physical_id = device.id.as_str();
     let name = device.name.as_str();
     let total_leds = device.total_leds as usize;
-    if device.zones.is_empty() {
-        return vec![OutputAssignment::New(Box::new(
-            layout_utils::create_default_zone(
-                layout_id,
-                physical_id,
-                name,
-                None,
-                total_leds,
-                MINT_CANVAS_WIDTH,
-                MINT_CANVAS_HEIGHT,
-                0,
-            ),
-        ))];
+
+    if let Some(seed) = layout_geometry::seeded_device_layout(
+        layout_id,
+        name,
+        &device.zones,
+        MINT_CANVAS_WIDTH,
+        MINT_CANVAS_HEIGHT,
+        0,
+    ) {
+        return MintedOutputs {
+            assignments: seed
+                .zones
+                .into_iter()
+                .map(|output| OutputAssignment::New(Box::new(output)))
+                .collect(),
+            preserve_placement: true,
+        };
     }
-    device
-        .zones
-        .iter()
-        .enumerate()
-        .map(|(order, channel)| {
-            OutputAssignment::New(Box::new(layout_utils::create_default_zone(
-                layout_id,
-                physical_id,
-                name,
-                Some(channel),
-                total_leds,
-                MINT_CANVAS_WIDTH,
-                MINT_CANVAS_HEIGHT,
-                i32::try_from(order).unwrap_or(i32::MAX),
-            )))
-        })
-        .collect()
+
+    if device.zones.is_empty() {
+        return MintedOutputs {
+            assignments: vec![OutputAssignment::New(Box::new(
+                layout_utils::create_default_zone(
+                    layout_id,
+                    physical_id,
+                    name,
+                    None,
+                    total_leds,
+                    MINT_CANVAS_WIDTH,
+                    MINT_CANVAS_HEIGHT,
+                    0,
+                ),
+            ))],
+            preserve_placement: false,
+        };
+    }
+    MintedOutputs {
+        assignments: device
+            .zones
+            .iter()
+            .enumerate()
+            .map(|(order, channel)| {
+                OutputAssignment::New(Box::new(layout_utils::create_default_zone(
+                    layout_id,
+                    physical_id,
+                    name,
+                    Some(channel),
+                    total_leds,
+                    MINT_CANVAS_WIDTH,
+                    MINT_CANVAS_HEIGHT,
+                    i32::try_from(order).unwrap_or(i32::MAX),
+                )))
+            })
+            .collect(),
+        preserve_placement: false,
+    }
 }
 
 /// The non-target zone that currently owns a device's outputs, or

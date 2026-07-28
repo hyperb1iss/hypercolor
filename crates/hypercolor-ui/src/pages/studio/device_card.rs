@@ -712,8 +712,14 @@ fn move_outputs_to_zone(studio: StudioContext, target_zone_id: String, output_id
     let scene_id = scene.id.clone();
     let revision = scene.groups_revision;
     spawn_local(async move {
-        match api::zones::assign_devices(&scene_id, &target_zone_id, assignments, Some(revision))
-            .await
+        match api::zones::assign_devices(
+            &scene_id,
+            &target_zone_id,
+            assignments,
+            false,
+            Some(revision),
+        )
+        .await
         {
             Ok(ZoneOutcome::Applied(_)) => {
                 let suffix = if count == 1 { "" } else { "s" };

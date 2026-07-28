@@ -120,14 +120,20 @@ pub async fn delete_zone(
 /// full `Output` so an unplaced device can be placed for the first
 /// time. Returns the new `groups_revision` so a follow-up mutation can
 /// chain without a refetch.
+///
+/// `preserve_placement` keeps the geometry the caller supplied instead of
+/// letting the daemon grid-place each output. Set it only when the
+/// arrangement is deliberate, such as a seeded hardware footprint.
 pub async fn assign_devices(
     scene_id: &str,
     zone_id: &str,
     assignments: Vec<OutputAssignment>,
+    preserve_placement: bool,
     expected_revision: Option<u64>,
 ) -> Result<ZoneOutcome<u64>, String> {
     let request = AssignDevicesRequest {
         device_zones: assignments,
+        preserve_placement,
     };
     client::send_json_versioned::<_, ZoneListResponse>(
         Method::POST,
