@@ -346,6 +346,9 @@ pub async fn activate_scene(
         );
     }
 
+    // Which scene is active decides which devices are worth connecting.
+    crate::api::spawn_connectivity_sync(state.as_ref());
+
     ApiResponse::ok(serde_json::json!({
         "scene": {
             "id": scene_id.to_string(),
@@ -391,6 +394,9 @@ pub async fn deactivate_scene(State(state): State<Arc<AppState>>) -> Response {
             hypercolor_types::event::SceneChangeReason::UserDeactivate,
         );
     }
+
+    // Which scene is active decides which devices are worth connecting.
+    crate::api::spawn_connectivity_sync(state.as_ref());
 
     ApiResponse::ok(serde_json::json!({
         "deactivated": true,

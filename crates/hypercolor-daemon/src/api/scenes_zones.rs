@@ -600,12 +600,7 @@ async fn finalize_zone_mutation(
     persist_runtime_session(state).await;
     publish_render_group_changed(state.as_ref(), scene_id, group, kind);
 
-    // Placing a device in a zone is what makes it worth connecting, so
-    // re-evaluate connect behavior here rather than leaving the device
-    // Deferred until the next discovery sweep. Runs after the scene lock is
-    // released — every caller closes its write block before finalizing.
-    let runtime = crate::api::discovery_runtime(state.as_ref());
-    crate::discovery::sync_active_layout_connectivity(&runtime, None).await;
+    crate::api::spawn_connectivity_sync(state.as_ref());
     Ok(())
 }
 

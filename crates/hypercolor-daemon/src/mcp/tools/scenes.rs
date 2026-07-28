@@ -281,6 +281,9 @@ pub(super) async fn handle_activate_scene_with_state(
         );
     }
 
+    // Which scene is active decides which devices are worth connecting.
+    crate::api::spawn_connectivity_sync(state);
+
     Ok(json!({
         "activated": true,
         "scene": {

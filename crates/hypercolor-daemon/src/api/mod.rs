@@ -944,6 +944,23 @@ pub(crate) fn discovery_runtime(state: &AppState) -> crate::discovery::Discovery
     state.driver_host.discovery_runtime()
 }
 
+/// Re-evaluate device connect behavior after a change to what the active
+/// scene targets, so a device placed in a zone connects now instead of
+/// whenever the next discovery sweep happens to run.
+///
+/// Spawned rather than awaited: reconciliation walks every tracked device
+/// and executes lifecycle actions inline, and a single connect can sit on a
+/// multi-second transport timeout. That has no business blocking the
+/// response to a rename or a placement nudge. Reconciliation reads live
+/// state when it runs and the lifecycle manager already guards against
+/// overlapping connects, so overlapping calls settle on the same result.
+pub(crate) fn spawn_connectivity_sync(state: &AppState) {
+    let runtime = discovery_runtime(state);
+    tokio::spawn(async move {
+        crate::discovery::sync_active_layout_connectivity(&runtime, None).await;
+    });
+}
+
 // ── Router ───────────────────────────────────────────────────────────────
 
 /// Build the complete Axum router with all API routes and middleware.
