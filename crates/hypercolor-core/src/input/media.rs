@@ -2389,10 +2389,22 @@ mod windows {
             .map(|index| sessions.GetAt(index).map_err(provider_error))
             .collect::<std::result::Result<Vec<_>, _>>()?;
         drop(sessions);
-        let discovered = session_handles
-            .into_iter()
-            .map(|session| Ok((session_key(&session)?, session)))
-            .collect::<std::result::Result<Vec<_>, MediaProviderError>>()?;
+        let mut discovered = Vec::with_capacity(session_handles.len());
+        let mut first_key_error = None;
+        for session in session_handles {
+            match session_key(&session) {
+                Ok(key) => discovered.push((key, session)),
+                Err(error) => {
+                    tracing::debug!(%error, "Skipped media session without a stable identity");
+                    first_key_error.get_or_insert(error);
+                }
+            }
+        }
+        if discovered.is_empty()
+            && let Some(error) = first_key_error
+        {
+            return Err(error);
+        }
         scanner
             .poll(discovered, |session| async move {
                 snapshot_session(&session).await
@@ -2403,10 +2415,21 @@ mod windows {
     fn session_key(
         session: &GlobalSystemMediaTransportControlsSession,
     ) -> std::result::Result<String, MediaProviderError> {
-        session
+        use ::windows::core::Interface as _;
+
+        let source_app_id = session
             .SourceAppUserModelId()
             .map_err(provider_error)
-            .map(|identity| identity.to_string())
+            .map(|identity| identity.to_string())?;
+        let runtime_identity = session
+            .cast::<::windows::core::IUnknown>()
+            .map_err(provider_error)?;
+        // Retaining the session handle keeps this COM identity alive, so its
+        // address cannot be recycled into another live scanner incarnation.
+        Ok(format!(
+            "{source_app_id}\u{1f}{:p}",
+            runtime_identity.as_raw()
+        ))
     }
 
     async fn snapshot_session(

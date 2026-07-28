@@ -503,6 +503,44 @@ async fn stale_completed_incarnation_cannot_replace_successor_snapshot() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn replacing_player_identity_cancels_prior_incarnation() {
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let mut scanner = PlayerSnapshotScanner::default();
+    let signal = Arc::clone(&dropped);
+    let initial = scanner
+        .poll([("same".to_owned(), "old".to_owned())], move |_| {
+            let signal = Arc::clone(&signal);
+            async move {
+                let _drop_probe = PlayerPollDropProbe(signal);
+                std::future::pending().await
+            }
+        })
+        .await
+        .expect("pending original incarnation should not fail");
+    assert!(initial.is_empty());
+    assert_eq!(dropped.load(Ordering::SeqCst), 0);
+
+    let mut snapshots = Vec::new();
+    for _ in 0..4 {
+        snapshots = scanner
+            .poll(
+                [("same".to_owned(), "new".to_owned())],
+                |track| async move { Ok(player("same", PlaybackStatus::Playing, &track)) },
+            )
+            .await
+            .expect("replacement incarnation should scan");
+        tokio::task::yield_now().await;
+        if !snapshots.is_empty() && dropped.load(Ordering::SeqCst) == 1 {
+            break;
+        }
+    }
+
+    assert_eq!(dropped.load(Ordering::SeqCst), 1);
+    assert_eq!(snapshots.len(), 1);
+    assert_eq!(snapshots[0].track, "new");
+}
+
+#[tokio::test(start_paused = true)]
 async fn healthy_player_behind_a_full_hung_window_is_eventually_published() {
     let healthy = MAX_CONCURRENT_MEDIA_PLAYER_POLLS;
     let discovered = (0..=healthy)
@@ -676,6 +714,30 @@ async fn clearing_scanner_cancels_retained_native_operations() {
     assert_eq!(dropped.load(Ordering::SeqCst), 0);
 
     scanner.clear();
+    tokio::task::yield_now().await;
+
+    assert_eq!(dropped.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn dropping_scanner_cancels_retained_native_operations() {
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let mut scanner = PlayerSnapshotScanner::default();
+    let signal = Arc::clone(&dropped);
+    let snapshots = scanner
+        .poll([("hung".to_owned(), ())], move |()| {
+            let signal = Arc::clone(&signal);
+            async move {
+                let _drop_probe = PlayerPollDropProbe(signal);
+                std::future::pending().await
+            }
+        })
+        .await
+        .expect("hung scan should remain pending");
+    assert!(snapshots.is_empty());
+    assert_eq!(dropped.load(Ordering::SeqCst), 0);
+
+    drop(scanner);
     tokio::task::yield_now().await;
 
     assert_eq!(dropped.load(Ordering::SeqCst), 1);
