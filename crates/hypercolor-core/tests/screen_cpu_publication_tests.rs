@@ -10,13 +10,13 @@ use hypercolor_core::input::screen::{
     CaptureRotation, CaptureSourceId, CaptureStorage, CaptureTransferFunction, ColorTuning,
     CommittedScreenPlan, CpuCaptureStorage, CpuReductionBatchJob, CpuReductionError,
     CpuReductionExecutor, CpuSurfaceReductionJob, CpuZoneMaterializationError,
-    KnownCaptureColorimetry, PhysicalOrigin, PixelExtent, PreparedCpuZoneMaterializer,
-    RawCaptureSurface, RegisteredScreenBranchDemand, ResolvedScreenBranchDemand,
-    ResolvedScreenPublicationDescriptor, ResolvedScreenSource, ResolvedScreenSourceConfig,
-    ScreenAdmissionCapacity, ScreenAspectPolicy, ScreenBackendResourceIdentity,
-    ScreenBranchPayload, ScreenCaptureBackend, ScreenCapturePlan, ScreenColorTuning,
-    ScreenCursorCapabilities, ScreenExactResource, ScreenExactResourceLedger, ScreenExtentRequest,
-    ScreenGridPolicy, ScreenInputGraphGeneration, ScreenPayloadKind,
+    KnownCaptureColorimetry, PhysicalOrigin, PixelExtent, PreparedCpuLogicalFanoutKind,
+    PreparedCpuPublicationFanout, PreparedCpuZoneMaterializer, RawCaptureSurface,
+    RegisteredScreenBranchDemand, ResolvedScreenBranchDemand, ResolvedScreenPublicationDescriptor,
+    ResolvedScreenSource, ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAspectPolicy,
+    ScreenBackendResourceIdentity, ScreenBranchPayload, ScreenCaptureBackend, ScreenCapturePlan,
+    ScreenColorTuning, ScreenCursorCapabilities, ScreenExactResource, ScreenExactResourceLedger,
+    ScreenExtentRequest, ScreenGridPolicy, ScreenInputGraphGeneration, ScreenPayloadKind,
     ScreenPhysicalReductionDescriptor, ScreenPlanBuilder, ScreenPlanError, ScreenProcessingProfile,
     ScreenProcessingProfileConfig, ScreenPublicationHealth, ScreenPublicationKind,
     ScreenPublicationMetadata, ScreenPublicationRequest, ScreenReductionFilter, ScreenResourceApi,
@@ -324,10 +324,38 @@ fn one_exact_reduction_fans_out_to_surface_and_oversubscribed_zones() {
     let mut workspace = batch
         .prepare_materialization_workspace(&plan)
         .expect("shared physical workspace prepares");
+    let fanout = PreparedCpuPublicationFanout::prepare(
+        &batch,
+        &workspace,
+        builder.committed_state(),
+        &binding,
+    )
+    .expect("shared physical fanout prepares");
     let frame = frame(&source);
 
     assert_eq!(batch.len(), 1);
     assert_eq!(workspace.len(), 1);
+    assert_eq!(fanout.plan_generation(), plan.generation());
+    assert_eq!(fanout.batch().len(), batch.len());
+    assert_eq!(fanout.len(), 1);
+    assert!(!fanout.is_empty());
+    assert_eq!(fanout.branch_count(), 2);
+    assert_eq!(fanout.physical_descriptor(0), batch.descriptor(0));
+    assert_eq!(fanout.physical_descriptor(1), None);
+    assert!(fanout.allocation_byte_len() > 0);
+    let shared_route = &fanout.physical()[0];
+    assert_eq!(shared_route.batch_index(), 0);
+    assert_eq!(shared_route.workspace_index(), Some(0));
+    assert_eq!(shared_route.branches().len(), 2);
+    assert!(shared_route.branches().iter().any(|branch| {
+        branch.kind() == PreparedCpuLogicalFanoutKind::DirectSurface
+            && branch.zone_materializer().is_none()
+    }));
+    assert!(shared_route.branches().iter().any(|branch| {
+        branch.kind() == PreparedCpuLogicalFanoutKind::Zones
+            && branch.zone_materializer().is_some()
+            && branch.publisher().descriptor() == branch.descriptor()
+    }));
     assert_eq!(workspace.pixels(0), None);
     assert_eq!(workspace.completed_source_sequence(0), None);
     let physical = batch.descriptor(0).expect("shared physical key exists");
@@ -477,9 +505,41 @@ fn materialization_workspace_retains_only_branch_local_physical_keys() {
     let mut workspace = batch
         .prepare_materialization_workspace(&plan)
         .expect("branch-local workspace prepares");
+    let fanout = PreparedCpuPublicationFanout::prepare(
+        &batch,
+        &workspace,
+        builder.committed_state(),
+        &binding,
+    )
+    .expect("mixed physical fanout prepares");
     let frame = frame(&source);
 
     assert_eq!(batch.len(), 3);
+    assert_eq!(fanout.len(), 3);
+    assert_eq!(fanout.branch_count(), 3);
+    assert_eq!(
+        fanout
+            .physical()
+            .iter()
+            .filter(|physical| physical.workspace_index().is_some())
+            .count(),
+        2
+    );
+    for expected_kind in [
+        PreparedCpuLogicalFanoutKind::DirectSurface,
+        PreparedCpuLogicalFanoutKind::MaterializedSurface,
+        PreparedCpuLogicalFanoutKind::Zones,
+    ] {
+        assert_eq!(
+            fanout
+                .physical()
+                .iter()
+                .flat_map(hypercolor_core::input::screen::PreparedCpuPhysicalFanout::branches)
+                .filter(|branch| branch.kind() == expected_kind)
+                .count(),
+            1
+        );
+    }
     assert_eq!(workspace.plan_generation(), plan.generation());
     assert_eq!(workspace.len(), 2);
     assert!(!workspace.is_empty());

@@ -331,6 +331,10 @@ pub struct PreparedCpuMaterializationWorkspace {
 }
 
 impl PreparedCpuMaterializationWorkspace {
+    pub(super) fn belongs_to(&self, batch: &PreparedCpuReductionBatch) -> bool {
+        Arc::ptr_eq(&self.reductions, &batch.reductions)
+    }
+
     /// Plan generation whose physical keys own this workspace.
     #[must_use]
     pub const fn plan_generation(&self) -> ScreenPlanGeneration {
@@ -504,7 +508,9 @@ impl CpuReductionDestination for PreparedScreenPublication {
     }
 }
 
-fn branch_requires_materialization(descriptor: &ResolvedScreenPublicationDescriptor) -> bool {
+pub(super) fn branch_requires_materialization(
+    descriptor: &ResolvedScreenPublicationDescriptor,
+) -> bool {
     if matches!(descriptor.kind(), ScreenPublicationKind::Zones { .. }) {
         return true;
     }

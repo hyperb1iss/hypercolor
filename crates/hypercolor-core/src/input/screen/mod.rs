@@ -16,6 +16,7 @@
 //! backend-agnostic and testable with synthetic data.
 
 mod cadence;
+mod fanout;
 mod frame;
 mod hub;
 mod materialize;
@@ -34,6 +35,10 @@ pub mod windows;
 
 pub use cadence::{
     CaptureCadence, CaptureCadenceError, CapturePacer, MAX_REPRESENTABLE_CAPTURE_FPS,
+};
+pub use fanout::{
+    CpuPublicationFanoutError, PreparedCpuLogicalFanout, PreparedCpuLogicalFanoutKind,
+    PreparedCpuPhysicalFanout, PreparedCpuPublicationFanout,
 };
 pub use frame::{
     CaptureColorSpace, CaptureColorimetry, CaptureColorimetryError, CaptureCursor,

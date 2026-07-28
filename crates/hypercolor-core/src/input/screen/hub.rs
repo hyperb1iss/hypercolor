@@ -1123,6 +1123,34 @@ impl ScreenCommittedState {
         self.branches.len()
     }
 
+    /// Bind a publisher from this exact immutable authority snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Rejects branches absent from the snapshot and substituted worker
+    /// bindings. The resulting capability remains stale-safe if a later state
+    /// replaces this snapshot before publication.
+    pub fn publisher(
+        &self,
+        descriptor: &ResolvedScreenPublicationDescriptor,
+        binding: &ScreenWorkerBinding,
+    ) -> Result<ScreenBranchPublisher, ScreenPublicationHubError> {
+        let branch = self.branch(descriptor).cloned().ok_or_else(|| {
+            ScreenPublicationHubError::BranchMissing {
+                descriptor: Arc::new(descriptor.clone()),
+            }
+        })?;
+        if !branch.binding.is_same(binding) {
+            return Err(ScreenPublicationHubError::WorkerBindingMismatch {
+                descriptor: Arc::new(descriptor.clone()),
+            });
+        }
+        Ok(ScreenBranchPublisher {
+            branch: branch.entry,
+            binding: branch.binding,
+        })
+    }
+
     fn branch(
         &self,
         descriptor: &ResolvedScreenPublicationDescriptor,
@@ -1341,20 +1369,7 @@ impl ScreenPublicationHub {
         binding: &ScreenWorkerBinding,
     ) -> Result<ScreenBranchPublisher, ScreenPublicationHubError> {
         let state = self.state.load_full();
-        let branch = state.branch(descriptor).cloned().ok_or_else(|| {
-            ScreenPublicationHubError::BranchMissing {
-                descriptor: Arc::new(descriptor.clone()),
-            }
-        })?;
-        if !branch.binding.is_same(binding) {
-            return Err(ScreenPublicationHubError::WorkerBindingMismatch {
-                descriptor: Arc::new(descriptor.clone()),
-            });
-        }
-        Ok(ScreenBranchPublisher {
-            branch: branch.entry,
-            binding: branch.binding,
-        })
+        state.publisher(descriptor, binding)
     }
 
     /// Reserve one admitted descriptor-shaped slot for direct reducer writes.
