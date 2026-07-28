@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, OnceLock};
 
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 // ── Canvas Constants ───────────────────────────────────────────────────────
 
@@ -21,6 +22,25 @@ pub const DEFAULT_CANVAS_HEIGHT: u32 = 480;
 
 /// Bytes per pixel in the RGBA format.
 pub const BYTES_PER_PIXEL: usize = 4;
+
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum SurfaceResourceError {
+    #[error("surface dimensions must be non-zero, got {width}x{height}")]
+    EmptyDimensions { width: u32, height: u32 },
+
+    #[error("surface byte length overflows addressable memory for {width}x{height}")]
+    ByteLengthOverflow { width: u32, height: u32 },
+
+    #[error("surface buffer length {actual} does not match expected length {expected}")]
+    BufferLengthMismatch { expected: usize, actual: usize },
+
+    #[error("could not allocate {byte_len} bytes for a {width}x{height} surface")]
+    AllocationFailed {
+        width: u32,
+        height: u32,
+        byte_len: usize,
+    },
+}
 
 static NEXT_PUBLISHED_SURFACE_STORAGE_ID: AtomicU64 = AtomicU64::new(1);
 const EMPTY_PUBLISHED_SURFACE_STORAGE_ID: u64 = 0;
@@ -504,20 +524,31 @@ impl Canvas {
     ///
     /// Allocates `width * height * 4` bytes zeroed, then sets every alpha byte to 255.
     #[must_use]
-    #[allow(clippy::as_conversions)]
     pub fn new(width: u32, height: u32) -> Self {
-        let len = width as usize * height as usize * BYTES_PER_PIXEL;
-        let mut pixels = vec![0u8; len];
-        // Set alpha channel to 255 (opaque) for every pixel
+        Self::try_new(width, height).expect("canvas dimensions must fit available memory")
+    }
+
+    pub fn try_new(width: u32, height: u32) -> Result<Self, SurfaceResourceError> {
+        let descriptor = SurfaceDescriptor::rgba8888(width, height);
+        let len = descriptor.try_non_empty_byte_len()?;
+        let mut pixels = Vec::new();
+        pixels
+            .try_reserve_exact(len)
+            .map_err(|_| SurfaceResourceError::AllocationFailed {
+                width,
+                height,
+                byte_len: len,
+            })?;
+        pixels.resize(len, 0);
         for chunk in pixels.chunks_exact_mut(BYTES_PER_PIXEL) {
             chunk[3] = 255;
         }
-        Self {
+        Ok(Self {
             width,
             height,
             pixels: Arc::new(pixels),
             storage_id: next_published_surface_storage_id(),
-        }
+        })
     }
 
     /// Create from a raw RGBA byte slice.
@@ -526,24 +557,38 @@ impl Canvas {
     ///
     /// Panics if `data.len() != width * height * 4`.
     #[must_use]
-    #[allow(clippy::as_conversions)]
     pub fn from_rgba(data: &[u8], width: u32, height: u32) -> Self {
-        let expected = width as usize * height as usize * BYTES_PER_PIXEL;
-        assert_eq!(
-            data.len(),
-            expected,
-            "RGBA data length {} does not match {}x{}x4 = {}",
-            data.len(),
-            width,
-            height,
-            expected,
-        );
-        Self {
-            width,
-            height,
-            pixels: Arc::new(data.to_vec()),
-            storage_id: next_published_surface_storage_id(),
+        Self::try_from_rgba(data, width, height)
+            .expect("RGBA data length does not match addressable canvas dimensions")
+    }
+
+    pub fn try_from_rgba(
+        data: &[u8],
+        width: u32,
+        height: u32,
+    ) -> Result<Self, SurfaceResourceError> {
+        let expected = SurfaceDescriptor::rgba8888(width, height).try_non_empty_byte_len()?;
+        if data.len() != expected {
+            return Err(SurfaceResourceError::BufferLengthMismatch {
+                expected,
+                actual: data.len(),
+            });
         }
+        let mut pixels = Vec::new();
+        pixels
+            .try_reserve_exact(expected)
+            .map_err(|_| SurfaceResourceError::AllocationFailed {
+                width,
+                height,
+                byte_len: expected,
+            })?;
+        pixels.extend_from_slice(data);
+        Ok(Self {
+            width,
+            height,
+            pixels: Arc::new(pixels),
+            storage_id: next_published_surface_storage_id(),
+        })
     }
 
     /// Wrap an existing `Vec<u8>` without copying. Takes ownership.
@@ -552,24 +597,29 @@ impl Canvas {
     ///
     /// Panics if `data.len() != width * height * 4`.
     #[must_use]
-    #[allow(clippy::as_conversions)]
     pub fn from_vec(data: Vec<u8>, width: u32, height: u32) -> Self {
-        let expected = width as usize * height as usize * BYTES_PER_PIXEL;
-        assert_eq!(
-            data.len(),
-            expected,
-            "Vec length {} does not match {}x{}x4 = {}",
-            data.len(),
-            width,
-            height,
-            expected,
-        );
-        Self {
+        Self::try_from_vec(data, width, height)
+            .expect("RGBA vector length does not match addressable canvas dimensions")
+    }
+
+    pub fn try_from_vec(
+        data: Vec<u8>,
+        width: u32,
+        height: u32,
+    ) -> Result<Self, SurfaceResourceError> {
+        let expected = SurfaceDescriptor::rgba8888(width, height).try_non_empty_byte_len()?;
+        if data.len() != expected {
+            return Err(SurfaceResourceError::BufferLengthMismatch {
+                expected,
+                actual: data.len(),
+            });
+        }
+        Ok(Self {
             width,
             height,
             pixels: Arc::new(data),
             storage_id: next_published_surface_storage_id(),
-        }
+        })
     }
 
     /// Alias an immutable published surface as a read-mostly canvas handle.
@@ -875,13 +925,31 @@ impl SurfaceDescriptor {
         }
     }
 
-    /// Total byte size for one surface.
+    /// Total byte size for one surface when it fits the host address space.
     #[must_use]
-    pub fn byte_len(self) -> usize {
+    pub fn checked_byte_len(self) -> Option<usize> {
         usize::try_from(self.width)
-            .unwrap_or_default()
-            .saturating_mul(usize::try_from(self.height).unwrap_or_default())
-            .saturating_mul(BYTES_PER_PIXEL)
+            .ok()?
+            .checked_mul(usize::try_from(self.height).ok()?)?
+            .checked_mul(BYTES_PER_PIXEL)
+    }
+
+    pub fn try_byte_len(self) -> Result<usize, SurfaceResourceError> {
+        self.checked_byte_len()
+            .ok_or(SurfaceResourceError::ByteLengthOverflow {
+                width: self.width,
+                height: self.height,
+            })
+    }
+
+    pub fn try_non_empty_byte_len(self) -> Result<usize, SurfaceResourceError> {
+        if self.width == 0 || self.height == 0 {
+            return Err(SurfaceResourceError::EmptyDimensions {
+                width: self.width,
+                height: self.height,
+            });
+        }
+        self.try_byte_len()
     }
 }
 

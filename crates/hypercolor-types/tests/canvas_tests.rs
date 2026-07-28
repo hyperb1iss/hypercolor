@@ -3,8 +3,8 @@
 use hypercolor_types::canvas::{
     BYTES_PER_PIXEL, BlendMode, Canvas, ColorFormat, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH,
     Oklab, Oklch, PublishedSurface, RenderSurfacePool, Rgb, Rgba, RgbaF32, SamplingMethod,
-    SurfaceDescriptor, SurfaceState, linear_srgb_to_oklab, linear_to_srgb, oklab_to_linear_srgb,
-    srgb_to_linear,
+    SurfaceDescriptor, SurfaceResourceError, SurfaceState, linear_srgb_to_oklab, linear_to_srgb,
+    oklab_to_linear_srgb, srgb_to_linear,
 };
 
 // ── Rgba ───────────────────────────────────────────────────────────────────
@@ -240,6 +240,54 @@ fn canvas_new_filled_opaque_black() {
     for pixel in c.pixels() {
         assert_eq!(pixel, [0, 0, 0, 255]);
     }
+}
+
+#[test]
+fn surface_dimensions_are_checked_without_a_fixed_resolution_ceiling() {
+    let descriptor = SurfaceDescriptor::rgba8888(7_680, 4_320);
+    assert_eq!(descriptor.try_byte_len(), Ok(132_710_400));
+
+    let portrait = SurfaceDescriptor::rgba8888(1_081, 1_921);
+    assert_eq!(portrait.try_byte_len(), Ok(8_306_404));
+}
+
+#[test]
+fn surface_dimensions_reject_zero_and_address_space_overflow() {
+    assert!(matches!(
+        Canvas::try_new(0, 1),
+        Err(SurfaceResourceError::EmptyDimensions {
+            width: 0,
+            height: 1
+        })
+    ));
+    assert_eq!(
+        SurfaceDescriptor::rgba8888(u32::MAX, u32::MAX).try_byte_len(),
+        Err(SurfaceResourceError::ByteLengthOverflow {
+            width: u32::MAX,
+            height: u32::MAX,
+        })
+    );
+}
+
+#[test]
+fn fallible_canvas_construction_supports_one_pixel_and_odd_shapes() {
+    let one = Canvas::try_new(1, 1).expect("one pixel canvas");
+    assert_eq!(one.as_rgba_bytes(), &[0, 0, 0, 255]);
+
+    let odd =
+        Canvas::try_from_vec(vec![9; 13 * 17 * BYTES_PER_PIXEL], 13, 17).expect("odd canvas shape");
+    assert_eq!((odd.width(), odd.height()), (13, 17));
+}
+
+#[test]
+fn fallible_canvas_construction_reports_buffer_mismatches() {
+    assert!(matches!(
+        Canvas::try_from_vec(vec![0; 7], 2, 1),
+        Err(SurfaceResourceError::BufferLengthMismatch {
+            expected: 8,
+            actual: 7
+        })
+    ));
 }
 
 #[test]
