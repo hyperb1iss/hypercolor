@@ -20,14 +20,15 @@ use crate::components::silk_select::SilkSelect;
 use crate::icons::*;
 use crate::layout_geometry;
 use crate::layout_utils;
+use crate::style_utils::uuid_v4_hex;
 use crate::toasts;
 
 use super::StudioContext;
 
-/// Canvas dimensions used when minting a `Output` for an unassigned
-/// device. They set the aspect ratio a seeded hardware footprint is
-/// fitted against, and seed the topology defaults `create_default_zone`
-/// derives for devices that have no footprint of their own.
+/// Fallback canvas used when minting an `Output` for an unassigned device
+/// and the target zone's own canvas cannot be read. Minting prefers the
+/// target zone's dimensions, because a seeded hardware footprint is fitted
+/// to a canvas aspect ratio and is then persisted as-is.
 const MINT_CANVAS_WIDTH: u32 = 640;
 const MINT_CANVAS_HEIGHT: u32 = 480;
 
@@ -180,7 +181,16 @@ pub(super) fn assign_device_to_zone(
     }
     let mut preserve_placement = false;
     if assignments.is_empty() {
-        let minted = mint_device_zones(&device);
+        // A seeded footprint is fitted to a canvas aspect ratio, so it has to
+        // be built against the canvas it will actually live on.
+        let canvas = scene
+            .groups
+            .iter()
+            .find(|group| group.id.to_string() == zone_id)
+            .map_or((MINT_CANVAS_WIDTH, MINT_CANVAS_HEIGHT), |group| {
+                (group.layout.canvas_width, group.layout.canvas_height)
+            });
+        let minted = mint_device_zones(&device, canvas);
         assignments = minted.assignments;
         preserve_placement = minted.preserve_placement;
     }
@@ -231,7 +241,10 @@ struct MintedOutputs {
 /// touch strip sit at fixed offsets on the real hardware) mints that
 /// arrangement and asks the daemon to preserve it. Everything else mints
 /// topology and shape only, and the daemon grid-places it.
-fn mint_device_zones(device: &api::DeviceSummary) -> MintedOutputs {
+fn mint_device_zones(
+    device: &api::DeviceSummary,
+    (canvas_width, canvas_height): (u32, u32),
+) -> MintedOutputs {
     let layout_id = device.layout_device_id.as_str();
     let physical_id = device.id.as_str();
     let name = device.name.as_str();
@@ -241,15 +254,25 @@ fn mint_device_zones(device: &api::DeviceSummary) -> MintedOutputs {
         layout_id,
         name,
         &device.zones,
-        MINT_CANVAS_WIDTH,
-        MINT_CANVAS_HEIGHT,
+        canvas_width,
+        canvas_height,
         0,
     ) {
         return MintedOutputs {
             assignments: seed
                 .zones
                 .into_iter()
-                .map(|output| OutputAssignment::New(Box::new(output)))
+                .map(|mut output| {
+                    // seeded_device_layout derives ids by folding every
+                    // non-alphanumeric character to '_', so device ids that
+                    // differ only in punctuation collapse together — two Push
+                    // 2s on usb paths `...-0-12` and `...-0-1-2` land on the
+                    // same id. assign_device_zone treats an output id as a
+                    // scene-global ownership key, so the second device would
+                    // silently take over the first one's outputs.
+                    output.id = format!("zone_{}", uuid_v4_hex());
+                    OutputAssignment::New(Box::new(output))
+                })
                 .collect(),
             preserve_placement: true,
         };
