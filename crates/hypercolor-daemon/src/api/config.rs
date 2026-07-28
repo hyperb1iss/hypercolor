@@ -667,7 +667,7 @@ async fn apply_capture_config_transaction(
             .map_err(CaptureConfigTransactionError::Prepare)?;
         source.set_source_graph_generation(plan.replacement_source_graph_generation());
         source
-            .set_screen_capture_active(plan.capture_active())
+            .set_screen_capture_demand(plan.capture_demand())
             .map_err(CaptureConfigTransactionError::Prepare)?;
         let source = Some(
             tokio::task::spawn_blocking(move || {
@@ -686,7 +686,7 @@ async fn apply_capture_config_transaction(
     } else {
         (None, None)
     };
-    if plan.capture_active()
+    if plan.capture_demand().is_active()
         && let Some(status) = replacement
             .as_ref()
             .and_then(|source| source.source_status_handle())
@@ -1026,6 +1026,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use hypercolor_core::config::ConfigManager;
+    use hypercolor_core::input::screen::{PixelExtent, ScreenCaptureDemand};
     use hypercolor_core::input::{
         InputData, InputManager, InputSource, ScreenReconfigurationConflict, SourceIssue,
         SourceKind, SourceState, SourceStatus, SourceStatusHandle, SourceStatusReporter,
@@ -1041,7 +1042,7 @@ mod tests {
 
     struct TestScreenSource {
         running: bool,
-        demanded: bool,
+        demand: ScreenCaptureDemand,
         stopped: Arc<AtomicBool>,
     }
 
@@ -1049,7 +1050,7 @@ mod tests {
         fn new(stopped: Arc<AtomicBool>) -> Self {
             Self {
                 running: false,
-                demanded: false,
+                demand: ScreenCaptureDemand::Inactive,
                 stopped,
             }
         }
@@ -1082,10 +1083,20 @@ mod tests {
             true
         }
 
-        fn set_screen_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
-            self.demanded = active;
+        fn screen_capture_demand(&self) -> ScreenCaptureDemand {
+            self.demand
+        }
+
+        fn set_screen_capture_demand(&mut self, demand: ScreenCaptureDemand) -> anyhow::Result<()> {
+            self.demand = demand;
             Ok(())
         }
+    }
+
+    fn test_screen_demand() -> ScreenCaptureDemand {
+        ScreenCaptureDemand::active(
+            PixelExtent::new(640, 480).expect("test screen extent should be non-empty"),
+        )
     }
 
     fn screen_status(state: SourceState, resource_count: usize) -> Arc<SourceStatus> {
@@ -1250,15 +1261,15 @@ mod tests {
     fn screen_runtime_commit_preserves_demand_and_retires_after_swap() {
         let mut manager = InputManager::new();
         manager
-            .set_screen_capture_active(true)
+            .set_screen_capture_demand(test_screen_demand())
             .expect("screen demand should cache before a source exists");
         let first_plan = manager.plan_screen_runtime_config(true);
-        assert!(first_plan.capture_active());
+        assert_eq!(first_plan.capture_demand(), test_screen_demand());
 
         let first_stopped = Arc::new(AtomicBool::new(false));
         let mut first = Box::new(TestScreenSource::new(Arc::clone(&first_stopped)));
         first
-            .set_screen_capture_active(first_plan.capture_active())
+            .set_screen_capture_demand(first_plan.capture_demand())
             .expect("prepared source should accept demand");
         first.start().expect("prepared source should start");
         let mut first = Some(first as Box<dyn InputSource>);
@@ -1269,11 +1280,11 @@ mod tests {
         assert!(first.is_none());
 
         let replacement_plan = manager.plan_screen_runtime_config(true);
-        assert!(replacement_plan.capture_active());
+        assert_eq!(replacement_plan.capture_demand(), test_screen_demand());
         let replacement_stopped = Arc::new(AtomicBool::new(false));
         let mut replacement = Box::new(TestScreenSource::new(replacement_stopped));
         replacement
-            .set_screen_capture_active(replacement_plan.capture_active())
+            .set_screen_capture_demand(replacement_plan.capture_demand())
             .expect("replacement should accept demand");
         replacement.start().expect("replacement should start");
         let mut replacement = Some(replacement as Box<dyn InputSource>);
@@ -1332,7 +1343,7 @@ mod tests {
             old.start().expect("old test source should start");
             input_manager.add_source(old);
             input_manager
-                .set_screen_capture_active(true)
+                .set_screen_capture_demand(test_screen_demand())
                 .expect("old source should accept active demand");
         }
         let graph_generation = state.input_manager.lock().await.source_graph_generation();

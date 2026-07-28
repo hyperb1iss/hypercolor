@@ -448,7 +448,10 @@ async fn capture_frame_reaches_daemon_screen_and_canvas_watches() {
     let demand = render_thread.input_publication_demands();
     let _registration = demand.register(
         InputPublicationConsumer::Diagnostic,
-        InputPublicationDemand::default().with_source(SourceKind::Screen, 60),
+        InputPublicationDemand::default().with_screen(
+            60,
+            PixelExtent::new(640, 480).expect("test screen extent should be non-empty"),
+        ),
     );
 
     wait_until("daemon screen-capture demand", || fixture.is_active()).await;

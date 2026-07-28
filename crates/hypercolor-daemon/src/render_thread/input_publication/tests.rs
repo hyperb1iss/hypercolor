@@ -1,7 +1,8 @@
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
+use hypercolor_core::input::screen::{PixelExtent, ScreenCaptureDemand};
 use hypercolor_core::input::{InputData, InputManager, InputSource, SourceKind};
 use tokio::sync::Mutex;
 
@@ -10,10 +11,70 @@ use super::{
     InputPublicationPump, InputPublicationSchedule, InputPublicationStatus, cadence_interval,
 };
 
+fn extent(width: u32, height: u32) -> PixelExtent {
+    PixelExtent::new(width, height).expect("test extent is non-empty")
+}
+
 struct CountingSource {
     samples: Arc<AtomicUsize>,
     capture_active: Arc<AtomicBool>,
     running: bool,
+}
+
+struct ScreenDemandSource {
+    demand: ScreenCaptureDemand,
+    transitions: Arc<StdMutex<Vec<ScreenCaptureDemand>>>,
+    running: bool,
+}
+
+impl ScreenDemandSource {
+    fn new(transitions: Arc<StdMutex<Vec<ScreenCaptureDemand>>>) -> Self {
+        Self {
+            demand: ScreenCaptureDemand::Inactive,
+            transitions,
+            running: false,
+        }
+    }
+}
+
+impl InputSource for ScreenDemandSource {
+    fn name(&self) -> &'static str {
+        "screen_demand"
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        self.running = true;
+        Ok(())
+    }
+
+    fn stop(&mut self) {
+        self.running = false;
+    }
+
+    fn sample(&mut self) -> anyhow::Result<InputData> {
+        Ok(InputData::None)
+    }
+
+    fn is_running(&self) -> bool {
+        self.running
+    }
+
+    fn is_screen_source(&self) -> bool {
+        true
+    }
+
+    fn screen_capture_demand(&self) -> ScreenCaptureDemand {
+        self.demand
+    }
+
+    fn set_screen_capture_demand(&mut self, demand: ScreenCaptureDemand) -> anyhow::Result<()> {
+        self.demand = demand;
+        self.transitions
+            .lock()
+            .expect("screen demand transition lock")
+            .push(demand);
+        Ok(())
+    }
 }
 
 impl CountingSource {
@@ -72,7 +133,7 @@ fn demand_snapshot_uses_the_highest_typed_consumer_rate() {
     let demands = InputPublicationDemandHandle::new();
     let _authoritative = demands.register(
         InputPublicationConsumer::Authoritative,
-        InputPublicationDemand::all_sources(60),
+        InputPublicationDemand::all_sources(60, extent(640, 480)),
     );
     let _preview = demands.register(
         InputPublicationConsumer::Preview,
@@ -80,13 +141,44 @@ fn demand_snapshot_uses_the_highest_typed_consumer_rate() {
     );
     let _diagnostic = demands.register(
         InputPublicationConsumer::Diagnostic,
-        InputPublicationDemand::default().with_source(SourceKind::Screen, 144),
+        InputPublicationDemand::default().with_screen(144, extent(5_120, 720)),
     );
 
     let snapshot = demands.snapshot();
     assert_eq!(snapshot.requested_hz(SourceKind::Interaction), 360);
     assert_eq!(snapshot.requested_hz(SourceKind::Screen), 144);
+    assert_eq!(
+        snapshot.aggregate.screen_requested_extent(),
+        Some(extent(5_120, 720))
+    );
     assert_eq!(snapshot.requested_hz(SourceKind::Audio), 60);
+}
+
+#[test]
+fn screen_demand_unions_each_extent_axis_and_shrinks_after_release() {
+    let demands = InputPublicationDemandHandle::new();
+    let ultrawide = demands.register(
+        InputPublicationConsumer::Authoritative,
+        InputPublicationDemand::default().with_screen(60, extent(5_120, 720)),
+    );
+    let portrait = demands.register(
+        InputPublicationConsumer::Preview,
+        InputPublicationDemand::default().with_screen(144, extent(1_920, 2_160)),
+    );
+
+    let aggregate = demands.snapshot().aggregate;
+    assert_eq!(aggregate.requested_hz(SourceKind::Screen), 144);
+    assert_eq!(
+        aggregate.screen_requested_extent(),
+        Some(extent(5_120, 2_160))
+    );
+
+    drop(ultrawide);
+    let shrunk = demands.snapshot().aggregate;
+    assert_eq!(shrunk.requested_hz(SourceKind::Screen), 144);
+    assert_eq!(shrunk.screen_requested_extent(), Some(extent(1_920, 2_160)));
+    drop(portrait);
+    assert_eq!(demands.snapshot().aggregate.screen_requested_extent(), None);
 }
 
 #[test]
@@ -100,7 +192,7 @@ fn concurrent_preview_registrations_union_and_drop_independently() {
         InputPublicationConsumer::Preview,
         InputPublicationDemand::default()
             .with_source(SourceKind::Interaction, 240)
-            .with_source(SourceKind::Screen, 90),
+            .with_screen(90, extent(1_920, 1_080)),
     );
 
     assert_eq!(
@@ -128,7 +220,7 @@ fn authoritative_registration_does_not_blanket_unrequested_source_types() {
     let demands = InputPublicationDemandHandle::new();
     let _authoritative = demands.register(
         InputPublicationConsumer::Authoritative,
-        InputPublicationDemand::default().with_source(SourceKind::Screen, 60),
+        InputPublicationDemand::default().with_screen(60, extent(640, 480)),
     );
 
     let snapshot = demands.snapshot();
@@ -150,7 +242,7 @@ fn source_cadences_advance_independently_without_catch_up_bursts() {
     let started_at = Instant::now();
     let mut schedule = InputPublicationSchedule::default();
     let demand = InputPublicationDemand::default()
-        .with_source(SourceKind::Screen, 20)
+        .with_screen(20, extent(640, 480))
         .with_source(SourceKind::Interaction, 120);
     let mut due = Vec::with_capacity(5);
 
@@ -183,7 +275,7 @@ fn source_reactivation_starts_with_one_cadence_window() {
     let started_at = Instant::now();
     let interval = cadence_interval(20);
     let mut schedule = InputPublicationSchedule::default();
-    let active = InputPublicationDemand::default().with_source(SourceKind::Screen, 20);
+    let active = InputPublicationDemand::default().with_screen(20, extent(640, 480));
     let mut due = Vec::with_capacity(5);
 
     schedule.synchronize(active, started_at);
@@ -207,7 +299,7 @@ async fn pump_waits_for_live_demand_then_samples_without_render_frames() {
     let demands = InputPublicationDemandHandle::new();
     let _demand = demands.register(
         InputPublicationConsumer::Authoritative,
-        InputPublicationDemand::all_sources(60),
+        InputPublicationDemand::all_sources(60, extent(640, 480)),
     );
     let mut pump = InputPublicationPump::start(Arc::clone(&manager), demands)
         .await
@@ -246,7 +338,7 @@ async fn dropping_the_pump_aborts_its_worker() {
     let demands = InputPublicationDemandHandle::new();
     let _demand = demands.register(
         InputPublicationConsumer::Authoritative,
-        InputPublicationDemand::all_sources(120),
+        InputPublicationDemand::all_sources(120, extent(640, 480)),
     );
     let pump = InputPublicationPump::start(manager, demands)
         .await
@@ -352,6 +444,55 @@ async fn aggregate_demand_owns_interaction_lifecycle_and_cadence() {
     pump.shutdown()
         .await
         .expect("publication pump should stop cleanly");
+}
+
+#[tokio::test]
+async fn pump_propagates_screen_extent_changes_even_while_cadence_stays_active() {
+    let transitions = Arc::new(StdMutex::new(Vec::new()));
+    let mut manager = InputManager::new();
+    manager.add_source(Box::new(ScreenDemandSource::new(Arc::clone(&transitions))));
+    manager.start_all().expect("screen source starts");
+    let manager = Arc::new(Mutex::new(manager));
+    let demands = InputPublicationDemandHandle::new();
+    let mut pump = InputPublicationPump::start(Arc::clone(&manager), demands.clone())
+        .await
+        .expect("publication pump starts");
+    let large = ScreenCaptureDemand::active(extent(5_120, 2_160));
+    let small = ScreenCaptureDemand::active(extent(1_280, 720));
+    let registration = demands.register(
+        InputPublicationConsumer::Authoritative,
+        InputPublicationDemand::default().with_screen(60, extent(5_120, 2_160)),
+    );
+    wait_for_screen_demand(&transitions, large).await;
+
+    registration.update(InputPublicationDemand::default().with_screen(60, extent(1_280, 720)));
+    wait_for_screen_demand(&transitions, small).await;
+
+    drop(registration);
+    wait_for_screen_demand(&transitions, ScreenCaptureDemand::Inactive).await;
+    pump.shutdown().await.expect("publication pump stops");
+}
+
+async fn wait_for_screen_demand(
+    transitions: &StdMutex<Vec<ScreenCaptureDemand>>,
+    expected: ScreenCaptureDemand,
+) {
+    tokio::time::timeout(Duration::from_millis(500), async {
+        loop {
+            if transitions
+                .lock()
+                .expect("screen demand transition lock")
+                .last()
+                .copied()
+                == Some(expected)
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("screen demand transition should propagate");
 }
 
 async fn wait_for_interaction_demand(

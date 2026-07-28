@@ -5,6 +5,7 @@ use tracing::{info, warn};
 
 use hypercolor_core::bus::{CanvasFrame, DisplayGroupFrame};
 use hypercolor_core::device::BackendManager;
+use hypercolor_core::input::screen::PixelExtent;
 use hypercolor_core::types::canvas::{Canvas, Rgba};
 use hypercolor_core::types::event::FrameTiming;
 use hypercolor_types::event::{FrameData, HypercolorEvent, Severity};
@@ -571,7 +572,13 @@ fn publish_input_demands(
     effect_demand: super::scene_snapshot::EffectDemand,
     state: &RenderThreadState,
 ) {
-    frame_loop.publish_input_demands(effect_demand, state.configured_max_fps_tier.get().fps());
+    let screen_extent = PixelExtent::new(state.canvas_dims.width(), state.canvas_dims.height())
+        .expect("render canvas dimensions are non-empty");
+    frame_loop.publish_input_demands(
+        effect_demand,
+        state.configured_max_fps_tier.get().fps(),
+        screen_extent,
+    );
 }
 
 fn should_record_idle_black_frame(

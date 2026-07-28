@@ -1,4 +1,4 @@
-use hypercolor_core::input::{InputManager, SourceKind};
+use hypercolor_core::input::{InputManager, ScreenCaptureDemand, SourceKind};
 use tracing::warn;
 
 use super::input_publication::InputPublicationDemand;
@@ -7,6 +7,7 @@ use super::input_publication::InputPublicationDemand;
 struct CaptureDemandKey {
     graph_generation: u64,
     desired_active: bool,
+    screen_demand: ScreenCaptureDemand,
 }
 
 #[derive(Clone, Copy)]
@@ -17,11 +18,24 @@ enum CaptureDomain {
 }
 
 impl CaptureDomain {
-    fn apply(self, manager: &mut InputManager, desired_active: bool) -> anyhow::Result<()> {
+    fn apply(
+        self,
+        manager: &mut InputManager,
+        demand: InputPublicationDemand,
+    ) -> anyhow::Result<()> {
+        let desired_active = demand.requested_hz(self.source_kind()) > 0;
         match self {
             Self::Audio => manager.set_audio_capture_active(desired_active),
-            Self::Screen => manager.set_screen_capture_active(desired_active),
+            Self::Screen => manager.set_screen_capture_demand(demand.screen_capture_demand()),
             Self::Interaction => manager.set_interaction_capture_active(desired_active),
+        }
+    }
+
+    const fn source_kind(self) -> SourceKind {
+        match self {
+            Self::Audio => SourceKind::Audio,
+            Self::Screen => SourceKind::Screen,
+            Self::Interaction => SourceKind::Interaction,
         }
     }
 
@@ -65,13 +79,18 @@ impl CaptureDemandState {
             let desired_key = CaptureDemandKey {
                 graph_generation: observed_generation,
                 desired_active,
+                screen_demand: if source == SourceKind::Screen {
+                    demand.screen_capture_demand()
+                } else {
+                    ScreenCaptureDemand::Inactive
+                },
             };
             if self.cached_key(domain) == Some(desired_key) {
                 succeeded[index] = true;
                 continue;
             }
 
-            match domain.apply(manager, desired_active) {
+            match domain.apply(manager, demand) {
                 Ok(()) => succeeded[index] = true,
                 Err(error) => warn!(
                     domain = domain.name(),
@@ -90,7 +109,7 @@ impl CaptureDemandState {
         }
     }
 
-    const fn key(
+    fn key(
         graph_generation: u64,
         demand: InputPublicationDemand,
         source: SourceKind,
@@ -98,6 +117,11 @@ impl CaptureDemandState {
         CaptureDemandKey {
             graph_generation,
             desired_active: demand.requested_hz(source) > 0,
+            screen_demand: if source == SourceKind::Screen {
+                demand.screen_capture_demand()
+            } else {
+                ScreenCaptureDemand::Inactive
+            },
         }
     }
 

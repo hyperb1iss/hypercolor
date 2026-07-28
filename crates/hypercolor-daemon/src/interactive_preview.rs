@@ -13,6 +13,7 @@ use hypercolor_core::input::routing::{
     InteractionRouteRequest, InteractionRouteSource, InteractionRouteSourceClass,
     InteractionRouter, RoutedInteraction, SourceIncarnation,
 };
+use hypercolor_core::input::screen::PixelExtent;
 use hypercolor_core::input::{
     BrowserInputAttachment, BrowserInputChildKey, BrowserInputPublicationId, InputData,
     InputGraphHandle, InputGraphSnapshot, SourceFreshness, SourceKind, SourceState,
@@ -1242,6 +1243,8 @@ fn catalog_event_invalidates(event: &HypercolorEvent) -> bool {
 
 fn preview_input_demand(scene: &ResolvedPreviewScene, requested_hz: u32) -> InputPublicationDemand {
     let mut demand = InputPublicationDemand::default();
+    let screen_extent = PixelExtent::new(scene.canvas_width, scene.canvas_height)
+        .expect("resolved preview canvas dimensions are non-empty");
     let mut media = false;
     let mut network = false;
     for group in scene.groups.iter().filter(|group| group.enabled) {
@@ -1257,7 +1260,7 @@ fn preview_input_demand(scene: &ResolvedPreviewScene, requested_hz: u32) -> Inpu
                             demand = demand.with_source(SourceKind::Audio, requested_hz);
                         }
                         if entry.metadata.screen_reactive {
-                            demand = demand.with_source(SourceKind::Screen, requested_hz);
+                            demand = demand.with_screen(requested_hz, screen_extent);
                         }
                         if entry.metadata.requires_interaction() {
                             demand = demand.with_source(SourceKind::Interaction, requested_hz);
@@ -1275,7 +1278,7 @@ fn preview_input_demand(scene: &ResolvedPreviewScene, requested_hz: u32) -> Inpu
                     }
                 }
                 LayerSource::ScreenRegion { .. } => {
-                    demand = demand.with_source(SourceKind::Screen, requested_hz);
+                    demand = demand.with_screen(requested_hz, screen_extent);
                 }
                 LayerSource::Media { .. } => media = true,
                 LayerSource::ColorFill { .. } | LayerSource::WebViewport { .. } => {}

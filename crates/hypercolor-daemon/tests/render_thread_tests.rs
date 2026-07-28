@@ -24,6 +24,7 @@ use hypercolor_core::device::{
 };
 use hypercolor_core::effect::{EffectRegistry, builtin::register_builtin_effects};
 use hypercolor_core::engine::{FpsTier, RenderLoop};
+use hypercolor_core::input::screen::{PixelExtent, ScreenCaptureDemand};
 use hypercolor_core::input::{InputData, InputManager, InputSource, ScreenData, SourceKind};
 use hypercolor_core::scene::{SceneManager, make_scene};
 use hypercolor_core::spatial::SpatialEngine;
@@ -80,10 +81,17 @@ fn demand_input(
     consumer: InputPublicationConsumer,
     source: SourceKind,
 ) -> InputPublicationDemandRegistration {
-    render_thread.input_publication_demands().register(
-        consumer,
-        InputPublicationDemand::default().with_source(source, 60),
-    )
+    let demand = if source == SourceKind::Screen {
+        InputPublicationDemand::default().with_screen(
+            60,
+            PixelExtent::new(320, 200).expect("test screen extent should be non-empty"),
+        )
+    } else {
+        InputPublicationDemand::default().with_source(source, 60)
+    };
+    render_thread
+        .input_publication_demands()
+        .register(consumer, demand)
 }
 
 fn strip_zone(id: &str, device_id: &str, led_count: u32) -> Output {
@@ -673,7 +681,7 @@ impl InputSource for DemandGatedMockAudioSource {
 
 struct DemandGatedMockScreenSource {
     running: bool,
-    capture_active: bool,
+    capture_demand: ScreenCaptureDemand,
     screen_data: ScreenData,
     transitions: Arc<StdMutex<Vec<bool>>>,
 }
@@ -682,7 +690,7 @@ impl DemandGatedMockScreenSource {
     fn new(screen_data: ScreenData, transitions: Arc<StdMutex<Vec<bool>>>) -> Self {
         Self {
             running: false,
-            capture_active: false,
+            capture_demand: ScreenCaptureDemand::Inactive,
             screen_data,
             transitions,
         }
@@ -701,11 +709,11 @@ impl InputSource for DemandGatedMockScreenSource {
 
     fn stop(&mut self) {
         self.running = false;
-        self.capture_active = false;
+        self.capture_demand = ScreenCaptureDemand::Inactive;
     }
 
     fn sample(&mut self) -> anyhow::Result<InputData> {
-        if !self.running || !self.capture_active {
+        if !self.running || !self.capture_demand.is_active() {
             return Ok(InputData::None);
         }
 
@@ -720,12 +728,16 @@ impl InputSource for DemandGatedMockScreenSource {
         true
     }
 
-    fn set_screen_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
-        self.capture_active = active;
+    fn screen_capture_demand(&self) -> ScreenCaptureDemand {
+        self.capture_demand
+    }
+
+    fn set_screen_capture_demand(&mut self, demand: ScreenCaptureDemand) -> anyhow::Result<()> {
+        self.capture_demand = demand;
         self.transitions
             .lock()
             .expect("transition log should lock")
-            .push(active);
+            .push(demand.is_active());
         Ok(())
     }
 }

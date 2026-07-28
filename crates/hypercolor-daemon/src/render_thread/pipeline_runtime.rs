@@ -15,6 +15,7 @@ use hypercolor_core::input::routing::{
     ConsumerIncarnation, InteractionRouteContext, InteractionRouteRequest, InteractionRouteSource,
     InteractionRouteSourceClass, InteractionRouter, RoutedInteraction, SourceIncarnation,
 };
+use hypercolor_core::input::screen::PixelExtent;
 use hypercolor_core::input::{
     InputData, InputGraphSnapshot, InputSourceSlot, InteractionData, MotionAggregate, PointerMode,
     SourceFreshness, SourceKind, SourceState, SourceStatusAvailability, SourceStatusHandle,
@@ -1180,8 +1181,13 @@ pub(crate) struct FrameLoopState {
 }
 
 impl FrameLoopState {
-    pub(crate) fn publish_input_demands(&mut self, effect_demand: EffectDemand, requested_hz: u32) {
-        let authoritative = authoritative_input_demand(effect_demand, requested_hz);
+    pub(crate) fn publish_input_demands(
+        &mut self,
+        effect_demand: EffectDemand,
+        requested_hz: u32,
+        screen_extent: PixelExtent,
+    ) {
+        let authoritative = authoritative_input_demand(effect_demand, requested_hz, screen_extent);
         self.authoritative_input_demand.publish(authoritative);
     }
 
@@ -1201,13 +1207,14 @@ impl FrameLoopState {
 fn authoritative_input_demand(
     effect_demand: EffectDemand,
     requested_hz: u32,
+    screen_extent: PixelExtent,
 ) -> InputPublicationDemand {
     let mut demand = InputPublicationDemand::default();
     if effect_demand.audio_capture_active {
         demand = demand.with_source(SourceKind::Audio, requested_hz);
     }
     if effect_demand.screen_capture_active {
-        demand = demand.with_source(SourceKind::Screen, requested_hz);
+        demand = demand.with_screen(requested_hz, screen_extent);
     }
     if effect_demand.interaction_capture_active {
         demand = demand.with_source(SourceKind::Interaction, requested_hz);
@@ -1929,6 +1936,7 @@ mod tests {
         BrowserConnectionIncarnation, BrowserInputChildKey, BrowserInputEdge, BrowserInputSource,
         BrowserPreviewId,
     };
+    use hypercolor_core::input::screen::PixelExtent;
     use hypercolor_core::input::{
         InputData, InputGraphSnapshot, InputManager, InputSource, InteractionData, SourceIssue,
         SourceKind, SourceStatusWriter,
@@ -2481,10 +2489,12 @@ mod tests {
             network_input_active: true,
         };
 
-        let demand = authoritative_input_demand(effect_demand, 60);
+        let screen_extent = PixelExtent::new(5_120, 2_160)
+            .expect("test screen publication extent should be non-empty");
+        let demand = authoritative_input_demand(effect_demand, 60, screen_extent);
         let expected = InputPublicationDemand::default()
             .with_source(SourceKind::Audio, 60)
-            .with_source(SourceKind::Screen, 60)
+            .with_screen(60, screen_extent)
             .with_source(SourceKind::Interaction, 60)
             .with_source(SourceKind::Media, 1)
             .with_source(SourceKind::Network, 1);

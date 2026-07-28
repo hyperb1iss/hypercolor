@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 use arc_swap::ArcSwap;
+use hypercolor_core::input::screen::{PixelExtent, ScreenCaptureDemand};
 use hypercolor_core::input::{
     InputGraphHandle, InputGraphSnapshot, InputManager, SourceKind, SourceState,
 };
@@ -43,31 +44,54 @@ pub enum InputPublicationConsumer {
 /// Per-source publication rates requested by one consumer class.
 pub struct InputPublicationDemand {
     audio: u32,
-    screen: u32,
+    screen: Option<ScreenPublicationDemand>,
     interaction: u32,
     media: u32,
     network: u32,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ScreenPublicationDemand {
+    requested_hz: u32,
+    requested_extent: PixelExtent,
+}
+
 impl InputPublicationDemand {
     /// Request the same rate for every typed source.
     #[must_use]
-    pub const fn all_sources(requested_hz: u32) -> Self {
+    pub fn all_sources(requested_hz: u32, screen_extent: PixelExtent) -> Self {
         Self {
             audio: requested_hz,
-            screen: requested_hz,
+            screen: (requested_hz > 0).then_some(ScreenPublicationDemand {
+                requested_hz,
+                requested_extent: screen_extent,
+            }),
             interaction: requested_hz,
             media: requested_hz,
             network: requested_hz,
         }
     }
 
-    /// Set one typed source rate, preserving the other source rates.
+    /// Set one scalar source rate, preserving the other source rates.
+    ///
+    /// Screen demand must use [`Self::with_screen`] so its extent cannot be
+    /// separated from its cadence.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `source` is [`SourceKind::Screen`] and `requested_hz` is
+    /// non-zero.
     #[must_use]
     pub const fn with_source(mut self, source: SourceKind, requested_hz: u32) -> Self {
         match source {
             SourceKind::Audio => self.audio = requested_hz,
-            SourceKind::Screen => self.screen = requested_hz,
+            SourceKind::Screen => {
+                assert!(
+                    requested_hz == 0,
+                    "screen publication demand requires an explicit extent"
+                );
+                self.screen = None;
+            }
             SourceKind::Interaction => self.interaction = requested_hz,
             SourceKind::Media => self.media = requested_hz,
             SourceKind::Network => self.network = requested_hz,
@@ -75,21 +99,43 @@ impl InputPublicationDemand {
         self
     }
 
-    pub(crate) const fn requested_hz(self, source: SourceKind) -> u32 {
+    /// Set screen publication cadence and extent together.
+    #[must_use]
+    pub fn with_screen(mut self, requested_hz: u32, requested_extent: PixelExtent) -> Self {
+        self.screen = (requested_hz > 0).then_some(ScreenPublicationDemand {
+            requested_hz,
+            requested_extent,
+        });
+        self
+    }
+
+    pub(crate) fn screen_capture_demand(self) -> ScreenCaptureDemand {
+        self.screen.map_or(ScreenCaptureDemand::Inactive, |screen| {
+            ScreenCaptureDemand::active(screen.requested_extent)
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn screen_requested_extent(self) -> Option<PixelExtent> {
+        self.screen.map(|screen| screen.requested_extent)
+    }
+
+    pub(crate) fn requested_hz(self, source: SourceKind) -> u32 {
         match source {
             SourceKind::Audio => self.audio,
-            SourceKind::Screen => self.screen,
+            SourceKind::Screen => self.screen.map_or(0, |screen| screen.requested_hz),
             SourceKind::Interaction => self.interaction,
             SourceKind::Media => self.media,
             SourceKind::Network => self.network,
         }
     }
 
-    const fn max_requested_hz(self) -> u32 {
-        let max = if self.audio > self.screen {
+    fn max_requested_hz(self) -> u32 {
+        let screen_hz = self.requested_hz(SourceKind::Screen);
+        let max = if self.audio > screen_hz {
             self.audio
         } else {
-            self.screen
+            screen_hz
         };
         let max = if max > self.interaction {
             max
@@ -104,18 +150,14 @@ impl InputPublicationDemand {
         }
     }
 
-    const fn union(self, other: Self) -> Self {
+    fn union(self, other: Self) -> Self {
         Self {
             audio: if self.audio > other.audio {
                 self.audio
             } else {
                 other.audio
             },
-            screen: if self.screen > other.screen {
-                self.screen
-            } else {
-                other.screen
-            },
+            screen: union_screen_demand(self.screen, other.screen),
             interaction: if self.interaction > other.interaction {
                 self.interaction
             } else {
@@ -132,6 +174,19 @@ impl InputPublicationDemand {
                 other.network
             },
         }
+    }
+}
+
+fn union_screen_demand(
+    left: Option<ScreenPublicationDemand>,
+    right: Option<ScreenPublicationDemand>,
+) -> Option<ScreenPublicationDemand> {
+    match (left, right) {
+        (None, demand) | (demand, None) => demand,
+        (Some(left), Some(right)) => Some(ScreenPublicationDemand {
+            requested_hz: left.requested_hz.max(right.requested_hz),
+            requested_extent: left.requested_extent.union(right.requested_extent),
+        }),
     }
 }
 
@@ -655,7 +710,13 @@ fn demand_for_active_sources(
             {
                 return active_demand;
             }
-            active_demand.with_source(status.kind, demand.requested_hz(status.kind))
+            if status.kind == SourceKind::Screen {
+                demand.aggregate.screen.map_or(active_demand, |screen| {
+                    active_demand.with_screen(screen.requested_hz, screen.requested_extent)
+                })
+            } else {
+                active_demand.with_source(status.kind, demand.requested_hz(status.kind))
+            }
         })
 }
 

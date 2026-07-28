@@ -21,7 +21,7 @@ use tokio::time::timeout;
 use super::{
     InteractivePreviewAcceleration, InteractivePreviewContext, InteractivePreviewExecutor,
     InteractivePreviewFrame, InteractivePreviewSpec, InteractivePreviewTarget, PreviewLaneId,
-    advance_deadline, duration_millis_u32,
+    ResolvedPreviewScene, advance_deadline, duration_millis_u32, preview_input_demand,
 };
 use crate::interaction_routing::InteractionRoutingControl;
 use crate::preview_runtime::PreviewPixelFormat;
@@ -227,6 +227,37 @@ fn wire_timestamp_wraps_at_u32_boundary() {
     let duration = Duration::from_millis(u64::from(u32::MAX) + 3);
 
     assert_eq!(duration_millis_u32(duration), 2);
+}
+
+#[test]
+fn screen_preview_demands_the_resolved_scene_extent() {
+    let mut group = color_group([0.0, 0.0, 0.0, 1.0]);
+    group.layers[0].source = LayerSource::ScreenRegion {
+        viewport: Default::default(),
+    };
+    let scene = ResolvedPreviewScene {
+        scene_id: None,
+        groups_revision: 0,
+        groups: Arc::from([group]),
+        registry: Arc::new(EffectRegistry::new(Vec::new())),
+        catalog_generation: 0,
+        canvas_width: 5_120,
+        canvas_height: 720,
+    };
+
+    let demand = preview_input_demand(&scene, 45);
+
+    assert_eq!(
+        demand.requested_hz(hypercolor_core::input::SourceKind::Screen),
+        45
+    );
+    assert_eq!(
+        demand.screen_requested_extent(),
+        Some(
+            hypercolor_core::input::screen::PixelExtent::new(5_120, 720)
+                .expect("test screen extent should be non-empty")
+        )
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
