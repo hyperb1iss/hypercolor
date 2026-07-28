@@ -9,6 +9,7 @@ use std::sync::Arc;
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::response::Response;
+use hypercolor_types::canvas::SurfaceDescriptor;
 use hypercolor_types::spatial::{Output, SamplingMode, SpatialLayout};
 use serde::{Deserialize, Serialize};
 
@@ -477,10 +478,10 @@ fn normalize_layout_name(raw: &str) -> Result<String, String> {
 }
 
 fn validate_canvas_dimensions(width: u32, height: u32) -> Result<(), String> {
-    if width == 0 || height == 0 {
-        return Err("canvas_width and canvas_height must be greater than 0".to_owned());
-    }
-    Ok(())
+    SurfaceDescriptor::rgba8888(width, height)
+        .try_non_empty_byte_len()
+        .map(|_| ())
+        .map_err(|error| error.to_string())
 }
 
 pub(crate) fn validate_layout_sampling_radii(layout: &SpatialLayout) -> Result<(), String> {

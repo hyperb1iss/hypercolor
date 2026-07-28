@@ -8370,6 +8370,55 @@ async fn layout_create_defaults_canvas_to_active_layout_dimensions() {
 }
 
 #[tokio::test]
+async fn layout_create_accepts_large_finite_canvas_dimensions() {
+    let app = test_app();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/layouts")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"name":"8K Canvas","canvas_width":7680,"canvas_height":4320}"#,
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["canvas_width"], 7_680);
+    assert_eq!(json["data"]["canvas_height"], 4_320);
+}
+
+#[tokio::test]
+async fn layout_create_rejects_canvas_dimensions_that_overflow_resources() {
+    let app = test_app();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/layouts")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"name":"Overflow","canvas_width":4294967295,"canvas_height":4294967295}"#,
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let json = body_json(response).await;
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("overflows addressable memory"))
+    );
+}
+
+#[tokio::test]
 async fn layout_apply_updates_active_layout() {
     let (state, _tmp) = test_state_with_temp_layout_and_runtime_store();
     let app = test_app_with_state(Arc::clone(&state));
