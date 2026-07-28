@@ -4,7 +4,9 @@
     target_pointer_width = "64"
 ))]
 
-use hypercolor_windows_capture::{CaptureError, CaptureExtent, CaptureReductionBenchmark};
+use hypercolor_windows_capture::{
+    CaptureError, CaptureExtent, CaptureReductionBenchmark, classify_allocation_pressure_for_test,
+};
 
 #[test]
 fn public_benchmark_reports_unallocatable_plane_without_entering_d3d() {
@@ -26,4 +28,25 @@ fn public_benchmark_reports_unallocatable_plane_without_entering_d3d() {
             requested_bytes,
         } if requested_bytes > isize::MAX as usize
     ));
+}
+
+#[test]
+fn d3d_out_of_memory_remains_typed_resource_pressure() {
+    for operation in [
+        "create capture compute shader",
+        "create reduction constants",
+        "create reduction texture",
+        "create reduction SRV",
+        "create reduction UAV",
+        "create reduction event query",
+    ] {
+        let error = classify_allocation_pressure_for_test(operation, 4096);
+        assert!(matches!(
+            error,
+            CaptureError::ResourceExhausted {
+                operation: classified_operation,
+                requested_bytes: 4096,
+            } if classified_operation == operation
+        ));
+    }
 }

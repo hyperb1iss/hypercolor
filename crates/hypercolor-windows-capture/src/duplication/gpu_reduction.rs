@@ -882,8 +882,9 @@ fn create_compute_shader(
     let mut shader = None;
     // SAFETY: bytecode came from D3DCompile for cs_5_0 and the out-pointer is
     // live for the duration of the call.
-    unsafe { device.CreateComputeShader(bytecode, None, Some(&mut shader)) }
-        .map_err(|error| GpuReductionError::windows("create capture compute shader", error))?;
+    unsafe { device.CreateComputeShader(bytecode, None, Some(&mut shader)) }.map_err(|error| {
+        classify_allocation_error("create capture compute shader", bytecode.len(), error)
+    })?;
     shader.ok_or_else(|| GpuReductionError::operation("compute shader creation returned no shader"))
 }
 
@@ -898,8 +899,9 @@ fn create_constant_buffer(device: &ID3D11Device) -> Result<ID3D11Buffer, GpuRedu
     };
     let mut buffer = None;
     // SAFETY: descriptor is valid and the out-pointer remains live.
-    unsafe { device.CreateBuffer(&desc, None, Some(&mut buffer)) }
-        .map_err(|error| GpuReductionError::windows("create reduction constants", error))?;
+    unsafe { device.CreateBuffer(&desc, None, Some(&mut buffer)) }.map_err(|error| {
+        classify_allocation_error("create reduction constants", desc.ByteWidth as usize, error)
+    })?;
     buffer
         .ok_or_else(|| GpuReductionError::operation("constant buffer creation returned no buffer"))
 }
@@ -924,15 +926,7 @@ fn create_texture(
     // the out-pointer remains valid.
     unsafe { device.CreateTexture2D(desc, initial.map(std::ptr::from_ref), Some(&mut texture)) }
         .map_err(|error| {
-            if error.code() == E_OUTOFMEMORY {
-                GpuReductionError::ResourceExhausted {
-                    context: "create reduction texture",
-                    requested_bytes,
-                    message: error.to_string(),
-                }
-            } else {
-                GpuReductionError::windows("create reduction texture", error)
-            }
+            classify_allocation_error("create reduction texture", requested_bytes, error)
         })?;
     texture.ok_or_else(|| GpuReductionError::operation("texture creation returned no texture"))
 }
@@ -941,11 +935,13 @@ fn create_srv(
     device: &ID3D11Device,
     texture: &ID3D11Texture2D,
 ) -> Result<ID3D11ShaderResourceView, GpuReductionError> {
+    let requested_bytes = texture_rgba_bytes(texture, "create reduction SRV")?;
     let mut view = None;
     // SAFETY: the texture supports shader-resource binding and the default
     // view spans its only subresource.
-    unsafe { device.CreateShaderResourceView(texture, None, Some(&mut view)) }
-        .map_err(|error| GpuReductionError::windows("create reduction SRV", error))?;
+    unsafe { device.CreateShaderResourceView(texture, None, Some(&mut view)) }.map_err(
+        |error| classify_allocation_error("create reduction SRV", requested_bytes, error),
+    )?;
     view.ok_or_else(|| GpuReductionError::operation("SRV creation returned no view"))
 }
 
@@ -953,11 +949,13 @@ fn create_uav(
     device: &ID3D11Device,
     texture: &ID3D11Texture2D,
 ) -> Result<ID3D11UnorderedAccessView, GpuReductionError> {
+    let requested_bytes = texture_rgba_bytes(texture, "create reduction UAV")?;
     let mut view = None;
     // SAFETY: the texture format was checked for typed UAV support and the
     // default view spans its only subresource.
-    unsafe { device.CreateUnorderedAccessView(texture, None, Some(&mut view)) }
-        .map_err(|error| GpuReductionError::windows("create reduction UAV", error))?;
+    unsafe { device.CreateUnorderedAccessView(texture, None, Some(&mut view)) }.map_err(
+        |error| classify_allocation_error("create reduction UAV", requested_bytes, error),
+    )?;
     view.ok_or_else(|| GpuReductionError::operation("UAV creation returned no view"))
 }
 
@@ -968,9 +966,50 @@ fn create_event_query(device: &ID3D11Device) -> Result<ID3D11Query, GpuReduction
     };
     let mut query = None;
     // SAFETY: the event query descriptor and out-pointer remain live.
-    unsafe { device.CreateQuery(&desc, Some(&mut query)) }
-        .map_err(|error| GpuReductionError::windows("create reduction event query", error))?;
+    unsafe { device.CreateQuery(&desc, Some(&mut query)) }.map_err(|error| {
+        classify_allocation_error(
+            "create reduction event query",
+            size_of::<D3D11_QUERY_DESC>(),
+            error,
+        )
+    })?;
     query.ok_or_else(|| GpuReductionError::operation("query creation returned no query"))
+}
+
+fn texture_rgba_bytes(
+    texture: &ID3D11Texture2D,
+    context: &'static str,
+) -> Result<usize, GpuReductionError> {
+    let mut desc = D3D11_TEXTURE2D_DESC::default();
+    // SAFETY: GetDesc fills a caller-owned descriptor and cannot fail.
+    unsafe { texture.GetDesc(&mut desc) };
+    checked_rgba_len(desc.Width, desc.Height, context)
+}
+
+fn classify_allocation_error(
+    context: &'static str,
+    requested_bytes: usize,
+    error: windows::core::Error,
+) -> GpuReductionError {
+    if error.code() == E_OUTOFMEMORY {
+        GpuReductionError::resource_exhausted(context, requested_bytes, error)
+    } else {
+        GpuReductionError::windows(context, error)
+    }
+}
+
+#[cfg(feature = "capture-bench")]
+pub fn classify_allocation_pressure_for_test(
+    context: &'static str,
+    requested_bytes: usize,
+) -> CaptureError {
+    classify_allocation_error(
+        context,
+        requested_bytes,
+        windows::core::Error::from_hresult(E_OUTOFMEMORY),
+    )
+    .as_capture_error()
+    .expect("E_OUTOFMEMORY always maps to a typed capture error")
 }
 
 fn normalized_pointer(shape: &super::PointerShape) -> Result<Vec<u8>, GpuReductionError> {

@@ -795,7 +795,7 @@ impl DesktopDuplicator {
         let (native_width, native_height) =
             native_scanout_extent(logical_width, logical_height, rotation);
         let (origin_x, origin_y) = output_origin(&output)?;
-        let (gpu_reducer, reduction_telemetry) = initialize_gpu_reduction(&device, &context);
+        let (gpu_reducer, reduction_telemetry) = initialize_gpu_reduction(&device, &context)?;
 
         Ok(Self {
             selector,
@@ -1593,7 +1593,7 @@ impl DesktopDuplicator {
         {
             self.region = None;
         }
-        let (gpu_reducer, reduction_status) = initialize_gpu_reduction(&device, &context);
+        let (gpu_reducer, reduction_status) = initialize_gpu_reduction(&device, &context)?;
 
         self.device = device;
         self.context = context;
@@ -1721,16 +1721,19 @@ fn saturating_i32(value: i64) -> i32 {
 fn initialize_gpu_reduction(
     device: &ID3D11Device,
     context: &ID3D11DeviceContext,
-) -> (Option<GpuReducer>, ReductionTelemetry) {
+) -> CaptureResult<(Option<GpuReducer>, ReductionTelemetry)> {
     match GpuReducer::new(device, context) {
-        Ok(reducer) => (
+        Ok(reducer) => Ok((
             Some(reducer),
             ReductionTelemetry {
                 path: ReductionPath::Gpu,
                 ..ReductionTelemetry::default()
             },
-        ),
+        )),
         Err(error) => {
+            if let Some(capture_error) = error.as_capture_error() {
+                return Err(capture_error);
+            }
             let issue = error.to_string();
             warn!(
                 reduction_path = ?ReductionPath::CpuFallback,
@@ -1738,7 +1741,7 @@ fn initialize_gpu_reduction(
                 %issue,
                 "GPU capture reduction unavailable; using CPU fallback"
             );
-            (None, fallback_reduction_telemetry(issue))
+            Ok((None, fallback_reduction_telemetry(issue)))
         }
     }
 }

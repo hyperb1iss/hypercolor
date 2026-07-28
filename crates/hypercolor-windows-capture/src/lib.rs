@@ -23,6 +23,7 @@ pub use duplication::DesktopDuplicator;
 #[doc(hidden)]
 pub use duplication::gpu_reduction::{
     CaptureCadenceReport, CaptureReductionBenchmark, ReductionBenchmarkSample,
+    classify_allocation_pressure_for_test,
 };
 
 mod shared;
