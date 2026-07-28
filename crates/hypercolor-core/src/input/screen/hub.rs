@@ -365,19 +365,53 @@ impl ScreenBranchDeliveryState {
     }
 }
 
-/// Complete worker-side metadata validated at publication authority.
+/// Worker-side publication intent with optional completion metadata.
 #[derive(Clone, Debug)]
 pub struct ScreenPublicationMetadata {
     source_epoch: CaptureEpoch,
     worker_plan_generation: ScreenPlanGeneration,
     native_sequence: NonZeroU64,
     captured_at: Instant,
-    published_at: Instant,
     freshness_deadline: Instant,
+    completion: Option<ScreenPublicationCompletion>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ScreenPublicationCompletion {
+    published_at: Instant,
     health: ScreenPublicationHealth,
 }
 
 impl ScreenPublicationMetadata {
+    /// Construct source intent before publication work begins.
+    ///
+    /// Writable reservations retain this intent while the reducer fills its
+    /// slot. Publication time and health are supplied only after that work
+    /// finishes.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a freshness deadline earlier than capture time.
+    pub fn try_intent(
+        source_epoch: CaptureEpoch,
+        worker_plan_generation: ScreenPlanGeneration,
+        native_sequence: NonZeroU64,
+        captured_at: Instant,
+        freshness_deadline: Instant,
+    ) -> Result<Self, ScreenPublicationHubError> {
+        if freshness_deadline < captured_at {
+            return Err(ScreenPublicationHubError::InvalidPublicationTimeline);
+        }
+        Ok(Self {
+            source_epoch,
+            worker_plan_generation,
+            native_sequence,
+            captured_at,
+            freshness_deadline,
+            completion: None,
+        })
+    }
+
     /// Construct one exact worker publication report.
     ///
     /// # Errors
@@ -395,15 +429,39 @@ impl ScreenPublicationMetadata {
         if published_at < captured_at || freshness_deadline < published_at {
             return Err(ScreenPublicationHubError::InvalidPublicationTimeline);
         }
-        Ok(Self {
+        let mut metadata = Self::try_intent(
             source_epoch,
             worker_plan_generation,
             native_sequence,
             captured_at,
-            published_at,
             freshness_deadline,
+        )?;
+        metadata.completion = Some(ScreenPublicationCompletion {
+            published_at,
             health,
-        })
+        });
+        Ok(metadata)
+    }
+
+    fn complete(
+        &mut self,
+        published_at: Instant,
+        health: ScreenPublicationHealth,
+    ) -> Result<(), ScreenPublicationHubError> {
+        if self.completion.is_some() {
+            return Err(ScreenPublicationHubError::PublicationCompletionAlreadySet);
+        }
+        if published_at < self.captured_at {
+            return Err(ScreenPublicationHubError::InvalidPublicationTimeline);
+        }
+        if published_at > self.freshness_deadline {
+            return Err(ScreenPublicationHubError::PublicationFreshnessExpired);
+        }
+        self.completion = Some(ScreenPublicationCompletion {
+            published_at,
+            health,
+        });
+        Ok(())
     }
 }
 
@@ -457,6 +515,20 @@ impl ScreenPublicationStorage {
                 colors.copy_from_slice(payload.colors());
             }
             _ => unreachable!("payload is descriptor-validated before slot mutation"),
+        }
+    }
+
+    fn surface_pixels_mut(&mut self) -> Option<&mut [u8]> {
+        match self {
+            Self::Surface { pixels, .. } => Some(pixels),
+            Self::Zones { .. } => None,
+        }
+    }
+
+    fn zone_colors_mut(&mut self) -> Option<&mut [[u8; 3]]> {
+        match self {
+            Self::Surface { .. } => None,
+            Self::Zones { colors, .. } => Some(colors),
         }
     }
 
@@ -1246,6 +1318,32 @@ impl ScreenPublicationHub {
         })
     }
 
+    /// Reserve one admitted descriptor-shaped slot for direct reducer writes.
+    ///
+    /// The returned reservation owns the only mutable reference to its slot.
+    /// Callers fill it through [`PreparedScreenPublication::surface_pixels_mut`]
+    /// or [`PreparedScreenPublication::zone_colors_mut`], then consume it with
+    /// [`Self::finalize_writable_publication`]. Dropping the reservation returns
+    /// the slot without replacing last-good.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale authority, a requested kind unlike the descriptor, wrong
+    /// epoch, or retained and reserved slots that exhaust the admitted pool.
+    pub fn prepare_writable_publication(
+        &self,
+        publisher: &ScreenBranchPublisher,
+        expected_kind: ScreenPayloadKind,
+        metadata: &ScreenPublicationMetadata,
+    ) -> Result<PreparedScreenPublication, ScreenPublicationHubError> {
+        validate_payload_kind(&publisher.branch.descriptor, expected_kind)?;
+        validate_publication_intent(&publisher.branch, &publisher.binding, metadata)?;
+        if metadata.completion.is_some() {
+            return Err(ScreenPublicationHubError::PublicationCompletionAlreadySet);
+        }
+        self.reserve_publication(publisher, metadata)
+    }
+
     /// Reserve one admitted slot and copy payload bytes outside authority locks.
     ///
     /// # Errors
@@ -1260,6 +1358,17 @@ impl ScreenPublicationHub {
     ) -> Result<PreparedScreenPublication, ScreenPublicationHubError> {
         validate_payload(&publisher.branch.descriptor, payload)?;
         validate_metadata(&publisher.branch, &publisher.binding, metadata)?;
+        let mut prepared = self.reserve_publication(publisher, metadata)?;
+        let publication_storage = prepared.publication_mut()?;
+        publication_storage.storage.copy_from(payload);
+        Ok(prepared)
+    }
+
+    fn reserve_publication(
+        &self,
+        publisher: &ScreenBranchPublisher,
+        metadata: &ScreenPublicationMetadata,
+    ) -> Result<PreparedScreenPublication, ScreenPublicationHubError> {
         let mut runtime = publisher.branch.lock_runtime();
         let state = self.state.load_full();
         if publisher.branch.is_retired() {
@@ -1291,7 +1400,7 @@ impl ScreenPublicationHub {
             });
         };
         drop(runtime);
-        let Some(publication_storage) = Arc::get_mut(&mut publication) else {
+        if Arc::get_mut(&mut publication).is_none() {
             let reserved = PreparedScreenPublication {
                 branch: Arc::clone(&publisher.branch),
                 binding: publisher.binding.clone(),
@@ -1304,15 +1413,7 @@ impl ScreenPublicationHub {
             return Err(ScreenPublicationHubError::PublicationPressure {
                 admitted_slots: self.state.load().slot_policy.total_slots(),
             });
-        };
-        publication_storage.storage.copy_from(payload);
-        publication_storage.worker_plan_generation = metadata.worker_plan_generation;
-        publication_storage.source_epoch = metadata.source_epoch.clone();
-        publication_storage.native_sequence = metadata.native_sequence;
-        publication_storage.captured_at = metadata.captured_at;
-        publication_storage.published_at = metadata.published_at;
-        publication_storage.freshness_deadline = metadata.freshness_deadline;
-        publication_storage.health = metadata.health;
+        }
         Ok(PreparedScreenPublication {
             branch: Arc::clone(&publisher.branch),
             binding: publisher.binding.clone(),
@@ -1349,7 +1450,12 @@ impl ScreenPublicationHub {
             drop(runtime);
             return Err(error);
         }
-        validate_metadata(&prepared.branch, &prepared.binding, &prepared.metadata)?;
+        if let Err(error) =
+            validate_metadata(&prepared.branch, &prepared.binding, &prepared.metadata)
+        {
+            drop(runtime);
+            return Err(error);
+        }
         if runtime
             .last_native_sequence
             .is_some_and(|sequence| prepared.metadata.native_sequence <= sequence)
@@ -1363,11 +1469,14 @@ impl ScreenPublicationHub {
             drop(runtime);
             return Err(error);
         }
-        let next_branch_sequence = runtime
+        let Some(next_branch_sequence) = runtime
             .next_branch_sequence
             .checked_add(1)
             .and_then(NonZeroU64::new)
-            .ok_or(ScreenPublicationHubError::BranchSequenceExhausted)?;
+        else {
+            drop(runtime);
+            return Err(ScreenPublicationHubError::BranchSequenceExhausted);
+        };
         let slot_is_reserved = runtime
             .slots
             .get(prepared.slot_index)
@@ -1385,15 +1494,26 @@ impl ScreenPublicationHub {
             drop(runtime);
             return Err(ScreenPublicationHubError::PublicationReservationLost);
         };
+        let completion = prepared
+            .metadata
+            .completion
+            .expect("validated publication completion exists");
         publication_storage.committed_plan_generation = state.plan.generation();
+        publication_storage.worker_plan_generation = prepared.metadata.worker_plan_generation;
+        publication_storage.source_epoch = prepared.metadata.source_epoch.clone();
+        publication_storage.native_sequence = prepared.metadata.native_sequence;
         publication_storage.branch_sequence = next_branch_sequence;
+        publication_storage.captured_at = prepared.metadata.captured_at;
+        publication_storage.published_at = completion.published_at;
+        publication_storage.freshness_deadline = prepared.metadata.freshness_deadline;
+        publication_storage.health = completion.health;
         runtime.next_branch_sequence = next_branch_sequence.get();
         runtime.last_native_sequence = Some(prepared.metadata.native_sequence);
         if let Some(slot) = runtime.slots.get_mut(prepared.slot_index) {
             *slot = Some(Arc::clone(&publication));
         }
         prepared.branch.latest.store(Some(Arc::clone(&publication)));
-        prepared.branch.report_health(prepared.metadata.health);
+        prepared.branch.report_health(completion.health);
         prepared.branch.clear_pressure();
         drop(runtime);
         Ok(ScreenLiveBranchReceipt {
@@ -1401,6 +1521,27 @@ impl ScreenPublicationHub {
             branch: Arc::clone(&prepared.branch),
             publication,
         })
+    }
+
+    /// Complete and finalize one directly written publication slot.
+    ///
+    /// Completion time is supplied after reducer work, so published freshness
+    /// reflects actual delivery rather than reservation time.
+    ///
+    /// # Errors
+    ///
+    /// Rejects completion before capture, completion after the freshness
+    /// deadline, repeated completion, stale authority, lost reservations, or
+    /// non-monotonic source sequences. Every rejection returns the slot without
+    /// replacing last-good.
+    pub fn finalize_writable_publication(
+        &self,
+        mut prepared: PreparedScreenPublication,
+        published_at: Instant,
+        health: ScreenPublicationHealth,
+    ) -> Result<ScreenLiveBranchReceipt, ScreenPublicationHubError> {
+        prepared.metadata.complete(published_at, health)?;
+        self.finalize_publication(prepared)
     }
 
     /// Copy and finalize one publication using the two-phase slot protocol.
@@ -1622,6 +1763,15 @@ pub struct PreparedScreenPublication {
 }
 
 impl PreparedScreenPublication {
+    fn publication_mut(
+        &mut self,
+    ) -> Result<&mut ScreenBranchPublication, ScreenPublicationHubError> {
+        self.publication
+            .as_mut()
+            .and_then(Arc::get_mut)
+            .ok_or(ScreenPublicationHubError::PublicationReservationLost)
+    }
+
     /// Exact descriptor copied into this reserved slot.
     #[must_use]
     pub fn descriptor(&self) -> &ResolvedScreenPublicationDescriptor {
@@ -1632,6 +1782,45 @@ impl PreparedScreenPublication {
     #[must_use]
     pub fn worker_plan_generation(&self) -> ScreenPlanGeneration {
         self.binding.plan_generation()
+    }
+
+    /// Borrow the exact tightly packed mutable surface slot.
+    ///
+    /// The bytes cannot outlive this reservation and become immutable when the
+    /// reservation is consumed by finalization.
+    ///
+    /// # Errors
+    ///
+    /// Rejects zone reservations and a reservation that lost unique ownership.
+    pub fn surface_pixels_mut(&mut self) -> Result<&mut [u8], ScreenPublicationHubError> {
+        let expected = descriptor_payload_kind(&self.branch.descriptor);
+        let publication = self.publication_mut()?;
+        publication.storage.surface_pixels_mut().ok_or(
+            ScreenPublicationHubError::PayloadKindMismatch {
+                expected,
+                observed: ScreenPayloadKind::Surface,
+            },
+        )
+    }
+
+    /// Borrow the exact row-major mutable RGB zone slot.
+    ///
+    /// The colors cannot outlive this reservation and become immutable when
+    /// the reservation is consumed by finalization.
+    ///
+    /// # Errors
+    ///
+    /// Rejects surface reservations and a reservation that lost unique
+    /// ownership.
+    pub fn zone_colors_mut(&mut self) -> Result<&mut [[u8; 3]], ScreenPublicationHubError> {
+        let expected = descriptor_payload_kind(&self.branch.descriptor);
+        let publication = self.publication_mut()?;
+        publication.storage.zone_colors_mut().ok_or(
+            ScreenPublicationHubError::PayloadKindMismatch {
+                expected,
+                observed: ScreenPayloadKind::Zones,
+            },
+        )
     }
 }
 
@@ -2007,6 +2196,15 @@ pub enum ScreenPublicationHubError {
     /// Capture/publish/freshness timestamps move backwards.
     #[error("publication timeline moves backwards")]
     InvalidPublicationTimeline,
+    /// Completed metadata was supplied to a writable reservation.
+    #[error("writable publication intent already contains completion metadata")]
+    PublicationCompletionAlreadySet,
+    /// Finalization was attempted before publication completion was supplied.
+    #[error("publication completion metadata is missing")]
+    PublicationCompletionMissing,
+    /// Reducer work completed after the source freshness deadline.
+    #[error("publication completed after its freshness deadline")]
+    PublicationFreshnessExpired,
     /// Native source sequence was duplicated or moved backwards.
     #[error("native source sequence must advance: previous {previous}, observed {observed}")]
     NativeSequenceNotMonotonic {
@@ -2078,7 +2276,44 @@ fn validate_payload(
     Ok(())
 }
 
+fn validate_payload_kind(
+    descriptor: &ResolvedScreenPublicationDescriptor,
+    observed: ScreenPayloadKind,
+) -> Result<(), ScreenPublicationHubError> {
+    let expected = descriptor_payload_kind(descriptor);
+    if observed == expected {
+        Ok(())
+    } else {
+        Err(ScreenPublicationHubError::PayloadKindMismatch { expected, observed })
+    }
+}
+
+fn descriptor_payload_kind(descriptor: &ResolvedScreenPublicationDescriptor) -> ScreenPayloadKind {
+    match descriptor.kind() {
+        ScreenPublicationKind::Surface => ScreenPayloadKind::Surface,
+        ScreenPublicationKind::Zones { .. } => ScreenPayloadKind::Zones,
+    }
+}
+
 fn validate_metadata(
+    branch: &ScreenBranchEntry,
+    binding: &ScreenWorkerBinding,
+    metadata: &ScreenPublicationMetadata,
+) -> Result<(), ScreenPublicationHubError> {
+    validate_publication_intent(branch, binding, metadata)?;
+    let completion = metadata
+        .completion
+        .ok_or(ScreenPublicationHubError::PublicationCompletionMissing)?;
+    if completion.published_at < metadata.captured_at {
+        return Err(ScreenPublicationHubError::InvalidPublicationTimeline);
+    }
+    if completion.published_at > metadata.freshness_deadline {
+        return Err(ScreenPublicationHubError::PublicationFreshnessExpired);
+    }
+    Ok(())
+}
+
+fn validate_publication_intent(
     branch: &ScreenBranchEntry,
     binding: &ScreenWorkerBinding,
     metadata: &ScreenPublicationMetadata,
