@@ -664,7 +664,7 @@ impl Default for AudioConfig {
 ///
 /// The capture source is chosen interactively through the desktop portal
 /// picker; `restore_token` persists that choice across daemon restarts.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CaptureConfig {
     #[serde(default = "defaults::capture_enabled")]
     pub enabled: bool,

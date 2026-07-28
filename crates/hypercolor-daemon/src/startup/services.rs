@@ -15,7 +15,7 @@ use tracing::{info, warn};
 use hypercolor_core::asset::{AssetLibrary, StreamUrlPolicy};
 use hypercolor_core::attachment::ComponentRegistry;
 use hypercolor_core::bus::HypercolorBus;
-use hypercolor_core::config::ConfigManager;
+use hypercolor_core::config::{CapturePersistenceEpoch, CapturePersistenceSource, ConfigManager};
 use hypercolor_core::device::mock::MockDeviceBackend;
 use hypercolor_core::device::{
     BackendManager, DeviceLifecycleManager, DeviceRegistry, UsbProtocolConfigStore,
@@ -39,7 +39,7 @@ use hypercolor_core::input::screen::WaylandScreenCaptureInput;
 use hypercolor_core::input::screen::{
     CaptureSourceSink, ResolvedCaptureSource, WindowsScreenCaptureInput,
 };
-use hypercolor_core::input::{InputManager, SensorPoller};
+use hypercolor_core::input::{InputManager, SensorPoller, SourceStatusHandle};
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_driver_api::CredentialStore;
@@ -625,6 +625,7 @@ pub(crate) fn build_input_manager(
             Arc::clone(config_manager),
         )?);
     }
+    config_manager.mark_capture_runtime_applied(&config.capture);
 
     Ok((input_manager, browser_input))
 }
@@ -633,18 +634,20 @@ pub(crate) fn build_platform_screen_capture_source(
     capture: &hypercolor_types::config::CaptureConfig,
     config_manager: Arc<ConfigManager>,
 ) -> Result<Box<dyn hypercolor_core::input::InputSource>> {
-    let persistence = CaptureConfigPersistenceGate::new(config_manager, true);
+    let expected = Arc::clone(&config_manager.get());
+    let persistence = CaptureConfigPersistenceGate::new(config_manager, &expected, true)?;
     build_platform_screen_capture_source_with_persistence(capture, persistence)
 }
 
 pub(crate) fn prepare_platform_screen_capture_source(
     capture: &hypercolor_types::config::CaptureConfig,
     config_manager: Arc<ConfigManager>,
+    expected: &Arc<HypercolorConfig>,
 ) -> Result<(
     Box<dyn hypercolor_core::input::InputSource>,
     CaptureConfigPersistenceGate,
 )> {
-    let persistence = CaptureConfigPersistenceGate::new(config_manager, false);
+    let persistence = CaptureConfigPersistenceGate::new(config_manager, expected, false)?;
     let source =
         build_platform_screen_capture_source_with_persistence(capture, persistence.clone())?;
     Ok((source, persistence))
@@ -655,17 +658,21 @@ fn build_platform_screen_capture_source_with_persistence(
     persistence: CaptureConfigPersistenceGate,
 ) -> Result<Box<dyn hypercolor_core::input::InputSource>> {
     #[cfg(target_os = "windows")]
-    {
-        build_windows_screen_capture_source(capture, persistence)
-    }
+    let source = build_windows_screen_capture_source(capture, persistence.clone())?;
     #[cfg(target_os = "linux")]
-    {
-        build_screen_capture_source(capture, persistence)
-    }
+    let source = build_screen_capture_source(capture, persistence.clone())?;
     #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     {
         let _ = (capture, persistence);
         anyhow::bail!("screen capture is not supported on this platform")
+    }
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    {
+        let status = source
+            .source_status_handle()
+            .context("screen capture source must expose lifecycle status")?;
+        persistence.bind_source(status);
+        Ok(source)
     }
 }
 
@@ -679,8 +686,22 @@ struct CaptureConfigPersistenceInner {
     state: StdMutex<CaptureConfigPersistenceState>,
 }
 
+impl Drop for CaptureConfigPersistenceInner {
+    fn drop(&mut self) {
+        let epoch = self
+            .state
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .epoch;
+        self.config_manager.revoke_capture_persistence(epoch);
+    }
+}
+
 struct CaptureConfigPersistenceState {
     committed: bool,
+    revoked: bool,
+    epoch: CapturePersistenceEpoch,
+    source_status: Option<SourceStatusHandle>,
     pending: Option<CaptureConfigPersistenceUpdate>,
 }
 
@@ -697,53 +718,122 @@ enum CaptureConfigPersistenceUpdate {
 }
 
 impl CaptureConfigPersistenceGate {
-    fn new(config_manager: Arc<ConfigManager>, committed: bool) -> Self {
-        Self {
+    fn new(
+        config_manager: Arc<ConfigManager>,
+        expected: &Arc<HypercolorConfig>,
+        committed: bool,
+    ) -> Result<Self> {
+        let epoch = config_manager
+            .reserve_capture_persistence(expected)
+            .context("capture config changed before persistence authority was reserved")?;
+        if committed && !config_manager.activate_capture_persistence(expected, epoch, None) {
+            config_manager.revoke_capture_persistence(epoch);
+            anyhow::bail!("capture config changed before persistence authority was activated");
+        }
+        Ok(Self {
             inner: Arc::new(CaptureConfigPersistenceInner {
                 config_manager,
                 state: StdMutex::new(CaptureConfigPersistenceState {
                     committed,
+                    revoked: false,
+                    epoch,
+                    source_status: None,
                     pending: None,
                 }),
             }),
-        }
+        })
+    }
+
+    fn bind_source(&self, status: SourceStatusHandle) {
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.source_status = Some(status);
+    }
+
+    pub(crate) fn epoch(&self) -> CapturePersistenceEpoch {
+        self.inner
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .epoch
+    }
+
+    pub(crate) fn source_identity(&self) -> Option<CapturePersistenceSource> {
+        let state = self
+            .inner
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        source_identity(&state)
     }
 
     fn publish(&self, update: CaptureConfigPersistenceUpdate) {
-        let update = {
+        let persistence = {
             let mut state = self
                 .inner
                 .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if state.committed {
-                Some(update)
+            if state.revoked {
+                None
+            } else if state.committed {
+                source_identity(&state).map(|source| (state.epoch, source, update))
             } else {
                 state.pending = Some(update);
                 None
             }
         };
-        if let Some(update) = update {
-            self.persist(update, false);
+        if let Some((epoch, source, update)) = persistence {
+            self.persist(epoch, source, update, false);
         }
     }
 
     pub(crate) fn commit(&self) {
-        let pending = {
+        let persistence = {
             let mut state = self
                 .inner
                 .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if state.revoked {
+                return;
+            }
             state.committed = true;
-            state.pending.take()
+            let source = source_identity(&state);
+            state
+                .pending
+                .take()
+                .and_then(|update| source.map(|source| (state.epoch, source, update)))
         };
-        if let Some(update) = pending {
-            self.persist(update, true);
+        if let Some((epoch, source, update)) = persistence {
+            self.persist(epoch, source, update, true);
         }
     }
 
-    fn persist(&self, update: CaptureConfigPersistenceUpdate, deferred: bool) {
+    pub(crate) fn revoke(&self) {
+        let epoch = {
+            let mut state = self
+                .inner
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.revoked = true;
+            state.pending = None;
+            state.epoch
+        };
+        self.inner.config_manager.revoke_capture_persistence(epoch);
+    }
+
+    fn persist(
+        &self,
+        epoch: CapturePersistenceEpoch,
+        source: CapturePersistenceSource,
+        update: CaptureConfigPersistenceUpdate,
+        deferred: bool,
+    ) {
         #[cfg(not(target_os = "linux"))]
         let _ = deferred;
         let config_manager = &self.inner.config_manager;
@@ -771,22 +861,35 @@ impl CaptureConfigPersistenceGate {
             return;
         }
 
-        let result = config_manager.modify_and_save_if_current(&snapshot, |config| match update {
-            #[cfg(target_os = "windows")]
-            CaptureConfigPersistenceUpdate::WindowsSource(resolved) => {
-                config.capture.source = resolved.stable_source;
-            }
-            #[cfg(target_os = "linux")]
-            CaptureConfigPersistenceUpdate::RestoreToken { resolved, .. } => {
-                config.capture.restore_token = resolved;
-            }
-            #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-            CaptureConfigPersistenceUpdate::Unsupported => {}
-        });
+        let result =
+            config_manager.modify_capture_if_authorized(epoch, source, |capture| match update {
+                #[cfg(target_os = "windows")]
+                CaptureConfigPersistenceUpdate::WindowsSource(resolved) => {
+                    capture.source = resolved.stable_source;
+                }
+                #[cfg(target_os = "linux")]
+                CaptureConfigPersistenceUpdate::RestoreToken { resolved, .. } => {
+                    capture.restore_token = resolved;
+                }
+                #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+                CaptureConfigPersistenceUpdate::Unsupported => {}
+            });
         if let Err(error) = result {
             warn!(%error, "Failed to persist resolved screen capture identity");
         }
     }
+}
+
+fn source_identity(state: &CaptureConfigPersistenceState) -> Option<CapturePersistenceSource> {
+    let status = state.source_status.as_ref()?.snapshot();
+    if status.source_graph_generation == 0 || status.session_generation == 0 {
+        return None;
+    }
+    Some(CapturePersistenceSource::new(
+        Arc::clone(&status.source_id),
+        status.source_graph_generation,
+        status.session_generation,
+    ))
 }
 
 #[cfg(target_os = "windows")]

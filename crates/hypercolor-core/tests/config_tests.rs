@@ -329,6 +329,72 @@ fn reload_preserves_old_config_on_parse_error() {
     assert_eq!(manager.get().daemon.port, 5555);
 }
 
+#[test]
+fn reload_serializes_with_an_inflight_config_writer() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let path = dir.path().join("hypercolor.toml");
+    fs::write(
+        &path,
+        r"
+        schema_version = 4
+
+        [daemon]
+        port = 7000
+    ",
+    )
+    .expect("failed to write reload config");
+    let manager = Arc::new(ConfigManager::new(path).expect("initial load should succeed"));
+    let (writer_entered_tx, writer_entered_rx) = mpsc::channel();
+    let (release_writer_tx, release_writer_rx) = mpsc::channel();
+    let writer_manager = Arc::clone(&manager);
+    let writer = std::thread::spawn(move || {
+        writer_manager.modify(|config| {
+            writer_entered_tx
+                .send(())
+                .expect("writer entry is observed");
+            release_writer_rx.recv().expect("writer is released");
+            config.daemon.port = 8000;
+        });
+    });
+    writer_entered_rx
+        .recv()
+        .expect("writer acquired serialization lock");
+
+    let (reload_started_tx, reload_started_rx) = mpsc::channel();
+    let (reload_finished_tx, reload_finished_rx) = mpsc::channel();
+    let reload_manager = Arc::clone(&manager);
+    let reload = std::thread::spawn(move || {
+        reload_started_tx
+            .send(())
+            .expect("reload attempt is observed");
+        let result = reload_manager.reload();
+        reload_finished_tx
+            .send(result)
+            .expect("reload completion is observed");
+    });
+    reload_started_rx
+        .recv()
+        .expect("reload thread reached the writer");
+    assert!(
+        reload_finished_rx
+            .recv_timeout(Duration::from_millis(100))
+            .is_err(),
+        "reload must wait for the active config writer"
+    );
+
+    release_writer_tx.send(()).expect("writer release succeeds");
+    writer.join().expect("writer thread completes");
+    reload_finished_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("reload completes after writer release")
+        .expect("reload succeeds");
+    reload.join().expect("reload thread completes");
+    assert_eq!(manager.get().daemon.port, 7000);
+}
+
 // ─── Path Resolution ────────────────────────────────────────────────────────
 
 #[test]

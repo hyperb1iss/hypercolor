@@ -2,10 +2,37 @@ use std::sync::Arc;
 
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::input::screen::ResolvedCaptureSource;
+use hypercolor_core::input::{SourceKind, SourceStatusHandle, SourceStatusReporter};
 
 use super::{
     CaptureConfigPersistenceGate, screen_capture_config_from, windows_capture_source_sink,
 };
+
+fn persistence_gate(
+    manager: &Arc<ConfigManager>,
+    committed: bool,
+) -> (
+    CaptureConfigPersistenceGate,
+    Arc<hypercolor_types::config::HypercolorConfig>,
+) {
+    let expected = Arc::clone(&manager.get());
+    let persistence = CaptureConfigPersistenceGate::new(Arc::clone(manager), &expected, committed)
+        .expect("capture persistence authority is reserved");
+    persistence.bind_source(live_screen_status());
+    (persistence, expected)
+}
+
+fn live_screen_status() -> SourceStatusHandle {
+    let mut reporter =
+        SourceStatusReporter::new("test-screen", SourceKind::Screen, "test", true, true, true);
+    reporter.set_source_graph_generation(1);
+    let session = reporter
+        .begin_session()
+        .expect("test source session begins")
+        .expect("manager-bound source creates a session");
+    session.mark_event_driven_live_without_deadline(1);
+    reporter.handle()
+}
 
 #[test]
 fn resolved_windows_capture_source_survives_daemon_restart() {
@@ -15,10 +42,8 @@ fn resolved_windows_capture_source_survives_daemon_restart() {
     manager.modify(|config| config.capture.source = "monitor:1".to_owned());
     manager.save().expect("legacy source is persisted");
 
-    windows_capture_source_sink(CaptureConfigPersistenceGate::new(
-        Arc::clone(&manager),
-        true,
-    ))(ResolvedCaptureSource {
+    let (persistence, _) = persistence_gate(&manager, true);
+    windows_capture_source_sink(persistence)(ResolvedCaptureSource {
         configured_source: "monitor:1".to_owned(),
         stable_source: "monitor:display:stable".to_owned(),
     });
@@ -36,10 +61,8 @@ fn resolved_windows_capture_source_does_not_overwrite_a_newer_selection() {
     manager.modify(|config| config.capture.source = "monitor:new-choice".to_owned());
     manager.save().expect("new source is persisted");
 
-    windows_capture_source_sink(CaptureConfigPersistenceGate::new(
-        Arc::clone(&manager),
-        true,
-    ))(ResolvedCaptureSource {
+    let (persistence, _) = persistence_gate(&manager, true);
+    windows_capture_source_sink(persistence)(ResolvedCaptureSource {
         configured_source: "monitor:1".to_owned(),
         stable_source: "monitor:display:stale".to_owned(),
     });
@@ -55,7 +78,7 @@ fn resolved_windows_capture_source_waits_for_graph_commit() {
     let path = directory.path().join("hypercolor.toml");
     let manager = Arc::new(ConfigManager::new(path.clone()).expect("config manager opens"));
     manager.modify(|config| config.capture.source = "monitor:1".to_owned());
-    let persistence = CaptureConfigPersistenceGate::new(Arc::clone(&manager), false);
+    let (persistence, expected) = persistence_gate(&manager, false);
 
     windows_capture_source_sink(persistence.clone())(ResolvedCaptureSource {
         configured_source: "monitor:1".to_owned(),
@@ -64,9 +87,52 @@ fn resolved_windows_capture_source_waits_for_graph_commit() {
 
     assert_eq!(manager.get().capture.source, "monitor:1");
     assert!(!path.exists());
+    let activated = manager
+        .save_capture_and_activate_if_current(
+            &expected,
+            persistence.epoch(),
+            persistence.source_identity(),
+            expected.capture.clone(),
+        )
+        .expect("prepared capture config is persisted")
+        .expect("prepared capture authority activates");
+    assert_eq!(activated.capture.source, "monitor:1");
     persistence.commit();
     assert_eq!(manager.get().capture.source, "monitor:display:stable");
     assert!(path.exists());
+}
+
+#[test]
+fn stale_windows_callback_cannot_rewrite_a_newer_capture_epoch() {
+    let directory = tempfile::tempdir().expect("test config directory is created");
+    let path = directory.path().join("hypercolor.toml");
+    let manager = Arc::new(ConfigManager::new(path).expect("config manager opens"));
+    manager.modify(|config| config.capture.source = "monitor:1".to_owned());
+    let (stale, _) = persistence_gate(&manager, true);
+    let (current, expected) = persistence_gate(&manager, false);
+    let activated = manager
+        .save_capture_and_activate_if_current(
+            &expected,
+            current.epoch(),
+            current.source_identity(),
+            expected.capture.clone(),
+        )
+        .expect("new capture config is persisted")
+        .expect("new capture epoch activates");
+    assert_eq!(activated.capture.source, "monitor:1");
+    current.commit();
+
+    windows_capture_source_sink(stale)(ResolvedCaptureSource {
+        configured_source: "monitor:1".to_owned(),
+        stable_source: "monitor:display:stale".to_owned(),
+    });
+    assert_eq!(manager.get().capture.source, "monitor:1");
+
+    windows_capture_source_sink(current)(ResolvedCaptureSource {
+        configured_source: "monitor:1".to_owned(),
+        stable_source: "monitor:display:current".to_owned(),
+    });
+    assert_eq!(manager.get().capture.source, "monitor:display:current");
 }
 
 #[test]

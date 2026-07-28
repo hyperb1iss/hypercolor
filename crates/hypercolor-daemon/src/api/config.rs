@@ -13,7 +13,8 @@ use utoipa::ToSchema;
 use hypercolor_core::config::canonical_audio_device_id;
 use hypercolor_core::engine::FpsTier;
 use hypercolor_core::input::{
-    AudioReconfigurationConflict, InputSource, ScreenReconfigurationConflict, SourceState,
+    AudioReconfigurationConflict, InputSource, ScreenReconfigurationConflict, SourceKind,
+    SourceState,
 };
 use hypercolor_types::audio::{AudioPipelineConfig, AudioSourceType};
 use hypercolor_types::config::{CaptureConfig, HypercolorConfig};
@@ -92,7 +93,7 @@ pub async fn set_config_value(
     let value_is_unchanged =
         get_json_path(&root, &key).is_some_and(|current| current == &parsed_value);
     let capture_runtime_matches = if value_is_unchanged && should_reconfigure_capture(Some(&key)) {
-        state.input_manager.lock().await.has_screen_source() == current.capture.enabled
+        capture_runtime_matches(&state, &current.capture).await
     } else {
         true
     };
@@ -661,6 +662,7 @@ async fn apply_capture_config_transaction(
             crate::startup::services::prepare_platform_screen_capture_source(
                 &capture,
                 Arc::clone(manager),
+                expected_config,
             )
             .map_err(CaptureConfigTransactionError::Prepare)?;
         source.set_source_graph_generation(plan.replacement_source_graph_generation());
@@ -690,40 +692,63 @@ async fn apply_capture_config_transaction(
             .and_then(|source| source.source_status_handle())
         && let Err(error) = validate_prepared_capture_status(status).await
     {
+        if let Some(persistence) = &persistence {
+            persistence.revoke();
+        }
         stop_prepared_capture_source(replacement).await;
         return Err(CaptureConfigTransactionError::Prepare(error));
     }
 
     let mut input_manager = state.input_manager.lock().await;
     if let Err(error) = input_manager.validate_screen_runtime_config(&plan, &replacement) {
+        if let Some(persistence) = &persistence {
+            persistence.revoke();
+        }
         drop(input_manager);
         stop_prepared_capture_source(replacement).await;
         return Err(CaptureConfigTransactionError::Commit(error));
     }
-    match manager.modify_and_save_if_current(expected_config, |config| {
-        config.capture.clone_from(&capture);
-    }) {
-        Ok(true) => {}
-        Ok(false) => {
+    let persistence_result = if let Some(persistence) = &persistence {
+        manager.save_capture_and_activate_if_current(
+            expected_config,
+            persistence.epoch(),
+            persistence.source_identity(),
+            capture.clone(),
+        )
+    } else {
+        manager
+            .modify_and_save_if_current(expected_config, |config| {
+                config.capture.clone_from(&capture);
+            })
+            .map(|saved| saved.then(|| Arc::clone(&manager.get())))
+    };
+    match persistence_result {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            if let Some(persistence) = &persistence {
+                persistence.revoke();
+            }
             drop(input_manager);
             stop_prepared_capture_source(replacement).await;
             return Err(CaptureConfigTransactionError::Conflict);
         }
         Err(error) => {
+            if let Some(persistence) = &persistence {
+                persistence.revoke();
+            }
             drop(input_manager);
             stop_prepared_capture_source(replacement).await;
             return Err(CaptureConfigTransactionError::Persist(error));
         }
     }
 
-    let retirement = match input_manager.commit_screen_runtime_config(&plan, &mut replacement) {
-        Ok(retirement) => retirement,
-        Err(error) => {
-            drop(input_manager);
-            stop_prepared_capture_source(replacement).await;
-            return Err(CaptureConfigTransactionError::Commit(error));
-        }
-    };
+    let retirement = input_manager
+        .commit_screen_runtime_config(&plan, &mut replacement)
+        .expect("screen runtime plan was validated under the same input-manager lock");
+    if !capture.enabled {
+        input_manager.remove_screen_sources();
+    }
+    manager.mark_capture_runtime_applied(&capture);
     drop(input_manager);
 
     if let Err(error) = tokio::task::spawn_blocking(move || retirement.retire()).await {
@@ -750,39 +775,63 @@ async fn validate_prepared_capture_status(
     status: hypercolor_core::input::SourceStatusHandle,
 ) -> anyhow::Result<()> {
     let mut subscription = status.subscribe();
-    let initial = subscription.snapshot();
-    if matches!(
-        initial.state,
-        SourceState::Unavailable | SourceState::Failed
-    ) {
-        anyhow::bail!(
-            "{}",
-            initial.issue.as_ref().map_or_else(
-                || "capture source is unavailable".to_owned(),
-                |issue| issue.message.to_string()
-            )
-        );
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(500);
+    loop {
+        let snapshot = subscription.snapshot();
+        match snapshot.state {
+            SourceState::Live => return Ok(()),
+            SourceState::Degraded if snapshot.resource_count > 0 => return Ok(()),
+            SourceState::Starting => {}
+            _ => {
+                anyhow::bail!(
+                    "{}",
+                    snapshot.issue.as_ref().map_or_else(
+                        || format!("capture source is not usable ({:?})", snapshot.state),
+                        |issue| issue.message.to_string()
+                    )
+                );
+            }
+        }
+        match tokio::time::timeout_at(deadline, subscription.changed()).await {
+            Ok(Some(_)) => {}
+            Ok(None) => anyhow::bail!("capture source status closed before becoming usable"),
+            Err(_) => anyhow::bail!("capture source did not become usable within 500ms"),
+        }
     }
-    if !matches!(initial.state, SourceState::Starting) {
-        return Ok(());
-    }
+}
 
-    if let Ok(Some(next)) = tokio::time::timeout(
-        std::time::Duration::from_millis(500),
-        subscription.changed(),
-    )
-    .await
-        && matches!(next.state, SourceState::Unavailable | SourceState::Failed)
-    {
-        anyhow::bail!(
-            "{}",
-            next.issue.as_ref().map_or_else(
-                || "capture source is unavailable".to_owned(),
-                |issue| issue.message.to_string()
-            )
-        );
+async fn capture_runtime_matches(state: &Arc<AppState>, capture: &CaptureConfig) -> bool {
+    let Some(manager) = state.config_manager.as_ref() else {
+        return false;
+    };
+    if !manager.capture_runtime_matches(capture) {
+        return false;
     }
-    Ok(())
+    let registry = state.input_manager.lock().await.source_status_registry();
+    let statuses = registry.snapshot().statuses();
+    capture_statuses_match(capture, &statuses)
+}
+
+fn capture_statuses_match(
+    capture: &CaptureConfig,
+    statuses: &[Arc<hypercolor_core::input::SourceStatus>],
+) -> bool {
+    let mut screen = statuses
+        .iter()
+        .filter(|status| status.kind == SourceKind::Screen && !status.retired);
+    let first = screen.next();
+    if !capture.enabled {
+        return first.is_none();
+    }
+    let Some(status) = first else {
+        return false;
+    };
+    if screen.next().is_some() || !status.configured || !status.consented {
+        return false;
+    }
+    matches!(status.state, SourceState::Live)
+        || matches!(status.state, SourceState::Degraded) && status.resource_count > 0
+        || matches!(status.state, SourceState::Stopped) && !status.demanded
 }
 
 async fn stop_prepared_capture_source(source: Option<Box<dyn InputSource>>) {
@@ -972,13 +1021,15 @@ mod tests {
 
     use hypercolor_core::config::ConfigManager;
     use hypercolor_core::input::{
-        InputData, InputManager, InputSource, ScreenReconfigurationConflict,
+        InputData, InputManager, InputSource, ScreenReconfigurationConflict, SourceIssue,
+        SourceKind, SourceState, SourceStatus, SourceStatusHandle, SourceStatusReporter,
     };
     use hypercolor_types::config::InteractionRoutePolicy;
 
     use super::{
         CaptureConfigTransactionError, SetConfigRequest, apply_capture_config_transaction,
-        canvas_dimensions_differ, maybe_apply_input_config_change, set_config_value,
+        canvas_dimensions_differ, capture_statuses_match, maybe_apply_input_config_change,
+        set_config_value, validate_prepared_capture_status,
     };
     use crate::api::AppState;
 
@@ -1031,6 +1082,58 @@ mod tests {
         }
     }
 
+    fn screen_status(state: SourceState, resource_count: usize) -> Arc<SourceStatus> {
+        screen_status_handle(state, resource_count).snapshot()
+    }
+
+    fn screen_status_handle(state: SourceState, resource_count: usize) -> SourceStatusHandle {
+        let mut reporter =
+            SourceStatusReporter::new("test-screen", SourceKind::Screen, "test", true, true, true);
+        reporter.set_source_graph_generation(1);
+        if state == SourceState::Stopped {
+            return reporter.handle();
+        }
+        let session = reporter
+            .begin_session()
+            .expect("test source session begins")
+            .expect("manager-bound source creates a session");
+        match state {
+            SourceState::Starting => {}
+            SourceState::Live => {
+                session.mark_event_driven_live_without_deadline(resource_count);
+            }
+            SourceState::Degraded => {
+                session.degraded_with_resources(
+                    SourceIssue::new("test_degraded", "reduced capture", true),
+                    resource_count,
+                );
+            }
+            SourceState::Unavailable => {
+                session.unavailable(SourceIssue::new(
+                    "test_unavailable",
+                    "capture unavailable",
+                    true,
+                ));
+            }
+            SourceState::Failed => {
+                session.failed(SourceIssue::new("test_failed", "capture failed", false));
+            }
+            SourceState::Stopped => unreachable!("stopped status returned before session start"),
+        }
+        reporter.handle()
+    }
+
+    fn starting_screen_status() -> SourceStatusHandle {
+        let mut reporter =
+            SourceStatusReporter::new("test-screen", SourceKind::Screen, "test", true, true, true);
+        reporter.set_source_graph_generation(1);
+        reporter
+            .begin_session()
+            .expect("test source session begins")
+            .expect("manager-bound source creates a session");
+        reporter.handle()
+    }
+
     #[test]
     fn canvas_dimensions_differ_only_when_size_changes() {
         assert!(!canvas_dimensions_differ(800, 600, 800, 600));
@@ -1071,6 +1174,70 @@ mod tests {
             state.input_manager.lock().await.source_graph_generation(),
             graph_generation
         );
+    }
+
+    #[tokio::test]
+    async fn demanded_starting_capture_times_out_instead_of_committing() {
+        let error = validate_prepared_capture_status(starting_screen_status())
+            .await
+            .expect_err("starting capture must become usable before commit");
+
+        assert!(error.to_string().contains("within 500ms"));
+    }
+
+    #[tokio::test]
+    async fn demanded_degraded_capture_commits_only_with_usable_resources() {
+        validate_prepared_capture_status(screen_status_handle(SourceState::Degraded, 1))
+            .await
+            .expect("degraded capture with resources is usable");
+
+        let error =
+            validate_prepared_capture_status(screen_status_handle(SourceState::Degraded, 0))
+                .await
+                .expect_err("degraded capture without resources is unusable");
+        assert!(error.to_string().contains("reduced capture"));
+    }
+
+    #[test]
+    fn capture_runtime_health_rejects_missing_stopped_failed_and_extra_sources() {
+        let mut capture = hypercolor_types::config::CaptureConfig::default();
+        capture.enabled = true;
+        assert!(!capture_statuses_match(&capture, &[]));
+        assert!(!capture_statuses_match(
+            &capture,
+            &[screen_status(SourceState::Stopped, 0)]
+        ));
+        assert!(!capture_statuses_match(
+            &capture,
+            &[screen_status(SourceState::Failed, 0)]
+        ));
+        assert!(capture_statuses_match(
+            &capture,
+            &[screen_status(SourceState::Degraded, 1)]
+        ));
+
+        capture.enabled = false;
+        assert!(!capture_statuses_match(
+            &capture,
+            &[
+                screen_status(SourceState::Stopped, 0),
+                screen_status(SourceState::Stopped, 0),
+            ]
+        ));
+    }
+
+    #[test]
+    fn capture_runtime_fingerprint_rejects_divergent_config() {
+        let tempdir = tempfile::tempdir().expect("temporary config directory should build");
+        let manager = ConfigManager::new(tempdir.path().join("hypercolor.toml"))
+            .expect("test config manager should initialize");
+        let applied = manager.get().capture.clone();
+        manager.mark_capture_runtime_applied(&applied);
+        let mut divergent = applied.clone();
+        divergent.capture_fps += 1;
+
+        assert!(manager.capture_runtime_matches(&applied));
+        assert!(!manager.capture_runtime_matches(&divergent));
     }
 
     #[test]
@@ -1203,6 +1370,9 @@ mod tests {
             let mut source = Box::new(TestScreenSource::new(Arc::clone(&stopped)));
             source.start().expect("stale source should start");
             input_manager.add_source(source);
+            let mut extra = Box::new(TestScreenSource::new(Arc::new(AtomicBool::new(false))));
+            extra.start().expect("extra stale source should start");
+            input_manager.add_source(extra);
         }
 
         let response = set_config_value(

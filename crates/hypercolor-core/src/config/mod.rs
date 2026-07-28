@@ -7,6 +7,7 @@
 
 pub mod paths;
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -15,7 +16,8 @@ use arc_swap::{ArcSwap, Guard};
 use tracing::{debug, info};
 
 use crate::types::config::{
-    CURRENT_SCHEMA_VERSION, HypercolorConfig, InteractionRoutePolicy, default_driver_configs,
+    CURRENT_SCHEMA_VERSION, CaptureConfig, HypercolorConfig, InteractionRoutePolicy,
+    default_driver_configs,
 };
 
 // ─── ConfigManager ──────────────────────────────────────────────────────────
@@ -33,7 +35,45 @@ pub struct ConfigManager {
     /// Serializes read-modify-write mutations and file writes so concurrent
     /// writers (config API, capture restore-token sink) cannot lose updates
     /// or interleave partial file contents.
-    write_lock: std::sync::Mutex<()>,
+    write_lock: std::sync::Mutex<ConfigWriterState>,
+}
+
+#[derive(Default)]
+struct ConfigWriterState {
+    next_capture_persistence_epoch: u64,
+    staged_capture_persistence_epochs: BTreeSet<u64>,
+    capture_persistence_authority: Option<CapturePersistenceAuthority>,
+    applied_capture: Option<CaptureConfig>,
+}
+
+struct CapturePersistenceAuthority {
+    epoch: CapturePersistenceEpoch,
+    config: Arc<HypercolorConfig>,
+    source: Option<CapturePersistenceSource>,
+}
+
+/// Opaque authority reserved for one prepared capture-source lifetime.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct CapturePersistenceEpoch(u64);
+
+/// Generation-fenced identity of the source session publishing capture metadata.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CapturePersistenceSource {
+    source_id: Arc<str>,
+    source_graph_generation: u64,
+    session_generation: u64,
+}
+
+impl CapturePersistenceSource {
+    /// Build an identity from one canonical input-source status snapshot.
+    #[must_use]
+    pub fn new(source_id: Arc<str>, source_graph_generation: u64, session_generation: u64) -> Self {
+        Self {
+            source_id,
+            source_graph_generation,
+            session_generation,
+        }
+    }
 }
 
 impl ConfigManager {
@@ -61,7 +101,7 @@ impl ConfigManager {
         Ok(Self {
             config: Arc::new(ArcSwap::from_pointee(config)),
             config_path,
-            write_lock: std::sync::Mutex::new(()),
+            write_lock: std::sync::Mutex::new(ConfigWriterState::default()),
         })
     }
 
@@ -98,11 +138,12 @@ impl ConfigManager {
 
     /// Replace the live configuration snapshot without re-reading from disk.
     pub fn update(&self, config: HypercolorConfig) {
-        let _guard = self
+        let mut writer = self
             .write_lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        self.config.store(Arc::new(normalize_config(config)));
+        let current = self.config.load_full();
+        self.publish_config(&mut writer, &current, Arc::new(normalize_config(config)));
     }
 
     /// Atomically read-modify-write the live configuration.
@@ -112,13 +153,14 @@ impl ConfigManager {
     /// the closure against the freshest config under the write lock. Use this
     /// for targeted mutations like the capture restore-token sink.
     pub fn modify(&self, mutate: impl FnOnce(&mut HypercolorConfig)) {
-        let _guard = self
+        let mut writer = self
             .write_lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut config = (**self.config.load()).clone();
+        let current = self.config.load_full();
+        let mut config = (*current).clone();
         mutate(&mut config);
-        self.config.store(Arc::new(normalize_config(config)));
+        self.publish_config(&mut writer, &current, Arc::new(normalize_config(config)));
     }
 
     /// Atomically mutate the live configuration only while `expected` is current.
@@ -130,17 +172,17 @@ impl ConfigManager {
         expected: &Arc<HypercolorConfig>,
         mutate: impl FnOnce(&mut HypercolorConfig),
     ) -> bool {
-        let _guard = self
+        let mut writer = self
             .write_lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let current = self.config.load();
+        let current = self.config.load_full();
         if !Arc::ptr_eq(expected, &current) {
             return false;
         }
-        let mut config = (**current).clone();
+        let mut config = (*current).clone();
         mutate(&mut config);
-        self.config.store(Arc::new(normalize_config(config)));
+        self.publish_config(&mut writer, &current, Arc::new(normalize_config(config)));
         true
     }
 
@@ -157,20 +199,184 @@ impl ConfigManager {
         expected: &Arc<HypercolorConfig>,
         mutate: impl FnOnce(&mut HypercolorConfig),
     ) -> Result<bool> {
-        let _guard = self
+        let mut writer = self
             .write_lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let current = self.config.load();
+        let current = self.config.load_full();
         if !Arc::ptr_eq(expected, &current) {
             return Ok(false);
         }
-        let mut candidate = (**current).clone();
+        let mut candidate = (*current).clone();
         mutate(&mut candidate);
         let candidate = normalize_config(candidate);
         self.persist(&candidate)?;
-        self.config.store(Arc::new(candidate));
+        self.publish_config(&mut writer, &current, Arc::new(candidate));
         Ok(true)
+    }
+
+    /// Reserve a non-serialized persistence epoch for a prepared capture source.
+    #[must_use]
+    pub fn reserve_capture_persistence(
+        &self,
+        expected: &Arc<HypercolorConfig>,
+    ) -> Option<CapturePersistenceEpoch> {
+        let mut writer = self
+            .write_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let current = self.config.load_full();
+        if !Arc::ptr_eq(expected, &current) {
+            return None;
+        }
+        writer.next_capture_persistence_epoch = writer
+            .next_capture_persistence_epoch
+            .checked_add(1)
+            .expect("capture persistence epoch exhausted");
+        let epoch = CapturePersistenceEpoch(writer.next_capture_persistence_epoch);
+        writer.staged_capture_persistence_epochs.insert(epoch.0);
+        Some(epoch)
+    }
+
+    /// Activate a reserved epoch without changing the serialized configuration.
+    pub fn activate_capture_persistence(
+        &self,
+        expected: &Arc<HypercolorConfig>,
+        epoch: CapturePersistenceEpoch,
+        source: Option<CapturePersistenceSource>,
+    ) -> bool {
+        let mut writer = self
+            .write_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let current = self.config.load_full();
+        if !Arc::ptr_eq(expected, &current)
+            || !writer.staged_capture_persistence_epochs.remove(&epoch.0)
+        {
+            return false;
+        }
+        writer.capture_persistence_authority = Some(CapturePersistenceAuthority {
+            epoch,
+            config: current,
+            source,
+        });
+        true
+    }
+
+    /// Persist a capture config and activate its prepared source in one writer epoch.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serialization or the atomic file replacement fails.
+    pub fn save_capture_and_activate_if_current(
+        &self,
+        expected: &Arc<HypercolorConfig>,
+        epoch: CapturePersistenceEpoch,
+        source: Option<CapturePersistenceSource>,
+        capture: CaptureConfig,
+    ) -> Result<Option<Arc<HypercolorConfig>>> {
+        let mut writer = self
+            .write_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let current = self.config.load_full();
+        if !Arc::ptr_eq(expected, &current)
+            || !writer.staged_capture_persistence_epochs.remove(&epoch.0)
+        {
+            return Ok(None);
+        }
+        let mut candidate = (*current).clone();
+        candidate.capture = capture;
+        let candidate = Arc::new(normalize_config(candidate));
+        if let Err(error) = self.persist(&candidate) {
+            return Err(error);
+        }
+        writer.capture_persistence_authority = Some(CapturePersistenceAuthority {
+            epoch,
+            config: Arc::clone(&candidate),
+            source,
+        });
+        writer.staged_capture_persistence_epochs.clear();
+        self.config.store(Arc::clone(&candidate));
+        Ok(Some(candidate))
+    }
+
+    /// Persist a source-resolved capture identity only for the active source epoch.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serialization or the atomic file replacement fails.
+    pub fn modify_capture_if_authorized(
+        &self,
+        epoch: CapturePersistenceEpoch,
+        source: CapturePersistenceSource,
+        mutate: impl FnOnce(&mut CaptureConfig),
+    ) -> Result<Option<Arc<HypercolorConfig>>> {
+        let mut writer = self
+            .write_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let current = self.config.load_full();
+        let Some(authority) = writer.capture_persistence_authority.as_ref() else {
+            return Ok(None);
+        };
+        if authority.epoch != epoch
+            || !Arc::ptr_eq(&authority.config, &current)
+            || authority
+                .source
+                .as_ref()
+                .is_some_and(|active| active != &source)
+        {
+            return Ok(None);
+        }
+        let mut candidate = (*current).clone();
+        mutate(&mut candidate.capture);
+        let candidate = Arc::new(normalize_config(candidate));
+        self.persist(&candidate)?;
+        let authority = writer
+            .capture_persistence_authority
+            .as_mut()
+            .expect("capture authority was validated under the writer lock");
+        authority.config = Arc::clone(&candidate);
+        authority.source.get_or_insert(source);
+        writer.applied_capture = Some(candidate.capture.clone());
+        self.config.store(Arc::clone(&candidate));
+        Ok(Some(candidate))
+    }
+
+    /// Revoke a staged or active capture persistence epoch.
+    pub fn revoke_capture_persistence(&self, epoch: CapturePersistenceEpoch) {
+        let mut writer = self
+            .write_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        writer.staged_capture_persistence_epochs.remove(&epoch.0);
+        if writer
+            .capture_persistence_authority
+            .as_ref()
+            .is_some_and(|authority| authority.epoch == epoch)
+        {
+            writer.capture_persistence_authority = None;
+        }
+    }
+
+    /// Record the capture config represented by the installed runtime source graph.
+    pub fn mark_capture_runtime_applied(&self, capture: &CaptureConfig) {
+        let mut writer = self
+            .write_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        writer.applied_capture = Some(capture.clone());
+    }
+
+    /// Whether the installed capture runtime was built from this exact config.
+    #[must_use]
+    pub fn capture_runtime_matches(&self, capture: &CaptureConfig) -> bool {
+        let writer = self
+            .write_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        writer.applied_capture.as_ref() == Some(capture)
     }
 
     /// Reloads configuration from the original file path.
@@ -182,9 +388,14 @@ impl ConfigManager {
     ///
     /// Returns an error if the config file cannot be read or parsed.
     pub fn reload(&self) -> Result<()> {
+        let mut writer = self
+            .write_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         info!(path = %self.config_path.display(), "reloading configuration");
-        let new_config = Self::load(&self.config_path)?;
-        self.config.store(Arc::new(new_config));
+        let new_config = Arc::new(normalize_config(Self::load(&self.config_path)?));
+        let current = self.config.load_full();
+        self.publish_config(&mut writer, &current, new_config);
         info!("configuration reloaded successfully");
         Ok(())
     }
@@ -199,7 +410,7 @@ impl ConfigManager {
     ///
     /// Returns an error if serialization fails or the file cannot be written.
     pub fn save(&self) -> Result<()> {
-        let _guard = self
+        let _writer = self
             .write_lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -218,6 +429,23 @@ impl ConfigManager {
             .with_context(|| format!("failed to write {}", tmp_path.display()))?;
         std::fs::rename(&tmp_path, &self.config_path)
             .with_context(|| format!("failed to replace {}", self.config_path.display()))
+    }
+
+    fn publish_config(
+        &self,
+        writer: &mut ConfigWriterState,
+        current: &Arc<HypercolorConfig>,
+        candidate: Arc<HypercolorConfig>,
+    ) {
+        writer.staged_capture_persistence_epochs.clear();
+        if current.capture == candidate.capture {
+            if let Some(authority) = writer.capture_persistence_authority.as_mut() {
+                authority.config = Arc::clone(&candidate);
+            }
+        } else {
+            writer.capture_persistence_authority = None;
+        }
+        self.config.store(candidate);
     }
 
     /// Path backing this manager's configuration file.
