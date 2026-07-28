@@ -225,8 +225,9 @@ pub async fn update_layout(
     };
 
     let existing = layouts
-        .get_mut(&key)
-        .expect("resolved layout key must exist");
+        .get(&key)
+        .expect("resolved layout key must exist")
+        .clone();
 
     let UpdateLayoutRequest {
         name,
@@ -238,38 +239,40 @@ pub async fn update_layout(
     let previous_zones = zones.as_ref().map(|_| existing.zones.clone());
     let updated_zones_for_exclusions = zones.clone();
     let layout_id = existing.id.clone();
+    let mut updated = existing;
 
     if let Some(name) = name {
         let normalized_name = match normalize_layout_name(&name) {
             Ok(name) => name,
             Err(error) => return ApiError::validation(error),
         };
-        existing.name = normalized_name;
+        updated.name = normalized_name;
     }
-    existing.description = description;
+    updated.description = description;
 
     if let Some(w) = canvas_width {
-        existing.canvas_width = w;
+        updated.canvas_width = w;
     }
     if let Some(h) = canvas_height {
-        existing.canvas_height = h;
+        updated.canvas_height = h;
     }
-    if let Err(error) = validate_canvas_dimensions(existing.canvas_width, existing.canvas_height) {
+    if let Err(error) = validate_canvas_dimensions(updated.canvas_width, updated.canvas_height) {
         return ApiError::validation(error);
     }
 
     if let Some(zones) = zones {
-        existing.zones = zones;
+        updated.zones = zones;
     }
 
     let summary = LayoutSummary {
-        id: existing.id.clone(),
-        name: existing.name.clone(),
-        canvas_width: existing.canvas_width,
-        canvas_height: existing.canvas_height,
-        zone_count: existing.zones.len(),
-        is_active: existing.id == active_layout_id,
+        id: updated.id.clone(),
+        name: updated.name.clone(),
+        canvas_width: updated.canvas_width,
+        canvas_height: updated.canvas_height,
+        zone_count: updated.zones.len(),
+        is_active: updated.id == active_layout_id,
     };
+    layouts.insert(key, updated);
 
     drop(layouts);
     if let (Some(previous_zones), Some(updated_zones)) =
@@ -322,6 +325,9 @@ pub async fn preview_layout(
     State(state): State<Arc<AppState>>,
     Json(layout): Json<SpatialLayout>,
 ) -> Response {
+    if let Err(error) = validate_canvas_dimensions(layout.canvas_width, layout.canvas_height) {
+        return ApiError::validation(error);
+    }
     if let Err(error) = validate_layout_sampling_radii(&layout) {
         return ApiError::validation(error);
     }

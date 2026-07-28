@@ -8661,6 +8661,40 @@ async fn layout_update_rejects_negative_output_sampling_radii_without_mutating()
 }
 
 #[tokio::test]
+async fn layout_update_rejects_invalid_geometry_without_mutating() {
+    let state = Arc::new(isolated_state());
+    let stored = layout_with_sampling_modes(SamplingMode::Bilinear, SamplingMode::Bilinear);
+    state
+        .layouts
+        .write()
+        .await
+        .insert(stored.id.clone(), stored.clone());
+
+    let app = test_app_with_state(Arc::clone(&state));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/layouts/{}", stored.id))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "name": "Poisoned",
+                        "canvas_width": u32::MAX,
+                        "canvas_height": u32::MAX,
+                    })
+                    .to_string(),
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(state.layouts.read().await[&stored.id], stored);
+}
+
+#[tokio::test]
 async fn layout_preview_rejects_invalid_sampling_radii_without_mutating() {
     let state = Arc::new(isolated_state());
     let original_layout_id = state.spatial_engine.read().await.layout().id.clone();
@@ -8712,6 +8746,31 @@ async fn layout_preview_rejects_invalid_sampling_radii_without_mutating() {
         state.spatial_engine.read().await.layout().id,
         original_layout_id
     );
+}
+
+#[tokio::test]
+async fn layout_preview_rejects_invalid_geometry_without_mutating() {
+    let state = Arc::new(isolated_state());
+    let original = state.spatial_engine.read().await.layout().as_ref().clone();
+
+    for (width, height) in [(0, original.canvas_height), (u32::MAX, u32::MAX)] {
+        let mut invalid = original.clone();
+        invalid.id = format!("invalid-{width}-{height}");
+        invalid.canvas_width = width;
+        invalid.canvas_height = height;
+
+        let response = api::layouts::preview_layout(
+            axum::extract::State(Arc::clone(&state)),
+            axum::Json(invalid),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            state.spatial_engine.read().await.layout().as_ref(),
+            &original
+        );
+    }
 }
 
 // ── Effect Layout Associations ──────────────────────────────────────────
