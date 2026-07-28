@@ -1581,8 +1581,18 @@ impl RenderSurfacePool {
         }
 
         if self.slots.len() < self.max_slots {
+            let slot_count = self.slots.len() + 1;
+            let pool_byte_len = checked_pool_byte_len(self.descriptor, slot_count)?;
             let mut fresh = SurfaceSlot::try_new(self.descriptor)?;
             let _ = fresh.try_begin_dequeue(self.descriptor)?;
+            self.slots.try_reserve(1).map_err(|_| {
+                SurfaceResourceError::PoolAllocationFailed {
+                    width: self.descriptor.width,
+                    height: self.descriptor.height,
+                    slot_count,
+                    byte_len: pool_byte_len,
+                }
+            })?;
             self.slots.push(fresh);
             self.grown_slots = self.grown_slots.saturating_add(1);
             let index = self.slots.len() - 1;

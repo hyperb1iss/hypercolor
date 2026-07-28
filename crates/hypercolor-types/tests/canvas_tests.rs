@@ -471,6 +471,29 @@ fn render_surface_pool_fallible_dequeue_preserves_normal_reuse() {
 }
 
 #[test]
+fn render_surface_pool_fallible_dequeue_grows_without_panicking() {
+    let descriptor = SurfaceDescriptor::rgba8888(2, 1);
+    let mut pool = RenderSurfacePool::try_with_slot_count_and_cap(descriptor, 1, 2)
+        .expect("small pool should allocate");
+    let first = pool
+        .try_dequeue()
+        .expect("first dequeue should not fail")
+        .expect("first slot should be available")
+        .submit(1, 10);
+
+    {
+        let second = pool
+            .try_dequeue()
+            .expect("growth should not fail")
+            .expect("grown slot should be available");
+        assert_eq!(second.descriptor(), descriptor);
+    }
+    assert_eq!(pool.slot_count(), 2);
+    assert_eq!(pool.grown_slots(), 1);
+    drop(first);
+}
+
+#[test]
 fn render_surface_pool_can_grow_without_disturbing_published_slots() {
     let descriptor = SurfaceDescriptor::rgba8888(4, 2);
     let mut pool = RenderSurfacePool::with_slot_count(descriptor, 2);
