@@ -239,12 +239,21 @@ impl CpuReductionExecutor {
         }
         validate_source(request.source, request.layout)?;
         let color = ReductionColor::resolve(request)?;
-        let rows_per_tile = usize::try_from(self.inner.tile_rows.get()).map_err(|_| {
-            CpuReductionError::ByteLengthNotAddressable {
-                resource: "tile rows",
-                byte_len: u64::from(self.inner.tile_rows.get()),
-            }
-        })?;
+        let configured_rows_per_tile =
+            usize::try_from(self.inner.tile_rows.get()).map_err(|_| {
+                CpuReductionError::ByteLengthNotAddressable {
+                    resource: "tile rows",
+                    byte_len: u64::from(self.inner.tile_rows.get()),
+                }
+            })?;
+        let target_rows =
+            usize::try_from(request.layout.target_extent().height()).map_err(|_| {
+                CpuReductionError::ByteLengthNotAddressable {
+                    resource: "target height",
+                    byte_len: u64::from(request.layout.target_extent().height()),
+                }
+            })?;
+        let rows_per_tile = configured_rows_per_tile.min(target_rows);
         let tile_bytes = request
             .layout
             .target_row_bytes()
