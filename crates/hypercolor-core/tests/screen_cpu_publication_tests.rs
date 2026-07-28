@@ -5,21 +5,24 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use hypercolor_core::input::screen::{
-    CaptureColorimetry, CaptureCursor, CaptureDamage, CaptureEpoch, CaptureFrame,
-    CaptureFrameMetadata, CaptureGeometry, CapturePixelFormat, CaptureRotation, CaptureSourceId,
-    CaptureStorage, CommittedScreenPlan, CpuCaptureStorage, CpuReductionBatchJob,
-    CpuReductionError, CpuReductionExecutor, PhysicalOrigin, PixelExtent, RawCaptureSurface,
-    RegisteredScreenBranchDemand, ResolvedScreenBranchDemand, ResolvedScreenPublicationDescriptor,
-    ResolvedScreenSource, ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAspectPolicy,
+    CaptureColorSpace, CaptureColorimetry, CaptureCursor, CaptureDamage, CaptureDynamicRange,
+    CaptureEpoch, CaptureFrame, CaptureFrameMetadata, CaptureGeometry, CapturePixelFormat,
+    CaptureRotation, CaptureSourceId, CaptureStorage, CaptureTransferFunction, ColorTuning,
+    CommittedScreenPlan, CpuCaptureStorage, CpuReductionBatchJob, CpuReductionError,
+    CpuReductionExecutor, CpuZoneMaterializationError, KnownCaptureColorimetry, PhysicalOrigin,
+    PixelExtent, PreparedCpuZoneMaterializer, RawCaptureSurface, RegisteredScreenBranchDemand,
+    ResolvedScreenBranchDemand, ResolvedScreenPublicationDescriptor, ResolvedScreenSource,
+    ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAspectPolicy,
     ScreenBackendResourceIdentity, ScreenBranchPayload, ScreenCaptureBackend, ScreenCapturePlan,
     ScreenColorTuning, ScreenCursorCapabilities, ScreenExactResource, ScreenExactResourceLedger,
-    ScreenExtentRequest, ScreenInputGraphGeneration, ScreenPayloadKind,
+    ScreenExtentRequest, ScreenGridPolicy, ScreenInputGraphGeneration, ScreenPayloadKind,
     ScreenPhysicalReductionDescriptor, ScreenPlanBuilder, ScreenPlanError, ScreenProcessingProfile,
     ScreenProcessingProfileConfig, ScreenPublicationHealth, ScreenPublicationKind,
     ScreenPublicationMetadata, ScreenPublicationRequest, ScreenReductionFilter, ScreenResourceApi,
-    ScreenResourceLifetime, ScreenSourceReflection, ScreenSourceSelector, ScreenUpscalePolicy,
-    ScreenWorkerBinding, ScreenWorkerPreparationTicket, SourceScale,
+    ScreenResourceLifetime, ScreenSourceReflection, ScreenSourceSelector, ScreenTargetColorimetry,
+    ScreenUpscalePolicy, ScreenWorkerBinding, ScreenWorkerPreparationTicket, SourceScale,
 };
+use hypercolor_types::canvas::linear_to_srgb_u8;
 
 fn non_zero(value: u32) -> NonZeroU32 {
     NonZeroU32::new(value).expect("test value is non-zero")
@@ -34,6 +37,13 @@ fn source_id() -> CaptureSourceId {
 }
 
 fn source(source_extent: PixelExtent) -> ResolvedScreenSource {
+    source_with_colorimetry(source_extent, CaptureColorimetry::SRGB)
+}
+
+fn source_with_colorimetry(
+    source_extent: PixelExtent,
+    colorimetry: CaptureColorimetry,
+) -> ResolvedScreenSource {
     let geometry = CaptureGeometry::new(
         PhysicalOrigin::default(),
         source_extent,
@@ -55,7 +65,7 @@ fn source(source_extent: PixelExtent) -> ResolvedScreenSource {
             source_extent,
             ScreenSourceReflection::None,
             CapturePixelFormat::Rgba8,
-            CaptureColorimetry::SRGB,
+            colorimetry,
             ScreenCursorCapabilities::clean_only(),
             ScreenBackendResourceIdentity::new(
                 ScreenCaptureBackend::Synthetic,
@@ -81,10 +91,26 @@ fn demand(
     profile: ScreenProcessingProfileConfig,
     executor: &CpuReductionExecutor,
 ) -> ResolvedScreenBranchDemand {
+    demand_for_kind(
+        source,
+        output_extent,
+        ScreenPublicationKind::Surface,
+        profile,
+        executor,
+    )
+}
+
+fn demand_for_kind(
+    source: &ResolvedScreenSource,
+    output_extent: PixelExtent,
+    kind: ScreenPublicationKind,
+    profile: ScreenProcessingProfileConfig,
+    executor: &CpuReductionExecutor,
+) -> ResolvedScreenBranchDemand {
     RegisteredScreenBranchDemand::new(
         ScreenPublicationRequest::new(
             ScreenSourceSelector::Configured,
-            ScreenPublicationKind::Surface,
+            kind,
             ScreenExtentRequest::bounded(
                 Some(non_zero(output_extent.width())),
                 Some(non_zero(output_extent.height())),
@@ -214,7 +240,7 @@ fn frame(source: &ResolvedScreenSource) -> CaptureFrame<RawCaptureSurface> {
         },
         CaptureStorage::Cpu(CpuCaptureStorage::new(
             Arc::from(pixels),
-            CapturePixelFormat::Rgba8,
+            source.config().pixel_format(),
             i64::from(source_extent.width()) * 4,
             0,
         )),
@@ -239,6 +265,438 @@ fn surface_branch<'a>(
         .find(|branch| matches!(branch.descriptor().kind(), ScreenPublicationKind::Surface))
         .map(hypercolor_core::input::screen::ScreenBranchDemand::descriptor)
         .expect("test physical key owns a surface branch")
+}
+
+fn zones_branch<'a>(
+    plan: &'a ScreenCapturePlan,
+    physical: &ScreenPhysicalReductionDescriptor,
+    grid: ScreenGridPolicy,
+) -> &'a ResolvedScreenPublicationDescriptor {
+    let reduction = plan
+        .physical_reductions()
+        .iter()
+        .find(|reduction| reduction.descriptor() == physical)
+        .expect("committed plan retains the prepared physical key");
+    reduction
+        .branch_indices()
+        .iter()
+        .filter_map(|index| plan.branches().get(*index))
+        .find(|branch| {
+            matches!(
+                branch.descriptor().kind(),
+                ScreenPublicationKind::Zones { .. }
+            ) && branch.descriptor().processing_profile().grid() == grid
+        })
+        .map(hypercolor_core::input::screen::ScreenBranchDemand::descriptor)
+        .expect("test physical key owns a zones branch")
+}
+
+#[test]
+fn one_exact_reduction_fans_out_to_surface_and_oversubscribed_zones() {
+    let executor = executor();
+    let source = source(extent(17, 11));
+    let profile = ScreenProcessingProfileConfig::default();
+    let surface = demand(&source, extent(17, 11), profile.clone(), &executor);
+    let zones = demand_for_kind(
+        &source,
+        extent(17, 11),
+        ScreenPublicationKind::Zones {
+            columns: non_zero(29),
+            rows: non_zero(23),
+        },
+        profile,
+        &executor,
+    );
+    let mut builder = ScreenPlanBuilder::new();
+    let hub = builder.publication_hub();
+    let (plan, binding) = commit(&mut builder, [surface, zones]);
+    let batch = executor
+        .prepare_batch(&source, &plan)
+        .expect("shared physical batch prepares");
+    let frame = frame(&source);
+
+    assert_eq!(batch.len(), 1);
+    let physical = batch.descriptor(0).expect("shared physical key exists");
+    let surface_descriptor = surface_branch(&plan, physical);
+    let zones_descriptor = zones_branch(&plan, physical, ScreenGridPolicy::AreaWeighted);
+    assert!(matches!(
+        PreparedCpuZoneMaterializer::prepare(surface_descriptor),
+        Err(CpuZoneMaterializationError::BranchNotZones)
+    ));
+    let materializer = PreparedCpuZoneMaterializer::prepare(zones_descriptor)
+        .expect("oversubscribed zones prepare");
+    assert_eq!(materializer.descriptor(), zones_descriptor);
+    assert_eq!(materializer.physical_descriptor(), physical);
+    assert_eq!(materializer.zone_count(), 29 * 23);
+    assert!(materializer.precomputed_byte_len() > 0);
+
+    let surface_publisher = hub
+        .publisher(surface_descriptor, &binding)
+        .expect("surface publisher is committed");
+    let zones_publisher = hub
+        .publisher(zones_descriptor, &binding)
+        .expect("zones publisher is committed");
+    let mut surface_publication = hub
+        .prepare_writable_publication(
+            &surface_publisher,
+            ScreenPayloadKind::Surface,
+            &intent(surface_descriptor, &binding, &frame),
+        )
+        .expect("surface slot reserves");
+    let mut zones_publication = hub
+        .prepare_writable_publication(
+            &zones_publisher,
+            ScreenPayloadKind::Zones,
+            &intent(zones_descriptor, &binding, &frame),
+        )
+        .expect("zones slot reserves");
+
+    let report = executor
+        .execute_surface_publications(
+            &batch,
+            &frame,
+            std::slice::from_mut(&mut surface_publication),
+        )
+        .expect("one physical reduction writes the surface slot");
+    assert_eq!(report.completed_jobs(), 1);
+    assert_eq!(report.output_bytes(), 17 * 11 * 4);
+    materializer
+        .materialize(
+            physical,
+            surface_publication
+                .surface_pixels_mut()
+                .expect("physical surface remains writable"),
+            &mut zones_publication,
+        )
+        .expect("the same physical bytes materialize zones");
+
+    hub.finalize_writable_publication(
+        surface_publication,
+        Instant::now(),
+        ScreenPublicationHealth::Healthy,
+    )
+    .expect("surface publication finalizes");
+    hub.finalize_writable_publication(
+        zones_publication,
+        Instant::now(),
+        ScreenPublicationHealth::Healthy,
+    )
+    .expect("zones publication finalizes");
+    let zones_latest = hub
+        .lease(zones_descriptor)
+        .expect("zones branch has a lease")
+        .read()
+        .expect("zones branch is live");
+    let ScreenBranchPayload::Zones(zones) = zones_latest.payload() else {
+        panic!("zones descriptor publishes zones");
+    };
+    assert_eq!(zones.columns(), non_zero(29));
+    assert_eq!(zones.rows(), non_zero(23));
+    assert_eq!(zones.colors().len(), 29 * 23);
+    assert!(zones.colors().iter().any(|color| *color != [0, 0, 0]));
+}
+
+#[test]
+fn exact_zone_branches_share_pixels_but_keep_sampling_and_tuning_local() {
+    let executor = executor();
+    let source = source(extent(2, 1));
+    let kind = ScreenPublicationKind::Zones {
+        columns: non_zero(5),
+        rows: non_zero(1),
+    };
+    let area = demand_for_kind(
+        &source,
+        extent(2, 1),
+        kind,
+        ScreenProcessingProfileConfig {
+            tuning: ScreenColorTuning::try_new(0.5, 0.5, 2.0).expect("test tuning is finite"),
+            ..ScreenProcessingProfileConfig::default()
+        },
+        &executor,
+    );
+    let points = demand_for_kind(
+        &source,
+        extent(2, 1),
+        kind,
+        ScreenProcessingProfileConfig {
+            grid: ScreenGridPolicy::PointSample,
+            ..ScreenProcessingProfileConfig::default()
+        },
+        &executor,
+    );
+    let mut builder = ScreenPlanBuilder::new();
+    let hub = builder.publication_hub();
+    let (plan, binding) = commit(&mut builder, [area, points]);
+    let batch = executor
+        .prepare_batch(&source, &plan)
+        .expect("shared zones batch prepares");
+    let frame = frame(&source);
+
+    assert_eq!(batch.len(), 1);
+    let physical = batch.descriptor(0).expect("shared physical key exists");
+    let area_descriptor = zones_branch(&plan, physical, ScreenGridPolicy::AreaWeighted);
+    let point_descriptor = zones_branch(&plan, physical, ScreenGridPolicy::PointSample);
+    let area_materializer =
+        PreparedCpuZoneMaterializer::prepare(area_descriptor).expect("area materializer prepares");
+    let point_materializer = PreparedCpuZoneMaterializer::prepare(point_descriptor)
+        .expect("point materializer prepares");
+    let area_publisher = hub
+        .publisher(area_descriptor, &binding)
+        .expect("area publisher is committed");
+    let point_publisher = hub
+        .publisher(point_descriptor, &binding)
+        .expect("point publisher is committed");
+    let mut area_publication = hub
+        .prepare_writable_publication(
+            &area_publisher,
+            ScreenPayloadKind::Zones,
+            &intent(area_descriptor, &binding, &frame),
+        )
+        .expect("area slot reserves");
+    let mut point_publication = hub
+        .prepare_writable_publication(
+            &point_publisher,
+            ScreenPayloadKind::Zones,
+            &intent(point_descriptor, &binding, &frame),
+        )
+        .expect("point slot reserves");
+    area_publication
+        .zone_colors_mut()
+        .expect("area colors are writable")
+        .fill([0xA5; 3]);
+    let physical_pixels = [255, 0, 0, 255, 0, 0, 255, 255];
+
+    assert_eq!(
+        area_materializer.materialize(
+            physical,
+            &physical_pixels[..physical_pixels.len() - 1],
+            &mut area_publication,
+        ),
+        Err(CpuZoneMaterializationError::PhysicalByteLengthMismatch {
+            expected: physical_pixels.len(),
+            actual: physical_pixels.len() - 1,
+        })
+    );
+    assert!(
+        area_publication
+            .zone_colors_mut()
+            .expect("rejected reservation remains writable")
+            .iter()
+            .all(|color| *color == [0xA5; 3])
+    );
+    area_materializer
+        .materialize(physical, &physical_pixels, &mut area_publication)
+        .expect("area zones materialize");
+    point_materializer
+        .materialize(physical, &physical_pixels, &mut point_publication)
+        .expect("point zones materialize");
+
+    hub.finalize_writable_publication(
+        area_publication,
+        Instant::now(),
+        ScreenPublicationHealth::Healthy,
+    )
+    .expect("area publication finalizes");
+    hub.finalize_writable_publication(
+        point_publication,
+        Instant::now(),
+        ScreenPublicationHealth::Healthy,
+    )
+    .expect("point publication finalizes");
+    let area_latest = hub
+        .lease(area_descriptor)
+        .expect("area branch has a lease")
+        .read()
+        .expect("area branch is live");
+    let point_latest = hub
+        .lease(point_descriptor)
+        .expect("point branch has a lease")
+        .read()
+        .expect("point branch is live");
+    let ScreenBranchPayload::Zones(area_zones) = area_latest.payload() else {
+        panic!("area descriptor publishes zones");
+    };
+    let ScreenBranchPayload::Zones(point_zones) = point_latest.payload() else {
+        panic!("point descriptor publishes zones");
+    };
+    let midpoint = linear_to_srgb_u8(0.5);
+    let mut expected_area = [
+        [255, 0, 0],
+        [255, 0, 0],
+        [midpoint, 0, midpoint],
+        [0, 0, 255],
+        [0, 0, 255],
+    ];
+    ColorTuning {
+        saturation: 0.5,
+        brightness: 0.5,
+        gamma: 2.0,
+    }
+    .apply(&mut expected_area);
+    assert_eq!(area_zones.colors(), &expected_area);
+    assert_eq!(
+        point_zones.colors(),
+        &[
+            [255, 0, 0],
+            [255, 0, 0],
+            [0, 0, 255],
+            [0, 0, 255],
+            [0, 0, 255],
+        ]
+    );
+}
+
+#[test]
+fn two_axis_bgra_area_materialization_is_exact() {
+    let executor = executor();
+    let source = source(extent(3, 2));
+    let bgra = demand_for_kind(
+        &source,
+        extent(3, 2),
+        ScreenPublicationKind::Zones {
+            columns: non_zero(2),
+            rows: non_zero(3),
+        },
+        ScreenProcessingProfileConfig {
+            target_pixel_format: CapturePixelFormat::Bgra8,
+            ..ScreenProcessingProfileConfig::default()
+        },
+        &executor,
+    );
+    let mut builder = ScreenPlanBuilder::new();
+    let hub = builder.publication_hub();
+    let (plan, binding) = commit(&mut builder, [bgra]);
+    let batch = executor
+        .prepare_batch(&source, &plan)
+        .expect("BGRA physical reduction prepares");
+    let frame = frame(&source);
+
+    assert_eq!(batch.len(), 1);
+    let physical = batch.descriptor(0).expect("BGRA physical key exists");
+    assert_eq!(physical.target_pixel_format(), CapturePixelFormat::Bgra8);
+    let descriptor = zones_branch(&plan, physical, ScreenGridPolicy::AreaWeighted);
+    let materializer =
+        PreparedCpuZoneMaterializer::prepare(descriptor).expect("BGRA materializer prepares");
+    let publisher = hub
+        .publisher(descriptor, &binding)
+        .expect("BGRA publisher is committed");
+    let mut publication = hub
+        .prepare_writable_publication(
+            &publisher,
+            ScreenPayloadKind::Zones,
+            &intent(descriptor, &binding, &frame),
+        )
+        .expect("BGRA slot reserves");
+    let pixels = [
+        0, 0, 255, 255, 0, 255, 0, 255, 255, 0, 0, 255, 255, 255, 255, 255, 0, 0, 0, 255, 0, 255,
+        255, 255,
+    ];
+    materializer
+        .materialize(physical, &pixels, &mut publication)
+        .expect("BGRA area zones materialize");
+    hub.finalize_writable_publication(
+        publication,
+        Instant::now(),
+        ScreenPublicationHealth::Healthy,
+    )
+    .expect("BGRA publication finalizes");
+    let latest = hub
+        .lease(descriptor)
+        .expect("BGRA branch has a lease")
+        .read()
+        .expect("BGRA branch is live");
+    let ScreenBranchPayload::Zones(zones) = latest.payload() else {
+        panic!("BGRA descriptor publishes zones");
+    };
+    let third = linear_to_srgb_u8(1.0 / 3.0);
+    let half = linear_to_srgb_u8(0.5);
+    let two_thirds = linear_to_srgb_u8(2.0 / 3.0);
+    assert_eq!(
+        zones.colors(),
+        &[
+            [two_thirds, third, 0],
+            [0, third, two_thirds],
+            [two_thirds, half, third],
+            [third, half, third],
+            [two_thirds, two_thirds, two_thirds],
+            [two_thirds, two_thirds, 0],
+        ]
+    );
+}
+
+#[test]
+fn linear_zone_materialization_preserves_quantized_channels() {
+    let executor = executor();
+    let linear_colorimetry = KnownCaptureColorimetry::try_new(
+        CaptureColorSpace::Srgb,
+        CaptureTransferFunction::Linear,
+        CaptureDynamicRange::Standard,
+        None,
+    )
+    .expect("linear SDR source is valid");
+    let source = source_with_colorimetry(
+        extent(2, 1),
+        CaptureColorimetry::from_known(linear_colorimetry),
+    );
+    let linear = demand_for_kind(
+        &source,
+        extent(2, 1),
+        ScreenPublicationKind::Zones {
+            columns: non_zero(2),
+            rows: non_zero(1),
+        },
+        ScreenProcessingProfileConfig {
+            target_colorimetry: ScreenTargetColorimetry::PreserveSource,
+            ..ScreenProcessingProfileConfig::default()
+        },
+        &executor,
+    );
+    let mut builder = ScreenPlanBuilder::new();
+    let hub = builder.publication_hub();
+    let (plan, binding) = commit(&mut builder, [linear]);
+    let batch = executor
+        .prepare_batch(&source, &plan)
+        .expect("linear physical reduction prepares");
+    let frame = frame(&source);
+
+    assert_eq!(batch.len(), 1);
+    let physical = batch.descriptor(0).expect("linear physical key exists");
+    assert_eq!(
+        physical.color_pipeline().output().transfer_function(),
+        CaptureTransferFunction::Linear
+    );
+    let descriptor = zones_branch(&plan, physical, ScreenGridPolicy::AreaWeighted);
+    let materializer =
+        PreparedCpuZoneMaterializer::prepare(descriptor).expect("linear materializer prepares");
+    let publisher = hub
+        .publisher(descriptor, &binding)
+        .expect("linear publisher is committed");
+    let mut publication = hub
+        .prepare_writable_publication(
+            &publisher,
+            ScreenPayloadKind::Zones,
+            &intent(descriptor, &binding, &frame),
+        )
+        .expect("linear slot reserves");
+    let pixels = [128, 64, 32, 255, 7, 19, 251, 255];
+    materializer
+        .materialize(physical, &pixels, &mut publication)
+        .expect("linear zones materialize");
+    hub.finalize_writable_publication(
+        publication,
+        Instant::now(),
+        ScreenPublicationHealth::Healthy,
+    )
+    .expect("linear publication finalizes");
+    let latest = hub
+        .lease(descriptor)
+        .expect("linear branch has a lease")
+        .read()
+        .expect("linear branch is live");
+    let ScreenBranchPayload::Zones(zones) = latest.payload() else {
+        panic!("linear descriptor publishes zones");
+    };
+    assert_eq!(zones.colors(), &[[128, 64, 32], [7, 19, 251]]);
 }
 
 fn intent(

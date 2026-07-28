@@ -18,6 +18,7 @@
 mod cadence;
 mod frame;
 mod hub;
+mod materialize;
 mod plan;
 mod process;
 mod publication;
@@ -54,6 +55,7 @@ pub use hub::{
     ScreenPublicationMetadata, ScreenPublicationRetirement, ScreenPublicationSlotPolicy,
     ScreenSurfacePayload, ScreenTwoPlanContinuityLease, ScreenZonesPayload,
 };
+pub use materialize::{CpuZoneMaterializationError, PreparedCpuZoneMaterializer};
 pub use plan::{
     ArmedScreenPlan, AwaitingBackendScreenPlan, CommittedScreenPlan,
     InputPublicationDemandRevision, PreparingScreenPlan, ScreenAdmissionCapacity,

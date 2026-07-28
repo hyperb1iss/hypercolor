@@ -12,6 +12,47 @@ const LUMA_R: f32 = 0.2126;
 const LUMA_G: f32 = 0.7152;
 const LUMA_B: f32 = 0.0722;
 
+#[derive(Clone, Copy, Debug)]
+pub(super) struct PreparedLinearColorTuning {
+    saturation: f32,
+    brightness: f32,
+    gamma: f32,
+    neutral: bool,
+}
+
+impl PreparedLinearColorTuning {
+    pub(super) fn new(saturation: f32, brightness: f32, gamma: f32) -> Self {
+        let tuning = ColorTuning {
+            saturation,
+            brightness,
+            gamma,
+        }
+        .clamped();
+        Self {
+            saturation: tuning.saturation,
+            brightness: tuning.brightness,
+            gamma: tuning.gamma,
+            neutral: tuning.is_neutral(),
+        }
+    }
+
+    pub(super) const fn is_neutral(self) -> bool {
+        self.neutral
+    }
+
+    pub(super) fn apply(self, color: &mut [f32; 3]) {
+        if self.neutral {
+            return;
+        }
+        let luma = LUMA_R * color[0] + LUMA_G * color[1] + LUMA_B * color[2];
+        for channel in color {
+            *channel = luma + (*channel - luma) * self.saturation;
+            *channel = (*channel * self.brightness).max(0.0);
+            *channel = channel.powf(self.gamma);
+        }
+    }
+}
+
 /// Saturation, brightness, and gamma adjustments for ambilight zone colors.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ColorTuning {
@@ -47,11 +88,11 @@ impl ColorTuning {
 
     /// Apply this tuning to a set of zone colors in-place.
     pub fn apply(&self, colors: &mut [[u8; 3]]) {
-        if self.is_neutral() {
+        let tuning = PreparedLinearColorTuning::new(self.saturation, self.brightness, self.gamma);
+        if tuning.is_neutral() {
             return;
         }
 
-        let tuning = self.clamped();
         for color in colors {
             let mut rgb = [
                 srgb_u8_to_linear(color[0]),
@@ -59,12 +100,7 @@ impl ColorTuning {
                 srgb_u8_to_linear(color[2]),
             ];
 
-            let luma = LUMA_R * rgb[0] + LUMA_G * rgb[1] + LUMA_B * rgb[2];
-            for channel in &mut rgb {
-                *channel = luma + (*channel - luma) * tuning.saturation;
-                *channel = (*channel * tuning.brightness).max(0.0);
-                *channel = channel.powf(tuning.gamma);
-            }
+            tuning.apply(&mut rgb);
 
             color[0] = linear_to_srgb_u8(rgb[0].clamp(0.0, 1.0));
             color[1] = linear_to_srgb_u8(rgb[1].clamp(0.0, 1.0));
