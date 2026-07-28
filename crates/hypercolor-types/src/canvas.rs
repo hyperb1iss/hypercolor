@@ -1293,7 +1293,7 @@ fn default_pool_cap(initial_slots: usize) -> usize {
 
 #[derive(Clone)]
 struct SurfaceSlot {
-    canvas: Canvas,
+    canvas: Option<Canvas>,
     generation: u64,
     state: SurfaceState,
 }
@@ -1301,10 +1301,18 @@ struct SurfaceSlot {
 impl SurfaceSlot {
     fn try_new(descriptor: SurfaceDescriptor) -> Result<Self, SurfaceResourceError> {
         Ok(Self {
-            canvas: Canvas::try_new(descriptor.width, descriptor.height)?,
+            canvas: Some(Canvas::try_new(descriptor.width, descriptor.height)?),
             generation: 0,
             state: SurfaceState::Free,
         })
+    }
+
+    const fn vacant() -> Self {
+        Self {
+            canvas: None,
+            generation: 0,
+            state: SurfaceState::Free,
+        }
     }
 
     /// Prepare the slot for a new producer write. Returns `true` if the pool
@@ -1314,12 +1322,14 @@ impl SurfaceSlot {
         &mut self,
         descriptor: SurfaceDescriptor,
     ) -> Result<bool, SurfaceResourceError> {
-        let reused_shared = self.state == SurfaceState::Published && self.canvas.is_shared();
+        let reused_shared = self.state == SurfaceState::Published
+            && self.canvas.as_ref().is_some_and(Canvas::is_shared);
         let needs_realloc = reused_shared
-            || self.canvas.width() != descriptor.width
-            || self.canvas.height() != descriptor.height;
+            || self.canvas.as_ref().is_none_or(|canvas| {
+                canvas.width() != descriptor.width || canvas.height() != descriptor.height
+            });
         if needs_realloc {
-            self.canvas = Canvas::try_new(descriptor.width, descriptor.height)?;
+            self.canvas = Some(Canvas::try_new(descriptor.width, descriptor.height)?);
         }
 
         self.state = SurfaceState::Dequeued;
@@ -1380,6 +1390,43 @@ impl RenderSurfacePool {
         slot_count: usize,
     ) -> Result<Self, SurfaceResourceError> {
         Self::try_with_slot_count_and_cap(descriptor, slot_count, default_pool_cap(slot_count))
+    }
+
+    /// Create a pool whose initial slots allocate their canvases on first dequeue.
+    pub fn try_with_lazy_slot_count(
+        descriptor: SurfaceDescriptor,
+        slot_count: usize,
+    ) -> Result<Self, SurfaceResourceError> {
+        Self::try_with_lazy_slot_count_and_cap(descriptor, slot_count, default_pool_cap(slot_count))
+    }
+
+    /// Create a lazily materialized pool with an explicit growth cap.
+    pub fn try_with_lazy_slot_count_and_cap(
+        descriptor: SurfaceDescriptor,
+        slot_count: usize,
+        max_slots: usize,
+    ) -> Result<Self, SurfaceResourceError> {
+        let slot_count = slot_count.max(1);
+        let max_slots = max_slots.max(slot_count);
+        let pool_byte_len = checked_pool_byte_len(descriptor, slot_count)?;
+        let mut slots = Vec::new();
+        slots.try_reserve_exact(slot_count).map_err(|_| {
+            SurfaceResourceError::PoolAllocationFailed {
+                width: descriptor.width,
+                height: descriptor.height,
+                slot_count,
+                byte_len: pool_byte_len,
+            }
+        })?;
+        slots.resize_with(slot_count, SurfaceSlot::vacant);
+        Ok(Self {
+            descriptor,
+            slots,
+            next_slot: 0,
+            max_slots,
+            grown_slots: 0,
+            saturation_reallocs: 0,
+        })
     }
 
     /// Create a render surface pool with explicit initial slot count and
@@ -1465,6 +1512,15 @@ impl RenderSurfacePool {
         self.slots.len()
     }
 
+    /// Number of slots whose canvas storage has been materialized.
+    #[must_use]
+    pub fn materialized_slot_count(&self) -> usize {
+        self.slots
+            .iter()
+            .filter(|slot| slot.canvas.is_some())
+            .count()
+    }
+
     /// Ensure the pool has at least the requested number of slots.
     pub fn ensure_slot_count(&mut self, slot_count: usize) {
         self.try_ensure_slot_count(slot_count)
@@ -1538,7 +1594,10 @@ impl RenderSurfacePool {
             if slot.state != SurfaceState::Published {
                 continue;
             }
-            let ref_count = slot.canvas.shared_ref_count();
+            let Some(canvas) = slot.canvas.as_ref() else {
+                continue;
+            };
+            let ref_count = canvas.shared_ref_count();
             counts.max_ref_count = counts.max_ref_count.max(ref_count);
             if ref_count > 1 {
                 counts.shared_published = counts.shared_published.saturating_add(1);
@@ -1585,14 +1644,14 @@ impl RenderSurfacePool {
             let pool_byte_len = checked_pool_byte_len(self.descriptor, slot_count)?;
             let mut fresh = SurfaceSlot::try_new(self.descriptor)?;
             let _ = fresh.try_begin_dequeue(self.descriptor)?;
-            self.slots.try_reserve(1).map_err(|_| {
-                SurfaceResourceError::PoolAllocationFailed {
+            self.slots
+                .try_reserve(1)
+                .map_err(|_| SurfaceResourceError::PoolAllocationFailed {
                     width: self.descriptor.width,
                     height: self.descriptor.height,
                     slot_count,
                     byte_len: pool_byte_len,
-                }
-            })?;
+                })?;
             self.slots.push(fresh);
             self.grown_slots = self.grown_slots.saturating_add(1);
             let index = self.slots.len() - 1;
@@ -1624,7 +1683,12 @@ impl RenderSurfacePool {
 
     fn reclaim_published_slots(&mut self) {
         for slot in &mut self.slots {
-            if slot.state == SurfaceState::Published && !slot.canvas.is_shared() {
+            if slot.state == SurfaceState::Published
+                && slot
+                    .canvas
+                    .as_ref()
+                    .is_some_and(|canvas| !canvas.is_shared())
+            {
                 slot.state = SurfaceState::Free;
             }
         }
@@ -1675,7 +1739,10 @@ impl SurfaceLease<'_> {
 
     /// Mutable canvas view for direct CPU rendering.
     pub fn canvas_mut(&mut self) -> &mut Canvas {
-        &mut self.slot.canvas
+        self.slot
+            .canvas
+            .as_mut()
+            .expect("dequeued surface slot must own a canvas")
     }
 
     /// Publish the leased surface and return an immutable shared handle.
@@ -1683,16 +1750,20 @@ impl SurfaceLease<'_> {
     pub fn submit(self, frame_number: u32, timestamp_ms: u32) -> PublishedSurface {
         self.slot.generation = self.slot.generation.saturating_add(1);
         self.slot.state = SurfaceState::Published;
-        let descriptor =
-            SurfaceDescriptor::rgba8888(self.slot.canvas.width(), self.slot.canvas.height());
+        let canvas = self
+            .slot
+            .canvas
+            .as_ref()
+            .expect("dequeued surface slot must own a canvas");
+        let descriptor = SurfaceDescriptor::rgba8888(canvas.width(), canvas.height());
         PublishedSurface {
             descriptor,
             generation: self.slot.generation,
             frame_number,
             timestamp_ms,
             storage: PublishedSurfaceStorage::new_cpu_rgba(
-                self.slot.canvas.storage_id,
-                Arc::clone(&self.slot.canvas.pixels),
+                canvas.storage_id,
+                Arc::clone(&canvas.pixels),
             ),
         }
     }
