@@ -1,7 +1,8 @@
 # Spec 73: Input and Capture Hardening
 
 Status: APPROVED (Claude cross-model review PASS, round 6; T11 amendment PASS,
-round 5 plus final delta)
+round 5 plus final delta); arbitrary-resolution amendment PASS, round 2 plus
+final delta
 Author: Nova
 Date: 2026-07-26
 Depends on: spec 14, spec 71, spec 72
@@ -141,6 +142,317 @@ extents, portrait, ultrawide, rotated, negative-origin, live resize, 1080p, 4K,
 8K, and synthetic dimensions beyond current display hardware where allocations
 remain practical. Performance gates report pixels and bytes processed so results
 normalize across shapes rather than blessing one canonical resolution.
+
+### Arbitrary-resolution descriptor amendment
+
+The first exact-demand implementation represented the aggregate screen demand as
+one cadence plus one component-wise maximum extent. That fold is invalid. An
+ultrawide `5120x720` consumer and a portrait `1920x2160` consumer must not create
+an unrequested `5120x2160` analysis surface. The following contract amends T12,
+T14, T16, T18, T22, and T23. It is the only long-term screen-demand model.
+
+#### Logical demand and output contracts
+
+At steady state, each consumer registers one immutable screen publication request
+plus its requested cadence. A descriptor change holds old and staged requests
+simultaneously only inside the two-plan lease helper. The registry preserves
+entries independently and builds a canonical, sorted plan. It merges cadence only
+for descriptors that are exactly equal.
+
+```rust
+enum ScreenExtentRequest {
+    Native,
+    Bounded {
+        max_width: Option<NonZeroU32>,
+        max_height: Option<NonZeroU32>,
+        upscale: ScreenUpscalePolicy,
+    },
+}
+
+enum ScreenUpscalePolicy {
+    Never,
+    Allow,
+}
+
+enum ScreenPublicationKind {
+    Surface,
+    Zones { columns: NonZeroU32, rows: NonZeroU32 },
+}
+
+struct ScreenPublicationRequest {
+    source: ScreenSourceSelector,
+    publication: ScreenPublicationDescriptor,
+}
+
+struct ScreenPublicationDescriptor {
+    source: CaptureSourceId,
+    kind: ScreenPublicationKind,
+    extent: ScreenExtentRequest,
+    aspect: ScreenAspectPolicy,
+    processing_profile: Arc<ScreenProcessingProfile>,
+}
+
+struct ScreenBranchDemand {
+    descriptor: ScreenPublicationDescriptor,
+    requested_hz: NonZeroU32,
+}
+
+struct ScreenCapturePlan {
+    generation: ScreenPlanGeneration,
+    branches: Arc<[ScreenBranchDemand]>,
+}
+```
+
+`Native` requests the processed native logical surface. `Bounded` accepts either
+axis independently, so WebSocket requests with one zero axis preserve their
+current aspect-derived semantics. `None, None` canonicalizes to `Native`.
+`Never` means a bound, not a requested raster size: derived analysis never
+manufactures pixels beyond the processed source. `Allow` is explicit and is used
+only when a consumer genuinely requires resampling. Final compositor, preview,
+or encoder raster size remains a separate exact output descriptor.
+
+`ScreenAspectPolicy` is the geometric fit rule used while resolving an extent.
+The processing profile's letterbox policy is the fill treatment applied once
+after that resolution in T14's canonical processing order.
+
+The request's source selector resolves to the descriptor's stable
+`CaptureSourceId` before a branch enters the canonical plan. `Primary` and other
+policy selectors remain control-plane inputs, never publication identities. A
+topology or source-resolution change produces a new resolved source epoch.
+
+Surface and zone publications are independent kinds. Zone analysis has its own
+extent, grid, cadence, and processing state. Attaching a preview or passive canvas
+subscriber cannot change LED analysis quality. A temporary compatibility adapter
+may combine one surface branch and one zone branch into legacy `ScreenData`, but
+that adapter is a consumer of the plan and never its owner.
+
+`ScreenProcessingProfile` is immutable and equality-complete. It includes every
+consumer-selectable operation that can change derived bytes: letterbox policy,
+smoothing time constant and scene-cut policy, tuning, cursor policy, grid policy,
+reduction filter, target pixel format and colorspace, and algorithm revision.
+Rotation, reflection, crop, physical origin, source scale, native pixel format,
+source colorspace, and transfer function remain source-frame metadata and are
+applied exactly once before or during resolution. They still participate in the
+resolved sharing keys below.
+
+#### Resolution and sharing proof
+
+Logical branches never collapse into an envelope. Every branch resolves as if it
+were the only consumer. Sharing occurs only after independent resolution produces
+equal internal descriptors.
+
+```text
+Resolved source epoch
+  = stable source id
+  + topology generation
+  + capture session generation
+  + native/storage/logical geometry
+  + rotation, reflection, crop, origin, and scale
+  + source pixel format, colorspace, and transfer function
+
+Physical reduction descriptor
+  = resolved source epoch
+  + selected region and cursor-composition policy
+  + resolved reduction extent
+  + reduction filter and algorithm revision
+  + target storage format and colorspace
+  + backend/device resource generation
+
+Derived analysis descriptor
+  = physical reduction descriptor
+  + publication kind and logical output descriptor
+  + complete processing profile
+  + analysis algorithm revision
+```
+
+The key types have private constructors that consume the complete resolved
+descriptors. Callers cannot hand-assemble partial hashes. Two branches share work
+only when full descriptor equality proves byte-for-byte equivalence. Requested
+cadence is scheduling state, not a byte-equivalence field; equal branches execute
+at the maximum requested cadence and publish latest-value snapshots to all of
+their leases.
+
+Property tests compare grouped execution with independent execution over source
+geometry, crop, all transforms, color metadata, cursor policy, filters, profiles,
+odd dimensions, portrait, ultrawide, and mixed branch kinds. Equality of output
+bytes and metadata is the sharing proof.
+
+#### Prepared plan transition
+
+Screen-plan generation is separate from structural input-graph generation.
+Descriptor churn cannot rebuild unrelated audio or interaction routes. The
+input-publication coordinator owns plan transitions; the render thread only reads
+committed immutable snapshots.
+
+```text
+Active(N)
+  -> Preparing(N+1, base graph generation, base plan generation)
+  -> AwaitingBackend(N+1) when platform negotiation is asynchronous
+  -> Armed(N+1) after every affected source acknowledges exact resources
+  -> Active(N+1) through one atomic committed-plan pointer swap
+```
+
+Preparation follows these rules:
+
+- The coordinator validates checked geometry and aggregate byte arithmetic, but
+  never constructs a throwaway analyzer or full-frame surface.
+- Each source worker receives only its candidate branch delta. It prepares real
+  resources once on the thread that owns them while generation N remains active.
+- Unchanged branches retain analyzers, smoother history, pools, publications, and
+  last-good state by identity. Removed branches are not destroyed during prepare.
+- Windows D3D11 duplication, textures, views, queries, and GPU reduction resources
+  prepare on the Windows capture worker. Per-source branch analyzers prepare on
+  that source's analysis worker.
+- Wayland portal, PipeWire main-loop, stream format parameters, and negotiated
+  acquisition geometry prepare on the capture main-loop thread. Branch analyzers
+  prepare on the analysis worker. A format change is armed only after the backend
+  acknowledges the candidate negotiation; the old stream and plan continue while
+  consent or negotiation is pending.
+- One source owns one analysis executor that iterates due branches. A branch does
+  not create an operating-system thread.
+- A worker returns an opaque prepared token, exact resource ledger, and resolved
+  branch metadata. Tokens cannot be reused across source or plan generations.
+- After every source is prepared, the coordinator rechecks the base structural
+  graph generation and plan generation. Any mismatch aborts the candidate.
+- Arm installs prepared resources behind generation fences without changing the
+  active publication catalog. Arm is allocation-free and non-destructive.
+- Commit is one atomic swap of the immutable plan and branch catalog. Publication
+  accepts a frame only when plan generation, branch key, source epoch, and worker
+  token match the committed catalog.
+- Any prepare, negotiation, arm, recheck, or commit conflict aborts every prepared
+  token and leaves generation N byte-identical. Retirement runs on the owning
+  worker after commit and after outstanding leases release their `Arc` handles.
+
+A plan may become committed while a newly exposed branch is still `pending` its
+first frame. Continuity-sensitive resize uses a two-plan lease helper: first add
+the new branch while retaining the old branch, wait until the new branch is live,
+atomically switch the consumer lease, then remove the old branch. Failure leaves
+the old lease and plan untouched. Callers cannot express release-then-acquire.
+
+#### Publication hub and epoch fencing
+
+Core owns one keyed publication hub. Its immutable catalog is read through an RCU
+or `ArcSwap` pointer. Each branch owns:
+
+- an `ArcSwapOption`-shaped latest-value slot;
+- requested and resolved descriptors;
+- plan generation and source epoch;
+- capture sequence, capture time, publication time, and freshness deadline;
+- branch health and resource diagnostics;
+- branch-local analyzer, smoother, reusable pools, and last-good publication.
+
+Consumers receive `Arc` snapshots through typed `BranchLease` handles. Reads do
+not take the mutable `InputManager` or a worker publication mutex. A lease cannot
+return a publication from a branch key or source epoch for which it was not
+issued. Publications of branches retained by identity remain continuously valid
+across plan commits. Removed catalog entries reject new leases immediately; their
+existing leases and storage retire after all readers release them. New branches
+start pending and never inherit another descriptor's pixels.
+
+Last-good retention and delivery are distinct. Storage may remain retained for
+diagnostics or rollback while current delivery is fenced.
+
+| Event | Current delivery and last-good behavior |
+| --- | --- |
+| Same-epoch resource or geometry failure | Retain the branch's last-good, publish typed degraded health, and serve it only until its freshness deadline. |
+| Static desktop or acquisition timeout | Retain last-good, advance no sequence, and become stale/degraded at the deadline. |
+| Access loss that advances capture session | Keep old storage only for diagnostics; do not deliver it under the new epoch. |
+| Source, topology, or processing-profile change | Fence current delivery. The new branch starts pending and cannot inherit old pixels. |
+| Resize admission or first-frame failure | Keep the old branch and lease live. Return the exact error only to the requesting transition. |
+| Worker exit, explicit stop, source removal, or branch retirement | Fence delivery and publish the lifecycle transition before stale data can be sampled. |
+
+Health, freshness, and continuity policy remain separate. Retained data never
+masquerades as `live`, and old dimensions never publish under a new key.
+
+#### Platform fan-out, cadence, and resource admission
+
+Windows keeps one Desktop Duplication session and one clean-desktop update per
+native frame. CPU fallback maps the native frame once. GPU reduction resources
+are keyed by the complete physical descriptor, not one mutable last-used slot, so
+alternating branch extents do not rebuild resources every frame. Pointer-only
+updates preserve clean-desktop continuity for every active physical key.
+
+Wayland keeps one portal/PipeWire session and one bounded callback copy into a
+canonical plane. The negotiated acquisition envelope may use the maximum resolved
+need across active branches, or true native acquisition when the backend provides
+it. That envelope exists only for capture negotiation. It is never a derived
+publication, analyzer allocation, or logical branch.
+
+When a branch-set change would alter a sub-native acquisition envelope, the
+backend must either negotiate true native acquisition or carry every unchanged
+branch through the prepared transition without an epoch fence or publication gap.
+Envelope selection may never perturb a branch whose descriptor did not change.
+
+The shared cadence primitive lands before multi-branch fan-out becomes visible.
+Native acquisition runs at the maximum cadence required by a due physical key.
+Each logical branch owns its next analysis and publication deadline. A physical
+reduction runs only when at least one dependent branch is due. Superseded native
+frames replace older frames rather than queueing latency.
+
+Admission accounts for checked dimensions, strides, planes, CPU pools, smoother
+and policy storage, GPU resources, encoded transport, and old-plus-staged overlap.
+The resource ledger is byte-based and supplied by explicit configuration or real
+backend capacity, never an axis, resolution, cadence, or consumer-count cap.
+Actual `try_reserve` and backend allocation still provide final admission.
+`ResourceExhausted` identifies the requested descriptor and limiting resource.
+Unchanged branches reuse resources, and candidate failure never evicts or
+downscales healthy work.
+
+#### Migration and deletion gates
+
+The amendment lands in reversible waves:
+
+1. Fix the committed passive WebSocket demand panic, current single-descriptor
+   worker adoption, typed resource propagation, and same-descriptor last-good.
+2. Add descriptors, branch aggregation, plan generation, keyed hub, and pure
+   independent-resolution/sharing tests. Keep one compatibility mirror implemented
+   as an ordinary branch in the new plan.
+3. Convert Windows and Wayland to worker-owned multi-branch preparation and land
+   shared cadence enforcement. Move the authoritative renderer and zone analysis
+   to exact branch leases.
+4. Move interactive previews and WebSocket screen canvas/zones to exact leases.
+   Delete the compatibility mirror, component-wise screen-demand union, and the
+   single screen schedule in the same wave.
+5. Complete physical-key sharing, descriptor-keyed GPU resources, allocation
+   gates, and 4K/8K mixed-shape performance certification.
+
+The compatibility mirror is not a second registry, scheduler, or demand owner.
+It is one mechanically deletable branch adapter in the new plan. Its deletion is
+a completion gate for wave 4.
+
+Required tests include:
+
+- `5120x720` plus `1920x2160` creates two branches and never allocates or
+  publishes `5120x2160`;
+- duplicate descriptors create one branch at maximum cadence;
+- native, one-axis bounded, two-axis bounded, and explicitly upscaled requests
+  survive registration and resolution unchanged;
+- bounded never-upscale resolution cannot exceed processed source geometry;
+- a zone grid finer than its resolved raster uses area-weighted sampling over
+  normalized pixel footprints without allocating an upscaled intermediate;
+- surface and zone consumers remain independent under attach, detach, and resize;
+- grouped planning and output equal independent execution for every tested key;
+- prepare or worker-side allocation failure preserves the exact old plan,
+  catalog, manager demand, publications, resource identities, and smoother state;
+- concurrent source-graph or plan changes abort a stale prepared token;
+- rapid resize has no publication gap and no wrong-generation or wrong-dimension
+  frame;
+- source, topology, session, and profile changes cannot masquerade retained pixels
+  as current;
+- one failing branch retains only its own last-good while other branches advance;
+- one Windows acquisition and clean-desktop update occur per native frame;
+- one CPU map occurs per native frame and GPU dispatch count equals unique due
+  physical keys;
+- one Wayland callback copy occurs per native frame and acquisition renegotiation
+  cannot become a derived publication;
+- zero steady-state allocation occurs after branch warmup;
+- descriptor churn retires resources without rebuilding the structural input
+  graph;
+- a passive screen-canvas subscribe/unsubscribe cycle against a live plan cannot
+  panic or strand demand; and
+- 1080p, 4K, 8K, portrait, ultrawide, duplicate, mixed-profile, and mixed-cadence
+  benchmarks report pixels, bytes, allocations, resource rebuilds, and deadline
+  percentiles without lowering requested quality.
 
 ### Input event contract
 
@@ -988,6 +1300,11 @@ Implementation:
   audio, screen, and interaction demand comes only from an authoritative effect,
   interactive preview lane, passive preview-stream lease, or explicit diagnostic
   lease that declares that domain.
+- For screen demand, implement the arbitrary-resolution descriptor amendment:
+  preserve every consumer descriptor independently, resolve it against its source,
+  and merge cadence only after complete descriptor equality. The compatibility
+  mirror is an ordinary branch; no demand path may construct a component-wise
+  maximum analysis extent.
 - Remove the Linux-only live-apply gate for capture settings where Windows has a
   real implementation. Reopen/reconfigure backends transactionally.
 - A demanded replacement reaches `Live` or a usable `Degraded` state before config
@@ -1018,6 +1335,9 @@ Verify:
   state on failure.
 - Validated limits reject unsupported values and accept every rate the backends
   advertise; cadence enforcement is proven in T18.
+- Mixed ultrawide, portrait, native, and one-axis-bounded demand produces the
+  exact independently resolved branches required by the amendment and never a
+  synthetic envelope publication.
 - `just python-generate-check`
 
 #### T13 - Introduce the backend-neutral capture frame envelope
@@ -1076,8 +1396,14 @@ Implementation:
 - Create explicit `RawCaptureSurface` and `ProcessedCaptureSurface` stages.
 - Apply rotation/crop, letterbox policy, tuning, and time-based smoothing once in
   the documented canonical order before any consumer sees processed pixels.
+- Implement `Surface` and `Zones` as independent descriptor-keyed branches with
+  complete immutable processing profiles. Each branch resolves as if it were the
+  only consumer; sharing follows only from equality of complete resolved keys.
 - Preserve the actual surface at its native aspect and contain/cover it into the
   compositor target. Use sectors only when no surface storage exists.
+- Treat one-axis and two-axis `Bounded` extents as analysis bounds. Unless
+  upscaling is explicit, derived analysis cannot exceed processed source geometry;
+  exact compositor and encoder rasters remain separate output descriptors.
 - Publish effective cropped grid dimensions separately from requested analysis
   dimensions; direct grid indexing replaces serialized zone-id parsing.
 - Normalize scene-cut distance by sample count and express EMA as a time constant
@@ -1093,6 +1419,8 @@ Verify:
 - A rotated Windows source and transformed Wayland source produce identical
   processed geometry with rotation applied exactly once.
 - Raw and processed consumers cannot be accidentally interchanged at compile time.
+- Attaching or resizing a surface consumer cannot change zone analysis geometry,
+  cadence, smoother state, or publication identity, and the inverse also holds.
 - Smoothing response is equivalent across grid sizes and 30/60/120 FPS within
   tolerance; scene cuts reset identically.
 - Cropping publishes no synthetic black sectors outside effective dimensions.
@@ -1175,6 +1503,12 @@ Implementation:
   performs the identical clean-copy-then-composite sequence.
 - Reuse textures, views, buffers, and query objects across stable extents; rebuild
   transactionally on topology or grid changes.
+- Key reusable reduction resources by the complete physical reduction descriptor,
+  not a mutable last-used extent. One native acquisition and clean-desktop update
+  fan out to all due physical keys; CPU fallback maps the native frame once.
+- Prepare replacement GPU resources and their old-plus-staged byte ledger on the
+  Windows capture worker. Failed admission keeps every active key and last-good
+  publication intact.
 - Keep a tested CPU fallback for unsupported hardware, with health and telemetry
   identifying the active path. The fallback retains configured cadence and
   quality rather than silently reducing them.
@@ -1191,6 +1525,8 @@ Verify:
   read, and missed-deadline percentiles at 1080p, 1440p, and 4K.
 - At 4K/120 Hz acquisition with 60 Hz analysis, readback bandwidth scales with the
   analysis surface rather than source pixels and no unbounded backlog forms.
+- Alternating 4K, 8K, portrait, and ultrawide branches rebuild only when a complete
+  physical key changes; dispatch count equals unique due physical keys.
 - `just deny`
 
 #### T17 - Make PipeWire decoding and worker lifetime correct
@@ -1267,10 +1603,12 @@ Parallel: no; it is the cross-platform integration checkpoint.
 
 Implementation:
 
-- Use one monotonic cadence primitive for Windows and Wayland analysis.
-- Enforce configured analysis cadence inside both
-  `input/screen/windows.rs` and `input/screen/wayland.rs`. Native acquisition may
-  run faster; expensive analysis and publication may not.
+- Land one monotonic cadence primitive before multi-branch publication becomes
+  visible. Windows and Wayland use it for per-physical-key work and per-logical-
+  branch analysis/publication deadlines.
+- Native acquisition runs only as fast as the maximum due physical-key cadence.
+  Expensive reduction runs only when a dependent branch is due, and each logical
+  branch independently honors its requested cadence.
 - Always analyze the newest eligible source frame and count superseded acquisition
   frames rather than queueing them.
 - Expire publication by timestamp/session generation, not by repeated identical
@@ -1281,9 +1619,11 @@ Implementation:
 Verify:
 
 - Deterministic clock tests cover jitter, clock jumps, burst acquisition, analysis
-  overruns, stop/restart, and live FPS changes.
-- Neither backend exceeds configured analysis cadence beyond one scheduling
-  quantum, and neither accumulates latency.
+  overruns, stop/restart, live FPS changes, mixed cadences, and branches that share
+  one physical reduction key.
+- Neither backend exceeds any branch cadence beyond one scheduling quantum,
+  performs duplicate native acquisition for branch fan-out, or accumulates
+  latency.
 
 ### Wave 4: consumers, media, and source selection
 
@@ -1414,11 +1754,13 @@ Parallel: no with T19; it is a focused performance follow-up.
 
 Implementation:
 
-- Store large immutable sample payloads behind `Arc` and clone handles across
-  renderer pools.
+- Store descriptor-keyed branch publications behind `Arc` and clone only typed
+  lease/snapshot handles across renderer pools. Reads come from the committed hub
+  catalog and never take the mutable manager or worker publication locks.
 - Replace nested per-frame `Vec<String>` and repeated zone-id serialization/parsing
   with indexed grid storage and interned immutable source/device descriptors.
-- Reuse per-frame route and consumer scratch buffers after warmup.
+- Reuse branch-local analyzers, smoother storage, pools, and route/consumer scratch
+  after warmup. Resource identity survives unrelated descriptor churn.
 - Keep ownership explicit enough that source replacement cannot mutate a frame
   already being rendered.
 
@@ -1427,6 +1769,8 @@ Verify:
 - Allocation benchmarks cover one and many renderer groups for audio, input,
   screen, and media snapshots.
 - Snapshot fan-out allocation is constant with renderer count after warmup.
+- Zero steady-state allocation holds for warmed 1080p, 4K, 8K, portrait,
+  ultrawide, duplicate-descriptor, and mixed-profile branch plans.
 - Functional parity tests prove immutable older frames survive source updates.
 
 #### T23 - Support multiple screen sources without accidental overwrite
@@ -1445,16 +1789,23 @@ Parallel: yes, after shared route contracts settle.
 Implementation:
 
 - Represent screen samples by stable source id instead of one optional slot.
-- Select a source explicitly per effect group, preview subscription, or capture
-  consumer; define primary-source default through stable topology metadata.
-- Preserve independent cadence, health, freshness, and session generation per
-  source.
+- Resolve policy selectors to stable source ids before constructing publication
+  descriptors. Select an exact descriptor branch per effect group, preview
+  subscription, or capture consumer through typed leases.
+- Own one descriptor-keyed publication hub whose immutable catalog commits through
+  the amendment's prepare/arm/commit protocol. Structural graph and screen-plan
+  generations remain independent.
+- Preserve independent cadence, health, freshness, session generation, last-good,
+  and resource diagnostics per source and branch. Epoch fences prevent old pixels
+  from masquerading as current after source, topology, session, or profile change.
 - Reject missing configured sources with diagnostics instead of silently using the
   last enumerated sample.
 
 Verify:
 
 - Two synthetic monitors can feed separate effect groups simultaneously.
+- One source can feed incompatible exact descriptors simultaneously without
+  synthetic union, cross-branch state mutation, or duplicate OS acquisition.
 - Reordering samples or enumeration does not change selection.
 - Removing one source degrades only its consumers and does not overwrite the other.
 
