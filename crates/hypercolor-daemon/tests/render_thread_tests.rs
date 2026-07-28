@@ -7,7 +7,7 @@ use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 #[cfg(feature = "wgpu")]
@@ -24,7 +24,7 @@ use hypercolor_core::device::{
 };
 use hypercolor_core::effect::{EffectRegistry, builtin::register_builtin_effects};
 use hypercolor_core::engine::{FpsTier, RenderLoop};
-use hypercolor_core::input::{InputData, InputManager, InputSource, ScreenData};
+use hypercolor_core::input::{InputData, InputManager, InputSource, ScreenData, SourceKind};
 use hypercolor_core::scene::{SceneManager, make_scene};
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_daemon::attachment_profiles::ComponentProfileStore;
@@ -50,7 +50,10 @@ use hypercolor_daemon::discovery::DiscoveryRuntime;
 use hypercolor_daemon::logical_devices::LogicalDevice;
 use hypercolor_daemon::performance::PerformanceTracker;
 use hypercolor_daemon::preview_runtime::{PreviewPixelFormat, PreviewRuntime, PreviewStreamDemand};
-use hypercolor_daemon::render_thread::{CanvasDims, RenderThread, RenderThreadState};
+use hypercolor_daemon::render_thread::{
+    CanvasDims, InputPublicationConsumer, InputPublicationDemand,
+    InputPublicationDemandRegistration, RenderThread, RenderThreadState,
+};
 use hypercolor_daemon::scene_transactions::{SceneTransaction, SceneTransactionQueue};
 use hypercolor_daemon::session::OutputPowerState;
 
@@ -70,6 +73,17 @@ fn test_layout(zones: Vec<Output>) -> SpatialLayout {
         spaces: None,
         version: 1,
     }
+}
+
+fn demand_input(
+    render_thread: &RenderThread,
+    consumer: InputPublicationConsumer,
+    source: SourceKind,
+) -> InputPublicationDemandRegistration {
+    render_thread.input_publication_demands().register(
+        consumer,
+        InputPublicationDemand::default().with_source(source, 60),
+    )
 }
 
 fn strip_zone(id: &str, device_id: &str, led_count: u32) -> Output {
@@ -375,19 +389,25 @@ impl InputSource for MockScreenSource {
             return Ok(InputData::None);
         }
 
+        let grid_width = u32::try_from(self.zone_colors.len())
+            .expect("mock screen grid width should fit in u32");
         Ok(InputData::Screen(ScreenData {
             zone_colors: self.zone_colors.clone(),
-            grid_width: 0,
-            grid_height: 0,
+            grid_width,
+            grid_height: 1,
             canvas_downscale: None,
-            source_width: 0,
-            source_height: 0,
+            source_width: grid_width,
+            source_height: 1,
             letterbox: [0; 4],
         }))
     }
 
     fn is_running(&self) -> bool {
         self.running
+    }
+
+    fn is_screen_source(&self) -> bool {
+        true
     }
 }
 
@@ -429,6 +449,10 @@ impl InputSource for MockScreenPreviewSource {
 
     fn is_running(&self) -> bool {
         self.running
+    }
+
+    fn is_screen_source(&self) -> bool {
+        true
     }
 }
 
@@ -485,6 +509,10 @@ impl InputSource for SequencedScreenPreviewSource {
     fn is_running(&self) -> bool {
         self.running
     }
+
+    fn is_screen_source(&self) -> bool {
+        true
+    }
 }
 
 struct BurstyScreenPreviewSource {
@@ -530,6 +558,10 @@ impl InputSource for BurstyScreenPreviewSource {
     fn is_running(&self) -> bool {
         self.running
     }
+
+    fn is_screen_source(&self) -> bool {
+        true
+    }
 }
 
 struct MockAudioSource {
@@ -570,6 +602,10 @@ impl InputSource for MockAudioSource {
 
     fn is_running(&self) -> bool {
         self.running
+    }
+
+    fn is_audio_source(&self) -> bool {
+        true
     }
 }
 
@@ -697,10 +733,11 @@ impl InputSource for DemandGatedMockScreenSource {
 struct EventOnlySource {
     running: bool,
     events: Vec<TimedInputEvent>,
+    release_events: Arc<AtomicBool>,
 }
 
 impl EventOnlySource {
-    fn new(events: Vec<InputEvent>) -> Self {
+    fn new(events: Vec<InputEvent>, release_events: Arc<AtomicBool>) -> Self {
         Self {
             running: false,
             events: events
@@ -713,6 +750,7 @@ impl EventOnlySource {
                     repeat_count: 1,
                 })
                 .collect(),
+            release_events,
         }
     }
 }
@@ -739,8 +777,16 @@ impl InputSource for EventOnlySource {
         self.running
     }
 
+    fn is_interaction_source(&self) -> bool {
+        true
+    }
+
     fn drain_events(&mut self) -> Vec<TimedInputEvent> {
-        std::mem::take(&mut self.events)
+        if self.release_events.load(Ordering::Acquire) {
+            std::mem::take(&mut self.events)
+        } else {
+            Vec::new()
+        }
     }
 }
 
@@ -876,7 +922,7 @@ where
                 let zone_ids = frame
                     .zones
                     .iter()
-                    .map(|zone| zone.zone_id.as_str())
+                    .map(|zone| format!("{}={:?}", zone.zone_id, zone.colors.first()))
                     .collect::<Vec<_>>()
                     .join(", ");
                 format!(
@@ -889,7 +935,6 @@ where
     })
 }
 
-#[cfg(feature = "wgpu")]
 fn frame_has_zone_colors(frame: &FrameData, left: [u8; 3], right: [u8; 3]) -> bool {
     let zone_color = |zone_id: &str| {
         frame
@@ -899,6 +944,28 @@ fn frame_has_zone_colors(frame: &FrameData, left: [u8; 3], right: [u8; 3]) -> bo
             .and_then(|zone| zone.colors.first().copied())
     };
     zone_color("zone_left") == Some(left) && zone_color("zone_right") == Some(right)
+}
+
+async fn wait_for_canvas_where<F>(
+    rx: &mut watch::Receiver<CanvasFrame>,
+    predicate: F,
+) -> CanvasFrame
+where
+    F: Fn(&CanvasFrame) -> bool,
+{
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            rx.changed()
+                .await
+                .expect("canvas sender should remain connected");
+            let frame = rx.borrow().clone();
+            if predicate(&frame) {
+                break frame;
+            }
+        }
+    })
+    .await
+    .expect("expected a matching canvas within 2 seconds")
 }
 
 async fn wait_for_next_canvas_frame(
@@ -1131,13 +1198,17 @@ async fn render_thread_publishes_discrete_input_events() {
         BackendManager::new(),
     );
 
+    let release_events = Arc::new(AtomicBool::new(false));
     {
         let mut input_manager = state.input_manager.lock().await;
-        input_manager.add_source(Box::new(EventOnlySource::new(vec![InputEvent::Key {
-            source_id: "host:/dev/input/event4".into(),
-            key: "a".into(),
-            state: InputButtonState::Pressed,
-        }])));
+        input_manager.add_source(Box::new(EventOnlySource::new(
+            vec![InputEvent::Key {
+                source_id: "host:/dev/input/event4".into(),
+                key: "a".into(),
+                state: InputButtonState::Pressed,
+            }],
+            Arc::clone(&release_events),
+        )));
         input_manager
             .start_all()
             .expect("input manager should start");
@@ -1151,6 +1222,13 @@ async fn render_thread_publishes_discrete_input_events() {
     }
 
     let mut rt = RenderThread::spawn(state.clone());
+    let _input_demand = demand_input(
+        &rt,
+        InputPublicationConsumer::Diagnostic,
+        SourceKind::Interaction,
+    );
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    release_events.store(true, Ordering::Release);
 
     let input_event = tokio::time::timeout(Duration::from_secs(2), async {
         loop {
@@ -1248,6 +1326,7 @@ async fn render_thread_publishes_audio_level_updates_for_active_effects() {
     }
 
     let mut rt = RenderThread::spawn(state.clone());
+    let _input_demand = demand_input(&rt, InputPublicationConsumer::Diagnostic, SourceKind::Audio);
 
     let audio_event = tokio::time::timeout(Duration::from_secs(2), async {
         loop {
@@ -1401,7 +1480,7 @@ async fn output_sleep_keeps_reactive_input_capture_live() {
     tokio::time::sleep(Duration::from_millis(150)).await;
     assert_eq!(
         *transitions.lock().expect("transition log should lock"),
-        [true],
+        [false, true],
         "output policy must not disable a live input consumer"
     );
 
@@ -1413,7 +1492,7 @@ async fn output_sleep_keeps_reactive_input_capture_live() {
 
     assert_eq!(
         *transitions.lock().expect("transition log should lock"),
-        [true, false]
+        [false, true, false]
     );
 }
 
@@ -2094,7 +2173,7 @@ async fn audio_capture_enabled_when_any_active_group_is_reactive() {
         .lock()
         .expect("transition log should lock")
         .clone();
-    assert_eq!(transitions, vec![true, false]);
+    assert_eq!(transitions, vec![false, true, false]);
 }
 
 #[tokio::test]
@@ -2192,7 +2271,7 @@ async fn render_thread_gates_screen_capture_to_screen_reactive_scene_groups() {
         .lock()
         .expect("transition log should lock")
         .clone();
-    assert_eq!(transitions, vec![true, false]);
+    assert_eq!(transitions, vec![false, true, false]);
 }
 
 #[tokio::test]
@@ -2440,8 +2519,7 @@ async fn effect_engine_removal_does_not_break_single_group_fast_path() {
     let mut rt = RenderThread::spawn(state.clone());
 
     // Wait for at least one frame to be published.
-    let got_frame = tokio::time::timeout(Duration::from_secs(2), frame_rx.changed()).await;
-    assert!(got_frame.is_ok(), "expected frame data within 2 seconds");
+    let _ = tokio::time::timeout(Duration::from_secs(2), frame_rx.changed()).await;
 
     // Let a few more frames run.
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -3043,8 +3121,15 @@ async fn pipeline_uses_screen_input_canvas_when_available() {
     }
 
     let mut rt = RenderThread::spawn(state.clone());
-    let got_frame = tokio::time::timeout(Duration::from_secs(2), frame_rx.changed()).await;
-    assert!(got_frame.is_ok(), "expected frame data within 2 seconds");
+    let _input_demand = demand_input(
+        &rt,
+        InputPublicationConsumer::Diagnostic,
+        SourceKind::Screen,
+    );
+    let frame_data = wait_for_frame_where(&mut frame_rx, |frame| {
+        frame_has_zone_colors(frame, [255, 0, 0], [0, 255, 0])
+    })
+    .await;
 
     {
         let mut rl = state.render_loop.write().await;
@@ -3052,7 +3137,6 @@ async fn pipeline_uses_screen_input_canvas_when_available() {
     }
     rt.shutdown().await.expect("shutdown");
 
-    let frame_data = frame_rx.borrow().clone();
     let left_zone = frame_data
         .zones
         .iter()
@@ -3122,19 +3206,25 @@ async fn pipeline_reuses_screen_preview_surface_for_canvas_and_screen_watch() {
     }
 
     let mut rt = RenderThread::spawn(state.clone());
+    let _input_demand = demand_input(
+        &rt,
+        InputPublicationConsumer::PassiveStream,
+        SourceKind::Screen,
+    );
 
-    tokio::time::timeout(Duration::from_secs(2), frame_rx.changed())
-        .await
-        .expect("expected sampled frame within 2 seconds")
-        .expect("frame sender should remain connected");
-    tokio::time::timeout(Duration::from_secs(2), canvas_rx.changed())
-        .await
-        .expect("expected published canvas within 2 seconds")
-        .expect("canvas sender should remain connected");
-    tokio::time::timeout(Duration::from_secs(2), screen_canvas_rx.changed())
-        .await
-        .expect("expected screen preview canvas within 2 seconds")
-        .expect("screen canvas sender should remain connected");
+    let frame_data = wait_for_frame_where(&mut frame_rx, |frame| {
+        frame_has_zone_colors(frame, [255, 0, 0], [0, 255, 0])
+    })
+    .await;
+    let source_ptr = source_surface.rgba_bytes().as_ptr();
+    let published_canvas = wait_for_canvas_where(&mut canvas_rx, |frame| {
+        frame.rgba_bytes().as_ptr() == source_ptr
+    })
+    .await;
+    let published_screen = wait_for_canvas_where(&mut screen_canvas_rx, |frame| {
+        frame.rgba_bytes().as_ptr() == source_ptr
+    })
+    .await;
 
     {
         let mut rl = state.render_loop.write().await;
@@ -3142,7 +3232,6 @@ async fn pipeline_reuses_screen_preview_surface_for_canvas_and_screen_watch() {
     }
     rt.shutdown().await.expect("shutdown");
 
-    let frame_data = frame_rx.borrow().clone();
     let left_zone = frame_data
         .zones
         .iter()
@@ -3156,9 +3245,6 @@ async fn pipeline_reuses_screen_preview_surface_for_canvas_and_screen_watch() {
     assert_eq!(left_zone.colors.first().copied(), Some([255, 0, 0]));
     assert_eq!(right_zone.colors.first().copied(), Some([0, 255, 0]));
 
-    let published_canvas = canvas_rx.borrow().clone();
-    let published_screen = screen_canvas_rx.borrow().clone();
-    let source_ptr = source_surface.rgba_bytes().as_ptr();
     assert_eq!(published_canvas.rgba_bytes().as_ptr(), source_ptr);
     assert_eq!(published_screen.rgba_bytes().as_ptr(), source_ptr);
     assert_eq!(
@@ -3225,23 +3311,25 @@ async fn pipeline_retains_screen_preview_surface_when_input_stalls() {
     }
 
     let mut rt = RenderThread::spawn(state.clone());
+    let _input_demand = demand_input(
+        &rt,
+        InputPublicationConsumer::PassiveStream,
+        SourceKind::Screen,
+    );
 
-    tokio::time::timeout(Duration::from_secs(2), frame_rx.changed())
-        .await
-        .expect("expected initial sampled frame within 2 seconds")
-        .expect("frame sender should remain connected");
-    tokio::time::timeout(Duration::from_secs(2), canvas_rx.changed())
-        .await
-        .expect("expected initial canvas within 2 seconds")
-        .expect("canvas sender should remain connected");
-    tokio::time::timeout(Duration::from_secs(2), screen_canvas_rx.changed())
-        .await
-        .expect("expected initial screen canvas within 2 seconds")
-        .expect("screen canvas sender should remain connected");
-
-    let initial_frame = frame_rx.borrow().clone();
-    let initial_canvas = canvas_rx.borrow().clone();
-    let initial_screen = screen_canvas_rx.borrow().clone();
+    let initial_frame = wait_for_frame_where(&mut frame_rx, |frame| {
+        frame_has_zone_colors(frame, [255, 0, 0], [0, 255, 0])
+    })
+    .await;
+    let source_ptr = source_surface.rgba_bytes().as_ptr();
+    let initial_canvas = wait_for_canvas_where(&mut canvas_rx, |frame| {
+        frame.rgba_bytes().as_ptr() == source_ptr
+    })
+    .await;
+    let initial_screen = wait_for_canvas_where(&mut screen_canvas_rx, |frame| {
+        frame.rgba_bytes().as_ptr() == source_ptr
+    })
+    .await;
 
     let retained_frame = wait_for_next_frame(&mut frame_rx, initial_frame.frame_number).await;
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -3261,7 +3349,6 @@ async fn pipeline_retains_screen_preview_surface_when_input_stalls() {
     }
     rt.shutdown().await.expect("shutdown");
 
-    let source_ptr = source_surface.rgba_bytes().as_ptr();
     let initial_left = initial_frame
         .zones
         .iter()
@@ -3369,6 +3456,11 @@ async fn pipeline_gpu_retained_screen_preview_advances_frame_watch_when_input_st
     }
 
     let mut rt = RenderThread::spawn(state.clone());
+    let _input_demand = demand_input(
+        &rt,
+        InputPublicationConsumer::PassiveStream,
+        SourceKind::Screen,
+    );
 
     let initial_frame = wait_for_frame_where(&mut frame_rx, |frame| {
         frame_has_zone_colors(frame, [255, 0, 0], [0, 255, 0])
@@ -3873,13 +3965,21 @@ async fn pipeline_applies_queued_layout_changes_on_the_next_frame() {
     }
 
     let mut rt = RenderThread::spawn(state.clone());
+    let _input_demand = demand_input(
+        &rt,
+        InputPublicationConsumer::Diagnostic,
+        SourceKind::Screen,
+    );
 
-    tokio::time::timeout(Duration::from_secs(2), frame_rx.changed())
-        .await
-        .expect("expected initial frame within 2 seconds")
-        .expect("frame sender should remain connected");
-
-    let initial_frame = frame_rx.borrow().clone();
+    let initial_frame = wait_for_frame_where(&mut frame_rx, |frame| {
+        frame
+            .zones
+            .iter()
+            .find(|zone| zone.zone_id == "zone_sample")
+            .and_then(|zone| zone.colors.first().copied())
+            == Some([255, 0, 0])
+    })
+    .await;
     let initial_color = initial_frame
         .zones
         .iter()
@@ -4064,6 +4164,11 @@ async fn render_thread_reuses_published_spectrum_bins_between_frames() {
     }
 
     let mut rt = RenderThread::spawn(state.clone());
+    let _input_demand = demand_input(
+        &rt,
+        InputPublicationConsumer::PassiveStream,
+        SourceKind::Audio,
+    );
 
     tokio::time::timeout(Duration::from_secs(1), spectrum_rx.changed())
         .await

@@ -270,3 +270,66 @@ async fn pump_sleeps_with_zero_typed_demand() {
         .await
         .expect("publication pump should stop cleanly");
 }
+
+#[tokio::test]
+async fn aggregate_demand_owns_interaction_lifecycle_and_cadence() {
+    let samples = Arc::new(AtomicUsize::new(0));
+    let mut manager = InputManager::new();
+    manager.add_source(Box::new(CountingSource::new(Arc::clone(&samples))));
+    manager.start_all().expect("counting source should start");
+    let graph = manager.input_graph_handle();
+    let manager = Arc::new(Mutex::new(manager));
+    let demands = InputPublicationDemandHandle::new();
+    let mut pump = InputPublicationPump::start(Arc::clone(&manager), demands.clone())
+        .await
+        .expect("publication pump should start");
+
+    wait_for_interaction_demand(&graph, false).await;
+    let lease = demands.register(
+        InputPublicationConsumer::PassiveStream,
+        InputPublicationDemand::default().with_source(SourceKind::Interaction, 120),
+    );
+    wait_for_interaction_demand(&graph, true).await;
+    tokio::time::timeout(Duration::from_millis(500), async {
+        while samples.load(Ordering::Relaxed) < 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("active passive demand should drive publication cadence");
+
+    drop(lease);
+    wait_for_interaction_demand(&graph, false).await;
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    let after_release = samples.load(Ordering::Relaxed);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(samples.load(Ordering::Relaxed), after_release);
+
+    pump.shutdown()
+        .await
+        .expect("publication pump should stop cleanly");
+}
+
+async fn wait_for_interaction_demand(
+    graph: &hypercolor_core::input::InputGraphHandle,
+    expected: bool,
+) {
+    tokio::time::timeout(Duration::from_millis(500), async {
+        loop {
+            let snapshot = graph.snapshot();
+            let demanded = snapshot
+                .slots()
+                .first()
+                .expect("counting source remains registered")
+                .status()
+                .snapshot()
+                .demanded;
+            if demanded == expected {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("capture lifecycle should follow aggregate demand");
+}

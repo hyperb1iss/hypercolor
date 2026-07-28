@@ -1,8 +1,7 @@
-use hypercolor_core::input::{InputGraphHandle, InputManager};
+use hypercolor_core::input::{InputManager, SourceKind};
 use tracing::warn;
 
-use super::RenderThreadState;
-use super::scene_snapshot::EffectDemand;
+use super::input_publication::InputPublicationDemand;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct CaptureDemandKey {
@@ -37,126 +36,84 @@ impl CaptureDomain {
 
 #[derive(Default)]
 pub(crate) struct CaptureDemandState {
-    input_graph: Option<InputGraphHandle>,
-    last_audio: Option<CaptureDemandKey>,
-    last_screen: Option<CaptureDemandKey>,
-    last_interaction: Option<CaptureDemandKey>,
+    audio: Option<CaptureDemandKey>,
+    screen: Option<CaptureDemandKey>,
+    interaction: Option<CaptureDemandKey>,
 }
 
 impl CaptureDemandState {
-    pub(crate) async fn reconcile_effect_demand(
-        &mut self,
-        state: &RenderThreadState,
-        effect_demand: EffectDemand,
-    ) {
-        self.reconcile_audio(state, effect_demand.audio_capture_active)
-            .await;
-        // A live preview subscriber (e.g. the Capture page) keeps the screen
-        // pipeline running even while no screen-reactive effect is active and
-        // even when outputs sleep — tuning needs a picture to tune against.
-        let preview_active = state.event_bus.screen_canvas_receiver_count() > 0
-            || state.event_bus.screen_zones_receiver_count() > 0;
-        self.reconcile_screen(state, effect_demand.screen_capture_active || preview_active)
-            .await;
-        self.reconcile_interaction(state, effect_demand.interaction_capture_active)
-            .await;
+    pub(crate) fn is_current(&self, graph_generation: u64, demand: InputPublicationDemand) -> bool {
+        self.cached_key(CaptureDomain::Audio)
+            == Some(Self::key(graph_generation, demand, SourceKind::Audio))
+            && self.cached_key(CaptureDomain::Screen)
+                == Some(Self::key(graph_generation, demand, SourceKind::Screen))
+            && self.cached_key(CaptureDomain::Interaction)
+                == Some(Self::key(graph_generation, demand, SourceKind::Interaction))
     }
 
-    pub(crate) async fn clear(&mut self, state: &RenderThreadState) {
-        self.reconcile_audio(state, false).await;
-        self.reconcile_screen(state, false).await;
-        self.reconcile_interaction(state, false).await;
-    }
+    pub(crate) fn reconcile(&mut self, manager: &mut InputManager, demand: InputPublicationDemand) {
+        let domains = [
+            (CaptureDomain::Audio, SourceKind::Audio),
+            (CaptureDomain::Screen, SourceKind::Screen),
+            (CaptureDomain::Interaction, SourceKind::Interaction),
+        ];
+        let mut succeeded = [false; 3];
 
-    pub(crate) async fn reconcile_audio(
-        &mut self,
-        state: &RenderThreadState,
-        desired_active: bool,
-    ) {
-        self.reconcile_domain(state, CaptureDomain::Audio, desired_active)
-            .await;
-    }
-
-    pub(crate) async fn reconcile_screen(
-        &mut self,
-        state: &RenderThreadState,
-        desired_active: bool,
-    ) {
-        self.reconcile_domain(state, CaptureDomain::Screen, desired_active)
-            .await;
-    }
-
-    pub(crate) async fn reconcile_interaction(
-        &mut self,
-        state: &RenderThreadState,
-        desired_active: bool,
-    ) {
-        self.reconcile_domain(state, CaptureDomain::Interaction, desired_active)
-            .await;
-    }
-
-    async fn reconcile_domain(
-        &mut self,
-        state: &RenderThreadState,
-        domain: CaptureDomain,
-        desired_active: bool,
-    ) {
-        let input_graph = self.input_graph(state).await;
-        let observed_generation = input_graph.snapshot().generation();
-        let desired_key = CaptureDemandKey {
-            graph_generation: observed_generation,
-            desired_active,
-        };
-        if self.cached_key(domain) == Some(desired_key) {
-            return;
-        }
-
-        let (result, resulting_generation) = {
-            let mut input_manager = state.input_manager.lock().await;
-            let result = domain.apply(&mut input_manager, desired_active);
-            (result, input_manager.source_graph_generation())
-        };
-
-        match result {
-            Ok(()) => self.set_cached_key(
-                domain,
-                CaptureDemandKey {
-                    graph_generation: resulting_generation,
-                    desired_active,
-                },
-            ),
-            Err(error) => warn!(
-                domain = domain.name(),
+        for (index, (domain, source)) in domains.into_iter().enumerate() {
+            let desired_active = demand.requested_hz(source) > 0;
+            let observed_generation = manager.source_graph_generation();
+            let desired_key = CaptureDemandKey {
+                graph_generation: observed_generation,
                 desired_active,
-                %error,
-                "Failed to update capture demand"
-            ),
+            };
+            if self.cached_key(domain) == Some(desired_key) {
+                succeeded[index] = true;
+                continue;
+            }
+
+            match domain.apply(manager, desired_active) {
+                Ok(()) => succeeded[index] = true,
+                Err(error) => warn!(
+                    domain = domain.name(),
+                    desired_active,
+                    %error,
+                    "Failed to update capture demand"
+                ),
+            }
+        }
+
+        let resulting_generation = manager.source_graph_generation();
+        for (index, (domain, source)) in domains.into_iter().enumerate() {
+            if succeeded[index] {
+                self.set_cached_key(domain, Self::key(resulting_generation, demand, source));
+            }
         }
     }
 
-    async fn input_graph(&mut self, state: &RenderThreadState) -> InputGraphHandle {
-        if self.input_graph.is_none() {
-            self.input_graph = Some(state.input_manager.lock().await.input_graph_handle());
+    const fn key(
+        graph_generation: u64,
+        demand: InputPublicationDemand,
+        source: SourceKind,
+    ) -> CaptureDemandKey {
+        CaptureDemandKey {
+            graph_generation,
+            desired_active: demand.requested_hz(source) > 0,
         }
-        self.input_graph
-            .as_ref()
-            .expect("input graph handle is initialized before reconciliation")
-            .clone()
     }
 
     fn cached_key(&self, domain: CaptureDomain) -> Option<CaptureDemandKey> {
         match domain {
-            CaptureDomain::Audio => self.last_audio,
-            CaptureDomain::Screen => self.last_screen,
-            CaptureDomain::Interaction => self.last_interaction,
+            CaptureDomain::Audio => self.audio,
+            CaptureDomain::Screen => self.screen,
+            CaptureDomain::Interaction => self.interaction,
         }
     }
 
     fn set_cached_key(&mut self, domain: CaptureDomain, key: CaptureDemandKey) {
         match domain {
-            CaptureDomain::Audio => self.last_audio = Some(key),
-            CaptureDomain::Screen => self.last_screen = Some(key),
-            CaptureDomain::Interaction => self.last_interaction = Some(key),
+            CaptureDomain::Audio => self.audio = Some(key),
+            CaptureDomain::Screen => self.screen = Some(key),
+            CaptureDomain::Interaction => self.interaction = Some(key),
         }
     }
 }

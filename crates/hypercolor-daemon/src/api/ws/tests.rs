@@ -70,7 +70,8 @@ use super::relays::{
     sync_preview_receiver, try_enqueue_json,
 };
 use super::session::{
-    BrowserPreviewSession, authorize_subscription_channels, validated_zone_layout_preview,
+    BrowserPreviewSession, WsInputDemandLeases, authorize_subscription_channels,
+    validated_zone_layout_preview,
 };
 use crate::api::AppState;
 use crate::api::security::{RequestAuthContext, SecurityState};
@@ -87,9 +88,59 @@ use crate::performance::{
 use crate::preview_runtime::{
     PreviewFrameReceiver, PreviewPixelFormat, PreviewRuntime, PreviewStreamDemand,
 };
-use crate::render_thread::InputPublicationDemandHandle;
+use crate::render_thread::{InputPublicationConsumer, InputPublicationDemandHandle};
 use crate::session::OutputPowerState;
 use crate::startup::input_status_events::InputStatusEventPublisher;
+
+#[test]
+fn websocket_input_demand_leases_follow_subscription_lifetime() {
+    let demands = InputPublicationDemandHandle::new();
+    let mut leases = WsInputDemandLeases::new(demands.clone(), 60);
+    let mut subscriptions = SubscriptionState::default();
+
+    leases.synchronize(&subscriptions);
+    assert_eq!(
+        demands.registration_count(InputPublicationConsumer::PassiveStream),
+        0
+    );
+
+    subscriptions.channels.insert(WsChannel::Spectrum);
+    subscriptions.config.spectrum.fps = 24;
+    subscriptions.channels.insert(WsChannel::ScreenCanvas);
+    subscriptions.channels.insert(WsChannel::ScreenZones);
+    subscriptions.channels.insert(WsChannel::InputEvents);
+    leases.synchronize(&subscriptions);
+    assert_eq!(
+        demands.registration_count(InputPublicationConsumer::PassiveStream),
+        3
+    );
+    assert_eq!(demands.requested_hz(SourceKind::Audio), 24);
+    assert_eq!(demands.requested_hz(SourceKind::Screen), 15);
+    assert_eq!(demands.requested_hz(SourceKind::Interaction), 60);
+
+    subscriptions.config.spectrum.fps = 48;
+    subscriptions.channels.remove(WsChannel::ScreenCanvas);
+    leases.synchronize(&subscriptions);
+    assert_eq!(demands.requested_hz(SourceKind::Audio), 48);
+    assert_eq!(demands.requested_hz(SourceKind::Screen), 15);
+
+    subscriptions.channels.remove(WsChannel::ScreenZones);
+    subscriptions.channels.remove(WsChannel::InputEvents);
+    leases.synchronize(&subscriptions);
+    assert_eq!(
+        demands.registration_count(InputPublicationConsumer::PassiveStream),
+        1
+    );
+    assert_eq!(demands.requested_hz(SourceKind::Screen), 0);
+    assert_eq!(demands.requested_hz(SourceKind::Interaction), 0);
+
+    drop(leases);
+    assert_eq!(
+        demands.registration_count(InputPublicationConsumer::PassiveStream),
+        0
+    );
+    assert_eq!(demands.requested_hz(SourceKind::Audio), 0);
+}
 
 static WS_CACHE_TEST_LOCK: LazyLock<StdMutex<()>> = LazyLock::new(|| StdMutex::new(()));
 

@@ -14,6 +14,8 @@ use tokio::time::{Instant as TokioInstant, timeout};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
+use super::capture_demand::CaptureDemandState;
+
 const STOP_TIMEOUT: Duration = Duration::from_secs(1);
 const LIFECYCLE_PROBE_INTERVAL: Duration = Duration::from_millis(250);
 const SOURCE_KINDS: [SourceKind; 5] = [
@@ -73,7 +75,7 @@ impl InputPublicationDemand {
         self
     }
 
-    const fn requested_hz(self, source: SourceKind) -> u32 {
+    pub(crate) const fn requested_hz(self, source: SourceKind) -> u32 {
         match source {
             SourceKind::Audio => self.audio,
             SourceKind::Screen => self.screen,
@@ -231,6 +233,16 @@ impl InputPublicationDemandHandle {
     #[must_use]
     pub fn registration_count(&self, consumer: InputPublicationConsumer) -> usize {
         self.snapshot().registration_count(consumer)
+    }
+
+    /// Read the current aggregate rate for one source domain.
+    #[must_use]
+    pub fn requested_hz(&self, source: SourceKind) -> u32 {
+        self.snapshot().requested_hz(source)
+    }
+
+    pub(crate) fn is_active(&self) -> bool {
+        self.snapshot().max_requested_hz() > 0
     }
 
     fn snapshot(&self) -> Arc<InputPublicationDemandSnapshot> {
@@ -544,18 +556,41 @@ async fn run_pump(
     let _ = ready.send(());
 
     let mut schedule = InputPublicationSchedule::default();
+    let mut capture_demand = CaptureDemandState::default();
     let mut due_sources = Vec::with_capacity(SOURCE_KINDS.len());
     loop {
-        let graph = reader.graph_snapshot();
         let demand = demands.snapshot();
+        let mut graph = reader.graph_snapshot();
+        if !capture_demand.is_current(graph.generation(), demand.aggregate) {
+            let manager_lock = manager.lock();
+            tokio::pin!(manager_lock);
+            let mut input_manager = tokio::select! {
+                () = cancel.cancelled() => break,
+                () = demands.changed() => continue,
+                manager = &mut manager_lock => manager,
+            };
+            capture_demand.reconcile(&mut input_manager, demand.aggregate);
+            drop(input_manager);
+            graph = reader.graph_snapshot();
+        }
+        let lifecycle_current = capture_demand.is_current(graph.generation(), demand.aggregate);
         let active_demand = demand_for_active_sources(&graph, &demand);
         let now = Instant::now();
         schedule.synchronize(active_demand, now);
+
+        if demand.max_requested_hz() == 0 && lifecycle_current {
+            tokio::select! {
+                () = cancel.cancelled() => break,
+                () = demands.changed() => {}
+            }
+            continue;
+        }
 
         if demand.max_requested_hz() == 0 {
             tokio::select! {
                 () = cancel.cancelled() => break,
                 () = demands.changed() => {}
+                () = tokio::time::sleep(LIFECYCLE_PROBE_INTERVAL) => {}
             }
             continue;
         }

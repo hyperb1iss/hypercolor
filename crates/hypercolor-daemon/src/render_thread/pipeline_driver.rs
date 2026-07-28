@@ -53,14 +53,9 @@ async fn handle_inactive_render_loop(
         render_loop.state()
     };
 
-    clear_capture_demand(state, runtime).await;
     runtime.frame_loop.clear_input_demands();
     clear_inactive_render_groups(state, runtime).await;
     runtime.frame_policy.inactive_loop_execution(loop_state)
-}
-
-async fn clear_capture_demand(state: &RenderThreadState, runtime: &mut PipelineRuntime) {
-    runtime.frame_loop.capture_demand.clear(state).await;
 }
 
 async fn clear_inactive_render_groups(state: &RenderThreadState, runtime: &mut PipelineRuntime) {

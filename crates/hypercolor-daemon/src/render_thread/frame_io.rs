@@ -133,9 +133,10 @@ pub(crate) fn publish_frame_updates(
     let publish_start = Instant::now();
     let event_subscribers = state.event_bus.subscriber_count();
     let spectrum_receivers = state.event_bus.spectrum_receiver_count();
-    let publish_audio_level =
-        publication_cadence.should_publish_audio_level(elapsed_ms, event_subscribers > 0);
-    let audio_signal = (spectrum_receivers > 0 || publish_audio_level)
+    let audio_was_published = publication_cadence.audio_publication_observed();
+    let publish_audio_level = audio_was_published
+        && publication_cadence.should_publish_audio_level(elapsed_ms, event_subscribers > 0);
+    let audio_signal = (audio_was_published && (spectrum_receivers > 0 || publish_audio_level))
         .then(|| AudioSignalSnapshot::from_audio(audio));
     let mut publication_full_frame_copy = FullFrameCopyMetrics::default();
     let frame_data_start = Instant::now();
@@ -147,7 +148,7 @@ pub(crate) fn publish_frame_updates(
         reuse_existing_frame,
         refresh_existing_frame_metadata,
     );
-    if spectrum_receivers > 0 {
+    if spectrum_receivers > 0 && audio_was_published {
         let audio_signal = audio_signal.as_ref().expect("audio signal should exist");
         state
             .event_bus
@@ -864,6 +865,88 @@ mod tests {
             configured_max_fps_tier: FpsTier::Full.into(),
             face_fps_cap: 30,
         }
+    }
+
+    #[test]
+    fn audio_events_wait_for_a_real_source_publication() {
+        let state = minimal_render_thread_state();
+        let mut events = state.event_bus.subscribe_all();
+        let mut recycled_frame = FrameData::empty();
+        let mut cadence = PublicationCadenceState::default();
+
+        publish_frame_updates(
+            &state,
+            &mut cadence,
+            FramePublicationRequest {
+                recycled_frame: &mut recycled_frame,
+                audio: &AudioData::silence(),
+                surfaces: FramePublicationSurfaces {
+                    canvas: None,
+                    frame_surface: None,
+                    preview_surface: None,
+                    screen_capture_surface: None,
+                    web_viewport_preview_surface: None,
+                    effect_running: true,
+                    screen_capture_active: false,
+                },
+                scene_id: None,
+                group_canvases: &[],
+                zone_canvases: &[],
+                active_group_canvas_ids: &[],
+                frame_number: 1,
+                elapsed_ms: 100,
+                reuse_existing_frame: false,
+                refresh_existing_frame_metadata: false,
+                timing: zero_timing(),
+            },
+        );
+        while let Ok(event) = events.try_recv() {
+            assert!(!matches!(
+                event.event,
+                hypercolor_types::event::HypercolorEvent::AudioLevelUpdate { .. }
+            ));
+        }
+
+        cadence.observe_audio_publication(true);
+        publish_frame_updates(
+            &state,
+            &mut cadence,
+            FramePublicationRequest {
+                recycled_frame: &mut recycled_frame,
+                audio: &AudioData::silence(),
+                surfaces: FramePublicationSurfaces {
+                    canvas: None,
+                    frame_surface: None,
+                    preview_surface: None,
+                    screen_capture_surface: None,
+                    web_viewport_preview_surface: None,
+                    effect_running: true,
+                    screen_capture_active: false,
+                },
+                scene_id: None,
+                group_canvases: &[],
+                zone_canvases: &[],
+                active_group_canvas_ids: &[],
+                frame_number: 2,
+                elapsed_ms: 200,
+                reuse_existing_frame: false,
+                refresh_existing_frame_metadata: false,
+                timing: zero_timing(),
+            },
+        );
+        let mut observed_audio = false;
+        while let Ok(event) = events.try_recv() {
+            if let hypercolor_types::event::HypercolorEvent::AudioLevelUpdate { level, .. } =
+                event.event
+            {
+                assert!(level.abs() <= f32::EPSILON);
+                observed_audio = true;
+            }
+        }
+        assert!(
+            observed_audio,
+            "a real silent audio publication may emit zero levels"
+        );
     }
 
     #[test]

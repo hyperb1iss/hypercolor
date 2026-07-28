@@ -38,7 +38,6 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::warn;
 
-use super::capture_demand::CaptureDemandState;
 use super::composition_planner::CompositionPlanner;
 use super::frame_composer::RenderStageStats;
 use super::frame_policy::FramePolicy;
@@ -76,6 +75,7 @@ fn next_input_event_seq() -> u64 {
 
 pub(crate) struct FrameInputs {
     pub(crate) audio: AudioData,
+    pub(crate) audio_was_published: bool,
     pub(crate) interaction: hypercolor_core::input::InteractionData,
     pub(crate) screen_data: Option<hypercolor_core::input::ScreenData>,
     pub(crate) sensors: Arc<SystemSnapshot>,
@@ -316,6 +316,7 @@ impl InputRouteCache {
                 && let InputData::Audio(snapshot) = sample.as_ref()
             {
                 inputs.audio.clone_from(snapshot);
+                inputs.audio_was_published = true;
             }
         }
         let mut screen_seen = false;
@@ -349,7 +350,10 @@ impl InputRouteCache {
                 continue;
             };
             match sample.as_ref() {
-                InputData::Audio(snapshot) => inputs.audio.clone_from(snapshot),
+                InputData::Audio(snapshot) => {
+                    inputs.audio.clone_from(snapshot);
+                    inputs.audio_was_published = true;
+                }
                 InputData::Interaction(_) => {}
                 InputData::Media(snapshot) => inputs.media = Some(Arc::clone(snapshot)),
                 InputData::Net(snapshot) => inputs.net = Some(Arc::clone(snapshot)),
@@ -537,6 +541,7 @@ impl FrameInputs {
         self.audio.spectral_flux = 0.0;
         self.audio.onset_detected = false;
         self.audio.onset_pulse = 0.0;
+        self.audio_was_published = false;
         self.interaction.keyboard.pressed_keys.clear();
         self.interaction.keyboard.recent_keys.clear();
         self.interaction.mouse.x = 0;
@@ -568,6 +573,7 @@ impl FrameInputs {
         let empty_sensors = Arc::new(SystemSnapshot::empty());
         Self {
             audio: AudioData::silence(),
+            audio_was_published: false,
             interaction: InteractionData::default(),
             screen_data: None,
             sensors: Arc::clone(&empty_sensors),
@@ -867,6 +873,7 @@ impl DeferredSamplingState {
 #[allow(clippy::struct_field_names)]
 pub(crate) struct PublicationCadenceState {
     pub(crate) last_audio_level_update_ms: Option<u64>,
+    audio_publication_observed: bool,
     pub(crate) last_canvas_preview_publish_ms: Option<u64>,
     pub(crate) last_scene_canvas_publish_ms: Option<u64>,
     pub(crate) last_screen_canvas_preview_publish_ms: Option<u64>,
@@ -875,6 +882,14 @@ pub(crate) struct PublicationCadenceState {
 }
 
 impl PublicationCadenceState {
+    pub(crate) fn observe_audio_publication(&mut self, published: bool) {
+        self.audio_publication_observed |= published;
+    }
+
+    pub(crate) const fn audio_publication_observed(&self) -> bool {
+        self.audio_publication_observed
+    }
+
     pub(crate) fn should_publish_audio_level(
         &self,
         elapsed_ms: u64,
@@ -1157,34 +1172,28 @@ pub(crate) struct FrameLoopState {
     pub(crate) inputs: InputReuseState,
     pub(crate) throttle: ThrottleState,
     pub(crate) publication_cadence: PublicationCadenceState,
-    pub(crate) capture_demand: CaptureDemandState,
     pub(crate) output_reuse: OutputReuseState,
     pub(crate) lighting_feed: super::lighting_feed::LightingFeedState,
+    pub(crate) input_demands: InputPublicationDemandHandle,
     pub(crate) authoritative_input_demand: OwnedInputPublicationDemand,
-    pub(crate) passive_input_demand: OwnedInputPublicationDemand,
 }
 
 impl FrameLoopState {
-    pub(crate) fn publish_input_demands(
-        &mut self,
-        effect_demand: EffectDemand,
-        passive_screen: bool,
-        requested_hz: u32,
-    ) {
+    pub(crate) fn publish_input_demands(&mut self, effect_demand: EffectDemand, requested_hz: u32) {
         let authoritative = authoritative_input_demand(effect_demand, requested_hz);
         self.authoritative_input_demand.publish(authoritative);
-
-        let passive = if passive_screen {
-            InputPublicationDemand::default().with_source(SourceKind::Screen, requested_hz)
-        } else {
-            InputPublicationDemand::default()
-        };
-        self.passive_input_demand.publish(passive);
     }
 
     pub(crate) fn clear_input_demands(&mut self) {
         self.authoritative_input_demand.clear();
-        self.passive_input_demand.clear();
+    }
+
+    pub(crate) fn has_active_input_demand(&self) -> bool {
+        self.input_demands.is_active()
+    }
+
+    pub(crate) fn has_screen_input_demand(&self) -> bool {
+        self.input_demands.requested_hz(SourceKind::Screen) > 0
     }
 }
 
@@ -1861,16 +1870,12 @@ impl PipelineRuntime {
                 inputs: InputReuseState::with_routing(input_reader, interaction_routing),
                 throttle: ThrottleState::default(),
                 publication_cadence: PublicationCadenceState::default(),
-                capture_demand: CaptureDemandState::default(),
                 output_reuse: OutputReuseState::default(),
                 lighting_feed: super::lighting_feed::LightingFeedState::default(),
+                input_demands: input_demands.clone(),
                 authoritative_input_demand: OwnedInputPublicationDemand::new(
                     &input_demands,
                     InputPublicationConsumer::Authoritative,
-                ),
-                passive_input_demand: OwnedInputPublicationDemand::new(
-                    &input_demands,
-                    InputPublicationConsumer::PassiveStream,
                 ),
             },
             render: RenderCaches {

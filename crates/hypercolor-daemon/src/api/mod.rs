@@ -93,7 +93,7 @@ use crate::performance::PerformanceTracker;
 use crate::playlist_runtime::PlaylistRuntimeState;
 use crate::preview_runtime::PreviewRuntime;
 use crate::profile_store::ProfileStore;
-use crate::render_thread::ConfiguredFpsTier;
+use crate::render_thread::{ConfiguredFpsTier, InputPublicationDemandHandle};
 use crate::runtime_state;
 use crate::scene_store::SceneStore;
 use crate::scene_transactions::SceneTransactionQueue;
@@ -184,6 +184,9 @@ pub struct AppState {
 
     /// Live input graph shared with the daemon render thread.
     pub input_manager: Arc<Mutex<InputManager>>,
+
+    /// Aggregate typed input demand shared with render and connection consumers.
+    pub input_publication_demands: InputPublicationDemandHandle,
 
     /// Lock-free latest-value health for the live input graph.
     pub input_status: SourceStatusRegistry,
@@ -555,6 +558,7 @@ impl AppState {
             extensions: ExtensionRegistry::default(),
             api_extensions: Vec::new(),
             input_manager,
+            input_publication_demands: InputPublicationDemandHandle::new(),
             input_status,
             browser_input,
             interaction_routing,
@@ -651,6 +655,9 @@ impl AppState {
             extensions: daemon.extensions.clone(),
             api_extensions: daemon.api_extensions.clone(),
             input_manager: Arc::clone(&daemon.input_manager),
+            input_publication_demands: daemon
+                .input_publication_demands()
+                .expect("live API state requires a running input publication pump"),
             input_status: daemon.input_status.clone(),
             browser_input: daemon.browser_input.clone(),
             interaction_routing: daemon.interaction_routing.clone(),

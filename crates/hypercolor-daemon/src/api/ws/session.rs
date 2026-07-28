@@ -58,6 +58,10 @@ use crate::interactive_preview::{
     InteractivePreviewTarget as RuntimeInteractivePreviewTarget,
 };
 use crate::preview_runtime::PreviewPixelFormat;
+use crate::render_thread::{
+    InputPublicationConsumer, InputPublicationDemand, InputPublicationDemandHandle,
+    InputPublicationDemandRegistration,
+};
 
 const WS_PROTOCOL_VERSION: &str = "1.0";
 const WS_PING_INTERVAL: Duration = Duration::from_secs(30);
@@ -156,6 +160,10 @@ async fn handle_socket(
     let initial_subscriptions = SubscriptionState::default();
     let (subscriptions_tx, subscriptions_rx) = watch::channel(initial_subscriptions.clone());
     let mut subscriptions = initial_subscriptions;
+    let mut input_demand_leases = WsInputDemandLeases::new(
+        state.input_publication_demands.clone(),
+        state.configured_max_fps_tier.get().fps(),
+    );
 
     // Send hello message.
     let hello = {
@@ -336,6 +344,7 @@ async fn handle_socket(
                             auth_context,
                             &mut subscriptions,
                             &subscriptions_tx,
+                            &mut input_demand_leases,
                             &mut zone_layout_preview_keys,
                             &mut browser_previews,
                             &mut socket,
@@ -376,11 +385,80 @@ async fn handle_socket(
     metrics_relay_handle.abort();
     device_metrics_relay_handle.abort();
     sensors_relay_handle.abort();
+    drop(input_demand_leases);
     state
         .zone_layout_previews
         .clear_many(zone_layout_preview_keys)
         .await;
     debug!("WebSocket client disconnected");
+}
+
+pub(super) struct WsInputDemandLeases {
+    demands: InputPublicationDemandHandle,
+    interaction_hz: u32,
+    spectrum: Option<InputPublicationDemandRegistration>,
+    screen: Option<InputPublicationDemandRegistration>,
+    interaction: Option<InputPublicationDemandRegistration>,
+}
+
+impl WsInputDemandLeases {
+    pub(super) fn new(demands: InputPublicationDemandHandle, interaction_hz: u32) -> Self {
+        Self {
+            demands,
+            interaction_hz,
+            spectrum: None,
+            screen: None,
+            interaction: None,
+        }
+    }
+
+    pub(super) fn synchronize(&mut self, subscriptions: &SubscriptionState) {
+        Self::synchronize_domain(
+            &self.demands,
+            &mut self.spectrum,
+            subscriptions.channels.contains(WsChannel::Spectrum),
+            InputPublicationDemand::default().with_source(
+                hypercolor_core::input::SourceKind::Audio,
+                subscriptions.config.spectrum.fps,
+            ),
+        );
+        Self::synchronize_domain(
+            &self.demands,
+            &mut self.screen,
+            subscriptions.channels.contains(WsChannel::ScreenCanvas)
+                || subscriptions.channels.contains(WsChannel::ScreenZones),
+            InputPublicationDemand::default().with_source(
+                hypercolor_core::input::SourceKind::Screen,
+                subscriptions.config.screen_canvas.fps,
+            ),
+        );
+        Self::synchronize_domain(
+            &self.demands,
+            &mut self.interaction,
+            subscriptions.channels.contains(WsChannel::InputEvents),
+            InputPublicationDemand::default().with_source(
+                hypercolor_core::input::SourceKind::Interaction,
+                self.interaction_hz,
+            ),
+        );
+    }
+
+    fn synchronize_domain(
+        demands: &InputPublicationDemandHandle,
+        registration: &mut Option<InputPublicationDemandRegistration>,
+        active: bool,
+        demand: InputPublicationDemand,
+    ) {
+        match (registration.as_ref(), active) {
+            (Some(registration), true) => registration.update(demand),
+            (None, true) => {
+                *registration =
+                    Some(demands.register(InputPublicationConsumer::PassiveStream, demand));
+            }
+            (Some(_), false) => *registration = None,
+            (None, false) => {}
+        }
+    }
 }
 
 /// A stable server-assigned identity for one WebSocket connection lifetime.
@@ -685,6 +763,7 @@ async fn handle_client_message(
     auth_context: RequestAuthContext,
     subscriptions: &mut SubscriptionState,
     subscriptions_tx: &watch::Sender<SubscriptionState>,
+    input_demand_leases: &mut WsInputDemandLeases,
     zone_layout_preview_keys: &mut HashSet<(SceneId, ZoneId)>,
     browser_previews: &mut BrowserPreviewSession,
     socket: &mut WebSocket,
@@ -732,6 +811,7 @@ async fn handle_client_message(
                 channels: unique_sorted_channel_names(&parsed_channels),
                 config: subscriptions.config.filtered_json(subscriptions.channels),
             };
+            input_demand_leases.synchronize(subscriptions);
             publish_subscriptions(subscriptions_tx, subscriptions);
             let _ = send_json(socket, &ack).await;
         }
@@ -753,6 +833,7 @@ async fn handle_client_message(
                 channels: unique_sorted_channel_names(&parsed_channels),
                 remaining,
             };
+            input_demand_leases.synchronize(subscriptions);
             publish_subscriptions(subscriptions_tx, subscriptions);
             let _ = send_json(socket, &ack).await;
         }

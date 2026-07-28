@@ -78,11 +78,9 @@ pub(crate) async fn execute_frame(
     )
     .await;
     let output_power = scene_snapshot.output_power;
-    frame_loop
-        .capture_demand
-        .reconcile_effect_demand(state, scene_snapshot.effect_demand)
-        .await;
-    publish_input_demands(state, frame_loop, scene_snapshot.effect_demand);
+    publish_input_demands(frame_loop, scene_snapshot.effect_demand, state);
+    let mut screen_input_active = frame_loop.has_screen_input_demand();
+    scene_snapshot.effect_demand.screen_capture_active = screen_input_active;
     let scene_snapshot_done_us = micros_u32(frame_start.elapsed());
     if output_power.sleeping {
         if output_power.off_output_behavior == OffOutputBehavior::Static
@@ -131,17 +129,15 @@ pub(crate) async fn execute_frame(
     .await
     {
         let refreshed_demand = scene_snapshot.effect_demand;
-        frame_loop
-            .capture_demand
-            .reconcile_effect_demand(state, refreshed_demand)
-            .await;
-        publish_input_demands(state, frame_loop, refreshed_demand);
+        publish_input_demands(frame_loop, refreshed_demand, state);
+        screen_input_active = frame_loop.has_screen_input_demand();
     }
+    scene_snapshot.effect_demand.screen_capture_active = screen_input_active;
 
     if let Some(frame) = maybe_idle_throttle(
         state,
         &mut runtime.frame_policy,
-        scene_snapshot.effect_demand.effect_running,
+        scene_snapshot.effect_demand.effect_running || frame_loop.has_active_input_demand(),
         scene_snapshot.effect_demand.screen_capture_active,
         &mut frame_loop.throttle,
     )
@@ -154,6 +150,9 @@ pub(crate) async fn execute_frame(
     let inputs = frame_loop
         .inputs
         .inputs_for_frame(state, skip_decision, delta_secs);
+    frame_loop
+        .publication_cadence
+        .observe_audio_publication(inputs.audio_was_published);
     inputs.lighting = {
         let registry = state.effect_registry.read().await;
         Some(frame_loop.lighting_feed.lighting_for_frame(
@@ -196,6 +195,7 @@ pub(crate) async fn execute_frame(
         &mut scene_snapshot,
     )
     .await;
+    scene_snapshot.effect_demand.screen_capture_active = screen_input_active;
 
     let mut render_stage = compose_frame(ComposeRequest {
         state,
@@ -549,17 +549,11 @@ pub(crate) async fn execute_frame(
 }
 
 fn publish_input_demands(
-    state: &RenderThreadState,
     frame_loop: &mut super::pipeline_runtime::FrameLoopState,
     effect_demand: super::scene_snapshot::EffectDemand,
+    state: &RenderThreadState,
 ) {
-    let passive_screen = state.event_bus.screen_canvas_receiver_count() > 0
-        || state.event_bus.screen_zones_receiver_count() > 0;
-    frame_loop.publish_input_demands(
-        effect_demand,
-        passive_screen,
-        state.configured_max_fps_tier.get().fps(),
-    );
+    frame_loop.publish_input_demands(effect_demand, state.configured_max_fps_tier.get().fps());
 }
 
 fn should_record_idle_black_frame(
