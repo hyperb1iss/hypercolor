@@ -522,6 +522,46 @@ fn render_surface_pool_lazy_slots_materialize_only_on_dequeue() {
 }
 
 #[test]
+fn render_surface_pool_lazy_growth_defers_new_slot_storage() {
+    let descriptor = SurfaceDescriptor::rgba8888(3, 2);
+    let mut pool = RenderSurfacePool::try_with_lazy_slot_count_and_cap(descriptor, 1, 4)
+        .expect("small lazy pool should construct");
+
+    pool.try_ensure_slot_count(4)
+        .expect("lazy metadata growth should succeed");
+
+    assert_eq!(pool.slot_count(), 4);
+    assert_eq!(pool.materialized_slot_count(), 0);
+
+    let surface = pool
+        .try_dequeue()
+        .expect("lazy allocation should succeed")
+        .expect("grown lazy slot should be available")
+        .submit(1, 10);
+
+    assert_eq!(pool.materialized_slot_count(), 1);
+    assert_eq!(surface.rgba_len(), 24);
+}
+
+#[test]
+fn render_surface_pool_failed_lazy_growth_preserves_materialization() {
+    let descriptor = SurfaceDescriptor::rgba8888(1, 1);
+    let mut pool = RenderSurfacePool::try_with_lazy_slot_count(descriptor, 1)
+        .expect("one-pixel lazy pool should construct");
+    let original_cap = pool.max_slots();
+
+    let result = pool.try_ensure_slot_count(usize::MAX);
+
+    assert!(matches!(
+        result,
+        Err(SurfaceResourceError::PoolByteLengthOverflow { .. })
+    ));
+    assert_eq!(pool.slot_count(), 1);
+    assert_eq!(pool.materialized_slot_count(), 0);
+    assert_eq!(pool.max_slots(), original_cap);
+}
+
+#[test]
 fn render_surface_pool_lazy_slots_reject_aggregate_overflow() {
     let descriptor = SurfaceDescriptor::rgba8888(1, 1);
     let slot_count = usize::MAX / 4 + 1;

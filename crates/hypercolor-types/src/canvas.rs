@@ -1352,6 +1352,7 @@ pub struct RenderSurfacePool {
     descriptor: SurfaceDescriptor,
     slots: Vec<SurfaceSlot>,
     next_slot: usize,
+    materialization: SurfaceMaterialization,
     /// Hard cap for `slots.len()`. Growth above this falls back to the
     /// realloc path; serves as a safety bound against runaway Arc leaks.
     max_slots: usize,
@@ -1363,6 +1364,12 @@ pub struct RenderSurfacePool {
     /// still-shared Published slot (forcing a fresh `Canvas::new`). A
     /// rising value means `max_slots` is too small for current fan-out.
     saturation_reallocs: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SurfaceMaterialization {
+    Eager,
+    Lazy,
 }
 
 impl RenderSurfacePool {
@@ -1423,6 +1430,7 @@ impl RenderSurfacePool {
             descriptor,
             slots,
             next_slot: 0,
+            materialization: SurfaceMaterialization::Lazy,
             max_slots,
             grown_slots: 0,
             saturation_reallocs: 0,
@@ -1474,6 +1482,7 @@ impl RenderSurfacePool {
             descriptor,
             slots,
             next_slot: 0,
+            materialization: SurfaceMaterialization::Eager,
             max_slots,
             grown_slots: 0,
             saturation_reallocs: 0,
@@ -1545,14 +1554,18 @@ impl RenderSurfacePool {
             }
         })?;
         for _ in 0..additional {
-            new_slots.push(SurfaceSlot::try_new(self.descriptor).map_err(|_| {
-                SurfaceResourceError::PoolAllocationFailed {
-                    width: self.descriptor.width,
-                    height: self.descriptor.height,
-                    slot_count,
-                    byte_len: pool_byte_len,
-                }
-            })?);
+            let slot =
+                match self.materialization {
+                    SurfaceMaterialization::Eager => SurfaceSlot::try_new(self.descriptor)
+                        .map_err(|_| SurfaceResourceError::PoolAllocationFailed {
+                            width: self.descriptor.width,
+                            height: self.descriptor.height,
+                            slot_count,
+                            byte_len: pool_byte_len,
+                        })?,
+                    SurfaceMaterialization::Lazy => SurfaceSlot::vacant(),
+                };
+            new_slots.push(slot);
         }
         self.slots.extend(new_slots);
         self.max_slots = self.max_slots.max(slot_count);
@@ -1714,6 +1727,7 @@ impl std::fmt::Debug for RenderSurfacePool {
         f.debug_struct("RenderSurfacePool")
             .field("descriptor", &self.descriptor)
             .field("slot_count", &self.slots.len())
+            .field("materialization", &self.materialization)
             .finish_non_exhaustive()
     }
 }
