@@ -93,7 +93,7 @@ pub async fn set_config_value(
     let value_is_unchanged =
         get_json_path(&root, &key).is_some_and(|current| current == &parsed_value);
     let capture_runtime_matches = if value_is_unchanged && should_reconfigure_capture(Some(&key)) {
-        capture_runtime_matches(&state, &current.capture).await
+        capture_runtime_matches(&state, &current_snapshot).await
     } else {
         true
     };
@@ -800,16 +800,22 @@ async fn validate_prepared_capture_status(
     }
 }
 
-async fn capture_runtime_matches(state: &Arc<AppState>, capture: &CaptureConfig) -> bool {
+async fn capture_runtime_matches(
+    state: &Arc<AppState>,
+    expected_config: &Arc<HypercolorConfig>,
+) -> bool {
     let Some(manager) = state.config_manager.as_ref() else {
         return false;
     };
-    if !manager.capture_runtime_matches(capture) {
+    let input_manager = state.input_manager.lock().await;
+    if !manager.is_current(expected_config)
+        || !manager.capture_runtime_matches(&expected_config.capture)
+    {
         return false;
     }
-    let registry = state.input_manager.lock().await.source_status_registry();
+    let registry = input_manager.source_status_registry();
     let statuses = registry.snapshot().statuses();
-    capture_statuses_match(capture, &statuses)
+    capture_statuses_match(&expected_config.capture, &statuses)
 }
 
 fn capture_statuses_match(
@@ -1388,5 +1394,47 @@ mod tests {
         assert_eq!(response.status(), axum::http::StatusCode::OK);
         assert!(!state.input_manager.lock().await.has_screen_source());
         assert!(stopped.load(Ordering::Acquire));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn unchanged_capture_rejects_a_concurrent_config_generation() {
+        let tempdir = tempfile::tempdir().expect("temporary config directory should build");
+        let manager = Arc::new(
+            ConfigManager::new(tempdir.path().join("hypercolor.toml"))
+                .expect("test config manager should initialize"),
+        );
+        manager.modify(|config| config.capture.enabled = false);
+        let initial = Arc::clone(&manager.get());
+        manager.mark_capture_runtime_applied(&initial.capture);
+        let mut state = AppState::new();
+        state.config_manager = Some(Arc::clone(&manager));
+        let state = Arc::new(state);
+        let input_manager = state.input_manager.lock().await;
+        let request_state = Arc::clone(&state);
+        let unchanged_fps = initial.capture.capture_fps;
+        let request = tokio::spawn(async move {
+            set_config_value(
+                axum::extract::State(request_state),
+                axum::Json(SetConfigRequest {
+                    key: "capture.capture_fps".to_owned(),
+                    value: unchanged_fps.to_string(),
+                    live: None,
+                }),
+            )
+            .await
+        });
+
+        tokio::task::yield_now().await;
+        let mut competing = (*initial).clone();
+        competing.capture.capture_fps += 1;
+        let competing_capture = competing.capture.clone();
+        manager.update(competing);
+        manager.mark_capture_runtime_applied(&competing_capture);
+        drop(input_manager);
+
+        let response = request.await.expect("unchanged request should complete");
+        assert_eq!(response.status(), axum::http::StatusCode::CONFLICT);
+        assert_eq!(manager.get().capture, competing_capture);
+        assert!(manager.capture_runtime_matches(&competing_capture));
     }
 }
