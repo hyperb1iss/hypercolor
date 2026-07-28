@@ -101,26 +101,35 @@ jobs:
           filters: |
             rust:
               - 'crates/**'
+              - 'protocol/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'rust-toolchain.toml'
               - 'deny.toml'
               - 'scripts/cargo-cache-build.*'
               - '.github/actions/rust-build-cache/**'
+              - '.github/workflows/ci.yml'
             python:
               - 'python/**'
+              - 'protocol/**'
               - 'justfile'
+              - '.github/workflows/ci.yml'
             sdk:
               - 'sdk/**'
+              - 'protocol/**'
+              - 'crates/hypercolor-core/src/effect/lightscript/frame_payload_adapter.js'
               - 'justfile'
               - '.github/actions/bun-cache/**'
+              - '.github/workflows/ci.yml'
             ui:
               - 'crates/hypercolor-ui/**'
               - 'crates/hypercolor-leptos-ext/**'
               - 'crates/hypercolor-leptos-ext-macros/**'
+              - 'protocol/**'
               - 'justfile'
               - '.github/actions/bun-cache/**'
               - '.github/actions/rust-build-cache/**'
+              - '.github/workflows/ci.yml'
             compat:
               - 'data/drivers/vendors/**'
               - 'data/compat/**'
@@ -413,6 +422,12 @@ jobs:
         run: |
           ./scripts/cargo-cache-build.sh cargo test --locked -p hypercolor-core --features servo --test effect_factory_tests
           ./scripts/cargo-cache-build.sh cargo test --locked -p hypercolor-core --features servo --test builtin_effect_tests
+
+      - name: Run Servo HTML loader registration tests
+        run: >-
+          ./scripts/cargo-cache-build.sh
+          cargo test --locked -p hypercolor-core --features servo
+          --test html_loader_tests
 
       - name: Run core Servo doc tests
         if: needs.changes.outputs.full == 'true'
