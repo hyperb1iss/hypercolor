@@ -522,6 +522,26 @@ fn render_surface_pool_lazy_slots_materialize_only_on_dequeue() {
 }
 
 #[test]
+fn render_surface_pool_lazy_slots_reuse_materialized_storage_first() {
+    let descriptor = SurfaceDescriptor::rgba8888(3, 2);
+    let mut pool = RenderSurfacePool::try_with_lazy_slot_count_and_cap(descriptor, 8, 16)
+        .expect("small lazy pool should construct");
+
+    for frame_number in 1..=16 {
+        let surface = pool
+            .try_dequeue()
+            .expect("lazy allocation should succeed")
+            .expect("lazy slot should be available")
+            .submit(frame_number, frame_number);
+        drop(surface);
+    }
+
+    assert_eq!(pool.slot_count(), 8);
+    assert_eq!(pool.materialized_slot_count(), 1);
+    assert_eq!(pool.grown_slots(), 0);
+}
+
+#[test]
 fn render_surface_pool_lazy_growth_defers_new_slot_storage() {
     let descriptor = SurfaceDescriptor::rgba8888(3, 2);
     let mut pool = RenderSurfacePool::try_with_lazy_slot_count_and_cap(descriptor, 1, 4)

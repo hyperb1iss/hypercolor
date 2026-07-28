@@ -1622,11 +1622,13 @@ impl RenderSurfacePool {
     /// Lease the next available surface slot for mutation.
     ///
     /// Preference order:
-    /// 1. An already-Free slot — no allocation.
-    /// 2. Appending a new slot (one-time `Canvas::new`) if we are under
+    /// 1. An already-Free materialized slot — no allocation.
+    /// 2. A configured vacant slot — one-time `Canvas::new` only when
+    ///    every materialized slot is busy.
+    /// 3. Appending a new slot (one-time `Canvas::new`) if we are under
     ///    `max_slots`. Converts the chronic realloc pattern from an
     ///    undersized pool into a single high-water-mark growth event.
-    /// 3. Reusing a still-shared Published slot — forces a
+    /// 4. Reusing a still-shared Published slot — forces a
     ///    `Canvas::new` every call; bumps `saturation_reallocs` so it
     ///    surfaces in metrics.
     pub fn dequeue(&mut self) -> Option<SurfaceLease<'_>> {
@@ -1637,6 +1639,20 @@ impl RenderSurfacePool {
     /// Fallible dequeue for pools whose descriptor or fan-out is runtime-negotiated.
     pub fn try_dequeue(&mut self) -> Result<Option<SurfaceLease<'_>>, SurfaceResourceError> {
         self.reclaim_published_slots();
+
+        for offset in 0..self.slots.len() {
+            let index = (self.next_slot + offset) % self.slots.len();
+            if self.slots[index].state != SurfaceState::Free || self.slots[index].canvas.is_none() {
+                continue;
+            }
+
+            let _ = self.slots[index].try_begin_dequeue(self.descriptor)?;
+            self.next_slot = (index + 1) % self.slots.len();
+            return Ok(Some(SurfaceLease {
+                descriptor: self.descriptor,
+                slot: &mut self.slots[index],
+            }));
+        }
 
         for offset in 0..self.slots.len() {
             let index = (self.next_slot + offset) % self.slots.len();
