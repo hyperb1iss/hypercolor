@@ -506,8 +506,19 @@ jobs:
           cargo clippy --locked ${{ env.RUST_WINDOWS_WORKSPACE_ARGS }} --all-targets
           -- -D warnings
 
+      - name: Clippy Windows capture fixtures
+        run: >-
+          cargo clippy --locked -p hypercolor-core
+          --features windows-capture-fixtures --all-targets -- -D warnings
+
       - name: Run shared crate tests
         run: cargo nextest run --locked ${{ env.RUST_WINDOWS_WORKSPACE_ARGS }}
+
+      - name: Run Windows host input fixture
+        run: >-
+          cargo test --locked -p hypercolor-core
+          --features windows-capture-fixtures
+          --test windows_host_input_fixture_tests
 
       - name: Run allocation contracts serially
         shell: pwsh
