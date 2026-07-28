@@ -40,6 +40,25 @@ pub enum SurfaceResourceError {
         height: u32,
         byte_len: usize,
     },
+
+    #[error(
+        "surface pool byte length overflows addressable memory for {slot_count} slots of {width}x{height}"
+    )]
+    PoolByteLengthOverflow {
+        width: u32,
+        height: u32,
+        slot_count: usize,
+    },
+
+    #[error(
+        "could not allocate {byte_len} bytes for {slot_count} surface slots of {width}x{height}"
+    )]
+    PoolAllocationFailed {
+        width: u32,
+        height: u32,
+        slot_count: usize,
+        byte_len: usize,
+    },
 }
 
 static NEXT_PUBLISHED_SURFACE_STORAGE_ID: AtomicU64 = AtomicU64::new(1);
@@ -1280,28 +1299,31 @@ struct SurfaceSlot {
 }
 
 impl SurfaceSlot {
-    fn new(descriptor: SurfaceDescriptor) -> Self {
-        Self {
-            canvas: Canvas::new(descriptor.width, descriptor.height),
+    fn try_new(descriptor: SurfaceDescriptor) -> Result<Self, SurfaceResourceError> {
+        Ok(Self {
+            canvas: Canvas::try_new(descriptor.width, descriptor.height)?,
             generation: 0,
             state: SurfaceState::Free,
-        }
+        })
     }
 
     /// Prepare the slot for a new producer write. Returns `true` if the pool
     /// had to allocate a fresh canvas because the previous slot was still
     /// shared downstream (a sign the pool is undersized for current load).
-    fn begin_dequeue(&mut self, descriptor: SurfaceDescriptor) -> bool {
+    fn try_begin_dequeue(
+        &mut self,
+        descriptor: SurfaceDescriptor,
+    ) -> Result<bool, SurfaceResourceError> {
         let reused_shared = self.state == SurfaceState::Published && self.canvas.is_shared();
         let needs_realloc = reused_shared
             || self.canvas.width() != descriptor.width
             || self.canvas.height() != descriptor.height;
         if needs_realloc {
-            self.canvas = Canvas::new(descriptor.width, descriptor.height);
+            self.canvas = Canvas::try_new(descriptor.width, descriptor.height)?;
         }
 
         self.state = SurfaceState::Dequeued;
-        reused_shared
+        Ok(reused_shared)
     }
 }
 
@@ -1340,11 +1362,24 @@ impl RenderSurfacePool {
         Self::with_slot_count(descriptor, DEFAULT_RENDER_SURFACE_SLOTS)
     }
 
+    /// Fallible counterpart to [`Self::new`] for runtime-negotiated descriptors.
+    pub fn try_new(descriptor: SurfaceDescriptor) -> Result<Self, SurfaceResourceError> {
+        Self::try_with_slot_count(descriptor, DEFAULT_RENDER_SURFACE_SLOTS)
+    }
+
     /// Create a render surface pool with an explicit initial slot count
     /// and an auto-computed growth cap.
     #[must_use]
     pub fn with_slot_count(descriptor: SurfaceDescriptor, slot_count: usize) -> Self {
         Self::with_slot_count_and_cap(descriptor, slot_count, default_pool_cap(slot_count))
+    }
+
+    /// Fallible counterpart to [`Self::with_slot_count`].
+    pub fn try_with_slot_count(
+        descriptor: SurfaceDescriptor,
+        slot_count: usize,
+    ) -> Result<Self, SurfaceResourceError> {
+        Self::try_with_slot_count_and_cap(descriptor, slot_count, default_pool_cap(slot_count))
     }
 
     /// Create a render surface pool with explicit initial slot count and
@@ -1356,19 +1391,46 @@ impl RenderSurfacePool {
         slot_count: usize,
         max_slots: usize,
     ) -> Self {
+        Self::try_with_slot_count_and_cap(descriptor, slot_count, max_slots)
+            .expect("surface pool dimensions must fit available memory")
+    }
+
+    /// Fallible pool construction for runtime-negotiated descriptors.
+    pub fn try_with_slot_count_and_cap(
+        descriptor: SurfaceDescriptor,
+        slot_count: usize,
+        max_slots: usize,
+    ) -> Result<Self, SurfaceResourceError> {
         let slot_count = slot_count.max(1);
         let max_slots = max_slots.max(slot_count);
-        let slots = (0..slot_count)
-            .map(|_| SurfaceSlot::new(descriptor))
-            .collect();
-        Self {
+        let pool_byte_len = checked_pool_byte_len(descriptor, slot_count)?;
+        let mut slots = Vec::new();
+        slots.try_reserve_exact(slot_count).map_err(|_| {
+            SurfaceResourceError::PoolAllocationFailed {
+                width: descriptor.width,
+                height: descriptor.height,
+                slot_count,
+                byte_len: pool_byte_len,
+            }
+        })?;
+        for _ in 0..slot_count {
+            slots.push(SurfaceSlot::try_new(descriptor).map_err(|_| {
+                SurfaceResourceError::PoolAllocationFailed {
+                    width: descriptor.width,
+                    height: descriptor.height,
+                    slot_count,
+                    byte_len: pool_byte_len,
+                }
+            })?);
+        }
+        Ok(Self {
             descriptor,
             slots,
             next_slot: 0,
             max_slots,
             grown_slots: 0,
             saturation_reallocs: 0,
-        }
+        })
     }
 
     /// Hard growth cap for this pool.
@@ -1405,12 +1467,40 @@ impl RenderSurfacePool {
 
     /// Ensure the pool has at least the requested number of slots.
     pub fn ensure_slot_count(&mut self, slot_count: usize) {
+        self.try_ensure_slot_count(slot_count)
+            .expect("surface pool growth must fit available memory");
+    }
+
+    /// Grow the pool transactionally, leaving the current slots unchanged on failure.
+    pub fn try_ensure_slot_count(&mut self, slot_count: usize) -> Result<(), SurfaceResourceError> {
         if slot_count <= self.slots.len() {
-            return;
+            return Ok(());
         }
 
-        self.slots
-            .extend((self.slots.len()..slot_count).map(|_| SurfaceSlot::new(self.descriptor)));
+        let pool_byte_len = checked_pool_byte_len(self.descriptor, slot_count)?;
+        let additional = slot_count - self.slots.len();
+        let mut new_slots = Vec::new();
+        new_slots.try_reserve_exact(additional).map_err(|_| {
+            SurfaceResourceError::PoolAllocationFailed {
+                width: self.descriptor.width,
+                height: self.descriptor.height,
+                slot_count,
+                byte_len: pool_byte_len,
+            }
+        })?;
+        for _ in 0..additional {
+            new_slots.push(SurfaceSlot::try_new(self.descriptor).map_err(|_| {
+                SurfaceResourceError::PoolAllocationFailed {
+                    width: self.descriptor.width,
+                    height: self.descriptor.height,
+                    slot_count,
+                    byte_len: pool_byte_len,
+                }
+            })?);
+        }
+        self.slots.extend(new_slots);
+        self.max_slots = self.max_slots.max(slot_count);
+        Ok(())
     }
 
     /// Current visible state of all pool slots.
@@ -1468,6 +1558,12 @@ impl RenderSurfacePool {
     ///    `Canvas::new` every call; bumps `saturation_reallocs` so it
     ///    surfaces in metrics.
     pub fn dequeue(&mut self) -> Option<SurfaceLease<'_>> {
+        self.try_dequeue()
+            .expect("surface pool dequeue must fit available memory")
+    }
+
+    /// Fallible dequeue for pools whose descriptor or fan-out is runtime-negotiated.
+    pub fn try_dequeue(&mut self) -> Result<Option<SurfaceLease<'_>>, SurfaceResourceError> {
         self.reclaim_published_slots();
 
         for offset in 0..self.slots.len() {
@@ -1476,25 +1572,25 @@ impl RenderSurfacePool {
                 continue;
             }
 
-            let _ = self.slots[index].begin_dequeue(self.descriptor);
+            let _ = self.slots[index].try_begin_dequeue(self.descriptor)?;
             self.next_slot = (index + 1) % self.slots.len();
-            return Some(SurfaceLease {
+            return Ok(Some(SurfaceLease {
                 descriptor: self.descriptor,
                 slot: &mut self.slots[index],
-            });
+            }));
         }
 
         if self.slots.len() < self.max_slots {
-            let mut fresh = SurfaceSlot::new(self.descriptor);
-            let _ = fresh.begin_dequeue(self.descriptor);
+            let mut fresh = SurfaceSlot::try_new(self.descriptor)?;
+            let _ = fresh.try_begin_dequeue(self.descriptor)?;
             self.slots.push(fresh);
             self.grown_slots = self.grown_slots.saturating_add(1);
             let index = self.slots.len() - 1;
             self.next_slot = (index + 1) % self.slots.len();
-            return Some(SurfaceLease {
+            return Ok(Some(SurfaceLease {
                 descriptor: self.descriptor,
                 slot: &mut self.slots[index],
-            });
+            }));
         }
 
         for offset in 0..self.slots.len() {
@@ -1503,17 +1599,17 @@ impl RenderSurfacePool {
                 continue;
             }
 
-            if self.slots[index].begin_dequeue(self.descriptor) {
+            if self.slots[index].try_begin_dequeue(self.descriptor)? {
                 self.saturation_reallocs = self.saturation_reallocs.saturating_add(1);
             }
             self.next_slot = (index + 1) % self.slots.len();
-            return Some(SurfaceLease {
+            return Ok(Some(SurfaceLease {
                 descriptor: self.descriptor,
                 slot: &mut self.slots[index],
-            });
+            }));
         }
 
-        None
+        Ok(None)
     }
 
     fn reclaim_published_slots(&mut self) {
@@ -1523,6 +1619,20 @@ impl RenderSurfacePool {
             }
         }
     }
+}
+
+fn checked_pool_byte_len(
+    descriptor: SurfaceDescriptor,
+    slot_count: usize,
+) -> Result<usize, SurfaceResourceError> {
+    descriptor
+        .try_non_empty_byte_len()?
+        .checked_mul(slot_count)
+        .ok_or(SurfaceResourceError::PoolByteLengthOverflow {
+            width: descriptor.width,
+            height: descriptor.height,
+            slot_count,
+        })
 }
 
 impl std::fmt::Debug for RenderSurfacePool {

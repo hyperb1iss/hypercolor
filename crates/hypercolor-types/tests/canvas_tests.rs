@@ -402,6 +402,75 @@ fn render_surface_pool_uses_three_slots_and_reclaims_released_surface() {
 }
 
 #[test]
+fn render_surface_pool_fallible_constructor_rejects_overflowing_descriptor() {
+    let result = RenderSurfacePool::try_new(SurfaceDescriptor::rgba8888(u32::MAX, u32::MAX));
+
+    assert!(matches!(
+        result,
+        Err(SurfaceResourceError::ByteLengthOverflow {
+            width: u32::MAX,
+            height: u32::MAX,
+        })
+    ));
+}
+
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn render_surface_pool_rejects_aggregate_byte_overflow_before_allocation() {
+    let descriptor = SurfaceDescriptor::rgba8888(u32::MAX, 1);
+    let surface_bytes = descriptor
+        .try_non_empty_byte_len()
+        .expect("single surface fits 64-bit address space");
+    let slot_count = usize::MAX / surface_bytes + 1;
+    let result = RenderSurfacePool::try_with_slot_count(descriptor, slot_count);
+
+    assert!(matches!(
+        result,
+        Err(SurfaceResourceError::PoolByteLengthOverflow {
+            width: u32::MAX,
+            height: 1,
+            slot_count: actual,
+        }) if actual == slot_count
+    ));
+}
+
+#[test]
+fn render_surface_pool_failed_growth_leaves_existing_slots_unchanged() {
+    let descriptor = SurfaceDescriptor::rgba8888(1, 1);
+    let mut pool = RenderSurfacePool::try_with_slot_count(descriptor, 1)
+        .expect("one-pixel pool should allocate");
+    let original_cap = pool.max_slots();
+
+    let result = pool.try_ensure_slot_count(usize::MAX);
+
+    assert!(matches!(
+        result,
+        Err(SurfaceResourceError::PoolByteLengthOverflow { .. })
+    ));
+    assert_eq!(pool.slot_count(), 1);
+    assert_eq!(pool.max_slots(), original_cap);
+}
+
+#[test]
+fn render_surface_pool_fallible_dequeue_preserves_normal_reuse() {
+    let descriptor = SurfaceDescriptor::rgba8888(2, 1);
+    let mut pool =
+        RenderSurfacePool::try_with_slot_count(descriptor, 1).expect("small pool should allocate");
+    let lease = pool
+        .try_dequeue()
+        .expect("dequeue should not fail")
+        .expect("slot should be available");
+    let surface = lease.submit(1, 10);
+    drop(surface);
+
+    let lease = pool
+        .try_dequeue()
+        .expect("reclaimed dequeue should not fail")
+        .expect("reclaimed slot should be available");
+    assert_eq!(lease.descriptor(), descriptor);
+}
+
+#[test]
 fn render_surface_pool_can_grow_without_disturbing_published_slots() {
     let descriptor = SurfaceDescriptor::rgba8888(4, 2);
     let mut pool = RenderSurfacePool::with_slot_count(descriptor, 2);
