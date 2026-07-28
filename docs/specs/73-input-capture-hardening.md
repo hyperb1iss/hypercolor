@@ -62,6 +62,9 @@ Microsoft documentation for Raw Input, DPI, and Desktop Duplication behavior.
 11. Health, capability, recent activity, and data freshness are separate fields.
 12. No implementation may trade correctness for a permanent FPS, resolution,
     queue, sampling, or concurrency nerf.
+13. Resolution is negotiated runtime shape, never a compile-time or product
+    ceiling. Every extent and byte count is checked before allocation; pressure
+    produces typed resource diagnostics rather than silent downscaling.
 
 ## Target architecture
 
@@ -108,6 +111,36 @@ Screen backends publish a backend-neutral `CaptureFrame` envelope:
 Acquisition, analysis, and publication are separate latest-value stages. Native
 frames may arrive at display cadence; analysis runs at configured cadence against
 the newest frame; publication replaces stale data rather than queueing latency.
+
+### Resolution and resource contract
+
+Source, analysis, compositor, effect, and preview extents are independent typed
+shapes. The source preserves its native logical geometry; each consumer declares
+the extent and aspect policy it actually needs. Producers reuse an existing
+surface only when its descriptor satisfies that contract, and otherwise build a
+new generation transactionally.
+
+There is no fixed 640x480, 4K, 8K, or platform-specific maximum in shared code.
+A finite request is accepted when checked width, height, stride, plane size,
+encoded size, GPU allocation, and in-flight byte budgets fit the active backend.
+Overflow, allocation failure, or an exhausted resource budget returns a typed
+error containing the requested descriptor and limiting resource. It never
+changes the requested resolution or cadence implicitly.
+
+Native acquisition stays latest-value and may feed multiple derived resolutions.
+Compatible consumers share immutable producer surfaces and reduction work;
+incompatible descriptors remain independent. CPU work scales with the pixels a
+consumer actually requests, GPU work uses reusable descriptor-keyed resources,
+and interactive transport is keyed latest-value with encoded-byte accounting and
+bounded chunk reassembly. Resolution changes advance generation and replace all
+shape-dependent pools, smoother state, routes, and transport assemblies at one
+transactional boundary.
+
+Property and integration tests cover zero/overflow rejection, one-pixel and odd
+extents, portrait, ultrawide, rotated, negative-origin, live resize, 1080p, 4K,
+8K, and synthetic dimensions beyond current display hardware where allocations
+remain practical. Performance gates report pixels and bytes processed so results
+normalize across shapes rather than blessing one canonical resolution.
 
 ### Input event contract
 
