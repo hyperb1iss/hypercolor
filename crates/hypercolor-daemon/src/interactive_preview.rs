@@ -20,7 +20,7 @@ use hypercolor_core::input::{
 };
 use hypercolor_core::scene::SceneManager;
 use hypercolor_types::audio::AudioData;
-use hypercolor_types::canvas::PublishedSurface;
+use hypercolor_types::canvas::{PublishedSurface, SurfaceDescriptor};
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::display::DisplayDescriptor;
 use hypercolor_types::event::{HypercolorEvent, ZoneColors};
@@ -43,7 +43,6 @@ use crate::render_thread::{
 };
 
 const MAX_PREVIEW_FPS: u32 = 60;
-const MAX_PREVIEW_DIMENSION: u32 = 4_096;
 static NEXT_CONSUMER_INCARNATION: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -68,13 +67,9 @@ impl InteractivePreviewSpec {
                 "preview fps must be between 1 and {MAX_PREVIEW_FPS}"
             )));
         }
-        if !(1..=MAX_PREVIEW_DIMENSION).contains(&self.width)
-            || !(1..=MAX_PREVIEW_DIMENSION).contains(&self.height)
-        {
-            return Err(InteractivePreviewError::InvalidSpec(format!(
-                "preview dimensions must be between 1 and {MAX_PREVIEW_DIMENSION}"
-            )));
-        }
+        SurfaceDescriptor::rgba8888(self.width, self.height)
+            .try_non_empty_byte_len()
+            .map_err(|error| InteractivePreviewError::InvalidSpec(error.to_string()))?;
         Ok(self)
     }
 }

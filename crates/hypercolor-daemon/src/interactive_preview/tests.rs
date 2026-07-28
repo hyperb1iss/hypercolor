@@ -168,12 +168,12 @@ async fn wait_for_preview_demands(demands: &InputPublicationDemandHandle, expect
 }
 
 #[test]
-fn preview_spec_rejects_unbounded_work() {
+fn preview_spec_validates_rate_and_addressable_dimensions() {
     let valid = InteractivePreviewSpec {
         target: InteractivePreviewTarget::ActiveScene,
         fps: 60,
-        width: 4_096,
-        height: 4_096,
+        width: 7_680,
+        height: 4_320,
         format: PreviewPixelFormat::Rgba,
     };
 
@@ -195,7 +195,17 @@ fn preview_spec_rejects_unbounded_work() {
     );
     assert!(
         InteractivePreviewSpec {
-            height: 4_097,
+            width: 13,
+            height: 17,
+            ..valid
+        }
+        .validate()
+        .is_ok()
+    );
+    assert!(
+        InteractivePreviewSpec {
+            width: u32::MAX,
+            height: u32::MAX,
             ..valid
         }
         .validate()
