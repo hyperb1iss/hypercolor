@@ -63,10 +63,12 @@ impl ZoneRuntime {
         };
         let scene_compose_start = Instant::now();
         let scene_frame = if project_scene_with_sparkleflinger {
-            self.compose_projected_scene_frame(projected_scene_layers, sparkleflinger)
-                .unwrap_or_else(|| self.compose_scene_frame(context.groups))
+            match self.compose_projected_scene_frame(projected_scene_layers, sparkleflinger) {
+                Some(frame) => frame,
+                None => self.compose_scene_frame(context.groups)?,
+            }
         } else {
-            self.compose_scene_frame(context.groups)
+            self.compose_scene_frame(context.groups)?
         };
         let scene_compose_us = micros_u32(scene_compose_start.elapsed());
         let led_sampling_strategy = if use_gpu_scene_sampling {

@@ -738,16 +738,17 @@ impl PreviewLane {
             .resolve(context.spec.target)
             .ok_or_else(|| "preview target disappeared during open".to_owned())?;
         let (sparkleflinger, backend) = create_preview_compositor(&context.acceleration);
-        let zone_runtime = context.asset_library.map_or_else(
-            || InteractivePreviewZoneRuntime::new(resolved.canvas_width, resolved.canvas_height),
-            |library| {
-                InteractivePreviewZoneRuntime::with_asset_library(
-                    resolved.canvas_width,
-                    resolved.canvas_height,
-                    library,
-                )
-            },
-        );
+        let zone_runtime = match context.asset_library {
+            Some(library) => InteractivePreviewZoneRuntime::with_asset_library(
+                resolved.canvas_width,
+                resolved.canvas_height,
+                library,
+            ),
+            None => {
+                InteractivePreviewZoneRuntime::new(resolved.canvas_width, resolved.canvas_height)
+            }
+        }
+        .map_err(|error| error.to_string())?;
         let current_demand = preview_input_demand(&resolved, context.spec.fps);
         let demand = context
             .demands
@@ -809,8 +810,15 @@ impl PreviewLane {
                 .publish_error("preview target is unavailable");
             return;
         };
-        self.zone_runtime
-            .resize_scene(scene.canvas_width, scene.canvas_height);
+        if let Err(error) = self
+            .zone_runtime
+            .resize_scene(scene.canvas_width, scene.canvas_height)
+        {
+            self.telemetry.publish_error(format!(
+                "preview canvas resources could not be prepared: {error}"
+            ));
+            return;
+        }
         let demand = preview_input_demand(&scene, self.spec.fps);
         if demand != self.current_demand {
             self.demand.update(demand);

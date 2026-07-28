@@ -1,8 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-#[cfg(test)]
-use anyhow::Result;
 use tokio::sync::RwLock;
 
 use hypercolor_core::asset::AssetLibrary;
@@ -17,7 +15,9 @@ use hypercolor_core::spatial::sample_led;
 use hypercolor_types::asset::AssetId;
 #[cfg(test)]
 use hypercolor_types::canvas::PublishedSurface;
-use hypercolor_types::canvas::{Canvas, RenderSurfacePool, SurfaceDescriptor};
+use hypercolor_types::canvas::{
+    Canvas, RenderSurfacePool, SurfaceDescriptor, SurfaceResourceError,
+};
 use hypercolor_types::event::HypercolorEvent;
 #[cfg(test)]
 use hypercolor_types::event::LayerHealth;
@@ -111,8 +111,17 @@ pub(crate) struct ZoneRuntime {
 }
 
 impl ZoneRuntime {
+    #[cfg(any(test, feature = "wgpu"))]
     pub(crate) fn new(scene_width: u32, scene_height: u32) -> Self {
-        Self::with_scene_surface_pool(
+        Self::try_new(scene_width, scene_height)
+            .expect("default scene dimensions must fit available memory")
+    }
+
+    pub(crate) fn try_new(
+        scene_width: u32,
+        scene_height: u32,
+    ) -> Result<Self, SurfaceResourceError> {
+        Self::try_with_scene_surface_pool(
             scene_width,
             scene_height,
             SCENE_SURFACE_POOL_INITIAL_SLOTS,
@@ -120,8 +129,11 @@ impl ZoneRuntime {
         )
     }
 
-    pub(crate) fn new_preview(scene_width: u32, scene_height: u32) -> Self {
-        Self::with_scene_surface_pool(
+    pub(crate) fn try_new_preview(
+        scene_width: u32,
+        scene_height: u32,
+    ) -> Result<Self, SurfaceResourceError> {
+        Self::try_with_scene_surface_pool(
             scene_width,
             scene_height,
             PREVIEW_SCENE_SURFACE_POOL_INITIAL_SLOTS,
@@ -129,15 +141,15 @@ impl ZoneRuntime {
         )
     }
 
-    fn with_scene_surface_pool(
+    fn try_with_scene_surface_pool(
         scene_width: u32,
         scene_height: u32,
         initial_slots: usize,
         max_slots: usize,
-    ) -> Self {
+    ) -> Result<Self, SurfaceResourceError> {
         let (combined_led_layout, combined_led_spatial_engine) =
             combined_led_state(empty_group_layout(scene_width, scene_height));
-        Self {
+        Ok(Self {
             asset_library: None,
             effect_pool: EffectPool::new(),
             media_producers: HashMap::new(),
@@ -153,11 +165,11 @@ impl ZoneRuntime {
             // display-output dispatch + one pin per display worker mid-
             // encode). The higher cap lets preview/display bursts settle
             // into a larger working set instead of reallocating per frame.
-            scene_surface_pool: RenderSurfacePool::with_slot_count_and_cap(
+            scene_surface_pool: RenderSurfacePool::try_with_lazy_slot_count_and_cap(
                 SurfaceDescriptor::rgba8888(scene_width, scene_height),
                 initial_slots,
                 max_slots,
-            ),
+            )?,
             scene_surface_pool_initial_slots: initial_slots,
             scene_surface_pool_max_slots: max_slots,
             reconciled_dependency_key: None,
@@ -169,54 +181,71 @@ impl ZoneRuntime {
             combined_led_spatial_engine,
             scene_width,
             scene_height,
-        }
+        })
     }
 
-    pub(crate) fn resize_scene(&mut self, scene_width: u32, scene_height: u32) {
+    pub(crate) fn try_resize_scene(
+        &mut self,
+        scene_width: u32,
+        scene_height: u32,
+    ) -> Result<(), SurfaceResourceError> {
         if self.scene_width == scene_width && self.scene_height == scene_height {
-            return;
+            return Ok(());
         }
+
+        let scene_surface_pool = RenderSurfacePool::try_with_lazy_slot_count_and_cap(
+            SurfaceDescriptor::rgba8888(scene_width, scene_height),
+            self.scene_surface_pool_initial_slots,
+            self.scene_surface_pool_max_slots,
+        )?;
 
         self.scene_width = scene_width;
         self.scene_height = scene_height;
         self.target_canvases.clear();
         self.scene_projection_cache.clear();
-        self.scene_surface_pool = RenderSurfacePool::with_slot_count_and_cap(
-            SurfaceDescriptor::rgba8888(scene_width, scene_height),
-            self.scene_surface_pool_initial_slots,
-            self.scene_surface_pool_max_slots,
-        );
+        self.scene_surface_pool = scene_surface_pool;
         self.retained_frame = None;
         self.reconciled_dependency_key = None;
         let (layout, engine) = combined_led_state(empty_group_layout(scene_width, scene_height));
         self.combined_led_layout = layout;
         self.combined_led_spatial_engine = engine;
+        Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn with_asset_library(
         scene_width: u32,
         scene_height: u32,
         asset_library: Arc<RwLock<AssetLibrary>>,
     ) -> Self {
-        let mut runtime = Self::new(scene_width, scene_height);
-        runtime
-            .effect_pool
-            .set_asset_library(Arc::clone(&asset_library));
-        runtime.asset_library = Some(asset_library);
-        runtime
+        Self::try_with_asset_library(scene_width, scene_height, asset_library)
+            .expect("default scene dimensions must fit available memory")
     }
 
-    pub(crate) fn with_asset_library_preview(
+    pub(crate) fn try_with_asset_library(
         scene_width: u32,
         scene_height: u32,
         asset_library: Arc<RwLock<AssetLibrary>>,
-    ) -> Self {
-        let mut runtime = Self::new_preview(scene_width, scene_height);
+    ) -> Result<Self, SurfaceResourceError> {
+        let mut runtime = Self::try_new(scene_width, scene_height)?;
         runtime
             .effect_pool
             .set_asset_library(Arc::clone(&asset_library));
         runtime.asset_library = Some(asset_library);
+        Ok(runtime)
+    }
+
+    pub(crate) fn try_with_asset_library_preview(
+        scene_width: u32,
+        scene_height: u32,
+        asset_library: Arc<RwLock<AssetLibrary>>,
+    ) -> Result<Self, SurfaceResourceError> {
+        let mut runtime = Self::try_new_preview(scene_width, scene_height)?;
         runtime
+            .effect_pool
+            .set_asset_library(Arc::clone(&asset_library));
+        runtime.asset_library = Some(asset_library);
+        Ok(runtime)
     }
 
     pub(crate) fn asset_library(&self) -> Option<Arc<RwLock<AssetLibrary>>> {

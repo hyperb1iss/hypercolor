@@ -1,4 +1,5 @@
 use hypercolor_core::spatial::SpatialEngine;
+use hypercolor_types::spatial::SpatialLayout;
 
 use crate::scene_transactions::{SceneTransaction, SceneTransactionQueue};
 
@@ -6,6 +7,11 @@ use crate::scene_transactions::{SceneTransaction, SceneTransactionQueue};
 pub(crate) struct RenderSceneState {
     spatial_engine: SpatialEngine,
     screen_capture_configured: bool,
+}
+
+pub(crate) struct PendingSceneTransactions {
+    pub(crate) layout: Option<SpatialLayout>,
+    pub(crate) resize: Option<(u32, u32)>,
 }
 
 impl RenderSceneState {
@@ -16,17 +22,17 @@ impl RenderSceneState {
         }
     }
 
-    /// Drain queued transactions and return a pending canvas resize if one was
-    /// enqueued. Multiple resizes in a single drain coalesce to the last one.
-    pub(crate) fn apply_transactions(
+    /// Drain queued transactions and return shape-dependent changes for admission.
+    pub(crate) fn drain_transactions(
         &mut self,
         scene_transactions: &SceneTransactionQueue,
-    ) -> Option<(u32, u32)> {
+    ) -> PendingSceneTransactions {
+        let mut pending_layout = None;
         let mut pending_resize = None;
         for transaction in scene_transactions.drain() {
             match transaction {
                 SceneTransaction::ReplaceLayout(layout) => {
-                    self.spatial_engine.update_layout(layout);
+                    pending_layout = Some(layout);
                 }
                 SceneTransaction::SetScreenCaptureConfigured(configured) => {
                     self.screen_capture_configured = configured;
@@ -36,7 +42,14 @@ impl RenderSceneState {
                 }
             }
         }
-        pending_resize
+        PendingSceneTransactions {
+            layout: pending_layout,
+            resize: pending_resize,
+        }
+    }
+
+    pub(crate) fn apply_layout(&mut self, layout: SpatialLayout) {
+        self.spatial_engine.update_layout(layout);
     }
 
     pub(crate) fn spatial_engine(&self) -> &SpatialEngine {
@@ -73,16 +86,25 @@ mod tests {
     }
 
     #[test]
-    fn render_scene_state_applies_layout_and_capture_transactions() {
+    fn render_scene_state_defers_layout_until_resize_admission() {
         let queue = SceneTransactionQueue::default();
         let mut scene_state =
             RenderSceneState::new(SpatialEngine::new(test_layout("initial", 320)), false);
         queue.push(SceneTransaction::SetScreenCaptureConfigured(true));
         queue.push(SceneTransaction::ReplaceLayout(test_layout("updated", 640)));
+        queue.push(SceneTransaction::ResizeCanvas {
+            width: 640,
+            height: 200,
+        });
 
-        scene_state.apply_transactions(&queue);
+        let pending = scene_state.drain_transactions(&queue);
 
         assert!(scene_state.screen_capture_configured());
+        assert_eq!(scene_state.spatial_engine().layout().id, "initial");
+        assert_eq!(pending.resize, Some((640, 200)));
+
+        scene_state.apply_layout(pending.layout.expect("layout should be pending"));
+
         assert_eq!(scene_state.spatial_engine().layout().id, "updated");
         assert_eq!(scene_state.spatial_engine().layout().canvas_width, 640);
     }

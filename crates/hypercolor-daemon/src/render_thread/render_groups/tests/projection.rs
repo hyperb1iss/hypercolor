@@ -82,7 +82,9 @@ fn authoritative_scene_canvas_clips_rotated_zone_geometry() {
     source.fill(Rgba::new(255, 0, 0, 255));
     runtime.target_canvases.insert(group.id, source);
 
-    let scene_frame = runtime.compose_scene_frame(&[group]);
+    let scene_frame = runtime
+        .compose_scene_frame(&[group])
+        .expect("scene frame should allocate");
     let ProducerFrame::Surface(surface) = scene_frame else {
         panic!("authoritative scene canvas should publish a pooled surface");
     };
@@ -115,7 +117,9 @@ fn authoritative_scene_canvas_preserves_group_overlap_order() {
     runtime.target_canvases.insert(back_group.id, back_source);
     runtime.target_canvases.insert(front_group.id, front_source);
 
-    let scene_frame = runtime.compose_scene_frame(&[back_group, front_group]);
+    let scene_frame = runtime
+        .compose_scene_frame(&[back_group, front_group])
+        .expect("scene frame should allocate");
     let ProducerFrame::Surface(surface) = scene_frame else {
         panic!("authoritative scene canvas should publish a pooled surface");
     };
@@ -146,7 +150,9 @@ fn authoritative_scene_canvas_uses_zone_sampling_mode() {
     source.set_pixel(1, 1, Rgba::new(255, 255, 0, 255));
     runtime.target_canvases.insert(group.id, source);
 
-    let scene_frame = runtime.compose_scene_frame(&[group]);
+    let scene_frame = runtime
+        .compose_scene_frame(&[group])
+        .expect("scene frame should allocate");
     let ProducerFrame::Surface(surface) = scene_frame else {
         panic!("authoritative scene canvas should publish a pooled surface");
     };

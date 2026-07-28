@@ -119,11 +119,11 @@ impl ZoneRuntime {
 
         for group in groups {
             if group_contributes_to_scene_canvas(group) {
-                self.ensure_group_canvas(group);
+                self.ensure_group_canvas(group)?;
                 self.ensure_scene_projection(group);
             }
             if group_publishes_direct_canvas(group) {
-                self.ensure_direct_surface_pool(group);
+                self.ensure_direct_surface_pool(group)?;
             }
             self.ensure_spatial_engine(group);
         }
@@ -134,17 +134,16 @@ impl ZoneRuntime {
         Ok(())
     }
 
-    fn ensure_group_canvas(&mut self, group: &Zone) {
+    fn ensure_group_canvas(&mut self, group: &Zone) -> Result<()> {
         let needs_canvas = self.target_canvases.get(&group.id).is_none_or(|canvas| {
             canvas.width() != group.layout.canvas_width
                 || canvas.height() != group.layout.canvas_height
         });
         if needs_canvas {
-            self.target_canvases.insert(
-                group.id,
-                Canvas::new(group.layout.canvas_width, group.layout.canvas_height),
-            );
+            let canvas = Canvas::try_new(group.layout.canvas_width, group.layout.canvas_height)?;
+            self.target_canvases.insert(group.id, canvas);
         }
+        Ok(())
     }
 
     fn ensure_scene_projection(&mut self, group: &Zone) {
@@ -164,7 +163,7 @@ impl ZoneRuntime {
         }
     }
 
-    fn ensure_direct_surface_pool(&mut self, group: &Zone) {
+    fn ensure_direct_surface_pool(&mut self, group: &Zone) -> Result<()> {
         let descriptor =
             SurfaceDescriptor::rgba8888(group.layout.canvas_width, group.layout.canvas_height);
         let needs_pool = self
@@ -172,15 +171,14 @@ impl ZoneRuntime {
             .get(&group.id)
             .is_none_or(|pool| pool.descriptor() != descriptor);
         if needs_pool {
-            self.direct_surface_pools.insert(
-                group.id,
-                RenderSurfacePool::with_slot_count_and_cap(
-                    descriptor,
-                    DIRECT_SURFACE_POOL_INITIAL_SLOTS,
-                    DIRECT_SURFACE_POOL_MAX_SLOTS,
-                ),
-            );
+            let pool = RenderSurfacePool::try_with_lazy_slot_count_and_cap(
+                descriptor,
+                DIRECT_SURFACE_POOL_INITIAL_SLOTS,
+                DIRECT_SURFACE_POOL_MAX_SLOTS,
+            )?;
+            self.direct_surface_pools.insert(group.id, pool);
         }
+        Ok(())
     }
 
     fn ensure_spatial_engine(&mut self, group: &Zone) {

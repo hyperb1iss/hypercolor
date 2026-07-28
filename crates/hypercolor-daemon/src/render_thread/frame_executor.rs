@@ -54,14 +54,32 @@ pub(crate) async fn execute_frame(
     );
     let reused_canvas = matches!(skip_decision, SkipDecision::ReuseCanvas);
 
-    let pending_resize = scene
+    let pending_transactions = scene
         .render_state
-        .apply_transactions(&state.scene_transactions);
-    if let Some((width, height)) = pending_resize {
-        info!(width, height, "Applying live canvas resize");
-        state.canvas_dims.set(width, height);
-        render.apply_canvas_resize(width, height);
-        frame_loop.throttle.reset_for_canvas_resize();
+        .drain_transactions(&state.scene_transactions);
+    if let Some((width, height)) = pending_transactions.resize {
+        match render.apply_canvas_resize(width, height) {
+            Ok(()) => {
+                if let Some(layout) = pending_transactions.layout {
+                    scene.render_state.apply_layout(layout);
+                }
+                state.canvas_dims.set(width, height);
+                frame_loop.throttle.reset_for_canvas_resize();
+                info!(width, height, "Applied live canvas resize");
+            }
+            Err(error) => {
+                warn!(
+                    %error,
+                    requested_width = width,
+                    requested_height = height,
+                    active_width = state.canvas_dims.width(),
+                    active_height = state.canvas_dims.height(),
+                    "Rejected live canvas resize because resources could not be prepared"
+                );
+            }
+        }
+    } else if let Some(layout) = pending_transactions.layout {
+        scene.render_state.apply_layout(layout);
     }
     let mut scene_snapshot = build_frame_scene_snapshot(
         state,

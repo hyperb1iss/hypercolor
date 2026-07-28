@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::f32::consts::FRAC_PI_4;
 
+use anyhow::Result;
 use gif::{Encoder, Frame, Repeat};
 #[cfg(feature = "media-video")]
 use hypercolor_core::asset::AssetTypeHint;
@@ -55,6 +56,37 @@ fn generation_zero_surface_materialization_records_full_frame_copy() {
     assert_eq!(
         full_frame_copy.reason,
         Some("generation_zero_surface_pool_materialization")
+    );
+}
+
+#[test]
+fn high_resolution_runtime_defers_scene_surface_storage() {
+    let runtime = ZoneRuntime::try_new(7_680, 4_320)
+        .expect("addressable high-resolution runtime should construct");
+
+    assert_eq!(runtime.scene_surface_pool.descriptor().width, 7_680);
+    assert_eq!(runtime.scene_surface_pool.descriptor().height, 4_320);
+    assert_eq!(runtime.scene_surface_pool.materialized_slot_count(), 0);
+}
+
+#[test]
+fn failed_scene_resize_preserves_last_good_geometry() {
+    let mut runtime = ZoneRuntime::try_new(4, 4).expect("small runtime should construct");
+
+    let result = runtime.try_resize_scene(u32::MAX, u32::MAX);
+
+    assert!(matches!(
+        result,
+        Err(SurfaceResourceError::ByteLengthOverflow {
+            width: u32::MAX,
+            height: u32::MAX,
+        })
+    ));
+    assert_eq!(runtime.scene_width, 4);
+    assert_eq!(runtime.scene_height, 4);
+    assert_eq!(
+        runtime.scene_surface_pool.descriptor(),
+        SurfaceDescriptor::rgba8888(4, 4)
     );
 }
 

@@ -1,6 +1,7 @@
 #[cfg(test)]
 use std::collections::HashMap;
 
+use anyhow::Result;
 use hypercolor_types::canvas::Canvas;
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::scene::Zone;
@@ -35,9 +36,9 @@ impl ZoneRuntime {
         }
     }
 
-    pub(super) fn compose_scene_frame(&mut self, groups: &[Zone]) -> ProducerFrame {
-        let Some(mut lease) = self.scene_surface_pool.dequeue() else {
-            let mut scene_canvas = Canvas::new(self.scene_width, self.scene_height);
+    pub(super) fn compose_scene_frame(&mut self, groups: &[Zone]) -> Result<ProducerFrame> {
+        let Some(mut lease) = self.scene_surface_pool.try_dequeue()? else {
+            let mut scene_canvas = Canvas::try_new(self.scene_width, self.scene_height)?;
             compose_authoritative_scene_canvas(
                 &mut scene_canvas,
                 groups,
@@ -48,7 +49,7 @@ impl ZoneRuntime {
             );
             let frame = ProducerFrame::Canvas(scene_canvas);
             record_producer_frame(&frame);
-            return frame;
+            return Ok(frame);
         };
 
         compose_authoritative_scene_canvas(
@@ -62,7 +63,7 @@ impl ZoneRuntime {
 
         let frame = ProducerFrame::Surface(lease.submit(0, 0));
         record_producer_frame(&frame);
-        frame
+        Ok(frame)
     }
 
     pub(super) fn compose_projected_scene_frame(

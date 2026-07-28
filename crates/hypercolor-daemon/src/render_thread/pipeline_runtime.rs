@@ -1693,7 +1693,13 @@ impl RenderCaches {
     /// Called at the frame boundary when a `ResizeCanvas` transaction is drained.
     /// Existing published surfaces stay valid until their leases drop; new
     /// dequeues get the updated dimensions.
-    pub(crate) fn apply_canvas_resize(&mut self, width: u32, height: u32) {
+    pub(crate) fn apply_canvas_resize(&mut self, width: u32, height: u32) -> Result<()> {
+        let render_group_runtime = match self.render_group_runtime.asset_library() {
+            Some(asset_library) => {
+                ZoneRuntime::try_with_asset_library(width, height, asset_library)?
+            }
+            None => ZoneRuntime::try_new(width, height)?,
+        };
         self.deferred_sampling
             .clear_for_canvas_resize(&mut self.sparkleflinger);
         #[cfg(feature = "wgpu")]
@@ -1701,13 +1707,11 @@ impl RenderCaches {
             self.display_sparkleflinger
                 .discard_pending_display_finalization(pending.pending);
         }
-        self.render_group_runtime = match self.render_group_runtime.asset_library() {
-            Some(asset_library) => ZoneRuntime::with_asset_library(width, height, asset_library),
-            None => ZoneRuntime::new(width, height),
-        };
+        self.render_group_runtime = render_group_runtime;
         self.composition_planner = CompositionPlanner::new();
         self.zone_transition_planner = ZoneTransitionPlanner::default();
         self.output_artifacts.reset_for_canvas_resize();
+        Ok(())
     }
 
     pub(crate) fn render_surface_snapshot(
@@ -1897,10 +1901,12 @@ impl PipelineRuntime {
                 deferred_sampling: DeferredSamplingState::default(),
                 zone_transition_planner: ZoneTransitionPlanner::default(),
                 render_group_runtime: match asset_library {
-                    Some(asset_library) => {
-                        ZoneRuntime::with_asset_library(canvas_width, canvas_height, asset_library)
-                    }
-                    None => ZoneRuntime::new(canvas_width, canvas_height),
+                    Some(asset_library) => ZoneRuntime::try_with_asset_library(
+                        canvas_width,
+                        canvas_height,
+                        asset_library,
+                    )?,
+                    None => ZoneRuntime::try_new(canvas_width, canvas_height)?,
                 },
                 output_artifacts: OutputArtifactsState::default(),
                 effect_delta_clock: EffectDeltaClock::default(),
