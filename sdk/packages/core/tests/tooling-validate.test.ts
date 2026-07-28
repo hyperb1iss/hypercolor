@@ -88,4 +88,30 @@ describe('tooling validate', () => {
         expect(result.valid).toBeFalse()
         expect(result.errors.some((entry) => entry.code === 'INVALID_MEDIA_KIND')).toBeTrue()
     })
+
+    test('accepts explicit canvas dimensions without a resolution ceiling', () => {
+        const html = VALID_EFFECT.replace(
+            '<canvas id="exCanvas"></canvas>',
+            '<canvas id="exCanvas" width="7680" height="4320"></canvas>',
+        )
+
+        const result = validateHtmlArtifact(html, '/tmp/8k.html')
+
+        expect(result.valid).toBeTrue()
+        expect(result.errors).toHaveLength(0)
+        expect(result.warnings).toHaveLength(0)
+    })
+
+    test('rejects canvas dimensions outside the runtime integer contract', () => {
+        const html = VALID_EFFECT.replace(
+            '<canvas id="exCanvas"></canvas>',
+            '<canvas id="exCanvas" width="0" height="4294967296"></canvas>',
+        )
+
+        const result = validateHtmlArtifact(html, '/tmp/invalid-size.html')
+
+        expect(result.valid).toBeFalse()
+        expect(result.errors.some((entry) => entry.code === 'INVALID_CANVAS_WIDTH')).toBeTrue()
+        expect(result.errors.some((entry) => entry.code === 'INVALID_CANVAS_HEIGHT')).toBeTrue()
+    })
 })

@@ -106,15 +106,19 @@ export function validateHtmlArtifact(html: string, filePath: string): Validation
         }
     }
 
-    if (parsed.canvasWidth != null && (parsed.canvasWidth < 100 || parsed.canvasWidth > 1920)) {
-        warnings.push(
-            warning('canvas_size', 'UNUSUAL_CANVAS_WIDTH', `Canvas width ${parsed.canvasWidth} is outside 100-1920`),
-        )
-    }
-    if (parsed.canvasHeight != null && (parsed.canvasHeight < 100 || parsed.canvasHeight > 1920)) {
-        warnings.push(
-            warning('canvas_size', 'UNUSUAL_CANVAS_HEIGHT', `Canvas height ${parsed.canvasHeight} is outside 100-1920`),
-        )
+    for (const [axis, value] of [
+        ['width', parsed.canvasWidth],
+        ['height', parsed.canvasHeight],
+    ] as const) {
+        if (value != null && (!Number.isSafeInteger(value) || value < 1 || value > 0xffff_ffff)) {
+            errors.push(
+                error(
+                    'canvas_size',
+                    `INVALID_CANVAS_${axis.toUpperCase()}`,
+                    `Canvas ${axis} ${value} must be a positive 32-bit integer`,
+                ),
+            )
+        }
     }
 
     if (parsed.audioReactive != null && !['true', 'false'].includes(parsed.audioReactive.toLowerCase())) {
