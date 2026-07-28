@@ -175,3 +175,34 @@ fn resource_frame_failures_retain_last_good_publication() {
         InputData::Screen(_)
     ));
 }
+
+#[test]
+fn rebuild_resource_failures_fence_the_invalidated_session() {
+    let epoch = fixture_epoch();
+    let (mut source, fixture) = WindowsScreenCaptureInput::new_deterministic_fixture(
+        CaptureConfig::default(),
+        epoch.clone(),
+    )
+    .expect("deterministic Windows source is valid");
+    let extent = PixelExtent::new(4, 2).expect("fixture extent is nonempty");
+
+    source.start().expect("deterministic source starts idle");
+    source
+        .set_screen_capture_demand(ScreenCaptureDemand::active(extent))
+        .expect("deterministic demand is admitted");
+    assert!(
+        fixture
+            .publish(fixture_frame(&epoch))
+            .expect("adapter frame is accepted")
+    );
+
+    fixture.inject_frame_failure(&CaptureError::SessionResourceExhausted {
+        operation: "inject rebuild pressure",
+        requested_bytes: usize::MAX,
+    });
+
+    assert!(matches!(
+        source.sample().expect("invalidated session samples idle"),
+        InputData::None
+    ));
+}

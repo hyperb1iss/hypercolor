@@ -165,15 +165,30 @@ struct RetainedDesktop {
     metadata: CaptureMetadata,
 }
 
-fn reacquire_duplication<D, S, E>(
+fn prepare_duplication<D, S, A, E>(
     duplication: &mut Option<D>,
     staging: &mut Option<S>,
     acquire: impl FnOnce() -> Result<D, E>,
-) -> Result<(), E> {
+    admit: impl FnOnce(&D) -> Result<A, E>,
+) -> Result<(D, A), E> {
     *staging = None;
     *duplication = None;
-    *duplication = Some(acquire()?);
-    Ok(())
+    let duplication = acquire()?;
+    let admission = admit(&duplication)?;
+    Ok((duplication, admission))
+}
+
+fn session_rebuild_error(error: CaptureError) -> CaptureError {
+    match error {
+        CaptureError::ResourceExhausted {
+            operation,
+            requested_bytes,
+        } => CaptureError::SessionResourceExhausted {
+            operation,
+            requested_bytes,
+        },
+        other => other,
+    }
 }
 
 const fn desktop_frame_source(
@@ -1575,29 +1590,38 @@ impl DesktopDuplicator {
             .map_err(|source| CaptureError::windows("query IDXGIOutput1", source))?;
         let (origin_x, origin_y) = output_origin(&output)?;
 
-        self.release_frame();
-        self.pointer = Arc::new(PointerState::default());
-        reacquire_duplication(&mut self.duplication, &mut self.staging, || {
-            duplicate_output(&output, &device)
-        })?;
-        let duplication = self
-            .duplication
-            .as_ref()
-            .expect("successful reacquisition installs a duplication interface");
-        let (logical_width, logical_height, rotation) = duplication_geometry(duplication);
+        let (duplication, (logical_width, logical_height, rotation, gpu_reducer, reduction_status)) =
+            prepare_duplication(
+                &mut self.duplication,
+                &mut self.staging,
+                || duplicate_output(&output, &device),
+                |duplication| {
+                    let (logical_width, logical_height, rotation) =
+                        duplication_geometry(duplication);
+                    let (gpu_reducer, reduction_status) =
+                        initialize_gpu_reduction(&device, &context)
+                            .map_err(session_rebuild_error)?;
+                    Ok((
+                        logical_width,
+                        logical_height,
+                        rotation,
+                        gpu_reducer,
+                        reduction_status,
+                    ))
+                },
+            )?;
         let (native_width, native_height) =
             native_scanout_extent(logical_width, logical_height, rotation);
-        if self
+        let region = self
             .region
-            .is_some_and(|region| !region.fits_within(native_width, native_height))
-        {
-            self.region = None;
-        }
-        let (gpu_reducer, reduction_status) = initialize_gpu_reduction(&device, &context)?;
+            .filter(|region| region.fits_within(native_width, native_height));
 
+        self.pointer = Arc::new(PointerState::default());
         self.device = device;
         self.context = context;
         self.output = output;
+        self.duplication = Some(duplication);
+        self.staging = None;
         self.monitor = entry.monitor.index;
         self.source_id = Arc::from(entry.monitor.id);
         self.topology_generation = entry.monitor.topology_generation;
@@ -1611,6 +1635,7 @@ impl DesktopDuplicator {
         self.origin_x = origin_x;
         self.origin_y = origin_y;
         self.rotation = rotation;
+        self.region = region;
         self.latest_capture = None;
         self.gpu_reducer = gpu_reducer;
         self.analysis_pending = false;

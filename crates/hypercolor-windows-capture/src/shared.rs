@@ -60,6 +60,15 @@ pub enum CaptureError {
         requested_bytes: usize,
     },
 
+    /// A replacement capture session could not reserve its resources.
+    #[error("capture session rebuild: {operation} could not reserve {requested_bytes} bytes")]
+    SessionResourceExhausted {
+        /// Resource operation that failed.
+        operation: &'static str,
+        /// Number of bytes requested by the operation.
+        requested_bytes: usize,
+    },
+
     /// Resolution-derived byte geometry could not be represented safely.
     #[error("{operation} byte geometry overflows for {width}x{height}")]
     GeometryOverflow {

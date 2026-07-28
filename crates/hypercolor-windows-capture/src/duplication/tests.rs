@@ -2,7 +2,7 @@ use super::{
     CaptureMetadata, DesktopFrameSource, PointerShape, PointerShapeKind, PointerState,
     TopologyEntry, TopologyState, average_channel, capture_region_origin, classify_hresult,
     desktop_frame_source, logical_to_scanout, native_scanout_extent, pointer_scanout_geometry,
-    reacquire_duplication, scanout_to_logical,
+    prepare_duplication, scanout_to_logical, session_rebuild_error,
 };
 use crate::{CaptureError, CaptureExtent, CaptureRegion, DisplayRotation, ReductionPath};
 use std::cell::Cell;
@@ -416,16 +416,27 @@ fn rotated_modes_keep_logical_and_native_scanout_extents_distinct() {
 }
 
 #[test]
-fn reacquisition_drops_old_duplication_and_staging_before_opening() {
+fn successful_reacquisition_releases_old_slot_before_opening() {
     let drops = Rc::new(Cell::new(0));
     let mut duplication = Some(DropSignal(Rc::clone(&drops)));
     let mut staging = Some(DropSignal(Rc::clone(&drops)));
 
-    reacquire_duplication(&mut duplication, &mut staging, || {
-        assert_eq!(drops.get(), 2);
-        Ok::<_, ()>(DropSignal(Rc::clone(&drops)))
-    })
+    let (candidate, ()) = prepare_duplication(
+        &mut duplication,
+        &mut staging,
+        || {
+            assert_eq!(drops.get(), 2);
+            Ok::<_, ()>(DropSignal(Rc::clone(&drops)))
+        },
+        |_| {
+            assert_eq!(drops.get(), 2);
+            Ok(())
+        },
+    )
     .expect("reacquisition succeeds");
+    assert!(duplication.is_none());
+    assert!(staging.is_none());
+    duplication = Some(candidate);
 
     assert!(duplication.is_some());
     assert!(staging.is_none());
@@ -433,22 +444,41 @@ fn reacquisition_drops_old_duplication_and_staging_before_opening() {
 }
 
 #[test]
-fn failed_reacquisition_leaves_no_stale_duplication_resources() {
+fn failed_reacquisition_admission_never_installs_a_partial_candidate() {
     let drops = Rc::new(Cell::new(0));
     let mut duplication = Some(DropSignal(Rc::clone(&drops)));
     let mut staging = Some(DropSignal(Rc::clone(&drops)));
 
-    let result = reacquire_duplication(&mut duplication, &mut staging, || {
-        Err::<DropSignal, _>("synthetic failure")
-    });
+    let result = prepare_duplication(
+        &mut duplication,
+        &mut staging,
+        || Ok(DropSignal(Rc::clone(&drops))),
+        |_| Err::<(), _>("synthetic admission failure"),
+    );
 
     assert_eq!(
         result.expect_err("reacquisition fails"),
-        "synthetic failure"
+        "synthetic admission failure"
     );
     assert!(duplication.is_none());
     assert!(staging.is_none());
-    assert_eq!(drops.get(), 2);
+    assert_eq!(drops.get(), 3);
+}
+
+#[test]
+fn rebuild_resource_admission_preserves_requested_byte_context() {
+    let error = session_rebuild_error(CaptureError::ResourceExhausted {
+        operation: "initialize GPU reduction",
+        requested_bytes: 987_654,
+    });
+
+    assert!(matches!(
+        error,
+        CaptureError::SessionResourceExhausted {
+            operation: "initialize GPU reduction",
+            requested_bytes: 987_654,
+        }
+    ));
 }
 
 #[test]

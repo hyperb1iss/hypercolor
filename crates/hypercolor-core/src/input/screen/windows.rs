@@ -1674,11 +1674,13 @@ fn capture_issue(error: &CaptureError) -> SourceIssue {
         CaptureError::InvalidExtent { .. } => {
             SourceIssue::new("windows_capture_extent_invalid", error.to_string(), false)
         }
-        CaptureError::ResourceExhausted { .. } => SourceIssue::new(
-            "windows_capture_resource_exhausted",
-            error.to_string(),
-            true,
-        ),
+        CaptureError::ResourceExhausted { .. } | CaptureError::SessionResourceExhausted { .. } => {
+            SourceIssue::new(
+                "windows_capture_resource_exhausted",
+                error.to_string(),
+                true,
+            )
+        }
         CaptureError::GeometryOverflow { .. } => SourceIssue::new(
             "windows_capture_geometry_overflow",
             error.to_string(),
