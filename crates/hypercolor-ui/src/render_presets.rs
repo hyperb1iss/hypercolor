@@ -18,11 +18,12 @@ pub const CANVAS_PRESETS: &[(&str, u32, u32)] = &[
     ("2560x1600", 2560, 1600),
     ("3440x1440", 3440, 1440),
     ("3840x2160", 3840, 2160),
+    ("5120x2880", 5120, 2880),
+    ("7680x4320", 7680, 4320),
 ];
 
-/// Upper bounds for manual canvas entry in the settings UI.
-pub const MAX_CUSTOM_CANVAS_WIDTH: f64 = 3840.0;
-pub const MAX_CUSTOM_CANVAS_HEIGHT: f64 = 2160.0;
+pub const MAX_CUSTOM_CANVAS_WIDTH: f64 = 4_294_967_295.0;
+pub const MAX_CUSTOM_CANVAS_HEIGHT: f64 = 4_294_967_295.0;
 
 pub fn canvas_preset_key(width: u32, height: u32) -> String {
     for (label, w, h) in CANVAS_PRESETS {

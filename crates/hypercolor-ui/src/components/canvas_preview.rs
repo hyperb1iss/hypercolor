@@ -666,14 +666,16 @@ pub fn CanvasPreview(
         let requested = interactive_requested.get();
         let generation = ws.map_or(0, |ws| ws.connection_generation.get());
         let fps = fps_target.get().clamp(1, 60);
-        let (width, height) = authoritative_frame
-            .with(|current| {
-                current
-                    .as_ref()
-                    .map(|frame| (frame.width.max(1), frame.height.max(1)))
-            })
-            .unwrap_or((640, 480));
-        let next = requested.then_some((generation, fps, width, height));
+        let extent = authoritative_frame.with(|current| {
+            current
+                .as_ref()
+                .filter(|frame| has_preview_extent(frame))
+                .map(|frame| (frame.width, frame.height))
+        });
+        let next = requested
+            .then_some(extent)
+            .flatten()
+            .map(|(width, height)| (generation, fps, width, height));
         if requested_interactive_preview.get_value() == next {
             return;
         }

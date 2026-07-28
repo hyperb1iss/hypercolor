@@ -712,7 +712,7 @@ pub fn RenderingSection(
                     key="daemon.canvas_width"
                     value=canvas_width
                     on_change=on_change
-                    min=32.0 max=MAX_CUSTOM_CANVAS_WIDTH step=16.0
+                    min=1.0 max=MAX_CUSTOM_CANVAS_WIDTH step=1.0
                 />
                 <SettingNumberInput
                     label="Canvas Height"
@@ -720,7 +720,7 @@ pub fn RenderingSection(
                     key="daemon.canvas_height"
                     value=canvas_height
                     on_change=on_change
-                    min=32.0 max=MAX_CUSTOM_CANVAS_HEIGHT step=16.0
+                    min=1.0 max=MAX_CUSTOM_CANVAS_HEIGHT step=1.0
                 />
             </Show>
             <SettingDropdown
