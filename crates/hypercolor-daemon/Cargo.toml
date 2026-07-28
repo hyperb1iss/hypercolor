@@ -73,6 +73,9 @@ sd-notify = "0.4"
 thread-priority = "3.0.0"
 windows-service = "0.8.0"
 
+[target.'cfg(target_os = "windows")'.dev-dependencies]
+hypercolor-windows-input = { path = "../hypercolor-windows-input" }
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }
