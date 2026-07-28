@@ -38,7 +38,8 @@ use crate::input::traits::{
     InputData, InputSource, InteractionData, InteractionDegradation, MotionAggregate, PointerMode,
 };
 use crate::input::{
-    SourceIssue, SourceKind, SourceStatusHandle, SourceStatusReporter, TerminalFailureLatch,
+    SourceIssue, SourceKind, SourceSessionSlot, SourceStatusHandle, SourceStatusReporter,
+    TerminalFailureLatch,
 };
 use crate::types::event::{InputButtonState, InputEvent, TimedInputEvent};
 
@@ -154,6 +155,67 @@ pub struct WindowsHostInput {
     worker_failure: TerminalFailureLatch,
     degraded: Option<InteractionDegradation>,
     status: SourceStatusReporter,
+    status_session: SourceSessionSlot,
+    #[cfg(all(target_os = "windows", feature = "windows-capture-fixtures"))]
+    fixture: Option<Arc<WindowsHostInputFixtureState>>,
+}
+
+#[cfg(all(target_os = "windows", feature = "windows-capture-fixtures"))]
+struct WindowsHostInputFixtureState {
+    active_epoch: Mutex<Option<u64>>,
+}
+
+/// Deterministic publisher at the Windows Raw Input adapter boundary.
+#[cfg(all(target_os = "windows", feature = "windows-capture-fixtures"))]
+#[doc(hidden)]
+pub struct WindowsHostInputFixture {
+    state: Arc<WindowsHostInputFixtureState>,
+    shared: Arc<Mutex<SharedState>>,
+    status_session: SourceSessionSlot,
+    event_limit: usize,
+}
+
+#[cfg(all(target_os = "windows", feature = "windows-capture-fixtures"))]
+impl WindowsHostInputFixture {
+    /// Whether daemon demand has activated the deterministic source.
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        self.state
+            .active_epoch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some()
+    }
+
+    /// Fold one post-adapter Raw Input batch through the production source.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error while daemon demand leaves the source inactive.
+    pub fn publish(
+        &self,
+        events: &[RawInputEvent],
+        cursor: Option<RawCursor>,
+        at_ms: u64,
+    ) -> anyhow::Result<bool> {
+        let epoch = self
+            .state
+            .active_epoch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .ok_or_else(|| anyhow::anyhow!("deterministic Windows Raw Input source is inactive"))?;
+        Ok(publish_raw_input_batch(
+            &self.shared,
+            &self.status_session,
+            RawInputBatch {
+                events,
+                cursor,
+                at_ms,
+                epoch,
+            },
+            self.event_limit,
+        ))
+    }
 }
 
 impl WindowsHostInput {
@@ -181,7 +243,36 @@ impl WindowsHostInput {
                 true,
                 false,
             ),
+            status_session: SourceSessionSlot::new(),
+            #[cfg(all(target_os = "windows", feature = "windows-capture-fixtures"))]
+            fixture: None,
         }
+    }
+
+    /// Create a source whose post-adapter batches are supplied deterministically.
+    ///
+    /// The source retains production epoch rotation, folding, sampling, demand,
+    /// status, and event publication. It never creates a Raw Input window or
+    /// claims physical devices that were not present in a published batch.
+    #[cfg(all(target_os = "windows", feature = "windows-capture-fixtures"))]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn new_deterministic_fixture(
+        capture_keyboard: bool,
+        capture_pointer: bool,
+    ) -> (Self, WindowsHostInputFixture) {
+        let mut source = Self::new(capture_keyboard, capture_pointer);
+        let state = Arc::new(WindowsHostInputFixtureState {
+            active_epoch: Mutex::new(None),
+        });
+        source.fixture = Some(Arc::clone(&state));
+        let fixture = WindowsHostInputFixture {
+            state,
+            shared: Arc::clone(&source.shared),
+            status_session: source.status_session.clone(),
+            event_limit: source.event_limit,
+        };
+        (source, fixture)
     }
 
     /// Devices registered, identified, and streaming.
@@ -193,6 +284,16 @@ impl WindowsHostInput {
     pub fn device_count(&self) -> usize {
         if self.degraded.is_some() {
             return 0;
+        }
+        #[cfg(all(target_os = "windows", feature = "windows-capture-fixtures"))]
+        if self.fixture.as_ref().is_some_and(|fixture| {
+            fixture
+                .active_epoch
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_some()
+        }) {
+            return shared_device_count(&self.shared);
         }
         self.session
             .as_ref()
@@ -226,7 +327,7 @@ impl WindowsHostInput {
         &mut self,
         batch: RawInputBatch<'_>,
     ) -> (InteractionData, Vec<TimedInputEvent>) {
-        fold_batch(&self.shared, batch, self.event_limit);
+        publish_raw_input_batch(&self.shared, &self.status_session, batch, self.event_limit);
         let shared = Arc::clone(&self.shared);
         let Ok(mut guard) = shared.lock() else {
             return (InteractionData::default(), Vec::new());
@@ -336,7 +437,21 @@ impl WindowsHostInput {
         // flight from the previous session cannot repopulate what was cleared.
         let epoch = self.rotate_epoch_and_clear();
 
+        #[cfg(all(target_os = "windows", feature = "windows-capture-fixtures"))]
+        if let Some(fixture) = self.fixture.as_ref() {
+            *fixture
+                .active_epoch
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(epoch);
+            self.degraded = None;
+            if let Some(status) = self.status_session.load() {
+                status.mark_event_driven_live_without_deadline(shared_device_count(&self.shared));
+            }
+            return;
+        }
+
         let shared = Arc::clone(&self.shared);
+        let status_session = self.status_session.clone();
         let event_limit = self.event_limit;
         let config = RawInputConfig {
             keyboard: self.capture_keyboard,
@@ -346,7 +461,7 @@ impl WindowsHostInput {
         };
 
         match RawInputSession::start(config, move |batch| {
-            fold_batch(&shared, batch, event_limit);
+            publish_raw_input_batch(&shared, &status_session, batch, event_limit);
         }) {
             Ok(session) => {
                 info!(
@@ -389,6 +504,13 @@ impl WindowsHostInput {
     }
 
     fn stop_session(&mut self) {
+        #[cfg(all(target_os = "windows", feature = "windows-capture-fixtures"))]
+        if let Some(fixture) = self.fixture.as_ref() {
+            *fixture
+                .active_epoch
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        }
         if let Some(mut session) = self.session.take() {
             session.stop();
         }
@@ -423,6 +545,24 @@ impl WindowsHostInput {
         }
         true
     }
+
+    fn capture_session_active(&self) -> bool {
+        if self.session.is_some() {
+            return true;
+        }
+        #[cfg(all(target_os = "windows", feature = "windows-capture-fixtures"))]
+        {
+            self.fixture.as_ref().is_some_and(|fixture| {
+                fixture
+                    .active_epoch
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .is_some()
+            })
+        }
+        #[cfg(not(all(target_os = "windows", feature = "windows-capture-fixtures")))]
+        false
+    }
 }
 
 impl InputSource for WindowsHostInput {
@@ -435,7 +575,9 @@ impl InputSource for WindowsHostInput {
             return Ok(());
         }
         if self.capture_active {
-            self.status.begin_session()?;
+            if let Some(session) = self.status.begin_session()? {
+                self.status_session.store(session);
+            }
             self.start_session();
         }
         self.running = true;
@@ -443,6 +585,7 @@ impl InputSource for WindowsHostInput {
     }
 
     fn stop(&mut self) {
+        self.status_session.clear();
         self.status.stop();
         self.stop_session();
         self.running = false;
@@ -452,7 +595,7 @@ impl InputSource for WindowsHostInput {
         if self.publish_worker_failure_once() {
             return Ok(InputData::None);
         }
-        if !self.running || self.session.is_none() {
+        if !self.running || !self.capture_session_active() {
             return Ok(InputData::None);
         }
         let shared = Arc::clone(&self.shared);
@@ -470,7 +613,7 @@ impl InputSource for WindowsHostInput {
         if self.publish_worker_failure_once() {
             return (Ok(InputData::None), Vec::new());
         }
-        if !self.running || self.session.is_none() {
+        if !self.running || !self.capture_session_active() {
             return (Ok(InputData::None), Vec::new());
         }
         let shared = Arc::clone(&self.shared);
@@ -517,7 +660,9 @@ impl InputSource for WindowsHostInput {
         Some(crate::input::InteractionDiagnostics {
             backend: "raw_input",
             host_capture: true,
-            capturing: self.capture_active && self.session.is_some() && worker_failure.is_none(),
+            capturing: self.capture_active
+                && self.capture_session_active()
+                && worker_failure.is_none(),
             devices_opened: self.device_count(),
             // There is no per-device denial on Windows to count: capture is a
             // session-level capability, and D1's elevated windows and secure
@@ -537,9 +682,12 @@ impl InputSource for WindowsHostInput {
             return Ok(());
         }
         if active {
-            self.status.begin_session()?;
+            if let Some(session) = self.status.begin_session()? {
+                self.status_session.store(session);
+            }
             self.start_session();
         } else {
+            self.status_session.clear();
             self.stop_session();
         }
         Ok(())
@@ -564,9 +712,39 @@ impl InputSource for WindowsHostInput {
 /// thread. One lock per drain rather than per event: at 8 kHz the per-event
 /// shape would mean 8000 lock round-trips a second contending with the render
 /// thread for this same mutex.
-fn fold_batch(shared: &Arc<Mutex<SharedState>>, batch: RawInputBatch<'_>, event_limit: usize) {
+fn publish_raw_input_batch(
+    shared: &Arc<Mutex<SharedState>>,
+    status_session: &SourceSessionSlot,
+    batch: RawInputBatch<'_>,
+    event_limit: usize,
+) -> bool {
+    let Some(result) = fold_batch(shared, batch, event_limit) else {
+        return false;
+    };
+    if let Some(resource_count) = result.resource_count
+        && let Some(status) = status_session.load()
+    {
+        status.mark_event_driven_live_without_deadline(resource_count);
+    }
+    true
+}
+
+#[cfg(all(target_os = "windows", feature = "windows-capture-fixtures"))]
+fn shared_device_count(shared: &Arc<Mutex<SharedState>>) -> usize {
+    shared.lock().map_or(0, |state| state.devices.len())
+}
+
+struct FoldBatchResult {
+    resource_count: Option<usize>,
+}
+
+fn fold_batch(
+    shared: &Arc<Mutex<SharedState>>,
+    batch: RawInputBatch<'_>,
+    event_limit: usize,
+) -> Option<FoldBatchResult> {
     let Ok(mut guard) = shared.lock() else {
-        return;
+        return None;
     };
 
     // Checked here, under the lock and immediately before mutation — not on
@@ -574,18 +752,26 @@ fn fold_batch(shared: &Arc<Mutex<SharedState>>, batch: RawInputBatch<'_>, event_
     // it guards: a detached pump could pass the check, block on the mutex, and
     // wake after the epoch had rotated.
     if guard.epoch != batch.epoch {
-        return;
+        return None;
     }
 
     if let Some(cursor) = batch.cursor {
         guard.cursor = Some(cursor);
     }
 
+    let mut resources_changed = false;
     for event in batch.events {
+        resources_changed |= matches!(
+            event,
+            RawInputEvent::DeviceArrived { .. } | RawInputEvent::DeviceRemoved { .. }
+        );
         fold_event(&mut guard, event, batch.at_ms, event_limit);
     }
 
     guard.pointer_present = guard.pointer_devices();
+    Some(FoldBatchResult {
+        resource_count: resources_changed.then_some(guard.devices.len()),
+    })
 }
 
 fn fold_event(state: &mut SharedState, event: &RawInputEvent, at_ms: u64, event_limit: usize) {

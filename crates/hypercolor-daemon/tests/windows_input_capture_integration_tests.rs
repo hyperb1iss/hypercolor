@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use hypercolor_core::asset::AssetLibrary;
@@ -22,8 +22,7 @@ use hypercolor_core::input::screen::{
     RawCaptureSurface, SourceScale, WindowsScreenCaptureInput,
 };
 use hypercolor_core::input::{
-    InputData, InputManager, InputSource, InteractionData, SourceFreshness, SourceKind,
-    SourceState, SourceStatusHandle, SourceStatusReporter, WindowsHostInput,
+    InputManager, SourceFreshness, SourceKind, SourceState, WindowsHostInput,
 };
 use hypercolor_core::scene::{SceneManager, make_scene};
 use hypercolor_core::spatial::SpatialEngine;
@@ -39,178 +38,13 @@ use hypercolor_daemon::session::OutputPowerState;
 use hypercolor_daemon::zone_layout_preview::ZoneLayoutPreviewStore;
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::effect::EffectId;
-use hypercolor_types::event::{HypercolorEvent, InputButtonState, InputEvent, TimedInputEvent};
+use hypercolor_types::event::{HypercolorEvent, InputButtonState, InputEvent};
 use hypercolor_types::scene::{UnassignedBehavior, Zone, ZoneId, ZoneRole};
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use hypercolor_windows_input::{
-    RawButton, RawCursor, RawDeviceDescriptor, RawDeviceKind, RawInputBatch, RawInputEvent,
-    RawKeyPrefix,
+    RawButton, RawCursor, RawDeviceDescriptor, RawDeviceKind, RawInputEvent, RawKeyPrefix,
 };
 use tokio::sync::{Mutex, RwLock, watch};
-
-#[derive(Clone)]
-struct RawInputFixtureHandle {
-    pending: Arc<StdMutex<Option<RawInputFixtureBatch>>>,
-}
-
-struct RawInputFixtureBatch {
-    events: Vec<RawInputEvent>,
-    cursor: Option<RawCursor>,
-    at_ms: u64,
-}
-
-impl RawInputFixtureHandle {
-    fn inject(&self, events: Vec<RawInputEvent>, cursor: Option<RawCursor>, at_ms: u64) {
-        let mut pending = self
-            .pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        assert!(
-            pending.is_none(),
-            "fixture batch must be consumed before reinjection"
-        );
-        *pending = Some(RawInputFixtureBatch {
-            events,
-            cursor,
-            at_ms,
-        });
-    }
-}
-
-struct RawInputFixtureSource {
-    fold: WindowsHostInput,
-    pending: Arc<StdMutex<Option<RawInputFixtureBatch>>>,
-    latest: InteractionData,
-    running: bool,
-    capture_active: bool,
-    status: SourceStatusReporter,
-}
-
-impl RawInputFixtureSource {
-    fn new() -> (Self, RawInputFixtureHandle) {
-        let pending = Arc::new(StdMutex::new(None));
-        (
-            Self {
-                fold: WindowsHostInput::new(true, true),
-                pending: Arc::clone(&pending),
-                latest: InteractionData::default(),
-                running: false,
-                capture_active: false,
-                status: SourceStatusReporter::new(
-                    "windows_raw_input_fixture",
-                    SourceKind::Interaction,
-                    "raw_input",
-                    true,
-                    true,
-                    false,
-                ),
-            },
-            RawInputFixtureHandle { pending },
-        )
-    }
-
-    fn sample_fixture(&mut self) -> (InputData, Vec<TimedInputEvent>) {
-        if !self.running || !self.capture_active {
-            return (InputData::None, Vec::new());
-        }
-        let batch = self
-            .pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
-        let Some(batch) = batch else {
-            return (InputData::Interaction(self.latest.clone()), Vec::new());
-        };
-        let (snapshot, events) = self.fold.fold_and_snapshot(RawInputBatch {
-            events: &batch.events,
-            cursor: batch.cursor,
-            at_ms: batch.at_ms,
-            epoch: self.fold.epoch(),
-        });
-        self.latest.clone_from(&snapshot);
-        (InputData::Interaction(snapshot), events)
-    }
-}
-
-impl InputSource for RawInputFixtureSource {
-    fn name(&self) -> &'static str {
-        "windows_raw_input_fixture"
-    }
-
-    fn source_status_handle(&self) -> Option<SourceStatusHandle> {
-        Some(self.status.handle())
-    }
-
-    fn source_status_reporter(&mut self) -> Option<&mut SourceStatusReporter> {
-        Some(&mut self.status)
-    }
-
-    fn start(&mut self) -> anyhow::Result<()> {
-        if self.running {
-            return Ok(());
-        }
-        if self.capture_active
-            && let Some(session) = self.status.begin_session()?
-        {
-            assert!(session.mark_event_driven_live_without_deadline(2));
-        }
-        self.running = true;
-        Ok(())
-    }
-
-    fn stop(&mut self) {
-        self.running = false;
-        self.status.stop();
-    }
-
-    fn sample(&mut self) -> anyhow::Result<InputData> {
-        Ok(self.sample_fixture().0)
-    }
-
-    fn sample_and_drain_with_delta_secs(
-        &mut self,
-        _delta_secs: f32,
-    ) -> (anyhow::Result<InputData>, Vec<TimedInputEvent>) {
-        let (sample, events) = self.sample_fixture();
-        (Ok(sample), events)
-    }
-
-    fn is_running(&self) -> bool {
-        self.running
-    }
-
-    fn is_interaction_source(&self) -> bool {
-        true
-    }
-
-    fn is_host_capture_source(&self) -> bool {
-        true
-    }
-
-    fn set_interaction_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
-        self.status.set_policy(true, true, active)?;
-        if self.capture_active == active {
-            return Ok(());
-        }
-        self.capture_active = active;
-        if !self.running {
-            return Ok(());
-        }
-        if active {
-            if let Some(session) = self.status.begin_session()? {
-                assert!(session.mark_event_driven_live_without_deadline(2));
-            }
-        } else {
-            self.status.stop();
-            self.latest = InteractionData::default();
-            self.pending
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take();
-        }
-        Ok(())
-    }
-}
 
 fn raw_device(source_id: &'static str, kind: RawDeviceKind) -> Arc<RawDeviceDescriptor> {
     Arc::new(RawDeviceDescriptor {
@@ -483,7 +317,7 @@ async fn raw_input_reaches_daemon_frame_routing_and_event_bus() {
             dy: -60,
         },
     ];
-    let (source, fixture) = RawInputFixtureSource::new();
+    let (source, fixture) = WindowsHostInput::new_deterministic_fixture(true, true);
     let mut manager = InputManager::new();
     let statuses = manager.source_status_registry();
     manager.add_source(Box::new(source));
@@ -500,18 +334,26 @@ async fn raw_input_reaches_daemon_frame_routing_and_event_bus() {
 
     wait_until("daemon Raw Input demand", || {
         let status = statuses.snapshot().handles()[0].snapshot();
-        status.demanded && status.state == SourceState::Live
+        fixture.is_active() && status.demanded && status.state == SourceState::Live
     })
     .await;
-    fixture.inject(
-        events,
-        Some(RawCursor {
-            x: -100,
-            y: 200,
-            norm_x: 0.25,
-            norm_y: 0.75,
-        }),
-        1_000,
+    assert_eq!(
+        statuses.snapshot().handles()[0].snapshot().resource_count,
+        0
+    );
+    assert!(
+        fixture
+            .publish(
+                &events,
+                Some(RawCursor {
+                    x: -100,
+                    y: 200,
+                    norm_x: 0.25,
+                    norm_y: 0.75,
+                }),
+                1_000,
+            )
+            .expect("post-adapter Raw Input batch is accepted")
     );
 
     let routed = tokio::time::timeout(Duration::from_secs(2), async {
@@ -577,6 +419,7 @@ async fn raw_input_reaches_daemon_frame_routing_and_event_bus() {
     assert_eq!(status.resource_count, 2);
 
     stop_render_thread(&state, &mut render_thread).await;
+    assert!(!fixture.is_active());
     assert_eq!(registry.handles()[0].snapshot().state, SourceState::Stopped);
 }
 

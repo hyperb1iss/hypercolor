@@ -52,6 +52,8 @@ pub use traits::{
     InteractionDiagnostics, KeyboardData, MotionAggregate, MouseData, PointerMode, ScreenData,
 };
 pub use windows::WindowsHostInput;
+#[cfg(all(target_os = "windows", feature = "windows-capture-fixtures"))]
+pub use windows::WindowsHostInputFixture;
 
 use crate::input::audio::{
     AudioInput, AudioPreparationRequest, AudioRuntimeRetirement, PreparedAudioReconfiguration,
