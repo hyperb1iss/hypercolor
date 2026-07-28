@@ -342,7 +342,7 @@ async fn tracked_player_poll(
     let current = active.fetch_add(1, Ordering::SeqCst) + 1;
     max_active.fetch_max(current, Ordering::SeqCst);
     let _active = ActivePlayerPoll { active };
-    tokio::task::yield_now().await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
     visited
         .lock()
         .expect("visited-player lock is not poisoned")
@@ -354,8 +354,31 @@ async fn tracked_player_poll(
     ))
 }
 
-#[tokio::test]
-async fn persistent_player_scan_bounds_fanout_and_visits_every_identity() {
+async fn poll_tracked_players(
+    scanner: &mut PlayerSnapshotScanner<usize>,
+    discovered: &[(String, usize)],
+    active: &Arc<AtomicUsize>,
+    max_active: &Arc<AtomicUsize>,
+    visited: &Arc<Mutex<HashSet<usize>>>,
+) -> Vec<PlayerSnapshot> {
+    let active = Arc::clone(active);
+    let max_active = Arc::clone(max_active);
+    let visited = Arc::clone(visited);
+    scanner
+        .poll(discovered.iter().cloned(), move |id| {
+            tracked_player_poll(
+                id,
+                Arc::clone(&active),
+                Arc::clone(&max_active),
+                Arc::clone(&visited),
+            )
+        })
+        .await
+        .expect("persistent scan should retain healthy snapshots")
+}
+
+#[tokio::test(start_paused = true)]
+async fn persistent_player_scan_stays_work_conserving_across_production_cadence() {
     const PLAYER_COUNT: usize = 2_048;
     let discovered = (0..PLAYER_COUNT)
         .map(|id| (format!("player-{id}"), id))
@@ -364,31 +387,23 @@ async fn persistent_player_scan_bounds_fanout_and_visits_every_identity() {
     let max_active = Arc::new(AtomicUsize::new(0));
     let visited = Arc::new(Mutex::new(HashSet::new()));
     let mut scanner = PlayerSnapshotScanner::default();
-    let mut snapshots = Vec::new();
+    let mut snapshots =
+        poll_tracked_players(&mut scanner, &discovered, &active, &max_active, &visited).await;
 
-    for _ in 0..PLAYER_COUNT {
-        let active = Arc::clone(&active);
-        let max_active = Arc::clone(&max_active);
-        let poll_visited = Arc::clone(&visited);
-        snapshots = scanner
-            .poll(discovered.iter().cloned(), move |id| {
-                tracked_player_poll(
-                    id,
-                    Arc::clone(&active),
-                    Arc::clone(&max_active),
-                    Arc::clone(&poll_visited),
-                )
-            })
-            .await;
+    for decisecond in 1..=400 {
+        tokio::time::advance(Duration::from_millis(100)).await;
         tokio::task::yield_now().await;
-        if visited
-            .lock()
-            .expect("visited-player lock is not poisoned")
-            .len()
-            == PLAYER_COUNT
-            && snapshots.len() == PLAYER_COUNT
-        {
-            break;
+        if decisecond % 10 == 0 {
+            snapshots =
+                poll_tracked_players(&mut scanner, &discovered, &active, &max_active, &visited)
+                    .await;
+            if decisecond >= 300 {
+                assert_eq!(
+                    snapshots.len(),
+                    PLAYER_COUNT,
+                    "all identities must remain inside the 30 second TTL at production cadence"
+                );
+            }
         }
     }
 
@@ -405,6 +420,86 @@ async fn persistent_player_scan_bounds_fanout_and_visits_every_identity() {
         max_active.load(Ordering::SeqCst),
         MAX_CONCURRENT_MEDIA_PLAYER_POLLS
     );
+    scanner.clear();
+    for _ in 0..64 {
+        if active.load(Ordering::SeqCst) == 0 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(active.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn scanner_reports_an_error_when_every_discovered_player_fails() {
+    let discovered = [
+        ("first".to_owned(), "first"),
+        ("second".to_owned(), "second"),
+    ];
+    let mut scanner = PlayerSnapshotScanner::default();
+    let mut failure = None;
+
+    for _ in 0..4 {
+        match scanner
+            .poll(discovered.iter().cloned(), |identity| async move {
+                Err(MediaProviderError::new(format!("{identity} failed")))
+            })
+            .await
+        {
+            Ok(players) => assert!(players.is_empty()),
+            Err(error) => {
+                failure = Some(error);
+                break;
+            }
+        }
+        tokio::task::yield_now().await;
+    }
+
+    assert_eq!(
+        failure
+            .expect("aggregate failure should surface")
+            .to_string(),
+        "first failed"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn stale_completed_incarnation_cannot_replace_successor_snapshot() {
+    let release_old = Arc::new(tokio::sync::Notify::new());
+    let mut scanner = PlayerSnapshotScanner::default();
+    let release = Arc::clone(&release_old);
+    let initial = scanner
+        .poll([("same".to_owned(), "old".to_owned())], move |track| {
+            let release = Arc::clone(&release);
+            async move {
+                release.notified().await;
+                Ok(player("same", PlaybackStatus::Playing, &track))
+            }
+        })
+        .await
+        .expect("pending original incarnation should not fail");
+    assert!(initial.is_empty());
+
+    release_old.notify_one();
+    tokio::task::yield_now().await;
+
+    let mut snapshots = Vec::new();
+    for _ in 0..4 {
+        snapshots = scanner
+            .poll(
+                [("same".to_owned(), "new".to_owned())],
+                |track| async move { Ok(player("same", PlaybackStatus::Playing, &track)) },
+            )
+            .await
+            .expect("replacement incarnation should scan");
+        if !snapshots.is_empty() {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+
+    assert_eq!(snapshots.len(), 1);
+    assert_eq!(snapshots[0].track, "new");
 }
 
 #[tokio::test(start_paused = true)]
@@ -425,13 +520,17 @@ async fn healthy_player_behind_a_full_hung_window_is_eventually_published() {
         scanner
             .poll(discovered.iter().cloned(), poll)
             .await
+            .expect("hung players should not fail a pending healthy sibling")
             .is_empty()
     );
     tokio::time::advance(Duration::from_secs(2)).await;
     tokio::task::yield_now().await;
     let mut snapshots = Vec::new();
     for _ in 0..4 {
-        snapshots = scanner.poll(discovered.iter().cloned(), poll).await;
+        snapshots = scanner
+            .poll(discovered.iter().cloned(), poll)
+            .await
+            .expect("healthy sibling should recover after hung window");
         if !snapshots.is_empty() {
             break;
         }
@@ -468,7 +567,8 @@ async fn scanner_preserves_discovery_order_and_player_selection_semantics() {
                 }
                 Ok(snapshot)
             })
-            .await;
+            .await
+            .expect("ordered scan should succeed");
         tokio::task::yield_now().await;
         if snapshots.len() == discovered.len() {
             break;
@@ -490,6 +590,16 @@ async fn scanner_preserves_discovery_order_and_player_selection_semantics() {
     );
 }
 
+async fn succeed_once_then_hang(
+    track: String,
+    should_succeed: Arc<AtomicBool>,
+) -> std::result::Result<PlayerSnapshot, MediaProviderError> {
+    if should_succeed.swap(false, Ordering::SeqCst) {
+        return Ok(player("same", PlaybackStatus::Playing, &track));
+    }
+    std::future::pending().await
+}
+
 #[tokio::test(start_paused = true)]
 async fn scanner_evicts_absent_replaced_and_stale_players() {
     let mut scanner = PlayerSnapshotScanner::default();
@@ -498,36 +608,44 @@ async fn scanner_evicts_absent_replaced_and_stale_players() {
             [("same".to_owned(), "old".to_owned())],
             |track| async move { Ok(player("same", PlaybackStatus::Playing, &track)) },
         )
-        .await;
+        .await
+        .expect("initial player should scan");
     assert_eq!(old[0].track, "old");
 
     let absent = scanner
         .poll(std::iter::empty::<(String, String)>(), |_| async {
             unreachable!("absent players cannot be scanned")
         })
-        .await;
+        .await
+        .expect("empty discovery should succeed");
     assert!(absent.is_empty());
 
+    let should_succeed = Arc::new(AtomicBool::new(true));
+    let replacement_gate = Arc::clone(&should_succeed);
     let replacement = scanner
-        .poll(
-            [("same".to_owned(), "new".to_owned())],
-            |track| async move { Ok(player("same", PlaybackStatus::Playing, &track)) },
-        )
-        .await;
+        .poll([("same".to_owned(), "new".to_owned())], move |track| {
+            succeed_once_then_hang(track, Arc::clone(&replacement_gate))
+        })
+        .await
+        .expect("replacement player should scan");
     assert_eq!(replacement[0].track, "new");
 
+    let retained_gate = Arc::clone(&should_succeed);
     let retained = scanner
-        .poll([("same".to_owned(), "new".to_owned())], |_| async {
-            std::future::pending().await
+        .poll([("same".to_owned(), "new".to_owned())], move |track| {
+            succeed_once_then_hang(track, Arc::clone(&retained_gate))
         })
-        .await;
+        .await
+        .expect("fresh cache should survive a pending refresh");
     assert_eq!(retained[0].track, "new");
     tokio::time::advance(MEDIA_PLAYER_CACHE_TTL + Duration::from_secs(1)).await;
+    let stale_gate = Arc::clone(&should_succeed);
     let stale = scanner
-        .poll([("same".to_owned(), "new".to_owned())], |_| async {
-            std::future::pending().await
+        .poll([("same".to_owned(), "new".to_owned())], move |track| {
+            succeed_once_then_hang(track, Arc::clone(&stale_gate))
         })
-        .await;
+        .await
+        .expect("stale cache eviction should not fail a pending player");
     assert!(stale.is_empty());
 }
 
@@ -552,7 +670,8 @@ async fn clearing_scanner_cancels_retained_native_operations() {
                 std::future::pending().await
             }
         })
-        .await;
+        .await
+        .expect("hung scan should remain pending");
     assert!(snapshots.is_empty());
     assert_eq!(dropped.load(Ordering::SeqCst), 0);
 

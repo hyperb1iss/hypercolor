@@ -50,9 +50,6 @@ pub const MEDIA_PLAYER_CACHE_TTL: Duration = Duration::from_secs(30);
 /// Initial wait for a newly discovered player before publishing an empty cache.
 const MEDIA_PLAYER_INITIAL_WAIT: Duration = Duration::from_millis(100);
 
-/// Completion work admitted during one provider poll after a cached result exists.
-const MAX_MEDIA_PLAYER_COMPLETIONS_PER_POLL: usize = 64;
-
 /// Deadline after which artwork work is cancelled, reaped, or quarantined.
 pub const ART_FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -396,6 +393,7 @@ type PlayerScanFuture = Pin<
                 Output = (
                     PlayerScanToken,
                     std::result::Result<PlayerSnapshot, MediaProviderError>,
+                    tokio::time::Instant,
                 ),
             > + Send,
     >,
@@ -412,6 +410,8 @@ pub struct PlayerSnapshotScanner<I> {
     in_flight_tokens: HashSet<PlayerScanToken>,
     abort_handles: HashMap<PlayerScanToken, tokio::task::AbortHandle>,
     cache: HashMap<String, CachedPlayer>,
+    failures: HashMap<PlayerScanToken, MediaProviderError>,
+    poll_gate: Arc<Semaphore>,
     discovery_generation: u64,
     next_incarnation: u64,
 }
@@ -427,19 +427,29 @@ impl<I> Default for PlayerSnapshotScanner<I> {
             in_flight_tokens: HashSet::new(),
             abort_handles: HashMap::new(),
             cache: HashMap::new(),
+            failures: HashMap::new(),
+            poll_gate: Arc::new(Semaphore::new(MAX_CONCURRENT_MEDIA_PLAYER_POLLS)),
             discovery_generation: 0,
             next_incarnation: 0,
         }
     }
 }
 
-impl<I: Clone + 'static> PlayerSnapshotScanner<I> {
+impl<I> Drop for PlayerSnapshotScanner<I> {
+    fn drop(&mut self) {
+        for handle in self.abort_handles.values() {
+            handle.abort();
+        }
+    }
+}
+
+impl<I: Clone + PartialEq + 'static> PlayerSnapshotScanner<I> {
     /// Reconcile one completed discovery and advance its fair scan queue.
     pub async fn poll<F, Fut>(
         &mut self,
         discovered: impl IntoIterator<Item = (String, I)>,
         mut snapshot: F,
-    ) -> Vec<PlayerSnapshot>
+    ) -> std::result::Result<Vec<PlayerSnapshot>, MediaProviderError>
     where
         F: FnMut(I) -> Fut,
         Fut: Future<Output = std::result::Result<PlayerSnapshot, MediaProviderError>>
@@ -449,12 +459,11 @@ impl<I: Clone + 'static> PlayerSnapshotScanner<I> {
         self.reconcile(discovered);
         self.evict_stale(tokio::time::Instant::now());
 
-        let mut attempted = HashSet::new();
-        self.fill(&mut snapshot, &attempted);
+        self.fill(&mut snapshot);
         let had_fresh_cache = self.has_fresh_cache(tokio::time::Instant::now());
         let mut completions = 0;
 
-        while completions < MAX_MEDIA_PLAYER_COMPLETIONS_PER_POLL {
+        loop {
             let result = if had_fresh_cache || completions != 0 {
                 let Some(result) = self.in_flight.next().now_or_never() else {
                     break;
@@ -466,19 +475,18 @@ impl<I: Clone + 'static> PlayerSnapshotScanner<I> {
                     Err(_) => break,
                 }
             };
-            let Some((token, result)) = result else {
+            let Some((token, result, completed_at)) = result else {
                 break;
             };
             completions += 1;
-            attempted.insert(token.clone());
-            self.finish(token, result);
-            self.fill(&mut snapshot, &attempted);
+            self.finish(token, result, completed_at);
             if !had_fresh_cache && self.has_fresh_cache(tokio::time::Instant::now()) {
                 break;
             }
         }
 
-        self.fresh_snapshots(tokio::time::Instant::now())
+        self.fill(&mut snapshot);
+        self.fresh_snapshots_or_failure(tokio::time::Instant::now())
     }
 
     /// Cancel all retained operations and cached native state.
@@ -494,6 +502,8 @@ impl<I: Clone + 'static> PlayerSnapshotScanner<I> {
         self.in_flight_tokens.clear();
         self.abort_handles.clear();
         self.cache.clear();
+        self.failures.clear();
+        self.poll_gate = Arc::new(Semaphore::new(MAX_CONCURRENT_MEDIA_PLAYER_POLLS));
     }
 
     fn reconcile(&mut self, discovered: impl IntoIterator<Item = (String, I)>) {
@@ -510,7 +520,15 @@ impl<I: Clone + 'static> PlayerSnapshotScanner<I> {
                 continue;
             }
             order.push(key.clone());
-            if let Some(existing) = self.discovered.get_mut(&key) {
+            if self
+                .discovered
+                .get(&key)
+                .is_some_and(|existing| existing.identity == identity)
+            {
+                let existing = self
+                    .discovered
+                    .get_mut(&key)
+                    .expect("matching media player remains discovered");
                 existing.identity = identity;
                 existing.seen_generation = generation;
                 continue;
@@ -538,6 +556,11 @@ impl<I: Clone + 'static> PlayerSnapshotScanner<I> {
             self.discovered
                 .get(key)
                 .is_some_and(|player| player.incarnation == cached.incarnation)
+        });
+        self.failures.retain(|token, _| {
+            self.discovered
+                .get(&token.key)
+                .is_some_and(|player| player.incarnation == token.incarnation)
         });
         self.queue.retain(|token| {
             self.discovered
@@ -568,23 +591,15 @@ impl<I: Clone + 'static> PlayerSnapshotScanner<I> {
         }
     }
 
-    fn fill<F, Fut>(&mut self, snapshot: &mut F, attempted: &HashSet<PlayerScanToken>)
+    fn fill<F, Fut>(&mut self, snapshot: &mut F)
     where
         F: FnMut(I) -> Fut,
         Fut: Future<Output = std::result::Result<PlayerSnapshot, MediaProviderError>>
             + Send
             + 'static,
     {
-        let mut deferred = VecDeque::new();
-        while self.in_flight.len() < MAX_CONCURRENT_MEDIA_PLAYER_POLLS {
-            let Some(token) = self.queue.pop_front() else {
-                break;
-            };
+        while let Some(token) = self.queue.pop_front() {
             self.queued.remove(&token);
-            if attempted.contains(&token) {
-                deferred.push_back(token);
-                continue;
-            }
             let Some(player) = self.discovered.get(&token.key) else {
                 continue;
             };
@@ -594,7 +609,12 @@ impl<I: Clone + 'static> PlayerSnapshotScanner<I> {
             let identity = player.identity.clone();
             let future = snapshot(identity);
             let result_token = token.clone();
+            let poll_gate = Arc::clone(&self.poll_gate);
             let task = tokio::spawn(async move {
+                let _permit = poll_gate
+                    .acquire_owned()
+                    .await
+                    .expect("media player poll gate remains open");
                 let result = tokio::time::timeout(MEDIA_PLAYER_TIMEOUT, future)
                     .await
                     .unwrap_or_else(|_| {
@@ -603,7 +623,7 @@ impl<I: Clone + 'static> PlayerSnapshotScanner<I> {
                             result_token.key, MEDIA_PLAYER_TIMEOUT
                         )))
                     });
-                (result_token, result)
+                (result_token, result, tokio::time::Instant::now())
             });
             self.abort_handles
                 .insert(token.clone(), task.abort_handle());
@@ -615,13 +635,11 @@ impl<I: Clone + 'static> PlayerSnapshotScanner<I> {
                         Err(MediaProviderError::new(format!(
                             "native media player task failed: {error}"
                         ))),
+                        tokio::time::Instant::now(),
                     )
                 })
             }));
             self.in_flight_tokens.insert(token);
-        }
-        for token in deferred {
-            self.enqueue(token);
         }
     }
 
@@ -629,6 +647,7 @@ impl<I: Clone + 'static> PlayerSnapshotScanner<I> {
         &mut self,
         token: PlayerScanToken,
         result: std::result::Result<PlayerSnapshot, MediaProviderError>,
+        completed_at: tokio::time::Instant,
     ) {
         self.in_flight_tokens.remove(&token);
         self.abort_handles.remove(&token);
@@ -641,17 +660,19 @@ impl<I: Clone + 'static> PlayerSnapshotScanner<I> {
         }
         match result {
             Ok(snapshot) => {
+                self.failures.remove(&token);
                 self.cache.insert(
                     token.key.clone(),
                     CachedPlayer {
                         snapshot,
                         incarnation: token.incarnation,
-                        refreshed_at: tokio::time::Instant::now(),
+                        refreshed_at: completed_at,
                     },
                 );
             }
             Err(error) => {
                 debug!(player = %token.key, %error, "Skipped unhealthy media player");
+                self.failures.insert(token.clone(), error);
             }
         }
         self.enqueue(token);
@@ -680,6 +701,39 @@ impl<I: Clone + 'static> PlayerSnapshotScanner<I> {
                     .then(|| cached.snapshot.clone())
             })
             .collect()
+    }
+
+    fn fresh_snapshots_or_failure(
+        &self,
+        now: tokio::time::Instant,
+    ) -> std::result::Result<Vec<PlayerSnapshot>, MediaProviderError> {
+        let snapshots = self.fresh_snapshots(now);
+        if !snapshots.is_empty() || self.order.is_empty() {
+            return Ok(snapshots);
+        }
+
+        let all_failed = self.order.iter().all(|key| {
+            self.discovered.get(key).is_some_and(|player| {
+                self.failures.contains_key(&PlayerScanToken {
+                    key: key.clone(),
+                    incarnation: player.incarnation,
+                })
+            })
+        });
+        if !all_failed {
+            return Ok(snapshots);
+        }
+
+        let first_failure = self.order.iter().find_map(|key| {
+            let player = self.discovered.get(key)?;
+            self.failures
+                .get(&PlayerScanToken {
+                    key: key.clone(),
+                    incarnation: player.incarnation,
+                })
+                .cloned()
+        });
+        Err(first_failure.expect("every discovered media player recorded a failure"))
     }
 }
 
@@ -2190,12 +2244,13 @@ mod linux {
             .filter(|name| name.starts_with(MPRIS_PREFIX))
             .map(|name| (name.clone(), name));
         let connection = connection.clone();
-        Ok(scanner
+        scanner
             .poll(players, move |name| {
                 let connection = connection.clone();
                 async move { snapshot_player(&connection, &name).await }
             })
-            .await)
+            .await
+            .map_err(anyhow::Error::from)
     }
 
     async fn snapshot_player(
@@ -2338,22 +2393,20 @@ mod windows {
             .into_iter()
             .map(|session| Ok((session_key(&session)?, session)))
             .collect::<std::result::Result<Vec<_>, MediaProviderError>>()?;
-        Ok(scanner
+        scanner
             .poll(discovered, |session| async move {
                 snapshot_session(&session).await
             })
-            .await)
+            .await
     }
 
     fn session_key(
         session: &GlobalSystemMediaTransportControlsSession,
     ) -> std::result::Result<String, MediaProviderError> {
-        use ::windows::core::Interface as _;
-
-        let identity = session
-            .cast::<::windows::core::IUnknown>()
-            .map_err(provider_error)?;
-        Ok(format!("{:p}", identity.as_raw()))
+        session
+            .SourceAppUserModelId()
+            .map_err(provider_error)
+            .map(|identity| identity.to_string())
     }
 
     async fn snapshot_session(
