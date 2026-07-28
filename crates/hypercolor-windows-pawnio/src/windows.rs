@@ -43,7 +43,15 @@ const AMD_F17_CUR_TMP_RANGE_OFFSET: f32 = 49.0;
 pub(super) const PAWNIO_MODULE_INTEL_MSR: &str = "IntelMSR.bin";
 pub(super) const PAWNIO_MODULE_AMD_FAMILY_17: &str = "AMDFamily17.bin";
 
-const PAWNIO_SLEEP_ALWAYS_SLEEP: u64 = 2;
+/// PawnIO SMBus wait strategy: 0 busy-stalls every poll
+/// (`KeStallExecutionProcessor`), 1 sleeps only long waits, 2 sleeps every
+/// poll (`KeDelayExecutionThread`). Kernel sleeps quantize to the ~15.6ms
+/// system timer tick, so modes 1-2 inflate each ~10us controller poll to a
+/// full tick — mode 2 turns one ENE register read into ~60ms. AlwaysBusy is
+/// the module's own default and the only mode that tracks hardware speed.
+const PAWNIO_SLEEP_ALWAYS_BUSY: u64 = 0;
+const PAWNIO_SLEEP_MODE_MAX: u64 = 2;
+const PAWNIO_SLEEP_MODE_ENV: &str = "HYPERCOLOR_PAWNIO_SLEEP_MODE";
 const GLOBAL_SMBUS_MUTEX_NAME: &[u8] = b"Global\\Access_SMBUS.HTP.Method\0";
 
 const I2C_SMBUS_READ: u64 = 1;
@@ -886,11 +894,31 @@ fn select_piix4_port(runtime: &PawnIoRuntime, handle: PawnIoHandle, port: u8) ->
     check_pawnio_status("ioctl_piix4_port_sel", status)
 }
 
+fn resolve_sleep_mode() -> u64 {
+    let Some(raw) = std::env::var_os(PAWNIO_SLEEP_MODE_ENV) else {
+        return PAWNIO_SLEEP_ALWAYS_BUSY;
+    };
+    let parsed = raw.to_string_lossy().trim().parse::<u64>().ok();
+    match parsed {
+        Some(mode) if mode <= PAWNIO_SLEEP_MODE_MAX => mode,
+        _ => {
+            debug!(
+                value = %raw.to_string_lossy(),
+                "ignoring invalid {PAWNIO_SLEEP_MODE_ENV}; using AlwaysBusy"
+            );
+            PAWNIO_SLEEP_ALWAYS_BUSY
+        }
+    }
+}
+
 fn set_sleep_mode(runtime: &PawnIoRuntime, handle: PawnIoHandle) {
-    let input = [PAWNIO_SLEEP_ALWAYS_SLEEP];
+    let mode = resolve_sleep_mode();
+    let input = [mode];
     let mut returned = 0_usize;
     let status = runtime.execute(handle, IOCTL_SET_SLEEP_MODE, &input, &mut [], &mut returned);
-    if status != S_OK {
+    if status == S_OK {
+        debug!(mode, "PawnIO SMBus sleep mode set");
+    } else {
         trace!(
             status = format_args!("0x{:08X}", status as u32),
             "PawnIO sleep mode ioctl failed"
