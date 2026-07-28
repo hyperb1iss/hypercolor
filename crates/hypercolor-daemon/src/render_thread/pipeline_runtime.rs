@@ -592,23 +592,24 @@ impl FrameInputs {
         &mut self,
         width: u32,
         height: u32,
-    ) -> Option<PublishedSurface> {
+    ) -> Result<Option<PublishedSurface>> {
         if self.screen_surface.is_none() {
             let surface_pool = self
                 .screen_surface_pool
                 .get_or_insert_with(Self::new_screen_surface_pool);
-            self.screen_surface = self.screen_data.as_ref().and_then(|data| {
-                screen_data_to_surface(
+            self.screen_surface = match self.screen_data.as_ref() {
+                Some(data) => screen_data_to_surface(
                     data,
                     width,
                     height,
                     &mut self.screen_sector_grid,
                     surface_pool,
-                )
-            });
+                )?,
+                None => None,
+            };
         }
 
-        self.screen_surface.clone()
+        Ok(self.screen_surface.clone())
     }
 
     fn new_screen_surface_pool() -> RenderSurfacePool {

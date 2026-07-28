@@ -471,14 +471,22 @@ impl ComposeContext<'_> {
                 .compose
                 .screen_queue
                 .submit_latest(ProducerFrame::Surface(screen_surface.clone()));
-        } else if let Some(screen_surface) = self.inputs.screen_surface_for_frame(
-            self.state.canvas_dims.width(),
-            self.state.canvas_dims.height(),
-        ) {
-            let _ = self
-                .compose
-                .screen_queue
-                .submit_latest(ProducerFrame::Surface(screen_surface));
+        } else {
+            match self.inputs.screen_surface_for_frame(
+                self.state.canvas_dims.width(),
+                self.state.canvas_dims.height(),
+            ) {
+                Ok(Some(screen_surface)) => {
+                    let _ = self
+                        .compose
+                        .screen_queue
+                        .submit_latest(ProducerFrame::Surface(screen_surface));
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    warn!(%error, "Screen surface allocation failed; retaining the last frame");
+                }
+            }
         }
 
         self.compose

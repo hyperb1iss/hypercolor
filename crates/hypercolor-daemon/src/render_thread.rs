@@ -553,7 +553,7 @@ mod tests {
     use hypercolor_core::engine::FpsTier;
     use hypercolor_core::input::ScreenData;
     use hypercolor_core::types::canvas::{
-        Canvas, PublishedSurface, RenderSurfacePool, Rgba, SurfaceDescriptor,
+        Canvas, PublishedSurface, RenderSurfacePool, Rgba, SurfaceDescriptor, SurfaceResourceError,
     };
     use hypercolor_core::types::event::ZoneColors;
 
@@ -643,6 +643,7 @@ mod tests {
             RenderSurfacePool::with_slot_count(SurfaceDescriptor::rgba8888(4, 4), 2);
         let surface =
             screen_data_to_surface(&screen_data, 4, 4, &mut sector_grid, &mut surface_pool)
+                .expect("screen surface conversion should succeed")
                 .expect("surface should build");
         assert_eq!(surface.get_pixel(0, 0), Rgba::new(255, 0, 0, 255));
         assert_eq!(surface.get_pixel(3, 0), Rgba::new(0, 255, 0, 255));
@@ -671,11 +672,69 @@ mod tests {
             RenderSurfacePool::with_slot_count(SurfaceDescriptor::rgba8888(4, 4), 2);
         let surface =
             screen_data_to_surface(&screen_data, 4, 4, &mut sector_grid, &mut surface_pool)
+                .expect("screen surface conversion should succeed")
                 .expect("downscale should pass through");
 
         assert_eq!(surface.width(), 16);
         assert_eq!(surface.height(), 9);
         assert!(sector_grid.is_empty());
+    }
+
+    #[test]
+    fn screen_data_to_surface_accepts_addressable_wide_extent() {
+        let screen_data = ScreenData::from_zones(
+            vec![ZoneColors {
+                zone_id: "screen".to_owned(),
+                colors: vec![[12, 34, 56]],
+            }],
+            1,
+            1,
+        );
+        let mut sector_grid = Vec::new();
+        let mut surface_pool =
+            RenderSurfacePool::with_slot_count(SurfaceDescriptor::rgba8888(1, 1), 2);
+
+        let surface =
+            screen_data_to_surface(&screen_data, 7_681, 1, &mut sector_grid, &mut surface_pool)
+                .expect("addressable wide surface conversion should succeed")
+                .expect("wide surface should build");
+
+        assert_eq!(surface.width(), 7_681);
+        assert_eq!(surface.height(), 1);
+        assert_eq!(surface.get_pixel(7_680, 0), Rgba::new(12, 34, 56, 255));
+    }
+
+    #[test]
+    fn screen_data_to_surface_preserves_pool_after_geometry_overflow() {
+        let screen_data = ScreenData::from_zones(
+            vec![ZoneColors {
+                zone_id: "screen".to_owned(),
+                colors: vec![[12, 34, 56]],
+            }],
+            1,
+            1,
+        );
+        let mut sector_grid = Vec::new();
+        let mut surface_pool =
+            RenderSurfacePool::with_slot_count(SurfaceDescriptor::rgba8888(4, 4), 2);
+
+        let error = screen_data_to_surface(
+            &screen_data,
+            u32::MAX,
+            u32::MAX,
+            &mut sector_grid,
+            &mut surface_pool,
+        )
+        .expect_err("overflowing geometry should be rejected");
+
+        assert!(matches!(
+            error.downcast_ref::<SurfaceResourceError>(),
+            Some(SurfaceResourceError::ByteLengthOverflow {
+                width: u32::MAX,
+                height: u32::MAX,
+            })
+        ));
+        assert_eq!(surface_pool.descriptor(), SurfaceDescriptor::rgba8888(4, 4));
     }
 
     #[test]
@@ -693,17 +752,20 @@ mod tests {
             RenderSurfacePool::with_slot_count(SurfaceDescriptor::rgba8888(4, 4), 2);
 
         let first = screen_data_to_surface(&screen_data, 4, 4, &mut sector_grid, &mut surface_pool)
+            .expect("screen surface conversion should succeed")
             .expect("first surface should build")
             .rgba_bytes()
             .as_ptr()
             .addr();
         let second =
             screen_data_to_surface(&screen_data, 4, 4, &mut sector_grid, &mut surface_pool)
+                .expect("screen surface conversion should succeed")
                 .expect("second surface should build")
                 .rgba_bytes()
                 .as_ptr()
                 .addr();
         let third = screen_data_to_surface(&screen_data, 4, 4, &mut sector_grid, &mut surface_pool)
+            .expect("screen surface conversion should succeed")
             .expect("third surface should build")
             .rgba_bytes()
             .as_ptr()
