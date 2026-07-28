@@ -10,6 +10,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex as StdMutex, PoisonError};
 
+use anyhow::{Context, Result};
 use axum::body::Bytes;
 use axum::extract::ws::Utf8Bytes;
 use serde::Serialize;
@@ -17,8 +18,11 @@ use serde::ser::SerializeSeq;
 use tracing::{trace, warn};
 
 use hypercolor_leptos_ext::ws::{
-    PreviewFrameChannel, SPECTRUM_FRAME_TAG, ZONE_PREVIEW_FRAME_HEADER_LEN, ZONE_PREVIEW_FRAME_TAG,
+    PreviewFrame, PreviewFrameChannel, PreviewPixelFormat as WirePreviewPixelFormat,
+    SPECTRUM_FRAME_TAG, ZonePreviewFrame as WireZonePreviewFrame,
 };
+#[cfg(test)]
+use hypercolor_leptos_ext::ws::{ZONE_PREVIEW_FRAME_HEADER_LEN, ZONE_PREVIEW_FRAME_TAG};
 use hypercolor_types::canvas::PublishedSurfaceStorageIdentity;
 use hypercolor_types::scene::{SceneId, ZoneId};
 
@@ -43,7 +47,9 @@ pub(super) const WS_WEB_VIEWPORT_CANVAS_HEADER: u8 = PreviewFrameChannel::WebVie
 /// the `display_preview` channel. Body layout matches the canvas frame:
 /// `[frame_number:u32LE][timestamp:u32LE][width:u16LE][height:u16LE][format:u8=2 (JPEG)][jpeg_payload]`.
 pub(super) const WS_DISPLAY_PREVIEW_HEADER: u8 = PreviewFrameChannel::DisplayPreview.tag();
+#[cfg(test)]
 pub(super) const WS_ZONE_PREVIEW_HEADER: u8 = ZONE_PREVIEW_FRAME_TAG;
+#[cfg(test)]
 pub(super) const WS_ZONE_PREVIEW_HEADER_LEN: usize = ZONE_PREVIEW_FRAME_HEADER_LEN;
 const WS_CANVAS_BINARY_CACHE_CAPACITY: usize = 32;
 const WS_DISPLAY_PREVIEW_PAYLOAD_CACHE_CAPACITY: usize = 64;
@@ -575,6 +581,8 @@ pub(super) fn encode_canvas_preview_binary(
         0,
         0,
     )
+    .expect("test canvas encoding should succeed")
+    .to_vec()
 }
 
 #[cfg(test)]
@@ -598,7 +606,9 @@ pub(super) fn try_encode_cached_canvas_preview_binary(
         canvas.height,
         requested_width,
         requested_height,
-    );
+    )
+    .inspect_err(|error| warn!(?error, "invalid canvas preview dimensions"))
+    .ok()?;
     if format == CanvasFormat::Jpeg {
         return try_encode_cached_canvas_jpeg_binary(
             canvas,
@@ -618,24 +628,16 @@ pub(super) fn try_encode_cached_canvas_preview_binary(
         return Some(payload);
     }
 
-    cached_canvas_binary(
+    encode_canvas_binary_with_header_and_brightness(
         canvas,
         format,
         WS_CANVAS_HEADER,
         brightness,
-        output_size,
-        || {
-            Bytes::from(encode_canvas_binary_with_header_and_brightness(
-                canvas,
-                format,
-                WS_CANVAS_HEADER,
-                brightness,
-                output_size.width,
-                output_size.height,
-            ))
-        },
+        output_size.width,
+        output_size.height,
     )
-    .into()
+    .inspect_err(|error| warn!(?error, "failed to encode canvas preview"))
+    .ok()
 }
 
 #[cfg(test)]
@@ -645,6 +647,8 @@ pub(super) fn encode_canvas_binary_with_header(
     header: u8,
 ) -> Vec<u8> {
     encode_canvas_binary_with_header_and_brightness(canvas, format, header, 1.0, 0, 0)
+        .expect("test canvas encoding should succeed")
+        .to_vec()
 }
 
 #[cfg(test)]
@@ -668,7 +672,9 @@ pub(super) fn try_encode_cached_canvas_binary_with_header_scaled(
         canvas.height,
         requested_width,
         requested_height,
-    );
+    )
+    .inspect_err(|error| warn!(?error, "invalid canvas preview dimensions"))
+    .ok()?;
     if format == CanvasFormat::Jpeg {
         return try_encode_cached_canvas_jpeg_binary(canvas, header, 1.0, output_size);
     }
@@ -679,17 +685,16 @@ pub(super) fn try_encode_cached_canvas_binary_with_header_scaled(
         return Some(payload);
     }
 
-    cached_canvas_binary(canvas, format, header, 1.0, output_size, || {
-        Bytes::from(encode_canvas_binary_with_header_and_brightness(
-            canvas,
-            format,
-            header,
-            1.0,
-            output_size.width,
-            output_size.height,
-        ))
-    })
-    .into()
+    encode_canvas_binary_with_header_and_brightness(
+        canvas,
+        format,
+        header,
+        1.0,
+        output_size.width,
+        output_size.height,
+    )
+    .inspect_err(|error| warn!(?error, "failed to encode canvas preview"))
+    .ok()
 }
 
 pub(super) fn try_encode_cached_zone_preview_binary_scaled(
@@ -704,7 +709,9 @@ pub(super) fn try_encode_cached_zone_preview_binary_scaled(
         canvas.height,
         requested_width,
         requested_height,
-    );
+    )
+    .inspect_err(|error| warn!(?error, "invalid zone preview dimensions"))
+    .ok()?;
     let key = ZonePreviewBinaryCacheKey {
         scene_id: zone_preview.scene_id,
         zone_id: zone_preview.zone_id,
@@ -723,23 +730,17 @@ pub(super) fn try_encode_cached_zone_preview_binary_scaled(
     let body = match format {
         CanvasFormat::Jpeg => cached_canvas_jpeg_body(canvas, 1.0, output_size)?,
         CanvasFormat::Rgb | CanvasFormat::Rgba => {
-            cached_canvas_raw_body(canvas, format, 1.0, output_size).unwrap_or_else(|| {
-                Bytes::from(PreviewRawEncoder::new().encode_scaled_body(
-                    canvas,
-                    format,
-                    1.0,
-                    output_size.width,
-                    output_size.height,
-                ))
-            })
+            cached_canvas_raw_body(canvas, format, 1.0, output_size).or_else(|| {
+                PreviewRawEncoder::new()
+                    .encode_scaled_body(canvas, format, 1.0, output_size.width, output_size.height)
+                    .ok()
+                    .map(Bytes::from)
+            })?
         }
     };
-    let payload = Bytes::from(build_zone_preview_binary_payload(
-        zone_preview,
-        format,
-        body.as_ref(),
-        output_size,
-    ));
+    let payload = build_zone_preview_binary_payload(zone_preview, format, body, output_size)
+        .inspect_err(|error| warn!(?error, "failed to encode zone preview"))
+        .ok()?;
     WS_CANVAS_PAYLOAD_BUILD_COUNT.fetch_add(1, Ordering::Relaxed);
     zone_preview_binary_cache_put(key, payload.clone());
     Some(payload)
@@ -752,13 +753,13 @@ fn encode_canvas_binary_with_header_and_brightness(
     brightness: f32,
     requested_width: u32,
     requested_height: u32,
-) -> Vec<u8> {
+) -> Result<Bytes> {
     let output_size = resolve_canvas_output_size(
         canvas.width,
         canvas.height,
         requested_width,
         requested_height,
-    );
+    )?;
     if format == CanvasFormat::Jpeg {
         return encode_canvas_jpeg_payload_scaled_stateless(
             canvas,
@@ -767,7 +768,7 @@ fn encode_canvas_binary_with_header_and_brightness(
             output_size.width,
             output_size.height,
         )
-        .unwrap_or_default();
+        .map(Bytes::from);
     }
     if format == CanvasFormat::Rgba
         && brightness.clamp(0.0, 1.0) >= 0.999
@@ -783,94 +784,63 @@ fn encode_canvas_binary_with_header_and_brightness(
         brightness,
         output_size.width,
         output_size.height,
-    );
-    build_canvas_binary_payload(canvas, header, format, &body, output_size)
+    )?;
+    build_canvas_binary_payload(canvas, header, format, Bytes::from(body), output_size)
 }
 
 fn build_zone_preview_binary_payload(
     zone_preview: &hypercolor_core::bus::ZonePreviewFrame,
     format: CanvasFormat,
-    body: &[u8],
+    body: Bytes,
     output_size: CanvasOutputSize,
-) -> Vec<u8> {
-    let width_u16 = u16::try_from(output_size.width).unwrap_or(u16::MAX);
-    let height_u16 = u16::try_from(output_size.height).unwrap_or(u16::MAX);
-    let mut payload = vec![0; WS_ZONE_PREVIEW_HEADER_LEN.saturating_add(body.len())];
-    write_zone_preview_payload_header(
-        &mut payload[..WS_ZONE_PREVIEW_HEADER_LEN],
-        zone_preview,
-        width_u16,
-        height_u16,
-        canvas_format_tag(format),
-    );
-    payload[WS_ZONE_PREVIEW_HEADER_LEN..].copy_from_slice(body);
-    payload
-}
-
-fn write_zone_preview_payload_header(
-    header_bytes: &mut [u8],
-    zone_preview: &hypercolor_core::bus::ZonePreviewFrame,
-    width_u16: u16,
-    height_u16: u16,
-    format_tag: u8,
-) {
-    debug_assert_eq!(header_bytes.len(), WS_ZONE_PREVIEW_HEADER_LEN);
-    header_bytes[0] = WS_ZONE_PREVIEW_HEADER;
-    header_bytes[1..5].copy_from_slice(&zone_preview.frame.frame_number.to_le_bytes());
-    header_bytes[5..9].copy_from_slice(&zone_preview.frame.timestamp_ms.to_le_bytes());
-    header_bytes[9..25].copy_from_slice(zone_preview.scene_id.0.as_bytes());
-    header_bytes[25..41].copy_from_slice(zone_preview.zone_id.0.as_bytes());
-    header_bytes[41..43].copy_from_slice(&width_u16.to_le_bytes());
-    header_bytes[43..45].copy_from_slice(&height_u16.to_le_bytes());
-    header_bytes[45] = format_tag;
+) -> Result<Bytes> {
+    WireZonePreviewFrame {
+        scene_id: *zone_preview.scene_id.0.as_bytes(),
+        zone_id: *zone_preview.zone_id.0.as_bytes(),
+        frame_number: zone_preview.frame.frame_number,
+        timestamp_ms: zone_preview.frame.timestamp_ms,
+        width: output_size.width,
+        height: output_size.height,
+        format: wire_preview_format(format),
+        payload: body,
+    }
+    .try_encode()
+    .context("failed to encode zone preview wire frame")
 }
 
 fn build_canvas_binary_payload(
     canvas: &hypercolor_core::bus::CanvasFrame,
     header: u8,
     format: CanvasFormat,
-    body: &[u8],
+    body: Bytes,
     output_size: CanvasOutputSize,
-) -> Vec<u8> {
-    const CANVAS_HEADER_LEN: usize = 14;
-
-    let width_u16 = u16::try_from(output_size.width).unwrap_or(u16::MAX);
-    let height_u16 = u16::try_from(output_size.height).unwrap_or(u16::MAX);
-    let mut payload = vec![0; CANVAS_HEADER_LEN.saturating_add(body.len())];
-    write_canvas_payload_header(
-        &mut payload[..CANVAS_HEADER_LEN],
-        header,
-        canvas,
-        width_u16,
-        height_u16,
-        canvas_format_tag(format),
-    );
-    payload[CANVAS_HEADER_LEN..].copy_from_slice(body);
-    payload
+) -> Result<Bytes> {
+    PreviewFrame {
+        channel: PreviewFrameChannel::try_from(header)
+            .context("preview header is not a passive preview channel")?,
+        frame_number: canvas.frame_number,
+        timestamp_ms: canvas.timestamp_ms,
+        width: output_size.width,
+        height: output_size.height,
+        format: wire_preview_format(format),
+        payload: body,
+    }
+    .try_encode()
+    .context("failed to encode passive preview wire frame")
 }
 
 fn build_canvas_rgba_payload_from_source(
     canvas: &hypercolor_core::bus::CanvasFrame,
     header: u8,
     output_size: CanvasOutputSize,
-) -> Vec<u8> {
-    const CANVAS_HEADER_LEN: usize = 14;
-
-    let rgba = canvas.rgba_bytes();
-    let width_u16 = u16::try_from(output_size.width).unwrap_or(u16::MAX);
-    let height_u16 = u16::try_from(output_size.height).unwrap_or(u16::MAX);
-    let payload_len = CANVAS_HEADER_LEN.saturating_add(rgba.len());
-    let mut payload = vec![0; payload_len];
-    write_canvas_payload_header(
-        &mut payload[..CANVAS_HEADER_LEN],
-        header,
+) -> Result<Bytes> {
+    build_canvas_binary_payload(
         canvas,
-        width_u16,
-        height_u16,
-        canvas_format_tag(CanvasFormat::Rgba),
-    );
-    payload[CANVAS_HEADER_LEN..].copy_from_slice(rgba);
-    payload
+        header,
+        CanvasFormat::Rgba,
+        Bytes::copy_from_slice(canvas.rgba_bytes()),
+        output_size,
+    )
 }
 
 fn try_encode_cached_canvas_binary_from_body(
@@ -901,13 +871,9 @@ fn try_encode_cached_canvas_binary_from_body(
     }
 
     let body = cached_canvas_raw_body(canvas, format, brightness, output_size)?;
-    let payload = Bytes::from(build_canvas_binary_payload(
-        canvas,
-        header,
-        format,
-        body.as_ref(),
-        output_size,
-    ));
+    let payload = build_canvas_binary_payload(canvas, header, format, body, output_size)
+        .inspect_err(|error| warn!(?error, "failed to encode cached canvas preview"))
+        .ok()?;
     WS_CANVAS_PAYLOAD_BUILD_COUNT.fetch_add(1, Ordering::Relaxed);
     canvas_binary_cache_put(key, payload.clone());
     Some(payload)
@@ -936,12 +902,9 @@ fn try_encode_cached_canvas_jpeg_binary(
     }
 
     let jpeg_body = cached_canvas_jpeg_body(canvas, brightness, output_size)?;
-    let payload = Bytes::from(build_canvas_jpeg_payload(
-        canvas,
-        header,
-        jpeg_body.as_ref(),
-        output_size,
-    ));
+    let payload = build_canvas_jpeg_payload(canvas, header, jpeg_body, output_size)
+        .inspect_err(|error| warn!(?error, "failed to encode cached canvas JPEG preview"))
+        .ok()?;
     WS_CANVAS_PAYLOAD_BUILD_COUNT.fetch_add(1, Ordering::Relaxed);
     canvas_binary_cache_put(key, payload.clone());
     Some(payload)
@@ -1019,13 +982,16 @@ fn try_encode_canvas_raw_body_shared(
     let mut encoder = WS_PREVIEW_RAW_ENCODERS[shard_index]
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
-    Some(Bytes::from(encoder.encode_scaled_body(
-        canvas,
-        format,
-        brightness,
-        output_size.width,
-        output_size.height,
-    )))
+    encoder
+        .encode_scaled_body(
+            canvas,
+            format,
+            brightness,
+            output_size.width,
+            output_size.height,
+        )
+        .ok()
+        .map(Bytes::from)
 }
 
 fn try_encode_canvas_jpeg_body_shared(
@@ -1063,41 +1029,18 @@ fn try_encode_canvas_jpeg_body_shared(
 fn build_canvas_jpeg_payload(
     canvas: &hypercolor_core::bus::CanvasFrame,
     header: u8,
-    jpeg_body: &[u8],
+    jpeg_body: Bytes,
     output_size: CanvasOutputSize,
-) -> Vec<u8> {
-    const CANVAS_HEADER_LEN: usize = 14;
-
-    let width_u16 = u16::try_from(output_size.width).unwrap_or(u16::MAX);
-    let height_u16 = u16::try_from(output_size.height).unwrap_or(u16::MAX);
-    let mut payload = vec![0; CANVAS_HEADER_LEN.saturating_add(jpeg_body.len())];
-    write_canvas_payload_header(
-        &mut payload[..CANVAS_HEADER_LEN],
-        header,
-        canvas,
-        width_u16,
-        height_u16,
-        canvas_format_tag(CanvasFormat::Jpeg),
-    );
-    payload[CANVAS_HEADER_LEN..].copy_from_slice(jpeg_body);
-    payload
+) -> Result<Bytes> {
+    build_canvas_binary_payload(canvas, header, CanvasFormat::Jpeg, jpeg_body, output_size)
 }
 
-fn write_canvas_payload_header(
-    header_bytes: &mut [u8],
-    header: u8,
-    canvas: &hypercolor_core::bus::CanvasFrame,
-    width_u16: u16,
-    height_u16: u16,
-    format_tag: u8,
-) {
-    debug_assert_eq!(header_bytes.len(), 14);
-    header_bytes[0] = header;
-    header_bytes[1..5].copy_from_slice(&canvas.frame_number.to_le_bytes());
-    header_bytes[5..9].copy_from_slice(&canvas.timestamp_ms.to_le_bytes());
-    header_bytes[9..11].copy_from_slice(&width_u16.to_le_bytes());
-    header_bytes[11..13].copy_from_slice(&height_u16.to_le_bytes());
-    header_bytes[13] = format_tag;
+const fn wire_preview_format(format: CanvasFormat) -> WirePreviewPixelFormat {
+    match format {
+        CanvasFormat::Rgb => WirePreviewPixelFormat::Rgb,
+        CanvasFormat::Rgba => WirePreviewPixelFormat::Rgba,
+        CanvasFormat::Jpeg => WirePreviewPixelFormat::Jpeg,
+    }
 }
 
 #[cfg(test)]
@@ -1145,39 +1088,6 @@ pub(super) fn cached_display_preview_payload(snapshot: &DisplayFrameSnapshot) ->
             "display preview payload exceeds cache size limit; serving uncached"
         );
     }
-    payload
-}
-
-fn cached_canvas_binary<F>(
-    canvas: &hypercolor_core::bus::CanvasFrame,
-    format: CanvasFormat,
-    header: u8,
-    brightness: f32,
-    output_size: CanvasOutputSize,
-    encode: F,
-) -> Bytes
-where
-    F: FnOnce() -> Bytes,
-{
-    let key = CanvasBinaryCacheKey {
-        generation: canvas.surface().generation(),
-        frame_number: canvas.frame_number,
-        timestamp_ms: canvas.timestamp_ms,
-        width: output_size.width,
-        height: output_size.height,
-        header,
-        format_tag: canvas_format_tag(format),
-        brightness_bits: brightness.to_bits(),
-    };
-
-    if let Some(cached) = canvas_binary_cache_get(key) {
-        WS_CANVAS_PAYLOAD_CACHE_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
-        return cached;
-    }
-
-    let payload = encode();
-    WS_CANVAS_PAYLOAD_BUILD_COUNT.fetch_add(1, Ordering::Relaxed);
-    canvas_binary_cache_put(key, payload.clone());
     payload
 }
 
@@ -1447,50 +1357,45 @@ fn resolve_canvas_output_size(
     source_height: u32,
     requested_width: u32,
     requested_height: u32,
-) -> CanvasOutputSize {
+) -> Result<CanvasOutputSize> {
     if source_width == 0 || source_height == 0 {
-        return CanvasOutputSize {
+        return Ok(CanvasOutputSize {
             width: source_width,
             height: source_height,
-        };
+        });
     }
     if requested_width == 0 && requested_height == 0 {
-        return CanvasOutputSize {
+        return Ok(CanvasOutputSize {
             width: source_width,
             height: source_height,
-        };
+        });
     }
     if requested_width == 0 {
-        let height = requested_height.max(1).min(source_height);
+        let height = requested_height.max(1);
         let width = u32::try_from(
             (u64::from(source_width) * u64::from(height))
                 .checked_div(u64::from(source_height))
-                .unwrap_or(1),
+                .context("canvas preview aspect division failed")?,
         )
-        .unwrap_or(u32::MAX)
+        .context("canvas preview aspect width exceeds u32")?
         .max(1);
-        return CanvasOutputSize { width, height };
+        return Ok(CanvasOutputSize { width, height });
     }
     if requested_height == 0 {
-        let width = requested_width.max(1).min(source_width);
+        let width = requested_width.max(1);
         let height = u32::try_from(
             (u64::from(source_height) * u64::from(width))
                 .checked_div(u64::from(source_width))
-                .unwrap_or(1),
+                .context("canvas preview aspect division failed")?,
         )
-        .unwrap_or(u32::MAX)
+        .context("canvas preview aspect height exceeds u32")?
         .max(1);
-        return CanvasOutputSize { width, height };
+        return Ok(CanvasOutputSize { width, height });
     }
-    // Cap dimensions at the source resolution. Upscaling a 320×200 effect
-    // canvas to 960-wide adds no detail — the browser's CSS scaling handles
-    // display-size upscaling at zero daemon cost, and for `image-rendering:
-    // pixelated` the native source actually renders sharper than a
-    // daemon-side bilinear upscale.
-    CanvasOutputSize {
-        width: requested_width.max(1).min(source_width),
-        height: requested_height.max(1).min(source_height),
-    }
+    Ok(CanvasOutputSize {
+        width: requested_width.max(1),
+        height: requested_height.max(1),
+    })
 }
 
 fn sanitize_f32(value: f32) -> f32 {

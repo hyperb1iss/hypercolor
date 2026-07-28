@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 
+use anyhow::{Context, Result, bail};
 use fast_image_resize as fr;
 
 #[derive(Clone, Copy)]
@@ -55,7 +56,7 @@ pub(super) fn scale_rgba_bilinear(
     brightness_lut: Option<&[u8; 256]>,
     format: PreviewScaleFormat,
     out: &mut Vec<u8>,
-) {
+) -> Result<()> {
     PREVIEW_RESIZER_STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         state.scale(
@@ -67,8 +68,8 @@ pub(super) fn scale_rgba_bilinear(
             brightness_lut,
             format,
             out,
-        );
-    });
+        )
+    })
 }
 
 impl PreviewResizerState {
@@ -83,26 +84,20 @@ impl PreviewResizerState {
         brightness_lut: Option<&[u8; 256]>,
         format: PreviewScaleFormat,
         out: &mut Vec<u8>,
-    ) {
+    ) -> Result<()> {
         let out_bpp = format.bytes_per_pixel();
-        let required_len = (target_width as usize)
-            .saturating_mul(target_height as usize)
-            .saturating_mul(out_bpp);
-        if out.len() != required_len {
-            out.resize(required_len, 0);
-        }
+        let required_len = checked_pixel_bytes(target_width, target_height, out_bpp)?;
+        resize_buffer(out, required_len)?;
 
-        let source_pixels_len = (source_width as usize)
-            .saturating_mul(source_height as usize)
-            .saturating_mul(4);
-        if source_width == 0
-            || source_height == 0
-            || target_width == 0
-            || target_height == 0
-            || rgba.len() < source_pixels_len
-        {
-            out.fill(0);
-            return;
+        if source_width == 0 || source_height == 0 || target_width == 0 || target_height == 0 {
+            bail!("preview dimensions must be nonzero");
+        }
+        let source_pixels_len = checked_pixel_bytes(source_width, source_height, 4)?;
+        if rgba.len() < source_pixels_len {
+            bail!(
+                "preview source buffer is too short: expected {source_pixels_len}, got {}",
+                rgba.len()
+            );
         }
 
         // Identity: copy source directly into the output, applying brightness
@@ -111,7 +106,7 @@ impl PreviewResizerState {
         // and requested preview are the same dimensions.
         if source_width == target_width && source_height == target_height {
             passthrough_with_brightness(rgba, out, format, brightness_lut);
-            return;
+            return Ok(());
         }
 
         // Split the state so we can hand a `&mut Vec<u8>` scratch to the
@@ -125,17 +120,13 @@ impl PreviewResizerState {
         let resize_buffer: &mut Vec<u8> = match format {
             PreviewScaleFormat::Rgba => out,
             PreviewScaleFormat::Rgb => {
-                let scratch_len = (target_width as usize)
-                    .saturating_mul(target_height as usize)
-                    .saturating_mul(4);
-                if rgba_scratch.len() != scratch_len {
-                    rgba_scratch.resize(scratch_len, 0);
-                }
+                let scratch_len = checked_pixel_bytes(target_width, target_height, 4)?;
+                resize_buffer(rgba_scratch, scratch_len)?;
                 rgba_scratch
             }
         };
 
-        if try_resize_rgba(
+        try_resize_rgba(
             resizer,
             rgba,
             source_width,
@@ -144,11 +135,7 @@ impl PreviewResizerState {
             target_height,
             resize_buffer,
         )
-        .is_err()
-        {
-            out.fill(0);
-            return;
-        }
+        .context("failed to resize preview RGBA surface")?;
 
         match format {
             PreviewScaleFormat::Rgba => apply_brightness_inplace_rgba(out, brightness_lut),
@@ -156,6 +143,7 @@ impl PreviewResizerState {
                 copy_rgba_to_rgb_with_brightness(rgba_scratch, out, brightness_lut);
             }
         }
+        Ok(())
     }
 }
 
@@ -167,7 +155,7 @@ fn try_resize_rgba(
     target_width: u32,
     target_height: u32,
     out_rgba: &mut [u8],
-) -> Result<(), fr::ImageBufferError> {
+) -> Result<()> {
     let src = fr::images::ImageRef::new(source_width, source_height, rgba, fr::PixelType::U8x4)?;
     let mut dst = fr::images::Image::from_slice_u8(
         target_width,
@@ -182,12 +170,29 @@ fn try_resize_rgba(
     let options = fr::ResizeOptions::new()
         .resize_alg(fr::ResizeAlg::Interpolation(fr::FilterType::Bilinear))
         .use_alpha(false);
-    // `resize` can only fail on shape mismatch for a same-pixel-type pair,
-    // which `ImageRef::new`/`Image::from_slice_u8` already reject above —
-    // so any error past this point is a library-level bug. Ignore the
-    // `Result` deliberately; the caller fills with zeros on the outer
-    // error path, which also handles invalid input shape.
-    let _ = resizer.resize(&src, &mut dst, &options);
+    resizer
+        .resize(&src, &mut dst, &options)
+        .context("fast image resize rejected preview geometry")?;
+    Ok(())
+}
+
+fn checked_pixel_bytes(width: u32, height: u32, bytes_per_pixel: usize) -> Result<usize> {
+    usize::try_from(width)
+        .context("preview width exceeds platform address space")?
+        .checked_mul(
+            usize::try_from(height).context("preview height exceeds platform address space")?,
+        )
+        .and_then(|pixels| pixels.checked_mul(bytes_per_pixel))
+        .context("preview byte length overflow")
+}
+
+fn resize_buffer(buffer: &mut Vec<u8>, required_len: usize) -> Result<()> {
+    if required_len > buffer.len() {
+        buffer
+            .try_reserve_exact(required_len - buffer.len())
+            .with_context(|| format!("failed to reserve {required_len} preview bytes"))?;
+    }
+    buffer.resize(required_len, 0);
     Ok(())
 }
 
@@ -254,7 +259,8 @@ mod tests {
             None,
             PreviewScaleFormat::Rgba,
             &mut out,
-        );
+        )
+        .expect("identity scale succeeds");
         assert_eq!(out, source);
     }
 
@@ -273,7 +279,8 @@ mod tests {
             None,
             PreviewScaleFormat::Rgba,
             &mut out,
-        );
+        )
+        .expect("bilinear scale succeeds");
         // fast_image_resize's bilinear centers samples between source texels,
         // matching the mean of the four corners: (255+0+0+255)/4 for R,
         // (0+255+0+255)/4 for G, (0+0+255+255)/4 for B. Allow a 1 LSB drift
@@ -306,7 +313,8 @@ mod tests {
             Some(&brightness_lut),
             PreviewScaleFormat::Rgb,
             &mut out,
-        );
+        )
+        .expect("brightened scale succeeds");
         // Post-resize brightness applies the `/2` LUT to each channel;
         // whether pre-LUT was 127 or 128 the output lands at 63 or 64.
         assert_eq!(out.len(), 3);
@@ -322,7 +330,8 @@ mod tests {
     fn bilinear_scaling_passthrough_strips_alpha_for_rgb_format() {
         let source = vec![10, 20, 30, 255, 40, 50, 60, 255];
         let mut out = Vec::new();
-        scale_rgba_bilinear(&source, 2, 1, 2, 1, None, PreviewScaleFormat::Rgb, &mut out);
+        scale_rgba_bilinear(&source, 2, 1, 2, 1, None, PreviewScaleFormat::Rgb, &mut out)
+            .expect("RGB passthrough succeeds");
         assert_eq!(out, vec![10, 20, 30, 40, 50, 60]);
     }
 
@@ -330,7 +339,7 @@ mod tests {
     fn bilinear_scaling_fills_zeroes_on_invalid_source_shape() {
         let source = vec![0u8; 4]; // claims 2x2 but only 4 bytes of storage
         let mut out = Vec::new();
-        scale_rgba_bilinear(
+        let error = scale_rgba_bilinear(
             &source,
             2,
             2,
@@ -339,7 +348,8 @@ mod tests {
             None,
             PreviewScaleFormat::Rgba,
             &mut out,
-        );
-        assert_eq!(out, vec![0_u8; 16]);
+        )
+        .expect_err("short source is rejected");
+        assert!(error.to_string().contains("too short"));
     }
 }

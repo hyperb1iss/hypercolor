@@ -6,15 +6,16 @@ use turbojpeg::{
 };
 
 use hypercolor_core::bus::CanvasFrame;
+use hypercolor_leptos_ext::ws::{
+    PreviewFrame, PreviewFrameChannel, PreviewPixelFormat as WirePreviewPixelFormat,
+};
 use hypercolor_types::canvas::{linear_to_srgb_u8, srgb_u8_to_linear};
 
 use super::preview_scale::{PreviewScaleFormat, scale_rgba_bilinear};
 use super::protocol::CanvasFormat;
 
-const CANVAS_HEADER_LEN: usize = 14;
 const PREVIEW_JPEG_QUALITY: u8 = 80;
 const PREVIEW_JPEG_SUBSAMP: TurboJpegSubsamp = TurboJpegSubsamp::Sub2x2;
-const JPEG_FORMAT_TAG: u8 = 2;
 
 pub(super) struct PreviewRawEncoder {
     body_buffer: Vec<u8>,
@@ -38,23 +39,18 @@ impl PreviewRawEncoder {
         brightness: f32,
         requested_width: u32,
         requested_height: u32,
-    ) -> Vec<u8> {
+    ) -> Result<Vec<u8>> {
         let brightness = brightness.clamp(0.0, 1.0);
         let (target_width, target_height) = resolve_preview_dimensions(
             frame.width,
             frame.height,
             requested_width,
             requested_height,
-        );
+        )?;
         let out_bpp = preview_format_bytes_per_pixel(format);
-        let target_len = usize::try_from(target_width)
-            .unwrap_or(0)
-            .saturating_mul(usize::try_from(target_height).unwrap_or(0))
-            .saturating_mul(out_bpp);
+        let target_len = checked_pixel_bytes(target_width, target_height, out_bpp)?;
         let mut body = std::mem::take(&mut self.body_buffer);
-        if body.len() != target_len {
-            body.resize(target_len, 0);
-        }
+        resize_buffer(&mut body, target_len)?;
 
         let brightness_lut = if brightness < 0.999 {
             refresh_brightness_lut(
@@ -70,11 +66,11 @@ impl PreviewRawEncoder {
         if target_width == frame.width && target_height == frame.height {
             match format {
                 CanvasFormat::Rgb => {
-                    copy_rgba_to_rgb(frame.rgba_bytes(), brightness_lut, &mut body);
+                    copy_rgba_to_rgb(frame.rgba_bytes(), brightness_lut, &mut body)?;
                 }
                 CanvasFormat::Rgba => {
                     if brightness_lut.is_some() {
-                        copy_rgba_to_rgba(frame.rgba_bytes(), brightness_lut, &mut body);
+                        copy_rgba_to_rgba(frame.rgba_bytes(), brightness_lut, &mut body)?;
                     } else {
                         body.copy_from_slice(frame.rgba_bytes());
                     }
@@ -91,10 +87,10 @@ impl PreviewRawEncoder {
                 brightness_lut,
                 preview_scale_format(format),
                 &mut body,
-            );
+            )?;
         }
 
-        body
+        Ok(body)
     }
 }
 
@@ -139,26 +135,22 @@ impl PreviewJpegEncoder {
             frame.height,
             requested_width,
             requested_height,
-        );
-        let mut jpeg =
-            self.encode_scaled_body(frame, brightness, requested_width, requested_height)?;
-        let width_u16 = u16::try_from(target_width).unwrap_or(u16::MAX);
-        let height_u16 = u16::try_from(target_height).unwrap_or(u16::MAX);
-        let body_offset = CANVAS_HEADER_LEN;
-        let payload_len = body_offset.saturating_add(jpeg.len());
-        let mut payload = vec![0; payload_len];
-        write_canvas_header(
-            &mut payload[..body_offset],
-            header,
-            frame,
-            width_u16,
-            height_u16,
-            JPEG_FORMAT_TAG,
-        );
-        payload[body_offset..].copy_from_slice(&jpeg);
-        jpeg.clear();
-        self.jpeg_buffer = jpeg;
-        Ok(payload)
+        )?;
+        let jpeg = self.encode_scaled_body(frame, brightness, requested_width, requested_height)?;
+        let channel = PreviewFrameChannel::try_from(header)
+            .context("preview header is not a passive preview channel")?;
+        PreviewFrame {
+            channel,
+            frame_number: frame.frame_number,
+            timestamp_ms: frame.timestamp_ms,
+            width: target_width,
+            height: target_height,
+            format: WirePreviewPixelFormat::Jpeg,
+            payload: jpeg.into(),
+        }
+        .try_encode()
+        .context("failed to encode preview JPEG wire frame")
+        .map(|bytes| bytes.to_vec())
     }
 
     #[cfg(test)]
@@ -185,19 +177,14 @@ impl PreviewJpegEncoder {
             frame.height,
             requested_width,
             requested_height,
-        );
-        let width_u16 = u16::try_from(target_width).unwrap_or(u16::MAX);
-        let height_u16 = u16::try_from(target_height).unwrap_or(u16::MAX);
-        let width = usize::from(width_u16);
-        let height = usize::from(height_u16);
+        )?;
+        let width = usize::try_from(target_width).context("preview width exceeds address space")?;
+        let height =
+            usize::try_from(target_height).context("preview height exceeds address space")?;
         let required_len = turbojpeg_compressed_buf_len(width, height, PREVIEW_JPEG_SUBSAMP)
             .context("failed to size preview JPEG buffer")?;
         let mut jpeg_buffer = std::mem::take(&mut self.jpeg_buffer);
-        if jpeg_buffer.len() < required_len {
-            jpeg_buffer.resize(required_len, 0);
-        } else {
-            jpeg_buffer.truncate(required_len);
-        }
+        resize_buffer(&mut jpeg_buffer, required_len)?;
 
         let (pixels, pixel_format) = if brightness >= 0.999
             && target_width == frame.width
@@ -206,7 +193,7 @@ impl PreviewJpegEncoder {
             (frame.rgba_bytes(), TurboJpegPixelFormat::RGBA)
         } else {
             self.refresh_brightness_lut(brightness);
-            self.copy_scaled_rgb_pixels(frame, target_width, target_height, brightness);
+            self.copy_scaled_rgb_pixels(frame, target_width, target_height, brightness)?;
             (self.rgb_buffer.as_slice(), TurboJpegPixelFormat::RGB)
         };
         let pitch = width
@@ -233,11 +220,11 @@ impl PreviewJpegEncoder {
         target_width: u32,
         target_height: u32,
         brightness: f32,
-    ) {
+    ) -> Result<()> {
         let brightness_lut = (brightness < 0.999).then_some(&self.brightness_lut);
         if target_width == frame.width && target_height == frame.height {
-            copy_rgba_to_rgb(frame.rgba_bytes(), brightness_lut, &mut self.rgb_buffer);
-            return;
+            copy_rgba_to_rgb(frame.rgba_bytes(), brightness_lut, &mut self.rgb_buffer)?;
+            return Ok(());
         }
 
         scale_rgba_bilinear(
@@ -249,7 +236,7 @@ impl PreviewJpegEncoder {
             brightness_lut,
             PreviewScaleFormat::Rgb,
             &mut self.rgb_buffer,
-        );
+        )
     }
 
     fn refresh_brightness_lut(&mut self, brightness: f32) {
@@ -261,29 +248,37 @@ impl PreviewJpegEncoder {
     }
 }
 
-fn copy_rgba_to_rgb(rgba: &[u8], brightness_lut: Option<&[u8; 256]>, out: &mut Vec<u8>) {
-    let required_len = rgba.len() / 4 * 3;
-    if out.len() != required_len {
-        out.resize(required_len, 0);
-    }
+fn copy_rgba_to_rgb(
+    rgba: &[u8],
+    brightness_lut: Option<&[u8; 256]>,
+    out: &mut Vec<u8>,
+) -> Result<()> {
+    let required_len = (rgba.len() / 4)
+        .checked_mul(3)
+        .context("preview RGB byte length overflow")?;
+    resize_buffer(out, required_len)?;
 
     if let Some(brightness_lut) = brightness_lut {
         copy_rgba_to_rgb_with_lut(rgba, brightness_lut, out);
     } else {
         copy_rgba_to_rgb_raw(rgba, out);
     }
+    Ok(())
 }
 
-fn copy_rgba_to_rgba(rgba: &[u8], brightness_lut: Option<&[u8; 256]>, out: &mut Vec<u8>) {
-    if out.len() != rgba.len() {
-        out.resize(rgba.len(), 0);
-    }
+fn copy_rgba_to_rgba(
+    rgba: &[u8],
+    brightness_lut: Option<&[u8; 256]>,
+    out: &mut Vec<u8>,
+) -> Result<()> {
+    resize_buffer(out, rgba.len())?;
 
     if let Some(brightness_lut) = brightness_lut {
         copy_rgba_to_rgba_with_lut(rgba, brightness_lut, out);
     } else {
         out.copy_from_slice(rgba);
     }
+    Ok(())
 }
 
 fn copy_rgba_to_rgb_raw(rgba: &[u8], out: &mut [u8]) {
@@ -408,22 +403,6 @@ pub(super) fn encode_canvas_jpeg_payload_scaled_stateless(
     encoder.encode_scaled_payload(frame, header, brightness, requested_width, requested_height)
 }
 
-fn write_canvas_header(
-    out: &mut [u8],
-    header: u8,
-    frame: &CanvasFrame,
-    width_u16: u16,
-    height_u16: u16,
-    format_tag: u8,
-) {
-    out[0] = header;
-    out[1..5].copy_from_slice(&frame.frame_number.to_le_bytes());
-    out[5..9].copy_from_slice(&frame.timestamp_ms.to_le_bytes());
-    out[9..11].copy_from_slice(&width_u16.to_le_bytes());
-    out[11..13].copy_from_slice(&height_u16.to_le_bytes());
-    out[13] = format_tag;
-}
-
 fn identity_brightness_lut() -> [u8; 256] {
     std::array::from_fn(|channel| {
         u8::try_from(channel)
@@ -436,43 +415,54 @@ fn resolve_preview_dimensions(
     source_height: u32,
     requested_width: u32,
     requested_height: u32,
-) -> (u32, u32) {
+) -> Result<(u32, u32)> {
     if source_width == 0 || source_height == 0 {
-        return (source_width, source_height);
+        return Ok((source_width, source_height));
     }
     if requested_width == 0 && requested_height == 0 {
-        return (source_width, source_height);
+        return Ok((source_width, source_height));
     }
     if requested_width == 0 {
-        let height = requested_height.max(1).min(source_height);
+        let height = requested_height.max(1);
         let width = u32::try_from(
             (u64::from(source_width) * u64::from(height))
                 .checked_div(u64::from(source_height))
-                .unwrap_or(1),
+                .context("preview aspect division failed")?,
         )
-        .unwrap_or(u32::MAX)
+        .context("preview aspect width exceeds u32")?
         .max(1);
-        return (width, height);
+        return Ok((width, height));
     }
     if requested_height == 0 {
-        let width = requested_width.max(1).min(source_width);
+        let width = requested_width.max(1);
         let height = u32::try_from(
             (u64::from(source_height) * u64::from(width))
                 .checked_div(u64::from(source_width))
-                .unwrap_or(1),
+                .context("preview aspect division failed")?,
         )
-        .unwrap_or(u32::MAX)
+        .context("preview aspect height exceeds u32")?
         .max(1);
-        return (width, height);
+        return Ok((width, height));
     }
-    // Cap requested dimensions at the source resolution — never upscale on
-    // the daemon side. The browser's CSS scaling renders sharper than a
-    // bilinear daemon-side upscale under `image-rendering: pixelated`, and
-    // for smooth rendering the quality is indistinguishable. Either way
-    // daemon CPU and WebSocket bandwidth drop proportionally to the
-    // avoided upscale ratio.
-    (
-        requested_width.max(1).min(source_width),
-        requested_height.max(1).min(source_height),
-    )
+    Ok((requested_width.max(1), requested_height.max(1)))
+}
+
+fn checked_pixel_bytes(width: u32, height: u32, bytes_per_pixel: usize) -> Result<usize> {
+    usize::try_from(width)
+        .context("preview width exceeds platform address space")?
+        .checked_mul(
+            usize::try_from(height).context("preview height exceeds platform address space")?,
+        )
+        .and_then(|pixels| pixels.checked_mul(bytes_per_pixel))
+        .context("preview byte length overflow")
+}
+
+fn resize_buffer(buffer: &mut Vec<u8>, required_len: usize) -> Result<()> {
+    if required_len > buffer.len() {
+        buffer
+            .try_reserve_exact(required_len - buffer.len())
+            .with_context(|| format!("failed to reserve {required_len} preview bytes"))?;
+    }
+    buffer.resize(required_len, 0);
+    Ok(())
 }

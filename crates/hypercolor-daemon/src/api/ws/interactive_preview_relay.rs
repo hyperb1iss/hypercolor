@@ -82,14 +82,14 @@ fn encode_frame(
             1.0,
             frame.width,
             frame.height,
-        ),
+        )?,
         PreviewPixelFormat::Rgba => raw_encoder.encode_scaled_body(
             &canvas,
             CanvasFormat::Rgba,
             1.0,
             frame.width,
             frame.height,
-        ),
+        )?,
         PreviewPixelFormat::Jpeg => {
             if jpeg_encoder.is_none() {
                 *jpeg_encoder = Some(PreviewJpegEncoder::new()?);

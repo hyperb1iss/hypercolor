@@ -4264,8 +4264,12 @@ fn preview_raw_encoder_reuses_state_across_formats_and_sizes() {
     let frame = CanvasFrame::from_canvas(&canvas, 8, 45);
     let mut encoder = PreviewRawEncoder::new();
 
-    let scaled_rgb = encoder.encode_scaled_body(&frame, CanvasFormat::Rgb, 1.0, 1, 0);
-    let dimmed_rgba = encoder.encode_scaled_body(&frame, CanvasFormat::Rgba, 0.5, 0, 0);
+    let scaled_rgb = encoder
+        .encode_scaled_body(&frame, CanvasFormat::Rgb, 1.0, 1, 0)
+        .expect("scaled RGB body");
+    let dimmed_rgba = encoder
+        .encode_scaled_body(&frame, CanvasFormat::Rgba, 0.5, 0, 0)
+        .expect("dimmed RGBA body");
 
     assert_eq!(scaled_rgb.len(), 3);
     assert_eq!(dimmed_rgba.len(), 16);
